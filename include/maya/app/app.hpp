@@ -25,7 +25,9 @@
 #include "../core/types.hpp"
 #include "../element/builder.hpp"
 #include "../element/element.hpp"
-#include "../render/frame.hpp"
+#include "../render/canvas.hpp"
+#include "../render/renderer.hpp"
+#include "../render/serialize.hpp"
 #include "../style/theme.hpp"
 #include "../terminal/input.hpp"
 #include "../terminal/terminal.hpp"
@@ -301,12 +303,14 @@ private:
     int fd_ = -1;
 
     // -- Rendering pipeline ---------------------------------------------------
+    // Single canvas: render element tree into it, serialize to ANSI, erase
+    // the previous output, write the new frame. No front/back buffers — the
+    // terminal IS the front buffer (exactly what Ink / Claude Code does).
     std::unique_ptr<Writer> writer_;
-    FrameBuffer             frame_buf_;
-    // When a write returns WouldBlock we store the frame here instead of
-    // re-rendering. The event loop adds POLLOUT to its poll() mask and flushes
-    // pending_frame_ the instant the fd becomes writable — no 100ms wait.
-    std::optional<std::string> pending_frame_;
+    StylePool               pool_;
+    Canvas                  canvas_;
+    int                     prev_height_ = 0;  // lines written in last frame
+    std::string             out_;               // reused output buffer
 
     // -- Configuration --------------------------------------------------------
     Theme      theme_         = theme::dark;
@@ -340,15 +344,11 @@ private:
         constexpr int poll_timeout_ms = 100;
 
         while (running_) {
-            // Prepare poll file descriptors: stdin + signal pipe.
             struct pollfd pfds[2];
             int nfds = 0;
 
             pfds[nfds].fd      = fd_;
-            // Include POLLOUT only when we have a cached frame waiting to be
-            // sent. This lets us flush it the instant the fd is writable
-            // without waiting for the next 100ms timeout.
-            pfds[nfds].events  = POLLIN | (pending_frame_.has_value() ? POLLOUT : 0);
+            pfds[nfds].events  = POLLIN;
             pfds[nfds].revents = 0;
             ++nfds;
 
@@ -362,45 +362,25 @@ private:
             int poll_result = ::poll(pfds, static_cast<nfds_t>(nfds), poll_timeout_ms);
 
             if (poll_result < 0) {
-                if (errno == EINTR) continue; // interrupted by signal -- retry
+                if (errno == EINTR) continue;
                 return err(Error::from_errno("poll"));
             }
 
-            // Check for SIGWINCH via the signal pipe.
             if (nfds > 1 && (pfds[1].revents & POLLIN)) {
                 detail::drain_signal_pipe();
                 handle_resize();
             }
 
-            // Flush a pending frame as soon as the fd is writable again.
-            // This happens before input dispatch so a buffered frame goes out
-            // at the earliest opportunity.
-            if (pending_frame_.has_value() && (pfds[0].revents & POLLOUT)) {
-                auto result = writer_->write_raw(*pending_frame_);
-                if (result) {
-                    frame_buf_.commit();
-                    pending_frame_.reset();
-                } else if (result.error().kind != ErrorKind::WouldBlock) {
-                    return result; // real I/O error
-                }
-                // Still WouldBlock — keep pending_frame_, poll will fire again.
-            }
-
-            // Read and parse stdin input.
             if (pfds[0].revents & POLLIN) {
                 MAYA_TRY_VOID(read_and_dispatch());
             }
 
-            // Flush any ambiguous escape sequences that have timed out.
             auto timeout_events = parser_.flush_timeout();
             for (auto& ev : timeout_events) {
                 dispatch_event(ev);
             }
 
-            // Re-render if state changed. A pending frame is discarded because
-            // the fresher state from render_fn_() supersedes it.
             if (needs_render_) {
-                pending_frame_.reset();
                 MAYA_TRY_VOID(render_frame());
                 needs_render_ = false;
             }
@@ -501,44 +481,27 @@ private:
         const int h = size_.height.raw();
         if (w <= 0 || h <= 0) return ok();
 
-        if (frame_buf_.width() != w || frame_buf_.height() != h) {
-            frame_buf_.resize(w, h);
+        // Resize the single canvas to match the terminal.
+        if (canvas_.width() != w || canvas_.height() != h) {
+            canvas_ = Canvas(w, h, &pool_);
+            prev_height_ = 0; // terminal contents are unknown after resize
         }
 
-        // render() computes the ANSI diff frame without swapping front/back.
-        // commit() is called only after a confirmed successful write so that
-        // front_ always reflects what the terminal actually shows.
-        frame_buf_.set_cursor_visible(false);
-        const std::string& frame = frame_buf_.render(render_fn_(), theme_);
+        // Layout + paint the element tree onto the canvas.
+        render_tree(render_fn_(), canvas_, pool_, theme_);
 
-        // Nothing changed — frame is just overhead bytes (sync markers + cursor
-        // hide + SGR reset). Commit to keep front/back in sync and skip the write.
-        static constexpr std::size_t kFrameOverhead =
-            ansi::hide_cursor.size() + ansi::sync_start.size() +
-            ansi::reset.size()        + ansi::sync_end.size();
-        if (frame.size() <= kFrameOverhead) {
-            frame_buf_.commit();
-            return ok();
-        }
+        // Build the frame:
+        //   BSU start → erase previous output → new content → BSU end
+        out_.clear();
+        out_ += ansi::sync_start;
+        ansi::erase_lines(prev_height_, out_);
+        out_ += ansi::hide_cursor;
+        serialize(canvas_, pool_, out_);
+        out_ += ansi::sync_end;
 
-        auto result = writer_->write_raw(frame);
-        if (!result) {
-            if (result.error().kind == ErrorKind::WouldBlock) {
-                // Either 0 bytes (clean EAGAIN) or a partial write followed by a
-                // recovery end-sync sequence. In both cases front_ may no longer
-                // match the terminal — invalidate to force a full repaint so the
-                // next render sends every cell with absolute positioning and fixes
-                // whatever the terminal received. Do NOT commit; poll for POLLOUT
-                // so the retry fires as soon as the fd drains.
-                frame_buf_.invalidate();
-                pending_frame_.reset(); // don't cache — repaint next iteration
-                needs_render_ = true;
-                return ok();
-            }
-            return result;
-        }
+        MAYA_TRY_VOID(writer_->write_raw(out_));
 
-        frame_buf_.commit();
+        prev_height_ = h; // next render must erase exactly h lines
         return ok();
     }
 };

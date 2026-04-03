@@ -156,6 +156,16 @@ inline constexpr std::string_view bg_reset          = "\x1b[49m";
     return "\x1b[1K";
 }
 
+/// Erase `n` lines upward from the current cursor row (inclusive), then move
+/// the cursor to column 1 of the top erased line. Matches Ink's eraseLines().
+inline void erase_lines(int n, std::string& out) {
+    for (int i = 0; i < n; ++i) {
+        out += "\x1b[2K";            // erase entire current line
+        if (i < n - 1) out += "\x1b[A"; // cursor up (not on last iteration)
+    }
+    if (n > 0) out += "\x1b[G";     // cursor to column 1
+}
+
 // ============================================================================
 // Color SGR sequences
 // ============================================================================

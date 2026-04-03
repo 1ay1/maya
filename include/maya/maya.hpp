@@ -38,6 +38,7 @@
 #include <maya/render/canvas.hpp>
 #include <maya/render/diff.hpp>
 #include <maya/render/renderer.hpp>
+#include <maya/render/serialize.hpp>
 #include <maya/render/pipeline.hpp>
 #include <maya/render/frame.hpp>
 

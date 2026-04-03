@@ -1,4 +1,4 @@
-// examples/dashboard.cpp — fake sysmon dashboard using maya's high-level API
+// examples/dashboard.cpp — fake sysmon dashboard
 #include <maya/maya.hpp>
 
 #include <algorithm>
@@ -17,9 +17,9 @@ using namespace std::chrono_literals;
 
 // ── tunables ──────────────────────────────────────────────────────────────────
 static constexpr int kBarW  = 16;
-static constexpr int kSprkW = 28;
+static constexpr int kSprkW = 30;
 static constexpr int kHistN = 60;
-static constexpr int kLogN  = 5;
+static constexpr int kLogN  = 4;
 
 // ── model ─────────────────────────────────────────────────────────────────────
 struct Proc { int pid; std::string name, st; float cpu, mem; };
@@ -73,10 +73,6 @@ static std::string pf(float v, int d = 1) {
     char b[32]; std::snprintf(b, 32, "%.*f", d, v); return b;
 }
 
-static std::string pad(std::string s, int n) {
-    while ((int)s.size() < n) s += ' '; return s;
-}
-
 static Color pc(float p, const Theme& t) {
     return p >= 80 ? t.error : p >= 60 ? t.warning : t.success;
 }
@@ -85,8 +81,7 @@ static Color pc(float p, const Theme& t) {
 
 static void bg_thread() {
     std::mt19937 rng{std::random_device{}()};
-
-    {   // seed history and initial data
+    {
         std::lock_guard lk(g_mu); auto& s = g_snap;
         for (int i = 0; i < kHistN; ++i) {
             s.ch.push_back(35.f + sinf(i * .25f) * 18.f +
@@ -114,13 +109,11 @@ static void bg_thread() {
         {"redis timeout",  "Disk I/O error",  "OOM: worker killed",  "Upstream down"},
     };
     static const char* LV[] = {"INFO", "WARN", "ERROR"};
-
     std::uniform_int_distribution<int> r10(0, 9), r4(0, 3);
 
     while (!g_stop) {
         std::this_thread::sleep_for(320ms);
         if (g_stop) break;
-
         std::lock_guard lk(g_mu); auto& s = g_snap;
 
         s.cpu  = drift(rng, s.cpu,    5, 95,  8.f);
@@ -149,7 +142,6 @@ static void bg_thread() {
         int roll = r10(rng), lv = roll < 6 ? 0 : roll < 9 ? 1 : 2;
         s.logs.push_back({ts_now(), LV[lv], M[lv][r4(rng)]});
         if ((int)s.logs.size() > kLogN) s.logs.erase(s.logs.begin());
-
         s.ts = ts_now();
     }
 }
@@ -175,47 +167,54 @@ int main() {
         [&](const Ctx& ctx) {
             Snap s;
             { std::lock_guard lk(g_mu); s = g_snap; }
-            const auto& t  = ctx.theme;
+            const auto& t = ctx.theme;
             const int   si = sel.get();
 
-            // ── gauge row helper ──────────────────────────────────────────────
-            auto G = [&](std::string lbl, float p, std::string ex = "") -> Element {
-                return box().direction(Row).gap(1)(
-                    text(pad(lbl, 5),  Style{}.with_fg(t.muted)),
-                    text("[",          dim_style),
-                    text(bar(p, kBarW), Style{}.with_fg(pc(p, t))),
-                    text("]",          dim_style),
-                    text(pad(pf(p, 0) + "%", 4), Style{}.with_bold().with_fg(pc(p, t))),
-                    ex.empty() ? text("") : text(ex, Style{}.with_fg(t.muted).with_dim())
+            // ── gauge row ──────────────────────────────────────────────────────
+            // Fixed 4-char label + [bar] + pct + optional annotation.
+            // All elements are on one Row so the bar always aligns.
+            auto G = [&](const char* lbl, float p, const char* ann = nullptr) -> Element {
+                char pb[8]; std::snprintf(pb, 8, " %3.0f%%", p);
+                return box().direction(Row)(
+                    text(lbl,             Style{}.with_fg(t.muted)),
+                    text(" [",            dim_style),
+                    text(bar(p, kBarW),   Style{}.with_fg(pc(p, t))),
+                    text("] ",            dim_style),
+                    text(std::string(pb), Style{}.with_bold().with_fg(pc(p, t))),
+                    ann ? text(std::string("  ") + ann, Style{}.with_fg(t.muted).with_dim())
+                        : text("")
                 );
             };
 
             // ── header ────────────────────────────────────────────────────────
-            auto hdr = box().direction(Row)(
-                text(" ◆ SYSMON ", Style{}.with_bold().with_fg(t.accent)),
+            auto hdr = box().direction(Row).padding(0, 1)(
+                text("◆ SYSMON", Style{}.with_bold().with_fg(t.accent)),
                 spacer(),
-                text("load " + pf(s.ld[0]) + " " + pf(s.ld[1]) + " " + pf(s.ld[2]) + "  ",
+                text("load " + pf(s.ld[0]) + "  " + pf(s.ld[1]) + "  " + pf(s.ld[2]),
                      Style{}.with_fg(t.muted)),
-                text(s.ts + " ", Style{}.with_fg(t.text))
+                text("    " + s.ts, Style{}.with_fg(t.text))
             );
 
             // ── resources panel ───────────────────────────────────────────────
+            // grow(1): this panel and the right panel each take 50% of the row.
             auto res = box()
                 .border(BorderStyle::Round).border_color(t.border)
                 .border_text(" RESOURCES ")
-                .direction(Column).padding(1).gap(1)(
-                G("CPU",  s.cpu),
+                .direction(Column).padding(1).gap(1)
+                .grow(1)(
+                G("CPU ", s.cpu),
                 text(spark(s.ch, kSprkW), Style{}.with_fg(pc(s.cpu, t)).with_dim()),
-                G("MEM",  s.mem,  "  " + pf(s.mem  / 100.f * 16.f, 1) + " / 16 GB"),
-                G("DISK", s.disk, "  " + pf(s.disk / 100.f * 500.f, 0) + " / 500 GB"),
-                G("GPU",  s.gpu),
-                text(""),
-                box().direction(Row).gap(2)(
-                    text("NET",  Style{}.with_fg(t.muted)),
-                    text("↑ " + pf(s.nu) + " MB/s", Style{}.with_fg(t.success)),
-                    text("↓ " + pf(s.nd) + " MB/s", Style{}.with_fg(t.info)),
+                G("MEM ", s.mem,
+                    (pf(s.mem / 100.f * 16.f, 1) + " / 16 GB").c_str()),
+                G("DISK", s.disk,
+                    (pf(s.disk / 100.f * 500.f, 0) + " / 500 GB").c_str()),
+                G("GPU ", s.gpu),
+                separator(),
+                box().direction(Row)(
+                    text("NET  ", Style{}.with_fg(t.muted)),
+                    text("↑ " + pf(s.nu) + " MB/s",   Style{}.with_fg(t.success)),
+                    text("   ↓ " + pf(s.nd) + " MB/s", Style{}.with_fg(t.info)),
                     spacer(),
-                    text("TEMP", Style{}.with_fg(t.muted)),
                     text(pf(s.temp, 0) + "°C",
                          Style{}.with_fg(s.temp >= 75 ? t.error
                                        : s.temp >= 60 ? t.warning : t.success))
@@ -223,44 +222,35 @@ int main() {
                 text(spark(s.nh, kSprkW), Style{}.with_fg(t.info).with_dim())
             );
 
-            // ── process rows ──────────────────────────────────────────────────
+            // ── process list ──────────────────────────────────────────────────
+            // Each row is two elements: a 2-char indicator + a single snprintf
+            // string. snprintf guarantees column alignment across all rows.
             std::vector<Element> prows;
             prows.reserve(s.procs.size());
             for (int i = 0; i < (int)s.procs.size(); ++i) {
-                const auto& p  = s.procs[i];
-                const bool  hi = (i == si);
-                char cb[8], mb[8];
-                std::snprintf(cb, 8, "%5.1f", p.cpu);
-                std::snprintf(mb, 8, "%5.1f", p.mem);
+                const auto& p = s.procs[i];
+                bool hi = (i == si);
+                char row[64];
+                std::snprintf(row, 64, "%-5d  %-12s  %5.1f%%  %5.1f%%",
+                    p.pid, p.name.c_str(), p.cpu, p.mem);
                 prows.push_back(box().direction(Row)(
-                    hi ? text("▶", Style{}.with_fg(t.accent)) : text(" "),
-                    text(pad(std::to_string(p.pid), 6),
-                         Style{}.with_fg(t.muted).with_bold(hi)),
-                    text(pad(p.name, 12),
-                         Style{}.with_fg(hi ? t.accent : t.text).with_bold(hi)),
-                    text(std::string(cb),
-                         Style{}.with_fg(pc(p.cpu, t)).with_bold(hi)),
-                    text("  "),
-                    text(std::string(mb),
-                         Style{}.with_fg(t.info).with_bold(hi)),
-                    text("  "),
-                    text(p.st,
-                         Style{}.with_fg(p.st == "R" ? t.success : t.muted).with_dim())
+                    hi ? text("▶ ", Style{}.with_fg(t.accent))
+                       : text("  ", Style{}.with_fg(t.muted)),
+                    text(std::string(row),
+                         Style{}.with_fg(hi ? t.accent : pc(p.cpu, t))
+                                .with_bold(hi))
                 ));
             }
 
+            // grow(1): procs fills remaining vertical space inside right column.
             auto procs = box()
                 .border(BorderStyle::Round).border_color(t.border)
                 .border_text(" PROCESSES ")
-                .direction(Column).padding(1).grow(1)(
-                box().direction(Row)(
-                    text(pad("", 2)),
-                    text(pad("PID",  6), Style{}.with_bold().with_fg(t.muted)),
-                    text(pad("NAME", 12), Style{}.with_bold().with_fg(t.muted)),
-                    text("CPU%    ", Style{}.with_bold().with_fg(t.muted)),
-                    text("MEM%    ", Style{}.with_bold().with_fg(t.muted)),
-                    text("ST",       Style{}.with_bold().with_fg(t.muted))
-                ),
+                .direction(Column).padding(1)
+                .grow(1)(
+                // Header row — same format string layout as data rows.
+                text("  PID    NAME          CPU%    MEM%",
+                     Style{}.with_bold().with_fg(t.muted)),
                 separator(),
                 prows
             );
@@ -271,17 +261,19 @@ int main() {
                 .border_text(" SERVICES ")
                 .direction(Column).padding(1)(
                 map_elements(s.svcs, [&](const Svc& sv) -> Element {
-                    return box().direction(Row).gap(1)(
-                        text(sv.up ? "●" : "○",
+                    return box().direction(Row)(
+                        text(sv.up ? "● " : "○ ",
                              Style{}.with_fg(sv.up ? t.success : t.error)),
-                        text(pad(sv.name, 10), Style{}.with_fg(t.text)),
-                        text(sv.up ? "active" : "stopped",
-                             Style{}.with_fg(sv.up ? t.success : t.muted).with_dim())
+                        text(sv.name, Style{}.with_fg(t.text)),
+                        spacer(),
+                        text(sv.up ? "active " : "stopped",
+                             Style{}.with_fg(sv.up ? t.success : t.muted)
+                                    .with_dim())
                     );
                 })
             );
 
-            // ── log stream panel ──────────────────────────────────────────────
+            // ── log stream ────────────────────────────────────────────────────
             auto logs = box()
                 .border(BorderStyle::Round).border_color(t.border)
                 .border_text(" LOG STREAM ")
@@ -290,32 +282,46 @@ int main() {
                     Color lc = l.lv == "ERROR" ? t.error
                              : l.lv == "WARN"  ? t.warning
                              : t.muted;
-                    return box().direction(Row).gap(1)(
-                        text("[" + l.ts + "]", Style{}.with_fg(t.muted).with_dim()),
-                        text(pad(l.lv, 5),     Style{}.with_bold().with_fg(lc)),
-                        text(l.msg,            Style{}.with_fg(t.text))
-                    );
+                    char row[96];
+                    std::snprintf(row, 96, "[%s]  %-5s  %s",
+                        l.ts.c_str(), l.lv.c_str(), l.msg.c_str());
+                    return text(std::string(row), Style{}.with_fg(lc));
                 })
             );
 
             // ── footer ────────────────────────────────────────────────────────
-            auto ftr = box().direction(Row)(
+            auto ftr = box().direction(Row).padding(0, 1)(
                 text("[↑↓] select  [q] quit", dim_style)
             );
 
             // ── root ──────────────────────────────────────────────────────────
+            //
+            // Column layout (top to bottom):
+            //   hdr  (1 row)
+            //   ─── (separator, 1 row)
+            //   Row (grow=1 → takes all remaining height)
+            //     res         (grow=1 → 50% width, full height)
+            //     Column      (grow=1 → 50% width, full height)
+            //       procs     (grow=1 → fills height after svcs)
+            //       svcs      (content height)
+            //   ─── (separator, 1 row)
+            //   logs (content height = kLogN rows + border + padding)
+            //   ftr  (1 row)
+            //
             return box()
                 .border(BorderStyle::Round).border_color(t.primary)
                 .direction(Column)(
                 hdr,
                 separator(),
-                box().direction(Row).grow(1)(
+                box().direction(Row).grow(1).gap(1)(
                     res,
-                    box().direction(Column).gap(1)(
+                    // right column: grow(1) so it takes same width as res
+                    box().direction(Column).grow(1).gap(1)(
                         procs,
                         svcs
                     )
                 ),
+                separator(),
                 logs,
                 ftr
             );

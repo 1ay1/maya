@@ -173,7 +173,7 @@ int main() {
             // ── gauge row ──────────────────────────────────────────────────────
             // Fixed 4-char label + [bar] + pct + optional annotation.
             // All elements are on one Row so the bar always aligns.
-            auto G = [&](const char* lbl, float p, const char* ann = nullptr) -> Element {
+            auto G = [&](const char* lbl, float p, std::string ann = {}) -> Element {
                 char pb[8]; std::snprintf(pb, 8, " %3.0f%%", p);
                 return box().direction(Row)(
                     text(lbl,             Style{}.with_fg(t.muted)),
@@ -181,8 +181,8 @@ int main() {
                     text(bar(p, kBarW),   Style{}.with_fg(pc(p, t))),
                     text("] ",            dim_style),
                     text(std::string(pb), Style{}.with_bold().with_fg(pc(p, t))),
-                    ann ? text(std::string("  ") + ann, Style{}.with_fg(t.muted).with_dim())
-                        : text("")
+                    !ann.empty() ? text("  " + ann, Style{}.with_fg(t.muted).with_dim())
+                                 : text("")
                 );
             };
 
@@ -249,7 +249,7 @@ int main() {
                 .direction(Column).padding(1)
                 .grow(1)(
                 // Header row — same format string layout as data rows.
-                text("  PID    NAME          CPU%    MEM%",
+                text("  PID    NAME            CPU%    MEM%",
                      Style{}.with_bold().with_fg(t.muted)),
                 separator(),
                 prows

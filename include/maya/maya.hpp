@@ -47,3 +47,4 @@
 #include <maya/app/app.hpp>
 #include <maya/app/events.hpp>
 #include <maya/app/run.hpp>
+#include <maya/app/inline.hpp>

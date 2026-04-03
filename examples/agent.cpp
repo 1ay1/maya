@@ -4,24 +4,15 @@
 // editing code, running tests — all rendered inline with streaming text,
 // spinners, diff-colored edits, and bordered tool output.
 //
-// Demonstrates maya as a formatting engine for CLI tools:
-//   Canvas + render_tree() + serialize() → styled ANSI on stdout
+// Uses maya::inline_run() — the inline equivalent of maya::run().
 
 #include <maya/maya.hpp>
 
-#include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <string>
-#include <thread>
 #include <vector>
-
-#ifdef __unix__
-#include <sys/ioctl.h>
-#include <unistd.h>
-#endif
 
 using namespace maya;
 
@@ -31,10 +22,10 @@ enum class Kind { Thinking, Tool, Result, Text, Divider };
 
 struct Block {
     Kind        kind;
-    std::string tool;       // tool name (Read, Edit, Bash)
-    std::string content;    // full text
+    std::string tool;
+    std::string content;
     float       speed;      // chars per second
-    float       pause;      // seconds to wait after finishing
+    float       pause;      // seconds to wait after done
 };
 
 // ── Scenario ─────────────────────────────────────────────────────────────────
@@ -45,14 +36,12 @@ static const char* kQuery =
 
 static std::vector<Block> make_scenario() {
     return {
-        // Thinking
         {Kind::Thinking, "",
          "The test `test_expired_jwt_returns_401` panics instead of returning 401. "
          "The JWT validation likely calls `.unwrap()` on the decode result rather "
          "than handling `ExpiredSignature`. Let me check the middleware code.",
          160, 0.4f},
 
-        // Read file
         {Kind::Tool, "Read", "src/middleware/auth.rs", 400, 0.2f},
 
         {Kind::Result, "",
@@ -71,11 +60,9 @@ static std::vector<Block> make_scenario() {
          "}",
          800, 0.5f},
 
-        // Edit
         {Kind::Tool, "Edit", "src/middleware/auth.rs:10", 400, 0.2f},
 
         {Kind::Result, "",
-         // red = removed, green = added
          "\xe2\x94\x80    let claims = decode_jwt(token).unwrap();\n"
          "\xe2\x94\x80\n"
          "+    let claims = match decode_jwt(token) {\n"
@@ -86,7 +73,6 @@ static std::vector<Block> make_scenario() {
          "+    };",
          500, 0.5f},
 
-        // Run test
         {Kind::Tool, "Bash", "cargo test test_expired_jwt_returns_401", 300, 0.2f},
 
         {Kind::Result, "",
@@ -96,7 +82,6 @@ static std::vector<Block> make_scenario() {
          "test result: ok. 1 passed; 0 failed; 0 ignored",
          600, 0.4f},
 
-        // Final response
         {Kind::Text, "",
          "Fixed the panic. The issue was `.unwrap()` on `decode_jwt()` at line 10 "
          "\xe2\x80\x94 expired tokens triggered a panic instead of a 401 response. "
@@ -104,7 +89,6 @@ static std::vector<Block> make_scenario() {
          "The test passes now.",
          90, 0.3f},
 
-        // Cost divider
         {Kind::Divider, "", "", 0, 0},
     };
 }
@@ -112,38 +96,36 @@ static std::vector<Block> make_scenario() {
 // ── State ────────────────────────────────────────────────────────────────────
 
 struct State {
-    std::vector<Block> blocks;
-    int     phase = 0;
-    float   phase_t = 0;
-    float   total_t = 0;
-    bool    done = false;
-    int     tokens_in = 2847, tokens_out = 0;
+    std::vector<Block> blocks = make_scenario();
+    int   phase = 0;
+    float phase_t = 0;
+    float total_t = 0;
+    int   tokens_in = 2847, tokens_out = 0;
 };
 
-static void advance(State& st, float dt) {
-    if (st.done) return;
-    st.total_t += dt;
+static const char* spin(float t) {
+    static const char* f[] = {
+        "\xe2\xa0\x8b", "\xe2\xa0\x99", "\xe2\xa0\xb9", "\xe2\xa0\xb8",
+        "\xe2\xa0\xbc", "\xe2\xa0\xb4", "\xe2\xa0\xa6", "\xe2\xa0\xa7",
+        "\xe2\xa0\x87", "\xe2\xa0\x8f",
+    };
+    return f[static_cast<int>(t * 10.f) % 10];
+}
 
-    if (st.phase >= static_cast<int>(st.blocks.size())) {
-        st.done = true;
-        return;
-    }
+static void advance(State& st, float dt) {
+    st.total_t += dt;
+    if (st.phase >= static_cast<int>(st.blocks.size())) { quit(); return; }
 
     auto& b = st.blocks[static_cast<std::size_t>(st.phase)];
     st.phase_t += dt;
 
-    if (b.kind == Kind::Divider) {
-        st.done = true;
-        return;
-    }
+    if (b.kind == Kind::Divider) { quit(); return; }
 
     int target = static_cast<int>(b.content.size());
     int shown  = std::min(static_cast<int>(st.phase_t * b.speed), target);
-    // Don't split UTF-8
     while (shown < target && (b.content[static_cast<std::size_t>(shown)] & 0xC0) == 0x80)
         shown++;
 
-    // Track output tokens
     st.tokens_out = 0;
     for (int i = 0; i <= st.phase; ++i) {
         auto& bl = st.blocks[static_cast<std::size_t>(i)];
@@ -151,100 +133,69 @@ static void advance(State& st, float dt) {
         st.tokens_out += s / 4;
     }
 
-    bool text_done = shown >= target;
-    float elapsed_after = st.phase_t - (static_cast<float>(target) / b.speed);
-
-    if (text_done && elapsed_after >= b.pause) {
+    if (shown >= target && st.phase_t > (static_cast<float>(target) / b.speed) + b.pause) {
         st.phase++;
         st.phase_t = 0;
     }
 }
 
-// ── Spinner ──────────────────────────────────────────────────────────────────
-
-static const char* spinner(float t) {
-    static const char* frames[] = {
-        "\xe2\xa0\x8b", "\xe2\xa0\x99", "\xe2\xa0\xb9", "\xe2\xa0\xb8",
-        "\xe2\xa0\xbc", "\xe2\xa0\xb4", "\xe2\xa0\xa6", "\xe2\xa0\xa7",
-        "\xe2\xa0\x87", "\xe2\xa0\x8f",
-    };
-    return frames[static_cast<int>(t * 10.f) % 10];
-}
-
 // ── Styles ───────────────────────────────────────────────────────────────────
 
-struct Sty {
-    Style prompt, query, thinking_hdr, thinking_active, thinking_body;
-    Style tool_icon, tool_active, tool_name, tool_arg;
-    Style result_border, result_text;
-    Style diff_del, diff_add, diff_ctx;
-    Style response, done_icon, cost;
-    Style check;
-};
+static const Style sPrompt   = Style{}.with_bold().with_fg(Color::rgb(100, 180, 255));
+static const Style sQuery    = Style{}.with_bold().with_fg(Color::rgb(225, 225, 240));
+static const Style sThinkHdr = Style{}.with_fg(Color::rgb(100, 100, 120));
+static const Style sThinkAct = Style{}.with_fg(Color::rgb(180, 130, 255));
+static const Style sThinkTxt = Style{}.with_italic().with_fg(Color::rgb(130, 130, 155));
+static const Style sToolName = Style{}.with_bold().with_fg(Color::rgb(80, 190, 255));
+static const Style sToolArg  = Style{}.with_fg(Color::rgb(180, 180, 200));
+static const Style sActive   = Style{}.with_fg(Color::rgb(180, 130, 255));
+static const Style sDone     = Style{}.with_bold().with_fg(Color::rgb(80, 220, 120));
+static const Style sResult   = Style{}.with_fg(Color::rgb(170, 175, 185));
+static const Style sDiffDel  = Style{}.with_fg(Color::rgb(255, 100, 100));
+static const Style sDiffAdd  = Style{}.with_fg(Color::rgb(80, 220, 120));
+static const Style sResponse = Style{}.with_fg(Color::rgb(215, 215, 235));
+static const Style sCost     = Style{}.with_fg(Color::rgb(75, 75, 95));
 
-static Sty make_styles() {
-    return {
-        .prompt         = Style{}.with_bold().with_fg(Color::rgb(100, 180, 255)),
-        .query          = Style{}.with_bold().with_fg(Color::rgb(225, 225, 240)),
-        .thinking_hdr   = Style{}.with_fg(Color::rgb(100, 100, 120)),
-        .thinking_active= Style{}.with_fg(Color::rgb(180, 130, 255)),
-        .thinking_body  = Style{}.with_italic().with_fg(Color::rgb(130, 130, 155)),
-        .tool_icon      = Style{}.with_fg(Color::rgb(180, 130, 255)),
-        .tool_active    = Style{}.with_fg(Color::rgb(180, 130, 255)),
-        .tool_name      = Style{}.with_bold().with_fg(Color::rgb(80, 190, 255)),
-        .tool_arg       = Style{}.with_fg(Color::rgb(180, 180, 200)),
-        .result_border  = Style{}.with_fg(Color::rgb(50, 55, 70)),
-        .result_text    = Style{}.with_fg(Color::rgb(170, 175, 185)),
-        .diff_del       = Style{}.with_fg(Color::rgb(255, 100, 100)),
-        .diff_add       = Style{}.with_fg(Color::rgb(80, 220, 120)),
-        .diff_ctx       = Style{}.with_fg(Color::rgb(150, 150, 170)),
-        .response       = Style{}.with_fg(Color::rgb(215, 215, 235)),
-        .done_icon      = Style{}.with_fg(Color::rgb(80, 220, 120)),
-        .cost           = Style{}.with_fg(Color::rgb(75, 75, 95)),
-        .check          = Style{}.with_bold().with_fg(Color::rgb(80, 220, 120)),
-    };
+// ── Build UI ─────────────────────────────────────────────────────────────────
+
+static int shown_chars(const State& st, int i) {
+    const auto& b = st.blocks[static_cast<std::size_t>(i)];
+    int target = static_cast<int>(b.content.size());
+    if (i < st.phase) return target;
+    int s = std::min(static_cast<int>(st.phase_t * b.speed), target);
+    while (s < target && (b.content[static_cast<std::size_t>(s)] & 0xC0) == 0x80) s++;
+    return s;
 }
 
-// ── Build element tree ───────────────────────────────────────────────────────
-
-static Element build_ui(const State& st, int w, const Sty& s) {
+static Element build_ui(const State& st) {
     std::vector<Element> rows;
 
-    // Prompt
     rows.push_back(hstack()(
-        text("\xe2\x9d\xaf ", s.prompt),
-        text(kQuery, s.query)
+        text("\xe2\x9d\xaf ", sPrompt),
+        text(kQuery, sQuery)
     ));
     rows.push_back(text(""));
 
     for (int i = 0; i <= st.phase && i < static_cast<int>(st.blocks.size()); ++i) {
         const auto& b = st.blocks[static_cast<std::size_t>(i)];
         bool current = (i == st.phase);
-        int target = static_cast<int>(b.content.size());
-        int shown  = current
-            ? std::min(static_cast<int>(st.phase_t * b.speed), target)
-            : target;
-        while (shown < target && (b.content[static_cast<std::size_t>(shown)] & 0xC0) == 0x80)
-            shown++;
-        bool block_done = shown >= target;
-        std::string_view visible{b.content.data(), static_cast<std::size_t>(shown)};
+        int shown = shown_chars(st, i);
+        bool done = shown >= static_cast<int>(b.content.size());
+        std::string vis(b.content.data(), static_cast<std::size_t>(shown));
 
         switch (b.kind) {
         case Kind::Thinking: {
-            float dur = block_done
-                ? static_cast<float>(target) / b.speed
-                : st.phase_t;
+            float dur = done ? static_cast<float>(b.content.size()) / b.speed : st.phase_t;
             char hdr[48];
-            if (block_done) {
+            if (done)
                 std::snprintf(hdr, sizeof hdr, "\xe2\x9c\x93 thought for %.1fs", static_cast<double>(dur));
-            } else {
-                std::snprintf(hdr, sizeof hdr, "%s thinking...", spinner(st.total_t));
-            }
+            else
+                std::snprintf(hdr, sizeof hdr, "%s thinking...", spin(st.total_t));
 
             rows.push_back(
-                box().direction(FlexDirection::Column).padding(0, 0, 0, 2).max_width(w - 2)(
-                    text(hdr, block_done ? s.thinking_hdr : s.thinking_active),
-                    text(std::string(visible), s.thinking_body)
+                vstack().padding(0, 0, 0, 2)(
+                    text(hdr, done ? sThinkHdr : sThinkAct),
+                    text(vis, sThinkTxt)
                 )
             );
             rows.push_back(text(""));
@@ -252,15 +203,12 @@ static Element build_ui(const State& st, int w, const Sty& s) {
         }
 
         case Kind::Tool: {
-            std::string icon_str = block_done
-                ? "\xe2\x9c\x93 " : std::string(spinner(st.total_t)) + " ";
-            Style icon_s = block_done ? s.done_icon : s.tool_active;
-
+            std::string icon = done ? "\xe2\x9c\x93 " : std::string(spin(st.total_t)) + " ";
             rows.push_back(hstack()(
-                text(icon_str, icon_s),
-                text(b.tool, s.tool_name),
-                text(" ", s.tool_arg),
-                text(std::string(visible), s.tool_arg)
+                text(icon, done ? sDone : sActive),
+                text(b.tool, sToolName),
+                text(" ", sToolArg),
+                text(vis, sToolArg)
             ));
             rows.push_back(text(""));
             break;
@@ -268,55 +216,35 @@ static Element build_ui(const State& st, int w, const Sty& s) {
 
         case Kind::Result: {
             if (shown == 0) break;
-
-            // Check if this is a diff block (contains + or ─ prefixed lines)
-            std::string vis(visible);
             bool is_diff = vis.find('+') != std::string::npos &&
-                          (vis.find("\xe2\x94\x80") != std::string::npos);
+                           vis.find("\xe2\x94\x80") != std::string::npos;
 
             if (is_diff) {
-                // Diff-colored output: lines starting with ─ are deletions, + are additions
-                std::vector<Element> diff_lines;
+                std::vector<Element> lines;
                 std::string line;
-                for (char ch : vis) {
-                    if (ch == '\n') {
-                        Style ls = s.diff_ctx;
-                        if (!line.empty()) {
-                            if (line[0] == '+') ls = s.diff_add;
-                            else if (line.size() >= 3 && line[0] == '\xe2') ls = s.diff_del;
-                        }
-                        diff_lines.push_back(text(line, ls));
-                        line.clear();
-                    } else {
-                        line += ch;
+                auto flush = [&] {
+                    Style s = sResult;
+                    if (!line.empty()) {
+                        if (line[0] == '+') s = sDiffAdd;
+                        else if (line.size() >= 3 && line[0] == '\xe2') s = sDiffDel;
                     }
-                }
-                if (!line.empty()) {
-                    Style ls = s.diff_ctx;
-                    if (line[0] == '+') ls = s.diff_add;
-                    else if (line.size() >= 3 && line[0] == '\xe2') ls = s.diff_del;
-                    diff_lines.push_back(text(line, ls));
-                }
+                    lines.push_back(text(line, s));
+                    line.clear();
+                };
+                for (char ch : vis) { if (ch == '\n') flush(); else line += ch; }
+                if (!line.empty()) flush();
 
                 rows.push_back(
-                    box().direction(FlexDirection::Column)
-                        .border(BorderStyle::Round)
+                    vstack().border(BorderStyle::Round)
                         .border_color(Color::rgb(50, 55, 70))
-                        .padding(0, 1, 0, 1)
-                        .max_width(w - 4)(
-                        std::move(diff_lines)
-                    )
+                        .padding(0, 1, 0, 1)(std::move(lines))
                 );
             } else {
-                // Regular result in bordered box
-                // Color "ok" green in test output
                 rows.push_back(
-                    box().direction(FlexDirection::Column)
-                        .border(BorderStyle::Round)
+                    vstack().border(BorderStyle::Round)
                         .border_color(Color::rgb(50, 55, 70))
-                        .padding(0, 1, 0, 1)
-                        .max_width(w - 4)(
-                        text(std::string(visible), s.result_text)
+                        .padding(0, 1, 0, 1)(
+                        text(vis, sResult)
                     )
                 );
             }
@@ -324,115 +252,32 @@ static Element build_ui(const State& st, int w, const Sty& s) {
             break;
         }
 
-        case Kind::Text: {
-            rows.push_back(
-                box().direction(FlexDirection::Column).max_width(w - 2)(
-                    text(std::string(visible), s.response)
-                )
-            );
+        case Kind::Text:
+            rows.push_back(text(vis, sResponse));
             rows.push_back(text(""));
             break;
-        }
 
         case Kind::Divider: {
             float cost = (st.tokens_in * 3.f + st.tokens_out * 15.f) / 1000000.f;
             char buf[64];
-            std::snprintf(buf, sizeof buf,
-                "%d input + %d output tokens \xe2\x80\xa2 $%.4f",
-                st.tokens_in, st.tokens_out, static_cast<double>(cost));
-            rows.push_back(text(buf, s.cost));
+            std::snprintf(buf, sizeof buf, "%d input + %d output tokens \xe2\x80\xa2 $%.4f",
+                          st.tokens_in, st.tokens_out, static_cast<double>(cost));
+            rows.push_back(text(buf, sCost));
             break;
         }
         }
     }
 
-    return vstack().width(w)(std::move(rows));
-}
-
-// ── Rendering helpers ────────────────────────────────────────────────────────
-
-static int find_content_height(const Canvas& c, int w, int h) {
-    for (int y = h - 1; y >= 0; --y) {
-        for (int x = 0; x < w; ++x) {
-            auto cell = Cell::unpack(c.cells()[y * w + x]);
-            if (cell.character != U' ' && cell.character != 0) return y + 1;
-        }
-    }
-    return 1;
-}
-
-static void render_frame(const Element& root, int w, StylePool& pool,
-                         std::string& out, int& prev_h) {
-    const int max_h = 50;
-    Canvas canvas{w, max_h, &pool};
-    render_tree(root, canvas, pool, theme::dark);
-
-    int h = find_content_height(canvas, w, max_h);
-
-    // Copy to trimmed canvas
-    Canvas trimmed{w, h, &pool};
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x) {
-            auto cell = Cell::unpack(canvas.cells()[y * w + x]);
-            trimmed.set(x, y, cell.character, cell.style_id);
-        }
-
-    out.clear();
-    if (prev_h > 0) ansi::erase_lines(prev_h, out);
-    serialize(trimmed, pool, out);
-    std::fwrite(out.data(), 1, out.size(), stdout);
-    std::fflush(stdout);
-    prev_h = h;
+    return vstack()(std::move(rows));
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main() {
-    // Detect terminal width
-    int term_w = 80;
-    #ifdef __unix__
-    {
-        struct winsize ws{};
-        if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-            term_w = ws.ws_col;
-    }
-    #endif
-    // Leave 1-col margin to prevent wrapping artifacts
-    int w = std::min(term_w - 1, 96);
-    if (w < 40) w = 40;
-
     State st;
-    st.blocks = make_scenario();
 
-    Sty sty = make_styles();
-    StylePool pool;
-    std::string out;
-    int prev_h = 0;
-
-    using Clock = std::chrono::steady_clock;
-    auto last = Clock::now();
-
-    std::fputs("\x1b[?25l", stdout); // hide cursor
-
-    while (!st.done) {
-        auto now = Clock::now();
-        float dt = std::chrono::duration<float>(now - last).count();
-        last = now;
-
+    inline_run({.fps = 30, .max_width = 96}, [&](float dt) {
         advance(st, dt);
-        Element root = build_ui(st, w, sty);
-        render_frame(root, w, pool, out, prev_h);
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(33));
-    }
-
-    // Final render with all content visible
-    advance(st, 1.0f);
-    {
-        Element root = build_ui(st, w, sty);
-        render_frame(root, w, pool, out, prev_h);
-    }
-
-    std::fputs("\x1b[?25h\n", stdout); // show cursor
-    std::fflush(stdout);
+        return build_ui(st);
+    });
 }

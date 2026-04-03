@@ -1,14 +1,20 @@
 #pragma once
 // maya::app - Application entry point and event loop
 //
-// App owns the terminal, writer, input parser, theme, and context. It runs
-// the event loop: poll stdin, parse events, dispatch handlers, call the
-// render function, layout, diff, and flush. Builder pattern for construction.
+// Provides two entry points:
 //
-// The event loop uses poll(2) with a 100ms timeout for idle re-renders
-// (e.g., animation ticks, blinking cursor). SIGWINCH is caught via a
-// self-pipe so resize events integrate cleanly with the poll loop.
+//   App  — element-tree / component model. Builder pattern, event handlers,
+//           render callback that returns an Element. Uses serialize + erase-
+//           and-redraw (Ink model). Good for UI applications.
+//
+//   canvas_run() — imperative canvas animation loop. Double-buffered diff,
+//                  fixed-fps timer, POLLOUT retry. Good for games / animations.
+//
+// Both share the same terminal infrastructure (signal pipe, raw mode, alt
+// screen, SIGWINCH). SIGWINCH is caught via a self-pipe so resize events
+// integrate cleanly with the poll loop.
 
+#include <chrono>
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
@@ -26,6 +32,7 @@
 #include "../element/builder.hpp"
 #include "../element/element.hpp"
 #include "../render/canvas.hpp"
+#include "../render/diff.hpp"
 #include "../render/renderer.hpp"
 #include "../render/serialize.hpp"
 #include "../style/theme.hpp"
@@ -505,5 +512,200 @@ private:
         return ok();
     }
 };
+
+// ============================================================================
+// canvas_run - Imperative canvas animation loop
+// ============================================================================
+// For applications that paint cells directly rather than composing element
+// trees. The framework owns every rendering concern: double-buffering, diff,
+// non-blocking I/O with POLLOUT retry, frame pacing, resize, and signal
+// handling. Users provide three narrow callbacks:
+//
+//   on_resize(pool, w, h)  — rebuild size-dependent state; called once at
+//                            startup and again after each SIGWINCH. The pool
+//                            is cleared before the call — re-intern styles here.
+//
+//   on_event(event) → bool — handle input; return false to quit.
+//
+//   on_paint(canvas, w, h) — draw the current frame into the back buffer,
+//                            which is already cleared. Do not call canvas.clear().
+
+struct CanvasConfig {
+    int         fps        = 60;    // target frame rate
+    bool        mouse      = false; // enable all-motion mouse reporting
+    bool        alt_screen = true;  // use the alternate screen buffer
+    std::string title;              // terminal window title (optional)
+};
+
+[[nodiscard]] inline Status canvas_run(
+    CanvasConfig                                   cfg,
+    std::function<void(StylePool&, int w, int h)>  on_resize,
+    std::function<bool(const Event&)>              on_event,
+    std::function<void(Canvas&, int w, int h)>     on_paint)
+{
+    using Clock = std::chrono::steady_clock;
+
+    MAYA_TRY_VOID(detail::setup_signal_pipe());
+
+    auto cooked = MAYA_TRY(Terminal<Cooked>::create(STDIN_FILENO));
+    auto raw    = MAYA_TRY(std::move(cooked).enable_raw_mode());
+    int  fd     = raw.fd();
+
+    std::optional<Terminal<AltScreen>> alt_term;
+    std::optional<Terminal<Raw>>       raw_term;
+    if (cfg.alt_screen) {
+        alt_term = MAYA_TRY(std::move(raw).enter_alt_screen());
+    } else {
+        raw_term = std::move(raw);
+    }
+
+    if (!cfg.title.empty()) {
+        std::string seq = "\x1b]0;" + cfg.title + "\x07";
+        (void)::write(fd, seq.data(), seq.size());
+    }
+
+    // All-motion mouse + SGR extended coordinates.
+    static constexpr std::string_view kMouseOn  = "\x1b[?1003h\x1b[?1006h";
+    static constexpr std::string_view kMouseOff = "\x1b[?1006l\x1b[?1003l";
+    if (cfg.mouse) (void)::write(fd, kMouseOn.data(), kMouseOn.size());
+
+    Writer writer{fd};
+
+    Size sz;
+    if (alt_term)      sz = alt_term->size();
+    else if (raw_term) sz = raw_term->size();
+    int W = std::max(1, sz.width.value);
+    int H = std::max(1, sz.height.value);
+
+    StylePool pool;
+    on_resize(pool, W, H);
+
+    Canvas front(W, H, &pool), back(W, H, &pool);
+    front.mark_all_damaged();
+
+    auto frame_ns   = std::chrono::nanoseconds(1'000'000'000LL / std::max(1, cfg.fps));
+    auto next_frame = Clock::now();
+
+    std::optional<std::string> pending_frame;
+    std::string out;
+    out.reserve(static_cast<std::size_t>(W * H * 12));
+
+    InputParser parser;
+    bool running = true;
+
+    auto cleanup = [&](Status result) -> Status {
+        if (cfg.mouse) (void)::write(fd, kMouseOff.data(), kMouseOff.size());
+        detail::cleanup_signal_pipe();
+        return result;
+    };
+
+    auto handle_resize = [&](int nw, int nh) {
+        W = nw; H = nh;
+        pool.clear();
+        on_resize(pool, W, H);
+        front = Canvas(W, H, &pool);
+        back  = Canvas(W, H, &pool);
+        front.mark_all_damaged();
+        pending_frame.reset();
+        out.reserve(static_cast<std::size_t>(W * H * 12));
+    };
+
+    while (running) {
+        auto now = Clock::now();
+        int timeout_ms;
+        if (now >= next_frame) {
+            timeout_ms = 0;
+        } else {
+            auto wait  = std::chrono::duration_cast<std::chrono::milliseconds>(next_frame - now);
+            timeout_ms = static_cast<int>(wait.count()) + 1;
+        }
+
+        struct pollfd pfds[2];
+        int nfds = 0;
+        pfds[nfds].fd      = fd;
+        pfds[nfds].events  = POLLIN | (pending_frame.has_value() ? POLLOUT : 0);
+        pfds[nfds].revents = 0;
+        ++nfds;
+        if (detail::signal_pipe_read_fd >= 0) {
+            pfds[nfds].fd      = detail::signal_pipe_read_fd;
+            pfds[nfds].events  = POLLIN;
+            pfds[nfds].revents = 0;
+            ++nfds;
+        }
+
+        int pr = ::poll(pfds, static_cast<nfds_t>(nfds), timeout_ms);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            return cleanup(err(Error::from_errno("poll")));
+        }
+
+        if (nfds > 1 && (pfds[1].revents & POLLIN)) {
+            detail::drain_signal_pipe();
+            Size new_sz;
+            if (alt_term)      new_sz = alt_term->size();
+            else if (raw_term) new_sz = raw_term->size();
+            int nw = std::max(1, new_sz.width.value);
+            int nh = std::max(1, new_sz.height.value);
+            if (nw != W || nh != H) handle_resize(nw, nh);
+        }
+
+        if (pending_frame.has_value() && (pfds[0].revents & POLLOUT)) {
+            auto result = writer.write_raw(*pending_frame);
+            if (result) {
+                std::swap(front, back);
+                back.reset_damage();
+                pending_frame.reset();
+            } else if (result.error().kind != ErrorKind::WouldBlock) {
+                return cleanup(result);
+            }
+        }
+
+        if (pfds[0].revents & POLLIN) {
+            char buf[1024];
+            ssize_t n = ::read(fd, buf, sizeof(buf));
+            if (n > 0) {
+                for (auto& ev : parser.feed({buf, static_cast<std::size_t>(n)})) {
+                    if (!on_event(ev)) { running = false; break; }
+                }
+            }
+        }
+
+        if (running && !pending_frame.has_value() && Clock::now() >= next_frame) {
+            next_frame += frame_ns;
+            if (Clock::now() > next_frame + frame_ns)
+                next_frame = Clock::now() + frame_ns;
+
+            back.clear();
+            on_paint(back, W, H);
+
+            out.clear();
+            out += ansi::sync_start;
+            diff(front, back, pool, out);
+            out += ansi::reset;
+            out += ansi::sync_end;
+
+            static const std::size_t kMinSize =
+                ansi::sync_start.size() + ansi::reset.size() + ansi::sync_end.size();
+            if (out.size() == kMinSize) {
+                std::swap(front, back);
+                back.reset_damage();
+            } else {
+                auto result = writer.write_raw(out);
+                if (!result) {
+                    if (result.error().kind == ErrorKind::WouldBlock) {
+                        pending_frame = out;
+                    } else {
+                        return cleanup(result);
+                    }
+                } else {
+                    std::swap(front, back);
+                    back.reset_damage();
+                }
+            }
+        }
+    }
+
+    return cleanup(ok());
+}
 
 } // namespace maya

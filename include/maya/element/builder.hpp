@@ -26,6 +26,10 @@
 #include <utility>
 #include <vector>
 
+// For text() overloads that accept numeric types.
+#include <charconv>
+#include <array>
+
 namespace maya {
 
 // ============================================================================
@@ -393,6 +397,82 @@ template <std::ranges::range R, typename Proj>
         items.emplace_back(proj(std::forward<decltype(val)>(val)));
     }
     return ElementList{std::move(items)};
+}
+
+// ============================================================================
+// operator| — Pipe a Style onto an Element
+// ============================================================================
+// Usage:  text("hello") | bold | fg(Color::red())
+//
+// For TextElement: merges the style into the text's style.
+// For BoxElement:  merges the style into the box's style.
+// For ElementList: applies the style to every child element.
+
+[[nodiscard]] inline Element operator|(Element elem, const Style& s) {
+    std::visit([&](auto& inner) {
+        using T = std::decay_t<decltype(inner)>;
+        if constexpr (std::same_as<T, TextElement>) {
+            inner.style = inner.style.merge(s);
+        } else if constexpr (std::same_as<T, BoxElement>) {
+            inner.style = inner.style.merge(s);
+        } else if constexpr (std::same_as<T, ElementList>) {
+            for (auto& child : inner.items)
+                child = std::move(child) | s;
+        }
+    }, elem.inner);
+    return elem;
+}
+
+// ============================================================================
+// Layout shortcuts
+// ============================================================================
+
+/// Vertical stack — `box().direction(Column)`.
+[[nodiscard]] inline auto vstack() -> BoxBuilder {
+    return BoxBuilder{}.direction(FlexDirection::Column);
+}
+
+/// Horizontal stack — `box().direction(Row)`.
+[[nodiscard]] inline auto hstack() -> BoxBuilder {
+    return BoxBuilder{}.direction(FlexDirection::Row);
+}
+
+/// Centered container — centers children on both axes.
+[[nodiscard]] inline auto center() -> BoxBuilder {
+    return BoxBuilder{}
+        .justify(Justify::Center)
+        .align_items(Align::Center)
+        .grow();
+}
+
+/// An empty line — visual breathing room between elements.
+[[nodiscard]] inline auto blank() -> Element {
+    return Element{TextElement{.content = ""}};
+}
+
+// ============================================================================
+// text() overloads — numeric and signal-aware
+// ============================================================================
+
+/// text(int) — auto-converts to string.
+[[nodiscard]] inline auto text(int value, Style s = {}) -> Element {
+    std::array<char, 16> buf;
+    auto [ptr, ec] = std::to_chars(buf.data(), buf.data() + buf.size(), value);
+    return Element{TextElement{
+        .content = std::string{buf.data(), ptr},
+        .style   = s,
+    }};
+}
+
+/// text(double) — auto-converts with up to 2 decimal places.
+[[nodiscard]] inline auto text(double value, Style s = {}) -> Element {
+    std::array<char, 32> buf;
+    auto [ptr, ec] = std::to_chars(buf.data(), buf.data() + buf.size(), value,
+                                    std::chars_format::fixed, 2);
+    return Element{TextElement{
+        .content = std::string{buf.data(), ptr},
+        .style   = s,
+    }};
 }
 
 } // namespace maya

@@ -165,4 +165,33 @@ struct MousePos {
     return fe && !fe->focused;
 }
 
+// ── on() — fire-and-forget key binding ─────────────────────────────────────
+// Calls `action` if the event matches the given key. Returns true if matched.
+//
+// Usage:
+//   on(ev, 'q', [&] { quit(); });
+//   on(ev, '+', '=', [&] { count++; });               // two keys, same action
+//   on(ev, SpecialKey::Up, [&] { scroll(-1); });
+
+template <typename Fn>
+    requires std::invocable<Fn>
+inline bool on(const Event& ev, char c, Fn&& action) {
+    if (key(ev, c)) { std::forward<Fn>(action)(); return true; }
+    return false;
+}
+
+template <typename Fn>
+    requires std::invocable<Fn>
+inline bool on(const Event& ev, char c1, char c2, Fn&& action) {
+    if (key(ev, c1) || key(ev, c2)) { std::forward<Fn>(action)(); return true; }
+    return false;
+}
+
+template <typename Fn>
+    requires std::invocable<Fn>
+inline bool on(const Event& ev, SpecialKey sk, Fn&& action) {
+    if (key(ev, sk)) { std::forward<Fn>(action)(); return true; }
+    return false;
+}
+
 } // namespace maya

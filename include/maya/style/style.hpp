@@ -235,4 +235,18 @@ static_assert((fg_red | fg_blue).fg == Color::blue());
 // Trivially copyable (value type guarantee)
 static_assert(std::is_trivially_copyable_v<Style>);
 
+// ============================================================================
+// fg() / bg() — Free functions for quick Style construction
+// ============================================================================
+// Usage:  text("hello") | bold_style | fg(Color::red()) | bg(Color::hex(0x222222))
+
+[[nodiscard]] constexpr Style fg(Color c) noexcept { return Style{}.with_fg(c); }
+[[nodiscard]] constexpr Style bg(Color c) noexcept { return Style{}.with_bg(c); }
+
+// Short aliases — less typing for the most common attributes.
+inline constexpr Style bold      = bold_style;
+inline constexpr Style dim       = dim_style;
+inline constexpr Style italic    = italic_style;
+inline constexpr Style underline = underline_style;
+
 } // namespace maya

@@ -1,9 +1,4 @@
-// maya demo — full showcase rewritten with the new run() interface
-//
-// Before (old API):   ~40 lines, manual App builder, on_key registration,
-//                     std::get_if variant dispatch, explicit error handling
-// After  (new API):   ~25 lines, one run() call, readable key() predicates,
-//                     zero boilerplate
+// maya demo — full showcase of the declarative API
 
 #include <maya/maya.hpp>
 #include <string>
@@ -17,45 +12,35 @@ int main() {
     run(
         {.title = "maya demo"},
 
-        // ── Event handler ─────────────────────────────────────────────────
-        // Return false to quit, true to keep running.
         [&](const Event& ev) {
-            if (key(ev, '+') || key(ev, '=')) {
+            on(ev, '+', '=', [&] {
                 counter.update([](int& n) { ++n; });
                 message.set("Counter: " + std::to_string(counter.get()));
-            }
-            if (key(ev, '-') || key(ev, '_')) {
+            });
+            on(ev, '-', '_', [&] {
                 counter.update([](int& n) { --n; });
                 message.set("Counter: " + std::to_string(counter.get()));
-            }
-            if (key(ev, 'r')) {
+            });
+            on(ev, 'r', [&] {
                 counter.set(0);
                 message.set("Reset!");
-            }
+            });
             return !key(ev, 'q');
         },
 
-        // ── Render function ───────────────────────────────────────────────
-        // Ctx carries the live terminal size and active theme.
-        // Rebuild the Element tree every frame — diff handles the rest.
         [&](const Ctx& ctx) {
-            auto num_style = Style{}.with_bold().with_fg(
-                counter.get() >= 0 ? ctx.theme.success : ctx.theme.error);
-
-            return box().direction(Column)
-                        .border(BorderStyle::Round)
-                        .border_color(ctx.theme.primary)
-                        .padding(1)(
-                text(" maya demo ", Style{}.with_bold().with_fg(ctx.theme.primary)),
-                text(""),
-                box().direction(Row).gap(2)(
-                    text("Counter:", Style{}.with_fg(ctx.theme.muted)),
-                    text(std::to_string(counter.get()), num_style)
+            return vstack().border(BorderStyle::Round).border_color(ctx.theme.primary).padding(1)(
+                text(" maya demo ") | bold | fg(ctx.theme.primary),
+                blank(),
+                hstack().gap(2)(
+                    text("Counter:") | fg(ctx.theme.muted),
+                    text(counter.get()) | bold | fg(counter.get() >= 0
+                        ? ctx.theme.success : ctx.theme.error)
                 ),
-                text(""),
-                text(message.get(), Style{}.with_dim().with_fg(ctx.theme.muted)),
+                blank(),
+                text(message.get()) | dim | fg(ctx.theme.muted),
                 spacer(),
-                text("[+/-] count  [r] reset  [q] quit", dim_style)
+                text("[+/-] count  [r] reset  [q] quit") | dim
             );
         }
     );

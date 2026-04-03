@@ -1,13 +1,11 @@
-// maya — AI agent terminal interface (inline, no alt screen)
+// maya — AI coding agent (inline, no alt screen)
 //
-// Simulates an AI coding agent that thinks, calls tools, and streams
-// responses — all rendered inline in your terminal using maya's element
-// tree and serialize() pipeline. No fullscreen takeover.
+// Automatic playthrough of an AI agent fixing a bug: thinking, reading files,
+// editing code, running tests — all rendered inline with streaming text,
+// spinners, diff-colored edits, and bordered tool output.
 //
-// This demonstrates maya as a formatting engine for CLI tools:
-//   Canvas + render_tree + serialize → styled ANSI on stdout
-//
-// Keys: enter = next step   q = quit
+// Demonstrates maya as a formatting engine for CLI tools:
+//   Canvas + render_tree() + serialize() → styled ANSI on stdout
 
 #include <maya/maya.hpp>
 
@@ -27,355 +25,371 @@
 
 using namespace maya;
 
-// ── Data model ───────────────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────────────
 
-enum class BlockKind { Thinking, ToolCall, ToolResult, Text, Cost };
+enum class Kind { Thinking, Tool, Result, Text, Divider };
 
 struct Block {
-    BlockKind   kind;
-    std::string label;      // tool name, "thinking", etc
-    std::string content;    // full content (streamed char by char)
-    int         chars_shown; // how many chars revealed so far
-    bool        done;
-    float       duration;   // seconds (for timing display)
+    Kind        kind;
+    std::string tool;       // tool name (Read, Edit, Bash)
+    std::string content;    // full text
+    float       speed;      // chars per second
+    float       pause;      // seconds to wait after finishing
 };
-
-struct AgentState {
-    std::string query;
-    std::vector<Block> blocks;
-    int   phase;            // which block we're building
-    float phase_time;       // time in current phase
-    float total_time;
-    bool  finished;
-    int   spinner_frame;
-    int   tokens_in, tokens_out;
-    float cost;
-};
-
-// ── Spinner ──────────────────────────────────────────────────────────────────
-
-static const char* kSpinners[] = {
-    "\xe2\xa0\x8b", "\xe2\xa0\x99", "\xe2\xa0\xb9", "\xe2\xa0\xb8",
-    "\xe2\xa0\xbc", "\xe2\xa0\xb4", "\xe2\xa0\xa6", "\xe2\xa0\xa7",
-    "\xe2\xa0\x87", "\xe2\xa0\x8f",
-};
-static constexpr int kSpinnerCount = 10;
 
 // ── Scenario ─────────────────────────────────────────────────────────────────
 
-static void init_scenario(AgentState& st) {
-    st.query = "Fix the failing test in auth_middleware.rs — it panics on expired JWT tokens";
-    st.tokens_in = 2847;
-    st.tokens_out = 0;
-    st.cost = 0.f;
+static const char* kQuery =
+    "Fix the failing test in auth_middleware.rs \xe2\x80\x94 "
+    "it panics on expired JWT tokens";
 
-    // Phase 0: Thinking
-    st.blocks.push_back({
-        .kind = BlockKind::Thinking,
-        .label = "thinking",
-        .content = "The test `test_expired_jwt_returns_401` is panicking instead of returning "
-                   "a 401 response. This is likely because the JWT validation function calls "
-                   "`.unwrap()` on the decode result instead of handling the `ExpiredSignature` "
-                   "error variant. I need to look at the middleware handler and the test to "
-                   "confirm.",
-        .chars_shown = 0, .done = false, .duration = 0,
-    });
+static std::vector<Block> make_scenario() {
+    return {
+        // Thinking
+        {Kind::Thinking, "",
+         "The test `test_expired_jwt_returns_401` panics instead of returning 401. "
+         "The JWT validation likely calls `.unwrap()` on the decode result rather "
+         "than handling `ExpiredSignature`. Let me check the middleware code.",
+         160, 0.4f},
 
-    // Phase 1: Read tool call
-    st.blocks.push_back({
-        .kind = BlockKind::ToolCall,
-        .label = "Read",
-        .content = "src/middleware/auth.rs",
-        .chars_shown = 0, .done = false, .duration = 0,
-    });
+        // Read file
+        {Kind::Tool, "Read", "src/middleware/auth.rs", 400, 0.2f},
 
-    // Phase 2: Tool result
-    st.blocks.push_back({
-        .kind = BlockKind::ToolResult,
-        .label = "src/middleware/auth.rs",
-        .content =
-            "pub async fn auth_middleware(req: Request) -> Result<Request, Response> {\n"
-            "    let token = req.header(\"Authorization\")\n"
-            "        .and_then(|h| h.strip_prefix(\"Bearer \"));\n"
-            "\n"
-            "    let token = match token {\n"
-            "        Some(t) => t,\n"
-            "        None => return Err(unauthorized(\"missing token\")),\n"
-            "    };\n"
-            "\n"
-            "    let claims = decode_jwt(token).unwrap();  // <-- panics here\n"
-            "    req.set_claims(claims);\n"
-            "    Ok(req)\n"
-            "}",
-        .chars_shown = 0, .done = false, .duration = 0,
-    });
+        {Kind::Result, "",
+         "pub async fn auth_middleware(req: Request) -> Result<Request, Response> {\n"
+         "    let token = req.header(\"Authorization\")\n"
+         "        .and_then(|h| h.strip_prefix(\"Bearer \"));\n"
+         "\n"
+         "    let token = match token {\n"
+         "        Some(t) => t,\n"
+         "        None => return Err(unauthorized(\"missing token\")),\n"
+         "    };\n"
+         "\n"
+         "    let claims = decode_jwt(token).unwrap();  // BUG\n"
+         "    req.set_claims(claims);\n"
+         "    Ok(req)\n"
+         "}",
+         800, 0.5f},
 
-    // Phase 3: Edit tool call
-    st.blocks.push_back({
-        .kind = BlockKind::ToolCall,
-        .label = "Edit",
-        .content = "src/middleware/auth.rs:10\n"
-                   "    let claims = decode_jwt(token).unwrap();\n"
-                   "\xe2\x86\x92\n"
-                   "    let claims = match decode_jwt(token) {\n"
-                   "        Ok(c) => c,\n"
-                   "        Err(e) if e.kind() == &ErrorKind::ExpiredSignature =>\n"
-                   "            return Err(unauthorized(\"token expired\")),\n"
-                   "        Err(e) => return Err(unauthorized(&e.to_string())),\n"
-                   "    };",
-        .chars_shown = 0, .done = false, .duration = 0,
-    });
+        // Edit
+        {Kind::Tool, "Edit", "src/middleware/auth.rs:10", 400, 0.2f},
 
-    // Phase 4: Bash tool call
-    st.blocks.push_back({
-        .kind = BlockKind::ToolCall,
-        .label = "Bash",
-        .content = "cargo test test_expired_jwt_returns_401",
-        .chars_shown = 0, .done = false, .duration = 0,
-    });
+        {Kind::Result, "",
+         // red = removed, green = added
+         "\xe2\x94\x80    let claims = decode_jwt(token).unwrap();\n"
+         "\xe2\x94\x80\n"
+         "+    let claims = match decode_jwt(token) {\n"
+         "+        Ok(c) => c,\n"
+         "+        Err(e) if e.kind() == &ErrorKind::ExpiredSignature =>\n"
+         "+            return Err(unauthorized(\"token expired\")),\n"
+         "+        Err(e) => return Err(unauthorized(&e.to_string())),\n"
+         "+    };",
+         500, 0.5f},
 
-    // Phase 5: Tool result (test output)
-    st.blocks.push_back({
-        .kind = BlockKind::ToolResult,
-        .label = "test output",
-        .content =
-            "running 1 test\n"
-            "test middleware::auth::test_expired_jwt_returns_401 ... ok\n"
-            "\n"
-            "test result: ok. 1 passed; 0 failed; 0 ignored",
-        .chars_shown = 0, .done = false, .duration = 0,
-    });
+        // Run test
+        {Kind::Tool, "Bash", "cargo test test_expired_jwt_returns_401", 300, 0.2f},
 
-    // Phase 6: Final response
-    st.blocks.push_back({
-        .kind = BlockKind::Text,
-        .label = "",
-        .content = "Fixed. The issue was `.unwrap()` on `decode_jwt()` at line 10 of "
-                   "`auth.rs`. Expired tokens caused a panic instead of returning a 401. "
-                   "I replaced it with a `match` that handles `ExpiredSignature` explicitly "
-                   "and converts other errors to 401 responses. The test passes now.",
-        .chars_shown = 0, .done = false, .duration = 0,
-    });
+        {Kind::Result, "",
+         "running 1 test\n"
+         "test middleware::auth::test_expired_jwt_returns_401 ... ok\n"
+         "\n"
+         "test result: ok. 1 passed; 0 failed; 0 ignored",
+         600, 0.4f},
 
-    // Phase 7: Cost line
-    st.blocks.push_back({
-        .kind = BlockKind::Cost,
-        .label = "",
-        .content = "",
-        .chars_shown = 0, .done = false, .duration = 0,
-    });
+        // Final response
+        {Kind::Text, "",
+         "Fixed the panic. The issue was `.unwrap()` on `decode_jwt()` at line 10 "
+         "\xe2\x80\x94 expired tokens triggered a panic instead of a 401 response. "
+         "Replaced it with a `match` that handles `ExpiredSignature` explicitly. "
+         "The test passes now.",
+         90, 0.3f},
 
-    st.phase = 0;
-    st.phase_time = 0;
-    st.total_time = 0;
-    st.finished = false;
-    st.spinner_frame = 0;
+        // Cost divider
+        {Kind::Divider, "", "", 0, 0},
+    };
 }
 
-// ── Simulation tick ──────────────────────────────────────────────────────────
+// ── State ────────────────────────────────────────────────────────────────────
 
-static void tick(AgentState& st, float dt) {
-    st.total_time += dt;
-    st.spinner_frame = static_cast<int>(st.total_time * 10.f) % kSpinnerCount;
+struct State {
+    std::vector<Block> blocks;
+    int     phase = 0;
+    float   phase_t = 0;
+    float   total_t = 0;
+    bool    done = false;
+    int     tokens_in = 2847, tokens_out = 0;
+};
 
-    if (st.finished || st.phase >= static_cast<int>(st.blocks.size())) {
-        st.finished = true;
+static void advance(State& st, float dt) {
+    if (st.done) return;
+    st.total_t += dt;
+
+    if (st.phase >= static_cast<int>(st.blocks.size())) {
+        st.done = true;
         return;
     }
 
     auto& b = st.blocks[static_cast<std::size_t>(st.phase)];
-    st.phase_time += dt;
-    b.duration = st.phase_time;
+    st.phase_t += dt;
 
-    // Stream characters
-    int target = static_cast<int>(b.content.size());
-    if (b.kind == BlockKind::Cost) {
-        // Cost block is instant
-        b.done = true;
-        st.phase++;
-        st.phase_time = 0;
-        st.finished = true;
+    if (b.kind == Kind::Divider) {
+        st.done = true;
         return;
     }
 
-    // Streaming speed varies by block type
-    float chars_per_sec;
-    switch (b.kind) {
-        case BlockKind::Thinking:  chars_per_sec = 120.f; break;
-        case BlockKind::ToolCall:  chars_per_sec = 200.f; break;
-        case BlockKind::ToolResult: chars_per_sec = 500.f; break;
-        case BlockKind::Text:      chars_per_sec = 100.f; break;
-        default:                   chars_per_sec = 100.f; break;
-    }
+    int target = static_cast<int>(b.content.size());
+    int shown  = std::min(static_cast<int>(st.phase_t * b.speed), target);
+    // Don't split UTF-8
+    while (shown < target && (b.content[static_cast<std::size_t>(shown)] & 0xC0) == 0x80)
+        shown++;
 
-    int new_shown = static_cast<int>(st.phase_time * chars_per_sec);
-    // Don't split mid-UTF8
-    while (new_shown < target && (b.content[static_cast<std::size_t>(new_shown)] & 0xC0) == 0x80)
-        new_shown++;
-    b.chars_shown = std::min(new_shown, target);
-
-    // Track tokens
+    // Track output tokens
     st.tokens_out = 0;
-    for (auto& blk : st.blocks)
-        st.tokens_out += blk.chars_shown / 4; // rough approx
-    st.cost = (st.tokens_in * 3.f + st.tokens_out * 15.f) / 1000000.f;
-
-    if (b.chars_shown >= target) {
-        b.done = true;
-        // Small pause before next phase
-        if (st.phase_time > b.duration + 0.3f) {
-            st.phase++;
-            st.phase_time = 0;
-        }
+    for (int i = 0; i <= st.phase; ++i) {
+        auto& bl = st.blocks[static_cast<std::size_t>(i)];
+        int s = (i < st.phase) ? static_cast<int>(bl.content.size()) : shown;
+        st.tokens_out += s / 4;
     }
+
+    bool text_done = shown >= target;
+    float elapsed_after = st.phase_t - (static_cast<float>(target) / b.speed);
+
+    if (text_done && elapsed_after >= b.pause) {
+        st.phase++;
+        st.phase_t = 0;
+    }
+}
+
+// ── Spinner ──────────────────────────────────────────────────────────────────
+
+static const char* spinner(float t) {
+    static const char* frames[] = {
+        "\xe2\xa0\x8b", "\xe2\xa0\x99", "\xe2\xa0\xb9", "\xe2\xa0\xb8",
+        "\xe2\xa0\xbc", "\xe2\xa0\xb4", "\xe2\xa0\xa6", "\xe2\xa0\xa7",
+        "\xe2\xa0\x87", "\xe2\xa0\x8f",
+    };
+    return frames[static_cast<int>(t * 10.f) % 10];
+}
+
+// ── Styles ───────────────────────────────────────────────────────────────────
+
+struct Sty {
+    Style prompt, query, thinking_hdr, thinking_active, thinking_body;
+    Style tool_icon, tool_active, tool_name, tool_arg;
+    Style result_border, result_text;
+    Style diff_del, diff_add, diff_ctx;
+    Style response, done_icon, cost;
+    Style check;
+};
+
+static Sty make_styles() {
+    return {
+        .prompt         = Style{}.with_bold().with_fg(Color::rgb(100, 180, 255)),
+        .query          = Style{}.with_bold().with_fg(Color::rgb(225, 225, 240)),
+        .thinking_hdr   = Style{}.with_fg(Color::rgb(100, 100, 120)),
+        .thinking_active= Style{}.with_fg(Color::rgb(180, 130, 255)),
+        .thinking_body  = Style{}.with_italic().with_fg(Color::rgb(130, 130, 155)),
+        .tool_icon      = Style{}.with_fg(Color::rgb(180, 130, 255)),
+        .tool_active    = Style{}.with_fg(Color::rgb(180, 130, 255)),
+        .tool_name      = Style{}.with_bold().with_fg(Color::rgb(80, 190, 255)),
+        .tool_arg       = Style{}.with_fg(Color::rgb(180, 180, 200)),
+        .result_border  = Style{}.with_fg(Color::rgb(50, 55, 70)),
+        .result_text    = Style{}.with_fg(Color::rgb(170, 175, 185)),
+        .diff_del       = Style{}.with_fg(Color::rgb(255, 100, 100)),
+        .diff_add       = Style{}.with_fg(Color::rgb(80, 220, 120)),
+        .diff_ctx       = Style{}.with_fg(Color::rgb(150, 150, 170)),
+        .response       = Style{}.with_fg(Color::rgb(215, 215, 235)),
+        .done_icon      = Style{}.with_fg(Color::rgb(80, 220, 120)),
+        .cost           = Style{}.with_fg(Color::rgb(75, 75, 95)),
+        .check          = Style{}.with_bold().with_fg(Color::rgb(80, 220, 120)),
+    };
 }
 
 // ── Build element tree ───────────────────────────────────────────────────────
 
-static Element build_ui(const AgentState& st, int width) {
+static Element build_ui(const State& st, int w, const Sty& s) {
     std::vector<Element> rows;
 
-    // ── User query ───────────────────────────────────────────────────────
-    rows.push_back(
-        hstack()(
-            text("\xe2\x9d\xaf ", Style{}.with_bold().with_fg(Color::rgb(100, 200, 255))),
-            text(st.query, Style{}.with_bold().with_fg(Color::rgb(220, 220, 240)))
-        )
-    );
+    // Prompt
+    rows.push_back(hstack()(
+        text("\xe2\x9d\xaf ", s.prompt),
+        text(kQuery, s.query)
+    ));
     rows.push_back(text(""));
 
-    // ── Blocks ───────────────────────────────────────────────────────────
     for (int i = 0; i <= st.phase && i < static_cast<int>(st.blocks.size()); ++i) {
         const auto& b = st.blocks[static_cast<std::size_t>(i)];
-        std::string_view visible{b.content.data(),
-            static_cast<std::size_t>(std::min(b.chars_shown, static_cast<int>(b.content.size())))};
+        bool current = (i == st.phase);
+        int target = static_cast<int>(b.content.size());
+        int shown  = current
+            ? std::min(static_cast<int>(st.phase_t * b.speed), target)
+            : target;
+        while (shown < target && (b.content[static_cast<std::size_t>(shown)] & 0xC0) == 0x80)
+            shown++;
+        bool block_done = shown >= target;
+        std::string_view visible{b.content.data(), static_cast<std::size_t>(shown)};
 
         switch (b.kind) {
-        case BlockKind::Thinking: {
-            // Dimmed italic thinking block
-            std::string header = b.done
-                ? std::string("\xe2\x9c\x93 thinking (") + std::to_string(static_cast<int>(b.duration * 10) / 10) + "s)"
-                : std::string(kSpinners[st.spinner_frame]) + " thinking...";
+        case Kind::Thinking: {
+            float dur = block_done
+                ? static_cast<float>(target) / b.speed
+                : st.phase_t;
+            char hdr[48];
+            if (block_done) {
+                std::snprintf(hdr, sizeof hdr, "\xe2\x9c\x93 thought for %.1fs", static_cast<double>(dur));
+            } else {
+                std::snprintf(hdr, sizeof hdr, "%s thinking...", spinner(st.total_t));
+            }
 
             rows.push_back(
-                box().direction(FlexDirection::Column).padding(0, 0, 0, 2)(
-                    text(header, b.done
-                        ? Style{}.with_fg(Color::rgb(80, 80, 100))
-                        : Style{}.with_fg(Color::rgb(180, 140, 255))),
-                    text(std::string(visible), Style{}.with_italic().with_fg(Color::rgb(120, 120, 150)))
+                box().direction(FlexDirection::Column).padding(0, 0, 0, 2).max_width(w - 2)(
+                    text(hdr, block_done ? s.thinking_hdr : s.thinking_active),
+                    text(std::string(visible), s.thinking_body)
                 )
             );
             rows.push_back(text(""));
             break;
         }
 
-        case BlockKind::ToolCall: {
-            Style tool_style = Style{}.with_bold().with_fg(Color::rgb(80, 200, 255));
-            Style content_style = Style{}.with_fg(Color::rgb(200, 200, 220));
+        case Kind::Tool: {
+            std::string icon_str = block_done
+                ? "\xe2\x9c\x93 " : std::string(spinner(st.total_t)) + " ";
+            Style icon_s = block_done ? s.done_icon : s.tool_active;
 
-            std::string icon = b.done ? "\xe2\x9c\x93" : kSpinners[st.spinner_frame];
-            Style icon_style = b.done
-                ? Style{}.with_fg(Color::rgb(80, 220, 120))
-                : Style{}.with_fg(Color::rgb(180, 140, 255));
-
-            if (b.label == "Edit" || b.label == "Read" || b.label == "Bash") {
-                // Tool call with content box
-                rows.push_back(
-                    hstack()(
-                        text(icon + " ", icon_style),
-                        text(b.label, tool_style)
-                    )
-                );
-
-                if (b.chars_shown > 0) {
-                    // Code-like content in a bordered box
-                    rows.push_back(
-                        box().direction(FlexDirection::Column)
-                            .border(BorderStyle::Round)
-                            .border_color(Color::rgb(50, 50, 70))
-                            .padding(0, 1, 0, 1)
-                            .width(std::min(width - 4, static_cast<int>(b.content.size()) + 4))(
-                            text(std::string(visible), content_style)
-                        )
-                    );
-                }
-            } else {
-                rows.push_back(
-                    hstack()(
-                        text(icon + " ", icon_style),
-                        text(b.label + ": ", tool_style),
-                        text(std::string(visible), content_style)
-                    )
-                );
-            }
+            rows.push_back(hstack()(
+                text(icon_str, icon_s),
+                text(b.tool, s.tool_name),
+                text(" ", s.tool_arg),
+                text(std::string(visible), s.tool_arg)
+            ));
             rows.push_back(text(""));
             break;
         }
 
-        case BlockKind::ToolResult: {
-            if (b.chars_shown > 0) {
-                Style label_style = Style{}.with_fg(Color::rgb(80, 80, 100));
+        case Kind::Result: {
+            if (shown == 0) break;
+
+            // Check if this is a diff block (contains + or ─ prefixed lines)
+            std::string vis(visible);
+            bool is_diff = vis.find('+') != std::string::npos &&
+                          (vis.find("\xe2\x94\x80") != std::string::npos);
+
+            if (is_diff) {
+                // Diff-colored output: lines starting with ─ are deletions, + are additions
+                std::vector<Element> diff_lines;
+                std::string line;
+                for (char ch : vis) {
+                    if (ch == '\n') {
+                        Style ls = s.diff_ctx;
+                        if (!line.empty()) {
+                            if (line[0] == '+') ls = s.diff_add;
+                            else if (line.size() >= 3 && line[0] == '\xe2') ls = s.diff_del;
+                        }
+                        diff_lines.push_back(text(line, ls));
+                        line.clear();
+                    } else {
+                        line += ch;
+                    }
+                }
+                if (!line.empty()) {
+                    Style ls = s.diff_ctx;
+                    if (line[0] == '+') ls = s.diff_add;
+                    else if (line.size() >= 3 && line[0] == '\xe2') ls = s.diff_del;
+                    diff_lines.push_back(text(line, ls));
+                }
 
                 rows.push_back(
                     box().direction(FlexDirection::Column)
                         .border(BorderStyle::Round)
-                        .border_color(Color::rgb(40, 50, 40))
+                        .border_color(Color::rgb(50, 55, 70))
                         .padding(0, 1, 0, 1)
-                        .max_width(width - 2)(
-                        text(std::string(visible), Style{}.with_fg(Color::rgb(160, 170, 160)))
+                        .max_width(w - 4)(
+                        std::move(diff_lines)
                     )
                 );
-                rows.push_back(text(""));
+            } else {
+                // Regular result in bordered box
+                // Color "ok" green in test output
+                rows.push_back(
+                    box().direction(FlexDirection::Column)
+                        .border(BorderStyle::Round)
+                        .border_color(Color::rgb(50, 55, 70))
+                        .padding(0, 1, 0, 1)
+                        .max_width(w - 4)(
+                        text(std::string(visible), s.result_text)
+                    )
+                );
             }
+            rows.push_back(text(""));
             break;
         }
 
-        case BlockKind::Text: {
+        case Kind::Text: {
             rows.push_back(
-                box().direction(FlexDirection::Column).padding(0)(
-                    text(std::string(visible), Style{}.with_fg(Color::rgb(210, 210, 230)))
+                box().direction(FlexDirection::Column).max_width(w - 2)(
+                    text(std::string(visible), s.response)
                 )
             );
             rows.push_back(text(""));
             break;
         }
 
-        case BlockKind::Cost: {
-            if (st.finished) {
-                char buf[80];
-                std::snprintf(buf, sizeof buf,
-                    "\xe2\x94\x80 %d in + %d out = $%.4f",
-                    st.tokens_in, st.tokens_out, static_cast<double>(st.cost));
-                rows.push_back(
-                    text(buf, Style{}.with_fg(Color::rgb(70, 70, 90)))
-                );
-            }
+        case Kind::Divider: {
+            float cost = (st.tokens_in * 3.f + st.tokens_out * 15.f) / 1000000.f;
+            char buf[64];
+            std::snprintf(buf, sizeof buf,
+                "%d input + %d output tokens \xe2\x80\xa2 $%.4f",
+                st.tokens_in, st.tokens_out, static_cast<double>(cost));
+            rows.push_back(text(buf, s.cost));
             break;
         }
         }
     }
 
-    // Active streaming indicator
-    if (!st.finished) {
-        // nothing — the spinner in the current block header is enough
-    }
+    return vstack().width(w)(std::move(rows));
+}
 
-    return vstack().width(width)(std::move(rows));
+// ── Rendering helpers ────────────────────────────────────────────────────────
+
+static int find_content_height(const Canvas& c, int w, int h) {
+    for (int y = h - 1; y >= 0; --y) {
+        for (int x = 0; x < w; ++x) {
+            auto cell = Cell::unpack(c.cells()[y * w + x]);
+            if (cell.character != U' ' && cell.character != 0) return y + 1;
+        }
+    }
+    return 1;
+}
+
+static void render_frame(const Element& root, int w, StylePool& pool,
+                         std::string& out, int& prev_h) {
+    const int max_h = 50;
+    Canvas canvas{w, max_h, &pool};
+    render_tree(root, canvas, pool, theme::dark);
+
+    int h = find_content_height(canvas, w, max_h);
+
+    // Copy to trimmed canvas
+    Canvas trimmed{w, h, &pool};
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            auto cell = Cell::unpack(canvas.cells()[y * w + x]);
+            trimmed.set(x, y, cell.character, cell.style_id);
+        }
+
+    out.clear();
+    if (prev_h > 0) ansi::erase_lines(prev_h, out);
+    serialize(trimmed, pool, out);
+    std::fwrite(out.data(), 1, out.size(), stdout);
+    std::fflush(stdout);
+    prev_h = h;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main() {
-    AgentState state{};
-    init_scenario(state);
-
-    // Get terminal width (fallback 80)
+    // Detect terminal width
     int term_w = 80;
-    if (auto* cols = std::getenv("COLUMNS")) {
-        term_w = std::atoi(cols);
-        if (term_w < 40) term_w = 80;
-    }
-    // Try ioctl
     #ifdef __unix__
     {
         struct winsize ws{};
@@ -383,102 +397,42 @@ int main() {
             term_w = ws.ws_col;
     }
     #endif
+    // Leave 1-col margin to prevent wrapping artifacts
+    int w = std::min(term_w - 1, 96);
+    if (w < 40) w = 40;
 
-    int width = std::min(term_w, 100);
+    State st;
+    st.blocks = make_scenario();
 
+    Sty sty = make_styles();
     StylePool pool;
-    int prev_height = 0;
     std::string out;
+    int prev_h = 0;
 
     using Clock = std::chrono::steady_clock;
     auto last = Clock::now();
 
-    // Hide cursor
-    std::fputs("\x1b[?25l", stdout);
+    std::fputs("\x1b[?25l", stdout); // hide cursor
 
-    while (!state.finished) {
+    while (!st.done) {
         auto now = Clock::now();
         float dt = std::chrono::duration<float>(now - last).count();
         last = now;
 
-        tick(state, dt);
+        advance(st, dt);
+        Element root = build_ui(st, w, sty);
+        render_frame(root, w, pool, out, prev_h);
 
-        // Build element tree
-        Element root = build_ui(state, width);
-
-        // Measure: how tall will this render?
-        // We use a generous height and let layout compute actual.
-        int render_h = 60; // max height
-        Canvas canvas{width, render_h, &pool};
-        render_tree(root, canvas, pool, theme::dark);
-
-        // Find actual content height (last non-empty row)
-        int actual_h = 0;
-        for (int y = render_h - 1; y >= 0; --y) {
-            bool empty = true;
-            for (int x = 0; x < width; ++x) {
-                auto cell = Cell::unpack(canvas.cells()[y * width + x]);
-                if (cell.character != U' ' && cell.character != 0) { empty = false; break; }
-            }
-            if (!empty) { actual_h = y + 1; break; }
-        }
-        if (actual_h == 0) actual_h = 1;
-
-        // Resize canvas to actual height for clean output
-        Canvas trimmed{width, actual_h, &pool};
-        for (int y = 0; y < actual_h; ++y)
-            for (int x = 0; x < width; ++x) {
-                auto cell = Cell::unpack(canvas.cells()[y * width + x]);
-                trimmed.set(x, y, cell.character, cell.style_id);
-            }
-
-        // Erase previous output, write new
-        out.clear();
-        if (prev_height > 0) {
-            ansi::erase_lines(prev_height, out);
-        }
-        serialize(trimmed, pool, out);
-
-        std::fwrite(out.data(), 1, out.size(), stdout);
-        std::fflush(stdout);
-        prev_height = actual_h;
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30fps
+        std::this_thread::sleep_for(std::chrono::milliseconds(33));
     }
 
-    // Final render (ensure everything visible)
-    tick(state, 0.5f);
+    // Final render with all content visible
+    advance(st, 1.0f);
     {
-        Element root = build_ui(state, width);
-        int render_h = 60;
-        Canvas canvas{width, render_h, &pool};
-        render_tree(root, canvas, pool, theme::dark);
-
-        int actual_h = 0;
-        for (int y = render_h - 1; y >= 0; --y) {
-            bool empty = true;
-            for (int x = 0; x < width; ++x) {
-                auto cell = Cell::unpack(canvas.cells()[y * width + x]);
-                if (cell.character != U' ' && cell.character != 0) { empty = false; break; }
-            }
-            if (!empty) { actual_h = y + 1; break; }
-        }
-        if (actual_h == 0) actual_h = 1;
-
-        Canvas trimmed{width, actual_h, &pool};
-        for (int y = 0; y < actual_h; ++y)
-            for (int x = 0; x < width; ++x) {
-                auto cell = Cell::unpack(canvas.cells()[y * width + x]);
-                trimmed.set(x, y, cell.character, cell.style_id);
-            }
-
-        out.clear();
-        if (prev_height > 0) ansi::erase_lines(prev_height, out);
-        serialize(trimmed, pool, out);
-        std::fwrite(out.data(), 1, out.size(), stdout);
+        Element root = build_ui(st, w, sty);
+        render_frame(root, w, pool, out, prev_h);
     }
 
-    // Show cursor, newline
-    std::fputs("\x1b[?25h\n", stdout);
+    std::fputs("\x1b[?25h\n", stdout); // show cursor
     std::fflush(stdout);
 }

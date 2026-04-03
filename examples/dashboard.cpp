@@ -370,7 +370,7 @@ static Element build_cpu_panel() {
 
     return vstack().border(BorderStyle::Round).border_color(theme_border())
         .border_text(std::string(spin()) + " CPU", BorderTextPos::Top)
-        .padding(0, 1, 0, 1)(std::move(rows));
+        .padding(0, 1, 0, 1).grow()(std::move(rows));
 }
 
 static Element build_mem_panel() {
@@ -404,7 +404,7 @@ static Element build_mem_panel() {
 
     return vstack().border(BorderStyle::Round).border_color(theme_border())
         .border_text(std::string(spin()) + " Memory", BorderTextPos::Top)
-        .padding(0, 1, 0, 1)(std::move(rows));
+        .padding(0, 1, 0, 1).grow()(std::move(rows));
 }
 
 static Element build_net_panel() {
@@ -434,7 +434,7 @@ static Element build_net_panel() {
 
     return vstack().border(BorderStyle::Round).border_color(theme_border())
         .border_text(std::string(spin()) + " Network", BorderTextPos::Top)
-        .padding(0, 1, 0, 1)(std::move(rows));
+        .padding(0, 1, 0, 1).grow()(std::move(rows));
 }
 
 static Element build_disk_panel() {
@@ -468,7 +468,7 @@ static Element build_disk_panel() {
 
     return vstack().border(BorderStyle::Round).border_color(theme_border())
         .border_text(std::string(spin()) + " Disk I/O", BorderTextPos::Top)
-        .padding(0, 1, 0, 1)(std::move(rows));
+        .padding(0, 1, 0, 1).grow()(std::move(rows));
 }
 
 static Element build_procs() {
@@ -527,7 +527,7 @@ static Element build_procs() {
 
     return vstack().border(BorderStyle::Round).border_color(theme_border())
         .border_text("Processes", BorderTextPos::Top)
-        .padding(0, 1, 0, 1).grow()(std::move(rows));
+        .padding(0, 1, 0, 1)(std::move(rows));
 }
 
 static Element build_status_bar() {
@@ -578,24 +578,17 @@ int main() {
             ++g_frame;
             tick(dt);
 
-            // DSL tree: header, panels in 2x2 grid, process table, status bar
-            return (v(
-                dyn([] { return build_header(); }),
-                dyn([] {
-                    return (h(
-                        dyn([] { return (v(
-                            dyn([] { return build_cpu_panel(); }),
-                            dyn([] { return build_net_panel(); })
-                        ) | grow_<2>).build(); }),
-                        dyn([] { return (v(
-                            dyn([] { return build_mem_panel(); }),
-                            dyn([] { return build_disk_panel(); })
-                        ) | grow_<1>).build(); })
-                    ) | grow_<1>).build();
-                }),
-                dyn([] { return build_procs(); }),
-                dyn([] { return build_status_bar(); })
-            )).build();
+            // Layout: header | [CPU + Net | Mem + Disk] | Processes | status bar
+            auto left  = vstack().grow(2)(build_cpu_panel(), build_net_panel());
+            auto right = vstack().grow(1)(build_mem_panel(), build_disk_panel());
+            auto grid  = hstack().grow()(std::move(left), std::move(right));
+
+            return vstack()(
+                build_header(),
+                std::move(grid),
+                build_procs(),
+                build_status_bar()
+            );
         }
     );
 }

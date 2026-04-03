@@ -474,32 +474,22 @@ private:
     auto render_frame() -> Status {
         if (!render_fn_) return ok();
 
-        // 1. Get the element tree from the user's render function.
-        Element root = render_fn_();
-
-        // 2. Resize frame buffer if terminal size changed.
-        int w = size_.width.raw();
-        int h = size_.height.raw();
-
+        const int w = size_.width.raw();
+        const int h = size_.height.raw();
         if (w <= 0 || h <= 0) return ok();
 
         if (frame_buf_.width() != w || frame_buf_.height() != h) {
             frame_buf_.resize(w, h);
         }
 
-        // 3. Render, layout, diff, and optimize — all handled by FrameBuffer.
+        // render() returns a complete, self-contained ANSI string:
+        //   cursor-hide + sync-start + diff + SGR-reset + sync-end
+        // One call, zero intermediate allocations beyond the string itself.
         frame_buf_.set_cursor_visible(false);
-        auto ops = frame_buf_.render(root, theme_);
+        const std::string& frame = frame_buf_.render(render_fn_(), theme_);
 
-        // 4. Push all ops to the writer and flush in a single sync update.
-        writer_->push(render_op::CursorHide{});
-        for (auto& op : ops) {
-            writer_->push(std::move(op));
-        }
-        // Reset style at end of frame to leave terminal in a clean state.
-        writer_->push(render_op::StyleStr{std::string(ansi::reset)});
-
-        return writer_->flush();
+        // Single write(2) syscall — the terminal sees an atomic update.
+        return writer_->write_raw(frame);
     }
 };
 

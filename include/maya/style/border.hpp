@@ -123,6 +123,55 @@ struct BorderChars {
 }
 
 // ============================================================================
+// BorderCodepoints - char32_t codepoints for direct canvas.set() painting
+// ============================================================================
+// Avoids the UTF-8 decode overhead of write_text() during border painting.
+// Each border character is a single codepoint — no need to round-trip through
+// UTF-8 encoding and decoding when we can write the codepoint directly.
+
+struct BorderCodepoints {
+    char32_t top_left;
+    char32_t top;
+    char32_t top_right;
+    char32_t right;
+    char32_t bottom_right;
+    char32_t bottom;
+    char32_t bottom_left;
+    char32_t left;
+};
+
+[[nodiscard]] constexpr BorderCodepoints get_border_codepoints(BorderStyle style) noexcept {
+    switch (style) {
+        case BorderStyle::None:
+            return {U' ', U' ', U' ', U' ', U' ', U' ', U' ', U' '};
+        case BorderStyle::Single:
+            return {U'\u250C', U'\u2500', U'\u2510', U'\u2502',
+                    U'\u2518', U'\u2500', U'\u2514', U'\u2502'};
+        case BorderStyle::Double:
+            return {U'\u2554', U'\u2550', U'\u2557', U'\u2551',
+                    U'\u255D', U'\u2550', U'\u255A', U'\u2551'};
+        case BorderStyle::Round:
+            return {U'\u256D', U'\u2500', U'\u256E', U'\u2502',
+                    U'\u256F', U'\u2500', U'\u2570', U'\u2502'};
+        case BorderStyle::Bold:
+            return {U'\u250F', U'\u2501', U'\u2513', U'\u2503',
+                    U'\u251B', U'\u2501', U'\u2517', U'\u2503'};
+        case BorderStyle::SingleDouble:
+            return {U'\u2553', U'\u2500', U'\u2556', U'\u2551',
+                    U'\u255C', U'\u2500', U'\u2559', U'\u2551'};
+        case BorderStyle::DoubleSingle:
+            return {U'\u2552', U'\u2550', U'\u2555', U'\u2502',
+                    U'\u255B', U'\u2550', U'\u2558', U'\u2502'};
+        case BorderStyle::Classic:
+            return {U'+', U'-', U'+', U'|', U'+', U'-', U'+', U'|'};
+        case BorderStyle::Arrow:
+            return {U'\u2191', U'\u2191', U'\u2191', U'\u2192',
+                    U'\u2193', U'\u2193', U'\u2193', U'\u2190'};
+    }
+    __builtin_unreachable();
+}
+
+// ============================================================================
 // BorderSides - Per-side enable / disable flags
 // ============================================================================
 

@@ -51,6 +51,10 @@ struct ReactiveNode {
     std::vector<ReactiveNode*> subscribers;
     std::vector<ReactiveNode*> dependencies;
     uint64_t                   version = 0;
+    // pending: O(1) batch-dedup flag — set when the node is queued in
+    // pending_notifications, cleared when the batch flushes. Replaces the
+    // O(n) std::ranges::find scan in notify_subscribers().
+    bool                       pending = false;
 
     virtual ~ReactiveNode() = default;
     virtual void mark_dirty() = 0;
@@ -122,22 +126,20 @@ inline ReactiveScope::~ReactiveScope() {
 
 inline void notify_subscribers(ReactiveNode* source) {
     if (batch_depth > 0) {
-        // Defer: collect nodes to notify when batch ends.
+        // Defer: enqueue each subscriber once using the O(1) pending flag.
+        // This replaces the old O(n) std::ranges::find scan.
         for (auto* sub : source->subscribers) {
-            if (std::ranges::find(pending_notifications, sub) == pending_notifications.end()) {
+            if (!sub->pending) {
+                sub->pending = true;
                 pending_notifications.push_back(sub);
             }
         }
     } else {
         // Immediate: mark all subscribers dirty then evaluate.
-        // Copy the subscriber list - evaluation may modify it.
+        // Copy the subscriber list — evaluation may modify it.
         auto subs = source->subscribers;
-        for (auto* sub : subs) {
-            sub->mark_dirty();
-        }
-        for (auto* sub : subs) {
-            sub->evaluate();
-        }
+        for (auto* sub : subs) sub->mark_dirty();
+        for (auto* sub : subs) sub->evaluate();
     }
 }
 
@@ -148,9 +150,10 @@ inline void notify_subscribers(ReactiveNode* source) {
 inline void flush_batch() {
     // Take ownership of the pending list so re-entrant batches work.
     auto nodes = std::move(pending_notifications);
-    pending_notifications.clear();
-
+    // Clear pending flags before evaluating so re-entrant signal sets
+    // during evaluation can re-enqueue nodes correctly.
     for (auto* node : nodes) {
+        node->pending = false;
         node->mark_dirty();
     }
     for (auto* node : nodes) {

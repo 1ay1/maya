@@ -178,8 +178,20 @@ void test_diff() {
     render_tree(text("before"), old_canvas, pool, theme::dark);
     render_tree(text("after"), new_canvas, pool, theme::dark);
 
-    auto result = diff(old_canvas, new_canvas, pool);
-    std::println("  diff ops: {}", result.size());
+    // Verify cells are actually different
+    std::println("  old[0]={:c} new[0]={:c}",
+        (char)old_canvas.get(0, 0).character,
+        (char)new_canvas.get(0, 0).character);
+    std::println("  old packed={:#x} new packed={:#x}",
+        old_canvas.get_packed(0, 0), new_canvas.get_packed(0, 0));
+    auto dmg = new_canvas.damage();
+    std::println("  damage: ({},{}) {}x{}",
+        dmg.pos.x.value, dmg.pos.y.value,
+        dmg.size.width.value, dmg.size.height.value);
+
+    std::string result;
+    diff(old_canvas, new_canvas, pool, result);
+    std::println("  diff bytes: {}", result.size());
     assert(!result.empty());
     std::println("PASS\n");
 }
@@ -192,18 +204,18 @@ void test_framebuffer() {
     FrameBuffer fb(30, 5);
 
     // First frame: full repaint
-    auto ops1 = fb.render(text("frame1"), theme::dark);
-    std::println("  frame1 ops: {}", ops1.size());
-    assert(!ops1.empty());
+    const auto& out1 = fb.render(text("frame1"), theme::dark);
+    std::println("  frame1 bytes: {}", out1.size());
+    assert(!out1.empty());
 
-    // Second frame: same content → should produce fewer/no ops
-    auto ops2 = fb.render(text("frame1"), theme::dark);
-    std::println("  frame2 (same) ops: {}", ops2.size());
+    // Second frame: same content → should produce fewer bytes
+    const auto& out2 = fb.render(text("frame1"), theme::dark);
+    std::println("  frame2 (same) bytes: {}", out2.size());
 
-    // Third frame: different content → should produce ops
-    auto ops3 = fb.render(text("frame2"), theme::dark);
-    std::println("  frame3 (changed) ops: {}", ops3.size());
-    assert(!ops3.empty());
+    // Third frame: different content → should produce output
+    const auto& out3 = fb.render(text("frame2"), theme::dark);
+    std::println("  frame3 (changed) bytes: {}", out3.size());
+    assert(!out3.empty());
     std::println("PASS\n");
 }
 
@@ -318,6 +330,7 @@ void test_writer() {
 }
 
 int main() {
+    setvbuf(stdout, nullptr, _IONBF, 0);
     test_bare_text();
     test_column_padding();
     test_row_layout();

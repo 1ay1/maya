@@ -6,6 +6,7 @@
 // small, trivially copyable, and zero-cost to pass around.
 
 #include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -172,6 +173,67 @@ public:
                        std::to_string(g_) + ";" + std::to_string(b_);
         }
         __builtin_unreachable();
+    }
+
+    // -------------------------------------------------------------------------
+    // Zero-allocation SGR emitters — write directly into an existing string.
+    // Avoids any heap allocation on the hot rendering path.
+    // -------------------------------------------------------------------------
+
+    void append_fg_sgr(std::string& out) const {
+        char buf[16];
+        switch (kind_) {
+            case Kind::Named: {
+                int code = r_ < 8 ? 30 + r_ : 90 + (r_ - 8);
+                auto [p, _] = std::to_chars(buf, buf + sizeof(buf), code);
+                out.append(buf, p);
+                break;
+            }
+            case Kind::Indexed: {
+                out += "38;5;";
+                auto [p, _] = std::to_chars(buf, buf + sizeof(buf), static_cast<int>(r_));
+                out.append(buf, p);
+                break;
+            }
+            case Kind::Rgb: {
+                out += "38;2;";
+                auto [p1, _1] = std::to_chars(buf, buf + sizeof(buf), static_cast<int>(r_));
+                out.append(buf, p1); out += ';';
+                auto [p2, _2] = std::to_chars(buf, buf + sizeof(buf), static_cast<int>(g_));
+                out.append(buf, p2); out += ';';
+                auto [p3, _3] = std::to_chars(buf, buf + sizeof(buf), static_cast<int>(b_));
+                out.append(buf, p3);
+                break;
+            }
+        }
+    }
+
+    void append_bg_sgr(std::string& out) const {
+        char buf[16];
+        switch (kind_) {
+            case Kind::Named: {
+                int code = r_ < 8 ? 40 + r_ : 100 + (r_ - 8);
+                auto [p, _] = std::to_chars(buf, buf + sizeof(buf), code);
+                out.append(buf, p);
+                break;
+            }
+            case Kind::Indexed: {
+                out += "48;5;";
+                auto [p, _] = std::to_chars(buf, buf + sizeof(buf), static_cast<int>(r_));
+                out.append(buf, p);
+                break;
+            }
+            case Kind::Rgb: {
+                out += "48;2;";
+                auto [p1, _1] = std::to_chars(buf, buf + sizeof(buf), static_cast<int>(r_));
+                out.append(buf, p1); out += ';';
+                auto [p2, _2] = std::to_chars(buf, buf + sizeof(buf), static_cast<int>(g_));
+                out.append(buf, p2); out += ';';
+                auto [p3, _3] = std::to_chars(buf, buf + sizeof(buf), static_cast<int>(b_));
+                out.append(buf, p3);
+                break;
+            }
+        }
     }
 
     // Lighten/darken (returns new color)

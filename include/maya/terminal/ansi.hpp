@@ -6,6 +6,7 @@
 // the lowest layer of terminal output - everything above talks in Colors
 // and Styles; this layer talks in bytes on the wire.
 
+#include <charconv>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -16,6 +17,33 @@
 
 namespace maya {
 namespace ansi {
+
+// ============================================================================
+// Zero-allocation helpers (write directly into an existing std::string)
+// ============================================================================
+// These are the speed-critical paths. Every allocation eliminated here
+// reduces pressure in the diff loop that runs for every changed cell.
+
+namespace detail {
+
+/// Append a decimal integer into `out` using std::to_chars (no allocation).
+[[gnu::always_inline]] inline void append_int(std::string& out, int n) {
+    char buf[12];
+    auto [end, _] = std::to_chars(buf, buf + sizeof(buf), n);
+    out.append(buf, end);
+}
+
+} // namespace detail
+
+/// Zero-alloc ANSI CUP cursor positioning: ESC [ row ; col H
+/// col and row are 1-based as per ANSI convention.
+[[gnu::always_inline]] inline void write_move_to(std::string& out, int col, int row) {
+    out += "\x1b[";
+    detail::append_int(out, row);
+    out += ';';
+    detail::append_int(out, col);
+    out += 'H';
+}
 
 // ============================================================================
 // Constants - CSI / OSC / ST prefixes
@@ -246,6 +274,64 @@ public:
         out += params;
         out += 'm';
         return out;
+    }
+
+    // -------------------------------------------------------------------------
+    // Zero-allocation variants — write directly into an existing string.
+    // Hot path: called once per style change in the diff loop.
+    // -------------------------------------------------------------------------
+
+    /// Apply a complete style directly to `out` (no intermediate allocations).
+    static void apply_to(const Style& s, std::string& out) {
+        if (s.empty()) return;
+        out += "\x1b[";
+        bool first = true;
+        auto sep = [&]() { if (!first) out += ';'; first = false; };
+        if (s.bold)          { sep(); out += '1'; }
+        if (s.dim)           { sep(); out += '2'; }
+        if (s.italic)        { sep(); out += '3'; }
+        if (s.underline)     { sep(); out += '4'; }
+        if (s.inverse)       { sep(); out += '7'; }
+        if (s.strikethrough) { sep(); out += '9'; }
+        if (s.fg) { sep(); s.fg->append_fg_sgr(out); }
+        if (s.bg) { sep(); s.bg->append_bg_sgr(out); }
+        out += 'm';
+    }
+
+    /// Transition from `prev` to `next`, writing directly to `out`.
+    /// Emits nothing when styles are identical.
+    static void transition_to(const Style& prev, const Style& next, std::string& out) {
+        if (prev == next) return;
+
+        bool needs_reset = (prev.bold          && !next.bold)
+                        || (prev.dim           && !next.dim)
+                        || (prev.italic        && !next.italic)
+                        || (prev.underline     && !next.underline)
+                        || (prev.inverse       && !next.inverse)
+                        || (prev.strikethrough && !next.strikethrough)
+                        || (prev.fg.has_value() && !next.fg.has_value())
+                        || (prev.bg.has_value() && !next.bg.has_value());
+
+        if (needs_reset) {
+            out += "\x1b[0m";
+            apply_to(next, out);
+            return;
+        }
+
+        // Only additions — emit incremental SGR.
+        bool any = false;
+        auto mark = [&]() { if (!any) { out += "\x1b["; any = true; } else out += ';'; };
+
+        if (next.bold          && !prev.bold)          { mark(); out += '1'; }
+        if (next.dim           && !prev.dim)           { mark(); out += '2'; }
+        if (next.italic        && !prev.italic)        { mark(); out += '3'; }
+        if (next.underline     && !prev.underline)     { mark(); out += '4'; }
+        if (next.inverse       && !prev.inverse)       { mark(); out += '7'; }
+        if (next.strikethrough && !prev.strikethrough) { mark(); out += '9'; }
+        if (next.fg && next.fg != prev.fg) { mark(); next.fg->append_fg_sgr(out); }
+        if (next.bg && next.bg != prev.bg) { mark(); next.bg->append_bg_sgr(out); }
+
+        if (any) out += 'm';
     }
 
 private:

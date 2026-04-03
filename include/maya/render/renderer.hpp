@@ -139,8 +139,12 @@ inline std::size_t build_layout_tree(
             auto& ln = nodes[idx];
 
             // Text is a leaf node with a measure function.
-            ln.measure = [&node](int max_width) -> Size {
-                return node.measure(max_width);
+            // Use a lightweight function pointer + context instead of std::function.
+            ln.measure = layout::MeasureFn{
+                [](const void* ctx, int max_width) -> Size {
+                    return static_cast<const TextElement*>(ctx)->measure(max_width);
+                },
+                &node
             };
 
             return idx;
@@ -172,6 +176,8 @@ inline std::size_t build_layout_tree(
 // ============================================================================
 
 /// Render a box's border onto the canvas.
+/// Uses canvas.set() with char32_t codepoints directly instead of write_text()
+/// to avoid per-character UTF-8 decode overhead on every border cell.
 inline void paint_border(
     Canvas& canvas,
     const BorderConfig& border,
@@ -180,7 +186,7 @@ inline void paint_border(
 {
     if (border.empty()) return;
 
-    auto chars = border.chars();
+    auto cp = get_border_codepoints(border.style);
     int x0 = rect.left().value;
     int y0 = rect.top().value;
     int x1 = rect.right().value - 1;  // inclusive right
@@ -188,49 +194,45 @@ inline void paint_border(
 
     if (x0 > x1 || y0 > y1) return;
 
-    // Corners.
+    // Corners — direct codepoint write, no UTF-8 round-trip.
     if (border.sides.top && border.sides.left)
-        canvas.write_text(x0, y0, chars.top_left, style_id);
+        canvas.set(x0, y0, cp.top_left, style_id);
     if (border.sides.top && border.sides.right)
-        canvas.write_text(x1, y0, chars.top_right, style_id);
+        canvas.set(x1, y0, cp.top_right, style_id);
     if (border.sides.bottom && border.sides.left)
-        canvas.write_text(x0, y1, chars.bottom_left, style_id);
+        canvas.set(x0, y1, cp.bottom_left, style_id);
     if (border.sides.bottom && border.sides.right)
-        canvas.write_text(x1, y1, chars.bottom_right, style_id);
+        canvas.set(x1, y1, cp.bottom_right, style_id);
 
     // Top edge.
     if (border.sides.top) {
-        for (int x = x0 + 1; x < x1; ++x) {
-            canvas.write_text(x, y0, chars.top, style_id);
-        }
+        for (int x = x0 + 1; x < x1; ++x)
+            canvas.set(x, y0, cp.top, style_id);
     }
 
     // Bottom edge.
     if (border.sides.bottom) {
-        for (int x = x0 + 1; x < x1; ++x) {
-            canvas.write_text(x, y1, chars.bottom, style_id);
-        }
+        for (int x = x0 + 1; x < x1; ++x)
+            canvas.set(x, y1, cp.bottom, style_id);
     }
 
     // Left edge.
     if (border.sides.left) {
-        for (int y = y0 + 1; y < y1; ++y) {
-            canvas.write_text(x0, y, chars.left, style_id);
-        }
+        for (int y = y0 + 1; y < y1; ++y)
+            canvas.set(x0, y, cp.left, style_id);
     }
 
     // Right edge.
     if (border.sides.right) {
-        for (int y = y0 + 1; y < y1; ++y) {
-            canvas.write_text(x1, y, chars.right, style_id);
-        }
+        for (int y = y0 + 1; y < y1; ++y)
+            canvas.set(x1, y, cp.right, style_id);
     }
 
-    // Border title text.
+    // Border title text (still uses write_text — rare path, variable-length string).
     if (border.text.has_value() && !border.text->content.empty()) {
         const auto& bt = *border.text;
         int edge_y = (bt.position == BorderTextPos::Top) ? y0 : y1;
-        int avail = x1 - x0 - 1; // space between corners
+        int avail = x1 - x0 - 1;
         if (avail <= 0) return;
 
         int text_width = string_width(bt.content);
@@ -378,8 +380,10 @@ inline void render_tree(
     [[maybe_unused]] const Theme& theme)
 {
     // Phase 1: Build the layout tree.
+    // Reserve 128 slots upfront — a typical TUI element tree has 20-80 nodes.
+    // Over-reserving once is cheaper than repeated realloc during tree walk.
     std::vector<layout::LayoutNode> layout_nodes;
-    layout_nodes.reserve(64);
+    layout_nodes.reserve(128);
 
     std::size_t root_idx = render_detail::build_layout_tree(root, layout_nodes, theme);
 

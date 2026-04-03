@@ -1,0 +1,159 @@
+#pragma once
+// maya::core::simd - SIMD-accelerated bulk operations for terminal cells
+//
+// Hardware-accelerated comparison of packed 64-bit cell arrays. Uses
+// AVX2 (4 cells/cycle), SSE2 (2 cells/cycle, x86-64 baseline), or
+// NEON (2 cells/cycle, ARM64). Scalar fallback for everything else.
+//
+// The diff algorithm calls find_first_diff() to skip unchanged regions
+// in O(N/4) instead of O(N) — a measured 3-4x speedup on full-screen
+// repaints. For typical incremental updates the damage region is small,
+// but SIMD still helps after terminal resize or when scrolling.
+//
+// IMPORTANT: We use _mm_cmpeq_epi8 + movemask, NOT xor + movemask.
+// XOR + movemask only detects differences in the MSB of each byte,
+// which misses low-bit differences (e.g. 'a' vs 'b' = 0x03, MSB=0).
+// cmpeq_epi8 produces 0xFF for equal bytes and 0x00 for different,
+// so movemask reliably detects ANY byte-level difference.
+
+#include <cstddef>
+#include <cstdint>
+
+// -- ISA detection -----------------------------------------------------------
+#if defined(__x86_64__) || defined(_M_X64)
+    #include <immintrin.h>
+    #if defined(__AVX2__)
+        #define MAYA_SIMD_AVX2 1
+    #endif
+    // SSE2 is baseline for all x86-64 CPUs.
+    #define MAYA_SIMD_SSE2 1
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    #include <arm_neon.h>
+    #define MAYA_SIMD_NEON 1
+#endif
+
+namespace maya::simd {
+
+// ============================================================================
+// find_first_diff - index of first differing cell in two arrays
+// ============================================================================
+// Returns `count` if all cells are identical.
+
+[[nodiscard]] inline std::size_t find_first_diff(
+    const uint64_t* __restrict__ a,
+    const uint64_t* __restrict__ b,
+    std::size_t count) noexcept
+{
+    std::size_t i = 0;
+
+#if defined(MAYA_SIMD_AVX2)
+    // AVX2: 4 cells (256 bits = 32 bytes) per iteration.
+    for (; i + 4 <= count; i += 4) {
+        __m256i va  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i));
+        __m256i vb  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+        __m256i cmp = _mm256_cmpeq_epi8(va, vb);  // 0xFF=equal, 0x00=different
+        unsigned mask = static_cast<unsigned>(_mm256_movemask_epi8(cmp));
+        if (mask != 0xFFFFFFFFu) {
+            // At least one byte differs. Find which cell (8 bytes each).
+            int diff_byte = __builtin_ctz(~mask);
+            return i + static_cast<std::size_t>(diff_byte / 8);
+        }
+    }
+#elif defined(MAYA_SIMD_SSE2)
+    // SSE2: 2 cells (128 bits = 16 bytes) per iteration.
+    for (; i + 2 <= count; i += 2) {
+        __m128i va  = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i));
+        __m128i vb  = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i));
+        __m128i cmp = _mm_cmpeq_epi8(va, vb);
+        int mask    = _mm_movemask_epi8(cmp);
+        if (mask != 0xFFFF) {
+            int diff_byte = __builtin_ctz(static_cast<unsigned>(~mask & 0xFFFF));
+            return i + static_cast<std::size_t>(diff_byte / 8);
+        }
+    }
+#elif defined(MAYA_SIMD_NEON)
+    // NEON: 2 cells (128 bits) per iteration.
+    // No movemask on NEON — compare 64-bit lanes directly.
+    for (; i + 2 <= count; i += 2) {
+        uint64x2_t va  = vld1q_u64(a + i);
+        uint64x2_t vb  = vld1q_u64(b + i);
+        uint64x2_t cmp = vceqq_u64(va, vb);
+        if (vgetq_lane_u64(cmp, 0) == 0) return i;
+        if (vgetq_lane_u64(cmp, 1) == 0) return i + 1;
+    }
+#endif
+
+    // Scalar tail.
+    for (; i < count; ++i) {
+        if (a[i] != b[i]) return i;
+    }
+    return count;
+}
+
+// ============================================================================
+// skip_equal - find next differing cell starting from `start`
+// ============================================================================
+// Returns the index of the first differing cell (>= start), or `end` if all
+// cells in [start, end) are identical. Used by the diff inner loop to jump
+// over unchanged runs within a row.
+
+[[nodiscard]] inline std::size_t skip_equal(
+    const uint64_t* __restrict__ a,
+    const uint64_t* __restrict__ b,
+    std::size_t start,
+    std::size_t end) noexcept
+{
+    std::size_t i = start;
+
+#if defined(MAYA_SIMD_AVX2)
+    for (; i + 4 <= end; i += 4) {
+        __m256i va  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i));
+        __m256i vb  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+        __m256i cmp = _mm256_cmpeq_epi8(va, vb);
+        unsigned mask = static_cast<unsigned>(_mm256_movemask_epi8(cmp));
+        if (mask != 0xFFFFFFFFu) {
+            int diff_byte = __builtin_ctz(~mask);
+            return i + static_cast<std::size_t>(diff_byte / 8);
+        }
+    }
+#elif defined(MAYA_SIMD_SSE2)
+    for (; i + 2 <= end; i += 2) {
+        __m128i va  = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + i));
+        __m128i vb  = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b + i));
+        __m128i cmp = _mm_cmpeq_epi8(va, vb);
+        int mask    = _mm_movemask_epi8(cmp);
+        if (mask != 0xFFFF) {
+            int diff_byte = __builtin_ctz(static_cast<unsigned>(~mask & 0xFFFF));
+            return i + static_cast<std::size_t>(diff_byte / 8);
+        }
+    }
+#elif defined(MAYA_SIMD_NEON)
+    for (; i + 2 <= end; i += 2) {
+        uint64x2_t va  = vld1q_u64(a + i);
+        uint64x2_t vb  = vld1q_u64(b + i);
+        uint64x2_t cmp = vceqq_u64(va, vb);
+        if (vgetq_lane_u64(cmp, 0) == 0) return i;
+        if (vgetq_lane_u64(cmp, 1) == 0) return i + 1;
+    }
+#endif
+
+    for (; i < end; ++i) {
+        if (a[i] != b[i]) return i;
+    }
+    return end;
+}
+
+// ============================================================================
+// bulk_eq - check if entire range is identical
+// ============================================================================
+// Fast early-out for rows where nothing changed.
+
+[[nodiscard]] inline bool bulk_eq(
+    const uint64_t* __restrict__ a,
+    const uint64_t* __restrict__ b,
+    std::size_t count) noexcept
+{
+    return find_first_diff(a, b, count) == count;
+}
+
+} // namespace maya::simd

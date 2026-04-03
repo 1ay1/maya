@@ -199,6 +199,17 @@ public:
         return ops_.empty();
     }
 
+    // ========================================================================
+    // Direct write — bypass the op queue entirely
+    // ========================================================================
+    // The fast render path (FrameBuffer::render) builds a complete ANSI frame
+    // string and calls write_raw() for a single syscall. The op queue is still
+    // available for ad-hoc terminal control outside render cycles.
+
+    [[nodiscard]] auto write_raw(std::string_view data) -> Status {
+        return write_all(data);
+    }
+
 private:
     // ========================================================================
     // Peephole optimizer

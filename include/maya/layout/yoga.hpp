@@ -18,8 +18,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <functional>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -112,11 +110,23 @@ struct FlexStyle {
 // LayoutNode - a node in the layout tree
 // ============================================================================
 
+// Lightweight measure function — avoids std::function's type-erasure overhead.
+// A function pointer + opaque context replaces the 32-byte std::function with
+// a 16-byte pair that never heap-allocates.
+struct MeasureFn {
+    using Fn = Size(*)(const void* ctx, int max_width);
+    Fn          fn  = nullptr;
+    const void* ctx = nullptr;
+
+    [[nodiscard]] explicit operator bool() const noexcept { return fn != nullptr; }
+    [[nodiscard]] Size operator()(int max_width) const { return fn(ctx, max_width); }
+};
+
 struct LayoutNode {
-    FlexStyle                                     style;
-    std::vector<std::size_t>                      children;
-    std::optional<std::function<Size(int)>>       measure;
-    Rect                                          computed = {};
+    FlexStyle                style;
+    std::vector<std::size_t> children;
+    MeasureFn                measure;
+    Rect                     computed = {};
 };
 
 // ============================================================================
@@ -126,7 +136,7 @@ struct LayoutNode {
 namespace detail {
 
 /// True when the main axis runs horizontally.
-[[nodiscard]] constexpr bool is_row(FlexDirection d) noexcept {
+[[gnu::always_inline]] [[nodiscard]] constexpr bool is_row(FlexDirection d) noexcept {
     return d == FlexDirection::Row || d == FlexDirection::RowReverse;
 }
 
@@ -137,7 +147,7 @@ namespace detail {
 
 /// Clamp `v` between `lo` and `hi`, where either bound may be Dimension::Auto
 /// (meaning unconstrained). `parent` is the reference for percentage resolution.
-[[nodiscard]] constexpr int clamp_dim(int v, Dimension lo, Dimension hi, int parent) noexcept {
+[[gnu::always_inline]] [[nodiscard]] constexpr int clamp_dim(int v, Dimension lo, Dimension hi, int parent) noexcept {
     int low  = lo.is_auto() ? 0          : lo.resolve(parent);
     int high = hi.is_auto() ? 0x7FFFFFFF : hi.resolve(parent);
     return std::clamp(v, low, high);
@@ -233,7 +243,7 @@ inline void compute_node(
     auto& style = node.style;
 
     // Display::None -- produce a zero-size rect and bail out.
-    if (style.display == Display::None) {
+    if (style.display == Display::None) [[unlikely]] {
         node.computed = {};
         return;
     }
@@ -253,9 +263,9 @@ inline void compute_node(
     // ------------------------------------------------------------------
     // 2. Leaf node with measure function
     // ------------------------------------------------------------------
-    if (node.children.empty()) {
-        if (node.measure) {
-            Size measured = (*node.measure)(content_w);
+    if (node.children.empty()) [[likely]] {
+        if (node.measure) [[likely]] {
+            Size measured = node.measure(content_w);
             int mw = measured.width.value;
             int mh = measured.height.value;
 
@@ -316,7 +326,7 @@ inline void compute_node(
         } else if (child.measure) {
             // Measure leaf to get intrinsic size
             int measure_w = row ? main_avail : content_w;
-            Size ms = (*child.measure)(std::max(0, measure_w - (row ? inner_horizontal(cs) : inner_horizontal(cs))));
+            Size ms = child.measure(std::max(0, measure_w - (row ? inner_horizontal(cs) : inner_horizontal(cs))));
             hypo_main = row ? ms.width.value + inner_horizontal(cs) : ms.height.value + inner_vertical(cs);
         } else {
             // Recurse to determine child's natural size.
@@ -483,7 +493,7 @@ inline void compute_node(
                 child_w = child.computed.size.width.value;
                 child_h = child.computed.size.height.value;
             } else if (child.measure) {
-                Size ms = (*child.measure)(inner_w);
+                Size ms = child.measure(inner_w);
                 if (cs.width.is_auto() && !row) {
                     child_w = clamp_dim(ms.width.value + inner_horizontal(cs),
                                         cs.min_width, cs.max_width, parent_width);

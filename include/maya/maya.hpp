@@ -6,11 +6,12 @@
 // terminal I/O, layout, elements, rendering, and finally the application
 // entry point. Each layer depends only on layers above it in this list.
 
-// -- Core: types, error handling, concepts, reactive signals ----------------
+// -- Core: types, error handling, concepts, reactive signals, SIMD ----------
 #include <maya/core/types.hpp>
 #include <maya/core/expected.hpp>
 #include <maya/core/concepts.hpp>
 #include <maya/core/signal.hpp>
+#include <maya/core/simd.hpp>
 
 // -- Style: colors, text styles, borders, themes ----------------------------
 #include <maya/style/color.hpp>
@@ -37,6 +38,7 @@
 #include <maya/render/canvas.hpp>
 #include <maya/render/diff.hpp>
 #include <maya/render/renderer.hpp>
+#include <maya/render/pipeline.hpp>
 #include <maya/render/frame.hpp>
 
 // -- App: context, application entry point and event loop -------------------

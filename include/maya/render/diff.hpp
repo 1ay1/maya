@@ -1,37 +1,28 @@
 #pragma once
-// maya::render::diff - Frame differ for minimal terminal updates
+// maya::render::diff - Frame differ: direct ANSI output, zero intermediate allocations
 //
-// Compares two canvases cell-by-cell within the damage region and produces
-// a compact sequence of RenderOps that transform the front buffer's
-// terminal state into the back buffer's visual state.
+// Compares two canvases cell-by-cell within the damage region and writes
+// a compact ANSI byte stream that transforms the front buffer's terminal
+// state into the back buffer's visual state.
 //
-// The diff exploits 64-bit packed cell comparison to skip unchanged cells
-// in a single integer test. It tracks the "current" cursor position and
-// active style to suppress redundant cursor-move and style-change ops.
-// Consecutive identical-style character writes are batched into single
-// Write operations to minimize escape sequence overhead.
+// Key design: instead of building a vector<RenderOp> and then serializing,
+// we write ANSI sequences directly into the caller's string buffer. This
+// eliminates every heap allocation that the old RenderOp path incurred —
+// one per changed cell for cursor positioning, one per style change, one
+// per character batch. On a typical 80x24 frame with 10% changed cells,
+// that's ~192 fewer allocations per render cycle.
+//
+// The 64-bit packed cell comparison lets us skip unchanged cells with a
+// single integer test — the innermost loop body is just a load + compare.
 
 #include <cstdint>
 #include <string>
-#include <vector>
 
 #include "canvas.hpp"
+#include "../core/simd.hpp"
 #include "../terminal/ansi.hpp"
-#include "../terminal/writer.hpp"
 
 namespace maya {
-
-// ============================================================================
-// DiffResult - The output of a frame diff
-// ============================================================================
-// A flat vector of RenderOps ready to be pushed into a Writer for flushing.
-
-struct DiffResult {
-    std::vector<RenderOp> ops;
-
-    [[nodiscard]] bool empty() const noexcept { return ops.empty(); }
-    [[nodiscard]] std::size_t size() const noexcept { return ops.size(); }
-};
 
 // ============================================================================
 // UTF-8 encoding helper
@@ -39,9 +30,9 @@ struct DiffResult {
 
 namespace detail {
 
-/// Encode a single Unicode code point to UTF-8, appending to `out`.
-inline void encode_utf8(char32_t cp, std::string& out) {
-    if (cp < 0x80) {
+/// Encode a Unicode code point, appending its UTF-8 bytes to `out`.
+[[gnu::always_inline]] inline void encode_utf8(char32_t cp, std::string& out) {
+    if (cp < 0x80) [[likely]] {
         out += static_cast<char>(cp);
     } else if (cp < 0x800) {
         out += static_cast<char>(0xC0 | (cp >> 6));
@@ -56,209 +47,144 @@ inline void encode_utf8(char32_t cp, std::string& out) {
         out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
         out += static_cast<char>(0x80 | (cp & 0x3F));
     } else {
-        // Invalid code point -- emit replacement character U+FFFD.
-        out += "\xEF\xBF\xBD";
+        out += "\xEF\xBF\xBD";  // U+FFFD replacement character
     }
 }
 
 } // namespace detail
 
 // ============================================================================
-// diff - Compare two canvases and produce RenderOps
+// diff - Compare two canvases; write ANSI update stream directly to `out`
 // ============================================================================
-// The algorithm:
-//   1. Determine the effective damage region (intersection of back canvas
-//      damage with canvas bounds).
-//   2. Iterate row-by-row, column-by-column through the damage region.
-//   3. Skip cells whose packed 64-bit values match between old and new.
-//   4. For changed cells, emit cursor positioning (only when the cursor is
-//      not already at the right position), style transitions (only when the
-//      style differs from the last emitted style), and character data.
-//   5. Batch consecutive character writes on the same row into a single
-//      Write op to reduce per-character overhead.
+// Algorithm:
+//   1. Determine the effective damage region from the back canvas.
+//   2. Iterate row-by-row, column-by-column.
+//   3. Fast-path skip: if packed 64-bit values match, continue (no branch taken).
+//   4. Emit cursor move only when not at the expected position (zero-alloc).
+//   5. Emit style transition only when style changes (zero-alloc).
+//   6. Write character bytes directly into `out`.
+//
+// All ANSI sequences are written with write_move_to() / apply_to() /
+// transition_to() — none of them allocate heap memory.
 
-[[nodiscard]] inline DiffResult diff(
+inline void diff(
     const Canvas& old_canvas,
     const Canvas& new_canvas,
-    const StylePool& pool)
+    const StylePool& pool,
+    std::string& out)
 {
-    DiffResult result;
+    const int width  = new_canvas.width();
+    const int height = new_canvas.height();
 
-    int width  = new_canvas.width();
-    int height = new_canvas.height();
+    if (width == 0 || height == 0) [[unlikely]] return;
 
-    if (width == 0 || height == 0) return result;
-
-    // Determine the region we need to scan.
-    Rect damage = new_canvas.damage();
-    if (damage.size.is_zero()) return result;
+    const Rect damage = new_canvas.damage();
+    if (damage.size.is_zero()) [[unlikely]] return;
 
     // Clamp damage to canvas bounds.
-    int x0 = std::max(0, damage.left().value);
-    int y0 = std::max(0, damage.top().value);
-    int x1 = std::min(width, damage.right().value);
-    int y1 = std::min(height, damage.bottom().value);
+    const int x0 = std::max(0, damage.left().value);
+    const int y0 = std::max(0, damage.top().value);
+    const int x1 = std::min(width,  damage.right().value);
+    const int y1 = std::min(height, damage.bottom().value);
 
-    if (x0 >= x1 || y0 >= y1) return result;
+    if (x0 >= x1 || y0 >= y1) [[unlikely]] return;
 
-    // State tracking to minimize redundant ops.
-    int cursor_x = -1;  // unknown position
-    int cursor_y = -1;
-    uint16_t current_style_id = UINT16_MAX;  // sentinel: no style applied yet
+    // Cursor and style state (unknown / sentinel at start).
+    int      cursor_x        = -1;
+    int      cursor_y        = -1;
+    uint16_t current_style   = UINT16_MAX;  // sentinel: no style written yet
 
-    // Pre-allocate a reasonable estimate.
-    result.ops.reserve(static_cast<std::size_t>((y1 - y0) * 4));
+    const bool size_changed = (old_canvas.width() != width || old_canvas.height() != height);
+    const uint64_t blank    = Cell{}.pack();
 
-    // Pending write accumulator: we batch consecutive characters on the
-    // same row with the same style into a single Write op.
-    std::string pending_text;
-    int pending_start_x = -1;
-    int pending_y = -1;
-
-    auto flush_pending = [&]() {
-        if (pending_text.empty()) return;
-        result.ops.emplace_back(render_op::Write{std::move(pending_text)});
-        pending_text.clear();
-        pending_start_x = -1;
-        pending_y = -1;
-    };
-
-    bool size_changed = (old_canvas.width() != width || old_canvas.height() != height);
+    // Pre-fetch the raw cell buffers for direct pointer arithmetic in the loop.
+    const uint64_t* new_cells = new_canvas.cells();
+    const uint64_t* old_cells = size_changed ? nullptr : old_canvas.cells();
+    const int       old_w     = size_changed ? 0 : old_canvas.width();
+    const int       old_h     = size_changed ? 0 : old_canvas.height();
 
     for (int y = y0; y < y1; ++y) {
-        for (int x = x0; x < x1; ++x) {
-            uint64_t new_packed = new_canvas.get_packed(x, y);
-            uint64_t old_packed = (!size_changed && x < old_canvas.width() && y < old_canvas.height())
-                                ? old_canvas.get_packed(x, y)
-                                : Cell{}.pack();
+        const int  new_row_base  = y * width;
+        const int  old_row_base  = y * old_w;
+        const bool old_row_valid = !size_changed && y < old_h;
 
-            // Fast path: cell unchanged -- skip it.
-            if (new_packed == old_packed) {
-                flush_pending();
+        // ── Level-1 SIMD skip: entire unchanged row ──────────────────────
+        // bulk_eq compares all cells in one AVX2/SSE2/NEON pass (4 cells/cycle).
+        // Most rows in a quiescent TUI are completely unchanged — this skips
+        // the inner loop entirely for them.
+        if (old_row_valid && old_w == width && x0 == 0 && x1 == width) [[likely]] {
+            if (simd::bulk_eq(new_cells + new_row_base, old_cells + old_row_base,
+                              static_cast<std::size_t>(width)))
                 continue;
+        }
+
+        // ── Level-2 SIMD skip: within-row unchanged runs ─────────────────
+        // find_first_diff() jumps ahead to the next changed cell without
+        // touching the intermediate cells at all. For rows with sparse
+        // changes (e.g. a blinking cursor), this skips the bulk unchanged
+        // prefix and suffix in O(N/4) instead of O(N).
+        auto x  = static_cast<std::size_t>(x0);
+        const auto xe = static_cast<std::size_t>(x1);
+
+        // How many cells from old canvas are available on this row?
+        const auto old_xe = old_row_valid
+                          ? std::min(xe, static_cast<std::size_t>(old_w))
+                          : static_cast<std::size_t>(0);
+
+        while (x < xe) {
+            // Skip unchanged prefix via SIMD (only when old data is available).
+            if (old_row_valid && x < old_xe) {
+                const std::size_t avail = old_xe - x;
+                const std::size_t skip  = simd::find_first_diff(
+                    new_cells + new_row_base + x,
+                    old_cells + old_row_base + x,
+                    avail);
+                x += skip;
+                // If we've exhausted the old-canvas coverage for this row,
+                // continue into the scalar section for the remaining new cells.
+                if (x >= xe) break;
+                // If SIMD only advanced into cells beyond old coverage, fall
+                // through to the per-cell check below.
             }
 
-            Cell cell = Cell::unpack(new_packed);
+            const uint64_t new_packed = new_cells[new_row_base + x];
+            const uint64_t old_packed = (old_row_valid && x < old_xe)
+                                      ? old_cells[old_row_base + x]
+                                      : blank;
 
-            // Skip wide-char second-half placeholders; the first-half
-            // write already covers both columns.
-            if (cell.width == 2) continue;
+            if (new_packed == old_packed) [[likely]] { ++x; continue; }
 
-            // Emit cursor positioning if we're not at the expected position.
-            if (cursor_x != x || cursor_y != y) {
-                flush_pending();
-                // Use absolute CUP (1-based row, col).
-                result.ops.emplace_back(render_op::Write{
-                    ansi::move_to(x + 1, y + 1)
-                });
-                cursor_x = x;
+            const Cell cell = Cell::unpack(new_packed);
+
+            // Wide-char second-half: the first-half write already covers it.
+            if (cell.width == 2) [[unlikely]] { ++x; continue; }
+
+            // Cursor positioning (zero-alloc).
+            const int cx = static_cast<int>(x);
+            if (cursor_x != cx || cursor_y != y) {
+                ansi::write_move_to(out, cx + 1, y + 1);
+                cursor_x = cx;
                 cursor_y = y;
             }
 
-            // Emit style transition if needed.
-            if (cell.style_id != current_style_id) {
-                flush_pending();
-
+            // Style transition (zero-alloc).
+            if (cell.style_id != current_style) {
                 const Style& new_style = pool.get(cell.style_id);
-                std::string sgr;
-
-                if (current_style_id == UINT16_MAX) {
-                    // First style application -- reset then apply from scratch.
-                    std::string full;
-                    full += ansi::reset;
-                    full += ansi::StyleApplier::apply(new_style);
-                    sgr = std::move(full);
+                if (current_style == UINT16_MAX) [[unlikely]] {
+                    out += ansi::reset;
+                    ansi::StyleApplier::apply_to(new_style, out);
                 } else {
-                    // Incremental transition from current style.
-                    const Style& prev_style = pool.get(current_style_id);
-                    sgr = ansi::StyleApplier::transition(prev_style, new_style);
+                    ansi::StyleApplier::transition_to(
+                        pool.get(current_style), new_style, out);
                 }
-
-                if (!sgr.empty()) {
-                    result.ops.emplace_back(render_op::StyleStr{std::move(sgr)});
-                }
-                current_style_id = cell.style_id;
+                current_style = cell.style_id;
             }
 
-            // Append this character to the pending write batch.
-            detail::encode_utf8(cell.character, pending_text);
-            if (pending_start_x < 0) {
-                pending_start_x = x;
-                pending_y = y;
-            }
-
-            // Advance cursor tracking.
-            int advance = (cell.width == 1) ? 2 : 1;
-            cursor_x += advance;
+            detail::encode_utf8(cell.character, out);
+            cursor_x += (cell.width == 1) ? 2 : 1;
+            ++x;
         }
-
-        // Flush at end of each row.
-        flush_pending();
     }
-
-    flush_pending();
-
-    return result;
-}
-
-// ============================================================================
-// optimize - Peephole optimization pass over a DiffResult
-// ============================================================================
-// Merges consecutive compatible operations to further reduce the byte
-// count sent to the terminal.
-
-[[nodiscard]] inline DiffResult optimize(DiffResult input) {
-    if (input.ops.size() < 2) return input;
-
-    DiffResult output;
-    output.ops.reserve(input.ops.size());
-
-    for (auto& op : input.ops) {
-        if (!output.ops.empty()) {
-            auto& last = output.ops.back();
-
-            // Merge consecutive Write ops.
-            if (auto* a = std::get_if<render_op::Write>(&last)) {
-                if (auto* b = std::get_if<render_op::Write>(&op)) {
-                    a->text += b->text;
-                    continue;
-                }
-            }
-
-            // Merge consecutive StyleStr ops.
-            if (auto* a = std::get_if<render_op::StyleStr>(&last)) {
-                if (auto* b = std::get_if<render_op::StyleStr>(&op)) {
-                    a->sgr += b->sgr;
-                    continue;
-                }
-            }
-
-            // Merge consecutive CursorMove ops.
-            if (auto* a = std::get_if<render_op::CursorMove>(&last)) {
-                if (auto* b = std::get_if<render_op::CursorMove>(&op)) {
-                    a->dx += b->dx;
-                    a->dy += b->dy;
-                    continue;
-                }
-            }
-
-            // Cancel adjacent CursorHide + CursorShow (and vice versa).
-            bool hide_then_show =
-                std::holds_alternative<render_op::CursorHide>(last) &&
-                std::holds_alternative<render_op::CursorShow>(op);
-            bool show_then_hide =
-                std::holds_alternative<render_op::CursorShow>(last) &&
-                std::holds_alternative<render_op::CursorHide>(op);
-            if (hide_then_show || show_then_hide) {
-                output.ops.pop_back();
-                continue;
-            }
-        }
-
-        output.ops.push_back(std::move(op));
-    }
-
-    return output;
 }
 
 } // namespace maya

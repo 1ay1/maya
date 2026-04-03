@@ -44,5 +44,6 @@
 // -- App: context, application entry point, event helpers, run() ------------
 #include <maya/app/context.hpp>
 #include <maya/app/app.hpp>
+#include <maya/app/canvas_app.hpp>
 #include <maya/app/events.hpp>
 #include <maya/app/run.hpp>

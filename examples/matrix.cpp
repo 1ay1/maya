@@ -9,22 +9,12 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
-#include <chrono>
 #include <cmath>
-#include <csignal>
-#include <iostream>
-#include <poll.h>
 #include <random>
 #include <string>
-#include <thread>
-#include <unistd.h>
 #include <vector>
 
 using namespace maya;
-using Clock = std::chrono::steady_clock;
-
-static volatile sig_atomic_t g_resize = 0;
-static void on_sigwinch(int) noexcept { g_resize = 1; }
 
 // ── Glyphs ────────────────────────────────────────────────────────────────────
 
@@ -40,7 +30,6 @@ static constexpr int kMaxTrail   = 28;
 using GradientIDs = std::array<uint16_t, kMaxTrail>;
 
 // ── Colour themes ─────────────────────────────────────────────────────────────
-// Each theme: head (near-white tinted) | bright (vivid second cell) | trail mid
 
 struct ThemeRGB { uint8_t r, g, b; };
 struct ThemeDef {
@@ -60,18 +49,17 @@ static constexpr ThemeDef kThemes[] = {
 static constexpr int kThemeCount = static_cast<int>(std::size(kThemes));
 
 // ── Pre-interned style table ──────────────────────────────────────────────────
-// Every style ID lives here. The StylePool never grows after intern_all().
 
 struct Styles {
-    std::array<GradientIDs, kThemeCount> theme;   // [t][depth] — normal rain
-    std::array<uint16_t,    kThemeCount> hover;   // hover-column head per theme
-    uint16_t flash;          // ripple shockwave flash (bright white)
-    uint16_t glitch;         // glitch-storm head (inverse white)
-    uint16_t bar_bg;         // status bar background cells
-    uint16_t bar_label;      // "maya" text
-    uint16_t bar_theme;      // theme name (tinted to current theme)
-    uint16_t bar_info;       // fps / speed text
-    uint16_t bar_mode;       // PAUSED / GLITCH indicator
+    std::array<GradientIDs, kThemeCount> theme;
+    std::array<uint16_t,    kThemeCount> hover;
+    uint16_t flash;
+    uint16_t glitch;
+    uint16_t bar_bg;
+    uint16_t bar_label;
+    uint16_t bar_theme;
+    uint16_t bar_info;
+    uint16_t bar_mode;
 };
 
 static Styles intern_all(StylePool& pool)
@@ -98,7 +86,6 @@ static Styles intern_all(StylePool& pool)
             s.theme[t][d] = pool.intern(st);
         }
 
-        // Hover head: brighter/saturated version of the vivid second cell
         auto clamp = [](int v) { return static_cast<uint8_t>(std::min(255, v)); };
         s.hover[t] = pool.intern(Style{}.with_bold().with_fg(Color::rgb(
             clamp(c.bright.r + 50),
@@ -136,9 +123,7 @@ struct Drop {
 // ── Ripple shockwave ──────────────────────────────────────────────────────────
 
 struct Ripple {
-    int cx;       // origin column
-    int cy;       // origin row (drops jump here when ring hits them)
-    int radius;   // current ring radius (expands 1 per frame)
+    int cx, cy, radius;
 };
 
 // ── Rain ──────────────────────────────────────────────────────────────────────
@@ -146,8 +131,8 @@ struct Ripple {
 class Rain {
     int            cols_, rows_;
     std::mt19937   rng_;
-    std::vector<Drop> drops_;
-    std::vector<int>  flash_;    // per-column flash countdown
+    std::vector<Drop>   drops_;
+    std::vector<int>    flash_;
     std::vector<Ripple> ripples_;
 
     static constexpr int   kFlashFrames = 12;
@@ -179,20 +164,17 @@ public:
         for (int c = 0; c < cols_; ++c) spawn(drops_[c], /*scatter=*/true);
     }
 
-    // Triggered by 't' — randomize all speeds
     void jolt() {
         for (auto& d : drops_)
             d.speed = std::uniform_real_distribution<float>(0.22f, kMaxSpeed)(rng_);
     }
 
-    // Triggered by 'r' — full respawn
     void reset() {
         for (auto& d : drops_) spawn(d, /*scatter=*/true);
         std::fill(flash_.begin(), flash_.end(), 0);
         ripples_.clear();
     }
 
-    // Triggered by mouse click — launch an expanding shockwave
     void shockwave(int cx, int cy) {
         ripples_.push_back({cx, cy, 0});
     }
@@ -200,33 +182,27 @@ public:
     void tick(float speed_mul, bool glitch, bool paused) {
         if (paused) return;
 
-        // Expand ripples; trigger flashes on the ring boundary
         for (auto& rip : ripples_) {
             for (int side : {-1, 1}) {
                 int c = rip.cx + side * rip.radius;
                 if (c >= 0 && c < cols_) {
                     flash_[c] = kFlashFrames;
-                    // Jump drop head to click row (minus trail so head lands at cy)
                     drops_[c].pos   = static_cast<float>(rip.cy);
                     drops_[c].speed = std::uniform_real_distribution<float>(1.2f, kMaxSpeed)(rng_);
                 }
             }
-            // Also flash origin on first frame
             if (rip.radius == 0 && rip.cx >= 0 && rip.cx < cols_)
                 flash_[rip.cx] = kFlashFrames;
             ++rip.radius;
         }
-        // Remove ripples that have expanded off screen
         std::erase_if(ripples_, [&](const Ripple& r) {
             return r.radius > cols_ / 2 + 4;
         });
 
-        // Simulate drops
         for (int c = 0; c < cols_; ++c) {
             Drop& d = drops_[c];
             d.pos += d.speed * speed_mul;
 
-            // Character mutation (faster during glitch)
             int mut_cap = glitch ? 2 : 38;
             for (int r = 0; r < rows_; ++r) {
                 if (--d.mutate[r] <= 0) {
@@ -245,7 +221,6 @@ public:
     void paint(Canvas& canvas, const Styles& st, int theme,
                int hover_col, bool glitch) const
     {
-        canvas.clear();
         for (int c = 0; c < cols_; ++c) {
             const Drop& d  = drops_[c];
             int         hd = static_cast<int>(d.pos);
@@ -258,11 +233,10 @@ public:
 
                 uint16_t sid;
                 if (depth == 0) {
-                    // Head cell: flash > hover > glitch > normal
-                    if (fl)            sid = st.flash;
-                    else if (glitch)   sid = st.glitch;
-                    else if (hv)       sid = st.hover[theme];
-                    else               sid = st.theme[theme][0];
+                    if (fl)          sid = st.flash;
+                    else if (glitch) sid = st.glitch;
+                    else if (hv)     sid = st.hover[theme];
+                    else             sid = st.theme[theme][0];
                 } else {
                     int gi = std::min(depth, kMaxTrail - 1);
                     sid = fl      ? st.theme[theme][std::min(depth, 1)]
@@ -285,7 +259,6 @@ static void paint_bar(Canvas& canvas, const Styles& st,
     int y = H - 1;
     for (int x = 0; x < W; ++x) canvas.set(x, y, U' ', st.bar_bg);
 
-    // Left: " maya "
     auto write_str = [&](int x, std::string_view sv, uint16_t sid) {
         for (char c : sv) {
             if (x >= W) break;
@@ -299,188 +272,98 @@ static void paint_bar(Canvas& canvas, const Styles& st,
     x = write_str(x, " | ",    st.bar_info);
     x = write_str(x, kThemes[theme].name, st.bar_theme);
 
-    if (paused) {
-        x = write_str(x, " | ", st.bar_info);
-        x = write_str(x, "PAUSED", st.bar_mode);
-    }
-    if (glitch) {
-        x = write_str(x, " | ", st.bar_info);
-        x = write_str(x, "GLITCH", st.bar_mode);
-    }
+    if (paused) { x = write_str(x, " | ", st.bar_info); x = write_str(x, "PAUSED", st.bar_mode); }
+    if (glitch) { x = write_str(x, " | ", st.bar_info); x = write_str(x, "GLITCH", st.bar_mode); }
 
-    // Right: speed | fps | hint
-    char buf[96];
-    char fpsbuf[16];
-    auto [fend, _] = std::to_chars(fpsbuf, fpsbuf + sizeof(fpsbuf),
-                                   fps, std::chars_format::fixed, 1);
-    *fend = '\0';
-    char spdbuf[16];
-    auto [send, __] = std::to_chars(spdbuf, spdbuf + sizeof(spdbuf),
-                                    speed_mul, std::chars_format::fixed, 2);
-    *send = '\0';
+    char buf[96], fpsbuf[16], spdbuf[16];
+    auto [fend, _]  = std::to_chars(fpsbuf, fpsbuf + sizeof(fpsbuf), fps, std::chars_format::fixed, 1);
+    auto [send, __] = std::to_chars(spdbuf, spdbuf + sizeof(spdbuf), speed_mul, std::chars_format::fixed, 2);
+    *fend = '\0'; *send = '\0';
 
     int len = std::snprintf(buf, sizeof(buf),
-        " [t]heme [g]litch [space]jolt [r]eset  %sx  %s fps ",
-        spdbuf, fpsbuf);
+        " [t]heme [g]litch [space]jolt [r]eset  %sx  %s fps ", spdbuf, fpsbuf);
     int rx = W - len;
-    if (rx > x) write_str(rx, {buf, static_cast<size_t>(len)}, st.bar_info);
+    if (rx > x) write_str(rx, {buf, static_cast<std::size_t>(len)}, st.bar_info);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ── main ──────────────────────────────────────────────────────────────────────
 
 int main()
 {
-    signal(SIGWINCH, on_sigwinch);
-
-    // ── Terminal: Cooked → Raw → AltScreen ────────────────────────────────────
-    auto cooked = Terminal<Cooked>::create(STDIN_FILENO);
-    if (!cooked) { std::println(std::cerr, "maya: {}", cooked.error().message); return 1; }
-
-    auto raw = std::move(*cooked).enable_raw_mode();
-    if (!raw) { std::println(std::cerr, "maya: {}", raw.error().message); return 1; }
-
-    auto alt = std::move(*raw).enter_alt_screen();
-    if (!alt) { std::println(std::cerr, "maya: {}", alt.error().message); return 1; }
-
-    auto term = std::move(*alt);
-    int  fd   = term.fd();
-
-    // Enable all-motion mouse tracking (hover events); disable before RAII cleanup
-    (void)term.write("\x1b[?1003h");
-
-    // ── Canvas & style setup ──────────────────────────────────────────────────
-    auto sz = term.size();
-    int W = std::max(1, sz.width.value);
-    int H = std::max(2, sz.height.value);
-
-    StylePool pool;
-    Styles    styles = intern_all(pool);
-
-    Canvas front(W, H, &pool), back(W, H, &pool);
-    front.mark_all_damaged();
-
-    Rain rain(W, H - 1);
-
-    // ── Interactive state ─────────────────────────────────────────────────────
     int   theme       = 0;
     float speed_mul   = 1.0f;
     bool  paused      = false;
-    int   glitch_left = 0;           // frames remaining in glitch storm
+    int   glitch_left = 0;
     int   hover_col   = -1;
 
-    InputParser parser;
-    bool running = true;
+    // Simulation and style state — rebuilt on resize.
+    std::unique_ptr<Rain> rain;
+    Styles                styles{};
 
-    // ── Timing ────────────────────────────────────────────────────────────────
-    constexpr auto kFrameTime   = std::chrono::microseconds(16'667); // ~60 fps
-    constexpr auto kSpinMargin  = std::chrono::microseconds(1'500);
+    // FPS tracking
+    using Clock = std::chrono::steady_clock;
     int    frame_count = 0;
     double fps         = 60.0;
     auto   fps_clock   = Clock::now();
 
-    std::string out;
-    out.reserve(static_cast<size_t>(W * H * 14));
+    auto result = canvas_run(
+        CanvasConfig{.fps = 60, .mouse = true, .title = "matrix · maya"},
 
-    // ─────────────────────────────────────────────────────────────────────────
-    while (running) {
-        auto frame_start = Clock::now();
-
-        // ── Resize ───────────────────────────────────────────────────────────
-        if (g_resize) {
-            g_resize = 0;
-            sz = term.size();
-            W  = std::max(1, sz.width.value);
-            H  = std::max(2, sz.height.value);
-            front.resize(W, H);
-            back .resize(W, H);
-            front.mark_all_damaged();
-            pool.clear();
+        // on_resize: rebuild rain + re-intern styles for the new size
+        [&](StylePool& pool, int W, int H) {
             styles = intern_all(pool);
-            rain   = Rain(W, H - 1);
-        }
+            rain   = std::make_unique<Rain>(W, H - 1);
+        },
 
-        // ── Input ─────────────────────────────────────────────────────────────
-        pollfd pfd{fd, POLLIN, 0};
-        if (::poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN)) {
-            auto bytes = term.read_raw();
-            if (bytes && !bytes->empty()) {
-                for (const auto& ev : parser.feed(*bytes)) {
-                    if (const auto* ke = std::get_if<KeyEvent>(&ev)) {
-                        if (auto* sk = std::get_if<SpecialKey>(&ke->key)) {
-                            if (*sk == SpecialKey::Escape) running = false;
-                        }
-                        if (auto* ck = std::get_if<CharKey>(&ke->key)) {
-                            switch (ck->codepoint) {
-                                case 'q': case 'Q':
-                                    running = false; break;
-                                case 'p': case 'P':
-                                    paused = !paused; break;
-                                case 'g': case 'G':
-                                    glitch_left = 90; break;  // ~1.5 s at 60fps
-                                case 't': case 'T':
-                                    theme = (theme + 1) % kThemeCount; break;
-                                case 'r': case 'R':
-                                    rain.reset(); break;
-                                case ' ':
-                                    rain.jolt(); break;
-                                case '+': case '=':
-                                    speed_mul = std::min(5.0f, speed_mul + 0.25f); break;
-                                case '-': case '_':
-                                    speed_mul = std::max(0.1f, speed_mul - 0.25f); break;
-                            }
-                        }
-                    }
-                    if (const auto* me = std::get_if<MouseEvent>(&ev)) {
-                        // Clamp to canvas area (exclude status bar)
-                        hover_col = std::clamp(me->x.value - 1, 0, W - 1);
-                        if (me->kind == MouseEventKind::Press) {
-                            int row = std::clamp(me->y.value - 1, 0, H - 2);
-                            rain.shockwave(hover_col, row);
-                        }
-                        if (me->button == MouseButton::ScrollUp)
-                            speed_mul = std::min(5.0f, speed_mul + 0.25f);
-                        if (me->button == MouseButton::ScrollDown)
-                            speed_mul = std::max(0.1f, speed_mul - 0.25f);
+        // on_event: return false to quit
+        [&](const Event& ev) -> bool {
+            if (const auto* ke = std::get_if<KeyEvent>(&ev)) {
+                if (auto* sk = std::get_if<SpecialKey>(&ke->key))
+                    if (*sk == SpecialKey::Escape) return false;
+                if (auto* ck = std::get_if<CharKey>(&ke->key)) {
+                    switch (ck->codepoint) {
+                        case 'q': case 'Q': return false;
+                        case 'p': case 'P': paused = !paused; break;
+                        case 'g': case 'G': glitch_left = 90; break;
+                        case 't': case 'T': theme = (theme + 1) % kThemeCount; break;
+                        case 'r': case 'R': rain->reset(); break;
+                        case ' ':           rain->jolt();  break;
+                        case '+': case '=': speed_mul = std::min(5.0f, speed_mul + 0.25f); break;
+                        case '-': case '_': speed_mul = std::max(0.1f, speed_mul - 0.25f); break;
                     }
                 }
             }
-        }
+            if (const auto* me = std::get_if<MouseEvent>(&ev)) {
+                hover_col = me->x.value - 1;
+                if (me->kind == MouseEventKind::Press)
+                    rain->shockwave(hover_col, std::clamp(me->y.value - 1, 0, 9999));
+                if (me->button == MouseButton::ScrollUp)
+                    speed_mul = std::min(5.0f, speed_mul + 0.25f);
+                if (me->button == MouseButton::ScrollDown)
+                    speed_mul = std::max(0.1f, speed_mul - 0.25f);
+            }
+            return true;
+        },
 
-        // ── Simulate ─────────────────────────────────────────────────────────
-        bool glitching = glitch_left > 0;
-        if (glitch_left > 0) --glitch_left;
+        // on_paint: simulate + draw (canvas already cleared by framework)
+        [&](Canvas& canvas, int W, int H) {
+            bool glitching = glitch_left > 0;
+            if (glitch_left > 0) --glitch_left;
 
-        rain.tick(speed_mul, glitching, paused);
+            rain->tick(speed_mul, glitching, paused);
 
-        // ── FPS ───────────────────────────────────────────────────────────────
-        ++frame_count;
-        {
+            // FPS
+            ++frame_count;
             double el = std::chrono::duration<double>(Clock::now() - fps_clock).count();
             if (el >= 0.5) { fps = frame_count / el; frame_count = 0; fps_clock = Clock::now(); }
+
+            rain->paint(canvas, styles, theme, hover_col, glitching);
+            paint_bar(canvas, styles, W, H, theme, fps, speed_mul, paused, glitching);
         }
+    );
 
-        // ── Paint ─────────────────────────────────────────────────────────────
-        rain.paint(back, styles, theme, hover_col, glitching);
-        paint_bar(back, styles, W, H, theme, fps, speed_mul, paused, glitching);
-
-        // ── Diff → output ─────────────────────────────────────────────────────
-        out.clear();
-        out += ansi::sync_start;
-        diff(front, back, pool, out);
-        out += ansi::reset;
-        out += ansi::sync_end;
-
-        (void)term.write(out);
-        std::swap(front, back);
-
-        // ── Frame cap (hybrid sleep + spin) ───────────────────────────────────
-        auto deadline  = frame_start + kFrameTime;
-        auto sleep_end = deadline - kSpinMargin;
-        if (Clock::now() < sleep_end)
-            std::this_thread::sleep_for(sleep_end - Clock::now());
-        while (Clock::now() < deadline) {}
+    if (!result) {
+        std::println(std::cerr, "maya: {}", result.error().message);
+        return 1;
     }
-
-    (void)term.write("\x1b[?1003l");  // disable all-motion before RAII cleanup
-    return 0;
 }

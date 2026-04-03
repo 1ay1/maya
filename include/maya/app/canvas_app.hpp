@@ -73,8 +73,8 @@ struct CanvasConfig {
         (void)::write(fd, seq.data(), seq.size());
     }
 
-    static constexpr std::string_view kMouseOn  = "\x1b[?1003h";
-    static constexpr std::string_view kMouseOff = "\x1b[?1003l";
+    static constexpr std::string_view kMouseOn  = "\x1b[?1003h\x1b[?1006h";
+    static constexpr std::string_view kMouseOff = "\x1b[?1006l\x1b[?1003l";
     if (cfg.mouse) (void)::write(fd, kMouseOn.data(), kMouseOn.size());
 
     Writer writer{fd};

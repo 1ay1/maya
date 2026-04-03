@@ -170,6 +170,7 @@ public:
         seq += ansi::alt_screen_enter;
         seq += ansi::hide_cursor;
         seq += ansi::enable_mouse;
+        seq += ansi::enable_alt_scroll;
         seq += ansi::enable_focus;
         seq += ansi::enable_bracketed_paste;
         seq += ansi::clear_screen();
@@ -256,6 +257,7 @@ public:
             seq.reserve(128);
             seq += ansi::disable_bracketed_paste;
             seq += ansi::disable_focus;
+            seq += ansi::disable_alt_scroll;
             seq += ansi::disable_mouse;
             seq += ansi::show_cursor;
             seq += ansi::alt_screen_leave;

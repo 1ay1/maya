@@ -514,22 +514,26 @@ private:
         static constexpr std::size_t kFrameOverhead =
             ansi::hide_cursor.size() + ansi::sync_start.size() +
             ansi::reset.size()        + ansi::sync_end.size();
-        if (frame.size() <= kFrameOverhead) return ok();
+        if (frame.size() <= kFrameOverhead) {
+            frame_buf_.commit(); // content unchanged — commit keeps front in sync
+            return ok();
+        }
 
         // Single write(2) syscall — the terminal sees an atomic update.
         auto result = writer_->write_raw(frame);
         if (!result) {
             if (result.error().kind == ErrorKind::WouldBlock) {
-                // The fd was writable when we checked above but the write still
-                // hit EAGAIN (race: buffer filled between poll and write). The
-                // frame was partially or not written — invalidate so the next
-                // render sends a full repaint rather than a broken partial diff.
-                frame_buf_.invalidate();
+                // EAGAIN: 0 bytes written. Do NOT commit — front_ still reflects
+                // what the terminal actually shows, so the next render() produces
+                // a correct diff without needing an expensive full invalidate.
                 needs_render_ = true;
                 return ok();
             }
             return result;
         }
+
+        // Write succeeded — flip front/back so front_ tracks the terminal state.
+        frame_buf_.commit();
         return ok();
     }
 };

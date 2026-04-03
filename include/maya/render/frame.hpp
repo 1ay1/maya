@@ -66,6 +66,15 @@ public:
     /// The string is reused across frames (clear + refill preserves capacity).
     /// The type-state pipeline guarantees the render stages execute in the
     /// correct order — wrong order = compile error, not runtime assertion.
+    /// Compute the ANSI diff frame for the given element tree and return a
+    /// reference to the internal output string.  The reference is valid until
+    /// the next render() call.
+    ///
+    /// This method does NOT swap front/back.  The caller must call commit()
+    /// after a successful write so that front_ tracks what the terminal actually
+    /// shows.  If the write fails (EAGAIN/WouldBlock), skip commit() — front_
+    /// keeps reflecting the last successfully displayed frame, so the next
+    /// render() produces a correct, complete diff rather than an empty one.
     [[nodiscard]] const std::string& render(const Element& root, const Theme& theme) {
         // Reuse the persistent output buffer: clear() preserves allocated capacity
         // so steady-state rendering is completely allocation-free.
@@ -91,10 +100,15 @@ public:
         if (out_.size() > reserve_hint_)
             reserve_hint_ = out_.size() + out_.size() / 4;
 
+        return out_;  // reference valid until the next render() call
+    }
+
+    /// Commit the current render: flip front/back and reset back damage.
+    /// Call this immediately after a successful write of the frame returned
+    /// by render().  Do NOT call it if the write was skipped or failed.
+    void commit() noexcept {
         swap();
         back_.canvas.reset_damage();
-
-        return out_;  // reference valid until the next render() call
     }
 
     /// Swap front and back frames.

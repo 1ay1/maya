@@ -27,8 +27,9 @@ if(MAYA_BUILD_EXAMPLES)
     add_executable(maya_viz       examples/viz.cpp)
     add_executable(maya_fireworks examples/fireworks.cpp)
     add_executable(maya_dashboard examples/dashboard.cpp)
+    add_executable(maya_agent    examples/agent.cpp)
 
-    foreach(tgt maya_demo maya_counter maya_matrix maya_viz maya_fireworks maya_dashboard)
+    foreach(tgt maya_demo maya_counter maya_matrix maya_viz maya_fireworks maya_dashboard maya_agent)
         target_link_libraries(${tgt} PRIVATE maya)
 
         # Maximum optimizations for the examples.

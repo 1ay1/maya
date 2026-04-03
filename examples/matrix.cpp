@@ -315,33 +315,33 @@ int main()
             rain   = std::make_unique<Rain>(W, H - 1);
         },
 
-        // on_event: return false to quit
+        // on_event
         [&](const Event& ev) -> bool {
-            if (const auto* ke = std::get_if<KeyEvent>(&ev)) {
-                if (auto* sk = std::get_if<SpecialKey>(&ke->key))
-                    if (*sk == SpecialKey::Escape) return false;
-                if (auto* ck = std::get_if<CharKey>(&ke->key)) {
-                    switch (ck->codepoint) {
-                        case 'q': case 'Q': return false;
-                        case 'p': case 'P': paused = !paused; break;
-                        case 'g': case 'G': glitch_left = 90; break;
-                        case 't': case 'T': theme = (theme + 1) % kThemeCount; break;
-                        case 'r': case 'R': rain->reset(); break;
-                        case ' ':           rain->jolt();  break;
-                        case '+': case '=': speed_mul = std::min(5.0f, speed_mul + 0.25f); break;
-                        case '-': case '_': speed_mul = std::max(0.1f, speed_mul - 0.25f); break;
-                    }
-                }
+            if (key(ev, 'q') || key(ev, 'Q') || key(ev, SpecialKey::Escape))
+                return false;
+
+            on(ev, 'p', [&] { paused = !paused; });
+            on(ev, 'P', [&] { paused = !paused; });
+            on(ev, 'g', [&] { glitch_left = 90; });
+            on(ev, 'G', [&] { glitch_left = 90; });
+            on(ev, 't', [&] { theme = (theme + 1) % kThemeCount; });
+            on(ev, 'T', [&] { theme = (theme + 1) % kThemeCount; });
+            on(ev, 'r', [&] { rain->reset(); });
+            on(ev, 'R', [&] { rain->reset(); });
+            on(ev, ' ', [&] { rain->jolt(); });
+            on(ev, '+', '=', [&] { speed_mul = std::min(5.0f, speed_mul + 0.25f); });
+            on(ev, '-', '_', [&] { speed_mul = std::max(0.1f, speed_mul - 0.25f); });
+
+            if (auto pos = mouse_pos(ev)) {
+                hover_col = pos->col - 1;
             }
-            if (const auto* me = std::get_if<MouseEvent>(&ev)) {
-                hover_col = me->x.value - 1;
-                if (me->kind == MouseEventKind::Press)
-                    rain->shockwave(hover_col, std::clamp(me->y.value - 1, 0, 9999));
-                if (me->button == MouseButton::ScrollUp)
-                    speed_mul = std::min(5.0f, speed_mul + 0.25f);
-                if (me->button == MouseButton::ScrollDown)
-                    speed_mul = std::max(0.1f, speed_mul - 0.25f);
+            if (mouse_clicked(ev)) {
+                auto pos = mouse_pos(ev);
+                if (pos) rain->shockwave(pos->col - 1, std::clamp(pos->row - 1, 0, 9999));
             }
+            if (scrolled_up(ev))   speed_mul = std::min(5.0f, speed_mul + 0.25f);
+            if (scrolled_down(ev)) speed_mul = std::max(0.1f, speed_mul - 0.25f);
+
             return true;
         },
 

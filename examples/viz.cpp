@@ -451,16 +451,10 @@ int main()
         },
 
         [](const Event& ev) -> bool {
-            if (const auto* ke = std::get_if<KeyEvent>(&ev)) {
-                if (const auto* ck = std::get_if<CharKey>(&ke->key)) {
-                    switch (ck->codepoint) {
-                        case 'q': case 'Q': return false;
-                        case 'p': case 'P': g_paused = !g_paused; break;
-                    }
-                }
-                if (const auto* sk = std::get_if<SpecialKey>(&ke->key))
-                    if (*sk == SpecialKey::Escape) return false;
-            }
+            if (key(ev, 'q') || key(ev, 'Q') || key(ev, SpecialKey::Escape))
+                return false;
+            on(ev, 'p', [] { g_paused = !g_paused; });
+            on(ev, 'P', [] { g_paused = !g_paused; });
             return true;
         },
 

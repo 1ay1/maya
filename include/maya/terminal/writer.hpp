@@ -353,21 +353,27 @@ private:
     // ========================================================================
 
     [[nodiscard]] auto write_all(std::string_view data) const -> Status {
-        const char* ptr = data.data();
-        auto remaining  = static_cast<ssize_t>(data.size());
+        const char* ptr  = data.data();
+        auto remaining   = static_cast<ssize_t>(data.size());
+        bool wrote_any   = false;
 
         while (remaining > 0) {
             ssize_t n = ::write(fd_, ptr, static_cast<size_t>(remaining));
             if (n < 0) {
                 if (errno == EINTR) continue;
-                // EAGAIN/EWOULDBLOCK: fd is O_NONBLOCK and buffer is full.
-                // The caller (render_frame) treats this as a frame-skip signal:
-                // it invalidates the framebuffer and schedules a full repaint
-                // for the next iteration so the terminal stays consistent.
-                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    if (!wrote_any) return err(Error::would_block()); // nothing sent — clean
+                    // Partial write: the frame included sync-start but not sync-end.
+                    // Terminals that implement BSU (DEC mode 2026) — foot, WezTerm — will
+                    // stall waiting for the end-sync marker. Send it now so they render
+                    // what they have and don't block the display for up to 100 ms.
+                    static constexpr std::string_view recovery = "\x1b[?2026l\x1b[0m";
+                    ::write(fd_, recovery.data(), recovery.size()); // best-effort
                     return err(Error::would_block());
+                }
                 return err(Error::from_errno("write"));
             }
+            wrote_any  = true;
             ptr       += n;
             remaining -= n;
         }

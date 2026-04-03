@@ -188,14 +188,6 @@ public:
             // Store theme in the context so render functions can access it.
             app.context_.set<Theme>(theme_);
 
-            // Non-blocking I/O: prevents write(2) from hanging when the PTY or
-            // SSH/mobile socket buffer fills up. read() already handles EAGAIN;
-            // write() now returns WouldBlock instead of sleeping in the kernel.
-            {
-                int flags = ::fcntl(fd, F_GETFL);
-                if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-            }
-
             // Set terminal title if provided.
             if (!title_.empty()) {
                 // OSC 0 ; title BEL
@@ -529,16 +521,18 @@ private:
             return ok();
         }
 
-        // Attempt the write. With O_NONBLOCK this returns immediately even if
-        // the PTY/SSH buffer is full (EAGAIN, zero bytes written).
         auto result = writer_->write_raw(frame);
         if (!result) {
             if (result.error().kind == ErrorKind::WouldBlock) {
-                // Buffer full — cache the frame. The event loop will add POLLOUT
-                // to its poll() mask and call write_raw(*pending_frame_) the
-                // instant the fd drains, without re-running layout or diff.
-                pending_frame_ = frame; // copy out_ before next render() clears it
-                // Do NOT commit: front_ stays as the last frame the terminal saw.
+                // Either 0 bytes (clean EAGAIN) or a partial write followed by a
+                // recovery end-sync sequence. In both cases front_ may no longer
+                // match the terminal — invalidate to force a full repaint so the
+                // next render sends every cell with absolute positioning and fixes
+                // whatever the terminal received. Do NOT commit; poll for POLLOUT
+                // so the retry fires as soon as the fd drains.
+                frame_buf_.invalidate();
+                pending_frame_.reset(); // don't cache — repaint next iteration
+                needs_render_ = true;
                 return ok();
             }
             return result;

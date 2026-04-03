@@ -311,6 +311,10 @@ private:
     // -- Rendering pipeline ---------------------------------------------------
     std::unique_ptr<Writer> writer_;
     FrameBuffer             frame_buf_;
+    // When a write returns WouldBlock we store the frame here instead of
+    // re-rendering. The event loop adds POLLOUT to its poll() mask and flushes
+    // pending_frame_ the instant the fd becomes writable — no 100ms wait.
+    std::optional<std::string> pending_frame_;
 
     // -- Configuration --------------------------------------------------------
     Theme      theme_         = theme::dark;
@@ -349,7 +353,10 @@ private:
             int nfds = 0;
 
             pfds[nfds].fd      = fd_;
-            pfds[nfds].events  = POLLIN;
+            // Include POLLOUT only when we have a cached frame waiting to be
+            // sent. This lets us flush it the instant the fd is writable
+            // without waiting for the next 100ms timeout.
+            pfds[nfds].events  = POLLIN | (pending_frame_.has_value() ? POLLOUT : 0);
             pfds[nfds].revents = 0;
             ++nfds;
 
@@ -373,6 +380,20 @@ private:
                 handle_resize();
             }
 
+            // Flush a pending frame as soon as the fd is writable again.
+            // This happens before input dispatch so a buffered frame goes out
+            // at the earliest opportunity.
+            if (pending_frame_.has_value() && (pfds[0].revents & POLLOUT)) {
+                auto result = writer_->write_raw(*pending_frame_);
+                if (result) {
+                    frame_buf_.commit();
+                    pending_frame_.reset();
+                } else if (result.error().kind != ErrorKind::WouldBlock) {
+                    return result; // real I/O error
+                }
+                // Still WouldBlock — keep pending_frame_, poll will fire again.
+            }
+
             // Read and parse stdin input.
             if (pfds[0].revents & POLLIN) {
                 MAYA_TRY_VOID(read_and_dispatch());
@@ -384,8 +405,10 @@ private:
                 dispatch_event(ev);
             }
 
-            // Render if needed (or on idle timeout for animations).
+            // Re-render if state changed. A pending frame is discarded because
+            // the fresher state from render_fn_() supersedes it.
             if (needs_render_) {
+                pending_frame_.reset();
                 MAYA_TRY_VOID(render_frame());
                 needs_render_ = false;
             }
@@ -490,49 +513,37 @@ private:
             frame_buf_.resize(w, h);
         }
 
-        // Writability check: if the output buffer is backed up (slow SSH link,
-        // mobile terminal, saturated PTY), skip this frame entirely and retry
-        // on the next poll iteration. This prevents write(2) from blocking the
-        // event loop and keeps input processing responsive.
-        {
-            struct pollfd pfd{fd_, POLLOUT, 0};
-            if (::poll(&pfd, 1, 0) == 0) {
-                needs_render_ = true;
-                return ok();
-            }
-        }
-
-        // render() returns a complete, self-contained ANSI string:
-        //   cursor-hide + sync-start + diff + SGR-reset + sync-end
-        // One call, zero intermediate allocations beyond the string itself.
+        // render() computes the ANSI diff frame without swapping front/back.
+        // commit() is called only after a confirmed successful write so that
+        // front_ always reflects what the terminal actually shows.
         frame_buf_.set_cursor_visible(false);
         const std::string& frame = frame_buf_.render(render_fn_(), theme_);
 
-        // Skip the write if nothing actually changed. A no-diff frame contains
-        // only the fixed overhead bytes (hide_cursor + sync markers + reset).
-        // Sending them anyway wastes bandwidth on every idle poll tick.
+        // Nothing changed — frame is just overhead bytes (sync markers + cursor
+        // hide + SGR reset). Commit to keep front/back in sync and skip the write.
         static constexpr std::size_t kFrameOverhead =
             ansi::hide_cursor.size() + ansi::sync_start.size() +
             ansi::reset.size()        + ansi::sync_end.size();
         if (frame.size() <= kFrameOverhead) {
-            frame_buf_.commit(); // content unchanged — commit keeps front in sync
+            frame_buf_.commit();
             return ok();
         }
 
-        // Single write(2) syscall — the terminal sees an atomic update.
+        // Attempt the write. With O_NONBLOCK this returns immediately even if
+        // the PTY/SSH buffer is full (EAGAIN, zero bytes written).
         auto result = writer_->write_raw(frame);
         if (!result) {
             if (result.error().kind == ErrorKind::WouldBlock) {
-                // EAGAIN: 0 bytes written. Do NOT commit — front_ still reflects
-                // what the terminal actually shows, so the next render() produces
-                // a correct diff without needing an expensive full invalidate.
-                needs_render_ = true;
+                // Buffer full — cache the frame. The event loop will add POLLOUT
+                // to its poll() mask and call write_raw(*pending_frame_) the
+                // instant the fd drains, without re-running layout or diff.
+                pending_frame_ = frame; // copy out_ before next render() clears it
+                // Do NOT commit: front_ stays as the last frame the terminal saw.
                 return ok();
             }
             return result;
         }
 
-        // Write succeeded — flip front/back so front_ tracks the terminal state.
         frame_buf_.commit();
         return ok();
     }

@@ -27,6 +27,7 @@ enum class ErrorKind : uint8_t {
     InvalidUtf8,        // Malformed UTF-8 input
     Unsupported,        // Feature not supported by terminal
     Signal,             // Process signal received
+    WouldBlock,         // Write would block (EAGAIN/EWOULDBLOCK) — frame skipped
 };
 
 // ============================================================================
@@ -65,6 +66,12 @@ struct Error {
         std::source_location loc = std::source_location::current()
     ) {
         return {ErrorKind::Unsupported, std::move(msg), loc};
+    }
+
+    [[nodiscard]] static Error would_block(
+        std::source_location loc = std::source_location::current()
+    ) {
+        return {ErrorKind::WouldBlock, "write would block", loc};
     }
 
     [[nodiscard]] static Error from_errno(

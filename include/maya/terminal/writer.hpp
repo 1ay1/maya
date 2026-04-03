@@ -360,6 +360,12 @@ private:
             ssize_t n = ::write(fd_, ptr, static_cast<size_t>(remaining));
             if (n < 0) {
                 if (errno == EINTR) continue;
+                // EAGAIN/EWOULDBLOCK: fd is O_NONBLOCK and buffer is full.
+                // The caller (render_frame) treats this as a frame-skip signal:
+                // it invalidates the framebuffer and schedules a full repaint
+                // for the next iteration so the terminal stays consistent.
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    return err(Error::would_block());
                 return err(Error::from_errno("write"));
             }
             ptr       += n;

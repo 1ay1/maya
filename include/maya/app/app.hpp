@@ -188,6 +188,14 @@ public:
             // Store theme in the context so render functions can access it.
             app.context_.set<Theme>(theme_);
 
+            // Non-blocking I/O: prevents write(2) from hanging when the PTY or
+            // SSH/mobile socket buffer fills up. read() already handles EAGAIN;
+            // write() now returns WouldBlock instead of sleeping in the kernel.
+            {
+                int flags = ::fcntl(fd, F_GETFL);
+                if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+            }
+
             // Set terminal title if provided.
             if (!title_.empty()) {
                 // OSC 0 ; title BEL
@@ -482,14 +490,47 @@ private:
             frame_buf_.resize(w, h);
         }
 
+        // Writability check: if the output buffer is backed up (slow SSH link,
+        // mobile terminal, saturated PTY), skip this frame entirely and retry
+        // on the next poll iteration. This prevents write(2) from blocking the
+        // event loop and keeps input processing responsive.
+        {
+            struct pollfd pfd{fd_, POLLOUT, 0};
+            if (::poll(&pfd, 1, 0) == 0) {
+                needs_render_ = true;
+                return ok();
+            }
+        }
+
         // render() returns a complete, self-contained ANSI string:
         //   cursor-hide + sync-start + diff + SGR-reset + sync-end
         // One call, zero intermediate allocations beyond the string itself.
         frame_buf_.set_cursor_visible(false);
         const std::string& frame = frame_buf_.render(render_fn_(), theme_);
 
+        // Skip the write if nothing actually changed. A no-diff frame contains
+        // only the fixed overhead bytes (hide_cursor + sync markers + reset).
+        // Sending them anyway wastes bandwidth on every idle poll tick.
+        static constexpr std::size_t kFrameOverhead =
+            ansi::hide_cursor.size() + ansi::sync_start.size() +
+            ansi::reset.size()        + ansi::sync_end.size();
+        if (frame.size() <= kFrameOverhead) return ok();
+
         // Single write(2) syscall — the terminal sees an atomic update.
-        return writer_->write_raw(frame);
+        auto result = writer_->write_raw(frame);
+        if (!result) {
+            if (result.error().kind == ErrorKind::WouldBlock) {
+                // The fd was writable when we checked above but the write still
+                // hit EAGAIN (race: buffer filled between poll and write). The
+                // frame was partially or not written — invalidate so the next
+                // render sends a full repaint rather than a broken partial diff.
+                frame_buf_.invalidate();
+                needs_render_ = true;
+                return ok();
+            }
+            return result;
+        }
+        return ok();
     }
 };
 

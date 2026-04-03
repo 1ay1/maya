@@ -15,6 +15,7 @@
 #include <vector>
 
 using namespace maya;
+using namespace maya::dsl;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -168,12 +169,13 @@ static int shown_chars(const State& st, int i) {
 }
 
 static Element build_ui(const State& st) {
+    // Dynamic content built inside dyn() — the DSL orchestrates the tree
     std::vector<Element> rows;
 
-    rows.push_back(hstack()(
-        text("\xe2\x9d\xaf ", sPrompt),
-        text(kQuery, sQuery)
-    ));
+    rows.push_back(h(
+        dyn([&] { return text("\xe2\x9d\xaf ", sPrompt); }),
+        dyn([&] { return text(kQuery, sQuery); })
+    ).build());
     rows.push_back(text(""));
 
     for (int i = 0; i <= st.phase && i < static_cast<int>(st.blocks.size()); ++i) {
@@ -204,12 +206,12 @@ static Element build_ui(const State& st) {
 
         case Kind::Tool: {
             std::string icon = done ? "\xe2\x9c\x93 " : std::string(spin(st.total_t)) + " ";
-            rows.push_back(hstack()(
-                text(icon, done ? sDone : sActive),
-                text(b.tool, sToolName),
-                text(" ", sToolArg),
-                text(vis, sToolArg)
-            ));
+            rows.push_back(h(
+                dyn([icon, done] { return text(icon, done ? sDone : sActive); }),
+                dyn([&b] { return text(b.tool, sToolName); }),
+                dyn([] { return text(" ", sToolArg); }),
+                dyn([vis] { return text(vis, sToolArg); })
+            ).build());
             rows.push_back(text(""));
             break;
         }

@@ -3,6 +3,7 @@
 #include <maya/maya.hpp>
 
 using namespace maya;
+using namespace maya::dsl;
 
 int main() {
     Signal<int> count{0};
@@ -14,10 +15,10 @@ int main() {
             return !key(ev, 'q');
         },
         [&] {
-            return vstack().padding(1)(
-                text("Counter: " + std::to_string(count.get())) | bold,
-                text("[+/-] change  [q] quit") | dim
-            );
+            return (v(
+                dyn([&] { return text("Counter: " + std::to_string(count.get()), Style{}.with_bold()); }),
+                t<"[+/-] change  [q] quit"> | Dim
+            ) | pad<1>).build();
         }
     );
 }

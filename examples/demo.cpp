@@ -4,6 +4,7 @@
 #include <string>
 
 using namespace maya;
+using namespace maya::dsl;
 
 int main() {
     Signal<int>         counter{0};
@@ -29,19 +30,25 @@ int main() {
         },
 
         [&](const Ctx& ctx) {
-            return vstack().border(BorderStyle::Round).border_color(ctx.theme.primary).padding(1)(
-                text(" maya demo ") | bold | fg(ctx.theme.primary),
-                blank(),
-                hstack().gap(2)(
-                    text("Counter:") | fg(ctx.theme.muted),
-                    text(counter.get()) | bold | fg(counter.get() >= 0
-                        ? ctx.theme.success : ctx.theme.error)
-                ),
-                blank(),
-                text(message.get()) | dim | fg(ctx.theme.muted),
-                spacer(),
-                text("[+/-] count  [r] reset  [q] quit") | dim
-            );
+            // DSL tree with dyn() for runtime content
+            return (v(
+                dyn([&] { return text(" maya demo ", Style{}.with_bold().with_fg(ctx.theme.primary)); }),
+                blank_,
+                dyn([&] {
+                    auto c = counter.get();
+                    return (h(
+                        dyn([&] { return text("Counter:", Style{}.with_fg(ctx.theme.muted)); }),
+                        dyn([&, c] {
+                            return text(std::to_string(c),
+                                Style{}.with_bold().with_fg(c >= 0 ? ctx.theme.success : ctx.theme.error));
+                        })
+                    ) | gap_<2>).build();
+                }),
+                blank_,
+                dyn([&] { return text(message.get(), Style{}.with_dim().with_fg(ctx.theme.muted)); }),
+                space,
+                t<"[+/-] count  [r] reset  [q] quit"> | Dim
+            ) | border_<Round> | pad<1>).build();
         }
     );
 }

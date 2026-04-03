@@ -220,7 +220,7 @@ void test_canvas_cells_span_size() {
     std::println("--- test_canvas_cells_span_size ---");
     StylePool pool;
     Canvas canvas(8, 4, &pool);
-    assert(canvas.cells().size() == 8 * 4);
+    assert(canvas.cell_count() == 8 * 4);
     std::println("PASS\n");
 }
 

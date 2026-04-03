@@ -1,7 +1,20 @@
 #pragma once
-// maya - A compile-time type-safe TUI library for C++26
+// maya — A compile-time type-safe TUI library for C++26
 //
 // Umbrella header. Include this single file to get the entire maya API.
+//
+// Primary API — compile-time DSL (maya::dsl):
+//
+//   using namespace maya::dsl;
+//   constexpr auto ui = v(
+//       t<"Hello"> | Bold | Fg<100, 180, 255>,
+//       h(t<"A">, t<"B"> | Dim) | border_<Round> | pad<1>
+//   );
+//   maya::print(ui.build());
+//
+// Type-state safety: impossible states are compile errors.
+// dyn() provides runtime escape hatches for dynamic content.
+//
 // Headers are ordered bottom-up: foundational types first, then styling,
 // terminal I/O, layout, elements, rendering, and finally the application
 // entry point. Each layer depends only on layers above it in this list.
@@ -48,3 +61,6 @@
 #include <maya/app/events.hpp>
 #include <maya/app/run.hpp>
 #include <maya/app/inline.hpp>
+
+// -- DSL: compile-time UI tree builder ----------------------------------------
+#include <maya/dsl.hpp>

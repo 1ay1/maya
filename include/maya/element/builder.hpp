@@ -1,20 +1,18 @@
 #pragma once
-// maya::element::builder - Declarative DSL for constructing element trees
+// maya::element::builder — Runtime element construction (internal)
 //
-// The crown jewel of the maya API. BoxBuilder provides a fluent, chainable
-// interface for assembling UI trees that reads almost like a markup language:
+// Low-level runtime builders used by maya::dsl to produce Element trees.
+// Prefer the compile-time DSL (maya/dsl.hpp) for user-facing code:
 //
-//   box().direction(Column).border(Round).padding(1)(
-//       text("Hello", bold_style | fg_red),
-//       box().direction(Row).gap(1)(
-//           text("Left"),
-//           text("Right", dim_style)
-//       )
-//   )
+//   using namespace maya::dsl;
+//   constexpr auto ui = v(
+//       t<"Hello"> | Bold | Fg<100, 180, 255>,
+//       h(t<"A">, t<"B"> | Dim) | border_<Round> | pad<1>
+//   );
+//   maya::print(ui.build());
 //
-// The trick: BoxBuilder accumulates properties via chained method calls,
-// then operator() finalizes the element by accepting children. An implicit
-// conversion to Element handles the no-children (self-closing) case.
+// These runtime functions (text(), box(), vstack(), hstack()) are retained
+// as implementation details and for use inside dyn() escape hatches.
 
 #include "element.hpp"
 

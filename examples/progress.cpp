@@ -13,6 +13,7 @@
 #include <vector>
 
 using namespace maya;
+using namespace maya::dsl;
 
 // ── Fast sin ─────────────────────────────────────────────────────────────────
 
@@ -94,7 +95,7 @@ static void advance(float dt) {
     if (g_done == kN) quit();
 }
 
-// ── Styles ───────────────────────────────────────────────────────────────────
+// ── Styles (compile-time where possible) ─────────────────────────────────────
 
 static const Style sBrand   = Style{}.with_bold().with_fg(Color::rgb(100, 180, 255));
 static const Style sWhite   = Style{}.with_bold().with_fg(Color::rgb(220, 220, 240));
@@ -112,36 +113,37 @@ static const Style sSpeed   = Style{}.with_fg(Color::rgb(140, 140, 170));
 static Element build_ui() {
     std::vector<Element> rows;
 
-    rows.push_back(hstack()(
-        text("\xe2\x9a\xa1 ", sBrand),
-        text("Installing dependencies...", sWhite)
-    ));
+    // Header — static DSL parts mixed with runtime
+    rows.push_back(h(
+        dyn([] { return text("\xe2\x9a\xa1 ", sBrand); }),
+        dyn([] { return text("Installing dependencies...", sWhite); })
+    ).build());
     rows.push_back(text(""));
 
     for (int i = 0; i < kN; ++i) {
         const auto& p = g_pkgs[i];
 
         if (!p.started) {
-            rows.push_back(hstack()(
-                text("  \xe2\x97\x8b ", sMuted),
-                text(p.name, sMuted),
-                text(" ", sMuted),
-                text(p.version, sMuted)
-            ));
+            rows.push_back(h(
+                dyn([&p] { return text("  \xe2\x97\x8b ", sMuted); }),
+                dyn([&p] { return text(p.name, sMuted); }),
+                dyn([&p] { return text(" ", sMuted); }),
+                dyn([&p] { return text(p.version, sMuted); })
+            ).build());
             continue;
         }
 
         if (p.done) {
             char sz[12];
             std::snprintf(sz, sizeof sz, "%.1f MB", static_cast<double>(p.size_mb));
-            rows.push_back(hstack()(
-                text("  \xe2\x9c\x93 ", sGreen),
-                text(p.name, sName),
-                text(" ", sDim),
-                text(p.version, sDim),
-                text("  ", sDim),
-                text(sz, sDim)
-            ));
+            rows.push_back(h(
+                dyn([] { return text("  \xe2\x9c\x93 ", sGreen); }),
+                dyn([&p] { return text(p.name, sName); }),
+                dyn([&p] { return text(" ", sDim); }),
+                dyn([&p] { return text(p.version, sDim); }),
+                dyn([] { return text("  ", sDim); }),
+                dyn([sz] { return text(sz, sDim); })
+            ).build());
             continue;
         }
 
@@ -173,16 +175,16 @@ static Element build_ui() {
         char spd_buf[16];
         std::snprintf(spd_buf, sizeof spd_buf, "%4.1f MB/s", static_cast<double>(p.dl_speed));
 
-        rows.push_back(hstack()(
-            text("  ", sDim),
-            text(std::string(spin(g_time + i * 0.3f)) + " ", sSpin),
-            text(name_buf, sName),
-            text(bar, sBar),
-            text(" ", sDim),
-            text(pct_buf, sName),
-            text("  ", sDim),
-            text(spd_buf, sSpeed)
-        ));
+        rows.push_back(h(
+            dyn([] { return text("  ", sDim); }),
+            dyn([i] { return text(std::string(spin(g_time + i * 0.3f)) + " ", sSpin); }),
+            dyn([name_buf] { return text(name_buf, sName); }),
+            dyn([bar] { return text(bar, sBar); }),
+            dyn([] { return text(" ", sDim); }),
+            dyn([pct_buf] { return text(pct_buf, sName); }),
+            dyn([] { return text("  ", sDim); }),
+            dyn([spd_buf] { return text(spd_buf, sSpeed); })
+        ).build());
     }
 
     rows.push_back(text(""));

@@ -548,14 +548,31 @@ static void paint_procs(Canvas& c, int x0, int y0, int x1, int y1) {
     int iy = y0 + 1;
     int iw = x1 - x0 - 3;
 
-    // Header
-    wstr(c, ix, iy, "PID    USER    NAME              CPU%    MEM%   VIRT    RES     STATE", g_sty.tbl_head);
+    // Fixed column offsets from ix
+    const int cPid  = 0;
+    const int cUser = 7;
+    const int cName = 15;
+    const int cCpu  = 29;
+    const int cMem  = 36;
+    const int cVirt = 43;
+    const int cRes  = 50;
+    const int cBar  = 57;   // CPU bar starts here
+
+    // Header — aligned to column offsets
+    wstr(c, ix + cPid,  iy, "PID",  g_sty.tbl_head);
+    wstr(c, ix + cUser, iy, "USER", g_sty.tbl_head);
+    wstr(c, ix + cName, iy, "NAME", g_sty.tbl_head);
+    wstr(c, ix + cCpu,  iy, "CPU%", g_sty.tbl_head);
+    wstr(c, ix + cMem,  iy, "MEM%", g_sty.tbl_head);
+    wstr(c, ix + cVirt, iy, "VIRT", g_sty.tbl_head);
+    wstr(c, ix + cRes,  iy, "RES",  g_sty.tbl_head);
+    wstr(c, ix + cBar,  iy, "LOAD", g_sty.tbl_head);
 
     // Separator
     for (int x = ix; x < ix + iw && x < x1; ++x)
         c.set(x, iy + 1, U'─', g_sty.muted);
 
-    const char* status_str[] = {"running", "sleep", "idle"};
+    const char* status_str[] = {"\xe2\x97\x8f run", "\xe2\x97\x8b slp", "\xe2\x97\x8b idl"};
 
     // Show as many processes as fit in available space
     int visible = std::min(kProcCount, y1 - iy - 2);
@@ -566,36 +583,45 @@ static void paint_procs(Canvas& c, int x0, int y0, int x1, int y1) {
 
         // Animated CPU
         float cpu = std::max(0.1f, p.base_cpu + p.base_cpu * 0.3f * fsin(g_time * (1.f + i * 0.4f)));
-
-        char buf[12];
-        int rx = ix;
-        std::snprintf(buf, sizeof buf, "%-7d", p.pid);    rx = wstr(c, rx, ry, buf, g_sty.tbl_num);
-        std::snprintf(buf, sizeof buf, "%-8s", p.user);   rx = wstr(c, rx, ry, buf, g_sty.tbl_user);
-
-        char name_buf[20];
-        std::snprintf(name_buf, sizeof name_buf, "%-18s", p.name);
-        rx = wstr(c, rx, ry, name_buf, g_sty.tbl_name);
-
-        std::snprintf(buf, sizeof buf, "%5.1f   ", cpu);
         int cpu_gi = std::clamp(static_cast<int>(cpu / 20.f * 11.f), 0, 11);
-        rx = wstr(c, rx, ry, buf, g_sty.gauge[cpu_gi]);
 
-        std::snprintf(buf, sizeof buf, "%5.1f  ", p.base_mem);
-        rx = wstr(c, rx, ry, buf, g_sty.tbl_num);
+        char buf[16];
+        std::snprintf(buf, sizeof buf, "%-7d", p.pid);
+        wstr(c, ix + cPid, ry, buf, g_sty.tbl_num);
 
-        std::snprintf(buf, sizeof buf, "%-7s ", p.virt);  rx = wstr(c, rx, ry, buf, g_sty.tbl_num);
-        std::snprintf(buf, sizeof buf, "%-7s ", p.res);   rx = wstr(c, rx, ry, buf, g_sty.tbl_num);
+        std::snprintf(buf, sizeof buf, "%-8s", p.user);
+        wstr(c, ix + cUser, ry, buf, g_sty.tbl_user);
 
-        rx = wstr(c, rx, ry, "\xe2\x97\x8f ", g_sty.dot[p.status]); // ●
-        rx = wstr(c, rx, ry, status_str[p.status], g_sty.dot[p.status]);
+        char name_buf[16];
+        std::snprintf(name_buf, sizeof name_buf, "%-14s", p.name);
+        wstr(c, ix + cName, ry, name_buf, g_sty.tbl_name);
 
-        // Mini CPU bar fills remaining width
-        rx += 1;
-        int bar_w = x1 - rx - 1;
-        if (bar_w > 2) {
-            int filled = std::clamp(static_cast<int>(cpu / 100.f * static_cast<float>(bar_w)), 0, bar_w);
-            for (int b = 0; b < bar_w; ++b)
-                c.set(rx + b, ry, b < filled ? U'━' : U'╌', b < filled ? g_sty.gauge[cpu_gi] : g_sty.muted);
+        std::snprintf(buf, sizeof buf, "%5.1f", cpu);
+        wstr(c, ix + cCpu, ry, buf, g_sty.gauge[cpu_gi]);
+
+        std::snprintf(buf, sizeof buf, "%5.1f", p.base_mem);
+        wstr(c, ix + cMem, ry, buf, g_sty.tbl_num);
+
+        std::snprintf(buf, sizeof buf, "%-6s", p.virt);
+        wstr(c, ix + cVirt, ry, buf, g_sty.tbl_num);
+
+        std::snprintf(buf, sizeof buf, "%-6s", p.res);
+        wstr(c, ix + cRes, ry, buf, g_sty.tbl_num);
+
+        // CPU bar — scales to 25% max so even low-cpu procs get visible bars
+        int bar_x = ix + cBar;
+        int bar_w = x1 - bar_x - 1;
+        if (bar_w > 4) {
+            // Status indicator in first 4 chars
+            wstr(c, bar_x, ry, status_str[p.status], g_sty.dot[p.status]);
+            int bx = bar_x + 5;
+            int bw = x1 - bx - 1;
+            if (bw > 0) {
+                float scale = std::max(15.f, cpu * 2.5f); // adaptive scale: max bar at ~40% real CPU
+                int filled = std::clamp(static_cast<int>(cpu / scale * static_cast<float>(bw)), 1, bw);
+                for (int b = 0; b < bw; ++b)
+                    c.set(bx + b, ry, b < filled ? U'━' : U'╌', b < filled ? g_sty.gauge[cpu_gi] : g_sty.muted);
+            }
         }
     }
 }

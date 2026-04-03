@@ -76,11 +76,19 @@ static Proc g_procs[] = {
     {"app",    "worker-7",      3201,  1.6f,  0.8f, "256M",  "92M", 0},
     {"root",   "containerd",    1102,  1.2f,  2.1f, "1.4G", "340M", 0},
     {"app",    "worker-3",      3198,  0.9f,  0.7f, "256M",  "88M", 1},
+    {"app",    "worker-5",      3199,  0.8f,  0.6f, "256M",  "84M", 0},
     {"root",   "systemd",          1,  0.4f,  0.5f, "168M",  "12M", 1},
+    {"root",   "dockerd",       1340,  0.6f,  1.8f, "920M", "280M", 0},
+    {"root",   "kubelet",       1401,  0.5f,  1.2f, "680M", "190M", 0},
     {"root",   "sshd",          1820,  0.1f,  0.1f,  "72M",   "8M", 1},
+    {"nobody", "dnsmasq",       1910,  0.1f,  0.1f,  "48M",   "6M", 1},
     {"root",   "cron",          1055,  0.0f,  0.3f,  "56M",   "4M", 1},
+    {"www",    "php-fpm",       2280,  1.1f,  0.9f, "320M", "110M", 0},
+    {"app",    "celery",        2410,  0.7f,  0.5f, "280M",  "96M", 1},
+    {"root",   "journald",       640,  0.2f,  0.4f, "160M",  "48M", 1},
+    {"root",   "udevd",          380,  0.0f,  0.1f,  "40M",   "4M", 1},
 };
-static constexpr int kProcCount = 10;
+static constexpr int kProcCount = 18;
 
 // ── Simulation ───────────────────────────────────────────────────────────────
 
@@ -462,16 +470,18 @@ static void paint_mem(Canvas& c, int x0, int y0, int x1, int y1) {
     std::snprintf(buf, sizeof buf, "cache  %5.1fG", g_mem_cache);
     wstr(c, ix, by + 2, buf, g_sty.spark_tx);
 
-    float free = kMemTotal - total_used;
-    std::snprintf(buf, sizeof buf, "free   %5.1fG", free);
+    float free_mem = kMemTotal - total_used;
+    std::snprintf(buf, sizeof buf, "free   %5.1fG", free_mem);
     wstr(c, ix, by + 3, buf, g_sty.muted);
 
     std::snprintf(buf, sizeof buf, "total  %5.1fG", kMemTotal);
     wstr(c, ix, by + 4, buf, g_sty.label);
 
-    // Memory sparkline
-    if (by + 6 < y1) {
-        draw_spark(c, ix, by + 6, iw, g_mem_hist, g_sty.spark_mem);
+    // Memory vertical bar chart — fill remaining space
+    int chart_top = by + 6;
+    int chart_h   = y1 - chart_top - 1;
+    if (chart_h >= 2) {
+        draw_vbar_chart(c, ix, chart_top, iw, chart_h, g_mem_hist);
     }
 }
 
@@ -547,7 +557,10 @@ static void paint_procs(Canvas& c, int x0, int y0, int x1, int y1) {
 
     const char* status_str[] = {"running", "sleep", "idle"};
 
-    for (int i = 0; i < kProcCount && iy + 2 + i < y1; ++i) {
+    // Show as many processes as fit in available space
+    int visible = std::min(kProcCount, y1 - iy - 2);
+
+    for (int i = 0; i < visible; ++i) {
         const auto& p = g_procs[i];
         int ry = iy + 2 + i;
 
@@ -574,7 +587,16 @@ static void paint_procs(Canvas& c, int x0, int y0, int x1, int y1) {
         std::snprintf(buf, sizeof buf, "%-7s ", p.res);   rx = wstr(c, rx, ry, buf, g_sty.tbl_num);
 
         rx = wstr(c, rx, ry, "\xe2\x97\x8f ", g_sty.dot[p.status]); // ●
-        wstr(c, rx, ry, status_str[p.status], g_sty.dot[p.status]);
+        rx = wstr(c, rx, ry, status_str[p.status], g_sty.dot[p.status]);
+
+        // Mini CPU bar fills remaining width
+        rx += 1;
+        int bar_w = x1 - rx - 1;
+        if (bar_w > 2) {
+            int filled = std::clamp(static_cast<int>(cpu / 100.f * static_cast<float>(bar_w)), 0, bar_w);
+            for (int b = 0; b < bar_w; ++b)
+                c.set(rx + b, ry, b < filled ? U'━' : U'╌', b < filled ? g_sty.gauge[cpu_gi] : g_sty.muted);
+        }
     }
 }
 

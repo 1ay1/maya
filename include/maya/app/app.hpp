@@ -288,6 +288,7 @@ public:
     /// Context map (mutable access for setting context values between frames).
     [[nodiscard]] ContextMap& context() noexcept { return context_; }
 
+
     // ========================================================================
     // Move-only
     // ========================================================================

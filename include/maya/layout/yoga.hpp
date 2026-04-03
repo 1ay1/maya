@@ -488,8 +488,16 @@ inline void compute_node(
             int inner_w = std::max(0, child_w - inner_horizontal(cs));
             int inner_h = std::max(0, child_h - inner_vertical(cs));
             if (!child.children.empty()) {
+                // Force the child to use the flex-resolved size, not shrink to content.
+                // Temporarily set definite dimensions so the recursive call respects them.
+                auto saved_w = cs.width;
+                auto saved_h = cs.height;
+                child.style.width  = Dimension::fixed(child_w);
+                child.style.height = Dimension::fixed(child_h);
                 compute_node(nodes, item.index, child_w, child_h, content_w, content_h);
-                // The recursive call sets computed size; use it.
+                child.style.width  = saved_w;
+                child.style.height = saved_h;
+                // Use the resolved sizes (which should match child_w/child_h now)
                 child_w = child.computed.size.width.value;
                 child_h = child.computed.size.height.value;
             } else if (child.measure) {

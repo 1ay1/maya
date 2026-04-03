@@ -41,6 +41,8 @@
 #include <maya/render/pipeline.hpp>
 #include <maya/render/frame.hpp>
 
-// -- App: context, application entry point and event loop -------------------
+// -- App: context, application entry point, event helpers, run() ------------
 #include <maya/app/context.hpp>
 #include <maya/app/app.hpp>
+#include <maya/app/events.hpp>
+#include <maya/app/run.hpp>

@@ -21,10 +21,12 @@ target_compile_features(maya INTERFACE cxx_std_26)
 
 option(MAYA_BUILD_EXAMPLES "Build example programs" ON)
 if(MAYA_BUILD_EXAMPLES)
-    add_executable(maya_demo    examples/demo.cpp)
-    add_executable(maya_counter examples/counter.cpp)
+    add_executable(maya_demo      examples/demo.cpp)
+    add_executable(maya_counter   examples/counter.cpp)
+    add_executable(maya_matrix    examples/matrix.cpp)
+    add_executable(maya_dashboard examples/dashboard.cpp)
 
-    foreach(tgt maya_demo maya_counter)
+    foreach(tgt maya_demo maya_counter maya_matrix maya_dashboard)
         target_link_libraries(${tgt} PRIVATE maya)
 
         # Maximum optimizations for the examples.

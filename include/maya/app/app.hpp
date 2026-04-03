@@ -569,6 +569,13 @@ struct CanvasConfig {
     static constexpr std::string_view kMouseOff = "\x1b[?1006l\x1b[?1003l";
     if (cfg.mouse) (void)::write(fd, kMouseOn.data(), kMouseOn.size());
 
+    // Switch fd to non-blocking so write() returns EAGAIN when the pty buffer
+    // is full rather than stalling the event loop. write_some() + pending_frame
+    // resume the BSU frame on the next POLLOUT — this is what makes the loop
+    // stay responsive on large terminals and over SSH.
+    const int orig_fl = ::fcntl(fd, F_GETFL);
+    if (orig_fl >= 0) ::fcntl(fd, F_SETFL, orig_fl | O_NONBLOCK);
+
     Writer writer{fd};
 
     Size sz;
@@ -586,16 +593,18 @@ struct CanvasConfig {
     auto frame_ns   = std::chrono::nanoseconds(1'000'000'000LL / std::max(1, cfg.fps));
     auto next_frame = Clock::now();
 
-    std::optional<std::string> pending_frame;
+    struct PendingFrame { std::string data; std::size_t offset = 0; };
+    std::optional<PendingFrame> pending_frame;
     std::string out;
     out.reserve(static_cast<std::size_t>(W * H * 12));
 
     InputParser parser;
     bool running = true;
 
-    auto cleanup = [&](Status result) -> Status {
+    auto cleanup = [&, orig_fl](Status result) -> Status {
         if (cfg.mouse) (void)::write(fd, kMouseOff.data(), kMouseOff.size());
         detail::cleanup_signal_pipe();
+        if (orig_fl >= 0) ::fcntl(fd, F_SETFL, orig_fl); // restore blocking mode
         return result;
     };
 
@@ -650,14 +659,17 @@ struct CanvasConfig {
         }
 
         if (pending_frame.has_value() && (pfds[0].revents & POLLOUT)) {
-            auto result = writer.write_raw(*pending_frame);
-            if (result) {
+            auto& pf   = *pending_frame;
+            auto  sv   = std::string_view(pf.data).substr(pf.offset);
+            auto  result = writer.write_some(sv);
+            if (!result) return cleanup(err(result.error()));
+            pf.offset += *result;
+            if (pf.offset >= pf.data.size()) {
                 std::swap(front, back);
                 back.reset_damage();
                 pending_frame.reset();
-            } else if (result.error().kind != ErrorKind::WouldBlock) {
-                return cleanup(result);
             }
+            // else: still pending, POLLOUT will fire again
         }
 
         if (pfds[0].revents & POLLIN) {
@@ -690,13 +702,12 @@ struct CanvasConfig {
                 std::swap(front, back);
                 back.reset_damage();
             } else {
-                auto result = writer.write_raw(out);
-                if (!result) {
-                    if (result.error().kind == ErrorKind::WouldBlock) {
-                        pending_frame = out;
-                    } else {
-                        return cleanup(result);
-                    }
+                auto result = writer.write_some(out);
+                if (!result) return cleanup(err(result.error()));
+                const std::size_t written = *result;
+                if (written < out.size()) {
+                    // Partial write — BSU frame is open; resume on next POLLOUT.
+                    pending_frame = PendingFrame{out, written};
                 } else {
                     std::swap(front, back);
                     back.reset_damage();

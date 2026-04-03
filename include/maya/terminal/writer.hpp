@@ -210,6 +210,29 @@ public:
         return write_all(data);
     }
 
+    /// Write as many bytes as possible without blocking.
+    /// Returns the number of bytes written (may be less than data.size() if
+    /// the fd would block). Never sends recovery sequences — the caller owns
+    /// the BSU frame and resumes it on the next POLLOUT.
+    [[nodiscard]] auto write_some(std::string_view data) const -> Result<std::size_t> {
+        if (data.empty()) return ok(std::size_t{0});
+        std::size_t total = 0;
+        const char* ptr   = data.data();
+        auto remaining    = static_cast<ssize_t>(data.size());
+        while (remaining > 0) {
+            ssize_t n = ::write(fd_, ptr, static_cast<size_t>(remaining));
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                if (errno == EAGAIN || errno == EWOULDBLOCK) break; // would block, stop
+                return err<std::size_t>(Error::from_errno("write"));
+            }
+            ptr       += n;
+            remaining -= n;
+            total     += static_cast<std::size_t>(n);
+        }
+        return ok(static_cast<std::size_t>(total));
+    }
+
 private:
     // ========================================================================
     // Peephole optimizer

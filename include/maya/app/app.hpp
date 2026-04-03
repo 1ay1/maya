@@ -599,7 +599,8 @@ struct CanvasConfig {
     out.reserve(static_cast<std::size_t>(W * H * 12));
 
     InputParser parser;
-    bool running = true;
+    bool running     = true;
+    bool needs_clear = true; // first frame must clear (alt screen may have stale content)
 
     auto cleanup = [&, orig_fl](Status result) -> Status {
         if (cfg.mouse) (void)::write(fd, kMouseOff.data(), kMouseOff.size());
@@ -616,6 +617,7 @@ struct CanvasConfig {
         back  = Canvas(W, H, &pool);
         front.mark_all_damaged();
         pending_frame.reset();
+        needs_clear = true; // terminal screen has stale content from old size
         out.reserve(static_cast<std::size_t>(W * H * 12));
     };
 
@@ -692,7 +694,18 @@ struct CanvasConfig {
 
             out.clear();
             out += ansi::sync_start;
-            diff(front, back, pool, out);
+            if (needs_clear) {
+                // After resize (or first frame), the terminal has stale content
+                // that doesn't match our front canvas. Bypass diff entirely:
+                // clear the screen and serialize every cell. This is the only
+                // way to guarantee no ghost cells — diff skips blank cells that
+                // match front, but the terminal might not actually be blank.
+                out += "\x1b[2J\x1b[H";
+                serialize(back, pool, out);
+                needs_clear = false;
+            } else {
+                diff(front, back, pool, out);
+            }
             out += ansi::reset;
             out += ansi::sync_end;
 

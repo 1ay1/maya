@@ -12,8 +12,13 @@
 // per character batch. On a typical 80x24 frame with 10% changed cells,
 // that's ~192 fewer allocations per render cycle.
 //
-// The 64-bit packed cell comparison lets us skip unchanged cells with a
-// single integer test — the innermost loop body is just a load + compare.
+// Performance critical paths (inner loop, per-cell):
+//   - Style transitions:  pre-cached SGR string from StylePool — single memcpy,
+//                          zero branches, zero Style field comparisons.
+//   - UTF-8 encoding:     batch write (one append() per character, not per byte).
+//   - Cursor positioning:  built in a stack buffer, one append() per CUP sequence.
+//   - Cell comparison:     single 64-bit integer test (packed cell representation).
+//   - Row skip:            SIMD bulk_eq (AVX-512: 8 cells/cycle, AVX2: 4, SSE2: 2).
 
 #include <cstdint>
 #include <string>
@@ -25,30 +30,73 @@
 namespace maya {
 
 // ============================================================================
-// UTF-8 encoding helper
+// UTF-8 encoding — batch write, one append() per character
 // ============================================================================
 
 namespace detail {
 
 /// Encode a Unicode code point, appending its UTF-8 bytes to `out`.
+/// Uses a stack buffer + single append() instead of per-byte operator+=.
 [[gnu::always_inline]] inline void encode_utf8(char32_t cp, std::string& out) {
     if (cp < 0x80) [[likely]] {
         out += static_cast<char>(cp);
-    } else if (cp < 0x800) {
-        out += static_cast<char>(0xC0 | (cp >> 6));
-        out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else if (cp < 0x10000) {
-        out += static_cast<char>(0xE0 | (cp >> 12));
-        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else if (cp <= 0x10FFFF) {
-        out += static_cast<char>(0xF0 | (cp >> 18));
-        out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-        out += static_cast<char>(0x80 | (cp & 0x3F));
     } else {
-        out += "\xEF\xBF\xBD";  // U+FFFD replacement character
+        char buf[4];
+        int len;
+        if (cp < 0x800) {
+            buf[0] = static_cast<char>(0xC0 | (cp >> 6));
+            buf[1] = static_cast<char>(0x80 | (cp & 0x3F));
+            len = 2;
+        } else if (cp < 0x10000) [[likely]] {
+            buf[0] = static_cast<char>(0xE0 | (cp >> 12));
+            buf[1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            buf[2] = static_cast<char>(0x80 | (cp & 0x3F));
+            len = 3;
+        } else {
+            buf[0] = static_cast<char>(0xF0 | (cp >> 18));
+            buf[1] = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            buf[2] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            buf[3] = static_cast<char>(0x80 | (cp & 0x3F));
+            len = 4;
+        }
+        out.append(buf, static_cast<std::size_t>(len));
     }
+}
+
+// ============================================================================
+// Fast cursor positioning — one append() per CUP sequence
+// ============================================================================
+// Builds \x1b[row;colH entirely in a stack buffer, then emits with a single
+// append(). Replaces 5 separate string operations with 1.
+
+[[gnu::always_inline]] inline char* write_uint_pos(char* p, unsigned n) noexcept {
+    if (n < 10) {
+        *p++ = static_cast<char>('0' + n);
+    } else if (n < 100) {
+        *p++ = static_cast<char>('0' + n / 10);
+        *p++ = static_cast<char>('0' + n % 10);
+    } else if (n < 1000) {
+        *p++ = static_cast<char>('0' + n / 100);
+        *p++ = static_cast<char>('0' + (n / 10) % 10);
+        *p++ = static_cast<char>('0' + n % 10);
+    } else {
+        *p++ = static_cast<char>('0' + n / 1000);
+        *p++ = static_cast<char>('0' + (n / 100) % 10);
+        *p++ = static_cast<char>('0' + (n / 10) % 10);
+        *p++ = static_cast<char>('0' + n % 10);
+    }
+    return p;
+}
+
+[[gnu::always_inline]] inline void write_cup(std::string& out, int col, int row) {
+    char buf[16]; // max: \x1b[9999;9999H = 15 chars
+    char* p = buf;
+    *p++ = '\x1b'; *p++ = '[';
+    p = write_uint_pos(p, static_cast<unsigned>(row));
+    *p++ = ';';
+    p = write_uint_pos(p, static_cast<unsigned>(col));
+    *p++ = 'H';
+    out.append(buf, static_cast<std::size_t>(p - buf));
 }
 
 } // namespace detail
@@ -56,16 +104,6 @@ namespace detail {
 // ============================================================================
 // diff - Compare two canvases; write ANSI update stream directly to `out`
 // ============================================================================
-// Algorithm:
-//   1. Determine the effective damage region from the back canvas.
-//   2. Iterate row-by-row, column-by-column.
-//   3. Fast-path skip: if packed 64-bit values match, continue (no branch taken).
-//   4. Emit cursor move only when not at the expected position (zero-alloc).
-//   5. Emit style transition only when style changes (zero-alloc).
-//   6. Write character bytes directly into `out`.
-//
-// All ANSI sequences are written with write_move_to() / apply_to() /
-// transition_to() — none of them allocate heap memory.
 
 inline void diff(
     const Canvas& old_canvas,
@@ -89,10 +127,10 @@ inline void diff(
 
     if (x0 >= x1 || y0 >= y1) [[unlikely]] return;
 
-    // Cursor and style state (unknown / sentinel at start).
-    int      cursor_x        = -1;
-    int      cursor_y        = -1;
-    uint16_t current_style   = UINT16_MAX;  // sentinel: no style written yet
+    // Cursor and style state (unknown at start).
+    int      cursor_x      = -1;
+    int      cursor_y      = -1;
+    uint16_t current_style = UINT16_MAX; // sentinel: no style written yet
 
     const bool size_changed = (old_canvas.width() != width || old_canvas.height() != height);
     const uint64_t blank    = Cell{}.pack();
@@ -109,9 +147,6 @@ inline void diff(
         const bool old_row_valid = !size_changed && y < old_h;
 
         // ── Level-1 SIMD skip: entire unchanged row ──────────────────────
-        // bulk_eq compares all cells in one AVX2/SSE2/NEON pass (4 cells/cycle).
-        // Most rows in a quiescent TUI are completely unchanged — this skips
-        // the inner loop entirely for them.
         if (old_row_valid && old_w == width && x0 == 0 && x1 == width) [[likely]] {
             if (simd::bulk_eq(new_cells + new_row_base, old_cells + old_row_base,
                               static_cast<std::size_t>(width)))
@@ -119,14 +154,9 @@ inline void diff(
         }
 
         // ── Level-2 SIMD skip: within-row unchanged runs ─────────────────
-        // find_first_diff() jumps ahead to the next changed cell without
-        // touching the intermediate cells at all. For rows with sparse
-        // changes (e.g. a blinking cursor), this skips the bulk unchanged
-        // prefix and suffix in O(N/4) instead of O(N).
         auto x  = static_cast<std::size_t>(x0);
         const auto xe = static_cast<std::size_t>(x1);
 
-        // How many cells from old canvas are available on this row?
         const auto old_xe = old_row_valid
                           ? std::min(xe, static_cast<std::size_t>(old_w))
                           : static_cast<std::size_t>(0);
@@ -140,11 +170,7 @@ inline void diff(
                     old_cells + old_row_base + x,
                     avail);
                 x += skip;
-                // If we've exhausted the old-canvas coverage for this row,
-                // continue into the scalar section for the remaining new cells.
                 if (x >= xe) break;
-                // If SIMD only advanced into cells beyond old coverage, fall
-                // through to the per-cell check below.
             }
 
             const uint64_t new_packed = new_cells[new_row_base + x];
@@ -159,27 +185,21 @@ inline void diff(
             // Wide-char second-half: the first-half write already covers it.
             if (cell.width == 2) [[unlikely]] { ++x; continue; }
 
-            // Cursor positioning (zero-alloc).
+            // Cursor positioning — single append via stack buffer.
             const int cx = static_cast<int>(x);
             if (cursor_x != cx || cursor_y != y) {
-                ansi::write_move_to(out, cx + 1, y + 1);
+                detail::write_cup(out, cx + 1, y + 1);
                 cursor_x = cx;
                 cursor_y = y;
             }
 
-            // Style transition (zero-alloc).
+            // Style transition — pre-cached SGR, single memcpy.
             if (cell.style_id != current_style) {
-                const Style& new_style = pool.get(cell.style_id);
-                if (current_style == UINT16_MAX) [[unlikely]] {
-                    out += ansi::reset;
-                    ansi::StyleApplier::apply_to(new_style, out);
-                } else {
-                    ansi::StyleApplier::transition_to(
-                        pool.get(current_style), new_style, out);
-                }
+                out.append(pool.sgr(cell.style_id));
                 current_style = cell.style_id;
             }
 
+            // Character — batch UTF-8 encoding.
             detail::encode_utf8(cell.character, out);
             cursor_x += (cell.width == 1) ? 2 : 1;
             ++x;

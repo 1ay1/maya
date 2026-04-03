@@ -18,6 +18,33 @@
 
 using namespace maya;
 
+// ── Fast math (polynomial approximations) ────────────────────────────────────
+
+// ~5× faster than sinf(). Max error ~0.001. Bhaskara I-style with refinement.
+inline float fast_sin(float x) noexcept {
+    constexpr float tp = 1.f / (2.f * 3.14159265f);
+    x *= tp;
+    x -= 0.25f + floorf(x + 0.25f);
+    x *= 16.f * (fabsf(x) - 0.5f);
+    x += 0.225f * x * (fabsf(x) - 1.f);
+    return x;
+}
+
+inline float fast_cos(float x) noexcept {
+    return fast_sin(x + 1.5707963f);
+}
+
+// Fast inverse sqrt (Quake III style, one Newton-Raphson iteration).
+// Then multiply by x to get sqrt. Avoids sqrtf() entirely.
+inline float fast_sqrt(float x) noexcept {
+    if (x <= 0.f) return 0.f;
+    union { float f; uint32_t i; } u = {x};
+    u.i = 0x5f375a86u - (u.i >> 1);
+    float y = u.f;
+    y *= 1.5f - 0.5f * x * y * y; // Newton-Raphson
+    return x * y;
+}
+
 // ── Braille dot-to-bit table ─────────────────────────────────────────────────
 //
 // Unicode 8-dot braille U+2800–U+28FF encodes 8 dots as 8 bits:
@@ -36,7 +63,7 @@ static constexpr uint8_t kBit[4][2] = {
 
 // ── Signal data ───────────────────────────────────────────────────────────────
 
-static constexpr int kHistLen = 320;
+static int g_hist_len = 320; // tracks chart pixel width — updated on resize
 
 struct SigData {
     const char* name;
@@ -156,7 +183,7 @@ static void tick(float dt) {
         tgt[i]  = std::clamp(0.15f + 0.7f * (0.5f + 0.5f * sinf(ph[i])), 0.04f, 0.96f);
         g_sig[i].val = g_sig[i].val * 0.87f + tgt[i] * 0.13f;
         g_sig[i].hist.push_back(g_sig[i].val);
-        if (static_cast<int>(g_sig[i].hist.size()) > kHistLen)
+        while (static_cast<int>(g_sig[i].hist.size()) > g_hist_len)
             g_sig[i].hist.pop_front();
     }
 }
@@ -165,56 +192,64 @@ static void tick(float dt) {
 //
 // Plots one signal as a filled area chart in the canvas region [x0,x1) × [y0,y1).
 // Each terminal cell holds one braille char (2 px wide × 4 px tall).
-// The area below the curve is filled with braille dots; the gradient fades
-// from bright at the curve line to dim at the bottom.
+//
+// Instead of iterating per-pixel-row to set individual bits (O(PW × fill_height)),
+// we compute the fill mask per char-cell in O(1) via a lookup table. Each cell's
+// two pixel columns have a curve threshold; the table maps threshold → bit mask.
+//
+//   threshold 0: all 4 dot rows set    threshold 3: only bottom dot
+//   threshold 1: bottom 3 dots         threshold 4: nothing
+//   threshold 2: bottom 2 dots
+
+// Fill-mask LUT: kFill[column][threshold] → braille bits for that column.
+// Left column encodes bits 0x01,0x02,0x04,0x08; right encodes 0x10,0x20,0x40,0x80.
+static constexpr uint8_t kFill[2][5] = {
+    {0x0F, 0x0E, 0x0C, 0x08, 0x00},  // left  (dc=0)
+    {0xF0, 0xE0, 0xC0, 0x80, 0x00},  // right (dc=1)
+};
 
 static void paint_chart(Canvas& canvas, int si, int x0, int y0, int x1, int y1)
 {
-    const int CW = x1 - x0;   // chars wide
-    const int CH = y1 - y0;   // chars tall
+    const int CW = x1 - x0;
+    const int CH = y1 - y0;
     if (CW <= 0 || CH <= 0) return;
-    const int PW = CW * 2;    // pixel columns (2 dots per char-col)
-    const int PH = CH * 4;    // pixel rows    (4 dots per char-row)
+    const int PW = CW * 2;
+    const int PH = CH * 4;
 
-    const auto& hist  = g_sig[si].hist;
-    const int   hlen  = static_cast<int>(hist.size());
+    const auto& hist = g_sig[si].hist;
+    const int   hlen = static_cast<int>(hist.size());
 
-    std::vector<uint8_t> bits(CW * CH, 0);
-    std::vector<int>     curve_py(PW, -1);  // curve pixel-row per pixel-column
-
+    // Phase 1: compute curve pixel-row for each pixel-column.
+    // Reuse a static buffer to avoid per-frame heap allocation.
+    static thread_local std::vector<int> cpy;
+    cpy.resize(static_cast<std::size_t>(PW));
     for (int px = 0; px < PW; ++px) {
         const int di = hlen - PW + px;
-        if (di < 0 || di >= hlen) continue;
-
-        const float v  = std::clamp(hist[di], 0.f, 1.f);
-        const int   py = static_cast<int>((1.f - v) * (PH - 1)); // 0=top
-        curve_py[px] = py;
-
-        // Fill all dots from the curve down to the bottom
-        for (int row = py; row < PH; ++row) {
-            const int cy = row / 4, dr = row % 4;
-            const int cx = px  / 2, dc = px  % 2;
-            if (cy < CH) bits[cy * CW + cx] |= kBit[dr][dc];
-        }
+        if (di < 0 || di >= hlen) { cpy[px] = PH; continue; }
+        cpy[px] = static_cast<int>((1.f - std::clamp(hist[di], 0.f, 1.f)) * (PH - 1));
     }
 
+    // Phase 2: per char-cell — LUT fill mask, gradient depth, canvas write.
+    // O(CW × CH) with constant work per cell (two table lookups + one canvas write).
     for (int cy = 0; cy < CH; ++cy) {
+        const int row_top = cy * 4;
         for (int cx = 0; cx < CW; ++cx) {
-            const uint8_t mask = bits[cy * CW + cx];
+            const int px0 = cx * 2;
+            const int px1 = px0 + 1;
+
+            const int c0 = cpy[px0];
+            const int c1 = (px1 < PW) ? cpy[px1] : PH;
+
+            const int t0 = std::clamp(c0 - row_top, 0, 4);
+            const int t1 = std::clamp(c1 - row_top, 0, 4);
+
+            const uint8_t mask = kFill[0][t0] | kFill[1][t1];
             if (!mask) continue;
 
-            // Nearest curve_py within this char's two pixel-columns
-            int min_curve = cy * 4 + 4;
-            for (int dc = 0; dc < 2; ++dc) {
-                const int px = cx * 2 + dc;
-                if (px < PW && curve_py[px] >= 0)
-                    min_curve = std::min(min_curve, curve_py[px]);
-            }
-
-            // Depth: pixel rows between this char's top and the nearest curve
-            const int   depth = std::max(0, cy * 4 - min_curve);
-            const float t     = std::min(static_cast<float>(depth) / static_cast<float>(PH), 1.f);
-            const int   grad  = static_cast<int>(t * t * (kGrad - 1));
+            const int   min_c = std::min(c0, c1);
+            const int   depth = std::max(0, row_top - min_c);
+            const float tf    = std::min(static_cast<float>(depth) / static_cast<float>(PH), 1.f);
+            const int   grad  = static_cast<int>(tf * tf * (kGrad - 1));
 
             canvas.set(x0 + cx, y0 + cy,
                        static_cast<char32_t>(0x2800u + mask),
@@ -240,38 +275,42 @@ static void paint_heatmap(Canvas& canvas, int x0, int y0, int x1, int y1)
     const float PH = static_cast<float>(CH * 2);
     const float kN = static_cast<float>(kHeat - 1);
 
-    struct Src { float x, y, k, w; };
+    // Precompute per-source constants (hoisted from inner loop).
+    struct Src { float x, y, k, wt; }; // wt = w * g_time (precomputed)
 
-    // Four corner sources + one roaming central source
     const Src srcs[5] = {
-        {0.12f * W, 0.14f * PH, 0.29f, 2.15f},
-        {0.88f * W, 0.18f * PH, 0.23f, 1.85f},
-        {0.14f * W, 0.86f * PH, 0.27f, 2.55f},
-        {0.86f * W, 0.84f * PH, 0.25f, 1.95f},
-        {W  * (0.5f + 0.22f * sinf(g_time * 0.37f)),
-         PH * (0.5f + 0.19f * cosf(g_time * 0.28f)),
-         0.34f, 3.1f},
+        {0.12f * W, 0.14f * PH, 0.29f, 2.15f * g_time},
+        {0.88f * W, 0.18f * PH, 0.23f, 1.85f * g_time},
+        {0.14f * W, 0.86f * PH, 0.27f, 2.55f * g_time},
+        {0.86f * W, 0.84f * PH, 0.25f, 1.95f * g_time},
+        {W  * (0.5f + 0.22f * fast_sin(g_time * 0.37f)),
+         PH * (0.5f + 0.19f * fast_cos(g_time * 0.28f)),
+         0.34f, 3.1f * g_time},
     };
 
-    // Aspect-ratio correction: terminal cells are ~2× taller than wide
-    const float ar = (W / PH) * 1.6f;
+    // Aspect-ratio correction squared (avoid sqrt of sum, apply before sqrt).
+    const float ar2 = ((W / PH) * 1.6f) * ((W / PH) * 1.6f);
 
     for (int cy = 0; cy < CH; ++cy) {
+        const float py0 = static_cast<float>(cy * 2) + 0.5f;
+        const float py1 = py0 + 1.f;
         for (int cx = 0; cx < CW; ++cx) {
-            float v[2];
-            for (int off = 0; off < 2; ++off) {
-                const float px = static_cast<float>(cx) + 0.5f;
-                const float py = static_cast<float>(cy * 2 + off) + 0.5f;
-                float s = 0.f;
-                for (const auto& src : srcs) {
-                    const float dx = px - src.x;
-                    const float dy = (py - src.y) * ar;
-                    s += sinf(src.k * sqrtf(dx*dx + dy*dy) - src.w * g_time);
-                }
-                v[off] = std::clamp(s / 5.f * 0.62f + 0.5f, 0.f, 1.f);
+            const float px = static_cast<float>(cx) + 0.5f;
+            float s0 = 0.f, s1 = 0.f;
+            for (const auto& src : srcs) {
+                const float dx  = px - src.x;
+                const float dx2 = dx * dx;
+                const float dy0 = py0 - src.y;
+                const float dy1 = py1 - src.y;
+                const float d0  = fast_sqrt(dx2 + dy0 * dy0 * ar2);
+                const float d1  = fast_sqrt(dx2 + dy1 * dy1 * ar2);
+                s0 += fast_sin(src.k * d0 - src.wt);
+                s1 += fast_sin(src.k * d1 - src.wt);
             }
-            const int fi = std::clamp(static_cast<int>(v[0] * kN), 0, kHeat - 1);
-            const int bi = std::clamp(static_cast<int>(v[1] * kN), 0, kHeat - 1);
+            const float v0 = std::clamp(s0 * 0.124f + 0.5f, 0.f, 1.f); // 0.62/5
+            const float v1 = std::clamp(s1 * 0.124f + 0.5f, 0.f, 1.f);
+            const int fi = static_cast<int>(v0 * kN);
+            const int bi = static_cast<int>(v1 * kN);
             canvas.set(x0 + cx, y0 + cy, U'\u2580', g_sty.heat[fi][bi]);
         }
     }
@@ -393,7 +432,7 @@ int main()
     for (int i = 0; i < 3; ++i) {
         float ph = static_cast<float>(i) * 2.09f;
         float v  = g_sig[i].val;
-        for (int j = 0; j < kHistLen / 2; ++j) {
+        for (int j = 0; j < g_hist_len / 2; ++j) {
             ph += 0.09f;
             v   = v * 0.9f + (0.15f + 0.7f * (0.5f + 0.5f * sinf(ph))) * 0.1f;
             g_sig[i].hist.push_back(v);
@@ -404,8 +443,11 @@ int main()
     auto result = canvas_run(
         CanvasConfig{.fps = 60, .title = "signals · maya"},
 
-        [](StylePool& pool, int, int) {
+        [](StylePool& pool, int w, int) {
             build_styles(pool);
+            // Chart pixel width = (div_x - label_width) * 2 dots per cell
+            const int div_x = std::max(28, w * 6 / 10);
+            g_hist_len = std::max(64, (div_x - 6) * 2);
         },
 
         [](const Event& ev) -> bool {

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "../core/types.hpp"
+#include "../core/simd.hpp"
 #include "../style/style.hpp"
 #include "../element/text.hpp"
 
@@ -87,7 +88,7 @@ public:
             capacity_ = count;
         }
         size_ = count;
-        std::fill(data_, data_ + count, value);
+        simd::streaming_fill(data_, count, value);
     }
 
     [[nodiscard]] uint64_t* data() noexcept { return data_; }
@@ -184,7 +185,9 @@ class StylePool {
 public:
     StylePool() {
         styles_.reserve(64);
+        sgr_cache_.reserve(64);
         styles_.emplace_back();  // ID 0 = default (empty) style
+        sgr_cache_.push_back(build_sgr(styles_[0]));
         grow(64);
         // Insert the default style into the map.
         insert_slot(hash_style(styles_[0]), 0);
@@ -203,6 +206,7 @@ public:
                 // Empty slot — insert new style.
                 auto id = static_cast<uint16_t>(styles_.size());
                 styles_.push_back(s);
+                sgr_cache_.push_back(build_sgr(s));
                 slot = {h, id};
                 ++size_;
                 if (size_ * 4 > capacity_ * 3) [[unlikely]] {
@@ -222,12 +226,20 @@ public:
         return styles_[id];
     }
 
+    /// Pre-built SGR escape sequence for a style ID.
+    /// Each string is a complete "\x1b[0;...m" that resets then applies — the diff
+    /// loop calls this once per style change instead of computing transitions.
+    [[gnu::always_inline]] [[nodiscard]] std::string_view sgr(uint16_t id) const noexcept {
+        return sgr_cache_[id];
+    }
+
     /// Number of interned styles.
     [[nodiscard]] std::size_t size() const noexcept { return styles_.size(); }
 
     /// Reset the pool back to only the default style.
     void clear() {
         styles_.resize(1);
+        sgr_cache_.resize(1);
         size_ = 1;
         std::fill(slots_.begin(), slots_.end(), Slot{});
         insert_slot(hash_style(styles_[0]), 0);
@@ -239,11 +251,74 @@ private:
         uint16_t    id   = 0;
     };
 
-    std::vector<Style> styles_;
-    std::vector<Slot>  slots_;
+    std::vector<Style>       styles_;
+    std::vector<std::string> sgr_cache_;  // sgr_cache_[id] = pre-built "\x1b[0;...m"
+    std::vector<Slot>        slots_;
     std::size_t size_     = 0;
     std::size_t capacity_ = 0;
     std::size_t mask_     = 0;
+
+    // ── SGR cache builder ────────────────────────────────────────────────
+    // Builds the complete ANSI SGR escape sequence for a style, including
+    // an implicit reset (parameter 0). The diff loop emits this verbatim
+    // instead of computing style transitions at runtime.
+    //
+    // Format: \x1b[0{;attr}*{;fg}{;bg}m
+    // Max:    \x1b[0;1;2;3;4;7;9;38;2;255;255;255;48;2;255;255;255m  (~50 bytes)
+
+    static char* write_uint_sgr(char* p, unsigned n) noexcept {
+        if (n < 10) {
+            *p++ = static_cast<char>('0' + n);
+        } else if (n < 100) {
+            *p++ = static_cast<char>('0' + n / 10);
+            *p++ = static_cast<char>('0' + n % 10);
+        } else {
+            *p++ = static_cast<char>('0' + n / 100);
+            *p++ = static_cast<char>('0' + (n / 10) % 10);
+            *p++ = static_cast<char>('0' + n % 10);
+        }
+        return p;
+    }
+
+    static char* append_color_sgr(char* p, const Color& c, bool is_fg) noexcept {
+        switch (c.kind()) {
+            case Color::Kind::Named: {
+                int base = is_fg ? 30 : 40;
+                int code = c.r() < 8 ? base + c.r() : (base + 60) + (c.r() - 8);
+                return write_uint_sgr(p, static_cast<unsigned>(code));
+            }
+            case Color::Kind::Indexed:
+                if (is_fg) { *p++='3'; *p++='8'; } else { *p++='4'; *p++='8'; }
+                *p++ = ';'; *p++ = '5'; *p++ = ';';
+                return write_uint_sgr(p, c.r());
+            case Color::Kind::Rgb:
+                if (is_fg) { *p++='3'; *p++='8'; } else { *p++='4'; *p++='8'; }
+                *p++ = ';'; *p++ = '2'; *p++ = ';';
+                p = write_uint_sgr(p, c.r()); *p++ = ';';
+                p = write_uint_sgr(p, c.g()); *p++ = ';';
+                return write_uint_sgr(p, c.b());
+        }
+        __builtin_unreachable();
+    }
+
+    static std::string build_sgr(const Style& s) {
+        char buf[64];
+        char* p = buf;
+        *p++ = '\x1b'; *p++ = '['; *p++ = '0';
+
+        if (s.bold)          { *p++ = ';'; *p++ = '1'; }
+        if (s.dim)           { *p++ = ';'; *p++ = '2'; }
+        if (s.italic)        { *p++ = ';'; *p++ = '3'; }
+        if (s.underline)     { *p++ = ';'; *p++ = '4'; }
+        if (s.inverse)       { *p++ = ';'; *p++ = '7'; }
+        if (s.strikethrough) { *p++ = ';'; *p++ = '9'; }
+
+        if (s.fg.has_value()) { *p++ = ';'; p = append_color_sgr(p, *s.fg, true); }
+        if (s.bg.has_value()) { *p++ = ';'; p = append_color_sgr(p, *s.bg, false); }
+
+        *p++ = 'm';
+        return {buf, static_cast<std::size_t>(p - buf)};
+    }
 
     /// FNV-1a hash over the style's packed representation.
     [[nodiscard]] static std::size_t hash_style(const Style& s) noexcept {
@@ -407,7 +482,7 @@ public:
     /// Reset all cells to space with the default style. Clears damage.
     void clear() {
         uint64_t blank = default_cell();
-        std::fill(cells_.begin(), cells_.end(), blank);
+        simd::streaming_fill(cells_.data(), cells_.size(), blank);
         damage_ = full_rect();
     }
 

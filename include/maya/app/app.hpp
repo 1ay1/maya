@@ -250,6 +250,9 @@ public:
         running_ = false;
     }
 
+    /// Set continuous rendering at the given frame rate (0 = event-driven).
+    void set_fps(int fps) { fps_ = fps; }
+
     // ========================================================================
     // Event handlers
     // ========================================================================
@@ -323,6 +326,7 @@ private:
     // -- Configuration --------------------------------------------------------
     Theme      theme_         = theme::dark;
     bool       mouse_enabled_ = false;
+    int        fps_           = 0;   // 0 = event-driven, >0 = continuous
     ContextMap context_;
     Size       size_{};
 
@@ -349,9 +353,18 @@ private:
     // 8. Handle SIGWINCH for resize via self-pipe
 
     auto event_loop() -> Status {
-        constexpr int poll_timeout_ms = 100;
+        using Clock = std::chrono::steady_clock;
+        auto next_frame = Clock::now();
 
         while (running_) {
+            // Compute poll timeout: fps-driven or 100ms idle.
+            int poll_timeout_ms = 100;
+            if (fps_ > 0) {
+                auto now = Clock::now();
+                auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(next_frame - now);
+                poll_timeout_ms = std::max(0, static_cast<int>(wait.count()));
+            }
+
             struct pollfd pfds[2];
             int nfds = 0;
 
@@ -386,6 +399,15 @@ private:
             auto timeout_events = parser_.flush_timeout();
             for (auto& ev : timeout_events) {
                 dispatch_event(ev);
+            }
+
+            // fps-driven: always re-render when the frame deadline has passed.
+            if (fps_ > 0 && Clock::now() >= next_frame) {
+                needs_render_ = true;
+                next_frame += std::chrono::microseconds(1'000'000 / fps_);
+                // Don't let the frame deadline drift too far behind.
+                if (Clock::now() > next_frame)
+                    next_frame = Clock::now();
             }
 
             if (needs_render_) {

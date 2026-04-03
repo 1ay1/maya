@@ -297,6 +297,9 @@ inline void compute_node(
     int main_avail  = row ? content_w : content_h;
     int cross_avail = row ? content_h : content_w;
 
+    // Whether the main dimension is definite (explicit or from flex-grow override).
+    bool main_definite = row ? (def_w >= 0) : (def_h >= 0);
+
     // ------------------------------------------------------------------
     // 3a. Collect visible children and compute their hypothetical main size
     // ------------------------------------------------------------------
@@ -402,8 +405,10 @@ inline void compute_node(
 
         int free_space = main_avail - total_hypo - total_gap;
 
-        if (free_space > 0) {
-            // Distribute positive free space via flex_grow
+        if (free_space > 0 && main_definite) {
+            // Distribute positive free space via flex_grow.
+            // Only when the main axis is definite — auto-sized containers
+            // shrink-wrap to content and have no free space to distribute.
             float total_grow = 0.0f;
             for (auto& it : line.items) {
                 total_grow += nodes[it.index].style.flex_grow;
@@ -430,7 +435,7 @@ inline void compute_node(
                     }
                 }
             }
-        } else if (free_space < 0) {
+        } else if (free_space < 0 && main_definite) {
             // Shrink overflowing items via flex_shrink
             float total_shrink_weighted = 0.0f;
             for (auto& it : line.items) {
@@ -489,15 +494,23 @@ inline void compute_node(
             int inner_h = std::max(0, child_h - inner_vertical(cs));
             if (!child.children.empty()) {
                 // Force the child to use the flex-resolved size, not shrink to content.
-                // Temporarily set definite dimensions so the recursive call respects them.
+                // Only fix the cross axis when the PARENT's cross dimension is definite;
+                // otherwise leave it auto so the child computes content-based cross size.
+                bool cross_definite = row ? (def_h >= 0) : (def_w >= 0);
                 auto saved_w = cs.width;
                 auto saved_h = cs.height;
-                child.style.width  = Dimension::fixed(child_w);
-                child.style.height = Dimension::fixed(child_h);
+                if (row) {
+                    child.style.width = Dimension::fixed(child_w);
+                    if (cross_definite || !saved_h.is_auto())
+                        child.style.height = Dimension::fixed(child_h);
+                } else {
+                    child.style.height = Dimension::fixed(child_h);
+                    if (cross_definite || !saved_w.is_auto())
+                        child.style.width = Dimension::fixed(child_w);
+                }
                 compute_node(nodes, item.index, child_w, child_h, content_w, content_h);
                 child.style.width  = saved_w;
                 child.style.height = saved_h;
-                // Use the resolved sizes (which should match child_w/child_h now)
                 child_w = child.computed.size.width.value;
                 child_h = child.computed.size.height.value;
             } else if (child.measure) {
@@ -530,6 +543,13 @@ inline void compute_node(
             if (i + 1 < line.items.size()) lm += style.gap;
         }
         line.main_size = lm;
+    }
+
+    // For single-line containers with a definite cross dimension, the
+    // line's cross size spans the full available cross space (CSS §9.4).
+    bool cross_definite_for_line = row ? (def_h >= 0) : (def_w >= 0);
+    if (lines.size() == 1 && cross_definite_for_line) {
+        lines[0].cross_size = std::max(lines[0].cross_size, cross_avail);
     }
 
     // ------------------------------------------------------------------

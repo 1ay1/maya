@@ -562,7 +562,7 @@ int main() {
     }
 
     run(
-        {.title = "dashboard \xc2\xb7 maya"},
+        {.title = "dashboard \xc2\xb7 maya", .fps = 30},
 
         [&](const Event& ev) {
             if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;

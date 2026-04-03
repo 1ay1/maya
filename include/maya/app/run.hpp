@@ -42,6 +42,7 @@ namespace maya {
 
 struct RunConfig {
     std::string_view title      = "";         ///< Terminal window title (OSC 0)
+    int              fps        = 0;          ///< Continuous rendering at N fps (0 = event-driven only)
     bool             mouse      = false;      ///< Enable mouse event reporting
     bool             alt_screen = true;       ///< Use the alternate screen buffer
     Theme            theme      = theme::dark;///< Colour theme for the app
@@ -122,6 +123,7 @@ void run_impl(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn)
     }
 
     auto app = std::move(*result);
+    if (cfg.fps > 0) app.set_fps(cfg.fps);
 
     // Keep a live Ctx updated on resize.
     Ctx ctx{app.size(), app.theme()};

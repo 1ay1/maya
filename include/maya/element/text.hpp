@@ -37,34 +37,33 @@ enum class TextWrap : uint8_t {
 
 /// Returns true if the Unicode code point is a wide character (CJK, etc.)
 /// that occupies two terminal columns.
+/// Ranges match the East Asian Width property (W=Wide, F=Fullwidth) from
+/// Unicode, aligned with the reference implementation in Claude Code ($N1).
 [[nodiscard]] constexpr bool is_wide_char(char32_t cp) noexcept {
-    // CJK Unified Ideographs
-    if (cp >= 0x4E00  && cp <= 0x9FFF)  return true;
-    // CJK Unified Ideographs Extension A
-    if (cp >= 0x3400  && cp <= 0x4DBF)  return true;
-    // CJK Unified Ideographs Extension B+
-    if (cp >= 0x20000 && cp <= 0x2FA1F) return true;
-    // CJK Compatibility Ideographs
-    if (cp >= 0xF900  && cp <= 0xFAFF)  return true;
+    // Hangul Jamo (leading consonants) — wide in most terminals
+    if (cp >= 0x1100  && cp <= 0x115F)  return true;
+    // CJK Radicals Supplement, Kangxi Radicals, Ideographic Description,
+    // CJK Symbols & Punct, Hiragana, Katakana, Bopomofo, Hangul Compat Jamo,
+    // Kanbun, Bopomofo Extended, CJK Strokes (U+2E80-U+3247)
+    if (cp >= 0x2E80  && cp <= 0x3247)  return true;
+    // CJK angle brackets
+    if (cp == 0x2329 || cp == 0x232A)   return true;
+    // CJK Compat, Extension A, Yijing (U+3250-U+4DBF)
+    if (cp >= 0x3250  && cp <= 0x4DBF)  return true;
+    // CJK Unified Ideographs, Yi Syllables/Radicals (U+4E00-U+A4C6)
+    if (cp >= 0x4E00  && cp <= 0xA4C6)  return true;
     // Hangul Syllables
     if (cp >= 0xAC00  && cp <= 0xD7AF)  return true;
-    // Fullwidth Forms
+    // CJK Compatibility Ideographs
+    if (cp >= 0xF900  && cp <= 0xFAFF)  return true;
+    // Fullwidth Latin, Greek, Cyrillic, etc.
     if (cp >= 0xFF01  && cp <= 0xFF60)  return true;
+    // Fullwidth currency and other signs
     if (cp >= 0xFFE0  && cp <= 0xFFE6)  return true;
-    // CJK Radicals Supplement, Kangxi Radicals
-    if (cp >= 0x2E80  && cp <= 0x2FDF)  return true;
-    // CJK Symbols and Punctuation, Hiragana, Katakana
-    if (cp >= 0x3000  && cp <= 0x303F)  return true;
-    if (cp >= 0x3040  && cp <= 0x309F)  return true;
-    if (cp >= 0x30A0  && cp <= 0x30FF)  return true;
-    // Katakana Phonetic Extensions
-    if (cp >= 0x31F0  && cp <= 0x31FF)  return true;
-    // Enclosed CJK Letters and Months
-    if (cp >= 0x3200  && cp <= 0x32FF)  return true;
-    // CJK Compatibility
-    if (cp >= 0x3300  && cp <= 0x33FF)  return true;
-    // Bopomofo
-    if (cp >= 0x3100  && cp <= 0x312F)  return true;
+    // Enclosed Ideographic Supplement
+    if (cp >= 0x1F200 && cp <= 0x1F251) return true;
+    // CJK Unified Ideographs Extension B through end of TIP (U+20000-U+3FFFD)
+    if (cp >= 0x20000 && cp <= 0x3FFFD) return true;
     return false;
 }
 
@@ -108,9 +107,11 @@ enum class TextWrap : uint8_t {
     while (pos < text.size()) {
         char32_t cp = decode_utf8(text, pos);
         if (cp < 0x20) continue;                        // skip control chars
-        if (cp == 0xFE0F) continue;                     // variation selector
+        if (cp == 0x200D) continue;                     // zero-width joiner (ZWJ)
+        if (cp == 0xFE0F || cp == 0xFE0E) continue;    // variation selectors
         if (cp >= 0x1160 && cp <= 0x11FF) continue;     // Hangul jungseong/jongseong (zero-width)
         if (cp >= 0x200B && cp <= 0x200F) continue;     // zero-width spaces / directional marks
+        if (cp >= 0x0300 && cp <= 0x036F) continue;     // combining diacritical marks (zero-width)
         if (cp == 0xFEFF) continue;                     // BOM / zero-width no-break space
         width += is_wide_char(cp) ? 2 : 1;
     }
@@ -152,9 +153,11 @@ word_wrap(std::string_view text, int max_width) {
                 char32_t cp = decode_utf8(line, pos);
                 int cw = (cp < 0x20) ? 0 : (is_wide_char(cp) ? 2 : 1);
 
-                // Whitespace is a potential break point
-                if (cp == ' ' || cp == '\t') {
-                    last_break = pos; // break *after* the space
+                // Whitespace and hyphens are potential break points.
+                // For spaces/tabs: break after (trim leading spaces on next line).
+                // For hyphens: break after (keep hyphen at end of line).
+                if (cp == ' ' || cp == '\t' || cp == '-') {
+                    last_break = pos; // break *after* the character
                 }
 
                 if (current_width + cw > max_width && current_width > 0) {
@@ -237,7 +240,7 @@ truncate_start(std::string_view text, int max_width) {
     if (max_width == 1) return "\xe2\x80\xa6";
 
     int budget = max_width - 1;
-    // Walk backwards by collecting all char boundaries, then taking from end.
+    // Collect all char boundaries in one forward pass.
     struct CharInfo { std::size_t offset; std::size_t len; int width; };
     std::vector<CharInfo> chars;
     std::size_t pos = 0;
@@ -248,13 +251,22 @@ truncate_start(std::string_view text, int max_width) {
         chars.push_back({start, pos - start, cw});
     }
 
-    std::string result;
-    result += "\xe2\x80\xa6";
+    // Walk backward, accumulating width until budget is hit.
     int w = 0;
+    std::size_t first_kept = chars.size();
     for (auto it = chars.rbegin(); it != chars.rend(); ++it) {
         if (w + it->width > budget) break;
         w += it->width;
-        result.insert(3, text.data() + it->offset, it->len); // insert after ellipsis bytes
+        --first_kept;
+    }
+
+    // Build result in one pass: ellipsis + kept chars (O(N) total).
+    std::string result;
+    result.reserve(3 + (text.size() - chars[first_kept].offset));
+    result += "\xe2\x80\xa6"; // U+2026 HORIZONTAL ELLIPSIS (3 UTF-8 bytes)
+    if (first_kept < chars.size()) {
+        result.append(text.data() + chars[first_kept].offset,
+                      text.size() - chars[first_kept].offset);
     }
     return result;
 }
@@ -293,15 +305,24 @@ truncate_middle(std::string_view text, int max_width) {
         chars.push_back({start, rpos - start, cw});
     }
 
-    std::string right_part;
+    // Walk backward to find the start of the right portion (O(N), no insert).
     int rw = 0;
+    std::size_t first_right = chars.size();
     for (auto it = chars.rbegin(); it != chars.rend(); ++it) {
         if (rw + it->width > right_budget) break;
         rw += it->width;
-        right_part.insert(0, text.data() + it->offset, it->len);
+        --first_right;
     }
 
-    return left_part + "\xe2\x80\xa6" + right_part;
+    std::string result;
+    result.reserve(left_part.size() + 3 + (text.size() - chars[first_right].offset));
+    result  = left_part;
+    result += "\xe2\x80\xa6";
+    if (first_right < chars.size()) {
+        result.append(text.data() + chars[first_right].offset,
+                      text.size() - chars[first_right].offset);
+    }
+    return result;
 }
 
 } // namespace detail

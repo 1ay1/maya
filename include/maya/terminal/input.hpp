@@ -446,6 +446,65 @@ private:
             return;
         }
 
+        // CSI u — Kitty / Unicode keyboard protocol: ESC [ <codepoint> ; <mods> u
+        // Encodes any Unicode codepoint with unambiguous modifier flags.
+        if (final_byte == 'u') {
+            auto params = parse_params(params_str);
+            if (!params.empty()) {
+                int codepoint = params[0];
+                Modifiers mods;
+                if (params.size() >= 2 && params[1] > 1) {
+                    mods = Modifiers::from_param(params[1]);
+                }
+
+                std::optional<Key> key;
+                switch (codepoint) {
+                    case 9:   key = SpecialKey::Tab;       break;
+                    case 13:  key = SpecialKey::Enter;     break;
+                    case 27:  key = SpecialKey::Escape;    break;
+                    case 127: key = SpecialKey::Backspace; break;
+                    // Function keys encoded as codepoints >= 57344 (Kitty extension)
+                    case 57344: key = SpecialKey::F1;  break;
+                    case 57345: key = SpecialKey::F2;  break;
+                    case 57346: key = SpecialKey::F3;  break;
+                    case 57347: key = SpecialKey::F4;  break;
+                    case 57348: key = SpecialKey::F5;  break;
+                    case 57349: key = SpecialKey::F6;  break;
+                    case 57350: key = SpecialKey::F7;  break;
+                    case 57351: key = SpecialKey::F8;  break;
+                    case 57352: key = SpecialKey::F9;  break;
+                    case 57353: key = SpecialKey::F10; break;
+                    case 57354: key = SpecialKey::F11; break;
+                    case 57355: key = SpecialKey::F12; break;
+                    // Arrow keys / navigation
+                    case 57356: key = SpecialKey::Up;       break;
+                    case 57357: key = SpecialKey::Down;     break;
+                    case 57358: key = SpecialKey::Left;     break;
+                    case 57359: key = SpecialKey::Right;    break;
+                    case 57360: key = SpecialKey::Home;     break;
+                    case 57361: key = SpecialKey::End;      break;
+                    case 57362: key = SpecialKey::PageUp;   break;
+                    case 57363: key = SpecialKey::PageDown; break;
+                    case 57364: key = SpecialKey::Insert;   break;
+                    case 57365: key = SpecialKey::Delete;   break;
+                    default:
+                        if (codepoint >= 32 && codepoint < 0x110000) {
+                            key = CharKey{static_cast<char32_t>(codepoint)};
+                        }
+                        break;
+                }
+
+                if (key) {
+                    events.emplace_back(KeyEvent{
+                        .key = *key,
+                        .mods = mods,
+                        .raw_sequence = std::move(buf_),
+                    });
+                }
+                return;
+            }
+        }
+
         // Fallback: emit as unknown key event with raw sequence
         events.emplace_back(KeyEvent{
             .key = CharKey{U'?'},

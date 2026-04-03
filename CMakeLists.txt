@@ -24,9 +24,9 @@ if(MAYA_BUILD_EXAMPLES)
     add_executable(maya_demo      examples/demo.cpp)
     add_executable(maya_counter   examples/counter.cpp)
     add_executable(maya_matrix    examples/matrix.cpp)
-    add_executable(maya_dashboard examples/dashboard.cpp)
+    add_executable(maya_viz       examples/viz.cpp)
 
-    foreach(tgt maya_demo maya_counter maya_matrix maya_dashboard)
+    foreach(tgt maya_demo maya_counter maya_matrix maya_viz)
         target_link_libraries(${tgt} PRIVATE maya)
 
         # Maximum optimizations for the examples.

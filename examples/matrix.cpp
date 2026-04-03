@@ -232,7 +232,7 @@ public:
                 if (--d.mutate[r] <= 0) {
                     d.chars[r]  = rand_glyph();
                     d.mutate[r] = glitch
-                        ? 1
+                        ? 3
                         : std::uniform_int_distribution<int>(3, mut_cap)(rng_);
                 }
             }
@@ -265,12 +265,13 @@ public:
                     else               sid = st.theme[theme][0];
                 } else {
                     int gi = std::min(depth, kMaxTrail - 1);
-                    sid = fl ? st.theme[theme][std::min(depth, 1)] : st.theme[theme][gi];
+                    sid = fl      ? st.theme[theme][std::min(depth, 1)]
+                        : glitch  ? st.glitch
+                        :           st.theme[theme][gi];
                 }
                 canvas.set(c, row, d.chars[row], sid);
             }
         }
-        canvas.mark_all_damaged();
     }
 };
 

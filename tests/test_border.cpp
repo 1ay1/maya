@@ -4,6 +4,8 @@
 #include <print>
 
 using namespace maya;
+using namespace maya::detail;
+using namespace maya::dsl;
 
 static std::string get_row(const Canvas& canvas, int y) {
     std::string s;

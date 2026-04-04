@@ -12,12 +12,37 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
         Debug Release RelWithDebInfo MinSizeRel)
 endif()
 
-add_library(maya INTERFACE)
-target_include_directories(maya INTERFACE
+add_library(maya
+    src/app/app.cpp
+    src/app/events.cpp
+    src/app/inline.cpp
+    src/element/builder.cpp
+    src/element/text.cpp
+    src/terminal/ansi.cpp
+    src/terminal/input.cpp
+    src/terminal/writer.cpp
+    src/layout/yoga.cpp
+    src/render/canvas.cpp
+    src/render/renderer.cpp
+    src/render/diff.cpp
+    src/render/serialize.cpp
+)
+target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_compile_features(maya INTERFACE cxx_std_26)
+target_compile_features(maya PUBLIC cxx_std_26)
+target_compile_options(maya PRIVATE
+    $<$<CXX_COMPILER_ID:GNU,Clang>:
+        -O3
+        -march=native
+        -funroll-loops
+    >
+    $<$<CXX_COMPILER_ID:MSVC>:/O2 /GL>
+)
+set_target_properties(maya PROPERTIES
+    INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+)
 
 option(MAYA_BUILD_EXAMPLES "Build example programs" ON)
 if(MAYA_BUILD_EXAMPLES)
@@ -30,8 +55,9 @@ if(MAYA_BUILD_EXAMPLES)
     add_executable(maya_agent    examples/agent.cpp)
     add_executable(maya_progress examples/progress.cpp)
     add_executable(maya_dsl     examples/dsl_demo.cpp)
+    add_executable(maya_inline  examples/inline.cpp)
 
-    foreach(tgt maya_demo maya_counter maya_matrix maya_viz maya_fireworks maya_dashboard maya_agent maya_progress maya_dsl)
+    foreach(tgt maya_demo maya_counter maya_matrix maya_viz maya_fireworks maya_dashboard maya_agent maya_progress maya_dsl maya_inline)
         target_link_libraries(${tgt} PRIVATE maya)
 
         # Maximum optimizations for the examples.

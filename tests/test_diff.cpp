@@ -4,6 +4,7 @@
 #include <print>
 
 using namespace maya;
+using namespace maya::dsl;
 
 void test_diff_identical_canvases_empty_output() {
     std::println("--- test_diff_identical_canvases_empty_output ---");

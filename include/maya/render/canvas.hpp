@@ -34,16 +34,7 @@ class AlignedBuffer {
 public:
     AlignedBuffer() = default;
 
-    explicit AlignedBuffer(std::size_t count, uint64_t fill_value = 0)
-        : size_(count)
-        , capacity_(count)
-    {
-        if (count > 0) {
-            data_ = static_cast<uint64_t*>(
-                ::operator new(count * sizeof(uint64_t), std::align_val_t{64}));
-            std::fill(data_, data_ + count, fill_value);
-        }
-    }
+    explicit AlignedBuffer(std::size_t count, uint64_t fill_value = 0);
 
     ~AlignedBuffer() { free(); }
 
@@ -63,33 +54,8 @@ public:
         return *this;
     }
 
-    void resize(std::size_t count, uint64_t fill_value = 0) {
-        if (count <= capacity_) {
-            if (count > size_) std::fill(data_ + size_, data_ + count, fill_value);
-            size_ = count;
-            return;
-        }
-        auto* new_data = static_cast<uint64_t*>(
-            ::operator new(count * sizeof(uint64_t), std::align_val_t{64}));
-        if (data_) {
-            std::copy(data_, data_ + size_, new_data);
-            free();
-        }
-        std::fill(new_data + size_, new_data + count, fill_value);
-        data_ = new_data;
-        size_ = capacity_ = count;
-    }
-
-    void assign(std::size_t count, uint64_t value) {
-        if (count > capacity_) {
-            free();
-            data_ = static_cast<uint64_t*>(
-                ::operator new(count * sizeof(uint64_t), std::align_val_t{64}));
-            capacity_ = count;
-        }
-        size_ = count;
-        simd::streaming_fill(data_, count, value);
-    }
+    void resize(std::size_t count, uint64_t fill_value = 0);
+    void assign(std::size_t count, uint64_t value);
 
     [[nodiscard]] uint64_t* data() noexcept { return data_; }
     [[nodiscard]] const uint64_t* data() const noexcept { return data_; }
@@ -183,16 +149,7 @@ static_assert(Cell{}.pack() == Cell{U' ', 0, 0, 0}.pack());
 
 class StylePool {
 public:
-    StylePool() {
-        styles_.reserve(64);
-        sgr_cache_.reserve(64);
-        styles_.emplace_back();  // ID 0 = default (empty) style
-        sgr_cache_.push_back(build_sgr(styles_[0]));
-        grow(64);
-        // Insert the default style into the map.
-        insert_slot(hash_style(styles_[0]), 0);
-        size_ = 1;
-    }
+    StylePool();
 
     /// Intern a style, returning its unique ID.
     /// Hot path: called once per cell during painting.
@@ -237,13 +194,7 @@ public:
     [[nodiscard]] std::size_t size() const noexcept { return styles_.size(); }
 
     /// Reset the pool back to only the default style.
-    void clear() {
-        styles_.resize(1);
-        sgr_cache_.resize(1);
-        size_ = 1;
-        std::fill(slots_.begin(), slots_.end(), Slot{});
-        insert_slot(hash_style(styles_[0]), 0);
-    }
+    void clear();
 
 private:
     struct Slot {
@@ -259,123 +210,15 @@ private:
     std::size_t mask_     = 0;
 
     // ── SGR cache builder ────────────────────────────────────────────────
-    // Builds the complete ANSI SGR escape sequence for a style, including
-    // an implicit reset (parameter 0). The diff loop emits this verbatim
-    // instead of computing style transitions at runtime.
-    //
-    // Format: \x1b[0{;attr}*{;fg}{;bg}m
-    // Max:    \x1b[0;1;2;3;4;7;9;38;2;255;255;255;48;2;255;255;255m  (~50 bytes)
-
-    static char* write_uint_sgr(char* p, unsigned n) noexcept {
-        if (n < 10) {
-            *p++ = static_cast<char>('0' + n);
-        } else if (n < 100) {
-            *p++ = static_cast<char>('0' + n / 10);
-            *p++ = static_cast<char>('0' + n % 10);
-        } else {
-            *p++ = static_cast<char>('0' + n / 100);
-            *p++ = static_cast<char>('0' + (n / 10) % 10);
-            *p++ = static_cast<char>('0' + n % 10);
-        }
-        return p;
-    }
-
-    static char* append_color_sgr(char* p, const Color& c, bool is_fg) noexcept {
-        switch (c.kind()) {
-            case Color::Kind::Named: {
-                int base = is_fg ? 30 : 40;
-                int code = c.r() < 8 ? base + c.r() : (base + 60) + (c.r() - 8);
-                return write_uint_sgr(p, static_cast<unsigned>(code));
-            }
-            case Color::Kind::Indexed:
-                if (is_fg) { *p++='3'; *p++='8'; } else { *p++='4'; *p++='8'; }
-                *p++ = ';'; *p++ = '5'; *p++ = ';';
-                return write_uint_sgr(p, c.r());
-            case Color::Kind::Rgb:
-                if (is_fg) { *p++='3'; *p++='8'; } else { *p++='4'; *p++='8'; }
-                *p++ = ';'; *p++ = '2'; *p++ = ';';
-                p = write_uint_sgr(p, c.r()); *p++ = ';';
-                p = write_uint_sgr(p, c.g()); *p++ = ';';
-                return write_uint_sgr(p, c.b());
-        }
-        __builtin_unreachable();
-    }
-
-    static std::string build_sgr(const Style& s) {
-        char buf[64];
-        char* p = buf;
-        *p++ = '\x1b'; *p++ = '['; *p++ = '0';
-
-        if (s.bold)          { *p++ = ';'; *p++ = '1'; }
-        if (s.dim)           { *p++ = ';'; *p++ = '2'; }
-        if (s.italic)        { *p++ = ';'; *p++ = '3'; }
-        if (s.underline)     { *p++ = ';'; *p++ = '4'; }
-        if (s.inverse)       { *p++ = ';'; *p++ = '7'; }
-        if (s.strikethrough) { *p++ = ';'; *p++ = '9'; }
-
-        if (s.fg.has_value()) { *p++ = ';'; p = append_color_sgr(p, *s.fg, true); }
-        if (s.bg.has_value()) { *p++ = ';'; p = append_color_sgr(p, *s.bg, false); }
-
-        *p++ = 'm';
-        return {buf, static_cast<std::size_t>(p - buf)};
-    }
+    static char* write_uint_sgr(char* p, unsigned n) noexcept;
+    static char* append_color_sgr(char* p, const Color& c, bool is_fg) noexcept;
+    static std::string build_sgr(const Style& s);
 
     /// FNV-1a hash over the style's packed representation.
-    [[nodiscard]] static std::size_t hash_style(const Style& s) noexcept {
-        std::size_t h = 14695981039346656037ULL;
-        auto mix = [&](uint64_t v) {
-            h ^= v;
-            h *= 1099511628211ULL;
-        };
+    [[nodiscard]] static std::size_t hash_style(const Style& s) noexcept;
 
-        uint8_t flags = 0;
-        if (s.bold)          flags |= (1 << 0);
-        if (s.dim)           flags |= (1 << 1);
-        if (s.italic)        flags |= (1 << 2);
-        if (s.underline)     flags |= (1 << 3);
-        if (s.strikethrough) flags |= (1 << 4);
-        if (s.inverse)       flags |= (1 << 5);
-        mix(flags);
-
-        if (s.fg.has_value()) {
-            mix(static_cast<uint64_t>(s.fg->kind()) << 24
-              | static_cast<uint64_t>(s.fg->r()) << 16
-              | static_cast<uint64_t>(s.fg->g()) << 8
-              | static_cast<uint64_t>(s.fg->b()));
-        } else {
-            mix(0xDEAD);
-        }
-
-        if (s.bg.has_value()) {
-            mix(static_cast<uint64_t>(s.bg->kind()) << 24
-              | static_cast<uint64_t>(s.bg->r()) << 16
-              | static_cast<uint64_t>(s.bg->g()) << 8
-              | static_cast<uint64_t>(s.bg->b()));
-        } else {
-            mix(0xBEEF);
-        }
-
-        // Map hash 0 → 1 (reserve 0 as empty sentinel).
-        return h == 0 ? 1 : h;
-    }
-
-    void insert_slot(std::size_t h, uint16_t id) {
-        std::size_t idx = h & mask_;
-        while (slots_[idx].hash != 0) {
-            idx = (idx + 1) & mask_;
-        }
-        slots_[idx] = {h, id};
-    }
-
-    void grow(std::size_t new_cap) {
-        capacity_ = new_cap;
-        mask_ = new_cap - 1;
-        slots_.assign(new_cap, Slot{});
-        // Re-insert all existing styles.
-        for (uint16_t i = 0; i < static_cast<uint16_t>(styles_.size()); ++i) {
-            insert_slot(hash_style(styles_[i]), i);
-        }
-    }
+    void insert_slot(std::size_t h, uint16_t id);
+    void grow(std::size_t new_cap);
 };
 
 // ============================================================================
@@ -392,20 +235,11 @@ class Canvas {
 public:
     Canvas() = default;
 
-    Canvas(int width, int height, StylePool* pool)
-        : width_(width)
-        , height_(height)
-        , style_pool_(pool)
-    {
-        cells_.resize(static_cast<std::size_t>(width_ * height_), default_cell());
-    }
+    Canvas(int width, int height, StylePool* pool);
 
     // -- Cell access ----------------------------------------------------------
 
     /// Set a cell at (x, y). Clipped or out-of-bounds coordinates are silently ignored.
-    /// mark_damage() is intentionally omitted here: the renderer always calls clear()
-    /// before painting, which marks the full canvas as damaged. Per-cell damage
-    /// tracking is therefore redundant and only wastes cycles.
     [[gnu::always_inline]] void set(int x, int y, char32_t ch, uint16_t style_id, uint8_t width = 0) {
         if (__builtin_expect(!in_bounds(x, y), 0)) return;
         if (!clip_stack_.empty() && __builtin_expect(!clip_stack_.back().contains({Columns{x}, Rows{y}}), 0)) return;
@@ -416,10 +250,7 @@ public:
     }
 
     /// Read the cell at (x, y). Out-of-bounds returns a default cell.
-    [[nodiscard]] Cell get(int x, int y) const noexcept {
-        if (!in_bounds(x, y)) return Cell{};
-        return Cell::unpack(cells_[cell_index(x, y)]);
-    }
+    [[nodiscard]] Cell get(int x, int y) const noexcept;
 
     /// Direct access to the packed cell value at (x, y) for fast diff.
     [[gnu::always_inline]] [[nodiscard]] uint64_t get_packed(int x, int y) const noexcept {
@@ -428,123 +259,42 @@ public:
 
     // -- Text rendering -------------------------------------------------------
 
-    /// Write a UTF-8 string starting at (x, y). Handles wide characters
-    /// by writing a wide-first-half cell followed by a wide-second-half
-    /// placeholder. Advances x by the display width of each character.
-    void write_text(int x, int y, std::string_view text, uint16_t style_id) {
-        int cx = x;
-        std::size_t pos = 0;
-        while (pos < text.size()) {
-            char32_t cp = decode_utf8(text, pos);
-            if (cp < 0x20) continue;  // skip control characters
-
-            if (is_wide_char(cp)) {
-                set(cx, y, cp, style_id, 1);       // first half
-                set(cx + 1, y, U' ', style_id, 2); // second half (placeholder)
-                cx += 2;
-            } else {
-                set(cx, y, cp, style_id, 0);
-                cx += 1;
-            }
-        }
-    }
+    /// Write a UTF-8 string starting at (x, y).
+    void write_text(int x, int y, std::string_view text, uint16_t style_id);
 
     // -- Region operations ----------------------------------------------------
 
     /// Fill a rectangular region with a character and style.
-    /// Hot path: uses row-wise std::fill on contiguous memory segments instead of
-    /// per-pixel is_clipped() checks. Clip intersection is computed once upfront.
-    void fill(Rect region, char32_t ch, uint16_t style_id) {
-        int x0 = std::max(0, region.left().value);
-        int y0 = std::max(0, region.top().value);
-        int x1 = std::min(width_, region.right().value);
-        int y1 = std::min(height_, region.bottom().value);
-
-        // Apply active clip in one shot — no per-pixel check needed.
-        if (!clip_stack_.empty()) {
-            const Rect& clip = clip_stack_.back();
-            x0 = std::max(x0, clip.left().value);
-            y0 = std::max(y0, clip.top().value);
-            x1 = std::min(x1, clip.right().value);
-            y1 = std::min(y1, clip.bottom().value);
-        }
-
-        if (x0 >= x1 || y0 >= y1) return;
-
-        uint64_t packed = Cell{ch, style_id, 0, 0}.pack();
-        uint64_t* base  = cells_.data();
-
-        for (int y = y0; y < y1; ++y) {
-            std::fill(base + y * width_ + x0, base + y * width_ + x1, packed);
-        }
-    }
+    void fill(Rect region, char32_t ch, uint16_t style_id);
 
     /// Reset all cells to space with the default style. Clears damage.
-    void clear() {
-        uint64_t blank = default_cell();
-        simd::streaming_fill(cells_.data(), cells_.size(), blank);
-        damage_ = full_rect();
-    }
+    void clear();
 
     // -- Clip stack -----------------------------------------------------------
 
-    /// Push a clipping rectangle. Subsequent writes outside this rect
-    /// (intersected with all parent clips) are silently discarded.
-    void push_clip(Rect clip) {
-        if (clip_stack_.empty()) {
-            clip_stack_.push_back(clip);
-        } else {
-            // Intersect with the current effective clip.
-            clip_stack_.push_back(clip_stack_.back().intersect(clip));
-        }
-    }
+    /// Push a clipping rectangle.
+    void push_clip(Rect clip);
 
     /// Pop the most recent clipping rectangle.
-    void pop_clip() {
-        if (!clip_stack_.empty()) {
-            clip_stack_.pop_back();
-        }
-    }
+    void pop_clip();
 
     /// Returns true if (x, y) falls outside the current clip region.
-    [[nodiscard]] bool is_clipped(int x, int y) const noexcept {
-        if (clip_stack_.empty()) return false;
-        return !clip_stack_.back().contains({Columns{x}, Rows{y}});
-    }
+    [[nodiscard]] bool is_clipped(int x, int y) const noexcept;
 
     // -- Sizing ---------------------------------------------------------------
 
     /// Resize the canvas, clearing all content.
-    void resize(int w, int h) {
-        width_ = w;
-        height_ = h;
-        cells_.assign(static_cast<std::size_t>(w * h), default_cell());
-        damage_ = full_rect();
-        clip_stack_.clear();
-    }
+    void resize(int w, int h);
 
     [[nodiscard]] int width()  const noexcept { return width_; }
     [[nodiscard]] int height() const noexcept { return height_; }
 
     // -- Damage tracking ------------------------------------------------------
 
-    /// Expand the damage region to include the given rectangle.
-    void mark_damage(Rect region) {
-        damage_ = damage_.unite(region);
-    }
-
-    /// Return the current damage rectangle (the union of all dirty regions).
+    void mark_damage(Rect region);
     [[nodiscard]] Rect damage() const noexcept { return damage_; }
-
-    /// Reset the damage region to empty.
-    void reset_damage() noexcept {
-        damage_ = Rect{};
-    }
-
-    /// Mark the entire canvas as damaged.
-    void mark_all_damaged() {
-        damage_ = full_rect();
-    }
+    void reset_damage() noexcept { damage_ = Rect{}; }
+    void mark_all_damaged();
 
     // -- Style pool access ----------------------------------------------------
 

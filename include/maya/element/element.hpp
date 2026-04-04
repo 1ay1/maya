@@ -94,6 +94,9 @@ struct Element {
     Element& operator=(const Element&) = default;
     Element& operator=(Element&&) noexcept = default;
     ~Element() = default;
+
+    // Satisfies the dsl::Node concept — an Element IS a built node.
+    [[nodiscard]] Element build() const { return *this; }
 };
 
 // -- Deferred ElementList constructor (Element is now complete) ----------------

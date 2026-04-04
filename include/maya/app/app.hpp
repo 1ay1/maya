@@ -54,69 +54,16 @@ namespace detail {
 inline int signal_pipe_read_fd  = -1;
 inline int signal_pipe_write_fd = -1;
 
-inline void sigwinch_handler(int /*sig*/) {
-    // Write a single byte to wake up the poll loop. Ignore errors (pipe
-    // full is harmless; the loop will see the resize anyway).
-    if (signal_pipe_write_fd >= 0) {
-        [[maybe_unused]] auto _ = ::write(signal_pipe_write_fd, "R", 1);
-    }
-}
+void sigwinch_handler(int /*sig*/);
 
 /// Create the self-pipe and install the SIGWINCH handler. Idempotent.
-inline auto setup_signal_pipe() -> Status {
-    if (signal_pipe_read_fd >= 0) return ok();
-
-    int fds[2];
-    if (::pipe(fds) < 0) {
-        return err(Error::from_errno("pipe"));
-    }
-
-    // Make both ends non-blocking and close-on-exec.
-    for (int fd : fds) {
-        int flags = ::fcntl(fd, F_GETFL);
-        if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-            ::close(fds[0]);
-            ::close(fds[1]);
-            return err(Error::from_errno("fcntl"));
-        }
-        ::fcntl(fd, F_SETFD, FD_CLOEXEC);
-    }
-
-    signal_pipe_read_fd  = fds[0];
-    signal_pipe_write_fd = fds[1];
-
-    struct sigaction sa{};
-    sa.sa_handler = sigwinch_handler;
-    sa.sa_flags   = SA_RESTART;
-    ::sigemptyset(&sa.sa_mask);
-    if (::sigaction(SIGWINCH, &sa, nullptr) < 0) {
-        return err(Error::from_errno("sigaction(SIGWINCH)"));
-    }
-
-    return ok();
-}
+auto setup_signal_pipe() -> Status;
 
 /// Drain any pending bytes from the signal pipe.
-inline void drain_signal_pipe() {
-    if (signal_pipe_read_fd < 0) return;
-    char buf[64];
-    while (::read(signal_pipe_read_fd, buf, sizeof(buf)) > 0) {}
-}
+void drain_signal_pipe();
 
 /// Tear down the signal pipe.
-inline void cleanup_signal_pipe() {
-    if (signal_pipe_read_fd >= 0) {
-        // Restore default SIGWINCH behavior.
-        struct sigaction sa{};
-        sa.sa_handler = SIG_DFL;
-        ::sigaction(SIGWINCH, &sa, nullptr);
-
-        ::close(signal_pipe_read_fd);
-        ::close(signal_pipe_write_fd);
-        signal_pipe_read_fd  = -1;
-        signal_pipe_write_fd = -1;
-    }
-}
+void cleanup_signal_pipe();
 
 } // namespace detail
 
@@ -140,80 +87,19 @@ public:
         Builder() = default;
 
         /// Whether to enter the alternate screen buffer (default: true).
-        auto alt_screen(bool v) -> Builder& {
-            alt_screen_ = v;
-            return *this;
-        }
+        auto alt_screen(bool v) -> Builder&;
 
         /// Whether to enable mouse event reporting (default: false).
-        auto mouse(bool v) -> Builder& {
-            mouse_ = v;
-            return *this;
-        }
+        auto mouse(bool v) -> Builder&;
 
         /// Set the color theme (default: theme::dark).
-        auto theme(Theme t) -> Builder& {
-            theme_ = t;
-            return *this;
-        }
+        auto theme(Theme t) -> Builder&;
 
         /// Set the terminal title (optional).
-        auto title(std::string_view t) -> Builder& {
-            title_ = std::string{t};
-            return *this;
-        }
+        auto title(std::string_view t) -> Builder&;
 
         /// Construct the App. Returns an error if terminal initialization fails.
-        [[nodiscard]] auto build() -> Result<App> {
-            // Set up the self-pipe for SIGWINCH delivery.
-            MAYA_TRY_VOID(detail::setup_signal_pipe());
-
-            // Acquire the terminal and move it through the type-state chain.
-            auto cooked = MAYA_TRY(Terminal<Cooked>::create(STDIN_FILENO));
-            auto raw    = MAYA_TRY(std::move(cooked).enable_raw_mode());
-
-            int fd = raw.fd();
-
-            // Optionally enter alt screen (consumes the Raw terminal).
-            // If alt_screen is disabled, we stay in raw mode.
-            std::optional<Terminal<AltScreen>> alt_term;
-            std::optional<Terminal<Raw>>       raw_term;
-
-            if (alt_screen_) {
-                alt_term = MAYA_TRY(std::move(raw).enter_alt_screen());
-            } else {
-                raw_term = std::move(raw);
-            }
-
-            // Construct the app.
-            App app;
-            app.alt_terminal_  = std::move(alt_term);
-            app.raw_terminal_  = std::move(raw_term);
-            app.fd_            = fd;
-            app.writer_        = std::make_unique<Writer>(fd);
-            app.theme_         = theme_;
-            app.mouse_enabled_ = mouse_;
-
-            // Store theme in the context so render functions can access it.
-            app.context_.set<Theme>(theme_);
-
-            // Set terminal title if provided.
-            if (!title_.empty()) {
-                // OSC 0 ; title BEL
-                std::string seq = "\x1b]0;" + title_ + "\x07";
-                auto written = ::write(fd, seq.data(), seq.size());
-                (void)written;
-            }
-
-            // Query initial terminal size.
-            if (app.alt_terminal_) {
-                app.size_ = app.alt_terminal_->size();
-            } else if (app.raw_terminal_) {
-                app.size_ = app.raw_terminal_->size();
-            }
-
-            return ok(std::move(app));
-        }
+        [[nodiscard]] auto build() -> Result<App>;
     };
 
     /// Create a Builder for fluent configuration.
@@ -235,15 +121,7 @@ public:
     }
 
     /// Run the event loop with a render callback that produces an Element tree.
-    auto run(std::function<Element()> render_fn) -> Status {
-        render_fn_ = std::move(render_fn);
-        running_ = true;
-
-        // Initial render.
-        needs_render_ = true;
-
-        return event_loop();
-    }
+    auto run(std::function<Element()> render_fn) -> Status;
 
     /// Signal the event loop to exit after the current iteration.
     void quit() {
@@ -278,6 +156,9 @@ public:
     // ========================================================================
     // Accessors
     // ========================================================================
+
+    /// Whether the app is running in inline mode (no alt screen).
+    [[nodiscard]] bool is_inline() const noexcept { return raw_terminal_.has_value(); }
 
     /// Current terminal size.
     [[nodiscard]] Size size() const noexcept { return size_; }
@@ -341,199 +222,14 @@ private:
     std::vector<std::function<void(Size)>>              resize_handlers_;
 
     // ========================================================================
-    // Event loop
-    // ========================================================================
-    // 1. Poll stdin + signal pipe with 100ms timeout
-    // 2. Parse input events
-    // 3. Dispatch to handlers
-    // 4. Call render function to get new Element tree
-    // 5. Layout + render to canvas
-    // 6. Diff old vs new frame
-    // 7. Optimize and flush to terminal
-    // 8. Handle SIGWINCH for resize via self-pipe
-
-    auto event_loop() -> Status {
-        using Clock = std::chrono::steady_clock;
-        auto next_frame = Clock::now();
-
-        while (running_) {
-            // Compute poll timeout: fps-driven or 100ms idle.
-            int poll_timeout_ms = 100;
-            if (fps_ > 0) {
-                auto now = Clock::now();
-                auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(next_frame - now);
-                poll_timeout_ms = std::max(0, static_cast<int>(wait.count()));
-            }
-
-            struct pollfd pfds[2];
-            int nfds = 0;
-
-            pfds[nfds].fd      = fd_;
-            pfds[nfds].events  = POLLIN;
-            pfds[nfds].revents = 0;
-            ++nfds;
-
-            if (detail::signal_pipe_read_fd >= 0) {
-                pfds[nfds].fd      = detail::signal_pipe_read_fd;
-                pfds[nfds].events  = POLLIN;
-                pfds[nfds].revents = 0;
-                ++nfds;
-            }
-
-            int poll_result = ::poll(pfds, static_cast<nfds_t>(nfds), poll_timeout_ms);
-
-            if (poll_result < 0) {
-                if (errno == EINTR) continue;
-                return err(Error::from_errno("poll"));
-            }
-
-            if (nfds > 1 && (pfds[1].revents & POLLIN)) {
-                detail::drain_signal_pipe();
-                handle_resize();
-            }
-
-            if (pfds[0].revents & POLLIN) {
-                MAYA_TRY_VOID(read_and_dispatch());
-            }
-
-            auto timeout_events = parser_.flush_timeout();
-            for (auto& ev : timeout_events) {
-                dispatch_event(ev);
-            }
-
-            // fps-driven: always re-render when the frame deadline has passed.
-            if (fps_ > 0 && Clock::now() >= next_frame) {
-                needs_render_ = true;
-                next_frame += std::chrono::microseconds(1'000'000 / fps_);
-                // Don't let the frame deadline drift too far behind.
-                if (Clock::now() > next_frame)
-                    next_frame = Clock::now();
-            }
-
-            if (needs_render_) {
-                MAYA_TRY_VOID(render_frame());
-                needs_render_ = false;
-            }
-        }
-
-        return ok();
-    }
-
-    // ========================================================================
-    // Input reading and dispatch
+    // Private methods (implemented in app.cpp)
     // ========================================================================
 
-    auto read_and_dispatch() -> Status {
-        char buf[1024];
-        ssize_t n = ::read(fd_, buf, sizeof(buf));
-
-        if (n < 0) {
-            if (errno == EAGAIN || errno == EINTR) return ok();
-            return err(Error::from_errno("read"));
-        }
-        if (n == 0) return ok(); // EOF
-
-        auto events = parser_.feed(std::string_view{buf, static_cast<size_t>(n)});
-        for (auto& event : events) {
-            dispatch_event(event);
-        }
-
-        return ok();
-    }
-
-    void dispatch_event(Event& event) {
-        std::visit([this](auto& ev) {
-            using T = std::decay_t<decltype(ev)>;
-
-            if constexpr (std::same_as<T, KeyEvent>) {
-                for (auto& handler : key_handlers_) {
-                    if (handler(ev)) break;
-                }
-                // Always re-render: the handler may have mutated state.
-                needs_render_ = true;
-            }
-            else if constexpr (std::same_as<T, MouseEvent>) {
-                for (auto& handler : mouse_handlers_) {
-                    if (handler(ev)) break;
-                }
-                needs_render_ = true;
-            }
-            else if constexpr (std::same_as<T, ResizeEvent>) {
-                size_ = {ev.width, ev.height};
-                for (auto& handler : resize_handlers_) {
-                    handler(size_);
-                }
-                needs_render_ = true;
-            }
-            else if constexpr (std::same_as<T, FocusEvent>) {
-                needs_render_ = true;
-            }
-            else if constexpr (std::same_as<T, PasteEvent>) {
-                needs_render_ = true;
-            }
-        }, event);
-    }
-
-    // ========================================================================
-    // Resize handling
-    // ========================================================================
-
-    void handle_resize() {
-        Size new_size;
-        if (alt_terminal_) {
-            new_size = alt_terminal_->size();
-        } else if (raw_terminal_) {
-            new_size = raw_terminal_->size();
-        } else {
-            return;
-        }
-
-        if (new_size != size_) {
-            size_ = new_size;
-            context_.set<Size>(size_);
-            for (auto& handler : resize_handlers_) {
-                handler(size_);
-            }
-            needs_render_ = true;
-        }
-    }
-
-    // ========================================================================
-    // Frame rendering
-    // ========================================================================
-    // Calls the user's render function, runs the full layout engine, renders
-    // to the canvas, diffs against the previous frame, and flushes changes.
-
-    auto render_frame() -> Status {
-        if (!render_fn_) return ok();
-
-        const int w = size_.width.raw();
-        const int h = size_.height.raw();
-        if (w <= 0 || h <= 0) return ok();
-
-        // Resize the single canvas to match the terminal.
-        if (canvas_.width() != w || canvas_.height() != h) {
-            canvas_ = Canvas(w, h, &pool_);
-            prev_height_ = 0; // terminal contents are unknown after resize
-        }
-
-        // Layout + paint the element tree onto the canvas.
-        render_tree(render_fn_(), canvas_, pool_, theme_);
-
-        // Build the frame:
-        //   BSU start → erase previous output → new content → BSU end
-        out_.clear();
-        out_ += ansi::sync_start;
-        ansi::erase_lines(prev_height_, out_);
-        out_ += ansi::hide_cursor;
-        serialize(canvas_, pool_, out_);
-        out_ += ansi::sync_end;
-
-        MAYA_TRY_VOID(writer_->write_raw(out_));
-
-        prev_height_ = h; // next render must erase exactly h lines
-        return ok();
-    }
+    auto event_loop() -> Status;
+    auto read_and_dispatch() -> Status;
+    void dispatch_event(Event& event);
+    void handle_resize();
+    auto render_frame() -> Status;
 };
 
 // ============================================================================
@@ -560,199 +256,10 @@ struct CanvasConfig {
     std::string title;              // terminal window title (optional)
 };
 
-[[nodiscard]] inline Status canvas_run(
+[[nodiscard]] Status canvas_run(
     CanvasConfig                                   cfg,
     std::function<void(StylePool&, int w, int h)>  on_resize,
     std::function<bool(const Event&)>              on_event,
-    std::function<void(Canvas&, int w, int h)>     on_paint)
-{
-    using Clock = std::chrono::steady_clock;
-
-    MAYA_TRY_VOID(detail::setup_signal_pipe());
-
-    auto cooked = MAYA_TRY(Terminal<Cooked>::create(STDIN_FILENO));
-    auto raw    = MAYA_TRY(std::move(cooked).enable_raw_mode());
-    int  fd     = raw.fd();
-
-    std::optional<Terminal<AltScreen>> alt_term;
-    std::optional<Terminal<Raw>>       raw_term;
-    if (cfg.alt_screen) {
-        alt_term = MAYA_TRY(std::move(raw).enter_alt_screen());
-    } else {
-        raw_term = std::move(raw);
-    }
-
-    if (!cfg.title.empty()) {
-        std::string seq = "\x1b]0;" + cfg.title + "\x07";
-        (void)::write(fd, seq.data(), seq.size());
-    }
-
-    // All-motion mouse + SGR extended coordinates.
-    static constexpr std::string_view kMouseOn  = "\x1b[?1003h\x1b[?1006h";
-    static constexpr std::string_view kMouseOff = "\x1b[?1006l\x1b[?1003l";
-    if (cfg.mouse) (void)::write(fd, kMouseOn.data(), kMouseOn.size());
-
-    // Switch fd to non-blocking so write() returns EAGAIN when the pty buffer
-    // is full rather than stalling the event loop. write_some() + pending_frame
-    // resume the BSU frame on the next POLLOUT — this is what makes the loop
-    // stay responsive on large terminals and over SSH.
-    const int orig_fl = ::fcntl(fd, F_GETFL);
-    if (orig_fl >= 0) ::fcntl(fd, F_SETFL, orig_fl | O_NONBLOCK);
-
-    Writer writer{fd};
-
-    Size sz;
-    if (alt_term)      sz = alt_term->size();
-    else if (raw_term) sz = raw_term->size();
-    int W = std::max(1, sz.width.value);
-    int H = std::max(1, sz.height.value);
-
-    StylePool pool;
-    on_resize(pool, W, H);
-
-    Canvas front(W, H, &pool), back(W, H, &pool);
-    front.mark_all_damaged();
-
-    auto frame_ns   = std::chrono::nanoseconds(1'000'000'000LL / std::max(1, cfg.fps));
-    auto next_frame = Clock::now();
-
-    struct PendingFrame { std::string data; std::size_t offset = 0; };
-    std::optional<PendingFrame> pending_frame;
-    std::string out;
-    out.reserve(static_cast<std::size_t>(W * H * 12));
-
-    InputParser parser;
-    bool running     = true;
-    bool needs_clear = true; // first frame must clear (alt screen may have stale content)
-
-    auto cleanup = [&, orig_fl](Status result) -> Status {
-        if (cfg.mouse) (void)::write(fd, kMouseOff.data(), kMouseOff.size());
-        detail::cleanup_signal_pipe();
-        if (orig_fl >= 0) ::fcntl(fd, F_SETFL, orig_fl); // restore blocking mode
-        return result;
-    };
-
-    auto handle_resize = [&](int nw, int nh) {
-        W = nw; H = nh;
-        pool.clear();
-        on_resize(pool, W, H);
-        front = Canvas(W, H, &pool);
-        back  = Canvas(W, H, &pool);
-        front.mark_all_damaged();
-        pending_frame.reset();
-        needs_clear = true; // terminal screen has stale content from old size
-        out.reserve(static_cast<std::size_t>(W * H * 12));
-    };
-
-    while (running) {
-        auto now = Clock::now();
-        int timeout_ms;
-        if (now >= next_frame) {
-            timeout_ms = 0;
-        } else {
-            auto wait  = std::chrono::duration_cast<std::chrono::milliseconds>(next_frame - now);
-            timeout_ms = static_cast<int>(wait.count()) + 1;
-        }
-
-        struct pollfd pfds[2];
-        int nfds = 0;
-        pfds[nfds].fd      = fd;
-        pfds[nfds].events  = POLLIN | (pending_frame.has_value() ? POLLOUT : 0);
-        pfds[nfds].revents = 0;
-        ++nfds;
-        if (detail::signal_pipe_read_fd >= 0) {
-            pfds[nfds].fd      = detail::signal_pipe_read_fd;
-            pfds[nfds].events  = POLLIN;
-            pfds[nfds].revents = 0;
-            ++nfds;
-        }
-
-        int pr = ::poll(pfds, static_cast<nfds_t>(nfds), timeout_ms);
-        if (pr < 0) {
-            if (errno == EINTR) continue;
-            return cleanup(err(Error::from_errno("poll")));
-        }
-
-        if (nfds > 1 && (pfds[1].revents & POLLIN)) {
-            detail::drain_signal_pipe();
-            Size new_sz;
-            if (alt_term)      new_sz = alt_term->size();
-            else if (raw_term) new_sz = raw_term->size();
-            int nw = std::max(1, new_sz.width.value);
-            int nh = std::max(1, new_sz.height.value);
-            if (nw != W || nh != H) handle_resize(nw, nh);
-        }
-
-        if (pending_frame.has_value() && (pfds[0].revents & POLLOUT)) {
-            auto& pf   = *pending_frame;
-            auto  sv   = std::string_view(pf.data).substr(pf.offset);
-            auto  result = writer.write_some(sv);
-            if (!result) return cleanup(err(result.error()));
-            pf.offset += *result;
-            if (pf.offset >= pf.data.size()) {
-                std::swap(front, back);
-                back.reset_damage();
-                pending_frame.reset();
-            }
-            // else: still pending, POLLOUT will fire again
-        }
-
-        if (pfds[0].revents & POLLIN) {
-            char buf[1024];
-            ssize_t n = ::read(fd, buf, sizeof(buf));
-            if (n > 0) {
-                for (auto& ev : parser.feed({buf, static_cast<std::size_t>(n)})) {
-                    if (!on_event(ev)) { running = false; break; }
-                }
-            }
-        }
-
-        if (running && !pending_frame.has_value() && Clock::now() >= next_frame) {
-            next_frame += frame_ns;
-            if (Clock::now() > next_frame + frame_ns)
-                next_frame = Clock::now() + frame_ns;
-
-            back.clear();
-            on_paint(back, W, H);
-
-            out.clear();
-            out += ansi::sync_start;
-            if (needs_clear) {
-                // After resize (or first frame), the terminal has stale content
-                // that doesn't match our front canvas. Bypass diff entirely:
-                // clear the screen and serialize every cell. This is the only
-                // way to guarantee no ghost cells — diff skips blank cells that
-                // match front, but the terminal might not actually be blank.
-                out += "\x1b[2J\x1b[H";
-                serialize(back, pool, out);
-                needs_clear = false;
-            } else {
-                diff(front, back, pool, out);
-            }
-            out += ansi::reset;
-            out += ansi::sync_end;
-
-            static const std::size_t kMinSize =
-                ansi::sync_start.size() + ansi::reset.size() + ansi::sync_end.size();
-            if (out.size() == kMinSize) {
-                std::swap(front, back);
-                back.reset_damage();
-            } else {
-                auto result = writer.write_some(out);
-                if (!result) return cleanup(err(result.error()));
-                const std::size_t written = *result;
-                if (written < out.size()) {
-                    // Partial write — BSU frame is open; resume on next POLLOUT.
-                    pending_frame = PendingFrame{out, written};
-                } else {
-                    std::swap(front, back);
-                    back.reset_damage();
-                }
-            }
-        }
-    }
-
-    return cleanup(ok());
-}
+    std::function<void(Canvas&, int w, int h)>     on_paint);
 
 } // namespace maya

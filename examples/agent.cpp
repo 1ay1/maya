@@ -175,7 +175,7 @@ static Element build_ui(const State& st) {
     rows.push_back(h(
         dyn([&] { return text("\xe2\x9d\xaf ", sPrompt); }),
         dyn([&] { return text(kQuery, sQuery); })
-    ).build());
+    ));
     rows.push_back(text(""));
 
     for (int i = 0; i <= st.phase && i < static_cast<int>(st.blocks.size()); ++i) {
@@ -196,10 +196,9 @@ static Element build_ui(const State& st) {
 
             rows.push_back(
                 vstack().padding(0, 0, 0, 2)(
-                    text(hdr, done ? sThinkHdr : sThinkAct),
-                    text(vis, sThinkTxt)
-                )
-            );
+                    text(hdr, done ? sThinkHdr : sThinkAct).build(),
+                    text(vis, sThinkTxt).build()
+                ));
             rows.push_back(text(""));
             break;
         }
@@ -211,7 +210,7 @@ static Element build_ui(const State& st) {
                 dyn([&b] { return text(b.tool, sToolName); }),
                 dyn([] { return text(" ", sToolArg); }),
                 dyn([vis] { return text(vis, sToolArg); })
-            ).build());
+            ));
             rows.push_back(text(""));
             break;
         }
@@ -270,7 +269,7 @@ static Element build_ui(const State& st) {
         }
     }
 
-    return vstack()(std::move(rows));
+    return v(std::move(rows));
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────

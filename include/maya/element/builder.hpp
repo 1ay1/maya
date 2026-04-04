@@ -43,7 +43,8 @@ concept ElementConvertible =
     std::same_as<std::remove_cvref_t<T>, Element>    ||
     std::same_as<std::remove_cvref_t<T>, BoxElement>  ||
     std::same_as<std::remove_cvref_t<T>, TextElement> ||
-    std::same_as<std::remove_cvref_t<T>, ElementList>;
+    std::same_as<std::remove_cvref_t<T>, ElementList> ||
+    std::convertible_to<T, Element>;
 
 /// True for BoxBuilder (needs special handling: finalize with no children).
 template <typename T>
@@ -121,173 +122,40 @@ public:
 
     // -- Property setters (return *this for chaining) -----------------------
 
-    auto direction(FlexDirection d) -> BoxBuilder& {
-        element_.layout.direction = d;
-        return *this;
-    }
-
-    auto wrap(FlexWrap w) -> BoxBuilder& {
-        element_.layout.wrap = w;
-        return *this;
-    }
-
-    auto padding(int all) -> BoxBuilder& {
-        element_.layout.padding = Edges<int>{all};
-        return *this;
-    }
-
-    auto padding(int v, int h) -> BoxBuilder& {
-        element_.layout.padding = Edges<int>{v, h};
-        return *this;
-    }
-
-    auto padding(int top, int right, int bottom, int left) -> BoxBuilder& {
-        element_.layout.padding = Edges<int>{top, right, bottom, left};
-        return *this;
-    }
-
-    auto margin(int all) -> BoxBuilder& {
-        element_.layout.margin = Edges<int>{all};
-        return *this;
-    }
-
-    auto margin(int v, int h) -> BoxBuilder& {
-        element_.layout.margin = Edges<int>{v, h};
-        return *this;
-    }
-
-    auto margin(int top, int right, int bottom, int left) -> BoxBuilder& {
-        element_.layout.margin = Edges<int>{top, right, bottom, left};
-        return *this;
-    }
-
-    auto border(BorderStyle bs) -> BoxBuilder& {
-        element_.border.style = bs;
-        element_.border.sides = BorderSides::all();
-        return *this;
-    }
-
-    auto border(BorderStyle bs, Color c) -> BoxBuilder& {
-        element_.border.style = bs;
-        element_.border.sides = BorderSides::all();
-        element_.border.colors = BorderColors::uniform(c);
-        return *this;
-    }
-
-    auto border_color(Color c) -> BoxBuilder& {
-        element_.border.colors = BorderColors::uniform(c);
-        return *this;
-    }
-
-    auto border_sides(BorderSides sides) -> BoxBuilder& {
-        element_.border.sides = sides;
-        return *this;
-    }
-
+    auto direction(FlexDirection d) -> BoxBuilder&;
+    auto wrap(FlexWrap w) -> BoxBuilder&;
+    auto padding(int all) -> BoxBuilder&;
+    auto padding(int v, int h) -> BoxBuilder&;
+    auto padding(int top, int right, int bottom, int left) -> BoxBuilder&;
+    auto margin(int all) -> BoxBuilder&;
+    auto margin(int v, int h) -> BoxBuilder&;
+    auto margin(int top, int right, int bottom, int left) -> BoxBuilder&;
+    auto border(BorderStyle bs) -> BoxBuilder&;
+    auto border(BorderStyle bs, Color c) -> BoxBuilder&;
+    auto border_color(Color c) -> BoxBuilder&;
+    auto border_sides(BorderSides sides) -> BoxBuilder&;
     auto border_text(std::string_view content,
-                     BorderTextPos pos = BorderTextPos::Top) -> BoxBuilder& {
-        element_.border.text = BorderText{
-            .content  = std::string{content},
-            .position = pos,
-        };
-        return *this;
-    }
-
+                     BorderTextPos pos = BorderTextPos::Top) -> BoxBuilder&;
     auto border_text(std::string_view content,
                      BorderTextPos pos,
-                     BorderTextAlign align) -> BoxBuilder& {
-        element_.border.text = BorderText{
-            .content  = std::string{content},
-            .position = pos,
-            .align    = align,
-        };
-        return *this;
-    }
-
-    auto grow(float g = 1.0f) -> BoxBuilder& {
-        element_.layout.grow = g;
-        return *this;
-    }
-
-    auto shrink(float s) -> BoxBuilder& {
-        element_.layout.shrink = s;
-        return *this;
-    }
-
-    auto basis(Dimension d) -> BoxBuilder& {
-        element_.layout.basis = d;
-        return *this;
-    }
-
-    auto width(Dimension d) -> BoxBuilder& {
-        element_.layout.width = d;
-        return *this;
-    }
-
-    auto height(Dimension d) -> BoxBuilder& {
-        element_.layout.height = d;
-        return *this;
-    }
-
-    auto min_width(Dimension d) -> BoxBuilder& {
-        element_.layout.min_width = d;
-        return *this;
-    }
-
-    auto min_height(Dimension d) -> BoxBuilder& {
-        element_.layout.min_height = d;
-        return *this;
-    }
-
-    auto max_width(Dimension d) -> BoxBuilder& {
-        element_.layout.max_width = d;
-        return *this;
-    }
-
-    auto max_height(Dimension d) -> BoxBuilder& {
-        element_.layout.max_height = d;
-        return *this;
-    }
-
-    auto gap(int g) -> BoxBuilder& {
-        element_.layout.gap = g;
-        return *this;
-    }
-
-    auto align_items(Align a) -> BoxBuilder& {
-        element_.layout.align_items = a;
-        return *this;
-    }
-
-    auto align_self(Align a) -> BoxBuilder& {
-        element_.layout.align_self = a;
-        return *this;
-    }
-
-    auto justify(Justify j) -> BoxBuilder& {
-        element_.layout.justify = j;
-        return *this;
-    }
-
-    auto overflow(Overflow o) -> BoxBuilder& {
-        element_.overflow = o;
-        return *this;
-    }
-
-    auto bg(Color c) -> BoxBuilder& {
-        element_.style.bg = c;
-        return *this;
-    }
-
-    auto fg(Color c) -> BoxBuilder& {
-        element_.style.fg = c;
-        return *this;
-    }
-
-    auto style(Style s) -> BoxBuilder& {
-        element_.style = s;
-        return *this;
-    }
+                     BorderTextAlign align) -> BoxBuilder&;
+    auto grow(float g = 1.0f) -> BoxBuilder&;
+    auto shrink(float s) -> BoxBuilder&;
+    auto basis(Dimension d) -> BoxBuilder&;
+    auto width(Dimension d) -> BoxBuilder&;
+    auto height(Dimension d) -> BoxBuilder&;
+    auto min_width(Dimension d) -> BoxBuilder&;
+    auto min_height(Dimension d) -> BoxBuilder&;
+    auto max_width(Dimension d) -> BoxBuilder&;
+    auto max_height(Dimension d) -> BoxBuilder&;
+    auto gap(int g) -> BoxBuilder&;
+    auto align_items(Align a) -> BoxBuilder&;
+    auto align_self(Align a) -> BoxBuilder&;
+    auto justify(Justify j) -> BoxBuilder&;
+    auto overflow(Overflow o) -> BoxBuilder&;
+    auto bg(Color c) -> BoxBuilder&;
+    auto fg(Color c) -> BoxBuilder&;
+    auto style(Style s) -> BoxBuilder&;
 
     // -- Finalize with children via operator() ------------------------------
 
@@ -319,158 +187,32 @@ public:
 // Factory functions
 // ============================================================================
 
-/// Create a new BoxBuilder with default properties.
-[[nodiscard]] inline auto box() -> BoxBuilder {
-    return BoxBuilder{};
-}
+namespace detail {
+
+/// Create a new BoxBuilder. Internal — users should use dsl::v() / dsl::h().
+[[nodiscard]] auto box() -> BoxBuilder;
 
 /// Create a new BoxBuilder pre-configured with a FlexStyle.
-[[nodiscard]] inline auto box(FlexStyle layout) -> BoxBuilder {
-    return BoxBuilder{std::move(layout)};
-}
+[[nodiscard]] auto box(FlexStyle layout) -> BoxBuilder;
 
-/// Create a text Element from a string_view.
-[[nodiscard]] inline auto text(std::string_view content, Style s = {}) -> Element {
-    return Element{TextElement{
-        .content = std::string{content},
-        .style   = s,
-    }};
-}
-
-/// Create a text Element with a specific wrap mode.
-[[nodiscard]] inline auto text(std::string_view content, Style s, TextWrap w) -> Element {
-    return Element{TextElement{
-        .content = std::string{content},
-        .style   = s,
-        .wrap    = w,
-    }};
-}
+} // namespace detail
 
 // ============================================================================
-// Separator and spacer helpers
+// operator| — Pipe a Style onto an Element (internal, found via ADL)
 // ============================================================================
 
-/// A flexible spacer that absorbs remaining space (flex_grow: 1).
-/// Useful for pushing siblings to opposite ends of a container.
-[[nodiscard]] inline auto spacer() -> Element {
-    return box().grow(1.0f);
-}
-
-/// A horizontal or vertical line separator.
-/// Renders as a border-only box that stretches across the cross axis.
-[[nodiscard]] inline auto separator(BorderStyle bs = BorderStyle::Single) -> Element {
-    return box()
-        .border(bs)
-        .border_sides(BorderSides::horizontal());
-}
-
-/// Vertical separator variant.
-[[nodiscard]] inline auto vseparator(BorderStyle bs = BorderStyle::Single) -> Element {
-    return box()
-        .border(bs)
-        .border_sides(BorderSides::vertical());
-}
+[[nodiscard]] Element operator|(Element elem, const Style& s);
 
 // ============================================================================
-// Convenience: list builder from a range
-// ============================================================================
-// Turns a range of items into an ElementList by mapping each item through
-// a projection function that returns an Element.
-//
-// Usage:
-//   auto items = std::vector<std::string>{"a", "b", "c"};
-//   box().direction(Column)(
-//       map_elements(items, [](const auto& s) { return text(s); })
-//   )
-
-template <std::ranges::range R, typename Proj>
-    requires std::invocable<Proj, std::ranges::range_value_t<R>> &&
-             std::convertible_to<std::invoke_result_t<Proj, std::ranges::range_value_t<R>>, Element>
-[[nodiscard]] auto map_elements(R&& range, Proj proj) -> ElementList {
-    std::vector<Element> items;
-    if constexpr (std::ranges::sized_range<R>) {
-        items.reserve(std::ranges::size(range));
-    }
-    for (auto&& val : range) {
-        items.emplace_back(proj(std::forward<decltype(val)>(val)));
-    }
-    return ElementList{std::move(items)};
-}
-
-// ============================================================================
-// operator| — Pipe a Style onto an Element
-// ============================================================================
-// Usage:  text("hello") | bold | fg(Color::red())
-//
-// For TextElement: merges the style into the text's style.
-// For BoxElement:  merges the style into the box's style.
-// For ElementList: applies the style to every child element.
-
-[[nodiscard]] inline Element operator|(Element elem, const Style& s) {
-    std::visit([&](auto& inner) {
-        using T = std::decay_t<decltype(inner)>;
-        if constexpr (std::same_as<T, TextElement>) {
-            inner.style = inner.style.merge(s);
-        } else if constexpr (std::same_as<T, BoxElement>) {
-            inner.style = inner.style.merge(s);
-        } else if constexpr (std::same_as<T, ElementList>) {
-            for (auto& child : inner.items)
-                child = std::move(child) | s;
-        }
-    }, elem.inner);
-    return elem;
-}
-
-// ============================================================================
-// Layout shortcuts
+// Layout shortcuts (internal — used by DSL and tests)
 // ============================================================================
 
-/// Vertical stack — `box().direction(Column)`.
-[[nodiscard]] inline auto vstack() -> BoxBuilder {
-    return BoxBuilder{}.direction(FlexDirection::Column);
-}
+namespace detail {
 
-/// Horizontal stack — `box().direction(Row)`.
-[[nodiscard]] inline auto hstack() -> BoxBuilder {
-    return BoxBuilder{}.direction(FlexDirection::Row);
-}
+[[nodiscard]] auto vstack() -> BoxBuilder;
+[[nodiscard]] auto hstack() -> BoxBuilder;
+[[nodiscard]] auto center() -> BoxBuilder;
 
-/// Centered container — centers children on both axes.
-[[nodiscard]] inline auto center() -> BoxBuilder {
-    return BoxBuilder{}
-        .justify(Justify::Center)
-        .align_items(Align::Center)
-        .grow();
-}
-
-/// An empty line — visual breathing room between elements.
-[[nodiscard]] inline auto blank() -> Element {
-    return Element{TextElement{.content = ""}};
-}
-
-// ============================================================================
-// text() overloads — numeric and signal-aware
-// ============================================================================
-
-/// text(int) — auto-converts to string.
-[[nodiscard]] inline auto text(int value, Style s = {}) -> Element {
-    std::array<char, 16> buf;
-    auto [ptr, ec] = std::to_chars(buf.data(), buf.data() + buf.size(), value);
-    return Element{TextElement{
-        .content = std::string{buf.data(), ptr},
-        .style   = s,
-    }};
-}
-
-/// text(double) — auto-converts with up to 2 decimal places.
-[[nodiscard]] inline auto text(double value, Style s = {}) -> Element {
-    std::array<char, 32> buf;
-    auto [ptr, ec] = std::to_chars(buf.data(), buf.data() + buf.size(), value,
-                                    std::chars_format::fixed, 2);
-    return Element{TextElement{
-        .content = std::string{buf.data(), ptr},
-        .style   = s,
-    }};
-}
+} // namespace detail
 
 } // namespace maya

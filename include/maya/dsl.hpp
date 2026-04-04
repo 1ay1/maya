@@ -24,17 +24,22 @@
 //
 //   maya::print(ui.build());
 //
-// Dynamic content (runtime escape hatch):
+// Dynamic content (runtime text returns a proper Node — pipeable):
 //   auto ui = v(
 //       t<"Live data:"> | Bold,
-//       dyn([&] { return text("count = " + std::to_string(n)); })
+//       text("count = " + std::to_string(n)) | Fg<100, 255, 180>
 //   );
 
+#include <array>
+#include <charconv>
 #include <cstddef>
+#include <ranges>
+#include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "element/builder.hpp"
 #include "style/border.hpp"
@@ -127,20 +132,97 @@ concept Node = requires(const T& n) {
     { n.build() } -> std::convertible_to<Element>;
 };
 
-// ── Text node ────────────────────────────────────────────────────────────────
+/// DslChild: anything that can be a child of v() / h().
+/// Either a Node (has .build()) or a range of Elements (vector<Element>, etc.)
+template <typename T>
+concept DslChild = Node<T> || ElementRange<T>;
+
+// ── Compile-time text node ──────────────────────────────────────────────────
 
 template <Str S, CTStyle Sty = CTStyle{}>
 struct TextNode {
+    operator Element() const { return build(); }
     [[nodiscard]] Element build() const {
-        return maya::text(std::string_view{S}, Sty.runtime());
+        return Element{TextElement{
+            .content = std::string{std::string_view{S}},
+            .style   = Sty.runtime(),
+        }};
     }
 };
+
+// ── Runtime text node — template over content type, pipeable ────────────────
+//
+// text("hello") | Bold | Fg<255, 100, 80>
+//
+// Returns RuntimeTextNode<S> which is a proper Node. Style pipes compose at
+// the node level — .build() materializes only when the tree is finalized.
+
+template <typename S>
+struct RuntimeTextNode {
+    S content;
+    Style style{};
+    TextWrap wrap{TextWrap::Wrap};
+
+    /// Implicit conversion to Element — allows RuntimeTextNode to be used
+    /// anywhere an Element is expected (dyn() lambdas, push_back, print()).
+    operator Element() const { return build(); }
+
+    [[nodiscard]] Element build() const {
+        if constexpr (std::integral<S> && !std::same_as<S, bool>) {
+            std::array<char, 32> buf;
+            auto [ptr, ec] = std::to_chars(buf.data(), buf.data() + buf.size(), content);
+            return Element{TextElement{
+                .content = std::string{buf.data(), ptr},
+                .style   = style,
+                .wrap    = wrap,
+            }};
+        } else if constexpr (std::floating_point<S>) {
+            std::array<char, 32> buf;
+            auto [ptr, ec] = std::to_chars(buf.data(), buf.data() + buf.size(), content,
+                                            std::chars_format::fixed, 2);
+            return Element{TextElement{
+                .content = std::string{buf.data(), ptr},
+                .style   = style,
+                .wrap    = wrap,
+            }};
+        } else {
+            return Element{TextElement{
+                .content = std::string{std::string_view{content}},
+                .style   = style,
+                .wrap    = wrap,
+            }};
+        }
+    }
+};
+
+// Deduction guides
+RuntimeTextNode(const char*) -> RuntimeTextNode<std::string_view>;
+RuntimeTextNode(std::string_view) -> RuntimeTextNode<std::string_view>;
+RuntimeTextNode(std::string) -> RuntimeTextNode<std::string>;
+RuntimeTextNode(int) -> RuntimeTextNode<int>;
+RuntimeTextNode(double) -> RuntimeTextNode<double>;
+
+/// Runtime text factory — returns a pipeable Node, not a raw Element.
+///   text("hello") | Bold | Fg<255, 100, 80>
+///   text(42) | Dim
+///   text(3.14)
+template <typename S>
+[[nodiscard]] auto text(S&& content, Style s = {}) {
+    return RuntimeTextNode<std::decay_t<S>>{std::forward<S>(content), s};
+}
+
+/// Overload with explicit TextWrap.
+template <typename S>
+[[nodiscard]] auto text(S&& content, Style s, TextWrap w) {
+    return RuntimeTextNode<std::decay_t<S>>{std::forward<S>(content), s, w};
+}
 
 // ── Dynamic node — runtime escape hatch in a compile-time tree ───────────────
 
 template <typename F>
 struct DynNode {
     F fn;
+    operator Element() const { return build(); }
     [[nodiscard]] Element build() const { return fn(); }
 };
 
@@ -148,24 +230,85 @@ template <typename F>
     requires std::invocable<F> && std::convertible_to<std::invoke_result_t<F>, Element>
 auto dyn(F&& fn) { return DynNode<std::decay_t<F>>{std::forward<F>(fn)}; }
 
-// ── Spacer / Separator ───────────────────────────────────────────────────────
+// ── Spacer / Separator / Blank — compile-time nodes ─────────────────────────
 
 struct SpacerNode {
-    [[nodiscard]] Element build() const { return maya::spacer(); }
+    operator Element() const { return build(); }
+    [[nodiscard]] Element build() const {
+        return Element{BoxElement{.layout = {.grow = 1.0f}}};
+    }
 };
 inline constexpr SpacerNode space{};
 
 struct SepNode {
-    [[nodiscard]] Element build() const { return maya::separator(); }
+    operator Element() const { return build(); }
+    [[nodiscard]] Element build() const {
+        return maya::detail::box()
+            .border(BorderStyle::Single)
+            .border_sides(BorderSides::horizontal());
+    }
 };
 inline constexpr SepNode sep{};
 
-// ── Blank line node ──────────────────────────────────────────────────────────
+struct VSepNode {
+    operator Element() const { return build(); }
+    [[nodiscard]] Element build() const {
+        return maya::detail::box()
+            .border(BorderStyle::Single)
+            .border_sides(BorderSides::vertical());
+    }
+};
+inline constexpr VSepNode vsep{};
 
 struct BlankNode {
-    [[nodiscard]] Element build() const { return maya::blank(); }
+    operator Element() const { return build(); }
+    [[nodiscard]] Element build() const {
+        return Element{TextElement{.content = ""}};
+    }
 };
 inline constexpr BlankNode blank_{};
+
+/// Function aliases — return nodes, not raw Elements.
+[[nodiscard]] constexpr auto spacer()    { return SpacerNode{}; }
+[[nodiscard]] constexpr auto separator() { return SepNode{}; }
+[[nodiscard]] constexpr auto blank()     { return BlankNode{}; }
+
+// ── Map node — project a runtime range into a Node ──────────────────────────
+//
+// map(items, [](const auto& s) { return text(s); })
+//
+// Returns MapNode<R, Proj> which satisfies Node. The range is captured and
+// the projection applied lazily in .build().
+
+template <typename R, typename Proj>
+struct MapNode {
+    R range;
+    Proj proj;
+
+    operator Element() const { return build(); }
+    [[nodiscard]] Element build() const {
+        std::vector<Element> items;
+        if constexpr (std::ranges::sized_range<R>) {
+            items.reserve(std::ranges::size(range));
+        }
+        for (auto&& val : range) {
+            if constexpr (Node<std::invoke_result_t<Proj, decltype(val)>>) {
+                items.emplace_back(proj(std::forward<decltype(val)>(val)).build());
+            } else {
+                items.emplace_back(proj(std::forward<decltype(val)>(val)));
+            }
+        }
+        return Element{ElementList{std::move(items)}};
+    }
+};
+
+/// Map a range through a projection into a Node.
+///   map(items, [](const auto& s) { return text(s) | Bold; })
+template <std::ranges::range R, typename Proj>
+[[nodiscard]] auto map(R&& range, Proj&& proj) {
+    return MapNode<std::decay_t<R>, std::decay_t<Proj>>{
+        std::forward<R>(range), std::forward<Proj>(proj)};
+}
 
 // ── Box node ─────────────────────────────────────────────────────────────────
 
@@ -173,9 +316,11 @@ template <FlexDirection Dir, BoxCfg Cfg, typename... Children>
 struct BoxNode {
     std::tuple<Children...> children;
 
+    operator Element() const { return build(); }
+
     [[nodiscard]] Element build() const {
         return std::apply([](const auto&... cs) {
-            auto b = maya::box().direction(Dir);
+            auto b = maya::detail::box().direction(Dir);
             if constexpr (Cfg.pad_t || Cfg.pad_r || Cfg.pad_b || Cfg.pad_l)
                 b = std::move(b).padding(Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l);
             if constexpr (Cfg.gap > 0)
@@ -190,7 +335,25 @@ struct BoxNode {
             if constexpr (sty.has_fg || sty.has_bg || sty.bold_ || sty.dim_ ||
                           sty.italic_ || sty.underline_ || sty.strike_ || sty.inverse_)
                 b = std::move(b).style(sty.runtime());
-            return b(cs.build()...);
+
+            // Fast path: all children are Nodes (compile-time known)
+            if constexpr ((Node<std::remove_cvref_t<decltype(cs)>> && ...)) {
+                return b(cs.build()...);
+            } else {
+                // Mixed path: some children may be ElementRanges (vector<Element>, etc.)
+                std::vector<Element> elems;
+                auto collect = [&elems](const auto& c) {
+                    using T = std::remove_cvref_t<decltype(c)>;
+                    if constexpr (Node<T>) {
+                        elems.push_back(c.build());
+                    } else {
+                        for (const auto& item : c)
+                            elems.push_back(Element{item});
+                    }
+                };
+                (collect(cs), ...);
+                return b(std::move(elems));
+            }
         }, children);
     }
 };
@@ -225,11 +388,26 @@ template <BorderStyle BS>                           inline constexpr BorderTag<B
 template <uint8_t R, uint8_t G, uint8_t B>         inline constexpr BColTag<R,G,B>  bcol{};
 template <int G = 1>                                inline constexpr GrowTag<G>      grow_{};
 
-// ── operator| : Text | Style ────────────────────────────────────────────────
+// ── operator| : TextNode | Style (compile-time) ────────────────────────────
 
 template <Str S, CTStyle Sty, CTStyle V>
 constexpr auto operator|(TextNode<S, Sty>, StyTag<V>) {
     return TextNode<S, Sty.merge(V)>{};
+}
+
+// ── operator| : RuntimeTextNode | Style (compile-time style on runtime text)
+
+template <typename S, CTStyle V>
+[[nodiscard]] auto operator|(RuntimeTextNode<S> n, StyTag<V>) {
+    n.style = n.style.merge(V.runtime());
+    return n;
+}
+
+// ── operator| : Element | Style (fallback for raw Elements) ─────────────────
+
+template <CTStyle V>
+[[nodiscard]] inline Element operator|(Element e, StyTag<V>) {
+    return std::move(e) | V.runtime();
 }
 
 // ── operator| : Box | Style ─────────────────────────────────────────────────
@@ -295,14 +473,18 @@ constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, GrowTag<G>) {
 template <Str S>
 inline constexpr TextNode<S> t{};
 
-/// Compile-time VStack: v(child1, child2, ...)
-template <Node... Cs>
+/// VStack: v(child1, child2, ...)
+/// Accepts any mix of compile-time nodes, runtime Elements, and
+/// ranges of Elements (e.g. std::vector<Element>).
+template <DslChild... Cs>
 constexpr auto v(Cs... cs) {
     return BoxNode<FlexDirection::Column, BoxCfg{}, Cs...>{{cs...}};
 }
 
-/// Compile-time HStack: h(child1, child2, ...)
-template <Node... Cs>
+/// HStack: h(child1, child2, ...)
+/// Accepts any mix of compile-time nodes, runtime Elements, and
+/// ranges of Elements (e.g. std::vector<Element>).
+template <DslChild... Cs>
 constexpr auto h(Cs... cs) {
     return BoxNode<FlexDirection::Row, BoxCfg{}, Cs...>{{cs...}};
 }
@@ -314,12 +496,27 @@ inline constexpr BorderStyle Single = BorderStyle::Single;
 inline constexpr BorderStyle Thick  = BorderStyle::Bold;
 inline constexpr BorderStyle Double = BorderStyle::Double;
 
+// ── Runtime builders (promoted from detail) ─────────────────────────────────
+//
+// For containers that need runtime-configured borders, colors, or border text,
+// use these fluent builders alongside the compile-time DSL:
+//
+//   vstack().border(Round).border_color(theme_color())
+//       .border_text(spin() + " CPU", BorderTextPos::Top)
+//       .padding(0, 1, 0, 1)(rows)
+
+using maya::detail::vstack;
+using maya::detail::hstack;
+using maya::detail::center;
+
 // ── Compile-time validation ─────────────────────────────────────────────────
 
-// Verify the Node concept works for all node types
-static_assert(Node<TextNode<Str{"hello"}>>, "TextNode must satisfy Node");
-static_assert(Node<SpacerNode>,             "SpacerNode must satisfy Node");
-static_assert(Node<SepNode>,                "SepNode must satisfy Node");
-static_assert(Node<BlankNode>,              "BlankNode must satisfy Node");
+static_assert(Node<TextNode<Str{"hello"}>>,              "TextNode must satisfy Node");
+static_assert(Node<RuntimeTextNode<std::string_view>>,   "RuntimeTextNode must satisfy Node");
+static_assert(Node<RuntimeTextNode<int>>,                "RuntimeTextNode<int> must satisfy Node");
+static_assert(Node<SpacerNode>,                          "SpacerNode must satisfy Node");
+static_assert(Node<SepNode>,                             "SepNode must satisfy Node");
+static_assert(Node<VSepNode>,                            "VSepNode must satisfy Node");
+static_assert(Node<BlankNode>,                           "BlankNode must satisfy Node");
 
 } // namespace maya::dsl

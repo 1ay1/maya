@@ -44,53 +44,13 @@ namespace maya {
 
 namespace detail {
 
-inline int detect_terminal_width() noexcept {
-    #ifdef __unix__
-    struct winsize ws{};
-    if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-        return ws.ws_col;
-    #endif
-    return 80;
-}
-
-// Find the last non-empty row in a canvas.
-inline int content_height(const Canvas& c) noexcept {
-    const int w = c.width();
-    const int h = c.height();
-    for (int y = h - 1; y >= 0; --y) {
-        for (int x = 0; x < w; ++x) {
-            auto cell = Cell::unpack(c.cells()[y * w + x]);
-            if (cell.character != U' ' && cell.character != 0) return y + 1;
-        }
-    }
-    return 1;
-}
+int detect_terminal_width() noexcept;
 
 // Render element → serialize → write to stdout, erasing previous output.
-inline int render_inline(const Element& root, int width, StylePool& pool,
-                         std::string& buf, int prev_height) {
-    constexpr int kMaxHeight = 60;
-    Canvas canvas{width, kMaxHeight, &pool};
-    render_tree(root, canvas, pool, theme::dark);
-
-    int h = content_height(canvas);
-
-    // Trim canvas to content height
-    Canvas trimmed{width, h, &pool};
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < width; ++x) {
-            auto cell = Cell::unpack(canvas.cells()[y * width + x]);
-            trimmed.set(x, y, cell.character, cell.style_id);
-        }
-
-    buf.clear();
-    if (prev_height > 0) ansi::erase_lines(prev_height, buf);
-    serialize(trimmed, pool, buf);
-
-    std::fwrite(buf.data(), 1, buf.size(), stdout);
-    std::fflush(stdout);
-    return h;
-}
+// Uses content_height() and serialize(rows) from serialize.hpp to avoid
+// copying into a trimmed canvas.
+int render_inline(const Element& root, int width, StylePool& pool,
+                  std::string& buf, int prev_height);
 
 } // namespace detail
 
@@ -104,23 +64,10 @@ inline int render_inline(const Element& root, int width, StylePool& pool,
 ///           text("World", dim)
 ///       )
 ///   );
-inline void print(const Element& root) {
-    int width = detail::detect_terminal_width() - 1;
-    StylePool pool;
-    std::string buf;
-    detail::render_inline(root, width, pool, buf, 0);
-    std::fputc('\n', stdout);
-    std::fflush(stdout);
-}
+void print(const Element& root);
 
 /// Print with explicit width.
-inline void print(const Element& root, int width) {
-    StylePool pool;
-    std::string buf;
-    detail::render_inline(root, width, pool, buf, 0);
-    std::fputc('\n', stdout);
-    std::fflush(stdout);
-}
+void print(const Element& root, int width);
 
 // ── InlineConfig ─────────────────────────────────────────────────────────────
 

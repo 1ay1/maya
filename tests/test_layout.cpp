@@ -4,6 +4,8 @@
 #include <print>
 
 using namespace maya;
+using namespace maya::detail;
+using namespace maya::dsl;
 
 // Extract ASCII/printable row from canvas (box-drawing chars → '#')
 static std::string get_row(const Canvas& canvas, int y) {
@@ -460,8 +462,204 @@ void test_string_child_auto_text() {
     std::println("PASS\n");
 }
 
+// ============================================================================
+// Dashboard-like layout: vstack(header, hstack(left_col, right_col), procs, footer)
+// ============================================================================
+
+void test_dashboard_layout() {
+    std::println("--- test_dashboard_layout ---");
+    StylePool pool;
+    Canvas canvas(80, 40, &pool);
+
+    // Simulate dashboard structure:
+    // - header (1 row)
+    // - grid: hstack containing two vstacks with bordered panels
+    // - procs: bordered vstack with several rows
+    // - footer (1 row)
+
+    // Use realistic content widths — sparklines are wide strings
+    std::string spark40(40, 'X');  // 40-char sparkline
+    std::string spark30(30, 'Y');  // 30-char sparkline
+    std::string spark20(20, 'Z');  // 20-char sparkline
+    std::string gauge20(20, '=');  // 20-char gauge
+
+    auto cpu_panel = box().direction(Column).border(BorderStyle::Round).padding(0,1,0,1)(
+        // hstack: "avg " + 40-char sparkline
+        box().direction(Row)(text("avg "), text(spark40)),
+        text(" 50.0%  max 92%  min 12%"),
+        text(""),
+        box().direction(Row)(text("c0 "), text(spark30), text(" 79%")),
+        box().direction(Row)(text("c1 "), text(spark30), text(" 21%")),
+        box().direction(Row)(text("c2 "), text(spark30), text(" 77%")),
+        box().direction(Row)(text("c3 "), text(spark30), text(" 53%")),
+        box().direction(Row)(text("c4 "), text(spark30), text(" 52%")),
+        box().direction(Row)(text("c5 "), text(spark30), text(" 14%")),
+        box().direction(Row)(text("c6 "), text(spark30), text(" 92%")),
+        box().direction(Row)(text("c7 "), text(spark30), text(" 12%"))
+    );
+    auto net_panel = box().direction(Column).border(BorderStyle::Round).padding(0,1,0,1)(
+        text("eth0  up 6.6 MB/s  dn 51.9 MB/s"),
+        box().direction(Row)(text(" rx "), text(spark30)),
+        box().direction(Row)(text(" tx "), text(spark30)),
+        text("tcp 842  udp 156  err 0  drop 0"),
+        text("rx 2.4G  tx 0.6G")
+    );
+    auto mem_panel = box().direction(Column).border(BorderStyle::Round).padding(0,1,0,1)(
+        text("92% used"),
+        text(gauge20),
+        text(""),
+        text("used   9.0G"),
+        text("buff   1.8G"),
+        text("cache  3.9G"),
+        text("free   1.3G"),
+        text("total 16.0G"),
+        text(""),
+        text(spark20)
+    );
+    auto disk_panel = box().direction(Column).border(BorderStyle::Round).padding(0,1,0,1)(
+        text("sda  R  87 MB/s  W  13 MB/s"),
+        box().direction(Row)(text("read "), text(spark20)),
+        box().direction(Row)(text("write"), text(spark20)),
+        text("iops 18.3k r/s  12.1k w/s"),
+        text("lat r 1.8ms  w 3.3ms"),
+        box().direction(Row)(text("util "), text(std::string(14, '=')), text(" 43%"))
+    );
+
+    auto left_col  = box().direction(Column).grow(2)(std::move(cpu_panel), std::move(net_panel));
+    auto right_col = box().direction(Column).grow(1)(std::move(mem_panel), std::move(disk_panel));
+    auto grid      = box().direction(Row)(std::move(left_col), std::move(right_col));
+
+    auto procs = box().direction(Column).border(BorderStyle::Round)(
+        text("PID  USER  NAME"),
+        text("1284 www   node"),
+        text("892  pg    postgres"),
+        text("2041 www   nginx")
+    );
+
+    auto tree = box().direction(Column)(
+        text("HEADER"),
+        std::move(grid),
+        std::move(procs),
+        text("FOOTER")
+    );
+
+    // Build layout tree and compute layout manually to inspect sizes
+    std::vector<layout::LayoutNode> dbg_nodes;
+    dbg_nodes.reserve(128);
+    render_detail::build_layout_tree(tree, dbg_nodes, theme::dark);
+    dbg_nodes[0].style.width = Dimension::fixed(80);
+    dbg_nodes[0].style.height = Dimension::fixed(40);
+    layout::compute(dbg_nodes, 0, 80, 40);
+
+    // Print root children sizes
+    std::println("  Root children:");
+    for (auto ci : dbg_nodes[0].children) {
+        auto& n = dbg_nodes[ci];
+        std::println("    node[{}]: pos=({},{}) size={}x{}",
+            ci, n.computed.pos.x.value, n.computed.pos.y.value,
+            n.computed.size.width.value, n.computed.size.height.value);
+        // Print grandchildren
+        for (auto gi : n.children) {
+            auto& g = dbg_nodes[gi];
+            std::println("      node[{}]: pos=({},{}) size={}x{}",
+                gi, g.computed.pos.x.value, g.computed.pos.y.value,
+                g.computed.size.width.value, g.computed.size.height.value);
+        }
+    }
+
+    render_tree(std::move(tree), canvas, pool, theme::dark);
+    dump(canvas, 30);
+
+    // Header should be at row 0
+    assert(get_row(canvas, 0).find("HEADER") != std::string::npos);
+
+    // CPU panel border should start at row 1 (right after header)
+    std::string row1 = get_row(canvas, 1);
+    std::println("  row1: '{}'", row1);
+    assert(row1.find('#') != std::string::npos); // border chars
+
+    // Check there's no huge empty gap - row 1 should have content, not be empty
+    assert(!row1.empty());
+
+    // Footer should be right after procs, not at the very bottom
+    // Find footer row
+    int footer_row = -1;
+    for (int y = 0; y < 40; ++y) {
+        if (get_row(canvas, y).find("FOOTER") != std::string::npos) {
+            footer_row = y;
+            break;
+        }
+    }
+    std::println("  footer at row: {}", footer_row);
+    assert(footer_row > 0 && footer_row < 30); // should be tightly packed
+
+    std::println("PASS\n");
+}
+
+// ============================================================================
+// Regression: column child's height should recompute when width changes
+// ============================================================================
+
+void test_column_child_height_recomputes() {
+    std::println("--- test_column_child_height_recomputes ---");
+    StylePool pool;
+    Canvas canvas(40, 20, &pool);
+
+    // An hstack with two children whose combined natural width exceeds
+    // the container. The hstack shrinks them. Content that fit at natural
+    // width may wrap at the shrunk width, increasing height. The outer
+    // column must accommodate the taller recomputed height.
+
+    // Left: 30-char text x3 = 3 rows at 30+ cols, 6 rows at 15 cols
+    // Right: 30-char text x2 = 2 rows at 30+ cols
+    // In 40 cols, total hypo = 60, shrink to 40. left→20, right→20.
+    // At 20 cols, 30-char text wraps to 2 rows. Left = 6 rows, right = 4.
+    std::string wide_text(30, 'A');
+    auto left = box().direction(Column)(
+        text(wide_text),
+        text(wide_text),
+        text(wide_text)
+    );
+    auto right = box().direction(Column)(
+        text(std::string(30, 'B')),
+        text(std::string(30, 'B'))
+    );
+    auto row_box = box().direction(Row)(std::move(left), std::move(right));
+
+    auto tree = box().direction(Column)(
+        text("TOP"),
+        std::move(row_box),
+        text("BOT")
+    );
+
+    render_tree(std::move(tree), canvas, pool, theme::dark);
+    dump(canvas, 10);
+
+    // TOP should be at row 0
+    assert(get_row(canvas, 0).find("TOP") != std::string::npos);
+
+    // At 30 cols each (natural width), left=3 rows, right=2, hstack cross=3.
+    // After shrink to 20 cols each, text wraps: left=6 rows, right=4,
+    // hstack cross should be 6. BOT at row 7.
+    int bot_row = -1;
+    for (int y = 0; y < 20; ++y) {
+        if (get_row(canvas, y).find("BOT") != std::string::npos) {
+            bot_row = y;
+            break;
+        }
+    }
+    std::println("  BOT at row: {}", bot_row);
+    // Without the fix, BOT at row 4 (hstack height=3 from full-width measurement).
+    // With the fix, BOT at row 7 (hstack height=6 after text wraps at shrunk width).
+    assert(bot_row >= 5);
+
+    std::println("PASS\n");
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    test_column_child_height_recomputes();
+    test_dashboard_layout();
     test_bare_text_renders_at_origin();
     test_text_with_style_renders();
     test_text_truncate_end();
@@ -485,5 +683,5 @@ int main() {
     test_separator_draws_horizontal_line();
     test_counter_tree();
     test_string_child_auto_text();
-    std::println("=== ALL 23 TESTS PASSED ===");
+    std::println("=== ALL 25 TESTS PASSED ===");
 }

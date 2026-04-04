@@ -96,91 +96,42 @@ inline constexpr std::string_view bg_reset          = "\x1b[49m";
 // Cursor control
 // ============================================================================
 
-[[nodiscard]] inline std::string move_up(int n = 1) {
-    if (n == 0) return {};
-    return "\x1b[" + std::to_string(n) + "A";
-}
-
-[[nodiscard]] inline std::string move_down(int n = 1) {
-    if (n == 0) return {};
-    return "\x1b[" + std::to_string(n) + "B";
-}
-
-[[nodiscard]] inline std::string move_right(int n = 1) {
-    if (n == 0) return {};
-    return "\x1b[" + std::to_string(n) + "C";
-}
-
-[[nodiscard]] inline std::string move_left(int n = 1) {
-    if (n == 0) return {};
-    return "\x1b[" + std::to_string(n) + "D";
-}
+[[nodiscard]] std::string move_up(int n = 1);
+[[nodiscard]] std::string move_down(int n = 1);
+[[nodiscard]] std::string move_right(int n = 1);
+[[nodiscard]] std::string move_left(int n = 1);
 
 // move_to: 1-based (col, row) as per ANSI CUP convention
-[[nodiscard]] inline std::string move_to(int col, int row) {
-    return "\x1b[" + std::to_string(row) + ";" + std::to_string(col) + "H";
-}
+[[nodiscard]] std::string move_to(int col, int row);
+[[nodiscard]] std::string move_to_col(int col);
 
-[[nodiscard]] inline std::string move_to_col(int col) {
-    return "\x1b[" + std::to_string(col) + "G";
-}
-
-[[nodiscard]] inline std::string save_pos() {
-    return "\x1b[s";
-}
-
-[[nodiscard]] inline std::string restore_pos() {
-    return "\x1b[u";
-}
-
-[[nodiscard]] inline std::string home() {
-    return "\x1b[H";
-}
+[[nodiscard]] std::string save_pos();
+[[nodiscard]] std::string restore_pos();
+[[nodiscard]] std::string home();
 
 // ============================================================================
 // Screen / line clearing
 // ============================================================================
 
 // 0 = cursor to end, 1 = cursor to start, 2 = entire screen
-[[nodiscard]] inline std::string clear_screen() {
-    return "\x1b[2J";
-}
-
-[[nodiscard]] inline std::string clear_line() {
-    return "\x1b[2K";
-}
-
-[[nodiscard]] inline std::string clear_to_end() {
-    return "\x1b[0K";
-}
-
-[[nodiscard]] inline std::string clear_to_start() {
-    return "\x1b[1K";
-}
+[[nodiscard]] std::string clear_screen();
+[[nodiscard]] std::string clear_line();
+[[nodiscard]] std::string clear_to_end();
+[[nodiscard]] std::string clear_to_start();
 
 /// Erase `n` lines upward from the current cursor row (inclusive), then move
 /// the cursor to column 1 of the top erased line. Matches Ink's eraseLines().
-inline void erase_lines(int n, std::string& out) {
-    for (int i = 0; i < n; ++i) {
-        out += "\x1b[2K";            // erase entire current line
-        if (i < n - 1) out += "\x1b[A"; // cursor up (not on last iteration)
-    }
-    if (n > 0) out += "\x1b[G";     // cursor to column 1
-}
+void erase_lines(int n, std::string& out);
 
 // ============================================================================
 // Color SGR sequences
 // ============================================================================
 
 // Foreground color sequence (without CSI/m wrapper - just the SGR parameter)
-[[nodiscard]] inline std::string fg(const Color& c) {
-    return "\x1b[" + c.fg_sgr() + "m";
-}
+[[nodiscard]] std::string fg(const Color& c);
 
 // Background color sequence
-[[nodiscard]] inline std::string bg(const Color& c) {
-    return "\x1b[" + c.bg_sgr() + "m";
-}
+[[nodiscard]] std::string bg(const Color& c);
 
 // ============================================================================
 // StyleApplier - diff-based SGR transition
@@ -192,201 +143,36 @@ inline void erase_lines(int n, std::string& out) {
 class StyleApplier {
 public:
     // Apply a style from scratch (previous style unknown / reset state)
-    [[nodiscard]] static std::string apply(const Style& s) {
-        std::string out;
-        out.reserve(32);
-
-        // Collect SGR parameters into a single sequence to avoid
-        // emitting multiple CSI..m runs.
-        std::string params;
-
-        if (s.bold)          append_param(params, "1");
-        if (s.dim)           append_param(params, "2");
-        if (s.italic)        append_param(params, "3");
-        if (s.underline)     append_param(params, "4");
-        if (s.inverse)       append_param(params, "7");
-        if (s.strikethrough) append_param(params, "9");
-
-        if (s.fg) append_param(params, s.fg->fg_sgr());
-        if (s.bg) append_param(params, s.bg->bg_sgr());
-
-        if (!params.empty()) {
-            out += "\x1b[";
-            out += params;
-            out += 'm';
-        }
-
-        return out;
-    }
+    [[nodiscard]] static std::string apply(const Style& s);
 
     // Transition from `prev` to `next`, emitting only what changed.
     // Returns empty string if the styles are identical.
-    [[nodiscard]] static std::string transition(const Style& prev, const Style& next) {
-        if (prev == next) return {};
-
-        // If any attribute was turned off that was previously on, we must
-        // reset and re-apply. SGR doesn't have individual "off" codes for
-        // bold vs dim (both are code 22), so a full reset is the safe path
-        // when attributes are removed.
-        bool needs_reset = (prev.bold          && !next.bold)
-                        || (prev.dim           && !next.dim)
-                        || (prev.italic        && !next.italic)
-                        || (prev.underline     && !next.underline)
-                        || (prev.inverse       && !next.inverse)
-                        || (prev.strikethrough && !next.strikethrough)
-                        || (prev.fg.has_value() && !next.fg.has_value())
-                        || (prev.bg.has_value() && !next.bg.has_value());
-
-        if (needs_reset) {
-            // Reset and re-apply from scratch
-            std::string out;
-            out.reserve(48);
-            out += "\x1b[0m";
-
-            std::string params;
-            if (next.bold)          append_param(params, "1");
-            if (next.dim)           append_param(params, "2");
-            if (next.italic)        append_param(params, "3");
-            if (next.underline)     append_param(params, "4");
-            if (next.inverse)       append_param(params, "7");
-            if (next.strikethrough) append_param(params, "9");
-            if (next.fg) append_param(params, next.fg->fg_sgr());
-            if (next.bg) append_param(params, next.bg->bg_sgr());
-
-            if (!params.empty()) {
-                out += "\x1b[";
-                out += params;
-                out += 'm';
-            }
-            return out;
-        }
-
-        // Only additions/changes - emit incremental SGR
-        std::string params;
-
-        if (next.bold          && !prev.bold)          append_param(params, "1");
-        if (next.dim           && !prev.dim)           append_param(params, "2");
-        if (next.italic        && !prev.italic)        append_param(params, "3");
-        if (next.underline     && !prev.underline)     append_param(params, "4");
-        if (next.inverse       && !prev.inverse)       append_param(params, "7");
-        if (next.strikethrough && !prev.strikethrough)  append_param(params, "9");
-
-        if (next.fg != prev.fg && next.fg) {
-            append_param(params, next.fg->fg_sgr());
-        }
-        if (next.bg != prev.bg && next.bg) {
-            append_param(params, next.bg->bg_sgr());
-        }
-
-        if (params.empty()) return {};
-
-        std::string out;
-        out.reserve(params.size() + 4);
-        out += "\x1b[";
-        out += params;
-        out += 'm';
-        return out;
-    }
+    [[nodiscard]] static std::string transition(const Style& prev, const Style& next);
 
     // -------------------------------------------------------------------------
-    // Zero-allocation variants — write directly into an existing string.
+    // Zero-allocation variants --- write directly into an existing string.
     // Hot path: called once per style change in the diff loop.
     // -------------------------------------------------------------------------
 
     /// Apply a complete style directly to `out` (no intermediate allocations).
-    static void apply_to(const Style& s, std::string& out) {
-        if (s.empty()) return;
-        out += "\x1b[";
-        bool first = true;
-        auto sep = [&]() { if (!first) out += ';'; first = false; };
-        if (s.bold)          { sep(); out += '1'; }
-        if (s.dim)           { sep(); out += '2'; }
-        if (s.italic)        { sep(); out += '3'; }
-        if (s.underline)     { sep(); out += '4'; }
-        if (s.inverse)       { sep(); out += '7'; }
-        if (s.strikethrough) { sep(); out += '9'; }
-        if (s.fg) { sep(); s.fg->append_fg_sgr(out); }
-        if (s.bg) { sep(); s.bg->append_bg_sgr(out); }
-        out += 'm';
-    }
+    static void apply_to(const Style& s, std::string& out);
 
     /// Transition from `prev` to `next`, writing directly to `out`.
     /// Emits nothing when styles are identical.
-    static void transition_to(const Style& prev, const Style& next, std::string& out) {
-        if (prev == next) return;
-
-        bool needs_reset = (prev.bold          && !next.bold)
-                        || (prev.dim           && !next.dim)
-                        || (prev.italic        && !next.italic)
-                        || (prev.underline     && !next.underline)
-                        || (prev.inverse       && !next.inverse)
-                        || (prev.strikethrough && !next.strikethrough)
-                        || (prev.fg.has_value() && !next.fg.has_value())
-                        || (prev.bg.has_value() && !next.bg.has_value());
-
-        if (needs_reset) {
-            out += "\x1b[0m";
-            apply_to(next, out);
-            return;
-        }
-
-        // Only additions — emit incremental SGR.
-        bool any = false;
-        auto mark = [&]() { if (!any) { out += "\x1b["; any = true; } else out += ';'; };
-
-        if (next.bold          && !prev.bold)          { mark(); out += '1'; }
-        if (next.dim           && !prev.dim)           { mark(); out += '2'; }
-        if (next.italic        && !prev.italic)        { mark(); out += '3'; }
-        if (next.underline     && !prev.underline)     { mark(); out += '4'; }
-        if (next.inverse       && !prev.inverse)       { mark(); out += '7'; }
-        if (next.strikethrough && !prev.strikethrough) { mark(); out += '9'; }
-        if (next.fg && next.fg != prev.fg) { mark(); next.fg->append_fg_sgr(out); }
-        if (next.bg && next.bg != prev.bg) { mark(); next.bg->append_bg_sgr(out); }
-
-        if (any) out += 'm';
-    }
+    static void transition_to(const Style& prev, const Style& next, std::string& out);
 
 private:
-    static void append_param(std::string& params, std::string_view p) {
-        if (!params.empty()) params += ';';
-        params += p;
-    }
+    static void append_param(std::string& params, std::string_view p);
 };
 
 // ============================================================================
 // OSC sequences
 // ============================================================================
 
-[[nodiscard]] inline std::string set_title(std::string_view title) {
-    std::string out;
-    out.reserve(title.size() + 6);
-    out += "\x1b]2;";
-    out += title;
-    out += '\x07';
-    return out;
-}
-
-[[nodiscard]] inline std::string hyperlink_start(std::string_view uri) {
-    std::string out;
-    out.reserve(uri.size() + 8);
-    out += "\x1b]8;;";
-    out += uri;
-    out += '\x07';
-    return out;
-}
-
-[[nodiscard]] inline std::string hyperlink_end() {
-    return "\x1b]8;;\x07";
-}
-
-[[nodiscard]] inline std::string set_clipboard(std::string_view base64_data) {
-    std::string out;
-    out.reserve(base64_data.size() + 12);
-    out += "\x1b]52;c;";
-    out += base64_data;
-    out += '\x07';
-    return out;
-}
+[[nodiscard]] std::string set_title(std::string_view title);
+[[nodiscard]] std::string hyperlink_start(std::string_view uri);
+[[nodiscard]] std::string hyperlink_end();
+[[nodiscard]] std::string set_clipboard(std::string_view base64_data);
 
 } // namespace ansi
 } // namespace maya

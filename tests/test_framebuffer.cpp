@@ -4,6 +4,7 @@
 #include <print>
 
 using namespace maya;
+using namespace maya::dsl;
 
 void test_framebuffer_first_render_nonempty() {
     std::println("--- test_framebuffer_first_render_nonempty ---");

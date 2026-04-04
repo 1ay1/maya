@@ -117,7 +117,7 @@ static Element build_ui() {
     rows.push_back(h(
         dyn([] { return text("\xe2\x9a\xa1 ", sBrand); }),
         dyn([] { return text("Installing dependencies...", sWhite); })
-    ).build());
+    ));
     rows.push_back(text(""));
 
     for (int i = 0; i < kN; ++i) {
@@ -129,7 +129,7 @@ static Element build_ui() {
                 dyn([&p] { return text(p.name, sMuted); }),
                 dyn([&p] { return text(" ", sMuted); }),
                 dyn([&p] { return text(p.version, sMuted); })
-            ).build());
+            ));
             continue;
         }
 
@@ -143,7 +143,7 @@ static Element build_ui() {
                 dyn([&p] { return text(p.version, sDim); }),
                 dyn([] { return text("  ", sDim); }),
                 dyn([sz] { return text(sz, sDim); })
-            ).build());
+            ));
             continue;
         }
 
@@ -184,7 +184,7 @@ static Element build_ui() {
             dyn([pct_buf] { return text(pct_buf, sName); }),
             dyn([] { return text("  ", sDim); }),
             dyn([spd_buf] { return text(spd_buf, sSpeed); })
-        ).build());
+        ));
     }
 
     rows.push_back(text(""));
@@ -205,7 +205,7 @@ static Element build_ui() {
         rows.push_back(text(buf, sBrand));
     }
 
-    return vstack()(std::move(rows));
+    return v(std::move(rows));
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────

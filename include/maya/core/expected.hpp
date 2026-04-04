@@ -6,6 +6,7 @@
 // Just algebraic types composed monadically.
 
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <expected>
 #include <source_location>

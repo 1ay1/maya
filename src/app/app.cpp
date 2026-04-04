@@ -151,8 +151,9 @@ auto App::Builder::build() -> Result<App> {
     app.raw_terminal_  = std::move(raw_term);
     app.fd_            = fd;
     app.writer_        = std::make_unique<Writer>(fd);
-    app.theme_         = theme_;
-    app.mouse_enabled_ = mouse_;
+    app.theme_          = theme_;
+    app.mouse_enabled_  = mouse_;
+    app.started_inline_ = !alt_screen_;
 
     // Store theme in the context so render functions can access it.
     app.context_.set<Theme>(theme_);
@@ -332,6 +333,12 @@ void App::handle_resize() {
     }
 
     if (new_size != size_) {
+        // In inline mode, a width change means the terminal has reflowed
+        // our output. Promote to alt screen for clean diff-based rendering.
+        if (is_inline() && new_size.width != size_.width) {
+            promote_to_alt_screen();
+        }
+
         size_ = new_size;
         context_.set<Size>(size_);
         for (auto& handler : resize_handlers_) {
@@ -341,6 +348,34 @@ void App::handle_resize() {
     }
 }
 
+void App::promote_to_alt_screen() {
+    if (!raw_terminal_) return;
+
+    // Erase inline output before switching buffers.
+    {
+        std::string cleanup;
+        ansi::erase_lines(prev_height_, cleanup);
+        cleanup += ansi::show_cursor;
+        (void)writer_->write_raw(cleanup);
+    }
+
+    // Transition Raw → AltScreen.
+    auto result = std::move(*raw_terminal_).enter_alt_screen();
+    raw_terminal_.reset();
+
+    if (result) {
+        alt_terminal_ = std::move(*result);
+    }
+
+    // Force fresh double-buffered canvases at new size.
+    canvas_ = Canvas(1, 1, &pool_);
+    front_  = Canvas(1, 1, &pool_);
+    pool_.clear();
+    prev_height_ = 0;
+    prev_width_  = 0;
+    needs_clear_ = true;
+}
+
 // ============================================================================
 // Frame rendering
 // ============================================================================
@@ -348,13 +383,53 @@ void App::handle_resize() {
 auto App::render_frame() -> Status {
     if (!render_fn_) return ok();
 
-    // In inline mode, reserve 1 column to avoid terminal line-wrap artifacts.
+    const bool promoted = started_inline_ && !is_inline();
     const int w = is_inline()
-        ? std::max(1, size_.width.raw() - 1)
-        : size_.width.raw();
+        ? std::max(1, size_.width.raw() - 1)   // inline: avoid terminal auto-wrap
+        : size_.width.raw();                     // alt screen: full width
     if (w <= 0) return ok();
 
-    if (is_inline()) {
+    if (promoted) {
+        // ── Promoted mode (was inline, now alt screen) ──────────────
+        // Content-height layout (UI stays compact, not stretched to full
+        // terminal height). Uses cursor-home positioning in alt screen.
+        constexpr int kMaxInlineHeight = 60;
+        const int canvas_h = std::max(1,
+            std::min(size_.height.raw(), kMaxInlineHeight));
+
+        if (canvas_.width() != w || canvas_.height() != canvas_h) {
+            canvas_ = Canvas(w, canvas_h, &pool_);
+            needs_clear_ = true;
+        }
+
+        render_tree(render_fn_(), canvas_, pool_, theme_);
+
+        int ch = content_height(canvas_);
+
+        out_.clear();
+        out_ += ansi::sync_start;
+        out_ += "\x1b[H";  // cursor home every frame (alt screen)
+
+        if (needs_clear_) {
+            out_ += "\x1b[2J";  // clear screen on first frame / resize
+            needs_clear_ = false;
+        }
+
+        out_ += ansi::hide_cursor;
+        serialize(canvas_, pool_, out_, ch);
+
+        // Clear leftover lines from previous taller frame.
+        if (prev_height_ > ch) {
+            for (int i = 0; i < prev_height_ - ch; ++i) {
+                out_ += "\r\n\x1b[2K";
+            }
+        }
+
+        out_ += ansi::sync_end;
+
+        MAYA_TRY_VOID(writer_->write_raw(out_));
+        prev_height_ = ch;
+    } else if (is_inline()) {
         // ── Inline mode ─────────────────────────────────────────────
         // Render into a tall canvas, measure content height, serialize
         // only the occupied rows. Erase only what we previously wrote.
@@ -379,7 +454,7 @@ auto App::render_frame() -> Status {
         MAYA_TRY_VOID(writer_->write_raw(out_));
         prev_height_ = ch;
     } else {
-        // ── Alt-screen mode ─────────────────────────────────────────
+        // ── Alt-screen mode (started in alt screen) ─────────────────
         const int h = size_.height.raw();
         if (h <= 0) return ok();
 

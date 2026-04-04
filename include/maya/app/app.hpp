@@ -177,13 +177,39 @@ public:
     // Move-only
     // ========================================================================
 
-    App(App&&) noexcept = default;
+    App(App&& o) noexcept
+        : alt_terminal_(std::move(o.alt_terminal_))
+        , raw_terminal_(std::move(o.raw_terminal_))
+        , fd_(std::exchange(o.fd_, -1))
+        , writer_(std::move(o.writer_))
+        , pool_(std::move(o.pool_))
+        , canvas_(std::move(o.canvas_))
+        , front_(std::move(o.front_))
+        , prev_height_(o.prev_height_)
+        , prev_width_(o.prev_width_)
+        , out_(std::move(o.out_))
+        , theme_(o.theme_)
+        , mouse_enabled_(o.mouse_enabled_)
+        , started_inline_(o.started_inline_)
+        , fps_(o.fps_)
+        , context_(std::move(o.context_))
+        , size_(o.size_)
+        , parser_(std::move(o.parser_))
+        , render_fn_(std::move(o.render_fn_))
+        , running_(o.running_)
+        , needs_render_(o.needs_render_)
+        , needs_clear_(o.needs_clear_)
+        , key_handlers_(std::move(o.key_handlers_))
+        , mouse_handlers_(std::move(o.mouse_handlers_))
+        , resize_handlers_(std::move(o.resize_handlers_))
+    {}
+
     App& operator=(App&&) noexcept = default;
     App(const App&) = delete;
     App& operator=(const App&) = delete;
 
     ~App() {
-        detail::cleanup_signal_pipe();
+        if (fd_ >= 0) detail::cleanup_signal_pipe();
     }
 
 private:
@@ -195,18 +221,20 @@ private:
     int fd_ = -1;
 
     // -- Rendering pipeline ---------------------------------------------------
-    // Single canvas: render element tree into it, serialize to ANSI, erase
-    // the previous output, write the new frame. No front/back buffers — the
-    // terminal IS the front buffer (exactly what Ink / Claude Code does).
+    // Inline mode: single canvas, serialize to ANSI, erase-and-redraw.
+    // After promotion to alt screen: double-buffered diff (front/back swap).
     std::unique_ptr<Writer> writer_;
     StylePool               pool_;
-    Canvas                  canvas_;
+    Canvas                  canvas_;           // back buffer (render target)
+    Canvas                  front_;            // front buffer (what's on screen, for diff)
     int                     prev_height_ = 0;  // lines written in last frame
+    int                     prev_width_  = 0;  // width used for last frame (inline reflow)
     std::string             out_;               // reused output buffer
 
     // -- Configuration --------------------------------------------------------
     Theme      theme_         = theme::dark;
     bool       mouse_enabled_ = false;
+    bool       started_inline_ = false;  // true if app started in inline mode
     int        fps_           = 0;   // 0 = event-driven, >0 = continuous
     ContextMap context_;
     Size       size_{};
@@ -216,6 +244,7 @@ private:
     std::function<Element()> render_fn_;
     bool                     running_      = false;
     bool                     needs_render_ = true;
+    bool                     needs_clear_  = false; // full clear on next render (after promotion)
 
     std::vector<std::function<bool(const KeyEvent&)>>   key_handlers_;
     std::vector<std::function<bool(const MouseEvent&)>> mouse_handlers_;
@@ -230,6 +259,7 @@ private:
     void dispatch_event(Event& event);
     void handle_resize();
     auto render_frame() -> Status;
+    void promote_to_alt_screen();
 };
 
 // ============================================================================

@@ -456,6 +456,12 @@ struct State {
     int cache_read = 0;
     int cache_write = 0;
     double total_cost = 0.0;
+
+    // ── Token rate tracking (for TokenStream) ────────────────
+    std::vector<float> tok_rate_history;
+    float tok_rate_timer = 0.f;
+    float peak_tok_rate = 0.f;
+    int   prev_output_tokens = 0;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -696,6 +702,18 @@ static void advance_metrics(State& st, float dt) {
     trim(st.mem_history, 50);
     trim(st.latency_history, 50);
 
+    // Token rate tracking
+    st.tok_rate_timer += dt;
+    if (st.tok_rate_timer > 0.3f) {
+        st.tok_rate_timer = 0.f;
+        int delta = st.total_output_tokens - st.prev_output_tokens;
+        float rate = static_cast<float>(delta) / 0.3f;
+        st.prev_output_tokens = st.total_output_tokens;
+        st.tok_rate_history.push_back(rate);
+        if (rate > st.peak_tok_rate) st.peak_tok_rate = rate;
+        trim(st.tok_rate_history, 40);
+    }
+
     // Server logs
     st.server_timer += dt;
     if (st.server_timer > 1.2f) {
@@ -928,12 +946,19 @@ static Element build_chat(State& st) {
 // Render: Sidebar — plan + edits + cost + metrics
 // ═══════════════════════════════════════════════════════════════════════════════
 
+static Element sidebar_heading(const std::string& title, const Palette& p) {
+    return text(title, Style{}.with_fg(p.muted).with_bold().with_dim());
+}
+
 static Element build_sidebar(State& st) {
     auto& p = palette();
     bool is_done = st.phase == Phase::Complete;
 
-    // ── Plan items with animated spinner on active step ─────────
-    std::vector<Element> plan_rows;
+    std::vector<Element> rows;
+
+    // ── Plan ────────────────────────────────────────────────────
+    rows.push_back(sidebar_heading("PLAN", p));
+
     struct PlanStep { const char* label; Phase after; };
     PlanStep steps[] = {
         {"Read auth middleware",     Phase::ReadFile},
@@ -957,7 +982,7 @@ static Element build_sidebar(State& st) {
 
         Element icon_elem = active
             ? Spinner({.frame = st.frame, .style = SpinnerStyle::Dots, .color = p.primary})
-            : text(done ? "✓" : "○",
+            : text(done ? "✓" : "·",
                    Style{}.with_fg(done ? p.success : p.dim).with_bold());
 
         Style label_style = done
@@ -966,91 +991,125 @@ static Element build_sidebar(State& st) {
                 ? Style{}.with_fg(p.text).with_bold()
                 : Style{}.with_fg(p.muted);
 
-        plan_rows.push_back(hstack().gap(1)(
+        rows.push_back(hstack().gap(1)(
             std::move(icon_elem),
             text(step.label, label_style)
         ));
     }
 
-    // Plan progress bar
     float plan_frac = static_cast<float>(done_count) / 5.f;
-    plan_rows.push_back(
-        vstack().padding(1, 0, 0, 0)(
-            ProgressBar({
-                .value = plan_frac,
-                .width = 22,
-                .show_percent = true,
-                .filled = is_done ? p.success : p.primary,
-            })
-        )
-    );
+    rows.push_back(hstack().gap(1)(
+        ProgressBar({
+            .value = plan_frac,
+            .width = 24,
+            .show_percent = false,
+            .filled = is_done ? p.success : p.primary,
+        }),
+        text(fmt("%d/5", done_count), Style{}.with_fg(p.muted))
+    ));
 
-    // ── File edits with icons ──────────────────────────────────
-    std::vector<Element> edit_rows;
+    // ── Divider ─────────────────────────────────────────────────
+    rows.push_back(Divider({.color = p.dim}));
+
+    // ── Edits ───────────────────────────────────────────────────
+    rows.push_back(sidebar_heading("EDITS", p));
+
     struct EditInfo { const char* path; int add; int del; Phase after; };
     EditInfo edits[] = {
         {"middleware/auth.ts", 18, 14, Phase::EditAuth},
         {"utils/token.ts",    32, 0,  Phase::CreateToken},
         {"auth.test.ts",      15, 8,  Phase::EditTests},
     };
+    bool has_edits = false;
     for (auto& e : edits) {
         if (st.phase > e.after) {
-            edit_rows.push_back(vstack()(
+            has_edits = true;
+            rows.push_back(hstack().gap(1)(
                 text(e.path, Style{}.with_fg(p.text)),
-                hstack().gap(1)(
-                    text("  ", Style{}),
-                    DiffStat({.added = e.add, .removed = e.del})
-                )
+                DiffStat({.added = e.add, .removed = e.del})
             ));
         }
     }
-    if (edit_rows.empty()) {
-        edit_rows.push_back(
-            text("no edits yet", Style{}.with_fg(p.dim).with_italic()));
+    if (!has_edits) {
+        rows.push_back(
+            text("waiting...", Style{}.with_fg(p.dim).with_italic()));
     }
 
-    // ── Cost ───────────────────────────────────────────────────
-    std::vector<Element> cost_rows;
-    cost_rows.push_back(CostMeter({
-        .input_tokens = st.total_input_tokens,
-        .output_tokens = st.total_output_tokens,
-        .cache_read = st.cache_read,
-        .cache_write = st.cache_write,
-        .cost = st.total_cost,
-        .budget = 5.00,
-        .model = "claude-opus-4-6",
-        .compact = true,
+    rows.push_back(Divider({.color = p.dim}));
+
+    // ── Context ─────────────────────────────────────────────────
+    rows.push_back(sidebar_heading("CONTEXT", p));
+    rows.push_back(ContextWindow({
+        .segments = {
+            {"System",   12400, p.info},
+            {"History",  static_cast<int>(st.total_input_tokens * 0.6), p.secondary},
+            {"Tools",    static_cast<int>(st.total_input_tokens * 0.3), p.accent},
+            {"Response", st.total_output_tokens, p.success},
+        },
+        .max_tokens = 200000,
+        .width = 26,
+        .show_labels = false,
     }));
 
-    // ── Elapsed time ───────────────────────────────────────────
+    rows.push_back(Divider({.color = p.dim}));
+
+    // ── Stats (cost + time + rate in a compact block) ───────────
+    rows.push_back(sidebar_heading("STATS", p));
+
     int secs = static_cast<int>(st.elapsed);
     int mins = secs / 60;
     secs %= 60;
-    std::vector<Element> time_rows;
-    time_rows.push_back(hstack().gap(1)(
-        text(fmt("%d:%02d", mins, secs),
-             Style{}.with_fg(p.text).with_bold()),
-        text("elapsed", Style{}.with_fg(p.dim))
-    ));
 
-    // ── Compact sparklines ─────────────────────────────────────
-    std::vector<Element> metric_rows;
-    metric_rows.push_back(hstack().gap(1)(
+    float cur_rate = st.tok_rate_history.empty() ? 0.f : st.tok_rate_history.back();
+    Color rate_col = cur_rate > 50.f ? Color::rgb(80, 220, 120)
+                   : cur_rate > 20.f ? Color::rgb(240, 200, 60)
+                   : Color::rgb(240, 80, 80);
+
+    auto stat_row = [&](const std::string& lbl, Element val) {
+        return hstack().gap(1)(
+            text(fmt("%-8s", lbl.c_str()), Style{}.with_fg(p.dim)),
+            std::move(val)
+        );
+    };
+
+    rows.push_back(stat_row("Cost",
+        text(fmt("$%.4f / $5.00", st.total_cost),
+             Style{}.with_fg(st.total_cost > 4.0 ? p.error
+                           : st.total_cost > 2.5 ? p.warning
+                           : p.success))));
+    rows.push_back(stat_row("Elapsed",
+        text(fmt("%d:%02d", mins, secs), Style{}.with_fg(p.text))));
+    rows.push_back(stat_row("Rate",
+        text(fmt("%.0f tok/s", static_cast<double>(cur_rate)),
+             Style{}.with_fg(rate_col))));
+    rows.push_back(stat_row("Input",
+        text(fmt("%.1fk", st.total_input_tokens / 1000.0),
+             Style{}.with_fg(p.muted))));
+    rows.push_back(stat_row("Output",
+        text(fmt("%.1fk", st.total_output_tokens / 1000.0),
+             Style{}.with_fg(p.muted))));
+
+    rows.push_back(Divider({.color = p.dim}));
+
+    // ── Sparklines ──────────────────────────────────────────────
+    rows.push_back(hstack().gap(1)(
         text("cpu", Style{}.with_fg(p.dim)),
-        Sparkline({.data = st.cpu_history, .width = 16, .color = Color::rgb(100, 200, 255)})
+        Sparkline({.data = st.cpu_history, .width = 22, .color = Color::rgb(100, 200, 255)})
     ));
-    metric_rows.push_back(hstack().gap(1)(
+    rows.push_back(hstack().gap(1)(
         text("mem", Style{}.with_fg(p.dim)),
-        Sparkline({.data = st.mem_history, .width = 16, .color = Color::rgb(200, 120, 255)})
+        Sparkline({.data = st.mem_history, .width = 22, .color = Color::rgb(200, 120, 255)})
+    ));
+    rows.push_back(hstack().gap(1)(
+        text("tok", Style{}.with_fg(p.dim)),
+        Sparkline({.data = st.tok_rate_history, .width = 22, .color = Color::rgb(255, 200, 100)})
     ));
 
-    return vstack().gap(1)(
-        panel(is_done ? " Plan ✓ " : " Plan ", is_done ? p.success : p.primary, std::move(plan_rows)),
-        panel(" Edits ", p.border, std::move(edit_rows)),
-        panel(" Cost ", p.border, std::move(cost_rows)),
-        panel(" Session ", p.border, std::move(time_rows)),
-        panel(" Metrics ", p.border, std::move(metric_rows))
-    );
+    // ── Single bordered container ───────────────────────────────
+    return vstack()
+        .border(Round, p.border)
+        .padding(0, 1, 0, 1)
+        .gap(0)(std::move(rows));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1165,32 +1224,54 @@ static Element build_tests(State& st) {
     auto metrics_panel = panel(" System Metrics ", p.border, {
         hstack().gap(1)(
             label("CPU"),
-            Sparkline({.data = st.cpu_history, .color = Color::rgb(100, 200, 255)}),
-            text(fmt("%.0f%%", static_cast<double>(cpu_val * 100)),
+            Sparkline({.data = st.cpu_history, .width = 30, .color = Color::rgb(100, 200, 255)}),
+            text(fmt("%3.0f%%", static_cast<double>(cpu_val * 100)),
                  Style{}.with_fg(cpu_val > 0.6f ? p.warning : p.text).with_bold())
         ),
         hstack().gap(1)(
             label("MEM"),
-            Sparkline({.data = st.mem_history, .color = Color::rgb(200, 120, 255)}),
-            text(fmt("%.0f%%", static_cast<double>(mem_val * 100)),
+            Sparkline({.data = st.mem_history, .width = 30, .color = Color::rgb(200, 120, 255)}),
+            text(fmt("%3.0f%%", static_cast<double>(mem_val * 100)),
                  Style{}.with_fg(mem_val > 0.7f ? p.warning : p.text).with_bold())
         ),
         hstack().gap(1)(
             label("LAT"),
-            Sparkline({.data = st.latency_history, .color = Color::rgb(255, 180, 100)}),
-            text(fmt("%.0fms", static_cast<double>(lat_val * 200)),
+            Sparkline({.data = st.latency_history, .width = 30, .color = Color::rgb(255, 180, 100)}),
+            text(fmt("%4.0fms", static_cast<double>(lat_val * 200)),
                  Style{}.with_fg(lat_val > 0.5f ? p.warning : p.text).with_bold())
         ),
-        Gauge({.value = cpu_val, .label = "CPU Load ", .width = 25,
+        Gauge({.value = cpu_val, .label = "CPU Load ", .width = 30,
                .thresholds = {{0.3f, p.success}, {0.6f, p.warning}, {0.85f, p.error}}}),
-        Gauge({.value = mem_val, .label = "Memory   ", .width = 25,
+        Gauge({.value = mem_val, .label = "Memory   ", .width = 30,
                .thresholds = {{0.5f, p.success}, {0.7f, p.warning}, {0.9f, p.error}}}),
-        Gauge({.value = 0.23f, .label = "Disk I/O ", .width = 25}),
+        Gauge({.value = 0.23f, .label = "Disk I/O ", .width = 30}),
+    });
+
+    // Waterfall panel — build pipeline timing
+    auto waterfall_panel = panel(" Build Pipeline ", p.border, {
+        Waterfall({.entries = {
+            {.label = "tsc compile",   .start = 0.0f, .duration = 1.2f,
+             .color = p.info,    .status = TaskStatus::Completed},
+            {.label = "lint",          .start = 0.0f, .duration = 0.8f,
+             .color = p.accent,  .status = TaskStatus::Completed},
+            {.label = "bundle",        .start = 1.2f, .duration = 0.6f,
+             .color = p.primary, .status = TaskStatus::Completed},
+            {.label = "auth.test",     .start = 1.8f, .duration = 0.9f,
+             .color = tests_done ? p.success : p.warning,
+             .status = tests_done ? TaskStatus::Completed : TaskStatus::InProgress},
+            {.label = "token.test",    .start = 1.8f, .duration = 0.7f,
+             .color = tests_done ? p.success : p.warning,
+             .status = tests_done ? TaskStatus::Completed : TaskStatus::InProgress},
+            {.label = "login.test",    .start = 2.0f, .duration = 0.5f,
+             .color = tests_done ? p.success : p.warning,
+             .status = tests_done ? TaskStatus::Completed : TaskStatus::Pending},
+        }, .bar_width = 25, .frame = st.frame}),
     });
 
     return vstack().padding(0, 1, 0, 1).gap(1)(
         std::move(test_panel),
         std::move(results_panel),
+        std::move(waterfall_panel),
         std::move(server_panel),
         std::move(metrics_panel)
     );
@@ -1246,11 +1327,26 @@ static Element build_config(State& st) {
         }),
     });
 
+    auto context_panel = panel(" Context Window ", p.border, {
+        ContextWindow({
+            .segments = {
+                {"System",   12400, p.info},
+                {"Chat",     static_cast<int>(st.total_input_tokens * 0.6), p.secondary},
+                {"Tools",    static_cast<int>(st.total_input_tokens * 0.3), p.accent},
+                {"Output",   st.total_output_tokens, p.success},
+                {"Cache",    st.cache_read, Color::rgb(100, 180, 100)},
+            },
+            .max_tokens = 200000,
+            .width = 40,
+        }),
+    });
+
     return vstack().padding(0, 1, 0, 1).gap(1)(
         std::move(model_panel),
         std::move(gen_panel),
         std::move(behavior_panel),
         std::move(cost_panel),
+        std::move(context_panel),
         Callout({
             .severity = st.phase == Phase::Complete ? Severity::Success : Severity::Info,
             .title = st.phase == Phase::Complete ? "Session Complete" : "Session Active",
@@ -1334,12 +1430,12 @@ static Element build_ui(State& st) {
 
         // Main content area with sidebar on chat/tests tabs
         hstack().gap(0)(
-            // Main content
-            std::move(main_panel),
+            // Main content — fills remaining space
+            vstack().grow(1).shrink(1)(std::move(main_panel)),
 
-            // Sidebar
+            // Sidebar — fixed width, won't shrink
             st.main_tabs.active() == 0 || st.main_tabs.active() == 2
-                ? build_sidebar(st)
+                ? vstack().width(Dimension::fixed(32)).shrink(0)(build_sidebar(st))
                 : text("")
         )
     );

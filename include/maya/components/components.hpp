@@ -36,6 +36,7 @@
 //   BarChart        Horizontal bar chart with labels
 //   CostMeter       AI token usage and cost display
 //   FormField       Label + description + error wrapper
+//   TokenStream     Live token generation rate with sparkline
 //
 // INPUT (stateful — class with update() + render())
 //   TextInput       Multi-line text editor with cursor
@@ -67,6 +68,19 @@
 //   StatusBar       Bottom bar with sections
 //   ThreadList      Conversation history with time groups
 //   ActivityBar     Sidebar with plan/edits/status sections
+//   ContextWindow   Context window usage segmented bar
+//   Timeline        Vertical event timeline (CI/pipeline style)
+//   Waterfall       Timing waterfall chart (devtools / CI style)
+//
+// VISUALIZATION
+//   Heatmap         Grid heatmap (GitHub contribution graph style)
+//   FlameChart      Flame graph visualization for profiling
+//   GitGraph        ASCII git commit graph with branch lines
+//   InlineDiff      Word-level diff within lines
+//
+// NAVIGATION & NOTIFICATIONS
+//   Breadcrumb      Path navigation breadcrumbs
+//   Toast           Auto-dismissing stacked notifications
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Core: palette, enums, helpers
@@ -87,6 +101,7 @@
 #include "bar_chart.hpp"
 #include "cost_meter.hpp"
 #include "form_field.hpp"
+#include "token_stream.hpp"
 
 // Input
 #include "text_input.hpp"
@@ -119,3 +134,16 @@
 #include "status_bar.hpp"
 #include "thread_list.hpp"
 #include "activity_bar.hpp"
+#include "context_window.hpp"
+#include "timeline.hpp"
+#include "waterfall.hpp"
+
+// Visualization
+#include "heatmap.hpp"
+#include "flame_chart.hpp"
+#include "git_graph.hpp"
+#include "inline_diff.hpp"
+
+// Navigation & Notifications
+#include "breadcrumb.hpp"
+#include "toast.hpp"

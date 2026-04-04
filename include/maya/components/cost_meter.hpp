@@ -25,9 +25,9 @@ struct CostMeterProps {
 namespace detail {
 
 inline std::string format_tokens(int n) {
-    if (n >= 1'000'000) return fmt("%.1fM", n / 1'000'000.0);
-    if (n >= 1'000)     return fmt("%.1fk", n / 1'000.0);
-    return std::to_string(n);
+    if (n >= 1'000'000) return fmt("%5.1fM", n / 1'000'000.0);
+    if (n >= 1'000)     return fmt("%5.1fk", n / 1'000.0);
+    return fmt("%5d", n);
 }
 
 } // namespace detail

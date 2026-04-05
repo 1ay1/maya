@@ -347,7 +347,8 @@ void render_tree(
     const Element& root,
     Canvas& canvas,
     StylePool& pool,
-    [[maybe_unused]] const Theme& theme)
+    [[maybe_unused]] const Theme& theme,
+    bool auto_height)
 {
     // Phase 1: Build the layout tree.
     std::vector<layout::LayoutNode> layout_nodes;
@@ -355,9 +356,12 @@ void render_tree(
 
     std::size_t root_idx = render_detail::build_layout_tree(root, layout_nodes, theme);
 
-    // Phase 2: Constrain root to terminal dimensions (like Ink's setWidth).
+    // Phase 2: Constrain root to terminal dimensions.
+    // In auto_height mode (inline rendering), only constrain width so the
+    // layout sizes to content height — preserving terminal scrollback.
     layout_nodes[root_idx].style.width  = Dimension::fixed(canvas.width());
-    layout_nodes[root_idx].style.height = Dimension::fixed(canvas.height());
+    if (!auto_height)
+        layout_nodes[root_idx].style.height = Dimension::fixed(canvas.height());
 
     // Phase 3: Run layout. Positions are parent-relative after this.
     layout::compute(layout_nodes, root_idx, canvas.width(), canvas.height());

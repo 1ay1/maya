@@ -1,5 +1,7 @@
 #include "maya/app/inline.hpp"
 
+#include <format>
+
 namespace maya {
 
 namespace detail {
@@ -15,15 +17,23 @@ int detect_terminal_width() noexcept {
 
 int render_inline(const Element& root, int width, StylePool& pool,
                   std::string& buf, int prev_height) {
-    constexpr int kMaxHeight = 60;
+    constexpr int kMaxHeight = 500;
     Canvas canvas{width, kMaxHeight, &pool};
-    render_tree(root, canvas, pool, theme::dark);
+    render_tree(root, canvas, pool, theme::dark, /*auto_height=*/true);
 
     int h = content_height(canvas);
 
     buf.clear();
-    if (prev_height > 0) ansi::erase_lines(prev_height, buf);
+    // Move cursor to start of previous output without erasing — overwrite in place.
+    if (prev_height > 1)
+        buf += std::format("\x1b[{}A", prev_height - 1);
+    if (prev_height > 0)
+        buf += "\r";
     serialize(canvas, pool, buf, h);
+    // Clear leftover lines if new output is shorter.
+    for (int i = h; i < prev_height; ++i) {
+        buf += "\r\n\x1b[2K";
+    }
 
     std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fflush(stdout);

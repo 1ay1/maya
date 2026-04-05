@@ -341,6 +341,7 @@ void App::handle_resize() {
 
         size_ = new_size;
         context_.set<Size>(size_);
+        needs_clear_ = true;  // force full repaint after resize
         for (auto& handler : resize_handlers_) {
             handler(size_);
         }
@@ -392,50 +393,43 @@ auto App::render_frame() -> Status {
     if (promoted) {
         // ── Promoted mode (was inline, now alt screen) ──────────────
         // Content-height layout (UI stays compact, not stretched to full
-        // terminal height). Uses cursor-home positioning in alt screen.
+        // terminal height). Double-buffered diff in alt screen.
         constexpr int kMaxInlineHeight = 60;
         const int canvas_h = std::max(1,
             std::min(size_.height.raw(), kMaxInlineHeight));
 
         if (canvas_.width() != w || canvas_.height() != canvas_h) {
             canvas_ = Canvas(w, canvas_h, &pool_);
+            front_  = Canvas(w, canvas_h, &pool_);
+            front_.mark_all_damaged();
             needs_clear_ = true;
         }
 
+        canvas_.clear();
         render_tree(render_fn_(), canvas_, pool_, theme_);
 
-        int ch = content_height(canvas_);
-
         out_.clear();
-        out_ += ansi::sync_start;
-        out_ += "\x1b[H";  // cursor home every frame (alt screen)
-
-        if (needs_clear_) {
-            out_ += "\x1b[2J";  // clear screen on first frame / resize
-            needs_clear_ = false;
-        }
-
         out_ += ansi::hide_cursor;
-        serialize(canvas_, pool_, out_, ch);
-
-        // Clear leftover lines from previous taller frame.
-        if (prev_height_ > ch) {
-            for (int i = 0; i < prev_height_ - ch; ++i) {
-                out_ += "\r\n\x1b[2K";
-            }
+        out_ += ansi::sync_start;
+        if (needs_clear_) {
+            out_ += "\x1b[2J\x1b[H";
+            serialize(canvas_, pool_, out_);
+            needs_clear_ = false;
+        } else {
+            diff(front_, canvas_, pool_, out_);
         }
-
+        out_ += ansi::reset;
         out_ += ansi::sync_end;
 
         MAYA_TRY_VOID(writer_->write_raw(out_));
-        prev_height_ = ch;
+        std::swap(front_, canvas_);
+        canvas_.reset_damage();
     } else if (is_inline()) {
         // ── Inline mode ─────────────────────────────────────────────
-        // Render into a tall canvas, measure content height, serialize
-        // only the occupied rows. Erase only what we previously wrote.
-        constexpr int kMaxInlineHeight = 60;
-        const int canvas_h = std::max(1,
-            std::min(size_.height.raw(), kMaxInlineHeight));
+        // Fixed viewport at the bottom of the terminal (like Claude Code).
+        // The canvas is terminal-height so layouts with grow/scroll work
+        // correctly, but we stay in the normal screen to preserve scrollback.
+        const int canvas_h = std::max(1, size_.height.raw());
 
         if (canvas_.width() != w || canvas_.height() != canvas_h)
             canvas_ = Canvas(w, canvas_h, &pool_);
@@ -446,34 +440,60 @@ auto App::render_frame() -> Status {
 
         out_.clear();
         out_ += ansi::sync_start;
-        ansi::erase_lines(prev_height_, out_);
         out_ += ansi::hide_cursor;
+
+        // Move cursor to start of previous output WITHOUT erasing.
+        // Serialize overwrites in place — every column is written, so
+        // no ghost characters remain. This eliminates the blank flash
+        // caused by erase-then-redraw on terminals without BSU support.
+        if (prev_height_ > 1)
+            out_ += std::format("\x1b[{}A", prev_height_ - 1);
+        if (prev_height_ > 0)
+            out_ += "\r";
+
         serialize(canvas_, pool_, out_, ch);
+
+        // Clear leftover lines if the new frame is shorter than the previous.
+        for (int i = ch; i < prev_height_; ++i) {
+            out_ += "\r\n\x1b[2K";
+        }
+
         out_ += ansi::sync_end;
 
         MAYA_TRY_VOID(writer_->write_raw(out_));
         prev_height_ = ch;
     } else {
         // ── Alt-screen mode (started in alt screen) ─────────────────
+        // Double-buffered diff: only emit ANSI for cells that changed.
         const int h = size_.height.raw();
         if (h <= 0) return ok();
 
         if (canvas_.width() != w || canvas_.height() != h) {
             canvas_ = Canvas(w, h, &pool_);
-            prev_height_ = 0;
+            front_  = Canvas(w, h, &pool_);
+            front_.mark_all_damaged();
+            needs_clear_ = true;
         }
 
+        canvas_.clear();
         render_tree(render_fn_(), canvas_, pool_, theme_);
 
         out_.clear();
-        out_ += ansi::sync_start;
-        ansi::erase_lines(prev_height_, out_);
         out_ += ansi::hide_cursor;
-        serialize(canvas_, pool_, out_);
+        out_ += ansi::sync_start;
+        if (needs_clear_) {
+            out_ += "\x1b[2J\x1b[H";
+            serialize(canvas_, pool_, out_);
+            needs_clear_ = false;
+        } else {
+            diff(front_, canvas_, pool_, out_);
+        }
+        out_ += ansi::reset;
         out_ += ansi::sync_end;
 
         MAYA_TRY_VOID(writer_->write_raw(out_));
-        prev_height_ = h;
+        std::swap(front_, canvas_);
+        canvas_.reset_damage();
     }
     return ok();
 }

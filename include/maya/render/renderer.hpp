@@ -65,10 +65,14 @@ void paint_element(
 // render_tree - Public API: render an element tree onto a canvas
 // ============================================================================
 
+/// Render an element tree onto a canvas.
+/// When auto_height is true, the root node's height is left unconstrained
+/// so layout sizes to content (inline / scrollback-preserving mode).
 void render_tree(
     const Element& root,
     Canvas& canvas,
     StylePool& pool,
-    [[maybe_unused]] const Theme& theme);
+    const Theme& theme,
+    bool auto_height = false);
 
 } // namespace maya

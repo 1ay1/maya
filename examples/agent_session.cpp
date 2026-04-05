@@ -1,16 +1,25 @@
-// maya — Full coding agent session simulator
+// maya — Claude Code-style inline terminal agent session
 //
-// A richly detailed simulation of an AI coding agent working through a complex
-// multi-file refactoring task. Demonstrates every maya component in a realistic
-// agentic workflow: streaming chat, tool calls with diffs, file navigation,
-// live test output, plan tracking, and configuration.
+// A single-column vertical flow simulating an AI coding agent working through
+// a multi-file JWT refactoring task. No tabs, no sidebar — the terminal's own
+// scrollback provides scrolling, just like Claude Code.
 //
 // Usage: ./maya_agent_session
-//        Tab/BackTab to switch panels, j/k/arrows to navigate, q to quit.
+//        q/Esc to quit, 1-5 toggle tool cards.
 
 #include <maya/maya.hpp>
 #include <maya/dsl.hpp>
 #include <maya/components/components.hpp>
+
+// Components not yet in the umbrella header
+#include <maya/components/context_pill.hpp>
+#include <maya/components/glimmer_text.hpp>
+#include <maya/components/read_card.hpp>
+#include <maya/components/command_card.hpp>
+#include <maya/components/accordion_bar.hpp>
+#include <maya/components/feedback_buttons.hpp>
+#include <maya/components/checkpoint.hpp>
+#include <maya/components/edit_card.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -298,12 +307,7 @@ struct State {
     float phase_timer = 0.f;
     bool phase_just_entered = true;
 
-    // ── Tab layout ─────────────────────────────────────────────
-    Tabs main_tabs{TabsProps{.labels = {
-        " Chat ", " Files ", " Tests ", " Config "
-    }}};
-
-    // ── Chat tab state ─────────────────────────────────────────
+    // ── Thinking ──────────────────────────────────────────────
     ThinkingBlock thinking{ThinkingBlockProps{
         .content = "",
         .expanded = true,
@@ -314,12 +318,13 @@ struct State {
     }};
     int thinking_chars = 0;
 
+    // ── Response streaming ────────────────────────────────────
     StreamingText response_stream{StreamingTextProps{
         .text = kAssistantResponse, .show_cursor = false,
     }};
     bool response_started = false;
 
-    // Tool call states
+    // ── Tool call states ──────────────────────────────────────
     TaskStatus read_status    = TaskStatus::Pending;
     TaskStatus edit1_status   = TaskStatus::Pending;
     TaskStatus create_status  = TaskStatus::Pending;
@@ -332,63 +337,39 @@ struct State {
     bool tool4_collapsed = false;
     bool tool5_collapsed = false;
 
-    ScrollView chat_scroll{ScrollViewProps{
-        .max_visible = 40,
-        .tail_follow = true,
+    // ── Read card ─────────────────────────────────────────────
+    ReadCard read_card{ReadCardProps{
+        .file_path = "src/middleware/auth.ts",
+        .content = "import session from 'express-session';\n"
+                   "import { SessionStore } from '../stores/session';\n"
+                   "\n"
+                   "const SESSION_SECRET = process.env.SESSION_SECRET!;\n"
+                   "const SESSION_TIMEOUT = 3600; // seconds\n"
+                   "\n"
+                   "export function authMiddleware() {\n"
+                   "  return session({\n"
+                   "    secret: SESSION_SECRET,\n"
+                   "    // ... (42 lines)\n"
+                   "  });\n"
+                   "}",
+        .line_count = 42,
+        .status = TaskStatus::Pending,
+        .collapsed = false,
+        .language = "typescript",
     }};
 
-    // ── Files tab state ────────────────────────────────────────
-    FileTree file_tree{FileTreeProps{
-        .roots = FileTree::from_paths({
-            "src/middleware/auth.ts",
-            "src/middleware/cors.ts",
-            "src/middleware/rate-limit.ts",
-            "src/utils/token.ts",
-            "src/utils/hash.ts",
-            "src/utils/logger.ts",
-            "src/routes/login.ts",
-            "src/routes/users.ts",
-            "src/routes/projects.ts",
-            "src/types/auth.ts",
-            "src/types/user.ts",
-            "src/config/database.ts",
-            "src/config/env.ts",
-            "src/app.ts",
-            "src/index.ts",
-            "tests/auth.test.ts",
-            "tests/token.test.ts",
-            "tests/routes/login.test.ts",
-            "tests/helpers/mock.ts",
-            "package.json",
-            "tsconfig.json",
-            ".env.example",
-        }),
-        .show_icons = true,
-        .show_git_status = true,
-        .max_visible = 18,
+    // ── Command card ──────────────────────────────────────────
+    CommandCard cmd_card{CommandCardProps{
+        .command = "npx vitest run --filter auth",
+        .status = TaskStatus::Pending,
+        .collapsed = false,
     }};
 
-    Table deps_table{TableProps{
-        .columns = {
-            {.header = "Package",     .width = 24},
-            {.header = "Version",     .width = 10, .align = ColumnAlign::Right},
-            {.header = "Status",      .width = 12, .align = ColumnAlign::Center},
-            {.header = "Size",        .width = 10, .align = ColumnAlign::Right},
-        },
-        .rows = {
-            {"jsonwebtoken",     "9.0.2",   "Added",     "45KB"},
-            {"@types/jsonwebtoken", "9.0.5", "Added",    "12KB"},
-            {"express-session",  "1.18.0",  "Removed",   "52KB"},
-            {"connect-redis",    "7.1.0",   "Removed",   "18KB"},
-            {"express",          "4.19.2",  "Unchanged", "210KB"},
-            {"typescript",       "5.4.2",   "Unchanged", "38MB"},
-            {"vitest",           "1.4.0",   "Unchanged", "8.2MB"},
-            {"cors",             "2.8.5",   "Unchanged", "6KB"},
-        },
-        .max_visible = 8,
-    }};
+    // ── Accordion (file changes summary) ──────────────────────
+    AccordionBar accordion{AccordionBarProps{.show_keyhints = false}};
+    bool show_accordion = false;
 
-    // ── Tests tab state ────────────────────────────────────────
+    // ── Test output ───────────────────────────────────────────
     LogView test_log{LogViewProps{
         .max_visible = 16,
         .tail_follow = true,
@@ -397,71 +378,49 @@ struct State {
     int test_line = 0;
     float test_timer = 0.f;
 
-    LogView server_log{LogViewProps{
-        .max_visible = 8,
-        .tail_follow = true,
-    }};
-    int server_line = 0;
-    float server_timer = 0.f;
+    // ── Feedback ──────────────────────────────────────────────
+    FeedbackButtons feedback{FeedbackButtonsProps{}};
 
-    // Metrics
-    std::vector<float> cpu_history;
-    std::vector<float> mem_history;
-    std::vector<float> latency_history;
-
-    // ── Config tab state ───────────────────────────────────────
-    RadioGroup<std::string> model_select{RadioGroupProps<std::string>{
-        .items = {"claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"},
-        .selected = 0,
+    // ── Checkpoint ────────────────────────────────────────────
+    Checkpoint checkpoint{CheckpointProps{
+        .label = "Before JWT refactor",
+        .file_count = 3,
+        .added = 65,
+        .removed = 22,
+        .timestamp = "just now",
     }};
 
-    NumberInput max_tokens{NumberInputProps{
-        .value = 8192, .min = 256, .max = 128000, .step = 256,
-        .label = "Max tokens",
+    // ── Toast ─────────────────────────────────────────────────
+    ToastStack toasts{ToastStackProps{.max_visible = 3, .show_timer = true}};
+    bool toast_pushed = false;
+
+    // ── Disclosure (detailed stats) ───────────────────────────
+    Disclosure stats_disclosure{DisclosureProps{
+        .title = "Detailed Stats",
+        .expanded = false,
+        .badge = "6 metrics",
     }};
 
-    NumberInput temperature{NumberInputProps{
-        .value = 0, .min = 0, .max = 100, .step = 5,
-        .label = "Temperature",
-    }};
+    // ── Approve edit toggle ───────────────────────────────────
+    bool edit_approved = true;
 
-    NumberInput budget_input{NumberInputProps{
-        .value = 500, .min = 0, .max = 10000, .step = 50,
-        .label = "Budget (cents)",
-    }};
-
-    bool auto_approve = false;
-    bool diff_preview = true;
-    bool run_tests    = true;
-    bool streaming    = true;
-    bool dark_mode    = true;
-    bool telemetry    = false;
-    bool verbose_logs = false;
-
-    // ── Plan tracking ──────────────────────────────────────────
-    ActivityBar activity{ActivityBarProps{
-        .plan_items = {
-            {.text = "Read current auth middleware",           .status = TaskStatus::Pending},
-            {.text = "Replace session auth with JWT",         .status = TaskStatus::Pending},
-            {.text = "Create token utility module",           .status = TaskStatus::Pending},
-            {.text = "Update test suite",                     .status = TaskStatus::Pending},
-            {.text = "Run tests and verify",                  .status = TaskStatus::Pending},
-        },
-        .edits = {},
-    }};
-
-    // ── Cost tracking ──────────────────────────────────────────
+    // ── Cost tracking ─────────────────────────────────────────
     int total_input_tokens = 0;
     int total_output_tokens = 0;
     int cache_read = 0;
     int cache_write = 0;
     double total_cost = 0.0;
 
-    // ── Token rate tracking (for TokenStream) ────────────────
+    // ── Token rate tracking ───────────────────────────────────
     std::vector<float> tok_rate_history;
     float tok_rate_timer = 0.f;
     float peak_tok_rate = 0.f;
     int   prev_output_tokens = 0;
+
+    // ── Heatmap data (token activity) ─────────────────────────
+    std::vector<std::vector<float>> heatmap_data;
+    float heatmap_timer = 0.f;
+    int heatmap_col = 0;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -508,27 +467,16 @@ static void advance_phase(State& st, float dt) {
     case Phase::ReadFile:
         if (just) {
             st.read_status = TaskStatus::InProgress;
-            st.activity.set_plan({
-                {.text = "Read current auth middleware",   .status = TaskStatus::InProgress},
-                {.text = "Replace session auth with JWT", .status = TaskStatus::Pending},
-                {.text = "Create token utility module",   .status = TaskStatus::Pending},
-                {.text = "Update test suite",             .status = TaskStatus::Pending},
-                {.text = "Run tests and verify",          .status = TaskStatus::Pending},
-            });
+            st.read_card.set_status(TaskStatus::InProgress);
         }
         if (st.phase_timer > 1.2f) {
             st.read_status = TaskStatus::Completed;
+            st.read_card.set_status(TaskStatus::Completed);
+            st.read_card.set_collapsed(true);
             st.tool1_collapsed = true;
             st.total_input_tokens += 3200;
             st.cache_write += 1200;
             st.total_cost += 0.048;
-            st.activity.set_plan({
-                {.text = "Read current auth middleware",   .status = TaskStatus::Completed},
-                {.text = "Replace session auth with JWT", .status = TaskStatus::Pending},
-                {.text = "Create token utility module",   .status = TaskStatus::Pending},
-                {.text = "Update test suite",             .status = TaskStatus::Pending},
-                {.text = "Run tests and verify",          .status = TaskStatus::Pending},
-            });
             enter_phase(st, Phase::EditAuth);
         }
         break;
@@ -536,29 +484,13 @@ static void advance_phase(State& st, float dt) {
     case Phase::EditAuth:
         if (just) {
             st.edit1_status = TaskStatus::InProgress;
-            st.activity.set_plan({
-                {.text = "Read current auth middleware",   .status = TaskStatus::Completed},
-                {.text = "Replace session auth with JWT", .status = TaskStatus::InProgress},
-                {.text = "Create token utility module",   .status = TaskStatus::Pending},
-                {.text = "Update test suite",             .status = TaskStatus::Pending},
-                {.text = "Run tests and verify",          .status = TaskStatus::Pending},
-            });
         }
         if (st.phase_timer > 2.0f) {
             st.edit1_status = TaskStatus::Completed;
             st.tool2_collapsed = true;
             st.total_output_tokens += 1840;
             st.total_cost += 0.138;
-            st.activity.set_plan({
-                {.text = "Read current auth middleware",   .status = TaskStatus::Completed},
-                {.text = "Replace session auth with JWT", .status = TaskStatus::Completed},
-                {.text = "Create token utility module",   .status = TaskStatus::Pending},
-                {.text = "Update test suite",             .status = TaskStatus::Pending},
-                {.text = "Run tests and verify",          .status = TaskStatus::Pending},
-            });
-            st.activity.set_edits({
-                {.path = "src/middleware/auth.ts", .added = 18, .removed = 14},
-            });
+            st.accordion.add_file({.path = "src/middleware/auth.ts", .added = 18, .removed = 14});
             enter_phase(st, Phase::CreateToken);
         }
         break;
@@ -566,30 +498,13 @@ static void advance_phase(State& st, float dt) {
     case Phase::CreateToken:
         if (just) {
             st.create_status = TaskStatus::InProgress;
-            st.activity.set_plan({
-                {.text = "Read current auth middleware",   .status = TaskStatus::Completed},
-                {.text = "Replace session auth with JWT", .status = TaskStatus::Completed},
-                {.text = "Create token utility module",   .status = TaskStatus::InProgress},
-                {.text = "Update test suite",             .status = TaskStatus::Pending},
-                {.text = "Run tests and verify",          .status = TaskStatus::Pending},
-            });
         }
         if (st.phase_timer > 2.0f) {
             st.create_status = TaskStatus::Completed;
             st.tool3_collapsed = true;
             st.total_output_tokens += 2100;
             st.total_cost += 0.158;
-            st.activity.set_plan({
-                {.text = "Read current auth middleware",   .status = TaskStatus::Completed},
-                {.text = "Replace session auth with JWT", .status = TaskStatus::Completed},
-                {.text = "Create token utility module",   .status = TaskStatus::Completed},
-                {.text = "Update test suite",             .status = TaskStatus::Pending},
-                {.text = "Run tests and verify",          .status = TaskStatus::Pending},
-            });
-            st.activity.set_edits({
-                {.path = "src/middleware/auth.ts", .added = 18, .removed = 14},
-                {.path = "src/utils/token.ts",    .added = 32, .removed = 0},
-            });
+            st.accordion.add_file({.path = "src/utils/token.ts", .added = 32, .is_new = true});
             enter_phase(st, Phase::EditTests);
         }
         break;
@@ -597,31 +512,14 @@ static void advance_phase(State& st, float dt) {
     case Phase::EditTests:
         if (just) {
             st.edit2_status = TaskStatus::InProgress;
-            st.activity.set_plan({
-                {.text = "Read current auth middleware",   .status = TaskStatus::Completed},
-                {.text = "Replace session auth with JWT", .status = TaskStatus::Completed},
-                {.text = "Create token utility module",   .status = TaskStatus::Completed},
-                {.text = "Update test suite",             .status = TaskStatus::InProgress},
-                {.text = "Run tests and verify",          .status = TaskStatus::Pending},
-            });
         }
         if (st.phase_timer > 2.0f) {
             st.edit2_status = TaskStatus::Completed;
             st.tool4_collapsed = true;
             st.total_output_tokens += 1650;
             st.total_cost += 0.124;
-            st.activity.set_plan({
-                {.text = "Read current auth middleware",   .status = TaskStatus::Completed},
-                {.text = "Replace session auth with JWT", .status = TaskStatus::Completed},
-                {.text = "Create token utility module",   .status = TaskStatus::Completed},
-                {.text = "Update test suite",             .status = TaskStatus::Completed},
-                {.text = "Run tests and verify",          .status = TaskStatus::Pending},
-            });
-            st.activity.set_edits({
-                {.path = "src/middleware/auth.ts", .added = 18, .removed = 14},
-                {.path = "src/utils/token.ts",    .added = 32, .removed = 0},
-                {.path = "tests/auth.test.ts",    .added = 15, .removed = 8},
-            });
+            st.accordion.add_file({.path = "tests/auth.test.ts", .added = 15, .removed = 8});
+            st.show_accordion = true;
             enter_phase(st, Phase::RunTests);
         }
         break;
@@ -631,33 +529,29 @@ static void advance_phase(State& st, float dt) {
             st.test_status = TaskStatus::InProgress;
             st.test_line = 0;
             st.test_timer = 0.f;
-            st.activity.set_plan({
-                {.text = "Read current auth middleware",   .status = TaskStatus::Completed},
-                {.text = "Replace session auth with JWT", .status = TaskStatus::Completed},
-                {.text = "Create token utility module",   .status = TaskStatus::Completed},
-                {.text = "Update test suite",             .status = TaskStatus::Completed},
-                {.text = "Run tests and verify",          .status = TaskStatus::InProgress},
-            });
+            st.cmd_card.set_status(TaskStatus::InProgress);
         }
         // Stream test output
         st.test_timer += dt;
         if (st.test_timer > 0.12f && st.test_line < kNumTestLines) {
             st.test_timer = 0.f;
             st.test_log.append(kTestLines[st.test_line]);
+            // Build output string for CommandCard
+            std::string output;
+            for (int i = 0; i <= st.test_line; i++) {
+                if (i > 0) output += "\n";
+                output += kTestLines[i];
+            }
+            st.cmd_card.set_output(output);
             st.test_line++;
         }
         if (st.test_line >= kNumTestLines && st.phase_timer > 4.f) {
             st.test_status = TaskStatus::Completed;
             st.tool5_collapsed = true;
+            st.cmd_card.set_status(TaskStatus::Completed);
+            st.cmd_card.set_exit_code(0);
             st.total_input_tokens += 1200;
             st.total_cost += 0.018;
-            st.activity.set_plan({
-                {.text = "Read current auth middleware",   .status = TaskStatus::Completed},
-                {.text = "Replace session auth with JWT", .status = TaskStatus::Completed},
-                {.text = "Create token utility module",   .status = TaskStatus::Completed},
-                {.text = "Update test suite",             .status = TaskStatus::Completed},
-                {.text = "Run tests and verify",          .status = TaskStatus::Completed},
-            });
             enter_phase(st, Phase::Responding);
         }
         break;
@@ -675,33 +569,16 @@ static void advance_phase(State& st, float dt) {
         break;
 
     case Phase::Complete:
+        // Push toast once on completion
+        if (!st.toast_pushed) {
+            st.toasts.push("All 14 tests passing — task complete", Severity::Success, 6.0f);
+            st.toast_pushed = true;
+        }
         break;
     }
 }
 
 static void advance_metrics(State& st, float dt) {
-    float t = st.elapsed;
-    float cpu = 0.15f + 0.1f * std::sin(t * 0.8f) + 0.05f * std::sin(t * 2.3f);
-    float mem = 0.42f + 0.08f * std::sin(t * 0.2f) + 0.03f * std::sin(t * 1.1f);
-    float lat = 0.1f + 0.3f * std::sin(t * 0.5f) * std::sin(t * 0.5f);
-
-    // Spike during test runs
-    if (st.phase == Phase::RunTests) {
-        cpu += 0.35f;
-        mem += 0.12f;
-        lat += 0.15f;
-    }
-
-    st.cpu_history.push_back(std::clamp(cpu, 0.f, 1.f));
-    st.mem_history.push_back(std::clamp(mem, 0.f, 1.f));
-    st.latency_history.push_back(std::clamp(lat, 0.f, 1.f));
-    auto trim = [](std::vector<float>& v, size_t max) {
-        if (v.size() > max) v.erase(v.begin());
-    };
-    trim(st.cpu_history, 50);
-    trim(st.mem_history, 50);
-    trim(st.latency_history, 50);
-
     // Token rate tracking
     st.tok_rate_timer += dt;
     if (st.tok_rate_timer > 0.3f) {
@@ -711,16 +588,33 @@ static void advance_metrics(State& st, float dt) {
         st.prev_output_tokens = st.total_output_tokens;
         st.tok_rate_history.push_back(rate);
         if (rate > st.peak_tok_rate) st.peak_tok_rate = rate;
+        auto trim = [](std::vector<float>& v, size_t max) {
+            if (v.size() > max) v.erase(v.begin());
+        };
         trim(st.tok_rate_history, 40);
     }
 
-    // Server logs
-    st.server_timer += dt;
-    if (st.server_timer > 1.2f) {
-        st.server_timer = 0.f;
-        st.server_log.append(kServerLogs[st.server_line % kNumServerLogs]);
-        st.server_line++;
+    // Heatmap data: build a 4-row x N-col grid of token activity
+    st.heatmap_timer += dt;
+    if (st.heatmap_timer > 0.5f) {
+        st.heatmap_timer = 0.f;
+        // Ensure 4 rows exist
+        if (st.heatmap_data.size() < 4) st.heatmap_data.resize(4);
+        float t = st.elapsed;
+        float base = (st.phase >= Phase::Thinking && st.phase <= Phase::Responding) ? 0.3f : 0.05f;
+        st.heatmap_data[0].push_back(std::clamp(base + 0.3f * std::sin(t * 1.1f), 0.f, 1.f));
+        st.heatmap_data[1].push_back(std::clamp(base + 0.2f * std::cos(t * 0.7f), 0.f, 1.f));
+        st.heatmap_data[2].push_back(std::clamp(base + 0.4f * std::sin(t * 1.5f) * std::sin(t * 0.3f), 0.f, 1.f));
+        st.heatmap_data[3].push_back(std::clamp(base + 0.25f * std::cos(t * 2.1f), 0.f, 1.f));
+        // Keep last 20 columns
+        for (auto& row : st.heatmap_data) {
+            if (row.size() > 20) row.erase(row.begin());
+        }
+        st.heatmap_col++;
     }
+
+    // Tick toasts
+    st.toasts.tick(dt);
 }
 
 static void advance(State& st, float dt) {
@@ -734,41 +628,19 @@ static void advance(State& st, float dt) {
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-static constexpr auto kLeftOnly = BorderSides{
-    .top = false, .right = false, .bottom = false, .left = true};
-
-// Accent left-border section with padding
-static Element section(Color accent, Children children) {
-    return vstack()
-        .border_sides(kLeftOnly)
-        .border_color(accent)
-        .padding(0, 1, 0, 1)
-        .gap(0)(std::move(children));
-}
-
-// Titled panel with round border
-static Element panel(const std::string& title, Color border_col, Children children) {
-    return vstack()
-        .border(Round, border_col)
-        .border_text(title, BorderTextPos::Top, BorderTextAlign::Start)
-        .padding(0, 1, 0, 1)
-        .gap(1)(std::move(children));
-}
-
-// Muted dim label
-static Element label(const std::string& s) {
+static Element muted(const std::string& s) {
     return text(s, Style{}.with_fg(palette().muted).with_dim());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Render: Chat tab
+// Render — single-column vertical flow
 // ═══════════════════════════════════════════════════════════════════════════════
 
-static Element build_chat(State& st) {
+static Element build_ui(State& st) {
     auto& p = palette();
     std::vector<Element> rows;
 
-    // ── User message ───────────────────────────────────────────
+    // ── User message with context pills ────────────────────────
     rows.push_back(
         MessageBubble({
             .role = Role::User,
@@ -780,127 +652,178 @@ static Element build_chat(State& st) {
         })
     );
 
-    if (st.phase < Phase::Thinking)
-        return vstack().padding(0, 1, 0, 1).gap(1)(std::move(rows));
+    // Context pills row — showing the files mentioned / attached
+    rows.push_back(ContextPillRow({.pills = {
+        {.kind = ContextKind::File,      .label = "src/middleware/auth.ts"},
+        {.kind = ContextKind::File,      .label = "tests/auth.test.ts"},
+        {.kind = ContextKind::GitDiff,   .label = "Working Changes"},
+        {.kind = ContextKind::Directory, .label = "src/utils/"},
+    }}));
 
-    // ── Thinking block ─────────────────────────────────────────
-    rows.push_back(
-        MessageBubble({
-            .role = Role::Assistant,
-            .children = {st.thinking.render(st.frame)},
-            .is_streaming = st.phase == Phase::Thinking,
-            .frame = st.frame,
-        })
-    );
+    if (st.phase < Phase::Thinking)
+        goto assemble;
+
+    // ── Thinking block with GlimmerText label ─────────────────
+    {
+        bool thinking_active = st.phase == Phase::Thinking;
+        Children thinking_children;
+        if (thinking_active) {
+            thinking_children.push_back(
+                GlimmerText({.text_content = "Thinking...",
+                             .frame = st.frame, .is_streaming = true}));
+        }
+        thinking_children.push_back(st.thinking.render(st.frame));
+        rows.push_back(
+            MessageBubble({
+                .role = Role::Assistant,
+                .children = std::move(thinking_children),
+                .is_streaming = thinking_active,
+                .frame = st.frame,
+            })
+        );
+    }
 
     if (st.phase < Phase::ReadFile)
-        return vstack().padding(0, 1, 0, 1).gap(1)(std::move(rows));
+        goto assemble;
 
-    // ── Tool 1: Read file ──────────────────────────────────────
-    rows.push_back(ToolCard({
-        .title = "Read src/middleware/auth.ts",
-        .status = st.read_status,
-        .frame = st.frame,
-        .collapsed = st.tool1_collapsed,
-        .summary = st.read_status == TaskStatus::Completed ? "42 lines read" : "",
-        .children = st.tool1_collapsed ? Children{} : Children{
-            CodeBlock({
-                .code = "import session from 'express-session';\n"
-                        "import { SessionStore } from '../stores/session';\n"
-                        "\n"
-                        "const SESSION_SECRET = process.env.SESSION_SECRET!;\n"
-                        "const SESSION_TIMEOUT = 3600; // seconds\n"
-                        "\n"
-                        "export function authMiddleware() {\n"
-                        "  return session({\n"
-                        "    secret: SESSION_SECRET,\n"
-                        "    // ... (42 lines)\n"
-                        "  });\n"
-                        "}",
-                .language = "typescript",
-            }),
-        },
-        .tool_name = "Read",
-    }));
+    // ── Tool 1: Read file (ReadCard) ──────────────────────────
+    rows.push_back(st.read_card.render(st.frame));
 
     if (st.phase < Phase::EditAuth)
-        return vstack().padding(0, 1, 0, 1).gap(1)(std::move(rows));
+        goto assemble;
 
-    // ── Tool 2: Edit auth middleware ────────────────────────────
-    rows.push_back(ToolCard({
-        .title = "Edit src/middleware/auth.ts",
-        .status = st.edit1_status,
-        .frame = st.frame,
-        .collapsed = st.tool2_collapsed,
-        .summary = st.edit1_status == TaskStatus::Completed ? "+18 -14 lines" : "",
-        .children = st.tool2_collapsed ? Children{} : Children{
-            DiffView({.diff = kDiff1, .file_path = "src/middleware/auth.ts"}),
-        },
-        .tool_name = "Edit",
-    }));
+    // ── Approve edit toggle (brief inline prompt) ─────────────
+    if (st.phase == Phase::EditAuth && st.phase_timer < 0.5f) {
+        rows.push_back(hstack().gap(2)(
+            Toggle({.checked = st.edit_approved, .label = "Auto-approve edits",
+                    .style = ToggleStyle::Switch}),
+            muted("press 'a' to toggle")
+        ));
+    }
 
-    if (st.phase < Phase::CreateToken)
-        return vstack().padding(0, 1, 0, 1).gap(1)(std::move(rows));
-
-    // ── Tool 3: Create token utility ───────────────────────────
-    rows.push_back(ToolCard({
-        .title = "Write src/utils/token.ts",
-        .status = st.create_status,
-        .frame = st.frame,
-        .collapsed = st.tool3_collapsed,
-        .summary = st.create_status == TaskStatus::Completed ? "+32 lines (new file)" : "",
-        .children = st.tool3_collapsed ? Children{} : Children{
-            DiffView({.diff = kDiff2, .file_path = "src/utils/token.ts"}),
-        },
-        .tool_name = "Write",
-    }));
-
-    if (st.phase < Phase::EditTests)
-        return vstack().padding(0, 1, 0, 1).gap(1)(std::move(rows));
-
-    // ── Tool 4: Edit tests ─────────────────────────────────────
-    rows.push_back(ToolCard({
-        .title = "Edit tests/auth.test.ts",
-        .status = st.edit2_status,
-        .frame = st.frame,
-        .collapsed = st.tool4_collapsed,
-        .summary = st.edit2_status == TaskStatus::Completed ? "+15 -8 lines" : "",
-        .children = st.tool4_collapsed ? Children{} : Children{
-            DiffView({.diff = kDiff3, .file_path = "tests/auth.test.ts"}),
-        },
-        .tool_name = "Edit",
-    }));
-
-    if (st.phase < Phase::RunTests)
-        return vstack().padding(0, 1, 0, 1).gap(1)(std::move(rows));
-
-    // ── Tool 5: Run tests ──────────────────────────────────────
+    // ── Tool 2: Edit auth middleware (ToolCard + DiffView) ────
     {
-        Children test_children;
-        if (!st.tool5_collapsed) {
-            test_children.push_back(st.test_log.render());
+        Children edit1_body;
+        if (!st.tool2_collapsed) {
+            edit1_body.push_back(
+                FileBreadcrumb("src/middleware/auth.ts", p.accent));
+            edit1_body.push_back(
+                DiffView({.diff = kDiff1, .file_path = "src/middleware/auth.ts"}));
         }
-        std::string summary;
-        if (st.test_status == TaskStatus::Completed)
-            summary = "14 passed, 0 failed";
-        else if (st.test_line > 0)
-            summary = std::to_string(st.test_line) + "/" + std::to_string(kNumTestLines) + " lines";
-
         rows.push_back(ToolCard({
-            .title = "Run npx vitest run --filter auth",
-            .status = st.test_status,
+            .title = "Edit src/middleware/auth.ts",
+            .status = st.edit1_status,
             .frame = st.frame,
-            .collapsed = st.tool5_collapsed,
-            .summary = summary,
-            .children = std::move(test_children),
-            .tool_name = "Bash",
+            .collapsed = st.tool2_collapsed,
+            .summary = st.edit1_status == TaskStatus::Completed ? "+18 -14 lines" : "",
+            .children = std::move(edit1_body),
+            .tool_name = "Edit",
         }));
     }
 
-    if (st.phase < Phase::Responding)
-        return vstack().padding(0, 1, 0, 1).gap(1)(std::move(rows));
+    if (st.phase < Phase::CreateToken)
+        goto assemble;
 
-    // ── Assistant response (rendered as Markdown) ────────────
+    // ── Tool 3: Create token utility (ToolCard + DiffView) ────
+    {
+        Children create_body;
+        if (!st.tool3_collapsed) {
+            create_body.push_back(
+                FileBreadcrumb("src/utils/token.ts", p.success));
+            create_body.push_back(
+                DiffView({.diff = kDiff2, .file_path = "src/utils/token.ts"}));
+        }
+        rows.push_back(ToolCard({
+            .title = "Write src/utils/token.ts",
+            .status = st.create_status,
+            .frame = st.frame,
+            .collapsed = st.tool3_collapsed,
+            .summary = st.create_status == TaskStatus::Completed ? "+32 (new file)" : "",
+            .children = std::move(create_body),
+            .tool_name = "Write",
+        }));
+    }
+
+    if (st.phase < Phase::EditTests)
+        goto assemble;
+
+    // ── Tool 4: Edit tests (ToolCard + DiffView) ──────────────
+    {
+        Children edit2_body;
+        if (!st.tool4_collapsed) {
+            edit2_body.push_back(
+                FileBreadcrumb("tests/auth.test.ts", p.accent));
+            edit2_body.push_back(
+                DiffView({.diff = kDiff3, .file_path = "tests/auth.test.ts"}));
+        }
+        rows.push_back(ToolCard({
+            .title = "Edit tests/auth.test.ts",
+            .status = st.edit2_status,
+            .frame = st.frame,
+            .collapsed = st.tool4_collapsed,
+            .summary = st.edit2_status == TaskStatus::Completed ? "+15 -8 lines" : "",
+            .children = std::move(edit2_body),
+            .tool_name = "Edit",
+        }));
+    }
+
+    // ── Accordion bar (file changes summary) ──────────────────
+    if (st.show_accordion) {
+        rows.push_back(st.accordion.render());
+    }
+
+    if (st.phase < Phase::RunTests)
+        goto assemble;
+
+    // ── Timeline: mini build pipeline ─────────────────────────
+    {
+        bool tests_done = st.phase > Phase::RunTests;
+        rows.push_back(Timeline({
+            .events = {
+                {.label = "Read auth middleware", .detail = "42 lines",
+                 .duration = "1.2s", .status = TaskStatus::Completed},
+                {.label = "Edit auth.ts", .detail = "+18 -14",
+                 .duration = "2.0s", .status = TaskStatus::Completed},
+                {.label = "Create token.ts", .detail = "+32 new",
+                 .duration = "2.0s", .status = TaskStatus::Completed},
+                {.label = "Edit tests", .detail = "+15 -8",
+                 .duration = "2.0s", .status = TaskStatus::Completed},
+                {.label = "Run tests", .detail = tests_done ? "14 passed" : "running...",
+                 .duration = tests_done ? "1.8s" : "",
+                 .status = tests_done ? TaskStatus::Completed : TaskStatus::InProgress,
+                 .bar_width = tests_done ? 12 : 8},
+            },
+            .compact = true,
+            .frame = st.frame,
+        }));
+    }
+
+    // ── Tool 5: Run tests (CommandCard + LogView) ─────────────
+    rows.push_back(st.cmd_card.render(st.frame));
+
+    // Test progress bar
+    {
+        float test_progress = 0.f;
+        if (st.phase > Phase::RunTests) test_progress = 1.f;
+        else if (st.phase == Phase::RunTests)
+            test_progress = static_cast<float>(st.test_line) / kNumTestLines;
+
+        bool tests_done = test_progress >= 1.f;
+        rows.push_back(hstack().gap(2)(
+            muted("progress"),
+            ProgressBar({
+                .value = test_progress,
+                .width = 30,
+                .show_percent = true,
+                .filled = tests_done ? p.success : p.primary,
+            })
+        ));
+    }
+
+    if (st.phase < Phase::Responding)
+        goto assemble;
+
+    // ── Assistant response (Markdown rendering) ────────────────
     {
         bool still_streaming = !st.response_stream.fully_revealed();
         auto revealed = st.response_stream.revealed_text();
@@ -918,527 +841,188 @@ static Element build_chat(State& st) {
         );
     }
 
+    // ── InlineDiff highlight of key change in response ────────
+    if (st.response_stream.fully_revealed() || st.phase == Phase::Complete) {
+        rows.push_back(InlineDiff({
+            .before = "const SESSION_TIMEOUT = 3600; // seconds",
+            .after  = "const TOKEN_EXPIRY = '1h';",
+            .label  = "Key fix",
+        }));
+    }
+
+    // ── Completion section ─────────────────────────────────────
     if (st.phase == Phase::Complete) {
+        // Callout with chips
         rows.push_back(
-            vstack()
-                .border(Round, p.success)
-                .padding(0, 1, 0, 1)
-                .gap(1)(
-                hstack().gap(2)(
-                    text("✓", Style{}.with_fg(p.success).with_bold()),
-                    text("Task completed", Style{}.with_fg(p.success).with_bold()),
-                    DiffStat({.added = 65, .removed = 22})
-                ),
-                hstack().gap(2)(
-                    Chip({.label = "14/14 tests pass", .severity = Severity::Success}),
-                    Chip({.label = "3 files changed"}),
-                    Chip({.label = "2 deps swapped", .severity = Severity::Info}),
-                    text(fmt("$%.4f", st.total_cost), Style{}.with_fg(p.muted))
-                )
-            )
-        );
-    }
-
-    return vstack().padding(0, 1, 0, 1).gap(1)(std::move(rows));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Render: Sidebar — plan + edits + cost + metrics
-// ═══════════════════════════════════════════════════════════════════════════════
-
-static Element sidebar_heading(const std::string& title, const Palette& p) {
-    return text(title, Style{}.with_fg(p.muted).with_bold().with_dim());
-}
-
-static Element build_sidebar(State& st) {
-    auto& p = palette();
-    bool is_done = st.phase == Phase::Complete;
-
-    std::vector<Element> rows;
-
-    // ── Plan ────────────────────────────────────────────────────
-    rows.push_back(sidebar_heading("PLAN", p));
-
-    struct PlanStep { const char* label; Phase after; };
-    PlanStep steps[] = {
-        {"Read auth middleware",     Phase::ReadFile},
-        {"Replace session with JWT", Phase::EditAuth},
-        {"Create token utility",     Phase::CreateToken},
-        {"Update test suite",        Phase::EditTests},
-        {"Run tests & verify",       Phase::RunTests},
-    };
-
-    int done_count = 0;
-    for (auto& step : steps) {
-        bool done = st.phase > step.after;
-        bool active = false;
-        if (step.after == Phase::ReadFile    && st.phase == Phase::ReadFile)    active = true;
-        if (step.after == Phase::EditAuth    && st.phase == Phase::EditAuth)    active = true;
-        if (step.after == Phase::CreateToken && st.phase == Phase::CreateToken) active = true;
-        if (step.after == Phase::EditTests   && st.phase == Phase::EditTests)   active = true;
-        if (step.after == Phase::RunTests    && st.phase == Phase::RunTests)    active = true;
-
-        if (done) done_count++;
-
-        Element icon_elem = active
-            ? Spinner({.frame = st.frame, .style = SpinnerStyle::Dots, .color = p.primary})
-            : text(done ? "✓" : "·",
-                   Style{}.with_fg(done ? p.success : p.dim).with_bold());
-
-        Style label_style = done
-            ? Style{}.with_fg(p.dim).with_strikethrough()
-            : active
-                ? Style{}.with_fg(p.text).with_bold()
-                : Style{}.with_fg(p.muted);
-
-        rows.push_back(hstack().gap(1)(
-            std::move(icon_elem),
-            text(step.label, label_style)
-        ));
-    }
-
-    float plan_frac = static_cast<float>(done_count) / 5.f;
-    rows.push_back(hstack().gap(1)(
-        ProgressBar({
-            .value = plan_frac,
-            .width = 24,
-            .show_percent = false,
-            .filled = is_done ? p.success : p.primary,
-        }),
-        text(fmt("%d/5", done_count), Style{}.with_fg(p.muted))
-    ));
-
-    // ── Divider ─────────────────────────────────────────────────
-    rows.push_back(Divider({.color = p.dim}));
-
-    // ── Edits ───────────────────────────────────────────────────
-    rows.push_back(sidebar_heading("EDITS", p));
-
-    struct EditInfo { const char* path; int add; int del; Phase after; };
-    EditInfo edits[] = {
-        {"middleware/auth.ts", 18, 14, Phase::EditAuth},
-        {"utils/token.ts",    32, 0,  Phase::CreateToken},
-        {"auth.test.ts",      15, 8,  Phase::EditTests},
-    };
-    bool has_edits = false;
-    for (auto& e : edits) {
-        if (st.phase > e.after) {
-            has_edits = true;
-            rows.push_back(hstack().gap(1)(
-                text(e.path, Style{}.with_fg(p.text)),
-                DiffStat({.added = e.add, .removed = e.del})
-            ));
-        }
-    }
-    if (!has_edits) {
-        rows.push_back(
-            text("waiting...", Style{}.with_fg(p.dim).with_italic()));
-    }
-
-    rows.push_back(Divider({.color = p.dim}));
-
-    // ── Context ─────────────────────────────────────────────────
-    rows.push_back(sidebar_heading("CONTEXT", p));
-    rows.push_back(ContextWindow({
-        .segments = {
-            {"System",   12400, p.info},
-            {"History",  static_cast<int>(st.total_input_tokens * 0.6), p.secondary},
-            {"Tools",    static_cast<int>(st.total_input_tokens * 0.3), p.accent},
-            {"Response", st.total_output_tokens, p.success},
-        },
-        .max_tokens = 200000,
-        .width = 26,
-        .show_labels = false,
-    }));
-
-    rows.push_back(Divider({.color = p.dim}));
-
-    // ── Stats (cost + time + rate in a compact block) ───────────
-    rows.push_back(sidebar_heading("STATS", p));
-
-    int secs = static_cast<int>(st.elapsed);
-    int mins = secs / 60;
-    secs %= 60;
-
-    float cur_rate = st.tok_rate_history.empty() ? 0.f : st.tok_rate_history.back();
-    Color rate_col = cur_rate > 50.f ? Color::rgb(80, 220, 120)
-                   : cur_rate > 20.f ? Color::rgb(240, 200, 60)
-                   : Color::rgb(240, 80, 80);
-
-    auto stat_row = [&](const std::string& lbl, Element val) {
-        return hstack().gap(1)(
-            text(fmt("%-8s", lbl.c_str()), Style{}.with_fg(p.dim)),
-            std::move(val)
-        );
-    };
-
-    rows.push_back(stat_row("Cost",
-        text(fmt("$%.4f / $5.00", st.total_cost),
-             Style{}.with_fg(st.total_cost > 4.0 ? p.error
-                           : st.total_cost > 2.5 ? p.warning
-                           : p.success))));
-    rows.push_back(stat_row("Elapsed",
-        text(fmt("%d:%02d", mins, secs), Style{}.with_fg(p.text))));
-    rows.push_back(stat_row("Rate",
-        text(fmt("%.0f tok/s", static_cast<double>(cur_rate)),
-             Style{}.with_fg(rate_col))));
-    rows.push_back(stat_row("Input",
-        text(fmt("%.1fk", st.total_input_tokens / 1000.0),
-             Style{}.with_fg(p.muted))));
-    rows.push_back(stat_row("Output",
-        text(fmt("%.1fk", st.total_output_tokens / 1000.0),
-             Style{}.with_fg(p.muted))));
-
-    rows.push_back(Divider({.color = p.dim}));
-
-    // ── Sparklines ──────────────────────────────────────────────
-    rows.push_back(hstack().gap(1)(
-        text("cpu", Style{}.with_fg(p.dim)),
-        Sparkline({.data = st.cpu_history, .width = 22, .color = Color::rgb(100, 200, 255)})
-    ));
-    rows.push_back(hstack().gap(1)(
-        text("mem", Style{}.with_fg(p.dim)),
-        Sparkline({.data = st.mem_history, .width = 22, .color = Color::rgb(200, 120, 255)})
-    ));
-    rows.push_back(hstack().gap(1)(
-        text("tok", Style{}.with_fg(p.dim)),
-        Sparkline({.data = st.tok_rate_history, .width = 22, .color = Color::rgb(255, 200, 100)})
-    ));
-
-    // ── Single bordered container ───────────────────────────────
-    return vstack()
-        .border(Round, p.border)
-        .padding(0, 1, 0, 1)
-        .gap(0)(std::move(rows));
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Render: Files tab
-// ═══════════════════════════════════════════════════════════════════════════════
-
-static Element build_files(State& st) {
-    auto& p = palette();
-
-    // File tree
-    auto tree_panel = panel(" Project ", p.primary, {
-        st.file_tree.render(),
-        hstack().gap(2)(
-            Chip({.label = "22 files"}),
-            Chip({.label = "3 modified", .severity = Severity::Warning}),
-            Chip({.label = "1 new", .severity = Severity::Success})
-        ),
-    });
-
-    // Code preview
-    auto preview_panel = panel(" src/middleware/auth.ts ", p.accent, {
-        CodeBlock({
-            .code = kCodePreview,
-            .language = "typescript",
-            .highlight_lines = {8, 11, 14, 18},
-        }),
-    });
-
-    // Dependencies
-    auto deps_panel = panel(" Dependencies ", p.border, {
-        st.deps_table.render(),
-        hstack().gap(2)(
-            Chip({.label = "+2 added", .severity = Severity::Info}),
-            Chip({.label = "-2 removed", .severity = Severity::Error}),
-            text("net: -13KB", Style{}.with_fg(p.success))
-        ),
-    });
-
-    return vstack().padding(0, 1, 0, 1).gap(1)(
-        std::move(tree_panel),
-        std::move(preview_panel),
-        std::move(deps_panel)
-    );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Render: Tests tab
-// ═══════════════════════════════════════════════════════════════════════════════
-
-static Element build_tests(State& st) {
-    auto& p = palette();
-
-    float test_progress = 0.f;
-    if (st.phase > Phase::RunTests) test_progress = 1.f;
-    else if (st.phase == Phase::RunTests)
-        test_progress = static_cast<float>(st.test_line) / kNumTestLines;
-
-    bool tests_done = test_progress >= 1.f;
-
-    // Title with live spinner
-    std::string test_title = tests_done
-        ? " ✓ Test Output "
-        : (st.phase == Phase::RunTests
-            ? std::string(" ") + spin(st.frame) + " Test Output "
-            : " Test Output ");
-
-    // Test output panel
-    auto test_panel = panel(test_title, tests_done ? p.success : p.border, {
-        st.test_log.render(),
-        hstack().gap(2)(
-            label("progress"),
-            ProgressBar({
-                .value = test_progress,
-                .width = 30,
-                .show_percent = true,
-                .filled = tests_done ? p.success : p.primary,
+            Callout({
+                .severity = Severity::Success,
+                .title = "Task completed  +65 -22",
+                .body = "Refactored session auth to JWT. All tests passing.",
             })
-        ),
-    });
-
-    // Results panel — only show when tests are done
-    Children results_children;
-    if (tests_done) {
-        results_children.push_back(BarChart({.bars = {
-            {.label = "auth.test",  .value = 5, .color = p.success},
-            {.label = "token.test", .value = 5, .color = p.success},
-            {.label = "login.test", .value = 4, .color = p.success},
-        }, .max_width = 20}));
-        results_children.push_back(
-            hstack().gap(2)(
-                Chip({.label = "3 suites", .severity = Severity::Success}),
-                Chip({.label = "14 tests", .severity = Severity::Success}),
-                Chip({.label = "1.847s"})
-            )
         );
-    } else {
-        results_children.push_back(
-            text("waiting for test run...", Style{}.with_fg(p.dim).with_italic()));
-    }
-    auto results_panel = panel(" Results ", p.border, std::move(results_children));
 
-    // Server panel
-    auto server_panel = panel(" Dev Server ", p.border, {
-        st.server_log.render(),
-    });
+        rows.push_back(hstack().gap(2)(
+            Chip({.label = "14/14 tests", .severity = Severity::Success}),
+            Chip({.label = "3 files"}),
+            Chip({.label = "2 deps swapped", .severity = Severity::Info}),
+            DiffStat({.added = 65, .removed = 22})
+        ));
 
-    // Metrics panel — sparklines + gauges
-    float cpu_val = st.cpu_history.empty() ? 0.f : st.cpu_history.back();
-    float mem_val = st.mem_history.empty() ? 0.f : st.mem_history.back();
-    float lat_val = st.latency_history.empty() ? 0.f : st.latency_history.back();
+        // Checkpoint — rollback point
+        rows.push_back(st.checkpoint.render());
 
-    auto metrics_panel = panel(" System Metrics ", p.border, {
-        hstack().gap(1)(
-            label("CPU"),
-            Sparkline({.data = st.cpu_history, .width = 30, .color = Color::rgb(100, 200, 255)}),
-            text(fmt("%3.0f%%", static_cast<double>(cpu_val * 100)),
-                 Style{}.with_fg(cpu_val > 0.6f ? p.warning : p.text).with_bold())
-        ),
-        hstack().gap(1)(
-            label("MEM"),
-            Sparkline({.data = st.mem_history, .width = 30, .color = Color::rgb(200, 120, 255)}),
-            text(fmt("%3.0f%%", static_cast<double>(mem_val * 100)),
-                 Style{}.with_fg(mem_val > 0.7f ? p.warning : p.text).with_bold())
-        ),
-        hstack().gap(1)(
-            label("LAT"),
-            Sparkline({.data = st.latency_history, .width = 30, .color = Color::rgb(255, 180, 100)}),
-            text(fmt("%4.0fms", static_cast<double>(lat_val * 200)),
-                 Style{}.with_fg(lat_val > 0.5f ? p.warning : p.text).with_bold())
-        ),
-        Gauge({.value = cpu_val, .label = "CPU Load ", .width = 30,
-               .thresholds = {{0.3f, p.success}, {0.6f, p.warning}, {0.85f, p.error}}}),
-        Gauge({.value = mem_val, .label = "Memory   ", .width = 30,
-               .thresholds = {{0.5f, p.success}, {0.7f, p.warning}, {0.9f, p.error}}}),
-        Gauge({.value = 0.23f, .label = "Disk I/O ", .width = 30}),
-    });
+        rows.push_back(Divider({.color = p.dim}));
 
-    // Waterfall panel — build pipeline timing
-    auto waterfall_panel = panel(" Build Pipeline ", p.border, {
-        Waterfall({.entries = {
-            {.label = "tsc compile",   .start = 0.0f, .duration = 1.2f,
-             .color = p.info,    .status = TaskStatus::Completed},
-            {.label = "lint",          .start = 0.0f, .duration = 0.8f,
-             .color = p.accent,  .status = TaskStatus::Completed},
-            {.label = "bundle",        .start = 1.2f, .duration = 0.6f,
-             .color = p.primary, .status = TaskStatus::Completed},
-            {.label = "auth.test",     .start = 1.8f, .duration = 0.9f,
-             .color = tests_done ? p.success : p.warning,
-             .status = tests_done ? TaskStatus::Completed : TaskStatus::InProgress},
-            {.label = "token.test",    .start = 1.8f, .duration = 0.7f,
-             .color = tests_done ? p.success : p.warning,
-             .status = tests_done ? TaskStatus::Completed : TaskStatus::InProgress},
-            {.label = "login.test",    .start = 2.0f, .duration = 0.5f,
-             .color = tests_done ? p.success : p.warning,
-             .status = tests_done ? TaskStatus::Completed : TaskStatus::Pending},
-        }, .bar_width = 25, .frame = st.frame}),
-    });
+        // ── Cost & Context section ────────────────────────────
+        rows.push_back(FormField({
+            .label = "Cost & Context",
+            .description = "Session resource usage",
+            .children = {
+                CostMeter({
+                    .input_tokens = st.total_input_tokens,
+                    .output_tokens = st.total_output_tokens,
+                    .cache_read = st.cache_read,
+                    .cache_write = st.cache_write,
+                    .cost = st.total_cost,
+                    .budget = 5.00,
+                    .model = "claude-opus-4-6",
+                }),
+            },
+        }));
 
-    return vstack().padding(0, 1, 0, 1).gap(1)(
-        std::move(test_panel),
-        std::move(results_panel),
-        std::move(waterfall_panel),
-        std::move(server_panel),
-        std::move(metrics_panel)
-    );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Render: Config tab
-// ═══════════════════════════════════════════════════════════════════════════════
-
-static Element build_config(State& st) {
-    auto& p = palette();
-
-    auto model_panel = panel(" Model ", p.primary, {
-        st.model_select.render(),
-    });
-
-    auto gen_panel = panel(" Generation ", p.border, {
-        st.max_tokens.render(),
-        st.temperature.render(),
-        st.budget_input.render(),
-    });
-
-    auto behavior_panel = panel(" Behavior ", p.border, {
-        section(p.primary, {
-            text("Permissions", Style{}.with_bold().with_fg(p.text)),
-            vstack().gap(1)(
-                Toggle({.checked = st.auto_approve, .label = "Auto-approve edits",   .style = ToggleStyle::Switch}),
-                Toggle({.checked = st.diff_preview, .label = "Show diff previews",   .style = ToggleStyle::Switch}),
-                Toggle({.checked = st.run_tests,    .label = "Auto-run tests after edits", .style = ToggleStyle::Switch})
-            ),
-        }),
-        section(p.accent, {
-            text("Output", Style{}.with_bold().with_fg(p.text)),
-            vstack().gap(1)(
-                Toggle({.checked = st.streaming,    .label = "Stream responses",    .style = ToggleStyle::Checkbox}),
-                Toggle({.checked = st.dark_mode,    .label = "Dark mode",           .style = ToggleStyle::Checkbox}),
-                Toggle({.checked = st.verbose_logs, .label = "Verbose logging",     .style = ToggleStyle::Checkbox}),
-                Toggle({.checked = st.telemetry,    .label = "Telemetry (disabled)", .style = ToggleStyle::Dot,
-                        .disabled = true})
-            ),
-        }),
-    });
-
-    auto cost_panel = panel(" Session Cost ", p.border, {
-        CostMeter({
-            .input_tokens = st.total_input_tokens,
-            .output_tokens = st.total_output_tokens,
-            .cache_read = st.cache_read,
-            .cache_write = st.cache_write,
-            .cost = st.total_cost,
-            .budget = 5.00,
-            .model = "claude-opus-4-6",
-        }),
-    });
-
-    auto context_panel = panel(" Context Window ", p.border, {
-        ContextWindow({
+        // Context window bar
+        rows.push_back(ContextWindow({
             .segments = {
                 {"System",   12400, p.info},
-                {"Chat",     static_cast<int>(st.total_input_tokens * 0.6), p.secondary},
+                {"History",  static_cast<int>(st.total_input_tokens * 0.6), p.secondary},
                 {"Tools",    static_cast<int>(st.total_input_tokens * 0.3), p.accent},
-                {"Output",   st.total_output_tokens, p.success},
+                {"Response", st.total_output_tokens, p.success},
                 {"Cache",    st.cache_read, Color::rgb(100, 180, 100)},
             },
             .max_tokens = 200000,
             .width = 40,
-        }),
-    });
+        }));
 
-    return vstack().padding(0, 1, 0, 1).gap(1)(
-        std::move(model_panel),
-        std::move(gen_panel),
-        std::move(behavior_panel),
-        std::move(cost_panel),
-        std::move(context_panel),
-        Callout({
-            .severity = st.phase == Phase::Complete ? Severity::Success : Severity::Info,
-            .title = st.phase == Phase::Complete ? "Session Complete" : "Session Active",
-            .body = st.phase == Phase::Complete
-                ? "All tasks completed successfully. 3 files modified, 14 tests passing."
-                : "Agent is working on the auth refactoring task...",
-        }),
-        KeyBindings({
-            {.keys = "Tab", .label = "switch tab"},
-            {.keys = "j/k", .label = "navigate"},
-            {.keys = "Enter", .label = "select"},
-            {.keys = "a/d/t/s/v", .label = "toggle"},
-            {.keys = "q", .label = "quit"},
-        })
-    );
-}
+        // Context usage gauge
+        {
+            int total_used = 12400 + st.total_input_tokens + st.total_output_tokens + st.cache_read;
+            float ctx_frac = static_cast<float>(total_used) / 200000.f;
+            rows.push_back(Gauge({
+                .value = ctx_frac,
+                .label = "Context ",
+                .width = 40,
+                .thresholds = {{0.5f, p.success}, {0.75f, p.warning}, {0.9f, p.error}},
+            }));
+        }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Main layout
-// ═══════════════════════════════════════════════════════════════════════════════
+        // Token stream with sparkline
+        {
+            float cur_rate = st.tok_rate_history.empty() ? 0.f : st.tok_rate_history.back();
+            rows.push_back(TokenStream({
+                .total_tokens = st.total_output_tokens,
+                .tokens_per_sec = cur_rate,
+                .peak_rate = st.peak_tok_rate,
+                .elapsed_secs = st.elapsed,
+                .rate_history = st.tok_rate_history,
+            }));
+        }
 
-static Element build_ui(State& st) {
-    auto& p = palette();
+        // Standalone sparkline of token rate
+        rows.push_back(hstack().gap(1)(
+            muted("tok/s"),
+            Sparkline({.data = st.tok_rate_history, .width = 30,
+                       .color = Color::rgb(255, 200, 100)})
+        ));
 
-    // Build active panel
-    Element main_panel;
-    switch (st.main_tabs.active()) {
-        case 0: main_panel = build_chat(st);   break;
-        case 1: main_panel = build_files(st);  break;
-        case 2: main_panel = build_tests(st);  break;
-        case 3: main_panel = build_config(st); break;
-        default: main_panel = text("?");       break;
+        // Heatmap of token activity
+        if (!st.heatmap_data.empty() && !st.heatmap_data[0].empty()) {
+            rows.push_back(FormField({
+                .label = "Token Activity",
+                .children = {
+                    Heatmap({
+                        .data = st.heatmap_data,
+                        .row_labels = {"in", "out", "cache", "rate"},
+                    }),
+                },
+            }));
+        }
+
+        // Disclosure: detailed stats
+        rows.push_back(st.stats_disclosure.render({
+            hstack().gap(2)(
+                muted(fmt("Input: %.1fk tokens", st.total_input_tokens / 1000.0)),
+                muted(fmt("Output: %.1fk tokens", st.total_output_tokens / 1000.0))
+            ),
+            hstack().gap(2)(
+                muted(fmt("Cache read: %d", st.cache_read)),
+                muted(fmt("Cache write: %d", st.cache_write))
+            ),
+            hstack().gap(2)(
+                muted(fmt("Peak rate: %.0f tok/s", static_cast<double>(st.peak_tok_rate))),
+                muted(fmt("Elapsed: %.1fs", static_cast<double>(st.elapsed)))
+            ),
+        }));
+
+        rows.push_back(Divider({.color = p.dim}));
+
+        // Feedback buttons
+        rows.push_back(st.feedback.render());
+
+        // Toast notifications (overlaid)
+        if (!st.toasts.empty()) {
+            rows.push_back(st.toasts.render());
+        }
     }
 
-    // Phase info
-    const char* phase_label = "Ready";
-    Color phase_color = p.success;
-    switch (st.phase) {
-        case Phase::UserMessage:  phase_label = "Receiving"; phase_color = p.info; break;
-        case Phase::Thinking:     phase_label = "Thinking";  phase_color = p.warning; break;
-        case Phase::ReadFile:     phase_label = "Reading";   phase_color = p.info; break;
-        case Phase::EditAuth:
-        case Phase::CreateToken:
-        case Phase::EditTests:    phase_label = "Editing";   phase_color = p.accent; break;
-        case Phase::RunTests:     phase_label = "Testing";   phase_color = p.warning; break;
-        case Phase::Responding:   phase_label = "Writing";   phase_color = p.primary; break;
-        case Phase::Complete:     phase_label = "Done";      phase_color = p.success; break;
-    }
+    // ── Keybindings ───────────────────────────────────────────
+    rows.push_back(KeyBindings({
+        {.keys = "Esc", .label = "quit"},
+        {.keys = "1-5", .label = "toggle tools"},
+    }));
 
-    int plan_done = 0;
-    if (st.phase > Phase::ReadFile) plan_done++;
-    if (st.phase > Phase::EditAuth) plan_done++;
-    if (st.phase > Phase::CreateToken) plan_done++;
-    if (st.phase > Phase::EditTests) plan_done++;
-    if (st.phase > Phase::RunTests) plan_done++;
+    // ── Status bar ────────────────────────────────────────────
+    {
+        const char* phase_label = "Ready";
+        Color phase_color = p.success;
+        switch (st.phase) {
+            case Phase::UserMessage:  phase_label = "Receiving"; phase_color = p.info; break;
+            case Phase::Thinking:     phase_label = "Thinking";  phase_color = p.warning; break;
+            case Phase::ReadFile:     phase_label = "Reading";   phase_color = p.info; break;
+            case Phase::EditAuth:
+            case Phase::CreateToken:
+            case Phase::EditTests:    phase_label = "Editing";   phase_color = p.accent; break;
+            case Phase::RunTests:     phase_label = "Testing";   phase_color = p.warning; break;
+            case Phase::Responding:   phase_label = "Writing";   phase_color = p.primary; break;
+            case Phase::Complete:     phase_label = "Done";      phase_color = p.success; break;
+        }
 
-    bool active = st.phase != Phase::Complete;
+        int plan_done = 0;
+        if (st.phase > Phase::ReadFile) plan_done++;
+        if (st.phase > Phase::EditAuth) plan_done++;
+        if (st.phase > Phase::CreateToken) plan_done++;
+        if (st.phase > Phase::EditTests) plan_done++;
+        if (st.phase > Phase::RunTests) plan_done++;
 
-    // Elapsed
-    int secs = static_cast<int>(st.elapsed);
+        bool active = st.phase != Phase::Complete;
+        int secs = static_cast<int>(st.elapsed);
 
-    // Status bar with spinner when active
-    std::string status_str = active
-        ? std::string(spin(st.frame)) + " " + phase_label
-        : std::string("✓ ") + phase_label;
+        std::string status_str = active
+            ? std::string(spin(st.frame)) + " " + phase_label
+            : std::string("✓ ") + phase_label;
 
-    return vstack()(
-        // Status bar
-        StatusBar(StatusBarProps{.sections = {
+        rows.push_back(StatusBar(StatusBarProps{.sections = {
             {.content = " maya", .color = p.primary, .bold = true},
             {.content = "claude-opus-4-6", .color = p.accent},
             {.content = status_str, .color = phase_color, .bold = true},
-            {.content = fmt("%d/5 steps", plan_done), .color = plan_done == 5 ? p.success : p.muted},
-            {.content = fmt("$%.3f / $5.00", st.total_cost),
+            {.content = fmt("%d/5", plan_done), .color = plan_done == 5 ? p.success : p.muted},
+            {.content = fmt("$%.3f", st.total_cost),
              .color = st.total_cost > 0.5 ? p.warning : p.muted},
             {.content = fmt("%ds", secs), .color = p.dim},
-        }}),
+        }}));
+    }
 
-        // Tabs
-        st.main_tabs.render(),
-
-        // Main content area with sidebar on chat/tests tabs
-        hstack().gap(0)(
-            // Main content — fills remaining space
-            vstack().grow(1).shrink(1)(std::move(main_panel)),
-
-            // Sidebar — fixed width, won't shrink
-            st.main_tabs.active() == 0 || st.main_tabs.active() == 2
-                ? vstack().width(Dimension::fixed(32)).shrink(0)(build_sidebar(st))
-                : text("")
-        )
-    );
+assemble:
+    return vstack().gap(1)(std::move(rows));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1455,41 +1039,23 @@ int main() {
 
         // ── Event handler ──────────────────────────────────────
         [&](const Event& ev) {
-            if (key(ev, 'q')) return false;
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
 
-            // Tab switching
-            if (st.main_tabs.update(ev)) return true;
+            // Toggle tool collapse with number keys
+            if (key(ev, '1')) { st.tool1_collapsed = !st.tool1_collapsed; st.read_card.toggle_collapsed(); return true; }
+            if (key(ev, '2')) { st.tool2_collapsed = !st.tool2_collapsed; return true; }
+            if (key(ev, '3')) { st.tool3_collapsed = !st.tool3_collapsed; return true; }
+            if (key(ev, '4')) { st.tool4_collapsed = !st.tool4_collapsed; return true; }
+            if (key(ev, '5')) { st.tool5_collapsed = !st.tool5_collapsed; return true; }
 
-            // Forward to active panel's components
-            switch (st.main_tabs.active()) {
-                case 0: // Chat
-                    if (st.chat_scroll.update(ev)) return true;
-                    if (st.test_log.update(ev)) return true;
-                    // Toggle tool collapse with number keys
-                    if (key(ev, '!') || (ctrl(ev, '1'))) { st.tool1_collapsed = !st.tool1_collapsed; return true; }
-                    if (key(ev, '@') || (ctrl(ev, '2'))) { st.tool2_collapsed = !st.tool2_collapsed; return true; }
-                    break;
-                case 1: // Files
-                    if (st.file_tree.update(ev)) return true;
-                    if (st.deps_table.update(ev)) return true;
-                    break;
-                case 2: // Tests
-                    if (st.test_log.update(ev)) return true;
-                    if (st.server_log.update(ev)) return true;
-                    break;
-                case 3: // Config
-                    if (st.model_select.update(ev)) return true;
-                    if (st.max_tokens.update(ev)) return true;
-                    if (st.temperature.update(ev)) return true;
-                    if (st.budget_input.update(ev)) return true;
-                    // Toggle shortcuts
-                    if (key(ev, 'a')) { st.auto_approve = !st.auto_approve; return true; }
-                    if (key(ev, 'd')) { st.diff_preview = !st.diff_preview; return true; }
-                    if (key(ev, 't')) { st.run_tests = !st.run_tests; return true; }
-                    if (key(ev, 's')) { st.streaming = !st.streaming; return true; }
-                    if (key(ev, 'v')) { st.verbose_logs = !st.verbose_logs; return true; }
-                    break;
-            }
+            // Toggle detailed stats disclosure
+            if (key(ev, 'd')) { st.stats_disclosure.toggle(); return true; }
+
+            // Feedback
+            st.feedback.update(ev);
+
+            // Checkpoint
+            st.checkpoint.update(ev);
 
             return true;
         },

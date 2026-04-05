@@ -147,3 +147,15 @@
 // Navigation & Notifications
 #include "breadcrumb.hpp"
 #include "toast.hpp"
+
+// Additional components
+#include "context_pill.hpp"
+#include "glimmer_text.hpp"
+#include "read_card.hpp"
+#include "command_card.hpp"
+#include "accordion_bar.hpp"
+#include "feedback_buttons.hpp"
+#include "checkpoint.hpp"
+#include "edit_card.hpp"
+#include "search_card.hpp"
+#include "model_selector.hpp"

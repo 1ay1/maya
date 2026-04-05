@@ -68,7 +68,7 @@ auto setup_signal_pipe() -> Status {
     struct sigaction sa{};
     sa.sa_handler = sigwinch_handler;
     sa.sa_flags   = SA_RESTART;
-    ::sigemptyset(&sa.sa_mask);
+    sigemptyset(&sa.sa_mask);
     if (::sigaction(SIGWINCH, &sa, nullptr) < 0) {
         return err(Error::from_errno("sigaction(SIGWINCH)"));
     }

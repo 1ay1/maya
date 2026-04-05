@@ -22,29 +22,13 @@ struct ChipProps {
     std::optional<Severity> severity = std::nullopt;
 };
 
-inline Element Chip(ChipProps props) {
-    using namespace maya::dsl;
-
-    Color c = props.severity ? severity_color(*props.severity) : props.color;
-    Style s = Style{}.with_fg(c);
-    if (props.bold) s = s.with_bold();
-
-    return text("[" + props.label + "]", s);
-}
+Element Chip(ChipProps props);
 
 struct BadgeProps {
     int   count = 0;
     Color color = palette().primary;
 };
 
-inline Element Badge(BadgeProps props) {
-    using namespace maya::dsl;
-
-    if (props.count <= 0) return text("");
-
-    auto label = props.count > 99 ? "99+" : std::to_string(props.count);
-    return text(" " + label + " ",
-                Style{}.with_bold().with_fg(Color::rgb(14, 14, 22)).with_bg(props.color));
-}
+Element Badge(BadgeProps props);
 
 } // namespace maya::components

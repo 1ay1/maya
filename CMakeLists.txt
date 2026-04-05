@@ -26,6 +26,59 @@ add_library(maya
     src/render/renderer.cpp
     src/render/diff.cpp
     src/render/serialize.cpp
+    src/components/accordion_bar.cpp
+    src/components/activity_bar.cpp
+    src/components/bar_chart.cpp
+    src/components/breadcrumb.cpp
+    src/components/button.cpp
+    src/components/callout.cpp
+    src/components/checkpoint.cpp
+    src/components/chip.cpp
+    src/components/code_block.cpp
+    src/components/command_card.cpp
+    src/components/context_pill.cpp
+    src/components/context_window.cpp
+    src/components/cost_meter.cpp
+    src/components/diff_stat.cpp
+    src/components/diff_view.cpp
+    src/components/disclosure.cpp
+    src/components/edit_card.cpp
+    src/components/divider.cpp
+    src/components/feedback_buttons.cpp
+    src/components/file_tree.cpp
+    src/components/flame_chart.cpp
+    src/components/form_field.cpp
+    src/components/gauge.cpp
+    src/components/git_graph.cpp
+    src/components/glimmer_text.cpp
+    src/components/heatmap.cpp
+    src/components/inline_diff.cpp
+    src/components/key_binding.cpp
+    src/components/log_view.cpp
+    src/components/markdown.cpp
+    src/components/message_bubble.cpp
+    src/components/model_selector.cpp
+    src/components/number_input.cpp
+    src/components/permission.cpp
+    src/components/progress_bar.cpp
+    src/components/read_card.cpp
+    src/components/search_card.cpp
+    src/components/search_input.cpp
+    src/components/sparkline.cpp
+    src/components/spinner.cpp
+    src/components/status_bar.cpp
+    src/components/streaming_text.cpp
+    src/components/table.cpp
+    src/components/tabs.cpp
+    src/components/text_input.cpp
+    src/components/thinking.cpp
+    src/components/thread_list.cpp
+    src/components/timeline.cpp
+    src/components/toast.cpp
+    src/components/toggle.cpp
+    src/components/token_stream.cpp
+    src/components/tool_card.cpp
+    src/components/waterfall.cpp
 )
 target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -462,7 +462,7 @@ auto App::render_frame() -> Status {
         // rows from the top).  We must check from row 0 — a change at
         // ANY row caps the stable prefix, preventing premature commitment
         // of rows below an active animation (spinner, streaming text).
-        std::vector<uint64_t> row_hashes(static_cast<size_t>(ch));
+        row_hashes_.resize(static_cast<size_t>(ch));
         int stable = 0;
         {
             int check = std::min(ch, prev_content_height_);
@@ -474,7 +474,7 @@ auto App::render_frame() -> Status {
                     h ^= row[x];
                     h *= 1099511628211ULL;
                 }
-                row_hashes[static_cast<size_t>(y)] = h;
+                row_hashes_[static_cast<size_t>(y)] = h;
 
                 // Extend stable prefix while rows match.
                 if (y == stable && y < check && y < prev_sz
@@ -507,7 +507,7 @@ auto App::render_frame() -> Status {
 
         // Move cursor to the top of the live region.
         if (prev_live > 1) {
-            out_ += std::format("\x1b[{}A", prev_live - 1);
+            ansi::write_cursor_up(out_, prev_live - 1);
         }
         if (prev_live > 0) {
             out_ += "\r";
@@ -519,7 +519,7 @@ auto App::render_frame() -> Status {
             int old_n = static_cast<int>(prev_row_hashes_.size());
             serialize_changed(canvas_, pool_, out_, ch, live_start,
                               old_p, old_n,
-                              row_hashes.data(), ch);
+                              row_hashes_.data(), ch);
         }
 
         // Erase leftover lines if the live area shrunk.
@@ -527,7 +527,7 @@ auto App::render_frame() -> Status {
             int extra = prev_live - live_rows;
             for (int i = 0; i < extra; ++i)
                 out_ += "\r\n\x1b[2K";
-            out_ += std::format("\x1b[{}A", extra);
+            ansi::write_cursor_up(out_, extra);
         }
 
         out_ += ansi::reset;
@@ -536,7 +536,7 @@ auto App::render_frame() -> Status {
         MAYA_TRY_VOID(writer_->write_raw(out_));
         prev_height_ = display_rows;
         prev_content_height_ = ch;
-        prev_row_hashes_ = std::move(row_hashes);
+        std::swap(prev_row_hashes_, row_hashes_);
     } else {
         // ── Alt-screen mode (started in alt screen) ─────────────────
         // Double-buffered diff: only emit ANSI for cells that changed.

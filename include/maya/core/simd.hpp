@@ -88,8 +88,25 @@ namespace maya::simd {
         }
     }
 #elif defined(MAYA_SIMD_NEON)
-    // NEON: 2 cells (128 bits) per iteration.
-    // No movemask on NEON — compare 64-bit lanes directly.
+    // NEON: 4 cells (2x 128 bits) per iteration — unrolled for throughput.
+    for (; i + 4 <= count; i += 4) {
+        uint64x2_t va0 = vld1q_u64(a + i);
+        uint64x2_t vb0 = vld1q_u64(b + i);
+        uint64x2_t va1 = vld1q_u64(a + i + 2);
+        uint64x2_t vb1 = vld1q_u64(b + i + 2);
+        uint64x2_t cmp0 = vceqq_u64(va0, vb0);
+        uint64x2_t cmp1 = vceqq_u64(va1, vb1);
+        // Fast path: all 4 cells equal (common case for unchanged regions)
+        uint64x2_t all = vandq_u64(cmp0, cmp1);
+        if (vgetq_lane_u64(all, 0) != 0 && vgetq_lane_u64(all, 1) != 0)
+            continue;
+        // Slow path: find which cell differs
+        if (vgetq_lane_u64(cmp0, 0) == 0) return i;
+        if (vgetq_lane_u64(cmp0, 1) == 0) return i + 1;
+        if (vgetq_lane_u64(cmp1, 0) == 0) return i + 2;
+        return i + 3;
+    }
+    // Handle remaining 2-cell block
     for (; i + 2 <= count; i += 2) {
         uint64x2_t va  = vld1q_u64(a + i);
         uint64x2_t vb  = vld1q_u64(b + i);
@@ -155,6 +172,21 @@ namespace maya::simd {
         }
     }
 #elif defined(MAYA_SIMD_NEON)
+    for (; i + 4 <= end; i += 4) {
+        uint64x2_t va0 = vld1q_u64(a + i);
+        uint64x2_t vb0 = vld1q_u64(b + i);
+        uint64x2_t va1 = vld1q_u64(a + i + 2);
+        uint64x2_t vb1 = vld1q_u64(b + i + 2);
+        uint64x2_t cmp0 = vceqq_u64(va0, vb0);
+        uint64x2_t cmp1 = vceqq_u64(va1, vb1);
+        uint64x2_t all = vandq_u64(cmp0, cmp1);
+        if (vgetq_lane_u64(all, 0) != 0 && vgetq_lane_u64(all, 1) != 0)
+            continue;
+        if (vgetq_lane_u64(cmp0, 0) == 0) return i;
+        if (vgetq_lane_u64(cmp0, 1) == 0) return i + 1;
+        if (vgetq_lane_u64(cmp1, 0) == 0) return i + 2;
+        return i + 3;
+    }
     for (; i + 2 <= end; i += 2) {
         uint64x2_t va  = vld1q_u64(a + i);
         uint64x2_t vb  = vld1q_u64(b + i);
@@ -195,8 +227,11 @@ namespace maya::simd {
 // is not a concern and for architectures without NT store support.
 
 inline void streaming_fill(uint64_t* __restrict__ dst, std::size_t count, uint64_t value) noexcept {
-    // For small buffers, regular fill is faster (data stays in cache).
-    static constexpr std::size_t kNtThreshold = 4096; // ~32KB
+    // For buffers that fit in L1 cache, regular fill is faster (data stays
+    // warm for the immediately-following paint + diff reads). NT stores
+    // bypass cache and cause cold misses. 16384 cells = 128KB covers
+    // typical full-screen terminals (e.g. 200x50 = 10K cells = 80KB).
+    static constexpr std::size_t kNtThreshold = 16384; // ~128KB
     if (count < kNtThreshold) {
         std::memset(dst, 0, 0); // compiler barrier
         for (std::size_t i = 0; i < count; ++i) dst[i] = value;
@@ -222,6 +257,19 @@ inline void streaming_fill(uint64_t* __restrict__ dst, std::size_t count, uint64
         __m128i val = _mm_set1_epi64x(static_cast<long long>(value));
         for (; i + 2 <= count; i += 2)
             _mm_stream_si128(reinterpret_cast<__m128i*>(dst + i), val);
+    }
+#elif defined(MAYA_SIMD_NEON)
+    // ARM64 has no non-temporal stores, but NEON vectorized fill is still
+    // ~2x faster than scalar (128-bit writes vs 64-bit). Use vst1q_u64
+    // for 2 cells per store, unrolled 2x for 4 cells per iteration.
+    {
+        uint64x2_t val = vdupq_n_u64(value);
+        for (; i + 4 <= count; i += 4) {
+            vst1q_u64(dst + i, val);
+            vst1q_u64(dst + i + 2, val);
+        }
+        for (; i + 2 <= count; i += 2)
+            vst1q_u64(dst + i, val);
     }
 #endif
 

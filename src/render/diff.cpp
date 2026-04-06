@@ -80,10 +80,9 @@ void diff(
 
             if (new_packed == old_packed) [[likely]] { ++x; continue; }
 
-            const Cell cell = Cell::unpack(new_packed);
-
-            // Wide-char second-half: the first-half write already covers it.
-            if (cell.width == 2) [[unlikely]] { ++x; continue; }
+            // Wide-char second-half: check packed width byte directly
+            // (bits 56-63) without full unpack. Value 2 = placeholder.
+            if ((new_packed >> 56) == 2) [[unlikely]] { ++x; continue; }
 
             // Cursor positioning — single append via stack buffer.
             const int cx = static_cast<int>(x);
@@ -93,15 +92,20 @@ void diff(
                 cursor_y = y;
             }
 
+            // Extract style_id and character from packed value directly.
+            const auto style_id = static_cast<uint16_t>((new_packed >> 32) & 0xFFFF);
+            const auto character = static_cast<char32_t>(new_packed & 0xFFFFFFFF);
+            const auto width = static_cast<uint8_t>(new_packed >> 56);
+
             // Style transition — pre-cached SGR, single memcpy.
-            if (cell.style_id != current_style) {
-                out.append(pool.sgr(cell.style_id));
-                current_style = cell.style_id;
+            if (style_id != current_style) {
+                out.append(pool.sgr(style_id));
+                current_style = style_id;
             }
 
             // Character — batch UTF-8 encoding.
-            detail::encode_utf8(cell.character, out);
-            cursor_x += (cell.width == 1) ? 2 : 1;
+            detail::encode_utf8(character, out);
+            cursor_x += (width == 1) ? 2 : 1;
             ++x;
         }
     }

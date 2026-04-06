@@ -189,6 +189,7 @@ public:
         , prev_width_(o.prev_width_)
         , out_(std::move(o.out_))
         , prev_row_hashes_(std::move(o.prev_row_hashes_))
+        , row_hashes_(std::move(o.row_hashes_))
         , committed_height_(o.committed_height_)
         , prev_content_height_(o.prev_content_height_)
         , theme_(o.theme_)
@@ -238,6 +239,7 @@ private:
     // Row hashes from the previous frame, used to detect stable rows at the
     // top that don't need to be overwritten (preserving them in scrollback).
     std::vector<uint64_t>   prev_row_hashes_;
+    std::vector<uint64_t>   row_hashes_;            // reusable scratch (avoids per-frame alloc)
     int                     committed_height_ = 0; // rows never overwritten again
     int                     prev_content_height_ = 0;
 

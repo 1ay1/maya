@@ -26,59 +26,6 @@ add_library(maya
     src/render/renderer.cpp
     src/render/diff.cpp
     src/render/serialize.cpp
-    src/components/accordion_bar.cpp
-    src/components/activity_bar.cpp
-    src/components/bar_chart.cpp
-    src/components/breadcrumb.cpp
-    src/components/button.cpp
-    src/components/callout.cpp
-    src/components/checkpoint.cpp
-    src/components/chip.cpp
-    src/components/code_block.cpp
-    src/components/command_card.cpp
-    src/components/context_pill.cpp
-    src/components/context_window.cpp
-    src/components/cost_meter.cpp
-    src/components/diff_stat.cpp
-    src/components/diff_view.cpp
-    src/components/disclosure.cpp
-    src/components/edit_card.cpp
-    src/components/divider.cpp
-    src/components/feedback_buttons.cpp
-    src/components/file_tree.cpp
-    src/components/flame_chart.cpp
-    src/components/form_field.cpp
-    src/components/gauge.cpp
-    src/components/git_graph.cpp
-    src/components/glimmer_text.cpp
-    src/components/heatmap.cpp
-    src/components/inline_diff.cpp
-    src/components/key_binding.cpp
-    src/components/log_view.cpp
-    src/components/markdown.cpp
-    src/components/message_bubble.cpp
-    src/components/model_selector.cpp
-    src/components/number_input.cpp
-    src/components/permission.cpp
-    src/components/progress_bar.cpp
-    src/components/read_card.cpp
-    src/components/search_card.cpp
-    src/components/search_input.cpp
-    src/components/sparkline.cpp
-    src/components/spinner.cpp
-    src/components/status_bar.cpp
-    src/components/streaming_text.cpp
-    src/components/table.cpp
-    src/components/tabs.cpp
-    src/components/text_input.cpp
-    src/components/thinking.cpp
-    src/components/thread_list.cpp
-    src/components/timeline.cpp
-    src/components/toast.cpp
-    src/components/toggle.cpp
-    src/components/token_stream.cpp
-    src/components/tool_card.cpp
-    src/components/waterfall.cpp
 )
 target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -99,31 +46,12 @@ set_target_properties(maya PROPERTIES
 
 option(MAYA_BUILD_EXAMPLES "Build example programs" ON)
 if(MAYA_BUILD_EXAMPLES)
-    add_executable(maya_demo      examples/demo.cpp)
-    add_executable(maya_counter   examples/counter.cpp)
-    add_executable(maya_matrix    examples/matrix.cpp)
-    add_executable(maya_viz       examples/viz.cpp)
-    add_executable(maya_fireworks examples/fireworks.cpp)
-    add_executable(maya_dashboard examples/dashboard.cpp)
-    add_executable(maya_agent    examples/agent.cpp)
-    add_executable(maya_progress examples/progress.cpp)
-    add_executable(maya_dsl     examples/dsl_demo.cpp)
-    add_executable(maya_inline  examples/inline.cpp)
-    add_executable(maya_agent_ui examples/agent_ui.cpp)
-    add_executable(maya_components_inline examples/components_inline.cpp)
-    add_executable(maya_components_showcase examples/components_showcase.cpp)
-    add_executable(maya_agent_session examples/agent_session.cpp)
-    add_executable(maya_test_inline examples/test_inline.cpp)
-
-    foreach(tgt maya_demo maya_counter maya_matrix maya_viz maya_fireworks maya_dashboard maya_agent maya_progress maya_dsl maya_inline maya_agent_ui maya_components_inline maya_components_showcase maya_agent_session maya_test_inline)
+    file(GLOB MAYA_EXAMPLE_SOURCES examples/*.cpp)
+    foreach(src ${MAYA_EXAMPLE_SOURCES})
+        get_filename_component(name ${src} NAME_WE)
+        set(tgt maya_${name})
+        add_executable(${tgt} ${src})
         target_link_libraries(${tgt} PRIVATE maya)
-
-        # Maximum optimizations for the examples.
-        # -O3              — full optimization (also auto-vectorizes fill/diff loops)
-        # -march=native    — use every instruction the local CPU supports
-        # -funroll-loops   — unroll tight loops in the diff inner loop
-        # -fno-rtti        — maya uses no RTTI; drop the overhead
-        # LTO              — cross-TU inlining (let the linker merge headers)
         target_compile_options(${tgt} PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:
                 -O3

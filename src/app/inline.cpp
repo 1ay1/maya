@@ -1,7 +1,7 @@
 #include "maya/app/inline.hpp"
 
 #include <algorithm>
-#include <format>
+#include <cstdio>
 
 namespace maya {
 
@@ -25,23 +25,33 @@ int detect_terminal_height() noexcept {
     return 24;
 }
 
+
 void render_inline(const Element& root, int width, StylePool& pool,
                    std::string& buf, InlineState& st) {
     constexpr int kMaxHeight = 500;
-    Canvas canvas{width, kMaxHeight, &pool};
-    render_tree(root, canvas, pool, theme::dark, /*auto_height=*/true);
 
-    int ch = content_height(canvas);
+    // Reuse or recreate the canvas only when width changes.
+    if (st.canvas_width != width) {
+        st.canvas = Canvas{width, kMaxHeight, &pool};
+        st.canvas_width = width;
+    } else {
+        st.canvas.set_style_pool(&pool);
+    }
+    st.canvas.clear();
+
+    render_tree(root, st.canvas, pool, theme::dark, /*auto_height=*/true);
+
+    int ch = content_height(st.canvas);
 
     int term_h = detect_terminal_height();
     int display_rows = std::min(ch, term_h);
     int skip_rows = ch - display_rows;
 
-    // ── Row-hash comparison ────────────────────────────────────
-    const int W = canvas.width();
-    const uint64_t* cells = canvas.cells();
+    // ── Row-hash comparison (reuse scratch buffer) ────────────
+    const int W = st.canvas.width();
+    const uint64_t* cells = st.canvas.cells();
 
-    std::vector<uint64_t> row_hashes(static_cast<size_t>(ch));
+    st.row_hashes.resize(static_cast<size_t>(ch));
     int stable = 0;
     {
         int check = std::min(ch, st.prev_content_height);
@@ -53,7 +63,7 @@ void render_inline(const Element& root, int width, StylePool& pool,
                 h ^= row[x];
                 h *= 1099511628211ULL;
             }
-            row_hashes[static_cast<size_t>(y)] = h;
+            st.row_hashes[static_cast<size_t>(y)] = h;
 
             if (y == stable && y < check && y < prev_sz
                 && h == st.prev_row_hashes[static_cast<size_t>(y)]) {
@@ -72,7 +82,7 @@ void render_inline(const Element& root, int width, StylePool& pool,
     buf += ansi::sync_start;
 
     if (prev_live > 1) {
-        buf += std::format("\x1b[{}A", prev_live - 1);
+        ansi::write_cursor_up(buf, prev_live - 1);
     }
     if (prev_live > 0) {
         buf += "\r";
@@ -81,15 +91,15 @@ void render_inline(const Element& root, int width, StylePool& pool,
     if (live_rows > 0) {
         const uint64_t* old_p = st.prev_row_hashes.data();
         int old_n = static_cast<int>(st.prev_row_hashes.size());
-        serialize_changed(canvas, pool, buf, ch, live_start,
+        serialize_changed(st.canvas, pool, buf, ch, live_start,
                           old_p, old_n,
-                          row_hashes.data(), ch);
+                          st.row_hashes.data(), ch);
     }
 
     if (live_rows < prev_live) {
         int extra = prev_live - live_rows;
         for (int i = 0; i < extra; ++i) buf += "\r\n\x1b[2K";
-        buf += std::format("\x1b[{}A", extra);
+        ansi::write_cursor_up(buf, extra);
     }
 
     buf += ansi::reset;
@@ -100,7 +110,7 @@ void render_inline(const Element& root, int width, StylePool& pool,
 
     st.prev_height = display_rows;
     st.prev_content_height = ch;
-    st.prev_row_hashes = std::move(row_hashes);
+    std::swap(st.prev_row_hashes, st.row_hashes);
 }
 
 } // namespace detail

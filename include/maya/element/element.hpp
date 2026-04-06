@@ -13,6 +13,7 @@
 //   4. Define Element (now all variant alternatives are complete types)
 
 #include <concepts>
+#include <functional>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -65,18 +66,38 @@ struct ElementList {
 };
 
 // ============================================================================
+// ComponentElement - A lazy element that renders after layout allocation
+// ============================================================================
+// Like a GTK widget: receives its allocated size before rendering.
+// The render callback is called during painting with the final (width, height)
+// and must return an Element tree that fits within those bounds.
+//
+// Usage with the DSL:
+//   component([](int w, int h) {
+//       return LineChart({.series = ..., .width = w, .height = h});
+//   }).grow(1)
+
+struct ComponentElement {
+    /// Called during painting with the allocated width and height.
+    std::function<Element(int width, int height)> render;
+
+    /// Layout properties — participates in flexbox just like BoxElement.
+    FlexStyle layout{};
+};
+
+// ============================================================================
 // Element - The tagged union of all element types
 // ============================================================================
 // Wraps std::variant for type-safe, zero-overhead dispatch. Every node in a
 // maya UI tree is one of these.
 //
-// BoxElement  - A flex container with children, border, padding, etc.
-// TextElement - A leaf node displaying styled text.
-// ElementList - A transparent fragment (vector of Element). Flattened during
-//               layout — like React fragments (<>...</>).
+// BoxElement       - A flex container with children, border, padding, etc.
+// TextElement      - A leaf node displaying styled text.
+// ElementList      - A transparent fragment (vector of Element).
+// ComponentElement - A lazy element that renders after receiving its size.
 
 struct Element {
-    using Variant = std::variant<BoxElement, TextElement, ElementList>;
+    using Variant = std::variant<BoxElement, TextElement, ElementList, ComponentElement>;
 
     Variant inner;
 
@@ -85,6 +106,7 @@ struct Element {
     Element(BoxElement b) : inner(std::move(b)) {}
     Element(TextElement t) : inner(std::move(t)) {}
     Element(ElementList l) : inner(std::move(l)) {}
+    Element(ComponentElement c) : inner(std::move(c)) {}
 
     // Default: empty text element
     Element() : inner(TextElement{}) {}
@@ -137,6 +159,10 @@ decltype(auto) visit_element(Element&& elem, Visitor&& vis) {
 
 [[nodiscard]] inline bool is_list(const Element& elem) noexcept {
     return std::holds_alternative<ElementList>(elem.inner);
+}
+
+[[nodiscard]] inline bool is_component(const Element& elem) noexcept {
+    return std::holds_alternative<ComponentElement>(elem.inner);
 }
 
 // ============================================================================

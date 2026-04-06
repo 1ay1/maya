@@ -215,4 +215,121 @@ namespace detail {
 
 } // namespace detail
 
+// ============================================================================
+// ComponentBuilder - Fluent builder for ComponentElement
+// ============================================================================
+// Creates a lazy element that defers rendering until layout allocates a size.
+// The render callback receives (width, height) and returns an Element.
+//
+// Usage:
+//   component([](int w, int h) {
+//       return LineChart({.series = data, .width = w, .height = h});
+//   }).grow(1).border(BorderStyle::Round)
+
+class ComponentBuilder {
+    ComponentElement element_{};
+
+public:
+    explicit ComponentBuilder(std::function<Element(int, int)> render_fn)
+    {
+        element_.render = std::move(render_fn);
+    }
+
+    auto grow(float g = 1.0f) -> ComponentBuilder& {
+        element_.layout.grow = g;
+        return *this;
+    }
+
+    auto shrink(float s) -> ComponentBuilder& {
+        element_.layout.shrink = s;
+        return *this;
+    }
+
+    auto basis(Dimension d) -> ComponentBuilder& {
+        element_.layout.basis = d;
+        return *this;
+    }
+
+    auto width(Dimension d) -> ComponentBuilder& {
+        element_.layout.width = d;
+        return *this;
+    }
+
+    auto height(Dimension d) -> ComponentBuilder& {
+        element_.layout.height = d;
+        return *this;
+    }
+
+    auto min_width(Dimension d) -> ComponentBuilder& {
+        element_.layout.min_width = d;
+        return *this;
+    }
+
+    auto min_height(Dimension d) -> ComponentBuilder& {
+        element_.layout.min_height = d;
+        return *this;
+    }
+
+    auto max_width(Dimension d) -> ComponentBuilder& {
+        element_.layout.max_width = d;
+        return *this;
+    }
+
+    auto max_height(Dimension d) -> ComponentBuilder& {
+        element_.layout.max_height = d;
+        return *this;
+    }
+
+    auto padding(int all) -> ComponentBuilder& {
+        element_.layout.padding = {all, all, all, all};
+        return *this;
+    }
+
+    auto padding(int v, int h) -> ComponentBuilder& {
+        element_.layout.padding = {v, h, v, h};
+        return *this;
+    }
+
+    auto padding(int top, int right, int bottom, int left) -> ComponentBuilder& {
+        element_.layout.padding = {top, right, bottom, left};
+        return *this;
+    }
+
+    auto margin(int all) -> ComponentBuilder& {
+        element_.layout.margin = {all, all, all, all};
+        return *this;
+    }
+
+    auto align_self(Align a) -> ComponentBuilder& {
+        element_.layout.align_self = a;
+        return *this;
+    }
+
+    /// Implicit conversion to Element.
+    operator Element() const& {
+        return Element{element_};
+    }
+
+    operator Element() && {
+        return Element{std::move(element_)};
+    }
+};
+
+// ============================================================================
+// component() - Factory for lazy elements
+// ============================================================================
+
+namespace detail {
+
+/// Create a lazy element that receives its allocated size before rendering.
+/// The callback is called with (width, height) during painting and must
+/// return an Element tree that fits within those bounds.
+[[nodiscard]] inline auto component(std::function<Element(int, int)> render_fn)
+    -> ComponentBuilder
+{
+    return ComponentBuilder{std::move(render_fn)};
+}
+
+} // namespace detail
+
 } // namespace maya

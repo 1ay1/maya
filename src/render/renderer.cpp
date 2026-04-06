@@ -150,6 +150,42 @@ std::size_t build_layout_tree(
             }
 
             return idx;
+        },
+
+        [&](const ComponentElement& node) -> std::size_t {
+            // Component: a leaf that defers rendering to paint time.
+            // Participates in flex layout via its FlexStyle properties.
+            // Has a measure function returning 1×1 so the layout engine
+            // gives it nonzero size even without explicit dimensions.
+            std::size_t idx = nodes.size();
+            nodes.emplace_back();
+            auto& ln = nodes[idx];
+            auto& ls = ln.style;
+
+            ls.flex_grow   = node.layout.grow;
+            ls.flex_shrink = node.layout.shrink;
+            ls.flex_basis  = node.layout.basis;
+            ls.width       = node.layout.width;
+            ls.height      = node.layout.height;
+            ls.min_width   = node.layout.min_width;
+            ls.min_height  = node.layout.min_height;
+            ls.max_width   = node.layout.max_width;
+            ls.max_height  = node.layout.max_height;
+            ls.padding     = node.layout.padding;
+            ls.margin      = node.layout.margin;
+            ls.align_self  = map_align(node.layout.align_self);
+
+            // Measure: return available width × 1 row minimum.
+            // This ensures the component gets at least 1 row and the
+            // full cross-axis width, so flex-grow can expand from there.
+            ln.measure = layout::MeasureFn{
+                [](const void*, int max_width) -> Size {
+                    return {Columns{max_width}, Rows{1}};
+                },
+                nullptr
+            };
+
+            return idx;
         }
     });
 }
@@ -337,6 +373,36 @@ void paint_element(
                     ax,
                     ay);
             }
+        },
+
+        [&](const ComponentElement& node) {
+            // Lazy component: call the render callback with the allocated size,
+            // then render the resulting element tree into this region.
+            if (!node.render) return;
+
+            int content_w = std::max(0, aw - static_cast<int>(node.layout.padding.horizontal()));
+            int content_h = std::max(0, ah - static_cast<int>(node.layout.padding.vertical()));
+            int content_x = ax + node.layout.padding.left;
+            int content_y = ay + node.layout.padding.top;
+
+            Element child = node.render(content_w, content_h);
+
+            // Build a sub-layout tree for the generated element.
+            std::vector<layout::LayoutNode> sub_nodes;
+            sub_nodes.reserve(64);
+            std::size_t sub_root = build_layout_tree(child, sub_nodes, {});
+
+            sub_nodes[sub_root].style.width = Dimension::fixed(content_w);
+            sub_nodes[sub_root].style.height = Dimension::fixed(content_h);
+            layout::compute(sub_nodes, sub_root, content_w, content_h);
+
+            canvas.push_clip(Rect{
+                {Columns{content_x}, Rows{content_y}},
+                {Columns{content_w}, Rows{content_h}}
+            });
+            paint_element(child, canvas, pool, sub_nodes, sub_root,
+                          content_x, content_y);
+            canvas.pop_clip();
         }
     });
 }
@@ -371,10 +437,44 @@ void render_tree(
     // double-count parent positions.
 
     // Phase 4: Paint to canvas.
-    canvas.clear();
+    // NOTE: caller is responsible for clearing the canvas before calling
+    // render_tree(). The pipeline's clear() step and App::render_frame()
+    // both do this. We do NOT clear here to avoid a redundant SIMD fill.
     render_detail::paint_element(
         root, canvas, pool, layout_nodes, root_idx,
         /*offset_x=*/0, /*offset_y=*/0);
+}
+
+void render_tree_at(
+    const Element& root,
+    Canvas& canvas,
+    StylePool& pool,
+    const Theme& theme,
+    int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0) return;
+
+    // Phase 1: Build the layout tree.
+    std::vector<layout::LayoutNode> layout_nodes;
+    layout_nodes.reserve(128);
+    std::size_t root_idx = render_detail::build_layout_tree(root, layout_nodes, theme);
+
+    // Phase 2: Constrain root to the sub-region dimensions.
+    layout_nodes[root_idx].style.width  = Dimension::fixed(w);
+    layout_nodes[root_idx].style.height = Dimension::fixed(h);
+
+    // Phase 3: Run layout within the sub-region bounds.
+    layout::compute(layout_nodes, root_idx, w, h);
+
+    // Phase 4: Clip to the sub-region and paint with offset — no clear.
+    canvas.push_clip(Rect{
+        {Columns{x}, Rows{y}},
+        {Columns{w}, Rows{h}}
+    });
+    render_detail::paint_element(
+        root, canvas, pool, layout_nodes, root_idx,
+        /*offset_x=*/x, /*offset_y=*/y);
+    canvas.pop_clip();
 }
 
 } // namespace maya

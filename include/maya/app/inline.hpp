@@ -54,6 +54,9 @@ struct InlineState {
     int prev_content_height = 0;
     int committed_height  = 0;
     std::vector<uint64_t> prev_row_hashes;
+    std::vector<uint64_t> row_hashes;   // reusable scratch buffer (avoids per-frame alloc)
+    int canvas_width      = 0;          // cached canvas width for reuse
+    Canvas canvas;                      // persistent canvas (avoids per-frame alloc)
 };
 
 // Render element → serialize → write to stdout, preserving stable rows

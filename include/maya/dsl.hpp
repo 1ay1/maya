@@ -508,6 +508,7 @@ inline constexpr BorderStyle Double = BorderStyle::Double;
 using maya::detail::vstack;
 using maya::detail::hstack;
 using maya::detail::center;
+using maya::detail::component;
 
 // ── Compile-time validation ─────────────────────────────────────────────────
 

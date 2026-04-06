@@ -113,8 +113,9 @@ if(MAYA_BUILD_EXAMPLES)
     add_executable(maya_components_inline examples/components_inline.cpp)
     add_executable(maya_components_showcase examples/components_showcase.cpp)
     add_executable(maya_agent_session examples/agent_session.cpp)
+    add_executable(maya_test_inline examples/test_inline.cpp)
 
-    foreach(tgt maya_demo maya_counter maya_matrix maya_viz maya_fireworks maya_dashboard maya_agent maya_progress maya_dsl maya_inline maya_agent_ui maya_components_inline maya_components_showcase maya_agent_session)
+    foreach(tgt maya_demo maya_counter maya_matrix maya_viz maya_fireworks maya_dashboard maya_agent maya_progress maya_dsl maya_inline maya_agent_ui maya_components_inline maya_components_showcase maya_agent_session maya_test_inline)
         target_link_libraries(${tgt} PRIVATE maya)
 
         # Maximum optimizations for the examples.

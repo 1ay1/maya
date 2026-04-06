@@ -188,6 +188,9 @@ public:
         , prev_height_(o.prev_height_)
         , prev_width_(o.prev_width_)
         , out_(std::move(o.out_))
+        , prev_row_hashes_(std::move(o.prev_row_hashes_))
+        , committed_height_(o.committed_height_)
+        , prev_content_height_(o.prev_content_height_)
         , theme_(o.theme_)
         , mouse_enabled_(o.mouse_enabled_)
         , started_inline_(o.started_inline_)
@@ -230,6 +233,13 @@ private:
     int                     prev_height_ = 0;  // lines written in last frame
     int                     prev_width_  = 0;  // width used for last frame (inline reflow)
     std::string             out_;               // reused output buffer
+
+    // -- Inline scrollback preservation --------------------------------------
+    // Row hashes from the previous frame, used to detect stable rows at the
+    // top that don't need to be overwritten (preserving them in scrollback).
+    std::vector<uint64_t>   prev_row_hashes_;
+    int                     committed_height_ = 0; // rows never overwritten again
+    int                     prev_content_height_ = 0;
 
     // -- Configuration --------------------------------------------------------
     Theme      theme_         = theme::dark;

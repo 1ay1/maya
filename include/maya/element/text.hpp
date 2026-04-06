@@ -62,6 +62,12 @@ enum class TextWrap : uint8_t {
     if (cp >= 0xFFE0  && cp <= 0xFFE6)  return true;
     // Enclosed Ideographic Supplement
     if (cp >= 0x1F200 && cp <= 0x1F251) return true;
+    // Emoji: Miscellaneous Symbols and Pictographs, Emoticons, Ornamental
+    // Dingbats, Transport/Map Symbols, Supplemental Symbols, Playing Cards.
+    // These are always rendered as 2 cells in modern terminals.
+    if (cp >= 0x1F300 && cp <= 0x1F9FF) return true;
+    // Supplemental Symbols and Pictographs
+    if (cp >= 0x1FA00 && cp <= 0x1FAFF) return true;
     // CJK Unified Ideographs Extension B through end of TIP (U+20000-U+3FFFD)
     if (cp >= 0x20000 && cp <= 0x3FFFD) return true;
     return false;

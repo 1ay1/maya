@@ -22,17 +22,25 @@ int content_height(const Canvas& canvas) noexcept {
 }
 
 void serialize(const Canvas& canvas, const StylePool& pool,
-               std::string& out, int rows) {
+               std::string& out, int rows, int start_row) {
     const int W = canvas.width();
-    const int H = (rows > 0) ? std::min(rows, canvas.height()) : canvas.height();
+    const int total_rows = (rows > 0) ? std::min(rows, canvas.height()) : canvas.height();
+    const int y_begin = std::clamp(start_row, 0, total_rows);
+    const int y_end = total_rows;
 
-    if (W <= 0 || H <= 0) return;
+    if (W <= 0 || y_begin >= y_end) return;
 
     const uint64_t* cells = canvas.cells();
     uint16_t current_style = UINT16_MAX; // sentinel: no SGR emitted yet
 
-    for (int y = 0; y < H; ++y) {
-        if (y > 0) out += "\r\n";
+    // Disable auto-wrap (DECAWM reset) so that characters extending past
+    // the right margin don't wrap to the next line.  This is a safety net:
+    // if any character's terminal display width exceeds our is_wide_char()
+    // classification, the row won't wrap and erase_lines() stays accurate.
+    out += "\x1b[?7l";
+
+    for (int y = y_begin; y < y_end; ++y) {
+        if (y > y_begin) out += "\r\n";
 
         const int row_base = y * W;
         for (int x = 0; x < W; ++x) {
@@ -51,6 +59,9 @@ void serialize(const Canvas& canvas, const StylePool& pool,
             detail::encode_utf8(cell.character, out);
         }
     }
+
+    // Re-enable auto-wrap.
+    out += "\x1b[?7h";
 
     out += ansi::reset; // reset SGR at end of frame
 }

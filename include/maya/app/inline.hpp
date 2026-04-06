@@ -45,12 +45,21 @@ namespace maya {
 namespace detail {
 
 int detect_terminal_width() noexcept;
+int detect_terminal_height() noexcept;
 
-// Render element → serialize → write to stdout, erasing previous output.
-// Uses content_height() and serialize(rows) from serialize.hpp to avoid
-// copying into a trimmed canvas.
-int render_inline(const Element& root, int width, StylePool& pool,
-                  std::string& buf, int prev_height);
+/// Persistent state for the inline renderer's scrollback-preserving
+/// row comparison.  Passed by reference across frames.
+struct InlineState {
+    int prev_height       = 0;
+    int prev_content_height = 0;
+    int committed_height  = 0;
+    std::vector<uint64_t> prev_row_hashes;
+};
+
+// Render element → serialize → write to stdout, preserving stable rows
+// in scrollback.
+void render_inline(const Element& root, int width, StylePool& pool,
+                   std::string& buf, InlineState& state);
 
 } // namespace detail
 
@@ -121,7 +130,7 @@ void inline_run(InlineConfig cfg, RenderFn&& render_fn) {
 
     StylePool pool;
     std::string buf;
-    int prev_h = 0;
+    detail::InlineState state;
 
     if (!cfg.cursor) std::fputs("\x1b[?25l", stdout); // hide cursor
 
@@ -143,11 +152,11 @@ void inline_run(InlineConfig cfg, RenderFn&& render_fn) {
 
         if (detail::quit_requested) {
             // Final render before exit
-            prev_h = detail::render_inline(root, width, pool, buf, prev_h);
+            detail::render_inline(root, width, pool, buf, state);
             break;
         }
 
-        prev_h = detail::render_inline(root, width, pool, buf, prev_h);
+        detail::render_inline(root, width, pool, buf, state);
 
         auto elapsed = Clock::now() - now;
         if (elapsed < frame_duration) {

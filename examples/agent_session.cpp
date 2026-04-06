@@ -472,8 +472,6 @@ static void advance_phase(State& st, float dt) {
         if (st.phase_timer > 1.2f) {
             st.read_status = TaskStatus::Completed;
             st.read_card.set_status(TaskStatus::Completed);
-            st.read_card.set_collapsed(true);
-            st.tool1_collapsed = true;
             st.total_input_tokens += 3200;
             st.cache_write += 1200;
             st.total_cost += 0.048;
@@ -487,7 +485,6 @@ static void advance_phase(State& st, float dt) {
         }
         if (st.phase_timer > 2.0f) {
             st.edit1_status = TaskStatus::Completed;
-            st.tool2_collapsed = true;
             st.total_output_tokens += 1840;
             st.total_cost += 0.138;
             st.accordion.add_file({.path = "src/middleware/auth.ts", .added = 18, .removed = 14});
@@ -501,7 +498,6 @@ static void advance_phase(State& st, float dt) {
         }
         if (st.phase_timer > 2.0f) {
             st.create_status = TaskStatus::Completed;
-            st.tool3_collapsed = true;
             st.total_output_tokens += 2100;
             st.total_cost += 0.158;
             st.accordion.add_file({.path = "src/utils/token.ts", .added = 32, .is_new = true});
@@ -515,7 +511,6 @@ static void advance_phase(State& st, float dt) {
         }
         if (st.phase_timer > 2.0f) {
             st.edit2_status = TaskStatus::Completed;
-            st.tool4_collapsed = true;
             st.total_output_tokens += 1650;
             st.total_cost += 0.124;
             st.accordion.add_file({.path = "tests/auth.test.ts", .added = 15, .removed = 8});
@@ -547,7 +542,6 @@ static void advance_phase(State& st, float dt) {
         }
         if (st.test_line >= kNumTestLines && st.phase_timer > 4.f) {
             st.test_status = TaskStatus::Completed;
-            st.tool5_collapsed = true;
             st.cmd_card.set_status(TaskStatus::Completed);
             st.cmd_card.set_exit_code(0);
             st.total_input_tokens += 1200;
@@ -638,6 +632,7 @@ static Element muted(const std::string& s) {
 
 static Element build_ui(State& st) {
     auto& p = palette();
+    auto phase = st.phase;
     std::vector<Element> rows;
 
     // ── User message with context pills ────────────────────────
@@ -652,7 +647,6 @@ static Element build_ui(State& st) {
         })
     );
 
-    // Context pills row — showing the files mentioned / attached
     rows.push_back(ContextPillRow({.pills = {
         {.kind = ContextKind::File,      .label = "src/middleware/auth.ts"},
         {.kind = ContextKind::File,      .label = "tests/auth.test.ts"},
@@ -660,12 +654,9 @@ static Element build_ui(State& st) {
         {.kind = ContextKind::Directory, .label = "src/utils/"},
     }}));
 
-    if (st.phase < Phase::Thinking)
-        goto assemble;
-
     // ── Thinking block with GlimmerText label ─────────────────
-    {
-        bool thinking_active = st.phase == Phase::Thinking;
+    if (phase >= Phase::Thinking) {
+        bool thinking_active = phase == Phase::Thinking;
         Children thinking_children;
         if (thinking_active) {
             thinking_children.push_back(
@@ -683,101 +674,80 @@ static Element build_ui(State& st) {
         );
     }
 
-    if (st.phase < Phase::ReadFile)
-        goto assemble;
-
     // ── Tool 1: Read file (ReadCard) ──────────────────────────
-    rows.push_back(st.read_card.render(st.frame));
-
-    if (st.phase < Phase::EditAuth)
-        goto assemble;
-
-    // ── Approve edit toggle (brief inline prompt) ─────────────
-    if (st.phase == Phase::EditAuth && st.phase_timer < 0.5f) {
-        rows.push_back(hstack().gap(2)(
-            Toggle({.checked = st.edit_approved, .label = "Auto-approve edits",
-                    .style = ToggleStyle::Switch}),
-            muted("press 'a' to toggle")
-        ));
+    if (phase >= Phase::ReadFile) {
+        rows.push_back(st.read_card.render(st.frame));
     }
 
     // ── Tool 2: Edit auth middleware (ToolCard + DiffView) ────
-    {
-        Children edit1_body;
-        if (!st.tool2_collapsed) {
-            edit1_body.push_back(
-                FileBreadcrumb("src/middleware/auth.ts", p.accent));
-            edit1_body.push_back(
-                DiffView({.diff = kDiff1, .file_path = "src/middleware/auth.ts"}));
+    if (phase >= Phase::EditAuth) {
+        if (phase == Phase::EditAuth && st.phase_timer < 0.5f) {
+            rows.push_back(hstack().gap(2)(
+                Toggle({.checked = st.edit_approved, .label = "Auto-approve edits",
+                        .style = ToggleStyle::Switch}),
+                muted("press 'a' to toggle")
+            ));
         }
+
+        Children edit1_body;
+        edit1_body.push_back(
+            FileBreadcrumb("src/middleware/auth.ts", p.accent));
+        edit1_body.push_back(
+            DiffView({.diff = kDiff1, .file_path = "src/middleware/auth.ts"}));
         rows.push_back(ToolCard({
             .title = "Edit src/middleware/auth.ts",
             .status = st.edit1_status,
             .frame = st.frame,
-            .collapsed = st.tool2_collapsed,
+            .collapsed = false,
             .summary = st.edit1_status == TaskStatus::Completed ? "+18 -14 lines" : "",
             .children = std::move(edit1_body),
             .tool_name = "Edit",
         }));
     }
 
-    if (st.phase < Phase::CreateToken)
-        goto assemble;
-
     // ── Tool 3: Create token utility (ToolCard + DiffView) ────
-    {
+    if (phase >= Phase::CreateToken) {
         Children create_body;
-        if (!st.tool3_collapsed) {
-            create_body.push_back(
-                FileBreadcrumb("src/utils/token.ts", p.success));
-            create_body.push_back(
-                DiffView({.diff = kDiff2, .file_path = "src/utils/token.ts"}));
-        }
+        create_body.push_back(
+            FileBreadcrumb("src/utils/token.ts", p.success));
+        create_body.push_back(
+            DiffView({.diff = kDiff2, .file_path = "src/utils/token.ts"}));
         rows.push_back(ToolCard({
             .title = "Write src/utils/token.ts",
             .status = st.create_status,
             .frame = st.frame,
-            .collapsed = st.tool3_collapsed,
+            .collapsed = false,
             .summary = st.create_status == TaskStatus::Completed ? "+32 (new file)" : "",
             .children = std::move(create_body),
             .tool_name = "Write",
         }));
     }
 
-    if (st.phase < Phase::EditTests)
-        goto assemble;
-
     // ── Tool 4: Edit tests (ToolCard + DiffView) ──────────────
-    {
+    if (phase >= Phase::EditTests) {
         Children edit2_body;
-        if (!st.tool4_collapsed) {
-            edit2_body.push_back(
-                FileBreadcrumb("tests/auth.test.ts", p.accent));
-            edit2_body.push_back(
-                DiffView({.diff = kDiff3, .file_path = "tests/auth.test.ts"}));
-        }
+        edit2_body.push_back(
+            FileBreadcrumb("tests/auth.test.ts", p.accent));
+        edit2_body.push_back(
+            DiffView({.diff = kDiff3, .file_path = "tests/auth.test.ts"}));
         rows.push_back(ToolCard({
             .title = "Edit tests/auth.test.ts",
             .status = st.edit2_status,
             .frame = st.frame,
-            .collapsed = st.tool4_collapsed,
+            .collapsed = false,
             .summary = st.edit2_status == TaskStatus::Completed ? "+15 -8 lines" : "",
             .children = std::move(edit2_body),
             .tool_name = "Edit",
         }));
+
+        if (st.show_accordion) {
+            rows.push_back(st.accordion.render());
+        }
     }
 
-    // ── Accordion bar (file changes summary) ──────────────────
-    if (st.show_accordion) {
-        rows.push_back(st.accordion.render());
-    }
-
-    if (st.phase < Phase::RunTests)
-        goto assemble;
-
-    // ── Timeline: mini build pipeline ─────────────────────────
-    {
-        bool tests_done = st.phase > Phase::RunTests;
+    // ── Timeline + Test execution ─────────────────────────────
+    if (phase >= Phase::RunTests) {
+        bool tests_done = phase > Phase::RunTests;
         rows.push_back(Timeline({
             .events = {
                 {.label = "Read auth middleware", .detail = "42 lines",
@@ -796,35 +766,27 @@ static Element build_ui(State& st) {
             .compact = true,
             .frame = st.frame,
         }));
-    }
 
-    // ── Tool 5: Run tests (CommandCard + LogView) ─────────────
-    rows.push_back(st.cmd_card.render(st.frame));
+        rows.push_back(st.cmd_card.render(st.frame));
 
-    // Test progress bar
-    {
         float test_progress = 0.f;
-        if (st.phase > Phase::RunTests) test_progress = 1.f;
-        else if (st.phase == Phase::RunTests)
-            test_progress = static_cast<float>(st.test_line) / kNumTestLines;
+        if (phase > Phase::RunTests) test_progress = 1.f;
+        else test_progress = static_cast<float>(st.test_line) / kNumTestLines;
 
-        bool tests_done = test_progress >= 1.f;
+        bool tp_done = test_progress >= 1.f;
         rows.push_back(hstack().gap(2)(
             muted("progress"),
             ProgressBar({
                 .value = test_progress,
                 .width = 30,
                 .show_percent = true,
-                .filled = tests_done ? p.success : p.primary,
+                .filled = tp_done ? p.success : p.primary,
             })
         ));
     }
 
-    if (st.phase < Phase::Responding)
-        goto assemble;
-
     // ── Assistant response (Markdown rendering) ────────────────
-    {
+    if (phase >= Phase::Responding) {
         bool still_streaming = !st.response_stream.fully_revealed();
         auto revealed = st.response_stream.revealed_text();
         Children response_children;
@@ -839,20 +801,18 @@ static Element build_ui(State& st) {
                 .frame = st.frame,
             })
         );
-    }
 
-    // ── InlineDiff highlight of key change in response ────────
-    if (st.response_stream.fully_revealed() || st.phase == Phase::Complete) {
-        rows.push_back(InlineDiff({
-            .before = "const SESSION_TIMEOUT = 3600; // seconds",
-            .after  = "const TOKEN_EXPIRY = '1h';",
-            .label  = "Key fix",
-        }));
+        if (st.response_stream.fully_revealed() || phase == Phase::Complete) {
+            rows.push_back(InlineDiff({
+                .before = "const SESSION_TIMEOUT = 3600; // seconds",
+                .after  = "const TOKEN_EXPIRY = '1h';",
+                .label  = "Key fix",
+            }));
+        }
     }
 
     // ── Completion section ─────────────────────────────────────
-    if (st.phase == Phase::Complete) {
-        // Callout with chips
+    if (phase == Phase::Complete) {
         rows.push_back(
             Callout({
                 .severity = Severity::Success,
@@ -868,12 +828,9 @@ static Element build_ui(State& st) {
             DiffStat({.added = 65, .removed = 22})
         ));
 
-        // Checkpoint — rollback point
         rows.push_back(st.checkpoint.render());
-
         rows.push_back(Divider({.color = p.dim}));
 
-        // ── Cost & Context section ────────────────────────────
         rows.push_back(FormField({
             .label = "Cost & Context",
             .description = "Session resource usage",
@@ -890,7 +847,6 @@ static Element build_ui(State& st) {
             },
         }));
 
-        // Context window bar
         rows.push_back(ContextWindow({
             .segments = {
                 {"System",   12400, p.info},
@@ -903,7 +859,6 @@ static Element build_ui(State& st) {
             .width = 40,
         }));
 
-        // Context usage gauge
         {
             int total_used = 12400 + st.total_input_tokens + st.total_output_tokens + st.cache_read;
             float ctx_frac = static_cast<float>(total_used) / 200000.f;
@@ -915,7 +870,6 @@ static Element build_ui(State& st) {
             }));
         }
 
-        // Token stream with sparkline
         {
             float cur_rate = st.tok_rate_history.empty() ? 0.f : st.tok_rate_history.back();
             rows.push_back(TokenStream({
@@ -927,14 +881,12 @@ static Element build_ui(State& st) {
             }));
         }
 
-        // Standalone sparkline of token rate
         rows.push_back(hstack().gap(1)(
             muted("tok/s"),
             Sparkline({.data = st.tok_rate_history, .width = 30,
                        .color = Color::rgb(255, 200, 100)})
         ));
 
-        // Heatmap of token activity
         if (!st.heatmap_data.empty() && !st.heatmap_data[0].empty()) {
             rows.push_back(FormField({
                 .label = "Token Activity",
@@ -947,7 +899,6 @@ static Element build_ui(State& st) {
             }));
         }
 
-        // Disclosure: detailed stats
         rows.push_back(st.stats_disclosure.render({
             hstack().gap(2)(
                 muted(fmt("Input: %.1fk tokens", st.total_input_tokens / 1000.0)),
@@ -964,27 +915,24 @@ static Element build_ui(State& st) {
         }));
 
         rows.push_back(Divider({.color = p.dim}));
-
-        // Feedback buttons
         rows.push_back(st.feedback.render());
 
-        // Toast notifications (overlaid)
         if (!st.toasts.empty()) {
             rows.push_back(st.toasts.render());
         }
     }
 
-    // ── Keybindings ───────────────────────────────────────────
+    // ── Keybindings (always visible) ─────────────────────────
     rows.push_back(KeyBindings({
         {.keys = "Esc", .label = "quit"},
         {.keys = "1-5", .label = "toggle tools"},
     }));
 
-    // ── Status bar ────────────────────────────────────────────
+    // ── Status bar (always visible) ──────────────────────────
     {
         const char* phase_label = "Ready";
         Color phase_color = p.success;
-        switch (st.phase) {
+        switch (phase) {
             case Phase::UserMessage:  phase_label = "Receiving"; phase_color = p.info; break;
             case Phase::Thinking:     phase_label = "Thinking";  phase_color = p.warning; break;
             case Phase::ReadFile:     phase_label = "Reading";   phase_color = p.info; break;
@@ -997,13 +945,13 @@ static Element build_ui(State& st) {
         }
 
         int plan_done = 0;
-        if (st.phase > Phase::ReadFile) plan_done++;
-        if (st.phase > Phase::EditAuth) plan_done++;
-        if (st.phase > Phase::CreateToken) plan_done++;
-        if (st.phase > Phase::EditTests) plan_done++;
-        if (st.phase > Phase::RunTests) plan_done++;
+        if (phase > Phase::ReadFile) plan_done++;
+        if (phase > Phase::EditAuth) plan_done++;
+        if (phase > Phase::CreateToken) plan_done++;
+        if (phase > Phase::EditTests) plan_done++;
+        if (phase > Phase::RunTests) plan_done++;
 
-        bool active = st.phase != Phase::Complete;
+        bool active = phase != Phase::Complete;
         int secs = static_cast<int>(st.elapsed);
 
         std::string status_str = active
@@ -1021,7 +969,6 @@ static Element build_ui(State& st) {
         }}));
     }
 
-assemble:
     return vstack().gap(1)(std::move(rows));
 }
 

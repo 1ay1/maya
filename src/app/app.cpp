@@ -374,6 +374,9 @@ void App::promote_to_alt_screen() {
     pool_.clear();
     prev_height_ = 0;
     prev_width_  = 0;
+    committed_height_ = 0;
+    prev_content_height_ = 0;
+    prev_row_hashes_.clear();
     needs_clear_ = true;
 }
 
@@ -425,43 +428,104 @@ auto App::render_frame() -> Status {
         std::swap(front_, canvas_);
         canvas_.reset_damage();
     } else if (is_inline()) {
-        // ── Inline mode ─────────────────────────────────────────────
-        // Fixed viewport at the bottom of the terminal (like Claude Code).
-        // The canvas is terminal-height so layouts with grow/scroll work
-        // correctly, but we stay in the normal screen to preserve scrollback.
-        const int canvas_h = std::max(1, size_.height.raw());
+        // ── Inline mode (Ink-style) ─────────────────────────────────
+        // Content-sized layout: the root's height is NOT constrained to
+        // the terminal — it sizes to content, exactly as Ink/Yoga does.
+        // The canvas is tall enough to hold any reasonable content.
+        // BSU/ESU wrapping prevents flicker during erase + redraw.
+        constexpr int kMaxCanvasHeight = 500;
+        const int canvas_h = kMaxCanvasHeight;
 
         if (canvas_.width() != w || canvas_.height() != canvas_h)
             canvas_ = Canvas(w, canvas_h, &pool_);
 
-        render_tree(render_fn_(), canvas_, pool_, theme_);
+        render_tree(render_fn_(), canvas_, pool_, theme_, /*auto_height=*/true);
 
         int ch = content_height(canvas_);
+        const int term_h = std::max(1, size_.height.raw());
+
+        // Cap to terminal height minus 1 to avoid auto-scroll on last line.
+        int display_rows = std::min(ch, term_h - 1);
+        int skip_rows = ch - display_rows;
+
+        // ── Row-hash comparison ────────────────────────────────
+        // Compute a hash per visible row to find the stable prefix
+        // (rows identical to last frame). Stable rows above the first
+        // change are "committed" to scrollback and never overwritten,
+        // so the user can scroll up to see old tool-card output, diffs,
+        // etc. exactly as they appeared.
+        const int W = canvas_.width();
+        const uint64_t* cells = canvas_.cells();
+
+        std::vector<uint64_t> row_hashes(static_cast<size_t>(ch));
+        for (int y = 0; y < ch; ++y) {
+            uint64_t h = 14695981039346656037ULL;
+            const uint64_t* row = cells + y * W;
+            for (int x = 0; x < W; ++x) {
+                h ^= row[x];
+                h *= 1099511628211ULL;
+            }
+            row_hashes[static_cast<size_t>(y)] = h;
+        }
+
+        // Find the first row (in canvas coordinates) that differs.
+        int stable = 0;
+        {
+            int check = std::min(ch, prev_content_height_);
+            int prev_sz = static_cast<int>(prev_row_hashes_.size());
+            for (int y = 0; y < check && y < prev_sz; ++y) {
+                if (row_hashes[static_cast<size_t>(y)]
+                    != prev_row_hashes_[static_cast<size_t>(y)])
+                    break;
+                stable = y + 1;
+            }
+        }
+
+        // committed_height_ only grows — once a row is committed it
+        // stays committed for the rest of this inline session.
+        if (stable > committed_height_)
+            committed_height_ = stable;
+
+        // The "live" region is everything from committed_height_ down.
+        // We only move the cursor up into the live region, never into
+        // committed rows.
+        int live_rows  = std::max(0, display_rows - std::max(0, committed_height_ - skip_rows));
+        int prev_live  = std::max(0, prev_height_  - std::max(0, committed_height_ - (prev_content_height_ - prev_height_)));
+
+        // Where in the canvas does the live region start?
+        int live_start = std::max(skip_rows, committed_height_);
 
         out_.clear();
         out_ += ansi::sync_start;
         out_ += ansi::hide_cursor;
 
-        // Move cursor to start of previous output WITHOUT erasing.
-        // Serialize overwrites in place — every column is written, so
-        // no ghost characters remain. This eliminates the blank flash
-        // caused by erase-then-redraw on terminals without BSU support.
-        if (prev_height_ > 1)
-            out_ += std::format("\x1b[{}A", prev_height_ - 1);
-        if (prev_height_ > 0)
+        // Move cursor to the top of the live region.
+        if (prev_live > 1) {
+            out_ += std::format("\x1b[{}A", prev_live - 1);
+        }
+        if (prev_live > 0) {
             out_ += "\r";
-
-        serialize(canvas_, pool_, out_, ch);
-
-        // Clear leftover lines if the new frame is shorter than the previous.
-        for (int i = ch; i < prev_height_; ++i) {
-            out_ += "\r\n\x1b[2K";
         }
 
+        // Serialize only the live portion of the canvas.
+        if (live_rows > 0)
+            serialize(canvas_, pool_, out_, ch, live_start);
+
+        // Erase leftover lines if the live area shrunk.
+        if (live_rows < prev_live) {
+            int extra = prev_live - live_rows;
+            for (int i = 0; i < extra; ++i)
+                out_ += "\r\n\x1b[2K";
+            out_ += std::format("\x1b[{}A", extra);
+        }
+
+        out_ += ansi::reset;
         out_ += ansi::sync_end;
 
         MAYA_TRY_VOID(writer_->write_raw(out_));
-        prev_height_ = ch;
+        prev_height_ = display_rows;
+        prev_content_height_ = ch;
+        prev_row_hashes_ = std::move(row_hashes);
     } else {
         // ── Alt-screen mode (started in alt screen) ─────────────────
         // Double-buffered diff: only emit ANSI for cells that changed.

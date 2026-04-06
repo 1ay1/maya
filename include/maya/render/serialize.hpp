@@ -26,8 +26,9 @@ namespace maya {
 /// Returns the number of rows that contain visible content.
 int content_height(const Canvas& canvas) noexcept;
 
-/// Serialize `rows` rows of the canvas (or all rows if rows <= 0).
+/// Serialize `rows` rows of the canvas starting at `start_row`
+/// (or all rows if rows <= 0).
 void serialize(const Canvas& canvas, const StylePool& pool,
-               std::string& out, int rows = 0);
+               std::string& out, int rows = 0, int start_row = 0);
 
 } // namespace maya

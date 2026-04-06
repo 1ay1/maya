@@ -347,6 +347,173 @@ Output (with ANSI colors in a real terminal):
 ╰──────────────────────────╯
 ```
 
+## Inline Scrollback Preservation
+
+When building inline (non-fullscreen) UIs — particularly AI agent sessions,
+multi-step build pipelines, or any workflow where components complete and new
+ones appear — preserving the terminal scrollback is critical.  The user should
+be able to scroll up and see the full history of what happened: expanded diffs,
+tool output, test results, etc.
+
+### The Problem: Content Shrinkage Destroys Scrollback
+
+The inline renderer works by overwriting its output in place each frame: it
+moves the cursor up to the top of the previous frame, writes the new frame,
+and erases any leftover lines below.
+
+This works perfectly when content height stays the same or grows.  But when
+content **shrinks** — e.g. a tool card collapses from 20 rows (showing a full
+diff) to 2 rows (just a status line) — the old expanded content at those
+terminal rows is **overwritten** with the shorter content, and the leftover
+lines are **erased** with `\x1b[2K`.  The old diff is gone from the terminal
+buffer entirely.  The user cannot scroll up to see it.
+
+```
+Frame N (tool running — 20 rows):
+┌─────────────────────────────────────┐
+│ ▸ Edit  src/middleware/auth.ts      │  ← header
+│   src/middleware/auth.ts            │  ← breadcrumb
+│   -import session from 'express-…  │  ← diff line 1
+│   +import jwt from 'jsonwebtoken'; │  ← diff line 2
+│   …16 more diff lines…             │
+│   ◐ running                        │  ← spinner
+└─────────────────────────────────────┘
+
+Frame N+1 (tool done — 2 rows):
+┌─────────────────────────────────────┐
+│ ✓ Edit  src/middleware/auth.ts  +18 -14 │  ← collapsed
+│                                         │  ← next tool starts…
+└─────────────────────────────────────┘
+↑ Cursor moved up 19 rows, overwrote everything.
+  Rows 3–20 erased.  Diff is gone from scrollback.
+```
+
+### The Solution: Two-Part Fix
+
+Maya solves this at **both** the framework and application levels.
+
+#### 1. Framework: Row-Hash Committed Scrollback
+
+The inline renderer computes a fast hash (FNV-1a over packed 64-bit cells) for
+every canvas row each frame.  It compares these hashes against the previous
+frame to find the **stable prefix** — the longest run of rows from the top that
+are identical between frames.
+
+Stable rows are **committed** to scrollback: the cursor is never moved above
+them and they are never overwritten.  Only the "live" region below the
+committed area is re-rendered each frame.
+
+```
+Canvas row 0:  [User message]       ← stable, committed (never touched)
+Canvas row 1:  [Context pills]      ← stable, committed
+Canvas row 2:  [Thinking block]     ← stable, committed
+Canvas row 3:  [Tool card header]   ← stable, committed
+Canvas row 4:  [  diff line 1]      ← stable, committed
+…
+Canvas row 18: [  diff line 15]     ← stable, committed
+Canvas row 19: [Spinner / status]   ← CHANGING → live region starts here
+Canvas row 20: [Status bar]         ← CHANGING → live
+```
+
+Once committed, a row stays committed for the entire inline session.  Even if
+the canvas content at that position later changes (e.g. the tool card header
+switches from a spinner to a checkmark), the committed row in the terminal
+retains its original content — which is exactly what scrollback preservation
+means.
+
+The live region (everything below the committed boundary) is managed normally:
+overwritten in place each frame, with leftover lines erased when it shrinks.
+
+**Key implementation details:**
+
+- `committed_height_` is monotonically increasing — rows are never un-committed
+- Row hashes use FNV-1a for fast comparison with extremely low collision risk
+- The `serialize()` call is passed `live_start` to skip committed rows entirely
+- `prev_live` tracks the live area height for correct cursor movement
+
+#### 2. Application: Content Should Only Grow
+
+The framework's row-hash comparison works best when content **grows
+monotonically** — each new component adds rows below existing ones, and
+completed components keep their content visible.
+
+This mirrors how Claude Code (built on Ink) works:
+
+- A completed Read card keeps its file preview visible
+- A completed Edit card keeps its diff visible with a ✓ header
+- A completed Bash card keeps its output visible with exit code
+- Only the header styling changes (spinner → checkmark)
+
+**Do this:**
+
+```cpp
+// Tool status changes but content stays visible
+if (phase_timer > 2.0f) {
+    edit_status = TaskStatus::Completed;  // header shows ✓
+    // DiffView stays in the tree — height doesn't change
+}
+```
+
+**Don't do this:**
+
+```cpp
+// ❌ Dramatic collapse — destroys scrollback content
+if (phase_timer > 2.0f) {
+    edit_status = TaskStatus::Completed;
+    tool_collapsed = true;  // Hides DiffView, height drops 15+ rows
+}
+```
+
+If you need user-toggleable collapse, use key bindings:
+
+```cpp
+if (key(ev, '2')) tool_collapsed = !tool_collapsed;
+```
+
+This way, the user controls when to collapse — the framework doesn't do it
+automatically during the session flow.
+
+### How It All Fits Together
+
+```
+Session start:
+  committed = 0, live = all rows
+  └─ Every row is overwritten each frame (normal)
+
+After 5 stable frames:
+  committed = 12, live = rows 12+
+  └─ Rows 0–11 (user msg, context, thinking) are locked in scrollback
+
+Tool card runs for 2 seconds:
+  committed = 12, live = rows 12+ (tool header + diff change due to spinner)
+  └─ When spinner stops → tool body rows become stable → committed grows to 30
+
+New tool starts:
+  committed = 30, live = rows 30+ (new tool header + body)
+  └─ All previous tool output (rows 0–29) locked in scrollback forever
+
+User scrolls up in terminal:
+  └─ Sees full diffs, file contents, test output — all preserved
+```
+
+### Limitations
+
+- **Hash collisions**: The FNV-1a row hash has a theoretical collision risk.
+  In practice, terminal content collisions are astronomically unlikely (one in
+  ~2^64 per row pair per frame).  A false match would cause one row to be
+  skipped for one frame — self-correcting on the next frame when the hash
+  changes.
+
+- **Content above committed boundary can't update**: If you change content
+  at a row that's already committed (e.g. updating an old tool card header),
+  the terminal won't reflect the change.  The committed row retains what was
+  originally rendered.  This is by design — it's the scrollback preservation
+  guarantee.
+
+- **Very tall content**: When content exceeds the terminal height, the top
+  rows are cropped via `skip_rows`.  Rows that were visible and committed but
+  get cropped remain in the terminal's scrollback from when they were written.
+
 ## Choosing the Right Mode
 
 ```

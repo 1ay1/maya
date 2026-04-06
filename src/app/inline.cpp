@@ -42,36 +42,34 @@ void render_inline(const Element& root, int width, StylePool& pool,
     const uint64_t* cells = canvas.cells();
 
     std::vector<uint64_t> row_hashes(static_cast<size_t>(ch));
-    for (int y = 0; y < ch; ++y) {
-        uint64_t h = 14695981039346656037ULL;
-        const uint64_t* row = cells + y * W;
-        for (int x = 0; x < W; ++x) {
-            h ^= row[x];
-            h *= 1099511628211ULL;
-        }
-        row_hashes[static_cast<size_t>(y)] = h;
-    }
-
     int stable = 0;
     {
         int check = std::min(ch, st.prev_content_height);
         int prev_sz = static_cast<int>(st.prev_row_hashes.size());
-        for (int y = 0; y < check && y < prev_sz; ++y) {
-            if (row_hashes[static_cast<size_t>(y)]
-                != st.prev_row_hashes[static_cast<size_t>(y)])
-                break;
-            stable = y + 1;
+        for (int y = 0; y < ch; ++y) {
+            uint64_t h = 14695981039346656037ULL;
+            const uint64_t* row = cells + y * W;
+            for (int x = 0; x < W; ++x) {
+                h ^= row[x];
+                h *= 1099511628211ULL;
+            }
+            row_hashes[static_cast<size_t>(y)] = h;
+
+            if (y == stable && y < check && y < prev_sz
+                && h == st.prev_row_hashes[static_cast<size_t>(y)]) {
+                stable = y + 1;
+            }
         }
     }
 
-    if (stable > st.committed_height)
-        st.committed_height = stable;
+    st.committed_height = stable;
 
     int live_rows = std::max(0, display_rows - std::max(0, st.committed_height - skip_rows));
     int prev_live = std::max(0, st.prev_height - std::max(0, st.committed_height - (st.prev_content_height - st.prev_height)));
     int live_start = std::max(skip_rows, st.committed_height);
 
     buf.clear();
+    buf += ansi::sync_start;
 
     if (prev_live > 1) {
         buf += std::format("\x1b[{}A", prev_live - 1);
@@ -90,6 +88,7 @@ void render_inline(const Element& root, int width, StylePool& pool,
     }
 
     buf += ansi::reset;
+    buf += ansi::sync_end;
 
     std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fflush(stdout);

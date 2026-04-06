@@ -34,9 +34,10 @@ void serialize(const Canvas& canvas, const StylePool& pool,
     uint16_t current_style = UINT16_MAX; // sentinel: no SGR emitted yet
 
     // Disable auto-wrap (DECAWM reset) so that characters extending past
-    // the right margin don't wrap to the next line.  This is a safety net:
-    // if any character's terminal display width exceeds our is_wide_char()
-    // classification, the row won't wrap and erase_lines() stays accurate.
+    // the right margin don't wrap to the next line.
+    //
+    // IMPORTANT: every code path after this point must re-enable DECAWM
+    // before returning (see the "\x1b[?7h" at the end of this function).
     out += "\x1b[?7l";
 
     for (int y = y_begin; y < y_end; ++y) {

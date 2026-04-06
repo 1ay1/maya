@@ -439,6 +439,7 @@ auto App::render_frame() -> Status {
         if (canvas_.width() != w || canvas_.height() != canvas_h)
             canvas_ = Canvas(w, canvas_h, &pool_);
 
+        canvas_.clear();
         render_tree(render_fn_(), canvas_, pool_, theme_, /*auto_height=*/true);
 
         int ch = content_height(canvas_);
@@ -457,38 +458,43 @@ auto App::render_frame() -> Status {
         const int W = canvas_.width();
         const uint64_t* cells = canvas_.cells();
 
+        // Hash every row and find the stable prefix (contiguous matching
+        // rows from the top).  We must check from row 0 — a change at
+        // ANY row caps the stable prefix, preventing premature commitment
+        // of rows below an active animation (spinner, streaming text).
         std::vector<uint64_t> row_hashes(static_cast<size_t>(ch));
-        for (int y = 0; y < ch; ++y) {
-            uint64_t h = 14695981039346656037ULL;
-            const uint64_t* row = cells + y * W;
-            for (int x = 0; x < W; ++x) {
-                h ^= row[x];
-                h *= 1099511628211ULL;
-            }
-            row_hashes[static_cast<size_t>(y)] = h;
-        }
-
-        // Find the first row (in canvas coordinates) that differs.
         int stable = 0;
         {
             int check = std::min(ch, prev_content_height_);
             int prev_sz = static_cast<int>(prev_row_hashes_.size());
-            for (int y = 0; y < check && y < prev_sz; ++y) {
-                if (row_hashes[static_cast<size_t>(y)]
-                    != prev_row_hashes_[static_cast<size_t>(y)])
-                    break;
-                stable = y + 1;
+            for (int y = 0; y < ch; ++y) {
+                uint64_t h = 14695981039346656037ULL;
+                const uint64_t* row = cells + y * W;
+                for (int x = 0; x < W; ++x) {
+                    h ^= row[x];
+                    h *= 1099511628211ULL;
+                }
+                row_hashes[static_cast<size_t>(y)] = h;
+
+                // Extend stable prefix while rows match.
+                if (y == stable && y < check && y < prev_sz
+                    && h == prev_row_hashes_[static_cast<size_t>(y)]) {
+                    stable = y + 1;
+                }
             }
         }
 
-        // committed_height_ only grows — once a row is committed it
-        // stays committed for the rest of this inline session.
-        if (stable > committed_height_)
-            committed_height_ = stable;
+        // Update committed_height_ to match the current stable prefix.
+        // It can grow (new rows become stable) or shrink (content changed
+        // in a previously-committed region, e.g. a new section was
+        // inserted in the middle of the UI, pushing rows down).
+        committed_height_ = stable;
 
         // The "live" region is everything from committed_height_ down.
         // We only move the cursor up into the live region, never into
-        // committed rows.
+        // committed rows.  prev_live is recomputed using the NEW
+        // committed_height_ so that newly-committed rows are excluded
+        // from cursor movement (they're now in scrollback).
         int live_rows  = std::max(0, display_rows - std::max(0, committed_height_ - skip_rows));
         int prev_live  = std::max(0, prev_height_  - std::max(0, committed_height_ - (prev_content_height_ - prev_height_)));
 

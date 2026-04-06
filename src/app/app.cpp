@@ -513,9 +513,14 @@ auto App::render_frame() -> Status {
             out_ += "\r";
         }
 
-        // Serialize only the live portion of the canvas.
-        if (live_rows > 0)
-            serialize(canvas_, pool_, out_, ch, live_start);
+        // Incremental serialize: only re-render rows that changed.
+        if (live_rows > 0) {
+            const uint64_t* old_p = prev_row_hashes_.data();
+            int old_n = static_cast<int>(prev_row_hashes_.size());
+            serialize_changed(canvas_, pool_, out_, ch, live_start,
+                              old_p, old_n,
+                              row_hashes.data(), ch);
+        }
 
         // Erase leftover lines if the live area shrunk.
         if (live_rows < prev_live) {

@@ -31,4 +31,12 @@ int content_height(const Canvas& canvas) noexcept;
 void serialize(const Canvas& canvas, const StylePool& pool,
                std::string& out, int rows = 0, int start_row = 0);
 
+/// Incremental serialize: only re-render rows whose hash differs between
+/// old_hashes and new_hashes.  Unchanged rows are skipped with cursor
+/// movement, dramatically reducing output on slow terminals.
+void serialize_changed(const Canvas& canvas, const StylePool& pool,
+                       std::string& out, int rows, int start_row,
+                       const uint64_t* old_hashes, int old_count,
+                       const uint64_t* new_hashes, int new_count);
+
 } // namespace maya

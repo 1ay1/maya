@@ -78,8 +78,13 @@ void render_inline(const Element& root, int width, StylePool& pool,
         buf += "\r";
     }
 
-    if (live_rows > 0)
-        serialize(canvas, pool, buf, ch, live_start);
+    if (live_rows > 0) {
+        const uint64_t* old_p = st.prev_row_hashes.data();
+        int old_n = static_cast<int>(st.prev_row_hashes.size());
+        serialize_changed(canvas, pool, buf, ch, live_start,
+                          old_p, old_n,
+                          row_hashes.data(), ch);
+    }
 
     if (live_rows < prev_live) {
         int extra = prev_live - live_rows;

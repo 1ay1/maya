@@ -123,6 +123,7 @@ struct BoxCfg {
     bool has_border = false, has_border_color = false;
     uint8_t bc_r = 0, bc_g = 0, bc_b = 0;
     CTStyle style{};
+    int ct_width = 0, ct_height = 0;  // compile-time fixed dimensions (0 = auto)
 };
 
 // ── Node concept ─────────────────────────────────────────────────────────────
@@ -327,6 +328,10 @@ struct BoxNode {
                 b = std::move(b).gap(Cfg.gap);
             if constexpr (Cfg.grow > 0)
                 b = std::move(b).grow(static_cast<float>(Cfg.grow));
+            if constexpr (Cfg.ct_width > 0)
+                b = std::move(b).width(Dimension::fixed(Cfg.ct_width));
+            if constexpr (Cfg.ct_height > 0)
+                b = std::move(b).height(Dimension::fixed(Cfg.ct_height));
             if constexpr (Cfg.has_border)
                 b = std::move(b).border(Cfg.bstyle);
             if constexpr (Cfg.has_border_color)
@@ -414,12 +419,10 @@ template <CTStyle V>
 
 template <FlexDirection Dir, BoxCfg Cfg, typename... Cs, CTStyle V>
 constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, StyTag<V>) {
-    constexpr BoxCfg nc = {
-        Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l,
+    constexpr BoxCfg nc = {Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l,
         Cfg.gap, Cfg.grow, Cfg.bstyle, Cfg.has_border,
         Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b,
-        Cfg.style.merge(V)
-    };
+        Cfg.style.merge(V), Cfg.ct_width, Cfg.ct_height};
     return BoxNode<Dir, nc, Cs...>{std::move(n.children)};
 }
 
@@ -428,7 +431,8 @@ constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, StyTag<V>) {
 template <FlexDirection Dir, BoxCfg Cfg, typename... Cs, int T, int R, int B, int L>
 constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, PadTag<T, R, B, L>) {
     constexpr BoxCfg nc = {T, R, B, L, Cfg.gap, Cfg.grow, Cfg.bstyle, Cfg.has_border,
-        Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b, Cfg.style};
+        Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b, Cfg.style,
+        Cfg.ct_width, Cfg.ct_height};
     return BoxNode<Dir, nc, Cs...>{std::move(n.children)};
 }
 
@@ -436,7 +440,8 @@ template <FlexDirection Dir, BoxCfg Cfg, typename... Cs, int G>
 constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, GapTag<G>) {
     constexpr BoxCfg nc = {Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l,
         G, Cfg.grow, Cfg.bstyle, Cfg.has_border,
-        Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b, Cfg.style};
+        Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b, Cfg.style,
+        Cfg.ct_width, Cfg.ct_height};
     return BoxNode<Dir, nc, Cs...>{std::move(n.children)};
 }
 
@@ -444,7 +449,8 @@ template <FlexDirection Dir, BoxCfg Cfg, typename... Cs, BorderStyle BS>
 constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, BorderTag<BS>) {
     constexpr BoxCfg nc = {Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l,
         Cfg.gap, Cfg.grow, BS, true,
-        Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b, Cfg.style};
+        Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b, Cfg.style,
+        Cfg.ct_width, Cfg.ct_height};
     return BoxNode<Dir, nc, Cs...>{std::move(n.children)};
 }
 
@@ -455,7 +461,8 @@ template <FlexDirection Dir, BoxCfg Cfg, typename... Cs, uint8_t R, uint8_t G, u
 constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, BColTag<R, G, B>) {
     constexpr BoxCfg nc = {Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l,
         Cfg.gap, Cfg.grow, Cfg.bstyle, Cfg.has_border,
-        true, R, G, B, Cfg.style};
+        true, R, G, B, Cfg.style,
+        Cfg.ct_width, Cfg.ct_height};
     return BoxNode<Dir, nc, Cs...>{std::move(n.children)};
 }
 
@@ -463,8 +470,58 @@ template <FlexDirection Dir, BoxCfg Cfg, typename... Cs, int G>
 constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, GrowTag<G>) {
     constexpr BoxCfg nc = {Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l,
         Cfg.gap, G, Cfg.bstyle, Cfg.has_border,
-        Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b, Cfg.style};
+        Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b, Cfg.style,
+        Cfg.ct_width, Cfg.ct_height};
     return BoxNode<Dir, nc, Cs...>{std::move(n.children)};
+}
+
+// ── operator| : Box | width/height ──────────────────────────────────────────
+
+template <int W>
+struct WidthTag {
+    static_assert(W > 0, "Width must be positive");
+};
+
+template <int H>
+struct HeightTag {
+    static_assert(H > 0, "Height must be positive");
+};
+
+template <int W> inline constexpr WidthTag<W>  w_{};
+template <int H> inline constexpr HeightTag<H> h_{};
+
+template <FlexDirection Dir, BoxCfg Cfg, typename... Cs, int W>
+constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, WidthTag<W>) {
+    constexpr BoxCfg nc = {Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l,
+        Cfg.gap, Cfg.grow, Cfg.bstyle, Cfg.has_border,
+        Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b, Cfg.style,
+        W, Cfg.ct_height};
+    return BoxNode<Dir, nc, Cs...>{std::move(n.children)};
+}
+
+template <FlexDirection Dir, BoxCfg Cfg, typename... Cs, int H>
+constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, HeightTag<H>) {
+    constexpr BoxCfg nc = {Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l,
+        Cfg.gap, Cfg.grow, Cfg.bstyle, Cfg.has_border,
+        Cfg.has_border_color, Cfg.bc_r, Cfg.bc_g, Cfg.bc_b, Cfg.style,
+        Cfg.ct_width, H};
+    return BoxNode<Dir, nc, Cs...>{std::move(n.children)};
+}
+
+// ── operator| : Text/Runtime | width (wraps in a fixed-width box) ──────────
+
+template <Str S, CTStyle Sty, int W>
+constexpr auto operator|(TextNode<S, Sty>, WidthTag<W>) {
+    return BoxNode<FlexDirection::Row,
+                   BoxCfg{.ct_width = W},
+                   TextNode<S, Sty>>{{TextNode<S, Sty>{}}};
+}
+
+template <typename St, int W>
+auto operator|(RuntimeTextNode<St> n, WidthTag<W>) {
+    return BoxNode<FlexDirection::Row,
+                   BoxCfg{.ct_width = W},
+                   RuntimeTextNode<St>>{{std::move(n)}};
 }
 
 // ── Factory: t<"...">, v(...), h(...) ───────────────────────────────────────

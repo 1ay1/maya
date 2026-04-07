@@ -92,4 +92,51 @@ struct Document {
 /// Parse markdown and return an Element tree.
 [[nodiscard]] Element markdown(std::string_view source);
 
+// ============================================================================
+// StreamingMarkdown — Progressive per-block rendering for streaming text
+// ============================================================================
+// Like Claude Code: completed blocks are parsed as markdown and cached.
+// Only the trailing incomplete block is rendered as plain text.
+// Each frame does O(new_chars) work, not O(total_chars).
+//
+// Usage:
+//   StreamingMarkdown md;
+//   md.append("# Hello\n\nSome **bold");   // "# Hello" → rendered as heading
+//   md.append(" text**\n\nMore...");        // "Some **bold text**" → rendered
+//   auto ui = md.build();
+//   md.finish();  // finalize last block
+
+class StreamingMarkdown {
+    std::string source_;
+    size_t committed_ = 0;              // bytes parsed into finalized blocks
+    std::vector<Element> blocks_;       // cached rendered blocks
+    bool in_code_fence_ = false;        // tracking ``` state
+
+    // Find the end of the last complete block boundary.
+    // Returns the byte offset up to which blocks are "complete".
+    [[nodiscard]] size_t find_block_boundary() const noexcept;
+
+public:
+    StreamingMarkdown() = default;
+
+    /// Replace the full content (for compatibility with streaming that
+    /// replaces the entire string each frame, like `msg.content = ...`).
+    void set_content(std::string_view content);
+
+    /// Append new text (for true incremental streaming).
+    void append(std::string_view text);
+
+    /// Finalize: parse any remaining tail as markdown (call when stream ends).
+    void finish();
+
+    /// Reset all state for a new stream.
+    void clear();
+
+    /// Build the element tree: cached blocks + raw tail.
+    [[nodiscard]] Element build() const;
+
+    /// Current full source text.
+    [[nodiscard]] const std::string& source() const noexcept { return source_; }
+};
+
 } // namespace maya

@@ -247,6 +247,7 @@ public:
         auto idx = cell_index(x, y);
         uint64_t packed = Cell{ch, style_id, 0, width}.pack();
         cells_[idx] = packed;  // unconditional write; diff will skip unchanged cells
+        if (ch != U' ' && y > max_y_) max_y_ = y;
     }
 
     /// Read the cell at (x, y). Out-of-bounds returns a default cell.
@@ -269,6 +270,14 @@ public:
 
     /// Reset all cells to space with the default style. Clears damage.
     void clear();
+
+    /// Clear only rows [0, n). Much faster than clear() for inline mode
+    /// where only a small portion of a tall canvas has content.
+    void clear_rows(int n);
+
+    /// The highest row index that received non-space content since last clear.
+    /// Returns -1 if nothing was written. O(1) — avoids scanning the canvas.
+    [[nodiscard]] int max_content_row() const noexcept { return max_y_; }
 
     // -- Clip stack -----------------------------------------------------------
 
@@ -327,6 +336,7 @@ private:
     AlignedBuffer cells_;
     int width_  = 0;
     int height_ = 0;
+    int max_y_  = -1;  // highest row with non-space content (O(1) content_height)
     StylePool* style_pool_ = nullptr;
     Rect damage_{};
     std::vector<Rect> clip_stack_;

@@ -75,6 +75,16 @@ void render_tree(
     const Theme& theme,
     bool auto_height = false);
 
+/// Same as render_tree, but reuses `layout_nodes` across frames to avoid
+/// per-frame vector allocation. The vector is cleared internally.
+void render_tree(
+    const Element& root,
+    Canvas& canvas,
+    StylePool& pool,
+    const Theme& theme,
+    std::vector<layout::LayoutNode>& layout_nodes,
+    bool auto_height = false);
+
 /// Render an element tree into a sub-region of a canvas without clearing it.
 /// This lets you mix component-based Elements with direct canvas painting
 /// in canvas_run mode — build your Element, then stamp it at (x, y, w, h).

@@ -170,6 +170,11 @@ auto App::Builder::build() -> Result<App> {
         app.size_ = app.raw_terminal_->size();
     }
 
+    // Initialize the render context with the initial terminal size.
+    app.render_ctx_.width      = app.size_.width.raw();
+    app.render_ctx_.height     = app.size_.height.raw();
+    app.render_ctx_.generation = 0;
+
     return ok(std::move(app));
 }
 
@@ -350,6 +355,10 @@ void App::handle_resize() {
 
         size_ = new_size;
         context_.set<Size>(size_);
+        ++resize_generation_;  // invalidate all CachedElement instances
+        render_ctx_.width      = size_.width.raw();
+        render_ctx_.height     = size_.height.raw();
+        render_ctx_.generation = resize_generation_;
         needs_clear_ = true;  // force full repaint after resize
         for (auto& handler : resize_handlers_) {
             handler(size_);
@@ -361,10 +370,18 @@ void App::handle_resize() {
 void App::promote_to_alt_screen() {
     if (!raw_terminal_) return;
 
-    // Erase inline output before switching buffers.
+    // Erase inline output before switching to alt screen.
+    // After terminal reflow, cursor position is unpredictable, so we
+    // move up generously and use "erase below" (\x1b[J) to wipe
+    // everything from cursor to end of screen — robust regardless of
+    // exactly where the cursor landed after reflow.
     {
         std::string cleanup;
-        ansi::erase_lines(prev_height_, cleanup);
+        int erase_rows = std::max(prev_height_, prev_content_height_) + 2;
+        if (erase_rows > 0) {
+            ansi::write_cursor_up(cleanup, erase_rows);
+        }
+        cleanup += "\r\x1b[J";  // column 1, erase to end of screen
         cleanup += ansi::show_cursor;
         (void)writer_->write_raw(cleanup);
     }
@@ -402,11 +419,16 @@ auto App::render_frame() -> Status {
         : size_.width.raw();                     // alt screen: full width
     if (w <= 0) return ok();
 
+    // Set the render context so all widgets can query available_width() etc.
+    render_ctx_.width  = w;
+    render_ctx_.height = size_.height.raw();
+    RenderContextGuard ctx_guard(render_ctx_);
+
     if (promoted) {
         // ── Promoted mode (was inline, now alt screen) ──────────────
-        // Content-height layout (UI stays compact, not stretched to full
-        // terminal height). Double-buffered diff in alt screen.
-        constexpr int kMaxInlineHeight = 60;
+        // Content-height layout with auto_height so UI stays compact
+        // (not stretched to fill terminal). Double-buffered diff.
+        constexpr int kMaxInlineHeight = 500;
         const int canvas_h = std::max(1,
             std::min(size_.height.raw(), kMaxInlineHeight));
 
@@ -418,7 +440,7 @@ auto App::render_frame() -> Status {
         }
 
         canvas_.clear();
-        render_tree(render_fn_(), canvas_, pool_, theme_);
+        render_tree(render_fn_(), canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/true);
 
         out_.clear();
         out_ += ansi::hide_cursor;
@@ -448,8 +470,31 @@ auto App::render_frame() -> Status {
         if (canvas_.width() != w || canvas_.height() != canvas_h)
             canvas_ = Canvas(w, canvas_h, &pool_);
 
-        canvas_.clear();
-        render_tree(render_fn_(), canvas_, pool_, theme_, /*auto_height=*/true);
+        // On resize (needs_clear_), erase previous output and reset tracking
+        // so the next frame renders from a clean slate.  Width changes are
+        // handled by promote_to_alt_screen(); this covers height-only changes.
+        if (needs_clear_) {
+            if (prev_height_ > 0) {
+                std::string erase;
+                ansi::write_cursor_up(erase, prev_height_);
+                erase += "\r\x1b[J";
+                (void)writer_->write_raw(erase);
+            }
+            prev_row_hashes_.clear();
+            prev_height_ = 0;
+            prev_content_height_ = 0;
+            committed_height_ = 0;
+            needs_clear_ = false;
+        }
+
+        // Partial clear: only wipe rows that had content last frame + margin.
+        // First frame (prev_content_height_ == 0) falls back to full clear.
+        if (prev_content_height_ > 0) {
+            canvas_.clear_rows(prev_content_height_ + 4);
+        } else {
+            canvas_.clear();
+        }
+        render_tree(render_fn_(), canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/true);
 
         int ch = content_height(canvas_);
         const int term_h = std::max(1, size_.height.raw());
@@ -477,12 +522,7 @@ auto App::render_frame() -> Status {
             int check = std::min(ch, prev_content_height_);
             int prev_sz = static_cast<int>(prev_row_hashes_.size());
             for (int y = 0; y < ch; ++y) {
-                uint64_t h = 14695981039346656037ULL;
-                const uint64_t* row = cells + y * W;
-                for (int x = 0; x < W; ++x) {
-                    h ^= row[x];
-                    h *= 1099511628211ULL;
-                }
+                uint64_t h = simd::hash_row(cells + y * W, W);
                 row_hashes_[static_cast<size_t>(y)] = h;
 
                 // Extend stable prefix while rows match.

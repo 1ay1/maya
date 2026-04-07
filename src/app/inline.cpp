@@ -32,14 +32,31 @@ void render_inline(const Element& root, int width, StylePool& pool,
 
     // Reuse or recreate the canvas only when width changes.
     if (st.canvas_width != width) {
+        // Width changed — terminal has reflowed our output, cursor position
+        // is unpredictable.  Erase all previous output before resetting.
+        if (st.prev_height > 0) {
+            std::string erase;
+            ansi::erase_lines(st.prev_height, erase);
+            std::fwrite(erase.data(), 1, erase.size(), stdout);
+            std::fflush(stdout);
+        }
         st.canvas = Canvas{width, kMaxHeight, &pool};
         st.canvas_width = width;
+        st.prev_row_hashes.clear();
+        st.prev_height = 0;
+        st.prev_content_height = 0;
+        st.committed_height = 0;
     } else {
         st.canvas.set_style_pool(&pool);
     }
-    st.canvas.clear();
+    // Partial clear: only wipe rows that had content last frame + margin.
+    if (st.prev_content_height > 0) {
+        st.canvas.clear_rows(st.prev_content_height + 4);
+    } else {
+        st.canvas.clear();
+    }
 
-    render_tree(root, st.canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(root, st.canvas, pool, theme::dark, st.layout_nodes, /*auto_height=*/true);
 
     int ch = content_height(st.canvas);
 
@@ -57,12 +74,7 @@ void render_inline(const Element& root, int width, StylePool& pool,
         int check = std::min(ch, st.prev_content_height);
         int prev_sz = static_cast<int>(st.prev_row_hashes.size());
         for (int y = 0; y < ch; ++y) {
-            uint64_t h = 14695981039346656037ULL;
-            const uint64_t* row = cells + y * W;
-            for (int x = 0; x < W; ++x) {
-                h ^= row[x];
-                h *= 1099511628211ULL;
-            }
+            uint64_t h = simd::hash_row(cells + y * W, W);
             st.row_hashes[static_cast<size_t>(y)] = h;
 
             if (y == stable && y < check && y < prev_sz
@@ -80,6 +92,7 @@ void render_inline(const Element& root, int width, StylePool& pool,
 
     buf.clear();
     buf += ansi::sync_start;
+    buf += ansi::hide_cursor;
 
     if (prev_live > 1) {
         ansi::write_cursor_up(buf, prev_live - 1);
@@ -103,6 +116,7 @@ void render_inline(const Element& root, int width, StylePool& pool,
     }
 
     buf += ansi::reset;
+    buf += ansi::show_cursor;
     buf += ansi::sync_end;
 
     std::fwrite(buf.data(), 1, buf.size(), stdout);

@@ -43,6 +43,14 @@ namespace detail {
     out += 'A';
 }
 
+/// Zero-alloc cursor-down: ESC [ n B
+[[gnu::always_inline]] inline void write_cursor_down(std::string& out, int n) {
+    if (n <= 0) return;
+    out += "\x1b[";
+    detail::append_int(out, n);
+    out += 'B';
+}
+
 /// Zero-alloc ANSI CUP cursor positioning: ESC [ row ; col H
 /// col and row are 1-based as per ANSI convention.
 [[gnu::always_inline]] inline void write_move_to(std::string& out, int col, int row) {

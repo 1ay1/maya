@@ -32,6 +32,9 @@
     #define MAYA_SIMD_SSE2 1
 #elif defined(__aarch64__) || defined(_M_ARM64)
     #include <arm_neon.h>
+    #if defined(__ARM_FEATURE_CRC32)
+        #include <arm_acle.h>
+    #endif
     #define MAYA_SIMD_NEON 1
 #endif
 
@@ -278,6 +281,53 @@ inline void streaming_fill(uint64_t* __restrict__ dst, std::size_t count, uint64
 
 #if defined(MAYA_SIMD_SSE2) || defined(MAYA_SIMD_AVX2) || defined(MAYA_SIMD_AVX512)
     _mm_sfence(); // ensure NT stores are globally visible
+#endif
+}
+
+// ============================================================================
+// hash_row - Fast row hash for change detection
+// ============================================================================
+// Uses hardware CRC32 on ARM (via __crc32d, ~1 cycle/cell on Apple Silicon)
+// and SSE4.2 CRC32 on x86. Falls back to FNV-1a on other platforms.
+// NOT cryptographic — optimized purely for collision resistance in
+// frame-to-frame row comparison.
+
+[[nodiscard]] inline uint64_t hash_row(const uint64_t* row, int width) noexcept {
+#if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
+    // ARM CRC32: process 8 bytes per __crc32d instruction.
+    // Unroll 4x for ILP — M-series can sustain 2 CRC ops per cycle.
+    uint32_t crc = 0xFFFFFFFFu;
+    int i = 0;
+    for (; i + 4 <= width; i += 4) {
+        crc = __crc32d(crc, row[i]);
+        crc = __crc32d(crc, row[i + 1]);
+        crc = __crc32d(crc, row[i + 2]);
+        crc = __crc32d(crc, row[i + 3]);
+    }
+    for (; i < width; ++i)
+        crc = __crc32d(crc, row[i]);
+    return static_cast<uint64_t>(crc);
+#elif defined(__SSE4_2__) && (defined(__x86_64__) || defined(_M_X64))
+    // x86 SSE4.2: _mm_crc32_u64 — 3-cycle latency but 1/cycle throughput.
+    uint64_t crc = 0xFFFFFFFFFFFFFFFFULL;
+    int i = 0;
+    for (; i + 4 <= width; i += 4) {
+        crc = _mm_crc32_u64(crc, row[i]);
+        crc = _mm_crc32_u64(crc, row[i + 1]);
+        crc = _mm_crc32_u64(crc, row[i + 2]);
+        crc = _mm_crc32_u64(crc, row[i + 3]);
+    }
+    for (; i < width; ++i)
+        crc = _mm_crc32_u64(crc, row[i]);
+    return crc;
+#else
+    // Scalar fallback: FNV-1a
+    uint64_t h = 14695981039346656037ULL;
+    for (int i = 0; i < width; ++i) {
+        h ^= row[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
 #endif
 }
 

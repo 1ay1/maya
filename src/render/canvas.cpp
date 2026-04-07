@@ -239,12 +239,27 @@ void Canvas::fill(Rect region, char32_t ch, uint16_t style_id) {
     for (int y = y0; y < y1; ++y) {
         std::fill(base + y * width_ + x0, base + y * width_ + x1, packed);
     }
+
+    // Track max painted row for non-space content.
+    if (ch != U' ' && y1 - 1 > max_y_) max_y_ = y1 - 1;
 }
 
 void Canvas::clear() {
     uint64_t blank = default_cell();
     simd::streaming_fill(cells_.data(), cells_.size(), blank);
     damage_ = full_rect();
+    max_y_ = -1;
+}
+
+void Canvas::clear_rows(int n) {
+    if (n <= 0) return;
+    int rows = std::min(n, height_);
+    auto count = static_cast<std::size_t>(rows * width_);
+    uint64_t blank = default_cell();
+    // For small regions (typical inline mode), regular fill keeps L1 warm.
+    std::fill(cells_.data(), cells_.data() + count, blank);
+    damage_ = Rect{{Columns{0}, Rows{0}}, {Columns{width_}, Rows{rows}}};
+    max_y_ = -1;
 }
 
 void Canvas::push_clip(Rect clip) {
@@ -270,6 +285,7 @@ bool Canvas::is_clipped(int x, int y) const noexcept {
 void Canvas::resize(int w, int h) {
     width_ = w;
     height_ = h;
+    max_y_ = -1;
     cells_.assign(static_cast<std::size_t>(w * h), default_cell());
     damage_ = full_rect();
     clip_stack_.clear();

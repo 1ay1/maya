@@ -57,6 +57,7 @@ struct InlineState {
     std::vector<uint64_t> row_hashes;   // reusable scratch buffer (avoids per-frame alloc)
     int canvas_width      = 0;          // cached canvas width for reuse
     Canvas canvas;                      // persistent canvas (avoids per-frame alloc)
+    std::vector<layout::LayoutNode> layout_nodes;  // reused across frames
 };
 
 // Render element → serialize → write to stdout, preserving stable rows
@@ -144,6 +145,12 @@ void inline_run(InlineConfig cfg, RenderFn&& render_fn) {
         auto now = Clock::now();
         float dt = std::chrono::duration<float>(now - last).count();
         last = now;
+
+        // Re-detect terminal width each frame to handle resize.
+        if (cfg.max_width <= 0) {
+            int new_w = std::max(20, detail::detect_terminal_width() - 1);
+            if (new_w != width) width = new_w;
+        }
 
         Element root = [&]() -> Element {
             if constexpr (InlineRenderFnDt<RenderFn>) {

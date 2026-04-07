@@ -28,6 +28,7 @@
 
 #include "../core/concepts.hpp"
 #include "../core/expected.hpp"
+#include "../core/render_context.hpp"
 #include "../core/types.hpp"
 #include "../element/builder.hpp"
 #include "../element/element.hpp"
@@ -192,12 +193,15 @@ public:
         , row_hashes_(std::move(o.row_hashes_))
         , committed_height_(o.committed_height_)
         , prev_content_height_(o.prev_content_height_)
+        , layout_nodes_(std::move(o.layout_nodes_))
         , theme_(o.theme_)
         , mouse_enabled_(o.mouse_enabled_)
         , started_inline_(o.started_inline_)
         , fps_(o.fps_)
         , context_(std::move(o.context_))
         , size_(o.size_)
+        , render_ctx_(o.render_ctx_)
+        , resize_generation_(o.resize_generation_)
         , parser_(std::move(o.parser_))
         , render_fn_(std::move(o.render_fn_))
         , running_(o.running_)
@@ -242,14 +246,17 @@ private:
     std::vector<uint64_t>   row_hashes_;            // reusable scratch (avoids per-frame alloc)
     int                     committed_height_ = 0; // rows never overwritten again
     int                     prev_content_height_ = 0;
+    std::vector<layout::LayoutNode> layout_nodes_;  // reused across frames (avoids alloc)
 
     // -- Configuration --------------------------------------------------------
     Theme      theme_         = theme::dark;
     bool       mouse_enabled_ = false;
     bool       started_inline_ = false;  // true if app started in inline mode
     int        fps_           = 0;   // 0 = event-driven, >0 = continuous
-    ContextMap context_;
-    Size       size_{};
+    ContextMap    context_;
+    Size          size_{};
+    RenderContext render_ctx_;        // geometry management context
+    uint32_t      resize_generation_ = 0;  // incremented on every resize
 
     // -- Event handling -------------------------------------------------------
     InputParser parser_;

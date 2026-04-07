@@ -160,6 +160,14 @@ void run_impl(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn)
         dispatch(Event{re});
     });
 
+    // Dispatch an initial resize event so widgets can learn the terminal
+    // dimensions before the first frame.
+    {
+        auto sz = app.size();
+        ResizeEvent re{sz.width, sz.height};
+        dispatch(Event{re});
+    }
+
     // Build a render wrapper that handles both () and (const Ctx&) signatures,
     // and checks quit_requested after each frame.
     std::function<Element()> render_wrapper;

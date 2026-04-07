@@ -123,11 +123,25 @@ public:
                     case SpecialKey::End:       move_end();   return true;
                     case SpecialKey::Backspace: delete_backward(); return true;
                     case SpecialKey::Delete:    delete_forward();  return true;
-                    case SpecialKey::Enter:     submit(); return true;
+                    case SpecialKey::Enter:
+                        if constexpr (Cfg.multiline) {
+                            if (ev.mods.ctrl || ev.mods.shift) {
+                                submit(); return true;
+                            }
+                            insert_char('\n'); return true;
+                        } else {
+                            submit(); return true;
+                        }
                     case SpecialKey::Up:
+                        if constexpr (Cfg.multiline) {
+                            if (move_up()) return true;
+                        }
                         if constexpr (Cfg.history) { history_up(); return true; }
                         return false;
                     case SpecialKey::Down:
+                        if constexpr (Cfg.multiline) {
+                            if (move_down()) return true;
+                        }
                         if constexpr (Cfg.history) { history_down(); return true; }
                         return false;
                     default: return false;
@@ -145,7 +159,6 @@ public:
 
         std::string display;
         if constexpr (Cfg.password) {
-            // Replace each character with bullet
             for (size_t i = 0; i < val.size(); ) {
                 uint8_t ch = static_cast<uint8_t>(val[i]);
                 if (ch < 0x80) { ++i; }
@@ -168,15 +181,21 @@ public:
             }};
         }
 
-        if (is_focused) {
-            // Render with cursor indicator
-            // Split text at cursor position, insert a visible cursor
+        if constexpr (Cfg.multiline) {
+            return build_multiline(display, cur, is_focused);
+        } else {
+            return build_singleline(display, cur, is_focused);
+        }
+    }
+
+private:
+    [[nodiscard]] Element build_singleline(const std::string& display,
+                                            int cur, bool focused) const {
+        if (focused) {
             std::string before = display.substr(0, static_cast<size_t>(cur));
             std::string after = cur < static_cast<int>(display.size())
-                ? display.substr(static_cast<size_t>(cur))
-                : "";
+                ? display.substr(static_cast<size_t>(cur)) : "";
 
-            // Use inverse style for cursor character
             std::string cursor_ch = after.empty() ? " " : after.substr(0, 1);
             if (!after.empty()) after = after.substr(1);
 
@@ -192,9 +211,63 @@ public:
 
             return detail::hstack()(std::move(parts));
         }
-
-        return Element{TextElement{.content = std::move(display)}};
+        return Element{TextElement{.content = display}};
     }
+
+    [[nodiscard]] Element build_multiline(const std::string& display,
+                                           int cur, bool focused) const {
+        // Split into lines
+        std::vector<std::string> lines;
+        size_t pos = 0;
+        while (pos <= display.size()) {
+            size_t nl = display.find('\n', pos);
+            if (nl == std::string::npos) {
+                lines.push_back(display.substr(pos));
+                break;
+            }
+            lines.push_back(display.substr(pos, nl - pos));
+            pos = nl + 1;
+            if (pos == display.size()) lines.emplace_back(); // trailing newline
+        }
+
+        if (!focused) {
+            std::vector<Element> rows;
+            for (auto& line : lines)
+                rows.push_back(Element{TextElement{.content = std::move(line)}});
+            return detail::vstack()(std::move(rows));
+        }
+
+        // Find which line the cursor is on
+        int cursor_line = 0;
+        int cursor_col = cur;
+        {
+            int accum = 0;
+            for (size_t i = 0; i < lines.size(); ++i) {
+                int line_len = static_cast<int>(lines[i].size());
+                if (cur <= accum + line_len) {
+                    cursor_line = static_cast<int>(i);
+                    cursor_col = cur - accum;
+                    break;
+                }
+                accum += line_len + 1; // +1 for \n
+            }
+        }
+
+        // Render each line, with cursor on the right one
+        std::vector<Element> rows;
+        for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
+            if (i == cursor_line) {
+                rows.push_back(build_singleline(lines[static_cast<size_t>(i)],
+                                                 cursor_col, true));
+            } else {
+                rows.push_back(Element{TextElement{
+                    .content = lines[static_cast<size_t>(i)]}});
+            }
+        }
+        return detail::vstack()(std::move(rows));
+    }
+
+public:
 
     // -- Programmatic access --
     void set_value(std::string_view v) {
@@ -336,6 +409,50 @@ private:
 
     void move_home() { cursor_.set(0); }
     void move_end()  { cursor_.set(static_cast<int>(value_().size())); }
+
+    // Multiline cursor movement — returns true if cursor moved
+    bool move_up() {
+        const auto& val = value_();
+        int cur = cursor_();
+        // Find start of current line
+        int line_start = cur;
+        while (line_start > 0 && val[static_cast<size_t>(line_start - 1)] != '\n')
+            --line_start;
+        if (line_start == 0) return false; // already on first line
+        int col = cur - line_start;
+        // Find start of previous line
+        int prev_end = line_start - 1; // the \n
+        int prev_start = prev_end;
+        while (prev_start > 0 && val[static_cast<size_t>(prev_start - 1)] != '\n')
+            --prev_start;
+        int prev_len = prev_end - prev_start;
+        cursor_.set(prev_start + std::min(col, prev_len));
+        return true;
+    }
+
+    bool move_down() {
+        const auto& val = value_();
+        int cur = cursor_();
+        int len = static_cast<int>(val.size());
+        // Find start of current line
+        int line_start = cur;
+        while (line_start > 0 && val[static_cast<size_t>(line_start - 1)] != '\n')
+            --line_start;
+        int col = cur - line_start;
+        // Find end of current line
+        int line_end = cur;
+        while (line_end < len && val[static_cast<size_t>(line_end)] != '\n')
+            ++line_end;
+        if (line_end >= len) return false; // already on last line
+        // Next line starts after \n
+        int next_start = line_end + 1;
+        int next_end = next_start;
+        while (next_end < len && val[static_cast<size_t>(next_end)] != '\n')
+            ++next_end;
+        int next_len = next_end - next_start;
+        cursor_.set(next_start + std::min(col, next_len));
+        return true;
+    }
 
     void submit() {
         if (on_submit_) on_submit_(value_());

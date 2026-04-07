@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "maya/core/overload.hpp"
+#include "maya/core/render_context.hpp"
 
 namespace maya {
 
@@ -411,15 +412,36 @@ void render_tree(
     [[maybe_unused]] const Theme& theme,
     bool auto_height)
 {
-    // Phase 1: Build the layout tree.
+    // Set the render context so widgets can query available_width() etc.
+    // If a parent context exists (e.g. from App::render_frame), this is
+    // a no-op override with the same values; if called standalone (tests,
+    // one-shot prints), this provides the correct canvas dimensions.
+    RenderContext ctx{canvas.width(), canvas.height(), render_generation()};
+    RenderContextGuard guard(ctx);
+
     std::vector<layout::LayoutNode> layout_nodes;
     layout_nodes.reserve(128);
+    render_tree(root, canvas, pool, theme, layout_nodes, auto_height);
+}
+
+void render_tree(
+    const Element& root,
+    Canvas& canvas,
+    StylePool& pool,
+    [[maybe_unused]] const Theme& theme,
+    std::vector<layout::LayoutNode>& layout_nodes,
+    bool auto_height)
+{
+    // Set the render context if not already set by the parent overload or App.
+    RenderContext ctx{canvas.width(), canvas.height(), render_generation()};
+    RenderContextGuard guard(ctx);
+
+    // Phase 1: Build the layout tree (reusing the caller's vector).
+    layout_nodes.clear();
 
     std::size_t root_idx = render_detail::build_layout_tree(root, layout_nodes, theme);
 
     // Phase 2: Constrain root to terminal dimensions.
-    // In auto_height mode (inline rendering), only constrain width so the
-    // layout sizes to content height — preserving terminal scrollback.
     layout_nodes[root_idx].style.width  = Dimension::fixed(canvas.width());
     if (!auto_height)
         layout_nodes[root_idx].style.height = Dimension::fixed(canvas.height());
@@ -427,14 +449,7 @@ void render_tree(
     // Phase 3: Run layout. Positions are parent-relative after this.
     layout::compute(layout_nodes, root_idx, canvas.width(), canvas.height());
 
-    // NOTE: We do NOT call resolve_absolute() because paint_element
-    // propagates offsets during the recursive walk. Calling both would
-    // double-count parent positions.
-
     // Phase 4: Paint to canvas.
-    // NOTE: caller is responsible for clearing the canvas before calling
-    // render_tree(). The pipeline's clear() step and App::render_frame()
-    // both do this. We do NOT clear here to avoid a redundant SIMD fill.
     render_detail::paint_element(
         root, canvas, pool, layout_nodes, root_idx,
         /*offset_x=*/0, /*offset_y=*/0);

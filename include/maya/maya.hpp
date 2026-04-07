@@ -28,6 +28,7 @@
 #include <maya/core/overload.hpp>
 #include <maya/core/scope_exit.hpp>
 #include <maya/core/focus.hpp>
+#include <maya/core/render_context.hpp>
 
 // -- Style: colors, text styles, borders, themes ----------------------------
 #include <maya/style/color.hpp>
@@ -72,6 +73,14 @@
 #include <maya/widget/spinner.hpp>
 #include <maya/widget/select.hpp>
 #include <maya/widget/progress.hpp>
+#include <maya/widget/divider.hpp>
+#include <maya/widget/badge.hpp>
+#include <maya/widget/breadcrumb.hpp>
+#include <maya/widget/statusbar.hpp>
+#include <maya/widget/confirm.hpp>
+#include <maya/widget/table.hpp>
+#include <maya/widget/toast.hpp>
+#include <maya/widget/chat.hpp>
 
 // -- App: static region for scrollback freeze --------------------------------
 #include <maya/app/static_region.hpp>

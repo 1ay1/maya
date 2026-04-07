@@ -26,6 +26,7 @@ add_library(maya
     src/render/renderer.cpp
     src/render/diff.cpp
     src/render/serialize.cpp
+    src/widget/markdown.cpp
 )
 target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

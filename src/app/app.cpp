@@ -4,6 +4,7 @@
 #include <format>
 #include <ranges>
 
+#include "maya/core/focus.hpp"
 #include "maya/core/overload.hpp"
 #include "maya/core/scope_exit.hpp"
 
@@ -287,6 +288,21 @@ auto App::read_and_dispatch() -> Status {
 void App::dispatch_event(Event& event) {
     std::visit(overload{
         [this](KeyEvent& ev) {
+            // Focus navigation: Tab / Shift+Tab cycle focus before user handlers
+            if (current_focus_scope) {
+                if (auto* sp = std::get_if<SpecialKey>(&ev.key)) {
+                    if (*sp == SpecialKey::Tab) {
+                        focus_next();
+                        needs_render_ = true;
+                        return;
+                    }
+                    if (*sp == SpecialKey::BackTab) {
+                        focus_prev();
+                        needs_render_ = true;
+                        return;
+                    }
+                }
+            }
             std::ranges::any_of(key_handlers_,
                 [&](auto& h) { return h(ev); });
             needs_render_ = true;

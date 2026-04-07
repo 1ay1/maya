@@ -19,12 +19,15 @@
 // terminal I/O, layout, elements, rendering, and finally the application
 // entry point. Each layer depends only on layers above it in this list.
 
-// -- Core: types, error handling, concepts, reactive signals, SIMD ----------
+// -- Core: types, error handling, concepts, reactive signals, SIMD, focus ----
 #include <maya/core/types.hpp>
 #include <maya/core/expected.hpp>
 #include <maya/core/concepts.hpp>
 #include <maya/core/signal.hpp>
 #include <maya/core/simd.hpp>
+#include <maya/core/overload.hpp>
+#include <maya/core/scope_exit.hpp>
+#include <maya/core/focus.hpp>
 
 // -- Style: colors, text styles, borders, themes ----------------------------
 #include <maya/style/color.hpp>
@@ -61,6 +64,17 @@
 #include <maya/app/events.hpp>
 #include <maya/app/run.hpp>
 #include <maya/app/inline.hpp>
+
+// -- Widgets: high-level interactive components ------------------------------
+#include <maya/widget/scroll.hpp>
+#include <maya/widget/input.hpp>
+#include <maya/widget/markdown.hpp>
+#include <maya/widget/spinner.hpp>
+#include <maya/widget/select.hpp>
+#include <maya/widget/progress.hpp>
+
+// -- App: static region for scrollback freeze --------------------------------
+#include <maya/app/static_region.hpp>
 
 // -- DSL: compile-time UI tree builder ----------------------------------------
 #include <maya/dsl.hpp>

@@ -125,6 +125,50 @@ inline constexpr StyTag<CTStyle{.has_fg=true, .fg_r=R, .fg_g=G, .fg_b=B}> Fg{};
 template <uint8_t R, uint8_t G, uint8_t B>
 inline constexpr StyTag<CTStyle{.has_bg=true, .bg_r=R, .bg_g=G, .bg_b=B}> Bg{};
 
+// ── Hex color shorthand ─────────────────────────────────────────────────────
+//
+// Hex colors avoid the 3-arg verbosity of Fg<R,G,B>:
+//   text("error") | fg<0xFF4444>
+//   v(...) | bg<0x1A1A2E>
+//
+// consteval decomposition validates range at compile time.
+
+namespace detail_color {
+    consteval CTStyle fg_from_hex(uint32_t hex) {
+        if (hex > 0xFFFFFF) throw "fg<>: hex value exceeds 0xFFFFFF";
+        return CTStyle{.has_fg=true,
+            .fg_r=static_cast<uint8_t>(hex >> 16),
+            .fg_g=static_cast<uint8_t>((hex >> 8) & 0xFF),
+            .fg_b=static_cast<uint8_t>(hex & 0xFF)};
+    }
+    consteval CTStyle bg_from_hex(uint32_t hex) {
+        if (hex > 0xFFFFFF) throw "bg<>: hex value exceeds 0xFFFFFF";
+        return CTStyle{.has_bg=true,
+            .bg_r=static_cast<uint8_t>(hex >> 16),
+            .bg_g=static_cast<uint8_t>((hex >> 8) & 0xFF),
+            .bg_b=static_cast<uint8_t>(hex & 0xFF)};
+    }
+}
+
+template <uint32_t Hex>
+inline constexpr StyTag<detail_color::fg_from_hex(Hex)> fg{};
+
+template <uint32_t Hex>
+inline constexpr StyTag<detail_color::bg_from_hex(Hex)> bg{};
+
+// ── Style composition — StyTag | StyTag → merged StyTag ─────────────────────
+//
+// Pre-combine styles into reusable presets:
+//   constexpr auto heading = Bold | fg<0xFFFFFF>;
+//   constexpr auto error   = Bold | fg<0xFF4444>;
+//   t<"Title"> | heading
+//   text(msg) | error
+
+template <CTStyle A, CTStyle B>
+constexpr auto operator|(StyTag<A>, StyTag<B>) {
+    return StyTag<A.merge(B)>{};
+}
+
 // ── Box layout config (structural NTTP) ──────────────────────────────────────
 
 struct BoxCfg {
@@ -591,6 +635,122 @@ using maya::detail::vstack;
 using maya::detail::hstack;
 using maya::detail::center;
 using maya::detail::component;
+
+// ── User-defined literal for text nodes ─────────────────────────────────────
+//
+// C++26 string literal operator template — compile-time text via UDL:
+//   "Hello"_t | Bold | fg<0x64B4FF>
+//
+// Equivalent to t<"Hello"> but reads more naturally in mixed expressions.
+
+template <Str S>
+constexpr auto operator""_t() { return TextNode<S>{}; }
+
+// ── when() — conditional rendering ──────────────────────────────────────────
+//
+// Eliminates the dyn() boilerplate for simple show/hide:
+//   when(is_loading, spinner, content)
+//   when(show_debug, debug_panel)           // omit else → blank
+//
+// Both branches must satisfy Node. The condition is evaluated at build time.
+
+template <Node Then, Node Else>
+struct WhenNode {
+    bool condition;
+    Then then_branch;
+    Else else_branch;
+
+    operator Element() const { return build(); }
+    [[nodiscard]] Element build() const {
+        return condition ? then_branch.build() : else_branch.build();
+    }
+};
+
+template <Node Then, Node Else>
+[[nodiscard]] auto when(bool condition, Then&& then_node, Else&& else_node) {
+    return WhenNode<std::decay_t<Then>, std::decay_t<Else>>{
+        condition, std::forward<Then>(then_node), std::forward<Else>(else_node)};
+}
+
+template <Node Then>
+[[nodiscard]] auto when(bool condition, Then&& then_node) {
+    return WhenNode<std::decay_t<Then>, BlankNode>{
+        condition, std::forward<Then>(then_node), BlankNode{}};
+}
+
+// ── visible() — runtime visibility pipe ─────────────────────────────────────
+//
+// Hide a node without removing it from the tree:
+//   text("debug info") | visible(debug_mode)
+//   panel | visible(expanded)
+
+struct VisibleTag { bool show; };
+
+[[nodiscard]] inline VisibleTag visible(bool show) { return {show}; }
+
+template <Node N>
+struct VisibleNode {
+    N inner;
+    bool show;
+
+    operator Element() const { return build(); }
+    [[nodiscard]] Element build() const {
+        return show ? inner.build() : BlankNode{}.build();
+    }
+};
+
+template <Node N>
+[[nodiscard]] auto operator|(N n, VisibleTag tag) {
+    return VisibleNode<N>{std::move(n), tag.show};
+}
+
+// ── bordered<Style, HexColor> — combined border + color pipe ────────────────
+//
+// Eliminates the two-step border_<Round> | bcol<R,G,B>:
+//   v(...) | bordered<Round, 0x323746>
+//   h(...) | bordered<Single>              // no color → default
+
+namespace detail_border {
+    consteval BoxCfg apply_bordered(BoxCfg cfg, BorderStyle bs,
+                                    bool has_color, uint32_t hex) {
+        cfg.bstyle = bs;
+        cfg.has_border = true;
+        if (has_color) {
+            cfg.has_border_color = true;
+            cfg.bc_r = static_cast<uint8_t>(hex >> 16);
+            cfg.bc_g = static_cast<uint8_t>((hex >> 8) & 0xFF);
+            cfg.bc_b = static_cast<uint8_t>(hex & 0xFF);
+        }
+        return cfg;
+    }
+}
+
+template <BorderStyle BS, uint32_t Color = 0>
+struct BorderedTag {
+    static constexpr bool has_color = (Color != 0);
+};
+
+template <BorderStyle BS, uint32_t Color = 0>
+inline constexpr BorderedTag<BS, Color> bordered{};
+
+template <FlexDirection Dir, BoxCfg Cfg, typename... Cs, BorderStyle BS, uint32_t Color>
+constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, BorderedTag<BS, Color>) {
+    constexpr BoxCfg nc = detail_border::apply_bordered(
+        Cfg, BS, BorderedTag<BS, Color>::has_color, Color);
+    return BoxNode<Dir, nc, Cs...>{std::move(n.children)};
+}
+
+// ── each() — apply a style to every item in a range ─────────────────────────
+//
+// Shorthand for map() when you just want to style range items:
+//   each(items, [](auto& s) { return text(s); }) | Bold
+//
+// (This is just an alias for map() — included for discoverability.)
+
+template <std::ranges::range R, typename Proj>
+[[nodiscard]] auto each(R&& range, Proj&& proj) {
+    return map(std::forward<R>(range), std::forward<Proj>(proj));
+}
 
 // ── Compile-time validation ─────────────────────────────────────────────────
 

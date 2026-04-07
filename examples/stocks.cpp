@@ -466,10 +466,10 @@ static maya::Element build_chart() {
     // Title row
     rows.push_back((h(
         text(s.symbol, accent().with_bold()),
-        text(" " + s.name, muted()),
+        text(" " + s.name, muted()) | clip,
         space,
         text("$" + fmt_price(s.price), fg_s(255, 255, 255).with_bold()),
-        text(" " + fmt_change(s.price, s.prev_close), chg_style(chg))
+        text(" " + fmt_change(s.price, s.prev_close), chg_style(chg)) | clip
     )).build());
 
     // Current price marker

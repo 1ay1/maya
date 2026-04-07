@@ -248,7 +248,8 @@ static void tick(float dt) {
         float drift = s.momentum * s.volatility * s.price * dt;
         float noise = randf(-1, 1) * s.volatility * s.price * std::sqrt(dt) * 3.0f;
         s.price += drift + noise;
-        s.price = std::max(s.price, s.prev_close * 0.80f);
+        // Cap daily move to ±20% from previous close
+        s.price = std::clamp(s.price, s.prev_close * 0.80f, s.prev_close * 1.20f);
         if (randi(0, 200) == 0) s.momentum = randf(-1.0f, 1.0f);
 
         s.history.erase(s.history.begin());
@@ -339,8 +340,8 @@ static maya::Element build_header() {
         text(" " + grad, accent()),
         space,
         text("S&P 500") | Dim | w_<8>,
-        text(fmt_price(idx_val), chg_style(total_change)) | w_<9>,
-        text(fmt_change(idx_val, 5234.18f), chg_style(total_change)) | w_<18>,
+        text(fmt_price(idx_val), chg_style(total_change)) | clip | w_<10>,
+        text(fmt_change(idx_val, 5234.18f), chg_style(total_change)) | clip | w_<22>,
         space,
         text(mkt, market_open ? gain_s() : loss_s()),
         text(std::string("  ") + thm().name, accent()) | w_<8>
@@ -369,14 +370,14 @@ static maya::Element build_portfolio_bar() {
 
     return (h(
         text("Portfolio") | Dim | w_<10>,
-        text("$" + fmt_price(total_val)) | Bold | w_<12>,
+        text("$" + fmt_price(total_val)) | Bold | clip | w_<14>,
         text("P&L") | Dim | w_<4>,
-        text(fmt_change(total_val, total_prev), chg_style(pnl)) | w_<20>,
+        text(fmt_change(total_val, total_prev), chg_style(pnl)) | clip | w_<24>,
         text("│") | Dim,
         text(" ▲ " + best.symbol, gain_s()) | w_<9>,
-        text(fmt_pct(best.price, best.prev_close), gain_s()),
+        text(fmt_pct(best.price, best.prev_close), gain_s()) | clip | w_<12>,
         text("  ▼ " + worst.symbol, loss_s()) | w_<9>,
-        text(fmt_pct(worst.price, worst.prev_close), loss_s())
+        text(fmt_pct(worst.price, worst.prev_close), loss_s()) | clip | w_<12>
     ) | pad<0, 1, 0, 1>).build();
 }
 
@@ -401,8 +402,8 @@ static maya::Element build_watchlist() {
         t<""> | w_<2>,
         t<"SYMBOL"> | Bold | Dim | w_<6>,
         t<"LAST"> | Bold | Dim | w_<10>,
-        t<"CHG"> | Bold | Dim | w_<8>,
-        t<"CHG%"> | Bold | Dim | w_<8>,
+        t<"CHG"> | Bold | Dim | w_<10>,
+        t<"CHG%"> | Bold | Dim | w_<10>,
         t<"MCAP"> | Bold | Dim | w_<8>,
         t<"VOL"> | Bold | Dim | w_<7>,
         t<"CHART"> | Bold | Dim
@@ -430,10 +431,10 @@ static maya::Element build_watchlist() {
         rows.push_back((h(
             text(marker, sel_sty) | w_<2>,
             text(s.symbol, sym_sty) | w_<6>,
-            text(fmt_price(s.price), sel_sty) | w_<10>,
-            text(std::string(chg_buf), chg_style(chg)) | w_<8>,
-            text(std::string(pct_buf), chg_style(chg)) | w_<8>,
-            text(fmt_mcap(s.market_cap), muted()) | w_<8>,
+            text(fmt_price(s.price), sel_sty) | clip | w_<10>,
+            text(std::string(chg_buf), chg_style(chg)) | clip | w_<10>,
+            text(std::string(pct_buf), chg_style(chg)) | clip | w_<10>,
+            text(fmt_mcap(s.market_cap), muted()) | clip | w_<8>,
             text(fmt_vol(s.volume), muted()) | w_<7>,
             text(spark, chg >= 0 ? gain_s() : loss_s())
         ) | gap_<1>).build());
@@ -486,7 +487,7 @@ static maya::Element build_chart() {
         std::string sep = (r == 0) ? "┤" : "│";
 
         rows.push_back((h(
-            text(std::string(label), muted()) | w_<8>,
+            text(std::string(label), muted()) | clip | w_<8>,
             text(sep) | Dim,
             text(chart_rows[static_cast<size_t>(r)], chart_col)
         )).build());
@@ -503,11 +504,11 @@ static maya::Element build_chart() {
     // Stats cards
     rows.push_back((h(
         text("Open", muted()) | w_<5>,
-        text(fmt_price(s.open), fg_s(200, 200, 210)) | w_<9>,
+        text(fmt_price(s.open), fg_s(200, 200, 210)) | clip | w_<10>,
         text("High", muted()) | w_<5>,
-        text(fmt_price(s.day_high), gain_s()) | w_<9>,
+        text(fmt_price(s.day_high), gain_s()) | clip | w_<10>,
         text("Low", muted()) | w_<5>,
-        text(fmt_price(s.day_low), loss_s()) | w_<9>,
+        text(fmt_price(s.day_low), loss_s()) | clip | w_<10>,
         text("Vol", muted()) | w_<5>,
         text(fmt_vol(s.volume), fg_s(200, 200, 210)) | w_<7>,
         text("MCap", muted()) | w_<5>,

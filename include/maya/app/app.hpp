@@ -298,10 +298,42 @@ struct CanvasConfig {
     std::string title;              // terminal window title (optional)
 };
 
-[[nodiscard]] Status canvas_run(
+// ── Concepts for canvas_run callbacks ───────────────────────────────────────
+
+template <typename F>
+concept CanvasResizeFn = std::invocable<F, StylePool&, int, int>;
+
+template <typename F>
+concept CanvasEventFn =
+    std::invocable<F, const Event&> &&
+    std::convertible_to<std::invoke_result_t<F, const Event&>, bool>;
+
+template <typename F>
+concept CanvasPaintFn = std::invocable<F, Canvas&, int, int>;
+
+// Type-erased implementation (in app.cpp)
+namespace detail {
+[[nodiscard]] Status canvas_run_impl(
     CanvasConfig                                   cfg,
     std::function<void(StylePool&, int w, int h)>  on_resize,
     std::function<bool(const Event&)>              on_event,
     std::function<void(Canvas&, int w, int h)>     on_paint);
+} // namespace detail
+
+/// Concept-constrained canvas_run — accepts any callable matching the
+/// required signatures. No std::function in the public API.
+template <CanvasResizeFn ResizeFn, CanvasEventFn EventFn, CanvasPaintFn PaintFn>
+[[nodiscard]] Status canvas_run(
+    CanvasConfig cfg,
+    ResizeFn&&   on_resize,
+    EventFn&&    on_event,
+    PaintFn&&    on_paint)
+{
+    return detail::canvas_run_impl(
+        std::move(cfg),
+        std::forward<ResizeFn>(on_resize),
+        std::forward<EventFn>(on_event),
+        std::forward<PaintFn>(on_paint));
+}
 
 } // namespace maya

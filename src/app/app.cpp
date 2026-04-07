@@ -4,14 +4,10 @@
 #include <format>
 #include <ranges>
 
+#include "maya/core/overload.hpp"
+#include "maya/core/scope_exit.hpp"
+
 namespace maya {
-
-// ============================================================================
-// Overload set for std::visit
-// ============================================================================
-
-template <typename... Fs>
-struct overload : Fs... { using Fs::operator()...; };
 
 // ============================================================================
 // Self-pipe for signal delivery into the poll loop
@@ -291,22 +287,19 @@ auto App::read_and_dispatch() -> Status {
 void App::dispatch_event(Event& event) {
     std::visit(overload{
         [this](KeyEvent& ev) {
-            for (auto& handler : key_handlers_) {
-                if (handler(ev)) break;
-            }
+            std::ranges::any_of(key_handlers_,
+                [&](auto& h) { return h(ev); });
             needs_render_ = true;
         },
         [this](MouseEvent& ev) {
-            for (auto& handler : mouse_handlers_) {
-                if (handler(ev)) break;
-            }
+            std::ranges::any_of(mouse_handlers_,
+                [&](auto& h) { return h(ev); });
             needs_render_ = true;
         },
         [this](ResizeEvent& ev) {
             size_ = {ev.width, ev.height};
-            for (auto& handler : resize_handlers_) {
-                handler(size_);
-            }
+            std::ranges::for_each(resize_handlers_,
+                [&](auto& h) { h(size_); });
             needs_render_ = true;
         },
         [this](FocusEvent&) {
@@ -577,7 +570,9 @@ auto App::render_frame() -> Status {
 // canvas_run - Imperative canvas animation loop
 // ============================================================================
 
-Status canvas_run(
+namespace detail {
+
+Status canvas_run_impl(
     CanvasConfig                                   cfg,
     std::function<void(StylePool&, int w, int h)>  on_resize,
     std::function<bool(const Event&)>              on_event,
@@ -642,12 +637,14 @@ Status canvas_run(
     bool running     = true;
     bool needs_clear = true; // first frame must clear (alt screen may have stale content)
 
-    auto cleanup = [&, orig_fl](Status result) -> Status {
+    // RAII guards — cleanup runs automatically on any exit path.
+    scope_exit mouse_guard([&] {
         if (cfg.mouse) (void)::write(fd, kMouseOff.data(), kMouseOff.size());
-        detail::cleanup_signal_pipe();
-        if (orig_fl >= 0) ::fcntl(fd, F_SETFL, orig_fl); // restore blocking mode
-        return result;
-    };
+    });
+    scope_exit signal_guard([] { cleanup_signal_pipe(); });
+    scope_exit fcntl_guard([&] {
+        if (orig_fl >= 0) ::fcntl(fd, F_SETFL, orig_fl);
+    });
 
     auto handle_resize = [&](int nw, int nh) {
         W = nw; H = nh;
@@ -687,7 +684,7 @@ Status canvas_run(
         int pr = ::poll(pfds, static_cast<nfds_t>(nfds), timeout_ms);
         if (pr < 0) {
             if (errno == EINTR) continue;
-            return cleanup(err(Error::from_errno("poll")));
+            return err(Error::from_errno("poll"));
         }
 
         if (nfds > 1 && (pfds[1].revents & POLLIN)) {
@@ -704,7 +701,7 @@ Status canvas_run(
             auto& pf   = *pending_frame;
             auto  sv   = std::string_view(pf.data).substr(pf.offset);
             auto  result = writer.write_some(sv);
-            if (!result) return cleanup(err(result.error()));
+            if (!result) return err(result.error());
             pf.offset += *result;
             if (pf.offset >= pf.data.size()) {
                 std::swap(front, back);
@@ -756,7 +753,7 @@ Status canvas_run(
                 back.reset_damage();
             } else {
                 auto result = writer.write_some(out);
-                if (!result) return cleanup(err(result.error()));
+                if (!result) return err(result.error());
                 const std::size_t written = *result;
                 if (written < out.size()) {
                     // Partial write — BSU frame is open; resume on next POLLOUT.
@@ -769,7 +766,8 @@ Status canvas_run(
         }
     }
 
-    return cleanup(ok());
+    return ok();
 }
 
+} // namespace detail
 } // namespace maya

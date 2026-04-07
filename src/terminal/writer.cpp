@@ -14,17 +14,11 @@
 #include <vector>
 
 #include "maya/core/expected.hpp"
+#include "maya/core/overload.hpp"
 #include "maya/core/types.hpp"
 #include "maya/terminal/ansi.hpp"
 
 namespace maya {
-
-// ============================================================================
-// Overload helper for variant visitation
-// ============================================================================
-
-template <typename... Fs>
-struct overload : Fs... { using Fs::operator()...; };
 
 // ============================================================================
 // Operation submission

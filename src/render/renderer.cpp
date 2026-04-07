@@ -6,14 +6,9 @@
 #include <string>
 #include <vector>
 
+#include "maya/core/overload.hpp"
+
 namespace maya {
-
-// ============================================================================
-// Overload set helper for std::visit dispatch
-// ============================================================================
-
-template <typename... Fs>
-struct overload : Fs... { using Fs::operator()...; };
 
 namespace render_detail {
 

@@ -51,7 +51,19 @@ void serialize(const Canvas& canvas, const StylePool& pool,
         }
 
         const int row_base = y * W;
-        for (int x = 0; x < W; ++x) {
+
+        // Trim trailing blanks: find last non-space cell to avoid writing
+        // trailing spaces. Since serialize() is called after screen clear,
+        // those blanks are already on-screen — skipping them saves output bytes.
+        int last_col = W - 1;
+        while (last_col >= 0) {
+            const uint64_t p = cells[row_base + last_col];
+            const auto c = static_cast<char32_t>(p & 0xFFFFFFFF);
+            if (c != U' ' && c != 0) break;
+            --last_col;
+        }
+
+        for (int x = 0; x <= last_col; ++x) {
             const uint64_t packed = cells[row_base + x];
             const auto ch = static_cast<char32_t>(packed & 0xFFFFFFFF);
             const auto sid = static_cast<uint16_t>((packed >> 32) & 0xFFFF);

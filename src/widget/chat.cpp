@@ -141,22 +141,29 @@ Element ChatView::build() {
         input_setup_ = true;
     }
 
-    // Messages area
-    Element msg_area;
-    if (messages_.empty()) {
-        msg_area = Element{TextElement{
-            .content = "  " + cfg_.placeholder,
-            .style = Style{}.with_dim().with_italic(),
-        }};
-    } else {
-        std::vector<Element> rendered;
-        rendered.reserve(messages_.size() * 2);
-        for (auto& msg : messages_) {
-            rendered.push_back(render_message(msg));
-            rendered.push_back(Element{TextElement{.content = ""}});
+    // Messages area wrapped in a scrollable container.
+    // In inline mode the viewport is unconstrained (auto_height) so the
+    // scroll is a no-op.  In promoted / alt-screen mode the grow=1 on the
+    // Scrollable fills the remaining terminal height, giving a real viewport.
+    auto msg_scroll = scroll(
+        {.auto_bottom = true, .show_bar = true},
+        scroll_state_,
+        [this](int /*w*/, int /*h*/) -> Element {
+            if (messages_.empty()) {
+                return Element{TextElement{
+                    .content = "  " + cfg_.placeholder,
+                    .style = Style{}.with_dim().with_italic(),
+                }};
+            }
+            std::vector<Element> rendered;
+            rendered.reserve(messages_.size() * 2);
+            for (size_t i = 0; i < messages_.size(); ++i) {
+                if (i > 0) rendered.push_back(Element{TextElement{.content = ""}});
+                rendered.push_back(render_message(messages_[i]));
+            }
+            return detail::vstack()(std::move(rendered));
         }
-        msg_area = detail::vstack()(std::move(rendered));
-    }
+    );
 
     // Divider
     auto divider = Element{TextElement{
@@ -199,7 +206,7 @@ Element ChatView::build() {
     // Layout
     std::vector<Element> layout;
     layout.reserve(6);
-    layout.push_back(std::move(msg_area));
+    layout.push_back(Element(msg_scroll));
     if (!toasts_.empty()) layout.push_back(toasts_.build());
     layout.push_back(std::move(divider));
     layout.push_back(std::move(prompt));

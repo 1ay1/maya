@@ -101,13 +101,15 @@ int main() {
     });
 
     maya::run(
-        {.fps = 30, .alt_screen = false},
+        {.fps = 30, .mouse = true, .alt_screen = false},
 
         [&](const Event& ev) {
             if (ctrl(ev, 'c') || ctrl(ev, 'd')) return false;
 
             if (auto* ke = as_key(ev); ke)
                 (void)chat.handle(*ke);
+            if (auto* me = as_mouse(ev); me)
+                (void)chat.handle(*me);
 
             return true;
         },

@@ -81,6 +81,12 @@ struct ComponentElement {
     /// Called during painting with the allocated width and height.
     std::function<Element(int width, int height)> render;
 
+    /// Optional custom measure function for layout. When provided, the
+    /// layout engine calls this instead of the default {max_width, 1}.
+    /// This lets components like Scrollable report their content height
+    /// so they size correctly in auto_height (unconstrained) layouts.
+    std::function<Size(int max_width)> measure;
+
     /// Layout properties — participates in flexbox just like BoxElement.
     FlexStyle layout{};
 };

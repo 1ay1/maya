@@ -426,11 +426,10 @@ auto App::render_frame() -> Status {
 
     if (promoted) {
         // ── Promoted mode (was inline, now alt screen) ──────────────
-        // Content-height layout with auto_height so UI stays compact
-        // (not stretched to fill terminal). Double-buffered diff.
-        constexpr int kMaxInlineHeight = 500;
-        const int canvas_h = std::max(1,
-            std::min(size_.height.raw(), kMaxInlineHeight));
+        // Fixed-height layout so widgets with grow=1 (e.g. Scrollable)
+        // get a real viewport. Without this, auto_height makes grow
+        // meaningless and scroll containers can't clip.
+        const int canvas_h = std::max(1, size_.height.raw());
 
         if (canvas_.width() != w || canvas_.height() != canvas_h) {
             canvas_ = Canvas(w, canvas_h, &pool_);
@@ -440,7 +439,7 @@ auto App::render_frame() -> Status {
         }
 
         canvas_.clear();
-        render_tree(render_fn_(), canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/true);
+        render_tree(render_fn_(), canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/false);
 
         out_.clear();
         out_ += ansi::hide_cursor;

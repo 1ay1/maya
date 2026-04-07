@@ -151,8 +151,6 @@ std::size_t build_layout_tree(
         [&](const ComponentElement& node) -> std::size_t {
             // Component: a leaf that defers rendering to paint time.
             // Participates in flex layout via its FlexStyle properties.
-            // Has a measure function returning 1×1 so the layout engine
-            // gives it nonzero size even without explicit dimensions.
             std::size_t idx = nodes.size();
             nodes.emplace_back();
             auto& ln = nodes[idx];
@@ -171,15 +169,27 @@ std::size_t build_layout_tree(
             ls.margin      = node.layout.margin;
             ls.align_self  = map_align(node.layout.align_self);
 
-            // Measure: return available width × 1 row minimum.
-            // This ensures the component gets at least 1 row and the
-            // full cross-axis width, so flex-grow can expand from there.
-            ln.measure = layout::MeasureFn{
-                [](const void*, int max_width) -> Size {
-                    return {Columns{max_width}, Rows{1}};
-                },
-                nullptr
-            };
+            if (node.measure) {
+                // Custom measure: lets the component report its content
+                // size (e.g. Scrollable reports content height so it
+                // sizes correctly in auto_height layouts).
+                ln.measure = layout::MeasureFn{
+                    [](const void* ctx, int max_width) -> Size {
+                        auto& fn = *static_cast<const std::function<Size(int)>*>(ctx);
+                        return fn(max_width);
+                    },
+                    &node.measure
+                };
+            } else {
+                // Default: return available width × 1 row minimum.
+                // flex-grow can expand from there.
+                ln.measure = layout::MeasureFn{
+                    [](const void*, int max_width) -> Size {
+                        return {Columns{max_width}, Rows{1}};
+                    },
+                    nullptr
+                };
+            }
 
             return idx;
         }
@@ -315,8 +325,9 @@ void paint_element(
             bool clipping = (node.overflow == Overflow::Hidden ||
                              node.overflow == Overflow::Scroll);
 
-            int content_x = ax + (node.border.sides.left ? 1 : 0) + node.layout.padding.left;
-            int content_y = ay + (node.border.sides.top ? 1 : 0) + node.layout.padding.top;
+            bool has_b = node.has_border();
+            int content_x = ax + (has_b && node.border.sides.left ? 1 : 0) + node.layout.padding.left;
+            int content_y = ay + (has_b && node.border.sides.top ? 1 : 0) + node.layout.padding.top;
             int content_w = std::max(0, aw - node.inner_horizontal());
             int content_h = std::max(0, ah - node.inner_vertical());
 

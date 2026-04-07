@@ -462,7 +462,7 @@ static auto build_log_panel() {
         auto row = h(
             text(std::string(ts)) | Dim | w_<6>,
             text(std::string(level_tag), level_color(e.level).with_bold()) | w_<5>,
-            text(e.msg) | Dim
+            text(e.msg) | Dim | clip
         );
         rows.push_back(row.build());
     }

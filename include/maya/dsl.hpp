@@ -108,6 +108,17 @@ inline constexpr StyTag<CTStyle{.underline_ = true}> Underline{};
 inline constexpr StyTag<CTStyle{.strike_ = true}>    Strike{};
 inline constexpr StyTag<CTStyle{.inverse_ = true}>   Inverse{};
 
+// ── Wrap tags ───────────────────────────────────────────────────────────────
+
+struct TruncateTag {};
+struct NoWrapTag {};
+
+/// Truncate text with ellipsis when it overflows:  text("long...") | clip
+inline constexpr TruncateTag  clip{};
+
+/// Never break text (may overflow container):  text("long...") | nowrap
+inline constexpr NoWrapTag nowrap{};
+
 template <uint8_t R, uint8_t G, uint8_t B>
 inline constexpr StyTag<CTStyle{.has_fg=true, .fg_r=R, .fg_g=G, .fg_b=B}> Fg{};
 
@@ -405,6 +416,20 @@ constexpr auto operator|(TextNode<S, Sty>, StyTag<V>) {
 template <typename S, CTStyle V>
 [[nodiscard]] auto operator|(RuntimeTextNode<S> n, StyTag<V>) {
     n.style = n.style.merge(V.runtime());
+    return n;
+}
+
+// ── operator| : RuntimeTextNode | trunc / nowrap ────────────────────────────
+
+template <typename S>
+[[nodiscard]] auto operator|(RuntimeTextNode<S> n, TruncateTag) {
+    n.wrap = TextWrap::TruncateEnd;
+    return n;
+}
+
+template <typename S>
+[[nodiscard]] auto operator|(RuntimeTextNode<S> n, NoWrapTag) {
+    n.wrap = TextWrap::NoWrap;
     return n;
 }
 

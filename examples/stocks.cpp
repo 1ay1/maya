@@ -543,7 +543,7 @@ static maya::Element build_news() {
         rows.push_back((h(
             text(icon, col) | w_<2>,
             text(n.source, label_s()) | w_<11>,
-            text(n.headline, muted()),
+            text(n.headline, muted()) | clip,
             space,
             text(fmt_time(n.age), fg_s(50, 50, 60))
         ) | gap_<1>).build());

@@ -241,8 +241,8 @@ void Canvas::fill(Rect region, char32_t ch, uint16_t style_id) {
         std::fill(base + y * width_ + x0, base + y * width_ + x1, packed);
     }
 
-    // Track max painted row for non-space content.
-    if (ch != U' ' && y1 - 1 > max_y_) max_y_ = y1 - 1;
+    // Track max painted row for non-space or styled content.
+    if ((ch != U' ' || style_id != 0) && y1 - 1 > max_y_) max_y_ = y1 - 1;
 }
 
 void Canvas::clear() {

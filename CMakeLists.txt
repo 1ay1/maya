@@ -27,7 +27,6 @@ add_library(maya
     src/render/diff.cpp
     src/render/serialize.cpp
     src/widget/markdown.cpp
-    src/widget/chat.cpp
 )
 target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -87,7 +86,6 @@ if(MAYA_BUILD_TESTS)
         tests/test_simd.cpp
         tests/test_ansi.cpp
         tests/test_writer.cpp
-        tests/test_chat_layout.cpp
         tests/test_resize.cpp
         tests/test_widgets.cpp
         tests/test_promoted.cpp

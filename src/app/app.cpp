@@ -507,7 +507,11 @@ auto App::render_frame() -> Status {
             }
         }
 
-        committed_height_ = std::max(committed_height_, stable);
+        // Note: committed_height_ only grows from overflow flushes (above).
+        // Do NOT extend it with `stable` — stable rows haven't been
+        // flushed to scrollback and must remain in the live region so
+        // they can be re-rendered when content changes.
+        // serialize_changed() already skips unchanged rows via hashes.
 
         int live_rows  = std::max(0, display_rows - std::max(0, committed_height_ - skip_rows));
         int prev_live  = std::max(0, prev_height_  - std::max(0, committed_height_ - (prev_content_height_ - prev_height_)));

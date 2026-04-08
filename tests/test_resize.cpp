@@ -484,149 +484,6 @@ void test_badge_resize() {
     std::println("PASS\n");
 }
 
-// ============================================================================
-// 14. ChatView: full lifecycle with resize
-// ============================================================================
-
-void test_chatview_resize() {
-    std::println("--- test_chatview_resize ---");
-
-    ChatView chat;
-    chat.add_user("hello");
-    chat.add_tool("read_file", "Lang: C++\nVer: 26");
-    chat.begin_stream();
-    chat.stream_set("Response text here.");
-    chat.end_stream();
-
-    // First render at 80
-    auto rows80 = render_at(chat.build(), 80);
-    assert(contains_text(rows80, "hello"));
-    assert(contains_text(rows80, "read_file"));
-    assert(contains_text(rows80, "Response text here"));
-    assert(contains_text(rows80, "ready"));
-    assert(contains_text(rows80, "3 msgs"));
-    assert_left_aligned(rows80, 10, "chat@80");
-    std::println("  80: {} rows — OK", rows80.size());
-
-    // Resize to 40
-    chat.resize(40, 24);
-    auto rows40 = render_at(chat.build(), 40);
-    assert(contains_text(rows40, "hello"));
-    assert(contains_text(rows40, "read_file"));
-    assert_left_aligned(rows40, 10, "chat@40");
-    std::println("  40: {} rows — OK", rows40.size());
-
-    // Resize to 145
-    chat.resize(145, 48);
-    auto rows145 = render_at(chat.build(), 145);
-    assert(contains_text(rows145, "hello"));
-    assert(contains_text(rows145, "Response text here"));
-    assert_left_aligned(rows145, 10, "chat@145");
-    std::println("  145: {} rows — OK", rows145.size());
-
-    std::println("PASS\n");
-}
-
-// ============================================================================
-// 15. ChatView: cache invalidation on resize
-// ============================================================================
-
-void test_chatview_cache_invalidation() {
-    std::println("--- test_chatview_cache_invalidation ---");
-
-    ChatView chat;
-    chat.add_user("test message");
-    chat.begin_stream();
-    chat.stream_set("Reply");
-    chat.end_stream();
-
-    // Render twice at same width — second should use cache
-    auto r1 = render_at(chat.build(), 80);
-    auto r2 = render_at(chat.build(), 80);
-    assert(r1.size() == r2.size());
-    for (size_t i = 0; i < r1.size(); ++i)
-        assert(r1[i] == r2[i]);
-
-    // Resize — cache should be invalidated
-    chat.resize(120, 24);
-    auto r3 = render_at(chat.build(), 120);
-    // Content should still be present
-    assert(contains_text(r3, "test message"));
-    assert(contains_text(r3, "Reply"));
-
-    std::println("PASS\n");
-}
-
-// ============================================================================
-// 16. ChatView: compact mode at narrow width
-// ============================================================================
-
-void test_chatview_compact() {
-    std::println("--- test_chatview_compact ---");
-
-    ChatView chat;
-    chat.add_user("hi");
-    chat.begin_stream();
-    chat.stream_set("Response");
-    chat.end_stream();
-
-    // Wide: should show "Assistant"
-    chat.resize(100, 24);
-    {
-        RenderContext ctx{100, 24, 0};
-        RenderContextGuard guard(ctx);
-        auto wide = render_at(chat.build(), 100);
-        assert(contains_text(wide, "Assistant"));
-    }
-
-    // Narrow (<60): should show "AI" instead
-    chat.resize(40, 24);
-    {
-        RenderContext ctx{40, 24, 1};
-        RenderContextGuard guard(ctx);
-        assert(chat.compact());
-        auto narrow = render_at(chat.build(), 40);
-        assert(contains_text(narrow, "AI"));
-    }
-
-    std::println("PASS\n");
-}
-
-// ============================================================================
-// 17. ChatView: streaming state
-// ============================================================================
-
-void test_chatview_streaming() {
-    std::println("--- test_chatview_streaming ---");
-
-    ChatView chat;
-    assert(!chat.is_streaming());
-    assert(chat.message_count() == 0);
-
-    chat.add_user("Hello");
-    assert(chat.message_count() == 1);
-
-    chat.begin_stream();
-    assert(chat.is_streaming());
-    assert(chat.message_count() == 2);
-
-    chat.stream_append("Part 1 ");
-    chat.stream_append("Part 2");
-
-    auto rows = render_at(chat.build(), 80);
-    assert(contains_text(rows, "Hello"));
-    assert(contains_text(rows, "Part 1 Part 2"));
-
-    chat.end_stream();
-    assert(!chat.is_streaming());
-    assert(chat.message_count() == 2);
-
-    // After end_stream, content should still be there
-    auto rows2 = render_at(chat.build(), 80);
-    assert(contains_text(rows2, "Part 1 Part 2"));
-
-    std::println("PASS\n");
-}
 
 // ============================================================================
 // 18. Alt-screen path: render_tree without auto_height (fixed canvas)
@@ -714,34 +571,6 @@ void test_diff_after_resize() {
     std::println("PASS\n");
 }
 
-// ============================================================================
-// 20. Stress: rapid resize cycle doesn't corrupt state
-// ============================================================================
-
-void test_rapid_resize_cycle() {
-    std::println("--- test_rapid_resize_cycle ---");
-
-    ChatView chat;
-    chat.add_user("message");
-    chat.begin_stream();
-    chat.stream_set("streaming response text");
-    chat.end_stream();
-
-    // Simulate rapid resize: 80 → 40 → 120 → 60 → 200 → 80
-    int widths[] = {80, 40, 120, 60, 200, 80};
-
-    for (int w : widths) {
-        chat.resize(w, 24);
-        auto rows = render_at(chat.build(), w);
-
-        assert(!rows.empty());
-        assert(contains_text(rows, "message"));
-        assert(contains_text(rows, "streaming response text"));
-        assert_left_aligned(rows, 10, "rapid resize");
-    }
-
-    std::println("PASS\n");
-}
 
 // ============================================================================
 // 21. Nested widget tree: border + padding + content adapts to width
@@ -801,15 +630,6 @@ int main() {
     test_markdown_resize();
     test_badge_resize();
 
-    // ChatView
-    test_chatview_resize();
-    test_chatview_cache_invalidation();
-    test_chatview_compact();
-    test_chatview_streaming();
-
-    // Stress
-    test_rapid_resize_cycle();
-
-    std::println("\n=== All {} resize tests passed! ===", 21);
+    std::println("\n=== All {} resize tests passed! ===", 16);
     return 0;
 }

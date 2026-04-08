@@ -1,16 +1,9 @@
-// examples/chat.cpp — AI coding session demo
+// examples/chat.cpp — AI coding assistant demo (DSL version)
 //
-// Runs in inline mode (Mode::Inline) like Claude Code:
-//   - Shell history stays visible above
-//   - Old content pushed to terminal scrollback (native scroll)
-//   - Live region at bottom is erased and redrawn each frame
-//   - Resize reflows the live region; scrollback is preserved
+// Composes individual widgets into a Claude Code-style chat interface
+// using maya's compile-time DSL with dyn() escape hatches for runtime state.
 //
-// Simulates a multi-turn AI coding session with:
-//   - Tool calls (read_file, bash, edit)
-//   - Streaming markdown with code blocks, tables, lists
-//   - Toast notifications
-//   - Progressive token delivery
+// Runs in inline mode — shell history above, native terminal scroll.
 
 #include <maya/maya.hpp>
 
@@ -19,246 +12,395 @@
 #include <vector>
 
 using namespace maya;
+using namespace maya::dsl;
 
-// ── Simulated AI response ─────────────────────────────────────────────────
+// ── Style presets ────────────────────────────────────────────────────────
 
-struct SimulatedResponse {
-    std::vector<std::string> tokens;
-    std::vector<std::pair<std::string, std::string>> tool_calls;
+constexpr auto user_label  = Bold | Fg<100, 200, 255>;
+constexpr auto asst_label  = Bold | Fg<180, 140, 255>;
+constexpr auto input_fg    = Fg<220, 220, 240>;
+constexpr auto prompt_fg   = Fg<100, 200, 255>;
+constexpr auto status_ok   = Fg<80, 220, 120>;
+constexpr auto status_busy = Fg<255, 200, 60>;
+
+// ── Message model ────────────────────────────────────────────────────────
+
+enum class Role : uint8_t { User, Assistant, Tool };
+
+struct Message {
+    Role role;
+    std::string content;
+    std::string tool_name;
+    StreamingMarkdown md;
+    bool streaming = false;
 };
 
-// A realistic multi-turn coding session -----------------------------------
+// ── Simulated responses ──────────────────────────────────────────────────
 
-static const SimulatedResponse responses[] = {
+struct Turn {
+    std::vector<std::string> tokens;
+    std::vector<std::pair<std::string, std::string>> tool_calls;
+    float think_time      = 0.0f;
+    bool needs_permission = false;
+    bool show_diff        = false;
+    bool show_tree        = false;
+};
 
-    // ── Turn 1: User asks about the project ──────────────────────────
-    {
-        {"I", "'ll", " take", " a", " look", " at", " the", " project",
-         " structure", " first", "."},
-        {{"read_file",
-          "Path: CMakeLists.txt\n"
-          "Lines: 45\n"
-          "Language: CMake"}}
-    },
+static const Turn turns[] = {
+    {.tokens = {"I", "'ll", " look", " at", " the", " project", " first", "."},
+     .tool_calls = {{"read_file", "Path: CMakeLists.txt"}},
+     .think_time = 1.5f,
+     .needs_permission = true},
 
-    // ── Turn 2: Analysis with rich markdown ──────────────────────────
-    {
-        {"Here", "'s", " what", " I", " found", " in", " your",
-         " project", ":\n\n",
-         "## Project Structure\n\n",
-         "This", " is", " a", " **C++26**", " TUI", " framework",
-         " called", " `maya`", ".", " Key", " details", ":\n\n",
+    {.tokens = {"## Project Structure\n\n",
          "| Component | Description |\n",
          "|-----------|-------------|\n",
          "| `src/render/` | SIMD-accelerated canvas diffing |\n",
-         "| `src/layout/` | Flexbox layout engine (Yoga-style) |\n",
-         "| `src/widget/` | Chat, Markdown, Table, Input, Scroll |\n",
-         "| `src/terminal/` | Type-state terminal RAII |\n",
-         "| `src/app/` | Event loop, inline & alt-screen rendering |\n\n",
-         "The", " build", " system", " uses", " **CMake**", " with",
-         " `g++-15`", " on", " macOS", ".", " Let", " me", " check",
-         " the", " test", " suite", "."},
-        {}
-    },
+         "| `src/layout/` | Flexbox layout engine |\n",
+         "| `src/widget/` | Markdown, Input, Spinner, Table |\n",
+         "| `src/app/` | Event loop, inline rendering |\n\n",
+         "Built", " with", " **CMake**", " +", " `g++-15`", "."},
+     .think_time = 1.5f,
+     .show_tree = true},
 
-    // ── Turn 3: Run tests ────────────────────────────────────────────
-    {
-        {"Running", " the", " test", " suite", " now", "."},
-        {{"bash",
-          "Command: ctest --output-on-failure\n"
-          "Exit: 0\n"
-          "Output: 18/18 tests passed"}}
-    },
+    {.tokens = {"Running", " tests", "..."},
+     .tool_calls = {{"bash", "ctest --output-on-failure"}},
+     .think_time = 0.8f,
+     .needs_permission = true},
 
-    // ── Turn 4: Test results + code suggestion ───────────────────────
-    {
-        {"All", " **18", " tests**", " pass", ".", " \xe2\x9c\x93\n\n",
-         "Now", " let", " me", " look", " at", " the", " rendering",
-         " pipeline", ".", " The", " inline", " mode", " uses", " a",
-         " clever", " row-hash", " comparison", " to", " minimize",
-         " redraws", ":\n\n",
+    {.tokens = {"All", " **18 tests**", " pass", ". \xe2\x9c\x93\n\n",
+         "The", " row-hash", " diffing", ":\n\n",
          "```cpp\n",
-         "// Row-hash comparison — only re-render changed rows\n",
          "for (int y = 0; y < ch; ++y) {\n",
          "    uint64_t h = simd::hash_row(cells + y * W, W);\n",
-         "    row_hashes_[y] = h;\n",
-         "    if (y == stable && y < check && y < prev_sz\n",
-         "        && h == prev_row_hashes_[y]) {\n",
+         "    if (y == stable && h == prev_hashes[y])\n",
          "        stable = y + 1;\n",
-         "    }\n",
          "}\n",
          "```\n\n",
-         "Stable", " rows", " at", " the", " top", " are", " committed",
-         " to", " scrollback", " and", " never", " redrawn", ".",
-         " This", " is", " what", " makes", " inline", " mode",
-         " efficient", " even", " with", " large", " outputs", "."},
-        {}
-    },
+         "Stable", " rows", " skip", " re-rendering", "."},
+     .think_time = 1.0f},
 
-    // ── Turn 5: Edit suggestion with diff ────────────────────────────
-    {
-        {"I", " noticed", " a", " potential", " improvement", ".",
-         " The", " canvas", " damage", " tracking", " could", " be",
-         " tighter", "."},
-        {{"edit",
-          "File: src/render/canvas.cpp\n"
-          "Action: Replace lines 12-15\n"
-          "Status: Applied"}}
-    },
+    {.tokens = {"I", " improved", " the", " damage", " tracking", ":"},
+     .tool_calls = {{"edit", "src/render/canvas.cpp:12-15"}},
+     .think_time = 1.0f,
+     .needs_permission = true,
+     .show_diff = true},
 
-    // ── Turn 6: Explanation with nested formatting ───────────────────
-    {
-        {"Here", "'s", " what", " I", " changed", ":\n\n",
-         "### Before\n",
-         "The", " damage", " rect", " was", " initialized", " to",
-         " the", " **full", " canvas**", ",", " causing",
-         " unnecessary", " diff", " work", " on", " blank",
-         " regions", ".\n\n",
-         "### After\n",
-         "Now", " the", " damage", " rect", " starts", " empty",
-         " and", " grows", " only", " when", " cells", " are",
-         " actually", " written", ".", " This", " means", ":\n\n",
-         "1. ", "**Partial", " updates**", " only", " diff", " the",
-         " region", " that", " changed\n",
-         "2. ", "**Empty", " frames**", " skip", " diffing",
-         " entirely\n",
-         "3. ", "**First", " render**", " still", " diffs",
-         " everything", " (full", " canvas", " is", " dirty", ")\n\n",
-         "> The", " SIMD", " hash_row", " function", " processes",
-         " 64", " bytes", " at", " a", " time\n",
-         "> using", " ARM", " NEON", ",", " so", " even", " full",
-         "-canvas", " diffs", " are", " fast", ".\n\n",
-         "Let", " me", " verify", " the", " tests", " still",
-         " pass", " after", " the", " change", "."},
-        {}
-    },
-
-    // ── Turn 7: Final verification ───────────────────────────────────
-    {
-        {"Re-running", " tests", "..."},
-        {{"bash",
-          "Command: ctest --output-on-failure\n"
-          "Exit: 0\n"
-          "Output: 18/18 tests passed"}}
-    },
-
-    // ── Turn 8: Summary ──────────────────────────────────────────────
-    {
-        {"All", " tests", " pass", ".", " \xe2\x9c\x93\n\n",
-         "## Summary\n\n",
-         "I", " made", " one", " change", " to",
-         " `src/render/canvas.cpp`", " that", " improves",
-         " damage", " tracking", ":", "\n\n",
-         "- ", "\xe2\x9c\x85", " Tests", ":", " **18/18**", " passing\n",
-         "- ", "\xf0\x9f\x9a\x80", " Performance", ":",
-         " tighter", " damage", " rects", " reduce", " diff", " work\n",
-         "- ", "\xf0\x9f\x94\x92", " Safety", ":",
-         " no", " behavioral", " change", " for", " full", " repaints\n\n",
-         "The", " inline", " rendering", " pipeline", " is", " solid",
-         " \xe2\x80\x94", " the", " row-hash", " comparison",
-         " combined", " with", " SIMD", " diffing", " gives",
-         " you", " fast", " updates", " without", " flicker", "."},
-        {}
-    },
+    {.tokens = {"## Summary\n\n",
+         "- \xe2\x9c\x85 Tests: **18/18** passing\n",
+         "- \xf0\x9f\x9a\x80 Tighter damage rects reduce diff work\n",
+         "- \xf0\x9f\x94\x92 No behavioral change for full repaints\n"},
+     .think_time = 0.6f},
 };
 
-// ── Main ──────────────────────────────────────────────────────────────────
+// ── Phases ───────────────────────────────────────────────────────────────
+
+enum class Phase { Input, Thinking, Permission, Tools, Streaming, Done };
+
+// ── Main ─────────────────────────────────────────────────────────────────
 
 int main() {
     FocusScope scope;
-    ChatView chat;
+    Input<> input;
     scope.focus_index(0);
+    input.set_placeholder("Type a message...");
 
-    int response_idx = 0;
-    int token_idx    = 0;
-    int tool_idx     = 0;
+    // State
+    std::vector<Message> messages;
+    Phase phase       = Phase::Input;
+    int turn_idx      = 0;
+    int token_idx     = 0;
+    int tool_idx      = 0;
     float token_timer = 0.0f;
-    bool feeding_tools = false;
-    constexpr float token_interval = 0.025f;
+    float think_timer = 0.0f;
+    constexpr float kTokenRate = 0.025f;
 
-    chat.on_submit([&](std::string_view /*text*/) {
-        if (response_idx >= static_cast<int>(std::size(responses))) {
-            chat.toast("Session complete — no more responses", ToastLevel::Warning);
+    // Widgets
+    ThinkingBlock thinking({.show_content = true, .show_border = true});
+    Spinner<SpinnerStyle::Dots> spinner;
+    ToastManager toasts;
+
+    // Extra widget elements (built once after streaming)
+    Element diff_elem{TextElement{}};
+    Element tree_elem{TextElement{}};
+    bool show_diff = false;
+    bool show_tree = false;
+
+    // Submit handler
+    input.on_submit([&](std::string_view sv) {
+        if (sv.empty()) return;
+        if (turn_idx >= static_cast<int>(std::size(turns))) {
+            toasts.push("No more responses", ToastLevel::Warning);
             return;
         }
 
-        auto& resp = responses[response_idx];
+        messages.push_back({Role::User, std::string{sv}, {}, {}, false});
+        input.clear();
 
-        if (!resp.tool_calls.empty()) {
-            feeding_tools = true;
-            tool_idx = 0;
+        show_diff = false;
+        show_tree = false;
+
+        auto& turn = turns[turn_idx];
+        if (turn.think_time > 0.0f) {
+            phase = Phase::Thinking;
+            think_timer = 0.0f;
+            thinking.set_active(true);
+            thinking.set_content("");
+            thinking.append("Analyzing the request...\n");
         } else {
-            chat.begin_stream();
-            token_idx = 0;
-            token_timer = 0.0f;
+            phase = Phase::Tools;
+            tool_idx = 0;
         }
     });
 
     maya::run(
-        {.fps = 30, .mouse = true, .mode = maya::Mode::Inline},
+        {.fps = 30, .mode = maya::Mode::Inline},
 
+        // ── Events ───────────────────────────────────────────────
         [&](const Event& ev) {
             if (ctrl(ev, 'c') || ctrl(ev, 'd')) return false;
 
-            if (auto* ke = as_key(ev); ke)
-                (void)chat.handle(*ke);
-            if (auto* me = as_mouse(ev); me)
-                (void)chat.handle(*me);
-
+            if (auto* ke = as_key(ev)) {
+                if (phase == Phase::Permission) {
+                    if (key(ev, 'y') || key(ev, 'Y')) {
+                        phase = Phase::Tools;
+                        tool_idx = 0;
+                    } else if (key(ev, 'n') || key(ev, 'N')) {
+                        toasts.push("Denied", ToastLevel::Error);
+                        phase = Phase::Input;
+                    }
+                    return true;
+                }
+                if (phase == Phase::Input)
+                    (void)input.handle(*ke);
+            }
             return true;
         },
 
-        [&](const Ctx& /*ctx*/) -> Element {
+        // ── Render ───────────────────────────────────────────────
+        [&]() -> Element {
             constexpr float dt = 1.0f / 30.0f;
-            chat.advance(dt);
+            spinner.advance(dt);
+            thinking.advance(dt);
+            toasts.advance(dt);
 
-            // Feed tool calls one per frame
-            if (feeding_tools &&
-                response_idx < static_cast<int>(std::size(responses))) {
-                auto& resp = responses[response_idx];
-                if (tool_idx < static_cast<int>(resp.tool_calls.size())) {
-                    auto& [name, content] =
-                        resp.tool_calls[static_cast<size_t>(tool_idx)];
-                    chat.add_tool(name, content);
-                    ++tool_idx;
-                }
-                if (tool_idx >= static_cast<int>(resp.tool_calls.size())) {
-                    feeding_tools = false;
-                    chat.begin_stream();
-                    token_idx = 0;
-                    token_timer = 0.0f;
-                }
-            }
+            if (turn_idx < static_cast<int>(std::size(turns))) {
+                auto& turn = turns[turn_idx];
 
-            // Stream tokens progressively
-            if (chat.is_streaming() &&
-                response_idx < static_cast<int>(std::size(responses))) {
-                auto& resp = responses[response_idx];
-                token_timer += dt;
-                while (token_timer >= token_interval &&
-                       token_idx < static_cast<int>(resp.tokens.size())) {
-                    chat.stream_append(
-                        resp.tokens[static_cast<size_t>(token_idx)]);
-                    ++token_idx;
-                    token_timer -= token_interval;
-                }
-                if (token_idx >= static_cast<int>(resp.tokens.size())) {
-                    chat.end_stream();
-                    ++response_idx;
+                // ── Thinking ─────────────────────────────────────
+                if (phase == Phase::Thinking) {
+                    think_timer += dt;
+                    if (think_timer > 0.5f && think_timer - dt <= 0.5f)
+                        thinking.append("Reading relevant files...\n");
+                    if (think_timer > 1.0f && think_timer - dt <= 1.0f)
+                        thinking.append("Forming response...\n");
 
-                    // Auto-feed the next turn's tool calls if any
-                    if (response_idx < static_cast<int>(std::size(responses))) {
-                        auto& next = responses[response_idx];
-                        if (!next.tool_calls.empty()) {
-                            // Don't auto-start — wait for user message
+                    if (think_timer >= turn.think_time) {
+                        thinking.set_active(false);
+                        thinking.set_expanded(false);
+
+                        if (turn.needs_permission && !turn.tool_calls.empty()) {
+                            phase = Phase::Permission;
+                        } else if (!turn.tool_calls.empty()) {
+                            phase = Phase::Tools;
+                            tool_idx = 0;
+                        } else {
+                            messages.push_back({Role::Assistant, {}, {}, {}, true});
+                            token_idx = 0;
+                            token_timer = 0.0f;
+                            phase = Phase::Streaming;
                         }
                     }
+                }
 
-                    chat.toast("Response complete", ToastLevel::Success);
+                // ── Tools ────────────────────────────────────────
+                if (phase == Phase::Tools) {
+                    if (tool_idx < static_cast<int>(turn.tool_calls.size())) {
+                        auto& [name, content] =
+                            turn.tool_calls[static_cast<size_t>(tool_idx)];
+                        messages.push_back({Role::Tool, std::string{content},
+                                           std::string{name}, {}, false});
+                        ++tool_idx;
+                    }
+                    if (tool_idx >= static_cast<int>(turn.tool_calls.size())) {
+                        messages.push_back({Role::Assistant, {}, {}, {}, true});
+                        token_idx = 0;
+                        token_timer = 0.0f;
+                        phase = Phase::Streaming;
+                    }
+                }
+
+                // ── Streaming ────────────────────────────────────
+                if (phase == Phase::Streaming) {
+                    token_timer += dt;
+                    while (token_timer >= kTokenRate &&
+                           token_idx < static_cast<int>(turn.tokens.size())) {
+                        auto& msg = messages.back();
+                        auto& tok = turn.tokens[static_cast<size_t>(token_idx)];
+                        msg.content += tok;
+                        msg.md.append(tok);
+                        ++token_idx;
+                        token_timer -= kTokenRate;
+                    }
+                    if (token_idx >= static_cast<int>(turn.tokens.size())) {
+                        messages.back().md.finish();
+                        messages.back().streaming = false;
+                        toasts.push("Response complete", ToastLevel::Success);
+
+                        if (turn.show_diff) {
+                            show_diff = true;
+                            diff_elem = DiffView("src/render/canvas.cpp",
+                                "@@ -12,4 +12,6 @@\n"
+                                " void Canvas::begin_frame() {\n"
+                                "-    damage_ = {0, 0, width_, height_};\n"
+                                "-    // Always diff the entire canvas\n"
+                                "+    damage_ = {0, 0, 0, 0};\n"
+                                "+    // Start with empty damage rect\n"
+                                "+    // Grows as cells are written\n"
+                                " }\n").build();
+                        }
+                        if (turn.show_tree) {
+                            show_tree = true;
+                            TreeView tv({.show_icons = true});
+                            tv.add("maya/", {
+                                TreeView::dir("src/", {
+                                    TreeView::dir("app/", {
+                                        TreeView::leaf("app.cpp"),
+                                        TreeView::leaf("inline.cpp")}),
+                                    TreeView::dir("render/", {
+                                        TreeView::leaf("canvas.cpp"),
+                                        TreeView::leaf("diff.cpp")}),
+                                    TreeView::dir("widget/", {
+                                        TreeView::leaf("markdown.cpp"),
+                                        TreeView::leaf("input.hpp")})}),
+                                TreeView::dir("include/maya/", {
+                                    TreeView::leaf("maya.hpp"),
+                                    TreeView::leaf("dsl.hpp")}),
+                                TreeView::leaf("CMakeLists.txt")});
+                            tree_elem = tv.build();
+                        }
+
+                        ++turn_idx;
+                        phase = Phase::Input;
+                    }
                 }
             }
 
-            return chat.build();
+            // ── Build UI with DSL ────────────────────────────────
+
+            // Messages → vector<Element>
+            // Capture by index (not range-for ref) so dyn() lambdas
+            // don't hold dangling references to the loop variable.
+            std::vector<Element> msg_elems;
+            for (size_t i = 0; i < messages.size(); ++i) {
+                msg_elems.push_back(blank().build());
+                switch (messages[i].role) {
+                case Role::User:
+                    msg_elems.push_back(
+                        (text("  You") | user_label).build());
+                    msg_elems.push_back(
+                        markdown(messages[i].content));
+                    break;
+
+                case Role::Assistant:
+                    msg_elems.push_back(
+                        h(text("\xe2\x97\x86 ") | asst_label,   // ◆
+                          text("Assistant") | asst_label).build());
+                    if (messages[i].streaming) {
+                        msg_elems.push_back(messages[i].md.build());
+                    } else {
+                        msg_elems.push_back(
+                            markdown(messages[i].content));
+                    }
+                    break;
+
+                case Role::Tool:
+                    msg_elems.push_back(
+                        vstack()
+                            .border(BorderStyle::Round)
+                            .border_color(Color::rgb(50, 50, 70))
+                            .border_text(messages[i].tool_name, BorderTextPos::Top)
+                            .padding(0, 1, 0, 1)(
+                                (text(messages[i].content) | Dim).build()));
+                    break;
+                }
+            }
+
+            // Input line: "❯ " + text + cursor
+            auto val = input.value()();
+            int cur  = input.cursor()();
+            std::string before = val.substr(0, static_cast<size_t>(cur));
+            std::string after  = (cur < static_cast<int>(val.size()))
+                ? val.substr(static_cast<size_t>(cur)) : "";
+
+            auto input_row = [&]() -> Element {
+                std::vector<Element> parts;
+                parts.push_back((text("\xe2\x9d\xaf ") | prompt_fg).build());
+                if (!before.empty())
+                    parts.push_back((text(std::move(before)) | input_fg).build());
+                if (!after.empty()) {
+                    parts.push_back(
+                        (text(after.substr(0, 1)) | Inverse).build());
+                    if (after.size() > 1)
+                        parts.push_back(
+                            (text(after.substr(1)) | input_fg).build());
+                } else {
+                    parts.push_back(
+                        (text("\xe2\x96\x88") | prompt_fg).build());  // █
+                }
+                return hstack()(std::move(parts));
+            };
+
+            // Compose the full UI — flat vector avoids blank rows
+            // from when(false, ...) producing height-1 BlankNodes.
+            std::vector<Element> ui;
+            ui.reserve(msg_elems.size() + 8);
+            for (auto& e : msg_elems) ui.push_back(std::move(e));
+
+            if (phase == Phase::Streaming) {
+                ui.push_back(
+                    h(t<"  ">,
+                      dyn([&] { return spinner.build(); }),
+                      t<" Generating..."> | Dim | Italic).build());
+            }
+
+            if (phase == Phase::Thinking) {
+                ui.push_back(thinking.build());
+            }
+
+            if (phase == Phase::Permission &&
+                turn_idx < static_cast<int>(std::size(turns))) {
+                auto& tc = turns[turn_idx];
+                if (!tc.tool_calls.empty()) {
+                    auto& [name, content] = tc.tool_calls[0];
+                    ui.push_back(Permission(name, content).build());
+                }
+            }
+
+            if (!toasts.empty()) {
+                ui.push_back(toasts.build());
+            }
+
+            if (show_diff) {
+                ui.push_back(
+                    v(h(t<"  "> | Dim,
+                        dyn([&] { return FileRef("src/render/canvas.cpp", 12).build(); })),
+                      dyn([&] { return diff_elem; })
+                    ).build());
+            }
+            if (show_tree) {
+                ui.push_back(tree_elem);
+            }
+
+            // ─── divider + input + status ───
+            ui.push_back((t<"\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"> | Dim).build());
+            ui.push_back(input_row());
+            ui.push_back(
+                phase == Phase::Streaming
+                    ? (text("\xe2\x97\x8f streaming") | status_busy).build()
+                    : (text("\xe2\x97\x8f ready") | status_ok).build());
+
+            return vstack()(std::move(ui));
         }
     );
 }

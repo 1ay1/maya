@@ -79,7 +79,12 @@
 #include <maya/widget/confirm.hpp>
 #include <maya/widget/table.hpp>
 #include <maya/widget/toast.hpp>
-#include <maya/widget/chat.hpp>
+#include <maya/widget/diff_view.hpp>
+#include <maya/widget/accordion.hpp>
+#include <maya/widget/file_ref.hpp>
+#include <maya/widget/tree_view.hpp>
+#include <maya/widget/thinking.hpp>
+#include <maya/widget/permission.hpp>
 
 // -- App: static region for scrollback freeze --------------------------------
 #include <maya/app/static_region.hpp>

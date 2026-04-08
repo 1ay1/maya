@@ -247,7 +247,7 @@ public:
         auto idx = cell_index(x, y);
         uint64_t packed = Cell{ch, style_id, 0, width}.pack();
         cells_[idx] = packed;  // unconditional write; diff will skip unchanged cells
-        if (ch != U' ' && y > max_y_) max_y_ = y;
+        if ((ch != U' ' || style_id != 0) && y > max_y_) max_y_ = y;
     }
 
     /// Read the cell at (x, y). Out-of-bounds returns a default cell.

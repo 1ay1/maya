@@ -1052,7 +1052,7 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
         },
         [&](const md::Code& c) {
             auto content = " " + c.content + " ";
-            auto sty = Style{}.with_fg(colors::code_fg).with_bg(colors::code_bg);
+            auto sty = Style{}.with_fg(colors::code_fg);
             runs.push_back({out.size(), content.size(), sty});
             out += content;
         },
@@ -1239,7 +1239,7 @@ Element md_block_to_element(const md::Block& block) {
             auto builder = detail::vstack()
                 .border(BorderStyle::Round)
                 .border_color(colors::code_border)
-                .bg(Color::black())
+                .bg(Color::bright_black())
                 .padding(0, 1, 0, 1);
 
             if (!c.lang.empty()) {

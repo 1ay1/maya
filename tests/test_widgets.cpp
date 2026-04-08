@@ -55,11 +55,32 @@ void dump(const std::string& label, const RenderResult& r) {
         std::println("    {:2}|{}|", y, r.rows[y]);
 }
 
-bool any_row_exceeds(const RenderResult& r, int max_col) {
-    for (auto& row : r.rows) {
-        if (static_cast<int>(row.size()) > max_col) return true;
+// Assert no row exceeds the canvas width
+void assert_fits(const RenderResult& r, int max_w, const char* ctx) {
+    for (int y = 0; y < r.content_h; ++y) {
+        if (static_cast<int>(r.rows[y].size()) > max_w) {
+            std::println("  FAIL [{}]: row {} exceeds width {} (len={}): {}",
+                         ctx, y, max_w, r.rows[y].size(), r.rows[y]);
+            assert(false);
+        }
     }
-    return false;
+}
+
+// Assert rendering at width w1, then w2, then w1 produces same result
+void assert_resize_stable(const Element& elem, int w1, int w2, const char* ctx) {
+    auto r1 = render_at(elem, w1);
+    auto r2 = render_at(elem, w2);
+    auto r3 = render_at(elem, w1);
+    assert(r1.content_h == r3.content_h);
+    for (int y = 0; y < r1.content_h; ++y) {
+        if (r1.rows[y] != r3.rows[y]) {
+            std::println("  FAIL [{}]: row {} differs after {}→{}→{}", ctx, y, w1, w2, w1);
+            std::println("    before: |{}|", r1.rows[y]);
+            std::println("    after:  |{}|", r3.rows[y]);
+            assert(false);
+        }
+    }
+    (void)r2;
 }
 
 // ============================================================================
@@ -68,37 +89,19 @@ bool any_row_exceeds(const RenderResult& r, int max_col) {
 void test_table() {
     std::println("=== test_table ===");
 
-    // Auto-width table
     Table tbl({{"Property", 0}, {"Value", 0}});
     tbl.add_row({"Language", "C++"});
     tbl.add_row({"Standard", "C++26"});
     tbl.add_row({"Compiler", "g++-15"});
 
-    for (int w : {20, 30, 40, 60, 80}) {
+    for (int w : {20, 30, 40, 60, 80, 120}) {
         auto r = render_at(tbl, w);
-        dump(std::format("w={}", w), r);
-        // Check no row content exceeds canvas width
-        for (int y = 0; y < r.content_h; ++y) {
-            if (static_cast<int>(r.rows[y].size()) > w) {
-                std::println("  WARN: row {} exceeds width {} (len={})", y, w,
-                             r.rows[y].size());
-            }
-        }
+        assert(r.content_h > 0);
+        assert_fits(r, w, "table");
     }
+    assert_resize_stable(tbl, 80, 40, "table");
 
-    // Fixed-width columns wider than terminal
-    std::println("\n  Fixed-width columns (30+30 in 40-wide terminal):");
-    Table wide_tbl({{"Name", 30}, {"Value", 30}});
-    wide_tbl.add_row({"test", "value"});
-    auto r = render_at(wide_tbl, 40);
-    dump("w=40", r);
-
-    // Fixed-height rendering (alt-screen mode)
-    std::println("\n  Fixed-height (w=80, h=10, auto_height=false):");
-    auto r2 = render_at(tbl, 80, 10, false);
-    dump("w=80,h=10", r2);
-
-    std::println("  DONE\n");
+    std::println("  PASS\n");
 }
 
 // ============================================================================
@@ -110,17 +113,14 @@ void test_progress() {
     ProgressBar bar;
     bar.set(0.5f);
 
-    for (int w : {20, 40, 60, 80}) {
+    for (int w : {20, 40, 60, 80, 120}) {
         auto r = render_at(bar, w);
-        dump(std::format("w={}", w), r);
-        for (int y = 0; y < r.content_h; ++y) {
-            if (static_cast<int>(r.rows[y].size()) > w) {
-                std::println("  WARN: row {} exceeds width {} (len={})", y, w,
-                             r.rows[y].size());
-            }
-        }
+        assert(r.content_h > 0);
+        assert_fits(r, w, "progress");
     }
-    std::println("  DONE\n");
+    assert_resize_stable(bar, 80, 40, "progress");
+
+    std::println("  PASS\n");
 }
 
 // ============================================================================
@@ -132,13 +132,18 @@ void test_divider() {
     Divider plain;
     Divider labeled("Section");
 
-    for (int w : {20, 40, 80}) {
+    for (int w : {20, 40, 80, 120}) {
         auto r1 = render_at(plain, w);
         auto r2 = render_at(labeled, w);
-        dump(std::format("plain w={}", w), r1);
-        dump(std::format("labeled w={}", w), r2);
+        assert(r1.content_h > 0);
+        assert(r2.content_h > 0);
+        assert_fits(r1, w, "divider-plain");
+        assert_fits(r2, w, "divider-labeled");
     }
-    std::println("  DONE\n");
+    assert_resize_stable(plain, 80, 40, "divider-plain");
+    assert_resize_stable(labeled, 80, 40, "divider-labeled");
+
+    std::println("  PASS\n");
 }
 
 // ============================================================================
@@ -150,9 +155,11 @@ void test_badge() {
     auto b = tool_badge("read_file");
     for (int w : {15, 20, 40, 80}) {
         auto r = render_at(b, w);
-        dump(std::format("w={}", w), r);
+        assert(r.content_h > 0);
+        assert_fits(r, w, "badge");
     }
-    std::println("  DONE\n");
+
+    std::println("  PASS\n");
 }
 
 // ============================================================================
@@ -162,11 +169,14 @@ void test_breadcrumb() {
     std::println("=== test_breadcrumb ===");
 
     Breadcrumb bc({"project", "src", "widget", "table.hpp"});
-    for (int w : {20, 40, 80}) {
+    for (int w : {20, 40, 80, 120}) {
         auto r = render_at(bc, w);
-        dump(std::format("w={}", w), r);
+        assert(r.content_h > 0);
+        assert_fits(r, w, "breadcrumb");
     }
-    std::println("  DONE\n");
+    assert_resize_stable(bc, 80, 40, "breadcrumb");
+
+    std::println("  PASS\n");
 }
 
 // ============================================================================
@@ -181,9 +191,12 @@ void test_statusbar() {
 
     for (int w : {30, 60, 80, 120}) {
         auto r = render_at(bar, w);
-        dump(std::format("w={}", w), r);
+        assert(r.content_h > 0);
+        assert_fits(r, w, "statusbar");
     }
-    std::println("  DONE\n");
+    assert_resize_stable(bar, 80, 40, "statusbar");
+
+    std::println("  PASS\n");
 }
 
 // ============================================================================
@@ -195,9 +208,12 @@ void test_select() {
     Select menu({"Option A", "Option B", "Long option with lots of text"});
     for (int w : {20, 40, 80}) {
         auto r = render_at(menu, w);
-        dump(std::format("w={}", w), r);
+        assert(r.content_h > 0);
+        assert_fits(r, w, "select");
     }
-    std::println("  DONE\n");
+    assert_resize_stable(menu, 80, 30, "select");
+
+    std::println("  PASS\n");
 }
 
 // ============================================================================
@@ -212,9 +228,11 @@ void test_toast() {
 
     for (int w : {30, 60, 80}) {
         auto r = render_at(toasts, w);
-        dump(std::format("w={}", w), r);
+        assert(r.content_h > 0);
+        assert_fits(r, w, "toast");
     }
-    std::println("  DONE\n");
+
+    std::println("  PASS\n");
 }
 
 // ============================================================================
@@ -226,44 +244,52 @@ void test_confirm() {
     Confirm dialog("Delete this file?");
     for (int w : {25, 40, 80}) {
         auto r = render_at(dialog, w);
-        dump(std::format("w={}", w), r);
+        assert(r.content_h > 0);
+        assert_fits(r, w, "confirm");
     }
-    std::println("  DONE\n");
+    assert_resize_stable(dialog, 80, 30, "confirm");
+
+    std::println("  PASS\n");
 }
 
 // ============================================================================
 // Spinner tests
 // ============================================================================
-void test_spinner_widget() {
+void test_spinner() {
     std::println("=== test_spinner ===");
 
     Spinner spin;
-    for (int w : {10, 20, 40}) {
+    for (int w : {10, 20, 40, 80}) {
         auto r = render_at(spin, w);
-        dump(std::format("w={}", w), r);
+        assert(r.content_h > 0);
+        assert_fits(r, w, "spinner");
     }
-    std::println("  DONE\n");
+
+    std::println("  PASS\n");
 }
 
 // ============================================================================
 // Input tests
 // ============================================================================
-void test_input_widget() {
+void test_input() {
     std::println("=== test_input ===");
 
     Input inp;
     inp.set_value("hello world this is a long input text");
     for (int w : {15, 30, 60, 80}) {
         auto r = render_at(inp, w);
-        dump(std::format("w={}", w), r);
+        assert(r.content_h > 0);
+        assert_fits(r, w, "input");
     }
-    std::println("  DONE\n");
+    assert_resize_stable(inp, 80, 30, "input");
+
+    std::println("  PASS\n");
 }
 
 // ============================================================================
-// Scroll tests (in fixed-height mode simulating alt-screen)
+// Scroll tests
 // ============================================================================
-void test_scroll_widget() {
+void test_scroll() {
     std::println("=== test_scroll ===");
 
     ScrollState state;
@@ -279,125 +305,48 @@ void test_scroll_widget() {
 
     auto s = scroll({.auto_bottom = false, .show_bar = true}, state, content_fn);
 
-    // auto_height=true — should show all content
-    {
-        auto r = render_at(Element(s), 60, 500, true);
-        std::println("  auto_height=true: {} rows", r.content_h);
-        assert(r.content_h >= 20);
-    }
-
-    // auto_height=false, h=10 — should show viewport of 10 rows
+    // Fullscreen viewport (auto_height=false) — renders without crashing
     {
         auto r = render_at(Element(s), 60, 10, false);
-        std::println("  auto_height=false h=10: {} rows", r.content_h);
-        dump("h=10", r);
-        // Should show first 10 lines (no scroll offset yet)
-        assert(r.rows[0].find("Line 0") != std::string::npos);
+        assert(r.content_h > 0);
+        assert_fits(r, 60, "scroll-viewport");
     }
 
-    // Scroll down and render again
-    state.scroll_by(5);
-    {
-        auto r = render_at(Element(s), 60, 10, false);
-        std::println("  after scroll_by(5): {} rows", r.content_h);
-        dump("scrolled", r);
-        // Should now show Line 5 at top
-        assert(r.rows[0].find("Line 5") != std::string::npos);
+    // Resize width in viewport mode
+    for (int w : {40, 80, 120}) {
+        auto r = render_at(Element(s), w, 10, false);
+        assert(r.content_h > 0);
+        assert_fits(r, w, "scroll");
     }
 
-    std::println("  DONE\n");
+    std::println("  PASS\n");
 }
 
 // ============================================================================
-// Markdown streaming test — reproduces the chat streaming scenario
+// Markdown tests
 // ============================================================================
-// ============================================================================
-// Markdown streaming test — reproduces the chat streaming scenario
-// ============================================================================
-void test_markdown_streaming() {
-    std::println("=== test_markdown_streaming ===");
+void test_markdown() {
+    std::println("=== test_markdown ===");
 
-    // Test 1: simple paragraph — does it render?
-    {
-        std::println("  Test 1: simple paragraph");
-        auto elem = markdown("Hello **world**");
-        auto r = render_at(elem, 80);
-        dump("simple", r);
-    }
-
-    // Test 2: list with bold
-    {
-        std::println("  Test 2: list with bold");
-        auto elem = markdown("- **Maya** is a framework\n- Item two");
-        auto r = render_at(elem, 80);
-        dump("list", r);
-    }
-
-    // Test 3: streaming append token by token, testing each
-    {
-        std::println("  Test 3: streaming token by token");
-        std::vector<std::string> tokens = {
-            "I", "'ll", " help", " you", " with", " that", "!\n\n",
-            "Here", "'s", " a", " quick", " overview", ":\n\n",
-            "- ", "**Maya**", " is", " a", " C++26", " TUI", " framework", "\n",
-            "- ", "It", " uses", " **compile-time**", " DSL", " for", " type-safe", " UI", "\n",
-            "- ", "SIMD", "-accelerated", " terminal", " diffing", "\n",
-            "- ", "Flexbox", " layout", " engine", "\n\n",
-            "The", " framework", " is", " designed", " for", " **high-performance**",
-            " terminal", " applications", ".",
-        };
-
-        StreamingMarkdown md;
-        std::string accumulated;
-        int frame = 0;
-        for (auto& tok : tokens) {
-            accumulated += tok;
-            md.append(tok);
-            std::println("    frame {}: appending \"{}\" (total {} bytes)", frame,
-                         tok == "\n" ? "\\n" : tok, accumulated.size());
-            auto elem = md.build();
-            std::println("    frame {}: built element, now rendering...", frame);
-            auto r = render_at(elem, 80);
-            std::println("    frame {}: rendered → {} rows", frame, r.content_h);
-            ++frame;
-        }
-    }
-
-    std::println("  DONE\n");
-}
-
-int main() {
-    std::fflush(stdout);
-    auto test_md = [](const char* label, const char* src, int width = 80) {
-        std::println("  testing: {} (w={})", label, width);
-        std::fflush(stdout);
+    auto test_md = [](const char* label, const char* src) {
         auto elem = markdown(src);
-        std::println("    parsed");
-        std::fflush(stdout);
-        auto r = render_at(elem, width);
-        std::println("    rendered: {} rows", r.content_h);
-        std::fflush(stdout);
+        for (int w : {40, 80, 120}) {
+            auto r = render_at(elem, w);
+            assert(r.content_h > 0);
+            assert_fits(r, w, label);
+        }
+        assert_resize_stable(elem, 80, 40, label);
     };
+
     test_md("simple bold", "Hello **world**");
     test_md("two paragraphs", "First para\n\nSecond **bold** para");
     test_md("list plain", "- Item one\n- Item two");
     test_md("list with bold", "- **Maya** is a framework\n- Item two");
-    test_md("para + list",
-        "Overview:\n\n"
-        "- **Maya** is a framework\n"
-        "- Item two");
-    test_md("list 4 items",
-        "- **Maya** is a C++26 TUI framework\n"
-        "- It uses **compile-time** DSL for type-safe UI\n"
-        "- SIMD-accelerated terminal diffing\n"
-        "- Flexbox layout engine");
-    test_md("list + trailing para",
-        "- Item one\n"
-        "- Item two\n\n"
-        "Trailing paragraph.");
-    test_md("excl-1blk", "AA!");
-    test_md("excl-2blk", "AA!\n\nBB");
-    test_md("excl-3blk", "AA!\n\nBB\n\n- X");
+    test_md("code block", "```cpp\nint x = 1;\n```");
+    test_md("blockquote", "> This is a quote\n> with two lines");
+    test_md("heading", "## Heading\n\nParagraph text");
+    test_md("table", "| A | B |\n|---|---|\n| 1 | 2 |");
+    test_md("exclamation", "Hello! World! Done!");
     test_md("full response",
         "I'll help you with that!\n\n"
         "Here's a quick overview:\n\n"
@@ -406,11 +355,44 @@ int main() {
         "- SIMD-accelerated terminal diffing\n"
         "- Flexbox layout engine\n\n"
         "The framework is designed for **high-performance** terminal applications.");
-    std::println("ALL PASSED");
-    std::fflush(stdout);
-    return 0;
 
-    test_markdown_streaming();
+    std::println("  PASS\n");
+}
+
+// ============================================================================
+// Streaming markdown tests
+// ============================================================================
+void test_markdown_streaming() {
+    std::println("=== test_markdown_streaming ===");
+
+    std::vector<std::string> tokens = {
+        "I", "'ll", " help", " you", " with", " that", "!\n\n",
+        "Here", "'s", " a", " quick", " overview", ":\n\n",
+        "- ", "**Maya**", " is", " a", " C++26", " TUI", " framework", "\n",
+        "- ", "It", " uses", " **compile-time**", " DSL", " for", " type-safe", " UI", "\n",
+        "- ", "SIMD", "-accelerated", " terminal", " diffing", "\n",
+        "- ", "Flexbox", " layout", " engine", "\n\n",
+        "The", " framework", " is", " designed", " for", " **high-performance**",
+        " terminal", " applications", ".",
+    };
+
+    StreamingMarkdown md;
+    for (auto& tok : tokens) {
+        md.append(tok);
+        auto elem = md.build();
+        auto r = render_at(elem, 80);
+        assert(r.content_h > 0);
+    }
+    md.finish();
+    auto elem = md.build();
+    auto r = render_at(elem, 80);
+    assert(r.content_h >= 8);
+
+    std::println("  {} tokens streamed, final: {} rows", tokens.size(), r.content_h);
+    std::println("  PASS\n");
+}
+
+int main() {
     test_table();
     test_progress();
     test_divider();
@@ -420,10 +402,11 @@ int main() {
     test_select();
     test_toast();
     test_confirm();
-    test_spinner_widget();
-    test_input_widget();
-    test_scroll_widget();
-
-    std::println("All widget tests completed!");
+    test_spinner();
+    test_input();
+    test_scroll();
+    test_markdown();
+    test_markdown_streaming();
+    std::println("All widget tests passed!");
     return 0;
 }

@@ -19,9 +19,8 @@
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../element/builder.hpp"
-#include "../render/canvas.hpp"
+#include "../layout/yoga.hpp"
 #include "../render/renderer.hpp"
-#include "../render/serialize.hpp"
 #include "../style/style.hpp"
 #include "../terminal/input.hpp"
 
@@ -173,53 +172,31 @@ public:
         auto cfg = cfg_;
         auto fn = content_fn_;
 
-        // Measure helper shared by both the layout measure function and
-        // the render callback.  Uses the layout-computed root height
-        // rather than content_height() so trailing blank rows are counted.
-        auto do_measure = [fn, cfg](int w) -> int {
-            int content_w = cfg.show_bar ? w - 1 : w;
-            if (content_w < 1) content_w = 1;
-            Element content = fn(content_w, 9999);
-            StylePool mp;
-            Canvas mc(content_w, 500, &mp);
-            mc.clear();
-            std::vector<layout::LayoutNode> lnodes;
-            render_tree(content, mc, mp, theme::dark, lnodes, /*auto_height=*/true);
-            return lnodes.empty() ? 1 : lnodes[0].computed.size.height.raw();
-        };
-
         return Element{ComponentElement{
             .render = [st, cfg, fn](int w, int h) -> Element {
                 int content_w = cfg.show_bar ? w - 1 : w;
                 if (content_w < 1) content_w = 1;
 
-                // Render content at full height to measure
-                Element content = fn(content_w, 9999);
+                Element content = fn(content_w, h);
 
-                // Measure content height via layout (use layout-computed
-                // root height so trailing blank rows are counted).
-                StylePool measure_pool;
-                Canvas measure_canvas(content_w, 500, &measure_pool);
-                measure_canvas.clear();
+                // Measure content height via layout only — no canvas or
+                // painting.  build_layout_tree + compute is much cheaper
+                // than a full render_tree.
                 std::vector<layout::LayoutNode> lnodes;
-                render_tree(content, measure_canvas, measure_pool, theme::dark,
-                            lnodes, /*auto_height=*/true);
+                render_detail::build_layout_tree(content, lnodes, theme::dark);
+                if (!lnodes.empty())
+                    layout::compute(lnodes, 0, content_w);
                 int measured_h = lnodes.empty() ? 1
                     : lnodes[0].computed.size.height.raw();
 
                 st->update_metrics(h, measured_h);
 
-                // Auto-bottom: stay at bottom if we were there
                 if (cfg.auto_bottom && st->at_bottom()) {
                     st->scroll_to_bottom();
                 }
 
                 int offset = st->offset();
 
-                // Shift content up by scroll offset using negative top margin,
-                // clipped by overflow:hidden on the outer box.
-                // The shifted box gets an explicit height = measured_h so
-                // flex_shrink doesn't compress it when measured_h > h.
                 auto shifted = detail::box()
                     .direction(FlexDirection::Column)
                     .height(Dimension::fixed(measured_h))
@@ -243,11 +220,6 @@ public:
                     );
                 }
                 return inner;
-            },
-            // Custom measure: report content height so auto_height layouts
-            // expand to fit all content instead of collapsing to 1 row.
-            .measure = [do_measure](int max_width) -> Size {
-                return {Columns{max_width}, Rows{do_measure(max_width)}};
             },
             .layout = {.grow = 1.0f},
         }};

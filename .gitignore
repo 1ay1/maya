@@ -12,3 +12,6 @@ cmake_install.cmake
 compile_commands.json
 *.cmake
 !CMakeLists.txt
+Testing/Temporary/LastTestsFailed.log
+Testing/Temporary/LastTest.log
+Testing/Temporary/CTestCostData.txt

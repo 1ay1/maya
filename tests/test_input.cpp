@@ -151,7 +151,7 @@ void test_input_ctrl_c() {
     assert(!events.empty());
     const KeyEvent& ke = get_key(events[0]);
     const auto* ck = std::get_if<CharKey>(&ke.key);
-    assert(ck != nullptr && ck->codepoint == 0x03);
+    assert(ck != nullptr && ck->codepoint == 'c');
     assert(ke.mods.ctrl == true);
     std::println("PASS\n");
 }
@@ -163,7 +163,7 @@ void test_input_ctrl_a() {
     assert(!events.empty());
     const KeyEvent& ke = get_key(events[0]);
     const auto* ck = std::get_if<CharKey>(&ke.key);
-    assert(ck != nullptr && ck->codepoint == 0x01);
+    assert(ck != nullptr && ck->codepoint == 'a');
     assert(ke.mods.ctrl == true);
     std::println("PASS\n");
 }

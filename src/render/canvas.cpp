@@ -189,6 +189,7 @@ Canvas::Canvas(int width, int height, StylePool* pool)
     : width_(width)
     , height_(height)
     , style_pool_(pool)
+    , damage_{{Columns{0}, Rows{0}}, {Columns{width}, Rows{height}}}
 {
     cells_.resize(static_cast<std::size_t>(width_ * height_), default_cell());
 }

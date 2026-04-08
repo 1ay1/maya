@@ -27,9 +27,10 @@ namespace maya {
 // ============================================================================
 
 struct RenderContext {
-    int      width      = 80;   // available width in columns
-    int      height     = 24;   // available height in rows
-    uint32_t generation = 0;    // incremented on every resize
+    int      width       = 80;   // available width in columns
+    int      height      = 24;   // available height in rows
+    uint32_t generation  = 0;    // incremented on every resize
+    bool     auto_height = false; // true in inline mode (root height unconstrained)
 };
 
 // ============================================================================
@@ -56,6 +57,13 @@ inline thread_local const RenderContext* render_ctx_ = nullptr;
 /// Returns 0 if called outside a render pass.
 [[nodiscard]] inline uint32_t render_generation() noexcept {
     return detail::render_ctx_ ? detail::render_ctx_->generation : 0;
+}
+
+/// True when the render pass uses auto-height (inline mode).
+/// Widgets that rely on grow=1 to fill remaining space should fall
+/// back to content-sized layout when this returns true.
+[[nodiscard]] inline bool is_auto_height() noexcept {
+    return detail::render_ctx_ && detail::render_ctx_->auto_height;
 }
 
 /// RAII guard that sets the thread-local render context for a scope.

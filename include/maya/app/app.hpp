@@ -196,7 +196,6 @@ public:
         , layout_nodes_(std::move(o.layout_nodes_))
         , theme_(o.theme_)
         , mouse_enabled_(o.mouse_enabled_)
-        , started_inline_(o.started_inline_)
         , fps_(o.fps_)
         , context_(std::move(o.context_))
         , size_(o.size_)
@@ -251,7 +250,6 @@ private:
     // -- Configuration --------------------------------------------------------
     Theme      theme_         = theme::dark;
     bool       mouse_enabled_ = false;
-    bool       started_inline_ = false;  // true if app started in inline mode
     int        fps_           = 0;   // 0 = event-driven, >0 = continuous
     ContextMap    context_;
     Size          size_{};
@@ -278,7 +276,6 @@ private:
     void dispatch_event(Event& event);
     void handle_resize();
     auto render_frame() -> Status;
-    void promote_to_alt_screen();
 };
 
 // ============================================================================

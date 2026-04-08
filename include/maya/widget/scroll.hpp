@@ -168,6 +168,17 @@ public:
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        // In inline/auto_height mode, the terminal's own scrollback provides
+        // scrolling.  ComponentElement + grow=1 would collapse to 0 height
+        // (no definite parent), so we bypass the scroll machinery entirely
+        // and return content at its natural height.
+        if (is_auto_height()) {
+            int w = available_width();
+            int content_w = cfg_.show_bar ? w - 1 : w;
+            if (content_w < 1) content_w = 1;
+            return content_fn_(content_w, 0);
+        }
+
         auto* st = state_;
         auto cfg = cfg_;
         auto fn = content_fn_;
@@ -188,6 +199,9 @@ public:
                     layout::compute(lnodes, 0, content_w);
                 int measured_h = lnodes.empty() ? 1
                     : lnodes[0].computed.size.height.raw();
+
+                // No scrolling needed — content fits the viewport.
+                if (measured_h <= h) return content;
 
                 st->update_metrics(h, measured_h);
 
@@ -212,7 +226,7 @@ public:
                         std::move(shifted)
                     );
 
-                if (cfg.show_bar && measured_h > h) {
+                if (cfg.show_bar) {
                     return detail::hstack()(
                         std::move(inner),
                         detail::render_scrollbar(h, st->progress(),

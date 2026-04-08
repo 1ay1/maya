@@ -160,11 +160,15 @@ private:
         Ss3,            // inside SS3 sequence (ESC O)
         Osc,            // inside OSC sequence (ESC ])
         BracketedPaste, // inside bracketed paste content
+        Utf8,           // buffering UTF-8 continuation bytes
     };
 
     State       state_ = State::Ground;
     std::string buf_;
     clock::time_point escape_start_;
+    char32_t    utf8_cp_ = 0;      // accumulated codepoint
+    uint8_t     utf8_remaining_ = 0; // continuation bytes left
+    std::string utf8_raw_;         // raw bytes for the sequence
 
     // Character classification
     static constexpr bool is_csi_final(uint8_t ch) noexcept {

@@ -34,7 +34,7 @@ namespace maya {
 struct Frame {
     Canvas   canvas;
     Position cursor         = Position::origin();
-    bool     cursor_visible = true;
+    bool     cursor_visible = false;
 };
 
 // ============================================================================

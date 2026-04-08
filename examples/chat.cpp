@@ -1,9 +1,10 @@
-// examples/chat.cpp — AI chat interface using ChatView widget
+// examples/chat.cpp — AI chat session demo
 //
-// Demonstrates:
-//   - ChatView with streaming markdown, tool calls, toasts
-//   - Inline mode (alt_screen = false) that promotes on resize
-//   - Simulated AI responses with progressive token streaming
+// Runs in inline mode (alt_screen = false) like Claude Code:
+//   - Shell history stays visible above
+//   - Old content pushed to terminal scrollback (native scroll)
+//   - Live region at bottom is erased and redrawn each frame
+//   - Resize reflows the live region; scrollback is preserved
 
 #include <maya/maya.hpp>
 
@@ -13,11 +14,11 @@
 
 using namespace maya;
 
-// ── Simulated AI response ──────────────────────────────────────────────────
+// ── Simulated AI response tokens ──────────────────────────────────────────
 
 struct SimulatedResponse {
     std::vector<std::string> tokens;
-    std::vector<std::pair<std::string, std::string>> tool_calls;  // {name, content}
+    std::vector<std::pair<std::string, std::string>> tool_calls;
 };
 
 static const SimulatedResponse responses[] = {
@@ -44,7 +45,7 @@ static const SimulatedResponse responses[] = {
          "```\n\n",
          "This", " starts", " in", " **inline mode**", " and",
          " automatically", " promotes", " to", " alt", " screen",
-         " on", " resize", "."},
+         " after", " the", " first", " frame", "."},
         {{"read_file", "Path: CMakeLists.txt\nLanguage: C++\nStandard: C++26\nCompiler: g++-15"}}
     },
     {
@@ -66,12 +67,8 @@ static const SimulatedResponse responses[] = {
 // ── Main ───────────────────────────────────────────────────────────────────
 
 int main() {
-    // FocusScope must be created before ChatView so the Input's FocusNode
-    // registers with this scope.
     FocusScope scope;
     ChatView chat;
-
-    // Focus the input immediately
     scope.focus_index(0);
 
     // Streaming state
@@ -100,6 +97,7 @@ int main() {
         }
     });
 
+    // Start in inline mode — promotes to alt screen after first frame.
     maya::run(
         {.fps = 30, .mouse = true, .alt_screen = false},
 

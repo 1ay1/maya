@@ -50,7 +50,8 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
             buf_ += static_cast<char>(ch);
             if (is_csi_final(ch)) {
                 parse_csi(events);
-                state_ = State::Ground;
+                if (state_ == State::Csi)
+                    state_ = State::Ground;
             }
             // Intermediate and parameter bytes: keep accumulating
             break;
@@ -72,6 +73,26 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
                        && ch == '\\') {
                 parse_osc(events);
                 state_ = State::Ground;
+            }
+            break;
+
+        case State::Utf8:
+            if ((ch & 0xC0) == 0x80) {
+                // Valid continuation byte
+                utf8_cp_ = (utf8_cp_ << 6) | (ch & 0x3F);
+                utf8_raw_ += static_cast<char>(ch);
+                if (--utf8_remaining_ == 0) {
+                    events.emplace_back(KeyEvent{
+                        .key = CharKey{utf8_cp_},
+                        .mods = {},
+                        .raw_sequence = std::move(utf8_raw_),
+                    });
+                    state_ = State::Ground;
+                }
+            } else {
+                // Invalid continuation — emit what we had and reprocess
+                state_ = State::Ground;
+                --i; // reprocess this byte
             }
             break;
 
@@ -166,10 +187,26 @@ void InputParser::ground_byte(uint8_t ch, std::vector<Event>& events) {
             .mods = {},
             .raw_sequence = std::string(1, static_cast<char>(ch)),
         });
+    } else if ((ch & 0xE0) == 0xC0) {
+        // UTF-8 2-byte lead
+        utf8_cp_ = ch & 0x1F;
+        utf8_remaining_ = 1;
+        utf8_raw_.assign(1, static_cast<char>(ch));
+        state_ = State::Utf8;
+    } else if ((ch & 0xF0) == 0xE0) {
+        // UTF-8 3-byte lead
+        utf8_cp_ = ch & 0x0F;
+        utf8_remaining_ = 2;
+        utf8_raw_.assign(1, static_cast<char>(ch));
+        state_ = State::Utf8;
+    } else if ((ch & 0xF8) == 0xF0) {
+        // UTF-8 4-byte lead
+        utf8_cp_ = ch & 0x07;
+        utf8_remaining_ = 3;
+        utf8_raw_.assign(1, static_cast<char>(ch));
+        state_ = State::Utf8;
     } else {
-        // UTF-8 lead byte - decode multi-byte sequence
-        // For now, emit as a single codepoint placeholder.
-        // A full implementation would buffer continuation bytes.
+        // Invalid byte, emit as-is
         events.emplace_back(KeyEvent{
             .key = CharKey{static_cast<char32_t>(ch)},
             .mods = {},
@@ -245,7 +282,7 @@ void InputParser::parse_csi(std::vector<Event>& events) {
 
     // Arrow keys, Home, End with optional modifiers
     // CSI [modifier] A/B/C/D/H/F
-    if (final_byte >= 'A' && final_byte <= 'F') {
+    if ((final_byte >= 'A' && final_byte <= 'F') || final_byte == 'H') {
         auto params = parse_params(params_str);
         Modifiers mods;
         if (params.size() >= 2 && params[1] > 1) {
@@ -428,8 +465,8 @@ void InputParser::parse_sgr_mouse(std::string_view params_str, uint8_t final_byt
     events.emplace_back(MouseEvent{
         .button = button,
         .kind   = kind,
-        .x      = Columns{px - 1}, // ANSI is 1-based, we use 0-based
-        .y      = Rows{py - 1},
+        .x      = Columns{px},
+        .y      = Rows{py},
         .mods   = mods,
     });
 }

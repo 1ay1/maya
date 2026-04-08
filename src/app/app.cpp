@@ -150,7 +150,6 @@ auto App::Builder::build() -> Result<App> {
     app.writer_        = std::make_unique<Writer>(fd);
     app.theme_          = theme_;
     app.mouse_enabled_  = mouse_;
-    app.started_inline_ = !alt_screen_;
 
     // Store theme in the context so render functions can access it.
     app.context_.set<Theme>(theme_);
@@ -347,17 +346,15 @@ void App::handle_resize() {
     }
 
     if (new_size != size_) {
-        // Width change in inline mode: the terminal has reflowed our
-        // output.  Just erase and re-render — no promotion needed.
-        // Staying inline preserves the terminal's scrollback buffer.
-
         size_ = new_size;
         context_.set<Size>(size_);
         ++resize_generation_;  // invalidate all CachedElement instances
         render_ctx_.width      = size_.width.raw();
         render_ctx_.height     = size_.height.raw();
         render_ctx_.generation = resize_generation_;
+
         needs_clear_ = true;  // force full repaint after resize
+
         for (auto& handler : resize_handlers_) {
             handler(size_);
         }
@@ -365,11 +362,6 @@ void App::handle_resize() {
     }
 }
 
-void App::promote_to_alt_screen() {
-    // No-op: we no longer promote to alt screen on resize.
-    // Staying in inline mode preserves the terminal's scrollback buffer.
-    // The inline render path handles width changes via needs_clear_.
-}
 
 // ============================================================================
 // Frame rendering
@@ -384,8 +376,9 @@ auto App::render_frame() -> Status {
     if (w <= 0) return ok();
 
     // Set the render context so all widgets can query available_width() etc.
-    render_ctx_.width  = w;
-    render_ctx_.height = size_.height.raw();
+    render_ctx_.width       = w;
+    render_ctx_.height      = size_.height.raw();
+    render_ctx_.auto_height = is_inline();
     RenderContextGuard ctx_guard(render_ctx_);
 
     if (is_inline()) {
@@ -523,6 +516,7 @@ auto App::render_frame() -> Status {
         prev_height_ = display_rows;
         prev_content_height_ = ch;
         std::swap(prev_row_hashes_, row_hashes_);
+
     } else {
         // ── Alt-screen mode (started in alt screen) ─────────────────
         // Double-buffered diff: only emit ANSI for cells that changed.

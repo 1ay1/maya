@@ -1,8 +1,11 @@
-// test_promoted.cpp — Faithful reproduction of promoted render path
+// test_promoted.cpp — Tests for inline mode resize (no alt screen promotion)
 //
-// Simulates exactly what App::render_frame() does after promoting
-// from inline to alt screen, to isolate whether the layout bug is
-// in render_tree or in the ANSI output pipeline.
+// Verifies:
+//   - Inline rendering works at various widths (simulating resize)
+//   - Content stays left-aligned after width changes
+//   - No alt screen sequences in output
+//   - Markdown with ! renders without hanging
+//   - Streaming markdown works across resize
 
 #include <maya/maya.hpp>
 #include <cassert>
@@ -12,24 +15,16 @@
 
 using namespace maya;
 
+// ============================================================================
+// Helpers
+// ============================================================================
+
 std::string get_row(const Canvas& canvas, int y) {
     std::string s;
     for (int x = 0; x < canvas.width(); ++x) {
         Cell c = canvas.get(x, y);
         if (c.character >= 0x20 && c.character < 0x7F)
             s += static_cast<char>(c.character);
-        else if (c.character == 0x2500)
-            s += '-';
-        else if (c.character >= 0x2500 && c.character < 0x2600)
-            s += '#';
-        else if (c.character == 0x25C6)
-            s += '*';
-        else if (c.character == 0x276F)
-            s += '>';
-        else if (c.character == 0x25CF)
-            s += '@';
-        else if (c.character == 0x2588)
-            s += '|';
         else if (c.character != U' ' && c.character != 0)
             s += '?';
         else
@@ -46,236 +41,262 @@ void dump(const Canvas& canvas, int rows = -1) {
     for (int y = 0; y < rows; ++y) {
         auto row = get_row(canvas, y);
         if (!row.empty())
-            std::println("  {:2}|{}|", y, row);
+            std::println("    {:2}|{}|", y, row);
     }
 }
 
-void assert_left_aligned(const Canvas& canvas, int max_col, const char* ctx) {
+struct RenderResult {
+    int content_h;
+    std::vector<std::string> rows;
+};
+
+RenderResult render_chat(ChatView& chat, int w, int h = 500) {
+    chat.resize(w, h);
+    StylePool pool;
+    Canvas canvas(std::max(1, w - 1), h, &pool);
+    canvas.clear();
+    render_tree(chat.build(), canvas, pool, theme::dark, /*auto_height=*/true);
     int ch = content_height(canvas);
-    for (int y = 0; y < ch; ++y) {
-        auto row = get_row(canvas, y);
-        if (row.empty()) continue;
-        auto first = row.find_first_not_of(' ');
-        if (first != std::string::npos && static_cast<int>(first) > max_col) {
-            std::println("  FAIL [{}]: row {} starts at col {}: '{}'", ctx, y, first, row);
-            assert(false);
-        }
-    }
+    std::vector<std::string> rows;
+    for (int y = 0; y < ch; ++y)
+        rows.push_back(get_row(canvas, y));
+    return {ch, std::move(rows)};
+}
+
+bool contains(const std::string& haystack, std::string_view needle) {
+    return haystack.find(needle) != std::string::npos;
 }
 
 // ============================================================================
-// Test: Simulate EXACT promoted render path from App::render_frame()
+// Test: Inline render produces correct content at various widths
 // ============================================================================
-void test_promoted_render_exact() {
-    std::println("=== test_promoted_render_exact ===");
-
-    // --- Phase 1: Build ChatView with same content as screenshot ---
-    ChatView chat;
-    chat.add_user("hi");
-    chat.add_tool("read_file",
-        "Language: C++\nStandard: C++26\nCompiler: g++-15\nStatus: OK");
-    chat.begin_stream();
-    chat.stream_set("I'll help you with that! Let me check the project files first.");
-    chat.end_stream();
-    chat.toast("Response complete", ToastLevel::Success);
-
-    // --- Phase 2: Simulate initial inline render at width 80 ---
-    {
-        StylePool pool;
-        Canvas canvas(79, 500, &pool);  // inline uses width-1
-        std::vector<layout::LayoutNode> layout_nodes;
-
-        chat.resize(80, 24);  // initial terminal size
-        Element ui = chat.build();
-        render_tree(ui, canvas, pool, theme::dark, layout_nodes, /*auto_height=*/true);
-
-        std::println("  Phase 1 (inline @ 79x500):");
-        dump(canvas);
-    }
-
-    // --- Phase 3: Simulate promote_to_alt_screen() ---
-    // This is what App does:
-    //   pool_.clear();
-    //   canvas_ = Canvas(1, 1, &pool_);
-    //   front_  = Canvas(1, 1, &pool_);
-    //   needs_clear_ = true;
-
-    // --- Phase 4: Simulate promoted render at 121x47 ---
-    {
-        StylePool pool;  // fresh pool (simulating pool_.clear())
-        std::vector<layout::LayoutNode> layout_nodes;
-
-        int w = 121;  // full width (alt screen)
-        int canvas_h = 47;  // terminal height
-
-        Canvas canvas(w, canvas_h, &pool);
-
-        // ChatView receives resize event before render
-        chat.resize(w, canvas_h);
-
-        // Render exactly as promoted path does
-        canvas.clear();
-        Element ui = chat.build();
-        render_tree(ui, canvas, pool, theme::dark, layout_nodes, /*auto_height=*/true);
-
-        std::println("\n  Phase 2 (promoted @ {}x{}):", w, canvas_h);
-        dump(canvas);
-
-        // Verify left alignment — no element should start beyond column 15
-        assert_left_aligned(canvas, 15, "promoted@121");
-    }
-
-    std::println("  PASS\n");
-}
-
-// ============================================================================
-// Test: Same thing but with canvas height = 500 (like inline)
-// ============================================================================
-void test_promoted_render_tall() {
-    std::println("=== test_promoted_render_tall ===");
+void test_inline_resize() {
+    std::println("=== test_inline_resize ===");
 
     ChatView chat;
     chat.add_user("hi");
-    chat.add_tool("read_file",
-        "Language: C++\nStandard: C++26\nCompiler: g++-15\nStatus: OK");
     chat.begin_stream();
     chat.stream_set("I'll help you with that!");
     chat.end_stream();
 
-    // Render at 121 with tall canvas (500) - simulating kMaxInlineHeight
-    StylePool pool;
-    std::vector<layout::LayoutNode> layout_nodes;
-    Canvas canvas(121, 500, &pool);
+    for (int w : {40, 80, 120, 160}) {
+        auto r = render_chat(chat, w);
+        std::println("  w={}: {} rows", w, r.content_h);
+        assert(r.content_h >= 3);  // at least: user msg, assistant label, text
 
-    chat.resize(121, 47);
-    Element ui = chat.build();
-    render_tree(ui, canvas, pool, theme::dark, layout_nodes, /*auto_height=*/true);
+        // Content must start near column 0
+        for (int y = 0; y < r.content_h; ++y) {
+            if (r.rows[y].empty()) continue;
+            auto first = r.rows[y].find_first_not_of(' ');
+            if (first != std::string::npos) {
+                assert(static_cast<int>(first) <= 15);
+            }
+        }
+    }
 
-    std::println("  Tall canvas (121x500):");
-    dump(canvas);
-
-    assert_left_aligned(canvas, 15, "tall@121");
     std::println("  PASS\n");
 }
 
 // ============================================================================
-// Test: Fixed height canvas WITHOUT auto_height (pure alt-screen mode)
+// Test: Content is consistent across width changes (no garbling)
 // ============================================================================
-void test_fixed_height_render() {
-    std::println("=== test_fixed_height_render ===");
+void test_resize_content_consistency() {
+    std::println("=== test_resize_content_consistency ===");
+
+    ChatView chat;
+    chat.add_user("test");
+    chat.begin_stream();
+    chat.stream_set("Hello **world**! This is a response.");
+    chat.end_stream();
+
+    // Render at 80, then 120, then back to 80
+    auto r1 = render_chat(chat, 80);
+    auto r2 = render_chat(chat, 120);
+    auto r3 = render_chat(chat, 80);
+
+    // First and third render (same width) should be identical
+    assert(r1.content_h == r3.content_h);
+    for (int y = 0; y < r1.content_h; ++y) {
+        assert(r1.rows[y] == r3.rows[y]);
+    }
+
+    std::println("  80→120→80: content matches ({} rows)", r1.content_h);
+    std::println("  PASS\n");
+}
+
+// ============================================================================
+// Test: Serialized output never contains alt screen sequences
+// ============================================================================
+void test_no_alt_screen_in_output() {
+    std::println("=== test_no_alt_screen_in_output ===");
+
+    ChatView chat;
+    chat.add_user("hi");
+    chat.begin_stream();
+    chat.stream_set("Response!");
+    chat.end_stream();
+    chat.resize(80, 24);
+
+    StylePool pool;
+    Canvas canvas(79, 500, &pool);
+    render_tree(chat.build(), canvas, pool, theme::dark, /*auto_height=*/true);
+
+    std::string out;
+    serialize(canvas, pool, out);
+
+    assert(!contains(out, "\x1b[?1049h"));
+    assert(!contains(out, "\x1b[?1049l"));
+
+    std::println("  {} bytes, no alt screen sequences", out.size());
+    std::println("  PASS\n");
+}
+
+// ============================================================================
+// Test: Multi-message chat survives resize
+// ============================================================================
+void test_multi_message_resize() {
+    std::println("=== test_multi_message_resize ===");
+
+    ChatView chat;
+    chat.add_user("first");
+    chat.begin_stream();
+    chat.stream_set("Response one");
+    chat.end_stream();
+    chat.add_user("second");
+    chat.begin_stream();
+    chat.stream_set("Response two with **bold** text.");
+    chat.end_stream();
+
+    for (int w : {60, 100, 60}) {
+        auto r = render_chat(chat, w);
+        std::println("  w={}: {} rows", w, r.content_h);
+        assert(r.content_h >= 6);  // 2 user + 2 assistant msgs + labels
+
+        // Check no row overflows width
+        for (int y = 0; y < r.content_h; ++y) {
+            assert(static_cast<int>(r.rows[y].size()) <= w);
+        }
+    }
+
+    std::println("  PASS\n");
+}
+
+// ============================================================================
+// Test: Tool cards + markdown survive resize
+// ============================================================================
+void test_tools_and_markdown_resize() {
+    std::println("=== test_tools_and_markdown_resize ===");
 
     ChatView chat;
     chat.add_user("hi");
     chat.add_tool("read_file",
-        "Language: C++\nStandard: C++26\nCompiler: g++-15\nStatus: OK");
+        "Language: C++\nStandard: C++26\nCompiler: g++-15");
     chat.begin_stream();
-    chat.stream_set("Response");
+    chat.stream_set(
+        "Here's what I found:\n\n"
+        "- **Maya** is a C++26 TUI framework\n"
+        "- Uses SIMD-accelerated diffing\n\n"
+        "The project looks great!");
     chat.end_stream();
 
-    // Render at 121x47 WITHOUT auto_height
-    StylePool pool;
-    std::vector<layout::LayoutNode> layout_nodes;
-    Canvas canvas(121, 47, &pool);
+    auto r80 = render_chat(chat, 80);
+    auto r120 = render_chat(chat, 120);
+    auto r80b = render_chat(chat, 80);
 
-    chat.resize(121, 47);
-    Element ui = chat.build();
-    render_tree(ui, canvas, pool, theme::dark, layout_nodes, /*auto_height=*/false);
+    // Same width → same output
+    assert(r80.content_h == r80b.content_h);
+    for (int y = 0; y < r80.content_h; ++y) {
+        assert(r80.rows[y] == r80b.rows[y]);
+    }
 
-    std::println("  Fixed height (121x47, auto_height=false):");
-    dump(canvas, 30);
+    std::println("  80: {} rows, 120: {} rows, 80 again: {} rows",
+                 r80.content_h, r120.content_h, r80b.content_h);
+    std::println("  PASS\n");
+}
 
-    // Elements should still be left-aligned
-    for (int y = 0; y < 30; ++y) {
-        auto row = get_row(canvas, y);
-        if (row.empty()) continue;
-        auto first = row.find_first_not_of(' ');
-        if (first != std::string::npos && static_cast<int>(first) > 15) {
-            std::println("  WARN: row {} starts at col {}: '{}'", y, first, row);
-        }
+// ============================================================================
+// Test: Markdown with ! doesn't hang
+// ============================================================================
+void test_markdown_exclamation() {
+    std::println("=== test_markdown_exclamation ===");
+
+    const char* cases[] = {
+        "Hello!",
+        "Done!",
+        "Help! More text",
+        "A!\n\nB!\n\n- Item",
+        "I'll help you with that!\n\nHere's a quick overview:\n\n"
+        "- **Maya** is a C++26 TUI framework\n"
+        "- It uses **compile-time** DSL for type-safe UI\n"
+        "- SIMD-accelerated terminal diffing\n"
+        "- Flexbox layout engine\n\n"
+        "The framework is designed for **high-performance** terminal applications.",
+    };
+
+    for (auto* src : cases) {
+        auto elem = markdown(src);
+        StylePool pool;
+        Canvas canvas(80, 500, &pool);
+        render_tree(elem, canvas, pool, theme::dark, /*auto_height=*/true);
+        int ch = content_height(canvas);
+        std::string label(src, std::min(strlen(src), size_t{40}));
+        if (strlen(src) > 40) label += "...";
+        for (auto& c : label) if (c == '\n') c = ' ';
+        std::println("  ok: \"{}\" → {} rows", label, ch);
+        assert(ch > 0);
     }
 
     std::println("  PASS\n");
 }
 
 // ============================================================================
-// Test: Verify serialize output contains correct content
+// Test: Streaming markdown across simulated resize
 // ============================================================================
-void test_serialize_output() {
-    std::println("=== test_serialize_output ===");
+void test_streaming_across_resize() {
+    std::println("=== test_streaming_across_resize ===");
 
     ChatView chat;
-    chat.add_user("hi");
-    chat.add_tool("read_file", "Language: C++");
+    chat.add_user("1");
     chat.begin_stream();
-    chat.stream_set("OK");
+
+    std::vector<std::string> tokens = {
+        "I", "'ll", " help", " you", " with", " that", "!\n\n",
+        "Here", "'s", " a", " quick", " overview", ":\n\n",
+        "- ", "**Maya**", " is", " a", " framework",
+    };
+
+    int widths[] = {80, 80, 80, 80, 80, 80, 80,
+                    120, 120, 120, 120, 120, 120,
+                    80, 80, 80, 80, 80};
+
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        chat.stream_append(tokens[i]);
+        chat.advance(1.0f / 30.0f);
+        auto r = render_chat(chat, widths[i]);
+        // Should not crash or produce zero output
+        assert(r.content_h > 0);
+    }
     chat.end_stream();
-    chat.resize(121, 47);
 
-    StylePool pool;
-    Canvas canvas(121, 47, &pool);
-    render_tree(chat.build(), canvas, pool, theme::dark, /*auto_height=*/true);
-
-    // Serialize as the promoted path does
-    std::string out;
-    out += "\x1b[2J\x1b[H";  // clear screen, home cursor
-    serialize(canvas, pool, out);
-
-    // Strip ANSI escape sequences to get plain text
-    std::string plain;
-    bool in_esc = false;
-    for (char c : out) {
-        if (c == '\x1b') { in_esc = true; continue; }
-        if (in_esc) {
-            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '~') {
-                in_esc = false;
-            }
-            continue;
-        }
-        plain += c;
+    auto final_r = render_chat(chat, 80);
+    std::println("  streamed {} tokens across resize, final: {} rows",
+                 tokens.size(), final_r.content_h);
+    for (int y = 0; y < final_r.content_h; ++y) {
+        if (!final_r.rows[y].empty())
+            std::println("    {:2}|{}|", y, final_r.rows[y]);
     }
-
-    // Split by lines
-    std::vector<std::string> lines;
-    std::string current;
-    for (char c : plain) {
-        if (c == '\n') {
-            lines.push_back(current);
-            current.clear();
-        } else if (c != '\r') {
-            current += c;
-        }
-    }
-    if (!current.empty()) lines.push_back(current);
-
-    std::println("  Serialized output ({} lines):", lines.size());
-    for (int i = 0; i < std::min(20, static_cast<int>(lines.size())); ++i) {
-        auto& line = lines[i];
-        // Trim trailing spaces
-        while (!line.empty() && line.back() == ' ') line.pop_back();
-        while (!line.empty() && line.front() == 0) line.erase(line.begin());
-        if (!line.empty())
-            std::println("  {:2}|{}|", i, line);
-    }
-
-    // Check content is in first 20 chars of each line
-    for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
-        auto& line = lines[i];
-        while (!line.empty() && line.back() == ' ') line.pop_back();
-        if (line.empty()) continue;
-        auto first = line.find_first_not_of(' ');
-        if (first != std::string::npos && first > 20) {
-            std::println("  WARN: line {} starts at col {}", i, first);
-        }
-    }
-
+    assert(final_r.content_h > 3);
     std::println("  PASS\n");
 }
 
 int main() {
-    test_promoted_render_exact();
-    test_promoted_render_tall();
-    test_fixed_height_render();
-    test_serialize_output();
-    std::println("All promoted render tests passed!");
+    test_inline_resize();
+    test_resize_content_consistency();
+    test_no_alt_screen_in_output();
+    test_multi_message_resize();
+    test_tools_and_markdown_resize();
+    test_markdown_exclamation();
+    test_streaming_across_resize();
+    std::println("All promoted/resize tests passed!");
     return 0;
 }

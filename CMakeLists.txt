@@ -90,6 +90,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_chat_layout.cpp
         tests/test_resize.cpp
         tests/test_widgets.cpp
+        tests/test_promoted.cpp
     )
 
     foreach(src ${MAYA_TEST_SOURCES})

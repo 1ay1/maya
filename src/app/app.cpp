@@ -347,11 +347,9 @@ void App::handle_resize() {
     }
 
     if (new_size != size_) {
-        // In inline mode, a width change means the terminal has reflowed
-        // our output. Promote to alt screen for clean diff-based rendering.
-        if (is_inline() && new_size.width != size_.width) {
-            promote_to_alt_screen();
-        }
+        // Width change in inline mode: the terminal has reflowed our
+        // output.  Just erase and re-render — no promotion needed.
+        // Staying inline preserves the terminal's scrollback buffer.
 
         size_ = new_size;
         context_.set<Size>(size_);
@@ -368,42 +366,9 @@ void App::handle_resize() {
 }
 
 void App::promote_to_alt_screen() {
-    if (!raw_terminal_) return;
-
-    // Erase inline output before switching to alt screen.
-    // After terminal reflow, cursor position is unpredictable, so we
-    // move up generously and use "erase below" (\x1b[J) to wipe
-    // everything from cursor to end of screen — robust regardless of
-    // exactly where the cursor landed after reflow.
-    {
-        std::string cleanup;
-        int erase_rows = std::max(prev_height_, prev_content_height_) + 2;
-        if (erase_rows > 0) {
-            ansi::write_cursor_up(cleanup, erase_rows);
-        }
-        cleanup += "\r\x1b[J";  // column 1, erase to end of screen
-        cleanup += ansi::show_cursor;
-        (void)writer_->write_raw(cleanup);
-    }
-
-    // Transition Raw → AltScreen.
-    auto result = std::move(*raw_terminal_).enter_alt_screen();
-    raw_terminal_.reset();
-
-    if (result) {
-        alt_terminal_ = std::move(*result);
-    }
-
-    // Force fresh double-buffered canvases at new size.
-    canvas_ = Canvas(1, 1, &pool_);
-    front_  = Canvas(1, 1, &pool_);
-    pool_.clear();
-    prev_height_ = 0;
-    prev_width_  = 0;
-    committed_height_ = 0;
-    prev_content_height_ = 0;
-    prev_row_hashes_.clear();
-    needs_clear_ = true;
+    // No-op: we no longer promote to alt screen on resize.
+    // Staying in inline mode preserves the terminal's scrollback buffer.
+    // The inline render path handles width changes via needs_clear_.
 }
 
 // ============================================================================
@@ -413,7 +378,6 @@ void App::promote_to_alt_screen() {
 auto App::render_frame() -> Status {
     if (!render_fn_) return ok();
 
-    const bool promoted = started_inline_ && !is_inline();
     const int w = is_inline()
         ? std::max(1, size_.width.raw() - 1)   // inline: avoid terminal auto-wrap
         : size_.width.raw();                     // alt screen: full width
@@ -424,40 +388,7 @@ auto App::render_frame() -> Status {
     render_ctx_.height = size_.height.raw();
     RenderContextGuard ctx_guard(render_ctx_);
 
-    if (promoted) {
-        // ── Promoted mode (was inline, now alt screen) ──────────────
-        // Fixed-height layout so widgets with grow=1 (e.g. Scrollable)
-        // get a real viewport. Without this, auto_height makes grow
-        // meaningless and scroll containers can't clip.
-        const int canvas_h = std::max(1, size_.height.raw());
-
-        if (canvas_.width() != w || canvas_.height() != canvas_h) {
-            canvas_ = Canvas(w, canvas_h, &pool_);
-            front_  = Canvas(w, canvas_h, &pool_);
-            front_.mark_all_damaged();
-            needs_clear_ = true;
-        }
-
-        canvas_.clear();
-        render_tree(render_fn_(), canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/false);
-
-        out_.clear();
-        out_ += ansi::hide_cursor;
-        out_ += ansi::sync_start;
-        if (needs_clear_) {
-            out_ += "\x1b[2J\x1b[H";
-            serialize(canvas_, pool_, out_);
-            needs_clear_ = false;
-        } else {
-            diff(front_, canvas_, pool_, out_);
-        }
-        out_ += ansi::reset;
-        out_ += ansi::sync_end;
-
-        MAYA_TRY_VOID(writer_->write_raw(out_));
-        std::swap(front_, canvas_);
-        canvas_.reset_damage();
-    } else if (is_inline()) {
+    if (is_inline()) {
         // ── Inline mode (Ink-style) ─────────────────────────────────
         // Content-sized layout: the root's height is NOT constrained to
         // the terminal — it sizes to content, exactly as Ink/Yoga does.
@@ -470,12 +401,19 @@ auto App::render_frame() -> Status {
             canvas_ = Canvas(w, canvas_h, &pool_);
 
         // On resize (needs_clear_), erase previous output and reset tracking
-        // so the next frame renders from a clean slate.  Width changes are
-        // handled by promote_to_alt_screen(); this covers height-only changes.
+        // so the next frame renders from a clean slate.
+        //
+        // After a width change the terminal reflows our text — each old row
+        // may now occupy more or fewer lines, and the cursor lands somewhere
+        // unpredictable.  Move up by the full terminal height (not just
+        // prev_height_) and erase to end of screen, guaranteeing we wipe
+        // everything the terminal reflowed.
         if (needs_clear_) {
             if (prev_height_ > 0) {
                 std::string erase;
-                ansi::write_cursor_up(erase, prev_height_);
+                int erase_rows = std::max(prev_height_,
+                                          size_.height.raw());
+                ansi::write_cursor_up(erase, erase_rows);
                 erase += "\r\x1b[J";
                 (void)writer_->write_raw(erase);
             }

@@ -17,7 +17,7 @@ namespace maya {
 
 struct DividerConfig {
     BorderStyle line    = BorderStyle::Single;
-    Style line_style    = Style{}.with_fg(Color::rgb(60, 60, 80));
+    Style line_style    = Style{}.with_fg(Color::rgb(50, 54, 62));
     Style label_style   = Style{}.with_dim();
 };
 

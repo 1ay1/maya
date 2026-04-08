@@ -789,46 +789,48 @@ md::Document parse_markdown(std::string_view source) {
 // AST to Element conversion — polished terminal rendering
 // ============================================================================
 
+// Zed agent panel color palette — One Dark inspired, muted and clean
 namespace colors {
-    constexpr auto text        = Color::rgb(220, 220, 235);
-    constexpr auto heading1    = Color::rgb(255, 255, 255);
-    constexpr auto heading2    = Color::rgb(190, 190, 255);
-    constexpr auto heading3    = Color::rgb(170, 170, 230);
-    constexpr auto heading_dim = Color::rgb(100, 100, 140);
-    constexpr auto bold_fg     = Color::rgb(255, 255, 255);
-    constexpr auto italic_fg   = Color::rgb(200, 200, 230);
-    constexpr auto code_fg     = Color::rgb(230, 180, 80);
-    constexpr auto code_bg     = Color::rgb(40, 40, 55);
-    constexpr auto link_fg     = Color::rgb(100, 160, 255);
-    constexpr auto image_fg    = Color::rgb(180, 140, 255);
-    constexpr auto strike_fg   = Color::rgb(120, 120, 140);
-    constexpr auto quote_bar   = Color::rgb(80, 80, 140);
-    constexpr auto quote_text  = Color::rgb(180, 180, 210);
-    constexpr auto list_bullet = Color::rgb(100, 180, 255);
-    constexpr auto list_num    = Color::rgb(100, 180, 255);
-    constexpr auto checkbox_fg = Color::rgb(80, 220, 120);
-    constexpr auto checkbox_off= Color::rgb(100, 100, 120);
-    constexpr auto code_border = Color::rgb(55, 55, 75);
-    constexpr auto code_lang   = Color::rgb(130, 130, 170);
-    constexpr auto hrule_fg    = Color::rgb(60, 60, 85);
-    constexpr auto footnote_fg = Color::rgb(140, 140, 180);
-    constexpr auto table_border= Color::rgb(70, 70, 100);
-    constexpr auto table_header= Color::rgb(200, 200, 255);
+    constexpr auto text        = Color::rgb(200, 204, 212);
+    constexpr auto heading1    = Color::rgb(224, 226, 232);
+    constexpr auto heading2    = Color::rgb(198, 200, 210);
+    constexpr auto heading3    = Color::rgb(170, 174, 186);
+    constexpr auto heading_dim = Color::rgb(120, 124, 140);
+    constexpr auto bold_fg     = Color::rgb(224, 226, 232);
+    constexpr auto italic_fg   = Color::rgb(180, 184, 200);
+    constexpr auto code_fg     = Color::rgb(209, 154, 102);
+    constexpr auto code_bg     = Color::black();
+    constexpr auto link_fg     = Color::rgb(97, 175, 239);
+    constexpr auto image_fg    = Color::rgb(198, 120, 221);
+    constexpr auto strike_fg   = Color::rgb(92, 99, 112);
+    constexpr auto quote_bar   = Color::rgb(62, 68, 82);
+    constexpr auto quote_text  = Color::rgb(150, 156, 170);
+    constexpr auto list_bullet = Color::rgb(92, 99, 112);
+    constexpr auto list_num    = Color::rgb(150, 156, 170);
+    constexpr auto checkbox_fg = Color::rgb(152, 195, 121);
+    constexpr auto checkbox_off= Color::rgb(92, 99, 112);
+    constexpr auto code_border = Color::rgb(50, 54, 62);
+    constexpr auto code_lang   = Color::rgb(92, 99, 112);
+    constexpr auto hrule_fg    = Color::rgb(50, 54, 62);
+    constexpr auto footnote_fg = Color::rgb(150, 156, 170);
+    constexpr auto table_border= Color::rgb(50, 54, 62);
+    constexpr auto table_header= Color::rgb(224, 226, 232);
 }
 
 // ============================================================================
 // Syntax highlighting for code blocks
 // ============================================================================
 
+// One Dark syntax colors (matches Zed's default dark theme)
 namespace syntax {
     constexpr auto kw_color      = Color::rgb(198, 120, 221); // purple - keywords
     constexpr auto str_color     = Color::rgb(152, 195, 121); // green - strings
     constexpr auto comment_color = Color::rgb(92, 99, 112);   // gray - comments
     constexpr auto num_color     = Color::rgb(209, 154, 102); // orange - numbers
-    constexpr auto type_color    = Color::rgb(86, 182, 194);  // cyan - types/caps
-    constexpr auto punct_color   = Color::rgb(130, 137, 151); // dim - punctuation
+    constexpr auto type_color    = Color::rgb(229, 192, 123); // yellow - types/caps
+    constexpr auto punct_color   = Color::rgb(92, 99, 112);   // gray - punctuation
     constexpr auto fn_color      = Color::rgb(97, 175, 239);  // blue - function calls
-    constexpr auto plain_color   = Color::rgb(200, 204, 212); // light - default code
+    constexpr auto plain_color   = Color::rgb(171, 178, 191); // light - default code
 }
 
 // Token kinds for syntax highlighting
@@ -1149,22 +1151,23 @@ static Element render_list(const md::List& l, int depth) {
         Style prefix_style;
 
         if (item.checked.has_value()) {
+            // Zed style: ✓/○ for task lists
             if (*item.checked) {
-                prefix = "  \xe2\x98\x91 ";  // "  ☑ "
+                prefix = "  \xe2\x9c\x93 ";  // "  ✓ "
                 prefix_style = Style{}.with_fg(colors::checkbox_fg);
             } else {
-                prefix = "  \xe2\x98\x90 ";  // "  ☐ "
+                prefix = "  \xe2\x97\x8b ";  // "  ○ "
                 prefix_style = Style{}.with_fg(colors::checkbox_off);
             }
         } else if (l.ordered) {
-            prefix = std::to_string(num++) + ". ";
-            prefix_style = Style{}.with_fg(colors::list_num).with_bold();
+            prefix = "  " + std::to_string(num++) + ". ";
+            prefix_style = Style{}.with_fg(colors::list_num);
         } else if (depth == 0) {
-            prefix = "  \xe2\x80\xa2 ";  // "  • " (U+2022 bullet)
+            prefix = "  \xe2\x80\xa2 ";  // "  • " — simple bullet
             prefix_style = Style{}.with_fg(colors::list_bullet);
         } else {
-            prefix = "  \xe2\x97\xa6 ";  // "  ◦ " (U+25E6 white bullet, nested)
-            prefix_style = Style{}.with_fg(colors::list_bullet).with_dim();
+            prefix = "    \xe2\x97\xa6 ";  // "    ◦ " — nested, extra indent
+            prefix_style = Style{}.with_fg(colors::list_bullet);
         }
 
         // Flatten prefix + inline content into single TextElement
@@ -1219,45 +1222,24 @@ Element md_block_to_element(const md::Block& block) {
                 default: sty = sty.with_fg(colors::heading3).with_dim(); break;
             }
 
-            // No ## prefix — just the heading text, bold and colored.
+            // Zed style: clean heading text, no underlines or decorations.
             std::string content;
             std::vector<StyledRun> runs;
             for (auto& s : h.spans) {
                 flatten_inline(s, sty, content, runs);
             }
-            auto heading_elem = Element{TextElement{
+            return Element{TextElement{
                 .content = std::move(content),
                 .style = sty,
                 .runs = std::move(runs),
             }};
-
-            // h1: double-line underline; h2: single-line underline
-            if (h.level == 1) {
-                std::string ul;
-                ul.reserve(40 * 3);
-                for (int k = 0; k < 40; ++k) ul += "\xe2\x95\x90"; // ═
-                auto ul_elem = Element{TextElement{
-                    .content = std::move(ul),
-                    .style = Style{}.with_fg(colors::heading2).with_dim(),
-                }};
-                return detail::vstack()(std::move(heading_elem), std::move(ul_elem));
-            } else if (h.level == 2) {
-                std::string ul;
-                ul.reserve(40 * 3);
-                for (int k = 0; k < 40; ++k) ul += "\xe2\x94\x80"; // ─
-                auto ul_elem = Element{TextElement{
-                    .content = std::move(ul),
-                    .style = Style{}.with_fg(colors::heading3).with_dim(),
-                }};
-                return detail::vstack()(std::move(heading_elem), std::move(ul_elem));
-            }
-            return heading_elem;
         },
         [](const md::CodeBlock& c) -> Element {
+            // Zed style: round border, subtle bg, language label top-left
             auto builder = detail::vstack()
                 .border(BorderStyle::Round)
                 .border_color(colors::code_border)
-                .bg(Color::rgb(30, 30, 40))
+                .bg(Color::black())
                 .padding(0, 1, 0, 1);
 
             if (!c.lang.empty()) {
@@ -1270,32 +1252,42 @@ Element md_block_to_element(const md::Block& block) {
             return builder(highlight_code(c.content, c.lang));
         },
         [](const md::Blockquote& bq) -> Element {
-            std::vector<Element> children;
-            children.reserve(bq.children.size());
-            for (auto& child : bq.children)
-                children.push_back(md_block_to_element(child));
+            // Zed style: thin │ gutter, muted italic text
+            std::vector<Element> rows;
+            rows.reserve(bq.children.size());
+            auto bar_style = Style{}.with_fg(colors::quote_bar);
+            auto text_style = Style{}.with_italic().with_fg(colors::quote_text);
 
-            return detail::hstack()(
-                Element{TextElement{
-                    // U+258C "▌" (left half block) — visually striking bar
-                    .content = "\xe2\x96\x8c ",
-                    .style = Style{}.with_fg(colors::quote_bar).with_dim(),
-                }},
-                detail::vstack()(std::move(children))
-                    | Style{}.with_italic().with_fg(colors::quote_text)
-            );
+            for (auto& child : bq.children) {
+                auto child_elem = md_block_to_element(child);
+                // Extract text and prefix each visual line with "│ "
+                rows.push_back(detail::hstack()(
+                    Element{TextElement{
+                        .content = "\xe2\x94\x82 ",  // "│ "
+                        .style = bar_style,
+                    }},
+                    std::move(child_elem) | text_style
+                ));
+            }
+
+            return detail::vstack()(std::move(rows));
         },
         [](const md::List& l) -> Element {
             return render_list(l, 0);
         },
         [](const md::HRule&) -> Element {
-            // U+2500 "─" repeated 40 times for a full-width feel
-            std::string rule;
-            rule.reserve(40 * 3);
-            for (int k = 0; k < 40; ++k) rule += "\xe2\x94\x80";
-            return Element{TextElement{
-                .content = std::move(rule),
-                .style = Style{}.with_fg(colors::hrule_fg),
+            // Zed style: thin, subtle separator
+            return Element{ComponentElement{
+                .render = [](int w, int /*h*/) -> Element {
+                    std::string rule;
+                    rule.reserve(static_cast<size_t>(w) * 3);
+                    for (int k = 0; k < w; ++k) rule += "\xe2\x94\x80"; // ─
+                    return Element{TextElement{
+                        .content = std::move(rule),
+                        .style = Style{}.with_fg(colors::hrule_fg),
+                    }};
+                },
+                .layout = {},
             }};
         },
         [](const md::Table& tbl) -> Element {

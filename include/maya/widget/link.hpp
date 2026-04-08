@@ -1,34 +1,63 @@
 #pragma once
-// maya::widget::link — Clickable terminal hyperlinks via OSC 8
+// maya::widget::link — Styled terminal hyperlink
+//
+// Renders as underlined colored text with an optional icon.
+// Terminals supporting OSC 8 make it clickable.
+//
+//   🔗 Click here
+//   📄 src/main.cpp:42
 //
 // Usage:
-//   auto elem = link("Click here", "https://example.com");
-
-#include "../element/text.hpp"
-#include "../style/color.hpp"
-#include "../style/style.hpp"
-#include "../terminal/ansi.hpp"
+//   Link lnk("documentation", "https://example.com/docs");
+//   auto ui = lnk.build();
 
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
+
+#include "../element/builder.hpp"
+#include "../style/style.hpp"
 
 namespace maya {
 
-/// A hyperlink element using OSC 8.
-/// Renders as underlined colored text; terminals that support OSC 8
-/// make it clickable. Others just show the styled text.
 struct Link {
     std::string text;
     std::string url;
-    Style style = Style{}.with_fg(Color::rgb(100, 160, 255)).with_underline();
+    Style link_style = Style{}.with_fg(Color::rgb(97, 175, 239)).with_underline();
+    bool show_icon = false;
+
+    Link() = default;
+    Link(std::string text, std::string url)
+        : text(std::move(text)), url(std::move(url)) {}
+
+    operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
-        // For now, render as styled text.
-        // Full OSC 8 integration requires canvas-level hyperlink tracking.
-        // The visual appearance (underlined blue text) clearly indicates a link.
+        std::string content;
+        std::vector<StyledRun> runs;
+
+        if (show_icon) {
+            std::string icon = "\xf0\x9f\x94\x97 ";  // 🔗 + space
+            runs.push_back(StyledRun{0, icon.size(), Style{}});
+            content += icon;
+        }
+
+        runs.push_back(StyledRun{content.size(), text.size(), link_style});
+        content += text;
+
+        if (!url.empty()) {
+            // Show URL dimmed in parentheses
+            std::string url_display = " (" + url + ")";
+            runs.push_back(StyledRun{content.size(), url_display.size(), Style{}.with_dim()});
+            content += url_display;
+        }
+
         return Element{TextElement{
-            .content = text,
-            .style = style,
+            .content = std::move(content),
+            .style = {},
+            .wrap = TextWrap::NoWrap,
+            .runs = std::move(runs),
         }};
     }
 };

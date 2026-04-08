@@ -1,158 +1,130 @@
 #pragma once
-// maya::widget::permission — Tool call permission prompt
+// maya::widget::permission — Tool permission prompt card
 //
-// Shows a permission dialog for tool/command execution approval.
-// Supports Allow/Deny with optional "always allow" memory.
+// Zed's bordered card presentation + Claude Code's key-hint UX.
 //
-// Usage:
-//   Permission perm("bash", "rm -rf build/");
-//   perm.on_decide([](PermissionResult r) { ... });
-//
-//   // In event handler:
-//   if (auto* ke = as_key(ev)) perm.handle(*ke);
+//   ╭─ ⚠ Permission Required ─────────────╮
+//   │ bash wants to execute:               │
+//   │ rm -rf node_modules && npm install   │
+//   │                                      │
+//   │ [y] allow  [n] deny  [a] always      │
+//   ╰──────────────────────────────────────╯
 
-#include <functional>
-#include <optional>
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
-#include "../core/focus.hpp"
-#include "../core/overload.hpp"
 #include "../element/builder.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
-#include "../terminal/input.hpp"
 
 namespace maya {
 
-enum class PermissionResult : uint8_t {
-    Allow,
-    AlwaysAllow,
-    Deny,
-};
-
-struct PermissionConfig {
-    Style tool_style      = Style{}.with_bold().with_fg(Color::rgb(180, 140, 255));
-    Style command_style   = Style{}.with_fg(Color::rgb(220, 220, 240));
-    Style allow_style     = Style{}.with_bold().with_fg(Color::rgb(80, 220, 120));
-    Style deny_style      = Style{}.with_bold().with_fg(Color::rgb(255, 80, 80));
-    Style hint_style      = Style{}.with_dim();
-    Color border_color    = Color::rgb(180, 140, 255);
-    bool show_always      = true;   // show "always allow" option
-};
+enum class PermissionResult : uint8_t { Pending, Allow, AllowAlways, Deny };
 
 class Permission {
-    std::string tool_name_;
-    std::string command_;
-    std::optional<PermissionResult> result_;
-    FocusNode focus_;
-    PermissionConfig cfg_;
-    std::move_only_function<void(PermissionResult)> on_decide_;
-
 public:
-    Permission() = default;
+    struct Config {
+        Config() = default;
+        std::string tool_name;
+        std::string description;
+        bool show_always_allow = false;
+    };
 
-    explicit Permission(std::string_view tool, std::string_view command,
-                        PermissionConfig cfg = {})
-        : tool_name_(tool), command_(command), cfg_(std::move(cfg)) {}
+    explicit Permission(Config cfg) : cfg_(std::move(cfg)) {}
 
-    [[nodiscard]] bool answered() const { return result_.has_value(); }
-    [[nodiscard]] std::optional<PermissionResult> result() const { return result_; }
-    [[nodiscard]] FocusNode& focus_node() { return focus_; }
-
-    void set_request(std::string_view tool, std::string_view command) {
-        tool_name_ = std::string{tool};
-        command_ = std::string{command};
-        result_.reset();
+    Permission(std::string tool_name, std::string description) {
+        cfg_.tool_name = std::move(tool_name);
+        cfg_.description = std::move(description);
     }
 
-    void reset() { result_.reset(); }
-
-    template <std::invocable<PermissionResult> F>
-    void on_decide(F&& fn) { on_decide_ = std::forward<F>(fn); }
-
-    [[nodiscard]] bool handle(const KeyEvent& ev) {
-        if (!focus_.focused() || result_.has_value()) return false;
-
-        return std::visit(overload{
-            [&](CharKey ck) -> bool {
-                if (ck.codepoint == 'y' || ck.codepoint == 'Y') {
-                    decide(PermissionResult::Allow); return true;
-                }
-                if (ck.codepoint == 'n' || ck.codepoint == 'N') {
-                    decide(PermissionResult::Deny); return true;
-                }
-                if (cfg_.show_always && (ck.codepoint == 'a' || ck.codepoint == 'A')) {
-                    decide(PermissionResult::AlwaysAllow); return true;
-                }
-                return false;
-            },
-            [&](SpecialKey sk) -> bool {
-                if (sk == SpecialKey::Enter) {
-                    decide(PermissionResult::Allow); return true;
-                }
-                if (sk == SpecialKey::Escape) {
-                    decide(PermissionResult::Deny); return true;
-                }
-                return false;
-            },
-        }, ev.key);
-    }
+    [[nodiscard]] PermissionResult result() const { return result_; }
+    void set_result(PermissionResult r) { result_ = r; }
 
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
-        if (result_.has_value()) {
-            return build_result();
+        std::vector<Element> rows;
+
+        // Action line: "tool wants to execute:"
+        std::string verb = "wants to execute:";
+        if (cfg_.tool_name == "read" || cfg_.tool_name == "Read")
+            verb = "wants to read:";
+        else if (cfg_.tool_name == "edit" || cfg_.tool_name == "Edit"
+              || cfg_.tool_name == "write" || cfg_.tool_name == "Write")
+            verb = "wants to edit:";
+
+        {
+            std::string content = cfg_.tool_name + " " + verb;
+            std::vector<StyledRun> runs;
+            runs.push_back(StyledRun{0, cfg_.tool_name.size(),
+                Style{}.with_bold()});
+            runs.push_back(StyledRun{cfg_.tool_name.size(),
+                content.size() - cfg_.tool_name.size(), Style{}.with_dim()});
+            rows.push_back(Element{TextElement{
+                .content = std::move(content), .style = {}, .runs = std::move(runs),
+            }});
         }
-        return build_prompt();
+
+        // Description (the actual command/path)
+        if (!cfg_.description.empty()) {
+            rows.push_back(Element{TextElement{
+                .content = cfg_.description,
+                .style = Style{}.with_fg(Color::rgb(200, 204, 212)),
+            }});
+        }
+
+        // Spacer
+        rows.push_back(Element{TextElement{.content = ""}});
+
+        // Key hints: [y] allow  [n] deny  [a] always
+        {
+            std::string content;
+            std::vector<StyledRun> runs;
+            auto dim = Style{}.with_dim();
+            auto allow_key = Style{}.with_bold().with_fg(Color::rgb(152, 195, 121));
+            auto deny_key = Style{}.with_bold().with_fg(Color::rgb(224, 108, 117));
+
+            auto add_hint = [&](const char* key, const char* label, Style ks) {
+                std::size_t off = content.size();
+                content += "[";
+                runs.push_back(StyledRun{off, 1, dim});
+                off = content.size();
+                content += key;
+                runs.push_back(StyledRun{off, std::string_view{key}.size(), ks});
+                off = content.size();
+                std::string rest = std::string{"] "} + label + "  ";
+                content += rest;
+                runs.push_back(StyledRun{off, rest.size(), dim});
+            };
+
+            add_hint("y", "allow", allow_key);
+            add_hint("n", "deny", deny_key);
+            if (cfg_.show_always_allow)
+                add_hint("a", "always", allow_key);
+
+            rows.push_back(Element{TextElement{
+                .content = std::move(content), .style = {},
+                .wrap = TextWrap::NoWrap, .runs = std::move(runs),
+            }});
+        }
+
+        // Wrap in Zed-style bordered card with warning tint
+        return detail::box()
+            .border(BorderStyle::Round)
+            .border_color(Color::rgb(120, 100, 50))
+            .border_text(" \xe2\x9a\xa0 Permission Required ",
+                         BorderTextPos::Top, BorderTextAlign::Start)
+            .padding(0, 1, 0, 1)(
+                detail::vstack()(std::move(rows))
+            );
     }
 
 private:
-    void decide(PermissionResult r) {
-        result_ = r;
-        if (on_decide_) on_decide_(r);
-    }
-
-    [[nodiscard]] Element build_prompt() const {
-        // Tool name + command
-        auto tool_line = detail::hstack()(
-            Element{TextElement{.content = tool_name_, .style = cfg_.tool_style}},
-            Element{TextElement{.content = " ", .style = Style{}}},
-            Element{TextElement{.content = command_, .style = cfg_.command_style}});
-
-        // Key hints
-        std::string hints = cfg_.show_always
-            ? "[Y]es  [A]lways  [N]o"
-            : "[Y]es  [N]o";
-        auto hint_line = Element{TextElement{
-            .content = std::move(hints), .style = cfg_.hint_style}};
-
-        return detail::vstack()
-            .border(BorderStyle::Round)
-            .border_color(cfg_.border_color)
-            .border_text("Allow tool?", BorderTextPos::Top)
-            .padding(0, 1, 0, 1)(
-                std::move(tool_line),
-                Element{TextElement{.content = "", .style = Style{}}},
-                std::move(hint_line));
-    }
-
-    [[nodiscard]] Element build_result() const {
-        const char* label = "Denied";
-        Style s = cfg_.deny_style;
-        if (*result_ == PermissionResult::Allow) {
-            label = "Allowed";
-            s = cfg_.allow_style;
-        } else if (*result_ == PermissionResult::AlwaysAllow) {
-            label = "Always allowed";
-            s = cfg_.allow_style;
-        }
-
-        return detail::hstack()(
-            Element{TextElement{.content = tool_name_ + " ", .style = cfg_.tool_style}},
-            Element{TextElement{.content = label, .style = s}});
-    }
+    Config cfg_;
+    PermissionResult result_ = PermissionResult::Pending;
 };
 
 } // namespace maya

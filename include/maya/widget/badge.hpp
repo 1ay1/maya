@@ -1,68 +1,89 @@
 #pragma once
-// maya::widget::badge — Inline styled label tags
+// maya::widget::badge — Inline styled label/chip
+//
+// Renders a bracketed label with preset color themes, matching Zed's Chip.
 //
 // Usage:
-//   auto tag = Badge("Tool", {.style = Style{}.with_fg(Color::rgb(180,140,255))});
-//   auto err = error_badge();
-//   auto ok  = success_badge("Done");
+//   auto b = Badge::success("ok");
+//   auto ui = h(Badge::info("info"), Badge::error("fail"));
 
 #include <string>
-#include <string_view>
 
 #include "../element/builder.hpp"
 #include "../style/style.hpp"
 
 namespace maya {
 
-struct BadgeConfig {
-    Style style           = Style{}.with_bold();
-    std::string left_cap  = "[";
-    std::string right_cap = "]";
-    Style bracket_style   = Style{}.with_dim();
-};
+struct Badge {
+    struct Config {
+        Config() = default;
+        Style style;
+        std::string left_cap  = "[";
+        std::string right_cap = "]";
+        Style bracket_style   = Style{}.with_dim();
+    };
 
-class Badge {
-    std::string label_;
-    BadgeConfig cfg_;
+    std::string label;
+    Config config;
 
-public:
-    Badge() = default;
-    explicit Badge(std::string_view label, BadgeConfig cfg = {})
-        : label_(label), cfg_(cfg) {}
+    Badge(std::string label_)
+        : label(std::move(label_)), config{} {}
+    Badge(std::string label_, Config cfg)
+        : label(std::move(label_)), config(std::move(cfg)) {}
 
-    void set_label(std::string_view l) { label_ = std::string{l}; }
+    static Badge success(std::string label) {
+        Config c; c.style = Style{}.with_fg(Color::rgb(152, 195, 121));
+        return Badge{std::move(label), std::move(c)};
+    }
+
+    static Badge error(std::string label) {
+        Config c; c.style = Style{}.with_fg(Color::rgb(224, 108, 117));
+        return Badge{std::move(label), std::move(c)};
+    }
+
+    static Badge warning(std::string label) {
+        Config c; c.style = Style{}.with_fg(Color::rgb(229, 192, 123));
+        return Badge{std::move(label), std::move(c)};
+    }
+
+    static Badge info(std::string label) {
+        Config c; c.style = Style{}.with_fg(Color::rgb(97, 175, 239));
+        return Badge{std::move(label), std::move(c)};
+    }
+
+    static Badge tool(std::string label) {
+        Config c; c.style = Style{}.with_fg(Color::rgb(198, 160, 246));
+        return Badge{std::move(label), std::move(c)};
+    }
 
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
-        return detail::hstack()(
-            Element{TextElement{.content = cfg_.left_cap, .style = cfg_.bracket_style}},
-            Element{TextElement{.content = label_, .style = cfg_.style}},
-            Element{TextElement{.content = cfg_.right_cap, .style = cfg_.bracket_style}}
-        );
+        std::string content;
+        std::vector<StyledRun> runs;
+
+        // Left bracket
+        std::size_t off = 0;
+        content += config.left_cap;
+        runs.push_back({off, config.left_cap.size(), config.bracket_style});
+
+        // Label
+        off = content.size();
+        content += label;
+        runs.push_back({off, label.size(), config.style});
+
+        // Right bracket
+        off = content.size();
+        content += config.right_cap;
+        runs.push_back({off, config.right_cap.size(), config.bracket_style});
+
+        return Element{TextElement{
+            .content = std::move(content),
+            .style = {},
+            .wrap = TextWrap::NoWrap,
+            .runs = std::move(runs),
+        }};
     }
 };
-
-// ── Preset factories ───────────────────────────────────────────────────────
-
-[[nodiscard]] inline Badge success_badge(std::string_view label = "Success") {
-    return Badge(label, {.style = Style{}.with_bold().with_fg(Color::rgb(80, 220, 120))});
-}
-
-[[nodiscard]] inline Badge error_badge(std::string_view label = "Error") {
-    return Badge(label, {.style = Style{}.with_bold().with_fg(Color::rgb(255, 80, 80))});
-}
-
-[[nodiscard]] inline Badge warning_badge(std::string_view label = "Warning") {
-    return Badge(label, {.style = Style{}.with_bold().with_fg(Color::rgb(255, 200, 60))});
-}
-
-[[nodiscard]] inline Badge info_badge(std::string_view label = "Info") {
-    return Badge(label, {.style = Style{}.with_bold().with_fg(Color::rgb(100, 180, 255))});
-}
-
-[[nodiscard]] inline Badge tool_badge(std::string_view label = "Tool") {
-    return Badge(label, {.style = Style{}.with_bold().with_fg(Color::rgb(180, 140, 255))});
-}
 
 } // namespace maya

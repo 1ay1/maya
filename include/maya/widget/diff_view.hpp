@@ -1,148 +1,151 @@
 #pragma once
-// maya::widget::diff_view — Unified diff display with syntax coloring
+// maya::widget::diff_view — Unified diff display for file changes
 //
-// Renders unified diff output with +/- line coloring, file headers, and
-// hunk markers. Designed for AI coding assistants showing file edits.
+// Renders unified diffs with colored +/- lines matching Zed's agent diff style.
+// Shows file path header, hunk markers, and colored added/removed/context lines.
 //
 // Usage:
-//   DiffView diff("src/main.cpp", R"(
-//   @@ -12,3 +12,4 @@
-//    int main() {
-//   -    return 0;
-//   +    auto result = run();
-//   +    return result;
-//    }
-//   )");
-//   auto ui = diff.build();
+//   auto diff = DiffView("src/main.cpp",
+//       "@@ -12,4 +12,6 @@\n"
+//       " void Canvas::begin_frame() {\n"
+//       "-    damage_ = {0, 0, width_, height_};\n"
+//       "+    damage_ = {0, 0, 0, 0};\n"
+//       "+    // Start with empty damage rect\n"
+//       " }\n");
+//   auto elem = diff.build();
 
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "../element/builder.hpp"
-#include "../style/border.hpp"
 #include "../style/style.hpp"
 
 namespace maya {
 
-struct DiffViewConfig {
-    Style add_style      = Style{}.with_fg(Color::rgb(80, 220, 120));
-    Style remove_style   = Style{}.with_fg(Color::rgb(255, 80, 80));
-    Style context_style  = Style{}.with_dim();
-    Style hunk_style     = Style{}.with_fg(Color::rgb(100, 180, 255)).with_dim();
-    Style header_style   = Style{}.with_bold().with_fg(Color::rgb(220, 220, 240));
-    Style line_no_style  = Style{}.with_dim();
-    Color border_color   = Color::rgb(60, 60, 80);
-    bool show_border     = true;
-    bool show_line_numbers = false;
-};
+struct DiffView {
+    struct Config {
+        Style add_style    = Style{}.with_fg(Color::rgb(152, 195, 121));
+        Style remove_style = Style{}.with_fg(Color::rgb(224, 108, 117));
+        Style context_style= Style{}.with_fg(Color::rgb(150, 156, 170));
+        Style hunk_style   = Style{}.with_fg(Color::rgb(97, 175, 239)).with_dim();
+        Style header_style = Style{}.with_fg(Color::rgb(97, 175, 239)).with_bold();
+        Style lineno_style = Style{}.with_fg(Color::rgb(92, 99, 112));
+        Color border_color = Color::rgb(50, 54, 62);
+        bool show_border = true;
+        bool show_line_numbers = true;
+    };
 
-class DiffView {
-    std::string filename_;
-    std::string diff_;
-    DiffViewConfig cfg_;
+    std::string file_path;
+    std::string diff_text;
+    Config config;
 
-public:
-    DiffView() = default;
+    DiffView(std::string path, std::string diff)
+        : file_path(std::move(path)), diff_text(std::move(diff)) {}
 
-    explicit DiffView(std::string_view filename, std::string_view diff,
-                      DiffViewConfig cfg = {})
-        : filename_(filename), diff_(diff), cfg_(std::move(cfg)) {}
-
-    void set_diff(std::string_view filename, std::string_view diff) {
-        filename_ = std::string{filename};
-        diff_ = std::string{diff};
-    }
-
-    operator Element() const { return build(); }
+    DiffView(std::string path, std::string diff, Config cfg)
+        : file_path(std::move(path)), diff_text(std::move(diff)), config(std::move(cfg)) {}
 
     [[nodiscard]] Element build() const {
-        std::vector<Element> rows;
+        std::vector<Element> lines;
+        lines.reserve(32);
 
         // Parse diff lines
-        std::string_view remaining{diff_};
+        std::string_view sv = diff_text;
         int old_line = 0, new_line = 0;
 
-        while (!remaining.empty()) {
-            auto nl = remaining.find('\n');
-            std::string_view line;
-            if (nl == std::string_view::npos) {
-                line = remaining;
-                remaining = {};
-            } else {
-                line = remaining.substr(0, nl);
-                remaining = remaining.substr(nl + 1);
-            }
+        while (!sv.empty()) {
+            auto nl = sv.find('\n');
+            auto line = (nl == std::string_view::npos) ? sv : sv.substr(0, nl);
+            sv = (nl == std::string_view::npos) ? std::string_view{} : sv.substr(nl + 1);
 
             if (line.empty()) continue;
 
             if (line.starts_with("@@")) {
                 // Parse hunk header for line numbers
-                parse_hunk(line, old_line, new_line);
-                rows.push_back(Element{TextElement{
-                    .content = std::string{line}, .style = cfg_.hunk_style}});
-            } else if (line.starts_with('+')) {
-                auto row = build_diff_line(line, cfg_.add_style, new_line);
-                rows.push_back(std::move(row));
-                ++new_line;
-            } else if (line.starts_with('-')) {
-                auto row = build_diff_line(line, cfg_.remove_style, old_line);
-                rows.push_back(std::move(row));
-                ++old_line;
+                auto plus_pos = line.find('+');
+                if (plus_pos != std::string_view::npos) {
+                    auto comma = line.find(',', plus_pos);
+                    auto end = line.find(' ', plus_pos);
+                    if (end == std::string_view::npos) end = line.size();
+                    auto num_str = line.substr(plus_pos + 1,
+                        (comma != std::string_view::npos && comma < end ? comma : end) - plus_pos - 1);
+                    new_line = 0;
+                    for (char c : num_str) {
+                        if (c >= '0' && c <= '9') new_line = new_line * 10 + (c - '0');
+                    }
+                    old_line = new_line;
+                }
+                lines.push_back(Element{TextElement{
+                    .content = std::string(line),
+                    .style = config.hunk_style,
+                }});
+                continue;
+            }
+
+            // Build line with optional line number
+            std::string content;
+            std::vector<StyledRun> runs;
+            Style line_style;
+
+            if (line[0] == '+') {
+                line_style = config.add_style;
+                if (config.show_line_numbers) {
+                    auto num = std::to_string(new_line++);
+                    while (num.size() < 4) num = " " + num;
+                    num += " ";
+                    runs.push_back(StyledRun{0, num.size(), config.lineno_style});
+                    content += num;
+                }
+                content += "+";
+                content += line.substr(1);
+                runs.push_back(StyledRun{content.size() - line.size(), line.size(), config.add_style});
+            } else if (line[0] == '-') {
+                line_style = config.remove_style;
+                if (config.show_line_numbers) {
+                    std::string num = "     ";  // blank for removed
+                    runs.push_back(StyledRun{0, num.size(), config.lineno_style});
+                    content += num;
+                }
+                content += "-";
+                content += line.substr(1);
+                runs.push_back(StyledRun{content.size() - line.size(), line.size(), config.remove_style});
             } else {
-                // Context line (starts with ' ' or bare text)
-                rows.push_back(build_diff_line(line, cfg_.context_style, old_line));
+                line_style = config.context_style;
+                if (config.show_line_numbers) {
+                    auto num = std::to_string(new_line++);
+                    while (num.size() < 4) num = " " + num;
+                    num += " ";
+                    runs.push_back(StyledRun{0, num.size(), config.lineno_style});
+                    content += num;
+                }
+                if (line[0] == ' ') {
+                    content += " ";
+                    content += line.substr(1);
+                } else {
+                    content += line;
+                }
+                runs.push_back(StyledRun{content.size() - (line[0] == ' ' ? line.size() : line.size()),
+                                          line.size(), config.context_style});
                 ++old_line;
-                ++new_line;
             }
+
+            lines.push_back(Element{TextElement{
+                .content = std::move(content),
+                .style = line_style,
+                .runs = std::move(runs),
+            }});
         }
 
-        auto body = detail::vstack()(std::move(rows));
-
-        if (!cfg_.show_border) return body;
-
-        // Wrap in a bordered box with filename header
-        std::string title = filename_.empty() ? "diff" : filename_;
-        return detail::vstack()
-            .border(BorderStyle::Round)
-            .border_color(cfg_.border_color)
-            .border_text(title, BorderTextPos::Top)(
-                std::move(body));
-    }
-
-private:
-    [[nodiscard]] Element build_diff_line(std::string_view line, const Style& s,
-                                           int lineno) const {
-        if (cfg_.show_line_numbers) {
-            std::string num = std::to_string(lineno);
-            while (num.size() < 4) num = " " + num;
-            num += " ";
-            return detail::hstack()(
-                Element{TextElement{.content = std::move(num), .style = cfg_.line_no_style}},
-                Element{TextElement{.content = std::string{line}, .style = s}});
+        if (config.show_border) {
+            return detail::vstack()
+                .border(BorderStyle::Round)
+                .border_color(config.border_color)
+                .border_text(" " + file_path + " ", BorderTextPos::Top)
+                .padding(0, 1, 0, 1)(std::move(lines));
         }
-        return Element{TextElement{.content = std::string{line}, .style = s}};
-    }
 
-    static void parse_hunk(std::string_view hunk, int& old_line, int& new_line) {
-        // Parse "@@ -old,count +new,count @@"
-        auto pos = hunk.find('-');
-        if (pos == std::string_view::npos) return;
-        auto comma = hunk.find(',', pos);
-        auto plus = hunk.find('+', pos);
-        if (plus == std::string_view::npos) return;
-
-        auto parse_int = [](std::string_view s) -> int {
-            int val = 0;
-            for (char c : s) {
-                if (c >= '0' && c <= '9') val = val * 10 + (c - '0');
-                else if (val > 0) break;
-            }
-            return val;
-        };
-
-        old_line = parse_int(hunk.substr(pos + 1));
-        new_line = parse_int(hunk.substr(plus + 1));
+        return detail::vstack()(std::move(lines));
     }
 };
 

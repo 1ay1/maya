@@ -1,14 +1,30 @@
 #pragma once
-// maya::widget::table — Formatted data table
+// maya::widget::table — Formatted data table with optional bordered card
+//
+// Zed's bordered card presentation + Claude Code's clean data display.
+//
+//   ╭─ Files ──────────────────────────────╮
+//   │  Name          Status     Size       │
+//   │  ─────────────────────────────────   │
+//   │  main.cpp      modified   2.3k       │
+//   │  README.md     staged     1.1k       │
+//   ╰──────────────────────────────────────╯
+//
+// Or without card:
+//    Name          Status     Size
+//    ─────────────────────────────────
+//    main.cpp      modified   2.3k
+//    README.md     staged     1.1k
 //
 // Usage:
 //   Table tbl({{"Name", 20}, {"Status", 10}});
 //   tbl.add_row({"main.cpp", "modified"});
-//   tbl.add_row({"README.md", "staged"});
+//   auto ui = tbl.build();
 
 #include <algorithm>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "../element/builder.hpp"
@@ -27,12 +43,15 @@ struct ColumnDef {
 };
 
 struct TableConfig {
-    Style header_style   = Style{}.with_bold();
-    Style row_style      = Style{};
-    Style alt_row_style  = Style{}.with_dim();
-    Style border_style   = Style{}.with_fg(Color::rgb(60, 60, 80));
-    bool stripe_rows     = false;
-    int cell_padding     = 1;    // horizontal padding per cell
+    Style header_style   = Style{}.with_bold().with_fg(Color::rgb(200, 204, 212));
+    Style row_style      = Style{}.with_fg(Color::rgb(171, 178, 191));
+    Style alt_row_style  = Style{}.with_fg(Color::rgb(150, 156, 170));
+    Style separator_style = Style{}.with_fg(Color::rgb(50, 54, 62));
+    bool stripe_rows     = true;
+    int cell_padding     = 1;
+    bool show_border     = false;
+    std::string title;           // shown in border text when bordered
+    Color border_color   = Color::rgb(50, 54, 62);
 };
 
 class Table {
@@ -41,13 +60,18 @@ class Table {
     TableConfig cfg_;
 
 public:
-    explicit Table(std::vector<ColumnDef> columns, TableConfig cfg = {})
+    explicit Table(std::vector<ColumnDef> columns)
+        : columns_(std::move(columns)), cfg_{} {}
+
+    Table(std::vector<ColumnDef> columns, TableConfig cfg)
         : columns_(std::move(columns)), cfg_(std::move(cfg)) {}
 
     void set_rows(std::vector<std::vector<std::string>> rows) { rows_ = std::move(rows); }
     void add_row(std::vector<std::string> row) { rows_.push_back(std::move(row)); }
     void clear_rows() { rows_.clear(); }
     [[nodiscard]] int row_count() const { return static_cast<int>(rows_.size()); }
+    void set_title(std::string_view t) { cfg_.title = std::string{t}; }
+    void set_bordered(bool b) { cfg_.show_border = b; }
 
     operator Element() const { return build(); }
 
@@ -61,7 +85,6 @@ public:
             if (columns_[static_cast<size_t>(c)].width > 0) {
                 widths[static_cast<size_t>(c)] = columns_[static_cast<size_t>(c)].width;
             } else {
-                // Auto: max of header and all row values
                 int max_w = string_width(columns_[static_cast<size_t>(c)].header);
                 for (const auto& row : rows_) {
                     if (c < static_cast<int>(row.size())) {
@@ -76,9 +99,9 @@ public:
         std::vector<Element> output;
 
         // Header row
-        output.push_back(build_row(columns_, widths, pad, true));
+        output.push_back(build_header_row(widths, pad));
 
-        // Header separator
+        // Separator
         output.push_back(build_separator(widths, pad));
 
         // Data rows
@@ -87,48 +110,73 @@ public:
             output.push_back(build_data_row(rows_[r], widths, pad, alt));
         }
 
-        return detail::vstack()(std::move(output));
+        auto content = detail::vstack()(std::move(output));
+
+        if (cfg_.show_border) {
+            auto builder = detail::box()
+                .border(BorderStyle::Round)
+                .border_color(cfg_.border_color)
+                .padding(0, 1, 0, 1);
+            if (!cfg_.title.empty()) {
+                builder.border_text(" " + cfg_.title + " ",
+                    BorderTextPos::Top, BorderTextAlign::Start);
+            }
+            return std::move(builder)(std::move(content));
+        }
+
+        return content;
     }
 
 private:
-    [[nodiscard]] Element build_row(const std::vector<ColumnDef>& cols,
-                                     const std::vector<int>& widths,
-                                     int pad, bool is_header) const {
-        std::vector<Element> cells;
-        for (size_t c = 0; c < cols.size(); ++c) {
-            std::string cell = pad_cell(cols[c].header, widths[c], cols[c].align, pad);
-            cells.push_back(Element{TextElement{
-                .content = std::move(cell),
-                .style = is_header ? cfg_.header_style : cfg_.row_style,
-            }});
+    [[nodiscard]] Element build_header_row(const std::vector<int>& widths, int pad) const {
+        std::string content;
+        std::vector<StyledRun> runs;
+
+        for (size_t c = 0; c < columns_.size(); ++c) {
+            std::string cell = pad_cell(columns_[c].header, widths[c], columns_[c].align, pad);
+            runs.push_back(StyledRun{content.size(), cell.size(), cfg_.header_style});
+            content += cell;
         }
-        return detail::hstack()(std::move(cells));
+
+        return Element{TextElement{
+            .content = std::move(content),
+            .style = {},
+            .wrap = TextWrap::NoWrap,
+            .runs = std::move(runs),
+        }};
     }
 
     [[nodiscard]] Element build_data_row(const std::vector<std::string>& row,
                                           const std::vector<int>& widths,
                                           int pad, bool alt) const {
-        std::vector<Element> cells;
+        std::string content;
+        std::vector<StyledRun> runs;
+        Style style = alt ? cfg_.alt_row_style : cfg_.row_style;
+
         for (size_t c = 0; c < columns_.size(); ++c) {
             std::string val = c < row.size() ? row[c] : "";
             std::string cell = pad_cell(val, widths[c], columns_[c].align, pad);
-            cells.push_back(Element{TextElement{
-                .content = std::move(cell),
-                .style = alt ? cfg_.alt_row_style : cfg_.row_style,
-            }});
+            runs.push_back(StyledRun{content.size(), cell.size(), style});
+            content += cell;
         }
-        return detail::hstack()(std::move(cells));
+
+        return Element{TextElement{
+            .content = std::move(content),
+            .style = {},
+            .wrap = TextWrap::NoWrap,
+            .runs = std::move(runs),
+        }};
     }
 
     [[nodiscard]] Element build_separator(const std::vector<int>& widths, int pad) const {
         std::string line;
         for (size_t c = 0; c < widths.size(); ++c) {
             int total = widths[c] + pad * 2;
-            for (int i = 0; i < total; ++i) line += "─";
+            for (int i = 0; i < total; ++i) line += "\xe2\x94\x80";  // ─
         }
         return Element{TextElement{
             .content = std::move(line),
-            .style = cfg_.border_style,
+            .style = cfg_.separator_style,
         }};
     }
 
@@ -136,8 +184,6 @@ private:
                                  ColumnAlign align, int padding) {
         int content_w = string_width(content);
         int total = width + padding * 2;
-        int space = total - content_w;
-        if (space < 0) space = 0;
 
         std::string result;
         result.reserve(static_cast<size_t>(total));

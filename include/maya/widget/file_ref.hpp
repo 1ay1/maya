@@ -1,77 +1,92 @@
 #pragma once
-// maya::widget::file_ref — Styled file path with optional line number
+// maya::widget::file_ref — File path reference display
 //
-// Renders a clickable-style file reference like "src/main.cpp:42"
-// with path dimmed and filename highlighted.
+// Renders a file path with the directory dimmed, filename underlined like a
+// link, and optional line number in purple, matching Zed's file link display.
 //
 // Usage:
 //   FileRef ref("src/render/canvas.cpp", 42);
-//   FileRef ref("README.md");
+//   auto ui = ref.build();
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "../element/builder.hpp"
 #include "../style/style.hpp"
 
 namespace maya {
 
-struct FileRefConfig {
-    Style path_style     = Style{}.with_dim();
-    Style name_style     = Style{}.with_fg(Color::rgb(100, 180, 255)).with_underline();
-    Style lineno_style   = Style{}.with_fg(Color::rgb(180, 140, 255));
-    Style icon_style     = Style{}.with_dim();
-    std::string icon     = "\xf0\x9f\x93\x84 ";  // "📄 "
-    bool show_icon       = false;
-};
+struct FileRef {
+    std::string path;
+    int line = 0;
 
-class FileRef {
-    std::string path_;
-    int line_ = 0;
-    FileRefConfig cfg_;
+    struct Config {
+        Config() = default;
+        Style path_style   = Style{}.with_dim().with_fg(Color::rgb(150, 156, 170));
+        Style name_style   = Style{}.with_fg(Color::rgb(97, 175, 239)).with_underline();
+        Style lineno_style = Style{}.with_fg(Color::rgb(198, 160, 246));
+        std::string icon   = "\xf0\x9f\x93\x84 "; // 📄 + space
+        bool show_icon     = true;
+    };
 
-public:
-    FileRef() = default;
-
-    explicit FileRef(std::string_view path, int line = 0, FileRefConfig cfg = {})
-        : path_(path), line_(line), cfg_(std::move(cfg)) {}
-
-    void set_path(std::string_view p, int line = 0) {
-        path_ = std::string{p};
-        line_ = line;
-    }
+    FileRef(std::string path, int line = 0)
+        : path(std::move(path)), line(line) {}
 
     operator Element() const { return build(); }
 
-    [[nodiscard]] Element build() const {
-        std::vector<Element> parts;
+    [[nodiscard]] Element build() const { return build(Config{}); }
+    [[nodiscard]] Element build(Config cfg) const {
+        std::string content;
+        std::vector<StyledRun> runs;
 
-        if (cfg_.show_icon) {
-            parts.push_back(Element{TextElement{
-                .content = cfg_.icon, .style = cfg_.icon_style}});
+        // Icon
+        if (cfg.show_icon && !cfg.icon.empty()) {
+            std::size_t off = content.size();
+            content += cfg.icon;
+            runs.push_back({off, cfg.icon.size(), Style{}});
         }
 
         // Split path into directory + filename
-        auto slash = path_.rfind('/');
-        if (slash != std::string::npos) {
-            parts.push_back(Element{TextElement{
-                .content = path_.substr(0, slash + 1),
-                .style = cfg_.path_style}});
-            parts.push_back(Element{TextElement{
-                .content = path_.substr(slash + 1),
-                .style = cfg_.name_style}});
+        std::string_view sv = path;
+        std::size_t last_sep = sv.rfind('/');
+        if (last_sep == std::string_view::npos) {
+            last_sep = sv.rfind('\\');
+        }
+
+        if (last_sep != std::string_view::npos) {
+            // Directory part (including trailing slash)
+            std::string_view dir = sv.substr(0, last_sep + 1);
+            std::size_t dir_off = content.size();
+            content += dir;
+            runs.push_back({dir_off, dir.size(), cfg.path_style});
+
+            // Filename part
+            std::string_view name = sv.substr(last_sep + 1);
+            std::size_t name_off = content.size();
+            content += name;
+            runs.push_back({name_off, name.size(), cfg.name_style});
         } else {
-            parts.push_back(Element{TextElement{
-                .content = path_, .style = cfg_.name_style}});
+            // No directory, just filename
+            std::size_t name_off = content.size();
+            content += path;
+            runs.push_back({name_off, path.size(), cfg.name_style});
         }
 
-        if (line_ > 0) {
-            parts.push_back(Element{TextElement{
-                .content = ":" + std::to_string(line_),
-                .style = cfg_.lineno_style}});
+        // Line number
+        if (line > 0) {
+            std::string lineno = ":" + std::to_string(line);
+            std::size_t ln_off = content.size();
+            content += lineno;
+            runs.push_back({ln_off, lineno.size(), cfg.lineno_style});
         }
 
-        return detail::hstack()(std::move(parts));
+        return Element{TextElement{
+            .content = std::move(content),
+            .style = {},
+            .wrap = TextWrap::NoWrap,
+            .runs = std::move(runs),
+        }};
     }
 };
 

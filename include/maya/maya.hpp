@@ -75,21 +75,33 @@
 #include <maya/widget/select.hpp>
 #include <maya/widget/progress.hpp>
 #include <maya/widget/divider.hpp>
-#include <maya/widget/badge.hpp>
-#include <maya/widget/breadcrumb.hpp>
-#include <maya/widget/statusbar.hpp>
-#include <maya/widget/confirm.hpp>
 #include <maya/widget/table.hpp>
-#include <maya/widget/toast.hpp>
-#include <maya/widget/diff_view.hpp>
-#include <maya/widget/accordion.hpp>
-#include <maya/widget/file_ref.hpp>
-#include <maya/widget/tree_view.hpp>
-#include <maya/widget/thinking.hpp>
-#include <maya/widget/permission.hpp>
 #include <maya/widget/gradient.hpp>
 #include <maya/widget/link.hpp>
 #include <maya/widget/scrollable.hpp>
+
+// -- Agent widgets: Zed-style AI agent interface components -----------------
+#include <maya/widget/disclosure.hpp>
+#include <maya/widget/badge.hpp>
+#include <maya/widget/toast.hpp>
+#include <maya/widget/file_ref.hpp>
+#include <maya/widget/diff_view.hpp>
+#include <maya/widget/thinking.hpp>
+#include <maya/widget/permission.hpp>
+#include <maya/widget/tool_call.hpp>
+#include <maya/widget/callout.hpp>
+#include <maya/widget/message.hpp>
+#include <maya/widget/plan_view.hpp>
+#include <maya/widget/activity_bar.hpp>
+
+// -- Tool widgets: specialized tool execution cards -------------------------
+#include <maya/widget/bash_tool.hpp>
+#include <maya/widget/read_tool.hpp>
+#include <maya/widget/edit_tool.hpp>
+#include <maya/widget/write_tool.hpp>
+#include <maya/widget/search_result.hpp>
+#include <maya/widget/agent_tool.hpp>
+#include <maya/widget/fetch_tool.hpp>
 
 // -- App: static region for scrollback freeze --------------------------------
 #include <maya/app/static_region.hpp>

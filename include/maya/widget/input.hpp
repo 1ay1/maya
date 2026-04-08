@@ -22,6 +22,7 @@
 #include "../core/signal.hpp"
 #include "../element/builder.hpp"
 #include "../element/text.hpp"
+#include "../style/border.hpp"
 #include "../style/style.hpp"
 #include "../terminal/input.hpp"
 
@@ -185,44 +186,93 @@ public:
         bool is_focused = focus_.focused();
         bool is_empty = val.empty();
 
+        // Build inner content (text + cursor)
+        Element inner{TextElement{}};
         if (is_empty && !placeholder_.empty() && !is_focused) {
-            return Element{TextElement{
+            inner = Element{TextElement{
                 .content = placeholder_,
-                .style = Style{}.with_dim(),
+                .style = Style{}.with_fg(Color::rgb(92, 99, 112)),
             }};
+        } else if constexpr (Cfg.multiline) {
+            inner = build_multiline(display, cur, is_focused);
+        } else {
+            inner = build_singleline(display, cur, is_focused);
         }
 
-        if constexpr (Cfg.multiline) {
-            return build_multiline(display, cur, is_focused);
-        } else {
-            return build_singleline(display, cur, is_focused);
-        }
+        // Zed style: wrap in a bordered box with prompt indicator
+        auto border_color = is_focused
+            ? Color::rgb(97, 175, 239)   // blue when focused
+            : Color::rgb(50, 54, 62);    // muted when blurred
+
+        return detail::box()
+            .border(BorderStyle::Round)
+            .border_color(border_color)
+            .padding(0, 1, 0, 1)(
+                detail::hstack()(
+                    Element{TextElement{
+                        .content = "\xe2\x9d\xaf ",  // "❯ "
+                        .style = Style{}.with_fg(
+                            is_focused ? Color::rgb(97, 175, 239)
+                                       : Color::rgb(92, 99, 112)),
+                    }},
+                    std::move(inner)
+                )
+            );
     }
 
 private:
     [[nodiscard]] Element build_singleline(const std::string& display,
                                             int cur, bool focused) const {
         if (focused) {
-            std::string before = display.substr(0, static_cast<size_t>(cur));
-            std::string after = cur < static_cast<int>(display.size())
-                ? display.substr(static_cast<size_t>(cur)) : "";
+            // Build as single TextElement with StyledRuns for cursor
+            std::string content;
+            std::vector<StyledRun> runs;
+            auto text_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+            auto cursor_style = Style{}.with_inverse();
 
-            std::string cursor_ch = after.empty() ? " " : after.substr(0, 1);
-            if (!after.empty()) after = after.substr(1);
+            // Before cursor
+            if (cur > 0) {
+                std::string before = display.substr(0, static_cast<size_t>(cur));
+                runs.push_back(StyledRun{content.size(), before.size(), text_style});
+                content += before;
+            }
 
-            std::vector<Element> parts;
-            if (!before.empty())
-                parts.push_back(Element{TextElement{.content = std::move(before)}});
-            parts.push_back(Element{TextElement{
-                .content = std::move(cursor_ch),
-                .style = Style{}.with_inverse(),
-            }});
-            if (!after.empty())
-                parts.push_back(Element{TextElement{.content = std::move(after)}});
+            // Cursor character
+            std::string cursor_ch;
+            size_t after_start = static_cast<size_t>(cur);
+            if (after_start < display.size()) {
+                // Get one UTF-8 character at cursor
+                size_t ch_len = 1;
+                uint8_t lead = static_cast<uint8_t>(display[after_start]);
+                if (lead >= 0xF0) ch_len = 4;
+                else if (lead >= 0xE0) ch_len = 3;
+                else if (lead >= 0xC0) ch_len = 2;
+                ch_len = std::min(ch_len, display.size() - after_start);
+                cursor_ch = display.substr(after_start, ch_len);
+                after_start += ch_len;
+            } else {
+                cursor_ch = " ";
+            }
+            runs.push_back(StyledRun{content.size(), cursor_ch.size(), cursor_style});
+            content += cursor_ch;
 
-            return detail::hstack()(std::move(parts));
+            // After cursor
+            if (after_start < display.size()) {
+                std::string after = display.substr(after_start);
+                runs.push_back(StyledRun{content.size(), after.size(), text_style});
+                content += after;
+            }
+
+            return Element{TextElement{
+                .content = std::move(content),
+                .style = text_style,
+                .runs = std::move(runs),
+            }};
         }
-        return Element{TextElement{.content = display}};
+        return Element{TextElement{
+            .content = display,
+            .style = Style{}.with_fg(Color::rgb(200, 204, 212)),
+        }};
     }
 
     [[nodiscard]] Element build_multiline(const std::string& display,
@@ -241,10 +291,12 @@ private:
             if (pos == display.size()) lines.emplace_back(); // trailing newline
         }
 
+        auto text_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+
         if (!focused) {
             std::vector<Element> rows;
             for (auto& line : lines)
-                rows.push_back(Element{TextElement{.content = std::move(line)}});
+                rows.push_back(Element{TextElement{.content = std::move(line), .style = text_style}});
             return detail::vstack()(std::move(rows));
         }
 
@@ -272,7 +324,8 @@ private:
                                                  cursor_col, true));
             } else {
                 rows.push_back(Element{TextElement{
-                    .content = lines[static_cast<size_t>(i)]}});
+                    .content = lines[static_cast<size_t>(i)],
+                    .style = text_style}});
             }
         }
         return detail::vstack()(std::move(rows));

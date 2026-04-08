@@ -161,6 +161,9 @@ public:
     /// Whether the app is running in inline mode (no alt screen).
     [[nodiscard]] bool is_inline() const noexcept { return raw_terminal_.has_value(); }
 
+    /// Whether the app originally started in inline mode.
+    [[nodiscard]] bool started_inline() const noexcept { return started_inline_; }
+
     /// Current terminal size.
     [[nodiscard]] Size size() const noexcept { return size_; }
 
@@ -182,6 +185,7 @@ public:
         : alt_terminal_(std::move(o.alt_terminal_))
         , raw_terminal_(std::move(o.raw_terminal_))
         , fd_(std::exchange(o.fd_, -1))
+        , started_inline_(o.started_inline_)
         , writer_(std::move(o.writer_))
         , pool_(std::move(o.pool_))
         , canvas_(std::move(o.canvas_))
@@ -226,6 +230,7 @@ private:
     std::optional<Terminal<AltScreen>> alt_terminal_;
     std::optional<Terminal<Raw>>       raw_terminal_;
     int fd_ = -1;
+    bool started_inline_ = false;
 
     // -- Rendering pipeline ---------------------------------------------------
     // Inline mode: single canvas, serialize to ANSI, erase-and-redraw.
@@ -275,6 +280,7 @@ private:
     auto read_and_dispatch() -> Status;
     void dispatch_event(Event& event);
     void handle_resize();
+    void promote_to_alt_screen();
     auto render_frame() -> Status;
 };
 

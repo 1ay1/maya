@@ -67,7 +67,6 @@
 #include <maya/app/inline.hpp>
 
 // -- Widgets: high-level interactive components ------------------------------
-#include <maya/widget/scroll.hpp>
 #include <maya/widget/input.hpp>
 #include <maya/widget/markdown.hpp>
 #include <maya/widget/spinner.hpp>

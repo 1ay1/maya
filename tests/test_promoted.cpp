@@ -210,24 +210,6 @@ void test_all_widgets_resize() {
         std::println("  markdown: ok");
     }
 
-    // Scroll (fullscreen viewport mode only)
-    {
-        ScrollState state;
-        auto content_fn = [](int, int) -> Element {
-            std::vector<Element> items;
-            for (int i = 0; i < 15; ++i)
-                items.push_back(Element{TextElement{
-                    .content = std::format("Line {}: content", i)}});
-            return detail::vstack()(std::move(items));
-        };
-        auto s = scroll({.auto_bottom = false, .show_bar = true}, state, content_fn);
-        for (int w : {40, 80, 120}) {
-            auto r = render_elem(Element(s), w, 20, /*auto_h=*/false);
-            assert_fits(r, w, "scroll");
-        }
-        std::println("  scroll: ok");
-    }
-
     std::println("  PASS\n");
 }
 

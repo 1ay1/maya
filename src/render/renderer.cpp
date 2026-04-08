@@ -171,8 +171,7 @@ std::size_t build_layout_tree(
 
             if (node.measure) {
                 // Custom measure: lets the component report its content
-                // size (e.g. Scrollable reports content height so it
-                // sizes correctly in auto_height layouts).
+                // size so it sizes correctly in auto_height layouts.
                 ln.measure = layout::MeasureFn{
                     [](const void* ctx, int max_width) -> Size {
                         auto& fn = *static_cast<const std::function<Size(int)>*>(ctx);
@@ -474,7 +473,7 @@ void render_tree(
     // If a parent context exists (e.g. from App::render_frame), this is
     // a no-op override with the same values; if called standalone (tests,
     // one-shot prints), this provides the correct canvas dimensions.
-    RenderContext ctx{canvas.width(), canvas.height(), render_generation()};
+    RenderContext ctx{canvas.width(), canvas.height(), render_generation(), auto_height};
     RenderContextGuard guard(ctx);
 
     std::vector<layout::LayoutNode> layout_nodes;
@@ -491,7 +490,7 @@ void render_tree(
     bool auto_height)
 {
     // Set the render context if not already set by the parent overload or App.
-    RenderContext ctx{canvas.width(), canvas.height(), render_generation()};
+    RenderContext ctx{canvas.width(), canvas.height(), render_generation(), auto_height};
     RenderContextGuard guard(ctx);
 
     // Phase 1: Build the layout tree (reusing the caller's vector).

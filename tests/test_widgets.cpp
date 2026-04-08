@@ -287,42 +287,6 @@ void test_input() {
 }
 
 // ============================================================================
-// Scroll tests
-// ============================================================================
-void test_scroll() {
-    std::println("=== test_scroll ===");
-
-    ScrollState state;
-    auto content_fn = [](int /*w*/, int /*h*/) -> Element {
-        std::vector<Element> items;
-        for (int i = 0; i < 20; ++i) {
-            items.push_back(Element{TextElement{
-                .content = std::format("Line {}: some content here", i),
-            }});
-        }
-        return detail::vstack()(std::move(items));
-    };
-
-    auto s = scroll({.auto_bottom = false, .show_bar = true}, state, content_fn);
-
-    // Fullscreen viewport (auto_height=false) — renders without crashing
-    {
-        auto r = render_at(Element(s), 60, 10, false);
-        assert(r.content_h > 0);
-        assert_fits(r, 60, "scroll-viewport");
-    }
-
-    // Resize width in viewport mode
-    for (int w : {40, 80, 120}) {
-        auto r = render_at(Element(s), w, 10, false);
-        assert(r.content_h > 0);
-        assert_fits(r, w, "scroll");
-    }
-
-    std::println("  PASS\n");
-}
-
-// ============================================================================
 // Markdown tests
 // ============================================================================
 void test_markdown() {
@@ -404,7 +368,6 @@ int main() {
     test_confirm();
     test_spinner();
     test_input();
-    test_scroll();
     test_markdown();
     test_markdown_streaming();
     std::println("All widget tests passed!");

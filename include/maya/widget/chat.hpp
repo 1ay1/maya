@@ -38,7 +38,6 @@
 #include "badge.hpp"
 #include "input.hpp"
 #include "markdown.hpp"
-#include "scroll.hpp"
 #include "spinner.hpp"
 #include "table.hpp"
 #include "toast.hpp"
@@ -113,7 +112,6 @@ class ChatView {
     Input<>                  input_;
     Spinner<SpinnerStyle::Dots> spinner_;
     ToastManager             toasts_;
-    ScrollState              scroll_state_;
     ChatViewConfig           cfg_;
     bool                     streaming_ = false;
     bool                     input_setup_ = false;
@@ -213,31 +211,12 @@ public:
 
     /// Handle a key event. Returns true if consumed.
     [[nodiscard]] bool handle(const KeyEvent& ev) {
-        // Scroll keys: PageUp/PageDown, Ctrl+Up/Down
-        if (auto* sp = std::get_if<SpecialKey>(&ev.key)) {
-            switch (*sp) {
-                case SpecialKey::PageUp:
-                    scroll_state_.scroll_by(-scroll_state_.viewport_height());
-                    return true;
-                case SpecialKey::PageDown:
-                    scroll_state_.scroll_by(scroll_state_.viewport_height());
-                    return true;
-                case SpecialKey::Up:
-                    if (ev.mods.ctrl) { scroll_state_.scroll_by(-3); return true; }
-                    break;
-                case SpecialKey::Down:
-                    if (ev.mods.ctrl) { scroll_state_.scroll_by(3); return true; }
-                    break;
-                default: break;
-            }
-        }
         return input_.handle(ev);
     }
 
     /// Handle a mouse event. Returns true if consumed.
     [[nodiscard]] bool handle(const MouseEvent& ev) {
-        if (ev.button == MouseButton::ScrollUp)   { scroll_state_.scroll_by(-3); return true; }
-        if (ev.button == MouseButton::ScrollDown)  { scroll_state_.scroll_by(3);  return true; }
+        (void)ev;
         return false;
     }
 

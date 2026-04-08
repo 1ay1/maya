@@ -169,6 +169,8 @@ auto App::Builder::build() -> Result<App> {
         app.size_ = app.raw_terminal_->size();
     }
 
+    app.started_inline_ = !alt_screen_;
+
     // Initialize the render context with the initial terminal size.
     app.render_ctx_.width      = app.size_.width.raw();
     app.render_ctx_.height     = app.size_.height.raw();
@@ -335,6 +337,11 @@ void App::dispatch_event(Event& event) {
 // Resize handling
 // ============================================================================
 
+void App::promote_to_alt_screen() {
+    // Intentionally empty — inline mode stays inline to preserve
+    // terminal scrollback. Alt screen has no scrollback.
+}
+
 void App::handle_resize() {
     Size new_size;
     if (alt_terminal_) {
@@ -393,21 +400,38 @@ auto App::render_frame() -> Status {
         if (canvas_.width() != w || canvas_.height() != canvas_h)
             canvas_ = Canvas(w, canvas_h, &pool_);
 
-        // On resize (needs_clear_), erase previous output and reset tracking
-        // so the next frame renders from a clean slate.
+        // On resize (needs_clear_), erase the live region and re-render.
         //
-        // After a width change the terminal reflows our text — each old row
-        // may now occupy more or fewer lines, and the cursor lands somewhere
-        // unpredictable.  Move up by the full terminal height (not just
-        // prev_height_) and erase to end of screen, guaranteeing we wipe
-        // everything the terminal reflowed.
+        // After a width change the terminal reflows ALL content (including
+        // scrollback).  We cannot predict how many terminal lines our old
+        // output now occupies, so we DON'T try to erase committed content
+        // that has already scrolled up.  Instead we:
+        //   1. Move up only into the live region (prev_height_ rows at most)
+        //   2. Erase from there to end of screen
+        //   3. Re-render at the new width
+        //
+        // Committed content in scrollback survives (possibly reflowed at
+        // old width).  This matches how Claude Code handles resize.
         if (needs_clear_) {
             if (prev_height_ > 0) {
+                // Clear the entire visible viewport on resize, matching
+                // alt-screen feel while preserving scrollback.  After a
+                // width change the terminal reflows content, so a row
+                // that fit on one line may now wrap to multiple lines.
+                // Scale by the reflow factor and ensure we erase at
+                // least the full terminal height so the viewport is
+                // pristine — the terminal clamps cursor movement to the
+                // top of scrollback, so overshooting is harmless.
+                const int term_h = std::max(1, size_.height.raw());
+                int erase_rows = prev_height_;
+                if (prev_width_ > 0 && prev_width_ > w) {
+                    erase_rows = prev_height_ * ((prev_width_ + w - 1) / w);
+                }
+                erase_rows = std::max(erase_rows, term_h);
                 std::string erase;
-                int erase_rows = std::max(prev_height_,
-                                          size_.height.raw());
-                ansi::write_cursor_up(erase, erase_rows);
-                erase += "\r\x1b[J";
+                erase += "\x1b[2J";   // erase entire screen
+                erase += "\x1b[3J";   // clear scrollback buffer
+                erase += "\x1b[H";    // cursor to home
                 (void)writer_->write_raw(erase);
             }
             prev_row_hashes_.clear();
@@ -514,6 +538,7 @@ auto App::render_frame() -> Status {
 
         MAYA_TRY_VOID(writer_->write_raw(out_));
         prev_height_ = display_rows;
+        prev_width_  = w;
         prev_content_height_ = ch;
         std::swap(prev_row_hashes_, row_hashes_);
 

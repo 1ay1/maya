@@ -65,6 +65,8 @@
 #include <maya/app/events.hpp>
 #include <maya/app/run.hpp>
 #include <maya/app/inline.hpp>
+#include <maya/app/environment.hpp>
+#include <maya/app/error_boundary.hpp>
 
 // -- Widgets: high-level interactive components ------------------------------
 #include <maya/widget/input.hpp>
@@ -85,6 +87,9 @@
 #include <maya/widget/tree_view.hpp>
 #include <maya/widget/thinking.hpp>
 #include <maya/widget/permission.hpp>
+#include <maya/widget/gradient.hpp>
+#include <maya/widget/link.hpp>
+#include <maya/widget/scrollable.hpp>
 
 // -- App: static region for scrollback freeze --------------------------------
 #include <maya/app/static_region.hpp>

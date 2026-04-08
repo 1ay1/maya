@@ -21,6 +21,7 @@
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../element/builder.hpp"
+#include "../element/text.hpp"
 #include "../style/style.hpp"
 #include "../terminal/input.hpp"
 
@@ -91,6 +92,16 @@ public:
 
     template <std::invocable<std::string_view> F>
     void on_change(F&& fn) { on_change_ = std::forward<F>(fn); }
+
+    // -- Paste event handling --
+    /// Handle a paste event — insert pasted text at cursor position.
+    void handle_paste(const PasteEvent& pe) {
+        // Insert each character from the pasted text
+        for (std::size_t pos = 0; pos < pe.content.size(); ) {
+            char32_t cp = decode_utf8(pe.content, pos);
+            if (cp >= 0x20) insert_char(cp);  // skip control chars
+        }
+    }
 
     // -- Key event handling --
     [[nodiscard]] bool handle(const KeyEvent& ev) {

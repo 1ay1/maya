@@ -797,8 +797,8 @@ namespace colors {
     constexpr auto heading_dim = Color::rgb(100, 100, 140);
     constexpr auto bold_fg     = Color::rgb(255, 255, 255);
     constexpr auto italic_fg   = Color::rgb(200, 200, 230);
-    constexpr auto code_fg     = Color::rgb(245, 220, 120);
-    constexpr auto code_bg     = Color::rgb(35, 35, 48);
+    constexpr auto code_fg     = Color::rgb(230, 180, 80);
+    constexpr auto code_bg     = Color::rgb(40, 40, 55);
     constexpr auto link_fg     = Color::rgb(100, 160, 255);
     constexpr auto image_fg    = Color::rgb(180, 140, 255);
     constexpr auto strike_fg   = Color::rgb(120, 120, 140);
@@ -812,8 +812,213 @@ namespace colors {
     constexpr auto code_lang   = Color::rgb(130, 130, 170);
     constexpr auto hrule_fg    = Color::rgb(60, 60, 85);
     constexpr auto footnote_fg = Color::rgb(140, 140, 180);
-    constexpr auto table_border= Color::rgb(60, 60, 85);
-    constexpr auto table_header= Color::rgb(190, 190, 255);
+    constexpr auto table_border= Color::rgb(70, 70, 100);
+    constexpr auto table_header= Color::rgb(200, 200, 255);
+}
+
+// ============================================================================
+// Syntax highlighting for code blocks
+// ============================================================================
+
+namespace syntax {
+    constexpr auto kw_color      = Color::rgb(198, 120, 221); // purple - keywords
+    constexpr auto str_color     = Color::rgb(152, 195, 121); // green - strings
+    constexpr auto comment_color = Color::rgb(92, 99, 112);   // gray - comments
+    constexpr auto num_color     = Color::rgb(209, 154, 102); // orange - numbers
+    constexpr auto type_color    = Color::rgb(86, 182, 194);  // cyan - types/caps
+    constexpr auto punct_color   = Color::rgb(130, 137, 151); // dim - punctuation
+    constexpr auto fn_color      = Color::rgb(97, 175, 239);  // blue - function calls
+    constexpr auto plain_color   = Color::rgb(200, 204, 212); // light - default code
+}
+
+// Token kinds for syntax highlighting
+enum class TokKind { Plain, Keyword, String, Comment, Number, Type, Punct };
+
+static bool is_keyword(std::string_view word) {
+    static constexpr std::string_view kws[] = {
+        "if", "else", "for", "while", "return", "class", "struct", "enum",
+        "fn", "func", "def", "let", "const", "var", "auto", "void", "int",
+        "bool", "string", "import", "from", "export", "use", "pub", "mod",
+        "async", "await", "try", "catch", "throw", "new", "delete",
+        "true", "false", "null", "nullptr", "None", "self", "this", "super",
+        "do", "switch", "case", "break", "continue", "static", "inline",
+        "namespace", "template", "typename", "using", "operator", "virtual",
+        "override", "final", "explicit", "constexpr", "noexcept", "sizeof",
+        "typeof", "type", "interface", "extends", "implements", "package",
+        "go", "chan", "select", "defer", "range", "map", "make", "append",
+        "lambda", "yield", "with", "pass", "raise", "and", "or", "not", "in",
+        "is", "as", "match", "when", "then", "where", "forall",
+    };
+    for (auto& kw : kws) {
+        if (word == kw) return true;
+    }
+    return false;
+}
+
+static bool is_punct_char(char c) {
+    return c == '{' || c == '}' || c == '[' || c == ']' ||
+           c == '(' || c == ')' || c == '.' || c == ',' ||
+           c == ';' || c == ':' || c == '+' || c == '-' ||
+           c == '*' || c == '/' || c == '<' || c == '>' ||
+           c == '=' || c == '!' || c == '&' || c == '|' ||
+           c == '^' || c == '~' || c == '%';
+}
+
+// Build a TextElement with syntax-highlighted styled runs for a code block.
+static Element highlight_code(const std::string& code, const std::string& /*lang*/) {
+    std::string out;
+    out.reserve(code.size());
+    std::vector<StyledRun> runs;
+
+    size_t i = 0;
+    size_t n = code.size();
+
+    auto push_run = [&](size_t start, size_t byte_len, TokKind kind) {
+        if (byte_len == 0) return;
+        Color c = syntax::plain_color;
+        switch (kind) {
+            case TokKind::Keyword:  c = syntax::kw_color;      break;
+            case TokKind::String:   c = syntax::str_color;     break;
+            case TokKind::Comment:  c = syntax::comment_color; break;
+            case TokKind::Number:   c = syntax::num_color;     break;
+            case TokKind::Type:     c = syntax::type_color;    break;
+            case TokKind::Punct:    c = syntax::punct_color;   break;
+            case TokKind::Plain:    c = syntax::plain_color;   break;
+        }
+        Style sty = Style{}.with_fg(c);
+        if (kind == TokKind::Comment) sty = sty.with_dim();
+        runs.push_back({start, byte_len, sty});
+    };
+
+    while (i < n) {
+        char ch = code[i];
+
+        // Newline — emit as plain (no run needed, just pass through)
+        if (ch == '\n') {
+            size_t start = out.size();
+            out += '\n';
+            push_run(start, 1, TokKind::Plain);
+            ++i;
+            continue;
+        }
+
+        // Line comment: // ... or # ...
+        if ((ch == '/' && i + 1 < n && code[i + 1] == '/') ||
+            ch == '#') {
+            size_t start = out.size();
+            size_t j = i;
+            while (j < n && code[j] != '\n') ++j;
+            out.append(code, i, j - i);
+            push_run(start, j - i, TokKind::Comment);
+            i = j;
+            continue;
+        }
+
+        // Block comment: /* ... */
+        if (ch == '/' && i + 1 < n && code[i + 1] == '*') {
+            size_t start = out.size();
+            size_t j = i + 2;
+            while (j + 1 < n && !(code[j] == '*' && code[j + 1] == '/')) ++j;
+            if (j + 1 < n) j += 2; // consume "*/"
+            out.append(code, i, j - i);
+            push_run(start, j - i, TokKind::Comment);
+            i = j;
+            continue;
+        }
+
+        // String literal: "...", '...', `...`
+        if (ch == '"' || ch == '\'' || ch == '`') {
+            char quote = ch;
+            size_t start = out.size();
+            size_t j = i + 1;
+            while (j < n && code[j] != '\n') {
+                if (code[j] == '\\' && j + 1 < n) { j += 2; continue; }
+                if (code[j] == quote) { ++j; break; }
+                ++j;
+            }
+            out.append(code, i, j - i);
+            push_run(start, j - i, TokKind::String);
+            i = j;
+            continue;
+        }
+
+        // Number: 0x... or digits[.digits]
+        if (std::isdigit(static_cast<unsigned char>(ch)) ||
+            (ch == '0' && i + 1 < n && (code[i + 1] == 'x' || code[i + 1] == 'X'))) {
+            size_t start = out.size();
+            size_t j = i;
+            if (j + 1 < n && code[j] == '0' && (code[j + 1] == 'x' || code[j + 1] == 'X')) {
+                j += 2;
+                while (j < n && std::isxdigit(static_cast<unsigned char>(code[j]))) ++j;
+            } else {
+                while (j < n && std::isdigit(static_cast<unsigned char>(code[j]))) ++j;
+                if (j < n && code[j] == '.' && j + 1 < n &&
+                    std::isdigit(static_cast<unsigned char>(code[j + 1]))) {
+                    ++j;
+                    while (j < n && std::isdigit(static_cast<unsigned char>(code[j]))) ++j;
+                }
+            }
+            out.append(code, i, j - i);
+            push_run(start, j - i, TokKind::Number);
+            i = j;
+            continue;
+        }
+
+        // Identifier or keyword or type
+        if (std::isalpha(static_cast<unsigned char>(ch)) || ch == '_') {
+            size_t j = i;
+            while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
+                              code[j] == '_')) ++j;
+            std::string_view word{code.data() + i, j - i};
+
+            // Check for function call: identifier immediately followed by '('
+            bool is_fn_call = (j < n && code[j] == '(');
+
+            size_t start = out.size();
+            out.append(code, i, j - i);
+
+            TokKind kind = TokKind::Plain;
+            if (is_keyword(word)) {
+                kind = TokKind::Keyword;
+            } else if (is_fn_call) {
+                kind = TokKind::Type;  // use fn_color via type slot — reuse fn_color
+                // override: use fn_color directly
+                push_run(start, j - i, TokKind::Plain);
+                // replace last run with fn_color
+                runs.back().style = Style{}.with_fg(syntax::fn_color);
+                i = j;
+                continue;
+            } else if (!word.empty() && std::isupper(static_cast<unsigned char>(word[0]))) {
+                kind = TokKind::Type;
+            }
+            push_run(start, j - i, kind);
+            i = j;
+            continue;
+        }
+
+        // Punctuation / operators
+        if (is_punct_char(ch)) {
+            size_t start = out.size();
+            out += ch;
+            push_run(start, 1, TokKind::Punct);
+            ++i;
+            continue;
+        }
+
+        // Anything else — plain
+        {
+            size_t start = out.size();
+            out += ch;
+            push_run(start, 1, TokKind::Plain);
+            ++i;
+        }
+    }
+
+    return Element{TextElement{
+        .content = std::move(out),
+        .style = Style{}.with_fg(syntax::plain_color),
+        .runs = std::move(runs),
+    }};
 }
 
 // ============================================================================
@@ -930,6 +1135,76 @@ static Element build_inline_row(const std::vector<md::Inline>& spans) {
     }};
 }
 
+// Forward declaration so render_list can call md_block_to_element.
+Element md_block_to_element(const md::Block& block);
+
+// Render an md::List at a given nesting depth (0 = top-level).
+static Element render_list(const md::List& l, int depth) {
+    std::vector<Element> items;
+    items.reserve(l.items.size());
+    int num = l.start_num;
+
+    for (auto& item : l.items) {
+        std::string prefix;
+        Style prefix_style;
+
+        if (item.checked.has_value()) {
+            if (*item.checked) {
+                prefix = "  \xe2\x98\x91 ";  // "  ☑ "
+                prefix_style = Style{}.with_fg(colors::checkbox_fg);
+            } else {
+                prefix = "  \xe2\x98\x90 ";  // "  ☐ "
+                prefix_style = Style{}.with_fg(colors::checkbox_off);
+            }
+        } else if (l.ordered) {
+            prefix = std::to_string(num++) + ". ";
+            prefix_style = Style{}.with_fg(colors::list_num).with_bold();
+        } else if (depth == 0) {
+            prefix = "  \xe2\x80\xa2 ";  // "  • " (U+2022 bullet)
+            prefix_style = Style{}.with_fg(colors::list_bullet);
+        } else {
+            prefix = "  \xe2\x97\xa6 ";  // "  ◦ " (U+25E6 white bullet, nested)
+            prefix_style = Style{}.with_fg(colors::list_bullet).with_dim();
+        }
+
+        // Flatten prefix + inline content into single TextElement
+        std::string content;
+        std::vector<StyledRun> runs;
+        Style base = Style{}.with_fg(colors::text);
+
+        runs.push_back({0, prefix.size(), prefix_style});
+        content += prefix;
+        for (auto& s : item.spans) {
+            flatten_inline(s, base, content, runs);
+        }
+
+        auto item_elem = Element{TextElement{
+            .content = std::move(content),
+            .style = base,
+            .runs = std::move(runs),
+        }};
+
+        if (item.children.empty()) {
+            items.push_back(std::move(item_elem));
+        } else {
+            // Item with sub-content (nested lists, multi-para)
+            std::vector<Element> sub;
+            sub.reserve(item.children.size() + 1);
+            sub.push_back(std::move(item_elem));
+            for (auto& child : item.children) {
+                // If this child is a list, render it at increased depth
+                if (auto* nested = std::get_if<md::List>(&child.inner)) {
+                    sub.push_back(render_list(*nested, depth + 1));
+                } else {
+                    sub.push_back(md_block_to_element(child));
+                }
+            }
+            items.push_back(detail::vstack()(std::move(sub)));
+        }
+    }
+    return detail::vstack()(std::move(items));
+}
+
 Element md_block_to_element(const md::Block& block) {
     return std::visit(overload{
         [](const md::Paragraph& p) -> Element {
@@ -944,28 +1219,45 @@ Element md_block_to_element(const md::Block& block) {
                 default: sty = sty.with_fg(colors::heading3).with_dim(); break;
             }
 
-            std::string prefix(static_cast<size_t>(h.level), '#');
-            prefix += ' ';
-
-            // Flatten heading into single TextElement with styled runs
+            // No ## prefix — just the heading text, bold and colored.
             std::string content;
             std::vector<StyledRun> runs;
-            runs.push_back({0, prefix.size(),
-                Style{}.with_fg(colors::heading_dim).with_bold()});
-            content += prefix;
             for (auto& s : h.spans) {
                 flatten_inline(s, sty, content, runs);
             }
-            return Element{TextElement{
+            auto heading_elem = Element{TextElement{
                 .content = std::move(content),
                 .style = sty,
                 .runs = std::move(runs),
             }};
+
+            // h1: double-line underline; h2: single-line underline
+            if (h.level == 1) {
+                std::string ul;
+                ul.reserve(40 * 3);
+                for (int k = 0; k < 40; ++k) ul += "\xe2\x95\x90"; // ═
+                auto ul_elem = Element{TextElement{
+                    .content = std::move(ul),
+                    .style = Style{}.with_fg(colors::heading2).with_dim(),
+                }};
+                return detail::vstack()(std::move(heading_elem), std::move(ul_elem));
+            } else if (h.level == 2) {
+                std::string ul;
+                ul.reserve(40 * 3);
+                for (int k = 0; k < 40; ++k) ul += "\xe2\x94\x80"; // ─
+                auto ul_elem = Element{TextElement{
+                    .content = std::move(ul),
+                    .style = Style{}.with_fg(colors::heading3).with_dim(),
+                }};
+                return detail::vstack()(std::move(heading_elem), std::move(ul_elem));
+            }
+            return heading_elem;
         },
         [](const md::CodeBlock& c) -> Element {
             auto builder = detail::vstack()
                 .border(BorderStyle::Round)
                 .border_color(colors::code_border)
+                .bg(Color::rgb(30, 30, 40))
                 .padding(0, 1, 0, 1);
 
             if (!c.lang.empty()) {
@@ -975,12 +1267,7 @@ Element md_block_to_element(const md::Block& block) {
                     BorderTextAlign::Start);
             }
 
-            return builder(
-                Element{TextElement{
-                    .content = c.content,
-                    .style = Style{}.with_fg(colors::text),
-                }}
-            );
+            return builder(highlight_code(c.content, c.lang));
         },
         [](const md::Blockquote& bq) -> Element {
             std::vector<Element> children;
@@ -990,76 +1277,24 @@ Element md_block_to_element(const md::Block& block) {
 
             return detail::hstack()(
                 Element{TextElement{
-                    .content = "\xe2\x94\x82 ",  // "│ "
-                    .style = Style{}.with_fg(colors::quote_bar),
+                    // U+258C "▌" (left half block) — visually striking bar
+                    .content = "\xe2\x96\x8c ",
+                    .style = Style{}.with_fg(colors::quote_bar).with_dim(),
                 }},
                 detail::vstack()(std::move(children))
                     | Style{}.with_italic().with_fg(colors::quote_text)
             );
         },
         [](const md::List& l) -> Element {
-            std::vector<Element> items;
-            items.reserve(l.items.size());
-            int num = l.start_num;
-            for (auto& item : l.items) {
-                std::string prefix;
-                Style prefix_style;
-
-                if (item.checked.has_value()) {
-                    if (*item.checked) {
-                        prefix = "  \xe2\x98\x91 ";  // "  ☑ "
-                        prefix_style = Style{}.with_fg(colors::checkbox_fg);
-                    } else {
-                        prefix = "  \xe2\x98\x90 ";  // "  ☐ "
-                        prefix_style = Style{}.with_fg(colors::checkbox_off);
-                    }
-                } else if (l.ordered) {
-                    prefix = std::to_string(num++) + ". ";
-                    prefix_style = Style{}.with_fg(colors::list_num).with_bold();
-                } else {
-                    prefix = "  \xe2\x80\xa2 ";  // "  • "
-                    prefix_style = Style{}.with_fg(colors::list_bullet);
-                }
-
-                // Flatten prefix + inline content into single TextElement
-                std::string content;
-                std::vector<StyledRun> runs;
-                Style base = Style{}.with_fg(colors::text);
-
-                runs.push_back({0, prefix.size(), prefix_style});
-                content += prefix;
-                for (auto& s : item.spans) {
-                    flatten_inline(s, base, content, runs);
-                }
-
-                auto item_elem = Element{TextElement{
-                    .content = std::move(content),
-                    .style = base,
-                    .runs = std::move(runs),
-                }};
-
-                if (item.children.empty()) {
-                    items.push_back(std::move(item_elem));
-                } else {
-                    // Item with sub-content (nested lists, multi-para)
-                    std::vector<Element> sub;
-                    sub.reserve(item.children.size() + 1);
-                    sub.push_back(std::move(item_elem));
-                    for (auto& child : item.children) {
-                        sub.push_back(md_block_to_element(child));
-                    }
-                    items.push_back(detail::vstack()(std::move(sub)));
-                }
-            }
-            return detail::vstack()(std::move(items));
+            return render_list(l, 0);
         },
         [](const md::HRule&) -> Element {
+            // U+2500 "─" repeated 40 times for a full-width feel
+            std::string rule;
+            rule.reserve(40 * 3);
+            for (int k = 0; k < 40; ++k) rule += "\xe2\x94\x80";
             return Element{TextElement{
-                .content = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-                           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-                           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-                           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-                           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",  // 20x "─"
+                .content = std::move(rule),
                 .style = Style{}.with_fg(colors::hrule_fg),
             }};
         },
@@ -1130,24 +1365,76 @@ Element md_block_to_element(const md::Block& block) {
                 }});
             }
 
+            // Helper: build a horizontal border line (top, mid, bottom)
+            // type: 0=top (┌┬┐), 1=mid (├┼┤), 2=bottom (└┴┘)
+            auto make_border_line = [&](int type) -> Element {
+                const char* left[]  = {"\xe2\x94\x8c", "\xe2\x94\x9c", "\xe2\x94\x94"}; // ┌├└
+                const char* mid[]   = {"\xe2\x94\xac", "\xe2\x94\xbc", "\xe2\x94\xb4"}; // ┬┼┴
+                const char* right[] = {"\xe2\x94\x90", "\xe2\x94\xa4", "\xe2\x94\x98"}; // ┐┤┘
+                std::string line;
+                line += left[type];
+                for (int c = 0; c < ncols; ++c) {
+                    if (c > 0) line += mid[type];
+                    int total = col_widths[static_cast<size_t>(c)] + pad * 2;
+                    for (int k = 0; k < total; ++k)
+                        line += "\xe2\x94\x80"; // "─"
+                }
+                line += right[type];
+                return Element{TextElement{
+                    .content = std::move(line),
+                    .style = Style{}.with_fg(colors::table_border),
+                }};
+            };
+
+            // Helper: build a data/header row with │ separators
+            auto make_row_with_sep = [&](std::vector<Element>& cells) -> Element {
+                std::string content;
+                std::vector<StyledRun> runs;
+                auto sep_style = Style{}.with_fg(colors::table_border);
+
+                content += "\xe2\x94\x82"; // │
+                runs.push_back(StyledRun{0, content.size(), sep_style});
+
+                for (size_t c = 0; c < cells.size(); ++c) {
+                    // Extract content and runs from each cell's TextElement
+                    auto* te = std::get_if<TextElement>(&cells[c].inner);
+                    if (te) {
+                        size_t offset = content.size();
+                        if (te->runs.empty()) {
+                            runs.push_back(StyledRun{offset, te->content.size(), te->style});
+                        } else {
+                            for (auto& r : te->runs) {
+                                runs.push_back(StyledRun{offset + r.byte_offset, r.byte_length, r.style});
+                            }
+                        }
+                        content += te->content;
+                    }
+                    // Add separator
+                    size_t sep_start = content.size();
+                    content += "\xe2\x94\x82"; // │
+                    runs.push_back(StyledRun{sep_start, 3, sep_style});
+                }
+
+                return Element{TextElement{
+                    .content = std::move(content),
+                    .style = Style{}.with_fg(colors::text),
+                    .runs = std::move(runs),
+                }};
+            };
+
             std::vector<Element> rows;
-            rows.reserve(tbl.rows.size() + 2);
-            rows.push_back(detail::hstack()(std::move(header_cells)));
+            rows.reserve(tbl.rows.size() + 4);
 
-            // Separator with proper widths
-            std::string sep;
-            for (int c = 0; c < ncols; ++c) {
-                if (c > 0) sep += "\xe2\x94\xbc"; // "┼"
-                int total = col_widths[static_cast<size_t>(c)] + pad * 2;
-                for (int i = 0; i < total; ++i)
-                    sep += "\xe2\x94\x80"; // "─"
-            }
-            rows.push_back(Element{TextElement{
-                .content = std::move(sep),
-                .style = Style{}.with_fg(colors::table_border),
-            }});
+            // Top border ┌──┬──┐
+            rows.push_back(make_border_line(0));
 
-            // Data rows with fixed-width cells
+            // Header row with │ separators
+            rows.push_back(make_row_with_sep(header_cells));
+
+            // Header/data separator ├──┼──┤
+            rows.push_back(make_border_line(1));
+
+            // Data rows with │ separators
             for (auto& row : tbl.rows) {
                 std::vector<Element> cells;
                 cells.reserve(static_cast<size_t>(ncols));
@@ -1180,8 +1467,11 @@ Element md_block_to_element(const md::Block& block) {
                             .content = std::move(empty)}});
                     }
                 }
-                rows.push_back(detail::hstack()(std::move(cells)));
+                rows.push_back(make_row_with_sep(cells));
             }
+
+            // Bottom border └──┴──┘
+            rows.push_back(make_border_line(2));
 
             return detail::vstack()(std::move(rows));
         },
@@ -1208,14 +1498,14 @@ Element markdown(std::string_view source) {
     if (doc.blocks.empty()) return Element{TextElement{""}};
 
     if (doc.blocks.size() == 1)
-        return md_block_to_element(doc.blocks[0]);
+        return detail::vstack().padding(0, 0, 0, 2)(md_block_to_element(doc.blocks[0]));
 
     std::vector<Element> blocks;
     blocks.reserve(doc.blocks.size());
     for (auto& block : doc.blocks)
         blocks.push_back(md_block_to_element(block));
 
-    return detail::vstack().gap(1)(std::move(blocks));
+    return detail::vstack().gap(1).padding(0, 0, 0, 2)(std::move(blocks));
 }
 
 // ============================================================================
@@ -1347,7 +1637,8 @@ Element StreamingMarkdown::build() const {
 
     if (total == 0) return Element{TextElement{""}};
 
-    if (total == 1 && !has_tail) return blocks_[0];
+    if (total == 1 && !has_tail)
+        return detail::vstack().padding(0, 0, 0, 2)(blocks_[0]);
 
     if (total == 1 && blocks_.empty()) {
         return markdown(tail);
@@ -1364,7 +1655,7 @@ Element StreamingMarkdown::build() const {
         }
     }
 
-    return detail::vstack().gap(1)(std::move(all));
+    return detail::vstack().gap(1).padding(0, 0, 0, 2)(std::move(all));
 }
 
 } // namespace maya

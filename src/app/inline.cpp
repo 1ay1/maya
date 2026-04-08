@@ -3,6 +3,10 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "maya/render/diff.hpp"    // for detail::encode_utf8
+#include "maya/render/renderer.hpp" // for render_tree, content_height
+#include "maya/render/serialize.hpp" // for content_height
+
 namespace maya {
 
 namespace detail {
@@ -146,6 +150,36 @@ void print(const Element& root, int width) {
     detail::render_live(root, width, pool, buf, st);
     std::fputc('\n', stdout);
     std::fflush(stdout);
+}
+
+std::string render_to_string(const Element& root, int width) {
+    StylePool pool;
+    Canvas canvas{width, 500, &pool};
+    render_tree(root, canvas, pool, theme::dark, /*auto_height=*/true);
+
+    int rows = content_height(canvas);
+    if (rows < 0) return {};
+
+    std::string result;
+    result.reserve(static_cast<std::size_t>((width + 1) * (rows + 1)));
+
+    for (int y = 0; y <= rows; ++y) {
+        // Build row string, then trim trailing spaces.
+        std::size_t row_start = result.size();
+        for (int x = 0; x < width; ++x) {
+            char32_t ch = canvas.get(x, y).character;
+            if (ch == U'\0') ch = U' ';
+            detail::encode_utf8(ch, result);
+        }
+        // Trim trailing spaces from this row.
+        std::size_t end = result.size();
+        while (end > row_start && result[end - 1] == ' ') --end;
+        result.resize(end);
+
+        if (y < rows) result += '\n';
+    }
+
+    return result;
 }
 
 } // namespace maya

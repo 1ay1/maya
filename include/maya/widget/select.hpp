@@ -93,16 +93,8 @@ public:
         return std::visit(overload{
             [&](SpecialKey sk) -> bool {
                 switch (sk) {
-                    case SpecialKey::Up: {
-                        int c = cursor_();
-                        cursor_.set(c > 0 ? c - 1 : static_cast<int>(items_.size()) - 1);
-                        return true;
-                    }
-                    case SpecialKey::Down: {
-                        int c = cursor_();
-                        cursor_.set((c + 1) % static_cast<int>(items_.size()));
-                        return true;
-                    }
+                    case SpecialKey::Up:   move_up();   return true;
+                    case SpecialKey::Down: move_down(); return true;
                     case SpecialKey::Enter:
                         if (on_select_) on_select_(cursor_(), items_[static_cast<size_t>(cursor_())]);
                         return true;
@@ -110,21 +102,47 @@ public:
                 }
             },
             [&](CharKey ck) -> bool {
-                if (ck.codepoint == 'j') {
-                    int c = cursor_();
-                    cursor_.set((c + 1) % static_cast<int>(items_.size()));
-                    return true;
-                }
-                if (ck.codepoint == 'k') {
-                    int c = cursor_();
-                    cursor_.set(c > 0 ? c - 1 : static_cast<int>(items_.size()) - 1);
-                    return true;
-                }
+                if (ck.codepoint == 'j') { move_down(); return true; }
+                if (ck.codepoint == 'k') { move_up();   return true; }
                 return false;
             },
         }, ev.key);
     }
 
+    /// Handle mouse events for click selection and scroll wheel navigation.
+    /// render_y_start: the terminal row where this widget's first item is rendered.
+    /// Returns true if the event was consumed.
+    bool handle_mouse(const MouseEvent& me, int render_y_start = 0) {
+        if (items_.empty()) return false;
+
+        if (me.kind == MouseEventKind::Press && me.button == MouseButton::Left) {
+            int clicked_row = me.y.value - render_y_start;
+            if (clicked_row >= 0 && clicked_row < static_cast<int>(items_.size())) {
+                cursor_.set(clicked_row);
+                if (on_select_) on_select_(cursor_(), items_[static_cast<size_t>(cursor_())]);
+                return true;
+            }
+        }
+        // Scroll wheel
+        if (me.kind == MouseEventKind::Press) {
+            if (me.button == MouseButton::ScrollUp)   { move_up();   return true; }
+            if (me.button == MouseButton::ScrollDown) { move_down(); return true; }
+        }
+        return false;
+    }
+
+private:
+    void move_up() {
+        int c = cursor_();
+        cursor_.set(c > 0 ? c - 1 : static_cast<int>(items_.size()) - 1);
+    }
+
+    void move_down() {
+        int c = cursor_();
+        cursor_.set((c + 1) % static_cast<int>(items_.size()));
+    }
+
+public:
     // -- Node concept: build into Element --
     operator Element() const { return build(); }
 

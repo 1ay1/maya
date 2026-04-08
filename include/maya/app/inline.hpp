@@ -82,6 +82,10 @@ void print(const Element& root);
 /// Print with explicit width.
 void print(const Element& root, int width);
 
+/// Render an element tree to a plain string (no ANSI escapes).
+/// Useful for testing, CI output, and documentation generation.
+[[nodiscard]] std::string render_to_string(const Element& root, int width = 80);
+
 // ── LiveConfig ─────────────────────────────────────────────────────────────
 
 struct LiveConfig {

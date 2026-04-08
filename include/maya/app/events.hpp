@@ -90,6 +90,11 @@ struct MousePos {
 [[nodiscard]] bool pasted(const Event& ev,
                            std::string* out = nullptr);
 
+/// Extract paste event from a variant Event.
+[[nodiscard]] inline const PasteEvent* as_paste(const Event& ev) noexcept {
+    return std::get_if<PasteEvent>(&ev);
+}
+
 // ── Focus predicates ───────────────────────────────────────────────────────
 
 /// True if the terminal window gained focus.

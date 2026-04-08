@@ -357,13 +357,60 @@ void paint_element(
         },
 
         [&](const TextElement& node) {
-            // Render formatted text lines at the computed position.
-            uint16_t style_id = pool.intern(node.style);
             auto lines = node.format(aw);
 
-            for (const auto& [row, line] :
-                     lines | std::views::enumerate | std::views::take(ah)) {
-                canvas.write_text(ax, ay + static_cast<int>(row), line, style_id);
+            if (node.runs.empty()) {
+                // Fast path: single style for the whole element.
+                uint16_t style_id = pool.intern(node.style);
+                for (const auto& [row, line] :
+                         lines | std::views::enumerate | std::views::take(ah)) {
+                    canvas.write_text(ax, ay + static_cast<int>(row), line, style_id);
+                }
+            } else {
+                // Styled runs: paint each character segment with its own style.
+                // Track byte offset into `content` as we walk wrapped lines.
+                std::size_t content_byte = 0;
+                std::size_t run_idx = 0;
+
+                for (const auto& [row, line] :
+                         lines | std::views::enumerate | std::views::take(ah)) {
+                    int y = ay + static_cast<int>(row);
+
+                    // Skip whitespace that word_wrap consumed between lines.
+                    // word_wrap may skip leading spaces on continuation lines,
+                    // and the source line has a newline we need to skip.
+                    while (content_byte < node.content.size() &&
+                           node.content.substr(content_byte, line.size()) != line) {
+                        ++content_byte;
+                    }
+
+                    // Paint this line character by character with correct styles
+                    int x_cursor = ax;
+                    std::size_t line_byte = 0;
+                    while (line_byte < line.size()) {
+                        // Find which run covers content_byte + line_byte
+                        std::size_t abs_byte = content_byte + line_byte;
+                        while (run_idx + 1 < node.runs.size() &&
+                               abs_byte >= node.runs[run_idx].byte_offset +
+                                           node.runs[run_idx].byte_length) {
+                            ++run_idx;
+                        }
+
+                        // Determine how many bytes of this run remain on this line
+                        const auto& run = node.runs[std::min(run_idx, node.runs.size() - 1)];
+                        std::size_t run_end = run.byte_offset + run.byte_length;
+                        std::size_t chunk_end = std::min(line.size(), line_byte + (run_end - abs_byte));
+                        if (chunk_end <= line_byte) chunk_end = line_byte + 1;
+
+                        auto chunk = line.substr(line_byte, chunk_end - line_byte);
+                        uint16_t sid = pool.intern(run.style);
+                        canvas.write_text(x_cursor, y, std::string{chunk}, sid);
+                        x_cursor += string_width(chunk);
+                        line_byte = chunk_end;
+                    }
+
+                    content_byte += line.size();
+                }
             }
         },
 

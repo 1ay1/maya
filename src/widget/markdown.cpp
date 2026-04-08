@@ -15,14 +15,39 @@
 namespace maya {
 
 // ============================================================================
-// Inline parser — single-pass, stack-based delimiter matching
+// Utility helpers
 // ============================================================================
 
 namespace {
 
+std::string_view trim(std::string_view s) {
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.remove_prefix(1);
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.remove_suffix(1);
+    return s;
+}
+
+bool starts_with(std::string_view s, std::string_view prefix) {
+    return s.size() >= prefix.size() && s.substr(0, prefix.size()) == prefix;
+}
+
+// Escapable characters per CommonMark spec
+bool is_escapable(char c) {
+    return c == '\\' || c == '`' || c == '*' || c == '_' || c == '{' ||
+           c == '}' || c == '[' || c == ']' || c == '(' || c == ')' ||
+           c == '#' || c == '+' || c == '-' || c == '.' || c == '!' ||
+           c == '|' || c == '~' || c == '<' || c == '>' || c == '"' ||
+           c == '\'' || c == '^';
+}
+
+// ============================================================================
+// Inline parser — single-pass, stack-based delimiter matching
+// ============================================================================
+
 // Find the closing delimiter (linear scan — called only when open found).
+// Respects backslash escapes.
 size_t find_closing(std::string_view text, std::string_view delim, size_t start) {
     for (size_t i = start; i + delim.size() <= text.size(); ++i) {
+        if (text[i] == '\\' && i + 1 < text.size()) { ++i; continue; }
         if (text.substr(i, delim.size()) == delim)
             return i;
     }
@@ -42,17 +67,85 @@ void push_text(std::vector<md::Inline>& result, std::string_view sv) {
     result.push_back(md::Text{std::string{sv}});
 }
 
+void push_char(std::vector<md::Inline>& result, char c) {
+    if (!result.empty()) {
+        auto* prev = std::get_if<md::Text>(&result.back().inner);
+        if (prev) {
+            prev->content += c;
+            return;
+        }
+    }
+    result.push_back(md::Text{std::string(1, c)});
+}
+
 std::vector<md::Inline> parse_inlines(std::string_view text) {
     std::vector<md::Inline> result;
     size_t i = 0;
 
     while (i < text.size()) {
-        // Inline code: `code`
+        // Backslash escape
+        if (text[i] == '\\' && i + 1 < text.size()) {
+            if (is_escapable(text[i + 1])) {
+                push_char(result, text[i + 1]);
+                i += 2;
+                continue;
+            }
+            // Hard line break: backslash before newline
+            if (text[i + 1] == '\n') {
+                result.push_back(md::HardBreak{});
+                i += 2;
+                continue;
+            }
+        }
+
+        // Hard line break: two+ trailing spaces before newline
+        if (text[i] == ' ' && i + 2 < text.size()) {
+            size_t spaces = 0;
+            size_t j = i;
+            while (j < text.size() && text[j] == ' ') { ++spaces; ++j; }
+            if (spaces >= 2 && j < text.size() && text[j] == '\n') {
+                result.push_back(md::HardBreak{});
+                i = j + 1;
+                continue;
+            }
+        }
+
+        // Inline code: `code` or ``code``
         if (text[i] == '`') {
-            size_t end = text.find('`', i + 1);
+            // Count opening backticks
+            size_t ticks = 0;
+            size_t j = i;
+            while (j < text.size() && text[j] == '`') { ++ticks; ++j; }
+            // Find matching closing backticks
+            auto closing = std::string(ticks, '`');
+            size_t end = text.find(std::string_view{closing}, j);
             if (end != std::string_view::npos) {
-                result.push_back(md::Code{std::string{text.substr(i + 1, end - i - 1)}});
-                i = end + 1;
+                auto code = text.substr(j, end - j);
+                // Strip one leading/trailing space if both present (CommonMark)
+                if (code.size() >= 2 && code.front() == ' ' && code.back() == ' ') {
+                    code.remove_prefix(1);
+                    code.remove_suffix(1);
+                }
+                result.push_back(md::Code{std::string{code}});
+                i = end + ticks;
+                continue;
+            }
+            // No closing — emit as text
+            push_text(result, text.substr(i, ticks));
+            i = j;
+            continue;
+        }
+
+        // Bold+italic: ***text*** or ___text___
+        if (i + 2 < text.size() &&
+            ((text[i] == '*' && text[i+1] == '*' && text[i+2] == '*') ||
+             (text[i] == '_' && text[i+1] == '_' && text[i+2] == '_'))) {
+            auto delim = text.substr(i, 3);
+            size_t end = find_closing(text, delim, i + 3);
+            if (end != std::string_view::npos) {
+                auto inner = text.substr(i + 3, end - i - 3);
+                result.push_back(md::BoldItalic{parse_inlines(inner)});
+                i = end + 3;
                 continue;
             }
         }
@@ -88,9 +181,9 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
         // Italic: *text* or _text_ (single delimiter)
         if (text[i] == '*' || text[i] == '_') {
             char delim_ch = text[i];
-            if (i + 1 < text.size() && text[i + 1] != delim_ch) {
+            if (i + 1 < text.size() && text[i + 1] != delim_ch && text[i + 1] != ' ') {
                 size_t end = text.find(delim_ch, i + 1);
-                if (end != std::string_view::npos) {
+                if (end != std::string_view::npos && text[end - 1] != ' ') {
                     auto inner = text.substr(i + 1, end - i - 1);
                     result.push_back(md::Italic{parse_inlines(inner)});
                     i = end + 1;
@@ -105,8 +198,43 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             continue;
         }
 
+        // Image: ![alt](url)
+        if (text[i] == '!' && i + 1 < text.size() && text[i + 1] == '[') {
+            size_t close_bracket = text.find(']', i + 2);
+            if (close_bracket != std::string_view::npos &&
+                close_bracket + 1 < text.size() &&
+                text[close_bracket + 1] == '(') {
+                size_t close_paren = text.find(')', close_bracket + 2);
+                if (close_paren != std::string_view::npos) {
+                    auto alt = text.substr(i + 2, close_bracket - i - 2);
+                    auto url = text.substr(close_bracket + 2,
+                                          close_paren - close_bracket - 2);
+                    result.push_back(md::Image{std::string{alt}, std::string{url}});
+                    i = close_paren + 1;
+                    continue;
+                }
+            }
+            push_text(result, "!");
+            ++i;
+            continue;
+        }
+
         // Link: [text](url)
         if (text[i] == '[') {
+            // Footnote reference: [^label]
+            if (i + 1 < text.size() && text[i + 1] == '^') {
+                size_t close = text.find(']', i + 2);
+                if (close != std::string_view::npos) {
+                    auto label = text.substr(i + 2, close - i - 2);
+                    // Only if it's a pure reference (no (url) after)
+                    if (close + 1 >= text.size() || text[close + 1] != '(') {
+                        result.push_back(md::FootnoteRef{std::string{label}});
+                        i = close + 1;
+                        continue;
+                    }
+                }
+            }
+
             size_t close_bracket = text.find(']', i + 1);
             if (close_bracket != std::string_view::npos &&
                 close_bracket + 1 < text.size() &&
@@ -127,8 +255,31 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             continue;
         }
 
-        // Unmatched special character
-        if (text[i] == '`' || text[i] == '~') {
+        // Autolink: <url> or <email>
+        if (text[i] == '<') {
+            size_t close = text.find('>', i + 1);
+            if (close != std::string_view::npos) {
+                auto content = text.substr(i + 1, close - i - 1);
+                // Check if it looks like a URL or email
+                bool is_url = content.find("://") != std::string_view::npos;
+                bool is_email = content.find('@') != std::string_view::npos &&
+                                content.find(' ') == std::string_view::npos;
+                if (is_url || is_email) {
+                    std::string url_str{content};
+                    if (is_email && !starts_with(content, "mailto:"))
+                        url_str = "mailto:" + url_str;
+                    result.push_back(md::Link{std::string{content}, std::move(url_str)});
+                    i = close + 1;
+                    continue;
+                }
+            }
+            push_text(result, "<");
+            ++i;
+            continue;
+        }
+
+        // Unmatched special characters (! without [, lone ~)
+        if (text[i] == '~' || text[i] == '!') {
             push_text(result, text.substr(i, 1));
             ++i;
             continue;
@@ -138,7 +289,14 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
         size_t start = i;
         while (i < text.size() &&
                text[i] != '`' && text[i] != '*' && text[i] != '_' &&
-               text[i] != '~' && text[i] != '[') {
+               text[i] != '~' && text[i] != '[' && text[i] != '!' &&
+               text[i] != '\\' && text[i] != '<') {
+            // Also break on trailing spaces before newline (hard break detection)
+            if (text[i] == ' ' && i + 2 < text.size()) {
+                size_t j = i;
+                while (j < text.size() && text[j] == ' ') ++j;
+                if (j < text.size() && text[j] == '\n' && (j - i) >= 2) break;
+            }
             ++i;
         }
         if (i > start) {
@@ -149,14 +307,119 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
     return result;
 }
 
-std::string_view trim(std::string_view s) {
-    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.remove_prefix(1);
-    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.remove_suffix(1);
-    return s;
+// ============================================================================
+// Table helpers
+// ============================================================================
+
+bool is_table_row(std::string_view line) {
+    auto t = trim(line);
+    if (t.empty() || t[0] != '|') return false;
+    return t.find('|', 1) != std::string_view::npos;
 }
 
-bool starts_with(std::string_view s, std::string_view prefix) {
-    return s.size() >= prefix.size() && s.substr(0, prefix.size()) == prefix;
+bool is_table_separator(std::string_view line) {
+    auto t = trim(line);
+    if (t.empty() || t[0] != '|') return false;
+    for (char c : t) {
+        if (c != '|' && c != '-' && c != ':' && c != ' ') return false;
+    }
+    return t.find('-') != std::string_view::npos;
+}
+
+std::vector<std::string_view> split_table_cells(std::string_view line) {
+    auto t = trim(line);
+    if (!t.empty() && t.front() == '|') t.remove_prefix(1);
+    if (!t.empty() && t.back() == '|') t.remove_suffix(1);
+
+    std::vector<std::string_view> cells;
+    size_t pos = 0;
+    while (pos < t.size()) {
+        // Handle escaped pipes within cells
+        size_t pipe = pos;
+        while (pipe < t.size()) {
+            if (t[pipe] == '\\' && pipe + 1 < t.size()) { pipe += 2; continue; }
+            if (t[pipe] == '|') break;
+            ++pipe;
+        }
+        cells.push_back(trim(t.substr(pos, pipe - pos)));
+        pos = (pipe < t.size()) ? pipe + 1 : t.size();
+    }
+    return cells;
+}
+
+// ============================================================================
+// List parsing helpers
+// ============================================================================
+
+// How many spaces of indentation does a line have?
+int count_indent(std::string_view line) {
+    int n = 0;
+    for (char c : line) {
+        if (c == ' ') ++n;
+        else if (c == '\t') n += 4;
+        else break;
+    }
+    return n;
+}
+
+// Remove up to `n` spaces of indentation
+std::string_view dedent(std::string_view line, int n) {
+    int removed = 0;
+    size_t i = 0;
+    while (i < line.size() && removed < n) {
+        if (line[i] == ' ') { ++removed; ++i; }
+        else if (line[i] == '\t') { removed += 4; ++i; }
+        else break;
+    }
+    return line.substr(i);
+}
+
+// Check if a line is an unordered list marker (returns content offset, 0 if not)
+int ul_marker_len(std::string_view line) {
+    auto t = trim(line);
+    if (t.size() >= 2 &&
+        (t[0] == '-' || t[0] == '*' || t[0] == '+') &&
+        t[1] == ' ') {
+        // Find position in original line
+        auto offset = static_cast<int>(line.size() - t.size());
+        return offset + 2;
+    }
+    return 0;
+}
+
+// Check if a line is an ordered list marker (returns content offset, 0 if not)
+int ol_marker_len(std::string_view line) {
+    auto t = trim(line);
+    if (t.size() < 3) return 0;
+    size_t d = 0;
+    while (d < t.size() && std::isdigit(static_cast<unsigned char>(t[d]))) ++d;
+    if (d == 0 || d >= t.size()) return 0;
+    if ((t[d] == '.' || t[d] == ')') && d + 1 < t.size() && t[d + 1] == ' ') {
+        auto offset = static_cast<int>(line.size() - t.size());
+        return offset + static_cast<int>(d) + 2;
+    }
+    return 0;
+}
+
+// Extract the starting number from an ordered list line
+int ol_start_num(std::string_view line) {
+    auto t = trim(line);
+    size_t d = 0;
+    while (d < t.size() && std::isdigit(static_cast<unsigned char>(t[d]))) ++d;
+    int num = 0;
+    for (size_t k = 0; k < d; ++k)
+        num = num * 10 + (t[k] - '0');
+    return num;
+}
+
+// Check for task list checkbox: "[ ] " or "[x] " or "[X] "
+// Returns: -1 = not a task, 0 = unchecked, 1 = checked
+int parse_task_checkbox(std::string_view content) {
+    if (content.size() >= 4 && content[0] == '[' && content[2] == ']' && content[3] == ' ') {
+        if (content[1] == ' ') return 0;
+        if (content[1] == 'x' || content[1] == 'X') return 1;
+    }
+    return -1;
 }
 
 } // anonymous namespace
@@ -168,9 +431,9 @@ bool starts_with(std::string_view s, std::string_view prefix) {
 md::Document parse_markdown(std::string_view source) {
     md::Document doc;
 
-    // Split into lines — single pass, no allocation for the views themselves
+    // Split into lines
     std::vector<std::string_view> lines;
-    lines.reserve(32); // reasonable default for typical markdown
+    lines.reserve(32);
     size_t pos = 0;
     while (pos < source.size()) {
         size_t nl = source.find('\n', pos);
@@ -208,7 +471,15 @@ md::Document parse_markdown(std::string_view source) {
             continue;
         }
 
-        // Heading: # ... ######
+        // Setext heading: check if NEXT line is === or ---
+        // (only if we have paragraph_buf accumulating, meaning current line is text)
+        if (!paragraph_buf.empty() && i + 1 <= lines.size()) {
+            // We're in paragraph mode, check if current continuation + next
+            // would form a setext heading. Actually setext is detected when
+            // we see the underline, so handle it below after paragraph check.
+        }
+
+        // ATX Heading: # ... ######
         if (line.size() >= 2 && line[0] == '#') {
             flush_paragraph();
             int level = 0;
@@ -217,21 +488,34 @@ md::Document parse_markdown(std::string_view source) {
                 ++level; ++j;
             }
             if (j < line.size() && line[j] == ' ') ++j;
-            doc.blocks.push_back(md::Heading{level, parse_inlines(line.substr(j))});
+            // Strip trailing #s (CommonMark)
+            auto content = line.substr(j);
+            while (content.size() >= 2 && content.back() == '#') content.remove_suffix(1);
+            content = trim(content);
+            doc.blocks.push_back(md::Heading{level, parse_inlines(content)});
             ++i;
             continue;
         }
 
-        // Fenced code block: ```lang
-        if (starts_with(line, "```")) {
+        // Fenced code block: ```lang or ~~~lang
+        if (starts_with(line, "```") || starts_with(line, "~~~")) {
             flush_paragraph();
-            auto lang = std::string{trim(line.substr(3))};
+            char fence_char = line[0];
+            size_t fence_len = 0;
+            while (fence_len < line.size() && line[fence_len] == fence_char) ++fence_len;
+            auto lang = std::string{trim(line.substr(fence_len))};
             std::string code;
             ++i;
             while (i < lines.size()) {
                 auto cl = lines[i];
                 if (!cl.empty() && cl.back() == '\r') cl.remove_suffix(1);
-                if (starts_with(cl, "```")) { ++i; break; }
+                // Closing fence: same char, at least same length
+                size_t cl_fence = 0;
+                while (cl_fence < cl.size() && cl[cl_fence] == fence_char) ++cl_fence;
+                if (cl_fence >= fence_len && trim(cl.substr(cl_fence)).empty()) {
+                    ++i;
+                    break;
+                }
                 if (!code.empty()) code += '\n';
                 code += cl;
                 ++i;
@@ -240,21 +524,72 @@ md::Document parse_markdown(std::string_view source) {
             continue;
         }
 
-        // Horizontal rule: --- or *** or ___
-        if (line.size() >= 3 &&
-            (line == "---" || line == "***" || line == "___" ||
-             starts_with(line, "---") || starts_with(line, "***"))) {
-            auto t = trim(line);
-            bool is_rule = t.size() >= 3;
-            char first = t[0];
-            if (is_rule && (first == '-' || first == '*' || first == '_')) {
-                bool all_same = true;
-                for (char c : t) {
-                    if (c != first && c != ' ') { all_same = false; break; }
+        // Indented code block: 4+ spaces (only if not in a list context)
+        if (count_indent(line) >= 4 && paragraph_buf.empty()) {
+            flush_paragraph();
+            std::string code;
+            while (i < lines.size()) {
+                auto cl = lines[i];
+                if (!cl.empty() && cl.back() == '\r') cl.remove_suffix(1);
+                if (count_indent(cl) >= 4) {
+                    if (!code.empty()) code += '\n';
+                    code += dedent(cl, 4);
+                    ++i;
+                } else if (trim(cl).empty()) {
+                    // Blank lines can be part of indented code
+                    if (!code.empty()) code += '\n';
+                    ++i;
+                } else {
+                    break;
                 }
-                if (all_same) {
-                    flush_paragraph();
-                    doc.blocks.push_back(md::HRule{});
+            }
+            // Trim trailing blank lines from code
+            while (!code.empty() && code.back() == '\n') code.pop_back();
+            doc.blocks.push_back(md::CodeBlock{std::move(code), {}});
+            continue;
+        }
+
+        // Horizontal rule: ---, ***, ___ (with optional spaces)
+        {
+            auto t = trim(line);
+            if (t.size() >= 3) {
+                char first = t[0];
+                if (first == '-' || first == '*' || first == '_') {
+                    bool all_same = true;
+                    int count = 0;
+                    for (char c : t) {
+                        if (c == first) ++count;
+                        else if (c != ' ') { all_same = false; break; }
+                    }
+                    if (all_same && count >= 3) {
+                        // Check it's not a setext heading (--- under paragraph text)
+                        if (first == '-' && !paragraph_buf.empty()) {
+                            // This is a setext heading level 2
+                            auto heading_text = trim(paragraph_buf);
+                            doc.blocks.push_back(md::Heading{2, parse_inlines(heading_text)});
+                            paragraph_buf.clear();
+                            ++i;
+                            continue;
+                        }
+                        flush_paragraph();
+                        doc.blocks.push_back(md::HRule{});
+                        ++i;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Setext heading level 1: line of ===
+        {
+            auto t = trim(line);
+            if (!t.empty() && t[0] == '=' && !paragraph_buf.empty()) {
+                bool all_eq = true;
+                for (char c : t) { if (c != '=') { all_eq = false; break; } }
+                if (all_eq && t.size() >= 1) {
+                    auto heading_text = trim(paragraph_buf);
+                    doc.blocks.push_back(md::Heading{1, parse_inlines(heading_text)});
+                    paragraph_buf.clear();
                     ++i;
                     continue;
                 }
@@ -262,14 +597,15 @@ md::Document parse_markdown(std::string_view source) {
         }
 
         // Blockquote: > text
-        if (line.size() >= 2 && line[0] == '>') {
+        if (line.size() >= 1 && trim(line)[0] == '>') {
             flush_paragraph();
             std::string bq_text;
             while (i < lines.size()) {
                 auto bl = lines[i];
                 if (!bl.empty() && bl.back() == '\r') bl.remove_suffix(1);
-                if (bl.empty() || bl[0] != '>') break;
-                auto content = bl.substr(1);
+                auto bt = trim(bl);
+                if (bt.empty() || bt[0] != '>') break;
+                auto content = bt.substr(1);
                 if (!content.empty() && content[0] == ' ') content.remove_prefix(1);
                 if (!bq_text.empty()) bq_text += '\n';
                 bq_text += content;
@@ -280,69 +616,166 @@ md::Document parse_markdown(std::string_view source) {
             continue;
         }
 
-        // Unordered list: - item or * item
-        if (line.size() >= 2 &&
-            (line[0] == '-' || line[0] == '*' || line[0] == '+') &&
-            line[1] == ' ') {
-            flush_paragraph();
-            std::vector<md::ListItem> items;
-            while (i < lines.size()) {
-                auto ll = lines[i];
-                if (!ll.empty() && ll.back() == '\r') ll.remove_suffix(1);
-                if (ll.size() >= 2 &&
-                    (ll[0] == '-' || ll[0] == '*' || ll[0] == '+') &&
-                    ll[1] == ' ') {
-                    items.push_back(md::ListItem{parse_inlines(ll.substr(2))});
-                    ++i;
-                } else {
-                    break;
-                }
-            }
-            doc.blocks.push_back(md::List{std::move(items), false});
-            continue;
-        }
+        // Footnote definition: [^label]: content
+        if (starts_with(trim(line), "[^")) {
+            auto t = trim(line);
+            size_t close = t.find("]:");
+            if (close != std::string_view::npos && close > 2) {
+                flush_paragraph();
+                auto label = std::string{t.substr(2, close - 2)};
+                auto first_content = t.substr(close + 2);
+                if (!first_content.empty() && first_content[0] == ' ')
+                    first_content.remove_prefix(1);
 
-        // Ordered list: 1. item
-        if (line.size() >= 3 && std::isdigit(static_cast<unsigned char>(line[0]))) {
-            size_t dot = line.find('.');
-            if (dot != std::string_view::npos && dot + 1 < line.size() &&
-                line[dot + 1] == ' ') {
-                bool all_digits = true;
-                for (size_t k = 0; k < dot; ++k) {
-                    if (!std::isdigit(static_cast<unsigned char>(line[k]))) {
-                        all_digits = false; break;
+                std::string fn_text{first_content};
+                ++i;
+                // Continuation lines: indented by 2+ spaces
+                while (i < lines.size()) {
+                    auto fl = lines[i];
+                    if (!fl.empty() && fl.back() == '\r') fl.remove_suffix(1);
+                    if (trim(fl).empty()) {
+                        fn_text += '\n';
+                        ++i;
+                        continue;
+                    }
+                    if (count_indent(fl) >= 2) {
+                        fn_text += '\n';
+                        fn_text += dedent(fl, 2);
+                        ++i;
+                    } else {
+                        break;
                     }
                 }
-                if (all_digits) {
-                    flush_paragraph();
-                    std::vector<md::ListItem> items;
-                    while (i < lines.size()) {
-                        auto ll = lines[i];
-                        if (!ll.empty() && ll.back() == '\r') ll.remove_suffix(1);
-                        size_t d = ll.find('.');
-                        if (d != std::string_view::npos && d + 1 < ll.size() &&
-                            ll[d + 1] == ' ') {
-                            bool ok = true;
-                            for (size_t k = 0; k < d; ++k) {
-                                if (!std::isdigit(static_cast<unsigned char>(ll[k]))) {
-                                    ok = false; break;
+                auto inner = parse_markdown(fn_text);
+                doc.blocks.push_back(md::FootnoteDef{std::move(label), std::move(inner.blocks)});
+                continue;
+            }
+        }
+
+        // Lists: unordered (- * +) and ordered (1. 1))
+        {
+            int ul_len = ul_marker_len(line);
+            int ol_len = ol_marker_len(line);
+            if (ul_len > 0 || ol_len > 0) {
+                flush_paragraph();
+                bool ordered = ol_len > 0;
+                int marker_len = ordered ? ol_len : ul_len;
+                int start_num = ordered ? ol_start_num(line) : 1;
+                int base_indent = count_indent(line);
+
+                std::vector<md::ListItem> items;
+
+                while (i < lines.size()) {
+                    auto ll = lines[i];
+                    if (!ll.empty() && ll.back() == '\r') ll.remove_suffix(1);
+
+                    int cur_ul = ul_marker_len(ll);
+                    int cur_ol = ol_marker_len(ll);
+                    bool is_item = ordered ? (cur_ol > 0) : (cur_ul > 0);
+                    int cur_indent = count_indent(ll);
+
+                    // Only match items at the same indentation level
+                    if (!is_item || std::abs(cur_indent - base_indent) > 1) {
+                        // Could be a continuation or sub-list
+                        if (trim(ll).empty() || cur_indent > base_indent + 1) {
+                            // Continuation or nested content — append to last item
+                            if (!items.empty()) {
+                                // Collect all continuation/nested lines
+                                std::string sub_text;
+                                while (i < lines.size()) {
+                                    auto sl = lines[i];
+                                    if (!sl.empty() && sl.back() == '\r') sl.remove_suffix(1);
+                                    int si = count_indent(sl);
+                                    bool blank = trim(sl).empty();
+
+                                    // A non-indented non-blank line that's not a list
+                                    // marker at higher indent = end of this item
+                                    if (!blank && si <= base_indent) {
+                                        int sul = ul_marker_len(sl);
+                                        int sol = ol_marker_len(sl);
+                                        if ((ordered && sol > 0 && si == base_indent) ||
+                                            (!ordered && sul > 0 && si == base_indent)) {
+                                            break; // next sibling item
+                                        }
+                                        if (si <= base_indent) break; // end of list
+                                    }
+
+                                    if (!sub_text.empty()) sub_text += '\n';
+                                    sub_text += dedent(sl, marker_len);
+                                    ++i;
                                 }
-                            }
-                            if (ok) {
-                                items.push_back(md::ListItem{parse_inlines(ll.substr(d + 2))});
-                                ++i;
+                                if (!sub_text.empty()) {
+                                    auto sub_doc = parse_markdown(sub_text);
+                                    for (auto& b : sub_doc.blocks) {
+                                        items.back().children.push_back(std::move(b));
+                                    }
+                                }
                                 continue;
                             }
                         }
-                        break;
+                        break; // end of list
                     }
-                    doc.blocks.push_back(md::List{std::move(items), true});
-                    continue;
+
+                    int cur_marker = ordered ? cur_ol : cur_ul;
+                    auto content = ll.substr(static_cast<size_t>(cur_marker));
+
+                    // Check for task list checkbox
+                    int task = parse_task_checkbox(content);
+                    std::optional<bool> checked;
+                    if (task >= 0) {
+                        checked = (task == 1);
+                        content = content.substr(4); // skip "[ ] " or "[x] "
+                    }
+
+                    items.push_back(md::ListItem{
+                        parse_inlines(content),
+                        {},
+                        checked
+                    });
+                    ++i;
                 }
+                doc.blocks.push_back(md::List{std::move(items), ordered, start_num});
+                continue;
             }
         }
 
-        // Regular paragraph text
+        // Table: | col | col |
+        if (is_table_row(line)) {
+            bool is_table = false;
+            if (i + 1 < lines.size()) {
+                auto next_line = lines[i + 1];
+                if (!next_line.empty() && next_line.back() == '\r')
+                    next_line.remove_suffix(1);
+                is_table = is_table_separator(next_line);
+            }
+            if (is_table) {
+                flush_paragraph();
+                auto header_cells = split_table_cells(line);
+                md::TableRow header;
+                for (auto& cell : header_cells) {
+                    header.cells.push_back(md::TableCell{parse_inlines(cell)});
+                }
+                i += 2; // skip header + separator
+
+                std::vector<md::TableRow> rows;
+                while (i < lines.size()) {
+                    auto rl = lines[i];
+                    if (!rl.empty() && rl.back() == '\r') rl.remove_suffix(1);
+                    if (!is_table_row(rl)) break;
+                    auto cells = split_table_cells(rl);
+                    md::TableRow row;
+                    for (auto& cell : cells) {
+                        row.cells.push_back(md::TableCell{parse_inlines(cell)});
+                    }
+                    rows.push_back(std::move(row));
+                    ++i;
+                }
+                doc.blocks.push_back(md::Table{std::move(header), std::move(rows)});
+                continue;
+            }
+        }
+
+        // Regular paragraph text — single newlines are soft breaks (spaces)
         if (!paragraph_buf.empty()) paragraph_buf += ' ';
         paragraph_buf += line;
         ++i;
@@ -356,99 +789,134 @@ md::Document parse_markdown(std::string_view source) {
 // AST to Element conversion — polished terminal rendering
 // ============================================================================
 
-// Color palette for consistent, beautiful output
 namespace colors {
-    constexpr auto text       = Color::rgb(220, 220, 235);
-    constexpr auto heading1   = Color::rgb(255, 255, 255);
-    constexpr auto heading2   = Color::rgb(190, 190, 255);
-    constexpr auto heading3   = Color::rgb(170, 170, 230);
-    constexpr auto heading_dim= Color::rgb(100, 100, 140);
-    constexpr auto bold_fg    = Color::rgb(255, 255, 255);
-    constexpr auto italic_fg  = Color::rgb(200, 200, 230);
-    constexpr auto code_fg    = Color::rgb(245, 220, 120);
-    constexpr auto code_bg    = Color::rgb(35, 35, 48);
-    constexpr auto link_fg    = Color::rgb(100, 160, 255);
-    constexpr auto strike_fg  = Color::rgb(120, 120, 140);
-    constexpr auto quote_bar  = Color::rgb(80, 80, 140);
-    constexpr auto quote_text = Color::rgb(180, 180, 210);
-    constexpr auto list_bullet= Color::rgb(100, 180, 255);
-    constexpr auto list_num   = Color::rgb(100, 180, 255);
-    constexpr auto code_border= Color::rgb(55, 55, 75);
-    constexpr auto code_lang  = Color::rgb(130, 130, 170);
-    constexpr auto hrule_fg   = Color::rgb(60, 60, 85);
+    constexpr auto text        = Color::rgb(220, 220, 235);
+    constexpr auto heading1    = Color::rgb(255, 255, 255);
+    constexpr auto heading2    = Color::rgb(190, 190, 255);
+    constexpr auto heading3    = Color::rgb(170, 170, 230);
+    constexpr auto heading_dim = Color::rgb(100, 100, 140);
+    constexpr auto bold_fg     = Color::rgb(255, 255, 255);
+    constexpr auto italic_fg   = Color::rgb(200, 200, 230);
+    constexpr auto code_fg     = Color::rgb(245, 220, 120);
+    constexpr auto code_bg     = Color::rgb(35, 35, 48);
+    constexpr auto link_fg     = Color::rgb(100, 160, 255);
+    constexpr auto image_fg    = Color::rgb(180, 140, 255);
+    constexpr auto strike_fg   = Color::rgb(120, 120, 140);
+    constexpr auto quote_bar   = Color::rgb(80, 80, 140);
+    constexpr auto quote_text  = Color::rgb(180, 180, 210);
+    constexpr auto list_bullet = Color::rgb(100, 180, 255);
+    constexpr auto list_num    = Color::rgb(100, 180, 255);
+    constexpr auto checkbox_fg = Color::rgb(80, 220, 120);
+    constexpr auto checkbox_off= Color::rgb(100, 100, 120);
+    constexpr auto code_border = Color::rgb(55, 55, 75);
+    constexpr auto code_lang   = Color::rgb(130, 130, 170);
+    constexpr auto hrule_fg    = Color::rgb(60, 60, 85);
+    constexpr auto footnote_fg = Color::rgb(140, 140, 180);
+    constexpr auto table_border= Color::rgb(60, 60, 85);
+    constexpr auto table_header= Color::rgb(190, 190, 255);
 }
 
-Element md_inline_to_element(const md::Inline& span) {
-    return std::visit(overload{
-        [](const md::Text& t) -> Element {
-            return Element{TextElement{.content = t.content}};
+// ============================================================================
+// Inline flattening — convert inline AST to a single TextElement with runs
+// ============================================================================
+// Instead of creating an hstack of separate TextElements (which breaks flex
+// layout because each becomes an independent box), flatten all inline spans
+// into one TextElement with styled runs.  This lets word wrapping operate on
+// the full concatenated text as a single flow.
+
+static void flatten_inline(const md::Inline& span, const Style& inherited,
+                           std::string& out, std::vector<StyledRun>& runs) {
+    std::visit(overload{
+        [&](const md::Text& t) {
+            runs.push_back({out.size(), t.content.size(), inherited});
+            out += t.content;
         },
-        [](const md::Bold& b) -> Element {
-            if (b.children.size() == 1) {
-                // Single child — skip hstack wrapper
-                auto child = md_inline_to_element(b.children[0]);
-                return child | Style{}.with_bold().with_fg(colors::bold_fg);
-            }
-            std::vector<Element> children;
-            children.reserve(b.children.size());
-            for (auto& child : b.children)
-                children.push_back(md_inline_to_element(child));
-            return detail::hstack()(std::move(children))
-                | Style{}.with_bold().with_fg(colors::bold_fg);
+        [&](const md::Bold& b) {
+            auto sty = inherited.merge(Style{}.with_bold().with_fg(colors::bold_fg));
+            for (auto& child : b.children) flatten_inline(child, sty, out, runs);
         },
-        [](const md::Italic& it) -> Element {
-            if (it.children.size() == 1) {
-                auto child = md_inline_to_element(it.children[0]);
-                return child | Style{}.with_italic().with_fg(colors::italic_fg);
-            }
-            std::vector<Element> children;
-            children.reserve(it.children.size());
-            for (auto& child : it.children)
-                children.push_back(md_inline_to_element(child));
-            return detail::hstack()(std::move(children))
-                | Style{}.with_italic().with_fg(colors::italic_fg);
+        [&](const md::Italic& it) {
+            auto sty = inherited.merge(Style{}.with_italic().with_fg(colors::italic_fg));
+            for (auto& child : it.children) flatten_inline(child, sty, out, runs);
         },
-        [](const md::Code& c) -> Element {
-            // Inline code with subtle background
-            return Element{TextElement{
-                .content = " " + c.content + " ",
-                .style = Style{}
-                    .with_fg(colors::code_fg)
-                    .with_bg(colors::code_bg),
-            }};
+        [&](const md::BoldItalic& bi) {
+            auto sty = inherited.merge(Style{}.with_bold().with_italic().with_fg(colors::bold_fg));
+            for (auto& child : bi.children) flatten_inline(child, sty, out, runs);
         },
-        [](const md::Link& l) -> Element {
-            return Element{TextElement{
-                .content = l.text,
-                .style = Style{}
-                    .with_fg(colors::link_fg)
-                    .with_underline(),
-            }};
+        [&](const md::Code& c) {
+            auto content = " " + c.content + " ";
+            auto sty = Style{}.with_fg(colors::code_fg).with_bg(colors::code_bg);
+            runs.push_back({out.size(), content.size(), sty});
+            out += content;
         },
-        [](const md::Strike& s) -> Element {
-            if (s.children.size() == 1) {
-                auto child = md_inline_to_element(s.children[0]);
-                return child | Style{}.with_strikethrough().with_fg(colors::strike_fg);
-            }
-            std::vector<Element> children;
-            children.reserve(s.children.size());
-            for (auto& child : s.children)
-                children.push_back(md_inline_to_element(child));
-            return detail::hstack()(std::move(children))
-                | Style{}.with_strikethrough().with_fg(colors::strike_fg);
+        [&](const md::Link& l) {
+            auto sty = Style{}.with_fg(colors::link_fg).with_underline();
+            runs.push_back({out.size(), l.text.size(), sty});
+            out += l.text;
+        },
+        [&](const md::Image& img) {
+            std::string display = "\xf0\x9f\x96\xbc " + img.alt;
+            auto sty = Style{}.with_fg(colors::image_fg).with_italic();
+            runs.push_back({out.size(), display.size(), sty});
+            out += display;
+        },
+        [&](const md::Strike& s) {
+            auto sty = inherited.merge(Style{}.with_strikethrough().with_fg(colors::strike_fg));
+            for (auto& child : s.children) flatten_inline(child, sty, out, runs);
+        },
+        [&](const md::FootnoteRef& f) {
+            auto content = "[" + f.label + "]";
+            auto sty = Style{}.with_fg(colors::footnote_fg).with_italic();
+            runs.push_back({out.size(), content.size(), sty});
+            out += content;
+        },
+        [&](const md::HardBreak&) {
+            runs.push_back({out.size(), 1, inherited});
+            out += '\n';
         },
     }, span.inner);
 }
 
-// Build inline spans into an element — avoids hstack for single spans.
+// Public API for backward compat — still used for heading prefix rendering
+Element md_inline_to_element(const md::Inline& span) {
+    std::string content;
+    std::vector<StyledRun> runs;
+    flatten_inline(span, Style{}.with_fg(colors::text), content, runs);
+    if (runs.size() <= 1 && !runs.empty()) {
+        return Element{TextElement{.content = std::move(content), .style = runs[0].style}};
+    }
+    return Element{TextElement{
+        .content = std::move(content),
+        .style = Style{}.with_fg(colors::text),
+        .runs = std::move(runs),
+    }};
+}
+
+// Build inline spans into a single TextElement with styled runs.
 static Element build_inline_row(const std::vector<md::Inline>& spans) {
     if (spans.empty()) return Element{TextElement{}};
-    if (spans.size() == 1) return md_inline_to_element(spans[0]);
-    std::vector<Element> elems;
-    elems.reserve(spans.size());
-    for (auto& s : spans)
-        elems.push_back(md_inline_to_element(s));
-    return detail::hstack()(std::move(elems));
+
+    std::string content;
+    std::vector<StyledRun> runs;
+    Style base = Style{}.with_fg(colors::text);
+
+    for (auto& s : spans) {
+        flatten_inline(s, base, content, runs);
+    }
+
+    // Optimize: single run → use simple TextElement
+    if (runs.size() == 1) {
+        return Element{TextElement{
+            .content = std::move(content),
+            .style = runs[0].style,
+        }};
+    }
+
+    return Element{TextElement{
+        .content = std::move(content),
+        .style = base,
+        .runs = std::move(runs),
+    }};
 }
 
 Element md_block_to_element(const md::Block& block) {
@@ -457,7 +925,6 @@ Element md_block_to_element(const md::Block& block) {
             return build_inline_row(p.spans);
         },
         [](const md::Heading& h) -> Element {
-            // Style progression: h1=bright white bold, h2=blue-white, h3=dimmer
             Style sty = Style{}.with_bold();
             switch (h.level) {
                 case 1: sty = sty.with_fg(colors::heading1); break;
@@ -469,31 +936,22 @@ Element md_block_to_element(const md::Block& block) {
             std::string prefix(static_cast<size_t>(h.level), '#');
             prefix += ' ';
 
-            if (h.spans.size() == 1) {
-                // Fast path: single span heading
-                auto child = md_inline_to_element(h.spans[0]);
-                return detail::hstack()(
-                    Element{TextElement{
-                        .content = std::move(prefix),
-                        .style = Style{}.with_fg(colors::heading_dim).with_bold(),
-                    }},
-                    child | sty
-                );
+            // Flatten heading into single TextElement with styled runs
+            std::string content;
+            std::vector<StyledRun> runs;
+            runs.push_back({0, prefix.size(),
+                Style{}.with_fg(colors::heading_dim).with_bold()});
+            content += prefix;
+            for (auto& s : h.spans) {
+                flatten_inline(s, sty, content, runs);
             }
-
-            std::vector<Element> spans;
-            spans.reserve(h.spans.size() + 1);
-            spans.push_back(Element{TextElement{
-                .content = std::move(prefix),
-                .style = Style{}.with_fg(colors::heading_dim).with_bold(),
-            }});
-            for (auto& s : h.spans)
-                spans.push_back(md_inline_to_element(s));
-            auto row = detail::hstack()(std::move(spans));
-            return row | sty;
+            return Element{TextElement{
+                .content = std::move(content),
+                .style = sty,
+                .runs = std::move(runs),
+            }};
         },
         [](const md::CodeBlock& c) -> Element {
-            // Code block with rounded border and language label
             auto builder = detail::vstack()
                 .border(BorderStyle::Round)
                 .border_color(colors::code_border)
@@ -519,7 +977,6 @@ Element md_block_to_element(const md::Block& block) {
             for (auto& child : bq.children)
                 children.push_back(md_block_to_element(child));
 
-            // Colored bar with italic quote text
             return detail::hstack()(
                 Element{TextElement{
                     .content = "\xe2\x94\x82 ",  // "│ "
@@ -532,11 +989,20 @@ Element md_block_to_element(const md::Block& block) {
         [](const md::List& l) -> Element {
             std::vector<Element> items;
             items.reserve(l.items.size());
-            int num = 1;
+            int num = l.start_num;
             for (auto& item : l.items) {
                 std::string prefix;
                 Style prefix_style;
-                if (l.ordered) {
+
+                if (item.checked.has_value()) {
+                    if (*item.checked) {
+                        prefix = "  \xe2\x98\x91 ";  // "  ☑ "
+                        prefix_style = Style{}.with_fg(colors::checkbox_fg);
+                    } else {
+                        prefix = "  \xe2\x98\x90 ";  // "  ☐ "
+                        prefix_style = Style{}.with_fg(colors::checkbox_off);
+                    }
+                } else if (l.ordered) {
                     prefix = std::to_string(num++) + ". ";
                     prefix_style = Style{}.with_fg(colors::list_num).with_bold();
                 } else {
@@ -544,27 +1010,120 @@ Element md_block_to_element(const md::Block& block) {
                     prefix_style = Style{}.with_fg(colors::list_bullet);
                 }
 
-                auto content = build_inline_row(item.spans);
-                items.push_back(detail::hstack()(
-                    Element{TextElement{
-                        .content = std::move(prefix),
-                        .style = prefix_style,
-                    }},
-                    std::move(content)
-                ));
+                // Flatten prefix + inline content into single TextElement
+                std::string content;
+                std::vector<StyledRun> runs;
+                Style base = Style{}.with_fg(colors::text);
+
+                runs.push_back({0, prefix.size(), prefix_style});
+                content += prefix;
+                for (auto& s : item.spans) {
+                    flatten_inline(s, base, content, runs);
+                }
+
+                auto item_elem = Element{TextElement{
+                    .content = std::move(content),
+                    .style = base,
+                    .runs = std::move(runs),
+                }};
+
+                if (item.children.empty()) {
+                    items.push_back(std::move(item_elem));
+                } else {
+                    // Item with sub-content (nested lists, multi-para)
+                    std::vector<Element> sub;
+                    sub.reserve(item.children.size() + 1);
+                    sub.push_back(std::move(item_elem));
+                    for (auto& child : item.children) {
+                        sub.push_back(md_block_to_element(child));
+                    }
+                    items.push_back(detail::vstack()(std::move(sub)));
+                }
             }
             return detail::vstack()(std::move(items));
         },
         [](const md::HRule&) -> Element {
-            // Simple text-based rule — avoids ComponentElement overhead
             return Element{TextElement{
                 .content = "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
                            "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
                            "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
                            "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
-                           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",  // 20× "─"
+                           "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",  // 20x "─"
                 .style = Style{}.with_fg(colors::hrule_fg),
             }};
+        },
+        [](const md::Table& tbl) -> Element {
+            int ncols = static_cast<int>(tbl.header.cells.size());
+            if (ncols == 0) return Element{TextElement{}};
+
+            // Build header row
+            std::vector<Element> header_cells;
+            header_cells.reserve(static_cast<size_t>(ncols));
+            for (auto& cell : tbl.header.cells) {
+                auto content = build_inline_row(cell.spans);
+                header_cells.push_back(
+                    detail::hstack().padding(0, 1, 0, 1)(
+                        std::move(content)
+                            | Style{}.with_bold().with_fg(colors::table_header)
+                    )
+                );
+            }
+
+            std::vector<Element> rows;
+            rows.reserve(tbl.rows.size() + 2);
+
+            rows.push_back(detail::hstack()(std::move(header_cells)));
+
+            // Separator
+            std::string sep;
+            for (int c = 0; c < ncols; ++c) {
+                if (c > 0) sep += "\xe2\x94\xbc"; // "┼"
+                sep += "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+                       "\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80"
+                       "\xe2\x94\x80\xe2\x94\x80";  // 8x "─"
+            }
+            rows.push_back(Element{TextElement{
+                .content = std::move(sep),
+                .style = Style{}.with_fg(colors::table_border),
+            }});
+
+            // Data rows
+            for (auto& row : tbl.rows) {
+                std::vector<Element> cells;
+                cells.reserve(static_cast<size_t>(ncols));
+                for (size_t c = 0; c < static_cast<size_t>(ncols); ++c) {
+                    if (c < row.cells.size()) {
+                        auto content = build_inline_row(row.cells[c].spans);
+                        cells.push_back(
+                            detail::hstack().padding(0, 1, 0, 1)(std::move(content))
+                        );
+                    } else {
+                        cells.push_back(
+                            detail::hstack().padding(0, 1, 0, 1)(
+                                Element{TextElement{.content = ""}}
+                            )
+                        );
+                    }
+                }
+                rows.push_back(detail::hstack()(std::move(cells)));
+            }
+
+            return detail::vstack()(std::move(rows));
+        },
+        [](const md::FootnoteDef& fn) -> Element {
+            std::vector<Element> parts;
+            parts.reserve(fn.children.size() + 1);
+            parts.push_back(Element{TextElement{
+                .content = "[" + fn.label + "]:",
+                .style = Style{}.with_fg(colors::footnote_fg).with_bold(),
+            }});
+            for (auto& child : fn.children) {
+                parts.push_back(detail::hstack()(
+                    Element{TextElement{.content = "  "}},
+                    md_block_to_element(child)
+                ));
+            }
+            return detail::vstack()(std::move(parts));
         },
     }, block.inner);
 }
@@ -573,7 +1132,6 @@ Element markdown(std::string_view source) {
     auto doc = parse_markdown(source);
     if (doc.blocks.empty()) return Element{TextElement{""}};
 
-    // Single block — skip vstack wrapper entirely
     if (doc.blocks.size() == 1)
         return md_block_to_element(doc.blocks[0]);
 
@@ -590,24 +1148,20 @@ Element markdown(std::string_view source) {
 // ============================================================================
 
 size_t StreamingMarkdown::find_block_boundary() const noexcept {
-    // Walk forward from committed_ tracking code fence state, find the
-    // last position where a complete block ends.  A block boundary is a
-    // blank line (\n\n) that is NOT inside a code fence.
     bool in_fence = in_code_fence_;
     size_t last_boundary = committed_;
 
     size_t i = committed_;
     while (i < source_.size()) {
-        // Check for code fence toggle
+        // Check for code fence toggle (``` or ~~~)
         if (i + 3 <= source_.size() &&
-            source_[i] == '`' && source_[i+1] == '`' && source_[i+2] == '`') {
-            // Find end of this line
+            ((source_[i] == '`' && source_[i+1] == '`' && source_[i+2] == '`') ||
+             (source_[i] == '~' && source_[i+1] == '~' && source_[i+2] == '~'))) {
             size_t eol = source_.find('\n', i);
-            if (eol == std::string::npos) break; // incomplete fence line
+            if (eol == std::string::npos) break;
             in_fence = !in_fence;
             i = eol + 1;
             if (!in_fence) {
-                // Just closed a code fence — this is a block boundary
                 last_boundary = i;
             }
             continue;
@@ -617,7 +1171,6 @@ size_t StreamingMarkdown::find_block_boundary() const noexcept {
         if (!in_fence && source_[i] == '\n') {
             size_t next = i + 1;
             if (next < source_.size() && source_[next] == '\n') {
-                // Double newline — block boundary after it
                 last_boundary = next + 1;
                 i = next + 1;
                 continue;
@@ -625,13 +1178,12 @@ size_t StreamingMarkdown::find_block_boundary() const noexcept {
             // Single newline + block-level marker = boundary
             if (next < source_.size()) {
                 char c = source_[next];
-                if (c == '#' || c == '>' || c == '-' || c == '*' || c == '+') {
+                if (c == '#' || c == '>' || c == '-' || c == '*' || c == '+' || c == '|') {
                     last_boundary = next;
                 }
             }
         }
 
-        // Advance to next line
         size_t eol = source_.find('\n', i);
         if (eol == std::string::npos) break;
         i = eol + 1;
@@ -643,17 +1195,14 @@ size_t StreamingMarkdown::find_block_boundary() const noexcept {
 void StreamingMarkdown::set_content(std::string_view content) {
     if (content.size() >= source_.size() &&
         content.substr(0, source_.size()) == source_) {
-        // Pure append — fast path
         if (content.size() > source_.size()) {
             source_ = std::string{content};
         }
     } else {
-        // Content changed (shouldn't happen in streaming, but handle it)
         clear();
         source_ = std::string{content};
     }
 
-    // Find new complete blocks and parse them
     size_t boundary = find_block_boundary();
     if (boundary > committed_) {
         auto new_text = std::string_view{source_}.substr(committed_, boundary - committed_);
@@ -661,10 +1210,10 @@ void StreamingMarkdown::set_content(std::string_view content) {
         for (auto& block : doc.blocks) {
             blocks_.push_back(md_block_to_element(block));
         }
-        // Update fence state by counting fences in the committed region
         for (size_t j = committed_; j < boundary; ++j) {
             if (j + 3 <= boundary &&
-                source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') {
+                ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
+                 (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'))) {
                 in_code_fence_ = !in_code_fence_;
             }
         }
@@ -684,7 +1233,8 @@ void StreamingMarkdown::append(std::string_view text) {
         }
         for (size_t j = committed_; j < boundary; ++j) {
             if (j + 3 <= boundary &&
-                source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') {
+                ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
+                 (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'))) {
                 in_code_fence_ = !in_code_fence_;
             }
         }
@@ -712,7 +1262,6 @@ void StreamingMarkdown::clear() {
 }
 
 Element StreamingMarkdown::build() const {
-    // Combine cached blocks + raw tail
     std::string_view tail;
     if (committed_ < source_.size()) {
         tail = std::string_view{source_}.substr(committed_);
@@ -726,11 +1275,7 @@ Element StreamingMarkdown::build() const {
     if (total == 1 && !has_tail) return blocks_[0];
 
     if (total == 1 && blocks_.empty()) {
-        // Only tail, no cached blocks — render as styled plain text
-        return Element{TextElement{
-            .content = std::string{tail},
-            .style = Style{}.with_fg(Color::rgb(220, 220, 235)),
-        }};
+        return markdown(tail);
     }
 
     std::vector<Element> all;
@@ -738,11 +1283,10 @@ Element StreamingMarkdown::build() const {
     for (auto& b : blocks_) all.push_back(b);
 
     if (has_tail) {
-        // Render the in-progress tail as plain styled text
-        all.push_back(Element{TextElement{
-            .content = std::string{tail},
-            .style = Style{}.with_fg(Color::rgb(220, 220, 235)),
-        }});
+        auto tail_doc = parse_markdown(tail);
+        for (auto& block : tail_doc.blocks) {
+            all.push_back(md_block_to_element(block));
+        }
     }
 
     return detail::vstack().gap(1)(std::move(all));

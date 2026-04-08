@@ -118,10 +118,28 @@ truncate_middle(std::string_view text, int max_width);
 // Satisfies the Measurable concept. During layout, measure() computes
 // the Size this text would occupy given a column constraint.
 
+// ============================================================================
+// StyledRun — a byte range within a TextElement with its own style
+// ============================================================================
+// Used for inline rich text (e.g. markdown paragraphs with bold/italic spans).
+// The `content` field holds the full concatenated text for measurement and
+// word wrapping.  Runs map byte ranges back to per-span styles for painting.
+
+struct StyledRun {
+    std::size_t byte_offset = 0;
+    std::size_t byte_length = 0;
+    Style       style;
+};
+
 struct TextElement {
     std::string content;
     Style       style;
     TextWrap    wrap = TextWrap::Wrap;
+
+    /// Styled runs within content.  When non-empty, the renderer paints each
+    /// run with its own style instead of using the base `style` for the whole
+    /// element.  Runs must cover the entire content in order and not overlap.
+    std::vector<StyledRun> runs;
 
     // -- Measurement ---------------------------------------------------------
 

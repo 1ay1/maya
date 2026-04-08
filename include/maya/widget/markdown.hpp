@@ -1,13 +1,16 @@
 #pragma once
-// maya::widget::markdown — Terminal markdown rendering
+// maya::widget::markdown — Full-featured terminal markdown rendering
 //
-// Parses a subset of Markdown and converts it to maya Element trees.
-// Supports: headings, bold, italic, inline code, code blocks, lists,
-// blockquotes, links, horizontal rules, and strikethrough.
+// Parses CommonMark + GFM markdown and converts to maya Element trees.
+// Supports: headings (ATX + setext), bold, italic, bold+italic, inline code,
+// fenced + indented code blocks, blockquotes, nested lists (ordered/unordered),
+// task lists, tables, links, images, footnotes, strikethrough, horizontal rules,
+// backslash escapes, autolinks, and hard line breaks.
 //
 // Usage:
-//   auto ui = md("## Hello\nThis is **bold** and `code`.");
+//   auto ui = markdown("## Hello\nThis is **bold** and `code`.");
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -22,48 +25,69 @@ namespace md {
 // Inline AST nodes (within paragraphs/headings)
 // ============================================================================
 
-struct Text       { std::string content; };
-struct Bold       { std::vector<struct Inline> children; };
-struct Italic     { std::vector<struct Inline> children; };
-struct Code       { std::string content; };
-struct Link       { std::string text; std::string url; };
-struct Strike     { std::vector<struct Inline> children; };
+struct Text        { std::string content; };
+struct Bold        { std::vector<struct Inline> children; };
+struct Italic      { std::vector<struct Inline> children; };
+struct BoldItalic  { std::vector<struct Inline> children; };
+struct Code        { std::string content; };
+struct Link        { std::string text; std::string url; };
+struct Image       { std::string alt; std::string url; };
+struct Strike      { std::vector<struct Inline> children; };
+struct FootnoteRef { std::string label; };
+struct HardBreak   {};
 
 struct Inline {
-    using Variant = std::variant<Text, Bold, Italic, Code, Link, Strike>;
+    using Variant = std::variant<Text, Bold, Italic, BoldItalic, Code,
+                                 Link, Image, Strike, FootnoteRef, HardBreak>;
     Variant inner;
 
-    Inline(Text t)   : inner(std::move(t)) {}
-    Inline(Bold b)   : inner(std::move(b)) {}
-    Inline(Italic i) : inner(std::move(i)) {}
-    Inline(Code c)   : inner(std::move(c)) {}
-    Inline(Link l)   : inner(std::move(l)) {}
-    Inline(Strike s) : inner(std::move(s)) {}
+    Inline(Text t)        : inner(std::move(t)) {}
+    Inline(Bold b)        : inner(std::move(b)) {}
+    Inline(Italic i)      : inner(std::move(i)) {}
+    Inline(BoldItalic bi) : inner(std::move(bi)) {}
+    Inline(Code c)        : inner(std::move(c)) {}
+    Inline(Link l)        : inner(std::move(l)) {}
+    Inline(Image im)      : inner(std::move(im)) {}
+    Inline(Strike s)      : inner(std::move(s)) {}
+    Inline(FootnoteRef f) : inner(std::move(f)) {}
+    Inline(HardBreak)     : inner(HardBreak{}) {}
 };
 
 // ============================================================================
 // Block AST nodes
 // ============================================================================
 
-struct Paragraph  { std::vector<Inline> spans; };
-struct Heading    { int level; std::vector<Inline> spans; };
-struct CodeBlock  { std::string content; std::string lang; };
-struct Blockquote { std::vector<struct Block> children; };
-struct ListItem   { std::vector<Inline> spans; };
-struct List       { std::vector<ListItem> items; bool ordered; };
-struct HRule      {};
+struct Paragraph   { std::vector<Inline> spans; };
+struct Heading     { int level; std::vector<Inline> spans; };
+struct CodeBlock   { std::string content; std::string lang; };
+struct Blockquote  { std::vector<struct Block> children; };
+
+struct ListItem {
+    std::vector<Inline> spans;                // first-line inline content
+    std::vector<struct Block> children;       // sub-blocks (nested lists, multi-para)
+    std::optional<bool> checked;              // nullopt = normal, true/false = task
+};
+struct List        { std::vector<ListItem> items; bool ordered; int start_num = 1; };
+
+struct HRule       {};
+struct TableCell   { std::vector<Inline> spans; };
+struct TableRow    { std::vector<TableCell> cells; };
+struct Table       { TableRow header; std::vector<TableRow> rows; };
+struct FootnoteDef { std::string label; std::vector<struct Block> children; };
 
 struct Block {
     using Variant = std::variant<Paragraph, Heading, CodeBlock,
-                                 Blockquote, List, HRule>;
+                                 Blockquote, List, HRule, Table, FootnoteDef>;
     Variant inner;
 
-    Block(Paragraph p)  : inner(std::move(p)) {}
-    Block(Heading h)    : inner(std::move(h)) {}
-    Block(CodeBlock c)  : inner(std::move(c)) {}
-    Block(Blockquote b) : inner(std::move(b)) {}
-    Block(List l)       : inner(std::move(l)) {}
-    Block(HRule)        : inner(HRule{}) {}
+    Block(Paragraph p)   : inner(std::move(p)) {}
+    Block(Heading h)     : inner(std::move(h)) {}
+    Block(CodeBlock c)   : inner(std::move(c)) {}
+    Block(Blockquote b)  : inner(std::move(b)) {}
+    Block(List l)        : inner(std::move(l)) {}
+    Block(HRule)         : inner(HRule{}) {}
+    Block(Table t)       : inner(std::move(t)) {}
+    Block(FootnoteDef f) : inner(std::move(f)) {}
 };
 
 struct Document {
@@ -96,8 +120,8 @@ struct Document {
 // StreamingMarkdown — Progressive per-block rendering for streaming text
 // ============================================================================
 // Like Claude Code: completed blocks are parsed as markdown and cached.
-// Only the trailing incomplete block is rendered as plain text.
-// Each frame does O(new_chars) work, not O(total_chars).
+// The trailing incomplete block is parsed each frame (not raw text).
+// Each frame does O(new_chars) work for committed blocks, not O(total_chars).
 //
 // Usage:
 //   StreamingMarkdown md;
@@ -132,7 +156,7 @@ public:
     /// Reset all state for a new stream.
     void clear();
 
-    /// Build the element tree: cached blocks + raw tail.
+    /// Build the element tree: cached blocks + parsed tail.
     [[nodiscard]] Element build() const;
 
     /// Current full source text.

@@ -27,7 +27,7 @@
 #include <utility>
 #include <vector>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../element/text.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
@@ -110,21 +110,22 @@ public:
             output.push_back(build_data_row(rows_[r], widths, pad, alt));
         }
 
-        auto content = detail::vstack()(std::move(output));
+        auto content = dsl::v(std::move(output));
 
         if (cfg_.show_border) {
-            auto builder = detail::box()
-                .border(BorderStyle::Round)
-                .border_color(cfg_.border_color)
-                .padding(0, 1, 0, 1);
+            auto bordered = std::move(content)
+                | dsl::border(BorderStyle::Round)
+                | dsl::bcolor(cfg_.border_color)
+                | dsl::padding(0, 1, 0, 1);
             if (!cfg_.title.empty()) {
-                builder.border_text(" " + cfg_.title + " ",
-                    BorderTextPos::Top, BorderTextAlign::Start);
+                bordered = std::move(bordered)
+                    | dsl::btext(" " + cfg_.title + " ",
+                        BorderTextPos::Top, BorderTextAlign::Start);
             }
-            return std::move(builder)(std::move(content));
+            return std::move(bordered).build();
         }
 
-        return content;
+        return content.build();
     }
 
 private:

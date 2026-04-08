@@ -13,7 +13,7 @@
 #include <string_view>
 #include <vector>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/style.hpp"
 #include "spinner.hpp"
 
@@ -95,7 +95,7 @@ public:
             ++line_count;
         }
 
-        return detail::vstack()(std::move(elems));
+        return dsl::v(std::move(elems)).build();
     }
 
 private:
@@ -109,7 +109,7 @@ private:
 
         if (active_) {
             // Active: "Thinking..." + spinner + chevron
-            return detail::hstack()(
+            return dsl::h(
                 Element{TextElement{
                     .content = "Thinking... ",
                     .style = label_style,
@@ -121,7 +121,7 @@ private:
                     .style = chev_style,
                     .wrap = TextWrap::NoWrap,
                 }}
-            );
+            ).build();
         }
 
         // Inactive: single text element

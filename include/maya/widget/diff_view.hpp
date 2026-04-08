@@ -18,7 +18,7 @@
 #include <string_view>
 #include <vector>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/style.hpp"
 
 namespace maya {
@@ -138,14 +138,14 @@ struct DiffView {
         }
 
         if (config.show_border) {
-            return detail::vstack()
-                .border(BorderStyle::Round)
-                .border_color(config.border_color)
-                .border_text(" " + file_path + " ", BorderTextPos::Top)
-                .padding(0, 1, 0, 1)(std::move(lines));
+            return (dsl::v(std::move(lines))
+                | dsl::border(BorderStyle::Round)
+                | dsl::bcolor(config.border_color)
+                | dsl::btext(" " + file_path + " ", BorderTextPos::Top)
+                | dsl::padding(0, 1, 0, 1)).build();
         }
 
-        return detail::vstack()(std::move(lines));
+        return dsl::v(std::move(lines)).build();
     }
 };
 

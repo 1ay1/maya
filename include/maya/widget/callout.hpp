@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/style.hpp"
 
 namespace maya {
@@ -113,7 +113,7 @@ public:
             }});
         }
 
-        return detail::vstack()(std::move(rows));
+        return dsl::v(std::move(rows)).build();
     }
 
 private:

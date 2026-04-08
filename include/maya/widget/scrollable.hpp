@@ -10,7 +10,7 @@
 //   // In event handler: scroll.scroll_down(), scroll.scroll_up()
 //   auto ui = scroll.build();
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../element/element.hpp"
 #include "../style/style.hpp"
 #include "../style/color.hpp"
@@ -111,28 +111,20 @@ public:
             }
         }
 
-        // Viewport: fixed height, clips overflow
-        auto viewport = detail::vstack()
-            .height(Dimension::fixed(cfg_.height))
-            .overflow(Overflow::Hidden);
-
         // Inner content shifted upward by offset using negative top margin
-        auto inner = detail::vstack()
-            .margin(-offset_, 0, 0, 0);
-
-        auto content_box = inner(content_);
+        auto content_box = (dsl::v(content_) | dsl::margin(-offset_, 0, 0, 0)).build();
 
         if (cfg_.show_indicator && content_height_ > cfg_.height) {
-            return detail::hstack()(
-                viewport(std::move(content_box)),
+            return dsl::h(
+                (dsl::v(std::move(content_box)) | dsl::height(cfg_.height) | dsl::overflow(Overflow::Hidden)).build(),
                 Element{TextElement{
                     .content = indicator,
                     .style   = Style{}.with_fg(cfg_.indicator_color),
                 }}
-            );
+            ).build();
         }
 
-        return viewport(std::move(content_box));
+        return (dsl::v(std::move(content_box)) | dsl::height(cfg_.height) | dsl::overflow(Overflow::Hidden)).build();
     }
 
     /// Implicit conversion to Element.

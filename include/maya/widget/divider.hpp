@@ -9,7 +9,7 @@
 #include <string>
 #include <string_view>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
 
@@ -64,7 +64,7 @@ public:
                 std::string right_line;
                 for (int i = 0; i < right_len; ++i) right_line += ch;
 
-                return detail::hstack()(
+                return dsl::h(
                     Element{TextElement{
                         .content = std::move(left_line),
                         .style = cfg.line_style,
@@ -77,7 +77,7 @@ public:
                         .content = std::move(right_line),
                         .style = cfg.line_style,
                     }}
-                );
+                ).build();
             },
             .layout = {},
         }};

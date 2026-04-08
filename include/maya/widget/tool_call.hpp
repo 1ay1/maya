@@ -22,7 +22,7 @@
 #include <string_view>
 #include <vector>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
 
@@ -83,20 +83,19 @@ public:
         else if (status_ == ToolCallStatus::Confirmation)
             border_color = Color::rgb(120, 100, 50);
 
-        auto builder = detail::box()
-            .border(BorderStyle::Round)
-            .border_color(border_color)
-            .border_text(border_label, BorderTextPos::Top, BorderTextAlign::Start)
-            .padding(0, 1, 0, 1);
-
         if (expanded_ && content_) {
-            return std::move(builder)(
-                build_header(),
-                *content_
-            );
+            return (dsl::v(build_header(), *content_)
+                | dsl::border(BorderStyle::Round)
+                | dsl::bcolor(border_color)
+                | dsl::btext(border_label, BorderTextPos::Top, BorderTextAlign::Start)
+                | dsl::padding(0, 1, 0, 1)).build();
         }
 
-        return std::move(builder)(build_header());
+        return (dsl::v(build_header())
+            | dsl::border(BorderStyle::Round)
+            | dsl::bcolor(border_color)
+            | dsl::btext(border_label, BorderTextPos::Top, BorderTextAlign::Start)
+            | dsl::padding(0, 1, 0, 1)).build();
     }
 
 private:

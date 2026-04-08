@@ -103,6 +103,41 @@
 #include <maya/widget/agent_tool.hpp>
 #include <maya/widget/fetch_tool.hpp>
 
+// -- Input widgets: forms and controls --------------------------------------
+#include <maya/widget/textarea.hpp>
+#include <maya/widget/checkbox.hpp>
+#include <maya/widget/radio.hpp>
+#include <maya/widget/button.hpp>
+#include <maya/widget/slider.hpp>
+
+// -- Data display widgets ---------------------------------------------------
+#include <maya/widget/list.hpp>
+#include <maya/widget/tree.hpp>
+#include <maya/widget/sparkline.hpp>
+
+// -- Navigation widgets -----------------------------------------------------
+#include <maya/widget/tabs.hpp>
+#include <maya/widget/breadcrumb.hpp>
+#include <maya/widget/menu.hpp>
+#include <maya/widget/command_palette.hpp>
+
+// -- Overlay widgets --------------------------------------------------------
+#include <maya/widget/modal.hpp>
+#include <maya/widget/popup.hpp>
+
+// -- Visualization widgets --------------------------------------------------
+#include <maya/widget/bar_chart.hpp>
+#include <maya/widget/line_chart.hpp>
+#include <maya/widget/gauge.hpp>
+#include <maya/widget/heatmap.hpp>
+
+// -- Specialized widgets ----------------------------------------------------
+#include <maya/widget/log_viewer.hpp>
+#include <maya/widget/image.hpp>
+#include <maya/widget/calendar.hpp>
+#include <maya/widget/canvas.hpp>
+#include <maya/widget/key_help.hpp>
+
 // -- App: static region for scrollback freeze --------------------------------
 #include <maya/app/static_region.hpp>
 

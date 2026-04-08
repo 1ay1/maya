@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
 
@@ -63,12 +63,6 @@ public:
         auto border_color = Color::rgb(50, 54, 62);
         if (status_ == ReadStatus::Failed)
             border_color = Color::rgb(120, 60, 65);
-
-        auto builder = detail::box()
-            .border(BorderStyle::Round)
-            .border_color(border_color)
-            .border_text(border_label, BorderTextPos::Top, BorderTextAlign::Start)
-            .padding(0, 1, 0, 1);
 
         std::vector<Element> rows;
 
@@ -173,7 +167,11 @@ public:
             }
         }
 
-        return std::move(builder)(detail::vstack()(std::move(rows)));
+        return (dsl::v(std::move(rows))
+            | dsl::border(BorderStyle::Round)
+            | dsl::bcolor(border_color)
+            | dsl::btext(border_label, BorderTextPos::Top, BorderTextAlign::Start)
+            | dsl::padding(0, 1, 0, 1)).build();
     }
 
 private:

@@ -18,7 +18,7 @@
 #include <string_view>
 #include <vector>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/style.hpp"
 
 namespace maya {
@@ -178,10 +178,10 @@ public:
             .runs = std::move(runs),
         }};
 
-        return detail::vstack()(
+        return dsl::v(
             std::move(divider),
             std::move(status_line)
-        );
+        ).build();
     }
 };
 

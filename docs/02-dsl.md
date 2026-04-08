@@ -366,3 +366,175 @@ auto ui = v(
 
 The tree structure, borders, padding, and static text are fully resolved at
 compile time. Only the `dyn()` and `map()` nodes execute at runtime.
+
+## Runtime Pipes
+
+The compile-time DSL pipes (`pad<1>`, `border_<Round>`, `bcol<50,54,62>`) only
+work with compile-time values. Runtime pipes fill the gap — same `|` syntax, but
+accepting runtime values (variables, function results, theme colors, etc.).
+
+All runtime pipe factories live in the `maya::dsl` namespace.
+
+### Layout
+
+```cpp
+padding(int all)                        // uniform padding
+padding(int v, int h)                   // vertical, horizontal
+padding(int t, int r, int b, int l)     // top, right, bottom, left
+
+gap(int g)                              // gap between children
+
+margin(int all)                         // uniform margin
+margin(int v, int h)                    // vertical, horizontal
+margin(int t, int r, int b, int l)      // top, right, bottom, left
+
+grow(float g = 1.0f)                    // flex grow factor
+width(int w)                            // fixed width
+height(int h)                           // fixed height
+```
+
+### Border
+
+```cpp
+border(BorderStyle bs)                  // runtime border style
+bcolor(Color c)                         // runtime border color
+btext(string s,                         // border text label
+      BorderTextPos pos = Top,
+      BorderTextAlign align = Start)
+```
+
+### Style
+
+```cpp
+fgc(Color c)                            // runtime foreground color
+bgc(Color c)                            // runtime background color
+```
+
+### Alignment
+
+```cpp
+align(Align a)                          // align items (cross-axis)
+justify(Justify j)                      // justify content (main-axis)
+overflow(Overflow o)                     // overflow behavior
+```
+
+### Compile-Time vs Runtime Comparison
+
+| Compile-time | Runtime | Purpose |
+|---|---|---|
+| `pad<1>` | `padding(1)` | Padding |
+| `gap_<1>` | `gap(1)` | Gap |
+| `border_<Round>` | `border(Round)` | Border style |
+| `bcol<50,54,62>` | `bcolor(c)` | Border color |
+| — | `btext("Title")` | Border text |
+| `grow_<1>` | `grow(1.0f)` | Flex grow |
+| `w_<40>` | `width(40)` | Fixed width |
+| `h_<10>` | `height(10)` | Fixed height |
+| `Fg<R,G,B>` | `fgc(color)` | Foreground |
+| `Bg<R,G,B>` | `bgc(color)` | Background |
+| — | `margin(1)` | Margin |
+| — | `align(Center)` | Align items |
+| — | `justify(End)` | Justify content |
+| — | `overflow(Hidden)` | Overflow |
+
+### Design
+
+- Runtime pipes wrap any `Node` in a `WrappedNode` that applies `BoxBuilder`
+  settings at build time.
+- Chaining multiple runtime pipes reuses the same `WrappedNode` — no extra
+  nesting per pipe.
+- Compile-time pipes still work after a runtime pipe.
+- `WrappedNode` satisfies `Node` — it can be a child of `v()` / `h()`.
+- Both pipe types compose freely in the same expression.
+
+### Examples
+
+```cpp
+// Runtime values from variables/theme
+Color border_color = theme.border;
+auto ui = v(
+    t<"Status"> | Bold,
+    text(message)
+) | border(Round) | bcolor(border_color) | btext("Info") | padding(0, 1);
+
+// Mix compile-time and runtime pipes
+auto panel = v(children)
+    | pad<1>                    // compile-time padding
+    | border(user_border_style) // runtime border (from config)
+    | bcolor(status_color)      // runtime color (from state)
+    | grow(1.0f);               // runtime grow
+```
+
+## Hex Color Shorthand
+
+For compile-time colors, hex literals are more convenient than separate RGB
+components:
+
+```cpp
+fg<0xFF4444>   // hex foreground — shorthand for Fg<0xFF, 0x44, 0x44>
+bg<0x1A1A2E>   // hex background
+```
+
+These are compile-time pipe tags just like `Fg` / `Bg`, but take a single
+24-bit hex value instead of three separate `uint8_t` parameters.
+
+## Style Presets
+
+Compose style tags into reusable presets with `constexpr`:
+
+```cpp
+constexpr auto heading = Bold | fg<0xFFFFFF>;
+constexpr auto error = Bold | fg<0xFF4444>;
+
+t<"Title"> | heading
+text(msg) | error
+```
+
+Because style tags are zero-size types, preset composition is resolved entirely
+at compile time.
+
+## User-Defined Literal
+
+The `_t` literal creates a `TextNode` from a string literal, equivalent to
+`t<"...">` but usable inline without angle brackets:
+
+```cpp
+"Hello"_t | Bold | fg<0x64B4FF>   // equivalent to t<"Hello">
+```
+
+## bordered<> — Combined Border + Color
+
+`bordered<>` applies a border style and optional border color in a single pipe,
+avoiding the two-step `border_<> | bcol<>` chain:
+
+```cpp
+v(...) | bordered<Round, 0x323746>   // border + color in one pipe
+v(...) | bordered<Single>            // border only, no color
+```
+
+The color argument is a 24-bit hex value, same format as `fg<>` / `bg<>`.
+
+## when() — Conditional Rendering
+
+`when()` selects between two elements (or omits content entirely) based on a
+runtime boolean:
+
+```cpp
+when(is_loading, spinner, content)     // show spinner or content
+when(show_debug, debug_panel)          // omit else -> blank
+```
+
+When the condition is `false` and no else branch is provided, `when()` produces
+a blank element that takes no space.
+
+## visible() — Runtime Visibility
+
+`visible()` is a runtime pipe that controls whether a node is rendered. Unlike
+`when()`, it keeps the node in the tree — it just suppresses its output:
+
+```cpp
+text("debug") | visible(debug_mode)   // hides without removing from tree
+```
+
+When `debug_mode` is `false`, the node still exists in the element tree but
+renders as zero-size.

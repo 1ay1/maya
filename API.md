@@ -18,16 +18,17 @@ using namespace maya;
 5. [Event helpers](#event-helpers)
 6. [Element DSL](#element-dsl)
 7. [Layout](#layout)
-8. [Signals](#signals)
-9. [Style](#style)
-10. [Color](#color)
-11. [Theme](#theme)
-12. [Borders](#borders)
-13. [Core types](#core-types)
-14. [Error handling](#error-handling)
-15. [Concepts](#concepts)
-16. [Context system](#context-system)
-17. [Advanced — low-level API](#advanced)
+8. [Widgets](#widgets)
+9. [Signals](#signals)
+10. [Style](#style)
+11. [Color](#color)
+12. [Theme](#theme)
+13. [Borders](#borders)
+14. [Core types](#core-types)
+15. [Error handling](#error-handling)
+16. [Concepts](#concepts)
+17. [Context system](#context-system)
+18. [Advanced — low-level API](#advanced)
 
 ---
 
@@ -36,6 +37,7 @@ using namespace maya;
 ```cpp
 #include <maya/maya.hpp>
 using namespace maya;
+using namespace maya::dsl;
 
 int main() {
     Signal<int> count{0};
@@ -49,17 +51,16 @@ int main() {
         },
         [&](const Ctx& ctx) {
             auto color = count.get() >= 0 ? ctx.theme.success : ctx.theme.error;
-            return box().direction(Column).padding(1)(
-                text("Count: " + std::to_string(count.get()),
-                     Style{}.with_bold().with_fg(color)),
-                text("[+/-] change  [q] quit", dim_style)
-            );
+            return (v(
+                text("Count: " + std::to_string(count.get())) | Bold | fgc(color),
+                text("[+/-] change  [q] quit") | Dim
+            ) | padding(1)).build();
         }
     );
 }
 ```
 
-That's a complete, reactive TUI application. No error handling ceremony, no object management, no headers beyond `maya/maya.hpp`.
+That's a complete, reactive TUI application. The DSL (`v()`, `h()`, pipes) is the primary API — no builders, no boilerplate.
 
 ---
 
@@ -151,13 +152,13 @@ Passed to the render function when it declares a `(const Ctx&)` parameter. Updat
 
 ```cpp
 [&](const Ctx& ctx) {
-    // Responsive layout based on width
+    using namespace dsl;
     bool narrow = ctx.size.width.value < 80;
 
-    return box().direction(Column)(
-        text("Hello", Style{}.with_fg(ctx.theme.primary)),
+    return v(
+        text("Hello") | fgc(ctx.theme.primary),
         narrow ? text("narrow") : text("wide layout")
-    );
+    ).build();
 }
 ```
 
@@ -250,122 +251,118 @@ bool unfocused(const Event& ev);
 
 ## Element DSL
 
-Elements are immutable value types. Build them with factory functions and the fluent `box()` builder. The render function returns one root `Element` per frame — maya diffs it against the previous frame.
-
-### text()
+Elements are immutable value types built with the compile-time DSL. The render function returns one root `Element` per frame — maya diffs it against the previous frame.
 
 ```cpp
-Element text(std::string_view content, Style s = {});
-Element text(std::string_view content, Style s, TextWrap wrap);
+using namespace maya::dsl;
 ```
 
+### Text
+
 ```cpp
-text("Hello, world!")
-text("Error", Style{}.with_bold().with_fg(Color::red()))
-text("Long line…", dim_style, TextWrap::Wrap)
+// Compile-time text (zero runtime cost)
+t<"Hello World"> | Bold | Fg<255, 100, 80>
+
+// Runtime text (dynamic content, still pipeable)
+text("hello") | Bold | fgc(Color::red())
+text(42) | Dim                    // numbers auto-format
+text(3.14)                        // floats too
 ```
 
-`TextWrap` values:
+`TextWrap` pipes:
 ```cpp
-TextWrap::Wrap           // word-wrap at box boundary (default)
-TextWrap::TruncateEnd    // clip at end with "…"
-TextWrap::TruncateMiddle // clip in middle with "…"
-TextWrap::TruncateStart  // clip at start with "…"
-TextWrap::NoWrap         // no wrapping, no truncation
+text("long...") | clip     // TruncateEnd
+text("long...") | nowrap   // NoWrap
 ```
 
-String children passed directly to `box()` are auto-wrapped in `text()`:
+### Containers: v() and h()
+
 ```cpp
-box().direction(Column)(
-    "This is auto-wrapped",        // same as text("...")
-    text("This is explicit")
-)
+v(child1, child2, child3)   // vertical stack (column)
+h(child1, child2, child3)   // horizontal stack (row)
 ```
 
-Full-width and CJK characters are measured correctly — `string_width()` returns terminal column count, not byte count.
-
-### box()
+Children can be any `Node`, `Element`, or `ElementRange` (like `vector<Element>`):
 
 ```cpp
-BoxBuilder box();
+std::vector<Element> rows = { text("a"), text("b") };
+v(t<"Header"> | Bold, rows, t<"Footer"> | Dim) | border(Round) | padding(1)
 ```
 
-Returns a builder. Chain property methods, then call it like a function with children to finalize:
+### Compile-time pipes
+
+Applied to `v()`/`h()` results. Values must be compile-time constants:
 
 ```cpp
-box().direction(Column).padding(1)(
-    text("child 1"),
-    text("child 2"),
-)
+v(...) | pad<1>                    // padding (all sides)
+v(...) | pad<1, 2, 3, 4>          // top, right, bottom, left
+v(...) | gap_<1>                   // gap between children
+v(...) | grow_<1>                  // flex grow
+v(...) | w_<40>                    // fixed width
+v(...) | h_<10>                    // fixed height
+v(...) | border_<Round>            // border style
+v(...) | border_<Round> | bcol<50,54,62>  // border + color
+v(...) | bordered<Round, 0x323746> // border + color shorthand
 ```
 
-A `BoxBuilder` converts implicitly to `Element` for the no-children case:
+### Runtime pipes
+
+Same `|` syntax but accept runtime values (variables, theme colors, etc.):
+
 ```cpp
-Element spacer_elem = box().grow(1.0f);  // implicit conversion
+Color c = theme.border;
+v(...) | padding(1)                // padding(all), padding(v,h), padding(t,r,b,l)
+v(...) | gap(n)                    // runtime gap
+v(...) | grow(1.0f)                // runtime grow
+v(...) | width(40) | height(10)    // runtime dimensions
+v(...) | border(Round)             // runtime border style
+v(...) | bcolor(c)                 // runtime border color
+v(...) | btext("Title", Top, Start) // border text label
+v(...) | fgc(c) | bgc(c)          // runtime colors
+v(...) | margin(1)                 // runtime margin
+v(...) | align(Align::Center)      // align items
+v(...) | justify(Justify::End)     // justify content
+v(...) | overflow(Overflow::Hidden) // overflow behavior
 ```
 
-### spacer()
+### Dynamic content
 
 ```cpp
-Element spacer();
+// Runtime escape hatch — lambda returns Element
+dyn([&] { return text("count = " + std::to_string(n)); })
+
+// Conditional rendering
+when(is_loading, spinner, content)   // if/else
+when(show_debug, debug_panel)        // if only (else → blank)
+
+// Range projection
+map(items, [](const auto& s) { return text(s) | Bold; })
+
+// Visibility toggle
+text("debug info") | visible(debug_mode)
 ```
 
-A flex-growing box that absorbs remaining space. Pushes siblings to opposite ends:
+### Utility nodes
 
 ```cpp
-box().direction(Row)(
-    text("Left"),
-    spacer(),
-    text("Right")   // pushed to the far right
-)
+space          // flex-growing spacer (pushes siblings apart)
+spacer()       // same, function form
+sep            // horizontal separator line
+vsep           // vertical separator line
+blank_         // empty line
+blank()        // same, function form
 ```
 
-### separator() / vseparator()
+### Hex colors and style presets
 
 ```cpp
-Element separator(BorderStyle bs = BorderStyle::Single);   // horizontal line
-Element vseparator(BorderStyle bs = BorderStyle::Single);  // vertical line
-```
-
-```cpp
-box().direction(Column)(
-    text("Section A"),
-    separator(),
-    text("Section B"),
-    separator(BorderStyle::Double)
-)
-```
-
-### map_elements()
-
-```cpp
-template<std::ranges::range R, typename Proj>
-ElementList map_elements(R&& range, Proj proj);
-```
-
-Maps a collection to child elements:
-
-```cpp
-auto items = std::vector<std::string>{"alpha", "beta", "gamma"};
-box().direction(Column)(
-    map_elements(items, [](const std::string& s) {
-        return text("• " + s);
-    })
-)
-```
-
-### ElementList
-
-`map_elements()` returns an `ElementList` — a transparent fragment type. When passed to `box()` as a child, its elements are spliced directly into the parent rather than wrapped in an extra box:
-
-```cpp
-ElementList list = map_elements(items, [](auto& s) { return text(s); });
-box()(list, text("footer"))   // items appear flat, not nested
+fg<0xFF4444>                         // hex foreground
+bg<0x1A1A2E>                         // hex background
+constexpr auto heading = Bold | fg<0xFFFFFF>;   // reusable preset
+"Hello"_t | heading                  // UDL syntax
 ```
 
 ### Element introspection
-
-For building generic components or element transformers:
 
 ```cpp
 bool is_box(const Element& e);
@@ -376,138 +373,210 @@ BoxElement*  as_box(Element& e);   // nullptr if not a box
 TextElement* as_text(Element& e);  // nullptr if not a text
 ElementList* as_list(Element& e);  // nullptr if not a list
 
-// Walk the tree depth-first
-void visit_element(const Element& e, auto&& visitor);
+void visit_element(const Element& e, auto&& visitor);  // depth-first walk
 ```
 
 ---
 
 ## Layout
 
-Layout is flexbox-inspired. Set properties on `BoxBuilder` via method chaining.
+Layout is flexbox-inspired. Use DSL pipes to set properties on containers.
 
 ### Direction
 
 ```cpp
-box().direction(Column)         // children stacked top-to-bottom (default)
-box().direction(Row)            // children side by side left-to-right
-box().direction(ColumnReverse)  // bottom-to-top
-box().direction(RowReverse)     // right-to-left
+v(...)   // children stacked top-to-bottom (column)
+h(...)   // children side by side left-to-right (row)
 ```
 
 ### Spacing
 
 ```cpp
-.padding(1)              // 1 cell on all sides
-.padding(1, 2)           // vertical=1, horizontal=2
-.padding(1, 2, 1, 2)    // top, right, bottom, left
-
-.margin(1)               // outer margin (same variants)
-
-.gap(1)                  // space between children
+v(...) | pad<1>               // compile-time: 1 cell all sides
+v(...) | pad<1, 2>            // compile-time: vertical=1, horizontal=2
+v(...) | pad<1, 2, 3, 4>     // compile-time: top, right, bottom, left
+v(...) | padding(1, 2, 3, 4) // runtime: same with variables
+v(...) | gap_<1>              // compile-time gap between children
+v(...) | gap(n)               // runtime gap
+v(...) | margin(1)            // runtime margin (same variants as padding)
 ```
 
 ### Sizing
 
 ```cpp
-.width(Dimension::px(40))        // exactly 40 columns
-.width(Dimension::percent(50))   // 50% of parent
-.width(Dimension::auto_())       // let layout decide (default)
-.height(Dimension::px(10))
-.min_width(Dimension::px(20))
-.max_width(Dimension::px(80))
-.grow(1.0f)   // flex-grow: absorb remaining space proportionally
-.shrink(1.0f) // flex-shrink
-.basis(Dimension::px(20))
+v(...) | w_<40>              // compile-time fixed width
+v(...) | h_<10>              // compile-time fixed height
+v(...) | width(40)           // runtime fixed width
+v(...) | height(10)          // runtime fixed height
+v(...) | grow_<1>            // compile-time grow factor
+v(...) | grow(1.0f)          // runtime grow factor
 ```
 
-`_pct` UDL shorthand:
+For advanced sizing (percent, min/max), use the `box()` builder:
 ```cpp
-using namespace maya::literals;
-.width(50_pct)   // same as Dimension::percent(50)
+box().width(Dimension::percent(50)).min_width(Dimension::px(20))(...)
 ```
 
 ### Alignment
 
 ```cpp
-// Cross-axis alignment of children
-.align_items(Align::Start)        // default
-.align_items(Align::Center)
-.align_items(Align::End)
-.align_items(Align::Stretch)
-.align_items(Align::Baseline)
-.align_items(Align::Auto)
-
-// Self alignment within parent
-.align_self(Align::Center)
-
-// Main-axis distribution
-.justify(Justify::Start)          // default
-.justify(Justify::End)
-.justify(Justify::Center)
-.justify(Justify::SpaceBetween)
-.justify(Justify::SpaceAround)
-.justify(Justify::SpaceEvenly)
+v(...) | align(Align::Center)         // cross-axis alignment
+v(...) | justify(Justify::SpaceBetween) // main-axis distribution
 ```
+
+`Align` values: `Start`, `Center`, `End`, `Stretch`, `Baseline`, `Auto`
+`Justify` values: `Start`, `End`, `Center`, `SpaceBetween`, `SpaceAround`, `SpaceEvenly`
 
 ### Overflow
 
 ```cpp
-.overflow(Overflow::Visible)   // default — children can exceed bounds
-.overflow(Overflow::Hidden)    // clip children at box boundary
-.overflow(Overflow::Scroll)    // clip + allow scroll offset
+v(...) | overflow(Overflow::Hidden)  // clip at boundary
 ```
 
-### Wrapping
+`Overflow` values: `Visible` (default), `Hidden`, `Scroll`
+
+### Styling a container
 
 ```cpp
-.wrap(FlexWrap::NoWrap)      // default
-.wrap(FlexWrap::Wrap)        // wrap children onto next line/column
-.wrap(FlexWrap::WrapReverse) // wrap in reverse direction
-```
-
-### Display
-
-```cpp
-.display(Display::Flex)   // default — participates in layout
-.display(Display::None)   // removed from layout entirely (not hidden, not measured)
-```
-
-### Styling a box
-
-```cpp
-.fg(Color::white())               // foreground color for the box region
-.bg(Color::rgb(30, 30, 40))       // background fill
-.style(Style{}.with_dim())        // full style override
+v(...) | fgc(Color::white())               // foreground color
+v(...) | bgc(Color::rgb(30, 30, 40))       // background fill
+v(...) | Fg<255,255,255>                    // compile-time fg
+v(...) | Bg<30,30,40>                       // compile-time bg
 ```
 
 ### Complete example
 
 ```cpp
-box().direction(Column).padding(1).gap(1)(
+using namespace maya::dsl;
+
+auto ui = v(
     // Header row: title left, status right
-    box().direction(Row)(
-        text("My App", bold_style),
-        spacer(),
-        text("READY", Style{}.with_fg(Color::green()))
+    h(
+        text("My App") | Bold,
+        space,
+        text("READY") | fgc(Color::green())
     ),
-    separator(),
+    sep,
     // Content area grows to fill remaining height
-    box().direction(Row).grow(1)(
+    h(
         // Sidebar: fixed width
-        box().direction(Column).width(Dimension::px(20)).padding(1)(
-            text("Nav item 1"),
-            text("Nav item 2")
-        ),
-        vseparator(),
+        v(text("Nav item 1"), text("Nav item 2")) | width(20) | padding(1),
+        vsep,
         // Main panel: stretches
-        box().direction(Column).grow(1).padding(1)(
-            text("Content here")
-        )
-    ),
-    separator(),
-    text("[q] quit", dim_style)
-)
+        v(text("Content here")) | grow(1) | padding(1)
+    ) | grow(1),
+    sep,
+    text("[q] quit") | Dim
+) | padding(1) | gap(1);
+```
+
+---
+
+## Widgets
+
+maya includes 50+ ready-to-use widgets. All satisfy the `Node` concept and work in DSL expressions. Full reference: [docs/13-widgets.md](docs/13-widgets.md).
+
+### Input widgets
+
+| Widget | Description |
+|--------|-------------|
+| `Input<Cfg>` | Single-line text input with cursor, placeholder, password mode |
+| `TextArea` | Multi-line text editor with line numbers |
+| `Checkbox` / `ToggleSwitch` | Toggle controls |
+| `Radio<N>` | Radio button group |
+| `Button` | Clickable button (default / filled variants) |
+| `Select` | Dropdown/list selector with filtering |
+| `Slider` | Numeric slider with range |
+
+### Data display
+
+| Widget | Description |
+|--------|-------------|
+| `Table` | Column-aligned data table with headers and borders |
+| `List<Cfg>` | Scrollable list with selection and search |
+| `Tree<T>` | Tree view with expand/collapse |
+| `Sparkline` | Inline sparkline chart |
+
+### Navigation
+
+| Widget | Description |
+|--------|-------------|
+| `Tabs` | Tab bar with selection indicator |
+| `Breadcrumb` | Path breadcrumb trail |
+| `Menu` | Vertical menu with keyboard navigation |
+| `CommandPalette` | Fuzzy search command palette |
+
+### Display
+
+| Widget | Description |
+|--------|-------------|
+| `Badge` | Inline colored label — `Badge::success("ok")`, `Badge::error("fail")` |
+| `Callout` | Severity-based alert — `Callout::error("title", "desc")` |
+| `ToastManager` | Notification stack with auto-dismiss |
+| `FileRef` | File path with dimmed directory, underlined filename |
+| `UserMessage` / `AssistantMessage` | Chat message bubbles |
+| `ProgressBar` | Progress bar with dynamic width |
+| `ActivityBar` | Activity status indicator |
+| `Divider` | Labeled horizontal divider |
+
+### Overlay
+
+| Widget | Description |
+|--------|-------------|
+| `Modal` | Dialog with title, body, action buttons |
+| `Popup` | Tooltip/popup box |
+| `ScrollableView` | Scrollable viewport with scrollbar |
+
+### Visualization
+
+| Widget | Description |
+|--------|-------------|
+| `BarChart` | Horizontal/vertical bar chart |
+| `LineChart` | Braille line chart |
+| `Gauge` | Linear or circular gauge |
+| `Heatmap` | 2D heatmap grid |
+| `PixelCanvas` | Freeform half-block pixel drawing |
+
+### Specialized
+
+| Widget | Description |
+|--------|-------------|
+| `Markdown` | Full markdown renderer (headers, code, lists, tables, links) |
+| `DiffView` | Unified diff display with add/remove highlighting |
+| `PlanView` | Step-by-step plan viewer |
+| `LogViewer` | Log viewer with severity filtering |
+| `Calendar` | Month calendar grid |
+| `KeyHelp` | Keyboard shortcut help panel |
+| `Disclosure` | Expand/collapse section |
+| `ThinkingBlock` | AI thinking/streaming indicator |
+
+### Tool widgets (for AI agent UIs)
+
+| Widget | Description |
+|--------|-------------|
+| `ToolCall` | Generic tool invocation display |
+| `BashTool` | Shell command execution |
+| `EditTool` / `WriteTool` / `ReadTool` | File operation displays |
+| `FetchTool` | URL fetch display |
+| `SearchResult` | Search result display |
+| `AgentTool` | Sub-agent invocation display |
+| `Permission` | Permission request dialog |
+
+### Usage example
+
+```cpp
+using namespace maya::dsl;
+
+// Widgets work directly in DSL expressions
+auto ui = v(
+    Badge::info("status"),
+    Callout::success("Build passed", "All 42 tests green"),
+    ProgressBar{.value = 0.75f, .label = "Progress"},
+    Table({
+        .headers = {"Name", "Value"},
+        .rows = {{"fps", "60"}, {"mem", "128MB"}},
+    })
+) | padding(1);
 ```
 
 ---
@@ -760,28 +829,23 @@ enum class BorderStyle {
 };
 ```
 
-Apply to a box:
+Apply via DSL pipes:
 
 ```cpp
-box().border(BorderStyle::Round)(
-    text("content")
-)
+// Compile-time border
+v(text("content")) | border_<Round>
+v(text("content")) | border_<Round> | bcol<50, 54, 62>
+v(text("content")) | bordered<Round, 0x323746>   // shorthand
 
-// With color
-box().border(BorderStyle::Single, Color::hex(0x3B4261))(...)
-
-// Color set separately (useful with theme colors)
-box().border(BorderStyle::Round).border_color(ctx.theme.primary)(...)
+// Runtime border (dynamic color/style)
+v(text("content")) | border(Round) | bcolor(ctx.theme.border)
 ```
 
 ### Border title
 
 ```cpp
-box().border(BorderStyle::Round)
-     .border_text("My Panel")
-     .border_text("My Panel", BorderTextPos::Bottom, BorderTextAlign::Right)(
-    text("content")
-)
+v(text("content")) | border(Round) | btext("My Panel")
+v(text("content")) | border(Round) | btext("Status", BorderTextPos::Bottom, BorderTextAlign::Right)
 ```
 
 `BorderTextPos`: `Top`, `Bottom`

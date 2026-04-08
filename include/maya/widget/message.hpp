@@ -13,7 +13,7 @@
 #include <string_view>
 #include <utility>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
 
@@ -32,12 +32,10 @@ struct UserMessage {
     }
 
     [[nodiscard]] static Element build(Element content) {
-        return detail::box()
-            .border(BorderStyle::Round)
-            .border_color(Color::rgb(50, 54, 62))
-            .padding(0, 1, 0, 1)(
-                std::move(content)
-            );
+        return (dsl::v(std::move(content))
+            | dsl::border(BorderStyle::Round)
+            | dsl::bcolor(Color::rgb(50, 54, 62))
+            | dsl::padding(0, 1, 0, 1)).build();
     }
 };
 
@@ -47,9 +45,8 @@ struct UserMessage {
 
 struct AssistantMessage {
     [[nodiscard]] static Element build(Element content) {
-        return detail::box().padding(0, 0, 0, 2)(
-            std::move(content)
-        );
+        return (dsl::v(std::move(content))
+            | dsl::padding(0, 0, 0, 2)).build();
     }
 };
 

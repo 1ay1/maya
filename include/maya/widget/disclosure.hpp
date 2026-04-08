@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/style.hpp"
 
 namespace maya {
@@ -53,18 +53,18 @@ public:
 
         // Content with a left-border indent (│ style) like Zed
         auto indent_color = Color::rgb(50, 54, 62);
-        auto bordered_content = detail::hstack()(
+        auto bordered_content = dsl::h(
             Element{TextElement{
                 .content = "\xe2\x94\x82 ",  // "│ "
                 .style = Style{}.with_fg(indent_color),
             }},
             std::move(content)
-        );
+        ).build();
 
-        return detail::vstack()(
+        return dsl::v(
             std::move(header),
             std::move(bordered_content)
-        );
+        ).build();
     }
 
 private:

@@ -8,6 +8,7 @@ Complete reference for all public types, functions, and constants in maya.
 - [DSL Nodes](#dsl-nodes)
 - [DSL Style Tags](#dsl-style-tags)
 - [DSL Layout Tags](#dsl-layout-tags)
+- [DSL Runtime Pipes](#dsl-runtime-pipes)
 - [DSL Factory Functions](#dsl-factory-functions)
 - [DSL Constants](#dsl-constants)
 - [Element Types](#element-types)
@@ -20,6 +21,7 @@ Complete reference for all public types, functions, and constants in maya.
 - [Event Predicates](#event-predicates)
 - [Signals](#signals)
 - [Canvas](#canvas)
+- [Widgets](#widgets)
 - [Core Types](#core-types)
 
 ---
@@ -271,6 +273,56 @@ inline constexpr GrowTag<G> grow_;
 
 ---
 
+## DSL Runtime Pipes
+
+Runtime pipe tags for dynamic values. Same `|` syntax as compile-time pipes.
+
+### Layout Pipes
+
+| Function | Tag Type | Description |
+|----------|----------|-------------|
+| `padding(int)` / `padding(int,int)` / `padding(int,int,int,int)` | `RPad` | Runtime padding |
+| `gap(int)` | `RGap` | Gap between children |
+| `margin(int)` / `margin(int,int)` / `margin(int,int,int,int)` | `RMargin` | Outer margin |
+| `grow(float g = 1.0f)` | `RGrow` | Flex grow factor |
+| `width(int)` | `RWidth` | Fixed width |
+| `height(int)` | `RHeight` | Fixed height |
+
+### Border Pipes
+
+| Function | Tag Type | Description |
+|----------|----------|-------------|
+| `border(BorderStyle)` | `RBorder` | Border style |
+| `bcolor(Color)` | `RBCol` | Border color |
+| `btext(string, BorderTextPos, BorderTextAlign)` | `RBText` | Border text label |
+
+### Style Pipes
+
+| Function | Tag Type | Description |
+|----------|----------|-------------|
+| `fgc(Color)` | `RFg` | Foreground color |
+| `bgc(Color)` | `RBg` | Background color |
+
+### Alignment Pipes
+
+| Function | Tag Type | Description |
+|----------|----------|-------------|
+| `align(Align)` | `RAlign` | Cross-axis alignment |
+| `justify(Justify)` | `RJust` | Main-axis distribution |
+| `overflow(Overflow)` | `ROvf` | Overflow behavior |
+
+### WrappedNode
+
+```cpp
+template <Node Inner>
+struct WrappedNode;
+```
+
+Created automatically when a runtime pipe is applied to any Node. Satisfies `Node`.
+Multiple runtime pipes chain onto the same WrappedNode without extra nesting.
+
+---
+
 ## DSL Factory Functions
 
 ```cpp
@@ -287,6 +339,7 @@ template <DslChild... Cs>
 constexpr auto h(Cs... cs) -> BoxNode<Row, BoxCfg{}, Cs...>;
 
 // Runtime builders (promoted from detail namespace)
+auto box() -> BoxBuilder;      // Base builder
 auto vstack() -> BoxBuilder;   // Column direction
 auto hstack() -> BoxBuilder;   // Row direction
 auto center() -> BoxBuilder;   // Centered, grow=1
@@ -873,6 +926,106 @@ class StylePool {
 void render_tree(const Element& root, Canvas& canvas,
                  StylePool& pool, const Theme& theme);
 ```
+
+---
+
+## Widgets
+
+All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-widgets.md).
+
+### Input
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `Input` | `widget/input.hpp` | Single-line text input with cursor and history |
+| `TextArea` | `widget/textarea.hpp` | Multi-line text editor |
+| `Checkbox` | `widget/checkbox.hpp` | Toggle checkbox |
+| `ToggleSwitch` | `widget/checkbox.hpp` | iOS-style toggle switch |
+| `Radio` | `widget/radio.hpp` | Radio button group |
+| `Select` | `widget/select.hpp` | Dropdown select menu |
+| `Slider` | `widget/slider.hpp` | Numeric slider |
+| `Button` | `widget/button.hpp` | Clickable button with variants |
+| `CommandPalette` | `widget/command_palette.hpp` | Fuzzy-search command launcher |
+
+### Data Display
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `Table` | `widget/table.hpp` | Tabular data with column alignment |
+| `Tree` | `widget/tree.hpp` | Expandable tree view |
+| `List` | `widget/list.hpp` | Selectable item list |
+| `KeyHelp` | `widget/key_help.hpp` | Keyboard shortcut legend |
+| `Badge` | `widget/badge.hpp` | Inline status badge |
+| `Callout` | `widget/callout.hpp` | Info/success/warning/error callout box |
+| `Link` | `widget/link.hpp` | Hyperlink element |
+
+### Navigation
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `Tabs` | `widget/tabs.hpp` | Tab bar navigation |
+| `Breadcrumb` | `widget/breadcrumb.hpp` | Breadcrumb path navigation |
+| `Menu` | `widget/menu.hpp` | Menu with selectable items |
+| `ActivityBar` | `widget/activity_bar.hpp` | Vertical icon sidebar |
+| `Scrollable` | `widget/scrollable.hpp` | Scrollable content region |
+
+### Display
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `StreamingMarkdown` | `widget/markdown.hpp` | Streaming markdown renderer |
+| `Spinner` | `widget/spinner.hpp` | Animated loading spinner |
+| `ProgressBar` | `widget/progress.hpp` | Progress bar with percentage |
+| `Gauge` | `widget/gauge.hpp` | Gauge / meter display |
+| `Divider` | `widget/divider.hpp` | Horizontal or vertical divider |
+| `Image` | `widget/image.hpp` | Terminal image display |
+| `gradient()` | `widget/gradient.hpp` | Color gradient text builder |
+| `Disclosure` | `widget/disclosure.hpp` | Collapsible disclosure section |
+
+### Overlay
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `Modal` | `widget/modal.hpp` | Modal dialog with buttons |
+| `Popup` | `widget/popup.hpp` | Floating popup |
+| `ToastManager` | `widget/toast.hpp` | Toast notification manager |
+
+### Visualization
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `BarChart` | `widget/bar_chart.hpp` | Horizontal/vertical bar chart |
+| `LineChart` | `widget/line_chart.hpp` | Line chart with series |
+| `Sparkline` | `widget/sparkline.hpp` | Inline sparkline graph |
+| `Heatmap` | `widget/heatmap.hpp` | Grid heatmap |
+| `Calendar` | `widget/calendar.hpp` | Calendar date display |
+| `PixelCanvas` | `widget/canvas.hpp` | Pixel-level drawing canvas |
+
+### Specialized
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `UserMessage` | `widget/message.hpp` | Chat user message bubble |
+| `AssistantMessage` | `widget/message.hpp` | Chat assistant message bubble |
+| `ThinkingBlock` | `widget/thinking.hpp` | Collapsible AI thinking block |
+| `DiffView` | `widget/diff_view.hpp` | Side-by-side or unified diff |
+| `PlanView` | `widget/plan_view.hpp` | Task plan with status tracking |
+| `LogViewer` | `widget/log_viewer.hpp` | Filterable log viewer |
+| `SearchResult` | `widget/search_result.hpp` | Grouped search results display |
+| `FileRef` | `widget/file_ref.hpp` | File reference with icon |
+| `Permission` | `widget/permission.hpp` | Permission approval prompt |
+
+### Tool Widgets
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `ToolCall` | `widget/tool_call.hpp` | Generic tool invocation display |
+| `BashTool` | `widget/bash_tool.hpp` | Shell command tool call |
+| `ReadTool` | `widget/read_tool.hpp` | File read tool call |
+| `EditTool` | `widget/edit_tool.hpp` | File edit tool call |
+| `WriteTool` | `widget/write_tool.hpp` | File write tool call |
+| `FetchTool` | `widget/fetch_tool.hpp` | HTTP fetch tool call |
+| `AgentTool` | `widget/agent_tool.hpp` | Sub-agent tool call |
 
 ---
 

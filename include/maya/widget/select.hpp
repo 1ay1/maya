@@ -20,7 +20,7 @@
 #include "../core/focus.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/style.hpp"
 #include "../terminal/input.hpp"
 
@@ -183,7 +183,7 @@ public:
             }});
         }
 
-        return detail::vstack()(std::move(rows));
+        return dsl::v(std::move(rows)).build();
     }
 };
 

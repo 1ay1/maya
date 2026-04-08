@@ -631,6 +631,7 @@ inline constexpr BorderStyle Double = BorderStyle::Double;
 //       .border_text(spin() + " CPU", BorderTextPos::Top)
 //       .padding(0, 1, 0, 1)(rows)
 
+using maya::detail::box;
 using maya::detail::vstack;
 using maya::detail::hstack;
 using maya::detail::center;
@@ -740,6 +741,244 @@ constexpr auto operator|(BoxNode<Dir, Cfg, Cs...> n, BorderedTag<BS, Color>) {
     return BoxNode<Dir, nc, Cs...>{std::move(n.children)};
 }
 
+// ── Runtime pipe system ─────────────────────────────────────────────────────
+//
+// Runtime pipes for dynamic values — same | syntax as compile-time pipes:
+//
+//   Color c = theme.border;
+//   auto ui = v(
+//       t<"Status"> | Bold,
+//       text(msg)
+//   ) | border(Round) | bcolor(c) | btext("Info") | padding(0, 1);
+//
+// Compile-time:  pad<1>, border_<Round>, bcol<50,54,62>, grow_<1>
+// Runtime:       padding(1), border(Round), bcolor(c), grow(1.0f)
+
+// -- Runtime pipe tags --
+
+struct RPad    { int t, r, b, l; };
+struct RGap    { int g; };
+struct RBorder { BorderStyle bs; };
+struct RBCol   { Color c; };
+struct RBText  { std::string s; BorderTextPos pos; BorderTextAlign align; };
+struct RGrow   { float g; };
+struct RWidth  { int w; };
+struct RHeight { int h; };
+struct RFg     { Color c; };
+struct RBg     { Color c; };
+struct RMargin { int t, r, b, l; };
+struct RAlign  { Align a; };
+struct RJust   { Justify j; };
+struct ROvf    { Overflow o; };
+
+// -- Runtime pipe factories --
+
+[[nodiscard]] inline RPad    padding(int all)                  { return {all,all,all,all}; }
+[[nodiscard]] inline RPad    padding(int v, int h)             { return {v,h,v,h}; }
+[[nodiscard]] inline RPad    padding(int t,int r,int b,int l)  { return {t,r,b,l}; }
+[[nodiscard]] inline RGap    gap(int g)                        { return {g}; }
+[[nodiscard]] inline RBorder border(BorderStyle bs)            { return {bs}; }
+[[nodiscard]] inline RBCol   bcolor(Color c)                   { return {c}; }
+[[nodiscard]] inline RGrow   grow(float g = 1.0f)              { return {g}; }
+[[nodiscard]] inline RWidth  width(int w)                      { return {w}; }
+[[nodiscard]] inline RHeight height(int h)                     { return {h}; }
+[[nodiscard]] inline RFg     fgc(Color c)                      { return {c}; }
+[[nodiscard]] inline RBg     bgc(Color c)                      { return {c}; }
+[[nodiscard]] inline RMargin margin(int all)                    { return {all,all,all,all}; }
+[[nodiscard]] inline RMargin margin(int v, int h)               { return {v,h,v,h}; }
+[[nodiscard]] inline RMargin margin(int t,int r,int b,int l)    { return {t,r,b,l}; }
+[[nodiscard]] inline RAlign  align(Align a)                     { return {a}; }
+[[nodiscard]] inline RJust   justify(Justify j)                 { return {j}; }
+[[nodiscard]] inline ROvf    overflow(Overflow o)               { return {o}; }
+
+[[nodiscard]] inline RBText btext(std::string s,
+    BorderTextPos p = BorderTextPos::Top,
+    BorderTextAlign a = BorderTextAlign::Start) {
+    return {std::move(s), p, a};
+}
+
+// -- WrappedNode: runtime box properties layered on any Node --
+
+template <Node Inner>
+struct WrappedNode {
+    static constexpr bool is_wrapped_tag_ = true;
+    static constexpr uint16_t PAD=1,GAP=2,BRD=4,BCOL=8,BTXT=16,
+                              GRW=32,WD=64,HT=128,STY=256,
+                              MGN=512,ALN=1024,JST=2048,OVF=4096;
+
+    Inner inner;
+    int pt_=0, pr_=0, pb_=0, pl_=0, gap_=0;
+    BorderStyle brd_{};
+    Color bcol_{};
+    std::string btxt_;
+    BorderTextPos btp_{};
+    BorderTextAlign bta_{};
+    float grw_=0;
+    int w_=0, h_=0;
+    Style sty_{};
+    int mt_=0, mr_=0, mb_=0, ml_=0;
+    Align aln_{};
+    Justify jst_{};
+    Overflow ovf_{};
+    uint16_t f_=0;
+
+    operator Element() const { return build(); }
+
+    [[nodiscard]] Element build() const {
+        auto b = maya::detail::box();
+        if (f_&PAD)  b.padding(pt_,pr_,pb_,pl_);
+        if (f_&GAP)  b.gap(gap_);
+        if (f_&BRD)  b.border(brd_);
+        if (f_&BCOL) b.border_color(bcol_);
+        if (f_&BTXT) b.border_text(btxt_,btp_,bta_);
+        if (f_&GRW)  b.grow(grw_);
+        if (f_&WD)   b.width(Dimension::fixed(w_));
+        if (f_&HT)   b.height(Dimension::fixed(h_));
+        if (f_&STY)  b.style(sty_);
+        if (f_&MGN)  b.margin(mt_,mr_,mb_,ml_);
+        if (f_&ALN)  b.align_items(aln_);
+        if (f_&JST)  b.justify(jst_);
+        if (f_&OVF)  b.overflow(ovf_);
+        return b(inner.build());
+    }
+};
+
+template <Node N>
+auto as_wrapped(N n) {
+    if constexpr (requires { N::is_wrapped_tag_; }) {
+        return std::move(n);
+    } else {
+        return WrappedNode<N>{std::move(n)};
+    }
+}
+
+// -- operator| : Node | runtime pipe → WrappedNode --
+
+template <Node N> [[nodiscard]] auto operator|(N n, RPad t) {
+    auto w = as_wrapped(std::move(n));
+    w.pt_=t.t; w.pr_=t.r; w.pb_=t.b; w.pl_=t.l;
+    w.f_ |= decltype(w)::PAD; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RGap t) {
+    auto w = as_wrapped(std::move(n));
+    w.gap_=t.g; w.f_ |= decltype(w)::GAP; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RBorder t) {
+    auto w = as_wrapped(std::move(n));
+    w.brd_=t.bs; w.f_ |= decltype(w)::BRD; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RBCol t) {
+    auto w = as_wrapped(std::move(n));
+    w.bcol_=t.c; w.f_ |= decltype(w)::BCOL; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RBText t) {
+    auto w = as_wrapped(std::move(n));
+    w.btxt_=std::move(t.s); w.btp_=t.pos; w.bta_=t.align;
+    w.f_ |= decltype(w)::BTXT; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RGrow t) {
+    auto w = as_wrapped(std::move(n));
+    w.grw_=t.g; w.f_ |= decltype(w)::GRW; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RWidth t) {
+    auto w = as_wrapped(std::move(n));
+    w.w_=t.w; w.f_ |= decltype(w)::WD; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RHeight t) {
+    auto w = as_wrapped(std::move(n));
+    w.h_=t.h; w.f_ |= decltype(w)::HT; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RFg t) {
+    auto w = as_wrapped(std::move(n));
+    w.sty_ = w.sty_.with_fg(t.c); w.f_ |= decltype(w)::STY; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RBg t) {
+    auto w = as_wrapped(std::move(n));
+    w.sty_ = w.sty_.with_bg(t.c); w.f_ |= decltype(w)::STY; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RMargin t) {
+    auto w = as_wrapped(std::move(n));
+    w.mt_=t.t; w.mr_=t.r; w.mb_=t.b; w.ml_=t.l;
+    w.f_ |= decltype(w)::MGN; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RAlign t) {
+    auto w = as_wrapped(std::move(n));
+    w.aln_=t.a; w.f_ |= decltype(w)::ALN; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RJust t) {
+    auto w = as_wrapped(std::move(n));
+    w.jst_=t.j; w.f_ |= decltype(w)::JST; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, ROvf t) {
+    auto w = as_wrapped(std::move(n));
+    w.ovf_=t.o; w.f_ |= decltype(w)::OVF; return w;
+}
+
+// -- Compile-time pipe tags forwarded through WrappedNode --
+
+template <Node N, CTStyle V>
+    requires (requires { N::is_wrapped_tag_; })
+[[nodiscard]] auto operator|(N n, StyTag<V>) {
+    n.sty_ = n.sty_.merge(V.runtime());
+    n.f_ |= decltype(n)::STY; return n;
+}
+
+template <Node N, int T, int R, int B, int L>
+    requires (requires { N::is_wrapped_tag_; })
+[[nodiscard]] auto operator|(N n, PadTag<T,R,B,L>) {
+    n.pt_=T; n.pr_=R; n.pb_=B; n.pl_=L;
+    n.f_ |= decltype(n)::PAD; return n;
+}
+
+template <Node N, int G>
+    requires (requires { N::is_wrapped_tag_; })
+[[nodiscard]] auto operator|(N n, GapTag<G>) {
+    n.gap_=G; n.f_ |= decltype(n)::GAP; return n;
+}
+
+template <Node N, BorderStyle BS>
+    requires (requires { N::is_wrapped_tag_; })
+[[nodiscard]] auto operator|(N n, BorderTag<BS>) {
+    n.brd_=BS; n.f_ |= decltype(n)::BRD; return n;
+}
+
+template <Node N, uint8_t R, uint8_t G, uint8_t B>
+    requires (requires { N::is_wrapped_tag_; })
+[[nodiscard]] auto operator|(N n, BColTag<R,G,B>) {
+    n.bcol_=Color::rgb(R,G,B); n.f_ |= decltype(n)::BCOL; return n;
+}
+
+template <Node N, int G>
+    requires (requires { N::is_wrapped_tag_; })
+[[nodiscard]] auto operator|(N n, GrowTag<G>) {
+    n.grw_=static_cast<float>(G); n.f_ |= decltype(n)::GRW; return n;
+}
+
+template <Node N, int W>
+    requires (requires { N::is_wrapped_tag_; })
+[[nodiscard]] auto operator|(N n, WidthTag<W>) {
+    n.w_=W; n.f_ |= decltype(n)::WD; return n;
+}
+
+template <Node N, int H>
+    requires (requires { N::is_wrapped_tag_; })
+[[nodiscard]] auto operator|(N n, HeightTag<H>) {
+    n.h_=H; n.f_ |= decltype(n)::HT; return n;
+}
+
+template <Node N, BorderStyle BS, uint32_t C>
+    requires (requires { N::is_wrapped_tag_; })
+[[nodiscard]] auto operator|(N n, BorderedTag<BS, C>) {
+    n.brd_=BS; n.f_ |= decltype(n)::BRD;
+    if constexpr (C != 0) {
+        n.bcol_=Color::rgb(static_cast<uint8_t>(C>>16),
+                           static_cast<uint8_t>((C>>8)&0xFF),
+                           static_cast<uint8_t>(C&0xFF));
+        n.f_ |= decltype(n)::BCOL;
+    }
+    return n;
+}
+
 // ── each() — apply a style to every item in a range ─────────────────────────
 //
 // Shorthand for map() when you just want to style range items:
@@ -761,5 +1000,6 @@ static_assert(Node<SpacerNode>,                          "SpacerNode must satisf
 static_assert(Node<SepNode>,                             "SepNode must satisfy Node");
 static_assert(Node<VSepNode>,                            "VSepNode must satisfy Node");
 static_assert(Node<BlankNode>,                           "BlankNode must satisfy Node");
+static_assert(Node<WrappedNode<BlankNode>>,              "WrappedNode must satisfy Node");
 
 } // namespace maya::dsl

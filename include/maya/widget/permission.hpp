@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
 
@@ -112,14 +112,12 @@ public:
         }
 
         // Wrap in Zed-style bordered card with warning tint
-        return detail::box()
-            .border(BorderStyle::Round)
-            .border_color(Color::rgb(120, 100, 50))
-            .border_text(" \xe2\x9a\xa0 Permission Required ",
+        return (dsl::v(std::move(rows))
+            | dsl::border(BorderStyle::Round)
+            | dsl::bcolor(Color::rgb(120, 100, 50))
+            | dsl::btext(" \xe2\x9a\xa0 Permission Required ",
                          BorderTextPos::Top, BorderTextAlign::Start)
-            .padding(0, 1, 0, 1)(
-                detail::vstack()(std::move(rows))
-            );
+            | dsl::padding(0, 1, 0, 1)).build();
     }
 
 private:

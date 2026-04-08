@@ -20,7 +20,7 @@
 #include "../core/focus.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
-#include "../element/builder.hpp"
+#include "../dsl.hpp"
 #include "../element/text.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
@@ -204,11 +204,8 @@ public:
             ? Color::rgb(97, 175, 239)   // blue when focused
             : Color::rgb(50, 54, 62);    // muted when blurred
 
-        return detail::box()
-            .border(BorderStyle::Round)
-            .border_color(border_color)
-            .padding(0, 1, 0, 1)(
-                detail::hstack()(
+        return (dsl::v(
+                dsl::h(
                     Element{TextElement{
                         .content = "\xe2\x9d\xaf ",  // "❯ "
                         .style = Style{}.with_fg(
@@ -216,8 +213,9 @@ public:
                                        : Color::rgb(92, 99, 112)),
                     }},
                     std::move(inner)
-                )
-            );
+                ).build()
+            ) | dsl::border(BorderStyle::Round) | dsl::bcolor(border_color)
+              | dsl::padding(0, 1, 0, 1)).build();
     }
 
 private:
@@ -297,7 +295,7 @@ private:
             std::vector<Element> rows;
             for (auto& line : lines)
                 rows.push_back(Element{TextElement{.content = std::move(line), .style = text_style}});
-            return detail::vstack()(std::move(rows));
+            return dsl::v(std::move(rows)).build();
         }
 
         // Find which line the cursor is on
@@ -328,7 +326,7 @@ private:
                     .style = text_style}});
             }
         }
-        return detail::vstack()(std::move(rows));
+        return dsl::v(std::move(rows)).build();
     }
 
 public:

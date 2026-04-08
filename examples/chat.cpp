@@ -18,6 +18,7 @@
 #include <vector>
 
 using namespace maya;
+using namespace maya::dsl;
 using Clock = std::chrono::steady_clock;
 
 // ── Timed event ──────────────────────────────────────────────────────────────
@@ -109,8 +110,8 @@ struct ChatApp {
     }
 };
 
-static Element spacer() {
-    return Element{TextElement{.content = ""}};
+static Element gap() {
+    return blank().build();
 }
 
 // ── Event handlers ───────────────────────────────────────────────────────────
@@ -120,7 +121,7 @@ static void fire_event(ChatApp& app, int id) {
 
     // ── Turn 1: User message ─────────────────────────────────────────────
     case 1: {
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(UserMessage::build(
             "Add dark mode support to the settings page. Make sure the "
             "toggle persists across sessions and all components respect the theme."
@@ -169,7 +170,7 @@ static void fire_event(ChatApp& app, int id) {
             "  textSecondary: '#64748b',\n"
             "};"
         );
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(read.build());
         app.activity.set_tokens(156, 240);
         app.activity.set_context_percent(12);
@@ -202,7 +203,7 @@ static void fire_event(ChatApp& app, int id) {
         g3.matches.push_back({34, "  <ThemeProvider value={lightTheme}>"});
         grep.add_group(std::move(g3));
 
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(grep.build());
         app.activity.set_tokens(156, 380);
         app.activity.set_context_percent(15);
@@ -213,7 +214,7 @@ static void fire_event(ChatApp& app, int id) {
     case 5: {
         app.thinking.set_active(false);
         app.show_thinking = false;
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(app.thinking.build());
         app.thinking = ThinkingBlock{};
         app.activity.set_status("");
@@ -229,7 +230,7 @@ static void fire_event(ChatApp& app, int id) {
         plan.add("Add theme toggle to Settings page", TaskStatus::Pending);
         plan.add("Persist preference in localStorage", TaskStatus::Pending);
         plan.add("Run tests to verify", TaskStatus::Pending);
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(plan.build());
         app.toasts.push("Plan created", ToastLevel::Info);
         break;
@@ -250,7 +251,7 @@ static void fire_event(ChatApp& app, int id) {
         g.matches.push_back({0, "src/styles/animations.css"});
         glob.add_group(std::move(g));
 
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(glob.build());
         break;
     }
@@ -278,7 +279,7 @@ static void fire_event(ChatApp& app, int id) {
             "  textSecondary: '#94a3b8',\n"
             "};"
         );
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(edit.build());
         app.activity.set_tokens(156, 520);
         app.activity.set_context_percent(22);
@@ -309,7 +310,7 @@ static void fire_event(ChatApp& app, int id) {
             "  return { theme, mode, toggle };\n"
             "}\n"
         );
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(write.build());
         app.activity.set_tokens(156, 680);
         app.activity.set_context_percent(26);
@@ -349,7 +350,7 @@ static void fire_event(ChatApp& app, int id) {
             "Tests:       4 passed, 4 total\n"
             "Time:        1.24s"
         );
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(bash.build());
         app.activity.set_tokens(156, 820);
         app.activity.set_cost(0.02f);
@@ -372,7 +373,7 @@ static void fire_event(ChatApp& app, int id) {
             "+  // Dark mode toggle persists via localStorage\n"
             "   return (\n"
         );
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(diff.build());
         break;
     }
@@ -409,7 +410,7 @@ static void fire_event(ChatApp& app, int id) {
 
     // ── Callout after turn 1 ─────────────────────────────────────────────
     case 15: {
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(
             Callout::success("All changes applied", "3 files modified, 4 tests passing").build()
         );
@@ -421,7 +422,7 @@ static void fire_event(ChatApp& app, int id) {
 
     // ── Turn 2: User message ─────────────────────────────────────────────
     case 20: {
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(UserMessage::build(
             "Can you check the accessibility contrast ratios for the dark "
             "mode colors? I want to meet WCAG AA."
@@ -465,7 +466,7 @@ static void fire_event(ChatApp& app, int id) {
         agent.add_tool(nested_read.build());
         agent.add_tool(fetch.build());
 
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(agent.build());
         app.activity.set_tokens(1240, 1320);
         app.activity.set_cost(0.06f);
@@ -478,7 +479,7 @@ static void fire_event(ChatApp& app, int id) {
     case 23: {
         app.thinking.set_active(false);
         app.show_thinking = false;
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(app.thinking.build());
         app.thinking = ThinkingBlock{};
         app.activity.set_status("");
@@ -526,42 +527,38 @@ static void fire_event(ChatApp& app, int id) {
 // ── Build UI ─────────────────────────────────────────────────────────────────
 
 static Element build_ui(ChatApp& app) {
-    std::vector<Element> parts;
+    return v(
+        // Frozen conversation history
+        dyn([&] { return Element{ElementList{app.frozen}}; }),
 
-    // Frozen conversation
-    for (auto const& elem : app.frozen) {
-        parts.push_back(elem);
-    }
+        // Live thinking (with spinner)
+        dyn([&]() -> Element {
+            if (!app.show_thinking) return blank().build();
+            return v(blank(), app.thinking).build();
+        }),
 
-    // Live thinking (with spinner)
-    if (app.show_thinking) {
-        parts.push_back(spacer());
-        parts.push_back(app.thinking.build());
-    }
+        // Permission prompt
+        dyn([&]() -> Element {
+            if (!app.show_permission) return blank().build();
+            Permission perm("bash", "npm test -- --run src/hooks/useTheme.test.ts");
+            return v(blank(), perm).build();
+        }),
 
-    // Permission prompt
-    if (app.show_permission) {
-        parts.push_back(spacer());
-        Permission perm("bash", "npm test -- --run src/hooks/useTheme.test.ts");
-        parts.push_back(perm.build());
-    }
+        // Streaming markdown
+        dyn([&]() -> Element {
+            if (!app.show_streaming) return blank().build();
+            return v(blank(), AssistantMessage::build(app.streaming_md.build())).build();
+        }),
 
-    // Streaming markdown
-    if (app.show_streaming) {
-        parts.push_back(spacer());
-        parts.push_back(AssistantMessage::build(app.streaming_md.build()));
-    }
+        // Toasts
+        dyn([&]() -> Element {
+            if (app.toasts.empty()) return blank().build();
+            return v(blank(), app.toasts).build();
+        }),
 
-    // Toasts
-    if (!app.toasts.empty()) {
-        parts.push_back(spacer());
-        parts.push_back(app.toasts.build());
-    }
-
-    // Activity bar
-    parts.push_back(app.activity.build());
-
-    return detail::vstack()(std::move(parts));
+        // Activity bar
+        dyn([&] { return app.activity.build(); })
+    ).build();
 }
 
 // ── Tick: advance time, fire events, stream ─────────────────────────────────
@@ -600,7 +597,7 @@ static void tick(ChatApp& app) {
     } else if (app.streaming && app.md_cursor >= static_cast<int>(app.md_target.size())) {
         app.streaming = false;
         app.streaming_md.finish();
-        app.frozen.push_back(spacer());
+        app.frozen.push_back(gap());
         app.frozen.push_back(AssistantMessage::build(app.streaming_md.build()));
         app.streaming_md.clear();
         app.show_streaming = false;

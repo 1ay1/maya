@@ -332,4 +332,19 @@ namespace detail {
 
 } // namespace detail
 
+// ============================================================================
+// Public API — promote runtime builders out of detail::
+// ============================================================================
+// These are the runtime counterpart to the compile-time DSL (dsl::v, dsl::h).
+// Use these when you need runtime-configured borders, colors, padding, etc.
+//
+//   box().border(Round).border_color(status_color)
+//       .border_text(title, BorderTextPos::Top)
+//       .padding(0, 1, 0, 1)(children)
+
+using detail::box;
+using detail::vstack;
+using detail::hstack;
+using detail::center;
+
 } // namespace maya

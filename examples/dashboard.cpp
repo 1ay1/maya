@@ -1135,7 +1135,7 @@ int main() {
     };
 
     (void)canvas_run(
-        CanvasConfig{.fps = 60, .mouse = false, .alt_screen = true, .title = "NEXUS"},
+        CanvasConfig{.fps = 60, .mouse = false, .mode = Mode::Fullscreen, .title = "NEXUS"},
 
         rebuild_styles,
 

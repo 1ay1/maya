@@ -45,6 +45,15 @@
 namespace maya {
 
 // ============================================================================
+// Mode — rendering mode selection
+// ============================================================================
+
+enum class Mode {
+    Inline,      // Raw mode, no alt screen, scrollback preserved (Claude Code style)
+    Fullscreen,  // Alt screen buffer, double-buffered cell diff
+};
+
+// ============================================================================
 // Self-pipe for signal delivery into the poll loop
 // ============================================================================
 // SIGWINCH writes a byte to the pipe; the event loop polls the read end
@@ -79,7 +88,7 @@ public:
     // ========================================================================
 
     class Builder {
-        bool        alt_screen_ = true;
+        Mode        mode_       = Mode::Fullscreen;
         bool        mouse_      = false;
         Theme       theme_      = theme::dark;
         std::string title_;
@@ -87,8 +96,8 @@ public:
     public:
         Builder() = default;
 
-        /// Whether to enter the alternate screen buffer (default: true).
-        auto alt_screen(bool v) -> Builder&;
+        /// Set the rendering mode (default: Mode::Fullscreen).
+        auto mode(Mode m) -> Builder&;
 
         /// Whether to enable mouse event reporting (default: false).
         auto mouse(bool v) -> Builder&;
@@ -159,10 +168,11 @@ public:
     // ========================================================================
 
     /// Whether the app is running in inline mode (no alt screen).
+    /// Whether the app is running in inline mode (no alt screen).
     [[nodiscard]] bool is_inline() const noexcept { return raw_terminal_.has_value(); }
 
     /// Whether the app originally started in inline mode.
-    [[nodiscard]] bool started_inline() const noexcept { return started_inline_; }
+    [[nodiscard]] bool started_inline() const noexcept { return started_mode_ == Mode::Inline; }
 
     /// Current terminal size.
     [[nodiscard]] Size size() const noexcept { return size_; }
@@ -185,7 +195,7 @@ public:
         : alt_terminal_(std::move(o.alt_terminal_))
         , raw_terminal_(std::move(o.raw_terminal_))
         , fd_(std::exchange(o.fd_, -1))
-        , started_inline_(o.started_inline_)
+        , started_mode_(o.started_mode_)
         , writer_(std::move(o.writer_))
         , pool_(std::move(o.pool_))
         , canvas_(std::move(o.canvas_))
@@ -230,7 +240,7 @@ private:
     std::optional<Terminal<AltScreen>> alt_terminal_;
     std::optional<Terminal<Raw>>       raw_terminal_;
     int fd_ = -1;
-    bool started_inline_ = false;
+    Mode started_mode_ = Mode::Fullscreen;
 
     // -- Rendering pipeline ---------------------------------------------------
     // Inline mode: single canvas, serialize to ANSI, erase-and-redraw.
@@ -302,10 +312,10 @@ private:
 //                            which is already cleared. Do not call canvas.clear().
 
 struct CanvasConfig {
-    int         fps        = 60;    // target frame rate
-    bool        mouse      = false; // enable all-motion mouse reporting
-    bool        alt_screen = true;  // use the alternate screen buffer
-    std::string title;              // terminal window title (optional)
+    int         fps        = 60;              // target frame rate
+    bool        mouse      = false;           // enable all-motion mouse reporting
+    Mode        mode       = Mode::Fullscreen;// rendering mode
+    std::string title;                        // terminal window title (optional)
 };
 
 // ── Concepts for canvas_run callbacks ───────────────────────────────────────

@@ -45,7 +45,7 @@ struct RunConfig {
     std::string_view title      = "";
     int              fps        = 0;       // 0 = event-driven
     bool             mouse      = false;
-    bool             alt_screen = true;
+    Mode             mode       = Mode::Fullscreen;
     Theme            theme      = theme::dark;
 };
 ```
@@ -59,17 +59,17 @@ struct Ctx {
 };
 ```
 
-### inline_run()
+### live()
 
 ```cpp
-template <AnyInlineRenderFn RenderFn>
-void inline_run(InlineConfig cfg, RenderFn&& render_fn);
+template <AnyLiveRenderFn RenderFn>
+void live(LiveConfig cfg, RenderFn&& render_fn);
 ```
 
-### InlineConfig
+### LiveConfig
 
 ```cpp
-struct InlineConfig {
+struct LiveConfig {
     int   fps       = 30;
     int   max_width = 0;     // 0 = auto-detect
     bool  cursor    = false;
@@ -92,7 +92,7 @@ Status canvas_run(
 struct CanvasConfig {
     int         fps        = 60;
     bool        mouse      = false;
-    bool        alt_screen = true;
+    Mode        mode       = Mode::Fullscreen;
     std::string title;
 };
 ```

@@ -7,8 +7,9 @@ the one that matches your application's needs.
 
 | Mode | Function | Screen | Event Loop | Use Case |
 |------|----------|--------|------------|----------|
-| **Fullscreen** | `run()` | Alt screen | Yes | Interactive TUIs, dashboards |
-| **Inline** | `inline_run()` | Scrollback | Timer-based | Progress bars, streaming output |
+| **Fullscreen** | `run({.mode = Mode::Fullscreen})` | Alt screen | Yes | Interactive TUIs, dashboards |
+| **Inline** | `run({.mode = Mode::Inline})` | Scrollback | Yes | Claude Code-style apps |
+| **Live** | `live()` | Scrollback | Timer-based | Progress bars, streaming output |
 | **Canvas** | `canvas_run()` | Alt screen | Yes | Games, animations, visualizations |
 | **One-shot** | `print()` | Scrollback | No | CLI output, reports, status cards |
 
@@ -34,11 +35,11 @@ void run(EventFn&& event_fn, RenderFn&& render_fn);
 
 ```cpp
 struct RunConfig {
-    std::string_view title      = "";           // Terminal window title
-    int              fps        = 0;            // 0 = event-driven, >0 = continuous
-    bool             mouse      = false;        // Enable mouse reporting
-    bool             alt_screen = true;         // Use alt screen buffer
-    Theme            theme      = theme::dark;  // Color theme
+    std::string_view title      = "";              // Terminal window title
+    int              fps        = 0;               // 0 = event-driven, >0 = continuous
+    bool             mouse      = false;           // Enable mouse reporting
+    Mode             mode       = Mode::Fullscreen;// Rendering mode
+    Theme            theme      = theme::dark;     // Color theme
 };
 ```
 
@@ -111,11 +112,11 @@ run(
 
 ### Inline Mode via run()
 
-Set `alt_screen = false` to render in the scrollback instead of the alt screen:
+Set `mode = Mode::Inline` to render in the scrollback instead of the alt screen:
 
 ```cpp
 run(
-    {.alt_screen = false},
+    {.mode = Mode::Inline},
     event_fn,
     render_fn
 );
@@ -124,7 +125,7 @@ run(
 This gives you event handling with inline rendering — useful for TUIs that
 should stay in the terminal history.
 
-## inline_run() — Timer-Based Inline Rendering
+## live() — Timer-Based Inline Rendering
 
 For animations and progress displays that render inline (in the terminal's
 scrollback) without taking over the screen. No event handling — just a render
@@ -133,14 +134,14 @@ loop with a timer.
 ### Signature
 
 ```cpp
-template <AnyInlineRenderFn RenderFn>
-void inline_run(InlineConfig cfg, RenderFn&& render_fn);
+template <AnyLiveRenderFn RenderFn>
+void live(LiveConfig cfg, RenderFn&& render_fn);
 ```
 
-### InlineConfig
+### LiveConfig
 
 ```cpp
-struct InlineConfig {
+struct LiveConfig {
     int   fps       = 30;   // Target frames per second
     int   max_width = 0;    // 0 = auto-detect terminal width
     bool  cursor    = false; // Show cursor during rendering
@@ -164,7 +165,7 @@ Two signatures:
 Call `maya::quit()` from inside the render function:
 
 ```cpp
-inline_run({.fps = 30}, [&](float dt) {
+live({.fps = 30}, [&](float dt) {
     elapsed += dt;
     if (elapsed > 5.0f) quit();  // Stop after 5 seconds
     return text("Time: " + std::to_string(elapsed));
@@ -175,7 +176,7 @@ inline_run({.fps = 30}, [&](float dt) {
 
 ```cpp
 float progress = 0;
-inline_run({.fps = 30}, [&](float dt) {
+live({.fps = 30}, [&](float dt) {
     progress += dt * 0.2f;
     if (progress >= 1.0f) quit();
 
@@ -192,7 +193,7 @@ inline_run({.fps = 30}, [&](float dt) {
 
 ### How It Works
 
-`inline_run()` renders each frame by:
+`live()` renders each frame by:
 1. Building the element tree from your render function
 2. Laying out and painting to a canvas
 3. Serializing to ANSI escape sequences
@@ -224,10 +225,10 @@ Status canvas_run(
 
 ```cpp
 struct CanvasConfig {
-    int         fps        = 60;     // Target frame rate
-    bool        mouse      = false;  // Enable mouse reporting
-    bool        alt_screen = true;   // Use alt screen buffer
-    std::string title;               // Terminal window title
+    int         fps        = 60;              // Target frame rate
+    bool        mouse      = false;           // Enable mouse reporting
+    Mode        mode       = Mode::Fullscreen;// Rendering mode
+    std::string title;                        // Terminal window title
 };
 ```
 
@@ -521,9 +522,9 @@ Need interactivity?
 ├── Yes: Need per-cell control?
 │   ├── Yes → canvas_run()     (games, animations, visualizations)
 │   └── No  → run()            (dashboards, forms, menus)
-│       └── Want scrollback output? → run({.alt_screen = false}, ...)
+│       └── Want scrollback output? → run({.mode = Mode::Inline}, ...)
 └── No: Need animation?
-    ├── Yes → inline_run()     (progress bars, streaming output)
+    ├── Yes → live()     (progress bars, streaming output)
     └── No  → print()          (CLI reports, status cards)
 ```
 
@@ -541,8 +542,8 @@ from any context.
 // In event handler
 on(ev, 'q', [] { quit(); });
 
-// In inline_run render
-inline_run({}, [&](float dt) {
+// In live render
+live({}, [&](float dt) {
     if (done) quit();
     return text("...");
 });

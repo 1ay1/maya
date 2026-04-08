@@ -41,11 +41,11 @@ namespace maya {
 // continue to compile unchanged.
 
 struct RunConfig {
-    std::string_view title      = "";         ///< Terminal window title (OSC 0)
-    int              fps        = 0;          ///< Continuous rendering at N fps (0 = event-driven only)
-    bool             mouse      = false;      ///< Enable mouse event reporting
-    bool             alt_screen = true;       ///< Use the alternate screen buffer
-    Theme            theme      = theme::dark;///< Colour theme for the app
+    std::string_view title      = "";              ///< Terminal window title (OSC 0)
+    int              fps        = 0;               ///< Continuous rendering at N fps (0 = event-driven only)
+    bool             mouse      = false;           ///< Enable mouse event reporting
+    Mode             mode       = Mode::Fullscreen;///< Rendering mode
+    Theme            theme      = theme::dark;     ///< Colour theme for the app
 };
 
 // ── Render context ─────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ void run_impl(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn)
     auto result = App::builder()
         .title(cfg.title)
         .mouse(cfg.mouse)
-        .alt_screen(cfg.alt_screen)
+        .mode(cfg.mode)
         .theme(cfg.theme)
         .build();
 
@@ -218,7 +218,7 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn)
 }
 
 /// Run a maya application with default configuration (no title, no mouse,
-/// alt screen, dark theme).
+/// fullscreen mode, dark theme).
 ///
 ///   maya::run(
 ///       [&](const Event& ev) { return !key(ev, 'q'); },

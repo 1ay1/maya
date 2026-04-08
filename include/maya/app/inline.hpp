@@ -1,13 +1,13 @@
 #pragma once
-// maya::print / maya::inline_run — Inline (non-fullscreen) rendering
+// maya::print / maya::live — Non-interactive rendering
 //
-// Two APIs for rendering maya elements without taking over the terminal:
+// Two APIs for rendering maya elements without raw mode or input handling:
 //
 //   maya::print(element)
 //       One-shot: render an element tree to stdout and return.
 //       Great for styled CLI output — tables, reports, status cards.
 //
-//   maya::inline_run({.fps = 30}, [&](float dt) {
+//   maya::live({.fps = 30}, [&](float dt) {
 //       return text("frame " + std::to_string(n++));
 //   });
 //       Live: re-renders inline at the given fps. Return the element tree
@@ -49,7 +49,7 @@ int detect_terminal_height() noexcept;
 
 /// Persistent state for the inline renderer's scrollback-preserving
 /// row comparison.  Passed by reference across frames.
-struct InlineState {
+struct LiveState {
     int prev_height       = 0;
     int prev_content_height = 0;
     int committed_height  = 0;
@@ -62,8 +62,8 @@ struct InlineState {
 
 // Render element → serialize → write to stdout, preserving stable rows
 // in scrollback.
-void render_inline(const Element& root, int width, StylePool& pool,
-                   std::string& buf, InlineState& state);
+void render_live(const Element& root, int width, StylePool& pool,
+                   std::string& buf, LiveState& state);
 
 } // namespace detail
 
@@ -82,9 +82,9 @@ void print(const Element& root);
 /// Print with explicit width.
 void print(const Element& root, int width);
 
-// ── InlineConfig ─────────────────────────────────────────────────────────────
+// ── LiveConfig ─────────────────────────────────────────────────────────────
 
-struct InlineConfig {
+struct LiveConfig {
     int   fps       = 30;      ///< Target frames per second
     int   max_width = 0;       ///< 0 = auto-detect terminal width
     bool  cursor    = false;   ///< Show cursor during rendering
@@ -93,36 +93,36 @@ struct InlineConfig {
 // ── Render function concepts ─────────────────────────────────────────────────
 
 template <typename F>
-concept InlineRenderFnDt =
+concept LiveRenderFnDt =
     std::invocable<F, float> &&
     std::convertible_to<std::invoke_result_t<F, float>, Element>;
 
 template <typename F>
-concept InlineRenderFnPlain =
+concept LiveRenderFnPlain =
     std::invocable<F> &&
     std::convertible_to<std::invoke_result_t<F>, Element>;
 
 template <typename F>
-concept AnyInlineRenderFn = InlineRenderFnDt<F> || InlineRenderFnPlain<F>;
+concept AnyLiveRenderFn = LiveRenderFnDt<F> || LiveRenderFnPlain<F>;
 
-// ── maya::inline_run ─────────────────────────────────────────────────────────
+// ── maya::live ─────────────────────────────────────────────────────────
 
 /// Run an inline render loop. The render function is called each frame and
 /// should return an Element. Call maya::quit() to stop.
 ///
 ///   int n = 0;
-///   maya::inline_run({.fps = 30}, [&](float dt) {
+///   maya::live({.fps = 30}, [&](float dt) {
 ///       if (n++ > 100) maya::quit();
 ///       return text("Frame " + std::to_string(n));
 ///   });
 ///
 /// Also accepts () -> Element (no delta time parameter):
 ///
-///   maya::inline_run({}, [&] {
+///   maya::live({}, [&] {
 ///       return text("hello");
 ///   });
-template <AnyInlineRenderFn RenderFn>
-void inline_run(InlineConfig cfg, RenderFn&& render_fn) {
+template <AnyLiveRenderFn RenderFn>
+void live(LiveConfig cfg, RenderFn&& render_fn) {
     detail::quit_requested = false;
 
     int width = cfg.max_width > 0
@@ -134,7 +134,7 @@ void inline_run(InlineConfig cfg, RenderFn&& render_fn) {
 
     StylePool pool;
     std::string buf;
-    detail::InlineState state;
+    detail::LiveState state;
 
     if (!cfg.cursor) std::fputs("\x1b[?25l", stdout); // hide cursor
 
@@ -153,7 +153,7 @@ void inline_run(InlineConfig cfg, RenderFn&& render_fn) {
         }
 
         Element root = [&]() -> Element {
-            if constexpr (InlineRenderFnDt<RenderFn>) {
+            if constexpr (LiveRenderFnDt<RenderFn>) {
                 return render_fn(dt);
             } else {
                 return render_fn();
@@ -162,11 +162,11 @@ void inline_run(InlineConfig cfg, RenderFn&& render_fn) {
 
         if (detail::quit_requested) {
             // Final render before exit
-            detail::render_inline(root, width, pool, buf, state);
+            detail::render_live(root, width, pool, buf, state);
             break;
         }
 
-        detail::render_inline(root, width, pool, buf, state);
+        detail::render_live(root, width, pool, buf, state);
 
         auto elapsed = Clock::now() - now;
         if (elapsed < frame_duration) {

@@ -2,7 +2,7 @@
 //
 // A visually rich terminal dashboard with animated charts, sparklines,
 // color-coded gains/losses, portfolio summary, and a scrolling news feed.
-// Uses maya::run with alt_screen=false so output stays in scrollback.
+// Uses maya::run with Mode::Inline so output stays in scrollback.
 //
 // All data is simulated with correlated random walks.
 //
@@ -595,7 +595,7 @@ int main() {
     init();
 
     maya::run(
-        {.title = "Terminal Trader", .fps = 20, .alt_screen = false},
+        {.title = "Terminal Trader", .fps = 20, .mode = maya::Mode::Inline},
         [](const maya::Event& ev) {
             using SK = maya::SpecialKey;
             maya::on(ev, 'q', [] { maya::quit(); });

@@ -120,7 +120,7 @@ Effect e([&] { if (should_quit.get()) quit(); });
 struct RunConfig {
     std::string_view title      = "";          // terminal window title (OSC 0)
     bool             mouse      = false;       // enable mouse event reporting
-    bool             alt_screen = true;        // use alternate screen buffer
+    Mode             mode       = Mode::Fullscreen; // rendering mode
     Theme            theme      = theme::dark; // colour theme
 };
 ```

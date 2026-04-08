@@ -601,7 +601,7 @@ int main() {
     auto last = Clock::now();
 
     run(
-        {.title = "matrix", .fps = 30, .alt_screen = true},
+        {.title = "matrix", .fps = 30, .mode = Mode::Fullscreen},
 
         [](const Event& ev) -> bool {
             if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;

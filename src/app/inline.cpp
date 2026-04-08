@@ -26,8 +26,8 @@ int detect_terminal_height() noexcept {
 }
 
 
-void render_inline(const Element& root, int width, StylePool& pool,
-                   std::string& buf, InlineState& st) {
+void render_live(const Element& root, int width, StylePool& pool,
+                   std::string& buf, LiveState& st) {
     constexpr int kMaxHeight = 500;
 
     // Reuse or recreate the canvas only when width changes.
@@ -133,8 +133,8 @@ void print(const Element& root) {
     int width = detail::detect_terminal_width() - 1;
     StylePool pool;
     std::string buf;
-    detail::InlineState st;
-    detail::render_inline(root, width, pool, buf, st);
+    detail::LiveState st;
+    detail::render_live(root, width, pool, buf, st);
     std::fputc('\n', stdout);
     std::fflush(stdout);
 }
@@ -142,8 +142,8 @@ void print(const Element& root) {
 void print(const Element& root, int width) {
     StylePool pool;
     std::string buf;
-    detail::InlineState st;
-    detail::render_inline(root, width, pool, buf, st);
+    detail::LiveState st;
+    detail::render_live(root, width, pool, buf, st);
     std::fputc('\n', stdout);
     std::fflush(stdout);
 }

@@ -123,13 +123,13 @@ void test_row_hash_width_dependency() {
 }
 
 // ============================================================================
-// 3. InlineState resets on width change
+// 3. LiveState resets on width change
 // ============================================================================
 
-void test_inline_state_reset() {
-    std::println("--- test_inline_state_reset ---");
+void test_live_state_reset() {
+    std::println("--- test_live_state_reset ---");
 
-    InlineState st;
+    LiveState st;
 
     // Simulate: first frame at width 80
     st.canvas_width = 80;
@@ -138,7 +138,7 @@ void test_inline_state_reset() {
     st.committed_height = 5;
     st.prev_row_hashes = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
 
-    // Simulate width change detection (as render_inline does)
+    // Simulate width change detection (as render_live does)
     int new_width = 120;
     if (st.canvas_width != new_width) {
         st.prev_row_hashes.clear();
@@ -780,7 +780,7 @@ int main() {
     // Canvas & hash fundamentals
     test_canvas_resize();
     test_row_hash_width_dependency();
-    test_inline_state_reset();
+    test_live_state_reset();
     test_serialize_after_resize();
     test_row_hash_stability();
 

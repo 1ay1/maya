@@ -533,7 +533,7 @@ int main() {
     init_state();
 
     maya::run(
-        {.title = "sysmon", .fps = 15, .alt_screen = false},
+        {.title = "sysmon", .fps = 15, .mode = maya::Mode::Inline},
         [&](const maya::Event& ev) {
             maya::on(ev, 'q', [] { maya::quit(); });
             maya::on(ev, maya::SpecialKey::Escape, [] { maya::quit(); });

@@ -56,7 +56,7 @@ pattern.
 | **Flexbox layout** | Row/column stacking, padding, margin, grow/shrink, gap, alignment, wrapping |
 | **Borders** | Single, Double, Round, Bold, Classic, Arrow — with colors, titles, per-side control |
 | **Reactive signals** | `Signal<T>`, `Computed<T>`, `Effect`, `Batch` — SolidJS-style fine-grained reactivity |
-| **Four rendering modes** | `run()` (fullscreen), `inline_run()` (scrollback), `canvas_run()` (imperative), `print()` (one-shot) |
+| **Four rendering modes** | `run()` (fullscreen/inline), `live()` (animated output), `canvas_run()` (imperative), `print()` (one-shot) |
 | **Rich input** | Keys, mouse clicks/movement/scroll, paste, focus, resize — all via pattern matching |
 | **Themes** | 24-slot color themes with dark/light built-ins and compile-time derivation |
 | **Canvas API** | Direct cell-level painting for games, visualizations, and animations |
@@ -91,7 +91,7 @@ pattern.
 │  Type-state: Cooked → Raw → AltScreen                │
 ├─────────────────────────────────────────────────────┤
 │               App Framework (app/)                   │
-│  run(), inline_run(), canvas_run(), print()          │
+│  run(), live(), canvas_run(), print()                 │
 │  Event dispatch, Signal integration, frame loop      │
 └─────────────────────────────────────────────────────┘
 ```
@@ -130,11 +130,11 @@ run(
 );
 ```
 
-### Inline progress (no alt screen)
+### Live progress (no alt screen)
 
 ```cpp
 int n = 0;
-inline_run({.fps = 30}, [&](float dt) {
+live({.fps = 30}, [&](float dt) {
     if (++n > 200) quit();
     return (v(
         text("Installing... " + std::to_string(n) + "/200") | Bold,
@@ -166,7 +166,7 @@ canvas_run(
 | [Layout](04-layout.md) | Flexbox model, direction, padding, grow, borders, alignment |
 | [Runtime Content](05-runtime-content.md) | `dyn()`, `text()`, `map()`, mixing static and dynamic |
 | [Event Handling](06-events.md) | Keys, mouse, resize, `on()` helpers, event predicates |
-| [Rendering Modes](07-rendering-modes.md) | `run()`, `inline_run()`, `canvas_run()`, `print()` |
+| [Rendering Modes](07-rendering-modes.md) | `run()`, `live()`, `canvas_run()`, `print()` |
 | [Canvas API](08-canvas-api.md) | Low-level painting, StylePool, cells, animations |
 | [Signals & Reactivity](09-signals.md) | `Signal<T>`, `Computed<T>`, `Effect`, `Batch` |
 | [Examples Walkthrough](10-examples.md) | Annotated guide through all 10 built-in examples |

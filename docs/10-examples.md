@@ -89,10 +89,10 @@ Also demonstrates mixing constexpr and runtime with `dyn()`.
 
 ## 4. inline.cpp — Inline Mode
 
-**Mode**: Fullscreen with `alt_screen = false`
+**Mode**: `run()` with `Mode::Inline`
 **Demonstrates**: Inline rendering, live bar animation, theme cycling
 
-Uses `run()` with `{.alt_screen = false}` — renders in the terminal scrollback
+Uses `run()` with `{.mode = Mode::Inline}` — renders in the terminal scrollback
 instead of the alt screen. The output stays visible after exit.
 
 **Key pattern — runtime bar construction**:
@@ -107,10 +107,10 @@ Shows that `text()` works with runtime strings for dynamic visualizations.
 
 ## 5. progress.cpp — Inline Progress Display
 
-**Mode**: Inline (`inline_run()`)
+**Mode**: Inline (`live()`)
 **Demonstrates**: Delta time, parallel progress bars, spinners, auto-quit
 
-Uses `inline_run({.fps = 30}, [](float dt) { ... })` — the delta-time
+Uses `live({.fps = 30}, [](float dt) { ... })` — the delta-time
 variant for smooth animation.
 
 **Key patterns**:
@@ -125,7 +125,7 @@ in `v(rows)`. Each package gets a different row based on its state.
 
 ## 6. agent.cpp — AI Agent Simulation
 
-**Mode**: Inline (`inline_run()`)
+**Mode**: Inline (`live()`)
 **Demonstrates**: Streaming text, phase state machine, diff coloring, bordered output
 
 Simulates an AI coding agent with token-by-token text streaming. Each "block"
@@ -325,8 +325,8 @@ canvas.set(cx, cy, kBurst[ci], gradient_style);
 | demo | run() | Yes | Yes | No | No |
 | dsl_demo | print() | No | Yes | No | No |
 | inline | run(inline) | Yes | Yes | No | Yes |
-| progress | inline_run() | No | Partial | No | Yes |
-| agent | inline_run() | No | Partial | No | Yes |
+| progress | live() | No | Partial | No | Yes |
+| agent | live() | No | Partial | No | Yes |
 | dashboard | run() | Yes | Partial | No | Yes |
 | matrix | canvas_run() | Yes | No | Yes | Yes |
 | viz | canvas_run() | Yes | No | Yes | Yes |

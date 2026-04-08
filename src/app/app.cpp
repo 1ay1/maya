@@ -101,8 +101,8 @@ void cleanup_signal_pipe() {
 // App::Builder
 // ============================================================================
 
-auto App::Builder::alt_screen(bool v) -> Builder& {
-    alt_screen_ = v;
+auto App::Builder::mode(Mode m) -> Builder& {
+    mode_ = m;
     return *this;
 }
 
@@ -131,12 +131,12 @@ auto App::Builder::build() -> Result<App> {
 
     int fd = raw.fd();
 
-    // Optionally enter alt screen (consumes the Raw terminal).
-    // If alt_screen is disabled, we stay in raw mode.
+    // Fullscreen mode enters the alt screen buffer (consumes the Raw terminal).
+    // Inline mode stays in raw mode.
     std::optional<Terminal<AltScreen>> alt_term;
     std::optional<Terminal<Raw>>       raw_term;
 
-    if (alt_screen_) {
+    if (mode_ == Mode::Fullscreen) {
         alt_term = MAYA_TRY(std::move(raw).enter_alt_screen());
     } else {
         raw_term = std::move(raw);
@@ -169,7 +169,7 @@ auto App::Builder::build() -> Result<App> {
         app.size_ = app.raw_terminal_->size();
     }
 
-    app.started_inline_ = !alt_screen_;
+    app.started_mode_ = mode_;
 
     // Initialize the render context with the initial terminal size.
     app.render_ctx_.width      = app.size_.width.raw();
@@ -453,23 +453,44 @@ auto App::render_frame() -> Status {
         int ch = content_height(canvas_);
         const int term_h = std::max(1, size_.height.raw());
 
-        // Cap to terminal height minus 1 to avoid auto-scroll on last line.
+        // Cap visible area to terminal height minus 1 to avoid
+        // auto-scroll on the last line.
         int display_rows = std::min(ch, term_h - 1);
         int skip_rows = ch - display_rows;
 
+        // ── Overflow: flush skipped rows once into scrollback ──────
+        // When content is taller than the terminal, the top rows
+        // would normally be clipped.  Instead, write them once into
+        // the terminal's scrollback so the user can scroll up to see
+        // them (matching Claude Code behavior).  After the flush the
+        // skipped rows become committed and are never rewritten.
+        if (skip_rows > 0 && skip_rows > committed_height_) {
+            int flush_from = committed_height_;
+            int flush_count = skip_rows - flush_from;
+            if (flush_count > 0) {
+                std::string flush;
+                flush += ansi::sync_start;
+                // Move to top of live region so the flush inserts above.
+                int prev_live_approx = std::max(0, prev_height_ - committed_height_);
+                if (prev_live_approx > 1)
+                    ansi::write_cursor_up(flush, prev_live_approx - 1);
+                if (prev_live_approx > 0)
+                    flush += "\r";
+                serialize(canvas_, pool_, flush, flush_count, flush_from);
+                flush += ansi::sync_end;
+                MAYA_TRY_VOID(writer_->write_raw(flush));
+                // These rows are now in scrollback — mark committed.
+                committed_height_ = skip_rows;
+                // Reset prev tracking since cursor position changed.
+                prev_height_ = 0;
+                prev_row_hashes_.clear();
+            }
+        }
+
         // ── Row-hash comparison ────────────────────────────────
-        // Compute a hash per visible row to find the stable prefix
-        // (rows identical to last frame). Stable rows above the first
-        // change are "committed" to scrollback and never overwritten,
-        // so the user can scroll up to see old tool-card output, diffs,
-        // etc. exactly as they appeared.
         const int W = canvas_.width();
         const uint64_t* cells = canvas_.cells();
 
-        // Hash every row and find the stable prefix (contiguous matching
-        // rows from the top).  We must check from row 0 — a change at
-        // ANY row caps the stable prefix, preventing premature commitment
-        // of rows below an active animation (spinner, streaming text).
         row_hashes_.resize(static_cast<size_t>(ch));
         int stable = 0;
         {
@@ -479,7 +500,6 @@ auto App::render_frame() -> Status {
                 uint64_t h = simd::hash_row(cells + y * W, W);
                 row_hashes_[static_cast<size_t>(y)] = h;
 
-                // Extend stable prefix while rows match.
                 if (y == stable && y < check && y < prev_sz
                     && h == prev_row_hashes_[static_cast<size_t>(y)]) {
                     stable = y + 1;
@@ -487,28 +507,16 @@ auto App::render_frame() -> Status {
             }
         }
 
-        // Update committed_height_ to match the current stable prefix.
-        // It can grow (new rows become stable) or shrink (content changed
-        // in a previously-committed region, e.g. a new section was
-        // inserted in the middle of the UI, pushing rows down).
-        committed_height_ = stable;
+        committed_height_ = std::max(committed_height_, stable);
 
-        // The "live" region is everything from committed_height_ down.
-        // We only move the cursor up into the live region, never into
-        // committed rows.  prev_live is recomputed using the NEW
-        // committed_height_ so that newly-committed rows are excluded
-        // from cursor movement (they're now in scrollback).
         int live_rows  = std::max(0, display_rows - std::max(0, committed_height_ - skip_rows));
         int prev_live  = std::max(0, prev_height_  - std::max(0, committed_height_ - (prev_content_height_ - prev_height_)));
-
-        // Where in the canvas does the live region start?
         int live_start = std::max(skip_rows, committed_height_);
 
         out_.clear();
         out_ += ansi::sync_start;
         out_ += ansi::hide_cursor;
 
-        // Move cursor to the top of the live region.
         if (prev_live > 1) {
             ansi::write_cursor_up(out_, prev_live - 1);
         }
@@ -516,7 +524,6 @@ auto App::render_frame() -> Status {
             out_ += "\r";
         }
 
-        // Incremental serialize: only re-render rows that changed.
         if (live_rows > 0) {
             const uint64_t* old_p = prev_row_hashes_.data();
             int old_n = static_cast<int>(prev_row_hashes_.size());
@@ -525,7 +532,6 @@ auto App::render_frame() -> Status {
                               row_hashes_.data(), ch);
         }
 
-        // Erase leftover lines if the live area shrunk.
         if (live_rows < prev_live) {
             int extra = prev_live - live_rows;
             for (int i = 0; i < extra; ++i)
@@ -600,7 +606,7 @@ Status canvas_run_impl(
 
     std::optional<Terminal<AltScreen>> alt_term;
     std::optional<Terminal<Raw>>       raw_term;
-    if (cfg.alt_screen) {
+    if (cfg.mode == Mode::Fullscreen) {
         alt_term = MAYA_TRY(std::move(raw).enter_alt_screen());
     } else {
         raw_term = std::move(raw);

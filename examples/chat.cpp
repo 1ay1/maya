@@ -1,6 +1,6 @@
 // examples/chat.cpp — AI coding session demo
 //
-// Runs in inline mode (alt_screen = false) like Claude Code:
+// Runs in inline mode (Mode::Inline) like Claude Code:
 //   - Shell history stays visible above
 //   - Old content pushed to terminal scrollback (native scroll)
 //   - Live region at bottom is erased and redrawn each frame
@@ -195,7 +195,7 @@ int main() {
     });
 
     maya::run(
-        {.fps = 30, .mouse = true, .alt_screen = false},
+        {.fps = 30, .mouse = true, .mode = maya::Mode::Inline},
 
         [&](const Event& ev) {
             if (ctrl(ev, 'c') || ctrl(ev, 'd')) return false;

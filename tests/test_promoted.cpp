@@ -237,7 +237,7 @@ void test_chatview_full_resize() {
         "- **Maya** is a C++26 TUI framework\n"
         "- It uses compile-time DSL for type-safe UI\n"
         "- SIMD-accelerated terminal diffing\n\n"
-        "```cpp\nmaya::run(\n    {.alt_screen = false},\n    handler,\n    render\n);\n```\n\n"
+        "```cpp\nmaya::run(\n    {.mode = Mode::Inline},\n    handler,\n    render\n);\n```\n\n"
         "> This is a well-structured project!\n\n"
         "The framework is designed for **high-performance** terminal applications.");
     chat.end_stream();
@@ -346,8 +346,8 @@ void test_extreme_widths() {
 // ============================================================================
 // Test: No alt screen sequences in any output
 // ============================================================================
-void test_no_alt_screen() {
-    std::println("=== test_no_alt_screen ===");
+void test_no_fullscreen_sequences() {
+    std::println("=== test_no_fullscreen_sequences ===");
 
     ChatView chat;
     chat.add_user("hi");
@@ -376,7 +376,7 @@ int main() {
     test_chatview_full_resize();
     test_streaming_during_resize();
     test_extreme_widths();
-    test_no_alt_screen();
+    test_no_fullscreen_sequences();
     std::println("All resize tests passed!");
     return 0;
 }

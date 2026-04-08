@@ -17,7 +17,7 @@ maya::print(markdown("# Hello"));
 
 ---
 
-## 2. Inline Run Mode (`alt_screen = false`)
+## 2. Inline Run Mode (`Mode::Inline`)
 
 Interactive inline rendering. The app runs in raw mode but does NOT enter the
 alt screen buffer. Content renders inline in the terminal, preserving scrollback
@@ -27,7 +27,7 @@ This is how Claude Code works. The app stays inline for its entire lifetime.
 
 ```cpp
 maya::run(
-    {.alt_screen = false, .mouse = true},
+    {.mode = Mode::Inline, .mouse = true},
     event_fn, render_fn
 );
 ```
@@ -48,14 +48,14 @@ provides scrolling. The scroll widget is a pass-through in this mode.
 
 ---
 
-## 3. Alt Screen Mode (`alt_screen = true`)
+## 3. Fullscreen Mode (`Mode::Fullscreen`)
 
 Full-screen mode. The terminal switches to the alternate screen buffer. The app
 owns the entire viewport. Double-buffered cell-level diffing.
 
 ```cpp
 maya::run(
-    {.alt_screen = true, .mouse = true},
+    {.mode = Mode::Fullscreen, .mouse = true},
     event_fn, render_fn
 );
 ```
@@ -75,30 +75,13 @@ viewport and renders a scrollbar. The terminal has no scrollback in alt screen.
 
 ## Mode comparison
 
-| Aspect              | Inline         | Inline Run        | Alt Screen          |
-|---------------------|----------------|-------------------|---------------------|
-| Raw mode            | No             | Yes               | Yes                 |
-| Alt screen buffer   | No             | No                | Yes                 |
-| Layout height       | Auto (content) | Auto (content)    | Fixed (terminal)    |
-| Diff method         | N/A            | Row-hash          | Cell-level          |
-| Scroll widget       | No             | Pass-through      | Clip + scrollbar    |
-| Terminal scrollback | Yes            | Yes (committed)   | None (alt buffer)   |
-| Mouse               | No             | Optional          | Optional            |
-| Resize handling     | N/A            | Erase live region | Recreate + repaint  |
-
----
-
-## Scroll widget behavior per mode
-
-- **Inline / Inline Run**: The scroll widget is a **pass-through**. It renders
-  all content without clipping. No scrollbar. Height = content height. The
-  terminal's native scrollback provides scrolling.
-
-- **Alt Screen**: The scroll widget **clips** to the viewport height, renders a
-  braille scrollbar, and handles scroll events (mouse wheel, PageUp/PageDown,
-  Ctrl+Up/Down).
-
-The scroll widget detects the mode via the layout allocation: in auto_height
-mode the allocated height is small (h < 2, from default measure), so it returns
-content directly. In alt-screen mode the allocated height comes from grow/fixed
-constraints, enabling clip + scrollbar.
+| Aspect              | print          | live              | Mode::Inline        | Mode::Fullscreen    |
+|---------------------|----------------|-------------------|---------------------|---------------------|
+| Raw mode            | No             | No                | Yes                 | Yes                 |
+| Alt screen buffer   | No             | No                | No                  | Yes                 |
+| Input handling      | No             | No                | Yes                 | Yes                 |
+| Layout height       | Auto (content) | Auto (content)    | Auto (content)      | Fixed (terminal)    |
+| Diff method         | N/A            | Row-hash          | Row-hash            | Cell-level          |
+| Terminal scrollback | Yes            | Yes (committed)   | Yes (committed)     | None (alt buffer)   |
+| Mouse               | No             | No                | Optional            | Optional            |
+| Resize handling     | N/A            | Re-detect width   | Clear + repaint     | Recreate + repaint  |

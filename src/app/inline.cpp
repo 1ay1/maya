@@ -5,8 +5,8 @@
 
 #include "maya/platform/io.hpp"
 #include "maya/render/diff.hpp"    // for detail::encode_utf8
-#include "maya/render/renderer.hpp" // for render_tree, content_height
-#include "maya/render/serialize.hpp" // for content_height
+#include "maya/render/renderer.hpp" // for render_tree
+#include "maya/render/serialize.hpp" // for content_height, serialize
 
 namespace maya {
 
@@ -29,20 +29,10 @@ void render_live(const Element& root, int width, StylePool& pool,
 
     // Reuse or recreate the canvas only when width changes.
     if (st.canvas_width != width) {
-        // Width changed — terminal has reflowed our output, cursor position
-        // is unpredictable.  Erase all previous output before resetting.
-        if (st.prev_height > 0) {
-            std::string erase;
-            ansi::erase_lines(st.prev_height, erase);
-            std::fwrite(erase.data(), 1, erase.size(), stdout);
-            std::fflush(stdout);
-        }
         st.canvas = Canvas{width, kMaxHeight, &pool};
         st.canvas_width = width;
-        st.prev_row_hashes.clear();
         st.prev_height = 0;
         st.prev_content_height = 0;
-        st.committed_height = 0;
     } else {
         st.canvas.set_style_pool(&pool);
     }
@@ -61,58 +51,37 @@ void render_live(const Element& root, int width, StylePool& pool,
     int display_rows = std::min(ch, term_h);
     int skip_rows = ch - display_rows;
 
-    // ── Row-hash comparison (reuse scratch buffer) ────────────
-    const int W = st.canvas.width();
-    const uint64_t* cells = st.canvas.cells();
-
-    st.row_hashes.resize(static_cast<size_t>(ch));
-    int stable = 0;
-    {
-        int check = std::min(ch, st.prev_content_height);
-        int prev_sz = static_cast<int>(st.prev_row_hashes.size());
-        for (int y = 0; y < ch; ++y) {
-            uint64_t h = simd::hash_row(cells + y * W, W);
-            st.row_hashes[static_cast<size_t>(y)] = h;
-
-            if (y == stable && y < check && y < prev_sz
-                && h == st.prev_row_hashes[static_cast<size_t>(y)]) {
-                stable = y + 1;
-            }
-        }
-    }
-
-    st.committed_height = stable;
-
-    int live_rows = std::max(0, display_rows - std::max(0, st.committed_height - skip_rows));
-    int prev_live = std::max(0, st.prev_height - std::max(0, st.committed_height - (st.prev_content_height - st.prev_height)));
-    int live_start = std::max(skip_rows, st.committed_height);
-
     buf.clear();
     buf += ansi::sync_start;
     buf += ansi::hide_cursor;
 
-    if (prev_live > 1) {
-        ansi::write_cursor_up(buf, prev_live - 1);
-    }
-    if (prev_live > 0) {
-        buf += "\r";
-    }
-
-    if (live_rows > 0) {
-        const uint64_t* old_p = st.prev_row_hashes.data();
-        int old_n = static_cast<int>(st.prev_row_hashes.size());
-        serialize_changed(st.canvas, pool, buf, ch, live_start,
-                          old_p, old_n,
-                          st.row_hashes.data(), ch);
+    // If the display needs to grow, reserve space FIRST by emitting newlines.
+    // This ensures that any content pushed to scrollback during the scroll
+    // is from ABOVE our live area (old terminal content), not stale frame data.
+    int growth = std::max(0, display_rows - st.prev_height);
+    if (growth > 0) {
+        for (int i = 0; i < growth; ++i) buf += '\n';
     }
 
-    if (live_rows < prev_live) {
-        int extra = prev_live - live_rows;
-        for (int i = 0; i < extra; ++i) buf += "\r\n\x1b[2K";
-        ansi::write_cursor_up(buf, extra);
+    // Move cursor to the top of our display area.
+    int total_lines = st.prev_height + growth;
+    if (total_lines > 1) {
+        ansi::write_cursor_up(buf, total_lines - 1);
+    }
+    if (total_lines > 0) {
+        buf += '\r';
     }
 
-    buf += ansi::reset;
+    // ED 0: erase from cursor to end of screen. One escape sequence
+    // clears everything — more robust than per-line erase, and is
+    // exactly what Ink/log-update uses.
+    buf += "\x1b[J";
+
+    // Write new content (full serialize from skip_rows)
+    if (display_rows > 0) {
+        serialize(st.canvas, pool, buf, ch, skip_rows);
+    }
+
     buf += ansi::show_cursor;
     buf += ansi::sync_end;
 
@@ -121,7 +90,6 @@ void render_live(const Element& root, int width, StylePool& pool,
 
     st.prev_height = display_rows;
     st.prev_content_height = ch;
-    std::swap(st.prev_row_hashes, st.row_hashes);
 }
 
 } // namespace detail

@@ -14,3 +14,4 @@ Testing/Temporary/LastTestsFailed.log
 Testing/Temporary/LastTest.log
 Testing/Temporary/CTestCostData.txt
 .claude/settings.local.json
+.DS_Store

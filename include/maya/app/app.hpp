@@ -147,9 +147,6 @@ public:
         , prev_height_(o.prev_height_)
         , prev_width_(o.prev_width_)
         , out_(std::move(o.out_))
-        , prev_row_hashes_(std::move(o.prev_row_hashes_))
-        , row_hashes_(std::move(o.row_hashes_))
-        , committed_height_(o.committed_height_)
         , prev_content_height_(o.prev_content_height_)
         , layout_nodes_(std::move(o.layout_nodes_))
         , theme_(o.theme_)
@@ -197,10 +194,6 @@ private:
     int                     prev_width_  = 0;
     std::string             out_;
 
-    // -- Inline scrollback preservation --------------------------------------
-    std::vector<uint64_t>   prev_row_hashes_;
-    std::vector<uint64_t>   row_hashes_;
-    int                     committed_height_ = 0;
     int                     prev_content_height_ = 0;
     std::vector<layout::LayoutNode> layout_nodes_;
 

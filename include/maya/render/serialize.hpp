@@ -34,9 +34,16 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 /// Incremental serialize: only re-render rows whose hash differs between
 /// old_hashes and new_hashes.  Unchanged rows are skipped with cursor
 /// movement, dramatically reducing output on slow terminals.
+///
+/// old_offset: when the display scrolled (skip_rows changed between frames),
+/// old_hashes[y] no longer corresponds to the same display position as
+/// new_hashes[y].  Pass (prev_skip_rows - skip_rows) so the comparison
+/// uses old_hashes[y + old_offset] — the hash of what was previously
+/// displayed at the same physical row.
 void serialize_changed(const Canvas& canvas, const StylePool& pool,
                        std::string& out, int rows, int start_row,
                        const uint64_t* old_hashes, int old_count,
-                       const uint64_t* new_hashes, int new_count);
+                       const uint64_t* new_hashes, int new_count,
+                       int old_offset = 0);
 
 } // namespace maya

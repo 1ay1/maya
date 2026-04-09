@@ -9,6 +9,10 @@
 #include "maya/core/scope_exit.hpp"
 #include "maya/platform/select.hpp"
 
+#if MAYA_PLATFORM_MACOS
+#include <pthread.h>
+#endif
+
 namespace maya {
 
 // ============================================================================
@@ -110,6 +114,12 @@ auto App::run(std::function<Element()> render_fn) -> Status {
 auto App::event_loop() -> Status {
     using Clock = std::chrono::steady_clock;
     auto next_frame = Clock::now();
+
+#if MAYA_PLATFORM_MACOS
+    // Tell macOS scheduler this is a user-interactive thread.
+    // Gets priority on performance cores (M-series), reduces frame jitter.
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 
     // Create the event source — multiplexes terminal input and resize signals.
     auto sig_handle = resize_signal_ ? resize_signal_->native_handle()
@@ -287,22 +297,14 @@ auto App::render_frame() -> Status {
 
         if (needs_clear_) {
             if (prev_height_ > 0) {
-                const int term_h = std::max(1, size_.height.raw());
-                int erase_rows = prev_height_;
-                if (prev_width_ > 0 && prev_width_ > w) {
-                    erase_rows = prev_height_ * ((prev_width_ + w - 1) / w);
-                }
-                erase_rows = std::max(erase_rows, term_h);
                 std::string erase;
                 erase += "\x1b[2J";
                 erase += "\x1b[3J";
                 erase += "\x1b[H";
                 (void)writer_->write_raw(erase);
             }
-            prev_row_hashes_.clear();
             prev_height_ = 0;
             prev_content_height_ = 0;
-            committed_height_ = 0;
             needs_clear_ = false;
         }
 
@@ -319,83 +321,52 @@ auto App::render_frame() -> Status {
         int display_rows = std::min(ch, term_h - 1);
         int skip_rows = ch - display_rows;
 
-        if (skip_rows > 0 && skip_rows > committed_height_) {
-            int flush_from = committed_height_;
-            int flush_count = skip_rows - flush_from;
-            if (flush_count > 0) {
-                std::string flush;
-                flush += ansi::sync_start;
-                int prev_live_approx = std::max(0, prev_height_ - committed_height_);
-                if (prev_live_approx > 1)
-                    ansi::write_cursor_up(flush, prev_live_approx - 1);
-                if (prev_live_approx > 0)
-                    flush += "\r";
-                serialize(canvas_, pool_, flush, flush_count, flush_from);
-                flush += ansi::sync_end;
-                MAYA_TRY_VOID(writer_->write_raw(flush));
-                committed_height_ = skip_rows;
-                prev_height_ = 0;
-                prev_row_hashes_.clear();
-            }
-        }
-
-        const int W = canvas_.width();
-        const uint64_t* cells = canvas_.cells();
-
-        row_hashes_.resize(static_cast<size_t>(ch));
-        int stable = 0;
-        {
-            int check = std::min(ch, prev_content_height_);
-            int prev_sz = static_cast<int>(prev_row_hashes_.size());
-            for (int y = 0; y < ch; ++y) {
-                uint64_t h = simd::hash_row(cells + y * W, W);
-                row_hashes_[static_cast<size_t>(y)] = h;
-
-                if (y == stable && y < check && y < prev_sz
-                    && h == prev_row_hashes_[static_cast<size_t>(y)]) {
-                    stable = y + 1;
-                }
-            }
-        }
-
-        int live_rows  = std::max(0, display_rows - std::max(0, committed_height_ - skip_rows));
-        int prev_live  = std::max(0, prev_height_  - std::max(0, committed_height_ - (prev_content_height_ - prev_height_)));
-        int live_start = std::max(skip_rows, committed_height_);
-
         out_.clear();
         out_ += ansi::sync_start;
         out_ += ansi::hide_cursor;
 
-        if (prev_live > 1) {
-            ansi::write_cursor_up(out_, prev_live - 1);
-        }
-        if (prev_live > 0) {
-            out_ += "\r";
+        if (prev_height_ == 0) {
+            // First render: just write from cursor position.
+            out_ += "\x1b[J";
+        } else {
+            // How many rows newly scrolled off the top since last frame?
+            int old_skip = prev_content_height_ - prev_height_;
+            int flush_count = std::max(0, skip_rows - old_skip);
+
+            // Emit \n's to push old display rows into scrollback.
+            // The terminal scrolls naturally — these are finalized
+            // rows from the previous frame entering scrollback.
+            for (int i = 0; i < flush_count; ++i) out_ += '\n';
+
+            // Also account for display growth (new visible rows).
+            int display_growth = std::max(0, display_rows - (prev_height_ - flush_count));
+            for (int i = 0; i < display_growth; ++i) out_ += '\n';
+
+            // Move cursor to top of display area. CUU clamps at
+            // screen row 0, which is exactly what we want.
+            int total_newlines = flush_count + display_growth;
+            int up = prev_height_ + total_newlines - 1;
+            if (up > 0)
+                ansi::write_cursor_up(out_, up);
+            out_ += '\r';
+
+            // ED 0: erase from cursor to end of screen. Only affects
+            // the screen, not scrollback — scrollback is preserved.
+            out_ += "\x1b[J";
         }
 
-        if (live_rows > 0) {
-            const uint64_t* old_p = prev_row_hashes_.data();
-            int old_n = static_cast<int>(prev_row_hashes_.size());
-            serialize_changed(canvas_, pool_, out_, ch, live_start,
-                              old_p, old_n,
-                              row_hashes_.data(), ch);
-        }
-
-        if (live_rows < prev_live) {
-            int extra = prev_live - live_rows;
-            for (int i = 0; i < extra; ++i)
-                out_ += "\r\n\x1b[2K";
-            ansi::write_cursor_up(out_, extra);
+        if (display_rows > 0) {
+            serialize(canvas_, pool_, out_, ch, skip_rows);
         }
 
         out_ += ansi::reset;
+        out_ += ansi::show_cursor;
         out_ += ansi::sync_end;
 
         MAYA_TRY_VOID(writer_->write_raw(out_));
         prev_height_ = display_rows;
         prev_width_  = w;
         prev_content_height_ = ch;
-        std::swap(prev_row_hashes_, row_hashes_);
 
     } else {
         const int h = size_.height.raw();
@@ -444,6 +415,10 @@ Status canvas_run_impl(
     std::function<void(Canvas&, int w, int h)>     on_paint)
 {
     using Clock = std::chrono::steady_clock;
+
+#if MAYA_PLATFORM_MACOS
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#endif
 
     MAYA_TRY_DECL(auto cooked, Terminal<Cooked>::create());
     MAYA_TRY_DECL(auto raw, std::move(cooked).enable_raw_mode());

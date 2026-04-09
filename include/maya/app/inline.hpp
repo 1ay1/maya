@@ -43,16 +43,13 @@ namespace detail {
 int detect_terminal_width() noexcept;
 int detect_terminal_height() noexcept;
 
-/// Persistent state for the inline renderer's scrollback-preserving
-/// row comparison.  Passed by reference across frames.
+/// Persistent state for the inline renderer's erase-and-rewrite loop.
+/// Passed by reference across frames.
 struct LiveState {
-    int prev_height       = 0;
-    int prev_content_height = 0;
-    int committed_height  = 0;
-    std::vector<uint64_t> prev_row_hashes;
-    std::vector<uint64_t> row_hashes;   // reusable scratch buffer (avoids per-frame alloc)
-    int canvas_width      = 0;          // cached canvas width for reuse
-    Canvas canvas;                      // persistent canvas (avoids per-frame alloc)
+    int prev_height         = 0;    // display rows written last frame
+    int prev_content_height = 0;    // total content rows last frame
+    int canvas_width        = 0;    // cached canvas width for reuse
+    Canvas canvas;                  // persistent canvas (avoids per-frame alloc)
     std::vector<layout::LayoutNode> layout_nodes;  // reused across frames
 };
 

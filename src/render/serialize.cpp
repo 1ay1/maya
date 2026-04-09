@@ -95,11 +95,15 @@ void serialize(const Canvas& canvas, const StylePool& pool,
                 detail::encode_utf8(ch, out);
             }
         }
+        // Flush remaining ASCII for this row, then erase to end of line.
+        // EL 0 cleans up any stale content from previous frames that was
+        // wider than the current row.
+        if (ascii_len > 0) {
+            out.append(ascii_buf, static_cast<size_t>(ascii_len));
+            ascii_len = 0;
+        }
+        out += "\x1b[K";
     }
-    if (ascii_len > 0) {
-        out.append(ascii_buf, static_cast<size_t>(ascii_len));
-    }
-
     // Re-enable auto-wrap.
     out += "\x1b[?7h";
 
@@ -109,7 +113,8 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 void serialize_changed(const Canvas& canvas, const StylePool& pool,
                        std::string& out, int rows, int start_row,
                        const uint64_t* old_hashes, int old_count,
-                       const uint64_t* new_hashes, int new_count) {
+                       const uint64_t* new_hashes, int new_count,
+                       int old_offset) {
     const int W = canvas.width();
     const int total_rows = (rows > 0) ? std::min(rows, canvas.height()) : canvas.height();
     const int y_begin = std::clamp(start_row, 0, total_rows);
@@ -128,10 +133,13 @@ void serialize_changed(const Canvas& canvas, const StylePool& pool,
     int cursor_y = y_begin;
 
     for (int y = y_begin; y < y_end; ++y) {
-        // Check if row changed
+        // Check if row changed — compare by display position, not canvas row.
+        // old_offset accounts for scroll: old_hashes[y + old_offset] is what
+        // was previously displayed at the same physical row as new_hashes[y].
         bool changed = true;
-        if (y < old_count && y < new_count)
-            changed = (old_hashes[y] != new_hashes[y]);
+        int old_y = y + old_offset;
+        if (old_y >= 0 && old_y < old_count && y < new_count)
+            changed = (old_hashes[old_y] != new_hashes[y]);
 
         if (!changed) continue; // skip unchanged rows entirely
 

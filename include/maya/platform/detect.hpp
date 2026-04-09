@@ -73,11 +73,14 @@ inline constexpr Arch arch =
 // ============================================================================
 
 struct Posix {};
+struct MacOS {};
 struct Win32 {};
 
-using OsFamily = std::conditional_t<os == Os::Windows, Win32, Posix>;
+using OsFamily = std::conditional_t<os == Os::Windows, Win32,
+                 std::conditional_t<os == Os::MacOS,   MacOS, Posix>>;
 
 inline constexpr bool is_posix = std::is_same_v<OsFamily, Posix>;
+inline constexpr bool is_macos = std::is_same_v<OsFamily, MacOS>;
 inline constexpr bool is_win32 = std::is_same_v<OsFamily, Win32>;
 
 // ============================================================================
@@ -135,9 +138,15 @@ static_assert(os != Os::Unknown || arch == Arch::Wasm32,
 
 #if defined(_WIN32) && !defined(__unix__) && !defined(__CYGWIN__)
     #define MAYA_PLATFORM_WIN32 1
+    #define MAYA_PLATFORM_MACOS 0
+    #define MAYA_PLATFORM_POSIX 0
+#elif defined(__APPLE__) && defined(__MACH__)
+    #define MAYA_PLATFORM_WIN32 0
+    #define MAYA_PLATFORM_MACOS 1
     #define MAYA_PLATFORM_POSIX 0
 #else
     #define MAYA_PLATFORM_WIN32 0
+    #define MAYA_PLATFORM_MACOS 0
     #define MAYA_PLATFORM_POSIX 1
 #endif
 

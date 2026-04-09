@@ -84,7 +84,7 @@ public:
         struct sigaction sa{};
         sa.sa_handler = detail::sigwinch_handler;
         sa.sa_flags   = SA_RESTART;
-        ::sigemptyset(&sa.sa_mask);
+        sigemptyset(&sa.sa_mask);
         if (::sigaction(SIGWINCH, &sa, nullptr) < 0) {
             ::close(fds[0]);
             ::close(fds[1]);

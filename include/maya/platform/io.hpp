@@ -12,9 +12,10 @@
 #include <cstddef>
 #include <string_view>
 
-#if MAYA_PLATFORM_POSIX
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     #include <cerrno>
     #include <sys/ioctl.h>
+    #include <sys/uio.h>   // writev()
     #include <unistd.h>
 #elif MAYA_PLATFORM_WIN32
     #ifndef WIN32_LEAN_AND_MEAN
@@ -56,7 +57,7 @@ inline constexpr NativeHandle invalid_handle = -1;
     NativeHandle h, const void* data, std::size_t len) noexcept
     -> Result<std::size_t>
 {
-#if MAYA_PLATFORM_POSIX
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     ssize_t n = ::write(h, data, len);
     if (n < 0) {
         if (errno == EINTR)
@@ -101,6 +102,42 @@ inline constexpr NativeHandle invalid_handle = -1;
 }
 
 // ============================================================================
+// io_writev — scatter-gather write (batches multiple buffers in one syscall)
+// ============================================================================
+
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+
+struct IoVec {
+    const void* base;
+    std::size_t len;
+};
+
+[[nodiscard]] inline auto io_writev(
+    NativeHandle h, const IoVec* vecs, int count) noexcept
+    -> Result<std::size_t>
+{
+    // Map our IoVec to OS iovec (layout-compatible, but be explicit)
+    struct iovec iov[16];
+    int n = count < 16 ? count : 16;
+    for (int i = 0; i < n; ++i) {
+        iov[i].iov_base = const_cast<void*>(vecs[i].base);
+        iov[i].iov_len  = vecs[i].len;
+    }
+
+    ssize_t written = ::writev(h, iov, n);
+    if (written < 0) {
+        if (errno == EINTR)
+            return ok(std::size_t{0});
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            return err<std::size_t>(Error::would_block());
+        return err<std::size_t>(Error::from_errno("writev"));
+    }
+    return ok(static_cast<std::size_t>(written));
+}
+
+#endif // POSIX || MACOS
+
+// ============================================================================
 // io_read — single read, returns 0 bytes on EINTR/EAGAIN
 // ============================================================================
 
@@ -108,7 +145,7 @@ inline constexpr NativeHandle invalid_handle = -1;
     NativeHandle h, void* buf, std::size_t len) noexcept
     -> Result<std::size_t>
 {
-#if MAYA_PLATFORM_POSIX
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     ssize_t n = ::read(h, buf, len);
     if (n < 0) {
         if (errno == EAGAIN || errno == EINTR)
@@ -135,7 +172,7 @@ inline constexpr NativeHandle invalid_handle = -1;
 [[nodiscard]] inline Size query_terminal_size(
     [[maybe_unused]] NativeHandle h) noexcept
 {
-#if MAYA_PLATFORM_POSIX
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     struct winsize ws{};
     if (::ioctl(h, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
         return {Columns{ws.ws_col}, Rows{ws.ws_row}};
@@ -156,7 +193,7 @@ inline constexpr NativeHandle invalid_handle = -1;
 // ============================================================================
 
 [[nodiscard]] inline NativeHandle stdout_handle() noexcept {
-#if MAYA_PLATFORM_POSIX
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     return STDOUT_FILENO;
 #else
     return ::GetStdHandle(STD_OUTPUT_HANDLE);
@@ -168,7 +205,7 @@ inline constexpr NativeHandle invalid_handle = -1;
 // ============================================================================
 
 [[nodiscard]] inline NativeHandle stdin_handle() noexcept {
-#if MAYA_PLATFORM_POSIX
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     return STDIN_FILENO;
 #else
     return ::GetStdHandle(STD_INPUT_HANDLE);
@@ -180,7 +217,7 @@ inline constexpr NativeHandle invalid_handle = -1;
 // ============================================================================
 
 [[nodiscard]] inline bool is_tty(NativeHandle h) noexcept {
-#if MAYA_PLATFORM_POSIX
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     return ::isatty(h) != 0;
 #else
     DWORD mode;

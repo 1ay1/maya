@@ -2,9 +2,9 @@
 
 #include <algorithm>
 #include <format>
-#include <ranges>
 
 #include "maya/core/focus.hpp"
+#include "maya/core/simd.hpp"
 #include "maya/core/overload.hpp"
 #include "maya/core/scope_exit.hpp"
 #include "maya/platform/select.hpp"
@@ -298,13 +298,12 @@ auto App::render_frame() -> Status {
         if (needs_clear_) {
             if (prev_height_ > 0) {
                 std::string erase;
-                erase += "\x1b[2J";
-                erase += "\x1b[3J";
-                erase += "\x1b[H";
+                erase += "\x1b[2J\x1b[3J\x1b[H";
                 (void)writer_->write_raw(erase);
             }
             prev_height_ = 0;
             prev_content_height_ = 0;
+            row_hashes_.clear();
             needs_clear_ = false;
         }
 
@@ -316,47 +315,79 @@ auto App::render_frame() -> Status {
         render_tree(render_fn_(), canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/true);
 
         int ch = content_height(canvas_);
-        const int term_h = std::max(1, size_.height.raw());
+        const int W = canvas_.width();
+        const uint64_t* cells = canvas_.cells();
 
-        int display_rows = std::min(ch, term_h - 1);
-        int skip_rows = ch - display_rows;
+        // Compute row hashes for the new frame.
+        std::vector<uint64_t> new_hashes(static_cast<size_t>(ch));
+        for (int y = 0; y < ch; ++y)
+            new_hashes[static_cast<size_t>(y)] =
+                simd::hash_row(cells + y * W, W);
+
+        // Row-diff approach: never erase, only overwrite changed rows
+        // and append new rows. Scrollback is never touched, so user
+        // can scroll freely while content streams in.
+
+        // Find the first row that changed (only within previously-
+        // written rows that are still on screen).
+        const int term_h = std::max(1, size_.height.raw());
+        const int prev_on_screen = std::min(prev_height_, term_h);
+        const int common = std::min(ch, prev_height_);
+
+        // Only rows on screen can be updated. Rows in scrollback
+        // (index < prev_height_ - prev_on_screen) are committed.
+        const int updatable_start = prev_height_ - prev_on_screen;
+        int first_changed = common; // default: no change in common rows
+        for (int y = updatable_start; y < common; ++y) {
+            if (new_hashes[static_cast<size_t>(y)] !=
+                row_hashes_[static_cast<size_t>(y)]) {
+                first_changed = y;
+                break;
+            }
+        }
+
+        // If nothing changed and no new rows, skip.
+        if (first_changed == common && ch <= prev_height_) {
+            row_hashes_ = std::move(new_hashes);
+            prev_content_height_ = ch;
+            return ok();
+        }
 
         out_.clear();
         out_ += ansi::sync_start;
         out_ += ansi::hide_cursor;
 
         if (prev_height_ == 0) {
-            // First render: just write from cursor position.
-            out_ += "\x1b[J";
+            // First render: write all rows from current cursor position.
+            if (ch > 0)
+                serialize(canvas_, pool_, out_, ch);
         } else {
-            // How many rows newly scrolled off the top since last frame?
-            int old_skip = prev_content_height_ - prev_height_;
-            int flush_count = std::max(0, skip_rows - old_skip);
-
-            // Emit \n's to push old display rows into scrollback.
-            // The terminal scrolls naturally — these are finalized
-            // rows from the previous frame entering scrollback.
-            for (int i = 0; i < flush_count; ++i) out_ += '\n';
-
-            // Also account for display growth (new visible rows).
-            int display_growth = std::max(0, display_rows - (prev_height_ - flush_count));
-            for (int i = 0; i < display_growth; ++i) out_ += '\n';
-
-            // Move cursor to top of display area. CUU clamps at
-            // screen row 0, which is exactly what we want.
-            int total_newlines = flush_count + display_growth;
-            int up = prev_height_ + total_newlines - 1;
+            // Move cursor up from bottom of previous output to
+            // first_changed row. Distance from cursor (at prev_height-1)
+            // to first_changed, clamped to on-screen rows.
+            int up = prev_height_ - 1 - first_changed;
+            up = std::min(up, prev_on_screen - 1); // can't go past screen top
             if (up > 0)
                 ansi::write_cursor_up(out_, up);
             out_ += '\r';
 
-            // ED 0: erase from cursor to end of screen. Only affects
-            // the screen, not scrollback — scrollback is preserved.
-            out_ += "\x1b[J";
-        }
+            // Write from first_changed to end of new content.
+            // This overwrites changed common rows + appends new rows.
+            // serialize() puts \r\n between rows and \x1b[K after each.
+            int write_rows = ch - first_changed;
+            if (write_rows > 0)
+                serialize(canvas_, pool_, out_, ch, first_changed);
 
-        if (display_rows > 0) {
-            serialize(canvas_, pool_, out_, ch, skip_rows);
+            // If content shrank, erase leftover rows below.
+            if (ch < prev_height_) {
+                int extra = prev_height_ - ch;
+                for (int i = 0; i < extra; ++i) {
+                    out_ += "\r\n\x1b[2K";
+                }
+                // Move cursor back up to the last content row.
+                if (extra > 0)
+                    ansi::write_cursor_up(out_, extra);
+            }
         }
 
         out_ += ansi::reset;
@@ -364,9 +395,10 @@ auto App::render_frame() -> Status {
         out_ += ansi::sync_end;
 
         MAYA_TRY_VOID(writer_->write_raw(out_));
-        prev_height_ = display_rows;
+        prev_height_ = ch;
         prev_width_  = w;
         prev_content_height_ = ch;
+        row_hashes_ = std::move(new_hashes);
 
     } else {
         const int h = size_.height.raw();

@@ -44,6 +44,19 @@ MAYA_FORCEINLINE void write_cursor_up(std::string& out, int n) {
     out += 'A';
 }
 
+/// Ink-style eraseLines: erase N lines from bottom to top.
+/// For each line: \x1b[2K (erase entire line) + \x1b[1A (cursor up).
+/// Finishes with \x1b[G (cursor to column 0).
+/// After this call, cursor is at column 0 of the line (N-1) rows above
+/// where the cursor started, and all N lines have been erased.
+MAYA_FORCEINLINE void write_erase_lines(std::string& out, int n) {
+    for (int i = 0; i < n; ++i) {
+        out += "\x1b[2K";                    // erase entire line
+        if (i < n - 1) out += "\x1b[1A";     // cursor up (not after last)
+    }
+    if (n > 0) out += "\x1b[G";              // cursor to column 0
+}
+
 /// Zero-alloc cursor-down: ESC [ n B
 MAYA_FORCEINLINE void write_cursor_down(std::string& out, int n) {
     if (n <= 0) return;

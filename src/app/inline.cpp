@@ -46,40 +46,36 @@ void render_live(const Element& root, int width, StylePool& pool,
     render_tree(root, st.canvas, pool, theme::dark, st.layout_nodes, /*auto_height=*/true);
 
     int ch = content_height(st.canvas);
-
     int term_h = detect_terminal_height();
-    int display_rows = std::min(ch, term_h);
-    int skip_rows = ch - display_rows;
 
     buf.clear();
     buf += ansi::sync_start;
     buf += ansi::hide_cursor;
 
-    // If the display needs to grow, reserve space FIRST by emitting newlines.
-    // This ensures that any content pushed to scrollback during the scroll
-    // is from ABOVE our live area (old terminal content), not stale frame data.
-    int growth = std::max(0, display_rows - st.prev_height);
-    if (growth > 0) {
-        for (int i = 0; i < growth; ++i) buf += '\n';
+    // Ink pattern: when previous output filled the terminal,
+    // hard-clear and rewrite from scratch.
+    if (st.prev_height >= term_h) {
+        buf += "\x1b[2J\x1b[3J\x1b[H";
+        if (ch > 0)
+            serialize(st.canvas, pool, buf, ch);
+        buf += ansi::show_cursor;
+        buf += ansi::sync_end;
+
+        std::fwrite(buf.data(), 1, buf.size(), stdout);
+        std::fflush(stdout);
+
+        st.prev_height = ch;
+        st.prev_content_height = ch;
+        return;
     }
 
-    // Move cursor to the top of our display area.
-    int total_lines = st.prev_height + growth;
-    if (total_lines > 1) {
-        ansi::write_cursor_up(buf, total_lines - 1);
-    }
-    if (total_lines > 0) {
-        buf += '\r';
+    // Normal path: eraseLines from bottom to top, then write all content.
+    if (st.prev_height > 0) {
+        ansi::write_erase_lines(buf, st.prev_height);
     }
 
-    // ED 0: erase from cursor to end of screen. One escape sequence
-    // clears everything — more robust than per-line erase, and is
-    // exactly what Ink/log-update uses.
-    buf += "\x1b[J";
-
-    // Write new content (full serialize from skip_rows)
-    if (display_rows > 0) {
-        serialize(st.canvas, pool, buf, ch, skip_rows);
+    if (ch > 0) {
+        serialize(st.canvas, pool, buf, ch);
     }
 
     buf += ansi::show_cursor;
@@ -88,7 +84,7 @@ void render_live(const Element& root, int width, StylePool& pool,
     std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fflush(stdout);
 
-    st.prev_height = display_rows;
+    st.prev_height = ch;
     st.prev_content_height = ch;
 }
 

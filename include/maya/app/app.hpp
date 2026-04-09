@@ -148,6 +148,7 @@ public:
         , prev_width_(o.prev_width_)
         , out_(std::move(o.out_))
         , prev_content_height_(o.prev_content_height_)
+        , row_hashes_(std::move(o.row_hashes_))
         , layout_nodes_(std::move(o.layout_nodes_))
         , theme_(o.theme_)
         , mouse_enabled_(o.mouse_enabled_)
@@ -195,6 +196,7 @@ private:
     std::string             out_;
 
     int                     prev_content_height_ = 0;
+    std::vector<uint64_t>   row_hashes_;
     std::vector<layout::LayoutNode> layout_nodes_;
 
     // -- Configuration --------------------------------------------------------

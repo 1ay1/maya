@@ -17,7 +17,7 @@
 #include <vector>
 
 #include "../core/types.hpp"
-#include "../core/simd.hpp"
+#include "../core/simd.hpp"  // also brings in platform/detect.hpp for MAYA_FORCEINLINE
 #include "../style/style.hpp"
 #include "../element/text.hpp"
 
@@ -156,7 +156,7 @@ public:
 
     /// Intern a style, returning its unique ID.
     /// Hot path: called once per cell during painting.
-    [[gnu::always_inline]] [[nodiscard]] uint16_t intern(const Style& s) {
+    MAYA_ALWAYS_INLINE [[nodiscard]] uint16_t intern(const Style& s) {
         std::size_t h = hash_style(s);
         std::size_t idx = h & mask_;
 
@@ -187,14 +187,14 @@ public:
     }
 
     /// Look up a style by its ID. The caller must ensure the ID is valid.
-    [[gnu::always_inline]] [[nodiscard]] const Style& get(uint16_t id) const noexcept {
+    MAYA_ALWAYS_INLINE [[nodiscard]] const Style& get(uint16_t id) const noexcept {
         return styles_[id];
     }
 
     /// Pre-built SGR escape sequence for a style ID.
     /// Each string is a complete "\x1b[0;...m" that resets then applies — the diff
     /// loop calls this once per style change instead of computing transitions.
-    [[gnu::always_inline]] [[nodiscard]] std::string_view sgr(uint16_t id) const noexcept {
+    MAYA_ALWAYS_INLINE [[nodiscard]] std::string_view sgr(uint16_t id) const noexcept {
         return sgr_cache_[id];
     }
 
@@ -248,7 +248,7 @@ public:
     // -- Cell access ----------------------------------------------------------
 
     /// Set a cell at (x, y). Clipped or out-of-bounds coordinates are silently ignored.
-    [[gnu::always_inline]] void set(int x, int y, char32_t ch, uint16_t style_id, uint8_t width = 0) {
+    MAYA_ALWAYS_INLINE void set(int x, int y, char32_t ch, uint16_t style_id, uint8_t width = 0) {
         if (__builtin_expect(!in_bounds(x, y), 0)) return;
         // Fast clip check using cached bounds — avoids vector access per cell.
         if (has_clip_ && __builtin_expect(
@@ -265,7 +265,7 @@ public:
     [[nodiscard]] Cell get(int x, int y) const noexcept;
 
     /// Direct access to the packed cell value at (x, y) for fast diff.
-    [[gnu::always_inline]] [[nodiscard]] uint64_t get_packed(int x, int y) const noexcept {
+    MAYA_ALWAYS_INLINE [[nodiscard]] uint64_t get_packed(int x, int y) const noexcept {
         return cells_[static_cast<std::size_t>(y * width_ + x)];
     }
 
@@ -327,12 +327,12 @@ public:
     [[nodiscard]] std::size_t cell_count() const noexcept { return cells_.size(); }
 
 private:
-    [[gnu::always_inline]] [[nodiscard]] bool in_bounds(int x, int y) const noexcept {
+    MAYA_ALWAYS_INLINE [[nodiscard]] bool in_bounds(int x, int y) const noexcept {
         return static_cast<unsigned>(x) < static_cast<unsigned>(width_)
             && static_cast<unsigned>(y) < static_cast<unsigned>(height_);
     }
 
-    [[gnu::always_inline]] [[nodiscard]] std::size_t cell_index(int x, int y) const noexcept {
+    MAYA_ALWAYS_INLINE [[nodiscard]] std::size_t cell_index(int x, int y) const noexcept {
         return static_cast<std::size_t>(y * width_ + x);
     }
 

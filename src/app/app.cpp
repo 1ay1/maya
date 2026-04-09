@@ -7,95 +7,9 @@
 #include "maya/core/focus.hpp"
 #include "maya/core/overload.hpp"
 #include "maya/core/scope_exit.hpp"
+#include "maya/platform/select.hpp"
 
 namespace maya {
-
-// ============================================================================
-// Self-pipe for signal delivery into the poll loop
-// ============================================================================
-
-namespace detail {
-
-namespace {
-
-struct SignalPipe {
-    int read_fd  = -1;
-    int write_fd = -1;
-};
-
-SignalPipe signal_pipe{};
-
-} // anonymous namespace
-
-void sigwinch_handler(int /*sig*/) {
-    // Write a single byte to wake up the poll loop. Ignore errors (pipe
-    // full is harmless; the loop will see the resize anyway).
-    if (signal_pipe.write_fd >= 0) {
-        [[maybe_unused]] auto _ = ::write(signal_pipe.write_fd, "R", 1);
-    }
-}
-
-auto setup_signal_pipe() -> Status {
-    if (signal_pipe.read_fd >= 0) return ok();
-
-    int fds[2];
-    if (::pipe(fds) < 0) {
-        return err(Error::from_errno("pipe"));
-    }
-
-    // Make both ends non-blocking and close-on-exec.
-    for (int fd : fds) {
-        int flags = ::fcntl(fd, F_GETFL);
-        if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-            ::close(fds[0]);
-            ::close(fds[1]);
-            return err(Error::from_errno("fcntl"));
-        }
-        ::fcntl(fd, F_SETFD, FD_CLOEXEC);
-    }
-
-    signal_pipe.read_fd  = fds[0];
-    signal_pipe.write_fd = fds[1];
-
-    // Update the inline globals that the header exposes so the rest of the
-    // codebase (poll setup in event_loop, canvas_run, etc.) can see them.
-    signal_pipe_read_fd  = signal_pipe.read_fd;
-    signal_pipe_write_fd = signal_pipe.write_fd;
-
-    struct sigaction sa{};
-    sa.sa_handler = sigwinch_handler;
-    sa.sa_flags   = SA_RESTART;
-    sigemptyset(&sa.sa_mask);
-    if (::sigaction(SIGWINCH, &sa, nullptr) < 0) {
-        return err(Error::from_errno("sigaction(SIGWINCH)"));
-    }
-
-    return ok();
-}
-
-void drain_signal_pipe() {
-    if (signal_pipe.read_fd < 0) return;
-    char buf[64];
-    while (::read(signal_pipe.read_fd, buf, sizeof(buf)) > 0) {}
-}
-
-void cleanup_signal_pipe() {
-    if (signal_pipe.read_fd >= 0) {
-        // Restore default SIGWINCH behavior.
-        struct sigaction sa{};
-        sa.sa_handler = SIG_DFL;
-        ::sigaction(SIGWINCH, &sa, nullptr);
-
-        ::close(signal_pipe.read_fd);
-        ::close(signal_pipe.write_fd);
-        signal_pipe = {-1, -1};
-
-        signal_pipe_read_fd  = -1;
-        signal_pipe_write_fd = -1;
-    }
-}
-
-} // namespace detail
 
 // ============================================================================
 // App::Builder
@@ -122,14 +36,15 @@ auto App::Builder::title(std::string_view t) -> Builder& {
 }
 
 auto App::Builder::build() -> Result<App> {
-    // Set up the self-pipe for SIGWINCH delivery.
-    MAYA_TRY_VOID(detail::setup_signal_pipe());
-
     // Acquire the terminal and move it through the type-state chain.
-    auto cooked = MAYA_TRY(Terminal<Cooked>::create(STDIN_FILENO));
-    auto raw    = MAYA_TRY(std::move(cooked).enable_raw_mode());
+    MAYA_TRY_DECL(auto cooked, Terminal<Cooked>::create());
+    MAYA_TRY_DECL(auto raw, std::move(cooked).enable_raw_mode());
 
-    int fd = raw.fd();
+    auto input_h  = raw.input_handle();
+    auto output_h = raw.output_handle();
+
+    // Install resize signal handler.
+    MAYA_TRY_DECL(auto resize_sig, platform::NativeResizeSignal::install());
 
     // Fullscreen mode enters the alt screen buffer (consumes the Raw terminal).
     // Inline mode stays in raw mode.
@@ -137,7 +52,8 @@ auto App::Builder::build() -> Result<App> {
     std::optional<Terminal<Raw>>       raw_term;
 
     if (mode_ == Mode::Fullscreen) {
-        alt_term = MAYA_TRY(std::move(raw).enter_alt_screen());
+        MAYA_TRY_DECL(auto alt, std::move(raw).enter_alt_screen());
+        alt_term = std::move(alt);
     } else {
         raw_term = std::move(raw);
     }
@@ -146,20 +62,19 @@ auto App::Builder::build() -> Result<App> {
     App app;
     app.alt_terminal_  = std::move(alt_term);
     app.raw_terminal_  = std::move(raw_term);
-    app.fd_            = fd;
-    app.writer_        = std::make_unique<Writer>(fd);
+    app.output_handle_ = output_h;
+    app.input_handle_  = input_h;
+    app.resize_signal_  = std::move(resize_sig);
+    app.writer_        = std::make_unique<Writer>(output_h);
     app.theme_          = theme_;
     app.mouse_enabled_  = mouse_;
 
-    // Store theme in the context so render functions can access it.
     app.context_.set<Theme>(theme_);
 
     // Set terminal title if provided.
     if (!title_.empty()) {
-        // OSC 0 ; title BEL
         auto seq = std::format("\x1b]0;{}\x07", title_);
-        auto written = ::write(fd, seq.data(), seq.size());
-        (void)written;
+        (void)platform::io_write_all(output_h, seq);
     }
 
     // Query initial terminal size.
@@ -170,8 +85,6 @@ auto App::Builder::build() -> Result<App> {
     }
 
     app.started_mode_ = mode_;
-
-    // Initialize the render context with the initial terminal size.
     app.render_ctx_.width      = app.size_.width.raw();
     app.render_ctx_.height     = app.size_.height.raw();
     app.render_ctx_.generation = 0;
@@ -180,29 +93,31 @@ auto App::Builder::build() -> Result<App> {
 }
 
 // ============================================================================
-// App::run (std::function overload)
+// App::run
 // ============================================================================
 
 auto App::run(std::function<Element()> render_fn) -> Status {
     render_fn_ = std::move(render_fn);
     running_ = true;
-
-    // Initial render.
     needs_render_ = true;
-
     return event_loop();
 }
 
 // ============================================================================
-// Event loop
+// Event loop — platform-abstracted
 // ============================================================================
 
 auto App::event_loop() -> Status {
     using Clock = std::chrono::steady_clock;
     auto next_frame = Clock::now();
 
+    // Create the event source — multiplexes terminal input and resize signals.
+    auto sig_handle = resize_signal_ ? resize_signal_->native_handle()
+                                      : platform::invalid_handle;
+    platform::NativeEventSource events(input_handle_, sig_handle);
+
     while (running_) {
-        // Compute poll timeout: fps-driven or 100ms idle.
+        // Compute poll timeout
         int poll_timeout_ms = 100;
         if (fps_ > 0) {
             auto now = Clock::now();
@@ -210,34 +125,15 @@ auto App::event_loop() -> Status {
             poll_timeout_ms = std::max(0, static_cast<int>(wait.count()));
         }
 
-        struct pollfd pfds[2];
-        int nfds = 0;
+        MAYA_TRY_DECL(auto ready, events.wait(
+            std::chrono::milliseconds(poll_timeout_ms)));
 
-        pfds[nfds].fd      = fd_;
-        pfds[nfds].events  = POLLIN;
-        pfds[nfds].revents = 0;
-        ++nfds;
-
-        if (detail::signal_pipe_read_fd >= 0) {
-            pfds[nfds].fd      = detail::signal_pipe_read_fd;
-            pfds[nfds].events  = POLLIN;
-            pfds[nfds].revents = 0;
-            ++nfds;
-        }
-
-        int poll_result = ::poll(pfds, static_cast<nfds_t>(nfds), poll_timeout_ms);
-
-        if (poll_result < 0) {
-            if (errno == EINTR) continue;
-            return err(Error::from_errno("poll"));
-        }
-
-        if (nfds > 1 && (pfds[1].revents & POLLIN)) {
-            detail::drain_signal_pipe();
+        if (ready.resize && resize_signal_) {
+            resize_signal_->drain();
             handle_resize();
         }
 
-        if (pfds[0].revents & POLLIN) {
+        if (ready.input) {
             MAYA_TRY_VOID(read_and_dispatch());
         }
 
@@ -245,11 +141,9 @@ auto App::event_loop() -> Status {
             dispatch_event(ev);
         }
 
-        // fps-driven: always re-render when the frame deadline has passed.
         if (fps_ > 0 && Clock::now() >= next_frame) {
             needs_render_ = true;
             next_frame += std::chrono::microseconds(1'000'000 / fps_);
-            // Don't let the frame deadline drift too far behind.
             if (Clock::now() > next_frame)
                 next_frame = Clock::now();
         }
@@ -260,8 +154,6 @@ auto App::event_loop() -> Status {
         }
     }
 
-    // In inline mode, show cursor and emit a newline so the shell
-    // prompt starts on a clean line below our output.
     if (is_inline()) {
         auto cleanup = std::format("{}{}\r\n", ansi::show_cursor, ansi::reset);
         (void)writer_->write_raw(cleanup);
@@ -275,26 +167,26 @@ auto App::event_loop() -> Status {
 // ============================================================================
 
 auto App::read_and_dispatch() -> Status {
-    char buf[1024];
-    ssize_t n = ::read(fd_, buf, sizeof(buf));
-
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EINTR) return ok();
-        return err(Error::from_errno("read"));
+    // Use the terminal's read method through the backend.
+    if (alt_terminal_) {
+        MAYA_TRY_DECL(auto data, alt_terminal_->read_raw());
+        if (data.empty()) return ok();
+        for (auto& event : parser_.feed(data)) {
+            dispatch_event(event);
+        }
+    } else if (raw_terminal_) {
+        MAYA_TRY_DECL(auto data, raw_terminal_->read_raw());
+        if (data.empty()) return ok();
+        for (auto& event : parser_.feed(data)) {
+            dispatch_event(event);
+        }
     }
-    if (n == 0) return ok(); // EOF
-
-    for (auto& event : parser_.feed(std::string_view{buf, static_cast<size_t>(n)})) {
-        dispatch_event(event);
-    }
-
     return ok();
 }
 
 void App::dispatch_event(Event& event) {
     std::visit(overload{
         [this](KeyEvent& ev) {
-            // Focus navigation: Tab / Shift+Tab cycle focus before user handlers
             if (current_focus_scope) {
                 if (auto* sp = std::get_if<SpecialKey>(&ev.key)) {
                     if (*sp == SpecialKey::Tab) {
@@ -355,12 +247,12 @@ void App::handle_resize() {
     if (new_size != size_) {
         size_ = new_size;
         context_.set<Size>(size_);
-        ++resize_generation_;  // invalidate all CachedElement instances
+        ++resize_generation_;
         render_ctx_.width      = size_.width.raw();
         render_ctx_.height     = size_.height.raw();
         render_ctx_.generation = resize_generation_;
 
-        needs_clear_ = true;  // force full repaint after resize
+        needs_clear_ = true;
 
         for (auto& handler : resize_handlers_) {
             handler(size_);
@@ -368,7 +260,6 @@ void App::handle_resize() {
         needs_render_ = true;
     }
 }
-
 
 // ============================================================================
 // Frame rendering
@@ -378,50 +269,24 @@ auto App::render_frame() -> Status {
     if (!render_fn_) return ok();
 
     const int w = is_inline()
-        ? std::max(1, size_.width.raw() - 1)   // inline: avoid terminal auto-wrap
-        : size_.width.raw();                     // alt screen: full width
+        ? std::max(1, size_.width.raw() - 1)
+        : size_.width.raw();
     if (w <= 0) return ok();
 
-    // Set the render context so all widgets can query available_width() etc.
     render_ctx_.width       = w;
     render_ctx_.height      = size_.height.raw();
     render_ctx_.auto_height = is_inline();
     RenderContextGuard ctx_guard(render_ctx_);
 
     if (is_inline()) {
-        // ── Inline mode (Ink-style) ─────────────────────────────────
-        // Content-sized layout: the root's height is NOT constrained to
-        // the terminal — it sizes to content, exactly as Ink/Yoga does.
-        // The canvas is tall enough to hold any reasonable content.
-        // BSU/ESU wrapping prevents flicker during erase + redraw.
         constexpr int kMaxCanvasHeight = 500;
         const int canvas_h = kMaxCanvasHeight;
 
         if (canvas_.width() != w || canvas_.height() != canvas_h)
             canvas_ = Canvas(w, canvas_h, &pool_);
 
-        // On resize (needs_clear_), erase the live region and re-render.
-        //
-        // After a width change the terminal reflows ALL content (including
-        // scrollback).  We cannot predict how many terminal lines our old
-        // output now occupies, so we DON'T try to erase committed content
-        // that has already scrolled up.  Instead we:
-        //   1. Move up only into the live region (prev_height_ rows at most)
-        //   2. Erase from there to end of screen
-        //   3. Re-render at the new width
-        //
-        // Committed content in scrollback survives (possibly reflowed at
-        // old width).  This matches how Claude Code handles resize.
         if (needs_clear_) {
             if (prev_height_ > 0) {
-                // Clear the entire visible viewport on resize, matching
-                // alt-screen feel while preserving scrollback.  After a
-                // width change the terminal reflows content, so a row
-                // that fit on one line may now wrap to multiple lines.
-                // Scale by the reflow factor and ensure we erase at
-                // least the full terminal height so the viewport is
-                // pristine — the terminal clamps cursor movement to the
-                // top of scrollback, so overshooting is harmless.
                 const int term_h = std::max(1, size_.height.raw());
                 int erase_rows = prev_height_;
                 if (prev_width_ > 0 && prev_width_ > w) {
@@ -429,9 +294,9 @@ auto App::render_frame() -> Status {
                 }
                 erase_rows = std::max(erase_rows, term_h);
                 std::string erase;
-                erase += "\x1b[2J";   // erase entire screen
-                erase += "\x1b[3J";   // clear scrollback buffer
-                erase += "\x1b[H";    // cursor to home
+                erase += "\x1b[2J";
+                erase += "\x1b[3J";
+                erase += "\x1b[H";
                 (void)writer_->write_raw(erase);
             }
             prev_row_hashes_.clear();
@@ -441,8 +306,6 @@ auto App::render_frame() -> Status {
             needs_clear_ = false;
         }
 
-        // Partial clear: only wipe rows that had content last frame + margin.
-        // First frame (prev_content_height_ == 0) falls back to full clear.
         if (prev_content_height_ > 0) {
             canvas_.clear_rows(prev_content_height_ + 4);
         } else {
@@ -453,24 +316,15 @@ auto App::render_frame() -> Status {
         int ch = content_height(canvas_);
         const int term_h = std::max(1, size_.height.raw());
 
-        // Cap visible area to terminal height minus 1 to avoid
-        // auto-scroll on the last line.
         int display_rows = std::min(ch, term_h - 1);
         int skip_rows = ch - display_rows;
 
-        // ── Overflow: flush skipped rows once into scrollback ──────
-        // When content is taller than the terminal, the top rows
-        // would normally be clipped.  Instead, write them once into
-        // the terminal's scrollback so the user can scroll up to see
-        // them (matching Claude Code behavior).  After the flush the
-        // skipped rows become committed and are never rewritten.
         if (skip_rows > 0 && skip_rows > committed_height_) {
             int flush_from = committed_height_;
             int flush_count = skip_rows - flush_from;
             if (flush_count > 0) {
                 std::string flush;
                 flush += ansi::sync_start;
-                // Move to top of live region so the flush inserts above.
                 int prev_live_approx = std::max(0, prev_height_ - committed_height_);
                 if (prev_live_approx > 1)
                     ansi::write_cursor_up(flush, prev_live_approx - 1);
@@ -479,15 +333,12 @@ auto App::render_frame() -> Status {
                 serialize(canvas_, pool_, flush, flush_count, flush_from);
                 flush += ansi::sync_end;
                 MAYA_TRY_VOID(writer_->write_raw(flush));
-                // These rows are now in scrollback — mark committed.
                 committed_height_ = skip_rows;
-                // Reset prev tracking since cursor position changed.
                 prev_height_ = 0;
                 prev_row_hashes_.clear();
             }
         }
 
-        // ── Row-hash comparison ────────────────────────────────
         const int W = canvas_.width();
         const uint64_t* cells = canvas_.cells();
 
@@ -506,12 +357,6 @@ auto App::render_frame() -> Status {
                 }
             }
         }
-
-        // Note: committed_height_ only grows from overflow flushes (above).
-        // Do NOT extend it with `stable` — stable rows haven't been
-        // flushed to scrollback and must remain in the live region so
-        // they can be re-rendered when content changes.
-        // serialize_changed() already skips unchanged rows via hashes.
 
         int live_rows  = std::max(0, display_rows - std::max(0, committed_height_ - skip_rows));
         int prev_live  = std::max(0, prev_height_  - std::max(0, committed_height_ - (prev_content_height_ - prev_height_)));
@@ -553,8 +398,6 @@ auto App::render_frame() -> Status {
         std::swap(prev_row_hashes_, row_hashes_);
 
     } else {
-        // ── Alt-screen mode (started in alt screen) ─────────────────
-        // Double-buffered diff: only emit ANSI for cells that changed.
         const int h = size_.height.raw();
         if (h <= 0) return ok();
 
@@ -602,38 +445,35 @@ Status canvas_run_impl(
 {
     using Clock = std::chrono::steady_clock;
 
-    MAYA_TRY_VOID(detail::setup_signal_pipe());
+    MAYA_TRY_DECL(auto cooked, Terminal<Cooked>::create());
+    MAYA_TRY_DECL(auto raw, std::move(cooked).enable_raw_mode());
+    auto input_h  = raw.input_handle();
+    auto output_h = raw.output_handle();
 
-    auto cooked = MAYA_TRY(Terminal<Cooked>::create(STDIN_FILENO));
-    auto raw    = MAYA_TRY(std::move(cooked).enable_raw_mode());
-    int  fd     = raw.fd();
+    // Install resize signal handler.
+    MAYA_TRY_DECL(auto resize_sig, platform::NativeResizeSignal::install());
+    auto sig_handle = resize_sig.native_handle();
 
     std::optional<Terminal<AltScreen>> alt_term;
     std::optional<Terminal<Raw>>       raw_term;
     if (cfg.mode == Mode::Fullscreen) {
-        alt_term = MAYA_TRY(std::move(raw).enter_alt_screen());
+        MAYA_TRY_DECL(auto alt, std::move(raw).enter_alt_screen());
+        alt_term = std::move(alt);
     } else {
         raw_term = std::move(raw);
     }
 
     if (!cfg.title.empty()) {
         auto seq = std::format("\x1b]0;{}\x07", cfg.title);
-        (void)::write(fd, seq.data(), seq.size());
+        (void)platform::io_write_all(output_h, seq);
     }
 
-    // All-motion mouse + SGR extended coordinates.
+    // Mouse tracking sequences (platform-independent ANSI)
     static constexpr std::string_view kMouseOn  = "\x1b[?1003h\x1b[?1006h";
     static constexpr std::string_view kMouseOff = "\x1b[?1006l\x1b[?1003l";
-    if (cfg.mouse) (void)::write(fd, kMouseOn.data(), kMouseOn.size());
+    if (cfg.mouse) (void)platform::io_write_all(output_h, kMouseOn);
 
-    // Switch fd to non-blocking so write() returns EAGAIN when the pty buffer
-    // is full rather than stalling the event loop. write_some() + pending_frame
-    // resume the BSU frame on the next POLLOUT — this is what makes the loop
-    // stay responsive on large terminals and over SSH.
-    const int orig_fl = ::fcntl(fd, F_GETFL);
-    if (orig_fl >= 0) ::fcntl(fd, F_SETFL, orig_fl | O_NONBLOCK);
-
-    Writer writer{fd};
+    Writer writer{output_h};
 
     Size sz;
     if (alt_term)      sz = alt_term->size();
@@ -657,15 +497,14 @@ Status canvas_run_impl(
 
     InputParser parser;
     bool running     = true;
-    bool needs_clear = true; // first frame must clear (alt screen may have stale content)
+    bool needs_clear = true;
 
-    // RAII guards — cleanup runs automatically on any exit path.
+    // Create event source
+    platform::NativeEventSource events(input_h, sig_handle);
+
+    // RAII guards
     scope_exit mouse_guard([&] {
-        if (cfg.mouse) (void)::write(fd, kMouseOff.data(), kMouseOff.size());
-    });
-    scope_exit signal_guard([] { cleanup_signal_pipe(); });
-    scope_exit fcntl_guard([&] {
-        if (orig_fl >= 0) ::fcntl(fd, F_SETFL, orig_fl);
+        if (cfg.mouse) (void)platform::io_write_all(output_h, kMouseOff);
     });
 
     auto handle_resize = [&](int nw, int nh) {
@@ -676,7 +515,7 @@ Status canvas_run_impl(
         back  = Canvas(W, H, &pool);
         front.mark_all_damaged();
         pending_frame.reset();
-        needs_clear = true; // terminal screen has stale content from old size
+        needs_clear = true;
         out.reserve(static_cast<std::size_t>(W * H * 12));
     };
 
@@ -690,27 +529,12 @@ Status canvas_run_impl(
             timeout_ms = static_cast<int>(wait.count()) + 1;
         }
 
-        struct pollfd pfds[2];
-        int nfds = 0;
-        pfds[nfds].fd      = fd;
-        pfds[nfds].events  = POLLIN | (pending_frame.has_value() ? POLLOUT : 0);
-        pfds[nfds].revents = 0;
-        ++nfds;
-        if (detail::signal_pipe_read_fd >= 0) {
-            pfds[nfds].fd      = detail::signal_pipe_read_fd;
-            pfds[nfds].events  = POLLIN;
-            pfds[nfds].revents = 0;
-            ++nfds;
-        }
+        MAYA_TRY_DECL(auto ready, events.wait(
+            std::chrono::milliseconds(timeout_ms),
+            pending_frame.has_value()));
 
-        int pr = ::poll(pfds, static_cast<nfds_t>(nfds), timeout_ms);
-        if (pr < 0) {
-            if (errno == EINTR) continue;
-            return err(Error::from_errno("poll"));
-        }
-
-        if (nfds > 1 && (pfds[1].revents & POLLIN)) {
-            detail::drain_signal_pipe();
+        if (ready.resize) {
+            resize_sig.drain();
             Size new_sz;
             if (alt_term)      new_sz = alt_term->size();
             else if (raw_term) new_sz = raw_term->size();
@@ -719,7 +543,7 @@ Status canvas_run_impl(
             if (nw != W || nh != H) handle_resize(nw, nh);
         }
 
-        if (pending_frame.has_value() && (pfds[0].revents & POLLOUT)) {
+        if (pending_frame.has_value() && ready.writeable) {
             auto& pf   = *pending_frame;
             auto  sv   = std::string_view(pf.data).substr(pf.offset);
             auto  result = writer.write_some(sv);
@@ -730,14 +554,18 @@ Status canvas_run_impl(
                 back.reset_damage();
                 pending_frame.reset();
             }
-            // else: still pending, POLLOUT will fire again
         }
 
-        if (pfds[0].revents & POLLIN) {
-            char buf[1024];
-            ssize_t n = ::read(fd, buf, sizeof(buf));
-            if (n > 0) {
-                for (auto& ev : parser.feed({buf, static_cast<std::size_t>(n)})) {
+        if (ready.input) {
+            Result<std::string> data_result = [&]() -> Result<std::string> {
+                if (alt_term)      return alt_term->read_raw();
+                else if (raw_term) return raw_term->read_raw();
+                return ok(std::string{});
+            }();
+            if (!data_result) return std::unexpected{data_result.error()};
+            auto& data = *data_result;
+            if (!data.empty()) {
+                for (auto& ev : parser.feed(data)) {
                     if (!on_event(ev)) { running = false; break; }
                 }
             }
@@ -751,9 +579,6 @@ Status canvas_run_impl(
             if (cfg.auto_clear) {
                 back.clear();
             } else {
-                // User will overwrite all cells — just mark damage without
-                // the memset. Saves writing the entire canvas to memory only
-                // to overwrite it immediately in on_paint.
                 back.mark_all_damaged();
             }
             on_paint(back, W, H);
@@ -761,11 +586,6 @@ Status canvas_run_impl(
             out.clear();
             out += ansi::sync_start;
             if (needs_clear) {
-                // After resize (or first frame), the terminal has stale content
-                // that doesn't match our front canvas. Bypass diff entirely:
-                // clear the screen and serialize every cell. This is the only
-                // way to guarantee no ghost cells — diff skips blank cells that
-                // match front, but the terminal might not actually be blank.
                 out += "\x1b[2J\x1b[H";
                 serialize(back, pool, out);
                 needs_clear = false;
@@ -785,7 +605,6 @@ Status canvas_run_impl(
                 if (!result) return err(result.error());
                 const std::size_t written = *result;
                 if (written < out.size()) {
-                    // Partial write — BSU frame is open; resume on next POLLOUT.
                     pending_frame = PendingFrame{out, written};
                 } else {
                     std::swap(front, back);

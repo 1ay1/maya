@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "maya/platform/io.hpp"
 #include "maya/render/diff.hpp"    // for detail::encode_utf8
 #include "maya/render/renderer.hpp" // for render_tree, content_height
 #include "maya/render/serialize.hpp" // for content_height
@@ -12,21 +13,13 @@ namespace maya {
 namespace detail {
 
 int detect_terminal_width() noexcept {
-    #ifdef __unix__
-    struct winsize ws{};
-    if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-        return ws.ws_col;
-    #endif
-    return 80;
+    auto sz = platform::query_terminal_size(platform::stdout_handle());
+    return sz.width.raw() > 0 ? sz.width.raw() : 80;
 }
 
 int detect_terminal_height() noexcept {
-    #ifdef __unix__
-    struct winsize ws{};
-    if (::ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
-        return ws.ws_row;
-    #endif
-    return 24;
+    auto sz = platform::query_terminal_size(platform::stdout_handle());
+    return sz.height.raw() > 0 ? sz.height.raw() : 24;
 }
 
 
@@ -134,6 +127,7 @@ void render_live(const Element& root, int width, StylePool& pool,
 } // namespace detail
 
 void print(const Element& root) {
+    platform::ensure_utf8();
     int width = detail::detect_terminal_width() - 1;
     StylePool pool;
     std::string buf;
@@ -144,6 +138,7 @@ void print(const Element& root) {
 }
 
 void print(const Element& root, int width) {
+    platform::ensure_utf8();
     StylePool pool;
     std::string buf;
     detail::LiveState st;

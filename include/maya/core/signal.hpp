@@ -113,7 +113,12 @@ inline thread_local ReactiveScope* current_scope = nullptr;
 inline thread_local int batch_depth = 0;
 
 // Thread-local list of nodes pending notification after batch completes.
-inline thread_local std::vector<ReactiveNode*> pending_notifications;
+// Wrapped in a function to avoid GCC's duplicate TLS-init symbol bug
+// with `inline thread_local` non-trivially-initialized types.
+inline std::vector<ReactiveNode*>& pending_notifications() {
+    thread_local std::vector<ReactiveNode*> v;
+    return v;
+}
 
 inline ReactiveScope::ReactiveScope(ReactiveNode* node) noexcept
     : owner(node), previous(current_scope) {
@@ -135,7 +140,7 @@ inline void notify_subscribers(ReactiveNode* source) {
         for (auto* sub : source->subscribers) {
             if (!sub->pending) {
                 sub->pending = true;
-                pending_notifications.push_back(sub);
+                pending_notifications().push_back(sub);
             }
         }
     } else {
@@ -153,7 +158,7 @@ inline void notify_subscribers(ReactiveNode* source) {
 
 inline void flush_batch() {
     // Take ownership of the pending list so re-entrant batches work.
-    auto nodes = std::move(pending_notifications);
+    auto nodes = std::move(pending_notifications());
     // Clear pending flags before evaluating so re-entrant signal sets
     // during evaluation can re-enqueue nodes correctly.
     for (auto* node : nodes) {

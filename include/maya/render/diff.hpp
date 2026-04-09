@@ -25,6 +25,7 @@
 
 #include "canvas.hpp"
 #include "../core/simd.hpp"
+#include "../platform/detect.hpp"
 #include "../terminal/ansi.hpp"
 
 namespace maya {
@@ -37,7 +38,7 @@ namespace detail {
 
 /// Encode a Unicode code point, appending its UTF-8 bytes to `out`.
 /// Uses a stack buffer + single append() instead of per-byte operator+=.
-[[gnu::always_inline]] inline void encode_utf8(char32_t cp, std::string& out) {
+MAYA_FORCEINLINE void encode_utf8(char32_t cp, std::string& out) {
     if (cp < 0x80) [[likely]] {
         out += static_cast<char>(cp);
     } else {
@@ -67,7 +68,7 @@ namespace detail {
 // Fast cursor positioning — one append() per CUP sequence
 // ============================================================================
 
-[[gnu::always_inline]] inline char* write_uint_pos(char* p, unsigned n) noexcept {
+MAYA_FORCEINLINE char* write_uint_pos(char* p, unsigned n) noexcept {
     if (n < 10) {
         *p++ = static_cast<char>('0' + n);
     } else if (n < 100) {
@@ -86,7 +87,7 @@ namespace detail {
     return p;
 }
 
-[[gnu::always_inline]] inline void write_cup(std::string& out, int col, int row) {
+MAYA_FORCEINLINE void write_cup(std::string& out, int col, int row) {
     char buf[16]; // max: \x1b[9999;9999H = 15 chars
     char* p = buf;
     *p++ = '\x1b'; *p++ = '[';

@@ -30,13 +30,9 @@
 #include "../render/renderer.hpp"
 #include "../render/serialize.hpp"
 #include "../style/theme.hpp"
+#include "../platform/io.hpp"
 #include "../terminal/ansi.hpp"
 #include "run.hpp"  // for maya::quit() / detail::quit_requested
-
-#ifdef __unix__
-#include <sys/ioctl.h>
-#include <unistd.h>
-#endif
 
 namespace maya {
 
@@ -127,6 +123,7 @@ concept AnyLiveRenderFn = LiveRenderFnDt<F> || LiveRenderFnPlain<F>;
 ///   });
 template <AnyLiveRenderFn RenderFn>
 void live(LiveConfig cfg, RenderFn&& render_fn) {
+    platform::ensure_utf8();
     detail::quit_requested = false;
 
     int width = cfg.max_width > 0

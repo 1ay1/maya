@@ -21,6 +21,8 @@
 #include <utility>
 #include <vector>
 
+#include "../platform/detect.hpp"
+
 #include <maya/core/types.hpp>
 
 namespace maya::layout {
@@ -136,7 +138,7 @@ struct LayoutNode {
 namespace detail {
 
 /// True when the main axis runs horizontally.
-[[gnu::always_inline]] [[nodiscard]] constexpr bool is_row(FlexDirection d) noexcept {
+MAYA_ALWAYS_INLINE [[nodiscard]] constexpr bool is_row(FlexDirection d) noexcept {
     return d == FlexDirection::Row || d == FlexDirection::RowReverse;
 }
 
@@ -147,7 +149,7 @@ namespace detail {
 
 /// Clamp `v` between `lo` and `hi`, where either bound may be Dimension::Auto
 /// (meaning unconstrained). `parent` is the reference for percentage resolution.
-[[gnu::always_inline]] [[nodiscard]] constexpr int clamp_dim(int v, Dimension lo, Dimension hi, int parent) noexcept {
+MAYA_ALWAYS_INLINE [[nodiscard]] constexpr int clamp_dim(int v, Dimension lo, Dimension hi, int parent) noexcept {
     int low  = lo.is_auto() ? 0          : lo.resolve(parent);
     int high = hi.is_auto() ? 0x7FFFFFFF : hi.resolve(parent);
     return std::clamp(v, low, high);

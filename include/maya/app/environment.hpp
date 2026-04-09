@@ -5,14 +5,15 @@
 // Apps should use this to gracefully degrade (e.g., skip ANSI in pipes).
 
 #include <cstdlib>
-#include <unistd.h>
 #include <string_view>
+
+#include "../platform/io.hpp"
 
 namespace maya::env {
 
 /// True if stdout is connected to a terminal (not piped/redirected).
 [[nodiscard]] inline bool is_tty() noexcept {
-    return ::isatty(STDOUT_FILENO) != 0;
+    return platform::is_tty(platform::stdout_handle());
 }
 
 /// True if running in a CI environment (GitHub Actions, GitLab CI, etc.).

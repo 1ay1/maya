@@ -10,19 +10,14 @@
 //   canvas_run() — imperative canvas animation loop. Double-buffered diff,
 //                  fixed-fps timer, POLLOUT retry. Good for games / animations.
 //
-// Both share the same terminal infrastructure (signal pipe, raw mode, alt
-// screen, SIGWINCH). SIGWINCH is caught via a self-pipe so resize events
-// integrate cleanly with the poll loop.
+// Both share the same terminal infrastructure (platform backends, signal
+// handling, raw mode, alt screen). Resize events are delivered through the
+// platform's NativeResizeSignal and NativeEventSource.
 
 #include <chrono>
-#include <csignal>
-#include <cstring>
-#include <fcntl.h>
 #include <functional>
-#include <poll.h>
 #include <string>
 #include <string_view>
-#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -32,6 +27,7 @@
 #include "../core/types.hpp"
 #include "../element/builder.hpp"
 #include "../element/element.hpp"
+#include "../platform/select.hpp"
 #include "../render/canvas.hpp"
 #include "../render/diff.hpp"
 #include "../render/renderer.hpp"
@@ -54,30 +50,6 @@ enum class Mode {
 };
 
 // ============================================================================
-// Self-pipe for signal delivery into the poll loop
-// ============================================================================
-// SIGWINCH writes a byte to the pipe; the event loop polls the read end
-// alongside stdin. This avoids the classic async-signal-safety pitfalls.
-
-namespace detail {
-
-inline int signal_pipe_read_fd  = -1;
-inline int signal_pipe_write_fd = -1;
-
-void sigwinch_handler(int /*sig*/);
-
-/// Create the self-pipe and install the SIGWINCH handler. Idempotent.
-auto setup_signal_pipe() -> Status;
-
-/// Drain any pending bytes from the signal pipe.
-void drain_signal_pipe();
-
-/// Tear down the signal pipe.
-void cleanup_signal_pipe();
-
-} // namespace detail
-
-// ============================================================================
 // App - The application entry point
 // ============================================================================
 
@@ -96,23 +68,14 @@ public:
     public:
         Builder() = default;
 
-        /// Set the rendering mode (default: Mode::Fullscreen).
         auto mode(Mode m) -> Builder&;
-
-        /// Whether to enable mouse event reporting (default: false).
         auto mouse(bool v) -> Builder&;
-
-        /// Set the color theme (default: theme::dark).
         auto theme(Theme t) -> Builder&;
-
-        /// Set the terminal title (optional).
         auto title(std::string_view t) -> Builder&;
 
-        /// Construct the App. Returns an error if terminal initialization fails.
         [[nodiscard]] auto build() -> Result<App>;
     };
 
-    /// Create a Builder for fluent configuration.
     [[nodiscard]] static auto builder() -> Builder {
         return Builder{};
     }
@@ -121,8 +84,6 @@ public:
     // Running the app
     // ========================================================================
 
-    /// Run the event loop with a Component (anything satisfying the Component
-    /// concept, i.e., has a render() -> Element method).
     template <Component C>
     auto run(C&& component) -> Status {
         return run([&component]() -> Element {
@@ -130,34 +91,28 @@ public:
         });
     }
 
-    /// Run the event loop with a render callback that produces an Element tree.
     auto run(std::function<Element()> render_fn) -> Status;
 
-    /// Signal the event loop to exit after the current iteration.
     void quit() {
         running_ = false;
     }
 
-    /// Set continuous rendering at the given frame rate (0 = event-driven).
     void set_fps(int fps) { fps_ = fps; }
 
     // ========================================================================
     // Event handlers
     // ========================================================================
 
-    /// Register a key event handler. Returns true to consume the event.
     auto on_key(std::function<bool(const KeyEvent&)> handler) -> App& {
         key_handlers_.push_back(std::move(handler));
         return *this;
     }
 
-    /// Register a mouse event handler. Returns true to consume the event.
     auto on_mouse(std::function<bool(const MouseEvent&)> handler) -> App& {
         mouse_handlers_.push_back(std::move(handler));
         return *this;
     }
 
-    /// Register a resize handler.
     auto on_resize(std::function<void(Size)> handler) -> App& {
         resize_handlers_.push_back(std::move(handler));
         return *this;
@@ -167,25 +122,12 @@ public:
     // Accessors
     // ========================================================================
 
-    /// Whether the app is running in inline mode (no alt screen).
-    /// Whether the app is running in inline mode (no alt screen).
     [[nodiscard]] bool is_inline() const noexcept { return raw_terminal_.has_value(); }
-
-    /// Whether the app originally started in inline mode.
     [[nodiscard]] bool started_inline() const noexcept { return started_mode_ == Mode::Inline; }
-
-    /// Current terminal size.
     [[nodiscard]] Size size() const noexcept { return size_; }
-
-    /// Current theme.
     [[nodiscard]] const Theme& theme() const noexcept { return theme_; }
-
-    /// Context map (read-only access for render functions).
     [[nodiscard]] const ContextMap& context() const noexcept { return context_; }
-
-    /// Context map (mutable access for setting context values between frames).
     [[nodiscard]] ContextMap& context() noexcept { return context_; }
-
 
     // ========================================================================
     // Move-only
@@ -194,8 +136,10 @@ public:
     App(App&& o) noexcept
         : alt_terminal_(std::move(o.alt_terminal_))
         , raw_terminal_(std::move(o.raw_terminal_))
-        , fd_(std::exchange(o.fd_, -1))
+        , output_handle_(std::exchange(o.output_handle_, platform::invalid_handle))
+        , input_handle_(std::exchange(o.input_handle_, platform::invalid_handle))
         , started_mode_(o.started_mode_)
+        , resize_signal_(std::move(o.resize_signal_))
         , writer_(std::move(o.writer_))
         , pool_(std::move(o.pool_))
         , canvas_(std::move(o.canvas_))
@@ -229,9 +173,7 @@ public:
     App(const App&) = delete;
     App& operator=(const App&) = delete;
 
-    ~App() {
-        if (fd_ >= 0) detail::cleanup_signal_pipe();
-    }
+    ~App() = default;
 
 private:
     App() = default;
@@ -239,44 +181,44 @@ private:
     // -- Terminal ownership ---------------------------------------------------
     std::optional<Terminal<AltScreen>> alt_terminal_;
     std::optional<Terminal<Raw>>       raw_terminal_;
-    int fd_ = -1;
+    platform::NativeHandle output_handle_ = platform::invalid_handle;
+    platform::NativeHandle input_handle_  = platform::invalid_handle;
     Mode started_mode_ = Mode::Fullscreen;
 
+    // -- Platform signal handling ---------------------------------------------
+    std::optional<platform::NativeResizeSignal> resize_signal_;
+
     // -- Rendering pipeline ---------------------------------------------------
-    // Inline mode: single canvas, serialize to ANSI, erase-and-redraw.
-    // After promotion to alt screen: double-buffered diff (front/back swap).
     std::unique_ptr<Writer> writer_;
     StylePool               pool_;
-    Canvas                  canvas_;           // back buffer (render target)
-    Canvas                  front_;            // front buffer (what's on screen, for diff)
-    int                     prev_height_ = 0;  // lines written in last frame
-    int                     prev_width_  = 0;  // width used for last frame (inline reflow)
-    std::string             out_;               // reused output buffer
+    Canvas                  canvas_;
+    Canvas                  front_;
+    int                     prev_height_ = 0;
+    int                     prev_width_  = 0;
+    std::string             out_;
 
     // -- Inline scrollback preservation --------------------------------------
-    // Row hashes from the previous frame, used to detect stable rows at the
-    // top that don't need to be overwritten (preserving them in scrollback).
     std::vector<uint64_t>   prev_row_hashes_;
-    std::vector<uint64_t>   row_hashes_;            // reusable scratch (avoids per-frame alloc)
-    int                     committed_height_ = 0; // rows never overwritten again
+    std::vector<uint64_t>   row_hashes_;
+    int                     committed_height_ = 0;
     int                     prev_content_height_ = 0;
-    std::vector<layout::LayoutNode> layout_nodes_;  // reused across frames (avoids alloc)
+    std::vector<layout::LayoutNode> layout_nodes_;
 
     // -- Configuration --------------------------------------------------------
     Theme      theme_         = theme::dark;
     bool       mouse_enabled_ = false;
-    int        fps_           = 0;   // 0 = event-driven, >0 = continuous
+    int        fps_           = 0;
     ContextMap    context_;
     Size          size_{};
-    RenderContext render_ctx_;        // geometry management context
-    uint32_t      resize_generation_ = 0;  // incremented on every resize
+    RenderContext render_ctx_;
+    uint32_t      resize_generation_ = 0;
 
     // -- Event handling -------------------------------------------------------
     InputParser parser_;
     std::function<Element()> render_fn_;
     bool                     running_      = false;
     bool                     needs_render_ = true;
-    bool                     needs_clear_  = false; // full clear on next render (after promotion)
+    bool                     needs_clear_  = false;
 
     std::vector<std::function<bool(const KeyEvent&)>>   key_handlers_;
     std::vector<std::function<bool(const MouseEvent&)>> mouse_handlers_;
@@ -297,29 +239,14 @@ private:
 // ============================================================================
 // canvas_run - Imperative canvas animation loop
 // ============================================================================
-// For applications that paint cells directly rather than composing element
-// trees. The framework owns every rendering concern: double-buffering, diff,
-// non-blocking I/O with POLLOUT retry, frame pacing, resize, and signal
-// handling. Users provide three narrow callbacks:
-//
-//   on_resize(pool, w, h)  — rebuild size-dependent state; called once at
-//                            startup and again after each SIGWINCH. The pool
-//                            is cleared before the call — re-intern styles here.
-//
-//   on_event(event) → bool — handle input; return false to quit.
-//
-//   on_paint(canvas, w, h) — draw the current frame into the back buffer,
-//                            which is already cleared. Do not call canvas.clear().
 
 struct CanvasConfig {
-    int         fps        = 60;              // target frame rate
-    bool        mouse      = false;           // enable all-motion mouse reporting
-    Mode        mode       = Mode::Fullscreen;// rendering mode
-    bool        auto_clear = true;            // clear back buffer before on_paint
-    std::string title;                        // terminal window title (optional)
+    int         fps        = 60;
+    bool        mouse      = false;
+    Mode        mode       = Mode::Fullscreen;
+    bool        auto_clear = true;
+    std::string title;
 };
-
-// ── Concepts for canvas_run callbacks ───────────────────────────────────────
 
 template <typename F>
 concept CanvasResizeFn = std::invocable<F, StylePool&, int, int>;
@@ -332,7 +259,6 @@ concept CanvasEventFn =
 template <typename F>
 concept CanvasPaintFn = std::invocable<F, Canvas&, int, int>;
 
-// Type-erased implementation (in app.cpp)
 namespace detail {
 [[nodiscard]] Status canvas_run_impl(
     CanvasConfig                                   cfg,
@@ -341,8 +267,6 @@ namespace detail {
     std::function<void(Canvas&, int w, int h)>     on_paint);
 } // namespace detail
 
-/// Concept-constrained canvas_run — accepts any callable matching the
-/// required signatures. No std::function in the public API.
 template <CanvasResizeFn ResizeFn, CanvasEventFn EventFn, CanvasPaintFn PaintFn>
 [[nodiscard]] Status canvas_run(
     CanvasConfig cfg,

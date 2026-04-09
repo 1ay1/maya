@@ -1,8 +1,6 @@
 build/
-build*
 .cache
 docs/claude-code-tui-engine
-
 # In-source cmake artifacts
 CMakeFiles/
 CMakeCache.txt

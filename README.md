@@ -36,6 +36,37 @@ int main() {
 
 Structure, text, styles, and layout — all resolved at compile time. Pipe operators chain naturally. Type-state machines enforce correctness: you can't set a border color without a border, can't apply layout modifiers to text nodes.
 
+A reactive counter app in 20 lines:
+
+```cpp
+#include <maya/maya.hpp>
+#include <maya/widget/sparkline.hpp>
+
+using namespace maya::dsl;
+
+int main() {
+    maya::Signal<int> count{0};
+    std::vector<float> history;
+
+    maya::run(
+        {.title = "counter"},
+        [&](const maya::Event& ev) {
+            if (maya::key(ev, '+')) count.update([](int& n) { ++n; });
+            if (maya::key(ev, '-')) count.update([](int& n) { --n; });
+            return !maya::key(ev, 'q');
+        },
+        [&] {
+            history.push_back(static_cast<float>(count.get()));
+            return v(
+                text("Count: " + std::to_string(count.get())) | Bold | Fg<100, 200, 255>,
+                Sparkline(history) | Fg<80, 220, 120>,
+                t<"[+/-] change  [q] quit"> | Dim
+            ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
+        }
+    );
+}
+```
+
 ## Examples
 
 21 examples ship with the framework. Here are a few:

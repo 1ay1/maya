@@ -85,20 +85,60 @@ Line chart · Bar chart · Gauge · Sparkline · Heatmap · Progress bar · Tabl
 
 ## Building
 
-Requires **g++-15** or later (C++26). AppleClang does not support the required C++26 features.
+Requires a C++26 compiler. **GCC 15+** is recommended across all platforms.
+
+### macOS (ARM / Intel)
+
+AppleClang does not support C++26. Use Homebrew GCC:
 
 ```bash
-# Install g++-15 (macOS)
-brew install gcc@15
-
-# Build
+brew install gcc@15 cmake
 cmake -B build -DCMAKE_CXX_COMPILER=g++-15
-cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+cmake --build build -j$(sysctl -n hw.ncpu)
+```
 
-# Run an example
-./build/maya_stocks
-./build/maya_fps
-./build/maya_dashboard
+### Linux (x86_64 / ARM64)
+
+```bash
+# Ubuntu/Debian
+sudo apt install g++-15 cmake
+cmake -B build -DCMAKE_CXX_COMPILER=g++-15
+cmake --build build -j$(nproc)
+
+# Arch
+sudo pacman -S gcc cmake
+cmake -B build
+cmake --build build -j$(nproc)
+
+# Fedora
+sudo dnf install gcc-c++ cmake
+cmake -B build
+cmake --build build -j$(nproc)
+```
+
+### Windows
+
+**MSYS2 (recommended):**
+```bash
+pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake
+cmake -B build -G "MinGW Makefiles"
+cmake --build build -j%NUMBER_OF_PROCESSORS%
+```
+
+**Visual Studio 2025+ (MSVC):**
+```bash
+cmake -B build -G "Visual Studio 17 2025"
+cmake --build build --config Release
+```
+
+**WSL2:** Follow the Linux instructions above.
+
+### Tests
+
+```bash
+cmake -B build -DCMAKE_CXX_COMPILER=g++-15 -DMAYA_BUILD_TESTS=ON
+cmake --build build
+ctest --test-dir build
 ```
 
 ## License

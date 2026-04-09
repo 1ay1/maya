@@ -14,6 +14,8 @@
 
 ---
 
+## Quickstart
+
 ```cpp
 #include <maya/dsl.hpp>
 #include <maya/app/run.hpp>

@@ -295,8 +295,9 @@ auto App::render_frame() -> Status {
         if (canvas_.width() != w || canvas_.height() != canvas_h)
             canvas_ = Canvas(w, canvas_h, &pool_);
 
-        if (needs_clear_) {
-            if (prev_height_ > 0) {
+        // Invalidate state on clear or width change.
+        if (needs_clear_ || prev_width_ != w) {
+            if (prev_height_ > 0 && needs_clear_) {
                 std::string erase;
                 erase += "\x1b[2J\x1b[3J\x1b[H";
                 (void)writer_->write_raw(erase);
@@ -314,41 +315,48 @@ auto App::render_frame() -> Status {
         }
         render_tree(render_fn_(), canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/true);
 
-        int ch = content_height(canvas_);
+        const int ch = content_height(canvas_);
+        if (ch <= 0) {
+            prev_content_height_ = 0;
+            return ok();
+        }
+
         const int W = canvas_.width();
         const uint64_t* cells = canvas_.cells();
+        const int term_h = std::max(1, size_.height.raw());
 
-        // Compute row hashes for the new frame.
-        std::vector<uint64_t> new_hashes(static_cast<size_t>(ch));
+        // ── Compute row hashes (reuse vector to avoid per-frame alloc) ──
+        row_hashes_.swap(row_hashes_);  // keep old in row_hashes_ until swap
+        // Save old hashes, compute new ones in-place.
+        std::vector<uint64_t> old_hashes = std::move(row_hashes_);
+        row_hashes_.resize(static_cast<size_t>(ch));
         for (int y = 0; y < ch; ++y)
-            new_hashes[static_cast<size_t>(y)] =
+            row_hashes_[static_cast<size_t>(y)] =
                 simd::hash_row(cells + y * W, W);
 
-        // Row-diff approach: never erase, only overwrite changed rows
-        // and append new rows. Scrollback is never touched, so user
-        // can scroll freely while content streams in.
+        // ── Row-diff: never erase, only overwrite changed rows ──────────
+        // Scrollback is never touched. User can scroll freely.
 
-        // Find the first row that changed (only within previously-
-        // written rows that are still on screen).
-        const int term_h = std::max(1, size_.height.raw());
         const int prev_on_screen = std::min(prev_height_, term_h);
         const int common = std::min(ch, prev_height_);
+        const int old_hash_count = static_cast<int>(old_hashes.size());
 
-        // Only rows on screen can be updated. Rows in scrollback
-        // (index < prev_height_ - prev_on_screen) are committed.
+        // Only rows still on screen can be updated via cursor movement.
+        // Rows in scrollback (index < prev_height_ - prev_on_screen)
+        // are committed and can't be reached.
         const int updatable_start = prev_height_ - prev_on_screen;
-        int first_changed = common; // default: no change in common rows
-        for (int y = updatable_start; y < common; ++y) {
-            if (new_hashes[static_cast<size_t>(y)] !=
-                row_hashes_[static_cast<size_t>(y)]) {
+
+        int first_changed = common; // assume no common rows changed
+        for (int y = updatable_start; y < common && y < old_hash_count; ++y) {
+            if (row_hashes_[static_cast<size_t>(y)] !=
+                old_hashes[static_cast<size_t>(y)]) {
                 first_changed = y;
                 break;
             }
         }
 
-        // If nothing changed and no new rows, skip.
-        if (first_changed == common && ch <= prev_height_) {
-            row_hashes_ = std::move(new_hashes);
+        // If nothing changed and no new/removed rows, skip the write.
+        if (first_changed == common && ch == prev_height_) {
             prev_content_height_ = ch;
             return ok();
         }
@@ -358,33 +366,27 @@ auto App::render_frame() -> Status {
         out_ += ansi::hide_cursor;
 
         if (prev_height_ == 0) {
-            // First render: write all rows from current cursor position.
-            if (ch > 0)
-                serialize(canvas_, pool_, out_, ch);
+            // First render: write all rows from cursor position.
+            serialize(canvas_, pool_, out_, ch);
         } else {
-            // Move cursor up from bottom of previous output to
-            // first_changed row. Distance from cursor (at prev_height-1)
-            // to first_changed, clamped to on-screen rows.
+            // Move cursor from bottom of previous output (row prev_height_-1)
+            // up to first_changed. Clamp to on-screen distance.
             int up = prev_height_ - 1 - first_changed;
-            up = std::min(up, prev_on_screen - 1); // can't go past screen top
+            up = std::clamp(up, 0, prev_on_screen - 1);
             if (up > 0)
                 ansi::write_cursor_up(out_, up);
             out_ += '\r';
 
-            // Write from first_changed to end of new content.
-            // This overwrites changed common rows + appends new rows.
-            // serialize() puts \r\n between rows and \x1b[K after each.
-            int write_rows = ch - first_changed;
-            if (write_rows > 0)
-                serialize(canvas_, pool_, out_, ch, first_changed);
+            // Overwrite from first_changed through end of new content.
+            // serialize() writes \r\n between rows, \x1b[K after each row.
+            serialize(canvas_, pool_, out_, ch, first_changed);
 
-            // If content shrank, erase leftover rows below.
+            // If content shrank, erase leftover rows below — but only
+            // the ones still on screen (can't erase scrollback rows).
             if (ch < prev_height_) {
-                int extra = prev_height_ - ch;
-                for (int i = 0; i < extra; ++i) {
+                int extra = std::min(prev_height_ - ch, prev_on_screen);
+                for (int i = 0; i < extra; ++i)
                     out_ += "\r\n\x1b[2K";
-                }
-                // Move cursor back up to the last content row.
                 if (extra > 0)
                     ansi::write_cursor_up(out_, extra);
             }
@@ -398,7 +400,6 @@ auto App::render_frame() -> Status {
         prev_height_ = ch;
         prev_width_  = w;
         prev_content_height_ = ch;
-        row_hashes_ = std::move(new_hashes);
 
     } else {
         const int h = size_.height.raw();

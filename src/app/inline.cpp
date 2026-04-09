@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "maya/core/simd.hpp"
 #include "maya/platform/io.hpp"
 #include "maya/render/diff.hpp"    // for detail::encode_utf8
 #include "maya/render/renderer.hpp" // for render_tree
@@ -27,16 +28,17 @@ void render_live(const Element& root, int width, StylePool& pool,
                    std::string& buf, LiveState& st) {
     constexpr int kMaxHeight = 500;
 
-    // Reuse or recreate the canvas only when width changes.
+    // Invalidate state on width change.
     if (st.canvas_width != width) {
         st.canvas = Canvas{width, kMaxHeight, &pool};
         st.canvas_width = width;
         st.prev_height = 0;
         st.prev_content_height = 0;
+        st.row_hashes.clear();
     } else {
         st.canvas.set_style_pool(&pool);
     }
-    // Partial clear: only wipe rows that had content last frame + margin.
+
     if (st.prev_content_height > 0) {
         st.canvas.clear_rows(st.prev_content_height + 4);
     } else {
@@ -45,37 +47,65 @@ void render_live(const Element& root, int width, StylePool& pool,
 
     render_tree(root, st.canvas, pool, theme::dark, st.layout_nodes, /*auto_height=*/true);
 
-    int ch = content_height(st.canvas);
-    int term_h = detect_terminal_height();
+    const int ch = content_height(st.canvas);
+    if (ch <= 0) {
+        st.prev_content_height = 0;
+        return;
+    }
+
+    const int W = st.canvas.width();
+    const uint64_t* cells = st.canvas.cells();
+    const int term_h = detect_terminal_height();
+
+    // Compute row hashes; swap old out.
+    std::vector<uint64_t> old_hashes = std::move(st.row_hashes);
+    st.row_hashes.resize(static_cast<size_t>(ch));
+    for (int y = 0; y < ch; ++y)
+        st.row_hashes[static_cast<size_t>(y)] =
+            simd::hash_row(cells + y * W, W);
+
+    // Row-diff: find first changed on-screen row.
+    const int prev_on_screen = std::min(st.prev_height, term_h);
+    const int common = std::min(ch, st.prev_height);
+    const int old_hash_count = static_cast<int>(old_hashes.size());
+    const int updatable_start = st.prev_height - prev_on_screen;
+
+    int first_changed = common;
+    for (int y = updatable_start; y < common && y < old_hash_count; ++y) {
+        if (st.row_hashes[static_cast<size_t>(y)] !=
+            old_hashes[static_cast<size_t>(y)]) {
+            first_changed = y;
+            break;
+        }
+    }
+
+    if (first_changed == common && ch == st.prev_height) {
+        st.prev_content_height = ch;
+        return;
+    }
 
     buf.clear();
     buf += ansi::sync_start;
     buf += ansi::hide_cursor;
 
-    // Ink pattern: when previous output filled the terminal,
-    // hard-clear and rewrite from scratch.
-    if (st.prev_height >= term_h) {
-        buf += "\x1b[2J\x1b[3J\x1b[H";
-        if (ch > 0)
-            serialize(st.canvas, pool, buf, ch);
-        buf += ansi::show_cursor;
-        buf += ansi::sync_end;
-
-        std::fwrite(buf.data(), 1, buf.size(), stdout);
-        std::fflush(stdout);
-
-        st.prev_height = ch;
-        st.prev_content_height = ch;
-        return;
-    }
-
-    // Normal path: eraseLines from bottom to top, then write all content.
-    if (st.prev_height > 0) {
-        ansi::write_erase_lines(buf, st.prev_height);
-    }
-
-    if (ch > 0) {
+    if (st.prev_height == 0) {
         serialize(st.canvas, pool, buf, ch);
+    } else {
+        int up = st.prev_height - 1 - first_changed;
+        up = std::clamp(up, 0, prev_on_screen - 1);
+        if (up > 0)
+            ansi::write_cursor_up(buf, up);
+        buf += '\r';
+
+        serialize(st.canvas, pool, buf, ch, first_changed);
+
+        if (ch < st.prev_height) {
+            int extra = std::min(st.prev_height - ch, prev_on_screen);
+            for (int i = 0; i < extra; ++i)
+                buf += "\r\n\x1b[2K";
+            if (extra > 0)
+                ansi::write_cursor_up(buf, extra);
+        }
     }
 
     buf += ansi::show_cursor;

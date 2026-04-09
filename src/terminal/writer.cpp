@@ -1,7 +1,5 @@
 #include "maya/terminal/writer.hpp"
 
-#include <unistd.h>
-
 #include <algorithm>
 #include <cstddef>
 #include <format>
@@ -16,6 +14,7 @@
 #include "maya/core/expected.hpp"
 #include "maya/core/overload.hpp"
 #include "maya/core/types.hpp"
+#include "maya/platform/io.hpp"
 #include "maya/terminal/ansi.hpp"
 
 namespace maya {
@@ -84,21 +83,13 @@ auto Writer::flush() -> Status {
     std::string buf;
     buf.reserve(reserve_hint_);
 
-    // Synchronized update start
     buf += ansi::sync_start;
-
-    // Serialize all operations
     serialize(buf);
-
-    // Synchronized update end
     buf += ansi::sync_end;
 
-    // Adaptive reserve hint for next frame
     reserve_hint_ = std::max(reserve_hint_, buf.size() + buf.size() / 4);
 
-    // Single write syscall
     auto result = write_all(buf);
-
     ops_.clear();
     return result;
 }
@@ -113,21 +104,26 @@ auto Writer::write_raw(std::string_view data) -> Status {
 
 auto Writer::write_some(std::string_view data) const -> Result<std::size_t> {
     if (data.empty()) return ok(std::size_t{0});
+
     std::size_t total = 0;
     const char* ptr   = data.data();
-    auto remaining    = static_cast<ssize_t>(data.size());
+    std::size_t remaining = data.size();
+
     while (remaining > 0) {
-        ssize_t n = ::write(fd_, ptr, static_cast<size_t>(remaining));
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) break; // would block, stop
-            return err<std::size_t>(Error::from_errno("write"));
+        auto result = platform::io_write(handle_, ptr, remaining);
+        if (!result) {
+            if (result.error().kind == ErrorKind::WouldBlock)
+                break;
+            return std::unexpected{result.error()};
         }
+
+        std::size_t n = *result;
+        if (n == 0) continue;  // EINTR
         ptr       += n;
         remaining -= n;
-        total     += static_cast<std::size_t>(n);
+        total     += n;
     }
-    return ok(static_cast<std::size_t>(total));
+    return ok(total);
 }
 
 // ============================================================================
@@ -142,7 +138,6 @@ void Writer::optimize() {
         | std::views::transform([](auto&& op) { return std::move(op); })
         | std::ranges::to<std::vector<RenderOp>>();
 
-    // Fold: build a new vector by merging/cancelling adjacent ops
     std::vector<RenderOp> result;
     result.reserve(optimized.size());
 
@@ -245,30 +240,30 @@ void Writer::serialize(std::string& buf) const {
 }
 
 // ============================================================================
-// Raw I/O
+// Raw I/O — platform-abstracted
 // ============================================================================
 
 auto Writer::write_all(std::string_view data) const -> Status {
     const char* ptr  = data.data();
-    auto remaining   = static_cast<ssize_t>(data.size());
+    std::size_t remaining = data.size();
     bool wrote_any   = false;
 
     while (remaining > 0) {
-        ssize_t n = ::write(fd_, ptr, static_cast<size_t>(remaining));
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                if (!wrote_any) return err(Error::would_block()); // nothing sent --- clean
-                // Partial write: the frame included sync-start but not sync-end.
-                // Terminals that implement BSU (DEC mode 2026) --- foot, WezTerm --- will
-                // stall waiting for the end-sync marker. Send it now so they render
-                // what they have and don't block the display for up to 100 ms.
+        auto result = platform::io_write(handle_, ptr, remaining);
+        if (!result) {
+            if (result.error().kind == ErrorKind::WouldBlock) {
+                if (!wrote_any) return err(Error::would_block());
+                // Partial write: BSU frame open. Send recovery so terminal
+                // doesn't stall waiting for sync-end.
                 static constexpr std::string_view recovery = "\x1b[?2026l\x1b[0m";
-                ::write(fd_, recovery.data(), recovery.size()); // best-effort
+                (void)platform::io_write(handle_, recovery.data(), recovery.size());
                 return err(Error::would_block());
             }
-            return err(Error::from_errno("write"));
+            return std::unexpected{result.error()};
         }
+
+        std::size_t n = *result;
+        if (n == 0) continue;  // EINTR
         wrote_any  = true;
         ptr       += n;
         remaining -= n;

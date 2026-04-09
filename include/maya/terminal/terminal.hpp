@@ -6,20 +6,19 @@
 // unless a Terminal<Cooked> was moved through enable_raw_mode(). The
 // destructor always restores the original terminal state - no leaked modes,
 // no orphaned alt screens, no hidden cursors.
+//
+// Generic over TerminalBackend — the platform backend is selected at
+// compile time via platform::NativeTerminal. No vtable, no indirection.
 
-#include <cerrno>
-#include <cstring>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
 
-#include <sys/ioctl.h>
-#include <termios.h>
-#include <unistd.h>
-
 #include "../core/expected.hpp"
 #include "../core/types.hpp"
+#include "../platform/select.hpp"
 #include "ansi.hpp"
 
 namespace maya {
@@ -31,58 +30,35 @@ class InputParser;
 // RawGuard - Standalone RAII guard for raw mode
 // ============================================================================
 // For code that needs raw mode without the full Terminal type-state machinery.
-// Saves termios on construction, restores on destruction.
+// Saves terminal state on construction, restores on destruction.
 
 class RawGuard : MoveOnly {
-    int fd_;
-    struct termios original_;
+    std::optional<platform::NativeTerminal> backend_;
     bool active_ = false;
 
 public:
-    [[nodiscard]] static auto create(int fd = STDIN_FILENO) -> Result<RawGuard> {
+    [[nodiscard]] static auto create() -> Result<RawGuard> {
         RawGuard guard;
-        guard.fd_ = fd;
+        auto result = platform::NativeTerminal::open();
+        if (!result) return err<RawGuard>(result.error());
 
-        if (::tcgetattr(fd, &guard.original_) < 0) {
-            return err<RawGuard>(Error::from_errno("tcgetattr"));
-        }
-
-        struct termios raw = guard.original_;
-        ::cfmakeraw(&raw);
-        raw.c_cc[VMIN]  = 0;
-        raw.c_cc[VTIME] = 1; // 100ms timeout
-
-        if (::tcsetattr(fd, TCSAFLUSH, &raw) < 0) {
-            return err<RawGuard>(Error::from_errno("tcsetattr"));
-        }
+        guard.backend_.emplace(std::move(*result));
+        auto status = guard.backend_->enable_raw();
+        if (!status) return err<RawGuard>(status.error());
 
         guard.active_ = true;
         return ok(std::move(guard));
     }
 
     RawGuard() = default;
-
-    RawGuard(RawGuard&& other) noexcept
-        : fd_(other.fd_)
-        , original_(other.original_)
-        , active_(std::exchange(other.active_, false))
-    {}
-
-    RawGuard& operator=(RawGuard&& other) noexcept {
-        if (this != &other) {
-            restore();
-            fd_       = other.fd_;
-            original_ = other.original_;
-            active_   = std::exchange(other.active_, false);
-        }
-        return *this;
-    }
+    RawGuard(RawGuard&&) noexcept = default;
+    RawGuard& operator=(RawGuard&&) noexcept = default;
 
     ~RawGuard() { restore(); }
 
     void restore() noexcept {
         if (active_) {
-            ::tcsetattr(fd_, TCSAFLUSH, &original_);
+            (void)backend_->disable_raw();
             active_ = false;
         }
     }
@@ -91,15 +67,18 @@ public:
 };
 
 // ============================================================================
-// Terminal<State> - Type-state terminal
+// Terminal<State, Backend> - Type-state terminal
 // ============================================================================
 // State is one of: Cooked, Raw, AltScreen (defined in core/types.hpp).
+//
+// Backend satisfies platform::TerminalBackend — selected at compile time.
+// Default is platform::NativeTerminal (POSIX termios or Win32 Console API).
 //
 // Transitions consume the source object and return a new object in the
 // target state. This is enforced by C++23 explicit object parameters
 // (deducing this) taking `self` by value.
 //
-// Construction: Terminal<Cooked>::create(fd)
+// Construction: Terminal<Cooked>::create()
 // Transitions:  Cooked -> Raw -> AltScreen
 // Destruction:  restores everything in reverse order
 
@@ -107,64 +86,56 @@ namespace detail {
     struct TerminalPrivateTag {};
 }
 
-template <typename State = Cooked>
+template <typename State = Cooked,
+          platform::TerminalBackend Backend = platform::NativeTerminal>
 class Terminal : MoveOnly {
-    int fd_;
-    struct termios original_;
-    bool owns_fd_ = false; // true if we should close fd on destruction
+    Backend backend_;
+    bool moved_from_ = true;  // default-constructed = moved-from
 
     // Private constructor - only create() and state transitions may construct
     using PrivateTag = detail::TerminalPrivateTag;
-    Terminal(PrivateTag, int fd, struct termios orig)
-        : fd_(fd), original_(orig) {}
+    Terminal(PrivateTag, Backend&& b)
+        : backend_(std::move(b)), moved_from_(false) {}
 
     // Allow other Terminal instantiations to access private members
-    template <typename OtherState>
+    template <typename OtherState, platform::TerminalBackend OtherBackend>
     friend class Terminal;
 
 public:
+    Terminal() = default;
+
     // ========================================================================
     // Creation
     // ========================================================================
 
-    /// The only way to obtain a terminal. Saves the original termios state.
-    [[nodiscard]] static auto create(int fd = STDIN_FILENO) -> Result<Terminal<Cooked>>
+    /// The only way to obtain a terminal. Saves the original state.
+    [[nodiscard]] static auto create() -> Result<Terminal<Cooked, Backend>>
         requires std::same_as<State, Cooked>
     {
-        struct termios orig{};
-        if (::tcgetattr(fd, &orig) < 0) {
-            return err<Terminal<Cooked>>(Error::from_errno("tcgetattr: failed to get terminal attributes"));
-        }
-        return ok(Terminal<Cooked>{PrivateTag{}, fd, orig});
+        MAYA_TRY_DECL(auto backend, Backend::open());
+        return ok(Terminal<Cooked, Backend>{PrivateTag{}, std::move(backend)});
     }
 
     // ========================================================================
     // Type-state transitions (consume self, return new state)
     // ========================================================================
 
-    /// Cooked -> Raw: enables raw mode (cfmakeraw, disable echo, VMIN/VTIME)
-    [[nodiscard]] auto enable_raw_mode(this Terminal<Cooked> self) -> Result<Terminal<Raw>> {
-        struct termios raw = self.original_;
-        ::cfmakeraw(&raw);
-        raw.c_lflag &= ~static_cast<tcflag_t>(ECHO);  // explicitly disable echo
-        raw.c_cc[VMIN]  = 0;   // non-blocking reads
-        raw.c_cc[VTIME] = 1;   // 100ms read timeout
-
-        if (::tcsetattr(self.fd_, TCSAFLUSH, &raw) < 0) {
-            // Restore is not needed - self still holds Cooked and its
-            // destructor (which does nothing for Cooked) will run.
-            return err<Terminal<Raw>>(Error::from_errno("tcsetattr: failed to enable raw mode"));
-        }
-
-        Terminal<Raw> result{PrivateTag{}, self.fd_, self.original_};
-        self.fd_ = -1; // prevent Cooked destructor from touching fd
+    /// Cooked -> Raw: enables raw mode
+    [[nodiscard]] auto enable_raw_mode(this Terminal<Cooked, Backend> self)
+        -> Result<Terminal<Raw, Backend>>
+    {
+        MAYA_TRY_VOID(self.backend_.enable_raw());
+        Terminal<Raw, Backend> result{PrivateTag{}, std::move(self.backend_)};
+        self.moved_from_ = true;
         return ok(std::move(result));
     }
 
     /// Raw -> AltScreen: enters alt screen buffer + hide cursor + enable
     /// mouse tracking + enable focus events + enable bracketed paste
-    [[nodiscard]] auto enter_alt_screen(this Terminal<Raw> self) -> Result<Terminal<AltScreen>> {
-        // Build the mode-enter sequence as a single write
+    [[nodiscard]] auto enter_alt_screen(this Terminal<Raw, Backend> self)
+        -> Result<Terminal<AltScreen, Backend>>
+    {
+        // ANSI sequences — work on ALL modern terminals (POSIX + Windows VT)
         std::string seq;
         seq.reserve(128);
         seq += ansi::alt_screen_enter;
@@ -176,14 +147,14 @@ public:
         seq += ansi::clear_screen();
         seq += ansi::home();
 
-        auto written = ::write(self.fd_, seq.data(), seq.size());
-        if (written < 0) {
+        auto status = self.backend_.write_all(seq);
+        if (!status) {
             // Self (Raw) will be destroyed, restoring raw -> cooked
-            return err<Terminal<AltScreen>>(Error::from_errno("write: failed to enter alt screen"));
+            return err<Terminal<AltScreen, Backend>>(status.error());
         }
 
-        Terminal<AltScreen> result{PrivateTag{}, self.fd_, self.original_};
-        self.fd_ = -1; // prevent Raw destructor from partial cleanup
+        Terminal<AltScreen, Backend> result{PrivateTag{}, std::move(self.backend_)};
+        self.moved_from_ = true;
         return ok(std::move(result));
     }
 
@@ -195,64 +166,46 @@ public:
     auto write(std::string_view data) -> Status
         requires (!std::same_as<State, Cooked>)
     {
-        const char* ptr = data.data();
-        auto remaining  = static_cast<ssize_t>(data.size());
-
-        while (remaining > 0) {
-            ssize_t n = ::write(fd_, ptr, static_cast<size_t>(remaining));
-            if (n < 0) {
-                if (errno == EINTR) continue;
-                return err(Error::from_errno("write"));
-            }
-            ptr       += n;
-            remaining -= n;
-        }
-        return ok();
+        return backend_.write_all(data);
     }
 
     /// Query the terminal dimensions.
     [[nodiscard]] auto size() const -> Size
         requires (!std::same_as<State, Cooked>)
     {
-        struct winsize ws{};
-        if (::ioctl(fd_, TIOCGWINSZ, &ws) < 0) {
-            // Fallback: 80x24 is the historical default
-            return {Columns{80}, Rows{24}};
-        }
-        return {Columns{ws.ws_col}, Rows{ws.ws_row}};
+        return backend_.size();
     }
 
-    /// Read raw bytes from the terminal file descriptor.
-    /// Returns a string of raw bytes for the input parser to process.
+    /// Get the underlying input handle (for polling, etc.)
+    [[nodiscard]] auto input_handle() const noexcept -> platform::NativeHandle
+        requires (!std::same_as<State, Cooked>)
+    {
+        return backend_.input_handle();
+    }
+
+    /// Get the underlying output handle.
+    [[nodiscard]] auto output_handle() const noexcept -> platform::NativeHandle
+        requires (!std::same_as<State, Cooked>)
+    {
+        return backend_.output_handle();
+    }
+
+    /// Read raw bytes from the terminal.
     [[nodiscard]] auto read_raw() -> Result<std::string>
         requires (!std::same_as<State, Cooked>)
     {
-        char buf[256];
-        ssize_t n = ::read(fd_, buf, sizeof(buf));
-
-        if (n < 0) {
-            if (errno == EAGAIN || errno == EINTR) {
-                return ok(std::string{});
-            }
-            return err<std::string>(Error::from_errno("read"));
-        }
-
-        return ok(std::string(buf, static_cast<size_t>(n)));
+        return backend_.read_raw();
     }
-
-    /// Get the underlying file descriptor (for polling, etc.)
-    [[nodiscard]] int fd() const noexcept { return fd_; }
 
     // ========================================================================
     // Destructor - RAII cleanup in reverse order of state transitions
     // ========================================================================
 
     ~Terminal() {
-        if (fd_ < 0) return; // moved-from state
+        if (moved_from_) return;
 
         if constexpr (std::same_as<State, AltScreen>) {
-            // Reverse of enter_alt_screen: disable paste, focus, mouse,
-            // show cursor, leave alt screen
+            // Reverse of enter_alt_screen
             std::string seq;
             seq.reserve(128);
             seq += ansi::disable_bracketed_paste;
@@ -261,15 +214,12 @@ public:
             seq += ansi::disable_mouse;
             seq += ansi::show_cursor;
             seq += ansi::alt_screen_leave;
-            ::write(fd_, seq.data(), seq.size());
-
-            // Also restore original termios (undo raw mode)
-            ::tcsetattr(fd_, TCSAFLUSH, &original_);
+            (void)backend_.write_all(seq);
+            (void)backend_.disable_raw();
         }
         else if constexpr (std::same_as<State, Raw>) {
-            // Restore original termios, show cursor just in case
-            ::write(fd_, ansi::show_cursor.data(), ansi::show_cursor.size());
-            ::tcsetattr(fd_, TCSAFLUSH, &original_);
+            (void)backend_.write_all(ansi::show_cursor);
+            (void)backend_.disable_raw();
         }
         // Cooked: nothing to restore
     }
@@ -279,16 +229,15 @@ public:
     // ========================================================================
 
     Terminal(Terminal&& other) noexcept
-        : fd_(std::exchange(other.fd_, -1))
-        , original_(other.original_)
+        : backend_(std::move(other.backend_))
+        , moved_from_(std::exchange(other.moved_from_, true))
     {}
 
     Terminal& operator=(Terminal&& other) noexcept {
         if (this != &other) {
-            // Destroy current state first
             this->~Terminal();
-            fd_       = std::exchange(other.fd_, -1);
-            original_ = other.original_;
+            backend_    = std::move(other.backend_);
+            moved_from_ = std::exchange(other.moved_from_, true);
         }
         return *this;
     }

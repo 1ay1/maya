@@ -23,8 +23,10 @@
 //   );
 
 #include <concepts>
+#include <cstdio>
+#include <cstdlib>
+#include <format>
 #include <functional>
-#include <iostream>
 #include <type_traits>
 
 #include "../core/expected.hpp"
@@ -117,8 +119,9 @@ void run_impl(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn)
         .build();
 
     if (!result) {
-        std::println(std::cerr, "maya: failed to initialize terminal: {}",
-                     result.error().message);
+        auto msg = std::format("maya: failed to initialize terminal: {}\n",
+                               result.error().message);
+        std::fputs(msg.c_str(), stderr);
         std::exit(1);
     }
 
@@ -193,7 +196,8 @@ void run_impl(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn)
 
     auto status = app.run(std::move(render_wrapper));
     if (!status) {
-        std::println(std::cerr, "maya: runtime error: {}", status.error().message);
+        auto msg = std::format("maya: runtime error: {}\n", status.error().message);
+        std::fputs(msg.c_str(), stderr);
         std::exit(1);
     }
 }

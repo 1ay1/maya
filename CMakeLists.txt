@@ -41,9 +41,6 @@ target_compile_options(maya PRIVATE
     >
     $<$<CXX_COMPILER_ID:MSVC>:/O2 /GL>
 )
-set_target_properties(maya PROPERTIES
-    INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
-)
 
 option(MAYA_BUILD_EXAMPLES "Build example programs" ON)
 if(MAYA_BUILD_EXAMPLES)
@@ -60,9 +57,6 @@ if(MAYA_BUILD_EXAMPLES)
                 -funroll-loops
             >
             $<$<CXX_COMPILER_ID:MSVC>:/O2 /GL>
-        )
-        set_target_properties(${tgt} PROPERTIES
-            INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
         )
     endforeach()
 endif()

@@ -98,8 +98,8 @@ using Status = Result<void>;
 // ============================================================================
 
 template <typename T>
-[[nodiscard]] constexpr Result<T> ok(T&& value) {
-    return Result<T>{std::forward<T>(value)};
+[[nodiscard]] constexpr Result<std::remove_cvref_t<T>> ok(T&& value) {
+    return Result<std::remove_cvref_t<T>>(std::in_place, std::forward<T>(value));
 }
 
 [[nodiscard]] inline Status ok() {
@@ -119,6 +119,13 @@ template <typename T = void>
 // If the result is an error, immediately returns it from the enclosing function.
 // If the result is a value, unwraps it.
 
+// Token concatenation for unique variable names
+#define MAYA_CAT2_(a, b) a##b
+#define MAYA_CAT_(a, b) MAYA_CAT2_(a, b)
+
+// GCC/Clang: expression macro using statement expressions.
+// Not available on MSVC — use MAYA_TRY_DECL instead.
+#if defined(__GNUC__) || defined(__clang__)
 #define MAYA_TRY(expr)                                         \
     ({                                                         \
         auto&& _maya_result = (expr);                          \
@@ -126,8 +133,21 @@ template <typename T = void>
             return std::unexpected{_maya_result.error()};       \
         std::move(*_maya_result);                               \
     })
+#endif
 
-// For Status (Result<void>) - just propagate error, no value to unwrap
+// Portable version — works on GCC, Clang, AND MSVC.
+// Usage: MAYA_TRY_DECL(auto val, some_result_fn());
+#define MAYA_TRY_DECL_IMPL_(uniq, decl, expr)                  \
+    auto&& uniq = (expr);                                      \
+    if (!uniq) [[unlikely]]                                    \
+        return std::unexpected{uniq.error()};                   \
+    decl = std::move(*uniq)
+
+#define MAYA_TRY_DECL(decl, expr)                              \
+    MAYA_TRY_DECL_IMPL_(MAYA_CAT_(_maya_try_, __COUNTER__), decl, expr)
+
+// For Status (Result<void>) - just propagate error, no value to unwrap.
+// Portable across all compilers.
 #define MAYA_TRY_VOID(expr)                                    \
     do {                                                       \
         auto&& _maya_result = (expr);                          \

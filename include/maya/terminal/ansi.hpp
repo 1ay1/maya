@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 
+#include "../platform/detect.hpp"
 #include "../style/color.hpp"
 #include "../style/style.hpp"
 
@@ -27,7 +28,7 @@ namespace ansi {
 namespace detail {
 
 /// Append a decimal integer into `out` using std::to_chars (no allocation).
-[[gnu::always_inline]] inline void append_int(std::string& out, int n) {
+MAYA_FORCEINLINE void append_int(std::string& out, int n) {
     char buf[12];
     auto [end, _] = std::to_chars(buf, buf + sizeof(buf), n);
     out.append(buf, end);
@@ -36,7 +37,7 @@ namespace detail {
 } // namespace detail
 
 /// Zero-alloc cursor-up: ESC [ n A — avoids std::format overhead.
-[[gnu::always_inline]] inline void write_cursor_up(std::string& out, int n) {
+MAYA_FORCEINLINE void write_cursor_up(std::string& out, int n) {
     if (n <= 0) return;
     out += "\x1b[";
     detail::append_int(out, n);
@@ -44,7 +45,7 @@ namespace detail {
 }
 
 /// Zero-alloc cursor-down: ESC [ n B
-[[gnu::always_inline]] inline void write_cursor_down(std::string& out, int n) {
+MAYA_FORCEINLINE void write_cursor_down(std::string& out, int n) {
     if (n <= 0) return;
     out += "\x1b[";
     detail::append_int(out, n);
@@ -53,7 +54,7 @@ namespace detail {
 
 /// Zero-alloc ANSI CUP cursor positioning: ESC [ row ; col H
 /// col and row are 1-based as per ANSI convention.
-[[gnu::always_inline]] inline void write_move_to(std::string& out, int col, int row) {
+MAYA_FORCEINLINE void write_move_to(std::string& out, int col, int row) {
     out += "\x1b[";
     detail::append_int(out, row);
     out += ';';

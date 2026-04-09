@@ -1,65 +1,52 @@
 #pragma once
 // maya — A compile-time type-safe TUI library for C++26
 //
-// Umbrella header. Include this single file to get the entire maya API.
+// Public API header. Include this single file to get the entire maya API.
 //
-// Primary API — compile-time DSL (maya::dsl):
+// This header exposes ONLY the public interface:
+//   - DSL          (v, h, t, text, dyn, when, map, pipes, styles)
+//   - App          (run, print, live, quit, RunConfig, Ctx)
+//   - Events       (key, ctrl, alt, mouse_clicked, on, ...)
+//   - Signals      (Signal, Computed, Effect, Batch)
+//   - Widgets      (Input, Scrollable, Markdown, ToolCall, ...)
 //
+// Internal subsystems (render pipeline, canvas, diff engine, SIMD,
+// terminal I/O, layout engine) are NOT included. They are implementation
+// details that downstream projects should never depend on.
+//
+// Usage:
+//   #include <maya/maya.hpp>
 //   using namespace maya::dsl;
+//
 //   constexpr auto ui = v(
 //       t<"Hello"> | Bold | Fg<100, 180, 255>,
 //       h(t<"A">, t<"B"> | Dim) | border_<Round> | pad<1>
 //   );
 //   maya::print(ui.build());
-//
-// Type-state safety: impossible states are compile errors.
-// dyn() provides runtime escape hatches for dynamic content.
-//
-// Headers are ordered bottom-up: foundational types first, then styling,
-// terminal I/O, layout, elements, rendering, and finally the application
-// entry point. Each layer depends only on layers above it in this list.
 
-// -- Core: types, error handling, concepts, reactive signals, SIMD, focus ----
+// ── Core: types, error handling, concepts, reactive signals, focus ───────
 #include <maya/core/types.hpp>
 #include <maya/core/expected.hpp>
 #include <maya/core/concepts.hpp>
 #include <maya/core/signal.hpp>
-#include <maya/core/simd.hpp>
 #include <maya/core/overload.hpp>
 #include <maya/core/scope_exit.hpp>
 #include <maya/core/focus.hpp>
 #include <maya/core/render_context.hpp>
 
-// -- Style: colors, text styles, borders, themes ----------------------------
+// ── Style: colors, text styles, borders, themes ─────────────────────────
 #include <maya/style/color.hpp>
 #include <maya/style/style.hpp>
 #include <maya/style/border.hpp>
 #include <maya/style/theme.hpp>
 
-// -- Terminal: ANSI sequences, terminal state, input parsing, buffered I/O --
-#include <maya/terminal/ansi.hpp>
-#include <maya/terminal/terminal.hpp>
-#include <maya/terminal/input.hpp>
-#include <maya/terminal/writer.hpp>
-
-// -- Layout: flexbox-inspired layout engine ---------------------------------
-#include <maya/layout/yoga.hpp>
-
-// -- Elements: the element variant, concrete types, builder DSL -------------
+// ── Elements: the element variant, concrete types, builder DSL ──────────
 #include <maya/element/text.hpp>
 #include <maya/element/box.hpp>
 #include <maya/element/element.hpp>
 #include <maya/element/builder.hpp>
 
-// -- Render: canvas, diffing, rendering pipeline, frame buffer ---------------
-#include <maya/render/canvas.hpp>
-#include <maya/render/diff.hpp>
-#include <maya/render/renderer.hpp>
-#include <maya/render/serialize.hpp>
-#include <maya/render/pipeline.hpp>
-#include <maya/render/frame.hpp>
-
-// -- App: context, application entry point, event helpers, run() ------------
+// ── App: lifecycle, events, run() ───────────────────────────────────────
 #include <maya/app/context.hpp>
 #include <maya/app/app.hpp>
 #include <maya/app/events.hpp>
@@ -67,79 +54,17 @@
 #include <maya/app/inline.hpp>
 #include <maya/app/environment.hpp>
 #include <maya/app/error_boundary.hpp>
-
-// -- Widgets: high-level interactive components ------------------------------
-#include <maya/widget/input.hpp>
-#include <maya/widget/markdown.hpp>
-#include <maya/widget/spinner.hpp>
-#include <maya/widget/select.hpp>
-#include <maya/widget/progress.hpp>
-#include <maya/widget/divider.hpp>
-#include <maya/widget/table.hpp>
-#include <maya/widget/gradient.hpp>
-#include <maya/widget/link.hpp>
-#include <maya/widget/scrollable.hpp>
-
-// -- Agent widgets: Zed-style AI agent interface components -----------------
-#include <maya/widget/disclosure.hpp>
-#include <maya/widget/badge.hpp>
-#include <maya/widget/toast.hpp>
-#include <maya/widget/file_ref.hpp>
-#include <maya/widget/diff_view.hpp>
-#include <maya/widget/thinking.hpp>
-#include <maya/widget/permission.hpp>
-#include <maya/widget/tool_call.hpp>
-#include <maya/widget/callout.hpp>
-#include <maya/widget/message.hpp>
-#include <maya/widget/plan_view.hpp>
-#include <maya/widget/activity_bar.hpp>
-
-// -- Tool widgets: specialized tool execution cards -------------------------
-#include <maya/widget/bash_tool.hpp>
-#include <maya/widget/read_tool.hpp>
-#include <maya/widget/edit_tool.hpp>
-#include <maya/widget/write_tool.hpp>
-#include <maya/widget/search_result.hpp>
-#include <maya/widget/agent_tool.hpp>
-#include <maya/widget/fetch_tool.hpp>
-
-// -- Input widgets: forms and controls --------------------------------------
-#include <maya/widget/textarea.hpp>
-#include <maya/widget/checkbox.hpp>
-#include <maya/widget/radio.hpp>
-#include <maya/widget/button.hpp>
-#include <maya/widget/slider.hpp>
-
-// -- Data display widgets ---------------------------------------------------
-#include <maya/widget/list.hpp>
-#include <maya/widget/tree.hpp>
-#include <maya/widget/sparkline.hpp>
-
-// -- Navigation widgets -----------------------------------------------------
-#include <maya/widget/tabs.hpp>
-#include <maya/widget/breadcrumb.hpp>
-#include <maya/widget/menu.hpp>
-#include <maya/widget/command_palette.hpp>
-
-// -- Overlay widgets --------------------------------------------------------
-#include <maya/widget/modal.hpp>
-#include <maya/widget/popup.hpp>
-
-// -- Visualization widgets --------------------------------------------------
-#include <maya/widget/bar_chart.hpp>
-#include <maya/widget/line_chart.hpp>
-#include <maya/widget/gauge.hpp>
-#include <maya/widget/heatmap.hpp>
-
-// -- Specialized widgets ----------------------------------------------------
-#include <maya/widget/log_viewer.hpp>
-#include <maya/widget/image.hpp>
-#include <maya/widget/calendar.hpp>
-#include <maya/widget/canvas.hpp>
-#include <maya/widget/key_help.hpp>
-
-// -- App: static region for scrollback freeze --------------------------------
 #include <maya/app/static_region.hpp>
 
-// -- DSL: compile-time UI tree builder ----------------------------------------
+// ── DSL: compile-time UI tree builder ───────────────────────────────────
 #include <maya/dsl.hpp>
+
+// ── Widgets ─────────────────────────────────────────────────────────────
+// Widgets are NOT included here. Include them individually as needed:
+//
+//   #include <maya/widget/input.hpp>
+//   #include <maya/widget/markdown.hpp>
+//   #include <maya/widget/scrollable.hpp>
+//   ...
+//
+// See include/maya/widget/ for the full list.

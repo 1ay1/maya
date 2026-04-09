@@ -7,7 +7,7 @@
 // Keys: q/Esc=quit  space=pause  Enter=step  +/-=speed  c=clear
 //       r=random  g=glider gun  p=pulsar  s=spaceship fleet
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 
 #include <algorithm>
 #include <cstdint>

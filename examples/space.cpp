@@ -13,10 +13,14 @@
 //
 // Usage:  ./maya_space
 
-#include <maya/dsl.hpp>
-#include <maya/app/run.hpp>
-#include <maya/app/events.hpp>
 #include <maya/maya.hpp>
+#include <maya/widget/badge.hpp>
+#include <maya/widget/bar_chart.hpp>
+#include <maya/widget/callout.hpp>
+#include <maya/widget/gauge.hpp>
+#include <maya/widget/heatmap.hpp>
+#include <maya/widget/line_chart.hpp>
+#include <maya/widget/sparkline.hpp>
 
 #include <algorithm>
 #include <array>

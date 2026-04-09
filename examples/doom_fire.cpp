@@ -8,7 +8,7 @@
 //
 // Keys: q/Esc=quit  space=toggle  ←/→=wind  +/-=intensity  1-3=palette
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 
 #include <algorithm>
 #include <cmath>

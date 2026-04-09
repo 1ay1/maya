@@ -6,7 +6,7 @@
 //
 // Keys: 1-5=mode  space=burst  r=reset  q/Esc=quit
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 
 #include <algorithm>
 #include <chrono>

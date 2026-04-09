@@ -2,7 +2,7 @@
 // Half-block SDF renderer: reflective surfaces, sunset sky, stars, fresnel,
 // tone mapping, colored lights. Arrows=orbit, space=pause, 1-4=scene, q=quit
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 
 #include <algorithm>
 #include <chrono>

@@ -11,6 +11,23 @@
 //   ActivityBar, ToastManager, Badge, Callout
 
 #include <maya/maya.hpp>
+#include <maya/widget/activity_bar.hpp>
+#include <maya/widget/agent_tool.hpp>
+#include <maya/widget/badge.hpp>
+#include <maya/widget/bash_tool.hpp>
+#include <maya/widget/callout.hpp>
+#include <maya/widget/diff_view.hpp>
+#include <maya/widget/edit_tool.hpp>
+#include <maya/widget/fetch_tool.hpp>
+#include <maya/widget/markdown.hpp>
+#include <maya/widget/message.hpp>
+#include <maya/widget/permission.hpp>
+#include <maya/widget/plan_view.hpp>
+#include <maya/widget/read_tool.hpp>
+#include <maya/widget/search_result.hpp>
+#include <maya/widget/thinking.hpp>
+#include <maya/widget/toast.hpp>
+#include <maya/widget/write_tool.hpp>
 
 #include <chrono>
 #include <string>

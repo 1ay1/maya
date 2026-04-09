@@ -16,9 +16,11 @@
 // Usage:  ./maya_hacker
 
 #include <maya/maya.hpp>
-#include <maya/dsl.hpp>
-#include <maya/app/run.hpp>
-#include <maya/app/events.hpp>
+#include <maya/widget/badge.hpp>
+#include <maya/widget/heatmap.hpp>
+#include <maya/widget/progress.hpp>
+#include <maya/widget/sparkline.hpp>
+#include <maya/widget/toast.hpp>
 
 #include <algorithm>
 #include <array>

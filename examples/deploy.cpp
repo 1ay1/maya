@@ -15,6 +15,7 @@
 // Usage:  ./maya_deploy
 
 #include <maya/maya.hpp>
+#include <maya/widget/sparkline.hpp>
 
 #include <algorithm>
 #include <array>

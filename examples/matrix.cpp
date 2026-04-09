@@ -5,7 +5,7 @@
 //
 // Keys: 1-4=color mode  m=message reveal  space=pause  q/Esc=quit
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 
 #include <algorithm>
 #include <cmath>

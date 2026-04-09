@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="#quickstart">Quickstart</a> · <a href="#examples">Examples</a> · <a href="#features">Features</a> · <a href="#building">Building</a>
+  <a href="#quickstart">Quickstart</a> · <a href="#examples">Examples</a> · <a href="#features">Features</a> · <a href="#headers">Headers</a> · <a href="#building">Building</a> · <a href="#using-maya-in-your-project">Using in your project</a>
 </p>
 
 ---
@@ -85,6 +85,46 @@ Line chart · Bar chart · Gauge · Sparkline · Heatmap · Progress bar · Tabl
 - Fullscreen and inline rendering modes
 - Alternate screen, raw mode, mouse tracking
 
+## Headers
+
+maya has a clean separation between its public API and internal implementation.
+
+### Public API — `<maya/maya.hpp>`
+
+The main header. Includes the DSL, app lifecycle, events, signals, styles, and element types. Does **not** include rendering internals.
+
+```cpp
+#include <maya/maya.hpp>
+```
+
+### Widgets — `<maya/widget/*.hpp>`
+
+Widgets are included individually, not bundled into `maya.hpp`. Include only what you use:
+
+```cpp
+#include <maya/widget/markdown.hpp>
+#include <maya/widget/input.hpp>
+#include <maya/widget/scrollable.hpp>
+#include <maya/widget/tool_call.hpp>
+// ... see include/maya/widget/ for the full list
+```
+
+### Internal — `<maya/internal.hpp>`
+
+For advanced use cases that need direct access to the canvas, diff engine, SIMD, terminal I/O, or layout engine. Most projects should never include this.
+
+```cpp
+#include <maya/internal.hpp>  // canvas_run(), Canvas, StylePool, etc.
+```
+
+### What's in each layer
+
+| Header | Contains | Stability |
+|--------|----------|-----------|
+| `maya.hpp` | DSL, `run()`, events, signals, styles, elements, themes | Stable — safe to depend on |
+| `widget/*.hpp` | 50+ widgets (Input, Markdown, ToolCall, ...) | Stable — include what you need |
+| `internal.hpp` | Canvas, diff, renderer, SIMD, terminal I/O, layout | Internal — may change across versions |
+
 ## Building
 
 Requires a C++26 compiler. **GCC 15+** is recommended across all platforms.
@@ -142,6 +182,32 @@ cmake -B build -DCMAKE_CXX_COMPILER=g++-15 -DMAYA_BUILD_TESTS=ON
 cmake --build build
 ctest --test-dir build
 ```
+
+## Using maya in your project
+
+Install maya, then use `find_package` in your CMakeLists.txt:
+
+```bash
+# Install to /usr/local (or any prefix)
+cmake --install build --prefix /usr/local
+```
+
+```cmake
+# Your project's CMakeLists.txt
+find_package(maya 0.1 REQUIRED)
+target_link_libraries(my_app PRIVATE maya::maya)
+```
+
+```cpp
+// Your code
+#include <maya/maya.hpp>
+#include <maya/widget/markdown.hpp>
+#include <maya/widget/input.hpp>
+
+using namespace maya::dsl;
+```
+
+Maya uses [SameMajorVersion](https://cmake.org/cmake/help/latest/module/CMakePackageConfigHelpers.html) compatibility — any 0.x release works with `find_package(maya 0.1)`.
 
 ## License
 

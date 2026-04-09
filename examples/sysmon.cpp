@@ -14,9 +14,7 @@
 //
 // Usage:  ./maya_sysmon
 
-#include <maya/dsl.hpp>
-#include <maya/app/run.hpp>
-#include <maya/app/events.hpp>
+#include <maya/maya.hpp>
 
 #include <algorithm>
 #include <array>

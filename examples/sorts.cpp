@@ -8,7 +8,7 @@
 //
 // Keys: q/Esc=quit  space=restart  1-4=solo algorithm
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 
 #include <algorithm>
 #include <cmath>

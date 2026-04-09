@@ -1,7 +1,7 @@
 // maya -- Snake: half-block pixels, gradient body, particle effects, ghost trails
 // arrows/wasd/hjkl=move  space=pause  W=wrap  r=restart  q/Esc=quit
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>

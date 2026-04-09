@@ -7,7 +7,7 @@
 // Keys: arrows=pan  +/-=zoom  space=toggle auto-zoom  1-6=palette
 //       r=reset  q/Esc=quit
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 
 #include <algorithm>
 #include <chrono>

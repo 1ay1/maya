@@ -6,7 +6,7 @@
 //
 // Keys: WASD/arrows=move  ,/.=turn  space=shoot  m=minimap  q/Esc=quit
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 
 #include <algorithm>
 #include <cmath>

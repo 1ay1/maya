@@ -5,7 +5,7 @@
 //
 // Keys: left/right or h/l=paddle  space=launch/pause  r=restart  q/Esc=quit
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>

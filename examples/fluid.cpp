@@ -6,7 +6,7 @@
 // Keys: q/Esc=quit  1-5=palette  space=pause  +/-=viscosity  r=reset
 // Mouse: drag to inject density + velocity
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 
 #include <algorithm>
 #include <cmath>

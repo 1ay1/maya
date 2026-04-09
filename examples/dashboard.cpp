@@ -13,7 +13,7 @@
 // Keys: q/Esc=quit  1-4=theme  space=pause  +/-=speed
 //       p=particles  g=glitch  w=waveform mode  r=reset
 
-#include <maya/maya.hpp>
+#include <maya/internal.hpp>
 
 #include <algorithm>
 #include <cmath>

@@ -105,9 +105,31 @@ if(MAYA_BUILD_TESTS)
 endif()
 
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
 install(DIRECTORY include/maya DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 install(TARGETS maya EXPORT maya-targets)
 install(EXPORT maya-targets
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/maya
     NAMESPACE maya::
+)
+
+# Generate maya-config.cmake so downstream projects can find_package(maya)
+configure_package_config_file(
+    cmake/maya-config.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/maya-config.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/maya
+)
+
+# Generate maya-config-version.cmake for version compatibility
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/maya-config-version.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/maya-config.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/maya-config-version.cmake
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/maya
 )

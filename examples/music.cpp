@@ -19,6 +19,10 @@
 // Usage:  ./maya_music
 
 #include <maya/maya.hpp>
+#include <maya/widget/badge.hpp>
+#include <maya/widget/heatmap.hpp>
+#include <maya/widget/progress.hpp>
+#include <maya/widget/sparkline.hpp>
 
 #include <algorithm>
 #include <array>

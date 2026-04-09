@@ -1,9 +1,10 @@
 # maya API reference
 
-maya is a C++26 TUI library. One header, one `run()` call, zero boilerplate.
+maya is a C++26 TUI library. `run()` call, zero boilerplate.
 
 ```cpp
-#include <maya/maya.hpp>
+#include <maya/maya.hpp>          // DSL, events, signals, styles, app lifecycle
+#include <maya/widget/input.hpp>  // widgets included individually
 using namespace maya;
 ```
 
@@ -11,24 +12,73 @@ using namespace maya;
 
 ## Table of contents
 
-1. [Quick start](#quick-start)
-2. [run()](#run)
-3. [RunConfig](#runconfig)
-4. [Ctx — render context](#ctx)
-5. [Event helpers](#event-helpers)
-6. [Element DSL](#element-dsl)
-7. [Layout](#layout)
-8. [Widgets](#widgets)
-9. [Signals](#signals)
-10. [Style](#style)
-11. [Color](#color)
-12. [Theme](#theme)
-13. [Borders](#borders)
-14. [Core types](#core-types)
-15. [Error handling](#error-handling)
-16. [Concepts](#concepts)
-17. [Context system](#context-system)
-18. [Advanced — low-level API](#advanced)
+1. [Headers](#headers)
+2. [Quick start](#quick-start)
+3. [run()](#run)
+4. [RunConfig](#runconfig)
+5. [Ctx — render context](#ctx)
+6. [Event helpers](#event-helpers)
+7. [Element DSL](#element-dsl)
+8. [Layout](#layout)
+9. [Widgets](#widgets)
+10. [Signals](#signals)
+11. [Style](#style)
+12. [Color](#color)
+13. [Theme](#theme)
+14. [Borders](#borders)
+15. [Core types](#core-types)
+16. [Error handling](#error-handling)
+17. [Concepts](#concepts)
+18. [Context system](#context-system)
+19. [Advanced — low-level API](#advanced)
+
+---
+
+## Headers
+
+maya separates its public API from internal implementation details. Downstream projects should only depend on the public headers.
+
+### Public API — `<maya/maya.hpp>`
+
+The main header. Includes:
+- Compile-time DSL (`v()`, `h()`, `t<>`, `text()`, pipes)
+- App lifecycle (`run()`, `print()`, `live()`, `quit()`)
+- Event predicates (`key()`, `ctrl()`, `mouse_clicked()`, ...)
+- Reactive signals (`Signal`, `Computed`, `Effect`, `Batch`)
+- Styling (`Color`, `Style`, `Border`, `Theme`)
+- Elements (`Element`, `BoxElement`, `TextElement`)
+- Core types (`Size`, `Rect`, `Columns`, `Rows`, `Dimension`)
+
+Does **not** include widgets or rendering internals.
+
+### Widgets — `<maya/widget/*.hpp>`
+
+Each widget has its own header. Include only what you use:
+
+```cpp
+#include <maya/widget/markdown.hpp>
+#include <maya/widget/input.hpp>
+#include <maya/widget/scrollable.hpp>
+#include <maya/widget/tool_call.hpp>
+```
+
+All 50+ widgets are in `include/maya/widget/`. They satisfy the `Node` concept and work directly in DSL expressions.
+
+### Internal — `<maya/internal.hpp>`
+
+For code that needs direct access to the rendering pipeline, canvas, diff engine, SIMD intrinsics, terminal I/O, or layout engine:
+
+```cpp
+#include <maya/internal.hpp>
+```
+
+This is used by maya's own canvas-based examples (doom fire, raymarcher, etc.) and is **not part of the stable API**. Internal headers may change across versions.
+
+| Layer | Header | Stable? |
+|-------|--------|---------|
+| Public API | `<maya/maya.hpp>` | Yes |
+| Widgets | `<maya/widget/*.hpp>` | Yes |
+| Internals | `<maya/internal.hpp>` | No — may change |
 
 ---
 
@@ -36,6 +86,7 @@ using namespace maya;
 
 ```cpp
 #include <maya/maya.hpp>
+#include <maya/widget/badge.hpp>
 using namespace maya;
 using namespace maya::dsl;
 
@@ -474,7 +525,15 @@ auto ui = v(
 
 ## Widgets
 
-maya includes 50+ ready-to-use widgets. All satisfy the `Node` concept and work in DSL expressions. Full reference: [docs/13-widgets.md](docs/13-widgets.md).
+maya includes 50+ ready-to-use widgets. Each has its own header — include what you need:
+
+```cpp
+#include <maya/widget/badge.hpp>
+#include <maya/widget/progress.hpp>
+#include <maya/widget/table.hpp>
+```
+
+All widgets satisfy the `Node` concept and work directly in DSL expressions.
 
 ### Input widgets
 
@@ -565,6 +624,12 @@ maya includes 50+ ready-to-use widgets. All satisfy the `Node` concept and work 
 ### Usage example
 
 ```cpp
+#include <maya/maya.hpp>
+#include <maya/widget/badge.hpp>
+#include <maya/widget/callout.hpp>
+#include <maya/widget/progress.hpp>
+#include <maya/widget/table.hpp>
+
 using namespace maya::dsl;
 
 // Widgets work directly in DSL expressions
@@ -1154,7 +1219,7 @@ Copy-on-write: `fork()` creates a child context that shares the parent's data un
 
 ## Advanced
 
-The sections above cover the stable public API — what you should use in applications. Everything below is the lower-level machinery. It's fully accessible but may change across versions.
+The sections above cover the stable public API (`<maya/maya.hpp>` + `<maya/widget/*.hpp>`). Everything below is the lower-level machinery, accessible via `<maya/internal.hpp>`. These interfaces may change across versions.
 
 ### Direct App access
 

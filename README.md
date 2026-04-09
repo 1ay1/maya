@@ -17,8 +17,7 @@
 ## Quickstart
 
 ```cpp
-#include <maya/dsl.hpp>
-#include <maya/app/run.hpp>
+#include <maya/maya.hpp>
 
 using namespace maya::dsl;
 

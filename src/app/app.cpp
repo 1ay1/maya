@@ -748,7 +748,14 @@ Status canvas_run_impl(
             if (Clock::now() > next_frame + frame_ns)
                 next_frame = Clock::now() + frame_ns;
 
-            back.clear();
+            if (cfg.auto_clear) {
+                back.clear();
+            } else {
+                // User will overwrite all cells — just mark damage without
+                // the memset. Saves writing the entire canvas to memory only
+                // to overwrite it immediately in on_paint.
+                back.mark_all_damaged();
+            }
             on_paint(back, W, H);
 
             out.clear();

@@ -315,6 +315,7 @@ struct CanvasConfig {
     int         fps        = 60;              // target frame rate
     bool        mouse      = false;           // enable all-motion mouse reporting
     Mode        mode       = Mode::Fullscreen;// rendering mode
+    bool        auto_clear = true;            // clear back buffer before on_paint
     std::string title;                        // terminal window title (optional)
 };
 

@@ -398,12 +398,17 @@ void paint_element(
                         // Determine how many bytes of this run remain on this line
                         const auto& run = node.runs[std::min(run_idx, node.runs.size() - 1)];
                         std::size_t run_end = run.byte_offset + run.byte_length;
-                        std::size_t chunk_end = std::min(line.size(), line_byte + (run_end - abs_byte));
+                        std::size_t chunk_end;
+                        if (run_end > abs_byte) {
+                            chunk_end = std::min(line.size(), line_byte + (run_end - abs_byte));
+                        } else {
+                            chunk_end = line_byte + 1;
+                        }
                         if (chunk_end <= line_byte) chunk_end = line_byte + 1;
 
                         auto chunk = line.substr(line_byte, chunk_end - line_byte);
                         uint16_t sid = pool.intern(run.style);
-                        canvas.write_text(x_cursor, y, std::string{chunk}, sid);
+                        canvas.write_text(x_cursor, y, chunk, sid);
                         x_cursor += string_width(chunk);
                         line_byte = chunk_end;
                     }
@@ -440,9 +445,20 @@ void paint_element(
 
             Element child = node.render(content_w, content_h);
 
-            // Build a sub-layout tree for the generated element.
-            std::vector<layout::LayoutNode> sub_nodes;
-            sub_nodes.reserve(64);
+            // Reuse a thread-local scratch buffer for the sub-layout tree.
+            // This avoids a heap allocation per component per frame — typical
+            // apps have 10-50 components, so this saves 10-50 allocations/frame.
+            // Guard against recursion: if a component renders another component,
+            // the inner call gets its own local vector to avoid clobbering.
+            thread_local std::vector<layout::LayoutNode> tl_sub_nodes;
+            thread_local bool tl_in_use = false;
+
+            auto use_local = tl_in_use;
+            std::vector<layout::LayoutNode> local_nodes;
+            auto& sub_nodes = use_local ? local_nodes : tl_sub_nodes;
+            sub_nodes.clear();
+            tl_in_use = true;
+
             std::size_t sub_root = build_layout_tree(child, sub_nodes, {});
 
             sub_nodes[sub_root].style.width = Dimension::fixed(content_w);
@@ -456,6 +472,7 @@ void paint_element(
             paint_element(child, canvas, pool, sub_nodes, sub_root,
                           content_x, content_y);
             canvas.pop_clip();
+            if (!use_local) tl_in_use = false;
         }
     });
 }

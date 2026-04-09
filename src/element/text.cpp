@@ -58,10 +58,27 @@ constexpr int codepoint_width(char32_t cp) noexcept {
 int string_width(std::string_view text) noexcept {
     int width = 0;
     std::size_t pos = 0;
-    while (pos < text.size()) {
-        char32_t cp = decode_utf8(text, pos);
-        int w = codepoint_width(cp);
-        if (w > 0) width += w;
+    const std::size_t len = text.size();
+    const char* data = text.data();
+
+    // ASCII fast path: scan runs of ASCII bytes (common for English/code).
+    // Each ASCII byte >= 0x20 is exactly 1 column wide.
+    while (pos < len) {
+        // Batch ASCII characters — no decode needed.
+        std::size_t ascii_start = pos;
+        while (pos < len && static_cast<unsigned char>(data[pos]) < 0x80
+                         && static_cast<unsigned char>(data[pos]) >= 0x20) {
+            ++pos;
+        }
+        width += static_cast<int>(pos - ascii_start);
+
+        // Handle non-ASCII or control characters one at a time.
+        if (pos < len && (static_cast<unsigned char>(data[pos]) >= 0x80
+                       || static_cast<unsigned char>(data[pos]) < 0x20)) {
+            char32_t cp = decode_utf8(text, pos);
+            int w = codepoint_width(cp);
+            if (w > 0) width += w;
+        }
     }
     return width;
 }
@@ -296,9 +313,25 @@ Size TextElement::measure(int max_width) const {
     switch (wrap) {
         case TextWrap::Wrap: {
             auto lines = word_wrap(content, max_width);
+            // Lines come from word_wrap which guarantees each line fits
+            // within max_width, so measuring them is just a formality.
+            // But content may have wide chars making actual width < max_width.
+            // Use a single combined scan: word_wrap already decoded all chars,
+            // so line widths are bounded by max_width.
             int widest = 0;
             for (auto& line : lines) {
-                widest = std::max(widest, string_width(line));
+                // For pure-ASCII lines (common), byte length == display width.
+                // Skip the full decode_utf8 scan.
+                std::size_t len = line.size();
+                bool all_ascii = true;
+                for (std::size_t i = 0; i < len; ++i) {
+                    if (static_cast<unsigned char>(line[i]) >= 0x80) {
+                        all_ascii = false;
+                        break;
+                    }
+                }
+                int w = all_ascii ? static_cast<int>(len) : string_width(line);
+                if (w > widest) widest = w;
             }
             return {Columns{widest}, Rows{static_cast<int>(lines.size())}};
         }

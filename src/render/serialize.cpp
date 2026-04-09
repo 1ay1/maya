@@ -149,10 +149,13 @@ void serialize_changed(const Canvas& canvas, const StylePool& pool,
         const int row_base = y * W;
         // Find last non-space cell to avoid writing trailing blanks.
         // Keep styled spaces (style_id != 0) — they carry visual attributes.
+        // Extract fields directly from packed value (avoid full unpack).
         int last_col = W - 1;
         while (last_col >= 0) {
-            Cell c = Cell::unpack(cells[row_base + last_col]);
-            if ((c.character != U' ' && c.character != 0) || c.style_id != 0) break;
+            const uint64_t p = cells[row_base + last_col];
+            const auto c = static_cast<char32_t>(p & 0xFFFFFFFF);
+            const auto s = static_cast<uint16_t>((p >> 32) & 0xFFFF);
+            if ((c != U' ' && c != 0) || s != 0) break;
             --last_col;
         }
 

@@ -94,31 +94,29 @@ private:
         // Bottom bar: filled ━ and empty ─ across the width
         // Use ComponentElement to get dynamic width
         auto bar_elem = Element{ComponentElement{
-            .render = [this](int w, int /*h*/) -> Element {
+            .render = [val = value_, col = color_](int w, int /*h*/) -> Element {
                 int inner_w = w;
                 if (inner_w < 2) inner_w = 2;
 
                 int filled = static_cast<int>(std::round(
-                    static_cast<float>(inner_w) * value_));
+                    static_cast<float>(inner_w) * val));
                 filled = std::clamp(filled, 0, inner_w);
                 int empty = inner_w - filled;
 
                 std::string content;
                 std::vector<StyledRun> runs;
 
-                // Filled portion: ━
                 std::string filled_str;
                 for (int i = 0; i < filled; ++i)
                     filled_str += "\xe2\x94\x81";  // ━
                 if (!filled_str.empty()) {
                     runs.push_back(StyledRun{
                         content.size(), filled_str.size(),
-                        Style{}.with_fg(color_),
+                        Style{}.with_fg(col),
                     });
                     content += filled_str;
                 }
 
-                // Empty portion: ─
                 std::string empty_str;
                 for (int i = 0; i < empty; ++i)
                     empty_str += "\xe2\x94\x80";  // ─

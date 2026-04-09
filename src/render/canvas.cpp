@@ -200,19 +200,38 @@ Cell Canvas::get(int x, int y) const noexcept {
 }
 
 void Canvas::write_text(int x, int y, std::string_view text, uint16_t style_id) {
+    if (__builtin_expect(!in_bounds(x, y), 0)) return;
+
     int cx = x;
     std::size_t pos = 0;
-    while (pos < text.size()) {
-        char32_t cp = decode_utf8(text, pos);
-        if (cp < 0x20) continue;  // skip control characters
+    const std::size_t len = text.size();
+    const char* data = text.data();
 
-        if (is_wide_char(cp)) {
-            set(cx, y, cp, style_id, 1);       // first half
-            set(cx + 1, y, U' ', style_id, 2); // second half (placeholder)
-            cx += 2;
-        } else {
-            set(cx, y, cp, style_id, 0);
-            cx += 1;
+    // ASCII fast path: most TUI text is ASCII. Batch-set without decode_utf8.
+    while (pos < len) {
+        // Scan run of printable ASCII bytes.
+        while (pos < len) {
+            auto byte = static_cast<unsigned char>(data[pos]);
+            if (byte >= 0x80 || byte < 0x20) break;
+            set(cx, y, static_cast<char32_t>(byte), style_id, 0);
+            ++cx;
+            ++pos;
+        }
+
+        // Handle non-ASCII / control characters.
+        if (pos < len) {
+            auto byte = static_cast<unsigned char>(data[pos]);
+            if (byte < 0x20) { ++pos; continue; } // skip control
+            char32_t cp = decode_utf8(text, pos);
+            if (cp < 0x20) continue;
+            if (is_wide_char(cp)) {
+                set(cx, y, cp, style_id, 1);
+                set(cx + 1, y, U' ', style_id, 2);
+                cx += 2;
+            } else {
+                set(cx, y, cp, style_id, 0);
+                ++cx;
+            }
         }
     }
 }
@@ -224,12 +243,11 @@ void Canvas::fill(Rect region, char32_t ch, uint16_t style_id) {
     int y1 = std::min(height_, region.bottom().value);
 
     // Apply active clip in one shot — no per-pixel check needed.
-    if (!clip_stack_.empty()) {
-        const Rect& clip = clip_stack_.back();
-        x0 = std::max(x0, clip.left().value);
-        y0 = std::max(y0, clip.top().value);
-        x1 = std::min(x1, clip.right().value);
-        y1 = std::min(y1, clip.bottom().value);
+    if (has_clip_) {
+        x0 = std::max(x0, clip_x0_);
+        y0 = std::max(y0, clip_y0_);
+        x1 = std::min(x1, clip_x1_);
+        y1 = std::min(y1, clip_y1_);
     }
 
     if (x0 >= x1 || y0 >= y1) return;
@@ -237,8 +255,16 @@ void Canvas::fill(Rect region, char32_t ch, uint16_t style_id) {
     uint64_t packed = Cell{ch, style_id, 0, 0}.pack();
     uint64_t* base  = cells_.data();
 
-    for (int y = y0; y < y1; ++y) {
-        std::fill(base + y * width_ + x0, base + y * width_ + x1, packed);
+    // For full-width fills spanning many rows, use SIMD streaming fill to
+    // avoid polluting L1/L2 cache (the data will be read later by diff).
+    // Threshold: 4+ full rows ≈ 320+ cells at width=80.
+    const bool full_width = (x0 == 0 && x1 == width_);
+    if (full_width && (y1 - y0) >= 4) {
+        simd::streaming_fill(base + y0 * width_, static_cast<std::size_t>((y1 - y0) * width_), packed);
+    } else {
+        for (int y = y0; y < y1; ++y) {
+            std::fill(base + y * width_ + x0, base + y * width_ + x1, packed);
+        }
     }
 
     // Track max painted row for non-space or styled content.
@@ -270,17 +296,19 @@ void Canvas::push_clip(Rect clip) {
         // Intersect with the current effective clip.
         clip_stack_.push_back(clip_stack_.back().intersect(clip));
     }
+    update_clip_cache();
 }
 
 void Canvas::pop_clip() {
     if (!clip_stack_.empty()) {
         clip_stack_.pop_back();
     }
+    update_clip_cache();
 }
 
 bool Canvas::is_clipped(int x, int y) const noexcept {
-    if (clip_stack_.empty()) return false;
-    return !clip_stack_.back().contains({Columns{x}, Rows{y}});
+    if (!has_clip_) return false;
+    return x < clip_x0_ || x >= clip_x1_ || y < clip_y0_ || y >= clip_y1_;
 }
 
 void Canvas::resize(int w, int h) {
@@ -290,6 +318,7 @@ void Canvas::resize(int w, int h) {
     cells_.assign(static_cast<std::size_t>(w * h), default_cell());
     damage_ = full_rect();
     clip_stack_.clear();
+    update_clip_cache();
 }
 
 void Canvas::mark_damage(Rect region) {

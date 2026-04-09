@@ -1,11 +1,9 @@
-// maya — Matrix digital rain
+// maya -- Matrix digital rain
 //
-// Authentic Matrix falling-code effect with multiple visual modes,
-// message injection ("wake up, Neo..."), glitch bursts, wave pulses,
-// and a hacker-style status bar with live stats.
+// Classic Matrix-style falling green characters (katakana, digits, latin)
+// cascading down the screen with fading trails and character mutation.
 //
-// Keys: q/Esc=quit  +/-=speed  space=pause  1-5=color mode
-//       d=density  r=reset  m=inject message  g=glitch  w=wave
+// Keys: 1-4=color mode  m=message reveal  space=pause  q/Esc=quit
 
 #include <maya/maya.hpp>
 
@@ -18,627 +16,391 @@
 #include <vector>
 
 using namespace maya;
-using namespace maya::dsl;
 
-// ── Glyph sets ─────────────────────────────────────────────────────────────
+// -- Character set -----------------------------------------------------------
 
-static const char* g_katakana[] = {
-    "ア", "イ", "ウ", "エ", "オ", "カ", "キ", "ク", "ケ", "コ",
-    "サ", "シ", "ス", "セ", "ソ", "タ", "チ", "ツ", "テ", "ト",
-    "ナ", "ニ", "ヌ", "ネ", "ノ", "ハ", "ヒ", "フ", "ヘ", "ホ",
-    "マ", "ミ", "ム", "メ", "モ", "ヤ", "ユ", "ヨ",
-    "ラ", "リ", "ル", "レ", "ロ", "ワ", "ヲ", "ン",
+static constexpr char32_t CHARSET[] = {
+    // Half-width katakana U+FF66..U+FF9D
+    0xFF66, 0xFF67, 0xFF68, 0xFF69, 0xFF6A, 0xFF6B, 0xFF6C, 0xFF6D,
+    0xFF6E, 0xFF6F, 0xFF70, 0xFF71, 0xFF72, 0xFF73, 0xFF74, 0xFF75,
+    0xFF76, 0xFF77, 0xFF78, 0xFF79, 0xFF7A, 0xFF7B, 0xFF7C, 0xFF7D,
+    0xFF7E, 0xFF7F, 0xFF80, 0xFF81, 0xFF82, 0xFF83, 0xFF84, 0xFF85,
+    0xFF86, 0xFF87, 0xFF88, 0xFF89, 0xFF8A, 0xFF8B, 0xFF8C, 0xFF8D,
+    0xFF8E, 0xFF8F, 0xFF90, 0xFF91, 0xFF92, 0xFF93, 0xFF94, 0xFF95,
+    0xFF96, 0xFF97, 0xFF98, 0xFF99, 0xFF9A, 0xFF9B, 0xFF9C, 0xFF9D,
+    // Digits
+    U'0', U'1', U'2', U'3', U'4', U'5', U'6', U'7', U'8', U'9',
+    // Latin
+    U'A', U'B', U'C', U'D', U'E', U'F', U'G', U'H', U'I', U'J',
+    U'K', U'L', U'M', U'N', U'O', U'P', U'Q', U'R', U'S', U'T',
+    U'U', U'V', U'W', U'X', U'Y', U'Z',
 };
-static constexpr int NUM_KATA = sizeof(g_katakana) / sizeof(g_katakana[0]);
+static constexpr int CHARSET_SIZE = sizeof(CHARSET) / sizeof(CHARSET[0]);
 
-static const char* g_symbols[] = {
-    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    "A", "B", "C", "D", "E", "F",
-    ":", ".", "=", "*", "+", "-", "<", ">", "~",
-    "!", "@", "#", "$", "%", "^", "&",
-    "{", "}", "[", "]", "(", ")",
-    "/", "\\", "|", "?",
-};
-static constexpr int NUM_SYM = sizeof(g_symbols) / sizeof(g_symbols[0]);
+// -- Constants ---------------------------------------------------------------
 
-static const char* glyph(int idx) {
-    // Mix katakana and symbols for variety
-    if (idx < NUM_KATA) return g_katakana[idx];
-    return g_symbols[(idx - NUM_KATA) % NUM_SYM];
+static constexpr int BRIGHTNESS_LEVELS = 32;
+static constexpr int TRAIL_LENGTH      = 24;
+static constexpr int MIN_SPEED         = 1;
+static constexpr int MAX_SPEED         = 4;
+static constexpr int MIN_GAP           = 4;
+static constexpr int MAX_GAP           = 30;
+
+// -- Color modes -------------------------------------------------------------
+
+enum class ColorMode { Classic, MultiColor, RedPill, Rainbow };
+
+static const char* mode_name(ColorMode m) {
+    switch (m) {
+        case ColorMode::Classic:    return "CLASSIC";
+        case ColorMode::MultiColor: return "MULTI-COLOR";
+        case ColorMode::RedPill:    return "RED PILL";
+        case ColorMode::Rainbow:    return "RAINBOW";
+    }
+    return "";
 }
-static constexpr int NUM_GLYPHS = NUM_KATA + NUM_SYM;
 
-// ── Color modes ────────────────────────────────────────────────────────────
+// -- HSV to RGB --------------------------------------------------------------
 
-enum class ColorMode { Green, RedPill, BluePill, Gold, Phantom };
+struct RGB { uint8_t r, g, b; };
 
-struct Palette {
-    const char* name;
-    const char* icon;
-    uint8_t hr, hg, hb;      // head
-    uint8_t br, bg_, bb;     // bright (just behind head)
-    uint8_t tr, tg, tb;      // trail start
-    uint8_t er, eg, eb;      // trail end (faded)
-};
+static RGB hsv_to_rgb(float h, float s, float v) {
+    float c = v * s;
+    float x = c * (1.0f - std::fabs(std::fmod(h / 60.0f, 2.0f) - 1.0f));
+    float m = v - c;
+    float r1, g1, b1;
+    if (h < 60)       { r1 = c; g1 = x; b1 = 0; }
+    else if (h < 120) { r1 = x; g1 = c; b1 = 0; }
+    else if (h < 180) { r1 = 0; g1 = c; b1 = x; }
+    else if (h < 240) { r1 = 0; g1 = x; b1 = c; }
+    else if (h < 300) { r1 = x; g1 = 0; b1 = c; }
+    else               { r1 = c; g1 = 0; b1 = x; }
+    return {
+        static_cast<uint8_t>((r1 + m) * 255),
+        static_cast<uint8_t>((g1 + m) * 255),
+        static_cast<uint8_t>((b1 + m) * 255),
+    };
+}
 
-static constexpr Palette g_palettes[] = {
-    {"CLASSIC",   ">>",  255,255,255,  180,255,180,  20,200,0,    2,30,0},
-    {"RED PILL",  "@@",  255,220,220,  255,120,120,  200,30,30,   40,5,5},
-    {"BLUE PILL", "~~",  220,220,255,  120,160,255,  30,80,220,   5,10,50},
-    {"GOLDEN",    "$$",  255,255,200,  255,220,100,  200,160,20,  50,30,0},
-    {"PHANTOM",   "..",  255,255,255,  200,200,220,  120,100,160, 20,15,30},
-};
-
-// ── Per-column rain stream ─────────────────────────────────────────────────
+// -- Stream (one falling column) ---------------------------------------------
 
 struct Stream {
-    float   y       = 0.f;
-    float   speed   = 1.f;
-    int     length  = 10;
-    std::vector<int> glyphs;
-    bool    is_message = false;     // column carries an injected message
-    int     msg_col    = -1;        // which char of the message to show at head
+    float    y_pos;
+    int      speed;
+    int      gap_remaining;
+    int      trail_len;
+    int      hue_offset;
+    std::vector<char32_t> chars;
 };
 
-// ── Message injection ──────────────────────────────────────────────────────
+// -- Global state ------------------------------------------------------------
 
-static const char* g_messages[] = {
-    "WAKE UP NEO...",
-    "THE MATRIX HAS YOU",
-    "FOLLOW THE WHITE RABBIT",
-    "KNOCK KNOCK NEO",
-    "THERE IS NO SPOON",
-    "FREE YOUR MIND",
-    "I KNOW KUNG FU",
-    "WELCOME TO THE REAL WORLD",
-    "THE ONE",
-    "DEJA VU",
-    "SYSTEM FAILURE",
-    "TRACE PROGRAM RUNNING",
-    "CALL TRANS OPT: RECEIVED",
-};
-static constexpr int NUM_MSGS = sizeof(g_messages) / sizeof(g_messages[0]);
-
-struct MessageInject {
-    const char* text = nullptr;
-    int   row   = 0;
-    int   col   = 0;        // starting column in the grid
-    float timer = 0.f;      // chars revealed so far (fractional)
-    float speed = 12.f;     // chars per second
-    float hold  = 0.f;      // time held after fully revealed
-    float fade  = 0.f;      // fade-out timer
-};
-
-// ── Glitch burst ───────────────────────────────────────────────────────────
-
-struct GlitchBurst {
-    float timer  = 0.f;
-    float dur    = 0.3f;
-    int   center_col = 0;
-    int   center_row = 0;
-    int   radius = 8;
-};
-
-// ── Wave pulse ─────────────────────────────────────────────────────────────
-
-struct WavePulse {
-    float radius = 0.f;
-    float speed  = 40.f;
-    int   cx, cy;
-    float life = 0.f;
-};
-
-// ── Global state ───────────────────────────────────────────────────────────
-
-static std::mt19937 g_rng{42};
+static std::mt19937 g_rng{std::random_device{}()};
+static int g_w = 0, g_h = 0;
 static std::vector<Stream> g_streams;
-static int g_cols = 0, g_rows = 0;
-static float g_speed_mult = 1.0f;
+static ColorMode g_mode = ColorMode::Classic;
 static bool g_paused = false;
-static ColorMode g_mode = ColorMode::Green;
-static int g_density = 3;
-static float g_elapsed = 0.f;
 static int g_frame = 0;
-static long long g_total_glyphs = 0;  // total glyphs rendered
 
-static std::vector<MessageInject> g_messages_active;
-static std::vector<GlitchBurst> g_glitches;
-static std::vector<WavePulse> g_waves;
+// Message reveal
+static bool g_msg_active = false;
+static int  g_msg_timer  = 0;
+static constexpr int MSG_DURATION = 90;
+static const char* MSG_TEXT = "WAKE UP NEO";
 
-static int g_msg_index = 0;
-static bool g_show_bar = true;
+// Styles
+static uint16_t g_green_styles[BRIGHTNESS_LEVELS];
+static uint16_t g_head_style;
+static uint16_t g_bar_bg, g_bar_dim, g_bar_accent;
+static uint16_t g_black_style;
+static uint16_t g_msg_style;
 
-// ── Stream init ────────────────────────────────────────────────────────────
+static constexpr int NUM_HUES = 6;
+static constexpr float HUES[NUM_HUES] = {120.0f, 180.0f, 270.0f, 300.0f, 90.0f, 160.0f};
+static uint16_t g_hue_styles[NUM_HUES][BRIGHTNESS_LEVELS];
+static uint16_t g_hue_head_styles[NUM_HUES];
 
-static void init_stream(Stream& s, int rows, bool from_top) {
-    std::uniform_real_distribution<float> speed_dist(4.f, 18.f);
-    std::uniform_int_distribution<int> len_dist(6, std::max(7, rows));
-    std::uniform_real_distribution<float> delay_dist(0.f, 3.f);
-    std::uniform_int_distribution<int> glyph_dist(0, NUM_GLYPHS - 1);
+static uint16_t g_red_styles[BRIGHTNESS_LEVELS];
+static uint16_t g_red_head;
 
-    s.speed  = speed_dist(g_rng);
-    s.length = len_dist(g_rng);
-    float delay = from_top ? delay_dist(g_rng) : 0.f;
-    s.y = from_top ? -static_cast<float>(s.length) - delay * s.speed
-                   : -static_cast<float>(s.length);
-    s.is_message = false;
-    s.msg_col = -1;
+static constexpr int RAINBOW_HUES = 64;
+static uint16_t g_rainbow_styles[RAINBOW_HUES][BRIGHTNESS_LEVELS];
+static uint16_t g_rainbow_head[RAINBOW_HUES];
 
-    s.glyphs.resize(rows + s.length + 20);
-    for (auto& g : s.glyphs) g = glyph_dist(g_rng);
+// -- Random helpers ----------------------------------------------------------
+
+static char32_t rand_char() {
+    return CHARSET[std::uniform_int_distribution<int>(0, CHARSET_SIZE - 1)(g_rng)];
 }
 
-static int stream_count(int cols) {
-    int base = cols / 2;
-    switch (g_density) {
-        case 1: return std::max(1, base / 2);
-        case 3: return base;
-        default: return std::max(1, base * 3 / 4);
+static int rand_range(int lo, int hi) {
+    return std::uniform_int_distribution<int>(lo, hi)(g_rng);
+}
+
+// -- Stream management -------------------------------------------------------
+
+static void init_stream(Stream& s, int col_height) {
+    s.y_pos = static_cast<float>(-rand_range(0, col_height));
+    s.speed = rand_range(MIN_SPEED, MAX_SPEED);
+    s.gap_remaining = 0;
+    s.trail_len = rand_range(TRAIL_LENGTH / 2, TRAIL_LENGTH);
+    s.hue_offset = rand_range(0, NUM_HUES - 1);
+    s.chars.resize(col_height);
+    for (auto& c : s.chars) c = rand_char();
+}
+
+static void reset_stream(Stream& s, int col_height) {
+    s.y_pos = static_cast<float>(-rand_range(2, 12));
+    s.speed = rand_range(MIN_SPEED, MAX_SPEED);
+    s.gap_remaining = rand_range(MIN_GAP, MAX_GAP);
+    s.trail_len = rand_range(TRAIL_LENGTH / 2, TRAIL_LENGTH);
+    s.hue_offset = rand_range(0, NUM_HUES - 1);
+    for (auto& c : s.chars) c = rand_char();
+}
+
+// -- Resize ------------------------------------------------------------------
+
+static void rebuild(StylePool& pool, int w, int h) {
+    g_w = w;
+    g_h = h;
+
+    g_black_style = pool.intern(Style{}.with_fg(Color::rgb(0, 0, 0)).with_bg(Color::rgb(0, 0, 0)));
+
+    // Classic green palette
+    for (int i = 0; i < BRIGHTNESS_LEVELS; ++i) {
+        float t = static_cast<float>(i) / (BRIGHTNESS_LEVELS - 1);
+        uint8_t g = static_cast<uint8_t>(30 + t * 225);
+        uint8_t r = static_cast<uint8_t>(t * t * 80);
+        g_green_styles[i] = pool.intern(
+            Style{}.with_fg(Color::rgb(r, g, 0)).with_bg(Color::rgb(0, 0, 0)));
+    }
+    g_head_style = pool.intern(
+        Style{}.with_fg(Color::rgb(220, 255, 220)).with_bg(Color::rgb(0, 0, 0)).with_bold());
+
+    // Multi-color palettes
+    for (int h_idx = 0; h_idx < NUM_HUES; ++h_idx) {
+        for (int i = 0; i < BRIGHTNESS_LEVELS; ++i) {
+            float t = static_cast<float>(i) / (BRIGHTNESS_LEVELS - 1);
+            auto c = hsv_to_rgb(HUES[h_idx], 0.8f, 0.15f + t * 0.85f);
+            g_hue_styles[h_idx][i] = pool.intern(
+                Style{}.with_fg(Color::rgb(c.r, c.g, c.b)).with_bg(Color::rgb(0, 0, 0)));
+        }
+        auto hc = hsv_to_rgb(HUES[h_idx], 0.2f, 1.0f);
+        g_hue_head_styles[h_idx] = pool.intern(
+            Style{}.with_fg(Color::rgb(hc.r, hc.g, hc.b)).with_bg(Color::rgb(0, 0, 0)).with_bold());
+    }
+
+    // Red pill palette
+    for (int i = 0; i < BRIGHTNESS_LEVELS; ++i) {
+        float t = static_cast<float>(i) / (BRIGHTNESS_LEVELS - 1);
+        uint8_t r = static_cast<uint8_t>(30 + t * 225);
+        uint8_t g = static_cast<uint8_t>(t * t * 40);
+        g_red_styles[i] = pool.intern(
+            Style{}.with_fg(Color::rgb(r, g, 0)).with_bg(Color::rgb(0, 0, 0)));
+    }
+    g_red_head = pool.intern(
+        Style{}.with_fg(Color::rgb(255, 200, 200)).with_bg(Color::rgb(0, 0, 0)).with_bold());
+
+    // Rainbow palette
+    for (int hi = 0; hi < RAINBOW_HUES; ++hi) {
+        float hue = (360.0f * hi) / RAINBOW_HUES;
+        for (int i = 0; i < BRIGHTNESS_LEVELS; ++i) {
+            float t = static_cast<float>(i) / (BRIGHTNESS_LEVELS - 1);
+            auto c = hsv_to_rgb(hue, 0.85f, 0.12f + t * 0.88f);
+            g_rainbow_styles[hi][i] = pool.intern(
+                Style{}.with_fg(Color::rgb(c.r, c.g, c.b)).with_bg(Color::rgb(0, 0, 0)));
+        }
+        auto hc = hsv_to_rgb(hue, 0.15f, 1.0f);
+        g_rainbow_head[hi] = pool.intern(
+            Style{}.with_fg(Color::rgb(hc.r, hc.g, hc.b)).with_bg(Color::rgb(0, 0, 0)).with_bold());
+    }
+
+    // Message style
+    g_msg_style = pool.intern(
+        Style{}.with_fg(Color::rgb(255, 255, 255)).with_bg(Color::rgb(0, 0, 0)).with_bold());
+
+    // Status bar
+    g_bar_bg     = pool.intern(Style{}.with_bg(Color::rgb(10, 10, 10)).with_fg(Color::rgb(100, 100, 100)));
+    g_bar_dim    = pool.intern(Style{}.with_bg(Color::rgb(10, 10, 10)).with_fg(Color::rgb(60, 60, 60)));
+    g_bar_accent = pool.intern(Style{}.with_bg(Color::rgb(10, 10, 10)).with_fg(Color::rgb(0, 200, 0)).with_bold());
+
+    // Two streams per column for dense rain
+    int num_streams = w * 2;
+    g_streams.resize(num_streams);
+    int rain_h = h - 1;
+    for (int i = 0; i < num_streams; ++i) {
+        init_stream(g_streams[i], std::max(rain_h, 1));
+        if (i >= w)
+            g_streams[i].y_pos -= static_cast<float>(rand_range(0, std::max(rain_h, 1)));
     }
 }
 
-static void resize(int cols, int rows) {
-    int want = stream_count(cols);
-    if (cols == g_cols && rows == g_rows && static_cast<int>(g_streams.size()) == want) return;
-    g_cols = cols;
-    g_rows = rows;
-    g_streams.resize(want);
-    for (auto& s : g_streams) init_stream(s, rows, true);
+// -- Events ------------------------------------------------------------------
+
+static bool handle(const Event& ev) {
+    if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+
+    on(ev, ' ', [] { g_paused = !g_paused; });
+    on(ev, 'm', [] { g_msg_active = true; g_msg_timer = MSG_DURATION; });
+    on(ev, '1', [] { g_mode = ColorMode::Classic; });
+    on(ev, '2', [] { g_mode = ColorMode::MultiColor; });
+    on(ev, '3', [] { g_mode = ColorMode::RedPill; });
+    on(ev, '4', [] { g_mode = ColorMode::Rainbow; });
+
+    return true;
 }
 
-static void inject_message() {
-    if (g_rows < 3 || g_cols < 10) return;
-    const char* msg = g_messages[g_msg_index % NUM_MSGS];
-    g_msg_index++;
+// -- Style lookup by mode ----------------------------------------------------
 
-    int len = static_cast<int>(std::strlen(msg));
-    int max_col = std::max(0, static_cast<int>(g_streams.size()) - len - 2);
-    int col = std::uniform_int_distribution<int>(1, std::max(1, max_col))(g_rng);
-    int row = std::uniform_int_distribution<int>(g_rows / 4, g_rows * 3 / 4)(g_rng);
-
-    g_messages_active.push_back({
-        .text  = msg,
-        .row   = row,
-        .col   = col,
-        .timer = 0.f,
-        .speed = 14.f,
-        .hold  = 0.f,
-        .fade  = 0.f,
-    });
+static uint16_t trail_style(int col, int brightness, int hue_offset) {
+    int b = std::clamp(brightness, 0, BRIGHTNESS_LEVELS - 1);
+    switch (g_mode) {
+        case ColorMode::Classic:
+            return g_green_styles[b];
+        case ColorMode::MultiColor:
+            return g_hue_styles[hue_offset % NUM_HUES][b];
+        case ColorMode::RedPill:
+            return g_red_styles[b];
+        case ColorMode::Rainbow: {
+            int hi = ((col * RAINBOW_HUES / std::max(g_w, 1)) + g_frame / 3) % RAINBOW_HUES;
+            return g_rainbow_styles[hi][b];
+        }
+    }
+    return g_green_styles[b];
 }
 
-static void trigger_glitch() {
-    int cx = std::uniform_int_distribution<int>(0, std::max(0, static_cast<int>(g_streams.size()) - 1))(g_rng);
-    int cy = std::uniform_int_distribution<int>(0, std::max(0, g_rows - 1))(g_rng);
-    g_glitches.push_back({.timer = 0.f, .dur = 0.4f, .center_col = cx, .center_row = cy, .radius = 12});
+static uint16_t get_head_style(int col, int hue_offset) {
+    switch (g_mode) {
+        case ColorMode::Classic:    return g_head_style;
+        case ColorMode::MultiColor: return g_hue_head_styles[hue_offset % NUM_HUES];
+        case ColorMode::RedPill:    return g_red_head;
+        case ColorMode::Rainbow: {
+            int hi = ((col * RAINBOW_HUES / std::max(g_w, 1)) + g_frame / 3) % RAINBOW_HUES;
+            return g_rainbow_head[hi];
+        }
+    }
+    return g_head_style;
 }
 
-static void trigger_wave() {
-    int cx = std::uniform_int_distribution<int>(0, std::max(0, static_cast<int>(g_streams.size()) - 1))(g_rng);
-    int cy = std::uniform_int_distribution<int>(0, std::max(0, g_rows - 1))(g_rng);
-    g_waves.push_back({.radius = 0.f, .speed = 50.f, .cx = cx, .cy = cy, .life = 0.f});
-}
+// -- Paint -------------------------------------------------------------------
 
-// ── Tick ───────────────────────────────────────────────────────────────────
+static void paint(Canvas& canvas, int w, int h) {
+    if (w != g_w || h != g_h) return;
 
-static void tick(float dt) {
-    if (g_paused) return;
-    g_elapsed += dt;
-    g_frame++;
+    int rain_h = h - 1;
+    if (rain_h <= 0) return;
 
-    std::uniform_int_distribution<int> glyph_dist(0, NUM_GLYPHS - 1);
+    // Fill with black
+    for (int y = 0; y < rain_h; ++y)
+        for (int x = 0; x < w; ++x)
+            canvas.set(x, y, U' ', g_black_style);
 
-    for (auto& s : g_streams) {
-        s.y += s.speed * g_speed_mult * dt;
+    if (!g_paused) {
+        ++g_frame;
+        if (g_msg_active) {
+            --g_msg_timer;
+            if (g_msg_timer <= 0) g_msg_active = false;
+        }
+    }
 
-        // Flicker
-        if (!s.glyphs.empty()) {
-            // Mutate 1-3 glyphs per frame for heavier flicker
-            int mutations = std::uniform_int_distribution<int>(1, 3)(g_rng);
-            for (int m = 0; m < mutations; ++m) {
-                int idx = std::uniform_int_distribution<int>(0, static_cast<int>(s.glyphs.size()) - 1)(g_rng);
-                s.glyphs[idx] = glyph_dist(g_rng);
+    int num_streams = static_cast<int>(g_streams.size());
+
+    for (int si = 0; si < num_streams; ++si) {
+        auto& s = g_streams[si];
+        int col = si % w;
+
+        if (!g_paused) {
+            if (s.gap_remaining > 0) {
+                --s.gap_remaining;
+                continue;
             }
-        }
+            s.y_pos += static_cast<float>(s.speed);
 
-        if (s.y - s.length > g_rows + 5) {
-            init_stream(s, g_rows, false);
-        }
-    }
-
-    // Update messages
-    for (auto& m : g_messages_active) {
-        int len = static_cast<int>(std::strlen(m.text));
-        if (m.timer < len) {
-            m.timer += m.speed * dt;
-        } else if (m.hold < 2.0f) {
-            m.hold += dt;
-        } else {
-            m.fade += dt * 2.f;
-        }
-    }
-    std::erase_if(g_messages_active, [](const MessageInject& m) { return m.fade > 1.5f; });
-
-    // Update glitches
-    for (auto& g : g_glitches) g.timer += dt;
-    std::erase_if(g_glitches, [](const GlitchBurst& g) { return g.timer > g.dur; });
-
-    // Update waves
-    for (auto& w : g_waves) { w.radius += w.speed * dt; w.life += dt; }
-    std::erase_if(g_waves, [](const WavePulse& w) { return w.life > 3.f; });
-
-    // Auto-inject a message every ~15 seconds
-    static float auto_msg_timer = 8.f;
-    auto_msg_timer -= dt;
-    if (auto_msg_timer <= 0.f) {
-        inject_message();
-        auto_msg_timer = std::uniform_real_distribution<float>(12.f, 22.f)(g_rng);
-    }
-
-    // Occasional random glitch
-    static float auto_glitch_timer = 5.f;
-    auto_glitch_timer -= dt;
-    if (auto_glitch_timer <= 0.f) {
-        trigger_glitch();
-        auto_glitch_timer = std::uniform_real_distribution<float>(4.f, 10.f)(g_rng);
-    }
-}
-
-// ── Column rendering ───────────────────────────────────────────────────────
-
-static Element build_column(int col_idx, const Stream& s, int rows) {
-    std::vector<Element> cells;
-    cells.reserve(rows);
-
-    int head = static_cast<int>(s.y);
-    auto& pal = g_palettes[static_cast<int>(g_mode)];
-
-    auto lerp8 = [](uint8_t a, uint8_t b, float t) -> uint8_t {
-        return static_cast<uint8_t>(a + (b - a) * std::clamp(t, 0.f, 1.f));
-    };
-
-    for (int row = 0; row < rows; ++row) {
-        // Check if a message occupies this cell
-        bool msg_cell = false;
-        char msg_char = 0;
-        float msg_brightness = 1.f;
-        for (auto& m : g_messages_active) {
-            int len = static_cast<int>(std::strlen(m.text));
-            int ci = col_idx - m.col;
-            if (m.row == row && ci >= 0 && ci < len && ci < static_cast<int>(m.timer)) {
-                msg_cell = true;
-                msg_char = m.text[ci];
-                msg_brightness = m.fade > 0.f ? std::max(0.f, 1.f - m.fade) : 1.f;
-                // Typewriter shimmer on newly revealed char
-                if (ci == static_cast<int>(m.timer) - 1 && m.timer - static_cast<int>(m.timer) < 0.5f)
-                    msg_brightness = 1.2f;
-                break;
+            // Mutate random trail characters
+            if (rand_range(0, 3) == 0) {
+                int mutate_row = static_cast<int>(s.y_pos) - rand_range(1, s.trail_len);
+                if (mutate_row >= 0 && mutate_row < rain_h)
+                    s.chars[mutate_row] = rand_char();
             }
-        }
 
-        if (msg_cell && msg_brightness > 0.01f) {
-            char buf[4] = {msg_char, ' ', 0, 0};
-            uint8_t b = static_cast<uint8_t>(255 * std::min(msg_brightness, 1.f));
-            cells.push_back(
-                text(std::string(buf),
-                     Style{}.with_fg(Color::rgb(b, b, b)).with_bold()).build());
-            g_total_glyphs++;
+            // Reset if fully off screen
+            if (static_cast<int>(s.y_pos) - s.trail_len > rain_h) {
+                reset_stream(s, rain_h);
+                continue;
+            }
+        } else if (s.gap_remaining > 0) {
             continue;
         }
 
-        // Check glitch effect
-        bool in_glitch = false;
-        for (auto& gb : g_glitches) {
-            int dc = col_idx - gb.center_col;
-            int dr = row - gb.center_row;
-            if (dc * dc + dr * dr < gb.radius * gb.radius) {
-                in_glitch = true;
-                break;
-            }
-        }
+        int head_y = static_cast<int>(s.y_pos);
 
-        // Check wave pulse brightness boost
-        float wave_boost = 0.f;
-        for (auto& w : g_waves) {
-            float dc = static_cast<float>(col_idx - w.cx);
-            float dr = static_cast<float>(row - w.cy);
-            float dist = std::sqrt(dc * dc + dr * dr);
-            float ring_dist = std::abs(dist - w.radius);
-            if (ring_dist < 3.f) {
-                float intensity = (1.f - ring_dist / 3.f) * std::max(0.f, 1.f - w.life * 0.5f);
-                wave_boost = std::max(wave_boost, intensity);
-            }
-        }
+        for (int i = 0; i <= s.trail_len; ++i) {
+            int y = head_y - i;
+            if (y < 0 || y >= rain_h) continue;
 
-        int dist = head - row;
-
-        if (in_glitch) {
-            // Glitch: random bright glyph with inverted/random color
-            int gi = std::uniform_int_distribution<int>(0, NUM_GLYPHS - 1)(g_rng);
-            const char* g = glyph(gi);
-            // Randomly pick between inverse, bright accent, or dim
-            int style_pick = std::uniform_int_distribution<int>(0, 3)(g_rng);
-            Style sty;
-            if (style_pick == 0)
-                sty = Style{}.with_fg(Color::rgb(pal.hr, pal.hg, pal.hb)).with_bold().with_inverse();
-            else if (style_pick == 1)
-                sty = Style{}.with_fg(Color::rgb(pal.br, pal.bg_, pal.bb)).with_bold();
-            else if (style_pick == 2)
-                sty = Style{}.with_fg(Color::rgb(255, 255, 255)).with_dim();
-            else
-                sty = Style{}.with_fg(Color::rgb(pal.tr, pal.tg, pal.tb));
-            cells.push_back(text(g, sty).build());
-            g_total_glyphs++;
-            continue;
-        }
-
-        if (dist < 0 || dist >= s.length) {
-            // Wave can illuminate empty cells with a faint glyph
-            if (wave_boost > 0.1f) {
-                int gi = (row * 7 + col_idx * 13) % NUM_GLYPHS;
-                uint8_t intensity = static_cast<uint8_t>(wave_boost * 80.f);
-                uint8_t wr = lerp8(0, pal.tr, wave_boost * 0.4f);
-                uint8_t wg = lerp8(0, pal.tg, wave_boost * 0.4f);
-                uint8_t wb = lerp8(0, pal.tb, wave_boost * 0.4f);
-                (void)intensity;
-                cells.push_back(text(glyph(gi), Style{}.with_fg(Color::rgb(wr, wg, wb))).build());
-                g_total_glyphs++;
+            if (i == 0) {
+                canvas.set(col, y, s.chars[y], get_head_style(col, s.hue_offset));
             } else {
-                cells.push_back(text("  ").build());
+                float fade = 1.0f - static_cast<float>(i) / static_cast<float>(s.trail_len);
+                int brightness = static_cast<int>(fade * (BRIGHTNESS_LEVELS - 1));
+                canvas.set(col, y, s.chars[y], trail_style(col, brightness, s.hue_offset));
             }
-            continue;
         }
+    }
 
-        int gi = (row + static_cast<int>(s.y * 0.5f)) % static_cast<int>(s.glyphs.size());
-        if (gi < 0) gi += static_cast<int>(s.glyphs.size());
-        const char* gl = glyph(s.glyphs[gi]);
+    // Message reveal effect
+    if (g_msg_active && g_msg_timer > 0) {
+        int msg_len = static_cast<int>(std::strlen(MSG_TEXT));
+        int mx = (w - msg_len) / 2;
+        int my = h / 2;
 
-        uint8_t fr, fg, fb;
-        bool bold = false;
+        float progress = static_cast<float>(g_msg_timer) / MSG_DURATION;
+        float alpha = (progress > 0.5f) ? (1.0f - progress) * 2.0f : progress * 2.0f;
+        alpha = std::clamp(alpha, 0.0f, 1.0f);
 
-        if (dist == 0) {
-            fr = pal.hr; fg = pal.hg; fb = pal.hb;
-            bold = true;
-        } else if (dist == 1) {
-            fr = pal.br; fg = pal.bg_; fb = pal.bb;
-        } else {
-            float fade = static_cast<float>(dist - 1) / static_cast<float>(s.length - 1);
-            fade = std::clamp(fade, 0.f, 1.f);
-            fade = fade * fade;
-            fr = lerp8(pal.tr, pal.er, fade);
-            fg = lerp8(pal.tg, pal.eg, fade);
-            fb = lerp8(pal.tb, pal.eb, fade);
+        if (alpha > 0.15f) {
+            for (int i = 0; i < msg_len; ++i) {
+                int x = mx + i;
+                if (x >= 0 && x < w && my >= 0 && my < rain_h) {
+                    char32_t ch = static_cast<char32_t>(MSG_TEXT[i]);
+                    if (ch == U' ') continue;
+                    if (alpha > 0.4f)
+                        canvas.set(x, my, ch, g_msg_style);
+                    else
+                        canvas.set(x, my, (rand_range(0, 3) == 0) ? ch : rand_char(), g_msg_style);
+                }
+            }
         }
-
-        // Apply wave brightness boost
-        if (wave_boost > 0.f) {
-            fr = lerp8(fr, 255, wave_boost * 0.6f);
-            fg = lerp8(fg, 255, wave_boost * 0.6f);
-            fb = lerp8(fb, 255, wave_boost * 0.6f);
-            if (wave_boost > 0.5f) bold = true;
-        }
-
-        auto sty = Style{}.with_fg(Color::rgb(fr, fg, fb));
-        if (bold) sty = sty.with_bold();
-        cells.push_back(text(gl, sty).build());
-        g_total_glyphs++;
     }
 
-    return vstack().gap(0)(std::move(cells));
+    // Status bar
+    int bar_y = h - 1;
+    for (int x = 0; x < w; ++x)
+        canvas.set(x, bar_y, U' ', g_bar_bg);
+
+    const char* bar = "MATRIX \xe2\x94\x82 [1-4] mode \xe2\x94\x82 [m] message \xe2\x94\x82 [space] pause \xe2\x94\x82 [q] quit";
+    canvas.write_text(1, bar_y, bar, g_bar_dim);
+    canvas.write_text(1, bar_y, "MATRIX", g_bar_accent);
+
+    const char* mname = mode_name(g_mode);
+    int mlen = static_cast<int>(std::strlen(mname));
+    if (w > mlen + 2)
+        canvas.write_text(w - mlen - 1, bar_y, mname, g_bar_accent);
+
+    if (g_paused) {
+        int px = (w - 6) / 2;
+        if (px > 0)
+            canvas.write_text(px, bar_y, "PAUSED", g_bar_accent);
+    }
 }
 
-// ── Status bar ─────────────────────────────────────────────────────────────
-
-static std::string format_count(long long n) {
-    if (n >= 1'000'000'000) {
-        char buf[32]; std::snprintf(buf, sizeof(buf), "%.1fG", n / 1e9); return buf;
-    }
-    if (n >= 1'000'000) {
-        char buf[32]; std::snprintf(buf, sizeof(buf), "%.1fM", n / 1e6); return buf;
-    }
-    if (n >= 1'000) {
-        char buf[32]; std::snprintf(buf, sizeof(buf), "%.1fK", n / 1e3); return buf;
-    }
-    return std::to_string(n);
-}
-
-static Element build_status_bar(int cols) {
-    auto& pal = g_palettes[static_cast<int>(g_mode)];
-    auto accent = Color::rgb(pal.tr, pal.tg, pal.tb);
-    auto bright = Color::rgb(pal.br, pal.bg_, pal.bb);
-    auto dim    = Color::rgb(80, 80, 80);
-    auto dark   = Color::rgb(40, 40, 40);
-    auto vdark  = Color::rgb(25, 25, 25);
-
-    // ── Left: branding + mode chips ──
-    auto mode_chip = [&](int idx, const char* label) -> Element {
-        bool active = (static_cast<int>(g_mode) == idx);
-        auto& p = g_palettes[idx];
-        auto c = Color::rgb(p.tr, p.tg, p.tb);
-        if (active)
-            return text(std::string(" ") + label + " ",
-                        Style{}.with_fg(Color::rgb(0, 0, 0)).with_bg(c).with_bold()).build();
-        return text(std::string(" ") + label + " ", Style{}.with_fg(Color::rgb(50, 50, 50))).build();
-    };
-
-    // Animated spinner for LIVE indicator
-    static const char* spinners[] = {">>", "/>", "//", "</", "<<", "\\<", "\\\\", ">\\"};
-    int spin_idx = (g_frame / 4) % 8;
-
-    auto left = hstack().gap(0)(
-        text(" MATRIX ", Style{}.with_fg(Color::rgb(0, 0, 0)).with_bg(bright).with_bold()).build(),
-        text(" ", Style{}).build(),
-        mode_chip(0, "1"),
-        mode_chip(1, "2"),
-        mode_chip(2, "3"),
-        mode_chip(3, "4"),
-        mode_chip(4, "5"),
-        text(" ", Style{}).build(),
-        text(pal.name, Style{}.with_fg(accent).with_bold()).build(),
-        text(" ", Style{}).build(),
-        text(g_paused ? "||" : spinners[spin_idx],
-             Style{}.with_fg(g_paused ? Color::rgb(255, 60, 60) : bright).with_bold()).build(),
-        text(g_paused ? " PAUSED " : " LIVE ",
-             Style{}.with_fg(g_paused ? Color::rgb(255, 60, 60) : bright).with_bold()).build()
-    );
-
-    // ── Center: stats ──
-
-    // Speed gauge
-    int bars = static_cast<int>(g_speed_mult * 4);
-    std::string speed_bar;
-    for (int i = 0; i < 16; ++i) {
-        if (i < bars) speed_bar += "\xe2\x96\xae";  // filled ▮
-        else speed_bar += "\xe2\x96\xaf";             // empty ▯
-    }
-
-    // Density
-    std::string dns;
-    for (int i = 1; i <= 3; ++i) dns += (i <= g_density) ? "\xe2\x96\x88" : "\xe2\x96\x91";
-
-    // Active streams
-    int active = 0;
-    for (auto& s : g_streams) {
-        int head = static_cast<int>(s.y);
-        if (head >= 0 && head - s.length < g_rows) active++;
-    }
-
-    int fps = g_elapsed > 0.5f ? static_cast<int>(g_frame / g_elapsed) : 0;
-    int mins = static_cast<int>(g_elapsed) / 60;
-    int secs = static_cast<int>(g_elapsed) % 60;
-    char time_buf[16];
-    if (mins > 0) std::snprintf(time_buf, sizeof(time_buf), "%d:%02d", mins, secs);
-    else std::snprintf(time_buf, sizeof(time_buf), "%ds", secs);
-
-    auto sep = [&]() { return text(" \xe2\x94\x82 ", Style{}.with_fg(vdark)).build(); };
-
-    auto mid = hstack().gap(0)(
-        text("SPD", Style{}.with_fg(dim)).build(),
-        text(" ", Style{}).build(),
-        text(speed_bar, Style{}.with_fg(accent)).build(),
-        sep(),
-        text("DNS", Style{}.with_fg(dim)).build(),
-        text(" ", Style{}).build(),
-        text(dns, Style{}.with_fg(accent)).build(),
-        sep(),
-        text(std::to_string(active), Style{}.with_fg(accent)).build(),
-        text("/", Style{}.with_fg(dark)).build(),
-        text(std::to_string(g_streams.size()), Style{}.with_fg(dim)).build(),
-        sep(),
-        text(format_count(g_total_glyphs), Style{}.with_fg(accent)).build(),
-        text(" glyphs", Style{}.with_fg(dark)).build(),
-        sep(),
-        text(std::to_string(fps), Style{}.with_fg(accent)).build(),
-        text("fps", Style{}.with_fg(dark)).build(),
-        text(" ", Style{}).build(),
-        text(std::string(time_buf), Style{}.with_fg(dim)).build()
-    );
-
-    // ── Right: keybindings ──
-    auto kb = [&](const char* k, const char* label) -> std::vector<Element> {
-        std::vector<Element> v;
-        v.push_back(text(k, Style{}.with_fg(accent).with_bold()).build());
-        v.push_back(text(label, Style{}.with_fg(dim)).build());
-        return v;
-    };
-
-    auto right = hstack().gap(0)(
-        text("[+/-]", Style{}.with_fg(accent).with_bold()).build(),
-        text("spd ", Style{}.with_fg(dim)).build(),
-        text("[d]", Style{}.with_fg(accent).with_bold()).build(),
-        text("dns ", Style{}.with_fg(dim)).build(),
-        text("[m]", Style{}.with_fg(accent).with_bold()).build(),
-        text("msg ", Style{}.with_fg(dim)).build(),
-        text("[g]", Style{}.with_fg(accent).with_bold()).build(),
-        text("glitch ", Style{}.with_fg(dim)).build(),
-        text("[w]", Style{}.with_fg(accent).with_bold()).build(),
-        text("wave ", Style{}.with_fg(dim)).build(),
-        text("[spc]", Style{}.with_fg(accent).with_bold()).build(),
-        text("pause ", Style{}.with_fg(dim)).build(),
-        text("[q]", Style{}.with_fg(accent).with_bold()).build(),
-        text("quit ", Style{}.with_fg(dim)).build()
-    );
-
-    return hstack().gap(0)(
-        std::move(left),
-        Element{BoxElement{.layout = {.grow = 1.0f}}},
-        std::move(mid),
-        Element{BoxElement{.layout = {.grow = 1.0f}}},
-        std::move(right)
-    );
-}
-
-// ── Build the full UI ──────────────────────────────────────────────────────
-
-static Element build_ui(int cols, int rows) {
-    int bar_rows = g_show_bar ? 1 : 0;
-    int rain_rows = std::max(1, rows - bar_rows);
-    resize(cols, rain_rows);
-
-    std::vector<Element> columns;
-    columns.reserve(g_streams.size());
-    for (int i = 0; i < static_cast<int>(g_streams.size()); ++i) {
-        columns.push_back(build_column(i, g_streams[i], rain_rows));
-    }
-
-    auto rain = hstack().gap(0)(std::move(columns));
-
-    if (g_show_bar) {
-        return vstack().gap(0)(
-            vstack().grow(1).gap(0)(std::move(rain)),
-            build_status_bar(cols)
-        );
-    }
-    return vstack().gap(0)(
-        vstack().grow(1).gap(0)(std::move(rain))
-    );
-}
-
-// ── Main ───────────────────────────────────────────────────────────────────
+// -- Main --------------------------------------------------------------------
 
 int main() {
-    using Clock = std::chrono::steady_clock;
-    auto last = Clock::now();
-
-    run(
-        {.title = "matrix", .fps = 30, .mode = Mode::Fullscreen},
-
-        [](const Event& ev) -> bool {
-            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-            on(ev, '+', [] { g_speed_mult = std::min(g_speed_mult + 0.25f, 4.f); });
-            on(ev, '=', [] { g_speed_mult = std::min(g_speed_mult + 0.25f, 4.f); });
-            on(ev, '-', [] { g_speed_mult = std::max(g_speed_mult - 0.25f, 0.25f); });
-            on(ev, ' ', [] { g_paused = !g_paused; });
-            on(ev, '1', [] { g_mode = ColorMode::Green; });
-            on(ev, '2', [] { g_mode = ColorMode::RedPill; });
-            on(ev, '3', [] { g_mode = ColorMode::BluePill; });
-            on(ev, '4', [] { g_mode = ColorMode::Gold; });
-            on(ev, '5', [] { g_mode = ColorMode::Phantom; });
-            on(ev, 'd', [] { g_density = (g_density % 3) + 1; g_cols = 0; });
-            on(ev, 'm', [] { inject_message(); });
-            on(ev, 'g', [] { trigger_glitch(); });
-            on(ev, 'w', [] { trigger_wave(); });
-            on(ev, 'h', [] { g_show_bar = !g_show_bar; });
-            on(ev, 'r', [] {
-                g_cols = 0;
-                g_elapsed = 0.f;
-                g_frame = 0;
-                g_total_glyphs = 0;
-                g_speed_mult = 1.0f;
-                g_paused = false;
-                g_messages_active.clear();
-                g_glitches.clear();
-                g_waves.clear();
-            });
-            return true;
-        },
-
-        [&](const Ctx& ctx) -> Element {
-            auto now = Clock::now();
-            float dt = std::chrono::duration<float>(now - last).count();
-            last = now;
-            tick(dt);
-            return build_ui(ctx.size.width.raw(), ctx.size.height.raw());
-        }
+    (void)canvas_run(
+        CanvasConfig{.fps = 30, .mouse = false, .mode = Mode::Fullscreen, .title = "matrix"},
+        rebuild,
+        handle,
+        paint
     );
 }

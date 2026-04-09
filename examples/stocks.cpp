@@ -569,9 +569,9 @@ static maya::Element build_footer() {
         text("t", accent().with_bold()) | w_<2>, text("theme", muted()) | w_<6>,
         text("q", accent().with_bold()) | w_<2>, text("quit", muted()),
         space,
-        text("powered by ", fg_s(35, 35, 45)),
+        text("powered by ", fg_s(55, 55, 70)),
         text("maya", accent())
-    ) | pad<0, 1, 0, 1>).build();
+    ) | pad<0, 1, 0, 1> | Bg<25, 25, 35>).build();
 }
 
 // ── Render ──────────────────────────────────────────────────────────────────

@@ -27,6 +27,12 @@ void diff(
 
     if (x0 >= x1 || y0 >= y1) [[unlikely]] return;
 
+    // Pre-reserve output buffer: worst case ~20 bytes/cell for style+char+cursor.
+    // In practice most cells are unchanged; reserve for ~5% damage.
+    const std::size_t estimated = static_cast<std::size_t>((x1 - x0) * (y1 - y0)) / 20 + 256;
+    if (out.capacity() < out.size() + estimated)
+        out.reserve(out.size() + estimated);
+
     // Cursor and style state (unknown at start).
     int      cursor_x      = -1;
     int      cursor_y      = -1;
@@ -40,6 +46,11 @@ void diff(
     const uint64_t* old_cells = size_changed ? nullptr : old_canvas.cells();
     const int       old_w     = size_changed ? 0 : old_canvas.width();
     const int       old_h     = size_changed ? 0 : old_canvas.height();
+
+    // ASCII batch buffer — accumulates consecutive ASCII characters with the
+    // same style to reduce per-character append() overhead in the inner loop.
+    char ascii_buf[256];
+    int  ascii_len = 0;
 
     for (int y = y0; y < y1; ++y) {
         const int  new_row_base  = y * width;
@@ -69,6 +80,14 @@ void diff(
                     new_cells + new_row_base + x,
                     old_cells + old_row_base + x,
                     avail);
+                if (skip > 0) {
+                    // Flush ASCII buffer before skipping — cursor position
+                    // will be discontinuous after the unchanged run.
+                    if (ascii_len > 0) {
+                        out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
+                        ascii_len = 0;
+                    }
+                }
                 x += skip;
                 if (x >= xe) break;
             }
@@ -78,15 +97,28 @@ void diff(
                                       ? old_cells[old_row_base + x]
                                       : blank;
 
-            if (new_packed == old_packed) [[likely]] { ++x; continue; }
+            if (new_packed == old_packed) [[likely]] {
+                // Flush before gap in changed cells.
+                if (ascii_len > 0) {
+                    out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
+                    ascii_len = 0;
+                }
+                ++x; continue;
+            }
 
             // Wide-char second-half: check packed width byte directly
             // (bits 56-63) without full unpack. Value 2 = placeholder.
             if ((new_packed >> 56) == 2) [[unlikely]] { ++x; continue; }
 
-            // Cursor positioning — single append via stack buffer.
+            // Cursor positioning — only emit CUP if cursor isn't already here.
+            // After writing a character, cursor_x advances naturally, so
+            // consecutive changed cells on the same row need no CUP.
             const int cx = static_cast<int>(x);
             if (cursor_x != cx || cursor_y != y) {
+                if (ascii_len > 0) {
+                    out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
+                    ascii_len = 0;
+                }
                 detail::write_cup(out, cx + 1, y + 1);
                 cursor_x = cx;
                 cursor_y = y;
@@ -95,19 +127,40 @@ void diff(
             // Extract style_id and character from packed value directly.
             const auto style_id = static_cast<uint16_t>((new_packed >> 32) & 0xFFFF);
             const auto character = static_cast<char32_t>(new_packed & 0xFFFFFFFF);
-            const auto width = static_cast<uint8_t>(new_packed >> 56);
+            const auto cell_w = static_cast<uint8_t>(new_packed >> 56);
 
             // Style transition — pre-cached SGR, single memcpy.
             if (style_id != current_style) {
+                if (ascii_len > 0) {
+                    out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
+                    ascii_len = 0;
+                }
                 out.append(pool.sgr(style_id));
                 current_style = style_id;
             }
 
-            // Character — batch UTF-8 encoding.
-            detail::encode_utf8(character, out);
-            cursor_x += (width == 1) ? 2 : 1;
+            // Character — batch ASCII into buffer, encode non-ASCII directly.
+            if (character < 0x80) [[likely]] {
+                ascii_buf[ascii_len++] = static_cast<char>(character);
+                if (ascii_len == 256) [[unlikely]] {
+                    out.append(ascii_buf, 256);
+                    ascii_len = 0;
+                }
+            } else {
+                if (ascii_len > 0) {
+                    out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
+                    ascii_len = 0;
+                }
+                detail::encode_utf8(character, out);
+            }
+            // Wide-char first half (width==1) occupies 2 columns; normal chars 1.
+            cursor_x += (cell_w == 1) ? 2 : 1;
             ++x;
         }
+    }
+    // Flush remaining ASCII.
+    if (ascii_len > 0) {
+        out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
     }
 }
 

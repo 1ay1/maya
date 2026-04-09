@@ -149,6 +149,9 @@ static_assert(Cell{}.pack() == Cell{U' ', 0, 0, 0}.pack());
 
 class StylePool {
 public:
+    /// Maximum number of unique styles (uint16_t ID space).
+    static constexpr std::size_t max_styles = 65535;
+
     StylePool();
 
     /// Intern a style, returning its unique ID.
@@ -160,6 +163,11 @@ public:
         while (true) {
             auto& slot = slots_[idx];
             if (slot.hash == 0) [[unlikely]] {
+                // Saturate: if we've exhausted the uint16_t ID space, return
+                // the closest existing style rather than wrapping around.
+                if (styles_.size() >= max_styles) [[unlikely]] {
+                    return static_cast<uint16_t>(styles_.size() - 1);
+                }
                 // Empty slot — insert new style.
                 auto id = static_cast<uint16_t>(styles_.size());
                 styles_.push_back(s);
@@ -242,7 +250,10 @@ public:
     /// Set a cell at (x, y). Clipped or out-of-bounds coordinates are silently ignored.
     [[gnu::always_inline]] void set(int x, int y, char32_t ch, uint16_t style_id, uint8_t width = 0) {
         if (__builtin_expect(!in_bounds(x, y), 0)) return;
-        if (!clip_stack_.empty() && __builtin_expect(!clip_stack_.back().contains({Columns{x}, Rows{y}}), 0)) return;
+        // Fast clip check using cached bounds — avoids vector access per cell.
+        if (has_clip_ && __builtin_expect(
+                x < clip_x0_ || x >= clip_x1_ || y < clip_y0_ || y >= clip_y1_, 0))
+            return;
 
         auto idx = cell_index(x, y);
         uint64_t packed = Cell{ch, style_id, 0, width}.pack();
@@ -333,6 +344,19 @@ private:
         return {{Columns{0}, Rows{0}}, {Columns{width_}, Rows{height_}}};
     }
 
+    void update_clip_cache() noexcept {
+        if (clip_stack_.empty()) {
+            has_clip_ = false;
+        } else {
+            has_clip_ = true;
+            const Rect& c = clip_stack_.back();
+            clip_x0_ = c.left().value;
+            clip_y0_ = c.top().value;
+            clip_x1_ = c.right().value;
+            clip_y1_ = c.bottom().value;
+        }
+    }
+
     AlignedBuffer cells_;
     int width_  = 0;
     int height_ = 0;
@@ -340,6 +364,9 @@ private:
     StylePool* style_pool_ = nullptr;
     Rect damage_{};
     std::vector<Rect> clip_stack_;
+    // Cached clip bounds — avoids vector back() on every set() call.
+    bool has_clip_ = false;
+    int clip_x0_ = 0, clip_y0_ = 0, clip_x1_ = 0, clip_y1_ = 0;
 };
 
 } // namespace maya

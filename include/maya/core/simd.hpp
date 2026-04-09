@@ -92,6 +92,8 @@ namespace maya::simd {
     }
 #elif defined(MAYA_SIMD_NEON)
     // NEON: 4 cells (2x 128 bits) per iteration — unrolled for throughput.
+    // Use vminvq_u32 for branchless all-equal check (single instruction on
+    // Apple Silicon vs. 2 lane extractions + 2 branches).
     for (; i + 4 <= count; i += 4) {
         uint64x2_t va0 = vld1q_u64(a + i);
         uint64x2_t vb0 = vld1q_u64(b + i);
@@ -99,10 +101,10 @@ namespace maya::simd {
         uint64x2_t vb1 = vld1q_u64(b + i + 2);
         uint64x2_t cmp0 = vceqq_u64(va0, vb0);
         uint64x2_t cmp1 = vceqq_u64(va1, vb1);
-        // Fast path: all 4 cells equal (common case for unchanged regions)
+        // Fast path: AND all comparison lanes, check with single reduction.
         uint64x2_t all = vandq_u64(cmp0, cmp1);
-        if (vgetq_lane_u64(all, 0) != 0 && vgetq_lane_u64(all, 1) != 0)
-            continue;
+        uint32x4_t all32 = vreinterpretq_u32_u64(all);
+        if (vminvq_u32(all32) != 0) continue;
         // Slow path: find which cell differs
         if (vgetq_lane_u64(cmp0, 0) == 0) return i;
         if (vgetq_lane_u64(cmp0, 1) == 0) return i + 1;
@@ -114,8 +116,10 @@ namespace maya::simd {
         uint64x2_t va  = vld1q_u64(a + i);
         uint64x2_t vb  = vld1q_u64(b + i);
         uint64x2_t cmp = vceqq_u64(va, vb);
+        uint32x4_t cmp32 = vreinterpretq_u32_u64(cmp);
+        if (vminvq_u32(cmp32) != 0) continue;
         if (vgetq_lane_u64(cmp, 0) == 0) return i;
-        if (vgetq_lane_u64(cmp, 1) == 0) return i + 1;
+        return i + 1;
     }
 #endif
 

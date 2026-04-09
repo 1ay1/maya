@@ -57,8 +57,8 @@ public:
     [[nodiscard]] Element build() const {
         // Use ComponentElement for dynamic width
         return Element{ComponentElement{
-            .render = [this](int w, int /*h*/) -> Element {
-                return build_chart(w);
+            .render = [self = *this](int w, int /*h*/) -> Element {
+                return self.build_chart(w);
             },
             .layout = {},
         }};

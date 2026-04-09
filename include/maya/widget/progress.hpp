@@ -60,16 +60,16 @@ public:
             return build_bar(cfg_.width);
         }
         // Width 0 = fill available width via ComponentElement
+        // Capture *this by value to avoid dangling pointer
         return Element{ComponentElement{
-            .render = [this](int w, int /*h*/) -> Element {
-                // Reserve space for suffix: "  68%  2.3s"
+            .render = [self = *this](int w, int /*h*/) -> Element {
                 int suffix_cols = 0;
-                if (cfg_.show_percentage) suffix_cols += 6;  // "  100%"
-                if (elapsed_ > 0.0f) suffix_cols += 8;       // "  12.3s"
+                if (self.cfg_.show_percentage) suffix_cols += 6;
+                if (self.elapsed_ > 0.0f) suffix_cols += 8;
                 int bar_w = w - suffix_cols;
-                if (!label_.empty()) bar_w -= static_cast<int>(label_.size()) + 2;
+                if (!self.label_.empty()) bar_w -= static_cast<int>(self.label_.size()) + 2;
                 if (bar_w < 10) bar_w = 10;
-                return build_bar(bar_w);
+                return self.build_bar(bar_w);
             },
             .layout = {},
         }};

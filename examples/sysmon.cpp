@@ -494,19 +494,19 @@ static auto build_status_bar() {
 
     return h(
         text(" ⏱ " + std::string(ts)) | Fg<100, 180, 255>,
-        text("  entropy:") | Dim,
+        text("  entropy:") | Fg<140, 140, 160>,
         text(entropy_bar) | Fg<0, 255, 136>,
-        text("  syscalls:") | Dim,
+        text("  syscalls:") | Fg<140, 140, 160>,
         text(sc_str) | Fg<255, 200, 60>,
-        text("  f:" + std::to_string(frame_count)) | Dim,
+        text("  f:" + std::to_string(frame_count)) | Fg<100, 100, 120>,
         space,
-        text(" q") | Bold | Fg<100, 180, 255>, text(":quit") | Dim,
-        text(" p") | Bold | Fg<100, 180, 255>, text(":pause") | Dim,
-        text(" s") | Bold | Fg<100, 180, 255>, text(":sort") | Dim,
-        text(" l") | Bold | Fg<100, 180, 255>, text(":log") | Dim,
-        text(" 1-3") | Bold | Fg<100, 180, 255>, text(":speed") | Dim,
-        text(" ␣") | Bold | Fg<100, 180, 255>, text(":burst ") | Dim
-    ) | pad<0, 1, 0, 1>;
+        text(" q") | Bold | Fg<180, 220, 255>, text(":quit") | Fg<120, 120, 140>,
+        text(" p") | Bold | Fg<180, 220, 255>, text(":pause") | Fg<120, 120, 140>,
+        text(" s") | Bold | Fg<180, 220, 255>, text(":sort") | Fg<120, 120, 140>,
+        text(" l") | Bold | Fg<180, 220, 255>, text(":log") | Fg<120, 120, 140>,
+        text(" 1-3") | Bold | Fg<180, 220, 255>, text(":speed") | Fg<120, 120, 140>,
+        text(" ␣") | Bold | Fg<180, 220, 255>, text(":burst ") | Fg<120, 120, 140>
+    ) | pad<0, 1, 0, 1> | Bg<30, 30, 42>;
 }
 
 // ── Render ──────────────────────────────────────────────────────────────────

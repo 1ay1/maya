@@ -109,10 +109,9 @@ public:
         // Dynamic width via ComponentElement
         return Element{ComponentElement{
             .render = [this](int w, int /*h*/) -> Element {
-                // Reserve space for label + percentage suffix
                 int reserved = 0;
                 if (!label_.empty()) reserved += static_cast<int>(label_.size()) + 2;
-                if (cfg_.show_percent) reserved += 6;  // "  100%"
+                if (cfg_.show_percent) reserved += 6;
                 int track_w = w - reserved;
                 if (track_w < 8) track_w = 8;
                 return build_track(track_w);

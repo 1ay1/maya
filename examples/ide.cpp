@@ -1,4 +1,4 @@
-// ide.cpp — VS Code / Zed-inspired terminal IDE layout
+// ide.cpp — VS Code / Zed-inspired terminal IDE layout (simple run() API)
 //
 // A stunning mini IDE showcasing the full maya widget toolkit:
 // file tree, tabbed editor with syntax highlighting, outline,
@@ -22,7 +22,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -941,98 +940,43 @@ static maya::Element render() {
     return vstack()(std::move(main_stack));
 }
 
-// ── Program ────────────────────────────────────────────────────────────────
-
-struct IDEApp {
-    struct Model { int frame = 0; };
-
-    struct Tick {};
-    struct Quit {};
-    struct CycleTab {};
-    struct ToggleLeft {};
-    struct ToggleRight {};
-    struct ToggleBottom {};
-    struct StartBuild {};
-    using Msg = std::variant<Tick, Quit, CycleTab, ToggleLeft, ToggleRight,
-                             ToggleBottom, StartBuild>;
-
-    static Model init() {
-        init_code();
-        init_build_log();
-        return {};
-    }
-
-    static auto update(Model m, Msg msg) -> std::pair<Model, maya::Cmd<Msg>> {
-        return std::visit(maya::overload{
-            [&](Tick) {
-                m.frame++;
-                frame = m.frame;
-                // Advance build simulation
-                if (building) {
-                    build_progress += 0.02f;
-                    if (build_progress >= 1.0f) {
-                        build_progress = 1.0f;
-                        building = false;
-                        build_done = true;
-                    }
-                }
-                return std::pair{m, maya::Cmd<Msg>{}};
-            },
-            [](Quit) {
-                return std::pair{Model{}, maya::Cmd<Msg>::quit()};
-            },
-            [&](CycleTab) {
-                active_tab = (active_tab + 1) % 4;
-                return std::pair{m, maya::Cmd<Msg>{}};
-            },
-            [&](ToggleLeft) {
-                show_left = !show_left;
-                return std::pair{m, maya::Cmd<Msg>{}};
-            },
-            [&](ToggleRight) {
-                show_right = !show_right;
-                return std::pair{m, maya::Cmd<Msg>{}};
-            },
-            [&](ToggleBottom) {
-                show_bottom = !show_bottom;
-                return std::pair{m, maya::Cmd<Msg>{}};
-            },
-            [&](StartBuild) {
-                if (!building) {
-                    building = true;
-                    build_progress = 0.0f;
-                    build_done = false;
-                }
-                return std::pair{m, maya::Cmd<Msg>{}};
-            },
-        }, msg);
-    }
-
-    static maya::Element view(const Model&) {
-        return render();
-    }
-
-    static auto subscribe(const Model&) -> maya::Sub<Msg> {
-        return maya::Sub<Msg>::batch(
-            maya::key_map<Msg>({
-                {'q', Quit{}},
-                {maya::SpecialKey::Escape, Quit{}},
-                {maya::SpecialKey::Tab, CycleTab{}},
-                {'1', ToggleLeft{}},
-                {'2', ToggleRight{}},
-                {'3', ToggleBottom{}},
-                {'b', StartBuild{}},
-            }),
-            maya::Sub<Msg>::every(std::chrono::milliseconds(1000 / 10), Tick{})
-        );
-    }
-};
-
-static_assert(maya::Program<IDEApp>);
-
 // ── Main ────────────────────────────────────────────────────────────────────
 
 int main() {
-    maya::run<IDEApp>({.title = "ide", .fps = 0, .mode = maya::Mode::Fullscreen});
-    return 0;
+    init_code();
+    init_build_log();
+
+    maya::run(
+        {.title = "ide", .fps = 10, .mode = maya::Mode::Fullscreen},
+        [](const maya::Event& ev) {
+            if (maya::key(ev, 'q') || maya::key(ev, maya::SpecialKey::Escape))
+                return false;
+            if (maya::key(ev, maya::SpecialKey::Tab))
+                active_tab = (active_tab + 1) % 4;
+            if (maya::key(ev, '1')) show_left = !show_left;
+            if (maya::key(ev, '2')) show_right = !show_right;
+            if (maya::key(ev, '3')) show_bottom = !show_bottom;
+            if (maya::key(ev, 'b') && !building) {
+                building = true;
+                build_progress = 0.0f;
+                build_done = false;
+            }
+            return true;
+        },
+        [] {
+            frame++;
+
+            // Advance build simulation
+            if (building) {
+                build_progress += 0.02f;
+                if (build_progress >= 1.0f) {
+                    build_progress = 1.0f;
+                    building = false;
+                    build_done = true;
+                }
+            }
+
+            return render();
+        }
+    );
 }

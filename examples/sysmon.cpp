@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +25,7 @@
 #include <string>
 #include <vector>
 
+using namespace maya;
 using namespace maya::dsl;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -522,92 +522,34 @@ static maya::Element render() {
     return vstack()(std::move(panels));
 }
 
-// ── Program ─────────────────────────────────────────────────────────────────
+// ── Main ────────────────────────────────────────────────────────────────────
 
-struct SysmonApp {
-    struct Model { int frame = 0; };
+int main() {
+    init_state();
 
-    struct Tick {};
-    struct Quit {};
-    struct TogglePause {};
-    struct ToggleLog {};
-    struct CycleSort {};
-    struct SetSpeed { float speed; };
-    struct LogBurst {};
-
-    using Msg = std::variant<Tick, Quit, TogglePause, ToggleLog,
-                             CycleSort, SetSpeed, LogBurst>;
-
-    static Model init() {
-        init_state();
-        return {};
-    }
-
-    static auto update(Model m, Msg msg) -> std::pair<Model, maya::Cmd<Msg>> {
-        return std::visit(maya::overload{
-            [&](Tick) -> std::pair<Model, maya::Cmd<Msg>> {
-                tick(1.0f / 15.0f);
-                m.frame++;
-                return {m, {}};
-            },
-            [&](Quit) -> std::pair<Model, maya::Cmd<Msg>> {
-                return {m, maya::Cmd<Msg>::quit()};
-            },
-            [&](TogglePause) -> std::pair<Model, maya::Cmd<Msg>> {
-                paused = !paused;
-                return {m, {}};
-            },
-            [&](ToggleLog) -> std::pair<Model, maya::Cmd<Msg>> {
-                show_log = !show_log;
-                return {m, {}};
-            },
-            [&](CycleSort) -> std::pair<Model, maya::Cmd<Msg>> {
-                sort_mode = (sort_mode + 1) % 3;
-                return {m, {}};
-            },
-            [&](SetSpeed s) -> std::pair<Model, maya::Cmd<Msg>> {
-                speed = s.speed;
-                return {m, {}};
-            },
-            [&](LogBurst) -> std::pair<Model, maya::Cmd<Msg>> {
+    maya::run(
+        {.title = "sysmon", .fps = 15, .mode = maya::Mode::Inline},
+        [](const Event& ev) {
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+            if (key(ev, 'p')) paused = !paused;
+            if (key(ev, 'l')) show_log = !show_log;
+            if (key(ev, 's')) sort_mode = (sort_mode + 1) % 3;
+            if (key(ev, '1')) speed = 0.25f;
+            if (key(ev, '2')) speed = 1.0f;
+            if (key(ev, '3')) speed = 4.0f;
+            if (key(ev, ' ')) {
                 for (int i = 0; i < 5; ++i) {
                     int lvl = randi(0, 2);
                     activity_log.push_back({uptime, log_msgs[static_cast<size_t>(randi(0, 15))], lvl});
                 }
                 while (activity_log.size() > MAX_LOG)
                     activity_log.erase(activity_log.begin());
-                return {m, {}};
-            },
-        }, msg);
-    }
-
-    static maya::Element view(const Model&) {
-        return render();
-    }
-
-    static auto subscribe(const Model&) -> maya::Sub<Msg> {
-        return maya::Sub<Msg>::batch(
-            maya::key_map<Msg>({
-                {'q',                         Quit{}},
-                {maya::SpecialKey::Escape,    Quit{}},
-                {'p',                         TogglePause{}},
-                {'l',                         ToggleLog{}},
-                {'s',                         CycleSort{}},
-                {'1',                         SetSpeed{0.25f}},
-                {'2',                         SetSpeed{1.0f}},
-                {'3',                         SetSpeed{4.0f}},
-                {' ',                         LogBurst{}},
-            }),
-            maya::Sub<Msg>::every(std::chrono::milliseconds(1000 / 15), Tick{})
-        );
-    }
-};
-
-static_assert(maya::Program<SysmonApp>);
-
-// ── Main ────────────────────────────────────────────────────────────────────
-
-int main() {
-    maya::run<SysmonApp>({.title = "sysmon", .fps = 0, .mode = maya::Mode::Inline});
-    return 0;
+            }
+            return true;
+        },
+        [] {
+            tick(1.0f / 15.0f);
+            return render();
+        }
+    );
 }

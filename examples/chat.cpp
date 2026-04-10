@@ -1,6 +1,6 @@
 // maya — AI Agent Session Demo (Inline Mode)
 //
-// Uses maya::run<P>() with Mode::Inline for keyboard-driven inline rendering.
+// Uses maya::run() with Mode::Inline for keyboard-driven inline rendering.
 // Content streams in character-by-character like a real AI response.
 // Press 'q' or Escape to quit.
 //
@@ -630,47 +630,17 @@ static void tick(ChatApp& app) {
     app.toasts.advance(dt);
 }
 
-// ── Program ─────────────────────────────────────────────────────────────────
-
-struct ChatDemo {
-    struct Model { int frame = 0; };
-
-    struct Tick {};
-    struct Quit {};
-    using Msg = std::variant<Tick, Quit>;
-
-    static Model init() { return {}; }
-
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Tick) {
-                tick(app);
-                m.frame++;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [](Quit) {
-                return std::pair{Model{}, Cmd<Msg>::quit()};
-            },
-        }, msg);
-    }
-
-    static Element view(const Model&) {
-        return build_ui(app);
-    }
-
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return Sub<Msg>::batch(
-            key_map<Msg>({{'q', Quit{}}, {SpecialKey::Escape, Quit{}}}),
-            Sub<Msg>::every(std::chrono::milliseconds(1000 / 30), Tick{})
-        );
-    }
-};
-
-static_assert(Program<ChatDemo>, "ChatDemo must satisfy the Program concept");
-
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main() {
-    maya::run<ChatDemo>({.fps = 0, .mode = Mode::Inline});
-    return 0;
+    maya::run(
+        {.fps = 30, .mode = Mode::Inline},
+        [](const Event& ev) {
+            return !(key(ev, 'q') || key(ev, SpecialKey::Escape));
+        },
+        [&] {
+            tick(app);
+            return build_ui(app);
+        }
+    );
 }

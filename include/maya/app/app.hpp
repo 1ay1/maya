@@ -63,9 +63,19 @@
 #include "../terminal/terminal.hpp"
 #include "../terminal/writer.hpp"
 #include "context.hpp"
+#include "quit.hpp"
 #include "sub.hpp"
 
 namespace maya {
+
+// ============================================================================
+// Ctx — render context passed to simple run() render functions
+// ============================================================================
+
+struct Ctx {
+    Size  size;    ///< Current terminal dimensions
+    Theme theme;   ///< Active colour theme
+};
 
 // ============================================================================
 // Mode — rendering mode selection
@@ -578,6 +588,107 @@ void run(RunConfig cfg = {}) {
     }
 
     (void)rt.cleanup();
+}
+
+// ============================================================================
+// run(cfg, event_fn, render_fn) — convenience wrapper for simple apps
+// ============================================================================
+// For quick prototypes and simple tools where the full Program ceremony
+// is overkill. Wraps closures into the Runtime loop directly.
+//
+//   run(
+//       {.title = "demo"},
+//       [&](const Event& ev) { return !key(ev, 'q'); },
+//       [&] { return text("hello") | Bold; }
+//   );
+//
+// Event function: (const Event&) -> bool  (false = quit)
+//            or:  (const Event&) -> void  (call maya::quit() to exit)
+// Render function: () -> Element
+//             or:  (const Ctx&) -> Element
+
+template <typename F>
+concept SimpleEventFn =
+    (std::invocable<F, const Event&> &&
+     std::convertible_to<std::invoke_result_t<F, const Event&>, bool>) ||
+    (std::invocable<F, const Event&> &&
+     std::is_void_v<std::invoke_result_t<F, const Event&>>);
+
+template <typename F>
+concept SimpleRenderFn =
+    (std::invocable<F> &&
+     std::convertible_to<std::invoke_result_t<F>, Element>) ||
+    (std::invocable<F, const Ctx&> &&
+     std::convertible_to<std::invoke_result_t<F, const Ctx&>, Element>);
+
+template <SimpleEventFn EventFn, SimpleRenderFn RenderFn>
+void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
+    auto result = detail::Runtime::create(cfg);
+    if (!result) {
+        auto msg = std::format("maya: failed to initialize terminal: {}\n",
+                               result.error().message);
+        std::fputs(msg.c_str(), stderr);
+        return;
+    }
+    auto rt = std::move(*result);
+    detail::quit_requested = false;
+
+    auto poll_timeout = cfg.fps > 0
+        ? std::chrono::milliseconds(1000 / std::max(1, cfg.fps))
+        : std::chrono::milliseconds(100);
+
+    bool needs_render = true;
+
+    auto dispatch = [&](const Event& ev) {
+        if constexpr (std::is_void_v<std::invoke_result_t<EventFn, const Event&>>) {
+            event_fn(ev);
+            if (detail::quit_requested) rt.request_quit();
+        } else {
+            if (!event_fn(ev)) rt.request_quit();
+        }
+    };
+
+    while (rt.is_running()) {
+        auto poll_result = rt.poll(poll_timeout);
+        if (!poll_result) break;
+
+        if (poll_result->resize) {
+            rt.handle_resize();
+            needs_render = true;
+        }
+
+        if (poll_result->input) {
+            auto events = rt.read_events();
+            if (!events) break;
+            for (auto& ev : *events) dispatch(ev);
+        }
+
+        for (auto& ev : rt.flush_timeouts()) dispatch(ev);
+
+        if (cfg.fps > 0) needs_render = true;
+
+        if (needs_render) {
+            Element root = [&]() -> Element {
+                if constexpr (std::invocable<RenderFn, const Ctx&>) {
+                    Ctx ctx{rt.size(), rt.theme()};
+                    return render_fn(ctx);
+                } else {
+                    return render_fn();
+                }
+            }();
+            auto status = rt.render(root);
+            if (!status) break;
+            needs_render = false;
+        }
+    }
+
+    detail::quit_requested = false;
+    (void)rt.cleanup();
+}
+
+template <SimpleEventFn EventFn, SimpleRenderFn RenderFn>
+void run(EventFn&& event_fn, RenderFn&& render_fn) {
+    run(RunConfig{}, std::forward<EventFn>(event_fn), std::forward<RenderFn>(render_fn));
 }
 
 // ============================================================================

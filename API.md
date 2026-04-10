@@ -1,6 +1,6 @@
 # maya API reference
 
-maya is a C++26 TUI library. `run()` call, zero boilerplate.
+maya is a C++26 TUI library. `run<P>()` call, zero boilerplate.
 
 ```cpp
 #include <maya/maya.hpp>          // DSL, events, signals, styles, app lifecycle
@@ -14,23 +14,25 @@ using namespace maya;
 
 1. [Headers](#headers)
 2. [Quick start](#quick-start)
-3. [run()](#run)
-4. [RunConfig](#runconfig)
-5. [Ctx — render context](#ctx)
-6. [Event helpers](#event-helpers)
-7. [Element DSL](#element-dsl)
-8. [Layout](#layout)
-9. [Widgets](#widgets)
-10. [Signals](#signals)
-11. [Style](#style)
-12. [Color](#color)
-13. [Theme](#theme)
-14. [Borders](#borders)
-15. [Core types](#core-types)
-16. [Error handling](#error-handling)
-17. [Concepts](#concepts)
-18. [Context system](#context-system)
-19. [Advanced — low-level API](#advanced)
+3. [Program concept / run\<P\>()](#program-concept--runp)
+4. [Cmd\<Msg\>](#cmdmsg)
+5. [Sub\<Msg\>](#submsg)
+6. [RunConfig](#runconfig)
+7. [Ctx — render context](#ctx)
+8. [Event helpers](#event-helpers)
+9. [Element DSL](#element-dsl)
+10. [Layout](#layout)
+11. [Widgets](#widgets)
+12. [Signals](#signals)
+13. [Style](#style)
+14. [Color](#color)
+15. [Theme](#theme)
+16. [Borders](#borders)
+17. [Core types](#core-types)
+18. [Error handling](#error-handling)
+19. [Concepts](#concepts)
+20. [Context system](#context-system)
+21. [Advanced — low-level API](#advanced)
 
 ---
 
@@ -42,7 +44,7 @@ maya separates its public API from internal implementation details. Downstream p
 
 The main header. Includes:
 - Compile-time DSL (`v()`, `h()`, `t<>`, `text()`, pipes)
-- App lifecycle (`run()`, `print()`, `live()`, `quit()`)
+- App lifecycle (`run<P>()`, `print()`, `live()`, `quit()`)
 - Event predicates (`key()`, `ctrl()`, `mouse_clicked()`, ...)
 - Reactive signals (`Signal`, `Computed`, `Effect`, `Batch`)
 - Styling (`Color`, `Style`, `Border`, `Theme`)
@@ -86,69 +88,93 @@ This is used by maya's own canvas-based examples (doom fire, raymarcher, etc.) a
 
 ```cpp
 #include <maya/maya.hpp>
-#include <maya/widget/badge.hpp>
 using namespace maya;
 using namespace maya::dsl;
 
-int main() {
-    Signal<int> count{0};
+struct Counter {
+    struct Model { int count = 0; };
+    struct Inc {}; struct Dec {}; struct Quit {};
+    using Msg = std::variant<Inc, Dec, Quit>;
 
-    run(
-        {.title = "counter"},
-        [&](const Event& ev) {
-            if (key(ev, '+')) count.update([](int& n) { ++n; });
-            if (key(ev, '-')) count.update([](int& n) { --n; });
-            return !key(ev, 'q');        // false = quit
-        },
-        [&](const Ctx& ctx) {
-            auto color = count.get() >= 0 ? ctx.theme.success : ctx.theme.error;
-            return (v(
-                text("Count: " + std::to_string(count.get())) | Bold | fgc(color),
-                text("[+/-] change  [q] quit") | Dim
-            ) | padding(1)).build();
-        }
-    );
-}
+    static Model init() { return {}; }
+
+    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
+        return std::visit(overload{
+            [&](Inc)  { return std::pair{Model{m.count + 1}, Cmd<Msg>{}}; },
+            [&](Dec)  { return std::pair{Model{m.count - 1}, Cmd<Msg>{}}; },
+            [](Quit)  { return std::pair{Model{}, Cmd<Msg>::quit()}; },
+        }, msg);
+    }
+
+    static Element view(const Model& m) {
+        auto color = m.count >= 0 ? Color::green() : Color::red();
+        return (v(
+            text("Count: " + std::to_string(m.count)) | Bold | fgc(color),
+            text("[+/-] change  [q] quit") | Dim
+        ) | padding(1)).build();
+    }
+
+    static auto subscribe(const Model&) -> Sub<Msg> {
+        return key_map<Msg>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
+    }
+};
+
+int main() { run<Counter>({.title = "counter"}); }
 ```
 
-That's a complete, reactive TUI application. The DSL (`v()`, `h()`, pipes) is the primary API — no builders, no boilerplate.
+That's a complete TUI application using the Elm-architecture Program model. The DSL (`v()`, `h()`, pipes) is the primary API — no builders, no boilerplate.
 
 ---
 
-## run()
+## Program concept / run\<P\>()
 
 ```cpp
-// With config
-template<AnyEventFn E, AnyRenderFn R>
-void run(RunConfig cfg, E&& event_fn, R&& render_fn);
-
-// Without config (uses all defaults)
-template<AnyEventFn E, AnyRenderFn R>
-void run(E&& event_fn, R&& render_fn);
+template<Program P>
+void run(RunConfig cfg = {});
 ```
 
-Starts the application. Blocks until the app quits. Errors are printed to stderr and the process exits — you never deal with terminal-init failure in application code.
+Starts the application. Blocks until the app quits (via `Cmd<Msg>::quit()`). Errors are printed to stderr and the process exits — you never deal with terminal-init failure in application code.
 
-**`event_fn`** signature — either of:
+### Program concept
+
+A **Program** is any struct/class that defines these associated types and static functions:
+
 ```cpp
-[&](const Event& ev) -> bool { ... }   // false = quit
-[&](const Event& ev) -> void { ... }   // use maya::quit() to exit
+struct MyApp {
+    // Required types
+    struct Model { /* your application state */ };
+    using Msg = std::variant</* your message types */>;
+
+    // Required functions
+    static Model init();                                           // or: static std::pair<Model, Cmd<Msg>> init();
+    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>>;
+    static Element view(const Model& m);
+
+    // Optional
+    static auto subscribe(const Model&) -> Sub<Msg>;              // event subscriptions
+};
 ```
 
-**`render_fn`** signature — either of:
-```cpp
-[&]() -> Element { ... }               // no context
-[&](const Ctx& ctx) -> Element { ... } // with live size + theme
-```
+**`init()`** — returns the initial model. Can also return `std::pair<Model, Cmd<Msg>>` to fire commands on startup.
 
-Both variants are detected automatically at compile time via concepts. Mix and match:
+**`update(Model, Msg)`** — pure function. Takes the current model and a message, returns the new model and an optional command. The model is passed by value — mutate and return it.
+
+**`view(const Model&)`** — renders the current model into an `Element` tree. Called every frame.
+
+**`subscribe(const Model&)`** — optional. Returns a `Sub<Msg>` that maps terminal events (keys, mouse, resize, timers) to messages. Re-evaluated when the model changes.
+
+### key_map\<Msg\>()
+
+Convenience for mapping key presses to messages:
 
 ```cpp
-// void event handler + context-aware render
-run(
-    [&](const Event& ev) { if (key(ev, 'q')) quit(); },
-    [&](const Ctx& ctx)  { return text("w=" + std::to_string(ctx.size.width.value)); }
-);
+static auto subscribe(const Model&) -> Sub<Msg> {
+    return key_map<Msg>({
+        {'+', Inc{}},
+        {'-', Dec{}},
+        {'q', Quit{}},
+    });
+}
 ```
 
 ### maya::quit()
@@ -157,12 +183,43 @@ run(
 void quit() noexcept;
 ```
 
-Schedules a clean exit. Safe to call from anywhere — Effect lambdas, signal handlers, render functions, async callbacks. The exit happens after the current frame completes.
+Schedules a clean exit. For `live()` and `canvas_run()` only. In Program apps, return `Cmd<Msg>::quit()` from `update()` instead.
+
+---
+
+## Cmd\<Msg\>
+
+Commands are side effects returned from `update()`. They run asynchronously and may produce new messages.
 
 ```cpp
-Signal<bool> should_quit{false};
-Effect e([&] { if (should_quit.get()) quit(); });
+Cmd<Msg>{}                    // no-op (do nothing)
+Cmd<Msg>::quit()              // exit the application
+Cmd<Msg>::batch({cmd1, cmd2}) // run multiple commands
+Cmd<Msg>::after(100ms, msg)   // deliver msg after a delay
+Cmd<Msg>::task([]() -> Msg {  // run async work, return a message
+    return SomeMsg{do_io()};
+})
+Cmd<Msg>::set_title("title")  // set terminal window title
+Cmd<Msg>::write_clipboard(s)  // write string to system clipboard
 ```
+
+---
+
+## Sub\<Msg\>
+
+Subscriptions map terminal events to messages. Returned from `subscribe()`.
+
+```cpp
+Sub<Msg>::none()                          // no subscriptions
+Sub<Msg>::batch({sub1, sub2})             // combine multiple subscriptions
+Sub<Msg>::on_key([](const KeyEvent& ke) -> std::optional<Msg> { ... })
+Sub<Msg>::on_mouse([](const MouseEvent& me) -> std::optional<Msg> { ... })
+Sub<Msg>::on_resize([](Size sz) -> std::optional<Msg> { ... })
+Sub<Msg>::on_paste([](std::string text) -> std::optional<Msg> { ... })
+Sub<Msg>::every(1s, [](auto now) -> Msg { return Tick{now}; })  // periodic timer
+```
+
+`key_map<Msg>()` is a convenience that builds a `Sub<Msg>::on_key()` subscription from a map of char-to-message pairs.
 
 ---
 
@@ -180,10 +237,11 @@ struct RunConfig {
 C++20 aggregate. Use designated initializers — only set what you need:
 
 ```cpp
-run({.title = "my app"},                    handler, render);
-run({.title = "editor", .mouse = true},     handler, render);
-run({.theme = theme::light},                handler, render);
-run({},                                     handler, render);  // all defaults
+run<MyApp>({.title = "my app"});
+run<MyApp>({.title = "editor", .mouse = true});
+run<MyApp>({.theme = theme::light});
+run<MyApp>({});                              // all defaults
+run<MyApp>();                                // also all defaults
 ```
 
 **Stability guarantee**: new fields are always added with defaults. Existing call sites never need updating.
@@ -199,13 +257,21 @@ struct Ctx {
 };
 ```
 
-Passed to the render function when it declares a `(const Ctx&)` parameter. Updated automatically on resize.
+In the Program architecture, `view()` takes `const Model&` rather than `Ctx`. Terminal size and theme are available through subscriptions (`Sub<Msg>::on_resize()`) and the runtime. `Ctx` is still used by `canvas_run()` and the low-level API.
 
 ```cpp
-[&](const Ctx& ctx) {
-    using namespace dsl;
-    bool narrow = ctx.size.width.value < 80;
+// Program app — store size in your Model via on_resize subscription
+static Element view(const Model& m) {
+    bool narrow = m.width < 80;
+    return v(
+        text("Hello") | fgc(Color::cyan()),
+        narrow ? text("narrow") : text("wide layout")
+    ).build();
+}
 
+// canvas_run / low-level — Ctx is passed directly
+[&](const Ctx& ctx) {
+    bool narrow = ctx.size.width.value < 80;
     return v(
         text("Hello") | fgc(ctx.theme.primary),
         narrow ? text("narrow") : text("wide layout")
@@ -223,7 +289,7 @@ ctx.size.height.value  // int — rows
 
 ## Event helpers
 
-Stable predicate functions over the `Event` variant. Use these instead of `std::get_if` — the internal `Event` representation can change without breaking your code.
+Stable predicate functions over the `Event` variant. For Program apps, prefer `Sub<Msg>::on_key()` and `key_map<Msg>()` instead of manual event handling. These predicates are still useful for `canvas_run()`, `live()`, and inside `Sub<Msg>::on_key()` lambdas.
 
 ### Key predicates
 
@@ -274,7 +340,7 @@ struct MousePos { int col, row; };  // 0-based terminal cell coordinates
 
 `MouseButton` values: `Left`, `Right`, `Middle`, `ScrollUp`, `ScrollDown`, `None`
 
-Mouse requires `.mouse = true` in `RunConfig`. For hover (motion without button), send `\x1b[?1003h` manually after terminal setup (low-level path only; the high-level `run()` enables button-press/release tracking by default).
+Mouse requires `.mouse = true` in `RunConfig`. For hover (motion without button), send `\x1b[?1003h` manually after terminal setup (low-level path only; the high-level `run<P>()` enables button-press/release tracking by default).
 
 ### Other predicates
 
@@ -286,7 +352,7 @@ bool unfocused(const Event& ev);
 ```
 
 ```cpp
-// Typical usage
+// Low-level usage (canvas_run / live)
 [&](const Event& ev) {
     int w, h;
     if (resized(ev, &w, &h)) relayout(w, h);
@@ -295,6 +361,18 @@ bool unfocused(const Event& ev);
     if (pasted(ev, &text)) handle_paste(text);
 
     return true;
+}
+
+// Program app equivalent — use subscriptions instead
+static auto subscribe(const Model&) -> Sub<Msg> {
+    return Sub<Msg>::batch({
+        Sub<Msg>::on_resize([](Size sz) -> std::optional<Msg> {
+            return Resized{sz.width.value, sz.height.value};
+        }),
+        Sub<Msg>::on_paste([](std::string text) -> std::optional<Msg> {
+            return Pasted{std::move(text)};
+        }),
+    });
 }
 ```
 
@@ -852,11 +930,12 @@ theme::light_ansi  // 16-color light
 
 Pass via `RunConfig`:
 ```cpp
-run({.theme = theme::light}, handler, render);
+run<MyApp>({.theme = theme::light});
 ```
 
-Access in the render function via `ctx.theme`:
+Access in `canvas_run` via `ctx.theme`. In Program apps, the theme is available through the runtime:
 ```cpp
+// canvas_run / low-level
 [&](const Ctx& ctx) {
     return text("Status", Style{}.with_fg(ctx.theme.success));
 }
@@ -873,7 +952,7 @@ constexpr auto my_theme = Theme::derive(
     [](Theme& t) { t.accent  = Color::hex(0xFFE66D); }
 );
 
-run({.theme = my_theme}, handler, render);
+run<MyApp>({.theme = my_theme});
 ```
 
 ---
@@ -1068,7 +1147,7 @@ class MyResource : MoveOnly {
 
 ## Error handling
 
-Used by the low-level API (terminal setup, I/O). `run()` handles all errors internally. You only need this when using `App::builder()` or the type-state terminal directly.
+Used by the low-level API (terminal setup, I/O). `run<P>()` handles all errors internally. You only need this when using `canvas_run()` or the type-state terminal directly.
 
 ```cpp
 enum class ErrorKind {
@@ -1221,26 +1300,19 @@ Copy-on-write: `fork()` creates a child context that shares the parent's data un
 
 The sections above cover the stable public API (`<maya/maya.hpp>` + `<maya/widget/*.hpp>`). Everything below is the lower-level machinery, accessible via `<maya/internal.hpp>`. These interfaces may change across versions.
 
-### Direct App access
+### canvas_run — low-level escape hatch
 
-If you need capabilities beyond `run()` — custom event loop timing, multiple concurrent render targets, non-blocking animations — use `App` directly:
+If you need capabilities beyond `run<P>()` — custom event loop timing, direct canvas access, non-blocking animations — use `canvas_run()`:
 
 ```cpp
-auto result = App::builder()
-    .title("my app")
-    .mouse(true)
-    .theme(theme::dark)
-    .build();
-
-if (!result) { /* handle error */ return 1; }
-
-auto app = std::move(*result);
-app.on_key([&](const KeyEvent& ke) -> bool { ... });
-app.on_mouse([&](const MouseEvent& me) -> bool { ... });
-app.on_resize([&](Size sz) { ... });
-
-auto status = app.run([&] { return text("hello"); });
+canvas_run(
+    {.title = "my app", .mouse = true},
+    [&](const Event& ev) -> bool { /* handle events, return false to quit */ },
+    [&](const Ctx& ctx) -> Element { /* render */ }
+);
 ```
+
+This is the callback-based API used by maya's canvas examples (doom fire, raymarcher, etc.).
 
 ### Type-state terminal
 

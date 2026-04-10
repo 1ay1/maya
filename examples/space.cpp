@@ -1,5 +1,6 @@
 // space.cpp — NASA-style Mission Control Dashboard
 //
+// Uses maya::run() with fps=15 for continuous rendering.
 // An animated spacecraft telemetry display tracking a journey to Mars.
 // Features gauges, sparklines, heatmap, line chart, bar chart, crew
 // status, subsystem health, random events, and physics simulation.
@@ -643,38 +644,16 @@ static maya::Element render() {
     return vstack()(std::move(layout));
 }
 
-// ── Program ─────────────────────────────────────────────────────────────────
+// ── Main ────────────────────────────────────────────────────────────────────
 
-struct SpaceApp {
-    struct Model { int frame = 0; };
+int main() {
+    init_state();
 
-    struct Tick {};
-    struct Quit {};
-    struct ThrusterBurn {};
-    struct Abort {};
-    struct Diagnostics {};
-    struct Phase1 {};
-    struct Phase2 {};
-    struct Phase3 {};
-    using Msg = std::variant<Tick, Quit, ThrusterBurn, Abort, Diagnostics,
-                             Phase1, Phase2, Phase3>;
-
-    static Model init() {
-        init_state();
-        return {};
-    }
-
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Tick) {
-                tick(1.0f / 15.0f);
-                m.frame++;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [](Quit) {
-                return std::pair{Model{}, Cmd<Msg>::quit()};
-            },
-            [&](ThrusterBurn) {
+    maya::run(
+        {.title = "ARES VII Mission Control", .fps = 15, .mode = Mode::Fullscreen},
+        [](const Event& ev) {
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+            if (key(ev, ' ')) {
                 if (fuel > 0.05f) {
                     fuel -= 0.03f;
                     velocity += 1.5f;
@@ -687,9 +666,8 @@ struct SpaceApp {
                     toasts.push_back({"FUEL CRITICAL — burn denied",
                                       maya::Severity::Error, 4.0f});
                 }
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Abort) {
+            }
+            if (key(ev, 'a')) {
                 if (!abort_sequence) {
                     abort_sequence = true;
                     abort_timer = 10.0f;
@@ -698,72 +676,32 @@ struct SpaceApp {
                     comm_log.push_back({elapsed, "FLIGHT: ABORT ABORT ABORT — all stations standby", 2});
                     if (comm_log.size() > MAX_LOG)
                         comm_log.erase(comm_log.begin());
-                    // Stress crew
                     for (auto& c : crew) c.stress += 0.15f;
                 } else {
                     abort_sequence = false;
                     toasts.push_back({"Abort sequence cancelled",
                                       maya::Severity::Info, 3.0f});
                 }
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Diagnostics) {
+            }
+            if (key(ev, 'd')) {
                 diag_mode = !diag_mode;
                 diag_timer = 5.0f;
                 if (diag_mode) {
                     toasts.push_back({"Diagnostics scan in progress...",
                                       maya::Severity::Info, 3.0f});
-                    // Fix a random subsystem
                     for (auto& s : subsystems) {
                         if (s.status > 0) { s.status = 0; break; }
                     }
                 }
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Phase1) {
-                mission_phase = 0;
-                toasts.push_back({"Phase set: LAUNCH", maya::Severity::Info, 2.0f});
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Phase2) {
-                mission_phase = 1;
-                toasts.push_back({"Phase set: TRANSIT", maya::Severity::Info, 2.0f});
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Phase3) {
-                mission_phase = 2;
-                toasts.push_back({"Phase set: ORBIT INSERTION", maya::Severity::Info, 2.0f});
-                return std::pair{m, Cmd<Msg>{}};
-            },
-        }, msg);
-    }
-
-    static Element view(const Model&) {
-        return render();
-    }
-
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return Sub<Msg>::batch(
-            key_map<Msg>({
-                {'q', Quit{}},
-                {SpecialKey::Escape, Quit{}},
-                {' ', ThrusterBurn{}},
-                {'a', Abort{}},
-                {'d', Diagnostics{}},
-                {'1', Phase1{}},
-                {'2', Phase2{}},
-                {'3', Phase3{}},
-            }),
-            Sub<Msg>::every(std::chrono::milliseconds(1000 / 15), Tick{})
-        );
-    }
-};
-
-static_assert(Program<SpaceApp>);
-
-// ── Main ────────────────────────────────────────────────────────────────────
-
-int main() {
-    run<SpaceApp>({.title = "ARES VII Mission Control", .fps = 0, .mode = Mode::Fullscreen});
-    return 0;
+            }
+            if (key(ev, '1')) { mission_phase = 0; toasts.push_back({"Phase set: LAUNCH", maya::Severity::Info, 2.0f}); }
+            if (key(ev, '2')) { mission_phase = 1; toasts.push_back({"Phase set: TRANSIT", maya::Severity::Info, 2.0f}); }
+            if (key(ev, '3')) { mission_phase = 2; toasts.push_back({"Phase set: ORBIT INSERTION", maya::Severity::Info, 2.0f}); }
+            return true;
+        },
+        [] {
+            tick(1.0f / 15.0f);
+            return render();
+        }
+    );
 }

@@ -654,96 +654,31 @@ static maya::Element render() {
     );
 }
 
-// -- Program -----------------------------------------------------------------
-
-struct DeployApp {
-    struct Model { int frame = 0; };
-
-    struct Tick {};
-    struct Quit {};
-    struct Deploy {};
-    struct Rollback {};
-    struct ForceToggle {};
-    struct EnvDev {};
-    struct EnvStaging {};
-    struct EnvProd {};
-    using Msg = std::variant<Tick, Quit, Deploy, Rollback, ForceToggle,
-                             EnvDev, EnvStaging, EnvProd>;
-
-    static Model init() {
-        init_services();
-        trigger_deploy_wave();
-        return {};
-    }
-
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Tick) {
-                tick(1.0f / 15.0f);
-                m.frame++;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [](Quit) {
-                return std::pair{Model{}, Cmd<Msg>::quit()};
-            },
-            [&](Deploy) {
-                trigger_deploy_wave();
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Rollback) {
-                trigger_rollback();
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ForceToggle) {
-                force_mode = !force_mode;
-                if (force_mode) add_log(1, "FORCE MODE enabled - skipping failure checks");
-                else add_log(0, "FORCE MODE disabled");
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](EnvDev) {
-                current_env = Env::Dev;
-                add_log(0, "Switched to DEV environment");
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](EnvStaging) {
-                current_env = Env::Staging;
-                add_log(0, "Switched to STAGING environment");
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](EnvProd) {
-                current_env = Env::Prod;
-                add_log(1, "Switched to PROD environment - caution!");
-                return std::pair{m, Cmd<Msg>{}};
-            },
-        }, msg);
-    }
-
-    static Element view(const Model&) {
-        return render();
-    }
-
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return Sub<Msg>::batch(
-            key_map<Msg>({
-                {'q', Quit{}},
-                {SpecialKey::Escape, Quit{}},
-                {' ', Deploy{}},
-                {'r', Rollback{}},
-                {'f', ForceToggle{}},
-                {'1', EnvDev{}},
-                {'2', EnvStaging{}},
-                {'3', EnvProd{}},
-            }),
-            Sub<Msg>::every(std::chrono::milliseconds(1000 / 15), Tick{})
-        );
-    }
-};
-
-static_assert(Program<DeployApp>);
-
 // -- Main --------------------------------------------------------------------
 
 int main() {
-    run<DeployApp>({.title = "deploy", .fps = 0, .mode = Mode::Fullscreen});
-    return 0;
+    init_services();
+    trigger_deploy_wave();
+
+    maya::run(
+        {.title = "deploy", .fps = 15, .mode = Mode::Fullscreen},
+        [](const Event& ev) {
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+            if (key(ev, ' '))  trigger_deploy_wave();
+            if (key(ev, 'r'))  trigger_rollback();
+            if (key(ev, 'f')) {
+                force_mode = !force_mode;
+                if (force_mode) add_log(1, "FORCE MODE enabled - skipping failure checks");
+                else add_log(0, "FORCE MODE disabled");
+            }
+            if (key(ev, '1')) { current_env = Env::Dev;     add_log(0, "Switched to DEV environment"); }
+            if (key(ev, '2')) { current_env = Env::Staging;  add_log(0, "Switched to STAGING environment"); }
+            if (key(ev, '3')) { current_env = Env::Prod;     add_log(1, "Switched to PROD environment - caution!"); }
+            return true;
+        },
+        [&] {
+            tick(1.0f / 15.0f);
+            return render();
+        }
+    );
 }

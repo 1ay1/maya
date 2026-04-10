@@ -26,10 +26,7 @@ above. Each frame erases and redraws the live region.
 This is how Claude Code works. The app stays inline for its entire lifetime.
 
 ```cpp
-maya::run(
-    {.mode = Mode::Inline, .mouse = true},
-    event_fn, render_fn
-);
+maya::run<P>({.mode = Mode::Inline, .mouse = true});
 ```
 
 **Pipeline**: raw mode -> render_tree (auto_height) -> serialize_changed
@@ -54,10 +51,7 @@ Full-screen mode. The terminal switches to the alternate screen buffer. The app
 owns the entire viewport. Double-buffered cell-level diffing.
 
 ```cpp
-maya::run(
-    {.mode = Mode::Fullscreen, .mouse = true},
-    event_fn, render_fn
-);
+maya::run<P>({.mode = Mode::Fullscreen, .mouse = true});
 ```
 
 **Pipeline**: alt screen -> render_tree (fixed height) -> diff (cell-level,

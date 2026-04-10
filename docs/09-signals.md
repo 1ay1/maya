@@ -229,27 +229,63 @@ Batches nest correctly — only the outermost batch triggers notifications:
 
 ## Signals in maya Applications
 
-### Pattern: Signal-Driven State
+Signals are most commonly used in `run()`, `live()`, and `canvas_run()` for
+local reactive state. In Program apps (`run<P>()`), the Model is the primary
+state — signals can still be useful for derived/cached computations.
+
+### Pattern: Signal-Driven State (run/live/canvas_run)
+
+Simple `run()` pairs naturally with signals — closures capture signal refs
+directly and `dyn()` ensures only the reactive parts re-render:
+
+```cpp
+Signal<int> count{0};
+run({.fps = 30},
+    [&](const Event& ev) {
+        on(ev, '+', [&] { count.update([](int& n) { ++n; }); });
+        return !key(ev, 'q');
+    },
+    [&] {
+        return (v(
+            dyn([&] { return text(count.get()) | Bold; }),
+            t<"[+] count  [q] quit"> | Dim
+        ) | pad<1>).build();
+    }
+);
+```
 
 ```cpp
 Signal<int>         count{0};
 Signal<std::string> message{"Ready"};
 
-run(
-    [&](const Event& ev) {
-        on(ev, '+', [&] {
-            count.update([](int& n) { ++n; });
-            message.set("Count: " + std::to_string(count.get()));
-        });
-        return !key(ev, 'q');
-    },
-    [&] {
-        return (v(
-            dyn([&] { return text(message.get()); }),
-            dyn([&] { return text(count.get()) | Bold; })
-        ) | pad<1>).build();
+live({.fps = 30}, [&] {
+    return (v(
+        dyn([&] { return text(message.get()); }),
+        dyn([&] { return text(count.get()) | Bold; })
+    ) | pad<1>).build();
+});
+```
+
+### Pattern: Program with Plain Model (preferred)
+
+In Program apps, use plain data in the Model instead of signals:
+
+```cpp
+struct MyApp {
+    struct Model { int count = 0; std::string message = "Ready"; };
+    struct Inc {};
+    using Msg = std::variant<Inc>;
+
+    static auto update(Model m, Msg) -> std::pair<Model, Cmd<Msg>> {
+        m.count++;
+        m.message = "Count: " + std::to_string(m.count);
+        return {m, {}};
     }
-);
+    static Element view(const Model& m) {
+        return v(text(m.message), text(m.count) | Bold) | pad<1>;
+    }
+    // ...
+};
 ```
 
 ### Pattern: Computed Display Values

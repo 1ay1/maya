@@ -259,6 +259,11 @@ auto grid = h(panels);
 
 ## Mixing Static and Dynamic Patterns
 
+All patterns in this section work in both `run()` and `run<P>()`. In simple
+`run()`, these trees are returned from the render closure. In Program apps,
+they are returned from `view(const Model&)`. The mixing of static and dynamic
+nodes is the same either way.
+
 ### Pattern: Static Shell + Dynamic Body
 
 ```cpp
@@ -335,5 +340,6 @@ dyn([&] {
   `sized_range`, it reserves upfront. The projection is called once per element.
 
 - **Rebuild per frame**: In continuous rendering (`fps > 0`), the entire tree
-  is rebuilt each frame. maya's diff engine ensures only changed cells are
-  written to the terminal. Don't worry about rebuilding — it's designed for it.
+  is rebuilt each frame — this applies to both simple `run()` and `run<P>()`.
+  maya's diff engine ensures only changed cells are written to the terminal.
+  Don't worry about rebuilding — it's designed for it.

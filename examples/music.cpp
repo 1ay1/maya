@@ -1,8 +1,9 @@
 // music.cpp — Terminal music player with animated visualizations
 //
-// A gorgeous Spotify/Apple Music-inspired terminal music player with
-// animated heatmap album art, sparkline audio visualizer, progress bar,
-// and scrollable playlist. All data is simulated.
+// Uses maya::run() with fps=15 for continuous rendering.
+// A Spotify/Apple Music-inspired terminal music player with animated
+// heatmap album art, sparkline audio visualizer, progress bar, and
+// scrollable playlist. All data is simulated.
 //
 // Controls:
 //   space       play/pause
@@ -479,110 +480,32 @@ static maya::Element render() {
     );
 }
 
-// -- Program -----------------------------------------------------------------
-
-struct MusicApp {
-    struct Model {};
-
-    struct Tick {};
-    struct Quit {};
-    struct TogglePlay {};
-    struct NextTrack {};
-    struct PrevTrack {};
-    struct ToggleShuffle {};
-    struct CycleRepeat {};
-    struct VolumeUp {};
-    struct VolumeDown {};
-    struct ScrollDown {};
-    struct ScrollUp {};
-
-    using Msg = std::variant<Tick, Quit, TogglePlay, NextTrack, PrevTrack,
-                              ToggleShuffle, CycleRepeat, VolumeUp, VolumeDown,
-                              ScrollDown, ScrollUp>;
-
-    static Model init() { init_shuffle(); return {}; }
-
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Tick) {
-                tick(1.0f / 15.0f);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Quit) {
-                return std::pair{m, Cmd<Msg>::quit()};
-            },
-            [&](TogglePlay) {
-                playing = !playing;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](NextTrack) {
-                advance_track(1);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](PrevTrack) {
-                advance_track(-1);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ToggleShuffle) {
-                shuffle_on = !shuffle_on;
-                if (shuffle_on) init_shuffle();
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](CycleRepeat) {
-                repeat_mode = (repeat_mode + 1) % 3;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](VolumeUp) {
-                volume = std::min(1.0f, volume + 0.05f);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](VolumeDown) {
-                volume = std::max(0.0f, volume - 0.05f);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ScrollDown) {
-                playlist_scroll = std::min(playlist_scroll + 1,
-                    std::max(0, static_cast<int>(tracks.size()) - 8));
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ScrollUp) {
-                playlist_scroll = std::max(0, playlist_scroll - 1);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-        }, msg);
-    }
-
-    static Element view(const Model&) { return render(); }
-
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        using SK = SpecialKey;
-        return Sub<Msg>::batch(
-            key_map<Msg>({
-                {'q',       Quit{}},
-                {SK::Escape, Quit{}},
-                {' ',       TogglePlay{}},
-                {'n',       NextTrack{}},
-                {'p',       PrevTrack{}},
-                {'s',       ToggleShuffle{}},
-                {'r',       CycleRepeat{}},
-                {'+',       VolumeUp{}},
-                {'=',       VolumeUp{}},
-                {'-',       VolumeDown{}},
-                {'j',       ScrollDown{}},
-                {SK::Down,  ScrollDown{}},
-                {'k',       ScrollUp{}},
-                {SK::Up,    ScrollUp{}},
-            }),
-            Sub<Msg>::every(std::chrono::milliseconds(1000 / 15), Tick{})
-        );
-    }
-};
-
-static_assert(Program<MusicApp>);
-
 // -- Main --------------------------------------------------------------------
 
 int main() {
-    run<MusicApp>({.title = "music", .mode = Mode::Fullscreen});
-    return 0;
+    init_shuffle();
+
+    maya::run(
+        {.title = "music", .fps = 15, .mode = Mode::Fullscreen},
+        [](const Event& ev) {
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+            if (key(ev, ' '))  playing = !playing;
+            if (key(ev, 'n'))  advance_track(1);
+            if (key(ev, 'p'))  advance_track(-1);
+            if (key(ev, 's'))  { shuffle_on = !shuffle_on; if (shuffle_on) init_shuffle(); }
+            if (key(ev, 'r'))  repeat_mode = (repeat_mode + 1) % 3;
+            if (key(ev, '+') || key(ev, '=')) volume = std::min(1.0f, volume + 0.05f);
+            if (key(ev, '-'))  volume = std::max(0.0f, volume - 0.05f);
+            if (key(ev, 'j') || key(ev, SpecialKey::Down))
+                playlist_scroll = std::min(playlist_scroll + 1,
+                    std::max(0, static_cast<int>(tracks.size()) - 8));
+            if (key(ev, 'k') || key(ev, SpecialKey::Up))
+                playlist_scroll = std::max(0, playlist_scroll - 1);
+            return true;
+        },
+        [] {
+            tick(1.0f / 15.0f);
+            return render();
+        }
+    );
 }

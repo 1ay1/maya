@@ -33,16 +33,9 @@
 #include "../platform/io.hpp"
 #include "../terminal/ansi.hpp"
 
+#include "quit.hpp"
+
 namespace maya {
-
-// ── maya::quit() — global quit for non-Program code (live, print) ───────
-namespace detail {
-    inline thread_local bool quit_requested = false;
-} // namespace detail
-
-/// Request a clean exit from maya::live(). Not needed for Program apps
-/// (use Cmd<Msg>::quit() instead).
-inline void quit() noexcept { detail::quit_requested = true; }
 
 // ── Terminal width detection ─────────────────────────────────────────────────
 

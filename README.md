@@ -36,36 +36,60 @@ int main() {
 
 Structure, text, styles, and layout — all resolved at compile time. Pipe operators chain naturally. Type-state machines enforce correctness: you can't set a border color without a border, can't apply layout modifiers to text nodes.
 
-A reactive counter app in 20 lines:
+A reactive counter in 12 lines:
 
 ```cpp
 #include <maya/maya.hpp>
-#include <maya/widget/sparkline.hpp>
-
+using namespace maya;
 using namespace maya::dsl;
 
 int main() {
-    maya::Signal<int> count{0};
-    std::vector<float> history;
+    Signal<int> count{0};
 
-    maya::run(
+    run(
         {.title = "counter"},
-        [&](const maya::Event& ev) {
-            if (maya::key(ev, '+')) count.update([](int& n) { ++n; });
-            if (maya::key(ev, '-')) count.update([](int& n) { --n; });
-            return !maya::key(ev, 'q');
+        [&](const Event& ev) {
+            if (key(ev, '+')) count.update([](int& n) { ++n; });
+            if (key(ev, '-')) count.update([](int& n) { --n; });
+            return !key(ev, 'q');
         },
         [&] {
-            history.push_back(static_cast<float>(count.get()));
             return v(
                 text("Count: " + std::to_string(count.get())) | Bold | Fg<100, 200, 255>,
-                Sparkline(history) | Fg<80, 220, 120>,
                 t<"[+/-] change  [q] quit"> | Dim
             ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
         }
     );
 }
 ```
+
+For complex apps, use the **Program** architecture — pure functions, effects as data:
+
+```cpp
+struct Counter {
+    struct Model { int count = 0; };
+    struct Inc {}; struct Dec {}; struct Quit {};
+    using Msg = std::variant<Inc, Dec, Quit>;
+
+    static Model init() { return {}; }
+    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
+        return std::visit(overload{
+            [&](Inc)  { return std::pair{Model{m.count + 1}, Cmd<Msg>{}}; },
+            [&](Dec)  { return std::pair{Model{m.count - 1}, Cmd<Msg>{}}; },
+            [](Quit)  { return std::pair{Model{}, Cmd<Msg>::quit()}; },
+        }, msg);
+    }
+    static Element view(const Model& m) {
+        return v(text(m.count) | Bold, t<"[+/-] q quit"> | Dim) | pad<1> | border_<Round>;
+    }
+    static auto subscribe(const Model&) -> Sub<Msg> {
+        return key_map<Msg>({{'+', Inc{}}, {'-', Dec{}}, {'q', Quit{}}});
+    }
+};
+int main() { run<Counter>({.title = "counter"}); }
+```
+
+Two APIs, same runtime. Use `run(event_fn, render_fn)` for quick tools, `run<P>()` when you want testable pure logic and algebraic effects.
 
 ## Examples
 
@@ -109,11 +133,13 @@ int main() {
 **Widgets** (50+)
 Line chart · Bar chart · Gauge · Sparkline · Heatmap · Progress bar · Table · Tabs · Tree view · Scrollable · Input · Textarea · Select · Slider · Checkbox · Radio · Button · Modal · Popup · Toast · Markdown · Diff view · Calendar · Breadcrumb · Spinner · Badge · Menu · Command palette · Log viewer · Canvas · Gradient · Image · and more
 
-**Runtime**
-- Signal/slot reactivity system
-- Keyboard, mouse, resize, focus/blur events
+**Architecture**
+- Elm-style Program concept: Model + Msg + init/update/view/subscribe
+- Effects as data: `Cmd<Msg>` (quit, batch, after, task) and `Sub<Msg>` (keys, mouse, timers)
+- Type-state render pipeline (Idle→Cleared→Painted→Opened→Closed)
+- Signal/slot reactivity system (SolidJS-inspired)
 - Fullscreen and inline rendering modes
-- Alternate screen, raw mode, mouse tracking
+- Keyboard, mouse, resize, focus/blur, paste events
 
 ## Headers
 
@@ -151,7 +177,7 @@ For advanced use cases that need direct access to the canvas, diff engine, SIMD,
 
 | Header | Contains | Stability |
 |--------|----------|-----------|
-| `maya.hpp` | DSL, `run()`, events, signals, styles, elements, themes | Stable — safe to depend on |
+| `maya.hpp` | DSL, `run<P>()`, Program concept, Cmd, Sub, events, signals, styles, elements, themes | Stable — safe to depend on |
 | `widget/*.hpp` | 50+ widgets (Input, Markdown, ToolCall, ...) | Stable — include what you need |
 | `internal.hpp` | Canvas, diff, renderer, SIMD, terminal I/O, layout | Internal — may change across versions |
 

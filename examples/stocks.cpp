@@ -2,7 +2,7 @@
 //
 // A visually rich terminal dashboard with animated charts, sparklines,
 // color-coded gains/losses, portfolio summary, and a scrolling news feed.
-// Uses the Program architecture with Mode::Inline so output stays in scrollback.
+// Uses Mode::Inline so output stays in scrollback.
 //
 // All data is simulated with correlated random walks.
 //
@@ -20,7 +20,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <numeric>
@@ -28,6 +27,7 @@
 #include <string>
 #include <vector>
 
+using namespace maya;
 using namespace maya::dsl;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -586,105 +586,32 @@ static maya::Element render() {
     );
 }
 
-// ── Program ─────────────────────────────────────────────────────────────────
+// ── Main ────────────────────────────────────────────────────────────────────
 
-struct StocksApp {
-    struct Model { int frame = 0; };
+int main() {
+    init_state();
 
-    struct Tick {};
-    struct Quit {};
-    struct SelectUp {};
-    struct SelectDown {};
-    struct TimeLeft {};
-    struct TimeRight {};
-    struct MarketEvent {};
-    struct ToggleMarket {};
-    struct CycleTheme {};
-
-    using Msg = std::variant<Tick, Quit, SelectUp, SelectDown,
-                             TimeLeft, TimeRight, MarketEvent,
-                             ToggleMarket, CycleTheme>;
-
-    static Model init() {
-        init_state();
-        return {};
-    }
-
-    static auto update(Model m, Msg msg) -> std::pair<Model, maya::Cmd<Msg>> {
-        return std::visit(maya::overload{
-            [&](Tick) -> std::pair<Model, maya::Cmd<Msg>> {
-                tick(1.0f / 20.0f);
-                m.frame++;
-                return {m, {}};
-            },
-            [&](Quit) -> std::pair<Model, maya::Cmd<Msg>> {
-                return {m, maya::Cmd<Msg>::quit()};
-            },
-            [&](SelectUp) -> std::pair<Model, maya::Cmd<Msg>> {
-                selected = std::max(0, selected - 1);
-                return {m, {}};
-            },
-            [&](SelectDown) -> std::pair<Model, maya::Cmd<Msg>> {
-                selected = std::min(static_cast<int>(stocks.size()) - 1, selected + 1);
-                return {m, {}};
-            },
-            [&](TimeLeft) -> std::pair<Model, maya::Cmd<Msg>> {
-                timeframe = std::max(0, timeframe - 1);
-                return {m, {}};
-            },
-            [&](TimeRight) -> std::pair<Model, maya::Cmd<Msg>> {
-                timeframe = std::min(4, timeframe + 1);
-                return {m, {}};
-            },
-            [&](MarketEvent) -> std::pair<Model, maya::Cmd<Msg>> {
+    maya::run(
+        {.title = "Terminal Trader", .fps = 20, .mode = maya::Mode::Inline},
+        [](const Event& ev) {
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+            if (key(ev, SpecialKey::Up)   || key(ev, 'k')) selected = std::max(0, selected - 1);
+            if (key(ev, SpecialKey::Down)  || key(ev, 'j')) selected = std::min(static_cast<int>(stocks.size()) - 1, selected + 1);
+            if (key(ev, SpecialKey::Left)  || key(ev, 'h')) timeframe = std::max(0, timeframe - 1);
+            if (key(ev, SpecialKey::Right) || key(ev, 'l')) timeframe = std::min(4, timeframe + 1);
+            if (key(ev, 'r')) {
                 auto& s = stocks[static_cast<size_t>(randi(0, static_cast<int>(stocks.size()) - 1))];
                 float shock = randf(-0.08f, 0.08f);
                 s.price *= (1.0f + shock);
                 s.momentum = shock > 0 ? 1.0f : -1.0f;
-                return {m, {}};
-            },
-            [&](ToggleMarket) -> std::pair<Model, maya::Cmd<Msg>> {
-                market_open = !market_open;
-                return {m, {}};
-            },
-            [&](CycleTheme) -> std::pair<Model, maya::Cmd<Msg>> {
-                theme_idx = (theme_idx + 1) % 4;
-                return {m, {}};
-            },
-        }, msg);
-    }
-
-    static maya::Element view(const Model&) {
-        return render();
-    }
-
-    static auto subscribe(const Model&) -> maya::Sub<Msg> {
-        return maya::Sub<Msg>::batch(
-            maya::key_map<Msg>({
-                {'q',                         Quit{}},
-                {maya::SpecialKey::Escape,    Quit{}},
-                {maya::SpecialKey::Up,        SelectUp{}},
-                {'k',                         SelectUp{}},
-                {maya::SpecialKey::Down,      SelectDown{}},
-                {'j',                         SelectDown{}},
-                {maya::SpecialKey::Left,      TimeLeft{}},
-                {'h',                         TimeLeft{}},
-                {maya::SpecialKey::Right,     TimeRight{}},
-                {'l',                         TimeRight{}},
-                {'r',                         MarketEvent{}},
-                {' ',                         ToggleMarket{}},
-                {'t',                         CycleTheme{}},
-            }),
-            maya::Sub<Msg>::every(std::chrono::milliseconds(1000 / 20), Tick{})
-        );
-    }
-};
-
-static_assert(maya::Program<StocksApp>);
-
-// ── Main ────────────────────────────────────────────────────────────────────
-
-int main() {
-    maya::run<StocksApp>({.title = "Terminal Trader", .fps = 0, .mode = maya::Mode::Inline});
-    return 0;
+            }
+            if (key(ev, ' ')) market_open = !market_open;
+            if (key(ev, 't')) theme_idx = (theme_idx + 1) % 4;
+            return true;
+        },
+        [] {
+            tick(1.0f / 20.0f);
+            return render();
+        }
+    );
 }

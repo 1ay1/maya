@@ -136,9 +136,16 @@ static int   g_score = 0;
 static int   g_kills = 0;
 static bool  g_won = false;
 
-static float g_move_fwd = 0.f, g_move_strafe = 0.f, g_turn = 0.f;
 static constexpr float MOVE_SPD = 0.18f;
 static constexpr float TURN_SPD = 0.08f;
+
+// Held-key tracking: terminals only repeat the LAST key pressed, so when
+// you hold W then press Left, W stops sending events entirely. We keep a
+// key "held" for a generous window so both stay active. A key is released
+// either by timeout or by pressing its opposite (cancels immediately).
+static constexpr int KEY_HOLD_FRAMES = 15; // ~500ms at 30fps
+enum KeyAction { K_FWD, K_BACK, K_LEFT, K_RIGHT, K_TURN_L, K_TURN_R, K_COUNT };
+static int g_key_last_seen[K_COUNT] = {-100, -100, -100, -100, -100, -100};
 static constexpr float COLLISION_R = 0.2f;
 
 // ── Enemies ─────────────────────────────────────────────────────────────────
@@ -327,13 +334,19 @@ static void tick(float dt) {
     if (g_flash > 0) g_flash--;
     if (g_hit_flash > 0) g_hit_flash--;
 
-    g_pa += g_turn * TURN_SPD;
+    // Derive movement from held keys (any key seen within KEY_HOLD_FRAMES is active)
+    auto held = [](KeyAction k) { return (g_frame - g_key_last_seen[k]) < KEY_HOLD_FRAMES; };
+    float move_fwd    = (held(K_FWD)    ? 1.f : 0.f) - (held(K_BACK)   ? 1.f : 0.f);
+    float move_strafe = (held(K_RIGHT)  ? 1.f : 0.f) - (held(K_LEFT)   ? 1.f : 0.f);
+    float turn        = (held(K_TURN_R) ? 1.f : 0.f) - (held(K_TURN_L) ? 1.f : 0.f);
+
+    g_pa += turn * TURN_SPD;
 
     float fwd_x = std::cos(g_pa), fwd_y = std::sin(g_pa);
     float right_x = std::cos(g_pa + PI / 2.f), right_y = std::sin(g_pa + PI / 2.f);
 
-    float mx = fwd_x * g_move_fwd + right_x * g_move_strafe;
-    float my = fwd_y * g_move_fwd + right_y * g_move_strafe;
+    float mx = fwd_x * move_fwd + right_x * move_strafe;
+    float my = fwd_y * move_fwd + right_y * move_strafe;
 
     float ml = std::sqrt(mx * mx + my * my);
     if (ml > 0.01f) {
@@ -344,7 +357,6 @@ static void tick(float dt) {
         if (can_move(g_px, ny)) g_py = ny;
         g_weapon_bob += ml * 0.3f;
     }
-    g_move_fwd = 0.f; g_move_strafe = 0.f; g_turn = 0.f;
 
     // Check exit
     if (int(g_px) >= 0 && int(g_px) < MAP_W && int(g_py) >= 0 && int(g_py) < MAP_H
@@ -401,16 +413,17 @@ static bool handle(const Event& ev) {
     on(ev, 'r', [] { reset_game(); });
     if (g_dead || g_won) return true;
 
-    on(ev, 'w', [] { g_move_fwd += 1.f; });
-    on(ev, 's', [] { g_move_fwd -= 1.f; });
-    on(ev, 'a', [] { g_move_strafe -= 1.f; });
-    on(ev, 'd', [] { g_move_strafe += 1.f; });
-    on(ev, SpecialKey::Up,    [] { g_move_fwd += 1.f; });
-    on(ev, SpecialKey::Down,  [] { g_move_fwd -= 1.f; });
-    on(ev, SpecialKey::Left,  [] { g_turn -= 1.f; });
-    on(ev, SpecialKey::Right, [] { g_turn += 1.f; });
-    on(ev, ',', [] { g_turn -= 1.f; });
-    on(ev, '.', [] { g_turn += 1.f; });
+    // Press a key: stamp it, and cancel its opposite so direction changes feel instant
+    on(ev, 'w', [] { g_key_last_seen[K_FWD]  = g_frame; g_key_last_seen[K_BACK]   = -100; });
+    on(ev, 's', [] { g_key_last_seen[K_BACK] = g_frame; g_key_last_seen[K_FWD]    = -100; });
+    on(ev, 'a', [] { g_key_last_seen[K_LEFT] = g_frame; g_key_last_seen[K_RIGHT]  = -100; });
+    on(ev, 'd', [] { g_key_last_seen[K_RIGHT]= g_frame; g_key_last_seen[K_LEFT]   = -100; });
+    on(ev, SpecialKey::Up,    [] { g_key_last_seen[K_FWD]    = g_frame; g_key_last_seen[K_BACK]   = -100; });
+    on(ev, SpecialKey::Down,  [] { g_key_last_seen[K_BACK]   = g_frame; g_key_last_seen[K_FWD]    = -100; });
+    on(ev, SpecialKey::Left,  [] { g_key_last_seen[K_TURN_L] = g_frame; g_key_last_seen[K_TURN_R] = -100; });
+    on(ev, SpecialKey::Right, [] { g_key_last_seen[K_TURN_R] = g_frame; g_key_last_seen[K_TURN_L] = -100; });
+    on(ev, ',', [] { g_key_last_seen[K_TURN_L] = g_frame; g_key_last_seen[K_TURN_R] = -100; });
+    on(ev, '.', [] { g_key_last_seen[K_TURN_R] = g_frame; g_key_last_seen[K_TURN_L] = -100; });
     on(ev, ' ', [] { shoot(); });
     on(ev, 'm', [] { g_show_map = !g_show_map; });
 

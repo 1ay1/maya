@@ -1,10 +1,9 @@
 // maya — FPS: Wolfenstein-style raycaster
 //
-// DDA raycasting engine with procedural brick textures, torch lighting,
-// gradient sky, stone floor tiles, vignette, weapon view, enemy sprites,
-// ambient occlusion, and color grading. Half-block at 2x vertical res.
+// Clean, bright DDA raycasting with colored walls, blue sky, stone floor,
+// torch lighting, enemies, pickups, weapon, minimap, and half-block rendering.
 //
-// Keys: WASD/arrows=move  ,/.=turn  space=shoot  m=minimap  q/Esc=quit
+// Keys: WASD/arrows=move  ,/.=turn  space=shoot  m=minimap  r=restart  q/Esc=quit
 
 #include <maya/internal.hpp>
 
@@ -20,7 +19,7 @@ using namespace maya;
 
 // ── Math ────────────────────────────────────────────────────────────────────
 
-static constexpr float PI  = 3.14159265f;
+static constexpr float PI = 3.14159265f;
 
 static float clampf(float x, float lo, float hi) { return std::fmin(std::fmax(x, lo), hi); }
 static float lerp(float a, float b, float t) { return a + (b - a) * t; }
@@ -30,15 +29,24 @@ static float smoothstep(float e0, float e1, float x) {
 }
 
 struct Col3 { float r, g, b; };
-static Col3 col_add(Col3 a, Col3 b) { return {a.r+b.r, a.g+b.g, a.b+b.b}; }
-static Col3 col_mul(Col3 a, float s) { return {a.r*s, a.g*s, a.b*s}; }
+static Col3 operator+(Col3 a, Col3 b) { return {a.r+b.r, a.g+b.g, a.b+b.b}; }
+static Col3 operator*(Col3 a, float s) { return {a.r*s, a.g*s, a.b*s}; }
 static Col3 col_lerp(Col3 a, Col3 b, float t) { return {lerp(a.r,b.r,t), lerp(a.g,b.g,t), lerp(a.b,b.b,t)}; }
 static Col3 col_clamp(Col3 c) { return {clampf(c.r,0,1), clampf(c.g,0,1), clampf(c.b,0,1)}; }
 
-// Simple hash for procedural textures
 static float hash(float x, float y) {
     float h = std::sin(x * 127.1f + y * 311.7f) * 43758.5453f;
     return h - std::floor(h);
+}
+
+static float value_noise(float x, float y) {
+    float ix = std::floor(x), iy = std::floor(y);
+    float fx = x - ix, fy = y - iy;
+    fx = fx * fx * (3.f - 2.f * fx);
+    fy = fy * fy * (3.f - 2.f * fy);
+    float a = hash(ix, iy), b = hash(ix + 1, iy);
+    float c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1);
+    return lerp(lerp(a, b, fx), lerp(c, d, fx), fy);
 }
 
 // ── Map ─────────────────────────────────────────────────────────────────────
@@ -46,7 +54,7 @@ static float hash(float x, float y) {
 static constexpr int MAP_W = 24;
 static constexpr int MAP_H = 24;
 
-// 0=empty, 1-5=wall, 6=door, 9=exit
+// 0=empty, 1-5=wall types, 6=door, 9=exit
 // clang-format off
 static int g_map[MAP_H][MAP_W] = {
     {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
@@ -76,50 +84,46 @@ static int g_map[MAP_H][MAP_W] = {
 };
 // clang-format on
 
-// ── Torch lights ────────────────────────────────────────────────────────────
-
-struct Torch {
-    float x, y;
-    Col3  color;
-    float intensity;
-};
-
-static const Torch g_torches[] = {
-    {1.5f,  1.5f,  {1.0f, 0.7f, 0.3f}, 4.0f},
-    {11.5f, 1.5f,  {1.0f, 0.7f, 0.3f}, 4.0f},
-    {22.5f, 1.5f,  {0.6f, 0.7f, 1.0f}, 3.5f},
-    {1.5f,  8.5f,  {1.0f, 0.7f, 0.3f}, 4.0f},
-    {22.5f, 8.5f,  {1.0f, 0.6f, 0.2f}, 4.0f},
-    {11.5f, 11.5f, {1.0f, 0.8f, 0.4f}, 5.0f},
-    {1.5f,  22.5f, {1.0f, 0.7f, 0.3f}, 4.0f},
-    {22.5f, 22.5f, {0.4f, 0.8f, 0.5f}, 3.5f},
-    {11.5f, 17.5f, {1.0f, 0.5f, 0.2f}, 4.5f},
-    {20.5f, 15.5f, {1.0f, 0.2f, 0.1f}, 6.0f}, // exit glow
-};
-static constexpr int NUM_TORCHES = sizeof(g_torches) / sizeof(g_torches[0]);
-
-// ── Wall base colors ────────────────────────────────────────────────────────
+// ── Wall colors (bright, distinct) ──────────────────────────────────────────
 
 struct WallMat {
-    Col3 base;        // base color
-    Col3 mortar;      // mortar/gap color
-    float brick_w;    // brick width in UV
-    float brick_h;    // brick height in UV
-    float roughness;  // surface noise
+    Col3  base;
+    Col3  shade;   // side-face color (darker)
+    Col3  mortar;  // mortar/grout color
+    float brick_w, brick_h;
 };
 
 static const WallMat WALL_MATS[] = {
-    {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, 1, 1, 0},           // 0: unused
-    {{0.45f,0.44f,0.48f},{0.20f,0.20f,0.22f}, 0.25f,0.125f, 0.12f},// 1: gray stone
-    {{0.60f,0.25f,0.18f},{0.15f,0.12f,0.10f}, 0.25f,0.125f, 0.08f},// 2: red brick
-    {{0.25f,0.42f,0.22f},{0.10f,0.15f,0.08f}, 0.50f,0.25f,  0.15f},// 3: green moss
-    {{0.32f,0.34f,0.52f},{0.12f,0.13f,0.20f}, 0.50f,0.50f,  0.05f},// 4: blue steel
-    {{0.52f,0.45f,0.30f},{0.22f,0.18f,0.12f}, 0.33f,0.167f, 0.10f},// 5: tan sandstone
-    {{0.65f,0.50f,0.15f},{0.30f,0.25f,0.08f}, 0.50f,1.00f,  0.03f},// 6: gold door
-    {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, 1, 1, 0},           // 7: unused
-    {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, 1, 1, 0},           // 8: unused
-    {{0.70f,0.15f,0.12f},{0.35f,0.05f,0.05f}, 0.50f,0.25f,  0.06f},// 9: red exit
+    //  base                    shade                   mortar                  bw     bh
+    {{0,0,0},              {0,0,0},              {0,0,0},              1,     1},      // 0: unused
+    {{0.48f,0.18f,0.14f}, {0.35f,0.13f,0.10f}, {0.15f,0.08f,0.06f}, 0.25f, 0.125f}, // 1: dark red brick
+    {{0.55f,0.20f,0.12f}, {0.40f,0.15f,0.09f}, {0.18f,0.09f,0.06f}, 0.25f, 0.125f}, // 2: dark red-orange
+    {{0.38f,0.14f,0.13f}, {0.28f,0.10f,0.09f}, {0.12f,0.06f,0.05f}, 0.50f, 0.25f},  // 3: deep crimson stone
+    {{0.50f,0.24f,0.19f}, {0.38f,0.18f,0.14f}, {0.16f,0.08f,0.07f}, 0.50f, 0.50f},  // 4: dark terracotta
+    {{0.42f,0.19f,0.16f}, {0.32f,0.14f,0.11f}, {0.13f,0.07f,0.06f}, 0.33f, 0.167f}, // 5: dark red sandstone
+    {{0.60f,0.50f,0.20f}, {0.45f,0.38f,0.15f}, {0.22f,0.18f,0.08f}, 0.50f, 1.00f},  // 6: gold door
+    {{0,0,0},              {0,0,0},              {0,0,0},              1,     1},      // 7: unused
+    {{0,0,0},              {0,0,0},              {0,0,0},              1,     1},      // 8: unused
+    {{0.62f,0.14f,0.10f}, {0.48f,0.10f,0.08f}, {0.22f,0.05f,0.04f}, 0.50f, 0.25f},  // 9: dark red exit
 };
+
+// ── Torches ─────────────────────────────────────────────────────────────────
+
+struct Torch { float x, y; Col3 color; float intensity; };
+
+static const Torch g_torches[] = {
+    {1.5f,  1.5f,  {1.0f, 0.85f, 0.5f}, 5.0f},
+    {11.5f, 1.5f,  {1.0f, 0.85f, 0.5f}, 5.0f},
+    {22.5f, 1.5f,  {0.7f, 0.8f, 1.0f},  4.5f},
+    {1.5f,  8.5f,  {1.0f, 0.85f, 0.5f}, 5.0f},
+    {22.5f, 8.5f,  {1.0f, 0.80f, 0.4f}, 5.0f},
+    {11.5f, 11.5f, {1.0f, 0.90f, 0.6f}, 6.0f},
+    {1.5f,  22.5f, {1.0f, 0.85f, 0.5f}, 5.0f},
+    {22.5f, 22.5f, {0.5f, 0.9f, 0.6f},  4.5f},
+    {11.5f, 17.5f, {1.0f, 0.70f, 0.4f}, 5.5f},
+    {20.5f, 15.5f, {1.0f, 0.40f, 0.2f}, 7.0f},
+};
+static constexpr int NUM_TORCHES = sizeof(g_torches) / sizeof(g_torches[0]);
 
 // ── Player ──────────────────────────────────────────────────────────────────
 
@@ -165,7 +169,7 @@ static void spawn_enemies() {
 }
 
 static int g_flash = 0, g_hit_flash = 0;
-static float g_weapon_bob = 0.f; // weapon bobbing animation
+static float g_weapon_bob = 0.f;
 
 struct Pickup { float x, y; int type; bool taken; };
 static std::vector<Pickup> g_pickups;
@@ -182,57 +186,7 @@ static void spawn_pickups() {
     g_pickups.push_back({22.5f, 17.5f, 0, false});
 }
 
-static int g_frame = 0;  // forward declaration for particles
-
-// ── Particles (torch embers, dust, death) ───────────────────────────────────
-
-struct Particle {
-    float x, y, z;       // world pos (z = height, 0=floor, 1=ceiling)
-    float vx, vy, vz;
-    float life, max_life;
-    Col3  color;
-    float size;
-};
-
-static std::vector<Particle> g_particles;
-
-static void spawn_torch_particles() {
-    for (int i = 0; i < NUM_TORCHES; ++i) {
-        if ((g_frame + i * 7) % 4 != 0) continue;
-        float spread = 0.3f;
-        float fi = static_cast<float>(i);
-        float ff = static_cast<float>(g_frame);
-        Particle p;
-        p.x = g_torches[i].x + (hash(ff * 0.1f, fi) - 0.5f) * spread;
-        p.y = g_torches[i].y + (hash(fi, ff * 0.1f) - 0.5f) * spread;
-        p.z = 0.4f + hash(ff * 0.13f, fi * 2.7f) * 0.3f;
-        p.vx = (hash(ff * 0.2f, fi) - 0.5f) * 0.02f;
-        p.vy = (hash(fi, ff * 0.2f) - 0.5f) * 0.02f;
-        p.vz = 0.01f + hash(ff * 0.3f, fi * 1.3f) * 0.015f;
-        p.life = 1.0f;
-        p.max_life = 1.0f;
-        p.color = Col3{
-            g_torches[i].color.r * 1.2f,
-            g_torches[i].color.g * 0.8f,
-            g_torches[i].color.b * 0.3f
-        };
-        p.size = 0.15f + hash(ff * 0.17f, fi) * 0.1f;
-        g_particles.push_back(p);
-    }
-}
-
-static void update_particles(float dt) {
-    for (auto& p : g_particles) {
-        p.x += p.vx; p.y += p.vy; p.z += p.vz;
-        p.life -= dt * 1.5f;
-        p.vz *= 0.98f;
-    }
-    std::erase_if(g_particles, [](const Particle& p) { return p.life <= 0.f || p.z > 1.0f; });
-}
-
-// ── Screen shake ────────────────────────────────────────────────────────────
-
-static float g_shake = 0.f;
+static int g_frame = 0;
 
 // ── Style interning ─────────────────────────────────────────────────────────
 
@@ -250,7 +204,6 @@ static uint16_t g_minimap_wall, g_minimap_empty, g_minimap_player, g_minimap_ene
 // ── State ───────────────────────────────────────────────────────────────────
 
 static int g_w = 0, g_h = 0;
-// g_frame declared above (before particles)
 static bool g_show_map = true;
 static bool g_dead = false;
 
@@ -294,15 +247,15 @@ static void rebuild(StylePool& pool, int w, int h) {
         }
     }
 
-    g_bar_bg      = pool.intern(Style{}.with_bg(Color::rgb(10, 10, 10)).with_fg(Color::rgb(100, 100, 100)));
-    g_bar_dim     = pool.intern(Style{}.with_bg(Color::rgb(10, 10, 10)).with_fg(Color::rgb(80, 80, 90)));
-    g_bar_accent  = pool.intern(Style{}.with_bg(Color::rgb(10, 10, 10)).with_fg(Color::rgb(255, 200, 60)).with_bold());
-    g_bar_health  = pool.intern(Style{}.with_bg(Color::rgb(10, 10, 10)).with_fg(Color::rgb(60, 220, 80)).with_bold());
-    g_bar_ammo    = pool.intern(Style{}.with_bg(Color::rgb(10, 10, 10)).with_fg(Color::rgb(80, 180, 255)).with_bold());
-    g_minimap_wall   = pool.intern(Style{}.with_bg(Color::rgb(80, 80, 90)).with_fg(Color::rgb(80, 80, 90)));
-    g_minimap_empty  = pool.intern(Style{}.with_bg(Color::rgb(20, 20, 25)).with_fg(Color::rgb(20, 20, 25)));
-    g_minimap_player = pool.intern(Style{}.with_bg(Color::rgb(255, 220, 50)).with_fg(Color::rgb(255, 220, 50)));
-    g_minimap_enemy  = pool.intern(Style{}.with_bg(Color::rgb(255, 50, 50)).with_fg(Color::rgb(255, 50, 50)));
+    g_bar_bg      = pool.intern(Style{}.with_bg(Color::rgb(20, 20, 30)).with_fg(Color::rgb(120, 120, 130)));
+    g_bar_dim     = pool.intern(Style{}.with_bg(Color::rgb(20, 20, 30)).with_fg(Color::rgb(100, 100, 110)));
+    g_bar_accent  = pool.intern(Style{}.with_bg(Color::rgb(20, 20, 30)).with_fg(Color::rgb(255, 220, 80)).with_bold());
+    g_bar_health  = pool.intern(Style{}.with_bg(Color::rgb(20, 20, 30)).with_fg(Color::rgb(80, 240, 100)).with_bold());
+    g_bar_ammo    = pool.intern(Style{}.with_bg(Color::rgb(20, 20, 30)).with_fg(Color::rgb(100, 200, 255)).with_bold());
+    g_minimap_wall   = pool.intern(Style{}.with_bg(Color::rgb(100, 100, 110)).with_fg(Color::rgb(100, 100, 110)));
+    g_minimap_empty  = pool.intern(Style{}.with_bg(Color::rgb(30, 30, 40)).with_fg(Color::rgb(30, 30, 40)));
+    g_minimap_player = pool.intern(Style{}.with_bg(Color::rgb(255, 230, 60)).with_fg(Color::rgb(255, 230, 60)));
+    g_minimap_enemy  = pool.intern(Style{}.with_bg(Color::rgb(255, 60, 60)).with_fg(Color::rgb(255, 60, 60)));
 
     g_pixel_w = w;
     g_pixel_h = (h - 1) * 2;
@@ -325,10 +278,6 @@ static bool can_move(float nx, float ny) {
 }
 
 // ── Game logic ──────────────────────────────────────────────────────────────
-
-static float randf(float lo, float hi) {
-    return std::uniform_real_distribution<float>(lo, hi)(g_rng);
-}
 
 static void reset_game() {
     g_px = 2.5f; g_py = 2.5f; g_pa = 0.0f;
@@ -473,8 +422,8 @@ static bool handle(const Event& ev) {
 struct RayHit {
     float dist;
     int   wall_type;
-    float wall_x;
-    bool  side;
+    float wall_x;   // 0-1 texture U coordinate
+    bool  side;      // true = Y-side hit
     int   map_x, map_y;
 };
 
@@ -505,37 +454,24 @@ static RayHit cast_ray(float angle) {
     return {64.f, 0, 0.f, false, 0, 0};
 }
 
-// ── Torch lighting at a world point ─────────────────────────────────────────
+// ── Lighting ────────────────────────────────────────────────────────────────
 
 static Col3 compute_light(float wx, float wy) {
-    Col3 ambient = {0.06f, 0.05f, 0.08f};
-    Col3 total = ambient;
-    float flicker = 0.85f + 0.15f * std::sin(g_frame * 0.23f + wx * 3.7f);
+    // Strong ambient so everything is always visible
+    Col3 total = {0.35f, 0.33f, 0.38f};
+    float flicker = 0.90f + 0.10f * std::sin(g_frame * 0.2f + wx * 3.7f);
 
     for (int i = 0; i < NUM_TORCHES; ++i) {
         float dx = wx - g_torches[i].x, dy = wy - g_torches[i].y;
         float d2 = dx * dx + dy * dy;
-        float atten = g_torches[i].intensity / (1.0f + d2 * 0.8f);
-        atten *= flicker + 0.05f * std::sin(g_frame * 0.37f + i * 2.1f);
-        total = col_add(total, col_mul(g_torches[i].color, atten));
+        float atten = g_torches[i].intensity / (1.0f + d2 * 0.5f);
+        atten *= flicker + 0.03f * std::sin(g_frame * 0.3f + i * 2.1f);
+        total = total + g_torches[i].color * atten;
     }
     return total;
 }
 
-// ── Smooth noise (value noise with cubic interpolation) ─────────────────────
-
-static float value_noise(float x, float y) {
-    float ix = std::floor(x), iy = std::floor(y);
-    float fx = x - ix, fy = y - iy;
-    // Cubic hermite smoothing
-    fx = fx * fx * (3.f - 2.f * fx);
-    fy = fy * fy * (3.f - 2.f * fy);
-    float a = hash(ix, iy);
-    float b = hash(ix + 1, iy);
-    float c = hash(ix, iy + 1);
-    float d = hash(ix + 1, iy + 1);
-    return lerp(lerp(a, b, fx), lerp(c, d, fx), fy);
-}
+// ── FBM (fractal brownian motion — multi-octave noise) ──────────────────────
 
 static float fbm(float x, float y, int octaves) {
     float sum = 0.f, amp = 0.5f;
@@ -547,14 +483,15 @@ static float fbm(float x, float y, int octaves) {
     return sum;
 }
 
-// ── Procedural brick texture ────────────────────────────────────────────────
+// ── Wall texture (rich brick: mortar, bevel, grain, chips, stains) ──────────
 
-static Col3 brick_texture(float u, float v, int wall_type) {
+static Col3 wall_texture(float u, float v, int wall_type, bool side) {
     const auto& mat = WALL_MATS[wall_type];
+    Col3 base = side ? mat.shade : mat.base;
 
+    // Brick grid with offset rows
     float bu = u / mat.brick_w;
     float bv = v / mat.brick_h;
-
     int row = static_cast<int>(std::floor(bv));
     if (row & 1) bu += 0.5f;
 
@@ -562,174 +499,145 @@ static Col3 brick_texture(float u, float v, int wall_type) {
     float fv = bv - std::floor(bv);
     float brick_ix = std::floor(bu), brick_iy = std::floor(bv);
 
-    // Mortar — soft edge with depth shading
+    // Mortar: soft-edged with depth shading and grit texture
     float mortar_w = 0.07f;
     float mu = std::fmin(fu, 1.f - fu) / mortar_w;
     float mv = std::fmin(fv, 1.f - fv) / mortar_w;
-    float mortar_edge = std::fmin(mu, mv);
-    mortar_edge = clampf(mortar_edge, 0.f, 1.f);
+    float mortar_edge = clampf(std::fmin(mu, mv), 0.f, 1.f);
 
-    if (mortar_edge < 1.0f) {
-        // Mortar with depth and grit
-        float grit = fbm(u * 40.f, v * 40.f, 3) * 0.08f;
-        float depth = (1.f - mortar_edge) * 0.06f; // mortar recessed = darker
+    if (mortar_edge < 0.65f) {
+        float depth = (1.f - mortar_edge) * 0.06f;
+        float grit = fbm(u * 50.f, v * 50.f, 2) * 0.05f;
         Col3 mc = {
             clampf(mat.mortar.r + grit - depth, 0, 1),
             clampf(mat.mortar.g + grit - depth, 0, 1),
             clampf(mat.mortar.b + grit - depth, 0, 1),
         };
-        if (mortar_edge > 0.5f) {
-            // Blend zone — brick edge highlight (chipped edge)
-            float edge_highlight = (mortar_edge - 0.5f) * 2.f * 0.08f;
-            mc = col_add(mc, {edge_highlight, edge_highlight, edge_highlight});
+        // Mortar edge highlight (chipped edge catch light)
+        if (mortar_edge > 0.35f) {
+            float edge_light = (mortar_edge - 0.35f) / 0.3f * 0.06f;
+            mc = mc + Col3{edge_light, edge_light * 0.8f, edge_light * 0.6f};
         }
-        if (mortar_edge >= 0.7f) {
-            // Transition zone: mix with brick
-        } else {
-            return mc;
-        }
+        return mc;
     }
 
-    // Per-brick identity
-    float bid = hash(brick_ix, brick_iy);
+    // Per-brick identity (3 independent hashes for variation)
+    float bid  = hash(brick_ix, brick_iy);
     float bid2 = hash(brick_ix + 77.f, brick_iy + 33.f);
     float bid3 = hash(brick_ix + 13.f, brick_iy + 91.f);
 
-    // Base color with per-brick hue/value shift
-    Col3 c = mat.base;
-    float hue_shift = (bid - 0.5f) * mat.roughness * 2.5f;
-    float val_shift = (bid2 - 0.5f) * mat.roughness * 1.5f;
-    c.r = clampf(c.r + hue_shift + val_shift, 0.02f, 0.95f);
-    c.g = clampf(c.g + hue_shift * 0.7f + val_shift, 0.02f, 0.95f);
-    c.b = clampf(c.b + hue_shift * 0.4f + val_shift, 0.02f, 0.95f);
+    // Base color with per-brick hue/value shift — each brick unique
+    Col3 c = base;
+    float hue_shift = (bid - 0.5f) * 0.18f;
+    float val_shift = (bid2 - 0.5f) * 0.12f;
+    c.r = clampf(c.r + hue_shift + val_shift, 0.10f, 0.98f);
+    c.g = clampf(c.g + hue_shift * 0.25f + val_shift * 0.4f, 0.05f, 0.90f);
+    c.b = clampf(c.b + hue_shift * 0.15f + val_shift * 0.3f, 0.04f, 0.85f);
 
-    // Multi-octave surface noise (grain / roughness)
+    // Multi-octave surface grain (fine stone texture)
     float grain = fbm(u * 30.f + bid * 100.f, v * 30.f + bid2 * 100.f, 3);
-    float fine_noise = (grain - 0.5f) * mat.roughness * 1.8f;
-    c.r = clampf(c.r + fine_noise, 0, 1);
-    c.g = clampf(c.g + fine_noise * 0.85f, 0, 1);
-    c.b = clampf(c.b + fine_noise * 0.7f, 0, 1);
+    float fine = (grain - 0.5f) * 0.12f;
+    c.r = clampf(c.r + fine, 0, 1);
+    c.g = clampf(c.g + fine * 0.55f, 0, 1);
+    c.b = clampf(c.b + fine * 0.45f, 0, 1);
 
-    // Stain / discoloration patches per brick
-    if (bid3 > 0.6f) {
-        float stain_str = (bid3 - 0.6f) * 2.5f;
-        float stain_mask = smoothstep(0.3f, 0.7f, value_noise(u * 8.f + bid * 50.f, v * 8.f));
-        Col3 stain_col = {c.r * 0.7f, c.g * 0.65f, c.b * 0.6f}; // darker stain
-        c = col_lerp(c, stain_col, stain_mask * stain_str * 0.4f);
-    }
+    // Bevel — edges of brick catch light (warm highlight)
+    float bevel = smoothstep(0.0f, 0.14f, fu) * smoothstep(1.0f, 0.86f, fu)
+                * smoothstep(0.0f, 0.14f, fv) * smoothstep(1.0f, 0.86f, fv);
+    float bevel_light = (1.0f - bevel) * 0.06f;
+    c = c + Col3{bevel_light, bevel_light * 0.6f, bevel_light * 0.4f};
 
-    // Chipped / damaged bricks (some bricks have pits)
-    if (bid > 0.85f) {
-        float pit = smoothstep(0.35f, 0.40f, std::fabs(fu - 0.3f - bid2 * 0.4f))
-                  * smoothstep(0.35f, 0.40f, std::fabs(fv - 0.3f - bid3 * 0.4f));
-        pit = 1.0f - pit;
-        if (pit > 0.5f) {
-            c = col_mul(c, 0.6f + (1.0f - pit) * 0.4f);
+    // Chipped / damaged bricks (some have pits that read as darker patches)
+    if (bid > 0.82f) {
+        float pit_cx = 0.3f + bid2 * 0.4f;
+        float pit_cy = 0.3f + bid3 * 0.4f;
+        float pit_d = std::sqrt((fu - pit_cx) * (fu - pit_cx) + (fv - pit_cy) * (fv - pit_cy));
+        float pit_r = 0.12f + bid2 * 0.08f;
+        if (pit_d < pit_r) {
+            float pit_depth = (1.0f - pit_d / pit_r);
+            c = c * (1.0f - pit_depth * 0.3f);
         }
     }
 
-    // Subtle bevel — edges of brick slightly lighter (catches light)
-    float bevel = smoothstep(0.0f, 0.15f, fu) * smoothstep(1.0f, 0.85f, fu)
-                * smoothstep(0.0f, 0.15f, fv) * smoothstep(1.0f, 0.85f, fv);
-    float bevel_light = (1.0f - bevel) * 0.04f;
-    c = col_add(c, {bevel_light, bevel_light, bevel_light});
+    // Stain / discoloration patches (darker blotches on some bricks)
+    if (bid3 > 0.55f) {
+        float stain_str = (bid3 - 0.55f) * 2.0f;
+        float stain_mask = smoothstep(0.4f, 0.6f, value_noise(u * 8.f + bid * 50.f, v * 8.f));
+        c = col_lerp(c, c * 0.7f, stain_mask * stain_str * 0.25f);
+    }
 
-    // Blend mortar/brick in transition zone
-    if (mortar_edge < 1.0f && mortar_edge >= 0.7f) {
-        float grit = fbm(u * 40.f, v * 40.f, 3) * 0.08f;
+    // Mortar/brick transition blend (smooth edge)
+    if (mortar_edge < 1.0f) {
+        float t = (mortar_edge - 0.65f) / 0.35f;
+        float grit = fbm(u * 50.f, v * 50.f, 2) * 0.04f;
         Col3 mc = {
             clampf(mat.mortar.r + grit, 0, 1),
             clampf(mat.mortar.g + grit, 0, 1),
             clampf(mat.mortar.b + grit, 0, 1),
         };
-        float t = (mortar_edge - 0.7f) / 0.3f;
         c = col_lerp(mc, c, t);
     }
 
-    return c;
+    // Weathering: dark stains running down from top on some bricks
+    if (v > 0.65f && bid > 0.55f) {
+        float stain = smoothstep(0.65f, 0.95f, v) * (bid - 0.55f) * 1.2f;
+        c = c * (1.0f - stain * 0.20f);
+    }
+
+    return col_clamp(c);
 }
 
-// ── Floor texture ───────────────────────────────────────────────────────────
+// ── Floor texture (stone flagstones with detail) ────────────────────────────
 
 static Col3 floor_texture(float wx, float wy) {
-    // Large flagstone tiles (irregular sizes)
-    float tile_u = wx * 1.0f, tile_v = wy * 1.0f;
-    float iu = std::floor(tile_u), iv = std::floor(tile_v);
-    float fu = tile_u - iu, fv = tile_v - iv;
+    float iu = std::floor(wx), iv = std::floor(wy);
+    float fu = wx - iu, fv = wy - iv;
 
-    // Tile identity
-    float tid = hash(iu, iv);
-    float tid2 = hash(iu + 37.f, iv + 91.f);
-    float tid3 = hash(iu + 73.f, iv + 17.f);
-
-    // Grout — recessed with depth
+    // Grout lines with depth
     float grout_w = 0.05f;
     float gu = std::fmin(fu, 1.f - fu) / grout_w;
     float gv = std::fmin(fv, 1.f - fv) / grout_w;
     float grout_edge = clampf(std::fmin(gu, gv), 0.f, 1.f);
 
-    if (grout_edge < 0.6f) {
-        float depth = (1.f - grout_edge) * 0.04f;
-        float grit = hash(wx * 50.f, wy * 50.f) * 0.02f;
-        float v = 0.04f + grit - depth;
-        return {v * 0.7f, v * 0.65f, v * 0.6f};
+    if (grout_edge < 0.5f) {
+        float depth = (1.f - grout_edge) * 0.03f;
+        return {0.12f - depth, 0.11f - depth, 0.10f - depth};
     }
 
-    // Base stone color — warm gray/brown with per-tile variation
-    float base_val = 0.13f + tid * 0.07f;
+    // Checkerboard tint
+    int check = (static_cast<int>(iu) + static_cast<int>(iv)) & 1;
+    float base = check ? 0.34f : 0.27f;
+
+    // Per-tile identity
+    float tid = hash(iu, iv);
+    float tid2 = hash(iu + 37.f, iv + 91.f);
+    float variation = (tid - 0.5f) * 0.07f;
+
+    // Warm stone tones
     Col3 c;
-    // Some tiles are warmer, some cooler
-    if (tid < 0.33f) {
-        c = {base_val * 0.95f, base_val * 0.88f, base_val * 0.78f}; // warm brown
-    } else if (tid < 0.66f) {
-        c = {base_val * 0.85f, base_val * 0.85f, base_val * 0.88f}; // cool gray
-    } else {
-        c = {base_val * 0.90f, base_val * 0.82f, base_val * 0.72f}; // sandstone
-    }
+    if (tid < 0.33f)
+        c = {base * 1.0f + variation, base * 0.92f + variation, base * 0.82f + variation};
+    else if (tid < 0.66f)
+        c = {base * 0.90f + variation, base * 0.90f + variation, base * 0.95f + variation};
+    else
+        c = {base * 0.95f + variation, base * 0.88f + variation, base * 0.80f + variation};
 
-    // Stone grain: multi-octave noise for natural texture
-    float grain = fbm(wx * 12.f + tid * 100.f, wy * 12.f + tid2 * 100.f, 4);
-    float fine = (grain - 0.5f) * 0.08f;
+    // Stone grain
+    float grain = value_noise(wx * 12.f + tid * 100.f, wy * 12.f + tid2 * 100.f);
+    float fine = (grain - 0.5f) * 0.06f;
     c.r = clampf(c.r + fine, 0, 1);
     c.g = clampf(c.g + fine * 0.9f, 0, 1);
     c.b = clampf(c.b + fine * 0.8f, 0, 1);
 
-    // Mineral veins (darker lines running through stone)
-    float vein_raw = value_noise(wx * 6.f + tid * 30.f, wy * 4.f + tid2 * 30.f);
-    float vein = smoothstep(0.48f, 0.52f, vein_raw);
-    float vein_dark = (1.0f - vein) * 0.06f;
-    c.r -= vein_dark; c.g -= vein_dark; c.b -= vein_dark * 0.8f;
-
-    // Speckles (mineral inclusions)
-    float speck = hash(wx * 43.f, wy * 37.f);
-    if (speck > 0.92f) {
-        float bright = (speck - 0.92f) * 12.5f;
-        float speck_hue = hash(wx * 43.1f, wy * 37.1f);
-        if (speck_hue < 0.3f)
-            c = col_add(c, {bright * 0.08f, bright * 0.06f, bright * 0.02f}); // gold fleck
-        else if (speck_hue < 0.6f)
-            c = col_add(c, {bright * 0.04f, bright * 0.04f, bright * 0.06f}); // quartz
-        else
-            c = col_add(c, {bright * 0.02f, bright * 0.05f, bright * 0.02f}); // green mineral
-    }
-
-    // Cracks (darker thin lines)
-    float crack_raw = std::sin(wx * 7.3f + wy * 3.1f + tid3 * 20.f)
-                    * std::sin(wx * 3.7f - wy * 5.9f + tid * 15.f);
-    if (crack_raw > 0.85f) {
-        float crack_str = (crack_raw - 0.85f) * 6.67f * 0.08f;
-        c.r -= crack_str; c.g -= crack_str; c.b -= crack_str;
-    }
-
-    // Worn/polished center of tiles (foot traffic)
+    // Worn center (polished by foot traffic)
     float center_dist = std::sqrt((fu - 0.5f) * (fu - 0.5f) + (fv - 0.5f) * (fv - 0.5f));
-    float polish = smoothstep(0.4f, 0.15f, center_dist) * 0.03f;
-    c = col_add(c, {polish, polish, polish * 1.2f}); // slight sheen
+    float polish = smoothstep(0.35f, 0.15f, center_dist) * 0.03f;
+    c = c + Col3{polish, polish, polish * 1.2f};
 
-    // Edge darkening (ambient occlusion at grout edges)
+    // Edge ambient occlusion
     if (grout_edge < 1.0f) {
-        float ao = grout_edge;
-        c = col_mul(c, 0.7f + ao * 0.3f);
+        float ao = 0.75f + grout_edge * 0.25f;
+        c = c * ao;
     }
 
     return col_clamp(c);
@@ -748,7 +656,7 @@ static void render_column(int col, int pixel_h) {
     int wall_top = static_cast<int>((pixel_h - wall_h) / 2.f);
     int wall_bot = static_cast<int>((pixel_h + wall_h) / 2.f);
 
-    // World position of wall hit for lighting
+    // Wall hit world position for lighting
     float hit_wx, hit_wy;
     if (!hit.side) {
         hit_wx = static_cast<float>(hit.map_x) + (std::cos(angle) > 0 ? 0.f : 1.f);
@@ -758,74 +666,77 @@ static void render_column(int col, int pixel_h) {
         hit_wy = static_cast<float>(hit.map_y) + (std::sin(angle) > 0 ? 0.f : 1.f);
     }
 
+    // Fog color (dark blue-gray, gives depth)
+    Col3 fog_color = {0.08f, 0.08f, 0.14f};
+
     for (int y = 0; y < pixel_h; ++y) {
         Col3 color;
 
         if (y < wall_top) {
-            // ── Sky: gradient + stars + moon + aurora ──
-            float t = static_cast<float>(y) / std::max(1, wall_top);
-            Col3 sky_top  = {0.01f, 0.01f, 0.06f};
-            Col3 sky_mid  = {0.03f, 0.03f, 0.10f};
-            Col3 sky_low  = {0.06f, 0.04f, 0.08f};
+            // ── Sky: gradient + clouds + moon ──
+            float t = static_cast<float>(y) / std::max(1.f, static_cast<float>(wall_top));
 
-            if (t < 0.5f) color = col_lerp(sky_top, sky_mid, t * 2.f);
-            else          color = col_lerp(sky_mid, sky_low, (t - 0.5f) * 2.f);
+            // Twilight gradient: dark blue top, warm orange-pink at horizon
+            Col3 sky_top  = {0.05f, 0.08f, 0.30f};
+            Col3 sky_mid  = {0.15f, 0.20f, 0.50f};
+            Col3 sky_low  = {0.45f, 0.35f, 0.45f};
+            Col3 sky_hori = {0.65f, 0.45f, 0.35f};
+
+            if (t < 0.33f)     color = col_lerp(sky_top, sky_mid, t * 3.f);
+            else if (t < 0.66f) color = col_lerp(sky_mid, sky_low, (t - 0.33f) * 3.f);
+            else                color = col_lerp(sky_low, sky_hori, (t - 0.66f) * 3.f);
 
             float sky_u = (angle / PI + 1.f) * 200.f;
             float sky_v = y * 0.5f;
 
-            // Stars (multi-layer for depth)
-            for (int layer = 0; layer < 3; ++layer) {
-                float scale = 1.0f + layer * 0.7f;
-                float su = std::floor(sky_u * scale), sv = std::floor(sky_v * scale);
-                float star = hash(su + layer * 100.f, sv);
-                float thresh = 0.988f - layer * 0.003f;
-                if (star > thresh) {
-                    float twinkle = 0.5f + 0.5f * std::sin(g_frame * (0.08f + layer * 0.03f) + star * 80.f);
-                    float bright = (star - thresh) * 80.f * twinkle;
-                    // Star color variation
-                    float temp = hash(su, sv + 77.f);
-                    Col3 sc = temp < 0.3f ? Col3{bright, bright * 0.85f, bright * 0.6f}  // warm
-                            : temp < 0.6f ? Col3{bright * 0.7f, bright * 0.85f, bright}  // cool
-                            :               Col3{bright, bright, bright * 0.95f};         // white
-                    color = col_add(color, sc);
+            // Stars (upper sky)
+            if (t < 0.4f) {
+                for (int layer = 0; layer < 2; ++layer) {
+                    float scale = 1.0f + layer * 0.6f;
+                    float su = std::floor(sky_u * scale), sv = std::floor(sky_v * scale);
+                    float star = hash(su + layer * 100.f, sv);
+                    if (star > 0.990f) {
+                        float twinkle = 0.5f + 0.5f * std::sin(g_frame * (0.08f + layer * 0.03f) + star * 80.f);
+                        float bright = (star - 0.990f) * 100.f * twinkle * (1.0f - t / 0.4f);
+                        float temp = hash(su, sv + 77.f);
+                        Col3 sc = temp < 0.4f ? Col3{bright, bright * 0.9f, bright * 0.7f}
+                                               : Col3{bright * 0.8f, bright * 0.9f, bright};
+                        color = color + sc;
+                    }
                 }
             }
 
             // Moon
-            float moon_angle = 0.8f; // fixed position
-            float moon_y_pos = 0.2f;
-            float moon_u = (angle - moon_angle);
+            float moon_angle = 0.8f;
+            float moon_u = angle - moon_angle;
             if (moon_u > PI) moon_u -= 2.f * PI;
             if (moon_u < -PI) moon_u += 2.f * PI;
-            float moon_v = t - moon_y_pos;
+            float moon_v = t - 0.2f;
             float moon_d = std::sqrt(moon_u * moon_u * 4.f + moon_v * moon_v * 16.f);
             if (moon_d < 0.15f) {
-                float moon_shade = 1.0f - moon_d / 0.15f;
+                float moon_shade = (1.0f - moon_d / 0.15f);
                 moon_shade = moon_shade * moon_shade;
-                // Crescent: offset circle subtraction
                 float crater_d = std::sqrt((moon_u + 0.03f) * (moon_u + 0.03f) * 4.f + moon_v * moon_v * 16.f);
-                if (crater_d > 0.12f) {
-                    color = col_add(color, {moon_shade * 0.5f, moon_shade * 0.48f, moon_shade * 0.4f});
-                }
-                // Moon glow
-                if (moon_d < 0.25f) {
-                    float glow = (1.0f - moon_d / 0.25f) * 0.08f;
-                    color = col_add(color, {glow * 0.6f, glow * 0.6f, glow * 0.8f});
-                }
+                if (crater_d > 0.12f)
+                    color = color + Col3{moon_shade * 0.5f, moon_shade * 0.48f, moon_shade * 0.42f};
+            }
+            if (moon_d < 0.25f) {
+                float glow = (1.0f - moon_d / 0.25f) * 0.06f;
+                color = color + Col3{glow * 0.5f, glow * 0.5f, glow * 0.7f};
             }
 
-            // Aurora borealis (subtle wavy bands)
-            if (t < 0.6f) {
-                float au = angle * 3.f + g_frame * 0.005f;
-                float wave = std::sin(au * 2.f) * 0.5f + std::sin(au * 3.7f + 1.f) * 0.3f;
-                float band = smoothstep(0.0f, 0.08f, std::fabs(t * 4.f - 1.0f + wave * 0.3f) - 0.5f);
-                float aurora = (1.0f - band) * 0.06f * (0.5f + 0.5f * std::sin(g_frame * 0.02f));
-                color = col_add(color, {aurora * 0.2f, aurora * 0.8f, aurora * 0.5f});
+            // Clouds (soft value noise bands)
+            if (t > 0.3f) {
+                float cu = angle * 2.f + g_frame * 0.002f;
+                float cv = t * 6.f;
+                float cloud = value_noise(cu, cv) * 0.6f + value_noise(cu * 2.1f, cv * 2.1f) * 0.3f;
+                cloud = smoothstep(0.45f, 0.65f, cloud);
+                Col3 cloud_col = {0.55f, 0.50f, 0.55f};
+                color = col_lerp(color, cloud_col, cloud * 0.25f);
             }
 
         } else if (y >= wall_bot) {
-            // ── Floor with reflections ──
+            // ── Floor with torch glow puddles ──
             float row_dist = static_cast<float>(pixel_h) / (2.f * y - pixel_h + 0.001f);
             float floor_x = g_px + row_dist * std::cos(angle);
             float floor_y = g_py + row_dist * std::sin(angle);
@@ -834,42 +745,26 @@ static void render_column(int col, int pixel_h) {
             Col3 light = compute_light(floor_x, floor_y);
 
             // Distance fog
-            float fog = std::fmin(row_dist * 0.06f, 0.9f);
-            Col3 fog_color = {0.02f, 0.02f, 0.04f};
+            float fog = std::fmin(row_dist * 0.04f, 0.75f);
 
             Col3 lit = col_clamp(Col3{
-                tex.r * light.r * 2.5f,
-                tex.g * light.g * 2.5f,
-                tex.b * light.b * 2.5f
+                tex.r * light.r * 2.8f,
+                tex.g * light.g * 2.8f,
+                tex.b * light.b * 2.8f
             });
 
-            // Wet floor reflection: mirror the wall color above into the floor
-            float reflect_str = 0.12f * (1.0f - fog); // stronger close, fades with distance
-            int mirror_y = pixel_h - 1 - y; // reflected y
-            if (mirror_y >= 0 && mirror_y < wall_top) {
-                // Sky reflection (very faint)
-                float sky_t = static_cast<float>(mirror_y) / std::max(1, wall_top);
-                Col3 sky_ref = {0.03f + sky_t * 0.02f, 0.03f + sky_t * 0.02f, 0.06f + sky_t * 0.03f};
-                lit = col_lerp(lit, sky_ref, reflect_str * 0.5f);
-            } else if (mirror_y >= wall_top && mirror_y < wall_bot && hit.wall_type > 0) {
-                // Wall reflection
-                float v = static_cast<float>(mirror_y - wall_top) / std::max(1.f, static_cast<float>(wall_bot - wall_top));
-                Col3 wall_tex = brick_texture(hit.wall_x, v, hit.wall_type);
-                lit = col_lerp(lit, col_mul(wall_tex, 0.3f), reflect_str);
-            }
-
-            // Torch glow puddles on floor
+            // Torch glow puddles on floor (warm light pools)
             for (int ti = 0; ti < NUM_TORCHES; ++ti) {
-                float dx = floor_x - g_torches[ti].x, dy = floor_y - g_torches[ti].y;
-                float d2 = dx * dx + dy * dy;
-                if (d2 < 4.0f) {
-                    float glow = (1.0f - d2 / 4.0f) * 0.15f;
-                    float flicker = 0.8f + 0.2f * std::sin(g_frame * 0.2f + ti * 1.5f);
-                    lit = col_add(lit, col_mul(g_torches[ti].color, glow * flicker));
+                float tdx = floor_x - g_torches[ti].x, tdy = floor_y - g_torches[ti].y;
+                float td2 = tdx * tdx + tdy * tdy;
+                if (td2 < 3.5f) {
+                    float glow = (1.0f - td2 / 3.5f) * 0.12f;
+                    float flicker = 0.85f + 0.15f * std::sin(g_frame * 0.18f + ti * 1.5f);
+                    lit = lit + g_torches[ti].color * (glow * flicker);
                 }
             }
 
-            color = col_lerp(lit, fog_color, fog);
+            color = col_lerp(col_clamp(lit), fog_color, fog);
 
         } else {
             // ── Wall ──
@@ -878,73 +773,67 @@ static void render_column(int col, int pixel_h) {
             } else {
                 float v = static_cast<float>(y - wall_top) / std::max(1.f, static_cast<float>(wall_bot - wall_top));
 
-                // Get procedural texture
-                Col3 tex = brick_texture(hit.wall_x, v, hit.wall_type);
-
-                // Compute lighting at wall surface
+                Col3 tex = wall_texture(hit.wall_x, v, hit.wall_type, hit.side);
                 Col3 light = compute_light(hit_wx, hit_wy);
 
-                // Side shading (normal-based)
-                float side_shade = hit.side ? 0.65f : 1.0f;
-
-                // Moisture/drip stains running down walls
+                // Moisture drip stains (dark wet streaks running down)
                 float drip_u = hit.wall_x * 7.3f;
                 float drip_seed = hash(std::floor(drip_u), static_cast<float>(hit.map_x * 13 + hit.map_y * 7));
-                if (drip_seed > 0.7f) {
-                    float drip_width = smoothstep(0.0f, 0.15f, std::fabs(drip_u - std::floor(drip_u) - 0.5f));
-                    float drip_flow = smoothstep(0.0f, 0.3f + drip_seed * 0.5f, v);
-                    float moisture = (1.0f - drip_width) * drip_flow * 0.15f;
-                    tex.r -= moisture; tex.g -= moisture * 0.8f; tex.b -= moisture * 0.5f;
-                    // Slight specular on wet areas
-                    float spec = moisture * 2.0f * (0.5f + 0.5f * std::sin(v * 20.f));
-                    tex = col_add(tex, {spec * 0.3f, spec * 0.3f, spec * 0.4f});
+                float moisture = 0.f;
+                if (drip_seed > 0.65f && v > 0.05f) {
+                    float drip_width = smoothstep(0.0f, 0.10f, std::fabs(drip_u - std::floor(drip_u) - 0.5f));
+                    float drip_flow = smoothstep(0.05f, 0.25f + drip_seed * 0.5f, v);
+                    moisture = (1.0f - drip_width) * drip_flow * 0.15f * (drip_seed - 0.65f) * 2.86f;
+                    tex = tex * (1.0f - moisture * 0.6f);
                 }
 
-                // Moss near bottom of walls (types 1, 3, 5)
-                if ((hit.wall_type == 1 || hit.wall_type == 3 || hit.wall_type == 5) && v > 0.75f) {
-                    float moss_t = smoothstep(0.75f, 0.95f, v);
-                    float moss_noise = hash(hit.wall_x * 13.f, v * 9.f);
-                    if (moss_noise > 0.4f) {
-                        Col3 moss_col = {0.12f, 0.22f, 0.08f};
-                        tex = col_lerp(tex, moss_col, moss_t * 0.5f * (moss_noise - 0.4f) * 1.67f);
+                // Specular highlight on wet areas (catches torchlight)
+                if (moisture > 0.02f) {
+                    float spec_wave = 0.5f + 0.5f * std::sin(v * 25.f + hit.wall_x * 10.f);
+                    float lum = light.r * 0.3f + light.g * 0.5f + light.b * 0.2f;
+                    float spec = moisture * spec_wave * lum * 0.4f;
+                    tex = tex + Col3{spec * 1.0f, spec * 0.9f, spec * 0.8f};
+                }
+
+                // Moss near bottom (green patches — organic, noisy)
+                if (v > 0.75f) {
+                    float moss_t = smoothstep(0.75f, 0.97f, v);
+                    float moss_noise = fbm(hit.wall_x * 8.f + hit.map_x * 3.f, v * 6.f + hit.map_y * 3.f, 2);
+                    if (moss_noise > 0.35f) {
+                        float moss_str = (moss_noise - 0.35f) * 1.5f;
+                        Col3 moss = {0.12f, 0.25f, 0.08f};
+                        tex = col_lerp(tex, moss, moss_t * moss_str * 0.35f);
                     }
                 }
 
-                // Cracks
-                float crack_h = hash(hit.wall_x * 5.1f + hit.map_x, v * 3.7f + hit.map_y);
-                if (crack_h > 0.97f) {
-                    tex = col_mul(tex, 0.6f);
-                }
-
-                // Ambient occlusion near top/bottom edges
+                // Ambient occlusion at ceiling/floor junctions
                 float ao = 1.0f;
-                float edge_top = smoothstep(0.0f, 0.10f, v);
-                float edge_bot = smoothstep(1.0f, 0.88f, v);
-                ao = std::fmin(edge_top, edge_bot);
-                ao = 0.4f + ao * 0.6f;
+                if (v < 0.06f) ao = 0.60f + v / 0.06f * 0.40f;
+                else if (v > 0.94f) ao = 0.60f + (1.f - v) / 0.06f * 0.40f;
+
+                // Normal-based shading (side faces darker)
+                float side_shade = hit.side ? 0.82f : 1.0f;
 
                 // Distance fog
-                float fog = std::fmin(perp * 0.045f, 0.85f);
-                Col3 fog_color = {0.02f, 0.02f, 0.04f};
+                float fog = std::fmin(perp * 0.035f, 0.70f);
 
-                // Combine
-                Col3 lit = {
-                    tex.r * light.r * side_shade * ao * 2.5f,
-                    tex.g * light.g * side_shade * ao * 2.5f,
-                    tex.b * light.b * side_shade * ao * 2.5f,
-                };
+                Col3 lit = col_clamp(Col3{
+                    tex.r * light.r * ao * side_shade * 2.8f,
+                    tex.g * light.g * ao * side_shade * 2.8f,
+                    tex.b * light.b * ao * side_shade * 2.8f,
+                });
 
-                color = col_lerp(col_clamp(lit), fog_color, fog);
+                color = col_lerp(lit, fog_color, fog);
 
-                // Door glow
+                // Door glow (warm gold pulse)
                 if (hit.wall_type == 6) {
                     float glow = 0.5f + 0.5f * std::sin(g_frame * 0.15f);
-                    color = col_add(color, {glow * 0.12f, glow * 0.08f, 0.f});
+                    color = color + Col3{glow * 0.18f, glow * 0.12f, 0.f};
                 }
-                // Exit pulse
+                // Exit pulse (bright red throb)
                 if (hit.wall_type == 9) {
                     float glow = 0.5f + 0.5f * std::sin(g_frame * 0.2f);
-                    color = col_add(color, {glow * 0.15f, 0.f, 0.f});
+                    color = color + Col3{glow * 0.22f, glow * 0.03f, 0.f};
                 }
             }
         }
@@ -957,7 +846,7 @@ static void render_column(int col, int pixel_h) {
     }
 }
 
-// ── Render sprites ──────────────────────────────────────────────────────────
+// ── Render enemy sprite ─────────────────────────────────────────────────────
 
 static void render_sprite(float sx, float sy, int type, int hp, int max_hp,
                           float sprite_scale, int pixel_h) {
@@ -965,14 +854,10 @@ static void render_sprite(float sx, float sy, int type, int hp, int max_hp,
     float dist = std::sqrt(dx * dx + dy * dy);
     if (dist < 0.1f || dist > 20.f) return;
 
-    // Camera transform
     float cos_a = std::cos(g_pa), sin_a = std::sin(g_pa);
-    float tx = dx * sin_a - dy * cos_a;
-    float ty = dx * cos_a + dy * sin_a;
-    // Adjust sign so it matches the camera plane convention
     float inv_det = 1.0f / (std::cos(g_pa + PI / 2.f) * sin_a - std::sin(g_pa + PI / 2.f) * cos_a);
-    tx = inv_det * (sin_a * dx - cos_a * dy);
-    ty = inv_det * (-std::sin(g_pa + PI / 2.f) * dx + std::cos(g_pa + PI / 2.f) * dy);
+    float tx = inv_det * (sin_a * dx - cos_a * dy);
+    float ty = inv_det * (-std::sin(g_pa + PI / 2.f) * dx + std::cos(g_pa + PI / 2.f) * dy);
     if (ty < 0.2f) return;
 
     int screen_x = static_cast<int>((g_pixel_w / 2.f) * (1.f + tx / ty));
@@ -982,23 +867,20 @@ static void render_sprite(float sx, float sy, int type, int hp, int max_hp,
     int s_left = screen_x - static_cast<int>(h / 2.f);
     int s_right = screen_x + static_cast<int>(h / 2.f);
 
-    float fog = std::fmin(ty * 0.05f, 0.8f);
+    float fog = std::fmin(ty * 0.04f, 0.7f);
     Col3 light = compute_light(sx, sy);
 
-    // Enemy colors
+    // Bright, distinct enemy colors
     Col3 body_col, head_col, eye_col;
     switch (type) {
-        case 0: body_col = {0.75f, 0.20f, 0.15f}; head_col = {0.85f, 0.30f, 0.25f}; break;
-        case 1: body_col = {0.15f, 0.65f, 0.20f}; head_col = {0.25f, 0.75f, 0.30f}; break;
-        case 2: body_col = {0.25f, 0.25f, 0.75f}; head_col = {0.35f, 0.35f, 0.85f}; break;
-        default: body_col = {0.5f, 0.5f, 0.5f}; head_col = {0.6f, 0.6f, 0.6f};
+        case 0: body_col = {0.85f, 0.25f, 0.20f}; head_col = {0.95f, 0.35f, 0.30f}; break; // red
+        case 1: body_col = {0.20f, 0.80f, 0.30f}; head_col = {0.30f, 0.90f, 0.40f}; break; // green
+        case 2: body_col = {0.30f, 0.30f, 0.85f}; head_col = {0.40f, 0.40f, 0.95f}; break; // blue
+        default: body_col = {0.6f, 0.6f, 0.6f}; head_col = {0.7f, 0.7f, 0.7f};
     }
-    eye_col = {1.0f, 0.9f, 0.5f};
+    eye_col = {1.0f, 1.0f, 0.5f};
 
-    // Damage flash (when recently hit)
-    float hurt_tint = (hp < max_hp) ? 0.15f : 0.f;
-
-    Col3 fog_color = {0.02f, 0.02f, 0.04f};
+    Col3 fog_color = {0.08f, 0.08f, 0.14f};
 
     for (int col = std::max(0, s_left); col < std::min(g_pixel_w, s_right); ++col) {
         if (ty >= g_zbuf[col]) continue;
@@ -1013,68 +895,58 @@ static void render_sprite(float sx, float sy, int type, int hp, int max_hp,
             Col3 c;
             bool draw = false;
 
-            // Body shape - rounded rectangle
-            float body_r = 0.35f - std::fabs(cy) * 0.15f; // narrower at top/bottom
+            // Body - rounded rectangle
+            float body_r = 0.35f - std::fabs(cy) * 0.15f;
             if (v > 0.25f && v < 0.95f && std::fabs(cx) < body_r) {
-                // Body shading
-                float shade = 1.0f - std::fabs(cx) / body_r * 0.4f;
-                c = col_mul(body_col, shade);
+                float shade = 1.0f - std::fabs(cx) / body_r * 0.3f;
+                c = body_col * shade;
                 draw = true;
             }
 
             // Head - circle
-            float head_cx = 0.f, head_cy = 0.15f;
-            float head_r = 0.18f;
-            float hdx = cx - head_cx, hdy = cy - head_cy;
+            float hdx = cx, hdy = cy - 0.15f;
             float hd = std::sqrt(hdx * hdx + hdy * hdy);
-            if (hd < head_r) {
-                float shade = 1.0f - hd / head_r * 0.3f;
-                c = col_mul(head_col, shade);
+            if (hd < 0.18f) {
+                float shade = 1.0f - hd / 0.18f * 0.25f;
+                c = head_col * shade;
                 draw = true;
 
                 // Eyes
-                float eye_y_range = (v > 0.28f && v < 0.36f);
-                float left_eye  = std::fabs(cx + 0.07f);
-                float right_eye = std::fabs(cx - 0.07f);
-                if (eye_y_range && (left_eye < 0.03f || right_eye < 0.03f)) {
-                    c = eye_col;
+                if (v > 0.28f && v < 0.36f) {
+                    if (std::fabs(cx + 0.07f) < 0.03f || std::fabs(cx - 0.07f) < 0.03f)
+                        c = eye_col;
                 }
-
                 // Mouth
-                if (v > 0.36f && v < 0.40f && std::fabs(cx) < 0.06f) {
-                    c = {0.15f, 0.05f, 0.05f};
-                }
+                if (v > 0.36f && v < 0.40f && std::fabs(cx) < 0.06f)
+                    c = {0.2f, 0.08f, 0.08f};
             }
 
-            // Arms (type 2 heavy has bigger arms)
+            // Arms
             float arm_w = (type == 2) ? 0.12f : 0.08f;
             if (v > 0.35f && v < 0.65f) {
-                float left_arm  = std::fabs(cx + 0.30f);
-                float right_arm = std::fabs(cx - 0.30f);
-                if (left_arm < arm_w || right_arm < arm_w) {
-                    c = col_mul(body_col, 0.8f);
+                if (std::fabs(cx + 0.30f) < arm_w || std::fabs(cx - 0.30f) < arm_w) {
+                    c = body_col * 0.85f;
                     draw = true;
                 }
             }
 
             if (!draw) continue;
 
-            // Apply lighting, fog, hurt tint
-            Col3 lit = {
-                c.r * light.r * 2.0f + hurt_tint,
-                c.g * light.g * 2.0f,
-                c.b * light.b * 2.0f,
-            };
-            Col3 final = col_clamp(col_lerp(lit, fog_color, fog));
+            Col3 lit = col_clamp(Col3{
+                c.r * light.r * 2.2f,
+                c.g * light.g * 2.2f,
+                c.b * light.b * 2.2f,
+            });
+            Col3 final_c = col_clamp(col_lerp(lit, fog_color, fog));
 
             px_set(col, row,
-                   static_cast<uint8_t>(final.r * 255.f),
-                   static_cast<uint8_t>(final.g * 255.f),
-                   static_cast<uint8_t>(final.b * 255.f));
+                   static_cast<uint8_t>(final_c.r * 255.f),
+                   static_cast<uint8_t>(final_c.g * 255.f),
+                   static_cast<uint8_t>(final_c.b * 255.f));
         }
     }
 
-    // Health bar above enemy
+    // Health bar
     if (hp < max_hp && hp > 0) {
         int bar_w = std::max(4, (s_right - s_left) / 2);
         int bar_y = std::max(0, s_top - 3);
@@ -1084,10 +956,8 @@ static void render_sprite(float sx, float sy, int type, int hp, int max_hp,
             int px = bar_x + bx;
             if (px < 0 || px >= g_pixel_w || ty >= g_zbuf[px]) continue;
             bool filled = (static_cast<float>(bx) / bar_w) < pct;
-            if (filled)
-                px_set(px, bar_y, 60, 220, 80);
-            else
-                px_set(px, bar_y, 80, 30, 30);
+            if (filled) px_set(px, bar_y, 80, 240, 100);
+            else        px_set(px, bar_y, 100, 40, 40);
         }
     }
 }
@@ -1112,12 +982,11 @@ static void render_pickup(float sx, float sy, int type, int pixel_h) {
     int s_left = screen_x - static_cast<int>(h / 2.f);
     int s_right = screen_x + static_cast<int>(h / 2.f);
 
-    // Bobbing glow
     float pulse = 0.7f + 0.3f * std::sin(g_frame * 0.12f);
-    Col3 color = (type == 0) ? Col3{0.15f, 0.85f * pulse, 0.25f}  // health = green
-                             : Col3{0.25f, 0.55f * pulse, 1.0f * pulse}; // ammo = blue
-    Col3 fog_color = {0.02f, 0.02f, 0.04f};
-    float fog = std::fmin(ty * 0.05f, 0.8f);
+    Col3 color = (type == 0) ? Col3{0.20f, 0.90f * pulse, 0.30f}
+                             : Col3{0.30f, 0.60f * pulse, 1.0f * pulse};
+    Col3 fog_color = {0.08f, 0.08f, 0.14f};
+    float fog = std::fmin(ty * 0.04f, 0.7f);
 
     for (int col = std::max(0, s_left); col < std::min(g_pixel_w, s_right); ++col) {
         if (ty >= g_zbuf[col]) continue;
@@ -1128,22 +997,20 @@ static void render_pickup(float sx, float sy, int type, int pixel_h) {
             float d = std::sqrt(cx * cx + cy * cy);
             if (d > 0.35f) continue;
 
-            // Glowing orb with inner shine
             float glow = 1.0f - d / 0.35f;
             glow = glow * glow;
-            Col3 c = col_mul(color, glow);
+            Col3 c = color * glow;
 
-            // Inner bright core
             if (d < 0.12f) {
                 float core = 1.0f - d / 0.12f;
-                c = col_add(c, {core * 0.5f, core * 0.5f, core * 0.5f});
+                c = c + Col3{core * 0.5f, core * 0.5f, core * 0.5f};
             }
 
-            Col3 final = col_clamp(col_lerp(c, fog_color, fog));
+            Col3 final_c = col_clamp(col_lerp(c, fog_color, fog));
             px_set(col, row,
-                   static_cast<uint8_t>(final.r * 255.f),
-                   static_cast<uint8_t>(final.g * 255.f),
-                   static_cast<uint8_t>(final.b * 255.f));
+                   static_cast<uint8_t>(final_c.r * 255.f),
+                   static_cast<uint8_t>(final_c.g * 255.f),
+                   static_cast<uint8_t>(final_c.b * 255.f));
         }
     }
 }
@@ -1155,35 +1022,25 @@ static void draw_weapon(int pixel_h) {
     int base_x = w / 2 + 4;
     int base_y = pixel_h + 2;
 
-    // Bobbing
     float bob_x = std::sin(g_weapon_bob) * 4.f;
     float bob_y = std::fabs(std::cos(g_weapon_bob * 2.f)) * 3.f;
-
-    // Recoil
     float recoil = g_flash > 0 ? static_cast<float>(g_flash) * 4.f : 0.f;
 
-    // Shake
-    float shake_x = g_shake * (hash(g_frame * 0.5f, 0.f) - 0.5f) * 6.f;
-    float shake_y = g_shake * (hash(0.f, g_frame * 0.5f) - 0.5f) * 4.f;
+    int ox = base_x + static_cast<int>(bob_x);
+    int oy = base_y + static_cast<int>(bob_y + recoil);
 
-    int ox = base_x + static_cast<int>(bob_x + shake_x);
-    int oy = base_y + static_cast<int>(bob_y + recoil + shake_y);
-
-    // Gun barrel (dark gunmetal with highlight)
+    // Gun barrel
     for (int dy = -22; dy <= 0; ++dy) {
         for (int dx = -4; dx <= 4; ++dx) {
             float t = 1.0f - static_cast<float>(-dy) / 22.f;
             float r = std::fabs(dx) / 4.5f;
-            float shade = 0.20f + t * 0.12f;
-            shade *= (1.0f - r * r * 0.5f);
+            float shade = 0.28f + t * 0.12f;
+            shade *= (1.0f - r * r * 0.4f);
+            float highlight = (dx == -2 || dx == -3) ? 0.08f : 0.0f;
 
-            // Metallic highlight on left edge
-            float highlight = (dx == -2 || dx == -3) ? 0.06f : 0.0f;
-            float rim = (dx == 3 || dx == -4) ? -0.03f : 0.0f;
-
-            float cr = clampf((shade + highlight + rim) * 0.85f, 0, 1);
-            float cg = clampf((shade + highlight + rim) * 0.88f, 0, 1);
-            float cb = clampf((shade + highlight + rim) * 1.0f, 0, 1);
+            float cr = clampf((shade + highlight) * 0.85f, 0, 1);
+            float cg = clampf((shade + highlight) * 0.88f, 0, 1);
+            float cb = clampf((shade + highlight) * 1.0f, 0, 1);
             px_set(ox + dx, oy + dy,
                    static_cast<uint8_t>(cr * 255.f),
                    static_cast<uint8_t>(cg * 255.f),
@@ -1194,22 +1051,21 @@ static void draw_weapon(int pixel_h) {
     // Muzzle ring
     for (int dx = -3; dx <= 3; ++dx) {
         float r = std::fabs(dx) / 3.5f;
-        float shade = 0.30f * (1.0f - r * 0.5f);
+        float shade = 0.35f * (1.0f - r * 0.4f);
         px_set(ox + dx, oy - 22,
-               static_cast<uint8_t>(shade * 200.f),
-               static_cast<uint8_t>(shade * 210.f),
-               static_cast<uint8_t>(shade * 230.f));
+               static_cast<uint8_t>(shade * 220.f),
+               static_cast<uint8_t>(shade * 225.f),
+               static_cast<uint8_t>(shade * 240.f));
     }
 
-    // Receiver / body (wider section)
+    // Receiver
     for (int dy = 0; dy <= 5; ++dy) {
         for (int dx = -6; dx <= 6; ++dx) {
             float r = std::fabs(dx) / 7.f;
-            float shade = 0.22f - r * 0.08f;
-            float highlight = (dx == -4) ? 0.04f : 0.0f;
-            float cr = clampf((shade + highlight) * 0.85f, 0, 1);
-            float cg = clampf((shade + highlight) * 0.85f, 0, 1);
-            float cb = clampf((shade + highlight) * 0.92f, 0, 1);
+            float shade = 0.28f - r * 0.06f;
+            float cr = clampf(shade * 0.85f, 0, 1);
+            float cg = clampf(shade * 0.85f, 0, 1);
+            float cb = clampf(shade * 0.95f, 0, 1);
             px_set(ox + dx, oy + dy,
                    static_cast<uint8_t>(cr * 255.f),
                    static_cast<uint8_t>(cg * 255.f),
@@ -1217,40 +1073,28 @@ static void draw_weapon(int pixel_h) {
         }
     }
 
-    // Grip (wood-brown with grain)
+    // Grip
     for (int dy = 5; dy <= 14; ++dy) {
         for (int dx = -4; dx <= 4; ++dx) {
             float t = static_cast<float>(dy - 5) / 9.f;
             float r = std::fabs(dx) / 5.f;
-            float shade = 0.18f + t * 0.06f;
-            shade *= (1.0f - r * 0.25f);
-            // Wood grain
+            float shade = 0.24f + t * 0.06f;
+            shade *= (1.0f - r * 0.2f);
             float grain = std::sin(dy * 1.5f + dx * 0.3f) * 0.02f;
             shade += grain;
             px_set(ox + dx, oy + dy,
-                   static_cast<uint8_t>(clampf(shade * 1.2f, 0, 1) * 255.f),
-                   static_cast<uint8_t>(clampf(shade * 0.85f, 0, 1) * 255.f),
-                   static_cast<uint8_t>(clampf(shade * 0.55f, 0, 1) * 255.f));
+                   static_cast<uint8_t>(clampf(shade * 1.3f, 0, 1) * 255.f),
+                   static_cast<uint8_t>(clampf(shade * 0.90f, 0, 1) * 255.f),
+                   static_cast<uint8_t>(clampf(shade * 0.60f, 0, 1) * 255.f));
         }
     }
 
-    // Trigger guard (thin arc)
-    for (int dy = 5; dy <= 9; ++dy) {
-        int tdx = (dy < 7) ? 5 : (dy < 9) ? 4 : 3;
-        float shade = 0.25f;
-        px_set(ox + tdx, oy + dy,
-               static_cast<uint8_t>(shade * 200.f),
-               static_cast<uint8_t>(shade * 210.f),
-               static_cast<uint8_t>(shade * 230.f));
-    }
-
-    // Muzzle flash (multi-layered bloom)
+    // Muzzle flash
     if (g_flash > 0) {
         int flash_y = oy - 24;
         float strength = static_cast<float>(g_flash) / 4.f;
 
-        // Inner bright core
-        int r1 = 3;
+        int r1 = 4;
         for (int dy = -r1; dy <= r1; ++dy)
             for (int dx = -r1; dx <= r1; ++dx) {
                 float d = std::sqrt(static_cast<float>(dx * dx + dy * dy));
@@ -1259,144 +1103,73 @@ static void draw_weapon(int pixel_h) {
                 px_blend(ox + dx, flash_y + dy, {1.0f, 1.0f, 0.9f}, t * t * strength);
             }
 
-        // Mid glow
-        int r2 = 6 + g_flash * 2;
+        int r2 = 8 + g_flash * 2;
         for (int dy = -r2; dy <= r2; ++dy)
             for (int dx = -r2; dx <= r2; ++dx) {
                 float d = std::sqrt(static_cast<float>(dx * dx + dy * dy));
                 if (d > r2) continue;
                 float t = (1.0f - d / r2);
-                px_blend(ox + dx, flash_y + dy, {1.0f, 0.8f, 0.3f}, t * t * strength * 0.6f);
-            }
-
-        // Outer warm glow (lights up surroundings)
-        int r3 = 12 + g_flash * 3;
-        for (int dy = -r3; dy <= r3; ++dy)
-            for (int dx = -r3; dx <= r3; ++dx) {
-                float d = std::sqrt(static_cast<float>(dx * dx + dy * dy));
-                if (d > r3) continue;
-                float t = (1.0f - d / r3);
-                px_blend(ox + dx, flash_y + dy, {0.8f, 0.5f, 0.1f}, t * strength * 0.15f);
+                px_blend(ox + dx, flash_y + dy, {1.0f, 0.85f, 0.4f}, t * t * strength * 0.5f);
             }
     }
 }
 
-// ── Post-processing ─────────────────────────────────────────────────────────
+// ── Crosshair ───────────────────────────────────────────────────────────────
 
-// ── Render particles in screen space ─────────────────────────────────────────
+static void draw_crosshair(int pixel_h) {
+    int cx = g_pixel_w / 2, cy = pixel_h / 2;
+    int gap = 2, len = 5;
+    Col3 cc = {1.0f, 1.0f, 1.0f};
+    float alpha = 0.85f;
 
-static void render_particles(int pixel_h) {
-    float cos_a = std::cos(g_pa), sin_a = std::sin(g_pa);
-    float inv_det = 1.0f / (std::cos(g_pa + PI / 2.f) * sin_a -
-                             std::sin(g_pa + PI / 2.f) * cos_a);
-
-    for (auto& p : g_particles) {
-        float dx = p.x - g_px, dy = p.y - g_py;
-        float tx = inv_det * (sin_a * dx - cos_a * dy);
-        float ty = inv_det * (-std::sin(g_pa + PI / 2.f) * dx + std::cos(g_pa + PI / 2.f) * dy);
-        if (ty < 0.1f || ty > 15.f) continue;
-
-        int sx = static_cast<int>((g_pixel_w / 2.f) * (1.f + tx / ty));
-        // Map z (height) to screen y
-        float screen_h = static_cast<float>(pixel_h) / ty;
-        int sy = static_cast<int>(pixel_h / 2.f - (p.z - 0.5f) * screen_h);
-
-        float alpha = p.life * 0.8f;
-        float fog = std::fmin(ty * 0.08f, 0.8f);
-        alpha *= (1.0f - fog);
-
-        int r = static_cast<int>(p.size * screen_h * 0.5f);
-        r = std::max(1, std::min(r, 4));
-
-        for (int py = -r; py <= r; ++py)
-            for (int px = -r; px <= r; ++px) {
-                float d = std::sqrt(static_cast<float>(px * px + py * py));
-                if (d > r) continue;
-                float falloff = (1.0f - d / (r + 0.5f));
-                px_blend(sx + px, sy + py, p.color, alpha * falloff * falloff);
-            }
+    for (int i = gap; i < gap + len; ++i) {
+        px_blend(cx + i, cy, cc, alpha);
+        px_blend(cx - i, cy, cc, alpha);
+        px_blend(cx, cy + i, cc, alpha);
+        px_blend(cx, cy - i, cc, alpha);
     }
+    px_blend(cx, cy, cc, 0.95f);
 }
 
-// ── Dust motes (screen-space particles) ─────────────────────────────────────
-
-static void render_dust(int pixel_h) {
-    // Floating dust particles, parallax based on angle
-    for (int i = 0; i < 40; ++i) {
-        float seed_x = hash(static_cast<float>(i), 42.f);
-        float seed_y = hash(42.f, static_cast<float>(i));
-        float speed = 0.3f + hash(static_cast<float>(i), 99.f) * 0.4f;
-
-        float x = std::fmod(seed_x * g_pixel_w + g_frame * speed + g_pa * 50.f * (seed_x - 0.5f),
-                           static_cast<float>(g_pixel_w));
-        if (x < 0) x += g_pixel_w;
-        float y = std::fmod(seed_y * pixel_h + g_frame * speed * 0.5f,
-                           static_cast<float>(pixel_h));
-
-        float bright = 0.15f + 0.1f * std::sin(g_frame * 0.05f + i * 1.7f);
-        float alpha = bright * (0.3f + 0.7f * std::sin(g_frame * 0.03f + seed_x * 20.f));
-        if (alpha < 0.05f) continue;
-
-        px_blend(static_cast<int>(x), static_cast<int>(y), {0.8f, 0.7f, 0.5f}, alpha);
-    }
-}
+// ── Post-processing (clean: vignette, warm tint, subtle bloom, damage) ──────
 
 static void post_process(int pixel_h) {
     int w = g_pixel_w, h = pixel_h;
-    float cx = w * 0.5f, cy = h * 0.5f;
+    float center_x = w * 0.5f, center_y = h * 0.5f;
 
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             auto& px = g_pixels[static_cast<size_t>(y * w + x)];
             float r = px.r / 255.f, g = px.g / 255.f, b = px.b / 255.f;
 
-            // Bloom: if pixel is bright, bleed into neighbors (cheap 1-pass approximation)
+            // Subtle bloom on bright pixels
             float lum = r * 0.299f + g * 0.587f + b * 0.114f;
-            if (lum > 0.5f) {
-                float bloom = (lum - 0.5f) * 0.15f;
-                r += bloom * 0.8f;
+            if (lum > 0.55f) {
+                float bloom = (lum - 0.55f) * 0.12f;
+                r += bloom * 0.9f;
                 g += bloom * 0.7f;
                 b += bloom * 0.6f;
             }
 
-            // Vignette (stronger, oval)
-            float dx = (x - cx) / cx, dy = (y - cy) / cy;
-            float vig = 1.0f - (dx * dx * 0.8f + dy * dy * 0.5f) * 0.4f;
-            vig = clampf(vig, 0.2f, 1.0f);
+            // Gentle vignette
+            float dx = (x - center_x) / center_x, dy = (y - center_y) / center_y;
+            float vig = 1.0f - (dx * dx * 0.7f + dy * dy * 0.4f) * 0.2f;
+            vig = clampf(vig, 0.55f, 1.0f);
             r *= vig; g *= vig; b *= vig;
 
-            // Film grain
-            float grain = (hash(x + g_frame * 0.1f, y + g_frame * 0.07f) - 0.5f) * 0.025f;
-            r += grain; g += grain; b += grain;
-
-            // Color grading: warm shadows, cool highlights
+            // Warm color grade (subtle: warm shadows, cool highlights)
             float mid = (r + g + b) / 3.f;
             if (mid < 0.3f) {
-                // Warm shadows
-                r += (0.3f - mid) * 0.06f;
-                b -= (0.3f - mid) * 0.04f;
-            } else if (mid > 0.6f) {
-                // Cool highlights
-                b += (mid - 0.6f) * 0.05f;
+                r += (0.3f - mid) * 0.04f;   // warm shadows
+                b -= (0.3f - mid) * 0.02f;
             }
-
-            // Slight contrast S-curve
-            r = clampf(r, 0, 1); g = clampf(g, 0, 1); b = clampf(b, 0, 1);
-            r = r * r * (3.f - 2.f * r); // smoothstep contrast
-            g = g * g * (3.f - 2.f * g);
-            b = b * b * (3.f - 2.f * b);
-
-            // Gamma
-            r = std::pow(clampf(r, 0, 1), 0.88f);
-            g = std::pow(clampf(g, 0, 1), 0.90f);
-            b = std::pow(clampf(b, 0, 1), 0.92f);
 
             // Damage flash
             if (g_hit_flash > 0) {
-                float alpha = static_cast<float>(g_hit_flash) / 6.f * 0.4f;
+                float alpha = static_cast<float>(g_hit_flash) / 6.f * 0.35f;
                 r = clampf(r + alpha * 0.5f, 0, 1);
-                g *= (1.f - alpha * 0.6f);
-                b *= (1.f - alpha * 0.6f);
+                g *= (1.f - alpha * 0.5f);
+                b *= (1.f - alpha * 0.5f);
             }
 
             px.r = static_cast<uint8_t>(clampf(r, 0, 1) * 255.f);
@@ -1406,25 +1179,7 @@ static void post_process(int pixel_h) {
     }
 }
 
-// ── Crosshair ───────────────────────────────────────────────────────────────
-
-static void draw_crosshair(int pixel_h) {
-    int cx = g_pixel_w / 2, cy = pixel_h / 2;
-    int gap = 2, len = 4;
-    Col3 cc = {1.0f, 1.0f, 1.0f};
-    float alpha = 0.7f;
-
-    for (int i = gap; i < gap + len; ++i) {
-        px_blend(cx + i, cy, cc, alpha);
-        px_blend(cx - i, cy, cc, alpha);
-        px_blend(cx, cy + i, cc, alpha);
-        px_blend(cx, cy - i, cc, alpha);
-    }
-    // Center dot
-    px_blend(cx, cy, cc, 0.9f);
-}
-
-// ── Composite ───────────────────────────────────────────────────────────────
+// ── Composite to canvas (half-block) ────────────────────────────────────────
 
 static void composite(Canvas& canvas, int canvas_h) {
     for (int cy = 0; cy < canvas_h; ++cy) {
@@ -1474,16 +1229,12 @@ static void paint(Canvas& canvas, int w, int h) {
     if (w != g_w || h != g_h) return;
     float dt = 1.0f / 30.0f;
     tick(dt);
-    spawn_torch_particles();
-    update_particles(dt);
-    if (g_shake > 0.f) g_shake *= 0.85f;
-    if (g_flash == 3) g_shake = 1.0f; // trigger on shot
 
     int canvas_h = h - 1;
     int pixel_h = canvas_h * 2;
     std::fill(g_pixels.begin(), g_pixels.end(), Pixel{0, 0, 0});
 
-    // Render walls (multi-threaded)
+    // Multi-threaded column rendering
     static const int n_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
     auto render_cols = [&](int x0, int x1) { for (int x = x0; x < x1; ++x) render_column(x, pixel_h); };
 
@@ -1496,13 +1247,18 @@ static void paint(Canvas& canvas, int w, int h) {
         for (int t = 0; t < n_threads; ++t) {
             int lo = t * chunk, hi = std::min(lo + chunk, g_pixel_w);
             if (lo >= hi) break;
-            threads.emplace_back([=, &canvas] { render_cols(lo, hi); });
+            threads.emplace_back([=] { render_cols(lo, hi); });
         }
     }
 
-    // Sprites (farthest first)
+    // Sprites (farthest first for correct z-ordering)
     std::vector<Enemy*> sorted;
-    for (auto& e : g_enemies) { if (e.active) { e.dist = std::sqrt((e.x-g_px)*(e.x-g_px)+(e.y-g_py)*(e.y-g_py)); sorted.push_back(&e); } }
+    for (auto& e : g_enemies) {
+        if (e.active) {
+            e.dist = std::sqrt((e.x-g_px)*(e.x-g_px)+(e.y-g_py)*(e.y-g_py));
+            sorted.push_back(&e);
+        }
+    }
     std::sort(sorted.begin(), sorted.end(), [](auto* a, auto* b) { return a->dist > b->dist; });
     for (auto* e : sorted) {
         float scale = (e->type == 1) ? 0.65f : (e->type == 2) ? 1.0f : 0.8f;
@@ -1511,21 +1267,14 @@ static void paint(Canvas& canvas, int w, int h) {
 
     // Pickups
     for (auto& p : g_pickups) {
-        if (p.taken) continue;
-        render_pickup(p.x, p.y, p.type, pixel_h);
+        if (!p.taken) render_pickup(p.x, p.y, p.type, pixel_h);
     }
-
-    // Torch particles
-    render_particles(pixel_h);
-
-    // Dust motes
-    render_dust(pixel_h);
 
     // Weapon + crosshair
     draw_weapon(pixel_h);
     draw_crosshair(pixel_h);
 
-    // Post-processing (bloom, vignette, color grading, film grain)
+    // Minimal post-processing
     post_process(pixel_h);
 
     // Composite to canvas
@@ -1534,23 +1283,23 @@ static void paint(Canvas& canvas, int w, int h) {
     // Minimap
     if (g_show_map) draw_minimap(canvas);
 
-    // Game over / victory
+    // Game over / victory overlay
     if (g_dead || g_won) {
         int cy = canvas_h / 2;
         const char* msg = g_dead ? "YOU DIED" : "ESCAPE!";
         int mlen = static_cast<int>(std::strlen(msg));
         auto* pool = canvas.style_pool();
         uint16_t s = pool->intern(
-            Style{}.with_fg(g_dead ? Color::rgb(255, 60, 60) : Color::rgb(80, 255, 120))
+            Style{}.with_fg(g_dead ? Color::rgb(255, 80, 80) : Color::rgb(100, 255, 140))
                    .with_bg(Color::rgb(0, 0, 0)).with_bold());
         canvas.write_text((w - mlen) / 2, cy, msg, s);
         const char* sub = "[r] restart  [q] quit";
         canvas.write_text((w - static_cast<int>(std::strlen(sub))) / 2, cy + 1, sub,
-            pool->intern(Style{}.with_fg(Color::rgb(160, 160, 160)).with_bg(Color::rgb(0, 0, 0))));
+            pool->intern(Style{}.with_fg(Color::rgb(180, 180, 180)).with_bg(Color::rgb(0, 0, 0))));
         char sbuf[64];
         std::snprintf(sbuf, sizeof(sbuf), "SCORE: %d  KILLS: %d", g_score, g_kills);
         canvas.write_text((w - static_cast<int>(std::strlen(sbuf))) / 2, cy + 2, sbuf,
-            pool->intern(Style{}.with_fg(Color::rgb(255, 200, 60)).with_bg(Color::rgb(0, 0, 0)).with_bold()));
+            pool->intern(Style{}.with_fg(Color::rgb(255, 220, 80)).with_bg(Color::rgb(0, 0, 0)).with_bold()));
     }
 
     // Status bar

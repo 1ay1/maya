@@ -141,9 +141,9 @@ static constexpr float TURN_SPD = 0.08f;
 
 // Held-key tracking: terminals only repeat the LAST key pressed, so when
 // you hold W then press Left, W stops sending events entirely. We keep a
-// key "held" for a generous window so both stay active. A key is released
+// key "held" for a short window so both stay active. A key is released
 // either by timeout or by pressing its opposite (cancels immediately).
-static constexpr int KEY_HOLD_FRAMES = 15; // ~500ms at 30fps
+static constexpr int KEY_HOLD_FRAMES = 5; // ~167ms at 30fps
 enum KeyAction { K_FWD, K_BACK, K_LEFT, K_RIGHT, K_TURN_L, K_TURN_R, K_COUNT };
 static int g_key_last_seen[K_COUNT] = {-100, -100, -100, -100, -100, -100};
 static constexpr float COLLISION_R = 0.2f;

@@ -24,12 +24,14 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <random>
 #include <string>
 #include <vector>
 
+using namespace maya;
 using namespace maya::dsl;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -600,8 +602,6 @@ static maya::Element build_status_bar() {
 // ── Render ──────────────────────────────────────────────────────────────────
 
 static maya::Element render() {
-    tick(1.0f / 15.0f);
-
     // Left column: telemetry, sparklines, nav
     auto left = (v(
         build_telemetry_panel(),
@@ -643,19 +643,38 @@ static maya::Element render() {
     return vstack()(std::move(layout));
 }
 
-// ── Main ────────────────────────────────────────────────────────────────────
+// ── Program ─────────────────────────────────────────────────────────────────
 
-int main() {
-    init_state();
+struct SpaceApp {
+    struct Model { int frame = 0; };
 
-    maya::run(
-        {.title = "ARES VII Mission Control", .fps = 15, .mode = maya::Mode::Fullscreen},
-        [](const maya::Event& ev) {
-            maya::on(ev, 'q', [] { maya::quit(); });
-            maya::on(ev, maya::SpecialKey::Escape, [] { maya::quit(); });
+    struct Tick {};
+    struct Quit {};
+    struct ThrusterBurn {};
+    struct Abort {};
+    struct Diagnostics {};
+    struct Phase1 {};
+    struct Phase2 {};
+    struct Phase3 {};
+    using Msg = std::variant<Tick, Quit, ThrusterBurn, Abort, Diagnostics,
+                             Phase1, Phase2, Phase3>;
 
-            // Thruster burn
-            maya::on(ev, ' ', [] {
+    static Model init() {
+        init_state();
+        return {};
+    }
+
+    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
+        return std::visit(overload{
+            [&](Tick) {
+                tick(1.0f / 15.0f);
+                m.frame++;
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [](Quit) {
+                return std::pair{Model{}, Cmd<Msg>::quit()};
+            },
+            [&](ThrusterBurn) {
                 if (fuel > 0.05f) {
                     fuel -= 0.03f;
                     velocity += 1.5f;
@@ -668,10 +687,9 @@ int main() {
                     toasts.push_back({"FUEL CRITICAL — burn denied",
                                       maya::Severity::Error, 4.0f});
                 }
-            });
-
-            // Abort
-            maya::on(ev, 'a', [] {
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](Abort) {
                 if (!abort_sequence) {
                     abort_sequence = true;
                     abort_timer = 10.0f;
@@ -687,10 +705,9 @@ int main() {
                     toasts.push_back({"Abort sequence cancelled",
                                       maya::Severity::Info, 3.0f});
                 }
-            });
-
-            // Diagnostics
-            maya::on(ev, 'd', [] {
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](Diagnostics) {
                 diag_mode = !diag_mode;
                 diag_timer = 5.0f;
                 if (diag_mode) {
@@ -701,24 +718,52 @@ int main() {
                         if (s.status > 0) { s.status = 0; break; }
                     }
                 }
-            });
-
-            // Mission phases
-            maya::on(ev, '1', [] {
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](Phase1) {
                 mission_phase = 0;
                 toasts.push_back({"Phase set: LAUNCH", maya::Severity::Info, 2.0f});
-            });
-            maya::on(ev, '2', [] {
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](Phase2) {
                 mission_phase = 1;
                 toasts.push_back({"Phase set: TRANSIT", maya::Severity::Info, 2.0f});
-            });
-            maya::on(ev, '3', [] {
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](Phase3) {
                 mission_phase = 2;
                 toasts.push_back({"Phase set: ORBIT INSERTION", maya::Severity::Info, 2.0f});
-            });
-        },
-        [] { return render(); }
-    );
+                return std::pair{m, Cmd<Msg>{}};
+            },
+        }, msg);
+    }
 
+    static Element view(const Model&) {
+        return render();
+    }
+
+    static auto subscribe(const Model&) -> Sub<Msg> {
+        return Sub<Msg>::batch(
+            key_map<Msg>({
+                {'q', Quit{}},
+                {SpecialKey::Escape, Quit{}},
+                {' ', ThrusterBurn{}},
+                {'a', Abort{}},
+                {'d', Diagnostics{}},
+                {'1', Phase1{}},
+                {'2', Phase2{}},
+                {'3', Phase3{}},
+            }),
+            Sub<Msg>::every(std::chrono::milliseconds(1000 / 15), Tick{})
+        );
+    }
+};
+
+static_assert(Program<SpaceApp>);
+
+// ── Main ────────────────────────────────────────────────────────────────────
+
+int main() {
+    run<SpaceApp>({.title = "ARES VII Mission Control", .fps = 0, .mode = Mode::Fullscreen});
     return 0;
 }

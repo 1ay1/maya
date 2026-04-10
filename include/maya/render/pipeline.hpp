@@ -38,6 +38,7 @@
 #include "canvas.hpp"
 #include "diff.hpp"
 #include "renderer.hpp"
+#include "serialize.hpp"
 #include "../core/types.hpp"
 #include "../element/element.hpp"
 #include "../style/theme.hpp"
@@ -128,6 +129,17 @@ public:
     }
 
     // =========================================================================
+    // δ(Cleared, paint(root, nodes)) → Painted
+    // Overload: reuses a layout node vector across frames to avoid allocation.
+    // =========================================================================
+    [[nodiscard]] RenderPipeline<stage::Painted>
+    paint(const Element& root, std::vector<layout::LayoutNode>& nodes,
+          bool auto_height = false) && requires std::same_as<S, stage::Cleared> {
+        render_tree(root, back_, pool_, theme_, nodes, auto_height);
+        return {back_, pool_, theme_, out_};
+    }
+
+    // =========================================================================
     // δ(Painted, open_frame()) → Opened
     // Effect: appends hide_cursor + sync_start to out_.
     //         The terminal will not display partial updates until close_frame().
@@ -173,6 +185,19 @@ public:
     }
 
     // =========================================================================
+    // δ(Opened, write_full()) → Opened
+    // Effect: clears the screen, homes the cursor, then serializes the entire
+    //         back canvas sequentially. Used for the first frame or after resize
+    //         when diff against a stale front canvas would be incorrect.
+    // =========================================================================
+    [[nodiscard]] RenderPipeline<stage::Opened>
+    write_full() && requires std::same_as<S, stage::Opened> {
+        out_ += "\x1b[2J\x1b[H";
+        serialize(back_, pool_, out_);
+        return {back_, pool_, theme_, out_};
+    }
+
+    // =========================================================================
     // δ(Opened, close_frame()) → Closed
     // Effect: appends SGR-reset + sync_end to out_.
     //         After this, out_ is a complete, self-contained ANSI frame.
@@ -203,6 +228,9 @@ static_assert(requires(RenderPipeline<stage::Painted> p)
 
 static_assert(requires(RenderPipeline<stage::Opened> p, const Canvas& c)
     { std::move(p).write_diff(c); });
+
+static_assert(requires(RenderPipeline<stage::Opened> p)
+    { std::move(p).write_full(); });
 
 static_assert(requires(RenderPipeline<stage::Opened> p)
     { std::move(p).close_frame(); });

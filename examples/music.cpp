@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+using namespace maya;
 using namespace maya::dsl;
 
 // -- Helpers -----------------------------------------------------------------
@@ -448,11 +449,9 @@ static maya::Element build_status_bar() {
     ) | pad<0, 1, 0, 1> | Bg<30, 30, 42>).build();
 }
 
-// -- Render ------------------------------------------------------------------
+// -- Render (without tick) ---------------------------------------------------
 
 static maya::Element render() {
-    tick(1.0f / 15.0f);
-
     // Left column: album art + visualizer + queue
     auto left_col = (v(
         build_album_art(),
@@ -480,47 +479,110 @@ static maya::Element render() {
     );
 }
 
+// -- Program -----------------------------------------------------------------
+
+struct MusicApp {
+    struct Model {};
+
+    struct Tick {};
+    struct Quit {};
+    struct TogglePlay {};
+    struct NextTrack {};
+    struct PrevTrack {};
+    struct ToggleShuffle {};
+    struct CycleRepeat {};
+    struct VolumeUp {};
+    struct VolumeDown {};
+    struct ScrollDown {};
+    struct ScrollUp {};
+
+    using Msg = std::variant<Tick, Quit, TogglePlay, NextTrack, PrevTrack,
+                              ToggleShuffle, CycleRepeat, VolumeUp, VolumeDown,
+                              ScrollDown, ScrollUp>;
+
+    static Model init() { init_shuffle(); return {}; }
+
+    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
+        return std::visit(overload{
+            [&](Tick) {
+                tick(1.0f / 15.0f);
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](Quit) {
+                return std::pair{m, Cmd<Msg>::quit()};
+            },
+            [&](TogglePlay) {
+                playing = !playing;
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](NextTrack) {
+                advance_track(1);
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](PrevTrack) {
+                advance_track(-1);
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](ToggleShuffle) {
+                shuffle_on = !shuffle_on;
+                if (shuffle_on) init_shuffle();
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](CycleRepeat) {
+                repeat_mode = (repeat_mode + 1) % 3;
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](VolumeUp) {
+                volume = std::min(1.0f, volume + 0.05f);
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](VolumeDown) {
+                volume = std::max(0.0f, volume - 0.05f);
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](ScrollDown) {
+                playlist_scroll = std::min(playlist_scroll + 1,
+                    std::max(0, static_cast<int>(tracks.size()) - 8));
+                return std::pair{m, Cmd<Msg>{}};
+            },
+            [&](ScrollUp) {
+                playlist_scroll = std::max(0, playlist_scroll - 1);
+                return std::pair{m, Cmd<Msg>{}};
+            },
+        }, msg);
+    }
+
+    static Element view(const Model&) { return render(); }
+
+    static auto subscribe(const Model&) -> Sub<Msg> {
+        using SK = SpecialKey;
+        return Sub<Msg>::batch(
+            key_map<Msg>({
+                {'q',       Quit{}},
+                {SK::Escape, Quit{}},
+                {' ',       TogglePlay{}},
+                {'n',       NextTrack{}},
+                {'p',       PrevTrack{}},
+                {'s',       ToggleShuffle{}},
+                {'r',       CycleRepeat{}},
+                {'+',       VolumeUp{}},
+                {'=',       VolumeUp{}},
+                {'-',       VolumeDown{}},
+                {'j',       ScrollDown{}},
+                {SK::Down,  ScrollDown{}},
+                {'k',       ScrollUp{}},
+                {SK::Up,    ScrollUp{}},
+            }),
+            Sub<Msg>::every(std::chrono::milliseconds(1000 / 15), Tick{})
+        );
+    }
+};
+
+static_assert(Program<MusicApp>);
+
 // -- Main --------------------------------------------------------------------
 
 int main() {
-    init_shuffle();
-
-    maya::run(
-        {.title = "music", .fps = 15, .mode = maya::Mode::Fullscreen},
-        [](const maya::Event& ev) {
-            using SK = maya::SpecialKey;
-            maya::on(ev, 'q', [] { maya::quit(); });
-            maya::on(ev, SK::Escape, [] { maya::quit(); });
-            maya::on(ev, ' ', [] { playing = !playing; });
-            maya::on(ev, 'n', [] { advance_track(1); });
-            maya::on(ev, 'p', [] { advance_track(-1); });
-            maya::on(ev, 's', [] {
-                shuffle_on = !shuffle_on;
-                if (shuffle_on) init_shuffle();
-            });
-            maya::on(ev, 'r', [] {
-                repeat_mode = (repeat_mode + 1) % 3;
-            });
-            maya::on(ev, '+', [] { volume = std::min(1.0f, volume + 0.05f); });
-            maya::on(ev, '=', [] { volume = std::min(1.0f, volume + 0.05f); });
-            maya::on(ev, '-', [] { volume = std::max(0.0f, volume - 0.05f); });
-            maya::on(ev, 'j', [] {
-                playlist_scroll = std::min(playlist_scroll + 1,
-                    std::max(0, static_cast<int>(tracks.size()) - 8));
-            });
-            maya::on(ev, SK::Down, [] {
-                playlist_scroll = std::min(playlist_scroll + 1,
-                    std::max(0, static_cast<int>(tracks.size()) - 8));
-            });
-            maya::on(ev, 'k', [] {
-                playlist_scroll = std::max(0, playlist_scroll - 1);
-            });
-            maya::on(ev, SK::Up, [] {
-                playlist_scroll = std::max(0, playlist_scroll - 1);
-            });
-        },
-        [] { return render(); }
-    );
-
+    run<MusicApp>({.title = "music", .mode = Mode::Fullscreen});
     return 0;
 }

@@ -206,7 +206,7 @@ static void add_log(const std::string& msg, int level = 0) {
 static const char* services[] = {"ssh","http","https","mysql","redis","postgres","ftp","smtp","dns","telnet"};
 static const int ports[] = {22, 80, 443, 3306, 6379, 5432, 21, 25, 53, 23};
 
-static void init() {
+static void init_state() {
     // Initial targets
     for (int i = 0; i < 5; ++i) {
         int si = randi(0, 9);
@@ -709,85 +709,123 @@ static maya::Element build_hex_footer() {
     ) | pad<0, 1, 0, 1> | Bg<20, 20, 30>).build();
 }
 
-// ── Render ─────────────────────────────────────────────────────────────────
+// ── Program ───────────────────────────────────────────────────────────────
 
-static maya::Element render() {
-    tick(1.0f / 15.0f);
+struct HackerApp {
+    // ── Model: trivial (all state is in statics) ─────────────────────────
+    struct Model {};
 
-    auto header = build_header();
+    // ── Messages ─────────────────────────────────────────────────────────
+    struct Tick {};
+    struct Quit {};
+    struct SetTheme { int idx; };
+    struct Breach {};
+    struct Extract {};
+    struct Cover {};
+    using Msg = std::variant<Tick, Quit, SetTheme, Breach, Extract, Cover>;
 
-    // Three-column main area
-    auto left = build_targets_panel();
-    auto center = build_terminal_panel();
-    auto right = build_intel_panel();
+    // ── init ─────────────────────────────────────────────────────────────
+    static Model init() {
+        init_state();
+        return {};
+    }
 
-    auto main_row = hstack()(
-        vstack().grow(1)(std::move(left)),
-        vstack().grow(2)(std::move(center)),
-        vstack().grow(1)(std::move(right))
-    );
-
-    auto footer = build_hex_footer();
-
-    // Toast overlay
-    auto toast_elem = toasts.build();
-
-    return vstack()(
-        std::move(header),
-        std::move(main_row),
-        std::move(toast_elem),
-        std::move(footer)
-    );
-}
-
-// ── Main ───────────────────────────────────────────────────────────────────
-
-int main() {
-    init();
-
-    maya::run(
-        {.title = "NEXUS://BREACH", .fps = 15, .mode = maya::Mode::Fullscreen},
-        [](const maya::Event& ev) {
-            maya::on(ev, 'q', [] { maya::quit(); });
-            maya::on(ev, maya::SpecialKey::Escape, [] { maya::quit(); });
-
-            // Theme selection
-            maya::on(ev, '1', [] { theme_idx = 0; });
-            maya::on(ev, '2', [] { theme_idx = 1; });
-            maya::on(ev, '3', [] { theme_idx = 2; });
-
-            // Breach sequence
-            maya::on(ev, ' ', [] {
+    // ── update ───────────────────────────────────────────────────────────
+    static auto update(Model m, Msg msg) -> std::pair<Model, maya::Cmd<Msg>> {
+        return std::visit(maya::overload{
+            [&](Tick) -> std::pair<Model, maya::Cmd<Msg>> {
+                tick(1.0f / 15.0f);
+                return {m, maya::Cmd<Msg>{}};
+            },
+            [&](Quit) -> std::pair<Model, maya::Cmd<Msg>> {
+                return {m, maya::Cmd<Msg>::quit()};
+            },
+            [&](SetTheme st) -> std::pair<Model, maya::Cmd<Msg>> {
+                theme_idx = st.idx;
+                return {m, maya::Cmd<Msg>{}};
+            },
+            [&](Breach) -> std::pair<Model, maya::Cmd<Msg>> {
                 if (!breaching) {
                     breaching = true;
                     breach_timer = 0.3f;
                     breach_phase = 0;
                     toasts.push("BREACH SEQUENCE INITIATED", maya::ToastLevel::Error);
                 }
-            });
-
-            // Extract data
-            maya::on(ev, 'e', [] {
+                return {m, maya::Cmd<Msg>{}};
+            },
+            [&](Extract) -> std::pair<Model, maya::Cmd<Msg>> {
                 if (!extracting) {
                     extracting = true;
                     extract_timer = 3.0f;
                     add_log(">>> DATA EXTRACTION STARTED <<<", 3);
                     toasts.push("EXTRACTING DATA", maya::ToastLevel::Warning);
                 }
-            });
-
-            // Cover tracks
-            maya::on(ev, 'c', [] {
+                return {m, maya::Cmd<Msg>{}};
+            },
+            [&](Cover) -> std::pair<Model, maya::Cmd<Msg>> {
                 if (!covering) {
                     covering = true;
                     cover_timer = 2.0f;
                     add_log(">>> COVERING TRACKS <<<", 2);
                     toasts.push("WIPING EVIDENCE", maya::ToastLevel::Warning);
                 }
-            });
-        },
-        [] { return render(); }
-    );
+                return {m, maya::Cmd<Msg>{}};
+            },
+        }, msg);
+    }
 
+    // ── view ─────────────────────────────────────────────────────────────
+    static maya::Element view(const Model&) {
+        auto header = build_header();
+
+        // Three-column main area
+        auto left = build_targets_panel();
+        auto center = build_terminal_panel();
+        auto right = build_intel_panel();
+
+        auto main_row = hstack()(
+            vstack().grow(1)(std::move(left)),
+            vstack().grow(2)(std::move(center)),
+            vstack().grow(1)(std::move(right))
+        );
+
+        auto footer = build_hex_footer();
+
+        // Toast overlay
+        auto toast_elem = toasts.build();
+
+        return vstack()(
+            std::move(header),
+            std::move(main_row),
+            std::move(toast_elem),
+            std::move(footer)
+        );
+    }
+
+    // ── subscribe ────────────────────────────────────────────────────────
+    static auto subscribe(const Model&) -> maya::Sub<Msg> {
+        using namespace std::chrono_literals;
+        return maya::Sub<Msg>::batch(
+            maya::Sub<Msg>::every(std::chrono::milliseconds(1000 / 15), Tick{}),
+            maya::key_map<Msg>({
+                {'q', Quit{}},
+                {maya::SpecialKey::Escape, Quit{}},
+                {'1', SetTheme{0}},
+                {'2', SetTheme{1}},
+                {'3', SetTheme{2}},
+                {' ', Breach{}},
+                {'e', Extract{}},
+                {'c', Cover{}},
+            })
+        );
+    }
+};
+
+static_assert(maya::Program<HackerApp>, "HackerApp must satisfy the Program concept");
+
+// ── Main ───────────────────────────────────────────────────────────────────
+
+int main() {
+    maya::run<HackerApp>({.title = "NEXUS://BREACH", .fps = 0, .mode = maya::Mode::Fullscreen});
     return 0;
 }

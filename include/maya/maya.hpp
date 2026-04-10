@@ -46,11 +46,14 @@
 #include <maya/element/element.hpp>
 #include <maya/element/builder.hpp>
 
-// ── App: lifecycle, events, run() ───────────────────────────────────────
+// ── Core: Cmd<Msg> — side effects as data ──────────────────────────────
+#include <maya/core/cmd.hpp>
+
+// ── App: lifecycle, events, run<P>() ────────────────────────────────────
 #include <maya/app/context.hpp>
+#include <maya/app/sub.hpp>
 #include <maya/app/app.hpp>
 #include <maya/app/events.hpp>
-#include <maya/app/run.hpp>
 #include <maya/app/inline.hpp>
 #include <maya/app/environment.hpp>
 #include <maya/app/error_boundary.hpp>

@@ -30,12 +30,15 @@ namespace maya::platform::macos {
 class MacEventSource {
     int kq_ = -1;
     NativeHandle terminal_fd_;
+    NativeHandle stdout_fd_ = -1;
+    bool write_registered_ = false;
 
     MacEventSource() = default;
 
 public:
     MacEventSource(NativeHandle term_fd, NativeHandle /*sig_fd*/) noexcept
         : terminal_fd_(term_fd)
+        , stdout_fd_(STDOUT_FILENO)
     {
         kq_ = ::kqueue();
         if (kq_ < 0) return;   // fallback: wait() will return error
@@ -62,10 +65,25 @@ public:
 
     [[nodiscard]] auto wait(
         std::chrono::milliseconds timeout,
-        bool /*want_write*/ = false) -> Result<ReadyFlags>
+        bool want_write = false) -> Result<ReadyFlags>
     {
         if (kq_ < 0)
             return err<ReadyFlags>(Error::io("kqueue: failed to create"));
+
+        // Dynamically register/unregister EVFILT_WRITE on stdout so kqueue
+        // wakes us when the PTY buffer has space. Only active when the
+        // caller has pending frame data — avoids spurious write wakeups.
+        if (want_write && !write_registered_) {
+            struct kevent ev;
+            EV_SET(&ev, stdout_fd_, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, nullptr);
+            ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
+            write_registered_ = true;
+        } else if (!want_write && write_registered_) {
+            struct kevent ev;
+            EV_SET(&ev, stdout_fd_, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
+            ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
+            write_registered_ = false;
+        }
 
         struct timespec ts;
         ts.tv_sec  = timeout.count() / 1000;
@@ -90,7 +108,13 @@ public:
                 events[i].ident == static_cast<uintptr_t>(SIGWINCH)) {
                 flags.resize = true;
             }
+            if (events[i].filter == EVFILT_WRITE &&
+                static_cast<int>(events[i].ident) == stdout_fd_) {
+                flags.writeable = true;
+            }
         }
+        // If not watching writes, always report writeable (blocking I/O).
+        if (!want_write) flags.writeable = true;
         return ok(flags);
     }
 
@@ -99,13 +123,17 @@ public:
     MacEventSource(MacEventSource&& o) noexcept
         : kq_(std::exchange(o.kq_, -1))
         , terminal_fd_(std::exchange(o.terminal_fd_, -1))
+        , stdout_fd_(std::exchange(o.stdout_fd_, -1))
+        , write_registered_(std::exchange(o.write_registered_, false))
     {}
 
     MacEventSource& operator=(MacEventSource&& o) noexcept {
         if (this != &o) {
             if (kq_ >= 0) ::close(kq_);
-            kq_          = std::exchange(o.kq_, -1);
-            terminal_fd_ = std::exchange(o.terminal_fd_, -1);
+            kq_               = std::exchange(o.kq_, -1);
+            terminal_fd_      = std::exchange(o.terminal_fd_, -1);
+            stdout_fd_        = std::exchange(o.stdout_fd_, -1);
+            write_registered_ = std::exchange(o.write_registered_, false);
         }
         return *this;
     }

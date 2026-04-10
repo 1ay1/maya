@@ -52,6 +52,14 @@ void diff(
     char ascii_buf[256];
     int  ascii_len = 0;
 
+    // Lambda: flush the ASCII batch buffer.
+    auto flush_ascii = [&] {
+        if (ascii_len > 0) {
+            out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
+            ascii_len = 0;
+        }
+    };
+
     for (int y = y0; y < y1; ++y) {
         const int  new_row_base  = y * width;
         const int  old_row_base  = y * old_w;
@@ -64,15 +72,27 @@ void diff(
                 continue;
         }
 
+        // ── Pre-scan: find last non-blank column in new canvas ───────────
+        // This enables the EL optimisation below: instead of writing each
+        // trailing blank cell individually, one \x1b[K clears them all.
+        int last_content = x0 - 1;
+        for (int scan = x1 - 1; scan >= x0; --scan) {
+            if (new_cells[new_row_base + scan] != blank) {
+                last_content = scan;
+                break;
+            }
+        }
+        // Inner loop only needs to process up to last_content (inclusive).
+        const auto content_end = static_cast<std::size_t>(last_content + 1);
+
         // ── Level-2 SIMD skip: within-row unchanged runs ─────────────────
         auto x  = static_cast<std::size_t>(x0);
-        const auto xe = static_cast<std::size_t>(x1);
 
         const auto old_xe = old_row_valid
-                          ? std::min(xe, static_cast<std::size_t>(old_w))
+                          ? std::min(content_end, static_cast<std::size_t>(old_w))
                           : static_cast<std::size_t>(0);
 
-        while (x < xe) {
+        while (x < content_end) {
             // Skip unchanged prefix via SIMD (only when old data is available).
             if (old_row_valid && x < old_xe) {
                 const std::size_t avail = old_xe - x;
@@ -83,13 +103,10 @@ void diff(
                 if (skip > 0) {
                     // Flush ASCII buffer before skipping — cursor position
                     // will be discontinuous after the unchanged run.
-                    if (ascii_len > 0) {
-                        out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
-                        ascii_len = 0;
-                    }
+                    flush_ascii();
                 }
                 x += skip;
-                if (x >= xe) break;
+                if (x >= content_end) break;
             }
 
             const uint64_t new_packed = new_cells[new_row_base + x];
@@ -99,10 +116,7 @@ void diff(
 
             if (new_packed == old_packed) [[likely]] {
                 // Flush before gap in changed cells.
-                if (ascii_len > 0) {
-                    out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
-                    ascii_len = 0;
-                }
+                flush_ascii();
                 ++x; continue;
             }
 
@@ -115,10 +129,7 @@ void diff(
             // consecutive changed cells on the same row need no CUP.
             const int cx = static_cast<int>(x);
             if (cursor_x != cx || cursor_y != y) {
-                if (ascii_len > 0) {
-                    out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
-                    ascii_len = 0;
-                }
+                flush_ascii();
                 detail::write_cup(out, cx + 1, y + 1);
                 cursor_x = cx;
                 cursor_y = y;
@@ -131,10 +142,7 @@ void diff(
 
             // Style transition — pre-cached SGR, single memcpy.
             if (style_id != current_style) {
-                if (ascii_len > 0) {
-                    out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
-                    ascii_len = 0;
-                }
+                flush_ascii();
                 out.append(pool.sgr(style_id));
                 current_style = style_id;
             }
@@ -147,21 +155,48 @@ void diff(
                     ascii_len = 0;
                 }
             } else {
-                if (ascii_len > 0) {
-                    out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
-                    ascii_len = 0;
-                }
+                flush_ascii();
                 detail::encode_utf8(character, out);
             }
             // Wide-char first half (width==1) occupies 2 columns; normal chars 1.
             cursor_x += (cell_w == 1) ? 2 : 1;
             ++x;
         }
+
+        // ── EL optimisation: clear trailing old content in one shot ──────
+        // If old canvas had non-blank cells beyond last_content, a single
+        // \x1b[K (erase to end of line) replaces what would otherwise be
+        // dozens of individual space writes + cursor moves.
+        if (old_row_valid && last_content < static_cast<int>(x1) - 1) {
+            const auto trail_start = static_cast<std::size_t>(last_content + 1);
+            const auto trail_end   = std::min(static_cast<std::size_t>(x1),
+                                              static_cast<std::size_t>(old_w));
+            bool need_el = false;
+            for (auto scan = trail_start; scan < trail_end; ++scan) {
+                if (old_cells[old_row_base + scan] != blank) {
+                    need_el = true;
+                    break;
+                }
+            }
+            if (need_el) {
+                flush_ascii();
+                const int el_col = last_content + 1;
+                if (cursor_x != el_col || cursor_y != y) {
+                    detail::write_cup(out, el_col + 1, y + 1);
+                }
+                // EL uses the current background — reset to default first.
+                if (current_style != 0) {
+                    out.append(pool.sgr(0));
+                    current_style = 0;
+                }
+                out += "\x1b[K";
+                cursor_x = el_col;
+                cursor_y = y;
+            }
+        }
     }
     // Flush remaining ASCII.
-    if (ascii_len > 0) {
-        out.append(ascii_buf, static_cast<std::size_t>(ascii_len));
-    }
+    flush_ascii();
 }
 
 } // namespace maya

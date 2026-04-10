@@ -114,23 +114,22 @@ struct Ops<Neon> {
         std::size_t count,
         uint64_t value) noexcept
     {
-        // ARM has no non-temporal stores, but NEON fill is ~2x scalar
-        static constexpr std::size_t kNtThreshold = 16384;
-        if (count < kNtThreshold) {
-            for (std::size_t i = 0; i < count; ++i) dst[i] = value;
-            return;
-        }
-
+        // Always use NEON: 128-bit stores are ~2x scalar throughput on
+        // Apple Silicon even for small buffers (no NT-store concern on ARM).
         std::size_t i = 0;
         uint64x2_t val = vdupq_n_u64(value);
-        for (; i + 4 <= count; i += 4) {
-            vst1q_u64(dst + i, val);
+
+        // 8 cells/iteration (4x 128-bit stores) — saturates M1/M2 store units
+        for (; i + 8 <= count; i += 8) {
+            vst1q_u64(dst + i,     val);
             vst1q_u64(dst + i + 2, val);
+            vst1q_u64(dst + i + 4, val);
+            vst1q_u64(dst + i + 6, val);
         }
         for (; i + 2 <= count; i += 2)
             vst1q_u64(dst + i, val);
 
-        for (; i < count; ++i) dst[i] = value;
+        if (i < count) dst[i] = value;
     }
 
     [[nodiscard]] static uint64_t hash_row(

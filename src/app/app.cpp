@@ -3,8 +3,6 @@
 #include <algorithm>
 #include <format>
 
-#include "maya/core/focus.hpp"
-#include "maya/core/simd.hpp"
 #include "maya/core/overload.hpp"
 #include "maya/core/scope_exit.hpp"
 #include "maya/platform/select.hpp"
@@ -13,34 +11,14 @@
 #include <pthread.h>
 #endif
 
-namespace maya {
+namespace maya::detail {
 
 // ============================================================================
-// App::Builder
+// Runtime::create — initialize terminal, event source, canvases
 // ============================================================================
 
-auto App::Builder::mode(Mode m) -> Builder& {
-    mode_ = m;
-    return *this;
-}
-
-auto App::Builder::mouse(bool v) -> Builder& {
-    mouse_ = v;
-    return *this;
-}
-
-auto App::Builder::theme(Theme t) -> Builder& {
-    theme_ = t;
-    return *this;
-}
-
-auto App::Builder::title(std::string_view t) -> Builder& {
-    title_ = std::string{t};
-    return *this;
-}
-
-auto App::Builder::build() -> Result<App> {
-    // Acquire the terminal and move it through the type-state chain.
+auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
+    // Move the terminal through the type-state chain: Cooked → Raw → AltScreen
     MAYA_TRY_DECL(auto cooked, Terminal<Cooked>::create());
     MAYA_TRY_DECL(auto raw, std::move(cooked).enable_raw_mode());
 
@@ -50,201 +28,73 @@ auto App::Builder::build() -> Result<App> {
     // Install resize signal handler.
     MAYA_TRY_DECL(auto resize_sig, platform::NativeResizeSignal::install());
 
-    // Fullscreen mode enters the alt screen buffer (consumes the Raw terminal).
-    // Inline mode stays in raw mode.
+    // Fullscreen enters alt screen (consumes Raw terminal).
+    // Inline stays in raw mode.
     std::optional<Terminal<AltScreen>> alt_term;
     std::optional<Terminal<Raw>>       raw_term;
 
-    if (mode_ == Mode::Fullscreen) {
+    if (cfg.mode == Mode::Fullscreen) {
         MAYA_TRY_DECL(auto alt, std::move(raw).enter_alt_screen());
         alt_term = std::move(alt);
     } else {
         raw_term = std::move(raw);
     }
 
-    // Construct the app.
-    App app;
-    app.alt_terminal_  = std::move(alt_term);
-    app.raw_terminal_  = std::move(raw_term);
-    app.output_handle_ = output_h;
-    app.input_handle_  = input_h;
-    app.resize_signal_  = std::move(resize_sig);
-    app.writer_        = std::make_unique<Writer>(output_h);
-    app.theme_          = theme_;
-    app.mouse_enabled_  = mouse_;
+    // Create event source — multiplexes terminal input and resize signals.
+    auto sig_handle = resize_sig.native_handle();
+    platform::NativeEventSource event_source(input_h, sig_handle);
 
-    app.context_.set<Theme>(theme_);
+    Runtime rt;
+    rt.alt_terminal_   = std::move(alt_term);
+    rt.raw_terminal_   = std::move(raw_term);
+    rt.output_handle_  = output_h;
+    rt.input_handle_   = input_h;
+    rt.resize_signal_  = std::move(resize_sig);
+    rt.event_source_   = std::move(event_source);
+    rt.writer_         = std::make_unique<Writer>(output_h);
+    rt.theme_          = cfg.theme;
 
     // Set terminal title if provided.
-    if (!title_.empty()) {
-        auto seq = std::format("\x1b]0;{}\x07", title_);
+    if (!cfg.title.empty()) {
+        auto seq = std::format("\x1b]0;{}\x07", cfg.title);
         (void)platform::io_write_all(output_h, seq);
     }
 
     // Query initial terminal size.
-    if (app.alt_terminal_) {
-        app.size_ = app.alt_terminal_->size();
-    } else if (app.raw_terminal_) {
-        app.size_ = app.raw_terminal_->size();
+    if (rt.alt_terminal_) {
+        rt.size_ = rt.alt_terminal_->size();
+    } else if (rt.raw_terminal_) {
+        rt.size_ = rt.raw_terminal_->size();
     }
 
-    app.started_mode_ = mode_;
-    app.render_ctx_.width      = app.size_.width.raw();
-    app.render_ctx_.height     = app.size_.height.raw();
-    app.render_ctx_.generation = 0;
-
-    return ok(std::move(app));
-}
-
-// ============================================================================
-// App::run
-// ============================================================================
-
-auto App::run(std::function<Element()> render_fn) -> Status {
-    render_fn_ = std::move(render_fn);
-    running_ = true;
-    needs_render_ = true;
-    return event_loop();
-}
-
-// ============================================================================
-// Event loop — platform-abstracted
-// ============================================================================
-
-auto App::event_loop() -> Status {
-    using Clock = std::chrono::steady_clock;
-    auto next_frame = Clock::now();
+    rt.render_ctx_.width      = rt.size_.width.raw();
+    rt.render_ctx_.height     = rt.size_.height.raw();
+    rt.render_ctx_.generation = 0;
 
 #if MAYA_PLATFORM_MACOS
     // Tell macOS scheduler this is a user-interactive thread.
-    // Gets priority on performance cores (M-series), reduces frame jitter.
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
 #endif
 
-    // Create the event source — multiplexes terminal input and resize signals.
-    auto sig_handle = resize_signal_ ? resize_signal_->native_handle()
-                                      : platform::invalid_handle;
-    platform::NativeEventSource events(input_handle_, sig_handle);
-
-    while (running_) {
-        // Compute poll timeout
-        int poll_timeout_ms = 100;
-        if (fps_ > 0) {
-            auto now = Clock::now();
-            auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(next_frame - now);
-            poll_timeout_ms = std::max(0, static_cast<int>(wait.count()));
-        }
-
-        MAYA_TRY_DECL(auto ready, events.wait(
-            std::chrono::milliseconds(poll_timeout_ms)));
-
-        if (ready.resize && resize_signal_) {
-            resize_signal_->drain();
-            handle_resize();
-        }
-
-        if (ready.input) {
-            MAYA_TRY_VOID(read_and_dispatch());
-        }
-
-        for (auto& ev : parser_.flush_timeout()) {
-            dispatch_event(ev);
-        }
-
-        if (fps_ > 0 && Clock::now() >= next_frame) {
-            needs_render_ = true;
-            next_frame += std::chrono::microseconds(1'000'000 / fps_);
-            if (Clock::now() > next_frame)
-                next_frame = Clock::now();
-        }
-
-        if (needs_render_) {
-            MAYA_TRY_VOID(render_frame());
-            needs_render_ = false;
-        }
-    }
-
-    if (is_inline()) {
-        auto cleanup = std::format("{}{}\r\n", ansi::show_cursor, ansi::reset);
-        (void)writer_->write_raw(cleanup);
-    }
-
-    return ok();
+    return ok(std::move(rt));
 }
 
 // ============================================================================
-// Input reading and dispatch
+// Runtime::poll — wait for events on the multiplexed event source
 // ============================================================================
 
-auto App::read_and_dispatch() -> Status {
-    // Use the terminal's read method through the backend.
-    if (alt_terminal_) {
-        MAYA_TRY_DECL(auto data, alt_terminal_->read_raw());
-        if (data.empty()) return ok();
-        for (auto& event : parser_.feed(data)) {
-            dispatch_event(event);
-        }
-    } else if (raw_terminal_) {
-        MAYA_TRY_DECL(auto data, raw_terminal_->read_raw());
-        if (data.empty()) return ok();
-        for (auto& event : parser_.feed(data)) {
-            dispatch_event(event);
-        }
-    }
-    return ok();
-}
-
-void App::dispatch_event(Event& event) {
-    std::visit(overload{
-        [this](KeyEvent& ev) {
-            if (current_focus_scope) {
-                if (auto* sp = std::get_if<SpecialKey>(&ev.key)) {
-                    if (*sp == SpecialKey::Tab) {
-                        focus_next();
-                        needs_render_ = true;
-                        return;
-                    }
-                    if (*sp == SpecialKey::BackTab) {
-                        focus_prev();
-                        needs_render_ = true;
-                        return;
-                    }
-                }
-            }
-            std::ranges::any_of(key_handlers_,
-                [&](auto& h) { return h(ev); });
-            needs_render_ = true;
-        },
-        [this](MouseEvent& ev) {
-            std::ranges::any_of(mouse_handlers_,
-                [&](auto& h) { return h(ev); });
-            needs_render_ = true;
-        },
-        [this](ResizeEvent& ev) {
-            size_ = {ev.width, ev.height};
-            std::ranges::for_each(resize_handlers_,
-                [&](auto& h) { h(size_); });
-            needs_render_ = true;
-        },
-        [this](FocusEvent&) {
-            needs_render_ = true;
-        },
-        [this](PasteEvent&) {
-            needs_render_ = true;
-        },
-    }, event);
+auto Runtime::poll(std::chrono::milliseconds timeout) -> Result<PollResult> {
+    MAYA_TRY_DECL(auto ready, event_source_->wait(timeout));
+    return ok(PollResult{.resize = ready.resize, .input = ready.input});
 }
 
 // ============================================================================
-// Resize handling
+// Runtime::handle_resize — update internal state on terminal resize
 // ============================================================================
 
-void App::promote_to_alt_screen() {
-    // Intentionally empty — inline mode stays inline to preserve
-    // terminal scrollback. Alt screen has no scrollback.
-}
+void Runtime::handle_resize() {
+    if (resize_signal_) resize_signal_->drain();
 
-void App::handle_resize() {
     Size new_size;
     if (alt_terminal_) {
         new_size = alt_terminal_->size();
@@ -256,28 +106,55 @@ void App::handle_resize() {
 
     if (new_size != size_) {
         size_ = new_size;
-        context_.set<Size>(size_);
         ++resize_generation_;
         render_ctx_.width      = size_.width.raw();
         render_ctx_.height     = size_.height.raw();
         render_ctx_.generation = resize_generation_;
-
         needs_clear_ = true;
-
-        for (auto& handler : resize_handlers_) {
-            handler(size_);
-        }
-        needs_render_ = true;
     }
 }
 
 // ============================================================================
-// Frame rendering
+// Runtime::read_events — read and parse terminal input
 // ============================================================================
 
-auto App::render_frame() -> Status {
-    if (!render_fn_) return ok();
+auto Runtime::read_events() -> Result<std::vector<Event>> {
+    std::vector<Event> result;
 
+    if (alt_terminal_) {
+        MAYA_TRY_DECL(auto data, alt_terminal_->read_raw());
+        if (!data.empty()) {
+            for (auto& event : parser_.feed(data))
+                result.push_back(std::move(event));
+        }
+    } else if (raw_terminal_) {
+        MAYA_TRY_DECL(auto data, raw_terminal_->read_raw());
+        if (!data.empty()) {
+            for (auto& event : parser_.feed(data))
+                result.push_back(std::move(event));
+        }
+    }
+    return ok(std::move(result));
+}
+
+// ============================================================================
+// Runtime::flush_timeouts — flush parser timeout events
+// ============================================================================
+
+auto Runtime::flush_timeouts() -> std::vector<Event> {
+    std::vector<Event> result;
+    for (auto& ev : parser_.flush_timeout())
+        result.push_back(std::move(ev));
+    return result;
+}
+
+// ============================================================================
+// Runtime::render — render an element tree to the terminal
+// ============================================================================
+// Fullscreen: RenderPipeline type-state machine (Idle→Cleared→Painted→Opened→Closed)
+// Inline: compose_inline_frame (row-diff, scrollback-preserving)
+
+auto Runtime::render(const Element& root) -> Status {
     const int w = is_inline()
         ? std::max(1, size_.width.raw() - 1)
         : size_.width.raw();
@@ -289,15 +166,13 @@ auto App::render_frame() -> Status {
     RenderContextGuard ctx_guard(render_ctx_);
 
     if (is_inline()) {
+        // ── Inline path: compose_inline_frame (row-diff renderer) ──────
         constexpr int kMaxCanvasHeight = 500;
         const int canvas_h = kMaxCanvasHeight;
 
         if (canvas_.width() != w || canvas_.height() != canvas_h)
             canvas_ = Canvas(w, canvas_h, &pool_);
 
-        // Explicit clear request — wipe the terminal and invalidate cache.
-        // Width changes are handled inside compose_inline_frame via the
-        // InlineFrameState width check.
         if (needs_clear_) {
             if (inline_state_.prev_rows > 0) {
                 std::string erase;
@@ -313,7 +188,7 @@ auto App::render_frame() -> Status {
         } else {
             canvas_.clear();
         }
-        render_tree(render_fn_(), canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/true);
+        render_tree(root, canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/true);
 
         const int ch = content_height(canvas_);
         if (ch <= 0) {
@@ -328,12 +203,11 @@ auto App::render_frame() -> Status {
 
         auto write_result = writer_->write_raw(out_);
         if (!write_result) {
-            // Terminal state is now ambiguous — next frame must redraw fresh.
             inline_state_.reset();
             return write_result;
         }
-
     } else {
+        // ── Fullscreen path: RenderPipeline type-state machine ─────────
         const int h = size_.height.raw();
         if (h <= 0) return ok();
 
@@ -344,21 +218,21 @@ auto App::render_frame() -> Status {
             needs_clear_ = true;
         }
 
-        canvas_.clear();
-        render_tree(render_fn_(), canvas_, pool_, theme_);
-
         out_.clear();
-        out_ += ansi::hide_cursor;
-        out_ += ansi::sync_start;
+
+        // RenderPipeline: Idle → Cleared → Painted → Opened
+        auto opened = RenderPipeline<stage::Idle>::start(canvas_, pool_, theme_, out_)
+            .clear()
+            .paint(root, layout_nodes_)
+            .open_frame();
+
+        // Opened → (write_full | write_diff) → close_frame → Closed
         if (needs_clear_) {
-            out_ += "\x1b[2J\x1b[H";
-            serialize(canvas_, pool_, out_);
+            std::move(opened).write_full().close_frame();
             needs_clear_ = false;
         } else {
-            diff(front_, canvas_, pool_, out_);
+            std::move(opened).write_diff(front_).close_frame();
         }
-        out_ += ansi::reset;
-        out_ += ansi::sync_end;
 
         MAYA_TRY_VOID(writer_->write_raw(out_));
         std::swap(front_, canvas_);
@@ -368,10 +242,86 @@ auto App::render_frame() -> Status {
 }
 
 // ============================================================================
-// canvas_run - Imperative canvas animation loop
+// Runtime::set_title — set terminal title via OSC 0
 // ============================================================================
 
-namespace detail {
+void Runtime::set_title(std::string_view title) {
+    auto seq = std::format("\x1b]0;{}\x07", title);
+    (void)writer_->write_raw(seq);
+}
+
+// ============================================================================
+// Runtime::cleanup — final terminal cleanup
+// ============================================================================
+
+auto Runtime::cleanup() -> Status {
+    if (is_inline()) {
+        auto cleanup = std::format("{}{}\r\n", ansi::show_cursor, ansi::reset);
+        return writer_->write_raw(cleanup);
+    }
+    return ok();
+}
+
+// ============================================================================
+// Runtime move constructor
+// ============================================================================
+
+Runtime::Runtime(Runtime&& o) noexcept
+    : alt_terminal_(std::move(o.alt_terminal_))
+    , raw_terminal_(std::move(o.raw_terminal_))
+    , output_handle_(std::exchange(o.output_handle_, platform::invalid_handle))
+    , input_handle_(std::exchange(o.input_handle_, platform::invalid_handle))
+    , resize_signal_(std::move(o.resize_signal_))
+    , event_source_(std::move(o.event_source_))
+    , writer_(std::move(o.writer_))
+    , pool_(std::move(o.pool_))
+    , canvas_(std::move(o.canvas_))
+    , front_(std::move(o.front_))
+    , out_(std::move(o.out_))
+    , inline_state_(std::move(o.inline_state_))
+    , layout_nodes_(std::move(o.layout_nodes_))
+    , theme_(o.theme_)
+    , size_(o.size_)
+    , render_ctx_(o.render_ctx_)
+    , resize_generation_(o.resize_generation_)
+    , parser_(std::move(o.parser_))
+    , running_(o.running_)
+    , needs_clear_(o.needs_clear_)
+{}
+
+Runtime& Runtime::operator=(Runtime&& o) noexcept {
+    if (this != &o) {
+        alt_terminal_      = std::move(o.alt_terminal_);
+        raw_terminal_      = std::move(o.raw_terminal_);
+        output_handle_     = std::exchange(o.output_handle_, platform::invalid_handle);
+        input_handle_      = std::exchange(o.input_handle_, platform::invalid_handle);
+        resize_signal_     = std::move(o.resize_signal_);
+        event_source_      = std::move(o.event_source_);
+        writer_            = std::move(o.writer_);
+        pool_              = std::move(o.pool_);
+        canvas_            = std::move(o.canvas_);
+        front_             = std::move(o.front_);
+        out_               = std::move(o.out_);
+        inline_state_      = std::move(o.inline_state_);
+        layout_nodes_      = std::move(o.layout_nodes_);
+        theme_             = o.theme_;
+        size_              = o.size_;
+        render_ctx_        = o.render_ctx_;
+        resize_generation_ = o.resize_generation_;
+        parser_            = std::move(o.parser_);
+        running_           = o.running_;
+        needs_clear_       = o.needs_clear_;
+    }
+    return *this;
+}
+
+} // namespace maya::detail
+
+// ============================================================================
+// canvas_run — imperative canvas animation loop
+// ============================================================================
+
+namespace maya::detail {
 
 Status canvas_run_impl(
     CanvasConfig                                   cfg,
@@ -557,5 +507,4 @@ Status canvas_run_impl(
     return ok();
 }
 
-} // namespace detail
-} // namespace maya
+} // namespace maya::detail

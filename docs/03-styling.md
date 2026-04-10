@@ -197,25 +197,25 @@ maya::theme::light_ansi   // 16-color light
 
 ### Using Themes in Your App
 
-The theme is available via `Ctx` in your render function:
+Pass a theme via `RunConfig`. In Program apps, access theme colors in `view()`:
 
 ```cpp
-run(
-    {.theme = theme::dark},
-    [&](const Event& ev) { return !key(ev, 'q'); },
-    [&](const Ctx& ctx) {
-        return (v(
-            dyn([&] {
-                return text("Hello", Style{}.with_bold()
-                    .with_fg(ctx.theme.primary));
-            }),
-            dyn([&] {
-                return text("Muted note", Style{}
-                    .with_fg(ctx.theme.muted));
-            })
-        ) | pad<1>).build();
+// Theme is accessible via the runtime — use it in view() for styling.
+// For compile-time colors, use Fg<R,G,B> directly.
+// For theme-aware colors, build Style objects with theme values.
+
+struct MyApp {
+    struct Model { /* ... */ };
+    // ...
+    static Element view(const Model& m) {
+        // Use compile-time colors when the color is fixed:
+        return v(
+            text("Hello") | Bold | Fg<100, 180, 255>,
+            text("Muted note") | Dim
+        ) | pad<1>;
     }
-);
+};
+run<MyApp>({.theme = theme::dark});
 ```
 
 ### Custom Themes

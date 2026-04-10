@@ -2,7 +2,7 @@
 //
 // Uses maya::run() with Mode::Inline for keyboard-driven inline rendering.
 // Content streams in character-by-character like a real AI response.
-// Press 'q' or Ctrl+C to quit.
+// Press 'q' or Escape to quit.
 //
 // Showcases every tool widget:
 //   UserMessage, ThinkingBlock, ReadTool, SearchResult (Grep/Glob),
@@ -37,6 +37,7 @@
 using namespace maya;
 using namespace maya::dsl;
 using Clock = std::chrono::steady_clock;
+using namespace std::chrono_literals;
 
 // ── Timed event ──────────────────────────────────────────────────────────────
 
@@ -126,6 +127,8 @@ struct ChatApp {
         timeline.push_back({t, 99});        // done
     }
 };
+
+static ChatApp app;
 
 static Element gap() {
     return blank().build();
@@ -630,24 +633,14 @@ static void tick(ChatApp& app) {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 int main() {
-    ChatApp app;
-
     maya::run(
         {.fps = 30, .mode = Mode::Inline},
-
-        // Event handler
-        [&](const Event& ev) -> bool {
-            if (key(ev, 'q') || key(ev, SpecialKey::Escape))
-                return false;
-            return true;
+        [](const Event& ev) {
+            return !(key(ev, 'q') || key(ev, SpecialKey::Escape));
         },
-
-        // Render
-        [&]() -> Element {
+        [&] {
             tick(app);
             return build_ui(app);
         }
     );
-
-    return 0;
 }

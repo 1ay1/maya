@@ -1,8 +1,9 @@
 // music.cpp — Terminal music player with animated visualizations
 //
-// A gorgeous Spotify/Apple Music-inspired terminal music player with
-// animated heatmap album art, sparkline audio visualizer, progress bar,
-// and scrollable playlist. All data is simulated.
+// Uses maya::run() with fps=15 for continuous rendering.
+// A Spotify/Apple Music-inspired terminal music player with animated
+// heatmap album art, sparkline audio visualizer, progress bar, and
+// scrollable playlist. All data is simulated.
 //
 // Controls:
 //   space       play/pause
@@ -32,6 +33,7 @@
 #include <string>
 #include <vector>
 
+using namespace maya;
 using namespace maya::dsl;
 
 // -- Helpers -----------------------------------------------------------------
@@ -448,11 +450,9 @@ static maya::Element build_status_bar() {
     ) | pad<0, 1, 0, 1> | Bg<30, 30, 42>).build();
 }
 
-// -- Render ------------------------------------------------------------------
+// -- Render (without tick) ---------------------------------------------------
 
 static maya::Element render() {
-    tick(1.0f / 15.0f);
-
     // Left column: album art + visualizer + queue
     auto left_col = (v(
         build_album_art(),
@@ -486,41 +486,26 @@ int main() {
     init_shuffle();
 
     maya::run(
-        {.title = "music", .fps = 15, .mode = maya::Mode::Fullscreen},
-        [](const maya::Event& ev) {
-            using SK = maya::SpecialKey;
-            maya::on(ev, 'q', [] { maya::quit(); });
-            maya::on(ev, SK::Escape, [] { maya::quit(); });
-            maya::on(ev, ' ', [] { playing = !playing; });
-            maya::on(ev, 'n', [] { advance_track(1); });
-            maya::on(ev, 'p', [] { advance_track(-1); });
-            maya::on(ev, 's', [] {
-                shuffle_on = !shuffle_on;
-                if (shuffle_on) init_shuffle();
-            });
-            maya::on(ev, 'r', [] {
-                repeat_mode = (repeat_mode + 1) % 3;
-            });
-            maya::on(ev, '+', [] { volume = std::min(1.0f, volume + 0.05f); });
-            maya::on(ev, '=', [] { volume = std::min(1.0f, volume + 0.05f); });
-            maya::on(ev, '-', [] { volume = std::max(0.0f, volume - 0.05f); });
-            maya::on(ev, 'j', [] {
+        {.title = "music", .fps = 15, .mode = Mode::Fullscreen},
+        [](const Event& ev) {
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+            if (key(ev, ' '))  playing = !playing;
+            if (key(ev, 'n'))  advance_track(1);
+            if (key(ev, 'p'))  advance_track(-1);
+            if (key(ev, 's'))  { shuffle_on = !shuffle_on; if (shuffle_on) init_shuffle(); }
+            if (key(ev, 'r'))  repeat_mode = (repeat_mode + 1) % 3;
+            if (key(ev, '+') || key(ev, '=')) volume = std::min(1.0f, volume + 0.05f);
+            if (key(ev, '-'))  volume = std::max(0.0f, volume - 0.05f);
+            if (key(ev, 'j') || key(ev, SpecialKey::Down))
                 playlist_scroll = std::min(playlist_scroll + 1,
                     std::max(0, static_cast<int>(tracks.size()) - 8));
-            });
-            maya::on(ev, SK::Down, [] {
-                playlist_scroll = std::min(playlist_scroll + 1,
-                    std::max(0, static_cast<int>(tracks.size()) - 8));
-            });
-            maya::on(ev, 'k', [] {
+            if (key(ev, 'k') || key(ev, SpecialKey::Up))
                 playlist_scroll = std::max(0, playlist_scroll - 1);
-            });
-            maya::on(ev, SK::Up, [] {
-                playlist_scroll = std::max(0, playlist_scroll - 1);
-            });
+            return true;
         },
-        [] { return render(); }
+        [] {
+            tick(1.0f / 15.0f);
+            return render();
+        }
     );
-
-    return 0;
 }

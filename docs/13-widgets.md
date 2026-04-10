@@ -6,6 +6,29 @@ conversion. Interactive widgets integrate with the focus system and accept
 `KeyEvent` via a `handle()` method. All types live in `namespace maya` and
 headers are under `include/maya/widget/`.
 
+## Using Widgets
+
+Widgets work in both API styles. In simple `run()`, use them directly in the render lambda:
+
+```cpp
+Input<> prompt;
+prompt.set_placeholder("Type here...");
+
+run({.title = "app"}, event_fn, [&] {
+    return v(prompt, t<"[Enter] submit"> | Dim) | pad<1>;
+});
+```
+
+In Program apps, widgets are typically stored in the Model or as globals, and rendered in `view()`:
+
+```cpp
+static Element view(const Model& m) {
+    return v(m.prompt, t<"[Enter] submit"> | Dim) | pad<1>;
+}
+```
+
+Interactive widgets need their `handle(KeyEvent)` method called from the event handler (simple run) or from `subscribe()`/`update()` (Program).
+
 ---
 
 ## Input Widgets

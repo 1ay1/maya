@@ -1,4 +1,4 @@
-// ide.cpp — VS Code / Zed-inspired terminal IDE layout
+// ide.cpp — VS Code / Zed-inspired terminal IDE layout (simple run() API)
 //
 // A stunning mini IDE showcasing the full maya widget toolkit:
 // file tree, tabbed editor with syntax highlighting, outline,
@@ -14,9 +14,7 @@
 //
 // Usage:  ./maya_ide
 
-#include <maya/dsl.hpp>
-#include <maya/app/run.hpp>
-#include <maya/app/events.hpp>
+#include <maya/maya.hpp>
 #include <maya/widget/badge.hpp>
 #include <maya/widget/breadcrumb.hpp>
 #include <maya/widget/sparkline.hpp>
@@ -24,7 +22,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -915,18 +912,6 @@ static maya::Element build_status_bar() {
 // ── Render ──────────────────────────────────────────────────────────────────
 
 static maya::Element render() {
-    frame++;
-
-    // Advance build
-    if (building) {
-        build_progress += 0.02f;
-        if (build_progress >= 1.0f) {
-            build_progress = 1.0f;
-            building = false;
-            build_done = true;
-        }
-    }
-
     // Main layout: 3 columns with optional sidebars
     std::vector<maya::Element> columns;
 
@@ -963,25 +948,35 @@ int main() {
 
     maya::run(
         {.title = "ide", .fps = 10, .mode = maya::Mode::Fullscreen},
-        [&](const maya::Event& ev) {
-            maya::on(ev, 'q', [] { maya::quit(); });
-            maya::on(ev, maya::SpecialKey::Escape, [] { maya::quit(); });
-            maya::on(ev, maya::SpecialKey::Tab, [] {
+        [](const maya::Event& ev) {
+            if (maya::key(ev, 'q') || maya::key(ev, maya::SpecialKey::Escape))
+                return false;
+            if (maya::key(ev, maya::SpecialKey::Tab))
                 active_tab = (active_tab + 1) % 4;
-            });
-            maya::on(ev, '1', [] { show_left = !show_left; });
-            maya::on(ev, '2', [] { show_right = !show_right; });
-            maya::on(ev, '3', [] { show_bottom = !show_bottom; });
-            maya::on(ev, 'b', [] {
-                if (!building) {
-                    building = true;
-                    build_progress = 0.0f;
-                    build_done = false;
-                }
-            });
+            if (maya::key(ev, '1')) show_left = !show_left;
+            if (maya::key(ev, '2')) show_right = !show_right;
+            if (maya::key(ev, '3')) show_bottom = !show_bottom;
+            if (maya::key(ev, 'b') && !building) {
+                building = true;
+                build_progress = 0.0f;
+                build_done = false;
+            }
+            return true;
         },
-        [&] { return render(); }
-    );
+        [] {
+            frame++;
 
-    return 0;
+            // Advance build simulation
+            if (building) {
+                build_progress += 0.02f;
+                if (build_progress >= 1.0f) {
+                    build_progress = 1.0f;
+                    building = false;
+                    build_done = true;
+                }
+            }
+
+            return render();
+        }
+    );
 }

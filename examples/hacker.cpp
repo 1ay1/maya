@@ -1,4 +1,4 @@
-// hacker.cpp — Cyberpunk hacker terminal (fullscreen mode)
+// hacker.cpp — Cyberpunk hacker terminal (simple run() API)
 //
 // A movie-style "hacking" terminal: rapid scrolling data, flashing alerts,
 // network intrusion simulation, hex dumps, progress bars, sparklines,
@@ -206,7 +206,7 @@ static void add_log(const std::string& msg, int level = 0) {
 static const char* services[] = {"ssh","http","https","mysql","redis","postgres","ftp","smtp","dns","telnet"};
 static const int ports[] = {22, 80, 443, 3306, 6379, 5432, 21, 25, 53, 23};
 
-static void init() {
+static void init_state() {
     // Initial targets
     for (int i = 0; i < 5; ++i) {
         int si = randi(0, 9);
@@ -709,85 +709,62 @@ static maya::Element build_hex_footer() {
     ) | pad<0, 1, 0, 1> | Bg<20, 20, 30>).build();
 }
 
-// ── Render ─────────────────────────────────────────────────────────────────
-
-static maya::Element render() {
-    tick(1.0f / 15.0f);
-
-    auto header = build_header();
-
-    // Three-column main area
-    auto left = build_targets_panel();
-    auto center = build_terminal_panel();
-    auto right = build_intel_panel();
-
-    auto main_row = hstack()(
-        vstack().grow(1)(std::move(left)),
-        vstack().grow(2)(std::move(center)),
-        vstack().grow(1)(std::move(right))
-    );
-
-    auto footer = build_hex_footer();
-
-    // Toast overlay
-    auto toast_elem = toasts.build();
-
-    return vstack()(
-        std::move(header),
-        std::move(main_row),
-        std::move(toast_elem),
-        std::move(footer)
-    );
-}
-
 // ── Main ───────────────────────────────────────────────────────────────────
 
 int main() {
-    init();
+    init_state();
 
     maya::run(
         {.title = "NEXUS://BREACH", .fps = 15, .mode = maya::Mode::Fullscreen},
         [](const maya::Event& ev) {
-            maya::on(ev, 'q', [] { maya::quit(); });
-            maya::on(ev, maya::SpecialKey::Escape, [] { maya::quit(); });
-
-            // Theme selection
-            maya::on(ev, '1', [] { theme_idx = 0; });
-            maya::on(ev, '2', [] { theme_idx = 1; });
-            maya::on(ev, '3', [] { theme_idx = 2; });
-
-            // Breach sequence
-            maya::on(ev, ' ', [] {
-                if (!breaching) {
-                    breaching = true;
-                    breach_timer = 0.3f;
-                    breach_phase = 0;
-                    toasts.push("BREACH SEQUENCE INITIATED", maya::ToastLevel::Error);
-                }
-            });
-
-            // Extract data
-            maya::on(ev, 'e', [] {
-                if (!extracting) {
-                    extracting = true;
-                    extract_timer = 3.0f;
-                    add_log(">>> DATA EXTRACTION STARTED <<<", 3);
-                    toasts.push("EXTRACTING DATA", maya::ToastLevel::Warning);
-                }
-            });
-
-            // Cover tracks
-            maya::on(ev, 'c', [] {
-                if (!covering) {
-                    covering = true;
-                    cover_timer = 2.0f;
-                    add_log(">>> COVERING TRACKS <<<", 2);
-                    toasts.push("WIPING EVIDENCE", maya::ToastLevel::Warning);
-                }
-            });
+            if (maya::key(ev, 'q') || maya::key(ev, maya::SpecialKey::Escape))
+                return false;
+            if (maya::key(ev, '1')) theme_idx = 0;
+            if (maya::key(ev, '2')) theme_idx = 1;
+            if (maya::key(ev, '3')) theme_idx = 2;
+            if (maya::key(ev, ' ') && !breaching) {
+                breaching = true;
+                breach_timer = 0.3f;
+                breach_phase = 0;
+                toasts.push("BREACH SEQUENCE INITIATED", maya::ToastLevel::Error);
+            }
+            if (maya::key(ev, 'e') && !extracting) {
+                extracting = true;
+                extract_timer = 3.0f;
+                add_log(">>> DATA EXTRACTION STARTED <<<", 3);
+                toasts.push("EXTRACTING DATA", maya::ToastLevel::Warning);
+            }
+            if (maya::key(ev, 'c') && !covering) {
+                covering = true;
+                cover_timer = 2.0f;
+                add_log(">>> COVERING TRACKS <<<", 2);
+                toasts.push("WIPING EVIDENCE", maya::ToastLevel::Warning);
+            }
+            return true;
         },
-        [] { return render(); }
-    );
+        [] {
+            tick(1.0f / 15.0f);
 
-    return 0;
+            auto header = build_header();
+            auto left = build_targets_panel();
+            auto center = build_terminal_panel();
+            auto right = build_intel_panel();
+
+            auto main_row = hstack()(
+                vstack().grow(1)(std::move(left)),
+                vstack().grow(2)(std::move(center)),
+                vstack().grow(1)(std::move(right))
+            );
+
+            auto footer = build_hex_footer();
+            auto toast_elem = toasts.build();
+
+            return vstack()(
+                std::move(header),
+                std::move(main_row),
+                std::move(toast_elem),
+                std::move(footer)
+            );
+        }
+    );
 }

@@ -36,6 +36,9 @@ The following features from the original roadmap have been fully implemented:
 
 ## What maya has today
 
+- **Elm architecture**: Program concept with Model/Msg/init/update/view/subscribe
+- **Effects as data**: `Cmd<Msg>` (quit, batch, after, task, set_title) and `Sub<Msg>` (on_key, on_mouse, on_resize, every)
+- **`run<P>(RunConfig)`**: Single entry point for all interactive apps (fullscreen and inline)
 - 50+ widgets across 9 categories (Input, Data Display, Navigation, Display, Overlay, Visualization, Specialized, Tool Widgets)
 - Compile-time DSL with both compile-time and runtime pipes
 - Runtime pipe system for dynamic values

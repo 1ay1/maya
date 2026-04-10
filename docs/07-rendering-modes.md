@@ -7,88 +7,19 @@ the one that matches your application's needs.
 
 | Mode | Function | Screen | Event Loop | Use Case |
 |------|----------|--------|------------|----------|
-| **Fullscreen** | `run({.mode = Mode::Fullscreen})` | Alt screen | Yes | Interactive TUIs, dashboards |
-| **Inline** | `run({.mode = Mode::Inline})` | Scrollback | Yes | Claude Code-style apps |
+| **Fullscreen** | `run<P>({.mode = Mode::Fullscreen})` | Alt screen | Yes | Interactive TUIs, dashboards |
+| **Inline** | `run<P>({.mode = Mode::Inline})` | Scrollback | Yes | Claude Code-style apps |
 | **Live** | `live()` | Scrollback | Timer-based | Progress bars, streaming output |
 | **Canvas** | `canvas_run()` | Alt screen | Yes | Games, animations, visualizations |
 | **One-shot** | `print()` | Scrollback | No | CLI output, reports, status cards |
 
-## run() — Fullscreen Interactive Apps
+## run() — Interactive Apps
 
-The primary API for interactive terminal applications. Takes over the terminal
-with the alternate screen buffer, handles input, and re-renders on events or
-at a fixed frame rate.
+The primary API for interactive terminal applications. Two forms:
 
-### Signature
+### Simple: run(config, event_fn, render_fn)
 
-```cpp
-// With explicit configuration
-template <AnyEventFn EventFn, AnyRenderFn RenderFn>
-void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn);
-
-// With defaults (dark theme, no mouse, alt screen)
-template <AnyEventFn EventFn, AnyRenderFn RenderFn>
-void run(EventFn&& event_fn, RenderFn&& render_fn);
-```
-
-### RunConfig
-
-```cpp
-struct RunConfig {
-    std::string_view title      = "";              // Terminal window title
-    int              fps        = 0;               // 0 = event-driven, >0 = continuous
-    bool             mouse      = false;           // Enable mouse reporting
-    Mode             mode       = Mode::Fullscreen;// Rendering mode
-    Theme            theme      = theme::dark;     // Color theme
-};
-```
-
-### Event Function
-
-Two signatures are accepted:
-
-```cpp
-// Bool return: false = quit
-[&](const Event& ev) -> bool { return !key(ev, 'q'); }
-
-// Void return: call maya::quit() to exit
-[&](const Event& ev) -> void { if (key(ev, 'q')) quit(); }
-```
-
-### Render Function
-
-Two signatures are accepted:
-
-```cpp
-// No context — simple
-[&]() -> Element { return v(t<"Hello">).build(); }
-
-// With context — access terminal size and theme
-[&](const Ctx& ctx) -> Element {
-    int w = ctx.size.width.value;
-    return v(text("Width: " + std::to_string(w))).build();
-}
-```
-
-The `Ctx` struct:
-
-```cpp
-struct Ctx {
-    Size  size;   // Current terminal dimensions
-    Theme theme;  // Active color theme
-};
-```
-
-### Event-Driven vs Continuous
-
-- **`fps = 0`** (default): Only re-renders when an event arrives (key press,
-  mouse move, resize). Minimal CPU usage. Best for static or user-driven UIs.
-
-- **`fps = 30`** (or any positive value): Re-renders at the given frame rate
-  regardless of input. Required for animations, timers, live data. The render
-  function is called every frame; the event handler is called when events arrive.
-
-### Example: Fullscreen Counter
+For quick prototypes and simple tools — closures, no boilerplate:
 
 ```cpp
 Signal<int> count{0};
@@ -110,16 +41,60 @@ run(
 );
 ```
 
-### Inline Mode via run()
+Event function returns `bool` (false = quit) or `void` (call `maya::quit()`).
+Render function returns `Element`, optionally taking `const Ctx&` for terminal size/theme.
+
+### Program: run\<P\>(config)
+
+For complex apps — pure functions, effects as data, testable logic:
+
+```cpp
+template <Program P>
+void run(RunConfig cfg = {});
+```
+
+A type `P` satisfies `Program` if it provides:
+
+```cpp
+struct P {
+    using Model = /* your state type */;
+    using Msg   = /* std::variant of message types */;
+
+    static auto init()                              -> Model; // or pair<Model, Cmd<Msg>>
+    static auto update(Model m, Msg msg)            -> std::pair<Model, Cmd<Msg>>;
+    static auto view(const Model&)                  -> Element;
+    static auto subscribe(const Model&)             -> Sub<Msg>; // optional
+};
+```
+
+### RunConfig
+
+```cpp
+struct RunConfig {
+    std::string_view title      = "";              // Terminal window title
+    int              fps        = 0;               // 0 = event-driven, >0 = continuous
+    bool             mouse      = false;           // Enable mouse reporting
+    Mode             mode       = Mode::Fullscreen;// Rendering mode
+    Theme            theme      = theme::dark;     // Color theme
+};
+```
+
+### Event-Driven vs Continuous
+
+- **`fps = 0`** (default): Only re-renders when an event arrives (key press,
+  mouse move, resize). Minimal CPU usage. Best for static or user-driven UIs.
+
+- **`fps = 30`** (or any positive value): Re-renders at the given frame rate
+  regardless of input. Required for animations, timers, live data.
+
+### Inline Mode
 
 Set `mode = Mode::Inline` to render in the scrollback instead of the alt screen:
 
 ```cpp
-run(
-    {.mode = Mode::Inline},
-    event_fn,
-    render_fn
-);
+run({.mode = Mode::Inline}, event_fn, render_fn);
+// or
+run<P>({.mode = Mode::Inline});
 ```
 
 This gives you event handling with inline rendering — useful for TUIs that
@@ -520,15 +495,47 @@ User scrolls up in terminal:
 ```
 Need interactivity?
 ├── Yes: Need per-cell control?
-│   ├── Yes → canvas_run()     (games, animations, visualizations)
-│   └── No  → run()            (dashboards, forms, menus)
-│       └── Want scrollback output? → run({.mode = Mode::Inline}, ...)
+│   ├── Yes → canvas_run()           (games, animations, visualizations)
+│   └── No  → run() or run<P>()      (dashboards, forms, menus)
+│       └── Want scrollback output? → run({.mode = Mode::Inline}) or run<P>({.mode = Mode::Inline})
 └── No: Need animation?
     ├── Yes → live()     (progress bars, streaming output)
     └── No  → print()          (CLI reports, status cards)
 ```
 
-## quit() — Global Exit
+## Quitting
+
+### Simple run(): return false or call quit()
+
+In simple `run()` apps, quit either by returning `false` from the event function
+or by calling `maya::quit()` if the event function returns `void`:
+
+```cpp
+// Event function returning bool — return false to quit
+run({}, [&](const Event& ev) {
+    return !key(ev, 'q');  // false = quit
+}, render_fn);
+
+// Event function returning void — call quit() to quit
+run({}, [&](const Event& ev) {
+    if (key(ev, 'q')) quit();
+}, render_fn);
+```
+
+### Program apps: Cmd\<Msg\>::quit()
+
+In `run<P>()` apps, quit by returning `Cmd<Msg>::quit()` from `update()`:
+
+```cpp
+static auto update(Model model, Msg msg) -> std::pair<Model, Cmd<Msg>> {
+    return std::visit(overload{
+        [&](Quit) { return std::pair{model, Cmd<Msg>::quit()}; },
+        // ...
+    }, msg);
+}
+```
+
+### canvas_run() / live(): maya::quit()
 
 ```cpp
 void maya::quit() noexcept;
@@ -539,17 +546,12 @@ schedule a clean exit after the current frame. Thread-local, safe to call
 from any context.
 
 ```cpp
-// In event handler
+// In canvas_run event handler
 on(ev, 'q', [] { quit(); });
 
 // In live render
 live({}, [&](float dt) {
     if (done) quit();
     return text("...");
-});
-
-// In a signal effect
-auto fx = effect([&] {
-    if (count.get() > 100) quit();
 });
 ```

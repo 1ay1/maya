@@ -4,8 +4,9 @@
 // Public API header. Include this single file to get the entire maya API.
 //
 // This header exposes ONLY the public interface:
+//   - Program      (Model, Msg, init, update, view, subscribe)
+//   - App          (run<P>, print, live, quit, RunConfig, Cmd, Sub)
 //   - DSL          (v, h, t, text, dyn, when, map, pipes, styles)
-//   - App          (run, print, live, quit, RunConfig, Ctx)
 //   - Events       (key, ctrl, alt, mouse_clicked, on, ...)
 //   - Signals      (Signal, Computed, Effect, Batch)
 //   - Widgets      (Input, Scrollable, Markdown, ToolCall, ...)
@@ -16,13 +17,18 @@
 //
 // Usage:
 //   #include <maya/maya.hpp>
+//   using namespace maya;
 //   using namespace maya::dsl;
 //
-//   constexpr auto ui = v(
-//       t<"Hello"> | Bold | Fg<100, 180, 255>,
-//       h(t<"A">, t<"B"> | Dim) | border_<Round> | pad<1>
-//   );
-//   maya::print(ui.build());
+//   struct App {
+//       struct Model { int n = 0; };
+//       using Msg = std::variant<struct Inc, struct Quit>;
+//       static Model init() { return {}; }
+//       static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> { ... }
+//       static Element view(const Model& m) { return text(m.n) | Bold; }
+//       static auto subscribe(const Model&) -> Sub<Msg> { return key_map<Msg>({...}); }
+//   };
+//   int main() { run<App>({.title = "demo"}); }
 
 // ── Core: types, error handling, concepts, reactive signals, focus ───────
 #include <maya/core/types.hpp>
@@ -46,11 +52,14 @@
 #include <maya/element/element.hpp>
 #include <maya/element/builder.hpp>
 
-// ── App: lifecycle, events, run() ───────────────────────────────────────
+// ── Core: Cmd<Msg> — side effects as data ──────────────────────────────
+#include <maya/core/cmd.hpp>
+
+// ── App: lifecycle, events, run<P>() ────────────────────────────────────
 #include <maya/app/context.hpp>
+#include <maya/app/sub.hpp>
 #include <maya/app/app.hpp>
 #include <maya/app/events.hpp>
-#include <maya/app/run.hpp>
 #include <maya/app/inline.hpp>
 #include <maya/app/environment.hpp>
 #include <maya/app/error_boundary.hpp>

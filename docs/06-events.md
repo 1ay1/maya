@@ -4,6 +4,41 @@ maya's event system gives you keyboard, mouse, paste, focus, and resize events
 through a unified `Event` variant type and a set of ergonomic predicate/helper
 functions.
 
+## Program Apps: Declarative Event Handling
+
+In the Program architecture (`run<P>(RunConfig)`), event handling is declarative.
+You define a `subscribe()` function that returns a `Sub<Msg>` describing which
+events map to which messages. The framework dispatches matched messages to your
+`update()` function.
+
+### key_map: Simple Key-to-Message Mapping
+
+For straightforward key bindings, use `key_map<Msg>()`:
+
+```cpp
+static auto subscribe(const Model&) -> Sub<Msg> {
+    return key_map<Msg>({
+        {'q', Quit{}}, {'+', Increment{}},
+        {SpecialKey::Up, MoveUp{}},
+    });
+}
+```
+
+### Sub::on_key: Complex Key Matching
+
+For more complex matching logic, use `Sub<Msg>::on_key()`:
+
+```cpp
+Sub<Msg>::on_key([](const KeyEvent& k) -> std::optional<Msg> {
+    if (key_is(k, 'q')) return Quit{};
+    if (ctrl_is(k, 'c')) return Quit{};
+    return std::nullopt;
+})
+```
+
+The predicates `key_is()`, `ctrl_is()`, and `alt_is()` work on `KeyEvent&`
+(not `Event&`) and are designed for use inside `Sub<Msg>::on_key()` filters.
+
 ## The Event Type
 
 ```cpp
@@ -61,10 +96,10 @@ if (auto* ke = as_key(ev)) {
 }
 ```
 
-## Fire-and-Forget Handlers
+## Fire-and-Forget Handlers (canvas_run / legacy callbacks)
 
 The `on()` helper combines a predicate with an action — returns `bool` (true
-if matched):
+if matched). This is used in `canvas_run()` event callbacks:
 
 ```cpp
 // Single key
@@ -80,8 +115,8 @@ on(ev, SpecialKey::Enter, [&] { submit(); });
 
 ### on() in Practice
 
-The event handler is a function that receives events. Use `on()` for each
-action:
+In `canvas_run()`, the event handler is a function that receives events. Use
+`on()` for each action:
 
 ```cpp
 [&](const Event& ev) {
@@ -98,7 +133,7 @@ action:
 Enable mouse events in the config:
 
 ```cpp
-run({.mouse = true}, event_fn, render_fn);
+run<P>({.mouse = true});
 // or
 canvas_run({.mouse = true}, ...);
 ```
@@ -135,11 +170,12 @@ if (auto* me = as_mouse(ev)) {
 }
 ```
 
-### Mouse Example
+### Mouse Example (canvas_run callback)
 
 ```cpp
-run(
+canvas_run(
     {.mouse = true},
+    on_resize,
     [&](const Event& ev) {
         if (mouse_clicked(ev)) {
             auto pos = mouse_pos(ev);
@@ -152,9 +188,11 @@ run(
         if (scrolled_down(ev)) zoom_out();
         return !key(ev, 'q');
     },
-    render_fn
+    on_paint
 );
 ```
+
+For Program apps, mouse events are handled via `Sub<Msg>::on_mouse()` in `subscribe()`.
 
 ## Resize Events
 
@@ -192,7 +230,32 @@ if (unfocused(ev)) { /* Terminal lost focus */ }
 
 ## Event Handler Patterns
 
-### Pattern 1: Bool Return (Quit Control)
+### Program Pattern: Declarative subscribe()
+
+For `run<P>()` apps, define a `subscribe()` function:
+
+```cpp
+static auto subscribe(const Model&) -> Sub<Msg> {
+    return key_map<Msg>({
+        {'q', Quit{}}, {'+', Increment{}}, {'-', Decrement{}},
+        {'r', Reset{}}, {'t', CycleTheme{}},
+    });
+}
+
+static auto update(Model model, Msg msg) -> std::pair<Model, Cmd<Msg>> {
+    return std::visit(overload{
+        [&](Quit)       { return std::pair{model, Cmd<Msg>::quit()}; },
+        [&](Increment)  { model.count++; return std::pair{model, Cmd<Msg>::none()}; },
+        // ...
+    }, msg);
+}
+```
+
+### canvas_run() Callback Patterns
+
+These patterns apply to `canvas_run()` event callbacks.
+
+#### Pattern 1: Bool Return (Quit Control)
 
 ```cpp
 // Return false to quit, true to continue
@@ -204,7 +267,7 @@ if (unfocused(ev)) { /* Terminal lost focus */ }
 }
 ```
 
-### Pattern 2: Void Return (Use quit())
+#### Pattern 2: Void Return (Use quit())
 
 ```cpp
 // Call maya::quit() to exit
@@ -215,9 +278,7 @@ if (unfocused(ev)) { /* Terminal lost focus */ }
 }
 ```
 
-Both signatures work with `run()`.
-
-### Pattern 3: Complex Event Dispatch
+#### Pattern 3: Complex Event Dispatch
 
 ```cpp
 [&](const Event& ev) {

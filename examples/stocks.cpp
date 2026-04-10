@@ -2,7 +2,7 @@
 //
 // A visually rich terminal dashboard with animated charts, sparklines,
 // color-coded gains/losses, portfolio summary, and a scrolling news feed.
-// Uses maya::run with Mode::Inline so output stays in scrollback.
+// Uses Mode::Inline so output stays in scrollback.
 //
 // All data is simulated with correlated random walks.
 //
@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+using namespace maya;
 using namespace maya::dsl;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -198,7 +199,7 @@ static const char* spinners[] = {"⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧"
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
-static void init() {
+static void init_state() {
     stocks = {
         {"AAPL",  "Apple Inc.",           189.84f, 188.50f, 187.20f, 191.30f, 187.10f,  62.4f, 0.012f, {}, {},  0.3f, 2940},
         {"NVDA",  "NVIDIA Corp.",         875.28f, 868.00f, 862.50f, 882.40f, 860.10f,  48.7f, 0.025f, {}, {},  0.8f, 2150},
@@ -575,8 +576,6 @@ static maya::Element build_footer() {
 // ── Render ──────────────────────────────────────────────────────────────────
 
 static maya::Element render() {
-    tick(1.0f / 20.0f);
-
     return vstack()(
         build_header(),
         build_portfolio_bar(),
@@ -590,35 +589,29 @@ static maya::Element render() {
 // ── Main ────────────────────────────────────────────────────────────────────
 
 int main() {
-    init();
+    init_state();
 
     maya::run(
         {.title = "Terminal Trader", .fps = 20, .mode = maya::Mode::Inline},
-        [](const maya::Event& ev) {
-            using SK = maya::SpecialKey;
-            maya::on(ev, 'q', [] { maya::quit(); });
-            maya::on(ev, SK::Escape, [] { maya::quit(); });
-            maya::on(ev, SK::Up, [] { selected = std::max(0, selected - 1); });
-            maya::on(ev, 'k', [] { selected = std::max(0, selected - 1); });
-            maya::on(ev, SK::Down, [] {
-                selected = std::min(static_cast<int>(stocks.size()) - 1, selected + 1);
-            });
-            maya::on(ev, 'j', [] {
-                selected = std::min(static_cast<int>(stocks.size()) - 1, selected + 1);
-            });
-            maya::on(ev, SK::Left, [] { timeframe = std::max(0, timeframe - 1); });
-            maya::on(ev, SK::Right, [] { timeframe = std::min(4, timeframe + 1); });
-            maya::on(ev, 'r', [] {
+        [](const Event& ev) {
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+            if (key(ev, SpecialKey::Up)   || key(ev, 'k')) selected = std::max(0, selected - 1);
+            if (key(ev, SpecialKey::Down)  || key(ev, 'j')) selected = std::min(static_cast<int>(stocks.size()) - 1, selected + 1);
+            if (key(ev, SpecialKey::Left)  || key(ev, 'h')) timeframe = std::max(0, timeframe - 1);
+            if (key(ev, SpecialKey::Right) || key(ev, 'l')) timeframe = std::min(4, timeframe + 1);
+            if (key(ev, 'r')) {
                 auto& s = stocks[static_cast<size_t>(randi(0, static_cast<int>(stocks.size()) - 1))];
                 float shock = randf(-0.08f, 0.08f);
                 s.price *= (1.0f + shock);
                 s.momentum = shock > 0 ? 1.0f : -1.0f;
-            });
-            maya::on(ev, ' ', [] { market_open = !market_open; });
-            maya::on(ev, 't', [] { theme_idx = (theme_idx + 1) % 4; });
+            }
+            if (key(ev, ' ')) market_open = !market_open;
+            if (key(ev, 't')) theme_idx = (theme_idx + 1) % 4;
+            return true;
         },
-        [] { return render(); }
+        [] {
+            tick(1.0f / 20.0f);
+            return render();
+        }
     );
-
-    return 0;
 }

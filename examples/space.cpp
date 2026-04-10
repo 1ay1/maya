@@ -1,5 +1,6 @@
 // space.cpp — NASA-style Mission Control Dashboard
 //
+// Uses maya::run() with fps=15 for continuous rendering.
 // An animated spacecraft telemetry display tracking a journey to Mars.
 // Features gauges, sparklines, heatmap, line chart, bar chart, crew
 // status, subsystem health, random events, and physics simulation.
@@ -24,12 +25,14 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <random>
 #include <string>
 #include <vector>
 
+using namespace maya;
 using namespace maya::dsl;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -600,8 +603,6 @@ static maya::Element build_status_bar() {
 // ── Render ──────────────────────────────────────────────────────────────────
 
 static maya::Element render() {
-    tick(1.0f / 15.0f);
-
     // Left column: telemetry, sparklines, nav
     auto left = (v(
         build_telemetry_panel(),
@@ -649,13 +650,10 @@ int main() {
     init_state();
 
     maya::run(
-        {.title = "ARES VII Mission Control", .fps = 15, .mode = maya::Mode::Fullscreen},
-        [](const maya::Event& ev) {
-            maya::on(ev, 'q', [] { maya::quit(); });
-            maya::on(ev, maya::SpecialKey::Escape, [] { maya::quit(); });
-
-            // Thruster burn
-            maya::on(ev, ' ', [] {
+        {.title = "ARES VII Mission Control", .fps = 15, .mode = Mode::Fullscreen},
+        [](const Event& ev) {
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+            if (key(ev, ' ')) {
                 if (fuel > 0.05f) {
                     fuel -= 0.03f;
                     velocity += 1.5f;
@@ -668,10 +666,8 @@ int main() {
                     toasts.push_back({"FUEL CRITICAL — burn denied",
                                       maya::Severity::Error, 4.0f});
                 }
-            });
-
-            // Abort
-            maya::on(ev, 'a', [] {
+            }
+            if (key(ev, 'a')) {
                 if (!abort_sequence) {
                     abort_sequence = true;
                     abort_timer = 10.0f;
@@ -680,45 +676,32 @@ int main() {
                     comm_log.push_back({elapsed, "FLIGHT: ABORT ABORT ABORT — all stations standby", 2});
                     if (comm_log.size() > MAX_LOG)
                         comm_log.erase(comm_log.begin());
-                    // Stress crew
                     for (auto& c : crew) c.stress += 0.15f;
                 } else {
                     abort_sequence = false;
                     toasts.push_back({"Abort sequence cancelled",
                                       maya::Severity::Info, 3.0f});
                 }
-            });
-
-            // Diagnostics
-            maya::on(ev, 'd', [] {
+            }
+            if (key(ev, 'd')) {
                 diag_mode = !diag_mode;
                 diag_timer = 5.0f;
                 if (diag_mode) {
                     toasts.push_back({"Diagnostics scan in progress...",
                                       maya::Severity::Info, 3.0f});
-                    // Fix a random subsystem
                     for (auto& s : subsystems) {
                         if (s.status > 0) { s.status = 0; break; }
                     }
                 }
-            });
-
-            // Mission phases
-            maya::on(ev, '1', [] {
-                mission_phase = 0;
-                toasts.push_back({"Phase set: LAUNCH", maya::Severity::Info, 2.0f});
-            });
-            maya::on(ev, '2', [] {
-                mission_phase = 1;
-                toasts.push_back({"Phase set: TRANSIT", maya::Severity::Info, 2.0f});
-            });
-            maya::on(ev, '3', [] {
-                mission_phase = 2;
-                toasts.push_back({"Phase set: ORBIT INSERTION", maya::Severity::Info, 2.0f});
-            });
+            }
+            if (key(ev, '1')) { mission_phase = 0; toasts.push_back({"Phase set: LAUNCH", maya::Severity::Info, 2.0f}); }
+            if (key(ev, '2')) { mission_phase = 1; toasts.push_back({"Phase set: TRANSIT", maya::Severity::Info, 2.0f}); }
+            if (key(ev, '3')) { mission_phase = 2; toasts.push_back({"Phase set: ORBIT INSERTION", maya::Severity::Info, 2.0f}); }
+            return true;
         },
-        [] { return render(); }
+        [] {
+            tick(1.0f / 15.0f);
+            return render();
+        }
     );
-
-    return 0;
 }

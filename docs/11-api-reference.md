@@ -4,7 +4,7 @@ Complete reference for all public types, functions, and constants in maya.
 
 ## Table of Contents
 
-- [App Framework](#app-framework)
+- [App Framework](#app-framework) (run, Program, Cmd, Sub, key\_map)
 - [DSL Nodes](#dsl-nodes)
 - [DSL Style Tags](#dsl-style-tags)
 - [DSL Layout Tags](#dsl-layout-tags)
@@ -28,17 +28,91 @@ Complete reference for all public types, functions, and constants in maya.
 
 ## App Framework
 
-### run()
+### run\<P\>()
 
 ```cpp
-// With configuration
-template <AnyEventFn EventFn, AnyRenderFn RenderFn>
-void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn);
-
-// With defaults
-template <AnyEventFn EventFn, AnyRenderFn RenderFn>
-void run(EventFn&& event_fn, RenderFn&& render_fn);
+template <Program P>
+void run(RunConfig cfg = {});
 ```
+
+The primary entry point for interactive apps. `P` must satisfy the `Program`
+concept (see below). The runtime owns the event loop, calling `P::update` on
+each message and re-rendering via `P::view`.
+
+### Program concept
+
+```cpp
+template <typename P>
+concept Program = requires {
+    typename P::Model;
+    typename P::Msg;
+} && (HasFullInit<P> || HasSimpleInit<P>)
+  && requires(P::Model m, P::Msg msg) {
+    { P::update(std::move(m), std::move(msg)) } -> std::convertible_to<std::pair<P::Model, Cmd<P::Msg>>>;
+} && requires(const P::Model& m) {
+    { P::view(m) } -> std::convertible_to<Element>;
+};
+```
+
+A Program is a struct with:
+- `Model` — the app state type (plain data)
+- `Msg` — a `std::variant` of all possible messages
+- `init()` — returns `Model` (simple) or `std::pair<Model, Cmd<Msg>>` (full)
+- `update(Model, Msg)` — returns `std::pair<Model, Cmd<Msg>>`
+- `view(const Model&)` — returns `Element`
+- `subscribe(const Model&)` (optional) — returns `Sub<Msg>`
+
+### Cmd\<Msg\>
+
+```cpp
+template <typename Msg>
+class Cmd {
+    static Cmd none();
+    static Cmd quit();
+    static Cmd batch(Cmd a, Cmd b);
+    static Cmd after(std::chrono::milliseconds delay, Msg msg);
+    static Cmd task(std::function<std::optional<Msg>()> fn);
+    static Cmd set_title(std::string title);
+    static Cmd write_clipboard(std::string text);
+};
+```
+
+Commands represent side effects. `Cmd<Msg>{}` (or `Cmd::none()`) means no
+effect. `Cmd::quit()` exits the app. `Cmd::batch()` combines multiple commands.
+`Cmd::after()` sends a delayed message. `Cmd::task()` runs an async function
+that may produce a message.
+
+### Sub\<Msg\>
+
+```cpp
+template <typename Msg>
+class Sub {
+    static Sub none();
+    static Sub batch(Sub a, Sub b);
+    static Sub on_key(std::function<std::optional<Msg>(const KeyEvent&)> fn);
+    static Sub on_mouse(std::function<std::optional<Msg>(const MouseEvent&)> fn);
+    static Sub on_resize(std::function<std::optional<Msg>(int w, int h)> fn);
+    static Sub on_paste(std::function<std::optional<Msg>(const std::string&)> fn);
+    static Sub every(std::chrono::milliseconds interval, Msg msg);
+};
+```
+
+Subscriptions declare which external events the app listens to. Returned from
+the optional `subscribe(const Model&)` method. Subscriptions are re-evaluated
+when the model changes, enabling conditional subscriptions (e.g. only tick
+while a timer is running).
+
+### key\_map\<Msg\>()
+
+```cpp
+using KeySpec = std::variant<char, SpecialKey>;
+
+template <typename Msg>
+Sub<Msg> key_map(std::initializer_list<std::pair<KeySpec, Msg>> entries);
+```
+
+Convenience helper that builds a `Sub::on_key` mapping specific keys to
+messages. Used for declarative key binding tables.
 
 ### RunConfig
 
@@ -52,14 +126,35 @@ struct RunConfig {
 };
 ```
 
+### run() — Simple Convenience API
+
+```cpp
+template <SimpleEventFn EventFn, SimpleRenderFn RenderFn>
+void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn);
+
+template <SimpleEventFn EventFn, SimpleRenderFn RenderFn>
+void run(EventFn&& event_fn, RenderFn&& render_fn); // default RunConfig
+```
+
+A closure-based entry point that requires no boilerplate. Suitable for most
+interactive apps that don't need the full Elm-architecture of `run<P>()`.
+
+Event function: `(const Event&) -> bool` (returning `false` quits) or
+`(const Event&) -> void` (call `quit()` to exit).
+
+Render function: `() -> Element` or `(const Ctx&) -> Element`.
+
 ### Ctx
 
 ```cpp
 struct Ctx {
-    Size  size;    // {Columns width, Rows height}
-    Theme theme;
+    Size  size;   // Current terminal dimensions
+    Theme theme;  // Active color theme
 };
 ```
+
+The `Ctx` overload of the render function is useful for adaptive layouts that
+need to inspect the terminal size or current theme at render time.
 
 ### live()
 
@@ -111,6 +206,10 @@ void print(const Element& root, int width);
 ```cpp
 void quit() noexcept;  // Schedule clean exit after current frame
 ```
+
+> In Program apps, prefer `Cmd<Msg>::quit()` from `update()` instead of calling
+> `quit()` directly. The free function is still available for `live()` and
+> `canvas_run()` apps.
 
 ---
 

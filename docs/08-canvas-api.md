@@ -5,6 +5,11 @@ use the DSL and element tree (`run()`, `print()`), the Canvas API gives you
 direct cell-level control for games, animations, particle systems, and complex
 visualizations.
 
+Most applications use `run()` or `run<P>()` with the DSL and element tree.
+`canvas_run()` is the low-level escape hatch for apps that need direct
+cell-level control — games, particle systems, complex visualizations. See
+[Rendering Modes](07-rendering-modes.md) for how to choose.
+
 ## Canvas Basics
 
 A `Canvas` is a 2D grid of `Cell` values. Each cell holds:

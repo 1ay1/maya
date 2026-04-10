@@ -32,7 +32,8 @@
 #include "../style/theme.hpp"
 #include "../platform/io.hpp"
 #include "../terminal/ansi.hpp"
-#include "run.hpp"  // for maya::quit() / detail::quit_requested
+
+#include "quit.hpp"
 
 namespace maya {
 

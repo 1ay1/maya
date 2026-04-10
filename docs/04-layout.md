@@ -374,3 +374,11 @@ h(
     v(t<"Col 3">) | grow_<1>
 )
 ```
+
+### API compatibility
+
+All layout patterns work identically in both `run()` (simple API) and
+`run<P>()` (Program architecture). In simple `run()`, your render closure
+returns an `Element`. In Program apps, `view(const Model&)` returns an
+`Element`. The DSL tree — `v()`, `h()`, `pad`, `grow`, borders, gaps — is
+the same either way.

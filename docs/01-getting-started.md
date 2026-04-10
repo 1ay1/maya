@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- **C++26 compiler**: GCC 14+ or Clang 19+ with `-std=c++2c`
+- **C++26 compiler**: GCC 15+ or Clang 19+ with `-std=c++2c`
 - **CMake 3.28+**
 - **Unix-like OS**: Linux, macOS (terminal raw mode, `ioctl`, signal handling)
 - No external dependencies — maya is self-contained
@@ -16,7 +16,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-This builds `libmaya.a` and all 10 example programs.
+This builds `libmaya.a` and all example programs.
 
 ### Build Options
 
@@ -35,16 +35,18 @@ ctest --test-dir build
 ### Running Examples
 
 ```bash
-./build/maya_counter      # Minimal counter (fullscreen)
-./build/maya_demo         # Feature showcase (fullscreen)
-./build/maya_dsl          # Compile-time DSL demo (one-shot print)
-./build/maya_inline       # Inline mode counter (scrollback)
+./build/maya_counter      # Minimal counter (Program app)
+./build/maya_stopwatch    # Stopwatch with subscriptions (Program app)
+./build/maya_chat         # Chat interface (Program app)
 ./build/maya_dashboard    # System monitoring dashboard
-./build/maya_agent        # AI coding agent simulation (inline)
-./build/maya_progress     # Package install progress (inline)
+./build/maya_sysmon       # System monitor
+./build/maya_stocks       # Stock ticker display
+./build/maya_deploy       # Deploy progress (inline)
 ./build/maya_matrix       # Matrix digital rain (canvas)
-./build/maya_viz          # Signal charts + heatmap (canvas)
-./build/maya_fireworks    # Particle fireworks (canvas)
+./build/maya_life         # Conway's Game of Life (canvas)
+./build/maya_snake        # Snake game (canvas)
+./build/maya_particles    # Particle effects (canvas)
+./build/maya_mandelbrot   # Mandelbrot fractal (canvas)
 ```
 
 ## Using maya in Your Project
@@ -109,14 +111,15 @@ You'll see a bordered box with styled text. Press `q` to exit.
 maya exposes two namespaces:
 
 ```cpp
-using namespace maya;       // Framework: run(), Signal, Event, quit(), print()...
+using namespace maya;       // Framework: run(), run<P>(), Cmd, Sub, Signal, Event, quit(), print()...
 using namespace maya::dsl;  // UI building: t<>, v(), h(), Bold, Fg<>, border_<>...
 ```
 
 Almost every maya program uses both. The DSL namespace contains everything
 needed to construct UI trees — nodes, style tags, layout modifiers, and
 factory functions. The root `maya` namespace contains the runtime framework —
-the app loop, event handling, reactive signals, and rendering.
+`run()` for simple apps, `run<P>()` for the Program architecture, `Cmd<Msg>`,
+`Sub<Msg>`, event handling, reactive signals, and rendering.
 
 ## The .build() Pattern
 

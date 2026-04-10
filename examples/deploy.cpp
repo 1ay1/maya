@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+using namespace maya;
 using namespace maya::dsl;
 
 // -- Helpers -----------------------------------------------------------------
@@ -644,8 +645,6 @@ static maya::Element build_status_bar() {
 // -- Render ------------------------------------------------------------------
 
 static maya::Element render() {
-    tick(1.0f / 15.0f);
-
     return vstack()(
         build_header(),
         build_pipeline_panel(),
@@ -659,38 +658,27 @@ static maya::Element render() {
 
 int main() {
     init_services();
-
-    // Start with an initial deployment wave
     trigger_deploy_wave();
 
     maya::run(
-        {.title = "deploy", .fps = 15, .mode = maya::Mode::Fullscreen},
-        [](const maya::Event& ev) {
-            using SK = maya::SpecialKey;
-            maya::on(ev, 'q', [] { maya::quit(); });
-            maya::on(ev, SK::Escape, [] { maya::quit(); });
-            maya::on(ev, ' ', [] { trigger_deploy_wave(); });
-            maya::on(ev, 'r', [] { trigger_rollback(); });
-            maya::on(ev, 'f', [] {
+        {.title = "deploy", .fps = 15, .mode = Mode::Fullscreen},
+        [](const Event& ev) {
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+            if (key(ev, ' '))  trigger_deploy_wave();
+            if (key(ev, 'r'))  trigger_rollback();
+            if (key(ev, 'f')) {
                 force_mode = !force_mode;
                 if (force_mode) add_log(1, "FORCE MODE enabled - skipping failure checks");
                 else add_log(0, "FORCE MODE disabled");
-            });
-            maya::on(ev, '1', [] {
-                current_env = Env::Dev;
-                add_log(0, "Switched to DEV environment");
-            });
-            maya::on(ev, '2', [] {
-                current_env = Env::Staging;
-                add_log(0, "Switched to STAGING environment");
-            });
-            maya::on(ev, '3', [] {
-                current_env = Env::Prod;
-                add_log(1, "Switched to PROD environment - caution!");
-            });
+            }
+            if (key(ev, '1')) { current_env = Env::Dev;     add_log(0, "Switched to DEV environment"); }
+            if (key(ev, '2')) { current_env = Env::Staging;  add_log(0, "Switched to STAGING environment"); }
+            if (key(ev, '3')) { current_env = Env::Prod;     add_log(1, "Switched to PROD environment - caution!"); }
+            return true;
         },
-        [] { return render(); }
+        [&] {
+            tick(1.0f / 15.0f);
+            return render();
+        }
     );
-
-    return 0;
 }

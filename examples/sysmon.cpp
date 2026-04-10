@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -26,6 +25,7 @@
 #include <string>
 #include <vector>
 
+using namespace maya;
 using namespace maya::dsl;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -510,9 +510,6 @@ static auto build_status_bar() {
 // ── Render ──────────────────────────────────────────────────────────────────
 
 static maya::Element render() {
-    // Tick with a fixed dt (fps-driven)
-    tick(1.0f / 15.0f);
-
     std::vector<maya::Element> panels;
     panels.push_back(build_header().build());
     panels.push_back(build_cpu_panel());
@@ -532,27 +529,27 @@ int main() {
 
     maya::run(
         {.title = "sysmon", .fps = 15, .mode = maya::Mode::Inline},
-        [&](const maya::Event& ev) {
-            maya::on(ev, 'q', [] { maya::quit(); });
-            maya::on(ev, maya::SpecialKey::Escape, [] { maya::quit(); });
-            maya::on(ev, 'p', [] { paused = !paused; });
-            maya::on(ev, 'l', [] { show_log = !show_log; });
-            maya::on(ev, 's', [] { sort_mode = (sort_mode + 1) % 3; });
-            maya::on(ev, '1', [] { speed = 0.25f; });
-            maya::on(ev, '2', [] { speed = 1.0f; });
-            maya::on(ev, '3', [] { speed = 4.0f; });
-            maya::on(ev, ' ', [] {
-                // Burst: inject 5 random log entries
+        [](const Event& ev) {
+            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+            if (key(ev, 'p')) paused = !paused;
+            if (key(ev, 'l')) show_log = !show_log;
+            if (key(ev, 's')) sort_mode = (sort_mode + 1) % 3;
+            if (key(ev, '1')) speed = 0.25f;
+            if (key(ev, '2')) speed = 1.0f;
+            if (key(ev, '3')) speed = 4.0f;
+            if (key(ev, ' ')) {
                 for (int i = 0; i < 5; ++i) {
                     int lvl = randi(0, 2);
                     activity_log.push_back({uptime, log_msgs[static_cast<size_t>(randi(0, 15))], lvl});
                 }
                 while (activity_log.size() > MAX_LOG)
                     activity_log.erase(activity_log.begin());
-            });
+            }
+            return true;
         },
-        [&] { return render(); }
+        [] {
+            tick(1.0f / 15.0f);
+            return render();
+        }
     );
-
-    return 0;
 }

@@ -144,11 +144,8 @@ public:
         , pool_(std::move(o.pool_))
         , canvas_(std::move(o.canvas_))
         , front_(std::move(o.front_))
-        , prev_height_(o.prev_height_)
-        , prev_width_(o.prev_width_)
         , out_(std::move(o.out_))
-        , prev_content_height_(o.prev_content_height_)
-        , row_hashes_(std::move(o.row_hashes_))
+        , inline_state_(std::move(o.inline_state_))
         , layout_nodes_(std::move(o.layout_nodes_))
         , theme_(o.theme_)
         , mouse_enabled_(o.mouse_enabled_)
@@ -191,12 +188,9 @@ private:
     StylePool               pool_;
     Canvas                  canvas_;
     Canvas                  front_;
-    int                     prev_height_ = 0;
-    int                     prev_width_  = 0;
     std::string             out_;
 
-    int                     prev_content_height_ = 0;
-    std::vector<uint64_t>   row_hashes_;
+    InlineFrameState        inline_state_;  // cached cells + width + row count
     std::vector<layout::LayoutNode> layout_nodes_;
 
     // -- Configuration --------------------------------------------------------

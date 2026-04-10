@@ -39,15 +39,16 @@ struct Ops<Avx512> {
                 return i + static_cast<std::size_t>(std::countr_zero(static_cast<unsigned>(neq)));
         }
 
-        // AVX2 cleanup: 4 cells (always available when AVX-512 is)
+        // AVX2 cleanup: 4 cells (always available when AVX-512 is).
+        // 64-bit lane compare — same pattern as Ops<Avx2>.
         for (; i + 4 <= count; i += 4) {
             __m256i va  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i));
             __m256i vb  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
-            __m256i cmp = _mm256_cmpeq_epi8(va, vb);
-            unsigned mask = static_cast<unsigned>(_mm256_movemask_epi8(cmp));
-            if (mask != 0xFFFFFFFFu) {
-                int diff_byte = std::countr_zero(~mask);
-                return i + static_cast<std::size_t>(diff_byte / 8);
+            __m256i cmp = _mm256_cmpeq_epi64(va, vb);
+            unsigned mask = static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(cmp)));
+            if (mask != 0xFu) {
+                return i + static_cast<std::size_t>(
+                    std::countr_zero(static_cast<unsigned>(~mask & 0xFu)));
             }
         }
 
@@ -77,11 +78,11 @@ struct Ops<Avx512> {
         for (; i + 4 <= end; i += 4) {
             __m256i va  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i));
             __m256i vb  = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
-            __m256i cmp = _mm256_cmpeq_epi8(va, vb);
-            unsigned mask = static_cast<unsigned>(_mm256_movemask_epi8(cmp));
-            if (mask != 0xFFFFFFFFu) {
-                int diff_byte = std::countr_zero(~mask);
-                return i + static_cast<std::size_t>(diff_byte / 8);
+            __m256i cmp = _mm256_cmpeq_epi64(va, vb);
+            unsigned mask = static_cast<unsigned>(_mm256_movemask_pd(_mm256_castsi256_pd(cmp)));
+            if (mask != 0xFu) {
+                return i + static_cast<std::size_t>(
+                    std::countr_zero(static_cast<unsigned>(~mask & 0xFu)));
             }
         }
 

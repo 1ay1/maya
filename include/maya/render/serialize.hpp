@@ -1,24 +1,21 @@
 #pragma once
-// maya::render::serialize - Full canvas serialization to ANSI
+// maya::render::serialize - Canvas serialization for inline rendering
 //
-// Converts every cell in the canvas to an ANSI byte stream — no diffing,
-// no skipping, no front/back comparison. This is the approach used by Ink
-// (and Claude Code): render fresh, erase previous output, write new output.
+// Converts canvas cells into an ANSI byte stream for terminal output.
+// Used by both the one-shot `serialize()` (full canvas dump) and the
+// stateful `compose_inline_frame()` (differential row update for
+// Claude-Code-style inline progress output).
 //
-// Output format (row-major, left-to-right, top-to-bottom):
-//   [SGR transition] [glyph] ... \r\n
-//   [SGR transition] [glyph] ... \r\n
-//   ...
-//   \x1b[0m   (final SGR reset)
-//
-// The caller wraps this in sync_start / sync_end and precedes it with
-// erase_lines(prev_height) to atomically replace the previous render.
+// The inline renderer keeps a cached copy of the last-rendered cells
+// in `InlineFrameState`. Each frame, it compares the new canvas row-by-
+// row using `simd::bulk_eq` (exact 64-bit-packed cell comparison — no
+// hash collisions) to find the first row that actually changed, then
+// rewrites only that row and everything below it. Rows still on-screen
+// are overwritten in place; rows that scrolled into history stay put.
 
-#include <cstdint>
 #include <string>
 
 #include "canvas.hpp"
-#include "../terminal/ansi.hpp"
 
 namespace maya {
 
@@ -31,19 +28,51 @@ int content_height(const Canvas& canvas) noexcept;
 void serialize(const Canvas& canvas, const StylePool& pool,
                std::string& out, int rows = 0, int start_row = 0);
 
-/// Incremental serialize: only re-render rows whose hash differs between
-/// old_hashes and new_hashes.  Unchanged rows are skipped with cursor
-/// movement, dramatically reducing output on slow terminals.
+// ============================================================================
+// Inline frame composition
+// ============================================================================
+
+/// Persistent state for the inline (row-diff) renderer.
 ///
-/// old_offset: when the display scrolled (skip_rows changed between frames),
-/// old_hashes[y] no longer corresponds to the same display position as
-/// new_hashes[y].  Pass (prev_skip_rows - skip_rows) so the comparison
-/// uses old_hashes[y + old_offset] — the hash of what was previously
-/// displayed at the same physical row.
-void serialize_changed(const Canvas& canvas, const StylePool& pool,
-                       std::string& out, int rows, int start_row,
-                       const uint64_t* old_hashes, int old_count,
-                       const uint64_t* new_hashes, int new_count,
-                       int old_offset = 0);
+/// Holds a copy of the last-rendered cell buffer so successive frames can
+/// be compared exactly via `simd::bulk_eq` instead of hashed (no collisions).
+/// Carry the same instance across frames; call `reset()` to invalidate
+/// after a write failure, `\x1b[2J` clear, or any other event that
+/// desynchronises the terminal from the cached state.
+struct InlineFrameState {
+    AlignedBuffer prev_cells;
+    int           prev_width = 0;
+    int           prev_rows  = 0;  // content_rows from the last composed frame
+
+    void reset() noexcept {
+        prev_width = 0;
+        prev_rows  = 0;
+    }
+};
+
+/// Compose the byte stream for one inline frame into `out`.
+///
+/// Writes nothing (returns with `out` unchanged) when the current canvas
+/// is byte-for-byte identical to the previous one. Otherwise emits the
+/// minimal ANSI sequence that:
+///   1. wraps the update in DEC 2026 synchronized output,
+///   2. hides the cursor,
+///   3. moves to the first row that actually changed (never into
+///      scrollback — rows that rolled off-screen are treated as
+///      committed and skipped),
+///   4. rewrites from there down through the new content,
+///   5. erases any rows the frame shrank past (still on-screen only),
+///   6. restores the cursor.
+///
+/// `content_rows` is the new frame's row count (typically
+/// `content_height(canvas)`). `term_h` is the terminal height — used to
+/// clamp cursor-up moves so we never try to "scroll back" into history.
+/// `state` is updated with the new cell buffer on successful composition.
+void compose_inline_frame(const Canvas& canvas,
+                          int content_rows,
+                          int term_h,
+                          const StylePool& pool,
+                          InlineFrameState& state,
+                          std::string& out);
 
 } // namespace maya

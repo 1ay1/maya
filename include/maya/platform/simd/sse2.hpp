@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../detect.hpp"
 #include "scalar.hpp"
 
 namespace maya::simd {

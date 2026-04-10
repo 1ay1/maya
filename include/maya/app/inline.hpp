@@ -46,11 +46,10 @@ int detect_terminal_height() noexcept;
 /// Persistent state for the inline renderer's erase-and-rewrite loop.
 /// Passed by reference across frames.
 struct LiveState {
-    int prev_height         = 0;    // rows of content written last frame
-    int prev_content_height = 0;    // total content rows last frame
-    int canvas_width        = 0;    // cached canvas width for reuse
-    Canvas canvas;                  // persistent canvas (avoids per-frame alloc)
-    std::vector<uint64_t> row_hashes;              // per-row hashes for diff
+    Canvas            canvas;        // persistent canvas (avoids per-frame alloc)
+    int               canvas_width = 0;  // cached canvas width for reuse
+    int               term_h       = 0;  // cached terminal height (refreshed on resize)
+    InlineFrameState  frame;        // prev_cells + prev_width + prev_rows
     std::vector<layout::LayoutNode> layout_nodes;  // reused across frames
 };
 

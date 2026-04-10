@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "../detect.hpp"
+
 namespace maya::simd {
 
 struct Scalar {};

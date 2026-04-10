@@ -295,21 +295,21 @@ auto App::render_frame() -> Status {
         if (canvas_.width() != w || canvas_.height() != canvas_h)
             canvas_ = Canvas(w, canvas_h, &pool_);
 
-        // Invalidate state on clear or width change.
-        if (needs_clear_ || prev_width_ != w) {
-            if (prev_height_ > 0 && needs_clear_) {
+        // Explicit clear request — wipe the terminal and invalidate cache.
+        // Width changes are handled inside compose_inline_frame via the
+        // InlineFrameState width check.
+        if (needs_clear_) {
+            if (inline_state_.prev_rows > 0) {
                 std::string erase;
                 erase += "\x1b[2J\x1b[3J\x1b[H";
                 (void)writer_->write_raw(erase);
             }
-            prev_height_ = 0;
-            prev_content_height_ = 0;
-            row_hashes_.clear();
+            inline_state_.reset();
             needs_clear_ = false;
         }
 
-        if (prev_content_height_ > 0) {
-            canvas_.clear_rows(prev_content_height_ + 4);
+        if (inline_state_.prev_rows > 0) {
+            canvas_.clear_rows(inline_state_.prev_rows + 4);
         } else {
             canvas_.clear();
         }
@@ -317,89 +317,21 @@ auto App::render_frame() -> Status {
 
         const int ch = content_height(canvas_);
         if (ch <= 0) {
-            prev_content_height_ = 0;
+            inline_state_.prev_rows = 0;
             return ok();
         }
 
-        const int W = canvas_.width();
-        const uint64_t* cells = canvas_.cells();
         const int term_h = std::max(1, size_.height.raw());
-
-        // ── Compute row hashes (reuse vector to avoid per-frame alloc) ──
-        row_hashes_.swap(row_hashes_);  // keep old in row_hashes_ until swap
-        // Save old hashes, compute new ones in-place.
-        std::vector<uint64_t> old_hashes = std::move(row_hashes_);
-        row_hashes_.resize(static_cast<size_t>(ch));
-        for (int y = 0; y < ch; ++y)
-            row_hashes_[static_cast<size_t>(y)] =
-                simd::hash_row(cells + y * W, W);
-
-        // ── Row-diff: never erase, only overwrite changed rows ──────────
-        // Scrollback is never touched. User can scroll freely.
-
-        const int prev_on_screen = std::min(prev_height_, term_h);
-        const int common = std::min(ch, prev_height_);
-        const int old_hash_count = static_cast<int>(old_hashes.size());
-
-        // Only rows still on screen can be updated via cursor movement.
-        // Rows in scrollback (index < prev_height_ - prev_on_screen)
-        // are committed and can't be reached.
-        const int updatable_start = prev_height_ - prev_on_screen;
-
-        int first_changed = common; // assume no common rows changed
-        for (int y = updatable_start; y < common && y < old_hash_count; ++y) {
-            if (row_hashes_[static_cast<size_t>(y)] !=
-                old_hashes[static_cast<size_t>(y)]) {
-                first_changed = y;
-                break;
-            }
-        }
-
-        // If nothing changed and no new/removed rows, skip the write.
-        if (first_changed == common && ch == prev_height_) {
-            prev_content_height_ = ch;
-            return ok();
-        }
-
         out_.clear();
-        out_ += ansi::sync_start;
-        out_ += ansi::hide_cursor;
+        compose_inline_frame(canvas_, ch, term_h, pool_, inline_state_, out_);
+        if (out_.empty()) return ok();
 
-        if (prev_height_ == 0) {
-            // First render: write all rows from cursor position.
-            serialize(canvas_, pool_, out_, ch);
-        } else {
-            // Move cursor from bottom of previous output (row prev_height_-1)
-            // up to first_changed. Clamp to on-screen distance.
-            int up = prev_height_ - 1 - first_changed;
-            up = std::clamp(up, 0, prev_on_screen - 1);
-            if (up > 0)
-                ansi::write_cursor_up(out_, up);
-            out_ += '\r';
-
-            // Overwrite from first_changed through end of new content.
-            // serialize() writes \r\n between rows, \x1b[K after each row.
-            serialize(canvas_, pool_, out_, ch, first_changed);
-
-            // If content shrank, erase leftover rows below — but only
-            // the ones still on screen (can't erase scrollback rows).
-            if (ch < prev_height_) {
-                int extra = std::min(prev_height_ - ch, prev_on_screen);
-                for (int i = 0; i < extra; ++i)
-                    out_ += "\r\n\x1b[2K";
-                if (extra > 0)
-                    ansi::write_cursor_up(out_, extra);
-            }
+        auto write_result = writer_->write_raw(out_);
+        if (!write_result) {
+            // Terminal state is now ambiguous — next frame must redraw fresh.
+            inline_state_.reset();
+            return write_result;
         }
-
-        out_ += ansi::reset;
-        out_ += ansi::show_cursor;
-        out_ += ansi::sync_end;
-
-        MAYA_TRY_VOID(writer_->write_raw(out_));
-        prev_height_ = ch;
-        prev_width_  = w;
-        prev_content_height_ = ch;
 
     } else {
         const int h = size_.height.raw();

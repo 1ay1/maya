@@ -5,6 +5,11 @@
 // tree, in both inline and alt-screen code paths.
 
 #include <maya/maya.hpp>
+#include <maya/widget/input.hpp>
+#include <maya/widget/spinner.hpp>
+#include <maya/widget/table.hpp>
+#include <maya/widget/markdown.hpp>
+#include <maya/widget/badge.hpp>
 #include <cassert>
 #include <print>
 #include <string>
@@ -123,42 +128,43 @@ void test_row_hash_width_dependency() {
 }
 
 // ============================================================================
-// 3. LiveState resets on width change
+// 3. InlineFrameState resets on width change via compose_inline_frame
 // ============================================================================
 
 void test_live_state_reset() {
     std::println("--- test_live_state_reset ---");
 
-    LiveState st;
+    StylePool pool;
+    auto sid = pool.intern(Style{});
 
-    // Simulate: first frame at width 80
-    st.canvas_width = 80;
-    st.prev_height = 10;
-    st.prev_content_height = 12;
-    st.committed_height = 5;
-    st.prev_row_hashes = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    // Frame 1: width 80
+    Canvas c1(80, 10, &pool);
+    c1.write_text(0, 0, "Hello", sid);
 
-    // Simulate width change detection (as render_live does)
-    int new_width = 120;
-    if (st.canvas_width != new_width) {
-        st.prev_row_hashes.clear();
-        st.prev_height = 0;
-        st.prev_content_height = 0;
-        st.committed_height = 0;
-        st.canvas_width = new_width;
-    }
+    InlineFrameState state;
+    std::string out;
+    compose_inline_frame(c1, 1, 24, pool, state, out);
+    assert(state.prev_width == 80);
+    assert(state.prev_rows == 1);
+    assert(!out.empty());
 
-    assert(st.prev_row_hashes.empty());
-    assert(st.prev_height == 0);
-    assert(st.prev_content_height == 0);
-    assert(st.committed_height == 0);
-    assert(st.canvas_width == 120);
+    // Frame 2: width 120 — same canvas content, but new geometry.
+    // compose_inline_frame must detect the width change and invalidate
+    // its cache, producing a full render from cursor position.
+    Canvas c2(120, 10, &pool);
+    c2.write_text(0, 0, "Hello", sid);
+
+    out.clear();
+    compose_inline_frame(c2, 1, 24, pool, state, out);
+    assert(state.prev_width == 120);
+    assert(state.prev_rows == 1);
+    assert(out.find("Hello") != std::string::npos);
 
     std::println("PASS\n");
 }
 
 // ============================================================================
-// 4. serialize_changed: all rows marked changed when old hashes empty
+// 4. compose_inline_frame: first render writes all rows
 // ============================================================================
 
 void test_serialize_after_resize() {
@@ -172,22 +178,16 @@ void test_serialize_after_resize() {
     canvas.write_text(0, 1, "Line two", sid);
     canvas.write_text(0, 2, "Line three", sid);
 
-    // Compute new hashes
-    std::vector<uint64_t> new_hashes(3);
-    for (int y = 0; y < 3; ++y)
-        new_hashes[y] = simd::hash_row(canvas.cells() + y * 60, 60);
-
-    // After resize: old hashes are EMPTY (cleared)
+    // First frame: empty state → all three rows should be emitted.
+    InlineFrameState state;
     std::string out;
-    serialize_changed(canvas, pool, out, 3, 0,
-                      nullptr, 0,  // no old hashes
-                      new_hashes.data(), 3);
+    compose_inline_frame(canvas, 3, 24, pool, state, out);
 
-    // All 3 rows should be serialized (all "changed")
-    // Verify output contains all three lines
     assert(out.find("Line one") != std::string::npos);
     assert(out.find("Line two") != std::string::npos);
     assert(out.find("Line three") != std::string::npos);
+    assert(state.prev_rows == 3);
+    assert(state.prev_width == 60);
 
     std::println("PASS\n");
 }
@@ -268,7 +268,7 @@ void test_render_determinism() {
 }
 
 // ============================================================================
-// 7. Row hashes: stable rows detected, changed rows detected
+// 7. compose_inline_frame: stable top row is skipped, only changed row emitted
 // ============================================================================
 
 void test_row_hash_stability() {
@@ -277,37 +277,38 @@ void test_row_hash_stability() {
     auto sid = pool.intern(Style{});
     constexpr int W = 80;
 
-    // Frame 1: two rows
+    // Frame 1: two rows, stored into the inline state cache.
     Canvas c1(W, 10, &pool);
     c1.write_text(0, 0, "Stable row", sid);
     c1.write_text(0, 1, "Changes every frame: 1", sid);
 
-    std::vector<uint64_t> hashes1(2);
-    hashes1[0] = simd::hash_row(c1.cells(), W);
-    hashes1[1] = simd::hash_row(c1.cells() + W, W);
+    InlineFrameState state;
+    std::string out;
+    compose_inline_frame(c1, 2, 24, pool, state, out);
+    assert(out.find("Stable row") != std::string::npos);
+    assert(out.find("Changes every frame: 1") != std::string::npos);
 
-    // Frame 2: row 0 same, row 1 different
+    // Frame 2: row 0 unchanged, row 1 changes.
     Canvas c2(W, 10, &pool);
     c2.write_text(0, 0, "Stable row", sid);
     c2.write_text(0, 1, "Changes every frame: 2", sid);
 
-    std::vector<uint64_t> hashes2(2);
-    hashes2[0] = simd::hash_row(c2.cells(), W);
-    hashes2[1] = simd::hash_row(c2.cells() + W, W);
+    out.clear();
+    compose_inline_frame(c2, 2, 24, pool, state, out);
 
-    // Row 0 should have same hash (content identical)
-    assert(hashes1[0] == hashes2[0]);
-    // Row 1 should have different hash
-    assert(hashes1[1] != hashes2[1]);
+    // Row 0's content must not be re-emitted — it is identical cell-for-cell.
+    assert(out.find("Stable row") == std::string::npos);
+    // Row 1's new content must be emitted.
+    assert(out.find("Changes every frame: 2") != std::string::npos);
 
-    // serialize_changed should skip row 0, only write row 1
-    std::string out;
-    serialize_changed(c2, pool, out, 2, 0,
-                      hashes1.data(), 2,
-                      hashes2.data(), 2);
+    // Frame 3: identical to frame 2 → compose_inline_frame should be a no-op.
+    Canvas c3(W, 10, &pool);
+    c3.write_text(0, 0, "Stable row", sid);
+    c3.write_text(0, 1, "Changes every frame: 2", sid);
 
-    assert(out.find("Stable row") == std::string::npos);   // skipped
-    assert(out.find("Changes every frame: 2") != std::string::npos); // written
+    out.clear();
+    compose_inline_frame(c3, 2, 24, pool, state, out);
+    assert(out.empty());
 
     std::println("PASS\n");
 }
@@ -475,7 +476,7 @@ void test_badge_resize() {
     std::println("--- test_badge_resize ---");
 
     for (int w : {20, 40, 80}) {
-        auto rows = render_at(tool_badge("read_file"), w);
+        auto rows = render_at(Badge::tool("read_file"), w);
         assert(!rows.empty());
         assert_left_aligned(rows, 5, "badge");
         std::println("  width={}: '{}' — OK", w, rows[0]);

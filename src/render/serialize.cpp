@@ -1,9 +1,12 @@
 #include "maya/render/serialize.hpp"
 
 #include "maya/render/diff.hpp"  // for detail::encode_utf8
+// simd::bulk_eq comes from canvas.hpp → core/simd.hpp
+#include "maya/terminal/ansi.hpp"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 
 namespace maya {
 
@@ -110,123 +113,103 @@ void serialize(const Canvas& canvas, const StylePool& pool,
     out += ansi::reset; // reset SGR at end of frame
 }
 
-void serialize_changed(const Canvas& canvas, const StylePool& pool,
-                       std::string& out, int rows, int start_row,
-                       const uint64_t* old_hashes, int old_count,
-                       const uint64_t* new_hashes, int new_count,
-                       int old_offset) {
-    const int W = canvas.width();
-    const int total_rows = (rows > 0) ? std::min(rows, canvas.height()) : canvas.height();
-    const int y_begin = std::clamp(start_row, 0, total_rows);
-    const int y_end = total_rows;
+// ============================================================================
+// compose_inline_frame
+// ============================================================================
 
-    if (W <= 0 || y_begin >= y_end) return;
+void compose_inline_frame(const Canvas& canvas,
+                          int content_rows,
+                          int term_h,
+                          const StylePool& pool,
+                          InlineFrameState& state,
+                          std::string& out)
+{
+    const int W = canvas.width();
+    if (W <= 0 || content_rows <= 0 || term_h <= 0) return;
+
+    // Width change invalidates the cached cell buffer — row layouts shift.
+    if (state.prev_width != W) state.reset();
 
     const uint64_t* cells = canvas.cells();
-    uint16_t current_style = UINT16_MAX;
+    const int prev_rows       = state.prev_rows;
+    const int prev_on_screen  = std::min(prev_rows, term_h);
+    const int updatable_start = prev_rows - prev_on_screen;
+    const int common          = std::min(content_rows, prev_rows);
 
-    out += "\x1b[?7l"; // disable DECAWM
+    // Locate the first row that actually changed within the on-screen
+    // portion of the overlap. Rows in scrollback (y < updatable_start)
+    // can't be updated, so we skip them entirely.
+    int first_changed = common;
+    if (prev_rows > 0 && static_cast<std::size_t>(prev_rows) * static_cast<std::size_t>(W)
+                        <= state.prev_cells.size())
+    {
+        const uint64_t* prev = state.prev_cells.data();
+        for (int y = updatable_start; y < common; ++y) {
+            if (!simd::bulk_eq(cells + y * W, prev + y * W,
+                               static_cast<std::size_t>(W)))
+            {
+                first_changed = y;
+                break;
+            }
+        }
+    }
 
-    // Batch cursor movement over unchanged rows instead of emitting
-    // \r\n for every single row.  cursor_y tracks the row the terminal
-    // cursor is physically on.
-    int cursor_y = y_begin;
+    // Nothing to do: the common range is identical and no rows were
+    // added or removed.
+    if (first_changed == common && content_rows == prev_rows) return;
 
-    for (int y = y_begin; y < y_end; ++y) {
-        // Check if row changed — compare by display position, not canvas row.
-        // old_offset accounts for scroll: old_hashes[y + old_offset] is what
-        // was previously displayed at the same physical row as new_hashes[y].
-        bool changed = true;
-        int old_y = y + old_offset;
-        if (old_y >= 0 && old_y < old_count && y < new_count)
-            changed = (old_hashes[old_y] != new_hashes[y]);
+    out += ansi::sync_start;
+    out += ansi::hide_cursor;
 
-        if (!changed) continue; // skip unchanged rows entirely
+    if (prev_rows == 0) {
+        // First render from the caller's cursor position (assumed col 0).
+        serialize(canvas, pool, out, content_rows);
+    } else {
+        // Position the cursor at column 0 of `first_changed`. The cursor
+        // is currently at (prev_rows - 1, somewhere on that row).
+        const int cursor_row = prev_rows - 1;
+        const int delta      = first_changed - cursor_row;
 
-        // Move cursor from cursor_y to row y
-        int delta = y - cursor_y;
-        if (delta > 0) {
-            out += "\r\n";
-            if (delta > 1)
-                ansi::write_cursor_down(out, delta - 1);
+        if (delta < 0) {
+            int up = std::min(-delta, prev_on_screen - 1);
+            if (up > 0) ansi::write_cursor_up(out, up);
+            out += '\r';
+        } else if (delta == 0) {
+            out += '\r';
         } else {
-            // Same row or first row — just go to column 1
-            out += "\r";
+            // Growing past the previous bottom — step down delta rows.
+            // The first \r\n scrolls the terminal if we were already at
+            // the last line, which is exactly what inline mode wants.
+            out += "\r\n";
+            if (delta > 1) ansi::write_cursor_down(out, delta - 1);
         }
 
-        const int row_base = y * W;
-        // Find last non-space cell to avoid writing trailing blanks.
-        // Keep styled spaces (style_id != 0) — they carry visual attributes.
-        // Extract fields directly from packed value (avoid full unpack).
-        int last_col = W - 1;
-        while (last_col >= 0) {
-            const uint64_t p = cells[row_base + last_col];
-            const auto c = static_cast<char32_t>(p & 0xFFFFFFFF);
-            const auto s = static_cast<uint16_t>((p >> 32) & 0xFFFF);
-            if ((c != U' ' && c != 0) || s != 0) break;
-            --last_col;
+        // Rewrite rows [first_changed, content_rows). serialize() emits
+        // \r\n between rows and \x1b[K after each, so stale tail content
+        // from the previous frame is cleaned up automatically.
+        serialize(canvas, pool, out, content_rows, first_changed);
+
+        // Content shrank — erase any leftover rows that are still on-screen.
+        // Rows that already rolled into scrollback are immutable.
+        if (content_rows < prev_rows) {
+            int extra = std::min(prev_rows - content_rows, prev_on_screen);
+            for (int i = 0; i < extra; ++i)
+                out += "\r\n\x1b[2K";
+            if (extra > 0) ansi::write_cursor_up(out, extra);
         }
-
-        // Batch consecutive ASCII cells with the same style into a single
-        // append() call, avoiding per-character string size checks.
-        char ascii_buf[256];
-        int ascii_len = 0;
-
-        for (int x = 0; x <= last_col; ++x) {
-            const uint64_t packed = cells[row_base + x];
-            // Extract fields directly from packed value (avoid full unpack).
-            const auto ch = static_cast<char32_t>(packed & 0xFFFFFFFF);
-            const auto sid = static_cast<uint16_t>((packed >> 32) & 0xFFFF);
-            const auto w = static_cast<uint8_t>(packed >> 56);
-
-            if (w == 2) [[unlikely]] continue; // wide-char placeholder
-
-            if (sid != current_style) [[unlikely]] {
-                // Flush ASCII buffer before style change.
-                if (ascii_len > 0) {
-                    out.append(ascii_buf, static_cast<size_t>(ascii_len));
-                    ascii_len = 0;
-                }
-                out.append(pool.sgr(sid));
-                current_style = sid;
-            }
-
-            if (ch < 0x80) [[likely]] {
-                ascii_buf[ascii_len++] = static_cast<char>(ch);
-                if (ascii_len == 256) [[unlikely]] {
-                    out.append(ascii_buf, 256);
-                    ascii_len = 0;
-                }
-            } else {
-                // Flush ASCII buffer, then encode non-ASCII character.
-                if (ascii_len > 0) {
-                    out.append(ascii_buf, static_cast<size_t>(ascii_len));
-                    ascii_len = 0;
-                }
-                detail::encode_utf8(ch, out);
-            }
-        }
-        // Flush remaining ASCII.
-        if (ascii_len > 0) {
-            out.append(ascii_buf, static_cast<size_t>(ascii_len));
-        }
-        // Erase remainder of line (no flash — content already written)
-        out += "\x1b[0K";
-        cursor_y = y;
     }
 
-    // Move cursor to the last row of the live region (y_end - 1)
-    // so the caller's subsequent cursor math is correct.
-    int target = y_end - 1;
-    if (target > cursor_y) {
-        int delta = target - cursor_y;
-        out += "\r\n";
-        if (delta > 1)
-            ansi::write_cursor_down(out, delta - 1);
-    }
+    out += ansi::show_cursor;
+    out += ansi::sync_end;
 
-    out += "\x1b[?7h"; // re-enable DECAWM
-    out += ansi::reset;
+    // Commit: cache the new cell buffer for next frame's comparison.
+    const std::size_t new_size =
+        static_cast<std::size_t>(content_rows) * static_cast<std::size_t>(W);
+    if (state.prev_cells.size() < new_size)
+        state.prev_cells.resize(new_size);
+    std::memcpy(state.prev_cells.data(), cells, new_size * sizeof(uint64_t));
+    state.prev_width = W;
+    state.prev_rows  = content_rows;
 }
 
 } // namespace maya

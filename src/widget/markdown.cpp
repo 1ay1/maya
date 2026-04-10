@@ -789,85 +789,558 @@ md::Document parse_markdown(std::string_view source) {
 // AST to Element conversion — polished terminal rendering
 // ============================================================================
 
-// Zed agent panel color palette — One Dark inspired, muted and clean
+// Terminal-adaptive color palette — uses named ANSI colors so the rendering
+// automatically matches whatever terminal theme the user has configured
+// (Catppuccin, Dracula, Solarized, One Dark, Gruvbox, etc.)
 namespace colors {
-    constexpr auto text        = Color::rgb(200, 204, 212);
-    constexpr auto heading1    = Color::rgb(224, 226, 232);
-    constexpr auto heading2    = Color::rgb(198, 200, 210);
-    constexpr auto heading3    = Color::rgb(170, 174, 186);
-    constexpr auto heading_dim = Color::rgb(120, 124, 140);
-    constexpr auto bold_fg     = Color::rgb(224, 226, 232);
-    constexpr auto italic_fg   = Color::rgb(180, 184, 200);
-    constexpr auto code_fg     = Color::rgb(209, 154, 102);
+    constexpr auto text        = Color::white();
+    constexpr auto heading1    = Color::bright_white();
+    constexpr auto heading2    = Color::bright_white();
+    constexpr auto heading3    = Color::white();
+    constexpr auto heading_dim = Color::bright_black();
+    constexpr auto bold_fg     = Color::bright_white();
+    constexpr auto italic_fg   = Color::white();
+    constexpr auto code_fg     = Color::bright_yellow();
     constexpr auto code_bg     = Color::black();
-    constexpr auto link_fg     = Color::rgb(97, 175, 239);
-    constexpr auto image_fg    = Color::rgb(198, 120, 221);
-    constexpr auto strike_fg   = Color::rgb(92, 99, 112);
-    constexpr auto quote_bar   = Color::rgb(62, 68, 82);
-    constexpr auto quote_text  = Color::rgb(150, 156, 170);
-    constexpr auto list_bullet = Color::rgb(92, 99, 112);
-    constexpr auto list_num    = Color::rgb(150, 156, 170);
-    constexpr auto checkbox_fg = Color::rgb(152, 195, 121);
-    constexpr auto checkbox_off= Color::rgb(92, 99, 112);
-    constexpr auto code_border = Color::rgb(50, 54, 62);
-    constexpr auto code_lang   = Color::rgb(92, 99, 112);
-    constexpr auto hrule_fg    = Color::rgb(50, 54, 62);
-    constexpr auto footnote_fg = Color::rgb(150, 156, 170);
-    constexpr auto table_border= Color::rgb(50, 54, 62);
-    constexpr auto table_header= Color::rgb(224, 226, 232);
+    constexpr auto link_fg     = Color::bright_blue();
+    constexpr auto image_fg    = Color::bright_magenta();
+    constexpr auto strike_fg   = Color::bright_black();
+    constexpr auto quote_bar   = Color::bright_black();
+    constexpr auto quote_text  = Color::white();
+    constexpr auto list_bullet = Color::bright_black();
+    constexpr auto list_num    = Color::white();
+    constexpr auto checkbox_fg = Color::bright_green();
+    constexpr auto checkbox_off= Color::bright_black();
+    constexpr auto code_border = Color::bright_black();
+    constexpr auto code_lang   = Color::bright_black();
+    constexpr auto hrule_fg    = Color::bright_black();
+    constexpr auto footnote_fg = Color::bright_black();
+    constexpr auto table_border= Color::bright_black();
+    constexpr auto table_header= Color::bright_white();
 }
 
 // ============================================================================
-// Syntax highlighting for code blocks
+// Language-aware syntax highlighting for code blocks
 // ============================================================================
+// Uses only terminal named ANSI colors so highlighting adapts to the user's
+// terminal theme (Catppuccin, Dracula, Solarized, One Dark, Gruvbox, etc.)
 
-// One Dark syntax colors (matches Zed's default dark theme)
 namespace syntax {
-    constexpr auto kw_color      = Color::rgb(198, 120, 221); // purple - keywords
-    constexpr auto str_color     = Color::rgb(152, 195, 121); // green - strings
-    constexpr auto comment_color = Color::rgb(92, 99, 112);   // gray - comments
-    constexpr auto num_color     = Color::rgb(209, 154, 102); // orange - numbers
-    constexpr auto type_color    = Color::rgb(229, 192, 123); // yellow - types/caps
-    constexpr auto punct_color   = Color::rgb(92, 99, 112);   // gray - punctuation
-    constexpr auto fn_color      = Color::rgb(97, 175, 239);  // blue - function calls
-    constexpr auto plain_color   = Color::rgb(171, 178, 191); // light - default code
+    inline Style kw()       { return Style{}.with_fg(Color::magenta()); }
+    inline Style ctrl()     { return Style{}.with_fg(Color::magenta()); }
+    inline Style type()     { return Style{}.with_fg(Color::cyan()); }
+    inline Style fn()       { return Style{}.with_fg(Color::blue()); }
+    inline Style str()      { return Style{}.with_fg(Color::green()); }
+    inline Style num()      { return Style{}.with_fg(Color::bright_yellow()); }
+    inline Style comment()  { return Style{}.with_fg(Color::bright_black()).with_italic(); }
+    inline Style constant() { return Style{}.with_fg(Color::bright_yellow()); }
+    inline Style preproc()  { return Style{}.with_fg(Color::yellow()); }
+    inline Style attr()     { return Style{}.with_fg(Color::yellow()); }
+    inline Style op()       { return Style{}.with_fg(Color::red()); }
+    inline Style punct()    { return Style{}.with_fg(Color::bright_black()); }
+    inline Style plain()    { return Style{}.with_fg(Color::white()); }
+    inline Style shellvar() { return Style{}.with_fg(Color::bright_cyan()); }
+
+    // Diff highlighting
+    inline Style diff_add()  { return Style{}.with_fg(Color::green()); }
+    inline Style diff_del()  { return Style{}.with_fg(Color::red()); }
+    inline Style diff_hunk() { return Style{}.with_fg(Color::cyan()); }
+    inline Style diff_meta() { return Style{}.with_fg(Color::bright_black()).with_bold(); }
 }
 
-// Token kinds for syntax highlighting
-enum class TokKind { Plain, Keyword, String, Comment, Number, Type, Punct };
+// ── Language identification ──────────────────────────────────────────────────
 
-static bool is_keyword(std::string_view word) {
-    static constexpr std::string_view kws[] = {
-        "if", "else", "for", "while", "return", "class", "struct", "enum",
-        "fn", "func", "def", "let", "const", "var", "auto", "void", "int",
-        "bool", "string", "import", "from", "export", "use", "pub", "mod",
-        "async", "await", "try", "catch", "throw", "new", "delete",
-        "true", "false", "null", "nullptr", "None", "self", "this", "super",
-        "do", "switch", "case", "break", "continue", "static", "inline",
-        "namespace", "template", "typename", "using", "operator", "virtual",
-        "override", "final", "explicit", "constexpr", "noexcept", "sizeof",
-        "typeof", "type", "interface", "extends", "implements", "package",
-        "go", "chan", "select", "defer", "range", "map", "make", "append",
-        "lambda", "yield", "with", "pass", "raise", "and", "or", "not", "in",
-        "is", "as", "match", "when", "then", "where", "forall",
-    };
-    for (auto& kw : kws) {
-        if (word == kw) return true;
-    }
+enum class LangId {
+    Unknown,
+    C, Cpp, Python, Rust, JavaScript, TypeScript, Go, Java, Kotlin, Swift,
+    Ruby, Shell, Fish, SQL, HTML, XML, CSS, SCSS,
+    JSON, YAML, TOML, Lua, Zig, Haskell, Elixir, Erlang, PHP, Perl, R,
+    Diff, Makefile, CMake, Dockerfile, Markdown,
+};
+
+static LangId detect_lang(std::string_view tag) {
+    // Normalize: lowercase
+    std::string lower;
+    lower.reserve(tag.size());
+    for (char c : tag)
+        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    if (lower == "c" || lower == "h")                return LangId::C;
+    if (lower == "cpp" || lower == "c++" ||
+        lower == "cxx" || lower == "cc" ||
+        lower == "hpp" || lower == "hxx")            return LangId::Cpp;
+    if (lower == "python" || lower == "py")          return LangId::Python;
+    if (lower == "rust" || lower == "rs")            return LangId::Rust;
+    if (lower == "javascript" || lower == "js" ||
+        lower == "jsx" || lower == "mjs" ||
+        lower == "cjs")                              return LangId::JavaScript;
+    if (lower == "typescript" || lower == "ts" ||
+        lower == "tsx")                              return LangId::TypeScript;
+    if (lower == "go" || lower == "golang")          return LangId::Go;
+    if (lower == "java")                             return LangId::Java;
+    if (lower == "kotlin" || lower == "kt" ||
+        lower == "kts")                              return LangId::Kotlin;
+    if (lower == "swift")                            return LangId::Swift;
+    if (lower == "ruby" || lower == "rb")            return LangId::Ruby;
+    if (lower == "bash" || lower == "sh" ||
+        lower == "shell" || lower == "zsh")          return LangId::Shell;
+    if (lower == "fish")                             return LangId::Fish;
+    if (lower == "sql" || lower == "mysql" ||
+        lower == "postgresql" || lower == "sqlite")  return LangId::SQL;
+    if (lower == "html" || lower == "htm")           return LangId::HTML;
+    if (lower == "xml" || lower == "svg")            return LangId::XML;
+    if (lower == "css")                              return LangId::CSS;
+    if (lower == "scss" || lower == "sass" ||
+        lower == "less")                             return LangId::SCSS;
+    if (lower == "json" || lower == "jsonc")         return LangId::JSON;
+    if (lower == "yaml" || lower == "yml")           return LangId::YAML;
+    if (lower == "toml")                             return LangId::TOML;
+    if (lower == "lua")                              return LangId::Lua;
+    if (lower == "zig")                              return LangId::Zig;
+    if (lower == "haskell" || lower == "hs")         return LangId::Haskell;
+    if (lower == "elixir" || lower == "ex" ||
+        lower == "exs")                              return LangId::Elixir;
+    if (lower == "erlang" || lower == "erl")         return LangId::Erlang;
+    if (lower == "php")                              return LangId::PHP;
+    if (lower == "perl" || lower == "pl")            return LangId::Perl;
+    if (lower == "r")                                return LangId::R;
+    if (lower == "diff" || lower == "patch")         return LangId::Diff;
+    if (lower == "makefile" || lower == "make")      return LangId::Makefile;
+    if (lower == "cmake")                            return LangId::CMake;
+    if (lower == "dockerfile" || lower == "docker")  return LangId::Dockerfile;
+    if (lower == "markdown" || lower == "md")        return LangId::Markdown;
+    return LangId::Unknown;
+}
+
+// ── Per-language keyword tables ──────────────────────────────────────────────
+
+static bool in_list(std::string_view word, std::initializer_list<std::string_view> list) {
+    for (auto& k : list) if (word == k) return true;
     return false;
 }
 
-static bool is_punct_char(char c) {
-    return c == '{' || c == '}' || c == '[' || c == ']' ||
-           c == '(' || c == ')' || c == '.' || c == ',' ||
-           c == ';' || c == ':' || c == '+' || c == '-' ||
-           c == '*' || c == '/' || c == '<' || c == '>' ||
-           c == '=' || c == '!' || c == '&' || c == '|' ||
-           c == '^' || c == '~' || c == '%';
+struct WordClass { bool keyword; bool type; bool constant; };
+
+static WordClass classify_word(std::string_view word, LangId lang) {
+    // Constants — universal
+    if (in_list(word, {"true", "false", "null", "nullptr", "None", "nil",
+                       "True", "False", "NULL", "NaN", "Infinity",
+                       "undefined", "NUL", "YES", "NO"}))
+        return {false, false, true};
+
+    switch (lang) {
+    case LangId::C:
+    case LangId::Cpp:
+        if (in_list(word, {
+            "if", "else", "for", "while", "do", "switch", "case", "break",
+            "continue", "return", "goto", "default",
+            "struct", "enum", "union", "typedef", "class", "namespace",
+            "template", "typename", "using", "static", "extern", "inline",
+            "const", "constexpr", "consteval", "constinit", "volatile",
+            "mutable", "register", "thread_local",
+            "virtual", "override", "final", "explicit", "noexcept",
+            "public", "private", "protected", "friend",
+            "new", "delete", "operator", "sizeof", "alignof", "decltype",
+            "static_assert", "static_cast", "dynamic_cast", "reinterpret_cast",
+            "const_cast", "typeid", "throw", "try", "catch",
+            "concept", "requires", "co_await", "co_yield", "co_return",
+            "export", "import", "module",
+            "auto", "void",
+            "#include", "#define", "#ifdef", "#ifndef", "#endif", "#pragma",
+        })) return {true, false, false};
+        if (in_list(word, {
+            "int", "char", "float", "double", "long", "short", "unsigned",
+            "signed", "bool", "size_t", "uint8_t", "uint16_t", "uint32_t",
+            "uint64_t", "int8_t", "int16_t", "int32_t", "int64_t",
+            "string", "string_view", "vector", "map", "set", "array",
+            "optional", "variant", "pair", "tuple", "span", "expected",
+            "unique_ptr", "shared_ptr", "weak_ptr",
+            "wchar_t", "char8_t", "char16_t", "char32_t", "ptrdiff_t",
+        })) return {false, true, false};
+        break;
+
+    case LangId::Python:
+        if (in_list(word, {
+            "if", "elif", "else", "for", "while", "break", "continue",
+            "return", "yield", "pass", "raise", "try", "except", "finally",
+            "with", "as", "assert", "del",
+            "def", "class", "lambda", "async", "await",
+            "import", "from", "global", "nonlocal",
+            "and", "or", "not", "in", "is",
+        })) return {true, false, false};
+        if (in_list(word, {
+            "int", "float", "str", "bool", "list", "dict", "tuple", "set",
+            "bytes", "bytearray", "complex", "frozenset", "type", "object",
+            "range", "enumerate", "zip", "map", "filter",
+            "Exception", "ValueError", "TypeError", "KeyError", "IndexError",
+            "RuntimeError", "StopIteration", "AttributeError", "ImportError",
+            "OSError", "IOError", "FileNotFoundError",
+        })) return {false, true, false};
+        if (in_list(word, {"self", "cls", "super"}))
+            return {true, false, false};
+        break;
+
+    case LangId::Rust:
+        if (in_list(word, {
+            "if", "else", "for", "while", "loop", "break", "continue",
+            "return", "match", "as",
+            "fn", "struct", "enum", "impl", "trait", "type", "where",
+            "let", "mut", "const", "static", "ref", "move",
+            "pub", "mod", "use", "crate", "super", "self", "Self",
+            "async", "await", "unsafe", "extern", "dyn",
+        })) return {true, false, false};
+        if (in_list(word, {
+            "i8", "i16", "i32", "i64", "i128", "isize",
+            "u8", "u16", "u32", "u64", "u128", "usize",
+            "f32", "f64", "bool", "char", "str",
+            "String", "Vec", "Box", "Rc", "Arc", "Cell", "RefCell",
+            "Option", "Result", "Ok", "Err", "Some",
+            "HashMap", "HashSet", "BTreeMap", "BTreeSet",
+            "Iterator", "IntoIterator", "From", "Into",
+            "Display", "Debug", "Clone", "Copy", "Send", "Sync",
+            "Default", "PartialEq", "Eq", "PartialOrd", "Ord", "Hash",
+        })) return {false, true, false};
+        break;
+
+    case LangId::JavaScript:
+    case LangId::TypeScript:
+        if (in_list(word, {
+            "if", "else", "for", "while", "do", "switch", "case", "break",
+            "continue", "return", "throw", "try", "catch", "finally",
+            "default", "in", "of", "typeof", "instanceof", "void", "delete",
+            "function", "class", "extends", "new", "this", "super",
+            "const", "let", "var", "async", "await", "yield",
+            "import", "export", "from", "as", "default",
+            "with", "debugger",
+        })) return {true, false, false};
+        if (lang == LangId::TypeScript && in_list(word, {
+            "type", "interface", "enum", "namespace", "declare", "abstract",
+            "implements", "readonly", "keyof", "infer", "is", "asserts",
+            "override", "satisfies",
+        })) return {true, false, false};
+        if (in_list(word, {
+            "string", "number", "boolean", "object", "symbol", "bigint",
+            "any", "unknown", "never", "void",
+            "Array", "Map", "Set", "Promise", "Date", "RegExp", "Error",
+            "Object", "Function", "Symbol", "WeakMap", "WeakSet",
+            "Record", "Partial", "Required", "Readonly", "Pick", "Omit",
+        })) return {false, true, false};
+        break;
+
+    case LangId::Go:
+        if (in_list(word, {
+            "if", "else", "for", "switch", "case", "break", "continue",
+            "return", "goto", "default", "fallthrough", "select",
+            "func", "type", "struct", "interface", "map", "chan",
+            "var", "const", "package", "import",
+            "go", "defer", "range",
+        })) return {true, false, false};
+        if (in_list(word, {
+            "int", "int8", "int16", "int32", "int64",
+            "uint", "uint8", "uint16", "uint32", "uint64", "uintptr",
+            "float32", "float64", "complex64", "complex128",
+            "bool", "byte", "rune", "string", "error",
+            "any", "comparable",
+        })) return {false, true, false};
+        if (in_list(word, {"make", "append", "len", "cap", "copy", "close",
+                           "new", "delete", "panic", "recover", "print", "println",
+                           "iota"}))
+            return {false, false, true};
+        break;
+
+    case LangId::Java:
+    case LangId::Kotlin:
+        if (in_list(word, {
+            "if", "else", "for", "while", "do", "switch", "case", "break",
+            "continue", "return", "throw", "try", "catch", "finally",
+            "default", "instanceof", "new", "this", "super",
+            "class", "interface", "enum", "extends", "implements",
+            "abstract", "final", "static", "synchronized", "volatile",
+            "transient", "native", "strictfp",
+            "public", "private", "protected", "package", "import",
+            "assert", "throws", "void",
+        })) return {true, false, false};
+        if (lang == LangId::Kotlin && in_list(word, {
+            "fun", "val", "var", "when", "is", "as", "in", "out",
+            "object", "companion", "data", "sealed", "inline", "reified",
+            "suspend", "override", "open", "internal", "lateinit",
+            "by", "constructor", "init", "typealias",
+        })) return {true, false, false};
+        if (in_list(word, {
+            "int", "long", "short", "byte", "float", "double", "char",
+            "boolean", "String", "Integer", "Long", "Double", "Float",
+            "Boolean", "Character", "Object", "Void",
+            "List", "Map", "Set", "Array", "Collection", "Iterator",
+            "Optional", "Stream", "Comparable", "Iterable",
+        })) return {false, true, false};
+        break;
+
+    case LangId::Ruby:
+        if (in_list(word, {
+            "if", "elsif", "else", "unless", "while", "until", "for",
+            "do", "end", "begin", "rescue", "ensure", "raise", "retry",
+            "return", "break", "next", "redo", "yield",
+            "def", "class", "module", "include", "extend", "require",
+            "require_relative", "attr_reader", "attr_writer", "attr_accessor",
+            "self", "super", "then", "when", "case", "in", "and", "or", "not",
+            "defined?", "alias", "undef", "private", "protected", "public",
+            "lambda", "proc", "block_given?",
+        })) return {true, false, false};
+        break;
+
+    case LangId::Shell:
+    case LangId::Fish:
+    case LangId::Makefile:
+    case LangId::Dockerfile:
+        if (in_list(word, {
+            "if", "then", "else", "elif", "fi", "for", "while", "until",
+            "do", "done", "case", "esac", "in", "function", "return",
+            "local", "export", "unset", "readonly", "declare", "typeset",
+            "source", "eval", "exec", "set", "shift", "trap",
+            "echo", "printf", "read", "test", "exit",
+            // Dockerfile
+            "FROM", "RUN", "CMD", "ENTRYPOINT", "COPY", "ADD", "WORKDIR",
+            "ENV", "ARG", "EXPOSE", "VOLUME", "USER", "LABEL", "ONBUILD",
+            "HEALTHCHECK", "SHELL", "STOPSIGNAL",
+        })) return {true, false, false};
+        break;
+
+    case LangId::SQL:
+        if (in_list(word, {
+            "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE",
+            "SET", "DELETE", "CREATE", "ALTER", "DROP", "TABLE", "INDEX",
+            "VIEW", "DATABASE", "SCHEMA", "JOIN", "LEFT", "RIGHT", "INNER",
+            "OUTER", "FULL", "CROSS", "ON", "AS", "AND", "OR", "NOT", "IN",
+            "IS", "LIKE", "BETWEEN", "EXISTS", "HAVING", "GROUP", "BY",
+            "ORDER", "ASC", "DESC", "LIMIT", "OFFSET", "UNION", "ALL",
+            "DISTINCT", "CASE", "WHEN", "THEN", "ELSE", "END", "IF",
+            "BEGIN", "COMMIT", "ROLLBACK", "TRANSACTION", "GRANT", "REVOKE",
+            "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "CONSTRAINT",
+            "UNIQUE", "CHECK", "DEFAULT", "CASCADE", "RESTRICT",
+            // Also match lowercase
+            "select", "from", "where", "insert", "into", "values", "update",
+            "set", "delete", "create", "alter", "drop", "table", "index",
+            "view", "database", "schema", "join", "left", "right", "inner",
+            "outer", "full", "cross", "on", "as", "and", "or", "not", "in",
+            "is", "like", "between", "exists", "having", "group", "by",
+            "order", "asc", "desc", "limit", "offset", "union", "all",
+            "distinct", "case", "when", "then", "else", "end", "if",
+            "begin", "commit", "rollback", "transaction", "grant", "revoke",
+            "primary", "key", "foreign", "references", "constraint",
+            "unique", "check", "default", "cascade", "restrict",
+        })) return {true, false, false};
+        if (in_list(word, {
+            "INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT",
+            "VARCHAR", "CHAR", "TEXT", "BLOB", "BOOLEAN", "BOOL",
+            "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC", "REAL",
+            "DATE", "TIME", "TIMESTAMP", "DATETIME",
+            "SERIAL", "BIGSERIAL", "UUID",
+            "int", "integer", "bigint", "smallint", "tinyint",
+            "varchar", "char", "text", "blob", "boolean", "bool",
+            "float", "double", "decimal", "numeric", "real",
+            "date", "time", "timestamp", "datetime",
+            "serial", "bigserial", "uuid",
+        })) return {false, true, false};
+        break;
+
+    case LangId::Lua:
+        if (in_list(word, {
+            "if", "then", "else", "elseif", "end", "for", "while", "do",
+            "repeat", "until", "break", "return", "goto",
+            "function", "local", "in", "and", "or", "not",
+        })) return {true, false, false};
+        break;
+
+    case LangId::Zig:
+        if (in_list(word, {
+            "if", "else", "for", "while", "break", "continue", "return",
+            "switch", "orelse", "catch", "unreachable",
+            "fn", "pub", "const", "var", "struct", "enum", "union",
+            "error", "test", "comptime", "inline", "extern", "export",
+            "threadlocal", "defer", "errdefer", "nosuspend",
+            "try", "async", "await", "suspend", "resume",
+            "align", "allowzero", "volatile", "linksection",
+        })) return {true, false, false};
+        if (in_list(word, {
+            "u8", "u16", "u32", "u64", "u128", "usize",
+            "i8", "i16", "i32", "i64", "i128", "isize",
+            "f16", "f32", "f64", "f128", "bool", "void", "noreturn",
+            "anyerror", "anyframe", "anytype", "anyopaque", "type",
+            "comptime_int", "comptime_float",
+        })) return {false, true, false};
+        break;
+
+    case LangId::Swift:
+        if (in_list(word, {
+            "if", "else", "for", "while", "repeat", "switch", "case",
+            "break", "continue", "return", "throw", "guard", "defer",
+            "do", "try", "catch", "where", "in", "as", "is",
+            "func", "class", "struct", "enum", "protocol", "extension",
+            "typealias", "associatedtype",
+            "let", "var", "static", "lazy", "override", "mutating",
+            "public", "private", "internal", "fileprivate", "open",
+            "import", "init", "deinit", "subscript", "operator",
+            "async", "await", "actor",
+            "self", "Self", "super",
+        })) return {true, false, false};
+        if (in_list(word, {
+            "Int", "Int8", "Int16", "Int32", "Int64",
+            "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
+            "Float", "Double", "Bool", "String", "Character",
+            "Array", "Dictionary", "Set", "Optional",
+            "Any", "AnyObject", "Void", "Never",
+        })) return {false, true, false};
+        break;
+
+    case LangId::Haskell:
+        if (in_list(word, {
+            "if", "then", "else", "case", "of", "let", "in", "where",
+            "do", "module", "import", "data", "type", "newtype", "class",
+            "instance", "deriving", "default", "forall", "infixl", "infixr",
+            "infix", "qualified", "as", "hiding",
+        })) return {true, false, false};
+        if (in_list(word, {
+            "Int", "Integer", "Float", "Double", "Char", "String", "Bool",
+            "IO", "Maybe", "Either", "Monad", "Functor", "Applicative",
+            "Show", "Read", "Eq", "Ord", "Num", "Enum", "Bounded",
+        })) return {false, true, false};
+        break;
+
+    case LangId::Elixir:
+    case LangId::Erlang:
+        if (in_list(word, {
+            "if", "else", "do", "end", "case", "cond", "when", "with",
+            "for", "unless", "fn", "def", "defp", "defmodule", "defstruct",
+            "defimpl", "defprotocol", "defmacro", "defguard",
+            "import", "require", "use", "alias", "raise", "rescue",
+            "try", "catch", "after", "receive", "send", "spawn",
+            "and", "or", "not", "in",
+        })) return {true, false, false};
+        break;
+
+    case LangId::PHP:
+        if (in_list(word, {
+            "if", "else", "elseif", "for", "foreach", "while", "do",
+            "switch", "case", "break", "continue", "return", "throw",
+            "try", "catch", "finally", "default",
+            "function", "class", "interface", "trait", "extends", "implements",
+            "abstract", "final", "static", "public", "private", "protected",
+            "new", "instanceof", "as", "use", "namespace", "echo", "print",
+            "include", "require", "include_once", "require_once",
+            "yield", "fn", "match", "enum", "readonly",
+        })) return {true, false, false};
+        break;
+
+    case LangId::CSS:
+    case LangId::SCSS:
+    case LangId::HTML:
+    case LangId::XML:
+    case LangId::JSON:
+    case LangId::YAML:
+    case LangId::TOML:
+    case LangId::Perl:
+    case LangId::R:
+    case LangId::CMake:
+    case LangId::Markdown:
+    case LangId::Unknown:
+        break;
+    }
+
+    return {false, false, false};
 }
 
-// Build a TextElement with syntax-highlighted styled runs for a code block.
-static Element highlight_code(const std::string& code, const std::string& /*lang*/) {
+// ── Comment style per language ───────────────────────────────────────────────
+
+struct CommentStyle {
+    const char* line;         // "//" or "#" or "--" or nullptr
+    const char* block_open;   // "/*" or "{-" or nullptr
+    const char* block_close;  // "*/" or "-}" or nullptr
+    bool hash_comment;        // '#' as line comment (separate from "//" because
+                              // '#' can also be preprocessor in C/C++)
+};
+
+static CommentStyle comment_style_for(LangId lang) {
+    switch (lang) {
+    case LangId::C:
+    case LangId::Cpp:          return {"//", "/*", "*/", false};
+    case LangId::Python:       return {nullptr, nullptr, nullptr, true};
+    case LangId::Rust:         return {"//", "/*", "*/", false};
+    case LangId::JavaScript:
+    case LangId::TypeScript:   return {"//", "/*", "*/", false};
+    case LangId::Go:           return {"//", "/*", "*/", false};
+    case LangId::Java:
+    case LangId::Kotlin:       return {"//", "/*", "*/", false};
+    case LangId::Swift:        return {"//", "/*", "*/", false};
+    case LangId::Zig:          return {"//", nullptr, nullptr, false};
+    case LangId::Lua:          return {"--", "--[[", "]]", false};
+    case LangId::Haskell:      return {"--", "{-", "-}", false};
+    case LangId::SQL:          return {"--", "/*", "*/", false};
+    case LangId::Ruby:         return {nullptr, "=begin", "=end", true};
+    case LangId::Shell:
+    case LangId::Fish:
+    case LangId::Makefile:
+    case LangId::Dockerfile:
+    case LangId::YAML:
+    case LangId::TOML:
+    case LangId::R:
+    case LangId::CMake:
+    case LangId::Elixir:
+    case LangId::Erlang:       return {nullptr, nullptr, nullptr, true};
+    case LangId::PHP:          return {"//", "/*", "*/", true};
+    case LangId::Perl:         return {nullptr, nullptr, nullptr, true};
+    case LangId::CSS:
+    case LangId::SCSS:         return {"//", "/*", "*/", false};
+    case LangId::HTML:
+    case LangId::XML:          return {nullptr, "<!--", "-->", false};
+    case LangId::JSON:         return {nullptr, nullptr, nullptr, false};
+    case LangId::Diff:
+    case LangId::Markdown:
+    case LangId::Unknown:      return {"//", "/*", "*/", true};
+    }
+    return {"//", "/*", "*/", true};
+}
+
+// ── Language feature flags ───────────────────────────────────────────────────
+
+struct LangFeatures {
+    bool triple_quote_strings;  // Python """...""", '''...'''
+    bool backtick_strings;      // JS `...` template literals, Go raw strings
+    bool preprocessor;          // C/C++ #include, #define
+    bool decorators;            // Python @, Java @, Rust #[...]
+    bool shell_vars;            // $VAR, ${VAR}
+    bool char_literals;         // 'c' is a char, not a string
+    bool lifetime;              // Rust 'a lifetime annotations
+    bool colon_atom;            // Ruby/Elixir :symbol
+};
+
+static LangFeatures features_for(LangId lang) {
+    switch (lang) {
+    case LangId::C:
+    case LangId::Cpp:          return {false, false, true,  false, false, true,  false, false};
+    case LangId::Python:       return {true,  false, false, true,  false, false, false, false};
+    case LangId::Rust:         return {false, false, false, false, false, false, true,  false};
+    case LangId::JavaScript:   return {false, true,  false, true,  false, false, false, false};
+    case LangId::TypeScript:   return {false, true,  false, true,  false, false, false, false};
+    case LangId::Go:           return {false, true,  false, false, false, true,  false, false};
+    case LangId::Java:         return {false, false, false, true,  false, true,  false, false};
+    case LangId::Kotlin:       return {false, false, false, true,  false, true,  false, false};
+    case LangId::Swift:        return {false, false, false, true,  false, false, false, false};
+    case LangId::Ruby:         return {false, false, false, false, false, false, false, true};
+    case LangId::Shell:
+    case LangId::Fish:
+    case LangId::Makefile:
+    case LangId::Dockerfile:   return {false, false, false, false, true,  false, false, false};
+    case LangId::PHP:          return {false, false, false, false, true,  true,  false, false};
+    case LangId::Perl:         return {false, false, false, false, true,  false, false, false};
+    case LangId::Elixir:       return {false, false, false, true,  false, false, false, true};
+    case LangId::Erlang:       return {false, false, false, false, false, true,  false, false};
+    default:                   return {false, false, false, false, false, false, false, false};
+    }
+}
+
+// ── Diff highlighter ─────────────────────────────────────────────────────────
+
+static Element highlight_diff(const std::string& code) {
     std::string out;
     out.reserve(code.size());
     std::vector<StyledRun> runs;
@@ -875,150 +1348,427 @@ static Element highlight_code(const std::string& code, const std::string& /*lang
     size_t i = 0;
     size_t n = code.size();
 
-    auto push_run = [&](size_t start, size_t byte_len, TokKind kind) {
-        if (byte_len == 0) return;
-        Color c = syntax::plain_color;
-        switch (kind) {
-            case TokKind::Keyword:  c = syntax::kw_color;      break;
-            case TokKind::String:   c = syntax::str_color;     break;
-            case TokKind::Comment:  c = syntax::comment_color; break;
-            case TokKind::Number:   c = syntax::num_color;     break;
-            case TokKind::Type:     c = syntax::type_color;    break;
-            case TokKind::Punct:    c = syntax::punct_color;   break;
-            case TokKind::Plain:    c = syntax::plain_color;   break;
+    while (i < n) {
+        size_t line_start = i;
+        // Find end of line
+        size_t eol = i;
+        while (eol < n && code[eol] != '\n') ++eol;
+        bool has_nl = (eol < n);
+        size_t line_end = has_nl ? eol + 1 : eol;
+
+        std::string_view line{code.data() + line_start, eol - line_start};
+        size_t out_start = out.size();
+        out.append(code, line_start, line_end - line_start);
+
+        Style sty = syntax::plain();
+        if (!line.empty()) {
+            if (line[0] == '+')                                    sty = syntax::diff_add();
+            else if (line[0] == '-')                               sty = syntax::diff_del();
+            else if (line.starts_with("@@"))                       sty = syntax::diff_hunk();
+            else if (line.starts_with("diff ") ||
+                     line.starts_with("index ") ||
+                     line.starts_with("--- ") ||
+                     line.starts_with("+++ "))                     sty = syntax::diff_meta();
         }
-        Style sty = Style{}.with_fg(c);
-        if (kind == TokKind::Comment) sty = sty.with_dim();
+        runs.push_back({out_start, line_end - line_start, sty});
+        i = line_end;
+    }
+
+    return Element{TextElement{
+        .content = std::move(out),
+        .style = syntax::plain(),
+        .runs = std::move(runs),
+    }};
+}
+
+// ── Main tokenizer ───────────────────────────────────────────────────────────
+
+static bool is_punct_char(char c) {
+    return c == '{' || c == '}' || c == '[' || c == ']' ||
+           c == '(' || c == ')' || c == '.' || c == ',' ||
+           c == ';' || c == ':' || c == '<' || c == '>' ||
+           c == '?' || c == '~' || c == '%' || c == '@' ||
+           c == '\\';
+}
+
+static bool is_op_char(char c) {
+    return c == '+' || c == '-' || c == '*' || c == '/' ||
+           c == '=' || c == '!' || c == '&' || c == '|' ||
+           c == '^';
+}
+
+static Element highlight_code(const std::string& code, const std::string& lang_tag) {
+    LangId lang = detect_lang(lang_tag);
+
+    // Special case: diff gets its own highlighter
+    if (lang == LangId::Diff) return highlight_diff(code);
+
+    auto cs = comment_style_for(lang);
+    auto feat = features_for(lang);
+
+    std::string out;
+    out.reserve(code.size());
+    std::vector<StyledRun> runs;
+
+    size_t i = 0;
+    size_t n = code.size();
+
+    auto emit = [&](size_t start, size_t byte_len, Style sty) {
+        if (byte_len == 0) return;
         runs.push_back({start, byte_len, sty});
     };
 
     while (i < n) {
         char ch = code[i];
 
-        // Newline — emit as plain (no run needed, just pass through)
+        // ── Newline ──────────────────────────────────────────────────
         if (ch == '\n') {
-            size_t start = out.size();
+            size_t s = out.size();
             out += '\n';
-            push_run(start, 1, TokKind::Plain);
+            emit(s, 1, syntax::plain());
             ++i;
             continue;
         }
 
-        // Line comment: // ... or # ...
-        if ((ch == '/' && i + 1 < n && code[i + 1] == '/') ||
-            ch == '#') {
-            size_t start = out.size();
+        // ── Whitespace ───────────────────────────────────────────────
+        if (ch == ' ' || ch == '\t') {
+            size_t s = out.size();
+            size_t j = i;
+            while (j < n && (code[j] == ' ' || code[j] == '\t')) ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::plain());
+            i = j;
+            continue;
+        }
+
+        // ── Preprocessor: #include, #define, etc. ────────────────────
+        if (feat.preprocessor && ch == '#') {
+            // Check if at start of line (or start of code)
+            bool at_line_start = (i == 0 || code[i - 1] == '\n');
+            if (at_line_start) {
+                size_t s = out.size();
+                size_t j = i;
+                while (j < n && code[j] != '\n') ++j;
+                out.append(code, i, j - i);
+                emit(s, j - i, syntax::preproc());
+                i = j;
+                continue;
+            }
+        }
+
+        // ── Line comment: // or # or -- ──────────────────────────────
+        if (cs.line && !std::string_view(cs.line).empty()) {
+            std::string_view lc{cs.line};
+            if (code.compare(i, lc.size(), lc) == 0) {
+                size_t s = out.size();
+                size_t j = i;
+                while (j < n && code[j] != '\n') ++j;
+                out.append(code, i, j - i);
+                emit(s, j - i, syntax::comment());
+                i = j;
+                continue;
+            }
+        }
+        if (cs.hash_comment && ch == '#') {
+            size_t s = out.size();
             size_t j = i;
             while (j < n && code[j] != '\n') ++j;
             out.append(code, i, j - i);
-            push_run(start, j - i, TokKind::Comment);
+            emit(s, j - i, syntax::comment());
             i = j;
             continue;
         }
 
-        // Block comment: /* ... */
-        if (ch == '/' && i + 1 < n && code[i + 1] == '*') {
-            size_t start = out.size();
-            size_t j = i + 2;
-            while (j + 1 < n && !(code[j] == '*' && code[j + 1] == '/')) ++j;
-            if (j + 1 < n) j += 2; // consume "*/"
-            out.append(code, i, j - i);
-            push_run(start, j - i, TokKind::Comment);
-            i = j;
-            continue;
+        // ── Block comment: /* ... */, <!-- ... -->, {- ... -} ────────
+        if (cs.block_open) {
+            std::string_view bo{cs.block_open};
+            std::string_view bc{cs.block_close};
+            if (code.compare(i, bo.size(), bo) == 0) {
+                size_t s = out.size();
+                size_t j = i + bo.size();
+                while (j + bc.size() <= n &&
+                       code.compare(j, bc.size(), bc) != 0)
+                    ++j;
+                if (j + bc.size() <= n) j += bc.size();
+                out.append(code, i, j - i);
+                emit(s, j - i, syntax::comment());
+                i = j;
+                continue;
+            }
         }
 
-        // String literal: "...", '...', `...`
-        if (ch == '"' || ch == '\'' || ch == '`') {
-            char quote = ch;
-            size_t start = out.size();
+        // ── Decorators/attributes: @decorator, #[attr] ──────────────
+        if (feat.decorators && ch == '@') {
+            size_t s = out.size();
             size_t j = i + 1;
-            while (j < n && code[j] != '\n') {
-                if (code[j] == '\\' && j + 1 < n) { j += 2; continue; }
-                if (code[j] == quote) { ++j; break; }
+            while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
+                              code[j] == '_' || code[j] == '.'))
+                ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::attr());
+            i = j;
+            continue;
+        }
+
+        // ── Rust lifetime: 'a, 'static ──────────────────────────────
+        if (feat.lifetime && ch == '\'' &&
+            i + 1 < n && std::isalpha(static_cast<unsigned char>(code[i + 1]))) {
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
+                              code[j] == '_'))
+                ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::type());
+            i = j;
+            continue;
+        }
+
+        // ── Shell variables: $VAR, ${VAR}, $(...) ────────────────────
+        if (feat.shell_vars && ch == '$' && i + 1 < n) {
+            size_t s = out.size();
+            size_t j = i + 1;
+            if (code[j] == '{') {
+                // ${VAR}
+                ++j;
+                while (j < n && code[j] != '}') ++j;
+                if (j < n) ++j;
+            } else if (code[j] == '(') {
+                // $(...) — just highlight the $( and )
+                out.append(code, i, 2);
+                emit(s, 2, syntax::shellvar());
+                i += 2;
+                continue;
+            } else if (std::isalpha(static_cast<unsigned char>(code[j])) ||
+                       code[j] == '_') {
+                while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
+                                  code[j] == '_'))
+                    ++j;
+            } else {
+                // $? $# $@ etc.
                 ++j;
             }
             out.append(code, i, j - i);
-            push_run(start, j - i, TokKind::String);
+            emit(s, j - i, syntax::shellvar());
             i = j;
             continue;
         }
 
-        // Number: 0x... or digits[.digits]
+        // ── Triple-quoted strings: """...""" / '''...''' ─────────────
+        if (feat.triple_quote_strings &&
+            (ch == '"' || ch == '\'') &&
+            i + 2 < n && code[i + 1] == ch && code[i + 2] == ch) {
+            char q = ch;
+            size_t s = out.size();
+            size_t j = i + 3;
+            while (j + 2 < n) {
+                if (code[j] == '\\') { j += 2; continue; }
+                if (code[j] == q && code[j + 1] == q && code[j + 2] == q) {
+                    j += 3;
+                    break;
+                }
+                ++j;
+            }
+            if (j + 2 >= n && !(j >= 3 && code[j-1] == q && code[j-2] == q && code[j-3] == q))
+                j = n;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::str());
+            i = j;
+            continue;
+        }
+
+        // ── Backtick template literals: `...${...}...` ──────────────
+        if (feat.backtick_strings && ch == '`') {
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && code[j] != '`') {
+                if (code[j] == '\\' && j + 1 < n) { j += 2; continue; }
+                ++j;
+            }
+            if (j < n) ++j; // consume closing `
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::str());
+            i = j;
+            continue;
+        }
+
+        // ── String literals: "..." ───────────────────────────────────
+        if (ch == '"') {
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && code[j] != '\n') {
+                if (code[j] == '\\' && j + 1 < n) { j += 2; continue; }
+                if (code[j] == '"') { ++j; break; }
+                ++j;
+            }
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::str());
+            i = j;
+            continue;
+        }
+
+        // ── Char literal or string: '...' ────────────────────────────
+        if (ch == '\'') {
+            if (feat.char_literals) {
+                // C-style char: 'x' or '\n' — short
+                size_t s = out.size();
+                size_t j = i + 1;
+                if (j < n && code[j] == '\\') j += 2;
+                else if (j < n) ++j;
+                if (j < n && code[j] == '\'') ++j;
+                out.append(code, i, j - i);
+                emit(s, j - i, syntax::str());
+                i = j;
+                continue;
+            }
+            // Treat as string in Ruby, Python (single-quoted), etc.
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && code[j] != '\n') {
+                if (code[j] == '\\' && j + 1 < n) { j += 2; continue; }
+                if (code[j] == '\'') { ++j; break; }
+                ++j;
+            }
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::str());
+            i = j;
+            continue;
+        }
+
+        // ── Ruby/Elixir atom: :symbol ────────────────────────────────
+        if (feat.colon_atom && ch == ':' &&
+            i + 1 < n && std::isalpha(static_cast<unsigned char>(code[i + 1]))) {
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
+                              code[j] == '_' || code[j] == '?' || code[j] == '!'))
+                ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::constant());
+            i = j;
+            continue;
+        }
+
+        // ── Number: 0x..., 0b..., 0o..., digits[.digits][e...] ──────
         if (std::isdigit(static_cast<unsigned char>(ch)) ||
-            (ch == '0' && i + 1 < n && (code[i + 1] == 'x' || code[i + 1] == 'X'))) {
-            size_t start = out.size();
+            (ch == '.' && i + 1 < n &&
+             std::isdigit(static_cast<unsigned char>(code[i + 1])))) {
+            size_t s = out.size();
             size_t j = i;
-            if (j + 1 < n && code[j] == '0' && (code[j + 1] == 'x' || code[j + 1] == 'X')) {
-                j += 2;
-                while (j < n && std::isxdigit(static_cast<unsigned char>(code[j]))) ++j;
+            if (ch == '0' && j + 1 < n) {
+                char next = code[j + 1];
+                if (next == 'x' || next == 'X') {
+                    j += 2;
+                    while (j < n && (std::isxdigit(static_cast<unsigned char>(code[j])) ||
+                                      code[j] == '_'))
+                        ++j;
+                } else if (next == 'b' || next == 'B') {
+                    j += 2;
+                    while (j < n && (code[j] == '0' || code[j] == '1' || code[j] == '_'))
+                        ++j;
+                } else if (next == 'o' || next == 'O') {
+                    j += 2;
+                    while (j < n && ((code[j] >= '0' && code[j] <= '7') || code[j] == '_'))
+                        ++j;
+                } else goto decimal;
             } else {
-                while (j < n && std::isdigit(static_cast<unsigned char>(code[j]))) ++j;
+            decimal:
+                while (j < n && (std::isdigit(static_cast<unsigned char>(code[j])) ||
+                                  code[j] == '_'))
+                    ++j;
                 if (j < n && code[j] == '.' && j + 1 < n &&
                     std::isdigit(static_cast<unsigned char>(code[j + 1]))) {
                     ++j;
+                    while (j < n && (std::isdigit(static_cast<unsigned char>(code[j])) ||
+                                      code[j] == '_'))
+                        ++j;
+                }
+                // Exponent
+                if (j < n && (code[j] == 'e' || code[j] == 'E')) {
+                    ++j;
+                    if (j < n && (code[j] == '+' || code[j] == '-')) ++j;
                     while (j < n && std::isdigit(static_cast<unsigned char>(code[j]))) ++j;
                 }
             }
+            // Number suffix: f, u, l, i32, etc.
+            while (j < n && (std::isalpha(static_cast<unsigned char>(code[j])) ||
+                              code[j] == '_'))
+                ++j;
             out.append(code, i, j - i);
-            push_run(start, j - i, TokKind::Number);
+            emit(s, j - i, syntax::num());
             i = j;
             continue;
         }
 
-        // Identifier or keyword or type
+        // ── Identifier / keyword / type / function ───────────────────
         if (std::isalpha(static_cast<unsigned char>(ch)) || ch == '_') {
             size_t j = i;
             while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
-                              code[j] == '_')) ++j;
-            std::string_view word{code.data() + i, j - i};
+                              code[j] == '_'))
+                ++j;
+            // Rust macros: name!
+            if (lang == LangId::Rust && j < n && code[j] == '!')
+                ++j;
 
-            // Check for function call: identifier immediately followed by '('
+            std::string_view word{code.data() + i, j - i};
             bool is_fn_call = (j < n && code[j] == '(');
 
-            size_t start = out.size();
+            size_t s = out.size();
             out.append(code, i, j - i);
 
-            TokKind kind = TokKind::Plain;
-            if (is_keyword(word)) {
-                kind = TokKind::Keyword;
-            } else if (is_fn_call) {
-                kind = TokKind::Type;  // use fn_color via type slot — reuse fn_color
-                // override: use fn_color directly
-                push_run(start, j - i, TokKind::Plain);
-                // replace last run with fn_color
-                runs.back().style = Style{}.with_fg(syntax::fn_color);
-                i = j;
-                continue;
-            } else if (!word.empty() && std::isupper(static_cast<unsigned char>(word[0]))) {
-                kind = TokKind::Type;
-            }
-            push_run(start, j - i, kind);
+            auto wc = classify_word(word, lang);
+            if (wc.constant)      emit(s, j - i, syntax::constant());
+            else if (wc.keyword)  emit(s, j - i, syntax::kw());
+            else if (wc.type)     emit(s, j - i, syntax::type());
+            else if (is_fn_call)  emit(s, j - i, syntax::fn());
+            else if (!word.empty() &&
+                     std::isupper(static_cast<unsigned char>(word[0])) &&
+                     word.size() > 1)
+                                  emit(s, j - i, syntax::type());
+            else                  emit(s, j - i, syntax::plain());
+
             i = j;
             continue;
         }
 
-        // Punctuation / operators
+        // ── Multi-char operators: =>, ->, ::, |>, <-, ==, != etc. ───
+        if (is_op_char(ch)) {
+            size_t s = out.size();
+            size_t j = i;
+            // Consume runs of operator chars (max 3 for things like >>=)
+            while (j < n && is_op_char(code[j]) && (j - i) < 3) ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::op());
+            i = j;
+            continue;
+        }
+
+        // ── Punctuation ──────────────────────────────────────────────
         if (is_punct_char(ch)) {
-            size_t start = out.size();
+            size_t s = out.size();
             out += ch;
-            push_run(start, 1, TokKind::Punct);
+            emit(s, 1, syntax::punct());
             ++i;
             continue;
         }
 
-        // Anything else — plain
+        // ── Anything else — plain ────────────────────────────────────
         {
-            size_t start = out.size();
-            out += ch;
-            push_run(start, 1, TokKind::Plain);
-            ++i;
+            size_t s = out.size();
+            // Consume UTF-8 continuation bytes together
+            size_t j = i + 1;
+            if (static_cast<unsigned char>(ch) >= 0x80) {
+                while (j < n && (static_cast<unsigned char>(code[j]) & 0xC0) == 0x80) ++j;
+            }
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::plain());
+            i = j;
         }
     }
 
     return Element{TextElement{
         .content = std::move(out),
-        .style = Style{}.with_fg(syntax::plain_color),
+        .style = syntax::plain(),
         .runs = std::move(runs),
     }};
 }

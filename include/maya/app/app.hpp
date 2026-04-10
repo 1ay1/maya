@@ -490,9 +490,14 @@ void run(RunConfig cfg = {}) {
 
     // ── Main event loop ──────────────────────────────────────────────────
     while (rt.is_running()) {
-        // Compute poll timeout: min of 100ms, fps frame time, nearest timer
-        auto poll_timeout = std::chrono::milliseconds(100);
-        if (cfg.fps > 0) {
+        // Compute poll timeout: min of 100ms, fps frame time, nearest timer.
+        // Zero on first frame so the UI appears immediately (Windows CMD
+        // has no initial event to wake the poll — without this the first
+        // render is delayed by the full timeout).
+        auto poll_timeout = needs_render
+            ? std::chrono::milliseconds(0)
+            : std::chrono::milliseconds(100);
+        if (!needs_render && cfg.fps > 0) {
             poll_timeout = std::chrono::milliseconds(1000 / std::max(1, cfg.fps));
         }
         if (!timers.empty()) {
@@ -509,9 +514,14 @@ void run(RunConfig cfg = {}) {
         auto poll_result = rt.poll(poll_timeout);
         if (!poll_result) break;
 
-        // Handle resize
+        // Handle resize — coalesce rapid events (e.g. window drag)
         if (poll_result->resize) {
             rt.handle_resize();
+            // Drain any further pending resizes before rendering
+            while (auto more = rt.poll(std::chrono::milliseconds(0))) {
+                if (!more->resize) break;
+                rt.handle_resize();
+            }
             auto sz = rt.size();
             ResizeEvent re{sz.width, sz.height};
             Event ev{re};
@@ -633,7 +643,7 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
     auto rt = std::move(*result);
     detail::quit_requested = false;
 
-    auto poll_timeout = cfg.fps > 0
+    const auto base_timeout = cfg.fps > 0
         ? std::chrono::milliseconds(1000 / std::max(1, cfg.fps))
         : std::chrono::milliseconds(100);
 
@@ -649,11 +659,21 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
     };
 
     while (rt.is_running()) {
+        // Zero timeout when a render is pending so the first frame appears
+        // immediately (critical on Windows CMD where no initial event wakes
+        // the poll).
+        auto poll_timeout = needs_render
+            ? std::chrono::milliseconds(0) : base_timeout;
         auto poll_result = rt.poll(poll_timeout);
         if (!poll_result) break;
 
         if (poll_result->resize) {
             rt.handle_resize();
+            // Coalesce rapid resizes (e.g. window drag) before rendering
+            while (auto more = rt.poll(std::chrono::milliseconds(0))) {
+                if (!more->resize) break;
+                rt.handle_resize();
+            }
             needs_render = true;
         }
 

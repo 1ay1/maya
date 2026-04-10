@@ -170,8 +170,10 @@ auto Runtime::render(const Element& root) -> Status {
         constexpr int kMaxCanvasHeight = 500;
         const int canvas_h = kMaxCanvasHeight;
 
-        if (canvas_.width() != w || canvas_.height() != canvas_h)
-            canvas_ = Canvas(w, canvas_h, &pool_);
+        if (canvas_.width() != w || canvas_.height() != canvas_h) {
+            canvas_.set_style_pool(&pool_);
+            canvas_.resize(w, canvas_h);
+        }
 
         if (needs_clear_) {
             if (inline_state_.prev_rows > 0) {
@@ -212,8 +214,10 @@ auto Runtime::render(const Element& root) -> Status {
         if (h <= 0) return ok();
 
         if (canvas_.width() != w || canvas_.height() != h) {
-            canvas_ = Canvas(w, h, &pool_);
-            front_  = Canvas(w, h, &pool_);
+            canvas_.set_style_pool(&pool_);
+            canvas_.resize(w, h);
+            front_.set_style_pool(&pool_);
+            front_.resize(w, h);
             front_.mark_all_damaged();
             needs_clear_ = true;
         }
@@ -226,9 +230,14 @@ auto Runtime::render(const Element& root) -> Status {
             .paint(root, layout_nodes_)
             .open_frame();
 
-        // Opened → (write_full | write_diff) → close_frame → Closed
+        // Opened → write_diff → close_frame → Closed
         if (needs_clear_) {
-            std::move(opened).write_full().close_frame();
+            // Home cursor and overwrite every row — no \x1b[2J which causes
+            // a visible flash even inside sync frames. serialize() appends
+            // \x1b[K per row to clear any stale trailing content.
+            out_ += "\x1b[H";
+            serialize(canvas_, pool_, out_);
+            std::move(opened).close_frame();
             needs_clear_ = false;
         } else {
             std::move(opened).write_diff(front_).close_frame();
@@ -399,14 +408,12 @@ Status canvas_run_impl(
 
     auto handle_resize = [&](int nw, int nh) {
         W = nw; H = nh;
-        pool.clear();
         on_resize(pool, W, H);
-        front = Canvas(W, H, &pool);
-        back  = Canvas(W, H, &pool);
+        front.resize(W, H);
+        back.resize(W, H);
         front.mark_all_damaged();
         pending_frame.reset();
         needs_clear = true;
-        out.reserve(static_cast<std::size_t>(W * H * 12));
     };
 
     while (running) {
@@ -425,12 +432,22 @@ Status canvas_run_impl(
 
         if (ready.resize) {
             resize_sig.drain();
-            Size new_sz;
-            if (alt_term)      new_sz = alt_term->size();
-            else if (raw_term) new_sz = raw_term->size();
-            int nw = std::max(1, new_sz.width.value);
-            int nh = std::max(1, new_sz.height.value);
-            if (nw != W || nh != H) handle_resize(nw, nh);
+            // Coalesce rapid resizes (e.g. window drag) — drain all pending
+            // resize events before rendering so we skip intermediate sizes.
+            auto coalesce = [&] {
+                Size new_sz;
+                if (alt_term)      new_sz = alt_term->size();
+                else if (raw_term) new_sz = raw_term->size();
+                int nw = std::max(1, new_sz.width.value);
+                int nh = std::max(1, new_sz.height.value);
+                if (nw != W || nh != H) handle_resize(nw, nh);
+            };
+            coalesce();
+            while (auto more = events.wait(std::chrono::milliseconds(0), false)) {
+                if (!more->resize) break;
+                resize_sig.drain();
+                coalesce();
+            }
         }
 
         if (pending_frame.has_value() && ready.writeable) {
@@ -476,7 +493,10 @@ Status canvas_run_impl(
             out.clear();
             out += ansi::sync_start;
             if (needs_clear) {
-                out += "\x1b[2J\x1b[H";
+                // Home cursor and overwrite every row — no \x1b[2J which
+                // causes a visible flash. serialize() appends \x1b[K per
+                // row to clear stale trailing content.
+                out += "\x1b[H";
                 serialize(back, pool, out);
                 needs_clear = false;
             } else {

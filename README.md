@@ -1,24 +1,30 @@
 <p align="center">
-  <img src="demo/maya_fps.gif" alt="3D FPS raycaster running in a terminal" width="700">
+  <img src="demo/maya_fps.gif" alt="3D FPS raycaster in a terminal" width="700">
 </p>
 
 <h1 align="center">maya</h1>
 
 <p align="center">
-  A C++26 terminal UI framework with a compile-time DSL, flexbox layout, SIMD-accelerated rendering, and 50+ widgets.
+  C++26 terminal UI framework.<br>
+  Compile-time DSL. Flexbox layout. SIMD rendering. 69 widgets. Cross-platform.
 </p>
 
 <p align="center">
-  <a href="#quickstart">Quickstart</a> · <a href="#examples">Examples</a> · <a href="#features">Features</a> · <a href="#headers">Headers</a> · <a href="#building">Building</a> · <a href="#using-maya-in-your-project">Using in your project</a>
+  <a href="#quickstart">Quickstart</a> · <a href="#examples">Examples</a> · <a href="#features">Features</a> · <a href="docs/">Docs</a> · <a href="#building">Building</a>
 </p>
 
 ---
 
+Build terminal apps that look good and run fast. Maya gives you a type-safe DSL that catches layout mistakes at compile time, a flexbox engine for real layout, and a rendering pipeline that diffs frames with SIMD so only changed cells hit the terminal.
+
+Ships with 69 widgets — from inputs and tables to markdown renderers, tool call cards, and everything you need to build an AI agent interface. Runs on Linux, macOS, and Windows.
+
 ## Quickstart
+
+Static UI:
 
 ```cpp
 #include <maya/maya.hpp>
-
 using namespace maya::dsl;
 
 int main() {
@@ -29,14 +35,11 @@ int main() {
             t<"Online"> | Bold | Fg<80, 220, 120>
         ) | border_<Round> | bcol<50, 55, 70> | pad<1>
     );
-
     maya::print(ui.build());
 }
 ```
 
-Structure, text, styles, and layout — all resolved at compile time. Pipe operators chain naturally. Type-state machines enforce correctness: you can't set a border color without a border, can't apply layout modifiers to text nodes.
-
-A reactive counter in 12 lines:
+Interactive counter:
 
 ```cpp
 #include <maya/maya.hpp>
@@ -45,7 +48,6 @@ using namespace maya::dsl;
 
 int main() {
     Signal<int> count{0};
-
     run(
         {.title = "counter"},
         [&](const Event& ev) {
@@ -63,7 +65,7 @@ int main() {
 }
 ```
 
-For complex apps, use the **Program** architecture — pure functions, effects as data:
+Elm architecture for complex apps:
 
 ```cpp
 struct Counter {
@@ -74,9 +76,9 @@ struct Counter {
     static Model init() { return {}; }
     static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
         return std::visit(overload{
-            [&](Inc)  { return std::pair{Model{m.count + 1}, Cmd<Msg>{}}; },
-            [&](Dec)  { return std::pair{Model{m.count - 1}, Cmd<Msg>{}}; },
-            [](Quit)  { return std::pair{Model{}, Cmd<Msg>::quit()}; },
+            [&](Inc) { return std::pair{Model{m.count + 1}, Cmd<Msg>{}}; },
+            [&](Dec) { return std::pair{Model{m.count - 1}, Cmd<Msg>{}}; },
+            [](Quit) { return std::pair{Model{}, Cmd<Msg>::quit()}; },
         }, msg);
     }
     static Element view(const Model& m) {
@@ -89,15 +91,15 @@ struct Counter {
 int main() { run<Counter>({.title = "counter"}); }
 ```
 
-Two APIs, same runtime. Use `run(event_fn, render_fn)` for quick tools, `run<P>()` when you want testable pure logic and algebraic effects.
+Two APIs, same runtime. `run(event_fn, render_fn)` for quick tools. `run<P>()` when you want testable pure logic and algebraic effects.
 
 ## Examples
 
-21 examples ship with the framework. Here are a few:
+26 examples ship with the framework:
 
 <table>
 <tr>
-<td align="center"><b>Cyberpunk Dashboard</b><br><sub>Oscilloscope · Radar · Hex waterfall · Spirograph</sub></td>
+<td align="center"><b>Dashboard</b><br><sub>Oscilloscope · Radar · Hex waterfall · Spirograph</sub></td>
 <td align="center"><b>Stock Ticker</b><br><sub>Live charts · Sparklines · Portfolio tracking</sub></td>
 </tr>
 <tr>
@@ -114,104 +116,92 @@ Two APIs, same runtime. Use `run(event_fn, render_fn)` for quick tools, `run<P>(
 </tr>
 </table>
 
-**Also included:** matrix rain, mandelbrot zoom, fluid simulation, game of life, breakout, snake, particle systems, raymarcher, sorting visualizations, spectrum analyzer, space shooter, music player, system monitor, and more.
+Also: FPS raycaster, raymarcher, fluid simulation, mandelbrot zoom, matrix rain, particle systems, sorting visualizations, spectrum analyzer, breakout, snake, space shooter, music player, system monitor, AI agent simulation, and more. All under [`examples/`](examples/).
 
 ## Features
 
-**DSL & Layout**
-- Compile-time UI tree construction with `|` pipe operators
-- Type-state safety — invalid compositions are compile errors
-- Flexbox layout powered by Yoga
-- Runtime text via `text()`, compile-time text via `t<"...">`
+### DSL
 
-**Rendering**
+- Compile-time UI trees with `|` pipe operators
+- Type-state safety — can't set border color without a border, can't apply layout to text
+- `t<"...">` for compile-time text, `text()` for runtime
+- Composes naturally: `v()`, `h()`, `text()`, `border_<>`, `pad<>`, `Fg<>`, `Bold`
+
+### Layout
+
+- Flexbox via Yoga — `grow()`, `gap()`, `width()`, `height()`, `align()`, `justify()`
+- Fullscreen and inline rendering modes (alternate screen or native scrollback)
+
+### Rendering
+
 - Double-buffered with dirty-region tracking
-- SIMD-accelerated diff (AVX2/SSE4.2/NEON) — only changed cells hit the terminal
+- SIMD-accelerated frame diff (AVX2 / SSE4.2 / NEON) — only changed cells write to terminal
 - 64-bit packed cells for O(1) comparison
 - Cache-line aligned buffers, style interning via open-addressing hash map
 
-**Widgets** (50+)
-Line chart · Bar chart · Gauge · Sparkline · Heatmap · Progress bar · Table · Tabs · Tree view · Scrollable · Input · Textarea · Select · Slider · Checkbox · Radio · Button · Modal · Popup · Toast · Markdown · Diff view · Calendar · Breadcrumb · Spinner · Badge · Menu · Command palette · Log viewer · Canvas · Gradient · Image · and more
+### Widgets (69)
 
-**Architecture**
-- Elm-style Program concept: Model + Msg + init/update/view/subscribe
+**Data:** Line chart · Bar chart · Gauge · Sparkline · Heatmap · Flame chart · Waterfall · Token stream · Context window · Git graph
+
+**Input:** Text input · Textarea · Select · Slider · Checkbox · Radio · Button · Menu · Command palette
+
+**Layout:** Table · Tabs · Tree · Scrollable · Modal · Popup · Toast · Disclosure · Divider · Breadcrumb
+
+**Display:** Markdown · Inline diff · Diff view · Badge · Spinner · Progress bar · Calendar · Canvas · Image · Log viewer
+
+**Agent UI:** Tool call · Bash tool · Read tool · Edit tool · Write tool · Fetch tool · Message · Thinking block · Streaming cursor · Activity bar · Permission prompt · Model badge · Cost tracker · Git status · File changes · System banner · Error block · Turn divider · Conversation view · Plan view · API usage
+
+### Architecture
+
+- Elm-style `Program` concept: `Model` + `Msg` + `init` / `update` / `view` / `subscribe`
 - Effects as data: `Cmd<Msg>` (quit, batch, after, task) and `Sub<Msg>` (keys, mouse, timers)
-- Type-state render pipeline (Idle→Cleared→Painted→Opened→Closed)
-- Signal/slot reactivity system (SolidJS-inspired)
-- Fullscreen and inline rendering modes
+- Type-state render pipeline (Idle → Cleared → Painted → Opened → Closed)
+- Signal/slot reactivity (SolidJS-inspired)
 - Keyboard, mouse, resize, focus/blur, paste events
 
 ## Headers
 
-maya has a clean separation between its public API and internal implementation.
-
-### Public API — `<maya/maya.hpp>`
-
-The main header. Includes the DSL, app lifecycle, events, signals, styles, and element types. Does **not** include rendering internals.
-
 ```cpp
-#include <maya/maya.hpp>
+#include <maya/maya.hpp>           // DSL, run<P>(), events, signals, styles — the public API
+#include <maya/widget/input.hpp>   // widgets are included individually
+#include <maya/internal.hpp>       // canvas, diff engine, SIMD, terminal I/O (unstable)
 ```
-
-### Widgets — `<maya/widget/*.hpp>`
-
-Widgets are included individually, not bundled into `maya.hpp`. Include only what you use:
-
-```cpp
-#include <maya/widget/markdown.hpp>
-#include <maya/widget/input.hpp>
-#include <maya/widget/scrollable.hpp>
-#include <maya/widget/tool_call.hpp>
-// ... see include/maya/widget/ for the full list
-```
-
-### Internal — `<maya/internal.hpp>`
-
-For advanced use cases that need direct access to the canvas, diff engine, SIMD, terminal I/O, or layout engine. Most projects should never include this.
-
-```cpp
-#include <maya/internal.hpp>  // canvas_run(), Canvas, StylePool, etc.
-```
-
-### What's in each layer
 
 | Header | Contains | Stability |
 |--------|----------|-----------|
-| `maya.hpp` | DSL, `run<P>()`, Program concept, Cmd, Sub, events, signals, styles, elements, themes | Stable — safe to depend on |
-| `widget/*.hpp` | 50+ widgets (Input, Markdown, ToolCall, ...) | Stable — include what you need |
-| `internal.hpp` | Canvas, diff, renderer, SIMD, terminal I/O, layout | Internal — may change across versions |
+| `maya.hpp` | DSL, Program, Cmd, Sub, events, signals, styles, elements, themes | Stable |
+| `widget/*.hpp` | 69 widgets | Stable |
+| `internal.hpp` | Canvas, diff, renderer, SIMD, terminal I/O, layout | Internal |
 
 ## Building
 
-Requires a C++26 compiler. **GCC 15+** is recommended across all platforms.
+Requires C++26. GCC 15+ recommended on all platforms.
 
-### macOS (ARM / Intel)
-
-AppleClang does not support C++26. Use Homebrew GCC:
+### Linux
 
 ```bash
-brew install gcc@15 cmake
-cmake -B build -DCMAKE_CXX_COMPILER=g++-15
-cmake --build build -j$(sysctl -n hw.ncpu)
-```
+# Arch
+sudo pacman -S gcc cmake
+cmake -B build && cmake --build build -j$(nproc)
 
-### Linux (x86_64 / ARM64)
-
-```bash
 # Ubuntu/Debian
 sudo apt install g++-15 cmake
 cmake -B build -DCMAKE_CXX_COMPILER=g++-15
 cmake --build build -j$(nproc)
 
-# Arch
-sudo pacman -S gcc cmake
-cmake -B build
-cmake --build build -j$(nproc)
-
 # Fedora
 sudo dnf install gcc-c++ cmake
-cmake -B build
-cmake --build build -j$(nproc)
+cmake -B build && cmake --build build -j$(nproc)
+```
+
+### macOS
+
+AppleClang doesn't support C++26. Use Homebrew GCC:
+
+```bash
+brew install gcc@15 cmake
+cmake -B build -DCMAKE_CXX_COMPILER=g++-15
+cmake --build build -j$(sysctl -n hw.ncpu)
 ```
 
 ### Windows
@@ -223,47 +213,37 @@ cmake -B build -G "MinGW Makefiles"
 cmake --build build -j%NUMBER_OF_PROCESSORS%
 ```
 
-**Visual Studio 2025+ (MSVC):**
+**Visual Studio 2025+:**
 ```bash
 cmake -B build -G "Visual Studio 17 2025"
 cmake --build build --config Release
 ```
 
-**WSL2:** Follow the Linux instructions above.
+**WSL2:** Follow the Linux instructions.
 
 ### Tests
 
 ```bash
-cmake -B build -DCMAKE_CXX_COMPILER=g++-15 -DMAYA_BUILD_TESTS=ON
+cmake -B build -DMAYA_BUILD_TESTS=ON
 cmake --build build
 ctest --test-dir build
 ```
 
 ## Using maya in your project
 
-Install maya, then use `find_package` in your CMakeLists.txt:
-
 ```bash
-# Install to /usr/local (or any prefix)
 cmake --install build --prefix /usr/local
 ```
 
 ```cmake
-# Your project's CMakeLists.txt
 find_package(maya 0.1 REQUIRED)
 target_link_libraries(my_app PRIVATE maya::maya)
 ```
 
 ```cpp
-// Your code
 #include <maya/maya.hpp>
 #include <maya/widget/markdown.hpp>
-#include <maya/widget/input.hpp>
-
-using namespace maya::dsl;
 ```
-
-Maya uses [SameMajorVersion](https://cmake.org/cmake/help/latest/module/CMakePackageConfigHelpers.html) compatibility — any 0.x release works with `find_package(maya 0.1)`.
 
 ## License
 

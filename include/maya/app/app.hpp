@@ -31,18 +31,26 @@
 // bottom of this file — it is a low-level escape hatch, not the primary API.
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <concepts>
 #include <cstdio>
 #include <format>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include <unistd.h>
+#ifdef __linux__
+#include <sys/eventfd.h>
+#endif
 
 #include "../core/cmd.hpp"
 #include "../core/concepts.hpp"
@@ -228,7 +236,7 @@ public:
     [[nodiscard]] bool is_inline() const noexcept { return raw_terminal_.has_value(); }
 
     // Poll the event source for ready flags.
-    struct PollResult { bool resize = false; bool input = false; };
+    struct PollResult { bool resize = false; bool input = false; bool wake = false; };
     auto poll(std::chrono::milliseconds timeout) -> Result<PollResult>;
 
     // Handle a resize signal: drain, update size, mark needs_clear.
@@ -256,7 +264,7 @@ public:
     Runtime& operator=(Runtime&&) noexcept;
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
-    ~Runtime() = default;
+    ~Runtime();
 
 private:
     Runtime() = default;
@@ -286,6 +294,35 @@ private:
     RenderContext render_ctx_;
     uint32_t      resize_generation_  = 0;
 
+    // -- Wake signaling (background task → UI thread) -------------------------
+    // Linux: eventfd (single fd, atomic counter, no drain loop needed)
+    // Other POSIX: self-pipe pair
+    int wake_read_fd_  = -1;
+    int wake_write_fd_ = -1;  // same as read_fd on eventfd
+
+public:
+    /// fd that background threads write to — wake the poll loop.
+    [[nodiscard]] int wake_write_fd() const noexcept { return wake_write_fd_; }
+
+    /// Whether the runtime uses eventfd (true) or pipe (false).
+    [[nodiscard]] bool uses_eventfd() const noexcept { return wake_read_fd_ == wake_write_fd_; }
+
+    /// Drain the wake signal (call after poll returns wake=true).
+    void drain_wake() noexcept {
+        if (wake_read_fd_ < 0) return;
+#ifdef __linux__
+        if (uses_eventfd()) {
+            uint64_t val;
+            (void)::read(wake_read_fd_, &val, sizeof(val));
+            return;
+        }
+#endif
+        // Pipe: drain all pending bytes in one shot
+        char buf[4096];
+        while (::read(wake_read_fd_, buf, sizeof(buf)) > 0) {}
+    }
+
+private:
     // -- State ----------------------------------------------------------------
     InputParser  parser_;
     bool         running_      = true;
@@ -301,6 +338,68 @@ private:
 
 namespace detail {
 
+// Thread-safe message queue for background tasks → UI thread.
+// Designed for high throughput: atomic wake coalescing, minimal lock scope,
+// swap-based drain to avoid holding the lock during message processing.
+template <typename Msg>
+struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
+    std::mutex              mutex_;
+    std::vector<Msg>        messages_;
+    int                     wake_fd_ = -1;       // write end (eventfd or pipe)
+    bool                    is_eventfd_ = false;  // eventfd uses uint64_t write
+    std::atomic<bool>       wake_pending_{false}; // coalesce wake writes
+    std::vector<std::thread> tasks_;
+
+    BackgroundQueue() = default;
+    BackgroundQueue(const BackgroundQueue&) = delete;
+    BackgroundQueue& operator=(const BackgroundQueue&) = delete;
+
+    void send(Msg m) {
+        {
+            std::lock_guard lk(mutex_);
+            messages_.push_back(std::move(m));
+        }
+        // Coalesce: only one write() per drain cycle.
+        // The UI thread resets wake_pending_ after drain_wake().
+        if (!wake_pending_.exchange(true, std::memory_order_acq_rel)) {
+            signal_wake();
+        }
+    }
+
+    // Drain all queued messages. Returns by value (swap is O(1)).
+    auto drain() -> std::vector<Msg> {
+        std::lock_guard lk(mutex_);
+        std::vector<Msg> out;
+        out.swap(messages_);
+        return out;
+    }
+
+    // Reset the coalesce flag so the next send() will write again.
+    void reset_wake() noexcept {
+        wake_pending_.store(false, std::memory_order_release);
+    }
+
+    ~BackgroundQueue() {
+        for (auto& t : tasks_) {
+            if (t.joinable()) t.join();
+        }
+    }
+
+private:
+    void signal_wake() noexcept {
+        if (wake_fd_ < 0) return;
+#ifdef __linux__
+        if (is_eventfd_) {
+            uint64_t val = 1;
+            (void)::write(wake_fd_, &val, sizeof(val));
+            return;
+        }
+#endif
+        char byte = 1;
+        (void)::write(wake_fd_, &byte, 1);
+    }
+};
+
 template <typename Msg>
 struct CmdContext {
     Runtime&          rt;
@@ -311,6 +410,7 @@ struct CmdContext {
         Msg                                    msg;
     };
     std::vector<TimerEntry>& timers;
+    std::shared_ptr<BackgroundQueue<Msg>> bg_queue;
 };
 
 template <typename Msg>
@@ -334,7 +434,17 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
             (void)w; // TODO: implement OSC 52 clipboard write
         },
         [&](const typename Cmd<Msg>::Task& t) {
-            t.run([&](Msg m) { ctx.pending.push_back(std::move(m)); });
+            if (ctx.bg_queue) {
+                // shared_ptr keeps the queue alive even if run<P>() exits early
+                auto q = ctx.bg_queue;
+                auto task_fn = t.run;
+                q->tasks_.emplace_back([q, task_fn = std::move(task_fn)] {
+                    task_fn([q](Msg m) { q->send(std::move(m)); });
+                });
+            } else {
+                // Fallback: synchronous (for simple run() without bg support)
+                t.run([&](Msg m) { ctx.pending.push_back(std::move(m)); });
+            }
         },
     }, cmd.inner);
 }
@@ -440,10 +550,17 @@ void run(RunConfig cfg = {}) {
     }
     auto rt = std::move(*result);
 
+    // Background task queue — tasks spawned by Cmd::task run on worker threads
+    // and deliver messages here; a wake fd signals the poll loop.
+    // shared_ptr ensures the queue outlives any background thread that holds it.
+    auto bg_queue = std::make_shared<detail::BackgroundQueue<Msg>>();
+    bg_queue->wake_fd_ = rt.wake_write_fd();
+    bg_queue->is_eventfd_ = rt.uses_eventfd();
+
     // Interpreter bookkeeping (not part of Model — these are runtime state)
     std::vector<Msg> pending_msgs;
     std::vector<typename detail::CmdContext<Msg>::TimerEntry> timers;
-    detail::CmdContext<Msg> ctx{rt, pending_msgs, timers};
+    detail::CmdContext<Msg> ctx{rt, pending_msgs, timers, bg_queue};
 
     // Helper: drain all pending messages through update()
     auto drain_pending = [&] {
@@ -535,6 +652,14 @@ void run(RunConfig cfg = {}) {
             for (auto& ev : *events) {
                 detail::dispatch_through_sub(current_sub, ev, pending_msgs);
             }
+        }
+
+        // Drain background task messages
+        if (poll_result->wake) {
+            rt.drain_wake();
+            bg_queue->reset_wake();  // allow next send() to signal again
+            for (auto& m : bg_queue->drain())
+                pending_msgs.push_back(std::move(m));
         }
 
         // Flush parser timeouts (e.g., bare Escape)

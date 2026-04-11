@@ -31,7 +31,9 @@ class MacEventSource {
     int kq_ = -1;
     NativeHandle terminal_fd_;
     NativeHandle stdout_fd_ = -1;
+    NativeHandle wake_fd_ = -1;
     bool write_registered_ = false;
+    bool wake_registered_ = false;
 
     MacEventSource() = default;
 
@@ -61,6 +63,16 @@ public:
         ::signal(SIGWINCH, SIG_IGN);
 
         ::kevent(kq_, changes, nchanges, nullptr, 0, nullptr);
+    }
+
+    void set_wake_fd(NativeHandle fd) noexcept {
+        wake_fd_ = fd;
+        if (kq_ >= 0 && fd >= 0 && !wake_registered_) {
+            struct kevent ev;
+            EV_SET(&ev, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, nullptr);
+            ::kevent(kq_, &ev, 1, nullptr, 0, nullptr);
+            wake_registered_ = true;
+        }
     }
 
     [[nodiscard]] auto wait(
@@ -112,6 +124,11 @@ public:
                 static_cast<int>(events[i].ident) == stdout_fd_) {
                 flags.writeable = true;
             }
+            if (events[i].filter == EVFILT_READ &&
+                wake_fd_ >= 0 &&
+                static_cast<int>(events[i].ident) == wake_fd_) {
+                flags.wake = true;
+            }
         }
         // If not watching writes, always report writeable (blocking I/O).
         if (!want_write) flags.writeable = true;
@@ -124,7 +141,9 @@ public:
         : kq_(std::exchange(o.kq_, -1))
         , terminal_fd_(std::exchange(o.terminal_fd_, -1))
         , stdout_fd_(std::exchange(o.stdout_fd_, -1))
+        , wake_fd_(std::exchange(o.wake_fd_, -1))
         , write_registered_(std::exchange(o.write_registered_, false))
+        , wake_registered_(std::exchange(o.wake_registered_, false))
     {}
 
     MacEventSource& operator=(MacEventSource&& o) noexcept {
@@ -133,7 +152,9 @@ public:
             kq_               = std::exchange(o.kq_, -1);
             terminal_fd_      = std::exchange(o.terminal_fd_, -1);
             stdout_fd_        = std::exchange(o.stdout_fd_, -1);
+            wake_fd_          = std::exchange(o.wake_fd_, -1);
             write_registered_ = std::exchange(o.write_registered_, false);
+            wake_registered_  = std::exchange(o.wake_registered_, false);
         }
         return *this;
     }

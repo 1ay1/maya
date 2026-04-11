@@ -26,16 +26,19 @@ namespace maya::platform::posix {
 class PosixEventSource {
     NativeHandle terminal_fd_;
     NativeHandle signal_fd_;
+    NativeHandle wake_fd_ = -1;
 
 public:
     PosixEventSource(NativeHandle term_fd, NativeHandle sig_fd) noexcept
         : terminal_fd_(term_fd), signal_fd_(sig_fd) {}
 
+    void set_wake_fd(NativeHandle fd) noexcept { wake_fd_ = fd; }
+
     [[nodiscard]] auto wait(
         std::chrono::milliseconds timeout,
         bool want_write = false) -> Result<ReadyFlags>
     {
-        struct pollfd pfds[3];
+        struct pollfd pfds[4];
         int nfds = 0;
 
         // [0] stdin — read readiness
@@ -53,7 +56,16 @@ public:
             sig_idx = nfds++;
         }
 
-        // [2] stdout — write readiness (only when caller has pending data)
+        // [2] wake pipe — background task messages
+        int wake_idx = -1;
+        if (wake_fd_ >= 0) {
+            pfds[nfds].fd      = wake_fd_;
+            pfds[nfds].events  = POLLIN;
+            pfds[nfds].revents = 0;
+            wake_idx = nfds++;
+        }
+
+        // [3] stdout — write readiness (only when caller has pending data)
         int write_idx = -1;
         if (want_write) {
             pfds[nfds].fd      = STDOUT_FILENO;
@@ -73,6 +85,7 @@ public:
         ReadyFlags flags{};
         flags.input     = (pfds[stdin_idx].revents & POLLIN) != 0;
         flags.resize    = sig_idx >= 0 && (pfds[sig_idx].revents & POLLIN) != 0;
+        flags.wake      = wake_idx >= 0 && (pfds[wake_idx].revents & POLLIN) != 0;
         flags.writeable = want_write
             ? (pfds[write_idx].revents & POLLOUT) != 0
             : true;  // not watching — assume writeable (blocking I/O)

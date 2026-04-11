@@ -28,6 +28,7 @@ struct ReadyFlags {
     bool input     : 1 = false;   // stdin has data
     bool resize    : 1 = false;   // terminal was resized
     bool writeable : 1 = false;   // stdout can accept more data
+    bool wake      : 1 = false;   // background task posted a message
 };
 
 // ============================================================================

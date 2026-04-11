@@ -7,6 +7,12 @@
 #include "maya/core/scope_exit.hpp"
 #include "maya/platform/select.hpp"
 
+#include <fcntl.h>
+#include <unistd.h>
+#ifdef __linux__
+#include <sys/eventfd.h>
+#endif
+
 #if MAYA_PLATFORM_MACOS
 #include <pthread.h>
 #endif
@@ -47,6 +53,34 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     platform::NativeEventSource event_source(input_h, sig_handle);
 
     Runtime rt;
+
+    // Create wake mechanism for background task → UI thread signaling.
+    // Linux: eventfd (single fd, atomic counter, zero-copy, no drain loop)
+    // Other POSIX: self-pipe with non-blocking ends
+#ifdef __linux__
+    int efd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (efd >= 0) {
+        rt.wake_read_fd_ = efd;
+        rt.wake_write_fd_ = efd;  // eventfd: same fd for read and write
+        event_source.set_wake_fd(efd);
+    }
+#else
+    {
+        int pipefd[2];
+        if (::pipe(pipefd) == 0) {
+            ::fcntl(pipefd[0], F_SETFL,
+                    ::fcntl(pipefd[0], F_GETFL) | O_NONBLOCK);
+            ::fcntl(pipefd[1], F_SETFL,
+                    ::fcntl(pipefd[1], F_GETFL) | O_NONBLOCK);
+            ::fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+            ::fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
+            rt.wake_read_fd_ = pipefd[0];
+            rt.wake_write_fd_ = pipefd[1];
+            event_source.set_wake_fd(pipefd[0]);
+        }
+    }
+#endif
+
     rt.alt_terminal_   = std::move(alt_term);
     rt.raw_terminal_   = std::move(raw_term);
     rt.output_handle_  = output_h;
@@ -87,7 +121,7 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
 
 auto Runtime::poll(std::chrono::milliseconds timeout) -> Result<PollResult> {
     MAYA_TRY_DECL(auto ready, event_source_->wait(timeout));
-    return ok(PollResult{.resize = ready.resize, .input = ready.input});
+    return ok(PollResult{.resize = ready.resize, .input = ready.input, .wake = ready.wake});
 }
 
 // ============================================================================
@@ -278,6 +312,13 @@ auto Runtime::cleanup() -> Status {
 // Runtime move constructor
 // ============================================================================
 
+Runtime::~Runtime() {
+    if (wake_read_fd_ >= 0) ::close(wake_read_fd_);
+    // For pipe: close write end too (different fd). For eventfd: same fd, don't double-close.
+    if (wake_write_fd_ >= 0 && wake_write_fd_ != wake_read_fd_)
+        ::close(wake_write_fd_);
+}
+
 Runtime::Runtime(Runtime&& o) noexcept
     : alt_terminal_(std::move(o.alt_terminal_))
     , raw_terminal_(std::move(o.raw_terminal_))
@@ -299,10 +340,18 @@ Runtime::Runtime(Runtime&& o) noexcept
     , parser_(std::move(o.parser_))
     , running_(o.running_)
     , needs_clear_(o.needs_clear_)
-{}
+{
+    wake_read_fd_  = std::exchange(o.wake_read_fd_, -1);
+    wake_write_fd_ = std::exchange(o.wake_write_fd_, -1);
+}
 
 Runtime& Runtime::operator=(Runtime&& o) noexcept {
     if (this != &o) {
+        // Close our wake fds before overwriting
+        if (wake_read_fd_ >= 0) ::close(wake_read_fd_);
+        if (wake_write_fd_ >= 0 && wake_write_fd_ != wake_read_fd_)
+            ::close(wake_write_fd_);
+
         alt_terminal_      = std::move(o.alt_terminal_);
         raw_terminal_      = std::move(o.raw_terminal_);
         output_handle_     = std::exchange(o.output_handle_, platform::invalid_handle);
@@ -323,6 +372,8 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         parser_            = std::move(o.parser_);
         running_           = o.running_;
         needs_clear_       = o.needs_clear_;
+        wake_read_fd_      = std::exchange(o.wake_read_fd_, -1);
+        wake_write_fd_     = std::exchange(o.wake_write_fd_, -1);
     }
     return *this;
 }

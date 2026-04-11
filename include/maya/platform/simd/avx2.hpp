@@ -81,17 +81,44 @@ struct Ops<Avx2> {
         std::size_t count,
         uint64_t value) noexcept
     {
-        static constexpr std::size_t kNtThreshold = 16384;
-        if (count < kNtThreshold) {
+        // Below 32 cells: scalar fill keeps data in L1 (hot for subsequent diff).
+        if (count < 32) {
             for (std::size_t i = 0; i < count; ++i) dst[i] = value;
             return;
         }
 
-        std::size_t i = 0;
         __m256i val = _mm256_set1_epi64x(static_cast<long long>(value));
+
+        // 32..2047 cells: AVX2 temporal stores — data stays in cache for
+        // the upcoming diff pass. Unroll 4x (16 cells/iteration) to saturate
+        // the store buffer on Alder Lake.
+        static constexpr std::size_t kNtThreshold = 2048;
+        if (count < kNtThreshold) {
+            std::size_t i = 0;
+            for (; i + 16 <= count; i += 16) {
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i),      val);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i + 4),  val);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i + 8),  val);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i + 12), val);
+            }
+            for (; i + 4 <= count; i += 4)
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i), val);
+            for (; i < count; ++i) dst[i] = value;
+            return;
+        }
+
+        // 2048+ cells: non-temporal stores — bypass cache entirely (full
+        // screen clears, large background fills). The diff pass will pull
+        // this data from DRAM on demand.
+        std::size_t i = 0;
+        for (; i + 16 <= count; i += 16) {
+            _mm256_stream_si256(reinterpret_cast<__m256i*>(dst + i),      val);
+            _mm256_stream_si256(reinterpret_cast<__m256i*>(dst + i + 4),  val);
+            _mm256_stream_si256(reinterpret_cast<__m256i*>(dst + i + 8),  val);
+            _mm256_stream_si256(reinterpret_cast<__m256i*>(dst + i + 12), val);
+        }
         for (; i + 4 <= count; i += 4)
             _mm256_stream_si256(reinterpret_cast<__m256i*>(dst + i), val);
-
         for (; i < count; ++i) dst[i] = value;
         _mm_sfence();
     }

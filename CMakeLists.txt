@@ -12,6 +12,49 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
         Debug Release RelWithDebInfo MinSizeRel)
 endif()
 
+# ── Linux-specific aggressive optimization ────────────────────────────────
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # LTO across all translation units — lets GCC inline across .cpp boundaries,
+    # devirtualize, and eliminate dead code globally.
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+
+    # Shared flags for library and examples
+    set(MAYA_LINUX_CXX_FLAGS
+        -O3
+        -march=native                # AVX2/BMI2/FMA on the host CPU
+        -mtune=native                # schedule for host microarchitecture
+        -funroll-loops               # unroll small loops
+        -ftree-vectorize             # auto-vectorize where SIMD fits
+        -fprefetch-loop-arrays       # insert prefetch for sequential access
+        -fomit-frame-pointer         # free up RBP as GPR
+        -fno-plt                     # direct calls through GOT, skip PLT indirection
+        -fno-semantic-interposition  # assume symbols won't be interposed at runtime
+        -fvisibility=hidden          # hide all symbols by default, reduce PLT/GOT
+        -fvisibility-inlines-hidden  # hide inline function bodies
+        -ffunction-sections          # each function in its own section for --gc-sections
+        -fdata-sections              # each global in its own section
+        -fmerge-all-constants        # merge identical constants across TUs
+        -fdevirtualize-speculatively # speculative devirt for indirect calls
+        -fipa-pta                    # interprocedural pointer analysis
+        -fgraphite-identity          # enable Graphite loop optimizations
+        -floop-nest-optimize         # Graphite polyhedral loop nest optimization
+        -ftree-loop-distribution     # distribute loops for better vectorization
+        -fno-math-errno              # don't set errno on math functions
+        -fno-trapping-math           # assume no FP traps
+        -fno-stack-protector         # no stack canaries — TUI app, not a network daemon
+    )
+
+    set(MAYA_LINUX_LINK_FLAGS
+        -Wl,--gc-sections            # discard unreferenced sections
+        -Wl,--as-needed              # only link actually-used libraries
+        -Wl,-O2                      # linker optimization level
+        -Wl,--hash-style=gnu         # faster symbol lookup
+        -Wl,--sort-common            # sort common symbols by alignment
+        -Wl,-z,now                   # resolve all symbols at load time (RELRO)
+        -Wl,-z,relro                 # read-only relocations
+    )
+endif()
+
 add_library(maya
     src/app/app.cpp
     src/app/events.cpp
@@ -33,14 +76,19 @@ target_include_directories(maya PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 target_compile_features(maya PUBLIC cxx_std_26)
-target_compile_options(maya PRIVATE
-    $<$<CXX_COMPILER_ID:GNU,Clang>:
-        -O3
-        -march=native
-        -funroll-loops
-    >
-    $<$<CXX_COMPILER_ID:MSVC>:/O2 /GL>
-)
+if(DEFINED MAYA_LINUX_CXX_FLAGS)
+    target_compile_options(maya PRIVATE ${MAYA_LINUX_CXX_FLAGS})
+    target_link_options(maya PRIVATE ${MAYA_LINUX_LINK_FLAGS})
+else()
+    target_compile_options(maya PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:
+            -O3
+            -march=native
+            -funroll-loops
+        >
+        $<$<CXX_COMPILER_ID:MSVC>:/O2 /GL>
+    )
+endif()
 
 option(MAYA_BUILD_EXAMPLES "Build example programs" ON)
 if(MAYA_BUILD_EXAMPLES)
@@ -50,14 +98,19 @@ if(MAYA_BUILD_EXAMPLES)
         set(tgt maya_${name})
         add_executable(${tgt} ${src})
         target_link_libraries(${tgt} PRIVATE maya)
-        target_compile_options(${tgt} PRIVATE
-            $<$<CXX_COMPILER_ID:GNU,Clang>:
-                -O3
-                -march=native
-                -funroll-loops
-            >
-            $<$<CXX_COMPILER_ID:MSVC>:/O2 /GL>
-        )
+        if(DEFINED MAYA_LINUX_CXX_FLAGS)
+            target_compile_options(${tgt} PRIVATE ${MAYA_LINUX_CXX_FLAGS})
+            target_link_options(${tgt} PRIVATE ${MAYA_LINUX_LINK_FLAGS})
+        else()
+            target_compile_options(${tgt} PRIVATE
+                $<$<CXX_COMPILER_ID:GNU,Clang>:
+                    -O3
+                    -march=native
+                    -funroll-loops
+                >
+                $<$<CXX_COMPILER_ID:MSVC>:/O2 /GL>
+            )
+        endif()
     endforeach()
 endif()
 

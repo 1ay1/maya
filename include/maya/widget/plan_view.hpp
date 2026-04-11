@@ -1,7 +1,7 @@
 #pragma once
 // maya::widget::plan_view — Task/plan display with status icons
 //
-// Displays a list of tasks with status indicators matching Zed's plan entries.
+// Displays a list of tasks with status indicators.
 //
 // Usage:
 //   PlanView plan;
@@ -41,7 +41,8 @@ struct PlanView {
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
-        // Colors
+        using namespace dsl;
+
         constexpr auto pending_color    = Color::rgb(92, 99, 112);
         constexpr auto inprogress_color = Color::rgb(97, 175, 239);
         constexpr auto completed_color  = Color::rgb(152, 195, 121);
@@ -50,62 +51,37 @@ struct PlanView {
         rows.reserve(tasks.size());
 
         for (auto const& task : tasks) {
-            std::string content;
-            std::vector<StyledRun> runs;
-
-            // 2-space indent
-            std::string indent = "  ";
-            content += indent;
-
-            std::string icon;
+            const char* icon;
             Style icon_style;
             Style text_style;
 
             switch (task.status) {
             case TaskStatus::Pending:
-                icon = "○";
+                icon = "\xe2\x97\x8b"; // ○
                 icon_style = Style{}.with_fg(pending_color);
                 text_style = Style{}.with_fg(pending_color);
                 break;
             case TaskStatus::InProgress:
-                icon = "●";
-                icon_style = Style{}.with_fg(inprogress_color);
+                icon = "\xe2\x97\x8f"; // ●
+                icon_style = Style{}.with_fg(inprogress_color).with_bold();
                 text_style = Style{}.with_fg(inprogress_color);
                 break;
             case TaskStatus::Completed:
-                icon = "✓";
+                icon = "\xe2\x9c\x93"; // ✓
                 icon_style = Style{}.with_fg(completed_color);
-                text_style = Style{}.with_dim().with_strikethrough().with_fg(completed_color);
+                text_style = Style{}.with_fg(completed_color).with_dim().with_strikethrough();
                 break;
             }
 
-            // Indent run (no style)
-            runs.push_back({0, indent.size(), Style{}});
-
-            // Icon run
-            std::size_t icon_offset = content.size();
-            content += icon;
-            runs.push_back({icon_offset, icon.size(), icon_style});
-
-            // Space after icon
-            std::size_t space_offset = content.size();
-            content += " ";
-            runs.push_back({space_offset, 1, Style{}});
-
-            // Label run
-            std::size_t label_offset = content.size();
-            content += task.label;
-            runs.push_back({label_offset, task.label.size(), text_style});
-
-            rows.push_back(Element{TextElement{
-                .content = std::move(content),
-                .style = {},
-                .wrap = TextWrap::NoWrap,
-                .runs = std::move(runs),
-            }});
+            rows.push_back(h(
+                text("  "),
+                text(icon, icon_style),
+                text(" "),
+                text(task.label, text_style)
+            ).build());
         }
 
-        return dsl::v(std::move(rows)).build();
+        return v(std::move(rows)).build();
     }
 };
 

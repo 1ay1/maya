@@ -538,9 +538,9 @@ void render_tree_at(
 {
     if (w <= 0 || h <= 0) return;
 
-    // Phase 1: Build the layout tree.
-    std::vector<layout::LayoutNode> layout_nodes;
-    layout_nodes.reserve(128);
+    // Phase 1: Build the layout tree (reuse thread-local to avoid per-call alloc).
+    thread_local std::vector<layout::LayoutNode> layout_nodes;
+    layout_nodes.clear();
     std::size_t root_idx = render_detail::build_layout_tree(root, layout_nodes, theme);
 
     // Phase 2: Constrain root to the sub-region dimensions.

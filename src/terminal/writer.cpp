@@ -80,16 +80,18 @@ auto Writer::flush() -> Status {
 
     optimize();
 
-    std::string buf;
-    buf.reserve(reserve_hint_);
+    // Reuse the member buffer across frames — clear() keeps the allocation.
+    flush_buf_.clear();
+    if (flush_buf_.capacity() < reserve_hint_)
+        flush_buf_.reserve(reserve_hint_);
 
-    buf += ansi::sync_start;
-    serialize(buf);
-    buf += ansi::sync_end;
+    flush_buf_ += ansi::sync_start;
+    serialize(flush_buf_);
+    flush_buf_ += ansi::sync_end;
 
-    reserve_hint_ = std::max(reserve_hint_, buf.size() + buf.size() / 4);
+    reserve_hint_ = std::max(reserve_hint_, flush_buf_.size() + flush_buf_.size() / 4);
 
-    auto result = write_all(buf);
+    auto result = write_all(flush_buf_);
     ops_.clear();
     return result;
 }
@@ -133,26 +135,22 @@ auto Writer::write_some(std::string_view data) const -> Result<std::size_t> {
 void Writer::optimize() {
     if (ops_.size() < 2) return;
 
-    auto optimized = ops_
-        | std::views::all
-        | std::views::transform([](auto&& op) { return std::move(op); })
-        | std::ranges::to<std::vector<RenderOp>>();
-
-    std::vector<RenderOp> result;
-    result.reserve(optimized.size());
-
-    for (auto& op : optimized) {
-        if (!result.empty() && try_merge(result.back(), op)) {
+    // In-place compaction: read from ops_, write back compacted.
+    // Avoids the extra vector allocation of the previous approach.
+    std::size_t write = 0;
+    for (std::size_t read = 0; read < ops_.size(); ++read) {
+        if (write > 0 && try_merge(ops_[write - 1], ops_[read])) {
             continue;
         }
-        if (!result.empty() && try_cancel_cursor(result.back(), op)) {
-            result.pop_back();
+        if (write > 0 && try_cancel_cursor(ops_[write - 1], ops_[read])) {
+            --write;
             continue;
         }
-        result.push_back(std::move(op));
+        if (write != read)
+            ops_[write] = std::move(ops_[read]);
+        ++write;
     }
-
-    ops_ = std::move(result);
+    ops_.resize(write);
 }
 
 bool Writer::try_merge(RenderOp& existing, const RenderOp& incoming) {
@@ -223,14 +221,16 @@ void Writer::serialize(std::string& buf) const {
         [&buf](const render_op::ClearLine& v) {
             buf += ansi::clear_line();
             for (int i = 1; i < v.count; ++i) {
-                buf += std::format("{}{}", ansi::move_down(1), ansi::clear_line());
+                buf += ansi::move_down(1);
+                buf += ansi::clear_line();
             }
             if (v.count > 1) {
                 buf += ansi::move_up(v.count - 1);
             }
         },
         [&buf](const render_op::ClearScreen&) {
-            buf += std::format("{}{}", ansi::clear_screen(), ansi::home());
+            buf += ansi::clear_screen();
+            buf += ansi::home();
         }
     };
 

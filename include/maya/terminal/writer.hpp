@@ -85,7 +85,8 @@ using RenderOp = std::variant<
 class Writer : MoveOnly {
     platform::NativeHandle handle_;
     std::vector<RenderOp> ops_;
-    size_t reserve_hint_ = 4096; // adaptive buffer size hint
+    std::string flush_buf_;       // reused across frames to avoid alloc
+    size_t reserve_hint_ = 4096;  // adaptive buffer size hint
 
 public:
     explicit Writer(platform::NativeHandle h) noexcept : handle_(h) {}

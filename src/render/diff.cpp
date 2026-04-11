@@ -3,6 +3,18 @@
 #include <algorithm>
 #include <cstdint>
 
+#ifdef __GNUC__
+#define MAYA_PREFETCH_R(addr) __builtin_prefetch((addr), 0, 1)
+#define MAYA_PREFETCH_W(addr) __builtin_prefetch((addr), 1, 1)
+#define MAYA_LIKELY(x)   __builtin_expect(!!(x), 1)
+#define MAYA_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define MAYA_PREFETCH_R(addr) ((void)0)
+#define MAYA_PREFETCH_W(addr) ((void)0)
+#define MAYA_LIKELY(x)   (x)
+#define MAYA_UNLIKELY(x) (x)
+#endif
+
 namespace maya {
 
 void diff(
@@ -64,6 +76,12 @@ void diff(
         const int  new_row_base  = y * width;
         const int  old_row_base  = y * old_w;
         const bool old_row_valid = !size_changed && y < old_h;
+
+        // Prefetch the next row's data into L2 while processing this row.
+        if (y + 1 < y1) [[likely]] {
+            MAYA_PREFETCH_R(new_cells + (y + 1) * width);
+            if (old_row_valid) MAYA_PREFETCH_R(old_cells + (y + 1) * old_w);
+        }
 
         // ── Level-1 SIMD skip: entire unchanged row ──────────────────────
         if (old_row_valid && old_w == width && x0 == 0 && x1 == width) [[likely]] {
@@ -171,12 +189,18 @@ void diff(
             const auto trail_start = static_cast<std::size_t>(last_content + 1);
             const auto trail_end   = std::min(static_cast<std::size_t>(x1),
                                               static_cast<std::size_t>(old_w));
+            // Use SIMD to check if old trailing region is all blank.
+            // bulk_eq against a blank row would require a blank buffer;
+            // instead use find_first_diff against the new (already blank)
+            // region — if old differs from new anywhere, we need EL.
             bool need_el = false;
-            for (auto scan = trail_start; scan < trail_end; ++scan) {
-                if (old_cells[old_row_base + scan] != blank) {
-                    need_el = true;
-                    break;
-                }
+            if (trail_start < trail_end) {
+                const std::size_t trail_len = trail_end - trail_start;
+                const std::size_t same = simd::find_first_diff(
+                    new_cells + new_row_base + trail_start,
+                    old_cells + old_row_base + trail_start,
+                    trail_len);
+                need_el = (same < trail_len);
             }
             if (need_el) {
                 flush_ascii();

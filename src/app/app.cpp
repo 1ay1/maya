@@ -37,6 +37,8 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
         MAYA_TRY_DECL(auto alt, std::move(raw).enter_alt_screen());
         alt_term = std::move(alt);
     } else {
+        // Enable bracketed paste in inline mode (alt screen enables it automatically)
+        (void)raw.write(ansi::enable_bracketed_paste);
         raw_term = std::move(raw);
     }
 
@@ -265,7 +267,8 @@ void Runtime::set_title(std::string_view title) {
 
 auto Runtime::cleanup() -> Status {
     if (is_inline()) {
-        auto cleanup = std::format("{}{}\r\n", ansi::show_cursor, ansi::reset);
+        auto cleanup = std::format("{}{}{}\r\n",
+            ansi::disable_bracketed_paste, ansi::show_cursor, ansi::reset);
         return writer_->write_raw(cleanup);
     }
     return ok();

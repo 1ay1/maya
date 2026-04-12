@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -20,23 +21,51 @@ namespace maya {
 
 namespace {
 
-std::string_view trim(std::string_view s) {
+// ── Compile-time lookup tables ──────────────────────────────────────────────
+
+// Helper: build a 256-byte boolean lookup table at compile time.
+struct CharTable {
+    bool v[256]{};
+    constexpr bool operator[](unsigned char c) const noexcept { return v[c]; }
+};
+
+template <unsigned char... Cs>
+consteval CharTable make_table() {
+    CharTable t{};
+    ((t.v[Cs] = true), ...);
+    return t;
+}
+
+// Escapable CommonMark characters.
+static constexpr auto kEscapable = make_table<
+    '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+',
+    '-', '.', '!', '|', '~', '<', '>', '"', '\'', '^'>();
+
+// Characters that break the inline plain-text batch scanner.
+static constexpr auto kInlineSpecial = make_table<
+    '`', '*', '_', '~', '[', '!', '\\', '<', '$'>();
+
+// Punctuation characters in syntax highlighting.
+static constexpr auto kPunctChar = make_table<
+    '{', '}', '[', ']', '(', ')', '.', ',', ';', ':',
+    '<', '>', '?', '~', '%', '@', '\\'>();
+
+// Operator characters in syntax highlighting.
+static constexpr auto kOpChar = make_table<
+    '+', '-', '*', '/', '=', '!', '&', '|', '^'>();
+
+inline std::string_view trim(std::string_view s) {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.remove_prefix(1);
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.remove_suffix(1);
     return s;
 }
 
-bool starts_with(std::string_view s, std::string_view prefix) {
+inline bool starts_with(std::string_view s, std::string_view prefix) {
     return s.size() >= prefix.size() && s.substr(0, prefix.size()) == prefix;
 }
 
-// Escapable characters per CommonMark spec
-bool is_escapable(char c) {
-    return c == '\\' || c == '`' || c == '*' || c == '_' || c == '{' ||
-           c == '}' || c == '[' || c == ']' || c == '(' || c == ')' ||
-           c == '#' || c == '+' || c == '-' || c == '.' || c == '!' ||
-           c == '|' || c == '~' || c == '<' || c == '>' || c == '"' ||
-           c == '\'' || c == '^';
+inline bool is_escapable(char c) {
+    return kEscapable[static_cast<unsigned char>(c)];
 }
 
 // ============================================================================
@@ -44,9 +73,30 @@ bool is_escapable(char c) {
 // ============================================================================
 
 // Find the closing delimiter (linear scan — called only when open found).
-// Respects backslash escapes.
-size_t find_closing(std::string_view text, std::string_view delim, size_t start) {
-    for (size_t i = start; i + delim.size() <= text.size(); ++i) {
+// Respects backslash escapes.  max_dist caps how far we scan to keep
+// pathological input (many unmatched delimiters) O(n) instead of O(n²).
+size_t find_closing(std::string_view text, std::string_view delim,
+                    size_t start, size_t max_dist = 2000) {
+    size_t limit = std::min(text.size(), start + max_dist);
+    // Specialize for common 1-byte and 2-byte delimiters to avoid
+    // substr construction + comparison overhead in the inner loop.
+    if (delim.size() == 1) [[likely]] {
+        char d = delim[0];
+        for (size_t i = start; i < limit; ++i) {
+            if (text[i] == '\\' && i + 1 < text.size()) { ++i; continue; }
+            if (text[i] == d) return i;
+        }
+        return std::string_view::npos;
+    }
+    if (delim.size() == 2) {
+        char d0 = delim[0], d1 = delim[1];
+        for (size_t i = start; i + 1 < limit; ++i) {
+            if (text[i] == '\\' && i + 1 < text.size()) { ++i; continue; }
+            if (text[i] == d0 && text[i + 1] == d1) return i;
+        }
+        return std::string_view::npos;
+    }
+    for (size_t i = start; i + delim.size() <= limit; ++i) {
         if (text[i] == '\\' && i + 1 < text.size()) { ++i; continue; }
         if (text.substr(i, delim.size()) == delim)
             return i;
@@ -136,6 +186,36 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             continue;
         }
 
+        // Math: $$...$$ (display) or $...$ (inline) — render as code to
+        // prevent delimiters inside math from being parsed as emphasis.
+        if (text[i] == '$') {
+            // Display math $$...$$
+            if (i + 1 < text.size() && text[i + 1] == '$') {
+                size_t end = text.find("$$", i + 2);
+                if (end != std::string_view::npos) {
+                    auto content = text.substr(i + 2, end - i - 2);
+                    result.push_back(md::Code{std::string{content}});
+                    i = end + 2;
+                    continue;
+                }
+            }
+            // Inline math $...$  — require non-space flanking to avoid
+            // matching currency like "$5 and $10".
+            if (i + 1 < text.size() && text[i + 1] != ' ' && text[i + 1] != '$') {
+                size_t end = text.find('$', i + 1);
+                if (end != std::string_view::npos && end > i + 1 &&
+                    text[end - 1] != ' ') {
+                    auto content = text.substr(i + 1, end - i - 1);
+                    result.push_back(md::Code{std::string{content}});
+                    i = end + 1;
+                    continue;
+                }
+            }
+            push_text(result, "$");
+            ++i;
+            continue;
+        }
+
         // Bold+italic: ***text*** or ___text___
         if (i + 2 < text.size() &&
             ((text[i] == '*' && text[i+1] == '*' && text[i+2] == '*') ||
@@ -182,7 +262,12 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
         if (text[i] == '*' || text[i] == '_') {
             char delim_ch = text[i];
             if (i + 1 < text.size() && text[i + 1] != delim_ch && text[i + 1] != ' ') {
-                size_t end = text.find(delim_ch, i + 1);
+                // Bounded scan to avoid O(n²) on many unmatched delimiters
+                size_t scan_limit = std::min(text.size(), i + 1 + 2000);
+                size_t end = std::string_view::npos;
+                for (size_t s = i + 1; s < scan_limit; ++s) {
+                    if (text[s] == delim_ch) { end = s; break; }
+                }
                 if (end != std::string_view::npos && text[end - 1] != ' ') {
                     auto inner = text.substr(i + 1, end - i - 1);
                     result.push_back(md::Italic{parse_inlines(inner)});
@@ -198,13 +283,21 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             continue;
         }
 
-        // Image: ![alt](url)
+        // Image: ![alt](url) — bounded bracket/paren search
         if (text[i] == '!' && i + 1 < text.size() && text[i + 1] == '[') {
-            size_t close_bracket = text.find(']', i + 2);
+            size_t bracket_limit = std::min(text.size(), i + 2 + 2000);
+            size_t close_bracket = std::string_view::npos;
+            for (size_t s = i + 2; s < bracket_limit; ++s) {
+                if (text[s] == ']') { close_bracket = s; break; }
+            }
             if (close_bracket != std::string_view::npos &&
                 close_bracket + 1 < text.size() &&
                 text[close_bracket + 1] == '(') {
-                size_t close_paren = text.find(')', close_bracket + 2);
+                size_t paren_limit = std::min(text.size(), close_bracket + 2 + 2000);
+                size_t close_paren = std::string_view::npos;
+                for (size_t s = close_bracket + 2; s < paren_limit; ++s) {
+                    if (text[s] == ')') { close_paren = s; break; }
+                }
                 if (close_paren != std::string_view::npos) {
                     auto alt = text.substr(i + 2, close_bracket - i - 2);
                     auto url = text.substr(close_bracket + 2,
@@ -219,11 +312,15 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             continue;
         }
 
-        // Link: [text](url)
+        // Link: [text](url) — bounded bracket/paren search
         if (text[i] == '[') {
             // Footnote reference: [^label]
             if (i + 1 < text.size() && text[i + 1] == '^') {
-                size_t close = text.find(']', i + 2);
+                size_t fn_limit = std::min(text.size(), i + 2 + 200);
+                size_t close = std::string_view::npos;
+                for (size_t s = i + 2; s < fn_limit; ++s) {
+                    if (text[s] == ']') { close = s; break; }
+                }
                 if (close != std::string_view::npos) {
                     auto label = text.substr(i + 2, close - i - 2);
                     // Only if it's a pure reference (no (url) after)
@@ -235,11 +332,19 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                 }
             }
 
-            size_t close_bracket = text.find(']', i + 1);
+            size_t bracket_limit = std::min(text.size(), i + 1 + 2000);
+            size_t close_bracket = std::string_view::npos;
+            for (size_t s = i + 1; s < bracket_limit; ++s) {
+                if (text[s] == ']') { close_bracket = s; break; }
+            }
             if (close_bracket != std::string_view::npos &&
                 close_bracket + 1 < text.size() &&
                 text[close_bracket + 1] == '(') {
-                size_t close_paren = text.find(')', close_bracket + 2);
+                size_t paren_limit = std::min(text.size(), close_bracket + 2 + 2000);
+                size_t close_paren = std::string_view::npos;
+                for (size_t s = close_bracket + 2; s < paren_limit; ++s) {
+                    if (text[s] == ')') { close_paren = s; break; }
+                }
                 if (close_paren != std::string_view::npos) {
                     auto link_text = text.substr(i + 1, close_bracket - i - 1);
                     auto url = text.substr(close_bracket + 2,
@@ -288,14 +393,15 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
         // Plain text: consume until next special character (batch scan)
         size_t start = i;
         while (i < text.size() &&
-               text[i] != '`' && text[i] != '*' && text[i] != '_' &&
-               text[i] != '~' && text[i] != '[' && text[i] != '!' &&
-               text[i] != '\\' && text[i] != '<') {
+               !kInlineSpecial[static_cast<unsigned char>(text[i])]) {
             // Also break on trailing spaces before newline (hard break detection)
             if (text[i] == ' ' && i + 2 < text.size()) {
                 size_t j = i;
                 while (j < text.size() && text[j] == ' ') ++j;
                 if (j < text.size() && text[j] == '\n' && (j - i) >= 2) break;
+                // Skip past all checked spaces to avoid O(n²) re-scanning
+                i = j;
+                continue;
             }
             ++i;
         }
@@ -424,12 +530,32 @@ int parse_task_checkbox(std::string_view content) {
 
 } // anonymous namespace
 
+// SIMD-accelerated newline search via memchr (outside anonymous namespace
+// so highlight_diff / highlight_code can reference it).
+static inline size_t find_eol(const char* data, size_t start, size_t end) noexcept {
+    if (start >= end) return end;
+    auto* p = static_cast<const char*>(
+        std::memchr(data + start, '\n', end - start));
+    return p ? static_cast<size_t>(p - data) : end;
+}
+
 // ============================================================================
 // Block parser — line-oriented markdown parsing
 // ============================================================================
 
-md::Document parse_markdown(std::string_view source) {
+static constexpr int kMaxRecursionDepth = 8;
+
+static md::Document parse_markdown_impl(std::string_view source, int depth) {
     md::Document doc;
+
+    // Guard against pathological nesting (deeply nested blockquotes, lists,
+    // footnotes).  Treat remaining text as a plain paragraph.
+    if (depth > kMaxRecursionDepth) {
+        auto trimmed = trim(source);
+        if (!trimmed.empty())
+            doc.blocks.push_back(md::Paragraph{parse_inlines(trimmed)});
+        return doc;
+    }
 
     // Split into lines
     std::vector<std::string_view> lines;
@@ -464,8 +590,12 @@ md::Document parse_markdown(std::string_view source) {
         if (!line.empty() && line.back() == '\r')
             line.remove_suffix(1);
 
+        // Cache trimmed line — trim() is called 3-7× per iteration
+        // in the worst case (blank, $$, hrule, setext, blockquote, footnote…).
+        auto trimmed = trim(line);
+
         // Blank line
-        if (trim(line).empty()) {
+        if (trimmed.empty()) {
             flush_paragraph();
             ++i;
             continue;
@@ -524,6 +654,23 @@ md::Document parse_markdown(std::string_view source) {
             continue;
         }
 
+        // Display math block: $$ on its own line
+        if (trimmed == "$$") {
+            flush_paragraph();
+            std::string math;
+            ++i;
+            while (i < lines.size()) {
+                auto ml = lines[i];
+                if (!ml.empty() && ml.back() == '\r') ml.remove_suffix(1);
+                if (trim(ml) == "$$") { ++i; break; }
+                if (!math.empty()) math += '\n';
+                math += ml;
+                ++i;
+            }
+            doc.blocks.push_back(md::CodeBlock{std::move(math), "math"});
+            continue;
+        }
+
         // Indented code block: 4+ spaces (only if not in a list context)
         if (count_indent(line) >= 4 && paragraph_buf.empty()) {
             flush_paragraph();
@@ -551,7 +698,7 @@ md::Document parse_markdown(std::string_view source) {
 
         // Horizontal rule: ---, ***, ___ (with optional spaces)
         {
-            auto t = trim(line);
+            auto t = trimmed;
             if (t.size() >= 3) {
                 char first = t[0];
                 if (first == '-' || first == '*' || first == '_') {
@@ -582,7 +729,7 @@ md::Document parse_markdown(std::string_view source) {
 
         // Setext heading level 1: line of ===
         {
-            auto t = trim(line);
+            auto t = trimmed;
             if (!t.empty() && t[0] == '=' && !paragraph_buf.empty()) {
                 bool all_eq = true;
                 for (char c : t) { if (c != '=') { all_eq = false; break; } }
@@ -597,7 +744,7 @@ md::Document parse_markdown(std::string_view source) {
         }
 
         // Blockquote: > text
-        if (line.size() >= 1 && trim(line)[0] == '>') {
+        if (!trimmed.empty() && trimmed[0] == '>') {
             flush_paragraph();
             std::string bq_text;
             while (i < lines.size()) {
@@ -611,14 +758,14 @@ md::Document parse_markdown(std::string_view source) {
                 bq_text += content;
                 ++i;
             }
-            auto inner = parse_markdown(bq_text);
+            auto inner = parse_markdown_impl(bq_text, depth + 1);
             doc.blocks.push_back(md::Blockquote{std::move(inner.blocks)});
             continue;
         }
 
         // Footnote definition: [^label]: content
-        if (starts_with(trim(line), "[^")) {
-            auto t = trim(line);
+        if (starts_with(trimmed, "[^")) {
+            auto t = trimmed;
             size_t close = t.find("]:");
             if (close != std::string_view::npos && close > 2) {
                 flush_paragraph();
@@ -646,7 +793,7 @@ md::Document parse_markdown(std::string_view source) {
                         break;
                     }
                 }
-                auto inner = parse_markdown(fn_text);
+                auto inner = parse_markdown_impl(fn_text, depth + 1);
                 doc.blocks.push_back(md::FootnoteDef{std::move(label), std::move(inner.blocks)});
                 continue;
             }
@@ -705,7 +852,7 @@ md::Document parse_markdown(std::string_view source) {
                                     ++i;
                                 }
                                 if (!sub_text.empty()) {
-                                    auto sub_doc = parse_markdown(sub_text);
+                                    auto sub_doc = parse_markdown_impl(sub_text, depth + 1);
                                     for (auto& b : sub_doc.blocks) {
                                         items.back().children.push_back(std::move(b));
                                     }
@@ -785,6 +932,10 @@ md::Document parse_markdown(std::string_view source) {
     return doc;
 }
 
+md::Document parse_markdown(std::string_view source) {
+    return parse_markdown_impl(source, 0);
+}
+
 // ============================================================================
 // AST to Element conversion — polished terminal rendering
 // ============================================================================
@@ -826,26 +977,28 @@ namespace colors {
 // terminal theme (Catppuccin, Dracula, Solarized, One Dark, Gruvbox, etc.)
 
 namespace syntax {
-    inline Style kw()       { return Style{}.with_fg(Color::magenta()); }
-    inline Style ctrl()     { return Style{}.with_fg(Color::magenta()); }
-    inline Style type()     { return Style{}.with_fg(Color::cyan()); }
-    inline Style fn()       { return Style{}.with_fg(Color::blue()); }
-    inline Style str()      { return Style{}.with_fg(Color::green()); }
-    inline Style num()      { return Style{}.with_fg(Color::bright_yellow()); }
-    inline Style comment()  { return Style{}.with_fg(Color::bright_black()).with_italic(); }
-    inline Style constant() { return Style{}.with_fg(Color::bright_yellow()); }
-    inline Style preproc()  { return Style{}.with_fg(Color::yellow()); }
-    inline Style attr()     { return Style{}.with_fg(Color::yellow()); }
-    inline Style op()       { return Style{}.with_fg(Color::red()); }
-    inline Style punct()    { return Style{}.with_fg(Color::bright_black()); }
-    inline Style plain()    { return Style{}.with_fg(Color::white()); }
-    inline Style shellvar() { return Style{}.with_fg(Color::bright_cyan()); }
+    // Static const: constructed once, returned by reference — avoids
+    // rebuilding Style objects on every token emission.
+    inline const Style& kw()       { static const Style s = Style{}.with_fg(Color::magenta()); return s; }
+    inline const Style& ctrl()     { static const Style s = Style{}.with_fg(Color::magenta()); return s; }
+    inline const Style& type()     { static const Style s = Style{}.with_fg(Color::cyan()); return s; }
+    inline const Style& fn()       { static const Style s = Style{}.with_fg(Color::blue()); return s; }
+    inline const Style& str()      { static const Style s = Style{}.with_fg(Color::green()); return s; }
+    inline const Style& num()      { static const Style s = Style{}.with_fg(Color::bright_yellow()); return s; }
+    inline const Style& comment()  { static const Style s = Style{}.with_fg(Color::bright_black()).with_italic(); return s; }
+    inline const Style& constant() { static const Style s = Style{}.with_fg(Color::bright_yellow()); return s; }
+    inline const Style& preproc()  { static const Style s = Style{}.with_fg(Color::yellow()); return s; }
+    inline const Style& attr()     { static const Style s = Style{}.with_fg(Color::yellow()); return s; }
+    inline const Style& op()       { static const Style s = Style{}.with_fg(Color::red()); return s; }
+    inline const Style& punct()    { static const Style s = Style{}.with_fg(Color::bright_black()); return s; }
+    inline const Style& plain()    { static const Style s = Style{}.with_fg(Color::white()); return s; }
+    inline const Style& shellvar() { static const Style s = Style{}.with_fg(Color::bright_cyan()); return s; }
 
     // Diff highlighting
-    inline Style diff_add()  { return Style{}.with_fg(Color::green()); }
-    inline Style diff_del()  { return Style{}.with_fg(Color::red()); }
-    inline Style diff_hunk() { return Style{}.with_fg(Color::cyan()); }
-    inline Style diff_meta() { return Style{}.with_fg(Color::bright_black()).with_bold(); }
+    inline const Style& diff_add()  { static const Style s = Style{}.with_fg(Color::green()); return s; }
+    inline const Style& diff_del()  { static const Style s = Style{}.with_fg(Color::red()); return s; }
+    inline const Style& diff_hunk() { static const Style s = Style{}.with_fg(Color::cyan()); return s; }
+    inline const Style& diff_meta() { static const Style s = Style{}.with_fg(Color::bright_black()).with_bold(); return s; }
 }
 
 // ── Language identification ──────────────────────────────────────────────────
@@ -859,11 +1012,14 @@ enum class LangId {
 };
 
 static LangId detect_lang(std::string_view tag) {
-    // Normalize: lowercase
-    std::string lower;
-    lower.reserve(tag.size());
-    for (char c : tag)
-        lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    // Normalize: lowercase — use stack buffer to avoid heap allocation
+    // (language tags are always short, typically < 16 chars).
+    char buf[32];
+    size_t len = std::min(tag.size(), sizeof(buf) - 1);
+    for (size_t k = 0; k < len; ++k)
+        buf[k] = static_cast<char>(std::tolower(static_cast<unsigned char>(tag[k])));
+    buf[len] = '\0';
+    std::string_view lower{buf, len};
 
     if (lower == "c" || lower == "h")                return LangId::C;
     if (lower == "cpp" || lower == "c++" ||
@@ -1350,9 +1506,8 @@ static Element highlight_diff(const std::string& code) {
 
     while (i < n) {
         size_t line_start = i;
-        // Find end of line
-        size_t eol = i;
-        while (eol < n && code[eol] != '\n') ++eol;
+        // Find end of line (memchr is SIMD-accelerated in glibc)
+        size_t eol = find_eol(code.data(), i, n);
         bool has_nl = (eol < n);
         size_t line_end = has_nl ? eol + 1 : eol;
 
@@ -1383,18 +1538,12 @@ static Element highlight_diff(const std::string& code) {
 
 // ── Main tokenizer ───────────────────────────────────────────────────────────
 
-static bool is_punct_char(char c) {
-    return c == '{' || c == '}' || c == '[' || c == ']' ||
-           c == '(' || c == ')' || c == '.' || c == ',' ||
-           c == ';' || c == ':' || c == '<' || c == '>' ||
-           c == '?' || c == '~' || c == '%' || c == '@' ||
-           c == '\\';
+static inline bool is_punct_char(char c) {
+    return kPunctChar[static_cast<unsigned char>(c)];
 }
 
-static bool is_op_char(char c) {
-    return c == '+' || c == '-' || c == '*' || c == '/' ||
-           c == '=' || c == '!' || c == '&' || c == '|' ||
-           c == '^';
+static inline bool is_op_char(char c) {
+    return kOpChar[static_cast<unsigned char>(c)];
 }
 
 static Element highlight_code(const std::string& code, const std::string& lang_tag) {
@@ -1447,8 +1596,7 @@ static Element highlight_code(const std::string& code, const std::string& lang_t
             bool at_line_start = (i == 0 || code[i - 1] == '\n');
             if (at_line_start) {
                 size_t s = out.size();
-                size_t j = i;
-                while (j < n && code[j] != '\n') ++j;
+                size_t j = find_eol(code.data(), i, n);
                 out.append(code, i, j - i);
                 emit(s, j - i, syntax::preproc());
                 i = j;
@@ -1461,8 +1609,7 @@ static Element highlight_code(const std::string& code, const std::string& lang_t
             std::string_view lc{cs.line};
             if (code.compare(i, lc.size(), lc) == 0) {
                 size_t s = out.size();
-                size_t j = i;
-                while (j < n && code[j] != '\n') ++j;
+                size_t j = find_eol(code.data(), i, n);
                 out.append(code, i, j - i);
                 emit(s, j - i, syntax::comment());
                 i = j;
@@ -1471,8 +1618,7 @@ static Element highlight_code(const std::string& code, const std::string& lang_t
         }
         if (cs.hash_comment && ch == '#') {
             size_t s = out.size();
-            size_t j = i;
-            while (j < n && code[j] != '\n') ++j;
+            size_t j = find_eol(code.data(), i, n);
             out.append(code, i, j - i);
             emit(s, j - i, syntax::comment());
             i = j;
@@ -2259,18 +2405,24 @@ size_t StreamingMarkdown::find_block_boundary() const noexcept {
 
     size_t i = committed_;
     while (i < source_.size()) {
-        // Check for code fence toggle (``` or ~~~)
-        if (i + 3 <= source_.size() &&
-            ((source_[i] == '`' && source_[i+1] == '`' && source_[i+2] == '`') ||
-             (source_[i] == '~' && source_[i+1] == '~' && source_[i+2] == '~'))) {
-            size_t eol = source_.find('\n', i);
-            if (eol == std::string::npos) break;
-            in_fence = !in_fence;
-            i = eol + 1;
-            if (!in_fence) {
-                last_boundary = i;
+        // Check for code/math fence toggle — only at line start
+        bool at_line_start = (i == 0 || source_[i - 1] == '\n');
+        if (at_line_start) {
+            bool is_code_fence = i + 3 <= source_.size() &&
+                ((source_[i] == '`' && source_[i+1] == '`' && source_[i+2] == '`') ||
+                 (source_[i] == '~' && source_[i+1] == '~' && source_[i+2] == '~'));
+            bool is_math_fence = !is_code_fence && i + 2 <= source_.size() &&
+                source_[i] == '$' && source_[i+1] == '$';
+            if (is_code_fence || is_math_fence) {
+                size_t eol = source_.find('\n', i);
+                if (eol == std::string::npos) break;
+                in_fence = !in_fence;
+                i = eol + 1;
+                if (!in_fence) {
+                    last_boundary = i;
+                }
+                continue;
             }
-            continue;
         }
 
         // Check for blank line (block separator) outside code fences
@@ -2284,7 +2436,8 @@ size_t StreamingMarkdown::find_block_boundary() const noexcept {
             // Single newline + block-level marker = boundary
             if (next < source_.size()) {
                 char c = source_[next];
-                if (c == '#' || c == '>' || c == '-' || c == '*' || c == '+' || c == '|') {
+                if (c == '#' || c == '>' || c == '-' || c == '*' || c == '+' ||
+                    c == '|' || c == '$') {
                     last_boundary = next;
                 }
             }
@@ -2317,10 +2470,15 @@ void StreamingMarkdown::set_content(std::string_view content) {
             blocks_.push_back(md_block_to_element(block));
         }
         for (size_t j = committed_; j < boundary; ++j) {
-            if (j + 3 <= boundary &&
-                ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
-                 (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'))) {
-                in_code_fence_ = !in_code_fence_;
+            bool at_line_start = (j == 0 || source_[j - 1] == '\n');
+            if (at_line_start) {
+                bool is_code = j + 3 <= boundary &&
+                    ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
+                     (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'));
+                bool is_math = !is_code && j + 2 <= boundary &&
+                    source_[j] == '$' && source_[j+1] == '$';
+                if (is_code || is_math)
+                    in_code_fence_ = !in_code_fence_;
             }
         }
         committed_ = boundary;
@@ -2338,10 +2496,15 @@ void StreamingMarkdown::append(std::string_view text) {
             blocks_.push_back(md_block_to_element(block));
         }
         for (size_t j = committed_; j < boundary; ++j) {
-            if (j + 3 <= boundary &&
-                ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
-                 (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'))) {
-                in_code_fence_ = !in_code_fence_;
+            bool at_line_start = (j == 0 || source_[j - 1] == '\n');
+            if (at_line_start) {
+                bool is_code = j + 3 <= boundary &&
+                    ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
+                     (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'));
+                bool is_math = !is_code && j + 2 <= boundary &&
+                    source_[j] == '$' && source_[j+1] == '$';
+                if (is_code || is_math)
+                    in_code_fence_ = !in_code_fence_;
             }
         }
         committed_ = boundary;

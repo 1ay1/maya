@@ -24,12 +24,13 @@ int detect_terminal_height() noexcept {
 
 void render_live(const Element& root, int width, StylePool& pool,
                    std::string& buf, LiveState& st) {
-    constexpr int kMaxHeight = 500;
+    constexpr int kMinHeight = 500;
 
     // Invalidate state on width change. compose_inline_frame also resets
     // its own cache on width change, but we must reallocate the canvas.
     if (st.canvas_width != width) {
-        st.canvas = Canvas{width, kMaxHeight, &pool};
+        int h = std::max(kMinHeight, st.canvas.height());
+        st.canvas = Canvas{width, h, &pool};
         st.canvas_width = width;
         st.frame.reset();
         // Refresh terminal height on width changes — typical resize events
@@ -49,7 +50,20 @@ void render_live(const Element& root, int width, StylePool& pool,
 
     render_tree(root, st.canvas, pool, theme::dark, st.layout_nodes, /*auto_height=*/true);
 
-    const int ch = content_height(st.canvas);
+    int ch = content_height(st.canvas);
+
+    // Content filled the canvas — grow using the layout-computed height.
+    if (ch >= st.canvas.height() && !st.layout_nodes.empty()) {
+        int needed = st.layout_nodes[0].computed.size.height.raw();
+        if (needed > st.canvas.height()) {
+            st.canvas.resize(width, needed + 8);
+            st.canvas.clear();
+            render_tree(root, st.canvas, pool, theme::dark,
+                        st.layout_nodes, /*auto_height=*/true);
+            ch = content_height(st.canvas);
+        }
+    }
+
     if (ch <= 0) {
         st.frame.prev_rows = 0;
         return;
@@ -88,10 +102,24 @@ void print(const Element& root, int width) {
 
 std::string render_to_string(const Element& root, int width) {
     StylePool pool;
+    std::vector<layout::LayoutNode> layout_nodes;
     Canvas canvas{width, 500, &pool};
-    render_tree(root, canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(root, canvas, pool, theme::dark, layout_nodes, /*auto_height=*/true);
 
     int rows = content_height(canvas);
+
+    // Grow canvas if content was clipped.
+    if (rows >= canvas.height() && !layout_nodes.empty()) {
+        int needed = layout_nodes[0].computed.size.height.raw();
+        if (needed > canvas.height()) {
+            canvas.resize(width, needed + 8);
+            canvas.clear();
+            render_tree(root, canvas, pool, theme::dark, layout_nodes,
+                        /*auto_height=*/true);
+            rows = content_height(canvas);
+        }
+    }
+
     if (rows < 0) return {};
 
     std::string result;

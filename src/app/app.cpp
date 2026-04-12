@@ -203,12 +203,13 @@ auto Runtime::render(const Element& root) -> Status {
 
     if (is_inline()) {
         // ── Inline path: compose_inline_frame (row-diff renderer) ──────
-        constexpr int kMaxCanvasHeight = 500;
-        const int canvas_h = kMaxCanvasHeight;
+        // Start with a reasonable canvas height; grow dynamically if
+        // content exceeds it (never shrink — avoids realloc churn).
+        constexpr int kMinCanvasHeight = 500;
 
-        if (canvas_.width() != w || canvas_.height() != canvas_h) {
+        if (canvas_.width() != w || canvas_.height() < kMinCanvasHeight) {
             canvas_.set_style_pool(&pool_);
-            canvas_.resize(w, canvas_h);
+            canvas_.resize(w, std::max(kMinCanvasHeight, canvas_.height()));
         }
 
         if (needs_clear_) {
@@ -228,7 +229,22 @@ auto Runtime::render(const Element& root) -> Status {
         }
         render_tree(root, canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/true);
 
-        const int ch = content_height(canvas_);
+        int ch = content_height(canvas_);
+
+        // Content filled the canvas — layout was likely clipped at the
+        // bottom.  Read the unconstrained height from the layout pass,
+        // grow the canvas, and re-render so nothing is lost.
+        if (ch >= canvas_.height() && !layout_nodes_.empty()) {
+            int needed = layout_nodes_[0].computed.size.height.raw();
+            if (needed > canvas_.height()) {
+                canvas_.resize(w, needed + 8);
+                canvas_.clear();
+                render_tree(root, canvas_, pool_, theme_, layout_nodes_,
+                            /*auto_height=*/true);
+                ch = content_height(canvas_);
+            }
+        }
+
         if (ch <= 0) {
             inline_state_.prev_rows = 0;
             return ok();

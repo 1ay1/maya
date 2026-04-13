@@ -37,6 +37,7 @@ namespace maya::platform::win32 {
 class Win32EventSource {
     HANDLE stdin_;
     HANDLE stdout_;
+    HANDLE wake_ = INVALID_HANDLE_VALUE;
 
 public:
     Win32EventSource(NativeHandle term_in, [[maybe_unused]] NativeHandle sig_handle) noexcept
@@ -44,21 +45,30 @@ public:
         , stdout_(::GetStdHandle(STD_OUTPUT_HANDLE))
     {}
 
+    void set_wake_handle(HANDLE h) noexcept { wake_ = h; }
+
     [[nodiscard]] auto wait(
         std::chrono::milliseconds timeout,
         [[maybe_unused]] bool want_write = false) -> Result<ReadyFlags>
     {
         ReadyFlags flags{};
-        flags.writeable = true;  // Console stdout is synchronous — always writable.
+        flags.writeable = true;
 
         DWORD ms = static_cast<DWORD>(timeout.count());
-        DWORD result = ::WaitForSingleObject(stdin_, ms);
 
-        if (result == WAIT_OBJECT_0) {
-            // Something is in the input queue. Classify events:
-            // drain system events that ReadFile can't handle, and
-            // only set input=true when real character data is present.
-            drain_system_events(flags);
+        if (wake_ != INVALID_HANDLE_VALUE) {
+            HANDLE handles[2] = { stdin_, wake_ };
+            DWORD result = ::WaitForMultipleObjects(2, handles, FALSE, ms);
+            if (result == WAIT_OBJECT_0) {
+                drain_system_events(flags);
+            } else if (result == WAIT_OBJECT_0 + 1) {
+                flags.wake = true;
+            }
+        } else {
+            DWORD result = ::WaitForSingleObject(stdin_, ms);
+            if (result == WAIT_OBJECT_0) {
+                drain_system_events(flags);
+            }
         }
 
         return ok(ReadyFlags{flags});

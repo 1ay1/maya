@@ -47,9 +47,11 @@
 #include <variant>
 #include <vector>
 
+#if !MAYA_PLATFORM_WIN32
 #include <unistd.h>
 #ifdef __linux__
 #include <sys/eventfd.h>
+#endif
 #endif
 
 #include "../core/cmd.hpp"
@@ -295,19 +297,22 @@ private:
     uint32_t      resize_generation_  = 0;
 
     // -- Wake signaling (background task → UI thread) -------------------------
-    // Linux: eventfd (single fd, atomic counter, no drain loop needed)
-    // Other POSIX: self-pipe pair
-    int wake_read_fd_  = -1;
-    int wake_write_fd_ = -1;  // same as read_fd on eventfd
+#if MAYA_PLATFORM_WIN32
+    platform::NativeHandle wake_event_ = platform::invalid_handle;
 
 public:
-    /// fd that background threads write to — wake the poll loop.
+    [[nodiscard]] platform::NativeHandle wake_handle() const noexcept { return wake_event_; }
+    void drain_wake() noexcept {
+        if (wake_event_ != platform::invalid_handle)
+            ::ResetEvent(wake_event_);
+    }
+#else
+    int wake_read_fd_  = -1;
+    int wake_write_fd_ = -1;
+
+public:
     [[nodiscard]] int wake_write_fd() const noexcept { return wake_write_fd_; }
-
-    /// Whether the runtime uses eventfd (true) or pipe (false).
     [[nodiscard]] bool uses_eventfd() const noexcept { return wake_read_fd_ == wake_write_fd_; }
-
-    /// Drain the wake signal (call after poll returns wake=true).
     void drain_wake() noexcept {
         if (wake_read_fd_ < 0) return;
 #ifdef __linux__
@@ -317,10 +322,10 @@ public:
             return;
         }
 #endif
-        // Pipe: drain all pending bytes in one shot
         char buf[4096];
         while (::read(wake_read_fd_, buf, sizeof(buf)) > 0) {}
     }
+#endif
 
 private:
     // -- State ----------------------------------------------------------------
@@ -345,9 +350,13 @@ template <typename Msg>
 struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
     std::mutex              mutex_;
     std::vector<Msg>        messages_;
-    int                     wake_fd_ = -1;       // write end (eventfd or pipe)
-    bool                    is_eventfd_ = false;  // eventfd uses uint64_t write
-    std::atomic<bool>       wake_pending_{false}; // coalesce wake writes
+#if MAYA_PLATFORM_WIN32
+    platform::NativeHandle  wake_handle_ = platform::invalid_handle;
+#else
+    int                     wake_fd_ = -1;
+    bool                    is_eventfd_ = false;
+#endif
+    std::atomic<bool>       wake_pending_{false};
     std::vector<std::thread> tasks_;
 
     BackgroundQueue() = default;
@@ -359,14 +368,11 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
             std::lock_guard lk(mutex_);
             messages_.push_back(std::move(m));
         }
-        // Coalesce: only one write() per drain cycle.
-        // The UI thread resets wake_pending_ after drain_wake().
         if (!wake_pending_.exchange(true, std::memory_order_acq_rel)) {
             signal_wake();
         }
     }
 
-    // Drain all queued messages. Returns by value (swap is O(1)).
     auto drain() -> std::vector<Msg> {
         std::lock_guard lk(mutex_);
         std::vector<Msg> out;
@@ -374,7 +380,6 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
         return out;
     }
 
-    // Reset the coalesce flag so the next send() will write again.
     void reset_wake() noexcept {
         wake_pending_.store(false, std::memory_order_release);
     }
@@ -387,6 +392,10 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
 
 private:
     void signal_wake() noexcept {
+#if MAYA_PLATFORM_WIN32
+        if (wake_handle_ != platform::invalid_handle)
+            ::SetEvent(wake_handle_);
+#else
         if (wake_fd_ < 0) return;
 #ifdef __linux__
         if (is_eventfd_) {
@@ -397,6 +406,7 @@ private:
 #endif
         char byte = 1;
         (void)::write(wake_fd_, &byte, 1);
+#endif
     }
 };
 
@@ -554,8 +564,12 @@ void run(RunConfig cfg = {}) {
     // and deliver messages here; a wake fd signals the poll loop.
     // shared_ptr ensures the queue outlives any background thread that holds it.
     auto bg_queue = std::make_shared<detail::BackgroundQueue<Msg>>();
+#if MAYA_PLATFORM_WIN32
+    bg_queue->wake_handle_ = rt.wake_handle();
+#else
     bg_queue->wake_fd_ = rt.wake_write_fd();
     bg_queue->is_eventfd_ = rt.uses_eventfd();
+#endif
 
     // Interpreter bookkeeping (not part of Model — these are runtime state)
     std::vector<Msg> pending_msgs;

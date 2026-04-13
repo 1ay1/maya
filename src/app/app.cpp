@@ -7,10 +7,12 @@
 #include "maya/core/scope_exit.hpp"
 #include "maya/platform/select.hpp"
 
+#if !MAYA_PLATFORM_WIN32
 #include <fcntl.h>
 #include <unistd.h>
 #ifdef __linux__
 #include <sys/eventfd.h>
+#endif
 #endif
 
 #if MAYA_PLATFORM_MACOS
@@ -55,13 +57,17 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     Runtime rt;
 
     // Create wake mechanism for background task → UI thread signaling.
-    // Linux: eventfd (single fd, atomic counter, zero-copy, no drain loop)
-    // Other POSIX: self-pipe with non-blocking ends
-#ifdef __linux__
+#if MAYA_PLATFORM_WIN32
+    HANDLE wake_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (wake_ev != nullptr) {
+        rt.wake_event_ = wake_ev;
+        event_source.set_wake_handle(wake_ev);
+    }
+#elif defined(__linux__)
     int efd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (efd >= 0) {
         rt.wake_read_fd_ = efd;
-        rt.wake_write_fd_ = efd;  // eventfd: same fd for read and write
+        rt.wake_write_fd_ = efd;
         event_source.set_wake_fd(efd);
     }
 #else
@@ -329,10 +335,14 @@ auto Runtime::cleanup() -> Status {
 // ============================================================================
 
 Runtime::~Runtime() {
+#if MAYA_PLATFORM_WIN32
+    if (wake_event_ != platform::invalid_handle)
+        ::CloseHandle(wake_event_);
+#else
     if (wake_read_fd_ >= 0) ::close(wake_read_fd_);
-    // For pipe: close write end too (different fd). For eventfd: same fd, don't double-close.
     if (wake_write_fd_ >= 0 && wake_write_fd_ != wake_read_fd_)
         ::close(wake_write_fd_);
+#endif
 }
 
 Runtime::Runtime(Runtime&& o) noexcept
@@ -357,16 +367,24 @@ Runtime::Runtime(Runtime&& o) noexcept
     , running_(o.running_)
     , needs_clear_(o.needs_clear_)
 {
+#if MAYA_PLATFORM_WIN32
+    wake_event_ = std::exchange(o.wake_event_, platform::invalid_handle);
+#else
     wake_read_fd_  = std::exchange(o.wake_read_fd_, -1);
     wake_write_fd_ = std::exchange(o.wake_write_fd_, -1);
+#endif
 }
 
 Runtime& Runtime::operator=(Runtime&& o) noexcept {
     if (this != &o) {
-        // Close our wake fds before overwriting
+#if MAYA_PLATFORM_WIN32
+        if (wake_event_ != platform::invalid_handle)
+            ::CloseHandle(wake_event_);
+#else
         if (wake_read_fd_ >= 0) ::close(wake_read_fd_);
         if (wake_write_fd_ >= 0 && wake_write_fd_ != wake_read_fd_)
             ::close(wake_write_fd_);
+#endif
 
         alt_terminal_      = std::move(o.alt_terminal_);
         raw_terminal_      = std::move(o.raw_terminal_);
@@ -388,8 +406,12 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         parser_            = std::move(o.parser_);
         running_           = o.running_;
         needs_clear_       = o.needs_clear_;
+#if MAYA_PLATFORM_WIN32
+        wake_event_        = std::exchange(o.wake_event_, platform::invalid_handle);
+#else
         wake_read_fd_      = std::exchange(o.wake_read_fd_, -1);
         wake_write_fd_     = std::exchange(o.wake_write_fd_, -1);
+#endif
     }
     return *this;
 }

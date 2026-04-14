@@ -29,7 +29,7 @@ enum class Os : uint8_t {
 };
 
 inline constexpr Os os =
-#if defined(__linux__)
+#if defined(__linux__) || defined(__CYGWIN__)
     Os::Linux;
 #elif defined(__APPLE__) && defined(__MACH__)
     Os::MacOS;

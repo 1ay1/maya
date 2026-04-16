@@ -63,8 +63,11 @@ public:
         std::string border_label = " " + icon + " Execute ";
 
         auto border_color = Color::rgb(50, 54, 62);
-        if (status_ == BashStatus::Failed)
+        auto border_style = BorderStyle::Round;
+        if (status_ == BashStatus::Failed) {
             border_color = Color::rgb(120, 60, 65);
+            border_style = BorderStyle::Dashed;
+        }
 
         std::vector<Element> rows;
 
@@ -156,7 +159,7 @@ public:
         }
 
         return (dsl::v(std::move(rows))
-            | dsl::border(BorderStyle::Round)
+            | dsl::border(border_style)
             | dsl::bcolor(border_color)
             | dsl::btext(border_label, BorderTextPos::Top, BorderTextAlign::Start)
             | dsl::padding(0, 1, 0, 1)).build();

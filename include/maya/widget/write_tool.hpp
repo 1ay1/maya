@@ -58,10 +58,13 @@ public:
         std::string border_label = " " + icon + " Write ";
 
         auto border_color = Color::rgb(50, 54, 62);
-        if (status_ == WriteStatus::Failed)
+        auto border_style = BorderStyle::Round;
+        if (status_ == WriteStatus::Failed) {
             border_color = Color::rgb(120, 60, 65);
-        else if (status_ == WriteStatus::Written)
+            border_style = BorderStyle::Dashed;
+        } else if (status_ == WriteStatus::Written) {
             border_color = Color::rgb(50, 80, 55);
+        }
 
         std::vector<Element> rows;
 
@@ -166,7 +169,7 @@ public:
         }
 
         return (dsl::v(std::move(rows))
-            | dsl::border(BorderStyle::Round)
+            | dsl::border(border_style)
             | dsl::bcolor(border_color)
             | dsl::btext(border_label, BorderTextPos::Top, BorderTextAlign::Start)
             | dsl::padding(0, 1, 0, 1)).build();

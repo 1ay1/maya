@@ -28,6 +28,7 @@ enum class BorderStyle : uint8_t {
     DoubleSingle,   ///< ╒═╕│╛═╘│  Double horizontal, single vertical.
     Classic,        ///< +-+|+-+|   ASCII-only fallback.
     Arrow,          ///< ↑→↓←       Arrow characters on each side.
+    Dashed,         ///< ╭┄╮┆╯┄╰┆   Rounded corners + triple-dash edges.
 };
 
 // ============================================================================
@@ -118,6 +119,14 @@ struct BorderChars {
                 "\u2193", "\u2193", "\u2193",  // ↓ ↓ ↓
                 "\u2190"                        // ←
             };
+
+        case BorderStyle::Dashed:
+            return {
+                "\u256D", "\u2504", "\u256E",  // ╭ ┄ ╮  (rounded corners,
+                "\u2506",                       // ┆       triple-dash edges)
+                "\u256F", "\u2504", "\u2570",  // ╯ ┄ ╰
+                "\u2506"                        // ┆
+            };
     }
     __builtin_unreachable();
 }
@@ -167,6 +176,9 @@ struct BorderCodepoints {
         case BorderStyle::Arrow:
             return {U'\u2191', U'\u2191', U'\u2191', U'\u2192',
                     U'\u2193', U'\u2193', U'\u2193', U'\u2190'};
+        case BorderStyle::Dashed:
+            return {U'\u256D', U'\u2504', U'\u256E', U'\u2506',
+                    U'\u256F', U'\u2504', U'\u2570', U'\u2506'};
     }
     __builtin_unreachable();
 }

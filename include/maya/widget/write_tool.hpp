@@ -57,13 +57,13 @@ public:
         auto [icon, icon_color] = status_icon();
         std::string border_label = " " + icon + " Write ";
 
-        auto border_color = Color::rgb(50, 54, 62);
+        auto border_color = Color::bright_black();
         auto border_style = BorderStyle::Round;
         if (status_ == WriteStatus::Failed) {
-            border_color = Color::rgb(120, 60, 65);
+            border_color = Color::red();
             border_style = BorderStyle::Dashed;
         } else if (status_ == WriteStatus::Written) {
-            border_color = Color::rgb(50, 80, 55);
+            border_color = Color::green();
         }
 
         std::vector<Element> rows;
@@ -72,8 +72,6 @@ public:
         {
             std::string content = file_path_;
             std::vector<StyledRun> runs;
-            auto path_style = Style{}.with_fg(Color::rgb(171, 178, 191));
-            runs.push_back(StyledRun{0, file_path_.size(), path_style});
 
             if (elapsed_ > 0.0f) {
                 std::string ts = "  " + format_elapsed();
@@ -99,14 +97,14 @@ public:
                     for (int i = 0; i < w; ++i) line += "\xe2\x94\x88";  // ┈
                     return Element{TextElement{
                         .content = std::move(line),
-                        .style = Style{}.with_dim().with_fg(Color::rgb(50, 54, 62)),
+                        .style = Style{}.with_dim(),
                     }};
                 },
                 .layout = {},
             }});
 
-            auto add_prefix_style = Style{}.with_fg(Color::rgb(152, 195, 121)).with_dim();
-            auto code_style = Style{}.with_fg(Color::rgb(152, 195, 121));
+            auto add_prefix_style = Style{}.with_fg(Color::green()).with_dim();
+            auto code_style = Style{}.with_fg(Color::green());
 
             std::string_view sv = content_;
             int shown = 0;
@@ -181,15 +179,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case WriteStatus::Pending:
-                return {"\xe2\x97\x8b", Color::rgb(92, 99, 112)};       // ○
+                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
             case WriteStatus::Writing:
-                return {"\xe2\x97\x8f", Color::rgb(229, 192, 123)};     // ●
+                return {"\xe2\x97\x8f", Color::yellow()};         // ●
             case WriteStatus::Written:
-                return {"\xe2\x9c\x93", Color::rgb(152, 195, 121)};     // ✓
+                return {"\xe2\x9c\x93", Color::green()};          // ✓
             case WriteStatus::Failed:
-                return {"\xe2\x9c\x97", Color::rgb(224, 108, 117)};     // ✗
+                return {"\xe2\x9c\x97", Color::red()};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::rgb(92, 99, 112)};
+        return {"\xe2\x97\x8b", Color::bright_black()};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

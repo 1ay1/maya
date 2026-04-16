@@ -38,12 +38,12 @@ class FlameChart {
 
     // Warm → cool by depth
     static constexpr Color depth_colors[] = {
-        Color::rgb(224, 108, 117),  // red
-        Color::rgb(229, 160,  90),  // orange
-        Color::rgb(229, 192, 123),  // amber
-        Color::rgb(152, 195, 121),  // green
-        Color::rgb( 97, 175, 239),  // blue
-        Color::rgb(198, 120, 221),  // purple
+        Color::red(),
+        Color::bright_red(),
+        Color::yellow(),
+        Color::green(),
+        Color::blue(),
+        Color::magenta(),
     };
     static constexpr int depth_n = 6;
 
@@ -85,8 +85,8 @@ public:
             if (s.depth > max_d) max_d = s.depth;
         max_d = std::min(max_d, max_depth_ - 1);
 
-        auto axis_style = Style{}.with_fg(Color::rgb(92, 99, 112));
-        auto tick_style = Style{}.with_fg(Color::rgb(62, 68, 81));
+        auto axis_style = Style{}.with_dim();
+        auto tick_style = Style{}.with_dim();
 
         std::vector<Element> rows;
 

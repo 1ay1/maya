@@ -134,12 +134,12 @@ public:
         int cur = cursor_();
         bool focused = focus_.focused();
 
-        auto name_style    = Style{}.with_fg(Color::rgb(200, 204, 212));
-        auto desc_style    = Style{}.with_fg(Color::rgb(150, 156, 170));
-        auto sc_style      = Style{}.with_fg(Color::rgb(92, 99, 112));
-        auto active_name   = Style{}.with_fg(Color::rgb(97, 175, 239)).with_bold();
-        auto active_desc   = Style{}.with_fg(Color::rgb(97, 175, 239));
-        auto match_style   = Style{}.with_fg(Color::rgb(229, 192, 123)).with_bold();
+        auto name_style    = Style{};
+        auto desc_style    = Style{}.with_dim();
+        auto sc_style      = Style{}.with_dim();
+        auto active_name   = Style{}.with_fg(Color::blue()).with_bold();
+        auto active_desc   = Style{}.with_fg(Color::blue());
+        auto match_style   = Style{}.with_fg(Color::yellow()).with_bold();
 
         const auto& query = search_.value()();
 
@@ -223,7 +223,7 @@ public:
         if (filtered_.empty()) {
             rows.push_back(Element{TextElement{
                 .content = "  No matching commands",
-                .style = Style{}.with_fg(Color::rgb(92, 99, 112)),
+                .style = Style{}.with_dim(),
             }});
         }
 
@@ -231,8 +231,8 @@ public:
 
         // Wrap search + results in a bordered box
         auto border_color = focused
-            ? Color::rgb(97, 175, 239)
-            : Color::rgb(50, 54, 62);
+            ? Color::blue()
+            : Color::bright_black();
 
         return (dsl::v(
                 search_.build(),
@@ -242,7 +242,7 @@ public:
                         for (int i = 0; i < w; ++i) line += "\xe2\x94\x80"; // "─"
                         return Element{TextElement{
                             .content = std::move(line),
-                            .style = Style{}.with_fg(Color::rgb(50, 54, 62)),
+                            .style = Style{}.with_fg(Color::bright_black()),
                         }};
                     },
                     .layout = {},

@@ -78,12 +78,12 @@ class LogViewer {
 
     [[nodiscard]] static Style level_style(LogLevel lv) {
         switch (lv) {
-            case LogLevel::Debug: return Style{}.with_fg(Color::rgb(92, 99, 112));
-            case LogLevel::Info:  return Style{}.with_fg(Color::rgb(97, 175, 239));
-            case LogLevel::Warn:  return Style{}.with_fg(Color::rgb(229, 192, 123));
-            case LogLevel::Error: return Style{}.with_fg(Color::rgb(224, 108, 117)).with_bold();
+            case LogLevel::Debug: return Style{}.with_dim();
+            case LogLevel::Info:  return Style{}.with_fg(Color::blue());
+            case LogLevel::Warn:  return Style{}.with_fg(Color::yellow());
+            case LogLevel::Error: return Style{}.with_fg(Color::red()).with_bold();
         }
-        return Style{}.with_fg(Color::rgb(150, 156, 170));
+        return Style{}.with_dim();
     }
 
     [[nodiscard]] std::vector<int> filtered_indices() const {
@@ -205,15 +205,15 @@ public:
         if (total == 0) {
             return Element{TextElement{
                 .content = "  No log entries",
-                .style = Style{}.with_fg(Color::rgb(92, 99, 112)),
+                .style = Style{}.with_dim(),
             }};
         }
 
         int start = std::clamp(scroll_offset_, 0, std::max(0, total - visible_));
         int count = std::min(visible_, total - start);
 
-        auto ts_style = Style{}.with_fg(Color::rgb(150, 156, 170));
-        auto msg_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+        auto ts_style = Style{}.with_dim();
+        auto msg_style = Style{};
 
         std::vector<Element> rows;
         rows.reserve(static_cast<size_t>(count) + 1);
@@ -265,7 +265,7 @@ public:
 
         rows.push_back(Element{TextElement{
             .content = std::move(status),
-            .style = Style{}.with_fg(Color::rgb(92, 99, 112)),
+            .style = Style{}.with_dim(),
         }});
 
         return dsl::v(std::move(rows)).build();

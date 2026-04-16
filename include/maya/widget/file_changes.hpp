@@ -50,12 +50,12 @@ class FileChanges {
 
     static Color kind_color(FileChangeKind k) {
         switch (k) {
-            case FileChangeKind::Created:  return Color::rgb(152, 195, 121);
-            case FileChangeKind::Modified: return Color::rgb(229, 192, 123);
-            case FileChangeKind::Deleted:  return Color::rgb(224, 108, 117);
-            case FileChangeKind::Renamed:  return Color::rgb(97, 175, 239);
+            case FileChangeKind::Created:  return Color::green();
+            case FileChangeKind::Modified: return Color::yellow();
+            case FileChangeKind::Deleted:  return Color::red();
+            case FileChangeKind::Renamed:  return Color::blue();
         }
-        return Color::rgb(229, 192, 123);
+        return Color::yellow();
     }
 
 public:
@@ -76,9 +76,8 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        auto lbl = Style{}.with_fg(Color::rgb(127, 132, 142));
-        auto val = Style{}.with_fg(Color::rgb(200, 204, 212));
-        auto dim = Style{}.with_fg(Color::rgb(62, 68, 81));
+        auto lbl = Style{}.with_dim();
+        auto val = Style{};
 
         if (changes_.empty())
             return text("No files changed", lbl);
@@ -103,10 +102,10 @@ public:
             parts.push_back(text(std::to_string(changes_.size()) + " files", val));
             if (total_add > 0)
                 parts.push_back(text(" +" + std::to_string(total_add),
-                    Style{}.with_fg(Color::rgb(152, 195, 121))));
+                    Style{}.with_fg(Color::green())));
             if (total_rm > 0)
                 parts.push_back(text(" -" + std::to_string(total_rm),
-                    Style{}.with_fg(Color::rgb(224, 108, 117))));
+                    Style{}.with_fg(Color::red())));
             return h(std::move(parts)).build();
         }
 
@@ -120,10 +119,10 @@ public:
                 val.with_bold()));
             if (total_add > 0)
                 summary.push_back(text("  +" + std::to_string(total_add),
-                    Style{}.with_fg(Color::rgb(152, 195, 121))));
+                    Style{}.with_fg(Color::green())));
             if (total_rm > 0)
                 summary.push_back(text("  -" + std::to_string(total_rm),
-                    Style{}.with_fg(Color::rgb(224, 108, 117))));
+                    Style{}.with_fg(Color::red())));
             rows.push_back(h(std::move(summary)).build());
         }
 
@@ -154,12 +153,12 @@ public:
 
                 if (c.lines_added > 0)
                     line.push_back(text("+" + std::to_string(c.lines_added),
-                        Style{}.with_fg(Color::rgb(152, 195, 121))));
+                        Style{}.with_fg(Color::green())));
                 if (c.lines_added > 0 && c.lines_removed > 0)
                     line.push_back(text(" "));
                 if (c.lines_removed > 0)
                     line.push_back(text("-" + std::to_string(c.lines_removed),
-                        Style{}.with_fg(Color::rgb(224, 108, 117))));
+                        Style{}.with_fg(Color::red())));
             }
 
             rows.push_back(h(std::move(line)).build());

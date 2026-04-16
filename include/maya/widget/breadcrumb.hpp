@@ -53,9 +53,9 @@ public:
             return Element{TextElement{}};
         }
 
-        auto dim_style = Style{}.with_fg(Color::rgb(92, 99, 112));
-        auto muted_style = Style{}.with_fg(Color::rgb(150, 156, 170));
-        auto active_style = Style{}.with_bold().with_fg(Color::rgb(200, 204, 212));
+        auto dim_style = Style{}.with_dim();
+        auto muted_style = Style{}.with_dim();
+        auto active_style = Style{}.with_bold();
         auto sep_style = dim_style;
 
         std::string content;

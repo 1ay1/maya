@@ -62,10 +62,10 @@ public:
         auto [icon, icon_color] = status_icon();
         std::string border_label = " " + icon + " Execute ";
 
-        auto border_color = Color::rgb(50, 54, 62);
+        auto border_color = Color::bright_black();
         auto border_style = BorderStyle::Round;
         if (status_ == BashStatus::Failed) {
-            border_color = Color::rgb(120, 60, 65);
+            border_color = Color::red();
             border_style = BorderStyle::Dashed;
         }
 
@@ -75,10 +75,8 @@ public:
         {
             std::string content = "$ " + command_;
             std::vector<StyledRun> runs;
-            auto prompt_style = Style{}.with_bold().with_fg(Color::rgb(152, 195, 121));
-            auto cmd_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+            auto prompt_style = Style{}.with_bold().with_fg(Color::green());
             runs.push_back(StyledRun{0, 2, prompt_style});  // "$ "
-            runs.push_back(StyledRun{2, command_.size(), cmd_style});
 
             // Elapsed time at end
             if (elapsed_ > 0.0f) {
@@ -103,7 +101,7 @@ public:
             std::snprintf(buf, sizeof(buf), "exit code %d", exit_code_);
             rows.push_back(Element{TextElement{
                 .content = buf,
-                .style = Style{}.with_fg(Color::rgb(224, 108, 117)).with_dim(),
+                .style = Style{}.with_fg(Color::red()).with_dim(),
             }});
         }
 
@@ -116,14 +114,14 @@ public:
                     for (int i = 0; i < w; ++i) line += "\xe2\x94\x88";  // ┈
                     return Element{TextElement{
                         .content = std::move(line),
-                        .style = Style{}.with_dim().with_fg(Color::rgb(50, 54, 62)),
+                        .style = Style{}.with_dim(),
                     }};
                 },
                 .layout = {},
             }});
 
-            // Output lines
-            auto output_style = Style{}.with_fg(Color::rgb(171, 178, 191));
+            // Output lines — terminal default fg
+            auto output_style = Style{};
             std::string_view sv = output_;
             int line_count = 0;
 
@@ -171,15 +169,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case BashStatus::Pending:
-                return {"\xe2\x97\x8b", Color::rgb(92, 99, 112)};       // ○
+                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
             case BashStatus::Running:
-                return {"\xe2\x97\x8f", Color::rgb(229, 192, 123)};     // ●
+                return {"\xe2\x97\x8f", Color::yellow()};         // ●
             case BashStatus::Success:
-                return {"\xe2\x9c\x93", Color::rgb(152, 195, 121)};     // ✓
+                return {"\xe2\x9c\x93", Color::green()};          // ✓
             case BashStatus::Failed:
-                return {"\xe2\x9c\x97", Color::rgb(224, 108, 117)};     // ✗
+                return {"\xe2\x9c\x97", Color::red()};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::rgb(92, 99, 112)};
+        return {"\xe2\x97\x8b", Color::bright_black()};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

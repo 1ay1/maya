@@ -96,7 +96,7 @@ public:
         if (bindings_.empty()) {
             return Element{TextElement{
                 .content = "  No shortcuts defined",
-                .style = Style{}.with_fg(Color::rgb(92, 99, 112)),
+                .style = Style{}.with_dim(),
             }};
         }
 
@@ -120,9 +120,9 @@ public:
 
                 // Helper: build column from a subset of groups
                 auto make_column = [&](const std::vector<std::string>& col_grps) -> Element {
-                    auto group_style = Style{}.with_bold().with_fg(Color::rgb(200, 204, 212));
-                    auto k_style     = Style{}.with_bold().with_fg(Color::rgb(97, 175, 239));
-                    auto desc_style  = Style{}.with_fg(Color::rgb(171, 178, 191));
+                    auto group_style = Style{}.with_bold();
+                    auto k_style     = Style{}.with_bold().with_fg(Color::blue());
+                    auto desc_style  = Style{};
 
                     std::vector<Element> rows;
                     for (size_t gi = 0; gi < col_grps.size(); ++gi) {
@@ -162,7 +162,7 @@ public:
                 auto wrap_border = [&](Element inner) -> Element {
                     auto node = dsl::v(std::move(inner))
                         | dsl::border(BorderStyle::Round)
-                        | dsl::bcolor(Color::rgb(50, 54, 62))
+                        | dsl::bcolor(Color::bright_black())
                         | dsl::padding(0, 1, 0, 1);
                     if (!title.empty()) {
                         node = std::move(node) | dsl::btext(" " + title + " ",

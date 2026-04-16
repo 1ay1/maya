@@ -43,15 +43,15 @@ struct ColumnDef {
 };
 
 struct TableConfig {
-    Style header_style   = Style{}.with_bold().with_fg(Color::rgb(200, 204, 212));
-    Style row_style      = Style{}.with_fg(Color::rgb(171, 178, 191));
-    Style alt_row_style  = Style{}.with_fg(Color::rgb(150, 156, 170));
-    Style separator_style = Style{}.with_fg(Color::rgb(50, 54, 62));
+    Style header_style   = Style{}.with_bold();
+    Style row_style      = Style{};
+    Style alt_row_style  = Style{}.with_dim();
+    Style separator_style = Style{}.with_fg(Color::bright_black());
     bool stripe_rows     = true;
     int cell_padding     = 1;
     bool show_border     = false;
     std::string title;           // shown in border text when bordered
-    Color border_color   = Color::rgb(50, 54, 62);
+    Color border_color   = Color::bright_black();
 };
 
 class Table {

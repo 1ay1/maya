@@ -30,7 +30,7 @@ class LineChart {
     std::vector<float> data_;
     int height_ = 8;
     std::string label_;
-    Color color_ = Color::rgb(97, 175, 239);
+    Color color_ = Color::blue();
 
 public:
     LineChart() = default;
@@ -160,7 +160,7 @@ private:
 
             runs.push_back(StyledRun{
                 content.size(), y_label.size(),
-                Style{}.with_fg(Color::rgb(92, 99, 112)),
+                Style{}.with_dim(),
             });
             content += y_label;
 
@@ -168,7 +168,7 @@ private:
             std::string sep = " \xe2\x94\x82";  // " │"
             runs.push_back(StyledRun{
                 content.size(), sep.size(),
-                Style{}.with_fg(Color::rgb(50, 54, 62)),
+                Style{}.with_fg(Color::bright_black()),
             });
             content += sep;
 
@@ -213,7 +213,7 @@ private:
             std::vector<StyledRun> label_runs;
             label_runs.push_back(StyledRun{
                 static_cast<size_t>(y_axis_width), label_.size(),
-                Style{}.with_fg(Color::rgb(150, 156, 170)),
+                Style{}.with_dim(),
             });
 
             rows.push_back(Element{TextElement{

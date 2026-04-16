@@ -26,7 +26,7 @@ struct WaterfallEntry {
     std::string label;
     float       start    = 0.f;
     float       duration = 0.f;
-    Color       color    = Color::rgb(97, 175, 239);
+    Color       color    = Color::blue();
     TaskStatus  status   = TaskStatus::Completed;
 };
 
@@ -67,9 +67,9 @@ public:
 
         if (entries_.empty()) return text("");
 
-        auto txt   = Style{}.with_fg(Color::rgb(200, 204, 212));
-        auto muted = Style{}.with_fg(Color::rgb(127, 132, 142));
-        auto dim   = Style{}.with_fg(Color::rgb(62, 68, 81));
+        auto txt   = Style{};
+        auto muted = Style{}.with_dim();
+        auto dim   = Style{}.with_dim();
 
         int w = std::max(4, bar_width_);
 
@@ -115,7 +115,7 @@ public:
                 for (int j = 0; j < static_cast<int>(lbl.size()) && start + j < w; ++j)
                     line[static_cast<size_t>(start + j)] = lbl[static_cast<size_t>(j)];
             }
-            axis.push_back(text(std::move(line), Style{}.with_fg(Color::rgb(92, 99, 112))));
+            axis.push_back(text(std::move(line), Style{}.with_dim()));
             rows.push_back(h(std::move(axis)).build());
         }
 

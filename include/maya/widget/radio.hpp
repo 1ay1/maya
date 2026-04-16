@@ -37,8 +37,8 @@ namespace maya {
 struct RadioConfig {
     std::string selected_indicator   = "\xe2\x97\x8f ";  // "● "
     std::string unselected_indicator = "\xe2\x97\x8b ";  // "○ "
-    Style selected_style   = Style{}.with_bold().with_fg(Color::rgb(97, 175, 239));
-    Style unselected_style = Style{}.with_fg(Color::rgb(150, 156, 170));
+    Style selected_style   = Style{}.with_bold().with_fg(Color::blue());
+    Style unselected_style = Style{}.with_dim();
     int visible_count      = 0;  // 0 = show all
 };
 
@@ -143,7 +143,7 @@ public:
         std::vector<Element> rows;
         rows.reserve(static_cast<size_t>(count));
 
-        auto cursor_bg = Style{}.with_fg(Color::rgb(200, 204, 212));
+        auto cursor_bg = Style{};
 
         for (int i = start; i < start + count; ++i) {
             bool is_selected = (i == sel);
@@ -159,9 +159,9 @@ public:
 
             Style indicator_style;
             if (is_selected) {
-                indicator_style = Style{}.with_fg(Color::rgb(97, 175, 239)).with_bold();
+                indicator_style = Style{}.with_fg(Color::blue()).with_bold();
             } else {
-                indicator_style = Style{}.with_fg(Color::rgb(92, 99, 112));
+                indicator_style = Style{}.with_dim();
             }
 
             runs.push_back(StyledRun{content.size(), indicator.size(), indicator_style});

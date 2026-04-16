@@ -25,13 +25,13 @@ namespace maya {
 
 struct DiffView {
     struct Config {
-        Style add_style    = Style{}.with_fg(Color::rgb(152, 195, 121));
-        Style remove_style = Style{}.with_fg(Color::rgb(224, 108, 117));
-        Style context_style= Style{}.with_fg(Color::rgb(150, 156, 170));
-        Style hunk_style   = Style{}.with_fg(Color::rgb(97, 175, 239)).with_dim();
-        Style header_style = Style{}.with_fg(Color::rgb(97, 175, 239)).with_bold();
-        Style lineno_style = Style{}.with_fg(Color::rgb(92, 99, 112));
-        Color border_color = Color::rgb(50, 54, 62);
+        Style add_style    = Style{}.with_fg(Color::green());
+        Style remove_style = Style{}.with_fg(Color::red());
+        Style context_style= Style{}.with_dim();
+        Style hunk_style   = Style{}.with_fg(Color::blue()).with_dim();
+        Style header_style = Style{}.with_fg(Color::blue()).with_bold();
+        Style lineno_style = Style{}.with_dim();
+        Color border_color = Color::bright_black();
         bool show_border = true;
         bool show_line_numbers = true;
     };

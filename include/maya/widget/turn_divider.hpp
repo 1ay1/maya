@@ -28,12 +28,12 @@ class TurnDivider {
 
     [[nodiscard]] Color role_color() const {
         switch (role_) {
-            case TurnRole::User:      return Color::rgb(97, 175, 239);   // blue
-            case TurnRole::Assistant: return Color::rgb(198, 120, 221);  // purple
-            case TurnRole::System:    return Color::rgb(229, 192, 123);  // amber
-            case TurnRole::Tool:      return Color::rgb(86, 182, 194);   // cyan
+            case TurnRole::User:      return Color::blue();
+            case TurnRole::Assistant: return Color::magenta();
+            case TurnRole::System:    return Color::yellow();
+            case TurnRole::Tool:      return Color::cyan();
         }
-        return Color::rgb(127, 132, 142);
+        return Color::bright_black();
     }
 
     [[nodiscard]] const char* role_label() const {
@@ -72,7 +72,7 @@ public:
 
         Color rc = role_color();
         auto rule_style = Style{}.with_fg(rc).with_dim();
-        auto dim = Style{}.with_fg(Color::rgb(62, 68, 81));
+        auto dim = Style{}.with_dim();
 
         // Build rule segments: ─── ✦ Claude #3 ───
         std::string rule;

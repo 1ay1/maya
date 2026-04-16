@@ -26,8 +26,8 @@ struct ScrollConfig {
     int height = 10;             ///< Visible viewport height in rows
     int scroll_amount = 1;       ///< Rows per scroll step
     bool show_indicator = true;  ///< Show scroll position indicator
-    Color indicator_color  = Color::rgb(50, 54, 62);
-    Color indicator_active = Color::rgb(92, 99, 112);
+    Color indicator_color  = Color::bright_black();
+    Color indicator_active = Color::bright_black();
 };
 
 class Scrollable {

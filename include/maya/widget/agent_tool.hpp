@@ -64,17 +64,17 @@ public:
         auto [icon, icon_color] = status_icon();
         std::string border_label = " " + icon + " Agent ";
 
-        auto border_color = Color::rgb(60, 55, 80);  // subtle purple tint for agents
+        auto border_color = Color::bright_black();
         if (status_ == AgentStatus::Failed)
-            border_color = Color::rgb(120, 60, 65);
+            border_color = Color::red();
         else if (status_ == AgentStatus::Running)
-            border_color = Color::rgb(75, 65, 100);
+            border_color = Color::magenta();
 
         std::vector<Element> rows;
 
         // Description header + model + spinner/elapsed
         {
-            auto desc_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+            auto desc_style = Style{};
 
             if (status_ == AgentStatus::Running) {
                 // Active: description + spinner
@@ -130,7 +130,7 @@ public:
                     for (int i = 0; i < w; ++i) line += "\xe2\x94\x88";  // ┈
                     return Element{TextElement{
                         .content = std::move(line),
-                        .style = Style{}.with_dim().with_fg(Color::rgb(50, 54, 62)),
+                        .style = Style{}.with_dim(),
                     }};
                 },
                 .layout = {},
@@ -154,15 +154,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case AgentStatus::Pending:
-                return {"\xe2\x97\x8b", Color::rgb(92, 99, 112)};       // ○
+                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
             case AgentStatus::Running:
-                return {"\xe2\x97\x8f", Color::rgb(198, 160, 246)};     // ● purple
+                return {"\xe2\x97\x8f", Color::magenta()};        // ●
             case AgentStatus::Completed:
-                return {"\xe2\x9c\x93", Color::rgb(152, 195, 121)};     // ✓
+                return {"\xe2\x9c\x93", Color::green()};          // ✓
             case AgentStatus::Failed:
-                return {"\xe2\x9c\x97", Color::rgb(224, 108, 117)};     // ✗
+                return {"\xe2\x9c\x97", Color::red()};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::rgb(92, 99, 112)};
+        return {"\xe2\x97\x8b", Color::bright_black()};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

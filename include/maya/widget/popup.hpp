@@ -60,23 +60,23 @@ public:
         }
 
         Color border_color;
-        Color text_color;
+        Style text_style;
         std::string icon;
 
         switch (style_) {
             case PopupStyle::Info:
-                border_color = Color::rgb(97, 175, 239);
-                text_color   = Color::rgb(171, 178, 191);
+                border_color = Color::blue();
+                text_style   = Style{};
                 icon = "\xe2\x84\xb9 ";  // ℹ
                 break;
             case PopupStyle::Warning:
-                border_color = Color::rgb(229, 192, 123);
-                text_color   = Color::rgb(229, 192, 123);
+                border_color = Color::yellow();
+                text_style   = Style{}.with_fg(Color::yellow());
                 icon = "\xe2\x9a\xa0 ";  // ⚠
                 break;
             case PopupStyle::Error:
-                border_color = Color::rgb(224, 108, 117);
-                text_color   = Color::rgb(224, 108, 117);
+                border_color = Color::red();
+                text_style   = Style{}.with_fg(Color::red());
                 icon = "\xe2\x9c\x98 ";  // ✘
                 break;
         }
@@ -92,7 +92,7 @@ public:
         runs.push_back(StyledRun{
             .byte_offset = icon.size(),
             .byte_length = content_.size(),
-            .style = Style{}.with_fg(text_color),
+            .style = text_style,
         });
 
         auto text_elem = Element{TextElement{

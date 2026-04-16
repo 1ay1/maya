@@ -58,9 +58,9 @@ public:
         auto [icon, icon_color] = status_icon();
         std::string border_label = " " + icon + " Fetch ";
 
-        auto border_color = Color::rgb(50, 54, 62);
+        auto border_color = Color::bright_black();
         if (status_ == FetchStatus::Failed)
-            border_color = Color::rgb(120, 60, 65);
+            border_color = Color::red();
 
         std::vector<Element> rows;
 
@@ -68,7 +68,7 @@ public:
         {
             std::string content = url_;
             std::vector<StyledRun> runs;
-            auto url_style = Style{}.with_fg(Color::rgb(97, 175, 239)).with_underline();
+            auto url_style = Style{}.with_fg(Color::blue()).with_underline();
             runs.push_back(StyledRun{0, url_.size(), url_style});
 
             if (elapsed_ > 0.0f) {
@@ -98,11 +98,11 @@ public:
 
                 Style code_style;
                 if (status_code_ >= 200 && status_code_ < 300)
-                    code_style = Style{}.with_fg(Color::rgb(152, 195, 121)).with_bold();
+                    code_style = Style{}.with_fg(Color::green()).with_bold();
                 else if (status_code_ >= 300 && status_code_ < 400)
-                    code_style = Style{}.with_fg(Color::rgb(229, 192, 123)).with_bold();
+                    code_style = Style{}.with_fg(Color::yellow()).with_bold();
                 else
-                    code_style = Style{}.with_fg(Color::rgb(224, 108, 117)).with_bold();
+                    code_style = Style{}.with_fg(Color::red()).with_bold();
 
                 runs.push_back(StyledRun{content.size(), full.size(), code_style});
                 content += full;
@@ -135,13 +135,13 @@ public:
                     for (int i = 0; i < w; ++i) line += "\xe2\x94\x88";  // ┈
                     return Element{TextElement{
                         .content = std::move(line),
-                        .style = Style{}.with_dim().with_fg(Color::rgb(50, 54, 62)),
+                        .style = Style{}.with_dim(),
                     }};
                 },
                 .layout = {},
             }});
 
-            auto body_style = Style{}.with_fg(Color::rgb(171, 178, 191));
+            auto body_style = Style{};
             std::string_view sv = body_;
             int shown = 0;
 
@@ -180,15 +180,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case FetchStatus::Pending:
-                return {"\xe2\x97\x8b", Color::rgb(92, 99, 112)};       // ○
+                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
             case FetchStatus::Fetching:
-                return {"\xe2\x97\x8f", Color::rgb(229, 192, 123)};     // ●
+                return {"\xe2\x97\x8f", Color::yellow()};         // ●
             case FetchStatus::Done:
-                return {"\xe2\x9c\x93", Color::rgb(152, 195, 121)};     // ✓
+                return {"\xe2\x9c\x93", Color::green()};          // ✓
             case FetchStatus::Failed:
-                return {"\xe2\x9c\x97", Color::rgb(224, 108, 117)};     // ✗
+                return {"\xe2\x9c\x97", Color::red()};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::rgb(92, 99, 112)};
+        return {"\xe2\x97\x8b", Color::bright_black()};
     }
 
     [[nodiscard]] static std::string http_reason(int code) {

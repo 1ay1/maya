@@ -53,12 +53,12 @@ private:
 
     static LevelInfo level_info(ToastLevel level) {
         switch (level) {
-        case ToastLevel::Info:    return {"\xe2\x84\xb9", Color::rgb(97, 175, 239)};   // ℹ
-        case ToastLevel::Success: return {"\xe2\x9c\x93", Color::rgb(152, 195, 121)};  // ✓
-        case ToastLevel::Warning: return {"\xe2\x9a\xa0", Color::rgb(229, 192, 123)};  // ⚠
-        case ToastLevel::Error:   return {"\xe2\x9c\x97", Color::rgb(224, 108, 117)};  // ✗
+        case ToastLevel::Info:    return {"\xe2\x84\xb9", Color::blue()};    // ℹ
+        case ToastLevel::Success: return {"\xe2\x9c\x93", Color::green()};   // ✓
+        case ToastLevel::Warning: return {"\xe2\x9a\xa0", Color::yellow()};  // ⚠
+        case ToastLevel::Error:   return {"\xe2\x9c\x97", Color::red()};     // ✗
         }
-        return {"\xe2\x84\xb9", Color::rgb(97, 175, 239)};
+        return {"\xe2\x84\xb9", Color::blue()};
     }
 
 public:
@@ -95,13 +95,13 @@ public:
             bool fading = toast.remaining < cfg_.fade_time;
 
             // Border color tinted by severity
-            Color border_color = Color::rgb(50, 54, 62);
+            Color border_color = Color::bright_black();
             if (toast.level == ToastLevel::Error)
-                border_color = Color::rgb(120, 60, 65);
+                border_color = Color::red();
             else if (toast.level == ToastLevel::Warning)
-                border_color = Color::rgb(120, 100, 50);
+                border_color = Color::yellow();
             else if (toast.level == ToastLevel::Success)
-                border_color = Color::rgb(50, 80, 55);
+                border_color = Color::green();
 
             // Border label with icon
             std::string border_label = " ";
@@ -109,7 +109,7 @@ public:
             border_label += " ";
 
             // Message content
-            Style msg_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+            Style msg_style = Style{};
             if (fading) msg_style = msg_style.with_dim();
 
             auto card = (dsl::v(Element{TextElement{
@@ -117,7 +117,7 @@ public:
                         .style = msg_style,
                     }})
                 | dsl::border(BorderStyle::Round)
-                | dsl::bcolor(fading ? Color::rgb(50, 54, 62) : border_color)
+                | dsl::bcolor(fading ? Color::bright_black() : border_color)
                 | dsl::btext(border_label, BorderTextPos::Top, BorderTextAlign::Start)
                 | dsl::padding(0, 1, 0, 1)).build();
 

@@ -39,8 +39,8 @@ struct SliderConfig {
     float max  = 1.0f;
     float step = 0.01f;
     int   width = 0;       // track width in columns; 0 = fill available width
-    Color fill_color   = Color::rgb(97, 175, 239);    // blue
-    Color track_color  = Color::rgb(50, 54, 62);       // dim border
+    Color fill_color   = Color::blue();
+    Color track_color  = Color::bright_black();
     bool  show_percent = true;
 };
 
@@ -149,8 +149,8 @@ private:
         // Label
         if (!label_.empty()) {
             auto label_style = focused
-                ? Style{}.with_fg(Color::rgb(200, 204, 212)).with_bold()
-                : Style{}.with_fg(Color::rgb(171, 178, 191));
+                ? Style{}.with_bold()
+                : Style{};
             runs.push_back(StyledRun{content.size(), label_.size(), label_style});
             content += label_;
             content += "  ";
@@ -183,7 +183,7 @@ private:
             char pct_buf[8];
             std::snprintf(pct_buf, sizeof(pct_buf), "  %d%%", pct);
             std::string pct_str = pct_buf;
-            auto pct_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+            auto pct_style = Style{};
             runs.push_back(StyledRun{content.size(), pct_str.size(), pct_style});
             content += pct_str;
         }

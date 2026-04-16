@@ -100,7 +100,7 @@ public:
             // Build with styled runs: border char in severity color, text dimmed
             std::size_t border_end = 5;  // "  │ " is 5 bytes (2 spaces + 3-byte UTF-8 + space)
             std::size_t content_len = content.size();
-            auto text_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+            auto text_style = Style{};
 
             rows.push_back(Element{TextElement{
                 .content = std::move(content),
@@ -127,13 +127,13 @@ private:
     [[nodiscard]] static constexpr SeverityProps severity_props(Severity sev) noexcept {
         switch (sev) {
             case Severity::Info:
-                return {"\u2139", Color::rgb(97, 175, 239)};    // ℹ blue
+                return {"\u2139", Color::blue()};    // ℹ blue
             case Severity::Success:
-                return {"\u2713", Color::rgb(152, 195, 121)};   // ✓ green
+                return {"\u2713", Color::green()};   // ✓ green
             case Severity::Warning:
-                return {"\u26A0", Color::rgb(229, 192, 123)};   // ⚠ yellow
+                return {"\u26A0", Color::yellow()};  // ⚠ yellow
             case Severity::Error:
-                return {"\u2717", Color::rgb(224, 108, 117)};   // ✗ red
+                return {"\u2717", Color::red()};     // ✗ red
         }
         __builtin_unreachable();
     }

@@ -85,7 +85,7 @@ struct ComponentElement {
     /// layout engine calls this instead of the default {max_width, 1}.
     /// This lets components like Scrollable report their content height
     /// so they size correctly in auto_height (unconstrained) layouts.
-    std::function<Size(int max_width)> measure;
+    std::function<Size(int max_width)> measure = nullptr;
 
     /// Layout properties — participates in flexbox just like BoxElement.
     FlexStyle layout{};

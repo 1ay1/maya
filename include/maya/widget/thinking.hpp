@@ -55,8 +55,8 @@ public:
         std::vector<Element> elems;
         elems.push_back(std::move(header));
 
-        auto gutter_style = Style{}.with_fg(Color::rgb(50, 54, 62));
-        auto text_style = Style{}.with_italic().with_fg(Color::rgb(150, 156, 170));
+        auto gutter_style = Style{}.with_fg(Color::bright_black());
+        auto text_style = Style{}.with_italic().with_dim();
 
         std::string_view sv = content_;
         int line_count = 0;
@@ -104,8 +104,8 @@ private:
             ? "  \xe2\x96\xbc"   // "  ▼"
             : "  \xe2\x96\xb6";  // "  ▶"
 
-        auto label_style = Style{}.with_fg(Color::rgb(150, 156, 170));
-        auto chev_style = Style{}.with_fg(Color::rgb(92, 99, 112));
+        auto label_style = Style{}.with_dim();
+        auto chev_style = Style{}.with_dim();
 
         if (active_) {
             // Active: "Thinking..." + spinner + chevron

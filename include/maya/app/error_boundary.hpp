@@ -56,15 +56,15 @@ private:
     [[nodiscard]] Element render_error() const {
         return detail::vstack()
             .border(BorderStyle::Round)
-            .border_color(Color::rgb(220, 50, 50))
+            .border_color(Color::red())
             .padding(0, 1, 0, 1)(
                 Element{TextElement{
                     .content = "\xe2\x9a\xa0 Render Error",  // ⚠ Render Error
-                    .style   = Style{}.with_bold().with_fg(Color::rgb(220, 50, 50)),
+                    .style   = Style{}.with_bold().with_fg(Color::red()),
                 }},
                 Element{TextElement{
                     .content = last_error_,
-                    .style   = Style{}.with_fg(Color::rgb(180, 180, 190)),
+                    .style   = Style{}.with_dim(),
                 }}
             );
     }

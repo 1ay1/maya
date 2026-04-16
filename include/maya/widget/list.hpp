@@ -49,11 +49,11 @@ struct ListItem {
 struct ListConfig {
     std::string indicator      = "\xe2\x96\xb8 ";  // "▸ "
     std::string inactive_prefix = "  ";
-    Style active_style   = Style{}.with_bold().with_fg(Color::rgb(97, 175, 239));
-    Style inactive_style = Style{}.with_fg(Color::rgb(200, 204, 212));
-    Style desc_style     = Style{}.with_fg(Color::rgb(150, 156, 170));
-    Style dim_style      = Style{}.with_fg(Color::rgb(92, 99, 112));
-    Style filter_style   = Style{}.with_fg(Color::rgb(229, 192, 123));
+    Style active_style   = Style{}.with_bold().with_fg(Color::blue());
+    Style inactive_style = Style{};
+    Style desc_style     = Style{}.with_dim();
+    Style dim_style      = Style{}.with_dim();
+    Style filter_style   = Style{}.with_fg(Color::yellow());
     int visible_count    = 10;
     bool filterable      = false;
 };

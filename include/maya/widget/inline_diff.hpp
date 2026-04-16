@@ -21,13 +21,13 @@
 namespace maya {
 
 struct InlineDiffConfig {
-    Color add_fg      = Color::rgb(152, 195, 121);
-    Color del_fg      = Color::rgb(224, 108, 117);
-    Color add_bg      = Color::rgb(30, 60, 35);    // word-level highlight
-    Color del_bg      = Color::rgb(60, 30, 30);    // word-level highlight
-    Color add_line_bg = Color::rgb(18, 35, 22);    // subtle whole-line tint
-    Color del_line_bg = Color::rgb(35, 18, 18);    // subtle whole-line tint
-    Color same_fg     = Color::rgb(200, 204, 212);
+    Color add_fg      = Color::green();
+    Color del_fg      = Color::red();
+    Color add_bg      = Color::green();    // word-level highlight
+    Color del_bg      = Color::red();      // word-level highlight
+    Color add_line_bg = Color::black();    // subtle whole-line tint
+    Color del_line_bg = Color::black();    // subtle whole-line tint
+    Color same_fg     = Color::white();
     bool  show_header = true;
 };
 
@@ -145,10 +145,10 @@ public:
         // File header
         if (cfg_.show_header && !label_.empty()) {
             rows.push_back(h(
-                text("\xe2\x94\x80\xe2\x94\x80 ", Style{}.with_fg(Color::rgb(62, 68, 81))), // ──
-                text(label_, Style{}.with_fg(Color::rgb(200, 204, 212)).with_bold()),
+                text("\xe2\x94\x80\xe2\x94\x80 ", Style{}.with_dim()), // ──
+                text(label_, Style{}.with_bold()),
                 text(" \xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80",
-                     Style{}.with_fg(Color::rgb(62, 68, 81))) // ─────
+                     Style{}.with_dim()) // ─────
             ).build());
         }
 

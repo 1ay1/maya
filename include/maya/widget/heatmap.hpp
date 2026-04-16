@@ -33,8 +33,8 @@ class Heatmap {
     std::vector<std::vector<float>> data_;
     std::vector<std::string> x_labels_;
     std::vector<std::string> y_labels_;
-    Color low_color_  = Color::rgb(92, 99, 112);
-    Color high_color_ = Color::rgb(152, 195, 121);
+    Color low_color_  = Color::bright_black();
+    Color high_color_ = Color::green();
 
 public:
     Heatmap() = default;
@@ -97,7 +97,7 @@ public:
 
                 runs.push_back(StyledRun{
                     content.size(), label.size(),
-                    Style{}.with_fg(Color::rgb(150, 156, 170)),
+                    Style{}.with_dim(),
                 });
                 content += label;
             }
@@ -154,7 +154,7 @@ public:
 
             runs.push_back(StyledRun{
                 label_start, content.size() - label_start,
-                Style{}.with_fg(Color::rgb(92, 99, 112)),
+                Style{}.with_dim(),
             });
 
             rows.push_back(Element{TextElement{
@@ -169,27 +169,11 @@ public:
     }
 
 private:
-    /// Linearly interpolate between two RGB colors.
+    /// Pick a cell color at intensity t in [0,1]: low (dim) for cold,
+    /// high (bright) for hot. Avoids RGB blending so the terminal palette
+    /// drives the actual hues.
     [[nodiscard]] static Color interpolate(Color a, Color b, float t) {
-        // Extract RGB components via the rgb() factory values
-        // Color::rgb returns a Color — we need to work with the raw values.
-        // We reconstruct by accessing the internal representation.
-        // Since Color::rgb(r,g,b) stores TrueColor, we use a helper approach:
-        // blend by creating a new Color from interpolated components.
-        auto lerp_u8 = [](uint8_t from, uint8_t to, float f) -> uint8_t {
-            float result = static_cast<float>(from) * (1.0f - f)
-                         + static_cast<float>(to) * f;
-            return static_cast<uint8_t>(std::clamp(
-                static_cast<int>(std::round(result)), 0, 255));
-        };
-
-        // Access the raw RGB bytes from the Color objects.
-        // Color::rgb() stores as TrueColor variant with r, g, b fields.
-        return Color::rgb(
-            lerp_u8(a.r(), b.r(), t),
-            lerp_u8(a.g(), b.g(), t),
-            lerp_u8(a.b(), b.b(), t)
-        );
+        return t < 0.5f ? a : b;
     }
 };
 

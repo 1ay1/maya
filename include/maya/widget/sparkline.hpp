@@ -30,9 +30,9 @@ namespace maya {
 // ============================================================================
 
 struct SparklineConfig {
-    Color color           = Color::rgb(97, 175, 239);
-    Style label_style     = Style{}.with_fg(Color::rgb(200, 204, 212));
-    Style value_style     = Style{}.with_fg(Color::rgb(150, 156, 170));
+    Color color           = Color::blue();
+    Style label_style     = Style{};
+    Style value_style     = Style{}.with_dim();
     bool show_min_max     = false;
     bool show_last        = false;
 };

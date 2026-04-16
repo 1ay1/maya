@@ -5,10 +5,10 @@
 // Sub-character precision using Unicode eighth-blocks.
 //
 //   ContextWindow ctx(200000);
-//   ctx.add_segment("System",   12400, Color::rgb(97, 175, 239));
-//   ctx.add_segment("History",  89200, Color::rgb(198, 120, 221));
-//   ctx.add_segment("Tools",    32100, Color::rgb(229, 192, 123));
-//   ctx.add_segment("Response", 11534, Color::rgb(152, 195, 121));
+//   ctx.add_segment("System",   12400, Color::blue());
+//   ctx.add_segment("History",  89200, Color::magenta());
+//   ctx.add_segment("Tools",    32100, Color::yellow());
+//   ctx.add_segment("Response", 11534, Color::green());
 //   auto ui = ctx.build();
 
 #include <algorithm>
@@ -26,7 +26,7 @@ namespace maya {
 struct ContextSegment {
     std::string label;
     int         tokens = 0;
-    Color       color  = Color::rgb(97, 175, 239);
+    Color       color  = Color::blue();
 };
 
 class ContextWindow {
@@ -88,7 +88,7 @@ public:
     void set_show_labels(bool b) { show_labels_ = b; }
     void set_show_percent(bool b) { show_percent_ = b; }
 
-    void add_segment(std::string label, int tokens, Color color = Color::rgb(97, 175, 239)) {
+    void add_segment(std::string label, int tokens, Color color = Color::blue()) {
         segments_.push_back({std::move(label), tokens, color});
     }
 
@@ -111,12 +111,12 @@ public:
         double used_pct = static_cast<double>(total_used) / max_tok * 100.0;
 
         // Color coding: green <50%, yellow 50-80%, red >80%
-        Color pct_color = used_pct > 80.0 ? Color::rgb(224, 108, 117)
-                        : used_pct > 50.0 ? Color::rgb(229, 192, 123)
-                        :                    Color::rgb(152, 195, 121);
+        Color pct_color = used_pct > 80.0 ? Color::red()
+                        : used_pct > 50.0 ? Color::yellow()
+                        :                    Color::green();
 
-        auto muted = Style{}.with_fg(Color::rgb(127, 132, 142));
-        auto dim   = Style{}.with_fg(Color::rgb(62, 68, 81));
+        auto muted = Style{}.with_dim();
+        auto dim   = Style{}.with_dim();
 
         std::vector<Element> rows;
 
@@ -131,7 +131,7 @@ public:
             rows.push_back(h(
                 text(std::string(pct_buf), Style{}.with_fg(pct_color).with_bold()),
                 text(" used", muted),
-                text(std::move(counts), Style{}.with_fg(Color::rgb(171, 178, 191)))
+                text(std::move(counts), Style{})
             ).build());
         }
 
@@ -175,7 +175,7 @@ public:
 
                 rows.push_back(h(
                     text("\xe2\x96\x90 ", Style{}.with_fg(seg.color)),  // ▐
-                    text(seg.label, Style{}.with_fg(Color::rgb(200, 204, 212))),
+                    text(seg.label, Style{}),
                     text(" " + make_dots(dot_count) + " ", dim),
                     text(std::move(suffix), muted)
                 ).build());
@@ -193,11 +193,11 @@ public:
                 int suffix_cols = static_cast<int>(suffix.size());
                 int dot_count = std::max(2, w - label_cols - suffix_cols - 1);
 
-                auto green = Style{}.with_fg(Color::rgb(152, 195, 121));
+                auto green = Style{}.with_fg(Color::green());
                 rows.push_back(h(
                     text("  Available", green),
                     text(" " + make_dots(dot_count) + " ", dim),
-                    text(std::move(suffix), Style{}.with_fg(Color::rgb(152, 195, 121)).with_dim())
+                    text(std::move(suffix), Style{}.with_fg(Color::green()).with_dim())
                 ).build());
             }
         }

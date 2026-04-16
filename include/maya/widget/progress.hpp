@@ -31,8 +31,8 @@ namespace maya {
 
 struct ProgressConfig {
     int   width      = 0;       // bar width in columns; 0 = fill available width
-    Color fill_color = Color::rgb(97, 175, 239);
-    Color bg_color   = Color::rgb(50, 54, 62);
+    Color fill_color = Color::blue();
+    Color bg_color   = Color::bright_black();
     bool  show_track = true;
     bool  show_percentage = true;
 };
@@ -93,7 +93,7 @@ public:
 
         // Label
         if (!label_.empty()) {
-            auto label_style = Style{}.with_fg(Color::rgb(171, 178, 191));
+            auto label_style = Style{};
             runs.push_back(StyledRun{content.size(), label_.size(), label_style});
             content += label_;
             content += "  ";
@@ -134,7 +134,7 @@ public:
                 static_cast<int>(value_ * 100.0f));
             std::string pct = pct_buf;
             runs.push_back(StyledRun{content.size(), pct.size(),
-                Style{}.with_fg(Color::rgb(200, 204, 212))});
+                Style{}});
             content += pct;
         }
 

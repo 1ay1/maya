@@ -24,7 +24,7 @@ namespace maya {
 struct Link {
     std::string text;
     std::string url;
-    Style link_style = Style{}.with_fg(Color::rgb(97, 175, 239)).with_underline();
+    Style link_style = Style{}.with_fg(Color::blue()).with_underline();
     bool show_icon = false;
 
     Link() = default;

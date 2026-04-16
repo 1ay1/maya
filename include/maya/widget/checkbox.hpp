@@ -97,13 +97,13 @@ public:
         // Checkbox indicator
         std::string indicator = is_checked ? "[x]" : "[ ]";
         auto indicator_style = is_checked
-            ? Style{}.with_fg(Color::rgb(152, 195, 121)).with_bold()  // green
-            : Style{}.with_fg(Color::rgb(92, 99, 112));               // dim
+            ? Style{}.with_fg(Color::green()).with_bold()  // green
+            : Style{}.with_dim();                          // dim
 
         if (focused) {
             indicator_style = is_checked
-                ? Style{}.with_fg(Color::rgb(152, 195, 121)).with_bold()
-                : Style{}.with_fg(Color::rgb(97, 175, 239));  // blue when focused
+                ? Style{}.with_fg(Color::green()).with_bold()
+                : Style{}.with_fg(Color::blue());  // blue when focused
         }
 
         runs.push_back(StyledRun{content.size(), indicator.size(), indicator_style});
@@ -114,8 +114,8 @@ public:
         runs.push_back(StyledRun{content.size() - 1, 1, Style{}});
 
         auto label_style = focused
-            ? Style{}.with_fg(Color::rgb(200, 204, 212))
-            : Style{}.with_fg(Color::rgb(171, 178, 191));
+            ? Style{}
+            : Style{}.with_dim();
 
         runs.push_back(StyledRun{content.size(), label_.size(), label_style});
         content += label_;
@@ -200,8 +200,8 @@ public:
             // ━━━●
             std::string track = "\xe2\x94\x81\xe2\x94\x81\xe2\x94\x81";  // ━━━
             std::string knob  = "\xe2\x97\x8f";                            // ●
-            auto track_style = Style{}.with_fg(Color::rgb(152, 195, 121)); // green
-            auto knob_style  = Style{}.with_fg(Color::rgb(152, 195, 121)).with_bold();
+            auto track_style = Style{}.with_fg(Color::green()); // green
+            auto knob_style  = Style{}.with_fg(Color::green()).with_bold();
             runs.push_back(StyledRun{content.size(), track.size(), track_style});
             content += track;
             runs.push_back(StyledRun{content.size(), knob.size(), knob_style});
@@ -210,8 +210,8 @@ public:
             // ◯━━━
             std::string knob  = "\xe2\x97\xaf";                            // ◯
             std::string track = "\xe2\x94\x81\xe2\x94\x81\xe2\x94\x81";  // ━━━
-            auto knob_style  = Style{}.with_fg(Color::rgb(92, 99, 112));
-            auto track_style = Style{}.with_fg(Color::rgb(92, 99, 112));
+            auto knob_style  = Style{}.with_dim();
+            auto track_style = Style{}.with_dim();
             runs.push_back(StyledRun{content.size(), knob.size(), knob_style});
             content += knob;
             runs.push_back(StyledRun{content.size(), track.size(), track_style});
@@ -223,8 +223,8 @@ public:
         runs.push_back(StyledRun{content.size() - 2, 2, Style{}});
 
         auto label_style = focused
-            ? Style{}.with_fg(Color::rgb(200, 204, 212))
-            : Style{}.with_fg(Color::rgb(171, 178, 191));
+            ? Style{}
+            : Style{}.with_dim();
 
         runs.push_back(StyledRun{content.size(), label_.size(), label_style});
         content += label_;

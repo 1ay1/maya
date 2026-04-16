@@ -26,10 +26,10 @@ namespace maya {
 struct ActivityBar {
     struct Config {
         Config() = default;
-        Style separator_style = Style{}.with_dim().with_fg(Color::rgb(50, 54, 62));
-        Style label_style     = Style{}.with_fg(Color::rgb(150, 156, 170));
-        Style value_style     = Style{}.with_fg(Color::rgb(200, 204, 212));
-        Style accent_style    = Style{}.with_fg(Color::rgb(97, 175, 239));
+        Style separator_style = Style{}.with_dim().with_fg(Color::bright_black());
+        Style label_style     = Style{}.with_dim();
+        Style value_style     = Style{};
+        Style accent_style    = Style{}.with_fg(Color::blue());
     };
 
     struct Section {
@@ -144,11 +144,11 @@ public:
             if (has_prev) append_separator();
             Style ctx_style;
             if (context_pct_ < 60)
-                ctx_style = Style{}.with_fg(Color::rgb(152, 195, 121));
+                ctx_style = Style{}.with_fg(Color::green());
             else if (context_pct_ <= 80)
-                ctx_style = Style{}.with_fg(Color::rgb(229, 192, 123));
+                ctx_style = Style{}.with_fg(Color::yellow());
             else
-                ctx_style = Style{}.with_fg(Color::rgb(224, 108, 117));
+                ctx_style = Style{}.with_fg(Color::red());
             append("ctx " + std::to_string(context_pct_) + "%", ctx_style);
             has_prev = true;
         }

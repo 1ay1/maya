@@ -25,23 +25,23 @@ class ModelBadge {
     };
 
     [[nodiscard]] ModelInfo resolve() const {
-        // Opus: purple
+        // Opus: magenta
         if (model_.find("opus") != std::string::npos)
-            return {"Opus", Color::rgb(198, 120, 221)};
+            return {"Opus", Color::magenta()};
         // Sonnet: blue
         if (model_.find("sonnet") != std::string::npos)
-            return {"Sonnet", Color::rgb(97, 175, 239)};
+            return {"Sonnet", Color::blue()};
         // Haiku: green
         if (model_.find("haiku") != std::string::npos)
-            return {"Haiku", Color::rgb(152, 195, 121)};
-        // GPT models: teal
+            return {"Haiku", Color::green()};
+        // GPT models: cyan
         if (model_.find("gpt") != std::string::npos)
-            return {"GPT", Color::rgb(86, 182, 194)};
-        // Gemini: amber
+            return {"GPT", Color::cyan()};
+        // Gemini: yellow
         if (model_.find("gemini") != std::string::npos)
-            return {"Gemini", Color::rgb(229, 192, 123)};
+            return {"Gemini", Color::yellow()};
         // Unknown
-        return {model_, Color::rgb(171, 178, 191)};
+        return {model_, Color::white()};
     }
 
     // Extract version from model ID (e.g., "4-6" from "claude-opus-4-6")

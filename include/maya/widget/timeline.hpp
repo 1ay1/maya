@@ -37,9 +37,9 @@ class Timeline {
     int  frame_          = 0;
     int  track_width_    = 40;
 
-    static constexpr Color pending_color    = Color::rgb(92, 99, 112);
-    static constexpr Color inprogress_color = Color::rgb(97, 175, 239);
-    static constexpr Color completed_color  = Color::rgb(152, 195, 121);
+    static constexpr Color pending_color    = Color::bright_black();
+    static constexpr Color inprogress_color = Color::blue();
+    static constexpr Color completed_color  = Color::green();
 
     static Color status_color(TaskStatus s) {
         switch (s) {
@@ -82,9 +82,9 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        auto txt   = Style{}.with_fg(Color::rgb(200, 204, 212));
-        auto muted = Style{}.with_fg(Color::rgb(127, 132, 142));
-        auto dim   = Style{}.with_fg(Color::rgb(62, 68, 81));
+        auto txt   = Style{};
+        auto muted = Style{}.with_dim();
+        auto dim   = Style{}.with_dim();
 
         std::vector<Element> rows;
 

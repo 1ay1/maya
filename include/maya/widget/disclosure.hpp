@@ -21,10 +21,10 @@ struct Disclosure {
     struct Config {
         Config() = default;
         std::string label;
-        Style label_style  = Style{}.with_fg(Color::rgb(150, 156, 170));
+        Style label_style  = Style{}.with_dim();
         std::string open_icon   = "\xe2\x96\xbc";   // ▼
         std::string closed_icon = "\xe2\x96\xb6";    // ▶
-        Style icon_style   = Style{}.with_fg(Color::rgb(92, 99, 112));
+        Style icon_style   = Style{}.with_dim();
     };
 
 private:
@@ -52,7 +52,7 @@ public:
         auto header = build_header();
 
         // Content with a left-border indent (│ style) like Zed
-        auto indent_color = Color::rgb(50, 54, 62);
+        auto indent_color = Color::bright_black();
         auto bordered_content = dsl::h(
             Element{TextElement{
                 .content = "\xe2\x94\x82 ",  // "│ "

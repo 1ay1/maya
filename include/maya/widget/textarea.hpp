@@ -155,10 +155,10 @@ public:
             if (gutter_w < 2) gutter_w = 2;
         }
 
-        auto text_style    = Style{}.with_fg(Color::rgb(200, 204, 212));
-        auto dim_style     = Style{}.with_fg(Color::rgb(92, 99, 112));
+        auto text_style    = Style{};
+        auto dim_style     = Style{}.with_dim();
         auto cursor_style  = Style{}.with_inverse();
-        auto gutter_sep    = Style{}.with_fg(Color::rgb(50, 54, 62));
+        auto gutter_sep    = Style{}.with_fg(Color::bright_black());
 
         // Empty state
         if (val.empty() && !placeholder_.empty() && !focused) {
@@ -166,7 +166,7 @@ public:
                 .content = placeholder_,
                 .style = dim_style,
             }};
-            auto border_color = Color::rgb(50, 54, 62);
+            auto border_color = Color::bright_black();
             return (dsl::v(std::move(inner))
                 | dsl::border(BorderStyle::Round) | dsl::bcolor(border_color)
                 | dsl::padding(0, 1, 0, 1)).build();
@@ -189,7 +189,7 @@ public:
                 std::snprintf(num_buf, sizeof(num_buf), "%*d", gutter_w, i + 1);
                 std::string num_str = num_buf;
                 auto num_style = is_cursor_line
-                    ? Style{}.with_fg(Color::rgb(171, 178, 191))
+                    ? Style{}
                     : dim_style;
                 runs.push_back(StyledRun{content.size(), num_str.size(), num_style});
                 content += num_str;
@@ -258,8 +258,8 @@ public:
 
         auto inner = dsl::v(std::move(rows)).build();
         auto border_color = focused
-            ? Color::rgb(97, 175, 239)
-            : Color::rgb(50, 54, 62);
+            ? Color::blue()
+            : Color::bright_black();
 
         return (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round) | dsl::bcolor(border_color)

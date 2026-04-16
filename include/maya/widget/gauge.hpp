@@ -37,14 +37,14 @@ enum class GaugeStyle : uint8_t {
 class Gauge {
     float value_ = 0.0f;
     std::string label_;
-    Color color_ = Color::rgb(97, 175, 239);
+    Color color_ = Color::blue();
     GaugeStyle style_ = GaugeStyle::Arc;
 
 public:
     Gauge() = default;
 
     explicit Gauge(float value, std::string label = {},
-                   Color color = Color::rgb(97, 175, 239),
+                   Color color = Color::blue(),
                    GaugeStyle style = GaugeStyle::Arc)
         : value_(std::clamp(value, 0.0f, 1.0f))
         , label_(std::move(label))
@@ -79,7 +79,7 @@ private:
 
         auto pct_elem = Element{TextElement{
             .content = pct_str,
-            .style = Style{}.with_fg(Color::rgb(200, 204, 212)).with_bold(),
+            .style = Style{}.with_bold(),
         }};
 
         // Label below percentage
@@ -87,7 +87,7 @@ private:
         if (!label_.empty()) {
             label_elem = Element{TextElement{
                 .content = label_,
-                .style = Style{}.with_fg(Color::rgb(150, 156, 170)),
+                .style = Style{}.with_dim(),
             }};
         }
 
@@ -123,7 +123,7 @@ private:
                 if (!empty_str.empty()) {
                     runs.push_back(StyledRun{
                         content.size(), empty_str.size(),
-                        Style{}.with_fg(Color::rgb(50, 54, 62)),
+                        Style{}.with_fg(Color::bright_black()),
                     });
                     content += empty_str;
                 }
@@ -146,7 +146,7 @@ private:
 
         return (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round)
-            | dsl::bcolor(Color::rgb(50, 54, 62))
+            | dsl::bcolor(Color::bright_black())
             | dsl::padding(0, 1)).build();
     }
 
@@ -182,7 +182,7 @@ private:
             static_cast<int>(std::round(static_cast<double>(value_) * 100.0)));
         rows.push_back(Element{TextElement{
             .content = std::string(pct_buf),
-            .style = Style{}.with_fg(Color::rgb(200, 204, 212)).with_bold(),
+            .style = Style{}.with_bold(),
         }});
 
         // Bar rows from top to bottom
@@ -198,7 +198,7 @@ private:
                 fg = color_;
             } else {
                 block = "\xe2\x94\x80";  // ─
-                fg = Color::rgb(50, 54, 62);
+                fg = Color::bright_black();
             }
 
             rows.push_back(Element{TextElement{
@@ -211,7 +211,7 @@ private:
         if (!label_.empty()) {
             rows.push_back(Element{TextElement{
                 .content = label_,
-                .style = Style{}.with_fg(Color::rgb(150, 156, 170)),
+                .style = Style{}.with_dim(),
             }});
         }
 

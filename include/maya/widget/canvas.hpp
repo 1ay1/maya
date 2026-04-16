@@ -10,8 +10,8 @@
 //
 // Usage:
 //   PixelCanvas c(40, 10);
-//   c.set_pixel(5, 3, Color::rgb(224, 108, 117));
-//   c.line(0, 0, 39, 19, Color::rgb(97, 175, 239));
+//   c.set_pixel(5, 3, Color::red());
+//   c.line(0, 0, 39, 19, Color::blue());
 //   auto ui = c.build();
 
 #include <algorithm>
@@ -30,7 +30,7 @@ class PixelCanvas {
     int height_ = 0;  // cell height (pixel height = height_ * 2)
     std::vector<Color> top_pixels_;     // top half of each cell
     std::vector<Color> bottom_pixels_;  // bottom half of each cell
-    Color bg_ = Color::rgb(0, 0, 0);   // default background / clear color
+    Color bg_ = Color::black();   // default background / clear color
 
     [[nodiscard]] size_t idx(int x, int y_cell) const {
         return static_cast<size_t>(y_cell * width_ + x);
@@ -41,8 +41,8 @@ public:
 
     PixelCanvas(int width, int height)
         : width_(width), height_(height),
-          top_pixels_(static_cast<size_t>(width * height), Color::rgb(0, 0, 0)),
-          bottom_pixels_(static_cast<size_t>(width * height), Color::rgb(0, 0, 0)) {}
+          top_pixels_(static_cast<size_t>(width * height), Color::black()),
+          bottom_pixels_(static_cast<size_t>(width * height), Color::black()) {}
 
     // -- Accessors --
     [[nodiscard]] int width()        const noexcept { return width_; }

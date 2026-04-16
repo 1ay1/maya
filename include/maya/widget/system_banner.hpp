@@ -30,12 +30,12 @@ class SystemBanner {
 
     [[nodiscard]] Color level_color() const {
         switch (level_) {
-            case BannerLevel::Info:    return Color::rgb(97, 175, 239);
-            case BannerLevel::Success: return Color::rgb(152, 195, 121);
-            case BannerLevel::Warning: return Color::rgb(229, 192, 123);
-            case BannerLevel::Error:   return Color::rgb(224, 108, 117);
+            case BannerLevel::Info:    return Color::blue();
+            case BannerLevel::Success: return Color::green();
+            case BannerLevel::Warning: return Color::yellow();
+            case BannerLevel::Error:   return Color::red();
         }
-        return Color::rgb(97, 175, 239);
+        return Color::blue();
     }
 
     [[nodiscard]] const char* level_icon() const {
@@ -79,7 +79,7 @@ public:
         parts.push_back(text(" " + message_, Style{}.with_fg(lc)));
 
         if (dismissable_) {
-            parts.push_back(text("  [esc]", Style{}.with_fg(Color::rgb(92, 99, 112))));
+            parts.push_back(text("  [esc]", Style{}.with_dim()));
         }
 
         parts.push_back(text(" " + rule, line_style));

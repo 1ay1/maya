@@ -80,9 +80,9 @@ public:
         std::string tool_name = (kind_ == SearchKind::Grep) ? "Grep" : "Glob";
         std::string border_label = " " + icon + " " + tool_name + " ";
 
-        auto border_color = Color::rgb(50, 54, 62);
+        auto border_color = Color::bright_black();
         if (status_ == SearchStatus::Failed)
-            border_color = Color::rgb(120, 60, 65);
+            border_color = Color::red();
 
         std::vector<Element> rows;
 
@@ -91,7 +91,7 @@ public:
             std::string content;
             std::vector<StyledRun> runs;
 
-            auto pattern_style = Style{}.with_fg(Color::rgb(229, 192, 123));
+            auto pattern_style = Style{}.with_fg(Color::yellow());
             auto summary_style = Style{}.with_dim();
 
             if (!pattern_.empty()) {
@@ -134,16 +134,16 @@ public:
                     for (int i = 0; i < w; ++i) line += "\xe2\x94\x88";  // ┈
                     return Element{TextElement{
                         .content = std::move(line),
-                        .style = Style{}.with_dim().with_fg(Color::rgb(50, 54, 62)),
+                        .style = Style{}.with_dim().with_fg(Color::bright_black()),
                     }};
                 },
                 .layout = {},
             }});
 
-            auto file_style = Style{}.with_fg(Color::rgb(97, 175, 239)).with_bold();
-            auto lineno_style = Style{}.with_fg(Color::rgb(92, 99, 112));
-            auto pipe_style = Style{}.with_fg(Color::rgb(50, 54, 62));
-            auto match_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+            auto file_style = Style{}.with_fg(Color::blue()).with_bold();
+            auto lineno_style = Style{}.with_dim();
+            auto pipe_style = Style{}.with_fg(Color::bright_black());
+            auto match_style = Style{};
 
             for (auto const& group : groups_) {
                 // File header
@@ -213,15 +213,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case SearchStatus::Pending:
-                return {"\xe2\x97\x8b", Color::rgb(92, 99, 112)};       // ○
+                return {"\xe2\x97\x8b", Color::bright_black()};       // ○
             case SearchStatus::Searching:
-                return {"\xe2\x97\x8f", Color::rgb(229, 192, 123)};     // ●
+                return {"\xe2\x97\x8f", Color::yellow()};             // ●
             case SearchStatus::Done:
-                return {"\xe2\x9c\x93", Color::rgb(152, 195, 121)};     // ✓
+                return {"\xe2\x9c\x93", Color::green()};              // ✓
             case SearchStatus::Failed:
-                return {"\xe2\x9c\x97", Color::rgb(224, 108, 117)};     // ✗
+                return {"\xe2\x9c\x97", Color::red()};                // ✗
         }
-        return {"\xe2\x97\x8b", Color::rgb(92, 99, 112)};
+        return {"\xe2\x97\x8b", Color::bright_black()};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

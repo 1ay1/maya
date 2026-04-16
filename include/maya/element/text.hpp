@@ -133,13 +133,13 @@ struct StyledRun {
 
 struct TextElement {
     std::string content;
-    Style       style;
+    Style       style = {};
     TextWrap    wrap = TextWrap::Wrap;
 
     /// Styled runs within content.  When non-empty, the renderer paints each
     /// run with its own style instead of using the base `style` for the whole
     /// element.  Runs must cover the entire content in order and not overlap.
-    std::vector<StyledRun> runs;
+    std::vector<StyledRun> runs = {};
 
     // -- Measurement ---------------------------------------------------------
 

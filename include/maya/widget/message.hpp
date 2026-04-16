@@ -27,14 +27,14 @@ struct UserMessage {
     [[nodiscard]] static Element build(std::string_view content) {
         return build(Element{TextElement{
             .content = std::string{content},
-            .style = Style{}.with_fg(Color::rgb(200, 204, 212)),
+            .style = Style{},
         }});
     }
 
     [[nodiscard]] static Element build(Element content) {
         return (dsl::v(std::move(content))
             | dsl::border(BorderStyle::Round)
-            | dsl::bcolor(Color::rgb(50, 54, 62))
+            | dsl::bcolor(Color::bright_black())
             | dsl::padding(0, 1, 0, 1)).build();
     }
 };

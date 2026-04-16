@@ -44,11 +44,11 @@ class APIUsage {
 
     // Color based on usage percentage: green→yellow→red
     static Color usage_color(int used, int limit) {
-        if (limit <= 0) return Color::rgb(127, 132, 142);
+        if (limit <= 0) return Color::bright_black();
         float pct = static_cast<float>(used) / static_cast<float>(limit);
-        if (pct < 0.6f)  return Color::rgb(152, 195, 121); // green
-        if (pct < 0.85f) return Color::rgb(229, 192, 123); // yellow
-        return Color::rgb(224, 108, 117);                   // red
+        if (pct < 0.6f)  return Color::green();
+        if (pct < 0.85f) return Color::yellow();
+        return Color::red();
     }
 
     // Mini bar: [████░░░░] style
@@ -80,9 +80,9 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        auto lbl = Style{}.with_fg(Color::rgb(127, 132, 142));
-        auto val = Style{}.with_fg(Color::rgb(200, 204, 212));
-        auto dim = Style{}.with_fg(Color::rgb(62, 68, 81));
+        auto lbl = Style{}.with_dim();
+        auto val = Style{};
+        auto dim = Style{}.with_dim();
 
         if (compact_) {
             std::vector<Element> parts;
@@ -102,9 +102,9 @@ public:
             }
             if (latency_ms_ > 0) {
                 if (!parts.empty()) parts.push_back(text("  ", dim));
-                Color lc = latency_ms_ < 500 ? Color::rgb(152, 195, 121)
-                         : latency_ms_ < 2000 ? Color::rgb(229, 192, 123)
-                         : Color::rgb(224, 108, 117);
+                Color lc = latency_ms_ < 500 ? Color::green()
+                         : latency_ms_ < 2000 ? Color::yellow()
+                         : Color::red();
                 parts.push_back(text(std::to_string(latency_ms_) + "ms", Style{}.with_fg(lc)));
             }
 
@@ -136,9 +136,9 @@ public:
 
         // Latency
         if (latency_ms_ > 0) {
-            Color lc = latency_ms_ < 500 ? Color::rgb(152, 195, 121)
-                     : latency_ms_ < 2000 ? Color::rgb(229, 192, 123)
-                     : Color::rgb(224, 108, 117);
+            Color lc = latency_ms_ < 500 ? Color::green()
+                     : latency_ms_ < 2000 ? Color::yellow()
+                     : Color::red();
             rows.push_back(h(
                 text("  Latency   ", lbl),
                 text(std::to_string(latency_ms_) + "ms", Style{}.with_fg(lc))
@@ -150,7 +150,7 @@ public:
             rows.push_back(h(
                 text("  Errors    ", lbl),
                 text(std::to_string(error_count_),
-                    Style{}.with_fg(Color::rgb(224, 108, 117)).with_bold())
+                    Style{}.with_fg(Color::red()).with_bold())
             ).build());
         }
 

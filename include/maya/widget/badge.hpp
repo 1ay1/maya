@@ -32,27 +32,27 @@ struct Badge {
         : label(std::move(label_)), config(std::move(cfg)) {}
 
     static Badge success(std::string label) {
-        Config c; c.style = Style{}.with_fg(Color::rgb(152, 195, 121));
+        Config c; c.style = Style{}.with_fg(Color::green());
         return Badge{std::move(label), std::move(c)};
     }
 
     static Badge error(std::string label) {
-        Config c; c.style = Style{}.with_fg(Color::rgb(224, 108, 117));
+        Config c; c.style = Style{}.with_fg(Color::red());
         return Badge{std::move(label), std::move(c)};
     }
 
     static Badge warning(std::string label) {
-        Config c; c.style = Style{}.with_fg(Color::rgb(229, 192, 123));
+        Config c; c.style = Style{}.with_fg(Color::yellow());
         return Badge{std::move(label), std::move(c)};
     }
 
     static Badge info(std::string label) {
-        Config c; c.style = Style{}.with_fg(Color::rgb(97, 175, 239));
+        Config c; c.style = Style{}.with_fg(Color::blue());
         return Badge{std::move(label), std::move(c)};
     }
 
     static Badge tool(std::string label) {
-        Config c; c.style = Style{}.with_fg(Color::rgb(198, 160, 246));
+        Config c; c.style = Style{}.with_fg(Color::magenta());
         return Badge{std::move(label), std::move(c)};
     }
 

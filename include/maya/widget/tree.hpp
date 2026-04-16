@@ -56,10 +56,10 @@ struct TreeConfig {
     std::string collapsed_icon = "\xe2\x96\xb8 ";   // "▸ "
     std::string leaf_prefix    = "  ";
     int indent_width           = 2;
-    Style active_style   = Style{}.with_bold().with_fg(Color::rgb(97, 175, 239));
-    Style branch_style   = Style{}.with_fg(Color::rgb(200, 204, 212));
-    Style leaf_style     = Style{}.with_fg(Color::rgb(171, 178, 191));
-    Style count_style    = Style{}.with_fg(Color::rgb(92, 99, 112));
+    Style active_style   = Style{}.with_bold().with_fg(Color::blue());
+    Style branch_style   = Style{};
+    Style leaf_style     = Style{};
+    Style count_style    = Style{}.with_dim();
 };
 
 // ============================================================================

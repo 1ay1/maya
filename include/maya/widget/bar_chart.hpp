@@ -7,7 +7,7 @@
 //   BarChart chart({
 //       {"CPU",    0.75f},
 //       {"Memory", 0.45f},
-//       {"Disk",   0.90f, Color::rgb(224, 108, 117)},
+//       {"Disk",   0.90f, Color::red()},
 //   });
 //   auto ui = chart.build();
 
@@ -40,7 +40,7 @@ struct Bar {
 class BarChart {
     std::vector<Bar> bars_;
     float max_value_ = 0.0f;  // 0 = auto-detect from data
-    Color default_color_ = Color::rgb(97, 175, 239);
+    Color default_color_ = Color::blue();
 
 public:
     BarChart() = default;
@@ -111,7 +111,7 @@ private:
             // Label
             runs.push_back(StyledRun{
                 content.size(), padded_label.size(),
-                Style{}.with_fg(Color::rgb(171, 178, 191)),
+                Style{},
             });
             content += padded_label;
 
@@ -138,7 +138,7 @@ private:
                     track += "\xe2\x94\x80";  // ─
                 runs.push_back(StyledRun{
                     content.size(), track.size(),
-                    Style{}.with_fg(Color::rgb(50, 54, 62)),
+                    Style{}.with_fg(Color::bright_black()),
                 });
                 content += track;
             }
@@ -149,7 +149,7 @@ private:
             std::string val_str = val_buf;
             runs.push_back(StyledRun{
                 content.size(), val_str.size(),
-                Style{}.with_fg(Color::rgb(150, 156, 170)),
+                Style{}.with_dim(),
             });
             content += val_str;
 

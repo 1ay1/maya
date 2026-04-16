@@ -100,12 +100,12 @@ public:
         int cur = cursor_();
         bool focused = focus_.focused();
 
-        auto normal_style   = Style{}.with_fg(Color::rgb(200, 204, 212));
-        auto shortcut_style = Style{}.with_fg(Color::rgb(150, 156, 170));
-        auto active_style   = Style{}.with_fg(Color::rgb(97, 175, 239)).with_bold();
-        auto active_sc      = Style{}.with_fg(Color::rgb(97, 175, 239));
-        auto disabled_style = Style{}.with_fg(Color::rgb(92, 99, 112));
-        auto sep_style      = Style{}.with_fg(Color::rgb(50, 54, 62));
+        auto normal_style   = Style{};
+        auto shortcut_style = Style{}.with_dim();
+        auto active_style   = Style{}.with_fg(Color::blue()).with_bold();
+        auto active_sc      = Style{}.with_fg(Color::blue());
+        auto disabled_style = Style{}.with_dim();
+        auto sep_style      = Style{}.with_fg(Color::bright_black());
 
         std::vector<Element> rows;
         rows.reserve(items_.size());

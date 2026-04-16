@@ -158,14 +158,14 @@ public:
         bool focused = focus_.focused();
         bool is_today_month = (year_ == today_year_ && month_ == today_month_);
 
-        auto header_style = Style{}.with_bold().with_fg(Color::rgb(200, 204, 212));
-        auto weekday_style = Style{}.with_fg(Color::rgb(150, 156, 170));
-        auto day_style = Style{}.with_fg(Color::rgb(200, 204, 212));
-        auto weekend_style = Style{}.with_fg(Color::rgb(92, 99, 112));
-        auto today_style = Style{}.with_fg(Color::rgb(97, 175, 239)).with_bold();
+        auto header_style = Style{}.with_bold();
+        auto weekday_style = Style{}.with_dim();
+        auto day_style = Style{};
+        auto weekend_style = Style{}.with_dim();
+        auto today_style = Style{}.with_fg(Color::blue()).with_bold();
         auto selected_style = focused
             ? Style{}.with_inverse().with_bold()
-            : Style{}.with_bold().with_fg(Color::rgb(97, 175, 239));
+            : Style{}.with_bold().with_fg(Color::blue());
 
         std::vector<Element> rows;
 

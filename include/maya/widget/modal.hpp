@@ -119,22 +119,22 @@ public:
             bool active = (i == cur) && focused;
 
             // Determine button colors
-            Color fg_color = Color::rgb(200, 204, 212);
-            Color border_color = Color::rgb(50, 54, 62);
+            Color fg_color = Color::white();
+            Color border_color = Color::bright_black();
 
             switch (btn.variant) {
                 case ModalButton::Primary:
-                    fg_color = Color::rgb(97, 175, 239);
+                    fg_color = Color::blue();
                     break;
                 case ModalButton::Danger:
-                    fg_color = Color::rgb(224, 108, 117);
+                    fg_color = Color::red();
                     break;
                 case ModalButton::Default:
                     break;
             }
 
             if (active) {
-                border_color = Color::rgb(97, 175, 239);
+                border_color = Color::blue();
             }
 
             std::string label = " " + btn.label + " ";
@@ -151,7 +151,7 @@ public:
         // Assemble the modal
         auto inner = (dsl::v(std::move(body), std::move(button_row)) | dsl::gap(1)).build();
 
-        auto border_color = Color::rgb(50, 54, 62);
+        auto border_color = Color::bright_black();
         return (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round) | dsl::bcolor(border_color)
             | dsl::btext(title_, BorderTextPos::Top)

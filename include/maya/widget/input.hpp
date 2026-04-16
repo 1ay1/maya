@@ -191,7 +191,7 @@ public:
         if (is_empty && !placeholder_.empty() && !is_focused) {
             inner = Element{TextElement{
                 .content = placeholder_,
-                .style = Style{}.with_fg(Color::rgb(92, 99, 112)),
+                .style = Style{}.with_dim(),
             }};
         } else if constexpr (Cfg.multiline) {
             inner = build_multiline(display, cur, is_focused);
@@ -201,16 +201,16 @@ public:
 
         // Zed style: wrap in a bordered box with prompt indicator
         auto border_color = is_focused
-            ? Color::rgb(97, 175, 239)   // blue when focused
-            : Color::rgb(50, 54, 62);    // muted when blurred
+            ? Color::blue()           // blue when focused
+            : Color::bright_black();  // muted when blurred
 
         return (dsl::v(
                 dsl::h(
                     Element{TextElement{
                         .content = "\xe2\x9d\xaf ",  // "❯ "
-                        .style = Style{}.with_fg(
-                            is_focused ? Color::rgb(97, 175, 239)
-                                       : Color::rgb(92, 99, 112)),
+                        .style = is_focused
+                            ? Style{}.with_fg(Color::blue())
+                            : Style{}.with_dim(),
                     }},
                     std::move(inner)
                 ).build()
@@ -225,7 +225,7 @@ private:
             // Build as single TextElement with StyledRuns for cursor
             std::string content;
             std::vector<StyledRun> runs;
-            auto text_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+            auto text_style = Style{};
             auto cursor_style = Style{}.with_inverse();
 
             // Before cursor
@@ -269,7 +269,7 @@ private:
         }
         return Element{TextElement{
             .content = display,
-            .style = Style{}.with_fg(Color::rgb(200, 204, 212)),
+            .style = Style{},
         }};
     }
 
@@ -289,7 +289,7 @@ private:
             if (pos == display.size()) lines.emplace_back(); // trailing newline
         }
 
-        auto text_style = Style{}.with_fg(Color::rgb(200, 204, 212));
+        auto text_style = Style{};
 
         if (!focused) {
             std::vector<Element> rows;

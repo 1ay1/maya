@@ -82,8 +82,8 @@ public:
 
         if (!active_) return text("");
 
-        Color accent = Color::rgb(198, 120, 221); // purple
-        auto dim = Style{}.with_fg(Color::rgb(127, 132, 142));
+        Color accent = Color::magenta(); // purple
+        auto dim = Style{}.with_dim();
 
         std::vector<Element> parts;
 

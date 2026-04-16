@@ -100,9 +100,9 @@ public:
         int cur = active_();
 
         auto active_style = Style{}.with_bold().with_underline()
-                                   .with_fg(Color::rgb(97, 175, 239));
-        auto inactive_style = Style{}.with_fg(Color::rgb(150, 156, 170));
-        auto sep_style = Style{}.with_fg(Color::rgb(92, 99, 112));
+                                   .with_fg(Color::blue());
+        auto inactive_style = Style{}.with_dim();
+        auto sep_style = Style{}.with_dim();
 
         // Build tab labels as a single TextElement with StyledRuns
         std::string content;
@@ -135,7 +135,7 @@ public:
                 for (int i = 0; i < w; ++i) line += "\xe2\x94\x80"; // "─"
                 return Element{TextElement{
                     .content = std::move(line),
-                    .style = Style{}.with_fg(Color::rgb(50, 54, 62)),
+                    .style = Style{}.with_fg(Color::bright_black()),
                 }};
             },
             .layout = {},

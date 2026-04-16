@@ -30,7 +30,7 @@ class Image {
     int width_  = 0;  // pixel width
     int height_ = 0;  // pixel height
     std::vector<bool> pixels_;
-    Color color_ = Color::rgb(200, 204, 212);
+    Color color_ = Color::white();
 
     // Braille dot positions within a 2x4 cell:
     //   (0,0)=0x01  (1,0)=0x08
@@ -63,7 +63,7 @@ class Image {
 public:
     Image() = default;
 
-    Image(int width, int height, Color color = Color::rgb(200, 204, 212))
+    Image(int width, int height, Color color = Color::white())
         : width_(width), height_(height),
           pixels_(static_cast<size_t>(width * height), false),
           color_(color) {}

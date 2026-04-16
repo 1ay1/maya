@@ -68,11 +68,10 @@ public:
             }});
         }
 
-        // Description (the actual command/path)
+        // Description (the actual command/path) — terminal default fg
         if (!cfg_.description.empty()) {
             rows.push_back(Element{TextElement{
                 .content = cfg_.description,
-                .style = Style{}.with_fg(Color::rgb(200, 204, 212)),
             }});
         }
 
@@ -84,8 +83,8 @@ public:
             std::string content;
             std::vector<StyledRun> runs;
             auto dim = Style{}.with_dim();
-            auto allow_key = Style{}.with_bold().with_fg(Color::rgb(152, 195, 121));
-            auto deny_key = Style{}.with_bold().with_fg(Color::rgb(224, 108, 117));
+            auto allow_key = Style{}.with_bold().with_fg(Color::green());
+            auto deny_key = Style{}.with_bold().with_fg(Color::red());
 
             auto add_hint = [&](const char* key, const char* label, Style ks) {
                 std::size_t off = content.size();
@@ -114,7 +113,7 @@ public:
         // Wrap in Zed-style bordered card with warning tint
         return (dsl::v(std::move(rows))
             | dsl::border(BorderStyle::Round)
-            | dsl::bcolor(Color::rgb(120, 100, 50))
+            | dsl::bcolor(Color::yellow())
             | dsl::btext(" \xe2\x9a\xa0 Permission Required ",
                          BorderTextPos::Top, BorderTextAlign::Start)
             | dsl::padding(0, 1, 0, 1)).build();

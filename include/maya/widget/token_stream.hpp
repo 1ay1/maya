@@ -29,7 +29,7 @@ class TokenStream {
     float peak_rate_      = 0.f;
     float elapsed_secs_   = 0.f;
     std::vector<float> rate_history_;
-    Color color_   = Color::rgb(97, 175, 239);
+    Color color_   = Color::blue();
     bool  compact_ = false;
 
     static std::string format_with_commas(int n) {
@@ -46,9 +46,9 @@ class TokenStream {
     }
 
     static Color rate_color(float rate) {
-        if (rate > 50.f) return Color::rgb(152, 195, 121);
-        if (rate >= 20.f) return Color::rgb(229, 192, 123);
-        return Color::rgb(224, 108, 117);
+        if (rate > 50.f) return Color::green();
+        if (rate >= 20.f) return Color::yellow();
+        return Color::red();
     }
 
     [[nodiscard]] std::string build_sparkline(size_t width) const {
@@ -98,8 +98,8 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        auto muted = Style{}.with_fg(Color::rgb(127, 132, 142));
-        auto txt   = Style{}.with_fg(Color::rgb(200, 204, 212));
+        auto muted = Style{}.with_dim();
+        auto txt   = Style{};
         Color rc   = rate_color(tokens_per_sec_);
 
         char rate_buf[32];

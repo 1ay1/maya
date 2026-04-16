@@ -810,7 +810,7 @@ struct WrappedNode {
     int pt_=0, pr_=0, pb_=0, pl_=0, gap_=0;
     BorderStyle brd_{};
     Color bcol_{};
-    std::string btxt_;
+    std::string btxt_ = {};
     BorderTextPos btp_{};
     BorderTextAlign bta_{};
     float grw_=0;

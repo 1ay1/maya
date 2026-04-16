@@ -116,11 +116,11 @@ public:
         switch (variant_) {
             case ButtonVariant::Ghost:  return build_ghost(focused);
             case ButtonVariant::Primary: return build_filled(focused,
-                Color::rgb(97, 175, 239),   // blue bg
-                Color::rgb(200, 204, 212));  // white text
+                Color::blue(),   // blue bg
+                Color::white()); // white text
             case ButtonVariant::Danger: return build_filled(focused,
-                Color::rgb(224, 108, 117),   // red bg
-                Color::rgb(200, 204, 212));  // white text
+                Color::red(),    // red bg
+                Color::white()); // white text
             case ButtonVariant::Default:
             default: return build_default(focused);
         }
@@ -133,12 +133,12 @@ private:
 
     [[nodiscard]] Element build_default(bool focused) const {
         auto border_color = focused
-            ? Color::rgb(97, 175, 239)   // blue
-            : Color::rgb(50, 54, 62);    // dim border
+            ? Color::blue()           // blue
+            : Color::bright_black();  // dim border
 
         auto text_style = focused
-            ? Style{}.with_fg(Color::rgb(200, 204, 212)).with_bold()
-            : Style{}.with_fg(Color::rgb(171, 178, 191));
+            ? Style{}.with_bold()
+            : Style{};
 
         auto inner = Element{TextElement{
             .content = label_,
@@ -156,7 +156,7 @@ private:
         auto text_style = Style{}.with_fg(text_color).with_bold();
         auto bg_style = focused
             ? bg_color
-            : Color::rgb(50, 54, 62);  // dim when not focused
+            : Color::bright_black();  // dim when not focused
 
         auto inner = Element{TextElement{
             .content = label_,
@@ -164,7 +164,7 @@ private:
             .wrap = TextWrap::NoWrap,
         }};
 
-        auto border_color = focused ? bg_color : Color::rgb(50, 54, 62);
+        auto border_color = focused ? bg_color : Color::bright_black();
 
         return (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round)
@@ -175,8 +175,8 @@ private:
 
     [[nodiscard]] Element build_ghost(bool focused) const {
         auto text_style = focused
-            ? Style{}.with_fg(Color::rgb(97, 175, 239)).with_underline()
-            : Style{}.with_fg(Color::rgb(150, 156, 170));
+            ? Style{}.with_fg(Color::blue()).with_underline()
+            : Style{}.with_dim();
 
         return Element{TextElement{
             .content = label_,

@@ -37,13 +37,13 @@ class GitGraph {
     bool show_author_  = false;
     bool show_time_    = true;
 
-    // Branch palette: one dark inspired
+    // Branch palette: terminal-defined named ANSI colors
     static constexpr Color branch_colors_[] = {
-        Color::rgb( 97, 175, 239),  // blue (main)
-        Color::rgb(198, 120, 221),  // purple
-        Color::rgb(152, 195, 121),  // green
-        Color::rgb( 86, 182, 194),  // cyan
-        Color::rgb(229, 192, 123),  // yellow
+        Color::blue(),
+        Color::magenta(),
+        Color::green(),
+        Color::cyan(),
+        Color::yellow(),
     };
 
     [[nodiscard]] Color branch_color(int col) const {
@@ -68,9 +68,9 @@ public:
 
         if (commits_.empty()) return text("");
 
-        auto dim   = Style{}.with_fg(Color::rgb(92, 99, 112));
-        auto txt   = Style{}.with_fg(Color::rgb(200, 204, 212));
-        auto muted = Style{}.with_fg(Color::rgb(127, 132, 142));
+        auto dim   = Style{}.with_dim();
+        auto txt   = Style{};
+        auto muted = Style{}.with_dim();
 
         int max_col = 0;
         for (auto& c : commits_)

@@ -35,11 +35,11 @@ class ErrorBlock {
 
     [[nodiscard]] Color severity_color() const {
         switch (severity_) {
-            case ErrorSeverity::Error:   return Color::rgb(224, 108, 117);
-            case ErrorSeverity::Warning: return Color::rgb(229, 192, 123);
-            case ErrorSeverity::Info:    return Color::rgb(97, 175, 239);
+            case ErrorSeverity::Error:   return Color::red();
+            case ErrorSeverity::Warning: return Color::yellow();
+            case ErrorSeverity::Info:    return Color::blue();
         }
-        return Color::rgb(224, 108, 117);
+        return Color::red();
     }
 
     [[nodiscard]] const char* severity_icon() const {
@@ -70,9 +70,9 @@ public:
         using namespace dsl;
 
         Color sc = severity_color();
-        auto msg_style = Style{}.with_fg(Color::rgb(200, 204, 212));
-        auto dim       = Style{}.with_fg(Color::rgb(92, 99, 112));
-        auto hint_style = Style{}.with_fg(Color::rgb(152, 195, 121)).with_italic();
+        auto msg_style = Style{};
+        auto dim       = Style{}.with_dim();
+        auto hint_style = Style{}.with_fg(Color::green()).with_italic();
 
         std::vector<Element> rows;
 
@@ -89,14 +89,14 @@ public:
 
         // Detail
         if (!detail_.empty()) {
-            rows.push_back(text(detail_, Style{}.with_fg(Color::rgb(171, 178, 191))));
+            rows.push_back(text(detail_, Style{}));
         }
 
         // Hint
         if (!hint_.empty()) {
             rows.push_back(h(
                 text("hint: ", hint_style),
-                text(hint_, Style{}.with_fg(Color::rgb(152, 195, 121)))
+                text(hint_, Style{}.with_fg(Color::green()))
             ).build());
         }
 
@@ -117,14 +117,11 @@ public:
              : severity_ == ErrorSeverity::Warning ? "Warning"
              : "Info") + " ";
 
-        Color border_col = Color::rgb(
-            static_cast<uint8_t>(sc.r() / 2 + 30),
-            static_cast<uint8_t>(sc.g() / 4 + 15),
-            static_cast<uint8_t>(sc.b() / 4 + 15));
-
+        // Use the severity color directly for the border so it matches the
+        // active terminal palette without any RGB blending.
         return (v(std::move(rows))
             | border(BorderStyle::Round)
-            | bcolor(border_col)
+            | bcolor(sc)
             | btext(std::move(label))
             | padding(0, 1)).build();
     }

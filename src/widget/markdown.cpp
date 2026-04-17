@@ -2189,7 +2189,8 @@ Element md_block_to_element(const md::Block& block) {
             int ncols = static_cast<int>(tbl.header.cells.size());
             if (ncols == 0) return Element{TextElement{}};
 
-            // Compute column widths: max of header and all data rows
+            // Compute column widths: max of header and all data rows, capped
+            constexpr int max_col_width = 50;
             std::vector<int> col_widths(static_cast<size_t>(ncols), 0);
             for (int c = 0; c < ncols; ++c) {
                 col_widths[static_cast<size_t>(c)] =
@@ -2201,9 +2202,42 @@ Element md_block_to_element(const md::Block& block) {
                             measure_inline_width(row.cells[static_cast<size_t>(c)].spans));
                     }
                 }
+                col_widths[static_cast<size_t>(c)] =
+                    std::min(col_widths[static_cast<size_t>(c)], max_col_width);
             }
 
             constexpr int pad = 1; // horizontal padding per side
+
+            // Truncate content to fit column width, adding "…" suffix
+            auto truncate_cell = [](std::string& content, std::vector<StyledRun>& runs, int max_w) {
+                int w = string_width(content);
+                if (w <= max_w) return;
+                // Walk byte-by-byte to find cut point at max_w-1 chars
+                int cur_w = 0;
+                size_t cut = 0;
+                for (size_t i = 0; i < content.size(); ) {
+                    unsigned char c = static_cast<unsigned char>(content[i]);
+                    int char_bytes = 1;
+                    if (c >= 0xF0) char_bytes = 4;
+                    else if (c >= 0xE0) char_bytes = 3;
+                    else if (c >= 0xC0) char_bytes = 2;
+                    int char_w = (c < 0x80) ? 1 : 1; // simplified: 1 per codepoint
+                    if (cur_w + char_w >= max_w) { cut = i; break; }
+                    cur_w += char_w;
+                    i += static_cast<size_t>(char_bytes);
+                    cut = i;
+                }
+                content.resize(cut);
+                content += "\xe2\x80\xa6"; // …
+                // Prune runs that extend past the cut
+                std::erase_if(runs, [cut](const StyledRun& r) {
+                    return r.byte_offset >= cut;
+                });
+                for (auto& r : runs) {
+                    if (r.byte_offset + r.byte_length > cut)
+                        r.byte_length = cut - r.byte_offset;
+                }
+            };
 
             // Helper: build a padded cell string of fixed width
             auto pad_cell = [&](const std::string& text, int content_w, int col_w) {
@@ -2227,8 +2261,9 @@ Element md_block_to_element(const md::Block& block) {
                 std::vector<StyledRun> runs;
                 auto header_base = Style{}.with_bold().with_fg(colors::table_header);
                 for (auto& s : cell.spans) flatten_inline(s, header_base, content, runs);
-                int cw = string_width(content);
                 int col_w = col_widths[static_cast<size_t>(c)];
+                truncate_cell(content, runs, col_w);
+                int cw = string_width(content);
                 int right_pad = std::max(0, col_w - cw) + pad;
                 // Prefix with left pad, append right pad
                 std::string padded;
@@ -2332,8 +2367,9 @@ Element md_block_to_element(const md::Block& block) {
                         std::vector<StyledRun> runs;
                         auto base = Style{}.with_fg(colors::text);
                         for (auto& s : cell.spans) flatten_inline(s, base, content, runs);
-                        int cw = string_width(content);
                         int col_w = col_widths[static_cast<size_t>(c)];
+                        truncate_cell(content, runs, col_w);
+                        int cw = string_width(content);
                         int right_pad_n = std::max(0, col_w - cw) + pad;
                         std::string padded;
                         padded.reserve(static_cast<size_t>(pad) + content.size()

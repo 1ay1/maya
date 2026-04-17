@@ -213,6 +213,16 @@ namespace detail {
 [[nodiscard]] auto hstack() -> BoxBuilder;
 [[nodiscard]] auto center() -> BoxBuilder;
 
+/// Create a z-stack: children layer on top of each other. The first child
+/// determines the size; subsequent children paint on top, clipped to that size.
+[[nodiscard]] inline Element zstack(std::vector<Element> layers) {
+    BoxElement box;
+    box.layout.direction = FlexDirection::Column;
+    box.is_stack = true;
+    box.children = std::move(layers);
+    return Element{std::move(box)};
+}
+
 } // namespace detail
 
 // ============================================================================

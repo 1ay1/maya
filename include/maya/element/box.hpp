@@ -124,6 +124,7 @@ struct BoxElement {
     Style                  style{};
     BorderConfig           border{.style = BorderStyle::None};
     Overflow               overflow = Overflow::Visible;
+    bool                   is_stack = false;
     std::vector<Element>   children{};
 
     // -- Convenience accessors -----------------------------------------------

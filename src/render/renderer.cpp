@@ -110,8 +110,12 @@ std::size_t build_layout_tree(
                 static_cast<uint8_t>(node.overflow));
 
             // Recursively build children.
-            for (const auto& child : node.children) {
-                std::size_t child_idx = build_layout_tree(child, nodes, /*theme=*/{});
+            // For stack boxes, only the first child participates in layout;
+            // overlay children are painted on top during the paint phase.
+            std::size_t child_limit = node.is_stack && !node.children.empty()
+                                        ? 1 : node.children.size();
+            for (std::size_t ci = 0; ci < child_limit; ++ci) {
+                std::size_t child_idx = build_layout_tree(node.children[ci], nodes, /*theme=*/{});
                 nodes[idx].children.push_back(child_idx);
             }
 
@@ -348,6 +352,37 @@ void paint_element(
                     child_layout_idx,
                     ax,
                     ay);
+            }
+
+            // 5. Stack overlays: children beyond index 0 are painted on top
+            //    using independent sub-layout trees, clipped to the same region.
+            if (node.is_stack && node.children.size() > 1) {
+                for (std::size_t oi = 1; oi < node.children.size(); ++oi) {
+                    const auto& overlay = node.children[oi];
+
+                    thread_local std::vector<layout::LayoutNode> overlay_nodes;
+                    thread_local bool overlay_in_use = false;
+                    auto was_in_use = overlay_in_use;
+                    std::vector<layout::LayoutNode> local_overlay;
+                    auto& sub = was_in_use ? local_overlay : overlay_nodes;
+                    sub.clear();
+                    overlay_in_use = true;
+
+                    std::size_t sub_root = build_layout_tree(overlay, sub, {});
+                    sub[sub_root].style.width  = Dimension::fixed(content_w);
+                    sub[sub_root].style.height = Dimension::fixed(content_h);
+                    layout::compute(sub, sub_root, content_w, content_h);
+
+                    canvas.push_clip(Rect{
+                        {Columns{content_x}, Rows{content_y}},
+                        {Columns{content_w}, Rows{content_h}}
+                    });
+                    paint_element(overlay, canvas, pool, sub, sub_root,
+                                  content_x, content_y);
+                    canvas.pop_clip();
+
+                    if (!was_in_use) overlay_in_use = false;
+                }
             }
 
             if (clipping) {

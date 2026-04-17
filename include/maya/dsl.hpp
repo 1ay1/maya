@@ -635,6 +635,7 @@ using maya::detail::box;
 using maya::detail::vstack;
 using maya::detail::hstack;
 using maya::detail::center;
+using maya::detail::zstack;
 using maya::detail::component;
 
 // ── User-defined literal for text nodes ─────────────────────────────────────

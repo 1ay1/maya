@@ -118,8 +118,15 @@ std::string StylePool::build_sgr(const Style& s) {
     if (s.inverse)       { *p++ = ';'; *p++ = '7'; }
     if (s.strikethrough) { *p++ = ';'; *p++ = '9'; }
 
-    if (s.fg.has_value()) { *p++ = ';'; p = append_color_sgr(p, *s.fg, true); }
-    if (s.bg.has_value()) { *p++ = ';'; p = append_color_sgr(p, *s.bg, false); }
+    // Color::Default is a sentinel meaning "occlude this cell but emit no
+    // explicit color SGR" — preserves terminal background transparency
+    // (e.g. Ghostty) while still letting the cell overdraw underlying glyphs.
+    if (s.fg.has_value() && s.fg->kind() != Color::Kind::Default) {
+        *p++ = ';'; p = append_color_sgr(p, *s.fg, true);
+    }
+    if (s.bg.has_value() && s.bg->kind() != Color::Kind::Default) {
+        *p++ = ';'; p = append_color_sgr(p, *s.bg, false);
+    }
 
     *p++ = 'm';
     return {buf, static_cast<std::size_t>(p - buf)};

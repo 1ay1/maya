@@ -110,7 +110,19 @@ struct Ops<Avx2> {
         // 2048+ cells: non-temporal stores — bypass cache entirely (full
         // screen clears, large background fills). The diff pass will pull
         // this data from DRAM on demand.
+        //
+        // _mm256_stream_si256 requires 32-byte alignment of dst. cells_ is
+        // std::vector<uint64_t> whose buffer is only 16-byte aligned on
+        // glibc, and per-region fills (base + y0 * width_) can land on any
+        // 8-byte boundary. Handle the misaligned head with scalar stores so
+        // the NT loop sees an aligned pointer; otherwise we'd take an
+        // alignment fault (#GP → SIGSEGV).
         std::size_t i = 0;
+        std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(dst);
+        std::size_t head = (32 - (addr & 31)) & 31;          // bytes to align
+        std::size_t head_cells = head / sizeof(uint64_t);    // 8B per cell
+        if (head_cells > count) head_cells = count;
+        for (; i < head_cells; ++i) dst[i] = value;
         for (; i + 16 <= count; i += 16) {
             _mm256_stream_si256(reinterpret_cast<__m256i*>(dst + i),      val);
             _mm256_stream_si256(reinterpret_cast<__m256i*>(dst + i + 4),  val);

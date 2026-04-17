@@ -40,7 +40,7 @@ enum class AnsiColor : uint8_t {
 
 class Color {
 public:
-    enum class Kind : uint8_t { Named, Indexed, Rgb };
+    enum class Kind : uint8_t { Named, Indexed, Rgb, Default };
 
 private:
     Kind    kind_;
@@ -72,6 +72,16 @@ public:
     static constexpr Color bright_white()   noexcept { return Color{AnsiColor::BrightWhite}; }
     static constexpr Color gray()           noexcept { return bright_black(); }
     static constexpr Color grey()           noexcept { return bright_black(); }
+
+    /// Terminal-default color (SGR 39 fg / 49 bg). Use this when you want a
+    /// container to occlude underlying cells in a zstack while still showing
+    /// the user's terminal theme background.
+    static constexpr Color default_color() noexcept {
+        Color c;
+        c.kind_ = Kind::Default;
+        c.r_ = 0;
+        return c;
+    }
 
     // 256-color palette
     static constexpr Color indexed(uint8_t index) noexcept {
@@ -155,6 +165,8 @@ public:
             case Kind::Rgb:
                 return "38;2;" + std::to_string(r_) + ";" +
                        std::to_string(g_) + ";" + std::to_string(b_);
+            case Kind::Default:
+                return "39";
         }
         __builtin_unreachable();
     }
@@ -171,6 +183,8 @@ public:
             case Kind::Rgb:
                 return "48;2;" + std::to_string(r_) + ";" +
                        std::to_string(g_) + ";" + std::to_string(b_);
+            case Kind::Default:
+                return "49";
         }
         __builtin_unreachable();
     }
@@ -205,6 +219,9 @@ public:
                 out.append(buf, p3);
                 break;
             }
+            case Kind::Default:
+                out += "39";
+                break;
         }
     }
 
@@ -233,6 +250,9 @@ public:
                 out.append(buf, p3);
                 break;
             }
+            case Kind::Default:
+                out += "49";
+                break;
         }
     }
 

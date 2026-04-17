@@ -826,6 +826,29 @@ struct WrappedNode {
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        // Build the inner first. If it's already a BoxElement, apply our
+        // runtime modifiers in-place — adding a wrapper layer breaks
+        // align_items propagation (Stretch only stretches the wrapper's
+        // single child to wrapper width, not the grandchildren to their
+        // intended width). For non-box inners (text, etc.) we still need
+        // an outer box to host the runtime properties.
+        Element inner_elem = inner.build();
+        if (auto* box = maya::as_box(inner_elem)) {
+            if (f_&PAD)  box->layout.padding = Edges<int>(pt_, pr_, pb_, pl_);
+            if (f_&GAP)  box->layout.gap = gap_;
+            if (f_&BRD)  box->border.style = brd_;
+            if (f_&BCOL) box->border.colors = BorderColors::uniform(bcol_);
+            if (f_&BTXT) box->border.text = BorderText{btxt_, btp_, bta_, 0};
+            if (f_&GRW)  box->layout.grow = grw_;
+            if (f_&WD)   box->layout.width = Dimension::fixed(w_);
+            if (f_&HT)   box->layout.height = Dimension::fixed(h_);
+            if (f_&STY)  box->style = box->style.merge(sty_);
+            if (f_&MGN)  box->layout.margin = Edges<int>(mt_, mr_, mb_, ml_);
+            if (f_&ALN)  box->layout.align_items = aln_;
+            if (f_&JST)  box->layout.justify = jst_;
+            if (f_&OVF)  box->overflow = ovf_;
+            return inner_elem;
+        }
         auto b = maya::detail::box();
         if (f_&PAD)  b.padding(pt_,pr_,pb_,pl_);
         if (f_&GAP)  b.gap(gap_);
@@ -840,7 +863,7 @@ struct WrappedNode {
         if (f_&ALN)  b.align_items(aln_);
         if (f_&JST)  b.justify(jst_);
         if (f_&OVF)  b.overflow(ovf_);
-        return b(inner.build());
+        return b(std::move(inner_elem));
     }
 };
 

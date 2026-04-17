@@ -59,11 +59,13 @@ public:
         if (wake_ != INVALID_HANDLE_VALUE) {
             HANDLE handles[2] = { stdin_, wake_ };
             DWORD result = ::WaitForMultipleObjects(2, handles, FALSE, ms);
-            if (result == WAIT_OBJECT_0) {
+            (void)result;
+            // Check each handle independently — WaitForMultipleObjects
+            // only reports the lowest signaled index, so we must probe both.
+            if (::WaitForSingleObject(stdin_, 0) == WAIT_OBJECT_0)
                 drain_system_events(flags);
-            } else if (result == WAIT_OBJECT_0 + 1) {
+            if (::WaitForSingleObject(wake_, 0) == WAIT_OBJECT_0)
                 flags.wake = true;
-            }
         } else {
             DWORD result = ::WaitForSingleObject(stdin_, ms);
             if (result == WAIT_OBJECT_0) {

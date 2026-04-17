@@ -671,9 +671,10 @@ void run(RunConfig cfg = {}) {
         // Drain background task messages
         if (poll_result->wake) {
             rt.drain_wake();
-            bg_queue->reset_wake();  // allow next send() to signal again
             for (auto& m : bg_queue->drain())
                 pending_msgs.push_back(std::move(m));
+            // Reset after drain so any send() racing with us re-signals.
+            bg_queue->reset_wake();
         }
 
         // Flush parser timeouts (e.g., bare Escape)

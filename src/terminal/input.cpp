@@ -172,6 +172,12 @@ void InputParser::ground_byte(uint8_t ch, std::vector<Event>& events) {
             .mods = {.ctrl = true},
             .raw_sequence = std::string(1, static_cast<char>(ch)),
         });
+    } else if (ch == 0x1f) {
+        events.emplace_back(KeyEvent{
+            .key = CharKey{U'/'},
+            .mods = {.ctrl = true},
+            .raw_sequence = std::string(1, static_cast<char>(ch)),
+        });
     } else if (ch < 0x20) {
         // Ctrl + letter (Ctrl-A = 0x01, Ctrl-Z = 0x1a)
         char32_t letter = static_cast<char32_t>(ch + 'a' - 1);

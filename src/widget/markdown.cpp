@@ -1,10 +1,12 @@
 #include "maya/widget/markdown.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -42,8 +44,13 @@ static constexpr auto kEscapable = make_table<
     '-', '.', '!', '|', '~', '<', '>', '"', '\'', '^'>();
 
 // Characters that break the inline plain-text batch scanner.
+// URL-sniffing, mentions, entities and emoji shortcodes are handled in a
+// separate post-pass over Text nodes (linkify_text_nodes), so their trigger
+// chars (h/w/@/#/&/:) do NOT appear here — adding them would cost a stop
+// per word in normal prose.
 static constexpr auto kInlineSpecial = make_table<
-    '`', '*', '_', '~', '[', '!', '\\', '<', '$'>();
+    '`', '*', '_', '~', '[', '!', '\\', '<', '$',
+    '=', '^'>();
 
 // Punctuation characters in syntax highlighting.
 static constexpr auto kPunctChar = make_table<
@@ -66,6 +73,257 @@ inline bool starts_with(std::string_view s, std::string_view prefix) {
 
 inline bool is_escapable(char c) {
     return kEscapable[static_cast<unsigned char>(c)];
+}
+
+inline std::string ascii_lower(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+// ── Reference-link map (threaded through parse via thread_local) ──────────
+// parse_inlines is called from many nested places (emphasis recursion, table
+// cells, list items, blockquote bodies).  Threading a pointer through every
+// call site would touch the whole inline parser API.  Instead, the top-level
+// parse_markdown stashes the active Document's ref_defs in this pointer.
+thread_local const std::unordered_map<std::string, md::LinkRef>*
+    tls_ref_defs = nullptr;
+
+struct RefDefsGuard {
+    const std::unordered_map<std::string, md::LinkRef>* prev;
+    explicit RefDefsGuard(const std::unordered_map<std::string, md::LinkRef>* p) noexcept
+        : prev(tls_ref_defs) { tls_ref_defs = p; }
+    ~RefDefsGuard() { tls_ref_defs = prev; }
+    RefDefsGuard(const RefDefsGuard&) = delete;
+    RefDefsGuard& operator=(const RefDefsGuard&) = delete;
+};
+
+inline const md::LinkRef* lookup_ref(std::string_view label) {
+    if (!tls_ref_defs) return nullptr;
+    auto key = ascii_lower(label);
+    // Collapse whitespace runs to a single space (CommonMark normalization).
+    std::string norm;
+    norm.reserve(key.size());
+    bool prev_space = false;
+    for (char c : key) {
+        bool sp = std::isspace(static_cast<unsigned char>(c));
+        if (sp) {
+            if (!prev_space && !norm.empty()) norm += ' ';
+            prev_space = true;
+        } else {
+            norm += c;
+            prev_space = false;
+        }
+    }
+    while (!norm.empty() && norm.back() == ' ') norm.pop_back();
+    auto it = tls_ref_defs->find(norm);
+    return (it == tls_ref_defs->end()) ? nullptr : &it->second;
+}
+
+// ── HTML entity decoding ──────────────────────────────────────────────────
+// Recognises the handful of named entities that appear in LLM output plus
+// numeric (&#123; / &#xNN;) forms.  Returns true if `text[start..]` matched
+// and consumes up to `end_out`; the decoded UTF-8 goes into `out`.
+
+static bool append_utf8(std::string& out, uint32_t cp) {
+    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+    if (cp < 0x80) { out += static_cast<char>(cp); return true; }
+    if (cp < 0x800) {
+        out += static_cast<char>(0xC0 | (cp >> 6));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+        return true;
+    }
+    if (cp < 0x10000) {
+        out += static_cast<char>(0xE0 | (cp >> 12));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+        return true;
+    }
+    out += static_cast<char>(0xF0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+    return true;
+}
+
+struct NamedEntity { std::string_view name; std::string_view utf8; };
+static constexpr std::array<NamedEntity, 40> kNamedEntities{{
+    {"amp",    "&"},  {"lt",     "<"},  {"gt",    ">"},
+    {"quot",   "\""}, {"apos",   "'"},  {"nbsp",  "\xC2\xA0"},
+    {"copy",   "\xC2\xA9"},           {"reg",   "\xC2\xAE"},
+    {"trade",  "\xE2\x84\xA2"},       {"sect",  "\xC2\xA7"},
+    {"para",   "\xC2\xB6"},           {"deg",   "\xC2\xB0"},
+    {"plusmn", "\xC2\xB1"},           {"times", "\xC3\x97"},
+    {"divide", "\xC3\xB7"},           {"micro", "\xC2\xB5"},
+    {"hellip", "\xE2\x80\xA6"},       {"mdash", "\xE2\x80\x94"},
+    {"ndash",  "\xE2\x80\x93"},       {"lsquo", "\xE2\x80\x98"},
+    {"rsquo",  "\xE2\x80\x99"},       {"ldquo", "\xE2\x80\x9C"},
+    {"rdquo",  "\xE2\x80\x9D"},       {"laquo", "\xC2\xAB"},
+    {"raquo",  "\xC2\xBB"},           {"bull",  "\xE2\x80\xA2"},
+    {"dagger", "\xE2\x80\xA0"},       {"middot","\xC2\xB7"},
+    {"larr",   "\xE2\x86\x90"},       {"uarr",  "\xE2\x86\x91"},
+    {"rarr",   "\xE2\x86\x92"},       {"darr",  "\xE2\x86\x93"},
+    {"harr",   "\xE2\x86\x94"},       {"infin", "\xE2\x88\x9E"},
+    {"ne",     "\xE2\x89\xA0"},       {"le",    "\xE2\x89\xA4"},
+    {"ge",     "\xE2\x89\xA5"},       {"pi",    "\xCF\x80"},
+    {"check",  "\xE2\x9C\x93"},       {"cross", "\xE2\x9C\x97"},
+}};
+
+// Try to decode an HTML entity starting at text[start]='&'.  If successful
+// returns true, writes decoded bytes into `out`, sets *consumed to the total
+// byte count including & and ;.
+static bool try_decode_entity(std::string_view text, size_t start,
+                              std::string& out, size_t* consumed) {
+    if (start >= text.size() || text[start] != '&') return false;
+    // Scan to ';' within a short bound.
+    size_t limit = std::min(text.size(), start + 10);
+    size_t semi = std::string_view::npos;
+    for (size_t k = start + 1; k < limit; ++k) {
+        if (text[k] == ';') { semi = k; break; }
+        if (text[k] == '&' || text[k] == ' ') break;
+    }
+    if (semi == std::string_view::npos) return false;
+    auto body = text.substr(start + 1, semi - start - 1);
+    if (body.empty()) return false;
+
+    // Numeric: &#N; or &#xH;
+    if (body[0] == '#') {
+        if (body.size() < 2) return false;
+        uint32_t cp = 0;
+        if (body[1] == 'x' || body[1] == 'X') {
+            if (body.size() < 3 || body.size() > 8) return false;
+            for (size_t k = 2; k < body.size(); ++k) {
+                char c = body[k];
+                cp <<= 4;
+                if (c >= '0' && c <= '9') cp |= static_cast<uint32_t>(c - '0');
+                else if (c >= 'a' && c <= 'f') cp |= static_cast<uint32_t>(c - 'a' + 10);
+                else if (c >= 'A' && c <= 'F') cp |= static_cast<uint32_t>(c - 'A' + 10);
+                else return false;
+            }
+        } else {
+            if (body.size() > 8) return false;
+            for (size_t k = 1; k < body.size(); ++k) {
+                char c = body[k];
+                if (c < '0' || c > '9') return false;
+                cp = cp * 10 + static_cast<uint32_t>(c - '0');
+            }
+        }
+        if (!append_utf8(out, cp)) return false;
+        *consumed = semi - start + 1;
+        return true;
+    }
+
+    // Named entity — linear scan; table is tiny.
+    for (auto& e : kNamedEntities) {
+        if (body == e.name) {
+            out.append(e.utf8);
+            *consumed = semi - start + 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+// ── Emoji shortcodes ──────────────────────────────────────────────────────
+// A curated table of the shortcodes LLMs actually use.  Cheap linear scan;
+// size stays well under the CPU cache line count that would matter.
+struct EmojiCode { std::string_view name; std::string_view utf8; };
+static constexpr std::array<EmojiCode, 52> kEmojis{{
+    {"smile",             "\xF0\x9F\x98\x84"},
+    {"grin",              "\xF0\x9F\x98\x81"},
+    {"laughing",          "\xF0\x9F\x98\x86"},
+    {"joy",               "\xF0\x9F\x98\x82"},
+    {"heart",             "\xE2\x9D\xA4"},
+    {"broken_heart",      "\xF0\x9F\x92\x94"},
+    {"thumbsup",          "\xF0\x9F\x91\x8D"},
+    {"thumbsdown",        "\xF0\x9F\x91\x8E"},
+    {"+1",                "\xF0\x9F\x91\x8D"},
+    {"-1",                "\xF0\x9F\x91\x8E"},
+    {"eyes",              "\xF0\x9F\x91\x80"},
+    {"tada",              "\xF0\x9F\x8E\x89"},
+    {"rocket",            "\xF0\x9F\x9A\x80"},
+    {"fire",              "\xF0\x9F\x94\xA5"},
+    {"bug",               "\xF0\x9F\x90\x9B"},
+    {"sparkles",          "\xE2\x9C\xA8"},
+    {"star",              "\xE2\xAD\x90"},
+    {"warning",           "\xE2\x9A\xA0\xEF\xB8\x8F"},
+    {"check",             "\xE2\x9C\x85"},
+    {"white_check_mark",  "\xE2\x9C\x85"},
+    {"x",                 "\xE2\x9D\x8C"},
+    {"lock",              "\xF0\x9F\x94\x92"},
+    {"unlock",            "\xF0\x9F\x94\x93"},
+    {"key",               "\xF0\x9F\x94\x91"},
+    {"bulb",              "\xF0\x9F\x92\xA1"},
+    {"book",              "\xF0\x9F\x93\x96"},
+    {"books",             "\xF0\x9F\x93\x9A"},
+    {"memo",              "\xF0\x9F\x93\x9D"},
+    {"pencil",            "\xE2\x9C\x8F\xEF\xB8\x8F"},
+    {"wrench",            "\xF0\x9F\x94\xA7"},
+    {"hammer",            "\xF0\x9F\x94\xA8"},
+    {"zap",               "\xE2\x9A\xA1"},
+    {"boom",              "\xF0\x9F\x92\xA5"},
+    {"rotating_light",    "\xF0\x9F\x9A\xA8"},
+    {"construction",      "\xF0\x9F\x9A\xA7"},
+    {"package",           "\xF0\x9F\x93\xA6"},
+    {"mag",               "\xF0\x9F\x94\x8D"},
+    {"chart",             "\xF0\x9F\x93\x88"},
+    {"calendar",          "\xF0\x9F\x93\x85"},
+    {"clock",             "\xF0\x9F\x95\x92"},
+    {"hourglass",         "\xE2\x8C\x9B"},
+    {"coffee",            "\xE2\x98\x95"},
+    {"thinking",          "\xF0\x9F\xA4\x94"},
+    {"wave",              "\xF0\x9F\x91\x8B"},
+    {"muscle",            "\xF0\x9F\x92\xAA"},
+    {"ok_hand",           "\xF0\x9F\x91\x8C"},
+    {"clap",              "\xF0\x9F\x91\x8F"},
+    {"sunny",             "\xE2\x98\x80\xEF\xB8\x8F"},
+    {"cloud",             "\xE2\x98\x81\xEF\xB8\x8F"},
+    {"snowflake",         "\xE2\x9D\x84\xEF\xB8\x8F"},
+    {"moon",              "\xF0\x9F\x8C\x99"},
+    {"earth",             "\xF0\x9F\x8C\x8D"},
+}};
+
+static std::string_view lookup_emoji(std::string_view name) {
+    for (auto& e : kEmojis)
+        if (e.name == name) return e.utf8;
+    return {};
+}
+
+// ── URL / mention sniffing helpers ────────────────────────────────────────
+
+inline bool is_url_char(unsigned char c) noexcept {
+    // RFC 3986 unreserved + common sub-delims used in URLs.  Stops at
+    // whitespace, angle brackets, and trailing punctuation (handled by the
+    // caller by shrinking past closing `.,;:)!?]`).
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+           (c >= 'A' && c <= 'Z') ||
+           c == '-' || c == '_' || c == '.' || c == '~' ||
+           c == '/' || c == '?' || c == '#' || c == '=' || c == '&' ||
+           c == '%' || c == '+' || c == ':' || c == '@' || c == ',' ||
+           c == ';' || c == '!' || c == '(' || c == ')';
+}
+
+inline bool is_word_char(unsigned char c) noexcept {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+           (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+// Find the end of a bare URL starting at `start`.  Returns the byte offset
+// one past the URL, or start if it's not a URL.  Trailing punctuation is
+// stripped so "See https://x.com/a." doesn't swallow the period.
+static size_t scan_bare_url(std::string_view text, size_t start) {
+    size_t e = start;
+    while (e < text.size() && is_url_char(static_cast<unsigned char>(text[e])))
+        ++e;
+    // Drop trailing punctuation like `.,;:)!?`
+    while (e > start) {
+        char c = text[e - 1];
+        if (c == '.' || c == ',' || c == ';' || c == ':' ||
+            c == '!' || c == '?' || c == ')') --e;
+        else break;
+    }
+    return e;
 }
 
 // ============================================================================
@@ -126,6 +384,401 @@ void push_char(std::vector<md::Inline>& result, char c) {
         }
     }
     result.push_back(md::Text{std::string(1, c)});
+}
+
+// Parse `(url [title])` starting at `text[pos] == '('`. Consumes through the
+// closing ')'.  URL may be wrapped in <...>.  Title is "..." or '...' (or
+// (...)).  Returns true on success and updates pos/url/title; otherwise pos
+// is unchanged.
+static bool parse_link_dest_paren(std::string_view text, size_t& pos,
+                                  std::string& url, std::string& title) {
+    if (pos >= text.size() || text[pos] != '(') return false;
+    size_t i = pos + 1;
+    auto skip_ws = [&] {
+        while (i < text.size() &&
+               (text[i] == ' ' || text[i] == '\t' || text[i] == '\n')) ++i;
+    };
+    skip_ws();
+
+    std::string u;
+    if (i < text.size() && text[i] == '<') {
+        ++i;
+        while (i < text.size() && text[i] != '>' && text[i] != '\n') {
+            if (text[i] == '\\' && i + 1 < text.size()) {
+                u += text[i + 1]; i += 2; continue;
+            }
+            u += text[i++];
+        }
+        if (i >= text.size() || text[i] != '>') return false;
+        ++i;
+    } else {
+        int depth = 0;
+        while (i < text.size()) {
+            char c = text[i];
+            if (c == '\\' && i + 1 < text.size()) {
+                u += text[i + 1]; i += 2; continue;
+            }
+            if (c == '(') { ++depth; u += c; ++i; continue; }
+            if (c == ')') {
+                if (depth == 0) break;
+                --depth; u += c; ++i; continue;
+            }
+            if (c == ' ' || c == '\t' || c == '\n') break;
+            u += c;
+            ++i;
+        }
+    }
+    skip_ws();
+
+    std::string t;
+    if (i < text.size() && (text[i] == '"' || text[i] == '\'' || text[i] == '(')) {
+        char open_q = text[i];
+        char close_q = (open_q == '(') ? ')' : open_q;
+        ++i;
+        size_t title_limit = std::min(text.size(), i + 1000);
+        while (i < title_limit && text[i] != close_q) {
+            if (text[i] == '\\' && i + 1 < text.size()) {
+                t += text[i + 1]; i += 2; continue;
+            }
+            t += text[i++];
+        }
+        if (i < text.size() && text[i] == close_q) ++i;
+    }
+    skip_ws();
+
+    if (i >= text.size() || text[i] != ')') return false;
+    url = std::move(u);
+    title = std::move(t);
+    pos = i + 1;
+    return true;
+}
+
+// Parse `[ref]` immediately after a [text] for reference links.  Uses
+// `fallback_label` when [] is empty (collapsed form).  On success, advances
+// pos past ']' and returns the resolved LinkRef; otherwise returns nullptr.
+static const md::LinkRef* parse_link_ref(std::string_view text, size_t& pos,
+                                         std::string_view fallback_label) {
+    if (pos >= text.size() || text[pos] != '[') return nullptr;
+    size_t i = pos + 1;
+    size_t close = std::string_view::npos;
+    size_t limit = std::min(text.size(), i + 1000);
+    for (size_t s = i; s < limit; ++s) {
+        if (text[s] == '\\' && s + 1 < text.size()) { ++s; continue; }
+        if (text[s] == ']') { close = s; break; }
+        if (text[s] == '\n' || text[s] == '[') break;
+    }
+    if (close == std::string_view::npos) return nullptr;
+    auto label = text.substr(i, close - i);
+    if (label.empty()) label = fallback_label;
+    auto* ref = lookup_ref(label);
+    if (!ref) return nullptr;
+    pos = close + 1;
+    return ref;
+}
+
+// ── HTML tag parser helpers ───────────────────────────────────────────────
+// We recognise a small, explicitly allow-listed subset of HTML tags and pass
+// everything else through as literal text.  Two forms:
+//   - void tags: <br> / <br/>  — no closer, emit a HardBreak
+//   - paired tags: <kbd>..</kbd>, <mark>, <sub>, <sup>, <strong>, <em>,
+//                  <span>, <abbr title="…">, <a id="…">
+// Parser matches case-insensitively and allows attributes only for <abbr>
+// and <a> (title and id respectively).  Unknown tags fall through so the raw
+// text remains visible to the user.
+
+struct HtmlTagInfo {
+    bool        matched      = false;
+    bool        is_closer    = false;
+    bool        self_closing = false;
+    std::string name;                   // lowercased, no <, /, >, or attrs
+    std::string attr_title;             // for <abbr title="...">
+    std::string attr_id;                // for <a id="...">
+    std::string attr_href;              // for <a href="...">
+    size_t      end          = 0;       // one past the closing '>'
+};
+
+static HtmlTagInfo try_parse_html_tag(std::string_view text, size_t start) {
+    HtmlTagInfo info;
+    if (start >= text.size() || text[start] != '<') return info;
+    size_t i = start + 1;
+    bool closer = false;
+    if (i < text.size() && text[i] == '/') { closer = true; ++i; }
+    if (i >= text.size()) return info;
+    char first = text[i];
+    if (!(std::isalpha(static_cast<unsigned char>(first)))) return info;
+
+    size_t name_start = i;
+    while (i < text.size() &&
+           (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '-')) {
+        ++i;
+    }
+    auto tag_name = ascii_lower(text.substr(name_start, i - name_start));
+
+    // Parse attributes: `name="value"` pairs, cheap whitespace-delimited.
+    while (i < text.size() && text[i] != '>' && text[i] != '/') {
+        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+        if (i < text.size() && (text[i] == '>' || text[i] == '/')) break;
+        if (i >= text.size()) return info;
+        size_t an_start = i;
+        while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) ||
+                                   text[i] == '-' || text[i] == '_')) ++i;
+        if (i == an_start) return info;                      // malformed
+        auto attr_name = ascii_lower(text.substr(an_start, i - an_start));
+        std::string attr_val;
+        if (i < text.size() && text[i] == '=') {
+            ++i;
+            if (i < text.size() && (text[i] == '"' || text[i] == '\'')) {
+                char q = text[i++];
+                size_t limit = std::min(text.size(), i + 500);
+                while (i < limit && text[i] != q) {
+                    if (text[i] == '\\' && i + 1 < text.size()) {
+                        attr_val += text[i + 1]; i += 2; continue;
+                    }
+                    attr_val += text[i++];
+                }
+                if (i < text.size() && text[i] == q) ++i;
+            } else {
+                while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i])) &&
+                       text[i] != '>' && text[i] != '/') {
+                    attr_val += text[i++];
+                }
+            }
+        }
+        if (attr_name == "title") info.attr_title = std::move(attr_val);
+        else if (attr_name == "id") info.attr_id = std::move(attr_val);
+        else if (attr_name == "href") info.attr_href = std::move(attr_val);
+    }
+    bool self_closing = false;
+    if (i < text.size() && text[i] == '/') { self_closing = true; ++i; }
+    while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+    if (i >= text.size() || text[i] != '>') return info;
+
+    info.matched      = true;
+    info.is_closer    = closer;
+    info.self_closing = self_closing;
+    info.name         = std::move(tag_name);
+    info.end          = i + 1;
+    return info;
+}
+
+// Find the matching closer `</tag>` for a paired HTML tag.  Bounded scan.
+static size_t find_html_closer(std::string_view text, size_t start,
+                               std::string_view tag, size_t max_dist = 4000) {
+    size_t limit = std::min(text.size(), start + max_dist);
+    size_t i = start;
+    while (i < limit) {
+        if (text[i] == '<' && i + 1 < text.size() && text[i + 1] == '/') {
+            auto info = try_parse_html_tag(text, i);
+            if (info.matched && info.is_closer && info.name == tag) return i;
+        }
+        ++i;
+    }
+    return std::string_view::npos;
+}
+
+// ── Text-node post-pass: entities, emoji, bare URLs, mentions ─────────────
+
+// Expand a single Text run into a sequence of Inline nodes, decoding HTML
+// entities, replacing `:emoji:` shortcodes, linkifying bare URLs, and
+// turning `@user` / `#N` / `org/repo#N` into Mention nodes.  Runs in a
+// single left-to-right pass over the input string.
+static std::vector<md::Inline> split_text_transform(std::string_view text) {
+    std::vector<md::Inline> out;
+    std::string buf;
+
+    auto flush = [&] {
+        if (!buf.empty()) {
+            out.push_back(md::Text{std::move(buf)});
+            buf.clear();
+        }
+    };
+
+    auto word_boundary_before = [&](size_t i) -> bool {
+        if (i == 0 && buf.empty()) return true;
+        char prev = (i > 0) ? text[i - 1] : (buf.empty() ? '\0' : buf.back());
+        return !is_word_char(static_cast<unsigned char>(prev));
+    };
+
+    size_t i = 0;
+    while (i < text.size()) {
+        char c = text[i];
+
+        // HTML entity: &name; / &#N; / &#xH;
+        if (c == '&') {
+            std::string decoded;
+            size_t consumed = 0;
+            if (try_decode_entity(text, i, decoded, &consumed)) {
+                buf += decoded;
+                i += consumed;
+                continue;
+            }
+        }
+
+        // Emoji shortcode :name:
+        if (c == ':' && i + 1 < text.size()) {
+            char n0 = text[i + 1];
+            if (std::isalpha(static_cast<unsigned char>(n0)) ||
+                n0 == '+' || n0 == '-' || n0 == '_') {
+                size_t limit = std::min(text.size(), i + 40);
+                size_t end = std::string_view::npos;
+                for (size_t s = i + 1; s < limit; ++s) {
+                    char x = text[s];
+                    if (x == ':') { end = s; break; }
+                    if (!std::isalnum(static_cast<unsigned char>(x)) &&
+                        x != '_' && x != '-' && x != '+') { end = std::string_view::npos; break; }
+                }
+                if (end != std::string_view::npos && end > i + 1) {
+                    auto name = text.substr(i + 1, end - i - 1);
+                    auto utf8 = lookup_emoji(name);
+                    if (!utf8.empty()) {
+                        buf.append(utf8);
+                        i = end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Bare URL: http:// https:// www.  (word-boundary preceding)
+        if ((c == 'h' || c == 'w' || c == 'H' || c == 'W') &&
+            word_boundary_before(i)) {
+            size_t prefix = 0;
+            bool need_scheme = false;
+            auto tail = text.substr(i);
+            if (tail.size() >= 7 && (tail.substr(0, 7) == "http://" ||
+                                     tail.substr(0, 7) == "HTTP://")) prefix = 7;
+            else if (tail.size() >= 8 && (tail.substr(0, 8) == "https://" ||
+                                          tail.substr(0, 8) == "HTTPS://")) prefix = 8;
+            else if (tail.size() >= 5 && (tail.substr(0, 4) == "www." ||
+                                          tail.substr(0, 4) == "WWW.") &&
+                     std::isalnum(static_cast<unsigned char>(tail[4]))) {
+                prefix = 4;
+                need_scheme = true;
+            }
+            if (prefix > 0) {
+                size_t end = scan_bare_url(text, i + prefix);
+                if (end > i + prefix + 1) {
+                    auto span = text.substr(i, end - i);
+                    std::string href = need_scheme
+                        ? "http://" + std::string{span}
+                        : std::string{span};
+                    flush();
+                    out.push_back(md::Link{
+                        std::string{span}, std::move(href), ""});
+                    i = end;
+                    continue;
+                }
+            }
+        }
+
+        // GitHub cross-repo ref: owner/repo#NNN
+        if ((std::isalnum(static_cast<unsigned char>(c)) || c == '_') &&
+            word_boundary_before(i)) {
+            size_t p = i;
+            while (p < text.size() && (std::isalnum(static_cast<unsigned char>(text[p])) ||
+                                       text[p] == '-' || text[p] == '_' ||
+                                       text[p] == '.')) ++p;
+            if (p > i && p < text.size() && text[p] == '/') {
+                size_t q = p + 1;
+                while (q < text.size() && (std::isalnum(static_cast<unsigned char>(text[q])) ||
+                                           text[q] == '-' || text[q] == '_' ||
+                                           text[q] == '.')) ++q;
+                if (q > p + 1 && q < text.size() && text[q] == '#') {
+                    size_t r = q + 1;
+                    while (r < text.size() &&
+                           std::isdigit(static_cast<unsigned char>(text[r]))) ++r;
+                    if (r > q + 1 && r - q - 1 <= 10) {
+                        auto owner = text.substr(i,     p - i);
+                        auto repo  = text.substr(p + 1, q - p - 1);
+                        auto num   = text.substr(q + 1, r - q - 1);
+                        std::string display{text.substr(i, r - i)};
+                        std::string url = "https://github.com/";
+                        url.append(owner); url += '/';
+                        url.append(repo);  url += "/issues/";
+                        url.append(num);
+                        flush();
+                        out.push_back(md::Mention{
+                            md::Mention::Kind::CrossRepo, std::move(display), std::move(url)});
+                        i = r;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // @user mention
+        if (c == '@' && word_boundary_before(i) && i + 1 < text.size() &&
+            (std::isalnum(static_cast<unsigned char>(text[i + 1])) || text[i + 1] == '_')) {
+            size_t e = i + 1;
+            while (e < text.size() && (std::isalnum(static_cast<unsigned char>(text[e])) ||
+                                       text[e] == '-' || text[e] == '_')) ++e;
+            if (e - i >= 2 && e - i <= 40) {
+                std::string display{text.substr(i, e - i)};
+                std::string url = "https://github.com/";
+                url.append(text.substr(i + 1, e - i - 1));
+                flush();
+                out.push_back(md::Mention{
+                    md::Mention::Kind::User, std::move(display), std::move(url)});
+                i = e;
+                continue;
+            }
+        }
+
+        // #NNN issue reference
+        if (c == '#' && word_boundary_before(i) && i + 1 < text.size() &&
+            std::isdigit(static_cast<unsigned char>(text[i + 1]))) {
+            size_t e = i + 1;
+            while (e < text.size() &&
+                   std::isdigit(static_cast<unsigned char>(text[e]))) ++e;
+            if (e - i >= 2 && e - i <= 10) {
+                std::string display{text.substr(i, e - i)};
+                flush();
+                out.push_back(md::Mention{
+                    md::Mention::Kind::Issue, std::move(display), ""});
+                i = e;
+                continue;
+            }
+        }
+
+        buf += c;
+        ++i;
+    }
+    flush();
+    return out;
+}
+
+// Apply split_text_transform to every Text node in `nodes`.  Non-Text nodes
+// pass through unchanged (their children have already been transformed by
+// parse_inlines recursion).  Adjacent Text runs are coalesced.
+static void post_process_text_nodes(std::vector<md::Inline>& nodes) {
+    std::vector<md::Inline> out;
+    out.reserve(nodes.size());
+    for (auto& span : nodes) {
+        auto* t = std::get_if<md::Text>(&span.inner);
+        if (!t) { out.push_back(std::move(span)); continue; }
+        if (t->content.empty()) continue;
+        // Skip expensive transform if no trigger chars present.
+        bool has_trigger = false;
+        for (char c : t->content) {
+            if (c == '&' || c == ':' || c == '@' || c == '#' ||
+                c == 'h' || c == 'w' || c == 'H' || c == 'W' || c == '/') {
+                has_trigger = true; break;
+            }
+        }
+        if (!has_trigger) { out.push_back(std::move(span)); continue; }
+        auto expanded = split_text_transform(t->content);
+        for (auto& e : expanded) {
+            auto* et = std::get_if<md::Text>(&e.inner);
+            if (et && !out.empty()) {
+                if (auto* ot = std::get_if<md::Text>(&out.back().inner)) {
+                    ot->content += et->content;
+                    continue;
+                }
+            }
+            out.push_back(std::move(e));
+        }
+    }
+    nodes = std::move(out);
 }
 
 std::vector<md::Inline> parse_inlines(std::string_view text) {
@@ -265,6 +918,69 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             continue;
         }
 
+        // Subscript: ~text~ (single ~) — must come after strike (~~) check.
+        // Bounded scan; require non-space flanking to avoid matching prose
+        // like "before~after" in URLs (already handled earlier in autolinks).
+        if (text[i] == '~') {
+            if (i + 1 < text.size() && text[i + 1] != '~' && text[i + 1] != ' ') {
+                size_t scan_limit = std::min(text.size(), i + 1 + 200);
+                size_t end = std::string_view::npos;
+                for (size_t s = i + 1; s < scan_limit; ++s) {
+                    if (text[s] == '~') { end = s; break; }
+                    // Subscripts don't span spaces or newlines.
+                    if (text[s] == ' ' || text[s] == '\n') break;
+                }
+                if (end != std::string_view::npos && text[end - 1] != ' ') {
+                    auto inner = text.substr(i + 1, end - i - 1);
+                    result.push_back(md::Sub{parse_inlines(inner)});
+                    i = end + 1;
+                    continue;
+                }
+            }
+            // No match — fall through to "unmatched ~" handler below.
+        }
+
+        // Highlight: ==text== (CommonMark extension / PHP Markdown Extra).
+        if (i + 1 < text.size() && text[i] == '=' && text[i + 1] == '=') {
+            size_t end = find_closing(text, "==", i + 2);
+            if (end != std::string_view::npos) {
+                auto inner = text.substr(i + 2, end - i - 2);
+                result.push_back(md::Highlight{parse_inlines(inner)});
+                i = end + 2;
+                continue;
+            }
+            // Fall through — literal '=' may just be prose.
+            push_text(result, text.substr(i, 1));
+            ++i;
+            continue;
+        }
+        if (text[i] == '=') {
+            push_text(result, text.substr(i, 1));
+            ++i;
+            continue;
+        }
+
+        // Superscript: ^text^ — bounded, no-space, no-newline.
+        if (text[i] == '^') {
+            if (i + 1 < text.size() && text[i + 1] != '^' && text[i + 1] != ' ') {
+                size_t scan_limit = std::min(text.size(), i + 1 + 200);
+                size_t end = std::string_view::npos;
+                for (size_t s = i + 1; s < scan_limit; ++s) {
+                    if (text[s] == '^') { end = s; break; }
+                    if (text[s] == ' ' || text[s] == '\n') break;
+                }
+                if (end != std::string_view::npos && text[end - 1] != ' ') {
+                    auto inner = text.substr(i + 1, end - i - 1);
+                    result.push_back(md::Sup{parse_inlines(inner)});
+                    i = end + 1;
+                    continue;
+                }
+            }
+            push_text(result, text.substr(i, 1));
+            ++i;
+            continue;
+        }
+
         // Italic: *text* or _text_ (single delimiter)
         if (text[i] == '*' || text[i] == '_') {
             char delim_ch = text[i];
@@ -290,28 +1006,43 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             continue;
         }
 
-        // Image: ![alt](url) — bounded bracket/paren search
+        // Image: ![alt](url [title]) or ![alt][ref] or ![alt][] or ![alt]
         if (text[i] == '!' && i + 1 < text.size() && text[i + 1] == '[') {
             size_t bracket_limit = std::min(text.size(), i + 2 + 2000);
             size_t close_bracket = std::string_view::npos;
             for (size_t s = i + 2; s < bracket_limit; ++s) {
+                if (text[s] == '\\' && s + 1 < text.size()) { ++s; continue; }
                 if (text[s] == ']') { close_bracket = s; break; }
             }
-            if (close_bracket != std::string_view::npos &&
-                close_bracket + 1 < text.size() &&
-                text[close_bracket + 1] == '(') {
-                size_t paren_limit = std::min(text.size(), close_bracket + 2 + 2000);
-                size_t close_paren = std::string_view::npos;
-                for (size_t s = close_bracket + 2; s < paren_limit; ++s) {
-                    if (text[s] == ')') { close_paren = s; break; }
-                }
-                if (close_paren != std::string_view::npos) {
-                    auto alt = text.substr(i + 2, close_bracket - i - 2);
-                    auto url = text.substr(close_bracket + 2,
-                                          close_paren - close_bracket - 2);
-                    result.push_back(md::Image{std::string{alt}, std::string{url}});
-                    i = close_paren + 1;
-                    continue;
+            if (close_bracket != std::string_view::npos) {
+                auto alt = text.substr(i + 2, close_bracket - i - 2);
+                size_t after = close_bracket + 1;
+                if (after < text.size() && text[after] == '(') {
+                    std::string url, title;
+                    size_t pos = after;
+                    if (parse_link_dest_paren(text, pos, url, title)) {
+                        result.push_back(md::Image{
+                            std::string{alt}, std::move(url), std::move(title)});
+                        i = pos;
+                        continue;
+                    }
+                } else if (after < text.size() && text[after] == '[') {
+                    size_t pos = after;
+                    auto* ref = parse_link_ref(text, pos, alt);
+                    if (ref) {
+                        result.push_back(md::Image{
+                            std::string{alt}, ref->url, ref->title});
+                        i = pos;
+                        continue;
+                    }
+                } else {
+                    // Shortcut ![alt] — look up `alt` directly.
+                    if (auto* ref = lookup_ref(alt)) {
+                        result.push_back(md::Image{
+                            std::string{alt}, ref->url, ref->title});
+                        i = close_bracket + 1;
+                        continue;
+                    }
                 }
             }
             push_text(result, "!");
@@ -319,7 +1050,7 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             continue;
         }
 
-        // Link: [text](url) — bounded bracket/paren search
+        // Link: [text](url [title]) or [text][ref] or [text][] or [text]
         if (text[i] == '[') {
             // Footnote reference: [^label]
             if (i + 1 < text.size() && text[i + 1] == '^') {
@@ -330,7 +1061,6 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                 }
                 if (close != std::string_view::npos) {
                     auto label = text.substr(i + 2, close - i - 2);
-                    // Only if it's a pure reference (no (url) after)
                     if (close + 1 >= text.size() || text[close + 1] != '(') {
                         result.push_back(md::FootnoteRef{std::string{label}});
                         i = close + 1;
@@ -339,27 +1069,47 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                 }
             }
 
+            // Find matching ']' — links can contain balanced [] brackets
+            // for clickable-image syntax [![alt](img)](url).  One level of
+            // nesting is enough to cover the common case.
             size_t bracket_limit = std::min(text.size(), i + 1 + 2000);
             size_t close_bracket = std::string_view::npos;
+            int depth = 0;
             for (size_t s = i + 1; s < bracket_limit; ++s) {
-                if (text[s] == ']') { close_bracket = s; break; }
-            }
-            if (close_bracket != std::string_view::npos &&
-                close_bracket + 1 < text.size() &&
-                text[close_bracket + 1] == '(') {
-                size_t paren_limit = std::min(text.size(), close_bracket + 2 + 2000);
-                size_t close_paren = std::string_view::npos;
-                for (size_t s = close_bracket + 2; s < paren_limit; ++s) {
-                    if (text[s] == ')') { close_paren = s; break; }
+                if (text[s] == '\\' && s + 1 < text.size()) { ++s; continue; }
+                if (text[s] == '[') { ++depth; continue; }
+                if (text[s] == ']') {
+                    if (depth == 0) { close_bracket = s; break; }
+                    --depth;
                 }
-                if (close_paren != std::string_view::npos) {
-                    auto link_text = text.substr(i + 1, close_bracket - i - 1);
-                    auto url = text.substr(close_bracket + 2,
-                                          close_paren - close_bracket - 2);
-                    result.push_back(md::Link{
-                        std::string{link_text}, std::string{url}});
-                    i = close_paren + 1;
-                    continue;
+            }
+            if (close_bracket != std::string_view::npos) {
+                auto link_text = text.substr(i + 1, close_bracket - i - 1);
+                size_t after = close_bracket + 1;
+                if (after < text.size() && text[after] == '(') {
+                    std::string url, title;
+                    size_t pos = after;
+                    if (parse_link_dest_paren(text, pos, url, title)) {
+                        result.push_back(md::Link{
+                            std::string{link_text}, std::move(url), std::move(title)});
+                        i = pos;
+                        continue;
+                    }
+                } else if (after < text.size() && text[after] == '[') {
+                    size_t pos = after;
+                    if (auto* ref = parse_link_ref(text, pos, link_text)) {
+                        result.push_back(md::Link{
+                            std::string{link_text}, ref->url, ref->title});
+                        i = pos;
+                        continue;
+                    }
+                } else {
+                    if (auto* ref = lookup_ref(link_text)) {
+                        result.push_back(md::Link{
+                            std::string{link_text}, ref->url, ref->title});
+                        i = close_bracket + 1;
+                        continue;
+                    }
                 }
             }
             push_text(result, "[");
@@ -367,20 +1117,117 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             continue;
         }
 
-        // Autolink: <url> or <email>
+        // `<` — autolink, HTML entity, HTML comment, or HTML tag.
         if (text[i] == '<') {
+            // HTML comment `<!-- ... -->` — render nothing (author notes,
+            // TODOs, linter pragmas are invisible in final output, matching
+            // CommonMark's behavior).  Bounded scan to cap worst-case.
+            if (i + 3 < text.size() &&
+                text[i + 1] == '!' && text[i + 2] == '-' && text[i + 3] == '-') {
+                size_t limit = std::min(text.size(), i + 4000);
+                size_t j = i + 4;
+                bool closed = false;
+                while (j + 2 < limit) {
+                    if (text[j] == '-' && text[j + 1] == '-' && text[j + 2] == '>') {
+                        i = j + 3; closed = true; break;
+                    }
+                    ++j;
+                }
+                if (closed) continue;
+                // Unterminated: fall through and emit the '<' as text.
+            }
+            // Try HTML tag first (allow-listed subset).
+            auto tag = try_parse_html_tag(text, i);
+            if (tag.matched) {
+                // <br> / <br/>  → HardBreak
+                if (tag.name == "br") {
+                    result.push_back(md::HardBreak{});
+                    i = tag.end;
+                    continue;
+                }
+                // <a id="…"> anchor marker — emit nothing visible.
+                if (tag.name == "a" && !tag.is_closer) {
+                    if (tag.self_closing) {
+                        i = tag.end; continue;
+                    }
+                    // <a id="x">text</a> — render text styled as a link
+                    // only when href is present; otherwise treat as plain.
+                    size_t closer = find_html_closer(text, tag.end, "a");
+                    auto body = (closer == std::string_view::npos)
+                        ? text.substr(tag.end)
+                        : text.substr(tag.end, closer - tag.end);
+                    auto inner = parse_inlines(body);
+                    if (!tag.attr_href.empty()) {
+                        std::string tx;
+                        for (auto& sp : inner)
+                            if (auto* t = std::get_if<md::Text>(&sp.inner)) tx += t->content;
+                        result.push_back(md::Link{
+                            std::move(tx), std::move(tag.attr_href), ""});
+                    } else {
+                        for (auto& sp : inner) result.push_back(std::move(sp));
+                    }
+                    i = (closer == std::string_view::npos)
+                        ? text.size() : closer + 4; // len("</a>")
+                    continue;
+                }
+                // Paired HTML tags we render.
+                auto render_paired = [&](const char* name,
+                                         auto wrap) -> bool {
+                    if (tag.is_closer || tag.self_closing) return false;
+                    if (tag.name != name) return false;
+                    size_t closer = find_html_closer(text, tag.end, name);
+                    auto body = (closer == std::string_view::npos)
+                        ? text.substr(tag.end)
+                        : text.substr(tag.end, closer - tag.end);
+                    auto inner = parse_inlines(body);
+                    wrap(std::move(inner), tag);
+                    i = (closer == std::string_view::npos)
+                        ? text.size()
+                        : closer + 3 + std::string_view(name).size();
+                    return true;
+                };
+                if (render_paired("strong", [&](auto inner, auto&) {
+                    result.push_back(md::Bold{std::move(inner)});
+                })) continue;
+                if (render_paired("em", [&](auto inner, auto&) {
+                    result.push_back(md::Italic{std::move(inner)});
+                })) continue;
+                if (render_paired("mark", [&](auto inner, auto&) {
+                    result.push_back(md::Highlight{std::move(inner)});
+                })) continue;
+                if (render_paired("sub", [&](auto inner, auto&) {
+                    result.push_back(md::Sub{std::move(inner)});
+                })) continue;
+                if (render_paired("sup", [&](auto inner, auto&) {
+                    result.push_back(md::Sup{std::move(inner)});
+                })) continue;
+                if (render_paired("kbd", [&](auto inner, auto&) {
+                    result.push_back(md::Kbd{std::move(inner)});
+                })) continue;
+                if (render_paired("span", [&](auto inner, auto&) {
+                    for (auto& sp : inner) result.push_back(std::move(sp));
+                })) continue;
+                if (render_paired("abbr", [&](auto inner, auto& t) {
+                    result.push_back(md::Abbr{std::move(t.attr_title), std::move(inner)});
+                })) continue;
+                // Unrecognized tag — fall through and treat as text.
+            }
+
+            // Autolink: <url> or <email>
             size_t close = text.find('>', i + 1);
-            if (close != std::string_view::npos) {
+            if (close != std::string_view::npos && close - i <= 500) {
                 auto content = text.substr(i + 1, close - i - 1);
-                // Check if it looks like a URL or email
+                bool has_space = content.find(' ') != std::string_view::npos ||
+                                 content.find('\n') != std::string_view::npos;
                 bool is_url = content.find("://") != std::string_view::npos;
                 bool is_email = content.find('@') != std::string_view::npos &&
-                                content.find(' ') == std::string_view::npos;
-                if (is_url || is_email) {
+                                !has_space && !is_url;
+                if ((is_url || is_email) && !has_space) {
                     std::string url_str{content};
                     if (is_email && !starts_with(content, "mailto:"))
                         url_str = "mailto:" + url_str;
-                    result.push_back(md::Link{std::string{content}, std::move(url_str)});
+                    result.push_back(md::Link{
+                        std::string{content}, std::move(url_str), ""});
                     i = close + 1;
                     continue;
                 }
@@ -417,6 +1264,7 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
         }
     }
 
+    post_process_text_nodes(result);
     return result;
 }
 
@@ -552,6 +1400,98 @@ static inline size_t find_eol(const char* data, size_t start, size_t end) noexce
 
 static constexpr int kMaxRecursionDepth = 8;
 
+// Normalize a reference label: lowercase + collapse whitespace runs.
+static std::string normalize_ref_label(std::string_view label) {
+    std::string out;
+    out.reserve(label.size());
+    bool prev_space = false;
+    for (char c : label) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        bool sp = std::isspace(uc);
+        if (sp) {
+            if (!prev_space && !out.empty()) out += ' ';
+            prev_space = true;
+        } else {
+            out += static_cast<char>(std::tolower(uc));
+            prev_space = false;
+        }
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out;
+}
+
+// Extract reference-link definitions `[label]: url "title"` from source.
+// Writes them to `defs` and returns a copy of `source` with the matched
+// lines removed (replaced by blank lines so line-oriented parsers still see
+// block boundaries).  Lines that look like footnote defs (`[^label]: …`)
+// are NOT treated as reference defs.
+static std::string collect_ref_defs(std::string_view source,
+                                    std::unordered_map<std::string, md::LinkRef>& defs) {
+    std::string out;
+    out.reserve(source.size());
+
+    size_t i = 0;
+    while (i < source.size()) {
+        size_t nl = source.find('\n', i);
+        size_t line_end = (nl == std::string_view::npos) ? source.size() : nl;
+        auto line = source.substr(i, line_end - i);
+        auto trimmed = trim(line);
+
+        bool consumed = false;
+        if (trimmed.size() >= 4 && trimmed[0] == '[' && trimmed[1] != '^') {
+            size_t close = trimmed.find("]:");
+            if (close != std::string_view::npos && close > 1) {
+                auto label_sv = trimmed.substr(1, close - 1);
+                auto rest = trim(trimmed.substr(close + 2));
+                std::string url;
+                size_t p = 0;
+                if (!rest.empty() && rest[0] == '<') {
+                    size_t gt = rest.find('>', 1);
+                    if (gt != std::string_view::npos) {
+                        url = std::string{rest.substr(1, gt - 1)};
+                        p = gt + 1;
+                    }
+                } else {
+                    size_t e = 0;
+                    while (e < rest.size() &&
+                           !std::isspace(static_cast<unsigned char>(rest[e]))) ++e;
+                    url = std::string{rest.substr(0, e)};
+                    p = e;
+                }
+                if (!url.empty()) {
+                    while (p < rest.size() &&
+                           std::isspace(static_cast<unsigned char>(rest[p]))) ++p;
+                    std::string title;
+                    if (p < rest.size() &&
+                        (rest[p] == '"' || rest[p] == '\'' || rest[p] == '(')) {
+                        char open_q = rest[p];
+                        char close_q = (open_q == '(') ? ')' : open_q;
+                        ++p;
+                        while (p < rest.size() && rest[p] != close_q) {
+                            title += rest[p++];
+                        }
+                    }
+                    auto key = normalize_ref_label(label_sv);
+                    if (!key.empty()) {
+                        defs.emplace(std::move(key),
+                                     md::LinkRef{std::move(url), std::move(title)});
+                        consumed = true;
+                    }
+                }
+            }
+        }
+
+        if (!consumed) {
+            out.append(line);
+        }
+        if (nl != std::string_view::npos) out += '\n';
+
+        if (nl == std::string_view::npos) break;
+        i = nl + 1;
+    }
+    return out;
+}
+
 static md::Document parse_markdown_impl(std::string_view source, int depth) {
     md::Document doc;
 
@@ -606,6 +1546,29 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
             flush_paragraph();
             ++i;
             continue;
+        }
+
+        // HTML comment block: `<!-- ... -->` (possibly multi-line).
+        // Render nothing — TODOs / linter pragmas / rendering hints stay
+        // invisible. If the open is mid-paragraph, let paragraph parsing
+        // handle it so inline comment stripping kicks in.
+        if (paragraph_buf.empty() && starts_with(trimmed, "<!--")) {
+            // Terminating --> on the same line?
+            if (auto end = trimmed.find("-->", 4); end != std::string_view::npos) {
+                auto rest = trim(trimmed.substr(end + 3));
+                if (rest.empty()) { ++i; continue; }
+                // Tail text after --> falls through to normal processing.
+            } else {
+                // Multi-line: consume until a line containing -->
+                ++i;
+                while (i < lines.size()) {
+                    auto cl = lines[i];
+                    if (!cl.empty() && cl.back() == '\r') cl.remove_suffix(1);
+                    ++i;
+                    if (cl.find("-->") != std::string_view::npos) break;
+                }
+                continue;
+            }
         }
 
         // Setext heading: check if NEXT line is === or ---
@@ -750,7 +1713,7 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
             }
         }
 
-        // Blockquote: > text
+        // Blockquote (or GitHub alert: `> [!NOTE] …`)
         if (!trimmed.empty() && trimmed[0] == '>') {
             flush_paragraph();
             std::string bq_text;
@@ -764,6 +1727,43 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
                 if (!bq_text.empty()) bq_text += '\n';
                 bq_text += content;
                 ++i;
+            }
+            // GitHub alert detection: first line is `[!NOTE]` / `[!TIP]` /
+            // `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]` (case-insensitive).
+            auto first_nl = bq_text.find('\n');
+            auto first_line = (first_nl == std::string::npos)
+                ? std::string_view{bq_text}
+                : std::string_view{bq_text}.substr(0, first_nl);
+            auto ft = trim(first_line);
+            if (ft.size() > 3 && ft.front() == '[' && ft[1] == '!') {
+                auto close_b = ft.find(']');
+                if (close_b != std::string_view::npos && close_b > 2) {
+                    auto tag = ascii_lower(ft.substr(2, close_b - 2));
+                    std::optional<md::Alert::Kind> kind;
+                    if      (tag == "note")      kind = md::Alert::Kind::Note;
+                    else if (tag == "tip")       kind = md::Alert::Kind::Tip;
+                    else if (tag == "important") kind = md::Alert::Kind::Important;
+                    else if (tag == "warning")   kind = md::Alert::Kind::Warning;
+                    else if (tag == "caution")   kind = md::Alert::Kind::Caution;
+                    if (kind.has_value()) {
+                        auto rest = (first_nl == std::string::npos)
+                            ? std::string_view{}
+                            : std::string_view{bq_text}.substr(first_nl + 1);
+                        auto after_tag = ft.substr(close_b + 1);
+                        std::string body;
+                        body.reserve(after_tag.size() + rest.size() + 1);
+                        after_tag = trim(after_tag);
+                        if (!after_tag.empty()) body.append(after_tag);
+                        if (!rest.empty()) {
+                            if (!body.empty()) body += '\n';
+                            body.append(rest);
+                        }
+                        auto inner = parse_markdown_impl(body, depth + 1);
+                        doc.blocks.push_back(md::Alert{
+                            *kind, std::move(inner.blocks)});
+                        continue;
+                    }
+                }
             }
             auto inner = parse_markdown_impl(bq_text, depth + 1);
             doc.blocks.push_back(md::Blockquote{std::move(inner.blocks)});
@@ -929,6 +1929,181 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
             }
         }
 
+        // Definition-list item: paragraph followed by one or more `: def` lines.
+        //   term1
+        //   : definition 1
+        //   : definition 2
+        //
+        // We detect this when paragraph_buf has exactly one non-empty line
+        // (the term) and the current line begins with `: `.
+        if (!paragraph_buf.empty() && trimmed.size() >= 2 &&
+            trimmed[0] == ':' && (trimmed[1] == ' ' || trimmed[1] == '\t')) {
+            // Only if paragraph_buf holds a single-line term (no embedded
+            // newlines) — otherwise treat `:` as regular prose.
+            if (paragraph_buf.find('\n') == std::string::npos) {
+                auto term_text = trim(paragraph_buf);
+                paragraph_buf.clear();
+
+                md::DefItem item;
+                item.term = parse_inlines(term_text);
+
+                while (i < lines.size()) {
+                    auto dl = lines[i];
+                    if (!dl.empty() && dl.back() == '\r') dl.remove_suffix(1);
+                    auto dt = trim(dl);
+                    if (dt.size() < 2 || dt[0] != ':' ||
+                        (dt[1] != ' ' && dt[1] != '\t')) break;
+                    std::string def{dt.substr(2)};
+                    ++i;
+                    // Continuation lines: indented by 2+ spaces.
+                    while (i < lines.size()) {
+                        auto cl = lines[i];
+                        if (!cl.empty() && cl.back() == '\r') cl.remove_suffix(1);
+                        if (trim(cl).empty()) break;
+                        if (count_indent(cl) < 2) break;
+                        def += '\n';
+                        def += dedent(cl, 2);
+                        ++i;
+                    }
+                    auto sub = parse_markdown_impl(def, depth + 1);
+                    item.defs.push_back(std::move(sub.blocks));
+                    // Allow blank line between defs.
+                    while (i < lines.size() && trim(lines[i]).empty()) ++i;
+                }
+                // Collect subsequent terms into the same list.
+                md::DefList dl_block;
+                dl_block.items.push_back(std::move(item));
+                while (i < lines.size()) {
+                    auto nl = lines[i];
+                    if (!nl.empty() && nl.back() == '\r') nl.remove_suffix(1);
+                    auto nt = trim(nl);
+                    if (nt.empty()) break;
+                    // A term is a line NOT starting with `:` and followed by
+                    // another `: …` line.
+                    if (nt[0] == ':' || nt[0] == '#' || nt[0] == '>' ||
+                        nt[0] == '|' || nt[0] == '-' || nt[0] == '*' ||
+                        nt[0] == '+' || nt[0] == '`') break;
+                    if (i + 1 >= lines.size()) break;
+                    auto peek = trim(lines[i + 1]);
+                    if (peek.size() < 2 || peek[0] != ':' ||
+                        (peek[1] != ' ' && peek[1] != '\t')) break;
+
+                    md::DefItem next;
+                    next.term = parse_inlines(nt);
+                    i += 1;
+                    while (i < lines.size()) {
+                        auto dl = lines[i];
+                        if (!dl.empty() && dl.back() == '\r') dl.remove_suffix(1);
+                        auto dt = trim(dl);
+                        if (dt.size() < 2 || dt[0] != ':' ||
+                            (dt[1] != ' ' && dt[1] != '\t')) break;
+                        std::string def{dt.substr(2)};
+                        ++i;
+                        while (i < lines.size()) {
+                            auto cl = lines[i];
+                            if (!cl.empty() && cl.back() == '\r') cl.remove_suffix(1);
+                            if (trim(cl).empty()) break;
+                            if (count_indent(cl) < 2) break;
+                            def += '\n';
+                            def += dedent(cl, 2);
+                            ++i;
+                        }
+                        auto sub = parse_markdown_impl(def, depth + 1);
+                        next.defs.push_back(std::move(sub.blocks));
+                        while (i < lines.size() && trim(lines[i]).empty()) ++i;
+                    }
+                    dl_block.items.push_back(std::move(next));
+                }
+                doc.blocks.push_back(std::move(dl_block));
+                continue;
+            }
+        }
+
+        // <details><summary>…</summary>…</details> — render as a titled
+        // blockquote.  Any other recognized HTML block (or unrecognized
+        // block-level tag) falls through to HtmlBlock.
+        if (!trimmed.empty() && trimmed[0] == '<' && paragraph_buf.empty()) {
+            auto open = try_parse_html_tag(trimmed, 0);
+            if (open.matched && !open.is_closer) {
+                if (open.name == "details") {
+                    flush_paragraph();
+                    // Collect body until </details> at line start.
+                    std::string body;
+                    // Remainder of this line after the <details> tag.
+                    auto tail = trimmed.substr(open.end);
+                    if (!tail.empty()) body.append(tail);
+                    ++i;
+                    bool found_close = false;
+                    while (i < lines.size()) {
+                        auto dl = lines[i];
+                        if (!dl.empty() && dl.back() == '\r') dl.remove_suffix(1);
+                        auto dt = trim(dl);
+                        if (starts_with(ascii_lower(std::string{dt}), "</details>")) {
+                            ++i;
+                            found_close = true;
+                            break;
+                        }
+                        if (!body.empty()) body += '\n';
+                        body += dl;
+                        ++i;
+                    }
+                    (void)found_close;
+                    // Extract <summary>…</summary> from body.
+                    std::vector<md::Inline> summary;
+                    auto body_lc = ascii_lower(body);
+                    size_t sm_open  = body_lc.find("<summary");
+                    if (sm_open != std::string::npos) {
+                        size_t sm_gt = body.find('>', sm_open);
+                        size_t sm_close = body_lc.find("</summary>", sm_gt + 1);
+                        if (sm_gt != std::string::npos &&
+                            sm_close != std::string::npos) {
+                            auto sum_text = std::string_view{body}
+                                .substr(sm_gt + 1, sm_close - sm_gt - 1);
+                            summary = parse_inlines(sum_text);
+                            // Strip the <summary>…</summary> from body.
+                            body.erase(sm_open, sm_close + 10 - sm_open);
+                        }
+                    }
+                    auto inner = parse_markdown_impl(body, depth + 1);
+                    doc.blocks.push_back(md::Details{
+                        std::move(summary), std::move(inner.blocks)});
+                    continue;
+                }
+                // Unrecognized block-level HTML — consume lines until a
+                // matching closer (case-insensitive) or a blank line.
+                // Only treat as HtmlBlock for a conservative allowlist;
+                // otherwise let it fall through to paragraph parsing so
+                // inline-level tags (<strong>, <kbd>, …) still work.
+                static constexpr std::array<std::string_view, 14> kBlockTags{{
+                    "div", "table", "ul", "ol", "dl", "p", "pre",
+                    "blockquote", "form", "figure", "section", "article",
+                    "aside", "nav",
+                }};
+                bool is_block = false;
+                for (auto& t : kBlockTags) if (open.name == t) { is_block = true; break; }
+                if (is_block) {
+                    flush_paragraph();
+                    std::string content{line};
+                    ++i;
+                    while (i < lines.size()) {
+                        auto hl = lines[i];
+                        if (!hl.empty() && hl.back() == '\r') hl.remove_suffix(1);
+                        if (trim(hl).empty()) { ++i; break; }
+                        content += '\n';
+                        content += hl;
+                        auto lc = ascii_lower(std::string{trim(hl)});
+                        if (starts_with(lc, "</" + open.name + ">")) {
+                            ++i;
+                            break;
+                        }
+                        ++i;
+                    }
+                    doc.blocks.push_back(md::HtmlBlock{std::move(content)});
+                    continue;
+                }
+            }
+        }
+
         // Regular paragraph text — single newlines are soft breaks (spaces)
         if (!paragraph_buf.empty()) paragraph_buf += ' ';
         paragraph_buf += line;
@@ -940,7 +2115,16 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
 }
 
 md::Document parse_markdown(std::string_view source) {
-    return parse_markdown_impl(source, 0);
+    md::Document doc;
+    // Pre-pass: pull out `[label]: url "title"` definitions and remember
+    // them in the Document, because inline parsing needs the map to resolve
+    // references that appear *before* the definition textually.
+    std::string cleaned = collect_ref_defs(source, doc.ref_defs);
+
+    RefDefsGuard guard(&doc.ref_defs);
+    auto parsed = parse_markdown_impl(cleaned, 0);
+    doc.blocks = std::move(parsed.blocks);
+    return doc;
 }
 
 // ============================================================================
@@ -975,6 +2159,16 @@ namespace colors {
     constexpr auto footnote_fg = Color::bright_black();
     constexpr auto table_border= Color::bright_black();
     constexpr auto table_header= Color::bright_white();
+    constexpr auto highlight_bg= Color::yellow();
+    constexpr auto highlight_fg= Color::black();
+    constexpr auto mention_fg  = Color::bright_cyan();
+    constexpr auto kbd_fg      = Color::bright_white();
+    constexpr auto kbd_border  = Color::bright_black();
+    constexpr auto alert_note      = Color::bright_blue();
+    constexpr auto alert_tip       = Color::bright_green();
+    constexpr auto alert_important = Color::bright_magenta();
+    constexpr auto alert_warning   = Color::bright_yellow();
+    constexpr auto alert_caution   = Color::bright_red();
 }
 
 // ============================================================================
@@ -1974,6 +3168,54 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             auto sty = inherited.merge(Style{}.with_strikethrough().with_fg(colors::strike_fg));
             for (auto& child : s.children) flatten_inline(child, sty, out, runs);
         },
+        [&](const md::Highlight& h) {
+            auto sty = inherited.merge(
+                Style{}.with_bg(colors::highlight_bg).with_fg(colors::highlight_fg));
+            for (auto& child : h.children) flatten_inline(child, sty, out, runs);
+        },
+        [&](const md::Sub& sb) {
+            size_t start = out.size();
+            auto sty = inherited.merge(Style{}.with_fg(colors::strike_fg));
+            out += "_{";
+            for (auto& child : sb.children) flatten_inline(child, sty, out, runs);
+            out += "}";
+            runs.push_back({start, 2, sty});
+            runs.push_back({out.size() - 1, 1, sty});
+        },
+        [&](const md::Sup& sp) {
+            size_t start = out.size();
+            auto sty = inherited.merge(Style{}.with_fg(colors::strike_fg));
+            out += "^{";
+            for (auto& child : sp.children) flatten_inline(child, sty, out, runs);
+            out += "}";
+            runs.push_back({start, 2, sty});
+            runs.push_back({out.size() - 1, 1, sty});
+        },
+        [&](const md::Kbd& k) {
+            auto bracket_sty = Style{}.with_fg(colors::kbd_border);
+            auto inner_sty = inherited.merge(
+                Style{}.with_bold().with_fg(colors::kbd_fg));
+            runs.push_back({out.size(), 1, bracket_sty});
+            out += "[";
+            for (auto& child : k.children) flatten_inline(child, inner_sty, out, runs);
+            runs.push_back({out.size(), 1, bracket_sty});
+            out += "]";
+        },
+        [&](const md::Abbr& a) {
+            auto sty = inherited.merge(Style{}.with_underline());
+            for (auto& child : a.children) flatten_inline(child, sty, out, runs);
+            if (!a.title.empty()) {
+                std::string suffix = " (" + a.title + ")";
+                auto suf_sty = Style{}.with_fg(colors::footnote_fg).with_italic();
+                runs.push_back({out.size(), suffix.size(), suf_sty});
+                out += suffix;
+            }
+        },
+        [&](const md::Mention& m) {
+            auto sty = Style{}.with_fg(colors::mention_fg);
+            runs.push_back({out.size(), m.display.size(), sty});
+            out += m.display;
+        },
         [&](const md::FootnoteRef& f) {
             auto content = "[" + f.label + "]";
             auto sty = Style{}.with_fg(colors::footnote_fg).with_italic();
@@ -2145,8 +3387,17 @@ Element md_block_to_element(const md::Block& block) {
                 .padding(0, 1, 0, 1);
 
             if (!c.lang.empty()) {
+                std::string label = " " + c.lang + " ";
+                // Diagram/math fences we can't layout: flag them in the label
+                // so users know the content is a textual fallback, not the
+                // intended rendering.
+                if (c.lang == "mermaid" || c.lang == "matrix" ||
+                    c.lang == "math"    || c.lang == "latex"  ||
+                    c.lang == "dot"     || c.lang == "graphviz") {
+                    label = " " + c.lang + " (diagram) ";
+                }
                 builder = std::move(builder).border_text(
-                    " " + c.lang + " ",
+                    std::move(label),
                     BorderTextPos::Top,
                     BorderTextAlign::Start);
             }
@@ -2420,6 +3671,138 @@ Element md_block_to_element(const md::Block& block) {
             }
             return detail::vstack()(std::move(parts));
         },
+        [](const md::Alert& a) -> Element {
+            // GitHub-style alert: colored gutter + kind header, children
+            // indented under a single solid bar in the kind color.
+            const char* label = "NOTE";
+            const char* icon  = "\xe2\x84\xb9";  // ℹ
+            Color bar = colors::alert_note;
+            switch (a.kind) {
+                case md::Alert::Kind::Note:
+                    label = "NOTE";  icon = "\xe2\x84\xb9";  // ℹ
+                    bar = colors::alert_note; break;
+                case md::Alert::Kind::Tip:
+                    label = "TIP";   icon = "\xf0\x9f\x92\xa1"; // 💡
+                    bar = colors::alert_tip; break;
+                case md::Alert::Kind::Important:
+                    label = "IMPORTANT"; icon = "\xe2\x97\x86";  // ◆
+                    bar = colors::alert_important; break;
+                case md::Alert::Kind::Warning:
+                    label = "WARNING";   icon = "\xe2\x9a\xa0";  // ⚠
+                    bar = colors::alert_warning; break;
+                case md::Alert::Kind::Caution:
+                    label = "CAUTION";   icon = "\xe2\x9b\x94";  // ⛔
+                    bar = colors::alert_caution; break;
+            }
+
+            auto bar_style = Style{}.with_fg(bar).with_bold();
+
+            std::vector<Element> rows;
+            rows.reserve(a.children.size() + 1);
+
+            // Header: " ▍ ICON KIND "
+            std::string header;
+            header.reserve(16);
+            header += "\xe2\x96\x8d ";          // ▍
+            header += icon;
+            header += ' ';
+            header += label;
+            rows.push_back(Element{TextElement{
+                .content = std::move(header),
+                .style = bar_style,
+            }});
+
+            for (auto& child : a.children) {
+                auto child_elem = md_block_to_element(child);
+                rows.push_back(detail::hstack()(
+                    Element{TextElement{
+                        .content = "\xe2\x96\x8d ",     // ▍
+                        .style = bar_style,
+                    }},
+                    std::move(child_elem)
+                ));
+            }
+
+            return detail::vstack()(std::move(rows));
+        },
+        [](const md::DefList& d) -> Element {
+            std::vector<Element> items;
+            items.reserve(d.items.size() * 2);
+            for (auto& item : d.items) {
+                // Term: bolded
+                std::string term_text;
+                std::vector<StyledRun> runs;
+                Style base = Style{}.with_bold().with_fg(colors::bold_fg);
+                for (auto& s : item.term) flatten_inline(s, base, term_text, runs);
+                items.push_back(Element{TextElement{
+                    .content = std::move(term_text),
+                    .style = base,
+                    .runs = std::move(runs),
+                }});
+
+                // Definitions: indented with leading ":"
+                for (auto& def : item.defs) {
+                    std::vector<Element> def_rows;
+                    def_rows.reserve(def.size());
+                    for (auto& child : def) {
+                        def_rows.push_back(md_block_to_element(child));
+                    }
+                    auto def_body = detail::vstack()(std::move(def_rows));
+                    items.push_back(detail::hstack()(
+                        Element{TextElement{
+                            .content = "  : ",
+                            .style = Style{}.with_fg(colors::list_bullet),
+                        }},
+                        std::move(def_body)
+                    ));
+                }
+            }
+            return detail::vstack()(std::move(items));
+        },
+        [](const md::Details& d) -> Element {
+            // Render as: "▸ summary" bolded, body indented beneath.
+            std::string summary_text;
+            std::vector<StyledRun> runs;
+            Style base = Style{}.with_bold().with_fg(colors::bold_fg);
+            runs.push_back({0, 2, Style{}.with_fg(colors::list_bullet)});
+            summary_text += "\xe2\x96\xb8 ";  // ▸
+            size_t offset = summary_text.size();
+            for (auto& s : d.summary) flatten_inline(s, base, summary_text, runs);
+            for (size_t i = 1; i < runs.size(); ++i) {
+                // Offsets from flatten_inline are relative to `out` which
+                // already includes the "▸ " prefix, so nothing to shift.
+                (void)offset;
+            }
+            Element header{TextElement{
+                .content = std::move(summary_text),
+                .style = base,
+                .runs = std::move(runs),
+            }};
+
+            std::vector<Element> body_rows;
+            body_rows.reserve(d.body.size());
+            for (auto& b : d.body) body_rows.push_back(md_block_to_element(b));
+
+            std::vector<Element> out_rows;
+            out_rows.reserve(2);
+            out_rows.push_back(std::move(header));
+            if (!body_rows.empty()) {
+                out_rows.push_back(detail::hstack()(
+                    Element{TextElement{
+                        .content = "  ",
+                    }},
+                    detail::vstack()(std::move(body_rows))
+                ));
+            }
+            return detail::vstack()(std::move(out_rows));
+        },
+        [](const md::HtmlBlock& h) -> Element {
+            // Raw-HTML passthrough: render as subtle preformatted text.
+            return Element{TextElement{
+                .content = h.content,
+                .style = Style{}.with_fg(colors::footnote_fg),
+            }};
+        },
     }, block.inner);
 }
 
@@ -2494,74 +3877,78 @@ size_t StreamingMarkdown::find_block_boundary() const noexcept {
     return last_boundary;
 }
 
-void StreamingMarkdown::set_content(std::string_view content) {
-    if (content.size() >= source_.size() &&
-        content.substr(0, source_.size()) == source_) {
-        if (content.size() > source_.size()) {
-            source_ = std::string{content};
-        }
-    } else {
-        clear();
-        source_ = std::string{content};
+// Parse [committed_, boundary), extend ref_defs_ with any new defs, push
+// rendered blocks onto blocks_, and advance the fence-state tracker.  Shared
+// between set_content() and append() — both need the exact same transition.
+void StreamingMarkdown::commit_range(size_t boundary) {
+    auto new_text = std::string_view{source_}.substr(committed_,
+                                                     boundary - committed_);
+
+    // Parse with our accumulated ref-def map as the resolution target, so
+    // defs found in earlier commits are visible to links in this chunk, and
+    // new defs found in this chunk become visible to future tail parses.
+    std::string cleaned = collect_ref_defs(new_text, ref_defs_);
+    RefDefsGuard guard(&ref_defs_);
+    auto parsed = parse_markdown_impl(cleaned, 0);
+
+    blocks_.reserve(blocks_.size() + parsed.blocks.size());
+    for (auto& block : parsed.blocks) {
+        blocks_.push_back(md_block_to_element(block));
     }
 
-    size_t boundary = find_block_boundary();
-    if (boundary > committed_) {
-        auto new_text = std::string_view{source_}.substr(committed_, boundary - committed_);
-        auto doc = parse_markdown(new_text);
-        for (auto& block : doc.blocks) {
-            blocks_.push_back(md_block_to_element(block));
-        }
-        for (size_t j = committed_; j < boundary; ++j) {
-            bool at_line_start = (j == 0 || source_[j - 1] == '\n');
-            if (at_line_start) {
-                bool is_code = j + 3 <= boundary &&
-                    ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
-                     (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'));
-                bool is_math = !is_code && j + 2 <= boundary &&
-                    source_[j] == '$' && source_[j+1] == '$';
-                if (is_code || is_math)
-                    in_code_fence_ = !in_code_fence_;
-            }
-        }
-        committed_ = boundary;
+    for (size_t j = committed_; j < boundary; ++j) {
+        bool at_line_start = (j == 0 || source_[j - 1] == '\n');
+        if (!at_line_start) continue;
+        bool is_code = j + 3 <= boundary &&
+            ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
+             (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'));
+        bool is_math = !is_code && j + 2 <= boundary &&
+            source_[j] == '$' && source_[j+1] == '$';
+        if (is_code || is_math) in_code_fence_ = !in_code_fence_;
     }
+
+    committed_ = boundary;
+    build_dirty_ = true;
+}
+
+void StreamingMarkdown::set_content(std::string_view content) {
+    // Fast-path: unchanged → no work. This dominates because the view layer
+    // calls set_content(streaming_text) every single frame.
+    if (content.size() == source_.size() &&
+        (content.empty() || std::memcmp(content.data(), source_.data(),
+                                        content.size()) == 0)) {
+        return;
+    }
+
+    // Growth with identical prefix → append only the new bytes (avoids a
+    // full reallocation + recopy of source_ when tokens trickle in).
+    if (content.size() > source_.size() &&
+        (source_.empty() || std::memcmp(content.data(), source_.data(),
+                                        source_.size()) == 0)) {
+        source_.append(content.data() + source_.size(),
+                       content.size() - source_.size());
+    } else {
+        clear();
+        source_.assign(content.data(), content.size());
+    }
+    build_dirty_ = true;
+
+    size_t boundary = find_block_boundary();
+    if (boundary > committed_) commit_range(boundary);
 }
 
 void StreamingMarkdown::append(std::string_view text) {
-    source_ += text;
+    if (text.empty()) return;
+    source_.append(text.data(), text.size());
+    build_dirty_ = true;
 
     size_t boundary = find_block_boundary();
-    if (boundary > committed_) {
-        auto new_text = std::string_view{source_}.substr(committed_, boundary - committed_);
-        auto doc = parse_markdown(new_text);
-        for (auto& block : doc.blocks) {
-            blocks_.push_back(md_block_to_element(block));
-        }
-        for (size_t j = committed_; j < boundary; ++j) {
-            bool at_line_start = (j == 0 || source_[j - 1] == '\n');
-            if (at_line_start) {
-                bool is_code = j + 3 <= boundary &&
-                    ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
-                     (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'));
-                bool is_math = !is_code && j + 2 <= boundary &&
-                    source_[j] == '$' && source_[j+1] == '$';
-                if (is_code || is_math)
-                    in_code_fence_ = !in_code_fence_;
-            }
-        }
-        committed_ = boundary;
-    }
+    if (boundary > committed_) commit_range(boundary);
 }
 
 void StreamingMarkdown::finish() {
     if (committed_ < source_.size()) {
-        auto tail = std::string_view{source_}.substr(committed_);
-        auto doc = parse_markdown(tail);
-        for (auto& block : doc.blocks) {
-            blocks_.push_back(md_block_to_element(block));
-        }
-        committed_ = source_.size();
+        commit_range(source_.size());
         in_code_fence_ = false;
     }
 }
@@ -2570,10 +3957,18 @@ void StreamingMarkdown::clear() {
     source_.clear();
     committed_ = 0;
     blocks_.clear();
+    ref_defs_.clear();
     in_code_fence_ = false;
+    build_dirty_ = true;
+    cached_tail_size_ = 0;
 }
 
-Element StreamingMarkdown::build() const {
+const Element& StreamingMarkdown::build() const {
+    // Cache: if nothing has changed since the last build, return the cached
+    // Element. This is the dominant case — the view calls build() once per
+    // frame and most frames add zero bytes.
+    if (!build_dirty_) return cached_build_;
+
     std::string_view tail;
     if (committed_ < source_.size()) {
         tail = std::string_view{source_}.substr(committed_);
@@ -2582,27 +3977,37 @@ Element StreamingMarkdown::build() const {
     bool has_tail = !tail.empty();
     size_t total = blocks_.size() + (has_tail ? 1 : 0);
 
-    if (total == 0) return Element{TextElement{""}};
+    auto finish_cache = [&](Element e) -> const Element& {
+        cached_build_     = std::move(e);
+        cached_tail_size_ = tail.size();
+        build_dirty_      = false;
+        return cached_build_;
+    };
+
+    if (total == 0) return finish_cache(Element{TextElement{""}});
 
     if (total == 1 && !has_tail)
-        return detail::vstack().padding(0, 0, 0, 2)(blocks_[0]);
+        return finish_cache(
+            detail::vstack().padding(0, 0, 0, 2)(blocks_[0]));
 
-    if (total == 1 && blocks_.empty()) {
-        return markdown(tail);
-    }
-
+    // Parse the tail directly (skip collect_ref_defs — tail refs would only
+    // matter if text after the tail cites them, which by definition has not
+    // been written yet, and link resolution already sees ref_defs_ via the
+    // guard below).
     std::vector<Element> all;
     all.reserve(total);
     for (auto& b : blocks_) all.push_back(b);
 
     if (has_tail) {
-        auto tail_doc = parse_markdown(tail);
+        RefDefsGuard guard(&ref_defs_);
+        auto tail_doc = parse_markdown_impl(tail, 0);
         for (auto& block : tail_doc.blocks) {
             all.push_back(md_block_to_element(block));
         }
     }
 
-    return detail::vstack().gap(1).padding(0, 0, 0, 2)(std::move(all));
+    return finish_cache(
+        detail::vstack().gap(1).padding(0, 0, 0, 2)(std::move(all)));
 }
 
 } // namespace maya

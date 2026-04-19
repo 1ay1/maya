@@ -136,6 +136,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_resize.cpp
         tests/test_widgets.cpp
         tests/test_promoted.cpp
+        tests/test_markdown.cpp
     )
 
     foreach(src ${MAYA_TEST_SOURCES})
@@ -148,6 +149,7 @@ if(MAYA_BUILD_TESTS)
             >
         )
         add_test(NAME ${tgt} COMMAND ${tgt})
+        set_tests_properties(${tgt} PROPERTIES TIMEOUT 120)
     endforeach()
 endif()
 

@@ -134,18 +134,25 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
 
     while (i < text.size()) {
         // Backslash escape
-        if (text[i] == '\\' && i + 1 < text.size()) {
-            if (is_escapable(text[i + 1])) {
+        if (text[i] == '\\') {
+            if (i + 1 < text.size() && is_escapable(text[i + 1])) {
                 push_char(result, text[i + 1]);
                 i += 2;
                 continue;
             }
             // Hard line break: backslash before newline
-            if (text[i + 1] == '\n') {
+            if (i + 1 < text.size() && text[i + 1] == '\n') {
                 result.push_back(md::HardBreak{});
                 i += 2;
                 continue;
             }
+            // Trailing or unrecognized backslash — emit as a literal so we
+            // always advance.  Without this, `\` appears in kInlineSpecial
+            // but never gets consumed, causing the outer loop to spin
+            // forever (e.g. input ending in "\\" or "\\<space>").
+            push_text(result, text.substr(i, 1));
+            ++i;
+            continue;
         }
 
         // Hard line break: two+ trailing spaces before newline

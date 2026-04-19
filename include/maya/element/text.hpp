@@ -141,6 +141,19 @@ struct TextElement {
     /// element.  Runs must cover the entire content in order and not overlap.
     std::vector<StyledRun> runs = {};
 
+    // -- Wrap cache ----------------------------------------------------------
+    // Word wrap + truncation is O(content) per call; for finalized/cached
+    // trees (e.g. a moha message's markdown Element reused across frames),
+    // the same TextElement instance is measured and formatted every frame
+    // at the same width. Cache by (width, wrap, content.size()) — callers
+    // treat content + wrap as immutable once the element is handed to the
+    // renderer, so no setters are needed for invalidation.
+    mutable int                      cached_width = -1;
+    mutable std::size_t              cached_content_size = 0;
+    mutable TextWrap                 cached_wrap = TextWrap::Wrap;
+    mutable Size                     cached_size{Columns{0}, Rows{1}};
+    mutable std::vector<std::string> cached_lines;
+
     // -- Measurement ---------------------------------------------------------
 
     /// Compute the Size this text would occupy given a maximum width constraint.
@@ -150,8 +163,10 @@ struct TextElement {
     // -- Rendering helpers ---------------------------------------------------
 
     /// Return the display-ready lines for a given width constraint.
-    /// Word-wrapped or truncated as configured.
-    [[nodiscard]] std::vector<std::string> format(int max_width) const;
+    /// Word-wrapped or truncated as configured.  Returned by const-ref
+    /// against the element's cache; the reference is valid as long as the
+    /// element lives.
+    [[nodiscard]] const std::vector<std::string>& format(int max_width) const;
 };
 
 } // namespace maya

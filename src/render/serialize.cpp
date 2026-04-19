@@ -10,6 +10,21 @@
 
 namespace maya {
 
+void InlineFrameState::commit_prefix(int rows) noexcept {
+    if (rows <= 0 || prev_rows <= 0 || prev_width <= 0) return;
+    if (rows >= prev_rows) { reset(); return; }
+
+    const std::size_t W = static_cast<std::size_t>(prev_width);
+    const std::size_t shift = static_cast<std::size_t>(rows) * W;
+    const std::size_t remaining = static_cast<std::size_t>(prev_rows - rows) * W;
+
+    uint64_t* data = prev_cells.data();
+    if (data != nullptr && shift + remaining <= prev_cells.size()) {
+        std::memmove(data, data + shift, remaining * sizeof(uint64_t));
+    }
+    prev_rows -= rows;
+}
+
 int content_height(const Canvas& canvas) noexcept {
     // O(1) fast path: if the canvas tracked max_y_ during painting,
     // we can skip the full scan entirely.

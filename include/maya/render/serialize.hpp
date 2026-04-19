@@ -48,6 +48,18 @@ struct InlineFrameState {
         prev_width = 0;
         prev_rows  = 0;
     }
+
+    /// Mark the top `rows` rows of the current prev frame as committed to
+    /// terminal scrollback.  Shifts `prev_cells` up by `rows * prev_width`
+    /// and decrements `prev_rows`.
+    ///
+    /// Use this when the caller knows the next frame's tree intentionally
+    /// omits content that was at the top of the previous frame (e.g. a
+    /// chat UI that slices old messages once they've scrolled above the
+    /// viewport).  Without this call, `compose_inline_frame` would treat
+    /// the shorter tree as "content removed from the bottom" and erase
+    /// visible rows.
+    void commit_prefix(int rows) noexcept;
 };
 
 /// Compose the byte stream for one inline frame into `out`.

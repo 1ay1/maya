@@ -258,6 +258,21 @@ public:
     // Set terminal title via OSC 0.
     void set_title(std::string_view title);
 
+    // Row count of the last composed inline frame (0 in fullscreen mode
+    // or before the first render).  Callers can use this as a cheap proxy
+    // for tree height when deciding to virtualize.
+    [[nodiscard]] int inline_content_rows() const noexcept {
+        return inline_state_.prev_rows;
+    }
+
+    // Mark the top `rows` rows of the current prev frame as committed to
+    // scrollback so the next frame can render a shorter tree without the
+    // renderer interpreting it as "content removed from the bottom".  No
+    // effect in fullscreen mode.
+    void commit_inline_prefix(int rows) noexcept {
+        if (is_inline()) inline_state_.commit_prefix(rows);
+    }
+
     // Final cleanup (show cursor, reset, newline).
     auto cleanup() -> Status;
 
@@ -455,6 +470,9 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
                 // Fallback: synchronous (for simple run() without bg support)
                 t.run([&](Msg m) { ctx.pending.push_back(std::move(m)); });
             }
+        },
+        [&](const typename Cmd<Msg>::CommitScrollback& c) {
+            ctx.rt.commit_inline_prefix(c.rows);
         },
     }, cmd.inner);
 }

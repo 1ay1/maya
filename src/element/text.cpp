@@ -310,95 +310,98 @@ Size TextElement::measure(int max_width) const {
         return {Columns{0}, Rows{1}};
     }
 
-    switch (wrap) {
-        case TextWrap::Wrap: {
-            auto lines = word_wrap(content, max_width);
-            // Lines come from word_wrap which guarantees each line fits
-            // within max_width, so measuring them is just a formality.
-            // But content may have wide chars making actual width < max_width.
-            // Use a single combined scan: word_wrap already decoded all chars,
-            // so line widths are bounded by max_width.
-            int widest = 0;
-            for (auto& line : lines) {
-                // For pure-ASCII lines (common), byte length == display width.
-                // Skip the full decode_utf8 scan.
-                std::size_t len = line.size();
-                bool all_ascii = true;
-                for (std::size_t i = 0; i < len; ++i) {
-                    if (static_cast<unsigned char>(line[i]) >= 0x80) {
-                        all_ascii = false;
-                        break;
-                    }
-                }
-                int w = all_ascii ? static_cast<int>(len) : string_width(line);
-                if (w > widest) widest = w;
-            }
-            return {Columns{widest}, Rows{static_cast<int>(lines.size())}};
-        }
-
-        case TextWrap::NoWrap: {
-            // Count explicit newlines only.
-            int height = 1;
-            int widest = 0;
-            int current = 0;
-            std::size_t pos = 0;
-            while (pos < content.size()) {
-                if (content[pos] == '\n') {
-                    widest = std::max(widest, current);
-                    current = 0;
-                    ++height;
-                    ++pos;
-                    continue;
-                }
-                char32_t cp = decode_utf8(content, pos);
-                if (cp >= 0x20) current += is_wide_char(cp) ? 2 : 1;
-            }
-            widest = std::max(widest, current);
-            return {Columns{widest}, Rows{height}};
-        }
-
-        case TextWrap::TruncateEnd:
-        case TextWrap::TruncateStart:
-        case TextWrap::TruncateMiddle: {
-            int raw_width = string_width(content);
-            int clamped = std::min(raw_width, max_width);
-            return {Columns{clamped}, Rows{1}};
-        }
+    // Cache hit: same width + wrap + content length → reuse prior result.
+    // Content identity is trusted via size — callers don't mutate content
+    // of a TextElement after handing it to the renderer.
+    if (cached_width == max_width
+        && cached_wrap == wrap
+        && cached_content_size == content.size()
+        && cached_size.height.value > 0) {
+        return cached_size;
     }
-    __builtin_unreachable();
+
+    // Miss: populate the cache via format(), which stores both lines and size.
+    (void)format(max_width);
+    return cached_size;
 }
 
-std::vector<std::string> TextElement::format(int max_width) const {
-    if (content.empty()) return {""};
-
-    switch (wrap) {
-        case TextWrap::Wrap: {
-            auto views = word_wrap(content, max_width);
-            std::vector<std::string> result;
-            result.reserve(views.size());
-            for (auto& v : views) result.emplace_back(v);
-            return result;
-        }
-
-        case TextWrap::NoWrap: {
-            std::vector<std::string> result;
-            // Split on newlines using ranges.
-            for (auto part : content | std::views::split('\n')) {
-                result.emplace_back(std::string_view{part});
-            }
-            return result;
-        }
-
-        case TextWrap::TruncateEnd:
-            return {detail::truncate_end(content, max_width)};
-
-        case TextWrap::TruncateStart:
-            return {detail::truncate_start(content, max_width)};
-
-        case TextWrap::TruncateMiddle:
-            return {detail::truncate_middle(content, max_width)};
+const std::vector<std::string>& TextElement::format(int max_width) const {
+    // Cache hit: same width + wrap + content length → return cached lines.
+    if (cached_width == max_width
+        && cached_wrap == wrap
+        && cached_content_size == content.size()
+        && (!cached_lines.empty() || content.empty())) {
+        return cached_lines;
     }
-    __builtin_unreachable();
+
+    cached_lines.clear();
+
+    if (content.empty()) {
+        cached_lines.emplace_back("");
+        cached_size = {Columns{0}, Rows{1}};
+    } else {
+        switch (wrap) {
+            case TextWrap::Wrap: {
+                auto views = word_wrap(content, max_width);
+                cached_lines.reserve(views.size());
+                int widest = 0;
+                for (auto& v : views) {
+                    // ASCII fast path: byte length == display width.
+                    std::size_t len = v.size();
+                    bool all_ascii = true;
+                    for (std::size_t i = 0; i < len; ++i) {
+                        if (static_cast<unsigned char>(v[i]) >= 0x80) {
+                            all_ascii = false;
+                            break;
+                        }
+                    }
+                    int w = all_ascii ? static_cast<int>(len) : string_width(v);
+                    if (w > widest) widest = w;
+                    cached_lines.emplace_back(v);
+                }
+                cached_size = {Columns{widest},
+                               Rows{static_cast<int>(cached_lines.size())}};
+                break;
+            }
+
+            case TextWrap::NoWrap: {
+                int widest = 0;
+                for (auto part : content | std::views::split('\n')) {
+                    std::string_view sv{part};
+                    int w = string_width(sv);
+                    if (w > widest) widest = w;
+                    cached_lines.emplace_back(sv);
+                }
+                if (cached_lines.empty()) cached_lines.emplace_back("");
+                cached_size = {Columns{widest},
+                               Rows{static_cast<int>(cached_lines.size())}};
+                break;
+            }
+
+            case TextWrap::TruncateEnd:
+                cached_lines.emplace_back(detail::truncate_end(content, max_width));
+                cached_size = {Columns{std::min(string_width(content), max_width)},
+                               Rows{1}};
+                break;
+
+            case TextWrap::TruncateStart:
+                cached_lines.emplace_back(detail::truncate_start(content, max_width));
+                cached_size = {Columns{std::min(string_width(content), max_width)},
+                               Rows{1}};
+                break;
+
+            case TextWrap::TruncateMiddle:
+                cached_lines.emplace_back(detail::truncate_middle(content, max_width));
+                cached_size = {Columns{std::min(string_width(content), max_width)},
+                               Rows{1}};
+                break;
+        }
+    }
+
+    cached_width = max_width;
+    cached_wrap = wrap;
+    cached_content_size = content.size();
+    return cached_lines;
 }
 
 } // namespace maya

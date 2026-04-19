@@ -78,8 +78,18 @@ public:
         std::function<void(std::function<void(Msg)>)> run;
     };
 
+    /// Mark the top `rows` rows of the last rendered inline frame as
+    /// committed to terminal scrollback.  Apply when the view function is
+    /// about to return a shorter element tree (e.g. a chat UI virtualizing
+    /// old messages), so the row-diff renderer doesn't interpret the
+    /// shrinkage as "content removed from the bottom" and erase visible
+    /// rows.  No effect in fullscreen mode.
+    struct CommitScrollback {
+        int rows;
+    };
+
     using Variant = std::variant<None, Quit, Batch, After,
-                                 SetTitle, WriteClipboard, Task>;
+                                 SetTitle, WriteClipboard, Task, CommitScrollback>;
     Variant inner;
 
     // -- Smart constructors ---------------------------------------------------
@@ -102,6 +112,10 @@ public:
     template <std::invocable<std::function<void(Msg)>> F>
     [[nodiscard]] static auto task(F&& f) -> Cmd {
         return {Task{std::forward<F>(f)}};
+    }
+
+    [[nodiscard]] static auto commit_scrollback(int rows) -> Cmd {
+        return {CommitScrollback{rows}};
     }
 
     /// Combine multiple Cmds. Flattens nested batches and strips Nones.
@@ -164,6 +178,9 @@ public:
                             dispatch(mapper(std::move(m)));
                         });
                     });
+            },
+            [](const CommitScrollback& c) -> Cmd<B> {
+                return Cmd<B>::commit_scrollback(c.rows);
             },
         }, inner);
     }

@@ -391,7 +391,7 @@ void paint_element(
         },
 
         [&](const TextElement& node) {
-            auto lines = node.format(aw);
+            const auto& lines = node.format(aw);
 
             if (node.runs.empty()) {
                 // Fast path: single style for the whole element.

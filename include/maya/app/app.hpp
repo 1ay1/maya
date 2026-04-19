@@ -679,6 +679,11 @@ void run(RunConfig cfg = {}) {
             ResizeEvent re{sz.width, sz.height};
             Event ev{re};
             detail::dispatch_through_sub(current_sub, ev, pending_msgs);
+            // Force a render — apps that don't subscribe to ResizeEvent
+            // (the common case) still need their view re-laid-out at the
+            // new size. Without this, with fps=0 the canvas dimensions
+            // update but the next paint waits for an unrelated event.
+            needs_render = true;
         }
 
         // Read and dispatch terminal input

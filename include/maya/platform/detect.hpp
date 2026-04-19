@@ -162,6 +162,20 @@ static_assert(os != Os::Unknown || arch == Arch::Wasm32,
     #define MAYA_RESTRICT __restrict__
 #endif
 
+// __builtin_unreachable / __builtin_expect — GCC/Clang intrinsics the rest
+// of maya relies on. MSVC has __assume(0) for unreachability and no direct
+// equivalent for branch hinting (identity is the correct fallback — the
+// surrounding [[likely]]/[[unlikely]] attributes handle hot-path hinting
+// on C++20 compilers).
+#if defined(_MSC_VER) && !defined(__clang__)
+    #ifndef __builtin_unreachable
+        #define __builtin_unreachable() __assume(0)
+    #endif
+    #ifndef __builtin_expect
+        #define __builtin_expect(expr, val) (expr)
+    #endif
+#endif
+
 // Force-inline hint — stronger than [[nodiscard]], used in hot paths.
 // Use MAYA_FORCEINLINE in place of 'inline' for free functions.
 // Use MAYA_ALWAYS_INLINE as an attribute on member functions.

@@ -119,11 +119,25 @@ inline constexpr TruncateTag  clip{};
 /// Never break text (may overflow container):  text("long...") | nowrap
 inline constexpr NoWrapTag nowrap{};
 
-template <uint8_t R, uint8_t G, uint8_t B>
-inline constexpr StyTag<CTStyle{.has_fg=true, .fg_r=R, .fg_g=G, .fg_b=B}> Fg{};
+// Funnelling the designated init through a consteval helper side-steps an
+// MSVC constexpr-evaluator bug where R/G/B appear as "outside their lifetime"
+// when used directly as designated-initializer values for a class NTTP.
+namespace detail_rgb {
+    template <uint8_t R, uint8_t G, uint8_t B>
+    consteval CTStyle make_fg() {
+        return CTStyle{.has_fg=true, .fg_r=R, .fg_g=G, .fg_b=B};
+    }
+    template <uint8_t R, uint8_t G, uint8_t B>
+    consteval CTStyle make_bg() {
+        return CTStyle{.has_bg=true, .bg_r=R, .bg_g=G, .bg_b=B};
+    }
+}
 
 template <uint8_t R, uint8_t G, uint8_t B>
-inline constexpr StyTag<CTStyle{.has_bg=true, .bg_r=R, .bg_g=G, .bg_b=B}> Bg{};
+inline constexpr StyTag<detail_rgb::make_fg<R, G, B>()> Fg{};
+
+template <uint8_t R, uint8_t G, uint8_t B>
+inline constexpr StyTag<detail_rgb::make_bg<R, G, B>()> Bg{};
 
 // ── Hex color shorthand ─────────────────────────────────────────────────────
 //

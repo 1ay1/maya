@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.28)
 project(maya VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 26)
+if(MSVC)
+    set(CMAKE_CXX_STANDARD 23)
+else()
+    set(CMAKE_CXX_STANDARD 26)
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -75,7 +79,21 @@ target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_compile_features(maya PUBLIC cxx_std_26)
+if(MSVC)
+    # CMake has no /std:c++26 for MSVC yet. Publicly require C++23 and
+    # opt PRIVATEly into /std:c++latest — consumers linking maya stay
+    # on C++23 but maya's own TUs get the newer library surface.
+    target_compile_features(maya PUBLIC cxx_std_23)
+    # Force-include the platform detect header so __builtin_unreachable /
+    # __builtin_expect polyfills are visible to every maya TU AND every
+    # downstream consumer (propagated via PUBLIC /FI).
+    target_compile_options(maya PUBLIC
+        /FI${CMAKE_CURRENT_SOURCE_DIR}/include/maya/platform/detect.hpp
+    )
+else()
+    target_compile_features(maya PUBLIC cxx_std_26)
+endif()
+
 if(DEFINED MAYA_LINUX_CXX_FLAGS)
     target_compile_options(maya PRIVATE ${MAYA_LINUX_CXX_FLAGS})
     target_link_options(maya PRIVATE ${MAYA_LINUX_LINK_FLAGS})
@@ -86,8 +104,57 @@ else()
             -march=native
             -funroll-loops
         >
-        $<$<CXX_COMPILER_ID:MSVC>:/O2 /GL>
+        $<$<CXX_COMPILER_ID:MSVC>:
+            /utf-8
+            /std:c++latest
+            /permissive-
+            /Zc:preprocessor
+            /Zc:__cplusplus
+            /Zc:inline
+            /Zc:throwingNew
+            /EHsc
+            /bigobj
+            /MP
+            /wd4100
+            /wd4127
+            /wd4324
+            /wd4244  # conversion, possible loss of data
+            /wd4267  # size_t -> int
+        >
+        # ── MSVC Release-only aggressive optimization ─────────────────
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release,RelWithDebInfo,MinSizeRel>>:
+            /O2
+            /Ob3               # aggressive inlining
+            /Oi                # intrinsics
+            /Ot                # favor speed over size
+            /Oy                # omit frame pointer
+            /GL                # whole-program optimization
+            /GF                # string pooling
+            /Gy                # function-level linking
+            /Gw                # data-level linking
+            /GS-               # disable stack cookies (TUI, not a daemon)
+            /fp:fast           # relax FP — fine for layout math
+            /arch:AVX2         # baseline AVX2/BMI2/FMA (consistent with SIMD caps)
+            /Qpar              # auto-parallelizer for hot loops
+        >
     )
+    target_link_options(maya PRIVATE
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<CONFIG:Release,RelWithDebInfo,MinSizeRel>>:
+            /LTCG
+            /OPT:REF
+            /OPT:ICF=3
+            /INCREMENTAL:NO
+            /DEBUG:NONE
+        >
+    )
+    if(MSVC)
+        target_compile_definitions(maya PUBLIC
+            _CRT_SECURE_NO_WARNINGS
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+            $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:NDEBUG>
+        )
+    endif()
 endif()
 
 option(MAYA_BUILD_EXAMPLES "Build example programs" ON)

@@ -47,6 +47,10 @@
 #include <variant>
 #include <vector>
 
+// platform detection must be visible before the POSIX header gate below;
+// MAYA_PLATFORM_WIN32 is defined inside platform/detect.hpp.
+#include "../platform/detect.hpp"
+
 #if !MAYA_PLATFORM_WIN32
 #include <unistd.h>
 #ifdef __linux__
@@ -688,11 +692,18 @@ void run(RunConfig cfg = {}) {
 
         // Drain background task messages
         if (poll_result->wake) {
+            // Order matters: clear the atomic coalesce guard FIRST so any
+            // send() racing with us re-arms SetEvent/eventfd. If we did
+            // drain→reset, a send between drain() and reset_wake() would
+            // see wake_pending still true, skip signaling, and its message
+            // would be orphaned in the queue with no wake pending — the
+            // UI would stay idle (e.g. "Streaming…" forever) until some
+            // unrelated event woke the loop. A redundant wake next tick
+            // (producing an empty drain) is harmless.
+            bg_queue->reset_wake();
             rt.drain_wake();
             for (auto& m : bg_queue->drain())
                 pending_msgs.push_back(std::move(m));
-            // Reset after drain so any send() racing with us re-signals.
-            bg_queue->reset_wake();
         }
 
         // Flush parser timeouts (e.g., bare Escape)

@@ -142,6 +142,13 @@ public:
             .style = style_,
         }};
     }
+
+    // Current frame glyph — lets callers wrap the spinner into a mixed-style
+    // text run (e.g. status-bar pills) without constructing a standalone
+    // Element just for the style override.
+    [[nodiscard]] std::string_view current_frame() const noexcept {
+        return frames_.frames[frame_];
+    }
 };
 
 } // namespace maya

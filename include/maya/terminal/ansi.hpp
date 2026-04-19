@@ -91,8 +91,11 @@ inline constexpr std::string_view show_cursor              = "\x1b[?25h";
 inline constexpr std::string_view hide_cursor              = "\x1b[?25l";
 inline constexpr std::string_view alt_screen_enter         = "\x1b[?1049h";
 inline constexpr std::string_view alt_screen_leave         = "\x1b[?1049l";
-inline constexpr std::string_view enable_mouse             = "\x1b[?1000h\x1b[?1006h";
-inline constexpr std::string_view disable_mouse            = "\x1b[?1006l\x1b[?1000l";
+// Mouse reporting: 1000 (button press/release), 1002 (button + drag motion),
+// 1006 (SGR extended coordinates). 1002 is a superset of 1000 that also emits
+// motion events while a button is held — required for click-and-drag widgets.
+inline constexpr std::string_view enable_mouse             = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+inline constexpr std::string_view disable_mouse            = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 inline constexpr std::string_view enable_alt_scroll        = "\x1b[?1007h";
 inline constexpr std::string_view disable_alt_scroll       = "\x1b[?1007l";
 inline constexpr std::string_view enable_focus             = "\x1b[?1004h";

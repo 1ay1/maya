@@ -263,18 +263,17 @@ void paint_border(
         int text_width = string_width(bt.content);
         int display_width = std::min(text_width, avail);
 
-        int text_x;
-        switch (bt.align) {
-            case BorderTextAlign::Start:
-                text_x = x0 + 1 + bt.offset;
-                break;
-            case BorderTextAlign::Center:
-                text_x = x0 + 1 + (avail - display_width) / 2 + bt.offset;
-                break;
-            case BorderTextAlign::End:
-                text_x = x1 - display_width + bt.offset;
-                break;
-        }
+        int text_x = [&] {
+            switch (bt.align) {
+                case BorderTextAlign::Start:
+                    return x0 + 1 + bt.offset;
+                case BorderTextAlign::Center:
+                    return x0 + 1 + (avail - display_width) / 2 + bt.offset;
+                case BorderTextAlign::End:
+                    return x1 - display_width + bt.offset;
+            }
+            std::unreachable();
+        }();
 
         text_x = std::clamp(text_x, x0 + 1, x1 - 1);
         canvas.write_text(text_x, edge_y, bt.content, style_id);

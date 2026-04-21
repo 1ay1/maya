@@ -15,8 +15,13 @@ endif()
 # ── Linux-specific aggressive optimization ────────────────────────────────
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # LTO across all translation units — lets GCC inline across .cpp boundaries,
-    # devirtualize, and eliminate dead code globally.
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    # devirtualize, and eliminate dead code globally. Respect a caller-supplied
+    # value (e.g. distro packagers pass -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
+    # so the installed libmaya.a contains real object code, not LTO bytecode
+    # tied to the producing GCC version).
+    if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    endif()
 
     # Shared flags for library and examples
     set(MAYA_LINUX_CXX_FLAGS

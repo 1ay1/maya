@@ -125,7 +125,15 @@ struct BoxElement {
     BorderConfig           border{.style = BorderStyle::None};
     Overflow               overflow = Overflow::Visible;
     bool                   is_stack = false;
-    std::vector<Element>   children{};
+    // No `{}` initializer here. With one, the compiler must instantiate
+    // vector<Element>::vector() (and its `_GLIBCXX20_CONSTEXPR` destructor,
+    // which does pointer arithmetic on Element*) while parsing this header —
+    // but Element is still only forward-declared at this point. clang +
+    // libstdc++ rejects that in C++20+; gcc tolerates it. Without the
+    // initializer, vector<Element>'s special members are only instantiated
+    // when BoxElement is itself default-constructed, by which time
+    // element.hpp has finished defining Element.
+    std::vector<Element>   children;
 
     // -- Convenience accessors -----------------------------------------------
 

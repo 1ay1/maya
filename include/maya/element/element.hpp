@@ -57,12 +57,17 @@ struct ElementList {
 
     explicit ElementList(std::vector<Element> elems);
 
+    // Body defined out-of-line below, after Element is a complete type. If
+    // the body lived in-class, clang's parsing of the non-dependent
+    // `items.reserve(...)` / `items.emplace_back(...)` calls would force
+    // instantiation of vector<Element> members (e.g. `_S_max_size`, which
+    // does `sizeof(Element)`) while Element is still incomplete here.
+    // Defining the template after the Element definition below sidesteps
+    // that — the body is only ever instantiated at user call sites, where
+    // Element is complete.
     template <typename... Args>
         requires (sizeof...(Args) > 0)
-    explicit ElementList(Args&&... args) {
-        items.reserve(sizeof...(Args));
-        (items.emplace_back(std::forward<Args>(args)), ...);
-    }
+    explicit ElementList(Args&&... args);
 };
 
 // ============================================================================
@@ -127,10 +132,17 @@ struct Element {
     [[nodiscard]] Element build() const { return *this; }
 };
 
-// -- Deferred ElementList constructor (Element is now complete) ----------------
+// -- Deferred ElementList constructors (Element is now complete) ---------------
 
 inline ElementList::ElementList(std::vector<Element> elems)
     : items(std::move(elems)) {}
+
+template <typename... Args>
+    requires (sizeof...(Args) > 0)
+ElementList::ElementList(Args&&... args) {
+    items.reserve(sizeof...(Args));
+    (items.emplace_back(std::forward<Args>(args)), ...);
+}
 
 // ============================================================================
 // visit_element - Convenience wrapper around std::visit for Element

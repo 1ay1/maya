@@ -1,0 +1,55 @@
+# Maintainer: Ayush <tfeayush@gmail.com>
+pkgname=maya-git
+pkgver=r116.2ed9d99
+pkgrel=1
+pkgdesc="A compile-time type-safe TUI library for C++26"
+arch=('x86_64')
+url="https://github.com/1ay1/maya"
+license=('custom')
+depends=('gcc-libs')
+makedepends=('cmake' 'ninja' 'git' 'gcc')
+provides=('maya')
+conflicts=('maya')
+
+# `staticlibs` keeps libmaya.a (default OPTIONS removes static libs).
+# `!strip` preserves the symbol table — without it makepkg strips the .a
+# down to ~14KB and downstream linkers see no symbols.
+# `!lto` disables makepkg-injected -flto so the archive contains real
+# object code, not LTO bytecode tied to a specific compiler version.
+options=('staticlibs' '!strip' '!lto')
+
+# Build from the local working tree on the currently checked-out branch.
+# Override with `_repo=<url>` and `_branch=<name>` to fetch from elsewhere.
+_repo="${_repo:-file:///home/ayush/projects/maya}"
+_branch="${_branch:-fix/clang-vector-incomplete-element}"
+
+source=("maya::git+${_repo}#branch=${_branch}")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$srcdir/maya"
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "$srcdir/maya"
+    # Force LTO off everywhere. `!lto` in OPTIONS only undoes makepkg's own
+    # LTO injection; if /etc/makepkg.conf has `-flto=auto` baked into CFLAGS
+    # the static archive ends up full of `.gnu.lto_*` sections that bind it
+    # to the producing gcc version and surface inlined-warnings in user code.
+    CFLAGS+=" -fno-lto"
+    CXXFLAGS+=" -fno-lto"
+    LDFLAGS+=" -fno-lto"
+    cmake -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF \
+        -DMAYA_BUILD_TESTS=OFF \
+        -DMAYA_BUILD_EXAMPLES=OFF
+    cmake --build build
+}
+
+package() {
+    cd "$srcdir/maya"
+    DESTDIR="$pkgdir" cmake --install build
+}

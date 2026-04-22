@@ -69,23 +69,20 @@ public:
 
         std::vector<Element> rows;
 
-        // File path header + elapsed
+        // File path header: "src/main.cpp              0.2s"
+        //
+        // Wrapped in a ComponentElement so we can measure the card width and
+        // truncate a long path with `…` instead of letting NoWrap clipping
+        // eat the elapsed time. For paths the important bit is the tail
+        // (filename), not the head — truncate from the left.
         {
-            std::string content = file_path_;
-            std::vector<StyledRun> runs;
-
-            if (elapsed_ > 0.0f) {
-                std::string ts = "  " + format_elapsed();
-                runs.push_back(StyledRun{content.size(), 2, Style{}});
-                runs.push_back(StyledRun{content.size() + 2, ts.size() - 2, Style{}.with_dim()});
-                content += ts;
-            }
-
-            rows.push_back(Element{TextElement{
-                .content = std::move(content),
-                .style = {},
-                .wrap = TextWrap::NoWrap,
-                .runs = std::move(runs),
+            std::string path = file_path_;
+            std::string suffix = elapsed_ > 0.0f ? ("  " + format_elapsed()) : std::string{};
+            rows.push_back(Element{ComponentElement{
+                .render = [path = std::move(path), suffix](int w, int /*h*/) -> Element {
+                    return build_path_row(path, suffix, w);
+                },
+                .layout = {},
             }});
         }
 
@@ -177,6 +174,59 @@ public:
 
 private:
     struct IconInfo { std::string icon; Color color; };
+
+    // Trim `s` to at most `max_bytes` without splitting a UTF-8 code point.
+    // Used by build_path_row — we need to chop the *head* of long paths
+    // without producing a broken multibyte prefix.
+    [[nodiscard]] static std::string utf8_trim_head(std::string_view s, std::size_t max_bytes) {
+        if (s.size() <= max_bytes) return std::string{s};
+        std::size_t skip = s.size() - max_bytes;
+        while (skip < s.size()
+               && (static_cast<unsigned char>(s[skip]) & 0xC0) == 0x80) {
+            ++skip;
+        }
+        return std::string{s.substr(skip)};
+    }
+
+    // Build a single-line header "src/.../main.cpp    0.2s" that fits in w.
+    // Unlike a command, a path's tail (filename) carries the information —
+    // so we truncate from the left with a leading `…` rather than the right.
+    [[nodiscard]] static Element build_path_row(std::string_view path,
+                                                std::string_view suffix,
+                                                int w) {
+        constexpr std::string_view kEllipsis = "\xe2\x80\xa6";  // …
+        int avail = w - static_cast<int>(suffix.size());
+        if (avail < 1) avail = 1;
+
+        std::string shown_path;
+        if (static_cast<int>(path.size()) <= avail) {
+            shown_path = std::string{path};
+        } else {
+            std::size_t keep = avail > 1 ? static_cast<std::size_t>(avail - 1) : 0;
+            shown_path = std::string{kEllipsis};
+            shown_path += utf8_trim_head(path, keep);
+        }
+
+        std::string content = shown_path;
+        std::size_t suffix_off = content.size();
+        if (!suffix.empty()) content += std::string{suffix};
+
+        std::vector<StyledRun> runs;
+        if (!shown_path.empty()) {
+            runs.push_back(StyledRun{0, shown_path.size(), Style{}});
+        }
+        if (!suffix.empty()) {
+            runs.push_back(StyledRun{suffix_off, suffix.size(),
+                Style{}.with_dim()});
+        }
+
+        return Element{TextElement{
+            .content = std::move(content),
+            .style = {},
+            .wrap = TextWrap::NoWrap,
+            .runs = std::move(runs),
+        }};
+    }
 
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {

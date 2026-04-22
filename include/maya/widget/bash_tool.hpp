@@ -71,27 +71,21 @@ public:
 
         std::vector<Element> rows;
 
-        // Command line: "$ command"
+        // Command line: "$ command                    1.6s"
+        //
+        // Wrapped in a ComponentElement so we can measure the actual card
+        // width at paint time and truncate the command when a long invocation
+        // would push the elapsed suffix off-screen. Plain NoWrap text clips
+        // blindly from the right — which hides precisely the bit
+        // (elapsed time / status) the user needs most during execution.
         {
-            std::string content = "$ " + command_;
-            std::vector<StyledRun> runs;
-            auto prompt_style = Style{}.with_bold().with_fg(Color::green());
-            runs.push_back(StyledRun{0, 2, prompt_style});  // "$ "
-
-            // Elapsed time at end
-            if (elapsed_ > 0.0f) {
-                std::string ts = "  " + format_elapsed();
-                auto time_style = Style{}.with_dim();
-                runs.push_back(StyledRun{content.size(), 2, Style{}});
-                runs.push_back(StyledRun{content.size() + 2, ts.size() - 2, time_style});
-                content += ts;
-            }
-
-            rows.push_back(Element{TextElement{
-                .content = std::move(content),
-                .style = {},
-                .wrap = TextWrap::NoWrap,
-                .runs = std::move(runs),
+            std::string cmd = command_;
+            std::string suffix = elapsed_ > 0.0f ? ("  " + format_elapsed()) : std::string{};
+            rows.push_back(Element{ComponentElement{
+                .render = [cmd = std::move(cmd), suffix](int w, int /*h*/) -> Element {
+                    return build_command_row(cmd, suffix, w);
+                },
+                .layout = {},
             }});
         }
 
@@ -165,6 +159,70 @@ public:
 
 private:
     struct IconInfo { std::string icon; Color color; };
+
+    // Truncate `s` to at most `max_bytes` without splitting a UTF-8 code
+    // point. Good enough for command text which is ASCII in the common
+    // case; for the odd non-ASCII arg we avoid printing a broken sequence
+    // that would render as replacement glyphs on the next redraw.
+    [[nodiscard]] static std::string utf8_trunc(std::string_view s, std::size_t max_bytes) {
+        if (s.size() <= max_bytes) return std::string{s};
+        std::size_t cut = max_bytes;
+        while (cut > 0
+               && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) {
+            --cut;
+        }
+        return std::string{s.substr(0, cut)};
+    }
+
+    // Build a single-line header "$ command ... elapsed" that fits in w.
+    // Layout: `$ ` (green prompt) + command (truncated with `…` if needed)
+    //        + right-aligned elapsed suffix. Total never exceeds w, so the
+    //        elapsed time is always visible even for very long commands.
+    [[nodiscard]] static Element build_command_row(std::string_view cmd,
+                                                   std::string_view suffix,
+                                                   int w) {
+        constexpr std::size_t kPromptBytes = 2;            // "$ "
+        constexpr std::string_view kEllipsis = "\xe2\x80\xa6";  // …
+        int avail = w - static_cast<int>(kPromptBytes)
+                      - static_cast<int>(suffix.size());
+        if (avail < 1) avail = 1;
+
+        std::string shown_cmd;
+        if (static_cast<int>(cmd.size()) <= avail) {
+            shown_cmd = std::string{cmd};
+        } else {
+            // Leave 1 display column for the ellipsis (3 bytes in UTF-8).
+            std::size_t keep = avail > 1 ? static_cast<std::size_t>(avail - 1) : 0;
+            shown_cmd = utf8_trunc(cmd, keep);
+            shown_cmd += std::string{kEllipsis};
+        }
+
+        std::string content;
+        content.reserve(kPromptBytes + shown_cmd.size() + suffix.size() + 8);
+        content += "$ ";
+        std::size_t cmd_off = content.size();
+        content += shown_cmd;
+        std::size_t suffix_off = content.size();
+        if (!suffix.empty()) content += std::string{suffix};
+
+        std::vector<StyledRun> runs;
+        runs.push_back(StyledRun{0, kPromptBytes,
+            Style{}.with_bold().with_fg(Color::green())});
+        if (!shown_cmd.empty()) {
+            runs.push_back(StyledRun{cmd_off, shown_cmd.size(), Style{}});
+        }
+        if (!suffix.empty()) {
+            runs.push_back(StyledRun{suffix_off, suffix.size(),
+                Style{}.with_dim()});
+        }
+
+        return Element{TextElement{
+            .content = std::move(content),
+            .style = {},
+            .wrap = TextWrap::NoWrap,
+            .runs = std::move(runs),
+        }};
+    }
 
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {

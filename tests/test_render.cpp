@@ -1,5 +1,6 @@
 // Headless render test - verifies layout + paint produce correct canvas output
 #include <maya/maya.hpp>
+#include <maya/render/frame.hpp>
 #include <cassert>
 #include <print>
 #include <string>

@@ -34,7 +34,9 @@
 #include <atomic>
 #include <chrono>
 #include <concepts>
+#include <condition_variable>
 #include <cstdio>
+#include <deque>
 #include <format>
 #include <functional>
 #include <memory>
@@ -362,11 +364,20 @@ private:
 
 namespace detail {
 
-// Thread-safe message queue for background tasks → UI thread.
-// Designed for high throughput: atomic wake coalescing, minimal lock scope,
-// swap-based drain to avoid holding the lock during message processing.
+// Thread-safe message queue for background tasks → UI thread, plus an elastic
+// worker pool for Cmd::Task execution.
+//
+// Pool design:
+//   * Zero threads at startup; the first post() spawns a worker on demand.
+//   * Workers live for the process lifetime and dequeue tasks in a loop, so
+//     a read/edit/grep burst reuses a warm thread (condvar wake ~tens of µs)
+//     instead of paying std::thread construction (~hundreds of µs) per call.
+//   * When all workers are busy and more work arrives, a new worker is
+//     spawned up to hardware_concurrency(). Long-running tasks like the SSE
+//     stream therefore never starve short tool calls.
 template <typename Msg>
 struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
+    // ── Message side (worker → UI) ────────────────────────────────────────
     std::mutex              mutex_;
     std::vector<Msg>        messages_;
 #if MAYA_PLATFORM_WIN32
@@ -376,7 +387,16 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
     bool                    is_eventfd_ = false;
 #endif
     std::atomic<bool>       wake_pending_{false};
-    std::vector<std::thread> tasks_;
+
+    // ── Task side (UI → workers) ──────────────────────────────────────────
+    std::mutex                          work_mutex_;
+    std::condition_variable             work_cv_;
+    std::deque<std::function<void()>>   work_;
+    std::vector<std::thread>            workers_;
+    int                                 idle_workers_ = 0;
+    bool                                shutdown_ = false;
+    unsigned                            max_workers_ =
+        std::max(4u, std::thread::hardware_concurrency());
 
     BackgroundQueue() = default;
     BackgroundQueue(const BackgroundQueue&) = delete;
@@ -403,13 +423,61 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
         wake_pending_.store(false, std::memory_order_release);
     }
 
+    // Enqueue a task. Spawns a worker only if every existing one is busy and
+    // we're still under the cap — otherwise hands off to an idle worker via
+    // condvar wake (cheap). Must not be called after destruction begins.
+    void post(std::function<void()> fn) {
+        bool need_spawn = false;
+        {
+            std::lock_guard<std::mutex> lk(work_mutex_);
+            work_.push_back(std::move(fn));
+            if (idle_workers_ == 0 && workers_.size() < max_workers_) {
+                need_spawn = true;
+                workers_.emplace_back(); // reserve slot; assigned below
+            }
+        }
+        if (need_spawn) {
+            // Assign outside the lock so std::thread construction doesn't
+            // serialize posts, and so a spawn that throws (extremely rare,
+            // e.g. EAGAIN) can be handled without deadlocking other posters.
+            std::lock_guard<std::mutex> lk(work_mutex_);
+            workers_.back() = std::thread([this] { worker_loop(); });
+        }
+        work_cv_.notify_one();
+    }
+
     ~BackgroundQueue() {
-        for (auto& t : tasks_) {
+        {
+            std::lock_guard<std::mutex> lk(work_mutex_);
+            shutdown_ = true;
+        }
+        work_cv_.notify_all();
+        for (auto& t : workers_) {
             if (t.joinable()) t.join();
         }
     }
 
 private:
+    void worker_loop() {
+        for (;;) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lk(work_mutex_);
+                ++idle_workers_;
+                work_cv_.wait(lk, [this] { return !work_.empty() || shutdown_; });
+                --idle_workers_;
+                if (work_.empty() && shutdown_) return;
+                task = std::move(work_.front());
+                work_.pop_front();
+            }
+            // A crashing tool must not kill its worker — other tool calls
+            // queued behind it would hang the UI on "Running…". Tools already
+            // report their own errors via dispatch, so swallowing here is
+            // safe: if we get this far it's something unexpected.
+            try { task(); } catch (...) {}
+        }
+    }
+
     void signal_wake() noexcept {
 #if MAYA_PLATFORM_WIN32
         if (wake_handle_ != platform::invalid_handle)
@@ -467,7 +535,7 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
                 // shared_ptr keeps the queue alive even if run<P>() exits early
                 auto q = ctx.bg_queue;
                 auto task_fn = t.run;
-                q->tasks_.emplace_back([q, task_fn = std::move(task_fn)] {
+                q->post([q, task_fn = std::move(task_fn)] {
                     task_fn([q](Msg m) { q->send(std::move(m)); });
                 });
             } else {

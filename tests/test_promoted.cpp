@@ -4,6 +4,17 @@
 // no content garbling, overflow, or crashes after resize.
 
 #include <maya/maya.hpp>
+#include <maya/widget/badge.hpp>
+#include <maya/widget/breadcrumb.hpp>
+#include <maya/widget/divider.hpp>
+#include <maya/widget/input.hpp>
+#include <maya/widget/markdown.hpp>
+#include <maya/widget/modal.hpp>
+#include <maya/widget/progress.hpp>
+#include <maya/widget/select.hpp>
+#include <maya/widget/spinner.hpp>
+#include <maya/widget/table.hpp>
+#include <maya/widget/toast.hpp>
 #include <cassert>
 #include <print>
 #include <string>
@@ -121,7 +132,7 @@ void test_all_widgets_resize() {
 
     // Badge
     {
-        auto b = tool_badge("read_file");
+        auto b = Badge::tool("read_file");
         cycle(b, 80, 20, "badge");
         std::println("  badge: ok");
     }
@@ -131,16 +142,6 @@ void test_all_widgets_resize() {
         Breadcrumb bc({"project", "src", "widget", "table.hpp"});
         cycle(bc, 80, 30, "breadcrumb");
         std::println("  breadcrumb: ok");
-    }
-
-    // StatusBar
-    {
-        StatusBar bar;
-        bar.set_left({" ready ", "main"});
-        bar.set_right({"3 files", "UTF-8"});
-        cycle(bar, 80, 40, "statusbar-80-40");
-        cycle(bar, 120, 30, "statusbar-120-30");
-        std::println("  statusbar: ok");
     }
 
     // Select
@@ -157,13 +158,6 @@ void test_all_widgets_resize() {
         toasts.push("Deprecated API", ToastLevel::Warning);
         cycle(toasts, 80, 30, "toast");
         std::println("  toast: ok");
-    }
-
-    // Confirm
-    {
-        Confirm dialog("Delete this file?");
-        cycle(dialog, 80, 30, "confirm");
-        std::println("  confirm: ok");
     }
 
     // Spinner

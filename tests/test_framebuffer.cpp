@@ -1,5 +1,6 @@
 // Tests for FrameBuffer: double-buffered rendering, diff cycle, persistent buffer
 #include <maya/maya.hpp>
+#include <maya/render/frame.hpp>
 #include <cassert>
 #include <print>
 

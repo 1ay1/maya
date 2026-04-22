@@ -1,5 +1,16 @@
 // test_widgets.cpp — Verify all widgets render correctly at various widths
 #include <maya/maya.hpp>
+#include <maya/widget/badge.hpp>
+#include <maya/widget/breadcrumb.hpp>
+#include <maya/widget/divider.hpp>
+#include <maya/widget/input.hpp>
+#include <maya/widget/markdown.hpp>
+#include <maya/widget/modal.hpp>
+#include <maya/widget/progress.hpp>
+#include <maya/widget/select.hpp>
+#include <maya/widget/spinner.hpp>
+#include <maya/widget/table.hpp>
+#include <maya/widget/toast.hpp>
 #include <cassert>
 #include <print>
 #include <string>
@@ -152,7 +163,7 @@ void test_divider() {
 void test_badge() {
     std::println("=== test_badge ===");
 
-    auto b = tool_badge("read_file");
+    auto b = Badge::tool("read_file");
     for (int w : {15, 20, 40, 80}) {
         auto r = render_at(b, w);
         assert(r.content_h > 0);
@@ -175,26 +186,6 @@ void test_breadcrumb() {
         assert_fits(r, w, "breadcrumb");
     }
     assert_resize_stable(bc, 80, 40, "breadcrumb");
-
-    std::println("  PASS\n");
-}
-
-// ============================================================================
-// StatusBar tests
-// ============================================================================
-void test_statusbar() {
-    std::println("=== test_statusbar ===");
-
-    StatusBar bar;
-    bar.set_left({" ready ", "main"});
-    bar.set_right({"3 files", "UTF-8"});
-
-    for (int w : {30, 60, 80, 120}) {
-        auto r = render_at(bar, w);
-        assert(r.content_h > 0);
-        assert_fits(r, w, "statusbar");
-    }
-    assert_resize_stable(bar, 80, 40, "statusbar");
 
     std::println("  PASS\n");
 }
@@ -231,23 +222,6 @@ void test_toast() {
         assert(r.content_h > 0);
         assert_fits(r, w, "toast");
     }
-
-    std::println("  PASS\n");
-}
-
-// ============================================================================
-// Confirm tests
-// ============================================================================
-void test_confirm() {
-    std::println("=== test_confirm ===");
-
-    Confirm dialog("Delete this file?");
-    for (int w : {25, 40, 80}) {
-        auto r = render_at(dialog, w);
-        assert(r.content_h > 0);
-        assert_fits(r, w, "confirm");
-    }
-    assert_resize_stable(dialog, 80, 30, "confirm");
 
     std::println("  PASS\n");
 }
@@ -362,10 +336,8 @@ int main() {
     test_divider();
     test_badge();
     test_breadcrumb();
-    test_statusbar();
     test_select();
     test_toast();
-    test_confirm();
     test_spinner();
     test_input();
     test_markdown();

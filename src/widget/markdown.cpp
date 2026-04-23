@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -3516,76 +3517,154 @@ Element md_block_to_element(const md::Block& block) {
                 }
             }
 
-            // Wrap into a ComponentElement so cell wrapping uses the
-            // actual rendered width — fixes the long-standing bug where
-            // tables truncated cells with "…" instead of wrapping when
-            // the terminal was narrower than `sum(ideal cell widths)`.
-            return Element{ComponentElement{
-                .render = [tbl_ncols = ncols,
-                           header_flat = std::move(header_flat),
-                           rows_flat = std::move(rows_flat),
-                           ideal = std::move(ideal),
-                           header_base, cell_base]
-                          (int avail_w, int /*h*/) -> Element {
-                    int ncols = tbl_ncols;
-                    constexpr int pad = 1;                 // per-side cell padding
-                    // Border accounts for: 1 leading │, plus one │ after
-                    // each column, plus 2*pad spaces per column.
-                    int chrome = 1 + ncols + 2 * ncols * pad;
-                    int avail_cells = std::max(ncols, avail_w - chrome);
+            // ── Shared helpers for layout + render ───────────────────────
+            // Both `measure` (called during build_layout_tree) and
+            // `render` (called during paint) need to know how the table
+            // lays out at a given width. The `measure` path needs only
+            // the row count so the layout engine allocates the right
+            // amount of vertical space; the `render` path needs the full
+            // wrapped Elements. Both call distribute_cols + wrap_cell —
+            // identical math, so the row count from measure exactly
+            // matches what render produces.
+            //
+            // The table data lives in a shared_ptr so both the `measure`
+            // and `render` closures can capture it by value (without
+            // double-moving). Capturing by reference would leave both
+            // callbacks holding dangling refs to function-local state
+            // — segfault on the first paint after this function returns.
 
-                    // ── Distribute width across columns. If the ideal
-                    // total fits, use it. Otherwise shrink each column
-                    // proportionally to the room it has above the
-                    // minimum. Min width 6 keeps text readable; the
-                    // wrapper force-breaks longer-than-min words.
-                    constexpr int kMinCol = 6;
-                    int ideal_sum = 0;
-                    for (int v : ideal) ideal_sum += v;
-
-                    std::vector<int> col_w(static_cast<size_t>(ncols));
-                    if (ideal_sum <= avail_cells) {
-                        // Use ideal widths; spare cells stay as right-edge slack.
-                        for (int c = 0; c < ncols; ++c)
-                            col_w[static_cast<size_t>(c)] = ideal[static_cast<size_t>(c)];
+            auto distribute_cols = [](int avail_w, int ncols_,
+                                       const std::vector<int>& ideal_)
+                                       -> std::vector<int> {
+                constexpr int pad = 1;
+                int chrome = 1 + ncols_ + 2 * ncols_ * pad;
+                int avail_cells = std::max(ncols_, avail_w - chrome);
+                constexpr int kMinCol = 6;
+                int ideal_sum = 0;
+                for (int v : ideal_) ideal_sum += v;
+                std::vector<int> col_w(static_cast<size_t>(ncols_));
+                if (ideal_sum <= avail_cells) {
+                    for (int c = 0; c < ncols_; ++c)
+                        col_w[static_cast<size_t>(c)] = ideal_[static_cast<size_t>(c)];
+                } else {
+                    int min_total = kMinCol * ncols_;
+                    if (avail_cells <= min_total) {
+                        for (int c = 0; c < ncols_; ++c)
+                            col_w[static_cast<size_t>(c)] = kMinCol;
                     } else {
-                        // Shrink. Each column floors at kMinCol; columns
-                        // wider than the floor share the deficit
-                        // proportionally to their excess.
-                        int min_total = kMinCol * ncols;
-                        if (avail_cells <= min_total) {
-                            // Even the floors don't fit; give every col
-                            // the floor and let the table overrun.
-                            for (int c = 0; c < ncols; ++c)
-                                col_w[static_cast<size_t>(c)] = kMinCol;
-                        } else {
-                            int budget_above_min = avail_cells - min_total;
-                            int excess_total = 0;
-                            for (int v : ideal) excess_total += std::max(0, v - kMinCol);
-                            for (int c = 0; c < ncols; ++c) {
-                                int excess = std::max(0,
-                                    ideal[static_cast<size_t>(c)] - kMinCol);
-                                int share = excess_total > 0
-                                    ? (excess * budget_above_min) / excess_total
-                                    : budget_above_min / ncols;
-                                col_w[static_cast<size_t>(c)] = kMinCol + share;
-                            }
-                            // Distribute any remainder to the widest cols
-                            // (caused by integer truncation in the share
-                            // calculation) so we hit avail_cells exactly.
-                            int sum = 0;
-                            for (int v : col_w) sum += v;
-                            int rem = avail_cells - sum;
-                            for (int i = 0; i < rem; ++i) {
-                                int best = 0;
-                                for (int c = 1; c < ncols; ++c)
-                                    if (ideal[static_cast<size_t>(c)] - col_w[static_cast<size_t>(c)]
-                                        > ideal[static_cast<size_t>(best)] - col_w[static_cast<size_t>(best)])
-                                        best = c;
-                                ++col_w[static_cast<size_t>(best)];
-                            }
+                        int budget_above_min = avail_cells - min_total;
+                        int excess_total = 0;
+                        for (int v : ideal_) excess_total += std::max(0, v - kMinCol);
+                        for (int c = 0; c < ncols_; ++c) {
+                            int excess = std::max(0,
+                                ideal_[static_cast<size_t>(c)] - kMinCol);
+                            int share = excess_total > 0
+                                ? (excess * budget_above_min) / excess_total
+                                : budget_above_min / ncols_;
+                            col_w[static_cast<size_t>(c)] = kMinCol + share;
+                        }
+                        int sum = 0;
+                        for (int v : col_w) sum += v;
+                        int rem = avail_cells - sum;
+                        for (int i = 0; i < rem; ++i) {
+                            int best = 0;
+                            for (int c = 1; c < ncols_; ++c)
+                                if (ideal_[static_cast<size_t>(c)] - col_w[static_cast<size_t>(c)]
+                                    > ideal_[static_cast<size_t>(best)] - col_w[static_cast<size_t>(best)])
+                                    best = c;
+                            ++col_w[static_cast<size_t>(best)];
                         }
                     }
+                }
+                return col_w;
+            };
+
+            // Word-aware wrap with force-break for over-long words. Used
+            // by both the row-counter (measure path) and the cell
+            // renderer (paint path); identical to keep counts exact.
+            auto wrap_cell_lines = [](const std::string& content, int max_w) -> int {
+                if (max_w <= 0) max_w = 1;
+                if (content.empty()) return 1;
+                auto cb = [](unsigned char c) -> int {
+                    if (c < 0xC0) return 1;
+                    if (c < 0xE0) return 2;
+                    if (c < 0xF0) return 3;
+                    return 4;
+                };
+                int lines = 0;
+                size_t i = 0;
+                int line_w = 0;
+                bool any_in_line = false;
+                auto end_line = [&]() { ++lines; line_w = 0; any_in_line = false; };
+                while (i < content.size()) {
+                    if (content[i] == '\n') { end_line(); ++i; continue; }
+                    size_t tok_start = i;
+                    bool ws = (content[i] == ' ' || content[i] == '\t');
+                    int tok_w = 0;
+                    while (i < content.size() && content[i] != '\n'
+                           && ((content[i] == ' '
+                                || content[i] == '\t') == ws)) {
+                        int n = cb(static_cast<unsigned char>(content[i]));
+                        ++tok_w;
+                        i += static_cast<size_t>(n);
+                    }
+                    if (line_w + tok_w <= max_w) {
+                        line_w += tok_w;
+                        if (!ws) any_in_line = true;
+                        continue;
+                    }
+                    if (ws) { end_line(); continue; }
+                    if (any_in_line) { end_line(); i = tok_start; continue; }
+                    size_t pos = tok_start;
+                    int forced = 0;
+                    while (pos < i && forced < max_w) {
+                        int n = cb(static_cast<unsigned char>(content[pos]));
+                        pos += static_cast<size_t>(n);
+                        ++forced;
+                    }
+                    end_line();
+                    i = pos;
+                }
+                if (any_in_line) ++lines;
+                return std::max(1, lines);
+            };
+
+            // Bundle the per-table state into a heap-allocated struct so
+            // both closures (render + measure) can hold it by shared_ptr
+            // and survive past this function's return.
+            struct TableData {
+                int ncols;
+                std::vector<FlatCell> header_flat;
+                std::vector<std::vector<FlatCell>> rows_flat;
+                std::vector<int> ideal;
+                Style header_base;
+                Style cell_base;
+            };
+            auto data = std::make_shared<TableData>(TableData{
+                ncols,
+                std::move(header_flat),
+                std::move(rows_flat),
+                std::move(ideal),
+                header_base,
+                cell_base,
+            });
+
+            // Wrap into a ComponentElement so cell wrapping uses the
+            // actual rendered width. The `measure` callback reports the
+            // exact row count so the parent vstack allocates the right
+            // amount of vertical space — without it the layout engine
+            // defaults to {max_width, 1}, clipping the entire table to
+            // a single row (the original symptom).
+            return Element{ComponentElement{
+                .render = [data, distribute_cols]
+                          (int avail_w, int /*h*/) -> Element {
+                    int ncols = data->ncols;
+                    const auto& header_flat = data->header_flat;
+                    const auto& rows_flat   = data->rows_flat;
+                    const auto& header_base = data->header_base;
+                    const auto& cell_base   = data->cell_base;
+                    constexpr int pad = 1;
+                    auto col_w = distribute_cols(avail_w, ncols, data->ideal);
 
                     // ── Wrap a (content, runs) cell to a target width.
                     // Returns one entry per visual line; each carries its
@@ -3830,6 +3909,39 @@ Element md_block_to_element(const md::Block& block) {
                             rows.push_back(std::move(v));
                     rows.push_back(make_border_line(2));
                     return detail::vstack()(std::move(rows));
+                },
+                // Custom measure: report the actual visual-row count so
+                // the parent vstack allocates enough vertical space.
+                // Without this, ComponentElement defaults to {max, 1}
+                // and the table is clipped to its top border.
+                // Captures `data` by-value (shared_ptr keeps the table
+                // state alive for the closure's lifetime) plus the
+                // stateless helper lambdas.
+                .measure = [data, distribute_cols, wrap_cell_lines]
+                           (int max_w) -> Size {
+                    int avail = std::max(1, max_w);
+                    int ncols = data->ncols;
+                    auto col_w = distribute_cols(avail, ncols, data->ideal);
+                    int header_lines = 1;
+                    for (int c = 0; c < ncols; ++c) {
+                        header_lines = std::max(header_lines,
+                            wrap_cell_lines(
+                                data->header_flat[static_cast<size_t>(c)].content,
+                                col_w[static_cast<size_t>(c)]));
+                    }
+                    int data_lines = 0;
+                    for (auto& row : data->rows_flat) {
+                        int rl = 1;
+                        for (int c = 0; c < ncols; ++c) {
+                            rl = std::max(rl,
+                                wrap_cell_lines(
+                                    row[static_cast<size_t>(c)].content,
+                                    col_w[static_cast<size_t>(c)]));
+                        }
+                        data_lines += rl;
+                    }
+                    int total = 3 + header_lines + data_lines;
+                    return {Columns{max_w}, Rows{total}};
                 },
                 .layout = {},
             }};

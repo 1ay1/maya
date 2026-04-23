@@ -88,9 +88,20 @@ class Writer : MoveOnly {
     std::string flush_buf_;       // reused across frames to avoid alloc
     size_t reserve_hint_ = 4096;  // adaptive buffer size hint
 
+    // A typical frame pushes 50–150 ops (one per style change + text run in
+    // a view of moderate depth). Reserving up front avoids the geometric
+    // reallocation chain on the first frame, and from frame 2 onward
+    // ops_.clear() preserves capacity so subsequent pushes hit the fast
+    // path. Cheap — sizeof(RenderOp) is ~40B, 128 * 40 = 5 KB per Writer.
+    static constexpr std::size_t kOpsReserveHint = 128;
+
 public:
-    explicit Writer(platform::NativeHandle h) noexcept : handle_(h) {}
-    Writer() noexcept : handle_(platform::invalid_handle) {}
+    explicit Writer(platform::NativeHandle h) noexcept : handle_(h) {
+        ops_.reserve(kOpsReserveHint);
+    }
+    Writer() noexcept : handle_(platform::invalid_handle) {
+        ops_.reserve(kOpsReserveHint);
+    }
 
     // ========================================================================
     // Operation submission

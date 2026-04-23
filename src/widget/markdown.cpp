@@ -3148,10 +3148,16 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             for (auto& child : bi.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::Code& c) {
-            auto content = " " + c.content + " ";
+            // Inline code: pure colored text, no surrounding space padding.
+            // The padding was legacy from a chip-style render that paired
+            // with a bg fill; without the bg, the spaces are invisible ink
+            // that only widens the word, forcing ugly mid-sentence wraps
+            // (e.g. `foo` on its own line, content on the next). Zed / GH
+            // CLI style: inline code is just a different color — it reads
+            // as distinct without needing a box.
             auto sty = Style{}.with_fg(colors::code_fg);
-            runs.push_back({out.size(), content.size(), sty});
-            out += content;
+            runs.push_back({out.size(), c.content.size(), sty});
+            out += c.content;
         },
         [&](const md::Link& l) {
             auto sty = Style{}.with_fg(colors::link_fg).with_underline();
@@ -3315,30 +3321,43 @@ static Element render_list(const md::List& l, int depth) {
             prefix_style = Style{}.with_fg(colors::list_bullet);
         }
 
-        // Flatten prefix + inline content into single TextElement
-        std::string content;
-        std::vector<StyledRun> runs;
-        Style base = Style{}.with_fg(colors::text);
-
-        runs.push_back({0, prefix.size(), prefix_style});
-        content += prefix;
-        for (auto& s : item.spans) {
-            flatten_inline(s, base, content, runs);
-        }
-
-        auto item_elem = Element{TextElement{
-            .content = std::move(content),
-            .style = base,
-            .runs = std::move(runs),
+        // Hanging-indent layout: render the bullet/number marker as its own
+        // fixed-width column on the left, and the body content in a flexing
+        // column on the right. When the body wraps, continuation lines stay
+        // aligned under the first character of the body — they do not bleed
+        // back to column 0. Same hstack(prefix, body) pattern blockquote uses.
+        auto prefix_elem = Element{TextElement{
+            .content = prefix,
+            .style = prefix_style,
         }};
 
+        std::string body;
+        std::vector<StyledRun> body_runs;
+        Style base = Style{}.with_fg(colors::text);
+        for (auto& s : item.spans) {
+            flatten_inline(s, base, body, body_runs);
+        }
+        Element body_elem = (body_runs.size() == 1)
+            ? Element{TextElement{
+                .content = std::move(body),
+                .style   = body_runs[0].style,
+              }}
+            : Element{TextElement{
+                .content = std::move(body),
+                .style   = base,
+                .runs    = std::move(body_runs),
+              }};
+
+        auto item_row = detail::hstack()(std::move(prefix_elem),
+                                         std::move(body_elem));
+
         if (item.children.empty()) {
-            items.push_back(std::move(item_elem));
+            items.push_back(std::move(item_row));
         } else {
             // Item with sub-content (nested lists, multi-para)
             std::vector<Element> sub;
             sub.reserve(item.children.size() + 1);
-            sub.push_back(std::move(item_elem));
+            sub.push_back(std::move(item_row));
             for (auto& child : item.children) {
                 // If this child is a list, render it at increased depth
                 if (auto* nested = std::get_if<md::List>(&child.inner)) {
@@ -3859,13 +3878,22 @@ size_t StreamingMarkdown::find_block_boundary() const noexcept {
                 i = next + 1;
                 continue;
             }
-            // Single newline + block-level marker = boundary
-            if (next < source_.size()) {
-                char c = source_[next];
-                if (c == '#' || c == '>' || c == '-' || c == '*' || c == '+' ||
-                    c == '|' || c == '$') {
-                    last_boundary = next;
-                }
+            // Single newline + heading marker = boundary. Headings are
+            // atomic (one line, no continuation), so committing on `#` is
+            // safe and keeps the cache hot.
+            //
+            // List markers (`-` `*` `+`), blockquote (`>`), and table rows
+            // (`|`) are deliberately NOT treated as boundaries: a list /
+            // blockquote / table is a single multi-line block, and the
+            // parser only renders it as one cohesive Element when it sees
+            // the whole thing in one parse. If we commit each list item
+            // separately, the streaming view shows each item as its own
+            // top-level block with the inter-block gap(1) between them —
+            // the same content reads as a tight list once finalized but
+            // as a stretched-out list of singletons mid-stream. Worth the
+            // extra re-parse work on the tail to keep the visual stable.
+            if (next < source_.size() && source_[next] == '#') {
+                last_boundary = next;
             }
         }
 

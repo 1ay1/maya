@@ -3466,214 +3466,373 @@ Element md_block_to_element(const md::Block& block) {
             int ncols = static_cast<int>(tbl.header.cells.size());
             if (ncols == 0) return Element{TextElement{}};
 
-            // Compute column widths: max of header and all data rows, capped
-            constexpr int max_col_width = 50;
-            std::vector<int> col_widths(static_cast<size_t>(ncols), 0);
+            // ── Pre-flatten every cell's inline content into (content, runs).
+            // This is the parse-time work: the inline spans are converted
+            // once into a flat string + StyledRun list which the render-
+            // time wrapper can then slice into wrapped lines based on the
+            // ACTUAL available width. Keeps the runtime path cheap (just
+            // wrap + pad) instead of re-walking the inline AST every frame.
+            struct FlatCell { std::string content; std::vector<StyledRun> runs; };
+
+            std::vector<FlatCell> header_flat;
+            header_flat.reserve(static_cast<size_t>(ncols));
+            auto header_base = Style{}.with_bold().with_fg(colors::table_header);
             for (int c = 0; c < ncols; ++c) {
-                col_widths[static_cast<size_t>(c)] =
-                    measure_inline_width(tbl.header.cells[static_cast<size_t>(c)].spans);
-                for (auto& row : tbl.rows) {
-                    if (static_cast<size_t>(c) < row.cells.size()) {
-                        col_widths[static_cast<size_t>(c)] = std::max(
-                            col_widths[static_cast<size_t>(c)],
-                            measure_inline_width(row.cells[static_cast<size_t>(c)].spans));
-                    }
-                }
-                col_widths[static_cast<size_t>(c)] =
-                    std::min(col_widths[static_cast<size_t>(c)], max_col_width);
+                FlatCell f;
+                for (auto& s : tbl.header.cells[static_cast<size_t>(c)].spans)
+                    flatten_inline(s, header_base, f.content, f.runs);
+                header_flat.push_back(std::move(f));
             }
 
-            constexpr int pad = 1; // horizontal padding per side
-
-            // Truncate content to fit column width, adding "…" suffix
-            auto truncate_cell = [](std::string& content, std::vector<StyledRun>& runs, int max_w) {
-                int w = string_width(content);
-                if (w <= max_w) return;
-                // Walk byte-by-byte to find cut point at max_w-1 chars
-                int cur_w = 0;
-                size_t cut = 0;
-                for (size_t i = 0; i < content.size(); ) {
-                    unsigned char c = static_cast<unsigned char>(content[i]);
-                    int char_bytes = 1;
-                    if (c >= 0xF0) char_bytes = 4;
-                    else if (c >= 0xE0) char_bytes = 3;
-                    else if (c >= 0xC0) char_bytes = 2;
-                    int char_w = (c < 0x80) ? 1 : 1; // simplified: 1 per codepoint
-                    if (cur_w + char_w >= max_w) { cut = i; break; }
-                    cur_w += char_w;
-                    i += static_cast<size_t>(char_bytes);
-                    cut = i;
-                }
-                content.resize(cut);
-                content += "\xe2\x80\xa6"; // …
-                // Prune runs that extend past the cut
-                std::erase_if(runs, [cut](const StyledRun& r) {
-                    return r.byte_offset >= cut;
-                });
-                for (auto& r : runs) {
-                    if (r.byte_offset + r.byte_length > cut)
-                        r.byte_length = cut - r.byte_offset;
-                }
-            };
-
-            // Helper: build a padded cell string of fixed width
-            auto pad_cell = [&](const std::string& text, int content_w, int col_w) {
-                std::string result;
-                int total = col_w + pad * 2;
-                result.reserve(static_cast<size_t>(total));
-                result.append(static_cast<size_t>(pad), ' ');
-                result += text;
-                int right = std::max(0, col_w - content_w) + pad;
-                result.append(static_cast<size_t>(right), ' ');
-                return result;
-            };
-
-            // Build header row with fixed-width cells
-            std::vector<Element> header_cells;
-            header_cells.reserve(static_cast<size_t>(ncols));
-            for (int c = 0; c < ncols; ++c) {
-                auto& cell = tbl.header.cells[static_cast<size_t>(c)];
-                // Flatten to get plain text for padding
-                std::string content;
-                std::vector<StyledRun> runs;
-                auto header_base = Style{}.with_bold().with_fg(colors::table_header);
-                for (auto& s : cell.spans) flatten_inline(s, header_base, content, runs);
-                int col_w = col_widths[static_cast<size_t>(c)];
-                truncate_cell(content, runs, col_w);
-                int cw = string_width(content);
-                int right_pad = std::max(0, col_w - cw) + pad;
-                // Prefix with left pad, append right pad
-                std::string padded;
-                padded.reserve(static_cast<size_t>(pad) + content.size()
-                               + static_cast<size_t>(right_pad));
-                padded.append(static_cast<size_t>(pad), ' ');
-                padded += content;
-                padded.append(static_cast<size_t>(right_pad), ' ');
-                // Shift run offsets by left pad
-                for (auto& r : runs) r.byte_offset += static_cast<size_t>(pad);
-                // Add a run for the padding spaces
-                if (!runs.empty()) {
-                    runs.insert(runs.begin(), {0, static_cast<size_t>(pad), header_base});
-                    runs.push_back({padded.size() - static_cast<size_t>(right_pad),
-                                    static_cast<size_t>(right_pad), header_base});
-                }
-                header_cells.push_back(Element{TextElement{
-                    .content = std::move(padded),
-                    .style = header_base,
-                    .runs = std::move(runs),
-                }});
-            }
-
-            // Helper: build a horizontal border line (top, mid, bottom)
-            // type: 0=top (┌┬┐), 1=mid (├┼┤), 2=bottom (└┴┘)
-            auto make_border_line = [&](int type) -> Element {
-                const char* left[]  = {"\xe2\x94\x8c", "\xe2\x94\x9c", "\xe2\x94\x94"}; // ┌├└
-                const char* mid[]   = {"\xe2\x94\xac", "\xe2\x94\xbc", "\xe2\x94\xb4"}; // ┬┼┴
-                const char* right[] = {"\xe2\x94\x90", "\xe2\x94\xa4", "\xe2\x94\x98"}; // ┐┤┘
-                std::string line;
-                line += left[type];
+            std::vector<std::vector<FlatCell>> rows_flat;
+            rows_flat.reserve(tbl.rows.size());
+            auto cell_base = Style{}.with_fg(colors::text);
+            for (auto& row : tbl.rows) {
+                std::vector<FlatCell> rf;
+                rf.reserve(static_cast<size_t>(ncols));
                 for (int c = 0; c < ncols; ++c) {
-                    if (c > 0) line += mid[type];
-                    int total = col_widths[static_cast<size_t>(c)] + pad * 2;
-                    for (int k = 0; k < total; ++k)
-                        line += "\xe2\x94\x80"; // "─"
+                    FlatCell f;
+                    if (static_cast<size_t>(c) < row.cells.size()) {
+                        for (auto& s : row.cells[static_cast<size_t>(c)].spans)
+                            flatten_inline(s, cell_base, f.content, f.runs);
+                    }
+                    rf.push_back(std::move(f));
                 }
-                line += right[type];
-                return Element{TextElement{
-                    .content = std::move(line),
-                    .style = Style{}.with_fg(colors::table_border),
-                }};
-            };
+                rows_flat.push_back(std::move(rf));
+            }
 
-            // Helper: build a data/header row with │ separators
-            auto make_row_with_sep = [&](std::vector<Element>& cells) -> Element {
-                std::string content;
-                std::vector<StyledRun> runs;
-                auto sep_style = Style{}.with_fg(colors::table_border);
+            // ── Ideal width per column (longest cell content). Used to
+            // decide the layout when the terminal is wide enough; shrunk
+            // proportionally when not. No cap — we let the render-time
+            // distributor handle it.
+            std::vector<int> ideal(static_cast<size_t>(ncols), 0);
+            for (int c = 0; c < ncols; ++c) {
+                ideal[static_cast<size_t>(c)] =
+                    std::max(1, string_width(header_flat[static_cast<size_t>(c)].content));
+                for (auto& r : rows_flat) {
+                    ideal[static_cast<size_t>(c)] = std::max(
+                        ideal[static_cast<size_t>(c)],
+                        string_width(r[static_cast<size_t>(c)].content));
+                }
+            }
 
-                content += "\xe2\x94\x82"; // │
-                runs.push_back(StyledRun{0, content.size(), sep_style});
+            // Wrap into a ComponentElement so cell wrapping uses the
+            // actual rendered width — fixes the long-standing bug where
+            // tables truncated cells with "…" instead of wrapping when
+            // the terminal was narrower than `sum(ideal cell widths)`.
+            return Element{ComponentElement{
+                .render = [tbl_ncols = ncols,
+                           header_flat = std::move(header_flat),
+                           rows_flat = std::move(rows_flat),
+                           ideal = std::move(ideal),
+                           header_base, cell_base]
+                          (int avail_w, int /*h*/) -> Element {
+                    int ncols = tbl_ncols;
+                    constexpr int pad = 1;                 // per-side cell padding
+                    // Border accounts for: 1 leading │, plus one │ after
+                    // each column, plus 2*pad spaces per column.
+                    int chrome = 1 + ncols + 2 * ncols * pad;
+                    int avail_cells = std::max(ncols, avail_w - chrome);
 
-                for (size_t c = 0; c < cells.size(); ++c) {
-                    // Extract content and runs from each cell's TextElement
-                    auto* te = std::get_if<TextElement>(&cells[c].inner);
-                    if (te) {
-                        size_t offset = content.size();
-                        if (te->runs.empty()) {
-                            runs.push_back(StyledRun{offset, te->content.size(), te->style});
+                    // ── Distribute width across columns. If the ideal
+                    // total fits, use it. Otherwise shrink each column
+                    // proportionally to the room it has above the
+                    // minimum. Min width 6 keeps text readable; the
+                    // wrapper force-breaks longer-than-min words.
+                    constexpr int kMinCol = 6;
+                    int ideal_sum = 0;
+                    for (int v : ideal) ideal_sum += v;
+
+                    std::vector<int> col_w(static_cast<size_t>(ncols));
+                    if (ideal_sum <= avail_cells) {
+                        // Use ideal widths; spare cells stay as right-edge slack.
+                        for (int c = 0; c < ncols; ++c)
+                            col_w[static_cast<size_t>(c)] = ideal[static_cast<size_t>(c)];
+                    } else {
+                        // Shrink. Each column floors at kMinCol; columns
+                        // wider than the floor share the deficit
+                        // proportionally to their excess.
+                        int min_total = kMinCol * ncols;
+                        if (avail_cells <= min_total) {
+                            // Even the floors don't fit; give every col
+                            // the floor and let the table overrun.
+                            for (int c = 0; c < ncols; ++c)
+                                col_w[static_cast<size_t>(c)] = kMinCol;
                         } else {
-                            for (auto& r : te->runs) {
-                                runs.push_back(StyledRun{offset + r.byte_offset, r.byte_length, r.style});
+                            int budget_above_min = avail_cells - min_total;
+                            int excess_total = 0;
+                            for (int v : ideal) excess_total += std::max(0, v - kMinCol);
+                            for (int c = 0; c < ncols; ++c) {
+                                int excess = std::max(0,
+                                    ideal[static_cast<size_t>(c)] - kMinCol);
+                                int share = excess_total > 0
+                                    ? (excess * budget_above_min) / excess_total
+                                    : budget_above_min / ncols;
+                                col_w[static_cast<size_t>(c)] = kMinCol + share;
+                            }
+                            // Distribute any remainder to the widest cols
+                            // (caused by integer truncation in the share
+                            // calculation) so we hit avail_cells exactly.
+                            int sum = 0;
+                            for (int v : col_w) sum += v;
+                            int rem = avail_cells - sum;
+                            for (int i = 0; i < rem; ++i) {
+                                int best = 0;
+                                for (int c = 1; c < ncols; ++c)
+                                    if (ideal[static_cast<size_t>(c)] - col_w[static_cast<size_t>(c)]
+                                        > ideal[static_cast<size_t>(best)] - col_w[static_cast<size_t>(best)])
+                                        best = c;
+                                ++col_w[static_cast<size_t>(best)];
                             }
                         }
-                        content += te->content;
                     }
-                    // Add separator
-                    size_t sep_start = content.size();
-                    content += "\xe2\x94\x82"; // │
-                    runs.push_back(StyledRun{sep_start, 3, sep_style});
-                }
 
-                return Element{TextElement{
-                    .content = std::move(content),
-                    .style = Style{}.with_fg(colors::text),
-                    .runs = std::move(runs),
-                }};
-            };
+                    // ── Wrap a (content, runs) cell to a target width.
+                    // Returns one entry per visual line; each carries its
+                    // own sliced run list so per-character styling
+                    // (bold, code, color) survives the wrap intact.
+                    // Word-aware with force-break for words longer than
+                    // the target width. Hard '\n' in content also breaks.
+                    auto wrap_cell = [](const std::string& content,
+                                        const std::vector<StyledRun>& runs,
+                                        int max_w) -> std::vector<FlatCell> {
+                        std::vector<FlatCell> out;
+                        if (max_w <= 0) max_w = 1;
+                        if (content.empty()) {
+                            out.push_back({});
+                            return out;
+                        }
 
-            std::vector<Element> rows;
-            rows.reserve(tbl.rows.size() + 4);
+                        // Helper: bytes per UTF-8 char from leading byte.
+                        auto cb = [](unsigned char c) -> int {
+                            if (c < 0x80) return 1;
+                            if (c < 0xC0) return 1;     // invalid lead, treat as 1
+                            if (c < 0xE0) return 2;
+                            if (c < 0xF0) return 3;
+                            return 4;
+                        };
 
-            // Top border ┌──┬──┐
-            rows.push_back(make_border_line(0));
+                        // Find ranges [start, end) per output line. Then
+                        // build content + runs from those ranges.
+                        std::vector<std::pair<size_t, size_t>> lines;
+                        size_t i = 0;
+                        size_t line_start = 0;
+                        int line_w = 0;
 
-            // Header row with │ separators
-            rows.push_back(make_row_with_sep(header_cells));
+                        auto flush_line = [&](size_t end) {
+                            // Trim trailing whitespace from the line.
+                            size_t e = end;
+                            while (e > line_start
+                                   && (content[e - 1] == ' '
+                                       || content[e - 1] == '\t'))
+                                --e;
+                            lines.push_back({line_start, e});
+                        };
 
-            // Header/data separator ├──┼──┤
-            rows.push_back(make_border_line(1));
+                        while (i < content.size()) {
+                            // Hard newline → flush current line, start fresh.
+                            if (content[i] == '\n') {
+                                flush_line(i);
+                                ++i;
+                                line_start = i;
+                                line_w = 0;
+                                continue;
+                            }
+                            // Read next token (run of non-space OR run of
+                            // space). Spaces collapse only across line
+                            // breaks, not within a line.
+                            size_t tok_start = i;
+                            bool ws = (content[i] == ' ' || content[i] == '\t');
+                            int tok_w = 0;
+                            while (i < content.size()
+                                   && content[i] != '\n'
+                                   && ((content[i] == ' '
+                                        || content[i] == '\t') == ws)) {
+                                int n = cb(static_cast<unsigned char>(content[i]));
+                                ++tok_w;
+                                i += static_cast<size_t>(n);
+                            }
 
-            // Data rows with │ separators
-            for (auto& row : tbl.rows) {
-                std::vector<Element> cells;
-                cells.reserve(static_cast<size_t>(ncols));
-                for (int c = 0; c < ncols; ++c) {
-                    if (static_cast<size_t>(c) < row.cells.size()) {
-                        auto& cell = row.cells[static_cast<size_t>(c)];
-                        std::string content;
-                        std::vector<StyledRun> runs;
-                        auto base = Style{}.with_fg(colors::text);
-                        for (auto& s : cell.spans) flatten_inline(s, base, content, runs);
-                        int col_w = col_widths[static_cast<size_t>(c)];
-                        truncate_cell(content, runs, col_w);
-                        int cw = string_width(content);
-                        int right_pad_n = std::max(0, col_w - cw) + pad;
-                        std::string padded;
-                        padded.reserve(static_cast<size_t>(pad) + content.size()
-                                       + static_cast<size_t>(right_pad_n));
-                        padded.append(static_cast<size_t>(pad), ' ');
-                        padded += content;
-                        padded.append(static_cast<size_t>(right_pad_n), ' ');
-                        for (auto& r : runs) r.byte_offset += static_cast<size_t>(pad);
-                        cells.push_back(Element{TextElement{
-                            .content = std::move(padded),
-                            .style = base,
-                            .runs = std::move(runs),
-                        }});
-                    } else {
-                        int total = col_widths[static_cast<size_t>(c)] + pad * 2;
-                        std::string empty(static_cast<size_t>(total), ' ');
-                        cells.push_back(Element{TextElement{
-                            .content = std::move(empty)}});
-                    }
-                }
-                rows.push_back(make_row_with_sep(cells));
-            }
+                            if (line_w + tok_w <= max_w) {
+                                line_w += tok_w;
+                                continue;
+                            }
+                            // Doesn't fit. If the token is whitespace,
+                            // discard it at the line break.
+                            if (ws) {
+                                flush_line(tok_start);
+                                line_start = i;
+                                line_w = 0;
+                                continue;
+                            }
+                            // Non-whitespace word that doesn't fit.
+                            // Case A: line already has content → break here.
+                            if (line_w > 0) {
+                                flush_line(tok_start);
+                                line_start = tok_start;
+                                line_w = 0;
+                                i = tok_start;   // re-process the word on new line
+                                continue;
+                            }
+                            // Case B: a single word longer than the line.
+                            // Force-break at max_w characters.
+                            size_t pos = tok_start;
+                            int forced_w = 0;
+                            while (pos < i && forced_w < max_w) {
+                                int n = cb(static_cast<unsigned char>(content[pos]));
+                                pos += static_cast<size_t>(n);
+                                ++forced_w;
+                            }
+                            flush_line(pos);
+                            line_start = pos;
+                            line_w = 0;
+                            i = pos;             // continue word on next line
+                        }
+                        if (line_start < content.size() || lines.empty())
+                            flush_line(content.size());
 
-            // Bottom border └──┴──┘
-            rows.push_back(make_border_line(2));
+                        // Build output FlatCell per line range, slicing runs.
+                        out.reserve(lines.size());
+                        for (auto [a, b] : lines) {
+                            FlatCell fc;
+                            fc.content = content.substr(a, b - a);
+                            for (auto& r : runs) {
+                                size_t rs = r.byte_offset;
+                                size_t re = r.byte_offset + r.byte_length;
+                                if (re <= a || rs >= b) continue;
+                                size_t s = std::max(rs, a);
+                                size_t e = std::min(re, b);
+                                if (e <= s) continue;
+                                fc.runs.push_back(
+                                    StyledRun{s - a, e - s, r.style});
+                            }
+                            out.push_back(std::move(fc));
+                        }
+                        return out;
+                    };
 
-            return detail::vstack()(std::move(rows));
+                    // ── Build the visual rows for a logical row by wrapping
+                    // each cell to its column width and then transposing
+                    // — visual line v of the row is "cell[0].line[v] │
+                    // cell[1].line[v] │ …", padded with empty lines
+                    // when a cell is shorter than the row's tallest cell.
+                    auto build_row_visuals = [&](
+                        const std::vector<FlatCell>& cells,
+                        const Style& base) -> std::vector<Element>
+                    {
+                        // Wrap each cell.
+                        std::vector<std::vector<FlatCell>> wrapped(
+                            static_cast<size_t>(ncols));
+                        int max_lines = 1;
+                        for (int c = 0; c < ncols; ++c) {
+                            wrapped[static_cast<size_t>(c)] = wrap_cell(
+                                cells[static_cast<size_t>(c)].content,
+                                cells[static_cast<size_t>(c)].runs,
+                                col_w[static_cast<size_t>(c)]);
+                            max_lines = std::max(max_lines,
+                                static_cast<int>(wrapped[static_cast<size_t>(c)].size()));
+                        }
+                        auto sep_style = Style{}.with_fg(colors::table_border);
+                        const std::string sep = "\xe2\x94\x82";   // │
+
+                        std::vector<Element> visuals;
+                        visuals.reserve(static_cast<size_t>(max_lines));
+                        for (int v = 0; v < max_lines; ++v) {
+                            std::string line;
+                            std::vector<StyledRun> line_runs;
+                            // Leading │
+                            line += sep;
+                            line_runs.push_back(StyledRun{0, sep.size(), sep_style});
+                            for (int c = 0; c < ncols; ++c) {
+                                int cw = col_w[static_cast<size_t>(c)];
+                                int total = cw + pad * 2;
+                                // Pull this cell's v-th line if present.
+                                const FlatCell* fc = nullptr;
+                                if (static_cast<int>(wrapped[static_cast<size_t>(c)].size()) > v)
+                                    fc = &wrapped[static_cast<size_t>(c)][static_cast<size_t>(v)];
+
+                                std::string content_part;
+                                std::vector<StyledRun> runs_part;
+                                if (fc) {
+                                    content_part = fc->content;
+                                    runs_part = fc->runs;
+                                }
+                                int content_w = string_width(content_part);
+
+                                // Left pad
+                                size_t cell_off = line.size();
+                                line.append(static_cast<size_t>(pad), ' ');
+                                // Content
+                                size_t content_off = line.size();
+                                line += content_part;
+                                for (auto& r : runs_part)
+                                    line_runs.push_back(StyledRun{
+                                        content_off + r.byte_offset,
+                                        r.byte_length, r.style});
+                                // Right pad to fill the column
+                                int right = std::max(0, cw - content_w) + pad;
+                                line.append(static_cast<size_t>(right), ' ');
+                                // Cell-spanning base style for the
+                                // padding cells (so background-color
+                                // styles, if any are added later, fill
+                                // the whole cell instead of just text).
+                                if (!runs_part.empty() || content_w == 0) {
+                                    line_runs.push_back(StyledRun{
+                                        cell_off, static_cast<size_t>(pad), base});
+                                    line_runs.push_back(StyledRun{
+                                        content_off + content_part.size(),
+                                        static_cast<size_t>(right), base});
+                                }
+                                // Trailing │
+                                size_t s = line.size();
+                                line += sep;
+                                line_runs.push_back(StyledRun{s, sep.size(), sep_style});
+                                (void)total;
+                            }
+                            visuals.push_back(Element{TextElement{
+                                .content = std::move(line),
+                                .style = base,
+                                .runs = std::move(line_runs),
+                            }});
+                        }
+                        return visuals;
+                    };
+
+                    // ── Border line builder. type: 0=top, 1=mid, 2=bottom.
+                    auto make_border_line = [&](int type) -> Element {
+                        const char* left[]  = {"\xe2\x94\x8c","\xe2\x94\x9c","\xe2\x94\x94"};
+                        const char* mid[]   = {"\xe2\x94\xac","\xe2\x94\xbc","\xe2\x94\xb4"};
+                        const char* right[] = {"\xe2\x94\x90","\xe2\x94\xa4","\xe2\x94\x98"};
+                        std::string line;
+                        line += left[type];
+                        for (int c = 0; c < ncols; ++c) {
+                            if (c > 0) line += mid[type];
+                            int total = col_w[static_cast<size_t>(c)] + pad * 2;
+                            for (int k = 0; k < total; ++k)
+                                line += "\xe2\x94\x80";          // ─
+                        }
+                        line += right[type];
+                        return Element{TextElement{
+                            .content = std::move(line),
+                            .style = Style{}.with_fg(colors::table_border),
+                        }};
+                    };
+
+                    // ── Compose the full table.
+                    std::vector<Element> rows;
+                    rows.reserve(rows_flat.size() * 2 + 4);
+                    rows.push_back(make_border_line(0));
+                    for (auto& v : build_row_visuals(header_flat, header_base))
+                        rows.push_back(std::move(v));
+                    rows.push_back(make_border_line(1));
+                    for (auto& row : rows_flat)
+                        for (auto& v : build_row_visuals(row, cell_base))
+                            rows.push_back(std::move(v));
+                    rows.push_back(make_border_line(2));
+                    return detail::vstack()(std::move(rows));
+                },
+                .layout = {},
+            }};
         },
         [](const md::FootnoteDef& fn) -> Element {
             std::vector<Element> parts;

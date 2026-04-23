@@ -214,7 +214,12 @@ void compose_inline_frame(const Canvas& canvas,
         }
     }
 
-    out += ansi::show_cursor;
+    // Don't emit show_cursor here — the in-frame hide_cursor above is for
+    // *flicker* prevention during the redraw, NOT a hint that the cursor
+    // should be re-shown between frames. Restoring it every tick reverses
+    // any startup hide_cursor the app sent (e.g. moha's inline-mode setup),
+    // and a TUI that wants a visible cursor can paint its own caret glyph.
+    // Final cursor visibility is set once at startup and once at cleanup.
     out += ansi::sync_end;
 
     // Commit: cache the new cell buffer for next frame's comparison.

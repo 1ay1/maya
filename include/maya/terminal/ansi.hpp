@@ -109,7 +109,7 @@ inline constexpr std::string_view sync_end                 = "\x1b[?2026l";
 // for keys whose default encoding doesn't carry modifier info: most
 // importantly Shift+Enter, Ctrl+Enter, Shift+Tab variants, modified
 // arrow keys, etc. Supported by Kitty, Foot, WezTerm, Ghostty, recent
-// xterm (modifyOtherKeys=2 fallback), Konsole 22.04+, iTerm2 3.5+.
+// xterm, Konsole 22.04+, iTerm2 3.5+, recent Alacritty.
 // Terminals that don't recognize the sequence ignore it silently — the
 // CSI parser there will just see plain `\r` for Enter as before, so
 // it's safe to send unconditionally.
@@ -118,6 +118,14 @@ inline constexpr std::string_view sync_end                 = "\x1b[?2026l";
 // terminal in a state the next program (a shell) can't decode.
 inline constexpr std::string_view kkp_push                 = "\x1b[>1u";
 inline constexpr std::string_view kkp_pop                  = "\x1b[<u";
+// xterm modifyOtherKeys=2 — older but more widely supported keyboard
+// disambiguation protocol than KKP. Many VTE-based terminals (GNOME
+// Terminal, Tilix) and stock xterm honor this even when they don't
+// speak KKP. Format on the wire is CSI 27;<mods>;<keycode>~ so e.g.
+// Shift+Enter becomes `\x1b[27;2;13~`. Sent alongside the KKP push as
+// a belt-and-suspenders fallback. Disabled (=0) on exit.
+inline constexpr std::string_view modify_other_keys_on     = "\x1b[>4;2m";
+inline constexpr std::string_view modify_other_keys_off    = "\x1b[>4m";
 
 // ============================================================================
 // SGR attribute constants

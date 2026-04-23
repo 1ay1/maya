@@ -262,6 +262,36 @@ void InputParser::parse_csi(std::vector<Event>& events) {
                 buf_.clear();
                 return;
             }
+            // xterm modifyOtherKeys=2: CSI 27 ; <mods> ; <keycode> ~
+            // The sentinel `27` (ESC code) marks this as a modified-key
+            // report; the real codepoint is in params[2]. Used for keys
+            // whose plain encoding lacks modifier info — Shift+Enter,
+            // Ctrl+Enter, etc — on terminals that don't speak KKP.
+            if (code == 27 && params.size() >= 3) {
+                int mod_param = params[1];
+                int keycode   = params[2];
+                Modifiers mods;
+                if (mod_param > 1) mods = Modifiers::from_param(mod_param);
+                std::optional<Key> k;
+                switch (keycode) {
+                    case 9:   k = SpecialKey::Tab;       break;
+                    case 13:  k = SpecialKey::Enter;     break;
+                    case 27:  k = SpecialKey::Escape;    break;
+                    case 127: k = SpecialKey::Backspace; break;
+                    default:
+                        if (keycode >= 32 && keycode < 0x110000)
+                            k = CharKey{static_cast<char32_t>(keycode)};
+                        break;
+                }
+                if (k) {
+                    events.emplace_back(KeyEvent{
+                        .key = *k,
+                        .mods = mods,
+                        .raw_sequence = std::move(buf_),
+                    });
+                }
+                return;
+            }
             // Tilde-terminated special keys
             handle_tilde_key(code, params.size() > 1 ? params[1] : 1, events);
             return;

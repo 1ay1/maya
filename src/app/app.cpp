@@ -45,8 +45,15 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
         MAYA_TRY_DECL(auto alt, std::move(raw).enter_alt_screen());
         alt_term = std::move(alt);
     } else {
-        // Enable bracketed paste in inline mode (alt screen enables it automatically)
+        // Inline mode: enable the per-feature mode bytes that alt-screen
+        // entry would otherwise have done for us. Bracketed paste lets us
+        // distinguish a paste from typed input; kitty keyboard protocol
+        // (KKP) push asks the terminal to disambiguate modified keys —
+        // most importantly Shift+Enter (which would otherwise arrive as
+        // plain `\r`, indistinguishable from Enter). Terminals that
+        // don't recognize the KKP push silently ignore it.
         (void)raw.write(ansi::enable_bracketed_paste);
+        (void)raw.write(ansi::kkp_push);
         raw_term = std::move(raw);
     }
 
@@ -323,8 +330,13 @@ void Runtime::set_title(std::string_view title) {
 
 auto Runtime::cleanup() -> Status {
     if (is_inline()) {
-        auto cleanup = std::format("{}{}{}\r\n",
-            ansi::disable_bracketed_paste, ansi::show_cursor, ansi::reset);
+        // Reverse the inline-mode setup. KKP pop comes first so the
+        // terminal's keyboard-protocol stack returns to its prior
+        // state before we relinquish raw mode (otherwise a misbehaving
+        // shell could see CSI-u sequences it doesn't understand).
+        auto cleanup = std::format("{}{}{}{}\r\n",
+            ansi::kkp_pop, ansi::disable_bracketed_paste,
+            ansi::show_cursor, ansi::reset);
         return writer_->write_raw(cleanup);
     }
     return ok();

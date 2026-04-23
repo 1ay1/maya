@@ -149,6 +149,13 @@ public:
     [[nodiscard]] std::string_view current_frame() const noexcept {
         return frames_.frames[frame_];
     }
+
+    // Current frame index — useful when handing the spinner's tick state
+    // to another widget that owns its own frame mapping (e.g. Timeline,
+    // which takes an int frame and resolves to its own spinner glyph).
+    // Lets one Tick subscription drive multiple animated surfaces in
+    // lockstep instead of each computing its own frame from the clock.
+    [[nodiscard]] int frame_index() const noexcept { return frame_; }
 };
 
 } // namespace maya

@@ -3897,16 +3897,40 @@ Element md_block_to_element(const md::Block& block) {
                         }};
                     };
 
+                    // ── Soft inter-row separator. Same skeleton as the
+                    // header rule (├ … ┼ … ┤) but with light-quadruple-
+                    // dash horizontals (┈) and rendered at half luminance
+                    // via `with_dim`. Dashed-not-solid + dim is the
+                    // canonical "this is a row break, not a section
+                    // break" treatment in pro TUIs (Helix, Lazygit).
+                    auto make_row_separator = [&]() -> Element {
+                        std::string line;
+                        line += "\xe2\x94\x9c";          // ├
+                        for (int c = 0; c < ncols; ++c) {
+                            if (c > 0) line += "\xe2\x94\xbc";  // ┼
+                            int total = col_w[static_cast<size_t>(c)] + pad * 2;
+                            for (int k = 0; k < total; ++k)
+                                line += "\xe2\x94\x88";  // ┈ (light quadruple dash)
+                        }
+                        line += "\xe2\x94\xa4";          // ┤
+                        return Element{TextElement{
+                            .content = std::move(line),
+                            .style = Style{}.with_fg(colors::table_border).with_dim(),
+                        }};
+                    };
+
                     // ── Compose the full table.
                     std::vector<Element> rows;
-                    rows.reserve(rows_flat.size() * 2 + 4);
+                    rows.reserve(rows_flat.size() * 3 + 4);
                     rows.push_back(make_border_line(0));
                     for (auto& v : build_row_visuals(header_flat, header_base))
                         rows.push_back(std::move(v));
                     rows.push_back(make_border_line(1));
-                    for (auto& row : rows_flat)
-                        for (auto& v : build_row_visuals(row, cell_base))
+                    for (std::size_t ri = 0; ri < rows_flat.size(); ++ri) {
+                        if (ri > 0) rows.push_back(make_row_separator());
+                        for (auto& v : build_row_visuals(rows_flat[ri], cell_base))
                             rows.push_back(std::move(v));
+                    }
                     rows.push_back(make_border_line(2));
                     return detail::vstack()(std::move(rows));
                 },
@@ -3940,7 +3964,15 @@ Element md_block_to_element(const md::Block& block) {
                         }
                         data_lines += rl;
                     }
-                    int total = 3 + header_lines + data_lines;
+                    // 3 chrome rows (top border, header sep, bottom border)
+                    // + header lines + data lines + (N-1) inter-row
+                    // separators between data rows. Must match the row
+                    // count produced by the render closure exactly,
+                    // otherwise the parent vstack clips the bottom rows.
+                    int row_seps = data->rows_flat.size() > 1
+                                 ? static_cast<int>(data->rows_flat.size()) - 1
+                                 : 0;
+                    int total = 3 + header_lines + data_lines + row_seps;
                     return {Columns{max_w}, Rows{total}};
                 },
                 .layout = {},

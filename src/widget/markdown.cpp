@@ -2136,22 +2136,30 @@ md::Document parse_markdown(std::string_view source) {
 // automatically matches whatever terminal theme the user has configured
 // (Catppuccin, Dracula, Solarized, One Dark, Gruvbox, etc.)
 namespace colors {
-    constexpr auto text        = Color::white();
+    // Prose body text uses ANSI 15 ("bright_white") rather than ANSI 7
+    // ("white"). The latter renders as a mid-gray in most popular dark
+    // themes (Catppuccin / One Dark / Dracula / Gruvbox / Solarized dark)
+    // which hurts long-form readability — the eye has to work harder per
+    // character. Bright_white pins prose to the terminal's highest-
+    // contrast foreground so the body always reads clearly regardless of
+    // theme. Dim / muted tones handle the typographic hierarchy instead
+    // of lowering the base contrast.
+    constexpr auto text        = Color::bright_white();
     constexpr auto heading1    = Color::bright_white();
     constexpr auto heading2    = Color::bright_white();
-    constexpr auto heading3    = Color::white();
+    constexpr auto heading3    = Color::bright_white();
     constexpr auto heading_dim = Color::bright_black();
     constexpr auto bold_fg     = Color::bright_white();
-    constexpr auto italic_fg   = Color::white();
+    constexpr auto italic_fg   = Color::bright_white();
     constexpr auto code_fg     = Color::bright_yellow();
     constexpr auto code_bg     = Color::black();
     constexpr auto link_fg     = Color::bright_blue();
     constexpr auto image_fg    = Color::bright_magenta();
     constexpr auto strike_fg   = Color::bright_black();
     constexpr auto quote_bar   = Color::bright_black();
-    constexpr auto quote_text  = Color::white();
+    constexpr auto quote_text  = Color::bright_white();
     constexpr auto list_bullet = Color::bright_black();
-    constexpr auto list_num    = Color::white();
+    constexpr auto list_num    = Color::bright_white();
     constexpr auto checkbox_fg = Color::bright_green();
     constexpr auto checkbox_off= Color::bright_black();
     constexpr auto code_border = Color::bright_black();

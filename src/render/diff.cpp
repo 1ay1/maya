@@ -3,16 +3,29 @@
 #include <algorithm>
 #include <cstdint>
 
-#ifdef __GNUC__
-#define MAYA_PREFETCH_R(addr) __builtin_prefetch((addr), 0, 1)
-#define MAYA_PREFETCH_W(addr) __builtin_prefetch((addr), 1, 1)
-#define MAYA_LIKELY(x)   __builtin_expect(!!(x), 1)
-#define MAYA_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#if defined(__GNUC__) || defined(__clang__)
+#  define MAYA_PREFETCH_R(addr) __builtin_prefetch((addr), 0, 1)
+#  define MAYA_PREFETCH_W(addr) __builtin_prefetch((addr), 1, 1)
+#  define MAYA_LIKELY(x)   __builtin_expect(!!(x), 1)
+#  define MAYA_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+// MSVC lacks __builtin_prefetch; emit a native SSE prefetch. The GCC hint
+// level we want (1 = "some temporal locality") maps best to _MM_HINT_T2
+// (L3-only), matching the one-touch-per-frame access pattern of Cell rows
+// in the diff loop. _mm_prefetch is read-only — MSVC has no write-prefetch
+// intrinsic; PREFETCHW is available on AMD but we stay portable here.
+// __assume used for branch hints: lets the optimizer know the expected
+// edge without relying on PGO feedback.
+#  include <intrin.h>
+#  define MAYA_PREFETCH_R(addr) _mm_prefetch(reinterpret_cast<const char*>(addr), _MM_HINT_T2)
+#  define MAYA_PREFETCH_W(addr) _mm_prefetch(reinterpret_cast<const char*>(addr), _MM_HINT_T2)
+#  define MAYA_LIKELY(x)   (x)
+#  define MAYA_UNLIKELY(x) (x)
 #else
-#define MAYA_PREFETCH_R(addr) ((void)0)
-#define MAYA_PREFETCH_W(addr) ((void)0)
-#define MAYA_LIKELY(x)   (x)
-#define MAYA_UNLIKELY(x) (x)
+#  define MAYA_PREFETCH_R(addr) ((void)0)
+#  define MAYA_PREFETCH_W(addr) ((void)0)
+#  define MAYA_LIKELY(x)   (x)
+#  define MAYA_UNLIKELY(x) (x)
 #endif
 
 namespace maya {

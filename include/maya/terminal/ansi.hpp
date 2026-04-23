@@ -104,6 +104,20 @@ inline constexpr std::string_view enable_bracketed_paste   = "\x1b[?2004h";
 inline constexpr std::string_view disable_bracketed_paste  = "\x1b[?2004l";
 inline constexpr std::string_view sync_start               = "\x1b[?2026h";
 inline constexpr std::string_view sync_end                 = "\x1b[?2026l";
+// Kitty Keyboard Protocol — push flag 1 ("disambiguate escape codes")
+// onto the terminal's keyboard-protocol stack. Enables CSI-u reporting
+// for keys whose default encoding doesn't carry modifier info: most
+// importantly Shift+Enter, Ctrl+Enter, Shift+Tab variants, modified
+// arrow keys, etc. Supported by Kitty, Foot, WezTerm, Ghostty, recent
+// xterm (modifyOtherKeys=2 fallback), Konsole 22.04+, iTerm2 3.5+.
+// Terminals that don't recognize the sequence ignore it silently — the
+// CSI parser there will just see plain `\r` for Enter as before, so
+// it's safe to send unconditionally.
+//
+// The matching `pop` sequence is sent on exit so we don't leave the
+// terminal in a state the next program (a shell) can't decode.
+inline constexpr std::string_view kkp_push                 = "\x1b[>1u";
+inline constexpr std::string_view kkp_pop                  = "\x1b[<u";
 
 // ============================================================================
 // SGR attribute constants

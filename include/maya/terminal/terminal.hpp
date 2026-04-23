@@ -144,6 +144,7 @@ public:
         seq += ansi::enable_alt_scroll;
         seq += ansi::enable_focus;
         seq += ansi::enable_bracketed_paste;
+        seq += ansi::kkp_push;          // disambiguate Shift+Enter etc.
         seq += ansi::clear_screen();
         seq += ansi::home();
 
@@ -208,6 +209,7 @@ public:
             // Reverse of enter_alt_screen
             std::string seq;
             seq.reserve(128);
+            seq += ansi::kkp_pop;       // restore terminal kbd protocol stack
             seq += ansi::disable_bracketed_paste;
             seq += ansi::disable_focus;
             seq += ansi::disable_alt_scroll;

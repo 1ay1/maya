@@ -68,6 +68,47 @@ enum class TextWrap : uint8_t {
     if (cp >= 0x1F300 && cp <= 0x1F9FF) return true;
     // Supplemental Symbols and Pictographs
     if (cp >= 0x1FA00 && cp <= 0x1FAFF) return true;
+    // ── BMP-range emoji (Emoji_Presentation = Yes per Unicode 16.0) ─────
+    // STRICT list. Earlier broader ranges (0x2600-0x2685 and 0x2702-0x27BF)
+    // over-counted text-presentation siblings — most importantly ✓ (U+2713)
+    // and ✗ (U+2717), which moha's tool cards use as status glyphs in
+    // EVERY card. Treating them as 2-cell broke right-edge alignment of
+    // every bordered card on Windows: terminal renders them 1-cell, maya
+    // computed 2-cell, layout overflowed the terminal, borders fell off.
+    //
+    // Stick to the Unicode-defined Emoji_Presentation=Yes set so we never
+    // over-count. The cost: chars like ☀ ☁ ☂ ✂ ✈ ❤ that DO render 2-cell
+    // when followed by VS16 (U+FE0F) get under-counted; tables containing
+    // those will still walk a column. That's a smaller bug than borders
+    // breaking everywhere — VS16 lookahead is the real fix and lives in
+    // `string_width` (text.cpp), not here.
+    if (cp == 0x231A || cp == 0x231B)               return true; // ⌚ ⌛
+    if (cp >= 0x23E9 && cp <= 0x23EC)               return true; // ⏩ ⏪ ⏫ ⏬
+    if (cp == 0x23F0 || cp == 0x23F3)               return true; // ⏰ ⏳
+    if (cp == 0x25FD || cp == 0x25FE)               return true; // ◽ ◾
+    if (cp == 0x2614 || cp == 0x2615)               return true; // ☔ ☕
+    if (cp >= 0x2648 && cp <= 0x2653)               return true; // ♈..♓
+    if (cp == 0x267F)                                return true; // ♿
+    if (cp == 0x2693)                                return true; // ⚓
+    if (cp == 0x26A1)                                return true; // ⚡
+    if (cp == 0x26AA || cp == 0x26AB)               return true; // ⚪ ⚫
+    if (cp == 0x26BD || cp == 0x26BE)               return true; // ⚽ ⚾
+    if (cp == 0x26C4 || cp == 0x26C5)               return true; // ⛄ ⛅
+    if (cp == 0x26CE)                                return true; // ⛎
+    if (cp == 0x26D4)                                return true; // ⛔
+    if (cp == 0x26EA)                                return true; // ⛪
+    if (cp == 0x26F2 || cp == 0x26F3 || cp == 0x26F5) return true; // ⛲ ⛳ ⛵
+    if (cp == 0x26FA || cp == 0x26FD)               return true; // ⛺ ⛽
+    if (cp == 0x2705)                                return true; // ✅
+    if (cp == 0x270A || cp == 0x270B)               return true; // ✊ ✋
+    if (cp == 0x2728)                                return true; // ✨
+    if (cp == 0x274C || cp == 0x274E)               return true; // ❌ ❎
+    if (cp >= 0x2753 && cp <= 0x2755)               return true; // ❓ ❔ ❕
+    if (cp == 0x2757)                                return true; // ❗
+    if (cp >= 0x2795 && cp <= 0x2797)               return true; // ➕ ➖ ➗
+    if (cp == 0x27B0 || cp == 0x27BF)               return true; // ➰ ➿
+    if (cp == 0x2B1B || cp == 0x2B1C)               return true; // ⬛ ⬜
+    if (cp == 0x2B50 || cp == 0x2B55)               return true; // ⭐ ⭕
     // CJK Unified Ideographs Extension B through end of TIP (U+20000-U+3FFFD)
     if (cp >= 0x20000 && cp <= 0x3FFFD) return true;
     return false;

@@ -77,6 +77,26 @@ int string_width(std::string_view text) noexcept {
                        || static_cast<unsigned char>(data[pos]) < 0x20)) {
             char32_t cp = decode_utf8(text, pos);
             int w = codepoint_width(cp);
+            // VS16 (U+FE0F) lookahead. Many BMP-range emoji codepoints
+            // are TEXT-presentation by default (☀ ☁ ✈ ❤ ✓ ✗ etc.) and
+            // render 1-cell — but when explicitly followed by VS16 they
+            // become emoji-presentation (2-cell) per Unicode TR51. We
+            // can't promote them in the static is_wide_char() table
+            // without breaking the bare 1-cell case (which would shred
+            // moha's tool-card borders that use ✓/✗ as glyphs). So we
+            // peek the next codepoint here: if it's VS16 and the base
+            // was 1-cell with the top bit set, bump width to 2 and
+            // consume VS16 (codepoint_width already returns -1 for it,
+            // so the lookahead doesn't double-count, just absorbs early).
+            if (w == 1 && cp >= 0x80 && pos < len) {
+                std::size_t peek = pos;
+                char32_t next = decode_utf8(text, peek);
+                if (next == 0xFE0F) {
+                    width += 2;          // promoted to emoji presentation
+                    pos = peek;          // consume VS16
+                    continue;
+                }
+            }
             if (w > 0) width += w;
         }
     }

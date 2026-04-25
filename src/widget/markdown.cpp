@@ -3822,6 +3822,42 @@ Element md_block_to_element(const md::Block& block) {
                         auto sep_style = Style{}.with_fg(colors::table_border);
                         const std::string sep = "\xe2\x94\x82";   // │
 
+                        // Detect emoji-bearing rows. Terminal emoji width
+                        // is inconsistent (1 vs 2 cells; affected by VS16,
+                        // ZWJ sequences, font fallback) — even with our
+                        // unicode width table, some terminals will draw the
+                        // row 1-cell wider than we computed, walking the
+                        // trailing │ into the next column. Drop the right
+                        // edge on emoji rows so a misalignment becomes a
+                        // graceful ragged-right instead of a visibly-broken
+                        // border. Inner cell separators stay (smaller blast
+                        // radius) and the table's top/bottom horizontal
+                        // borders stay (drawn separately).
+                        auto cell_has_emoji = [](std::string_view s) {
+                            std::size_t i = 0;
+                            while (i < s.size()) {
+                                char32_t cp = decode_utf8(s, i);
+                                // Conservative: any codepoint in the BMP
+                                // emoji-presentation neighbourhood + the
+                                // high-plane emoji ranges. CJK is excluded
+                                // (width handling there is rock-solid).
+                                if ((cp >= 0x231A  && cp <= 0x231B) ||
+                                    (cp >= 0x23E9  && cp <= 0x23F3) ||
+                                    (cp >= 0x25FD  && cp <= 0x25FE) ||
+                                    (cp >= 0x2600  && cp <= 0x27BF) ||
+                                    (cp >= 0x2B00  && cp <= 0x2BFF) ||
+                                    (cp >= 0x1F000 && cp <= 0x1FFFF))
+                                    return true;
+                            }
+                            return false;
+                        };
+                        bool row_has_emoji = false;
+                        for (const auto& fc : cells) {
+                            if (cell_has_emoji(fc.content)) {
+                                row_has_emoji = true; break;
+                            }
+                        }
+
                         std::vector<Element> visuals;
                         visuals.reserve(static_cast<size_t>(max_lines));
                         for (int v = 0; v < max_lines; ++v) {
@@ -3870,10 +3906,16 @@ Element md_block_to_element(const md::Block& block) {
                                         content_off + content_part.size(),
                                         static_cast<size_t>(right), base});
                                 }
-                                // Trailing │
-                                size_t s = line.size();
-                                line += sep;
-                                line_runs.push_back(StyledRun{s, sep.size(), sep_style});
+                                // Trailing │ — skipped on the rightmost
+                                // cell of an emoji-bearing row so a 1-cell
+                                // width disagreement between us and the
+                                // terminal doesn't draw a misplaced edge.
+                                bool is_last = (c + 1 == ncols);
+                                if (!(is_last && row_has_emoji)) {
+                                    size_t s = line.size();
+                                    line += sep;
+                                    line_runs.push_back(StyledRun{s, sep.size(), sep_style});
+                                }
                                 (void)total;
                             }
                             visuals.push_back(Element{TextElement{

@@ -707,7 +707,19 @@ void run(RunConfig cfg = {}) {
         current_sub = get_sub();
     }
 
-    bool needs_render = true;
+    // ── First paint BEFORE entering the event loop ──────────────────
+    // On Windows (conhost / Windows Terminal under PowerShell) the
+    // event loop's first `poll(0) → fall-through-to-render` path was
+    // observed to leave the UI invisible until the user pressed a key
+    // — strongly suggests a console-host buffering or focus-update
+    // quirk where the very first WriteFile after raw-mode init
+    // doesn't get reflected on screen until a stdin event nudges
+    // conhost. Painting once unconditionally HERE removes the
+    // dependency on the loop's first iteration getting through cleanly.
+    // The cost is a single extra render call per program lifetime.
+    (void)rt.render(P::view(model));
+
+    bool needs_render = false;
 
     // ── Main event loop ──────────────────────────────────────────────────
     while (rt.is_running()) {

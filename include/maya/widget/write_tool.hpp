@@ -123,28 +123,38 @@ public:
             auto add_prefix_style = Style{}.with_fg(Color::green()).with_dim();
             auto code_style = Style{}.with_fg(Color::green());
 
-            std::string_view sv = content_;
-            int shown = 0;
-            int total_lines = lines;
-
-            while (!sv.empty()) {
-                auto nl = sv.find('\n');
-                auto line = (nl == std::string_view::npos) ? sv : sv.substr(0, nl);
-                sv = (nl == std::string_view::npos) ? std::string_view{} : sv.substr(nl + 1);
-
-                if (max_preview_lines_ > 0 && shown >= max_preview_lines_) {
-                    int remaining = total_lines - shown;
-                    if (remaining > 0) {
-                        char buf[48];
-                        std::snprintf(buf, sizeof(buf), "  ... %d more lines", remaining);
-                        rows.push_back(Element{TextElement{
-                            .content = buf,
-                            .style = Style{}.with_dim(),
-                        }});
-                    }
-                    break;
+            // Head + tail elision so the user always sees both the start AND
+            // the end of the file. Showing only the head meant the user
+            // couldn't tell if the model finished with a sensible closing
+            // brace / EOF, only what it began with. With max=6 we render
+            // 3 head + ellipsis + 3 tail; max=15 → 8 head + 7 tail. When
+            // total_lines fits the cap (or max_preview_lines_<=0 meaning
+            // "no limit"), the tail collapses into the head and we emit
+            // every line exactly once.
+            std::vector<std::string_view> all_lines;
+            all_lines.reserve(static_cast<std::size_t>(lines) + 1);
+            {
+                std::string_view sv = content_;
+                while (!sv.empty()) {
+                    auto nl = sv.find('\n');
+                    auto line = (nl == std::string_view::npos) ? sv : sv.substr(0, nl);
+                    all_lines.push_back(line);
+                    if (nl == std::string_view::npos) break;
+                    sv = sv.substr(nl + 1);
                 }
+            }
 
+            const int total = static_cast<int>(all_lines.size());
+            const bool elide = max_preview_lines_ > 0 && total > max_preview_lines_;
+            // Bias the head when the cap is odd (e.g. max=7 → head=4, tail=3)
+            // so the start gets the extra row. The very first line of a file
+            // tends to be the most identifying (shebang, package decl,
+            // license header) — give it precedence over a tail row.
+            const int head_n = elide ? (max_preview_lines_ + 1) / 2 : total;
+            const int tail_n = elide ? max_preview_lines_ / 2       : 0;
+            const int hidden = elide ? total - head_n - tail_n      : 0;
+
+            auto emit_line = [&](std::string_view line) {
                 std::string content = "+ ";
                 content += line;
                 std::vector<StyledRun> runs;
@@ -152,16 +162,26 @@ public:
                 if (!line.empty()) {
                     runs.push_back(StyledRun{2, line.size(), code_style});
                 }
-
                 rows.push_back(Element{TextElement{
                     .content = std::move(content),
                     .style = {},
                     .wrap = TextWrap::NoWrap,
                     .runs = std::move(runs),
                 }});
-                ++shown;
-            }
+            };
 
+            for (int i = 0; i < head_n && i < total; ++i) emit_line(all_lines[i]);
+            if (hidden > 0) {
+                char buf[64];
+                std::snprintf(buf, sizeof(buf),
+                              "  \xe2\x8b\xae %d hidden line%s \xe2\x8b\xae",
+                              hidden, hidden == 1 ? "" : "s");
+                rows.push_back(Element{TextElement{
+                    .content = buf,
+                    .style = Style{}.with_dim(),
+                }});
+            }
+            for (int i = total - tail_n; i < total; ++i) emit_line(all_lines[i]);
         }
 
         // Live progress / outcome footer. We *always* render this for non-

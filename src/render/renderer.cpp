@@ -394,10 +394,18 @@ void paint_element(
 
             if (node.runs.empty()) {
                 // Fast path: single style for the whole element.
+                // Hand-rolled index instead of `std::views::enumerate` —
+                // libc++ on Android NDK / Termux doesn't ship the C++23
+                // `enumerate` view yet (clang accepts the syntax but the
+                // headers don't define the symbol). The manual loop is
+                // identical in behaviour and runs everywhere our other
+                // C++23 features compile.
                 uint16_t style_id = pool.intern(node.style);
-                for (const auto& [row, line] :
-                         lines | std::views::enumerate | std::views::take(ah)) {
-                    canvas.write_text(ax, ay + static_cast<int>(row), line, style_id);
+                const std::size_t cap =
+                    std::min<std::size_t>(static_cast<std::size_t>(ah), lines.size());
+                for (std::size_t row = 0; row < cap; ++row) {
+                    canvas.write_text(ax, ay + static_cast<int>(row),
+                                      lines[row], style_id);
                 }
             } else {
                 // Styled runs: paint each character segment with its own style.
@@ -405,8 +413,10 @@ void paint_element(
                 std::size_t content_byte = 0;
                 std::size_t run_idx = 0;
 
-                for (const auto& [row, line] :
-                         lines | std::views::enumerate | std::views::take(ah)) {
+                const std::size_t cap =
+                    std::min<std::size_t>(static_cast<std::size_t>(ah), lines.size());
+                for (std::size_t row = 0; row < cap; ++row) {
+                    const auto& line = lines[row];
                     int y = ay + static_cast<int>(row);
 
                     // Skip whitespace that word_wrap consumed between lines.

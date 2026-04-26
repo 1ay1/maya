@@ -108,6 +108,19 @@ else()
             -O3
             -march=native
             -funroll-loops
+            # Designated-init aggregates intentionally omit fields that
+            # zero-init by default (cached_lines, children, etc.). Both
+            # warnings spuriously fire on every builder/widget call site.
+            -Wno-missing-field-initializers
+        >
+        # Clang-only: -Wmissing-designated-field-initializers is its own
+        # warning, NOT covered by -Wno-missing-field-initializers above.
+        # `__COUNTER__` lands in the -Wc2y-extensions bucket on clang in
+        # C++26 mode (it's a long-standing GCC/Clang extension; only
+        # ISO ratification status changed).
+        $<$<CXX_COMPILER_ID:Clang>:
+            -Wno-missing-designated-field-initializers
+            -Wno-c2y-extensions
         >
         $<$<CXX_COMPILER_ID:MSVC>:
             /utf-8

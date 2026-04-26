@@ -102,6 +102,12 @@ char* StylePool::append_color_sgr(char* p, const Color& c, bool is_fg) noexcept 
             p = write_uint_sgr(p, c.r()); *p++ = ';';
             p = write_uint_sgr(p, c.g()); *p++ = ';';
             return write_uint_sgr(p, c.b());
+        case Color::Kind::Default:
+            // SGR 39/49 — terminal-default fg/bg. Caller handles emitting
+            // the leading code; we just write the body.
+            *p++ = is_fg ? '3' : '4';
+            *p++ = '9';
+            return p;
     }
     __builtin_unreachable();
 }

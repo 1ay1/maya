@@ -2608,6 +2608,7 @@ static WordClass classify_word(std::string_view word, LangId lang) {
     case LangId::R:
     case LangId::CMake:
     case LangId::Markdown:
+    case LangId::Diff:
     case LangId::Unknown:
         break;
     }

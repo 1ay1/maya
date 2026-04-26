@@ -616,7 +616,7 @@ int main() {
                     int lo = t * chunk;
                     int hi = std::min(lo + chunk, canvas_h);
                     if (lo >= hi) break;
-                    threads.emplace_back([=, &canvas] { trace_rows(lo, hi); });
+                    threads.emplace_back([=] { trace_rows(lo, hi); });
                 }
                 // jthread destructor joins automatically
             }

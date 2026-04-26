@@ -50,9 +50,15 @@ struct DiffView {
         std::vector<Element> lines;
         lines.reserve(32);
 
-        // Parse diff lines
+        // Parse diff lines. `old_line` is tracked alongside `new_line` so
+        // future per-side gutter rendering can opt back in; both numbers
+        // already advance in lockstep with the hunk parser. Currently
+        // only `new_line` is rendered (single-column gutter), so the
+        // `[[maybe_unused]]` on `old_line` keeps the parser shape intact
+        // without a `-Wunused-but-set-variable` from clang.
         std::string_view sv = diff_text;
-        int old_line = 0, new_line = 0;
+        [[maybe_unused]] int old_line = 0;
+        int new_line = 0;
 
         while (!sv.empty()) {
             auto nl = sv.find('\n');

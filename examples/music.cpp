@@ -270,7 +270,6 @@ static maya::Element build_progress() {
 
 static maya::Element build_controls() {
     auto& trk = tracks[static_cast<size_t>(current_track)];
-    auto accent = maya::Color::rgb(trk.art_r2, trk.art_g2, trk.art_b2);
 
     auto ctrl = [&](const std::string& icon, bool active) {
         if (active)

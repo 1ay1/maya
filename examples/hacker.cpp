@@ -307,8 +307,6 @@ static void tick(float dt) {
     elapsed += dt;
     frame++;
 
-    float fdt = dt;
-
     // Update sparklines
     if (frame % 3 == 0) {
         inbound_spark[static_cast<size_t>(spark_idx)] = randf(0.1f, 1.0f);

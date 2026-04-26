@@ -611,7 +611,7 @@ static Col3 floor_texture(float wx, float wy) {
     // Per-tile identity
     float tid = hash(iu, iv);
     float tid2 = hash(iu + 37.f, iv + 91.f);
-    float tid3 = hash(iu + 73.f, iv + 17.f);
+    [[maybe_unused]] float tid3 = hash(iu + 73.f, iv + 17.f);
     float variation = (tid - 0.5f) * 0.03f;
 
     // Cool stone tones

@@ -147,7 +147,6 @@ public:
                     std::vector<Element> conn;
 
                     int lo = std::min(col, next_col);
-                    int hi = std::max(col, next_col);
 
                     for (int b = 0; b < lo; ++b)
                         conn.push_back(text("\xe2\x94\x82 ", Style{}.with_fg(branch_color(b))));

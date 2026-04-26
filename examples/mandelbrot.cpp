@@ -353,7 +353,7 @@ int main() {
                     int lo = t * chunk;
                     int hi = std::min(lo + chunk, canvas_h);
                     if (lo >= hi) break;
-                    threads.emplace_back([=, &canvas] { compute_rows(lo, hi); });
+                    threads.emplace_back([=] { compute_rows(lo, hi); });
                 }
             }
 

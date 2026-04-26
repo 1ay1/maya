@@ -82,16 +82,12 @@ public:
         if (changes_.empty())
             return text("No files changed", lbl);
 
-        // Summary counts
-        int created = 0, modified = 0, deleted = 0, renamed = 0;
+        // Summary counts. Only the totals are rendered; the per-kind
+        // counters were tracked for a future "by-kind summary" row that
+        // never landed. Dropped to silence -Wunused-but-set-variable
+        // on clang; restore alongside that feature when it ships.
         int total_add = 0, total_rm = 0;
         for (auto& c : changes_) {
-            switch (c.kind) {
-                case FileChangeKind::Created:  ++created; break;
-                case FileChangeKind::Modified: ++modified; break;
-                case FileChangeKind::Deleted:  ++deleted; break;
-                case FileChangeKind::Renamed:  ++renamed; break;
-            }
             total_add += c.lines_added;
             total_rm  += c.lines_removed;
         }

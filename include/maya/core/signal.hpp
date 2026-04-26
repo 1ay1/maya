@@ -18,9 +18,23 @@
 #include <utility>
 #include <vector>
 
-// C++23: move_only_function avoids the copy overhead of std::function.
-// Reactive callbacks are never copied — they are captured once and invoked
-// in-place. move_only_function is the correct abstraction here.
+// C++23 added std::move_only_function (P0288). It avoids the copy
+// overhead of std::function and accepts non-copyable callables — the
+// right abstraction for reactive callbacks, which are captured once
+// and invoked in place.
+//
+// libstdc++ 14+ and libc++ 19+ ship it. Older C++23 standard libraries
+// (Termux/Android NDK clang 21 still on libc++ 18, GCC 13) don't.
+// Feature-test it and fall back to std::function on those — copies of
+// the callable are unobservable here (we always invoke through the
+// node, never replicate it), and capturing non-copyable types into
+// reactive callbacks is rare enough that surfacing the requirement
+// as a compile-time error is acceptable.
+#if defined(__cpp_lib_move_only_function) && __cpp_lib_move_only_function >= 202110L
+#  define MAYA_DETAIL_CALLABLE ::std::move_only_function
+#else
+#  define MAYA_DETAIL_CALLABLE ::std::function
+#endif
 
 namespace maya {
 
@@ -282,11 +296,11 @@ public:
 template <typename T>
 class Computed {
     struct Node final : detail::ReactiveNode {
-        std::move_only_function<T()> compute_fn;
+        MAYA_DETAIL_CALLABLE<T()> compute_fn;
         T                            cached_value;
         bool                         dirty = true;
 
-        explicit Node(std::move_only_function<T()> fn)
+        explicit Node(MAYA_DETAIL_CALLABLE<T()> fn)
             : compute_fn(std::move(fn)), cached_value{} {}
 
         void mark_dirty() override {
@@ -387,10 +401,10 @@ auto computed(F&& fn) -> Computed<std::invoke_result_t<F>> {
 
 class Effect {
     struct Node final : detail::ReactiveNode {
-        std::move_only_function<void()> effect_fn;
+        MAYA_DETAIL_CALLABLE<void()> effect_fn;
         bool                            dirty = true;
 
-        explicit Node(std::move_only_function<void()> fn)
+        explicit Node(MAYA_DETAIL_CALLABLE<void()> fn)
             : effect_fn(std::move(fn)) {}
 
         ~Node() override {

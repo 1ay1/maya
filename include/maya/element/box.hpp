@@ -43,8 +43,14 @@ enum class Align : uint8_t {
     Start,
     Center,
     End,
-    Stretch,   ///< Fill the cross axis (default).
+    Stretch,   ///< Fill the cross axis (default for align_items).
     Baseline,
+    Auto,      ///< Only meaningful for align_self: inherit from parent's
+               ///< align_items. Matches CSS / Yoga semantics. Note: NOT
+               ///< the default for align_self — too disruptive across
+               ///< existing widgets, which were laid out against the
+               ///< Start-default behavior. Set explicitly when you want
+               ///< a child to inherit its parent's stretch directive.
 };
 
 /// Main-axis distribution (analogous to CSS justify-content).

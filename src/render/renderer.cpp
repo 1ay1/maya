@@ -40,6 +40,7 @@ constexpr layout::FlexWrap map_wrap(FlexWrap w) noexcept {
 
 constexpr layout::Align map_align(Align a) noexcept {
     switch (a) {
+        case Align::Auto:     return layout::Align::Auto;
         case Align::Start:    return layout::Align::Start;
         case Align::Center:   return layout::Align::Center;
         case Align::End:      return layout::Align::End;

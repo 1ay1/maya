@@ -18,6 +18,7 @@
 //       .in_flight = activity_indicator_element,    // optional
 //   }}.build();
 
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -26,14 +27,16 @@
 #include "../style/color.hpp"
 #include "../style/style.hpp"
 
+#include "activity_indicator.hpp"
+#include "turn.hpp"
+
 namespace maya {
 
 class Conversation {
 public:
     struct Config {
-        std::vector<Element> turns;
-        Element              in_flight;          // empty Element = no indicator
-        bool                 has_in_flight = false;
+        std::vector<Turn::Config>                turns;
+        std::optional<ActivityIndicator::Config> in_flight;
     };
 
     explicit Conversation(Config c) : cfg_(std::move(c)) {}
@@ -46,9 +49,10 @@ public:
         rows.reserve(cfg_.turns.size() * 2 + 1);
         for (std::size_t i = 0; i < cfg_.turns.size(); ++i) {
             if (i > 0) rows.push_back(divider_rule());
-            rows.push_back(cfg_.turns[i]);
+            rows.push_back(Turn{cfg_.turns[i]}.build());
         }
-        if (cfg_.has_in_flight) rows.push_back(cfg_.in_flight);
+        if (cfg_.in_flight)
+            rows.push_back(ActivityIndicator{*cfg_.in_flight}.build());
         return (v(rows) | padding(0, 1) | grow(1.0f)).build();
     }
 

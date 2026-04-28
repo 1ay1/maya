@@ -1,34 +1,24 @@
 #pragma once
 // maya::widget::Thread — top-level conversation viewport.
 //
-// Owns the empty-vs-populated branch and the in-flight indicator
-// decision:
-//
+// Owns the empty-vs-populated branch:
 //   - Empty thread → maya::WelcomeScreen (brand splash, starters, hints)
-//   - Non-empty    → maya::Conversation (list of turns + dim dividers)
-//                    plus an optional bottom maya::ActivityIndicator
-//                    when the model is active and the active turn has
-//                    no Timeline showing yet.
+//   - Non-empty    → maya::Conversation  (turns + dividers + in-flight)
 //
-// All caller-side data flows through nested widget Configs — no
-// Element construction in the host app:
+// Caller fills `welcome` when `is_empty == true`, `conversation` when
+// `is_empty == false`. The widget invokes the matching sub-widget.
 //
 //   maya::Thread{{
-//       .is_empty = m.d.current.messages.empty(),
-//       .welcome  = welcome_cfg(m),                  // used when is_empty
-//       .turns    = build_turn_configs(m),           // used when !is_empty
-//       .in_flight = optional<ActivityIndicator::Config>{...},
+//       .is_empty     = m.d.current.messages.empty(),
+//       .welcome      = welcome_screen_config(m),
+//       .conversation = conversation_config(m),
 //   }}.build();
 
-#include <optional>
 #include <utility>
-#include <vector>
 
 #include "../element/element.hpp"
 
-#include "activity_indicator.hpp"
 #include "conversation.hpp"
-#include "turn.hpp"
 #include "welcome_screen.hpp"
 
 namespace maya {
@@ -36,17 +26,9 @@ namespace maya {
 class Thread {
 public:
     struct Config {
-        // Empty-state branch
-        bool                    is_empty = false;
-        WelcomeScreen::Config   welcome;
-
-        // Non-empty branch — one Turn::Config per visible message.
-        std::vector<Turn::Config> turns;
-
-        // Optional bottom-of-thread "still working…" indicator. Use
-        // when the model is mid-stream and the active turn has no
-        // visible Timeline / spinner of its own (otherwise duplicate).
-        std::optional<ActivityIndicator::Config> in_flight;
+        bool                  is_empty = false;
+        WelcomeScreen::Config welcome;        // when is_empty
+        Conversation::Config  conversation;   // when !is_empty
     };
 
     explicit Thread(Config c) : cfg_(std::move(c)) {}
@@ -54,18 +36,9 @@ public:
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
-        if (cfg_.is_empty) return WelcomeScreen{cfg_.welcome}.build();
-
-        Conversation::Config conv;
-        conv.turns.reserve(cfg_.turns.size());
-        for (const auto& tc : cfg_.turns)
-            conv.turns.push_back(Turn{tc}.build());
-
-        if (cfg_.in_flight) {
-            conv.in_flight = ActivityIndicator{*cfg_.in_flight}.build();
-            conv.has_in_flight = true;
-        }
-        return Conversation{std::move(conv)}.build();
+        if (cfg_.is_empty)
+            return WelcomeScreen{cfg_.welcome}.build();
+        return Conversation{cfg_.conversation}.build();
     }
 
 private:

@@ -73,8 +73,22 @@ public:
     };
 
     /// Escape hatch: arbitrary async work. The function receives a dispatch
-    /// callback and calls it with a Msg when the result is ready.
+    /// callback and calls it with a Msg when the result is ready. Runs on
+    /// the runtime's shared, elastic-but-bounded BG worker pool — cheap,
+    /// good for short tasks (HTTP fetch, model list, browser launch).
     struct Task {
+        std::function<void(std::function<void(Msg)>)> run;
+    };
+
+    /// Like Task, but runs on its own dedicated, detached std::thread
+    /// instead of the shared BG pool. Use this for work that can wedge a
+    /// thread indefinitely on a blocking syscall (slow / dead filesystem
+    /// mounts, network freezes, sandboxed subprocesses). A wedged
+    /// IsolatedTask leaks one thread; a wedged Task on the shared pool
+    /// permanently consumes one of the pool's slots and starves
+    /// subsequent tasks. Trade: ~100-300 µs of std::thread construction
+    /// per call, paid only for genuinely hang-prone work.
+    struct IsolatedTask {
         std::function<void(std::function<void(Msg)>)> run;
     };
 
@@ -88,8 +102,9 @@ public:
         int rows;
     };
 
-    using Variant = std::variant<None, Quit, Batch, After,
-                                 SetTitle, WriteClipboard, Task, CommitScrollback>;
+    using Variant = std::variant<None, Quit, Batch, After, SetTitle,
+                                 WriteClipboard, Task, IsolatedTask,
+                                 CommitScrollback>;
     Variant inner;
 
     // -- Smart constructors ---------------------------------------------------
@@ -112,6 +127,15 @@ public:
     template <std::invocable<std::function<void(Msg)>> F>
     [[nodiscard]] static auto task(F&& f) -> Cmd {
         return {Task{std::forward<F>(f)}};
+    }
+
+    /// Run on a dedicated detached thread. See IsolatedTask for the
+    /// rationale — use this for hang-prone work (filesystem syscalls,
+    /// blocking subprocess waits, network calls without timeouts) so
+    /// a wedged worker can't starve the shared BG pool.
+    template <std::invocable<std::function<void(Msg)>> F>
+    [[nodiscard]] static auto task_isolated(F&& f) -> Cmd {
+        return {IsolatedTask{std::forward<F>(f)}};
     }
 
     [[nodiscard]] static auto commit_scrollback(int rows) -> Cmd {
@@ -172,6 +196,15 @@ public:
             },
             [&](const Task& t) -> Cmd<B> {
                 return Cmd<B>::task(
+                    [run = t.run, mapper = std::forward<F>(f)]
+                    (std::function<void(B)> dispatch) {
+                        run([&mapper, &dispatch](Msg m) {
+                            dispatch(mapper(std::move(m)));
+                        });
+                    });
+            },
+            [&](const IsolatedTask& t) -> Cmd<B> {
+                return Cmd<B>::task_isolated(
                     [run = t.run, mapper = std::forward<F>(f)]
                     (std::function<void(B)> dispatch) {
                         run([&mapper, &dispatch](Msg m) {

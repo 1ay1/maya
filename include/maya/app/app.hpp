@@ -543,6 +543,42 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
                 t.run([&](Msg m) { ctx.pending.push_back(std::move(m)); });
             }
         },
+        [&](const typename Cmd<Msg>::IsolatedTask& t) {
+            // Dedicated thread per call. The runtime never owns the thread —
+            // it's detached at construction so a wedged syscall (slow NFS,
+            // dead FUSE mount, hung subprocess) leaks one thread instead of
+            // permanently consuming a slot in the shared BG worker pool.
+            // The shared_ptr<BackgroundQueue> capture keeps the dispatch
+            // sink alive even if the runtime tears down before the thread
+            // finishes — Msg send becomes a no-op once the queue's wake fd
+            // is closed during shutdown, but the captured shared_ptr still
+            // holds the queue object so the lambda can run to completion.
+            //
+            // Without a bg_queue, we can't dispatch from another thread
+            // safely. Fall back to the inline path the regular Task uses.
+            if (ctx.bg_queue) {
+                auto q = ctx.bg_queue;
+                auto task_fn = t.run;
+                try {
+                    std::thread([q, task_fn = std::move(task_fn)] {
+                        task_fn([q](Msg m) { q->send(std::move(m)); });
+                    }).detach();
+                } catch (const std::system_error&) {
+                    // pthread_create returned EAGAIN (per-process or system
+                    // thread cap reached). Degrade gracefully: run the task
+                    // on the shared pool. Worst case the shared pool is also
+                    // saturated and the user sees the existing queueing
+                    // behaviour — strictly better than dropping the work.
+                    auto qq = ctx.bg_queue;
+                    auto fn = t.run;
+                    qq->post([qq, fn = std::move(fn)] {
+                        fn([qq](Msg m) { qq->send(std::move(m)); });
+                    });
+                }
+            } else {
+                t.run([&](Msg m) { ctx.pending.push_back(std::move(m)); });
+            }
+        },
         [&](const typename Cmd<Msg>::CommitScrollback& c) {
             ctx.rt.commit_inline_prefix(c.rows);
         },

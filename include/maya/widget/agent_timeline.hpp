@@ -1,5 +1,5 @@
 #pragma once
-// maya::widget::agent_timeline — bordered Actions panel for agent tool turns.
+// maya::widget::AgentTimeline — bordered Actions panel for agent tool turns.
 //
 // CI-pipeline-style log of tool events inside a single bordered card. Each
 // event has a tree glyph, status icon, name + detail line + duration, an
@@ -8,21 +8,24 @@
 // duration formatting, body stripe, footer. Callers supply pure data:
 // per-tool body element, category color, rich event status.
 //
-//   AgentTimeline tl;
-//   tl.set_title(" ACTIONS  ·  3/5  ·  Bash ");
-//   tl.set_border_color(Color::cyan());
-//   tl.set_frame(spinner_frame);
-//   tl.set_stats({{"INSPECT", 3, Color::blue()},
-//                 {"MUTATE",  2, Color::magenta()}});
-//   tl.add({.name="Bash", .detail="npm test  ·  exit 0",
-//           .elapsed_seconds=1.2f, .category_color=Color::green(),
-//           .status=AgentEventStatus::Done,
-//           .body=preview_block_element});
-//   tl.set_footer("\xe2\x9c\x93", "done", Color::green(), "3 actions   1.4s");
-//   auto ui = tl.build();
+//   maya::AgentTimeline{{
+//       .title        = " ACTIONS  ·  3/5  ·  Bash ",
+//       .border_color = Color::cyan(),
+//       .frame        = spinner_frame,
+//       .stats        = {{"INSPECT", 3, Color::blue()},
+//                        {"MUTATE",  2, Color::magenta()}},
+//       .events       = {{.name="Bash", .detail="npm test  ·  exit 0",
+//                         .elapsed_seconds=1.2f,
+//                         .category_color=Color::green(),
+//                         .status=AgentEventStatus::Done,
+//                         .body=preview_block_element}},
+//       .footer       = {{.glyph="\xe2\x9c\x93", .text="done",
+//                         .color=Color::green(), .summary="3 actions   1.4s"}},
+//   }}.build();
 
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -62,85 +65,65 @@ struct AgentTimelineStat {
     Color       color = Color::blue();
 };
 
+struct AgentTimelineFooter {
+    std::string glyph;
+    std::string text;
+    Color       color = Color::green();
+    std::string summary;
+};
+
 class AgentTimeline {
 public:
-    AgentTimeline() = default;
+    struct Config {
+        std::string                          title;
+        Color                                border_color = Color::bright_black();
+        int                                  frame        = 0;
+        std::vector<AgentTimelineStat>       stats;
+        std::vector<AgentTimelineEvent>      events;
+        std::optional<AgentTimelineFooter>   footer;
+    };
 
-    void set_title(std::string t)                          { title_ = std::move(t); }
-    void set_border_color(Color c)                         { border_color_ = c; }
-    void set_frame(int f)                                  { frame_ = f; }
-    void set_stats(std::vector<AgentTimelineStat> s)       { stats_ = std::move(s); }
-    void add(AgentTimelineEvent e)                         { events_.push_back(std::move(e)); }
-    void clear()                                           { events_.clear(); }
-
-    // Footer row shown at the bottom of the panel (typically when every event
-    // has reached a terminal status). Pass empty strings to leave it off.
-    void set_footer(std::string verb_glyph,
-                    std::string verb_text,
-                    Color       verb_color,
-                    std::string total_summary) {
-        footer_glyph_   = std::move(verb_glyph);
-        footer_text_    = std::move(verb_text);
-        footer_color_   = verb_color;
-        footer_summary_ = std::move(total_summary);
-        has_footer_     = !footer_glyph_.empty() || !footer_text_.empty();
-    }
+    explicit AgentTimeline(Config c) : cfg_(std::move(c)) {}
 
     operator Element() const { return build(); }
 
-    // Declarative composition. The outer chrome is a single pipe chain;
-    // dynamic content (stats, events, footer) flows through a flat
-    // vector<Element> that v(...) flattens into top-level rows.
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
         std::vector<Element> rows;
-        rows.reserve(events_.size() * 4 + 4);
+        rows.reserve(cfg_.events.size() * 4 + 4);
 
-        const bool show_stats = events_.size() > 1 && !stats_.empty();
+        const bool show_stats = cfg_.events.size() > 1 && !cfg_.stats.empty();
         if (show_stats) {
             rows.push_back(stats_row());
             rows.push_back(blank());
         }
-        for (std::size_t i = 0; i < events_.size(); ++i) append_event(rows, i);
-        if (has_footer_) {
+        for (std::size_t i = 0; i < cfg_.events.size(); ++i) append_event(rows, i);
+        if (cfg_.footer) {
             rows.push_back(blank());
-            rows.push_back(footer_row());
+            rows.push_back(footer_row(*cfg_.footer));
         }
 
         return (v(rows)
                 | border_<Round>
                 | pad<0, 1, 0, 1>
-                | bcolor(border_color_)
-                | btext(title_, BorderTextPos::Top, BorderTextAlign::Start)
+                | bcolor(cfg_.border_color)
+                | btext(cfg_.title, BorderTextPos::Top, BorderTextAlign::Start)
                ).build();
     }
 
 private:
-    std::vector<AgentTimelineEvent> events_;
-    std::vector<AgentTimelineStat>  stats_;
-    std::string title_;
-    Color       border_color_ = Color::bright_black();
-    int         frame_        = 0;
-    bool        has_footer_   = false;
-    std::string footer_glyph_;
-    std::string footer_text_;
-    std::string footer_summary_;
-    Color       footer_color_ = Color::green();
+    Config cfg_;
 
     // ── Stats row: small-caps category badges separated by mid-dots.
     [[nodiscard]] Element stats_row() const {
         using namespace dsl;
         const Color muted = Color::bright_black();
 
-        // Each badge is "LABEL N"; join with a mid-dot separator. Built as
-        // a flat vector so map() can project then a separator can be
-        // sprinkled between via h(); we hand-roll the sprinkle since map()
-        // emits one-element-per-input.
         std::vector<Element> parts;
-        parts.reserve(stats_.size() * 3);
-        for (std::size_t i = 0; i < stats_.size(); ++i) {
-            const auto& s = stats_[i];
+        parts.reserve(cfg_.stats.size() * 3);
+        for (std::size_t i = 0; i < cfg_.stats.size(); ++i) {
+            const auto& s = cfg_.stats[i];
             if (i > 0)
                 parts.push_back(text("  \xc2\xb7  ", Style{}.with_fg(muted)));
             parts.push_back(text(small_caps(s.label),
@@ -152,16 +135,15 @@ private:
     }
 
     // ── Footer row: `   ✓ DONE   3 actions   1.4s`.
-    [[nodiscard]] Element footer_row() const {
+    [[nodiscard]] static Element footer_row(const AgentTimelineFooter& f) {
         using namespace dsl;
         const Color muted = Color::bright_black();
         return h(
             text("   "),
-            text(footer_glyph_ + " ", Style{}.with_fg(footer_color_).with_bold()),
-            text(small_caps(footer_text_),
-                 Style{}.with_fg(footer_color_).with_bold()),
+            text(f.glyph + " ", Style{}.with_fg(f.color).with_bold()),
+            text(small_caps(f.text), Style{}.with_fg(f.color).with_bold()),
             text("   "),
-            text(footer_summary_, Style{}.with_fg(muted))
+            text(f.summary, Style{}.with_fg(muted))
         ).build();
     }
 
@@ -170,19 +152,18 @@ private:
     //    in order.
     void append_event(std::vector<Element>& rows, std::size_t i) const {
         using namespace dsl;
-        const auto& ev       = events_[i];
-        const bool is_last   = (i + 1 == events_.size());
+        const auto& ev       = cfg_.events[i];
+        const bool is_last   = (i + 1 == cfg_.events.size());
         const bool is_active = (ev.status == AgentEventStatus::Pending
                              || ev.status == AgentEventStatus::Running);
         const bool is_terminal = (ev.status == AgentEventStatus::Done
                                || ev.status == AgentEventStatus::Failed
                                || ev.status == AgentEventStatus::Rejected);
 
-        // ── Header row.
         rows.push_back((h(
-            text(tree_glyph(i, events_.size()), tree_style(ev.category_color, is_active)),
+            text(tree_glyph(i, cfg_.events.size()), tree_style(ev.category_color, is_active)),
             text(" "),
-            status_icon(ev.status, frame_),
+            status_icon(ev.status, cfg_.frame),
             text("  "),
             text(ev.name, name_style(ev.status, ev.category_color, is_active)),
             text("  "),
@@ -193,11 +174,6 @@ private:
                       Style{}.with_fg(duration_color(ev.elapsed_seconds))))
         ) | grow(1.0f)).build());
 
-        // ── Body rows under a `│` stripe. The body is whatever Element
-        //    the caller supplied; we walk its children (or the single
-        //    non-empty Text) so each line gets its own stripe — keeps
-        //    each rendered row at exactly 1 line of measured height,
-        //    which inline mode prefers.
         const Color cc        = event_connector_color(ev.status);
         const Style stripe_st = is_active ? Style{}.with_fg(cc)
                                           : Style{}.with_fg(cc).with_dim();
@@ -213,10 +189,8 @@ private:
             rows.push_back((h(body_rule, ev.body) | grow(1.0f)).build());
         }
 
-        // ── Inter-event connector — a short `│` in the next event's
-        //    color so the lane visually flows into the upcoming event.
         if (!is_last) {
-            const Color next_cc = event_connector_color(events_[i + 1].status);
+            const Color next_cc = event_connector_color(cfg_.events[i + 1].status);
             rows.push_back(h(
                 text("   "),
                 text("\xe2\x94\x82", Style{}.with_fg(next_cc).with_dim())
@@ -248,8 +222,6 @@ private:
 
     // ── Pure helpers (formatting / glyphs / colors) ────────────────────
 
-    // Status icon. Same braille spinner as Spinner<SpinnerStyle::Dots> for
-    // active events; static glyphs for terminal states.
     static dsl::RuntimeTextNode<std::string_view>
     status_icon(AgentEventStatus s, int frame) {
         static constexpr const char* spinner_frames[] = {
@@ -278,8 +250,6 @@ private:
                          Style{}.with_fg(Color::bright_black()));
     }
 
-    // Tree glyph: rounded + light box-drawing characters. ╭─ first, ├─ middle,
-    // ╰─ last, ── singleton. Drawn in the per-event category color.
     static std::string_view tree_glyph(std::size_t idx, std::size_t total) {
         if (total == 1)        return "\xe2\x94\x80\xe2\x94\x80";  // ──
         if (idx == 0)          return "\xe2\x95\xad\xe2\x94\x80";  // ╭─
@@ -287,7 +257,6 @@ private:
         return                        "\xe2\x94\x9c\xe2\x94\x80";  // ├─
     }
 
-    // ms / s / m+s — short, glanceable, no surprising precision changes.
     static std::string format_duration(float secs) {
         char buf[24];
         if      (secs < 1.0f)
@@ -303,8 +272,6 @@ private:
         return buf;
     }
 
-    // Color-code wall-clock duration. Green = snappy (<250ms),
-    // dim = normal (<2s), warn = slow (<15s), danger = stalling.
     static Color duration_color(float secs) {
         if (secs < 0.25f) return Color::green();
         if (secs < 2.0f)  return Color::bright_black();
@@ -312,7 +279,6 @@ private:
         return Color::red();
     }
 
-    // Body-stripe and inter-event connector color, derived from event status.
     static Color event_connector_color(AgentEventStatus s) {
         switch (s) {
             case AgentEventStatus::Failed:   return Color::red();
@@ -324,7 +290,6 @@ private:
         return Color::bright_black();
     }
 
-    // Letter-spaced uppercase ("D O N E") for section labels.
     static std::string small_caps(std::string_view s) {
         std::string out;
         out.reserve(s.size() * 2);

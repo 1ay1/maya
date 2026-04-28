@@ -1,0 +1,293 @@
+#pragma once
+// maya::widget::Composer — bordered input box reflecting agent state.
+//
+// State-driven input box: border / prompt / placeholder change with
+// activity (idle, awaiting permission, streaming, executing tool); the
+// hint row carries Send / newline / expand keys plus right-side ambient
+// indicators (queued count, word/token counters, profile chip). Wraps,
+// caps height, pins height during activity to prevent jitter, and adds
+// a bottom-right "N lines" caption when multi-line.
+//
+//   maya::Composer{{
+//       .text        = m.ui.composer.text,
+//       .cursor      = m.ui.composer.cursor,
+//       .state       = compute_state(m),
+//       .active_color = phase_color(m.s.phase),
+//       .queued      = m.ui.composer.queued.size(),
+//       .profile     = {.label = profile_label(m.d.profile),
+//                       .color = profile_color(m.d.profile)},
+//       .expanded    = m.ui.composer.expanded,
+//   }}.build();
+
+#include <algorithm>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "../dsl.hpp"
+#include "../element/element.hpp"
+#include "../style/border.hpp"
+#include "../style/color.hpp"
+#include "../style/style.hpp"
+
+namespace maya {
+
+class Composer {
+public:
+    // Drives border color, prompt boldness, placeholder text, and the
+    // height-pin behaviour that keeps the box from bobbing during
+    // streaming / tool execution.
+    enum class State : std::uint8_t {
+        Idle,                  // nothing happening — may or may not have text
+        AwaitingPermission,    // user must respond to a permission prompt above
+        Streaming,             // model is generating
+        ExecutingTool,         // a tool is running
+    };
+
+    struct ProfileChip {
+        std::string label;     // raw — widget small-caps's it
+        Color       color = Color::magenta();
+    };
+
+    struct Config {
+        std::string text;
+        int         cursor = 0;
+
+        State state         = State::Idle;
+        // The color used for the border / prompt while the agent is
+        // active (Streaming / ExecutingTool). Caller picks based on the
+        // current phase so the composer matches the status bar.
+        Color active_color  = Color::cyan();
+
+        // Brand palette
+        Color text_color      = Color::bright_white();
+        Color accent_color    = Color::magenta();   // "primed" border, idle + text
+        Color warn_color      = Color::yellow();    // awaiting-permission border
+        Color highlight_color = Color::cyan();      // queue-depth chip
+
+        // Right-side ambient indicators
+        std::size_t queued = 0;
+        ProfileChip profile;
+
+        // Layout
+        bool expanded = false;
+    };
+
+    explicit Composer(Config c) : cfg_(std::move(c)) {}
+
+    operator Element() const { return build(); }
+
+    [[nodiscard]] Element build() const {
+        using namespace dsl;
+
+        const Color muted = Color::bright_black();
+        const bool  has_text     = !cfg_.text.empty();
+        const bool  is_awaiting  = (cfg_.state == State::AwaitingPermission);
+        const bool  is_streaming = (cfg_.state == State::Streaming);
+        const bool  is_executing = (cfg_.state == State::ExecutingTool);
+        const bool  active       = is_streaming || is_executing;
+
+        // ── State-driven box / prompt color.
+        Color box_color =
+            is_awaiting ? cfg_.warn_color :
+            active      ? cfg_.active_color :
+            has_text    ? cfg_.accent_color :
+                          muted;
+
+        // ── Cursor injection.
+        std::string with_cursor = cfg_.text;
+        int cur = std::min<int>(cfg_.cursor, static_cast<int>(cfg_.text.size()));
+        with_cursor.insert(static_cast<std::size_t>(cur), "\xe2\x96\x8e");  // ▎
+
+        // ── Prompt chip + body rows.
+        Style prompt_style = (active || has_text || is_awaiting)
+            ? Style{}.with_fg(box_color).with_bold()
+            : Style{}.with_fg(box_color).with_dim();
+        auto prompt_chip  = text("\xe2\x9d\xaf ", prompt_style);              // ❯
+        auto continuation = text("\xe2\x94\x8a ", fg_dim_(muted));            // ┊
+        auto blank_pre    = text("  ");
+
+        std::vector<Element> body_rows;
+        if (!has_text) {
+            std::string placeholder =
+                is_awaiting  ? "awaiting permission \xe2\x80\x94 respond above\xe2\x80\xa6" :
+                is_executing ? "running tool \xe2\x80\x94 type to queue\xe2\x80\xa6"        :
+                is_streaming ? "streaming \xe2\x80\x94 type to queue\xe2\x80\xa6"           :
+                               "type a message\xe2\x80\xa6";
+            body_rows.push_back(h(
+                prompt_chip,
+                text("\xe2\x96\x8e", fg_dim_(muted)),                          // dim cursor
+                text(placeholder, Style{}.with_fg(muted).with_italic())
+            ).build());
+        } else {
+            auto lines = split_lines(with_cursor);
+            for (std::size_t i = 0; i < lines.size(); ++i) {
+                Element prefix = (i == 0) ? prompt_chip
+                                          : (lines.size() > 1 ? continuation : blank_pre);
+                body_rows.push_back(h(
+                    prefix,
+                    text(std::string{lines[i]}, Style{}.with_fg(cfg_.text_color))
+                ).build());
+            }
+        }
+
+        // ── Sizing: grow with content, but cap at 8 (or 16 expanded).
+        // Pin to min_rows during activity so layout reflows above don't
+        // bob the composer's top edge.
+        int row_count = static_cast<int>(body_rows.size());
+        int max_rows  = cfg_.expanded ? 16 : 8;
+        int min_rows  = 3;
+        int rows      = active ? min_rows
+                               : std::clamp(row_count, min_rows, max_rows);
+
+        auto inner = (v(std::move(body_rows)) | padding(0, 1) | height(rows)).build();
+
+        // ── Hint row: width-adaptive left, ambient right.
+        auto kbd = [tc = cfg_.text_color](const char* k) {
+            return text(k, Style{}.with_fg(tc).with_bold());
+        };
+        auto lbl = [muted](const char* l) { return text(l, fg_dim_(muted)); };
+        auto dot = [muted]() { return text("  \xc2\xb7  ", fg_dim_(muted)); };
+
+        auto hint_left_builder = [kbd, lbl, dot](int avail_width) {
+            std::vector<Element> out;
+            out.push_back(kbd("\xe2\x86\xb5"));           // ↵
+            out.push_back(lbl(" send"));
+            if (avail_width >= 60) {
+                out.push_back(dot());
+                out.push_back(kbd("\xe2\x87\xa7\xe2\x86\xb5 / \xe2\x8c\xa5\xe2\x86\xb5"));
+                out.push_back(lbl(" newline"));
+            }
+            if (avail_width >= 90) {
+                out.push_back(dot());
+                out.push_back(kbd("^E"));
+                out.push_back(lbl(" expand"));
+            }
+            return out;
+        };
+
+        std::vector<Element> hint_right;
+        if (cfg_.queued > 0) {
+            hint_right.push_back(text("\xe2\x9d\x9a ",
+                                      Style{}.with_fg(cfg_.highlight_color)));   // ❚
+            hint_right.push_back(text(
+                tabular_int_(static_cast<int>(cfg_.queued), 2) + " queued",
+                Style{}.with_fg(cfg_.highlight_color).with_bold()));
+            hint_right.push_back(dot());
+        }
+        if (has_text) {
+            int words = word_count(cfg_.text);
+            int toks  = approx_tokens(cfg_.text);
+            hint_right.push_back(text(
+                tabular_int_(words, 4) + " words", fg_dim_(muted)));
+            hint_right.push_back(text("  \xc2\xb7  ", fg_dim_(muted)));
+            hint_right.push_back(text(
+                "~" + tabular_int_(toks, 4) + " tok", fg_dim_(muted)));
+            hint_right.push_back(dot());
+        }
+        hint_right.push_back(text("\xe2\x96\x8e",
+                                  Style{}.with_fg(cfg_.profile.color)));         // ▎
+        hint_right.push_back(text(" "));
+        hint_right.push_back(text(
+            small_caps_(cfg_.profile.label),
+            Style{}.with_fg(cfg_.profile.color).with_bold()));
+
+        auto hint_element = Element{ComponentElement{
+            .render = [hint_left_builder, hint_right](int w, int /*h*/) -> Element {
+                auto left = hint_left_builder(w);
+                return h(
+                    h(left),
+                    spacer(),
+                    h(hint_right),
+                    text(" ")
+                ).build();
+            }
+        }};
+
+        // ── Box composition with optional bottom-right line-count caption.
+        int line_count = static_cast<int>(split_lines(cfg_.text).size());
+
+        auto box = v(inner, std::move(hint_element))
+                   | border(BorderStyle::Round)
+                   | bcolor(box_color);
+
+        if (line_count > 1) {
+            box = std::move(box) | btext(
+                " " + std::to_string(line_count) + " lines ",
+                BorderTextPos::Bottom, BorderTextAlign::End);
+        }
+        return (std::move(box) | grow(1.0f)).build();
+    }
+
+private:
+    Config cfg_;
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    static std::vector<std::string_view> split_lines(std::string_view s) {
+        std::vector<std::string_view> out;
+        std::size_t start = 0;
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == '\n') {
+                out.emplace_back(s.data() + start, i - start);
+                start = i + 1;
+            }
+        }
+        out.emplace_back(s.data() + start, s.size() - start);
+        return out;
+    }
+
+    static int word_count(std::string_view s) {
+        int n = 0;
+        bool in_word = false;
+        for (char c : s) {
+            bool ws = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+            if (!ws && !in_word) { ++n; in_word = true; }
+            else if (ws)         { in_word = false; }
+        }
+        return n;
+    }
+
+    // ~4 bytes/token Claude heuristic — close enough for live counter UI.
+    static int approx_tokens(std::string_view s) {
+        return static_cast<int>((s.size() + 3) / 4);
+    }
+
+    // Right-aligned fixed-width int — keeps surrounding chips pinned as
+    // counters tick.
+    static std::string tabular_int_(int n, int width) {
+        std::string s = std::to_string(n);
+        if (static_cast<int>(s.size()) >= width) return s;
+        return std::string(static_cast<std::size_t>(width - static_cast<int>(s.size())), ' ')
+             + s;
+    }
+
+    // Letter-spaced uppercase ("D O N E") for short labels.
+    static std::string small_caps_(std::string_view s) {
+        std::string out;
+        out.reserve(s.size() * 2);
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            char c = s[i];
+            out.push_back(static_cast<char>(
+                (c >= 'a' && c <= 'z') ? (c - 32) : c));
+            if (i + 1 < s.size()) out.push_back(' ');
+        }
+        return out;
+    }
+
+    // bright_black is already the "subdued secondary" tone — stacking
+    // SGR `dim` on top can collapse below readability on some themes,
+    // so suppress dim when the color is already bright_black.
+    static Style fg_dim_(Color c) {
+        const bool is_already_muted =
+            c.kind() == Color::Kind::Named
+            && c.index() == static_cast<uint8_t>(AnsiColor::BrightBlack);
+        return is_already_muted
+            ? Style{}.with_fg(c)
+            : Style{}.with_fg(c).with_dim();
+    }
+};
+
+} // namespace maya

@@ -186,20 +186,31 @@ void compose_inline_frame(const Canvas& canvas,
     // `term_h` rows of `content_rows` scrolls off as the panel grows.
     // Updating them anyway means rewriting from a low `first_changed`,
     // which makes the rewrite span exceed `term_h`; the cascade past
-    // the bottom commits a fresh snapshot of every just-written row to
-    // scrollback. Across many frames that fills scrollback with
-    // duplicated copies of the panel's top rows (the visible "stacked
-    // frames" symptom). Clamping the diff scan to rows that will
-    // remain on screen keeps the rewrite span ≤ term_h, so growth
-    // produces exactly one scrollback commit per row pushed off the
-    // top — no cascade, no duplication.
+    // the bottom commits a fresh snapshot of every just-written row
+    // to scrollback. Across many frames that fills scrollback with
+    // duplicated copies of the panel's top rows. Clamping the diff
+    // scan to rows that will remain on screen keeps the rewrite span
+    // ≤ term_h, so growth produces exactly one scrollback commit per
+    // row pushed off the top — no cascade, no duplication.
+    //
+    // The cost: rows in `[updatable_start, new_visible_start)` whose
+    // canvas content changed since they last got rewritten will
+    // commit their *stale* on-screen snapshot to scrollback when
+    // they scroll off. A "pre-flush every about-to-scroll row" pass
+    // sounds like the fix, but in practice it interacts badly with
+    // views whose row indices shift between frames (insertions in
+    // the middle of the body): the same logical content gets
+    // captured at multiple positions across frames, producing
+    // visibly duplicated rows in scrollback. Stale-but-stable beats
+    // duplicate-but-fresh.
     const int new_visible_start = std::max(0, content_rows - term_h);
     const int scan_start        = std::max(updatable_start, new_visible_start);
 
     // Locate the first row that actually changed within the on-screen
     // portion of the overlap. Rows in scrollback (y < updatable_start)
-    // can't be updated, and rows below new_visible_start are about to
-    // be in scrollback after this draw — skip both.
+    // can't be updated; rows below new_visible_start scroll off this
+    // frame and aren't worth rewriting (would only cascade into
+    // duplicate scrollback commits).
     int first_changed = common;
     if (prev_rows > 0 && static_cast<std::size_t>(prev_rows) * static_cast<std::size_t>(W)
                         <= state.prev_cells.size())
@@ -243,8 +254,9 @@ void compose_inline_frame(const Canvas& canvas,
                          content_rows);
         serialize(canvas, pool, out, content_rows);
     } else {
-        // Position the cursor at column 0 of `first_changed`. The cursor
-        // is currently at (prev_rows - 1, somewhere on that row).
+        // Position the cursor at column 0 of `first_changed`. The
+        // cursor is currently at (prev_rows - 1, somewhere on that
+        // row).
         const int cursor_row = prev_rows - 1;
         const int delta      = first_changed - cursor_row;
 

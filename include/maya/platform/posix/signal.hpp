@@ -30,13 +30,18 @@ namespace maya::platform::posix {
 
 namespace detail {
 
-inline int g_signal_write_fd = -1;
+// volatile sig_atomic_t is the only standard-blessed type for variables
+// touched by both a signal handler and the rest of the program. Plain
+// int loads are atomic on every supported target in practice, but this
+// is what the standard guarantees.
+inline volatile sig_atomic_t g_signal_write_fd = -1;
 
 inline void sigwinch_handler(int /*sig*/) {
     // Async-signal-safe: write(2) is safe. Ignore errors —
     // pipe full is harmless; the loop will see the resize anyway.
-    if (g_signal_write_fd >= 0) {
-        [[maybe_unused]] auto _ = ::write(g_signal_write_fd, "R", 1);
+    int fd = g_signal_write_fd;
+    if (fd >= 0) {
+        [[maybe_unused]] auto _ = ::write(fd, "R", 1);
     }
 }
 

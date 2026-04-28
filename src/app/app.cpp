@@ -68,41 +68,12 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     }
 
     // Create event source — multiplexes terminal input and resize signals.
+    // The wake fd/handle is registered later via rt.set_wake_fd() /
+    // set_wake_handle() once the BackgroundQueue exists in run<P>().
     auto sig_handle = resize_sig.native_handle();
     platform::NativeEventSource event_source(input_h, sig_handle);
 
     Runtime rt;
-
-    // Create wake mechanism for background task → UI thread signaling.
-#if MAYA_PLATFORM_WIN32
-    HANDLE wake_ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (wake_ev != nullptr) {
-        rt.wake_event_ = wake_ev;
-        event_source.set_wake_handle(wake_ev);
-    }
-#elif defined(__linux__)
-    int efd = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (efd >= 0) {
-        rt.wake_read_fd_ = efd;
-        rt.wake_write_fd_ = efd;
-        event_source.set_wake_fd(efd);
-    }
-#else
-    {
-        int pipefd[2];
-        if (::pipe(pipefd) == 0) {
-            ::fcntl(pipefd[0], F_SETFL,
-                    ::fcntl(pipefd[0], F_GETFL) | O_NONBLOCK);
-            ::fcntl(pipefd[1], F_SETFL,
-                    ::fcntl(pipefd[1], F_GETFL) | O_NONBLOCK);
-            ::fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
-            ::fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
-            rt.wake_read_fd_ = pipefd[0];
-            rt.wake_write_fd_ = pipefd[1];
-            event_source.set_wake_fd(pipefd[0]);
-        }
-    }
-#endif
 
     rt.alt_terminal_   = std::move(alt_term);
     rt.raw_terminal_   = std::move(raw_term);
@@ -357,16 +328,7 @@ auto Runtime::cleanup() -> Status {
 // Runtime move constructor
 // ============================================================================
 
-Runtime::~Runtime() {
-#if MAYA_PLATFORM_WIN32
-    if (wake_event_ != platform::invalid_handle)
-        ::CloseHandle(wake_event_);
-#else
-    if (wake_read_fd_ >= 0) ::close(wake_read_fd_);
-    if (wake_write_fd_ >= 0 && wake_write_fd_ != wake_read_fd_)
-        ::close(wake_write_fd_);
-#endif
-}
+Runtime::~Runtime() = default;
 
 Runtime::Runtime(Runtime&& o) noexcept
     : alt_terminal_(std::move(o.alt_terminal_))
@@ -389,26 +351,10 @@ Runtime::Runtime(Runtime&& o) noexcept
     , parser_(std::move(o.parser_))
     , running_(o.running_)
     , needs_clear_(o.needs_clear_)
-{
-#if MAYA_PLATFORM_WIN32
-    wake_event_ = std::exchange(o.wake_event_, platform::invalid_handle);
-#else
-    wake_read_fd_  = std::exchange(o.wake_read_fd_, -1);
-    wake_write_fd_ = std::exchange(o.wake_write_fd_, -1);
-#endif
-}
+{}
 
 Runtime& Runtime::operator=(Runtime&& o) noexcept {
     if (this != &o) {
-#if MAYA_PLATFORM_WIN32
-        if (wake_event_ != platform::invalid_handle)
-            ::CloseHandle(wake_event_);
-#else
-        if (wake_read_fd_ >= 0) ::close(wake_read_fd_);
-        if (wake_write_fd_ >= 0 && wake_write_fd_ != wake_read_fd_)
-            ::close(wake_write_fd_);
-#endif
-
         alt_terminal_      = std::move(o.alt_terminal_);
         raw_terminal_      = std::move(o.raw_terminal_);
         output_handle_     = std::exchange(o.output_handle_, platform::invalid_handle);
@@ -429,12 +375,6 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         parser_            = std::move(o.parser_);
         running_           = o.running_;
         needs_clear_       = o.needs_clear_;
-#if MAYA_PLATFORM_WIN32
-        wake_event_        = std::exchange(o.wake_event_, platform::invalid_handle);
-#else
-        wake_read_fd_      = std::exchange(o.wake_read_fd_, -1);
-        wake_write_fd_     = std::exchange(o.wake_write_fd_, -1);
-#endif
     }
     return *this;
 }

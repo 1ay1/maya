@@ -5,6 +5,15 @@
 // The read end is polled by PosixEventSource. This is the classic
 // self-pipe trick for integrating async signals into an event loop
 // without async-signal-safety violations.
+//
+// Lifetime model: the pipe + handler are a process-global singleton owned
+// by a std::shared_ptr.  install() returns a non-owning *handle* that
+// keeps the singleton alive through its embedded shared_ptr.  Multiple
+// concurrent installers (e.g. opening a Runtime, closing it, opening
+// another) all get a valid native_handle() pointing at the same pipe.
+// When the last handle drops, the pipe is closed and the handler is
+// uninstalled.  This eliminates the "second installer gets invalid fd"
+// hazard the previous design had.
 
 #if !MAYA_PLATFORM_POSIX
 #error "This header is for POSIX platforms only"
@@ -12,6 +21,8 @@
 
 #include <cerrno>
 #include <csignal>
+#include <memory>
+#include <mutex>
 #include <utility>
 
 #include <fcntl.h>
@@ -45,30 +56,77 @@ inline void sigwinch_handler(int /*sig*/) {
     }
 }
 
+// Refcounted pipe + handler bundle.  Constructed inside install() under a
+// mutex; destructed when the last shared_ptr referring to it drops.  The
+// destructor restores SIGWINCH to SIG_DFL *before* closing the fds and
+// before clearing g_signal_write_fd, so an in-flight handler invocation
+// either runs against a still-valid fd (write succeeds, harmless) or
+// short-circuits on the volatile sig_atomic_t guard (read sees -1, skips).
+struct ResizePipe {
+    int read_fd  = -1;
+    int write_fd = -1;
+
+    ResizePipe(int r, int w) noexcept : read_fd(r), write_fd(w) {}
+
+    ResizePipe(const ResizePipe&)            = delete;
+    ResizePipe& operator=(const ResizePipe&) = delete;
+
+    ~ResizePipe() noexcept {
+        // Order is load-bearing.  (1) un-install the handler so no NEW
+        // signal will run our function; pending signals delivered while
+        // the new disposition is being installed will see SIG_DFL
+        // (which for SIGWINCH is "ignore").  (2) clear the global fd
+        // so any handler that might still be mid-flight sees -1 and
+        // skips its write.  (3) close the fds — at this point no
+        // writer can still be live.
+        struct sigaction sa{};
+        sa.sa_handler = SIG_DFL;
+        ::sigaction(SIGWINCH, &sa, nullptr);
+
+        g_signal_write_fd = -1;
+
+        if (read_fd  >= 0) ::close(read_fd);
+        if (write_fd >= 0) ::close(write_fd);
+    }
+};
+
+// Singleton accessor.  install() locks the mutex, upgrades the weak_ptr
+// — if the singleton is alive, return the same shared_ptr; otherwise
+// allocate the pipe + register the handler and stash a weak_ptr.
+inline std::mutex&                  install_mutex() {
+    static std::mutex m;
+    return m;
+}
+inline std::weak_ptr<ResizePipe>&   install_singleton() {
+    static std::weak_ptr<ResizePipe> w;
+    return w;
+}
+
 } // namespace detail
 
 // ============================================================================
-// PosixResizeSignal — RAII SIGWINCH handler with self-pipe
+// PosixResizeSignal — RAII handle on the SIGWINCH self-pipe singleton
 // ============================================================================
 
 class PosixResizeSignal {
-    int read_fd_  = -1;
-    int write_fd_ = -1;
+    std::shared_ptr<detail::ResizePipe> pipe_;
 
     PosixResizeSignal() = default;
+    explicit PosixResizeSignal(std::shared_ptr<detail::ResizePipe> p) noexcept
+        : pipe_(std::move(p)) {}
 
 public:
     [[nodiscard]] static auto install() -> Result<PosixResizeSignal> {
-        // Already installed — reuse existing pipe.
-        if (detail::g_signal_write_fd >= 0) {
-            // Return a non-owning instance that won't cleanup.
-            // Only the first installer owns the pipe.
-            PosixResizeSignal s;
-            // Find the read fd from the write fd... we can't easily.
-            // So just return invalid — caller should check.
-            return ok(std::move(s));
+        std::lock_guard lk(detail::install_mutex());
+
+        // Singleton is alive — share the existing pipe.  Both installers
+        // see the same read_fd, the same handler, and a refcount that
+        // keeps the pipe alive until the last handle drops.
+        if (auto existing = detail::install_singleton().lock()) {
+            return ok(PosixResizeSignal{std::move(existing)});
         }
 
+        // No live singleton — allocate a fresh one.
         int fds[2];
         if (::pipe(fds) < 0)
             return err<PosixResizeSignal>(Error::from_errno("pipe"));
@@ -97,59 +155,32 @@ public:
             return err<PosixResizeSignal>(Error::from_errno("sigaction(SIGWINCH)"));
         }
 
-        PosixResizeSignal s;
-        s.read_fd_  = fds[0];
-        s.write_fd_ = fds[1];
-        return ok(std::move(s));
+        auto pipe = std::make_shared<detail::ResizePipe>(fds[0], fds[1]);
+        detail::install_singleton() = pipe;
+        return ok(PosixResizeSignal{std::move(pipe)});
     }
 
-    [[nodiscard]] bool pending() const { return read_fd_ >= 0; }
+    [[nodiscard]] bool pending() const noexcept {
+        return pipe_ && pipe_->read_fd >= 0;
+    }
 
-    void drain() {
-        if (read_fd_ < 0) return;
+    void drain() noexcept {
+        if (!pipe_ || pipe_->read_fd < 0) return;
         char buf[64];
-        while (::read(read_fd_, buf, sizeof(buf)) > 0) {}
+        while (::read(pipe_->read_fd, buf, sizeof(buf)) > 0) {}
     }
 
     [[nodiscard]] NativeHandle native_handle() const noexcept {
-        return read_fd_;
+        return pipe_ ? pipe_->read_fd : -1;
     }
 
-    // -- Move-only ------------------------------------------------------------
+    // -- Move-only (shared_ptr handles refcount) ------------------------------
 
-    PosixResizeSignal(PosixResizeSignal&& o) noexcept
-        : read_fd_(std::exchange(o.read_fd_, -1))
-        , write_fd_(std::exchange(o.write_fd_, -1))
-    {}
-
-    PosixResizeSignal& operator=(PosixResizeSignal&& o) noexcept {
-        if (this != &o) {
-            cleanup();
-            read_fd_  = std::exchange(o.read_fd_, -1);
-            write_fd_ = std::exchange(o.write_fd_, -1);
-        }
-        return *this;
-    }
-
-    PosixResizeSignal(const PosixResizeSignal&) = delete;
+    PosixResizeSignal(PosixResizeSignal&&)                 noexcept = default;
+    PosixResizeSignal& operator=(PosixResizeSignal&&)      noexcept = default;
+    PosixResizeSignal(const PosixResizeSignal&)            = delete;
     PosixResizeSignal& operator=(const PosixResizeSignal&) = delete;
-
-    ~PosixResizeSignal() { cleanup(); }
-
-private:
-    void cleanup() noexcept {
-        if (read_fd_ >= 0) {
-            struct sigaction sa{};
-            sa.sa_handler = SIG_DFL;
-            ::sigaction(SIGWINCH, &sa, nullptr);
-
-            ::close(read_fd_);
-            ::close(write_fd_);
-            detail::g_signal_write_fd = -1;
-            read_fd_  = -1;
-            write_fd_ = -1;
-        }
-    }
+    ~PosixResizeSignal()                                   = default;
 };
 
 } // namespace maya::platform::posix

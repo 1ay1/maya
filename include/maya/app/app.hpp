@@ -234,6 +234,51 @@ concept Program = requires {
 
 namespace detail {
 
+// ============================================================================
+// Render-coherence type-state (parameterized double-buffer)
+// ============================================================================
+// The terminal/canvas relationship has two genuine states, encoded as the
+// alternatives of a std::variant.  This is the parameterized-canvas form:
+// the *only* path that carries the canonical front buffer is the Synced
+// alternative — Divergent literally has no Canvas member.  An incremental
+// diff therefore cannot be issued from a Divergent state because the front
+// buffer required by the diff routine is physically inaccessible.
+//
+//   FullscreenSynced { Canvas front; }
+//       Terminal pixels are known to match `front`.  The next render can
+//       diff (canvas_ vs front) and emit only the changed cells.  Producer:
+//       a successful end-to-end frame write.
+//
+//   InlineSynced { InlineFrameState state; }
+//       Inline analogue: `state.prev_cells/prev_rows` accurately model
+//       the current scrollback tail.  compose_inline_frame() can do its
+//       row-diff against this state.
+//
+//   Divergent {}
+//       Terminal pixels are unknown — write failed mid-frame, resize
+//       happened, or this is the first render.  The only legal next move
+//       is a full serialize / clear-and-paint, which (on success) returns
+//       to Synced.
+//
+// std::visit on either variant gives compile-time exhaustiveness: adding
+// a new state forces every dispatcher to handle it or fail to build.
+namespace coherent {
+
+struct FullscreenSynced {
+    Canvas front;   // canonical "what the terminal currently displays"
+};
+
+struct InlineSynced {
+    InlineFrameState state;
+};
+
+struct Divergent {};
+
+using FullscreenState = std::variant<FullscreenSynced, Divergent>;
+using InlineState     = std::variant<InlineSynced,     Divergent>;
+
+} // namespace coherent
+
 class Runtime {
 public:
     static auto create(RunConfig cfg) -> Result<Runtime>;
@@ -242,7 +287,7 @@ public:
     [[nodiscard]] bool is_running() const noexcept { return running_; }
     [[nodiscard]] Size size() const noexcept { return size_; }
     [[nodiscard]] const Theme& theme() const noexcept { return theme_; }
-    [[nodiscard]] bool is_inline() const noexcept { return raw_terminal_.has_value(); }
+    [[nodiscard]] bool is_inline() const noexcept { return inline_terminal_.has_value(); }
 
     // Poll the event source for ready flags.
     struct PollResult { bool resize = false; bool input = false; bool wake = false; };
@@ -267,17 +312,25 @@ public:
 
     // Row count of the last composed inline frame (0 in fullscreen mode
     // or before the first render).  Callers can use this as a cheap proxy
-    // for tree height when deciding to virtualize.
+    // for tree height when deciding to virtualize.  Returns 0 in the
+    // Divergent state (the prev_rows is part of InlineFrameState which
+    // only exists inside InlineSynced — by construction).
     [[nodiscard]] int inline_content_rows() const noexcept {
-        return inline_state_.prev_rows;
+        if (auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_))
+            return s->state.prev_rows;
+        return 0;
     }
 
     // Mark the top `rows` rows of the current prev frame as committed to
     // scrollback so the next frame can render a shorter tree without the
     // renderer interpreting it as "content removed from the bottom".  No
-    // effect in fullscreen mode.
+    // effect in fullscreen mode or when render coherence is Divergent
+    // (there is no prev-frame state to commit against — the next render
+    // will be a full repaint anyway).
     void commit_inline_prefix(int rows) noexcept {
-        if (is_inline()) inline_state_.commit_prefix(rows);
+        if (!is_inline()) return;
+        if (auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_))
+            s->state.commit_prefix(rows);
     }
 
     // Final cleanup (show cursor, reset, newline).
@@ -294,8 +347,15 @@ private:
     Runtime() = default;
 
     // -- Terminal ownership ---------------------------------------------------
-    std::optional<Terminal<AltScreen>> alt_terminal_;
-    std::optional<Terminal<Raw>>       raw_terminal_;
+    // Exactly one of these is engaged for the lifetime of the runtime.
+    // Both states own their cleanup in their destructor: ~Terminal<AltScreen>
+    // leaves the alt screen + restores keyboard/mouse state, and
+    // ~Terminal<Inline> reverses the per-feature opt-ins (KKP,
+    // modifyOtherKeys, bracketed paste, cursor) before disabling raw mode.
+    // An exception escaping run<P>() therefore restores the terminal as
+    // cleanly as a graceful exit — the type system enforces it.
+    std::optional<Terminal<AltScreen>>  alt_terminal_;
+    std::optional<Terminal<InlineMode>> inline_terminal_;
     platform::NativeHandle output_handle_ = platform::invalid_handle;
     platform::NativeHandle input_handle_  = platform::invalid_handle;
 
@@ -304,13 +364,29 @@ private:
     std::optional<platform::NativeEventSource>  event_source_;
 
     // -- Rendering pipeline ---------------------------------------------------
-    std::unique_ptr<Writer> writer_;
-    StylePool               pool_;
-    Canvas                  canvas_;
-    Canvas                  front_;
-    std::string             out_;
-    InlineFrameState        inline_state_;
+    // canvas_ is the back buffer that every render paints into.  The
+    // *front* canvas (fullscreen) and prev-frame state (inline) live
+    // exclusively inside the corresponding `*Synced` alternative of the
+    // coherence variants — they don't exist as bare members because
+    // they're meaningless in the Divergent state.  This is the encoding
+    // that makes "diff after a failed write" structurally inexpressible.
+    std::unique_ptr<Writer>         writer_;
+    StylePool                       pool_;
+    Canvas                          canvas_;
+    std::string                     out_;
     std::vector<layout::LayoutNode> layout_nodes_;
+    // Initial state matters: in inline mode, Divergent means "previous
+    // content from us is on the terminal, must erase before re-painting"
+    // — but on the very first frame nothing of ours has been drawn, so
+    // the terminal IS the user's shell.  Defaulting to Divergent would
+    // emit \x1b[2J\x1b[3J\x1b[H and erase their scrollback.  Defaulting
+    // to InlineSynced{} (empty InlineFrameState) means "we know what
+    // we've drawn: nothing", so compose_inline_frame paints from the
+    // cursor downward without disturbing what's above.  Fullscreen has
+    // no equivalent concern because alt-screen entry already cleared
+    // the buffer — Divergent's "home + serialize" path is benign there.
+    coherent::FullscreenState       fs_coherence_ = coherent::Divergent{};
+    coherent::InlineState           in_coherence_ = coherent::InlineSynced{};
 
     // -- Configuration --------------------------------------------------------
     Theme         theme_              = theme::dark;
@@ -336,9 +412,8 @@ public:
 
 private:
     // -- State ----------------------------------------------------------------
-    InputParser  parser_;
-    bool         running_      = true;
-    bool         needs_clear_  = false;
+    InputParser parser_;
+    bool        running_ = true;
 };
 
 } // namespace detail

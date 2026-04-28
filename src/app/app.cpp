@@ -36,35 +36,20 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     // Install resize signal handler.
     MAYA_TRY_DECL(auto resize_sig, platform::NativeResizeSignal::install());
 
-    // Fullscreen enters alt screen (consumes Raw terminal).
-    // Inline stays in raw mode.
-    std::optional<Terminal<AltScreen>> alt_term;
-    std::optional<Terminal<Raw>>       raw_term;
+    // Both Fullscreen and Inline transitions consume the Raw terminal and
+    // return a new type-state whose destructor reverses the opt-ins.  This
+    // is the entire fault-tolerance story for terminal cleanup — no manual
+    // cleanup() function can be forgotten because the type's destructor
+    // runs on every exit path, including stack unwinding from exceptions.
+    std::optional<Terminal<AltScreen>>  alt_term;
+    std::optional<Terminal<InlineMode>> inline_term;
 
     if (cfg.mode == Mode::Fullscreen) {
         MAYA_TRY_DECL(auto alt, std::move(raw).enter_alt_screen());
         alt_term = std::move(alt);
     } else {
-        // Inline mode: enable the per-feature mode bytes that alt-screen
-        // entry would otherwise have done for us. Bracketed paste lets
-        // us distinguish a paste from typed input. KKP push + xterm
-        // modifyOtherKeys=2 are *both* sent so we get keyboard
-        // disambiguation (Shift+Enter, Ctrl+Enter, etc) on the widest
-        // possible terminal set: KKP covers Kitty/Foot/WezTerm/Ghostty/
-        // iTerm 3.5+/Konsole 22.04+/recent xterm; modifyOtherKeys=2
-        // covers VTE-based terminals (GNOME Terminal, Tilix) and stock
-        // xterm. Terminals that recognize neither silently ignore both.
-        //
-        // hide_cursor: after each frame the terminal cursor naturally
-        // sits at the end of the last rendered row (e.g. next to the
-        // shortcut bar) — visually distracting, and we already paint
-        // our own caret glyph inside the composer. Hide the real one;
-        // cleanup() restores it on exit.
-        (void)raw.write(ansi::enable_bracketed_paste);
-        (void)raw.write(ansi::kkp_push);
-        (void)raw.write(ansi::modify_other_keys_on);
-        (void)raw.write(ansi::hide_cursor);
-        raw_term = std::move(raw);
+        MAYA_TRY_DECL(auto inl, std::move(raw).enable_inline_mode());
+        inline_term = std::move(inl);
     }
 
     // Create event source — multiplexes terminal input and resize signals.
@@ -75,14 +60,14 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
 
     Runtime rt;
 
-    rt.alt_terminal_   = std::move(alt_term);
-    rt.raw_terminal_   = std::move(raw_term);
-    rt.output_handle_  = output_h;
-    rt.input_handle_   = input_h;
-    rt.resize_signal_  = std::move(resize_sig);
-    rt.event_source_   = std::move(event_source);
-    rt.writer_         = std::make_unique<Writer>(output_h);
-    rt.theme_          = cfg.theme;
+    rt.alt_terminal_    = std::move(alt_term);
+    rt.inline_terminal_ = std::move(inline_term);
+    rt.output_handle_   = output_h;
+    rt.input_handle_    = input_h;
+    rt.resize_signal_   = std::move(resize_sig);
+    rt.event_source_    = std::move(event_source);
+    rt.writer_          = std::make_unique<Writer>(output_h);
+    rt.theme_           = cfg.theme;
 
     // Set terminal title if provided.
     if (!cfg.title.empty()) {
@@ -93,8 +78,8 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     // Query initial terminal size.
     if (rt.alt_terminal_) {
         rt.size_ = rt.alt_terminal_->size();
-    } else if (rt.raw_terminal_) {
-        rt.size_ = rt.raw_terminal_->size();
+    } else if (rt.inline_terminal_) {
+        rt.size_ = rt.inline_terminal_->size();
     }
 
     rt.render_ctx_.width      = rt.size_.width.raw();
@@ -128,8 +113,8 @@ void Runtime::handle_resize() {
     Size new_size;
     if (alt_terminal_) {
         new_size = alt_terminal_->size();
-    } else if (raw_terminal_) {
-        new_size = raw_terminal_->size();
+    } else if (inline_terminal_) {
+        new_size = inline_terminal_->size();
     } else {
         return;
     }
@@ -140,7 +125,13 @@ void Runtime::handle_resize() {
         render_ctx_.width      = size_.width.raw();
         render_ctx_.height     = size_.height.raw();
         render_ctx_.generation = resize_generation_;
-        needs_clear_ = true;
+        // A resize invalidates both the prev-frame cell grid (fullscreen
+        // diff) and the row-diff state (inline) — collapse both coherence
+        // variants to Divergent so the next render does a full repaint.
+        // Dropping the FullscreenSynced/InlineSynced alternative releases
+        // the front canvas / prev-frame InlineFrameState back to the heap.
+        fs_coherence_ = coherent::Divergent{};
+        in_coherence_ = coherent::Divergent{};
     }
 }
 
@@ -157,8 +148,8 @@ auto Runtime::read_events() -> Result<std::vector<Event>> {
             for (auto& event : parser_.feed(data))
                 result.push_back(std::move(event));
         }
-    } else if (raw_terminal_) {
-        MAYA_TRY_DECL(auto data, raw_terminal_->read_raw());
+    } else if (inline_terminal_) {
+        MAYA_TRY_DECL(auto data, inline_terminal_->read_raw());
         if (!data.empty()) {
             for (auto& event : parser_.feed(data))
                 result.push_back(std::move(event));
@@ -196,9 +187,12 @@ auto Runtime::render(const Element& root) -> Status {
     RenderContextGuard ctx_guard(render_ctx_);
 
     if (is_inline()) {
-        // ── Inline path: compose_inline_frame (row-diff renderer) ──────
-        // Start with a reasonable canvas height; grow dynamically if
-        // content exceeds it (never shrink — avoids realloc churn).
+        // ── Inline path: dispatch on coherence variant ──────────────────
+        // std::visit selects the rendering function whose precondition
+        // matches the current state.  The InlineFrameState (prev_cells +
+        // prev_rows) lives only inside InlineSynced — compose_inline_frame
+        // can ONLY be called from the Synced lambda where it has a state
+        // to diff against.
         constexpr int kMinCanvasHeight = 500;
 
         if (canvas_.width() != w || canvas_.height() < kMinCanvasHeight) {
@@ -206,94 +200,157 @@ auto Runtime::render(const Element& root) -> Status {
             canvas_.resize(w, std::max(kMinCanvasHeight, canvas_.height()));
         }
 
-        if (needs_clear_) {
-            if (inline_state_.prev_rows > 0) {
-                std::string erase;
-                erase += "\x1b[2J\x1b[3J\x1b[H";
-                (void)writer_->write_raw(erase);
-            }
-            inline_state_.reset();
-            needs_clear_ = false;
-        }
-
-        if (inline_state_.prev_rows > 0) {
-            canvas_.clear_rows(inline_state_.prev_rows + 4);
-        } else {
-            canvas_.clear();
-        }
-        render_tree(root, canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/true);
-
-        int ch = content_height(canvas_);
-
-        // Content filled the canvas — layout was likely clipped at the
-        // bottom.  Read the unconstrained height from the layout pass,
-        // grow the canvas, and re-render so nothing is lost.
-        if (ch >= canvas_.height() && !layout_nodes_.empty()) {
-            int needed = layout_nodes_[0].computed.size.height.raw();
-            if (needed > canvas_.height()) {
-                canvas_.resize(w, needed + 8);
+        Status write_status = ok();
+        in_coherence_ = std::visit(overload{
+            // Divergent → Synced: erase the previously-rendered frame,
+            // start a brand-new InlineFrameState, paint, write.
+            [&](coherent::Divergent) -> coherent::InlineState {
+                // No prev_rows to track from a Divergent state.  The
+                // erase write only matters when there's something on
+                // screen — but we don't know what's on screen, so play
+                // safe and emit it once.  Failure stays Divergent.
+                if (auto wr = writer_->write_raw("\x1b[2J\x1b[3J\x1b[H"); !wr) {
+                    write_status = wr;
+                    return coherent::Divergent{};
+                }
+                InlineFrameState fresh;
                 canvas_.clear();
                 render_tree(root, canvas_, pool_, theme_, layout_nodes_,
                             /*auto_height=*/true);
-                ch = content_height(canvas_);
+                int ch = content_height(canvas_);
+                if (ch >= canvas_.height() && !layout_nodes_.empty()) {
+                    int needed = layout_nodes_[0].computed.size.height.raw();
+                    if (needed > canvas_.height()) {
+                        canvas_.resize(w, needed + 8);
+                        canvas_.clear();
+                        render_tree(root, canvas_, pool_, theme_, layout_nodes_,
+                                    /*auto_height=*/true);
+                        ch = content_height(canvas_);
+                    }
+                }
+                if (ch <= 0) return coherent::InlineSynced{std::move(fresh)};
+
+                const int term_h = std::max(1, size_.height.raw());
+                out_.clear();
+                compose_inline_frame(canvas_, ch, term_h, pool_, fresh, out_);
+                if (out_.empty()) return coherent::InlineSynced{std::move(fresh)};
+
+                if (auto wr = writer_->write_raw(out_); !wr) {
+                    write_status = wr;
+                    return coherent::Divergent{};   // back to unknown pixels
+                }
+                return coherent::InlineSynced{std::move(fresh)};
+            },
+
+            // Synced → Synced (success) or Synced → Divergent (write fail):
+            // the InlineFrameState is owned here by `s.state`, so the
+            // row-diff has access to its own canonical record.
+            [&](coherent::InlineSynced& s) -> coherent::InlineState {
+                if (s.state.prev_rows > 0) {
+                    canvas_.clear_rows(s.state.prev_rows + 4);
+                } else {
+                    canvas_.clear();
+                }
+                render_tree(root, canvas_, pool_, theme_, layout_nodes_,
+                            /*auto_height=*/true);
+                int ch = content_height(canvas_);
+                if (ch >= canvas_.height() && !layout_nodes_.empty()) {
+                    int needed = layout_nodes_[0].computed.size.height.raw();
+                    if (needed > canvas_.height()) {
+                        canvas_.resize(w, needed + 8);
+                        canvas_.clear();
+                        render_tree(root, canvas_, pool_, theme_, layout_nodes_,
+                                    /*auto_height=*/true);
+                        ch = content_height(canvas_);
+                    }
+                }
+                if (ch <= 0) {
+                    s.state.prev_rows = 0;
+                    return coherent::InlineSynced{std::move(s.state)};
+                }
+
+                const int term_h = std::max(1, size_.height.raw());
+                out_.clear();
+                compose_inline_frame(canvas_, ch, term_h, pool_, s.state, out_);
+                if (out_.empty()) {
+                    return coherent::InlineSynced{std::move(s.state)};
+                }
+
+                if (auto wr = writer_->write_raw(out_); !wr) {
+                    write_status = wr;
+                    return coherent::Divergent{};   // drop the stale state
+                }
+                return coherent::InlineSynced{std::move(s.state)};
+            },
+        }, in_coherence_);
+        return write_status;
+    }
+
+    // ── Fullscreen path: dispatch on coherence variant ──────────────────
+    // The front canvas lives only inside FullscreenSynced.  The diff
+    // pipeline can only be invoked from inside that lambda — the
+    // serialize path is the sole option for Divergent.  std::visit
+    // statically rejects any future state we forget to handle.
+    const int h = size_.height.raw();
+    if (h <= 0) return ok();
+
+    if (canvas_.width() != w || canvas_.height() != h) {
+        canvas_.set_style_pool(&pool_);
+        canvas_.resize(w, h);
+        // The front (if any) was sized for the old terminal — drop it.
+        if (std::holds_alternative<coherent::FullscreenSynced>(fs_coherence_))
+            fs_coherence_ = coherent::Divergent{};
+    }
+
+    Status write_status = ok();
+    fs_coherence_ = std::visit(overload{
+        // Synced → Synced (success) or Synced → Divergent (write fail).
+        [&](coherent::FullscreenSynced& s) -> coherent::FullscreenState {
+            out_.clear();
+            auto opened = RenderPipeline<stage::Idle>::start(canvas_, pool_, theme_, out_)
+                .clear()
+                .paint(root, layout_nodes_)
+                .open_frame();
+            std::move(opened).write_diff(s.front).close_frame();
+            if (auto wr = writer_->write_raw(out_); !wr) {
+                write_status = wr;
+                return coherent::Divergent{};       // drop the stale front
             }
-        }
+            // Front ↔ back swap.  The just-written canvas content is now
+            // the canonical front; the old front becomes the recyclable
+            // back buffer for the next paint.
+            std::swap(s.front, canvas_);
+            canvas_.reset_damage();
+            return coherent::FullscreenSynced{std::move(s.front)};
+        },
 
-        if (ch <= 0) {
-            inline_state_.prev_rows = 0;
-            return ok();
-        }
-
-        const int term_h = std::max(1, size_.height.raw());
-        out_.clear();
-        compose_inline_frame(canvas_, ch, term_h, pool_, inline_state_, out_);
-        if (out_.empty()) return ok();
-
-        auto write_result = writer_->write_raw(out_);
-        if (!write_result) {
-            inline_state_.reset();
-            return write_result;
-        }
-    } else {
-        // ── Fullscreen path: RenderPipeline type-state machine ─────────
-        const int h = size_.height.raw();
-        if (h <= 0) return ok();
-
-        if (canvas_.width() != w || canvas_.height() != h) {
-            canvas_.set_style_pool(&pool_);
-            canvas_.resize(w, h);
-            front_.set_style_pool(&pool_);
-            front_.resize(w, h);
-            front_.mark_all_damaged();
-            needs_clear_ = true;
-        }
-
-        out_.clear();
-
-        // RenderPipeline: Idle → Cleared → Painted → Opened
-        auto opened = RenderPipeline<stage::Idle>::start(canvas_, pool_, theme_, out_)
-            .clear()
-            .paint(root, layout_nodes_)
-            .open_frame();
-
-        // Opened → write_diff → close_frame → Closed
-        if (needs_clear_) {
-            // Home cursor and overwrite every row — no \x1b[2J which causes
-            // a visible flash even inside sync frames. serialize() appends
-            // \x1b[K per row to clear any stale trailing content.
+        // Divergent → Synced (success) or Divergent → Divergent (write fail).
+        [&](coherent::Divergent) -> coherent::FullscreenState {
+            out_.clear();
+            auto opened = RenderPipeline<stage::Idle>::start(canvas_, pool_, theme_, out_)
+                .clear()
+                .paint(root, layout_nodes_)
+                .open_frame();
+            // Home + serialize every row (no \x1b[2J — flashes inside DEC
+            // sync). serialize() appends \x1b[K per row to wipe stale
+            // trailing content.
             out_ += "\x1b[H";
             serialize(canvas_, pool_, out_);
             std::move(opened).close_frame();
-            needs_clear_ = false;
-        } else {
-            std::move(opened).write_diff(front_).close_frame();
-        }
-
-        MAYA_TRY_VOID(writer_->write_raw(out_));
-        std::swap(front_, canvas_);
-        canvas_.reset_damage();
-    }
-    return ok();
+            if (auto wr = writer_->write_raw(out_); !wr) {
+                write_status = wr;
+                return coherent::Divergent{};
+            }
+            // canvas_ now mirrors what's on the terminal — promote it to
+            // the new front.  Allocate a fresh back of matching size for
+            // the next paint cycle.
+            Canvas new_back(canvas_.width(), canvas_.height(), &pool_);
+            Canvas new_front = std::exchange(canvas_, std::move(new_back));
+            canvas_.reset_damage();
+            return coherent::FullscreenSynced{std::move(new_front)};
+        },
+    }, fs_coherence_);
+    return write_status;
 }
 
 // ============================================================================
@@ -310,17 +367,12 @@ void Runtime::set_title(std::string_view title) {
 // ============================================================================
 
 auto Runtime::cleanup() -> Status {
-    if (is_inline()) {
-        // Reverse the inline-mode setup. Disable both keyboard-protocol
-        // extensions so the terminal's stack returns to its prior state
-        // before we relinquish raw mode — a misbehaving shell could
-        // otherwise see CSI-u or CSI 27;… sequences it can't decode.
-        auto cleanup = std::format("{}{}{}{}{}\r\n",
-            ansi::modify_other_keys_off, ansi::kkp_pop,
-            ansi::disable_bracketed_paste, ansi::show_cursor,
-            ansi::reset);
-        return writer_->write_raw(cleanup);
-    }
+    // No-op by design.  Both terminal states (Terminal<AltScreen>,
+    // Terminal<Inline>) reverse their own opt-ins in their destructors,
+    // so cleanup is structurally guaranteed by the type system — there
+    // is no path where ~Runtime runs without the terminal being
+    // restored.  This method is kept for ABI/API stability with
+    // pre-type-state callers that still invoke (void)rt.cleanup().
     return ok();
 }
 
@@ -332,7 +384,7 @@ Runtime::~Runtime() = default;
 
 Runtime::Runtime(Runtime&& o) noexcept
     : alt_terminal_(std::move(o.alt_terminal_))
-    , raw_terminal_(std::move(o.raw_terminal_))
+    , inline_terminal_(std::move(o.inline_terminal_))
     , output_handle_(std::exchange(o.output_handle_, platform::invalid_handle))
     , input_handle_(std::exchange(o.input_handle_, platform::invalid_handle))
     , resize_signal_(std::move(o.resize_signal_))
@@ -340,23 +392,22 @@ Runtime::Runtime(Runtime&& o) noexcept
     , writer_(std::move(o.writer_))
     , pool_(std::move(o.pool_))
     , canvas_(std::move(o.canvas_))
-    , front_(std::move(o.front_))
     , out_(std::move(o.out_))
-    , inline_state_(std::move(o.inline_state_))
     , layout_nodes_(std::move(o.layout_nodes_))
+    , fs_coherence_(std::move(o.fs_coherence_))
+    , in_coherence_(std::move(o.in_coherence_))
     , theme_(o.theme_)
     , size_(o.size_)
     , render_ctx_(o.render_ctx_)
     , resize_generation_(o.resize_generation_)
     , parser_(std::move(o.parser_))
     , running_(o.running_)
-    , needs_clear_(o.needs_clear_)
 {}
 
 Runtime& Runtime::operator=(Runtime&& o) noexcept {
     if (this != &o) {
         alt_terminal_      = std::move(o.alt_terminal_);
-        raw_terminal_      = std::move(o.raw_terminal_);
+        inline_terminal_   = std::move(o.inline_terminal_);
         output_handle_     = std::exchange(o.output_handle_, platform::invalid_handle);
         input_handle_      = std::exchange(o.input_handle_, platform::invalid_handle);
         resize_signal_     = std::move(o.resize_signal_);
@@ -364,17 +415,16 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         writer_            = std::move(o.writer_);
         pool_              = std::move(o.pool_);
         canvas_            = std::move(o.canvas_);
-        front_             = std::move(o.front_);
         out_               = std::move(o.out_);
-        inline_state_      = std::move(o.inline_state_);
         layout_nodes_      = std::move(o.layout_nodes_);
+        fs_coherence_      = std::move(o.fs_coherence_);
+        in_coherence_      = std::move(o.in_coherence_);
         theme_             = o.theme_;
         size_              = o.size_;
         render_ctx_        = o.render_ctx_;
         resize_generation_ = o.resize_generation_;
         parser_            = std::move(o.parser_);
         running_           = o.running_;
-        needs_clear_       = o.needs_clear_;
     }
     return *this;
 }
@@ -444,7 +494,52 @@ Status canvas_run_impl(
     auto frame_ns   = std::chrono::nanoseconds(1'000'000'000LL / std::max(1, cfg.fps));
     auto next_frame = Clock::now();
 
-    struct PendingFrame { std::string data; std::size_t offset = 0; };
+    // ── BSU recovery scope guard (linear-RAII) ─────────────────────────────
+    // Frames are wrapped in DEC sync (\x1b[?2026h ... \x1b[?2026l). If a
+    // partial write leaves the terminal in BSU and we never finish the
+    // remainder (resize discards the rest, hard error returns), the
+    // terminal stays in sync mode forever. A FrameScope is created when
+    // a frame begins flushing; commit() suppresses recovery on success;
+    // any other path runs ~FrameScope which emits sync_end + SGR reset.
+    //
+    // The TYPE-LEVEL invariant: PendingFrame OWNS a FrameScope, so dropping
+    // the pending frame (for any reason) closes BSU. The compiler enforces
+    // this — there is no API to construct PendingFrame without a scope, and
+    // ~PendingFrame always runs ~FrameScope.
+    static constexpr std::string_view kBsuRecovery = "\x1b[?2026l\x1b[0m";
+    class FrameScope {
+        platform::NativeHandle out_;
+        bool                   may_be_open_ = false;
+    public:
+        FrameScope() noexcept : out_(platform::invalid_handle) {}
+        explicit FrameScope(platform::NativeHandle h) noexcept
+            : out_(h), may_be_open_(true) {}
+        void commit() noexcept { may_be_open_ = false; }
+        ~FrameScope() {
+            if (may_be_open_ && out_ != platform::invalid_handle)
+                (void)platform::io_write_all(out_, kBsuRecovery);
+        }
+        FrameScope(FrameScope&& o) noexcept
+            : out_(std::exchange(o.out_, platform::invalid_handle))
+            , may_be_open_(std::exchange(o.may_be_open_, false)) {}
+        FrameScope& operator=(FrameScope&& o) noexcept {
+            if (this != &o) {
+                if (may_be_open_ && out_ != platform::invalid_handle)
+                    (void)platform::io_write_all(out_, kBsuRecovery);
+                out_         = std::exchange(o.out_, platform::invalid_handle);
+                may_be_open_ = std::exchange(o.may_be_open_, false);
+            }
+            return *this;
+        }
+        FrameScope(const FrameScope&)            = delete;
+        FrameScope& operator=(const FrameScope&) = delete;
+    };
+
+    struct PendingFrame {
+        std::string data;
+        std::size_t offset = 0;
+        FrameScope  scope;          // closes BSU on drop unless commit()ed
+    };
     std::optional<PendingFrame> pending_frame;
     std::string out;
     out.reserve(static_cast<std::size_t>(W * H * 12));
@@ -512,6 +607,7 @@ Status canvas_run_impl(
             if (!result) return err(result.error());
             pf.offset += *result;
             if (pf.offset >= pf.data.size()) {
+                pf.scope.commit();      // sync_end was at the tail; BSU closed
                 std::swap(front, back);
                 back.reset_damage();
                 pending_frame.reset();
@@ -566,12 +662,17 @@ Status canvas_run_impl(
                 std::swap(front, back);
                 back.reset_damage();
             } else {
+                // FrameScope is armed BEFORE the write — if write_some
+                // throws or the function returns early via err(...), the
+                // guard's destructor still emits BSU recovery.
+                FrameScope scope{output_h};
                 auto result = writer.write_some(out);
                 if (!result) return err(result.error());
                 const std::size_t written = *result;
                 if (written < out.size()) {
-                    pending_frame = PendingFrame{out, written};
+                    pending_frame = PendingFrame{out, written, std::move(scope)};
                 } else {
+                    scope.commit();
                     std::swap(front, back);
                     back.reset_damage();
                 }

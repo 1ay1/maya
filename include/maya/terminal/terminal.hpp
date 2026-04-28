@@ -130,6 +130,38 @@ public:
         return ok(std::move(result));
     }
 
+    /// Raw -> Inline: enables the per-feature opt-ins that inline-mode
+    /// applications (Claude-Code-style chat UIs) need WITHOUT entering the
+    /// alt screen — scrollback is preserved.  The destructor disables each
+    /// feature in reverse order; an exception escaping `run<P>()` therefore
+    /// restores the user's terminal exactly as well as a graceful exit.
+    /// This is the linear-RAII counterpart to the loose `(void)write(...)`
+    /// calls that used to live in `Runtime::create`.
+    [[nodiscard]] auto enable_inline_mode(this Terminal<Raw, Backend> self)
+        -> Result<Terminal<InlineMode, Backend>>
+    {
+        // Two keyboard-protocol opt-ins so we get key disambiguation on the
+        // widest set of terminals: KKP (Kitty/Foot/WezTerm/Ghostty/iTerm
+        // 3.5+/Konsole 22.04+/recent xterm) AND xterm modifyOtherKeys=2
+        // (VTE/GNOME/Tilix/stock xterm). Terminals that recognise neither
+        // silently ignore both. hide_cursor: after each frame the cursor
+        // sits at the end of the last rendered row — visually distracting,
+        // and the composer paints its own caret glyph.
+        std::string seq;
+        seq.reserve(64);
+        seq += ansi::enable_bracketed_paste;
+        seq += ansi::kkp_push;
+        seq += ansi::modify_other_keys_on;
+        seq += ansi::hide_cursor;
+        auto status = self.backend_.write_all(seq);
+        if (!status) {
+            return err<Terminal<InlineMode, Backend>>(status.error());
+        }
+        Terminal<InlineMode, Backend> result{PrivateTag{}, std::move(self.backend_)};
+        self.moved_from_ = true;
+        return ok(std::move(result));
+    }
+
     /// Raw -> AltScreen: enters alt screen buffer + hide cursor + enable
     /// mouse tracking + enable focus events + enable bracketed paste
     [[nodiscard]] auto enter_alt_screen(this Terminal<Raw, Backend> self)
@@ -216,6 +248,23 @@ public:
             seq += ansi::disable_mouse;
             seq += ansi::show_cursor;
             seq += ansi::alt_screen_leave;
+            (void)backend_.write_all(seq);
+            (void)backend_.disable_raw();
+        }
+        else if constexpr (std::same_as<State, InlineMode>) {
+            // Reverse of enable_inline_mode. Disabling both keyboard
+            // protocols BEFORE relinquishing raw mode prevents a misbehaving
+            // shell from seeing CSI-u or CSI 27;… sequences it can't decode
+            // after we hand control back.  Trailing \r\n moves the user's
+            // shell prompt onto a fresh line below the last rendered frame.
+            std::string seq;
+            seq.reserve(64);
+            seq += ansi::modify_other_keys_off;
+            seq += ansi::kkp_pop;
+            seq += ansi::disable_bracketed_paste;
+            seq += ansi::show_cursor;
+            seq += ansi::reset;
+            seq += "\r\n";
             (void)backend_.write_all(seq);
             (void)backend_.disable_raw();
         }

@@ -6,9 +6,29 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace maya {
+
+namespace {
+
+// Lazy-initialised debug log. Enabled by setting MAYA_RENDER_LOG to a
+// writable path; one line per compose_inline_frame call plus state
+// resets. Safe no-op when the env var isn't set.
+[[nodiscard]] FILE* render_log() noexcept {
+    static FILE* f = []() -> FILE* {
+        const char* path = std::getenv("MAYA_RENDER_LOG");
+        if (!path || !*path) return nullptr;
+        FILE* p = std::fopen(path, "w");
+        if (p) std::setvbuf(p, nullptr, _IONBF, 0);  // unbuffered
+        return p;
+    }();
+    return f;
+}
+
+}  // namespace
 
 void InlineFrameState::commit_prefix(int rows) noexcept {
     if (rows <= 0 || prev_rows <= 0 || prev_width <= 0) return;
@@ -140,10 +160,20 @@ void compose_inline_frame(const Canvas& canvas,
                           std::string& out)
 {
     const int W = canvas.width();
-    if (W <= 0 || content_rows <= 0 || term_h <= 0) return;
+    if (W <= 0 || content_rows <= 0 || term_h <= 0) {
+        if (FILE* lg = render_log())
+            std::fprintf(lg, "[compose] EARLY-RETURN W=%d content_rows=%d term_h=%d\n",
+                         W, content_rows, term_h);
+        return;
+    }
 
     // Width change invalidates the cached cell buffer — row layouts shift.
-    if (state.prev_width != W) state.reset();
+    if (state.prev_width != W) {
+        if (FILE* lg = render_log())
+            std::fprintf(lg, "[compose] WIDTH-CHANGE prev_width=%d new_width=%d -> reset\n",
+                         state.prev_width, W);
+        state.reset();
+    }
 
     const uint64_t* cells = canvas.cells();
     const int prev_rows       = state.prev_rows;
@@ -151,15 +181,31 @@ void compose_inline_frame(const Canvas& canvas,
     const int updatable_start = prev_rows - prev_on_screen;
     const int common          = std::min(content_rows, prev_rows);
 
+    // Rows below `new_visible_start` will end up in the NEW frame's
+    // scrollback once this draw lands — every row before the bottom
+    // `term_h` rows of `content_rows` scrolls off as the panel grows.
+    // Updating them anyway means rewriting from a low `first_changed`,
+    // which makes the rewrite span exceed `term_h`; the cascade past
+    // the bottom commits a fresh snapshot of every just-written row to
+    // scrollback. Across many frames that fills scrollback with
+    // duplicated copies of the panel's top rows (the visible "stacked
+    // frames" symptom). Clamping the diff scan to rows that will
+    // remain on screen keeps the rewrite span ≤ term_h, so growth
+    // produces exactly one scrollback commit per row pushed off the
+    // top — no cascade, no duplication.
+    const int new_visible_start = std::max(0, content_rows - term_h);
+    const int scan_start        = std::max(updatable_start, new_visible_start);
+
     // Locate the first row that actually changed within the on-screen
     // portion of the overlap. Rows in scrollback (y < updatable_start)
-    // can't be updated, so we skip them entirely.
+    // can't be updated, and rows below new_visible_start are about to
+    // be in scrollback after this draw — skip both.
     int first_changed = common;
     if (prev_rows > 0 && static_cast<std::size_t>(prev_rows) * static_cast<std::size_t>(W)
                         <= state.prev_cells.size())
     {
         const uint64_t* prev = state.prev_cells.data();
-        for (int y = updatable_start; y < common; ++y) {
+        for (int y = scan_start; y < common; ++y) {
             if (!simd::bulk_eq(cells + y * W, prev + y * W,
                                static_cast<std::size_t>(W)))
             {
@@ -169,15 +215,32 @@ void compose_inline_frame(const Canvas& canvas,
         }
     }
 
+    if (FILE* lg = render_log()) {
+        std::fprintf(lg,
+            "[compose] prev_rows=%d content_rows=%d term_h=%d W=%d "
+            "updatable_start=%d new_visible_start=%d scan_start=%d "
+            "common=%d first_changed=%d span=%d\n",
+            prev_rows, content_rows, term_h, W,
+            updatable_start, new_visible_start, scan_start,
+            common, first_changed, content_rows - first_changed);
+    }
+
     // Nothing to do: the common range is identical and no rows were
     // added or removed.
-    if (first_changed == common && content_rows == prev_rows) return;
+    if (first_changed == common && content_rows == prev_rows) {
+        if (FILE* lg = render_log())
+            std::fprintf(lg, "[compose] no-op (clean diff, no growth)\n");
+        return;
+    }
 
     out += ansi::sync_start;
     out += ansi::hide_cursor;
 
     if (prev_rows == 0) {
         // First render from the caller's cursor position (assumed col 0).
+        if (FILE* lg = render_log())
+            std::fprintf(lg, "[compose] FRESH-DRAW rows=%d (prev_rows was 0)\n",
+                         content_rows);
         serialize(canvas, pool, out, content_rows);
     } else {
         // Position the cursor at column 0 of `first_changed`. The cursor
@@ -187,14 +250,21 @@ void compose_inline_frame(const Canvas& canvas,
 
         if (delta < 0) {
             int up = std::min(-delta, prev_on_screen - 1);
+            if (FILE* lg = render_log())
+                std::fprintf(lg, "[compose]   delta=%d up=%d \\r\n", delta, up);
             if (up > 0) ansi::write_cursor_up(out, up);
             out += '\r';
         } else if (delta == 0) {
+            if (FILE* lg = render_log())
+                std::fprintf(lg, "[compose]   delta=0 \\r\n");
             out += '\r';
         } else {
             // Growing past the previous bottom — step down delta rows.
             // The first \r\n scrolls the terminal if we were already at
             // the last line, which is exactly what inline mode wants.
+            if (FILE* lg = render_log())
+                std::fprintf(lg, "[compose]   delta=%d \\r\\n + cursor_down(%d)\n",
+                             delta, std::max(0, delta - 1));
             out += "\r\n";
             if (delta > 1) ansi::write_cursor_down(out, delta - 1);
         }
@@ -202,12 +272,17 @@ void compose_inline_frame(const Canvas& canvas,
         // Rewrite rows [first_changed, content_rows). serialize() emits
         // \r\n between rows and \x1b[K after each, so stale tail content
         // from the previous frame is cleaned up automatically.
+        if (FILE* lg = render_log())
+            std::fprintf(lg, "[compose]   rewrite rows [%d, %d) = %d rows\n",
+                         first_changed, content_rows, content_rows - first_changed);
         serialize(canvas, pool, out, content_rows, first_changed);
 
         // Content shrank — erase any leftover rows that are still on-screen.
         // Rows that already rolled into scrollback are immutable.
         if (content_rows < prev_rows) {
             int extra = std::min(prev_rows - content_rows, prev_on_screen);
+            if (FILE* lg = render_log())
+                std::fprintf(lg, "[compose]   shrink-erase extra=%d\n", extra);
             for (int i = 0; i < extra; ++i)
                 out += "\r\n\x1b[2K";
             if (extra > 0) ansi::write_cursor_up(out, extra);

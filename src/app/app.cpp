@@ -1,11 +1,27 @@
 #include "maya/app/app.hpp"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <format>
 
 #include "maya/core/overload.hpp"
 #include "maya/core/scope_exit.hpp"
 #include "maya/platform/select.hpp"
+
+namespace {
+// Mirror of serialize.cpp's render_log() — same env var, same file.
+[[nodiscard]] FILE* app_render_log() noexcept {
+    static FILE* f = []() -> FILE* {
+        const char* path = std::getenv("MAYA_RENDER_LOG");
+        if (!path || !*path) return nullptr;
+        FILE* p = std::fopen(path, "a");  // append; serialize.cpp opens "w" first
+        if (p) std::setvbuf(p, nullptr, _IONBF, 0);
+        return p;
+    }();
+    return f;
+}
+}  // namespace
 
 #if !MAYA_PLATFORM_WIN32
 #include <fcntl.h>
@@ -164,6 +180,10 @@ void Runtime::handle_resize() {
     }
 
     if (new_size != size_) {
+        if (FILE* lg = app_render_log())
+            std::fprintf(lg, "[app] RESIZE old=%dx%d new=%dx%d -> needs_clear\n",
+                         size_.width.raw(), size_.height.raw(),
+                         new_size.width.raw(), new_size.height.raw());
         size_ = new_size;
         ++resize_generation_;
         render_ctx_.width      = size_.width.raw();
@@ -236,6 +256,9 @@ auto Runtime::render(const Element& root) -> Status {
         }
 
         if (needs_clear_) {
+            if (FILE* lg = app_render_log())
+                std::fprintf(lg, "[app] needs_clear handled (prev_rows=%d) -> reset\n",
+                             inline_state_.prev_rows);
             if (inline_state_.prev_rows > 0) {
                 std::string erase;
                 erase += "\x1b[2J\x1b[3J\x1b[H";
@@ -269,6 +292,9 @@ auto Runtime::render(const Element& root) -> Status {
         }
 
         if (ch <= 0) {
+            if (FILE* lg = app_render_log())
+                std::fprintf(lg, "[app] ch<=0 (was prev_rows=%d) -> prev_rows=0\n",
+                             inline_state_.prev_rows);
             inline_state_.prev_rows = 0;
             return ok();
         }
@@ -280,6 +306,8 @@ auto Runtime::render(const Element& root) -> Status {
 
         auto write_result = writer_->write_raw(out_);
         if (!write_result) {
+            if (FILE* lg = app_render_log())
+                std::fprintf(lg, "[app] write_raw FAILED -> reset\n");
             inline_state_.reset();
             return write_result;
         }

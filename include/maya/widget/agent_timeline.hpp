@@ -37,6 +37,8 @@
 #include "../style/color.hpp"
 #include "../style/style.hpp"
 
+#include "tool_body_preview.hpp"
+
 namespace maya {
 
 // Lifecycle status for a single timeline event. Maps directly to the model's
@@ -51,12 +53,12 @@ enum class AgentEventStatus : std::uint8_t {
 };
 
 struct AgentTimelineEvent {
-    std::string         name;                 // Display name e.g. "Bash"
-    std::string         detail;               // One-line summary
-    float               elapsed_seconds = 0.0f;
-    Color               category_color  = Color::blue();
-    AgentEventStatus    status          = AgentEventStatus::Pending;
-    Element             body{TextElement{}};  // empty by default; rendered under `│` stripe
+    std::string             name;                 // Display name e.g. "Bash"
+    std::string             detail;               // One-line summary
+    float                   elapsed_seconds = 0.0f;
+    Color                   category_color  = Color::blue();
+    AgentEventStatus        status          = AgentEventStatus::Pending;
+    ToolBodyPreview::Config body;                 // empty by default; rendered under `│` stripe
 };
 
 struct AgentTimelineStat {
@@ -174,6 +176,11 @@ private:
                       Style{}.with_fg(duration_color(ev.elapsed_seconds))))
         ) | grow(1.0f)).build());
 
+        // Build the body via ToolBodyPreview, then stripe each child row
+        // with the `│` connector. The body widget owns its own line layout
+        // (vector<row> in a vstack); we walk its children to give each row
+        // its own stripe, keeping every rendered row at exactly 1 line of
+        // measured height (inline mode prefers that).
         const Color cc        = event_connector_color(ev.status);
         const Style stripe_st = is_active ? Style{}.with_fg(cc)
                                           : Style{}.with_fg(cc).with_dim();
@@ -182,11 +189,12 @@ private:
             text("\xe2\x94\x82  ", stripe_st)
         ).build();
 
-        if (auto* bx = as_box(ev.body)) {
+        Element body_el = ToolBodyPreview{ev.body}.build();
+        if (auto* bx = as_box(body_el)) {
             for (const auto& child : bx->children)
                 rows.push_back((h(body_rule, child) | grow(1.0f)).build());
-        } else if (auto* t = as_text(ev.body); t && !t->content.empty()) {
-            rows.push_back((h(body_rule, ev.body) | grow(1.0f)).build());
+        } else if (auto* t = as_text(body_el); t && !t->content.empty()) {
+            rows.push_back((h(body_rule, body_el) | grow(1.0f)).build());
         }
 
         if (!is_last) {

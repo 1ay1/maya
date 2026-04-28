@@ -5,54 +5,57 @@
 //
 //   ┌─────────────────────────────────────────┐  ↑
 //   │                                         │  │
-//   │  thread_panel (grows to fill)           │  │
+//   │  Thread (grows to fill)                 │  │
 //   │                                         │  │
 //   │ ┌─────────────────────────────────────┐ │  │ pad<1>
-//   │ │  changes_strip (optional)           │ │  │
+//   │ │  ChangesStrip (optional)            │ │  │
 //   │ ├─────────────────────────────────────┤ │  │
-//   │ │  composer                           │ │  │
+//   │ │  Composer                           │ │  │
 //   │ └─────────────────────────────────────┘ │  │
-//   │  status_bar                             │  │
+//   │  StatusBar                              │  │
 //   └─────────────────────────────────────────┘  ↓
 //
-// When `overlay_present` is true, `overlay` floats over the base
-// (horizontally centered, pinned to the bottom edge, with an opaque
-// background). The widget delegates that to maya::Overlay.
+// Every section is a nested widget Config — host apps construct one
+// `AppLayout::Config` per frame and `AppLayout::build()` invokes the
+// sub-widgets internally. No Element construction in the host.
 //
-// All four section elements are accepted as pre-built Elements —
-// callers typically build them from their own widget Configs
-// (Composer, StatusBar, ChangesStrip, …). Pass an empty Element
-// for `changes_strip` to hide the slot entirely.
+// `overlay_present == true` floats `overlay` (centered, bottom-pinned,
+// opaque background) over the base. Empty Element + present=false
+// collapses cleanly to just the base — host doesn't need an `if`.
 //
 //   maya::AppLayout{{
-//       .thread_panel    = thread_panel_element,
-//       .changes_strip   = changes_strip_element,    // empty = hide
-//       .composer        = composer_element,
-//       .status_bar      = status_bar_element,
-//       .overlay         = modal_element,            // when open
+//       .thread        = thread_cfg(m),
+//       .changes_strip = changes_strip_cfg(m),
+//       .composer      = composer_cfg(m),
+//       .status_bar    = status_bar_cfg(m),
+//       .overlay         = pick_overlay(m),       // Element (modal etc.)
 //       .overlay_present = m.has_modal_open,
 //   }}.build();
 
+#include <optional>
 #include <utility>
 
 #include "../dsl.hpp"
 #include "../element/element.hpp"
 
+#include "changes_strip.hpp"
+#include "composer.hpp"
 #include "overlay.hpp"
+#include "status_bar.hpp"
+#include "thread.hpp"
 
 namespace maya {
 
 class AppLayout {
 public:
     struct Config {
-        Element thread_panel{TextElement{}};
-        Element changes_strip{TextElement{}};
-        Element composer{TextElement{}};
-        Element status_bar{TextElement{}};
+        Thread::Config        thread;
+        ChangesStrip::Config  changes_strip;
+        Composer::Config      composer;
+        StatusBar::Config     status_bar;
 
-        // Overlay slot — empty Element + present=false collapses to base.
-        Element overlay{TextElement{}};
-        bool    overlay_present = false;
+        // Overlay slot — nullopt collapses cleanly to just the base.
+        std::optional<Element> overlay;
     };
 
     explicit AppLayout(Config c) : cfg_(std::move(c)) {}
@@ -63,17 +66,19 @@ public:
         using namespace dsl;
 
         auto base = (v(
-            v(cfg_.thread_panel) | grow(1.0f),
-            cfg_.changes_strip,
-            cfg_.composer,
-            cfg_.status_bar
+            v(Thread{cfg_.thread}.build()) | grow(1.0f),
+            ChangesStrip{cfg_.changes_strip}.build(),
+            Composer{cfg_.composer}.build(),
+            StatusBar{cfg_.status_bar}.build()
         ) | pad<1> | grow(1.0f)).build();
 
-        return Overlay{{
-            .base    = std::move(base),
-            .overlay = cfg_.overlay,
-            .present = cfg_.overlay_present,
-        }}.build();
+        Overlay::Config oc;
+        oc.base = std::move(base);
+        if (cfg_.overlay) {
+            oc.overlay = *cfg_.overlay;
+            oc.present = true;
+        }
+        return Overlay{std::move(oc)}.build();
     }
 
 private:

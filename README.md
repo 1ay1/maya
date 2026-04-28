@@ -5,23 +5,26 @@
 <h1 align="center">maya</h1>
 
 <p align="center">
-  C++26 terminal UI framework.<br>
-  Compile-time DSL. Flexbox layout. SIMD rendering. 69 widgets. Cross-platform.
+  Terminal UI for C++26.<br>
+  Compile-time DSL · flexbox layout · SIMD-diffed frames · 69 widgets · cross-platform.
 </p>
 
 <p align="center">
-  <a href="#quickstart">Quickstart</a> · <a href="#examples">Examples</a> · <a href="#features">Features</a> · <a href="docs/">Docs</a> · <a href="#building">Building</a>
+  <a href="#quickstart">Quickstart</a> · <a href="#examples">Examples</a> · <a href="#widgets">Widgets</a> · <a href="docs/">Docs</a> · <a href="#building">Building</a>
 </p>
 
 ---
 
-Build terminal apps that look good and run fast. Maya gives you a type-safe DSL that catches layout mistakes at compile time, a flexbox engine for real layout, and a rendering pipeline that diffs frames with SIMD so only changed cells hit the terminal.
-
-Ships with 69 widgets — from inputs and tables to markdown renderers, tool call cards, and everything you need to build an AI agent interface. Runs on Linux, macOS, and Windows.
+- **Compile-time UI trees.** `t<"Hello"> | Bold | border_<Round>` is type-state safe — try to set border color without a border and it's a compile error, not a runtime no-op.
+- **SIMD frame diff.** AVX2 / SSE4.2 / NEON. 64-bit packed cells, O(1) compare. Only changed cells write to the terminal.
+- **Real flexbox.** Yoga layout — `grow()`, `gap()`, `align()`, `justify()`. No `printf` column-counting.
+- **Two render modes.** Fullscreen (alternate screen) or **inline** (lives in your scrollback, doesn't take over the terminal).
+- **Two app APIs.** `run(event_fn, render_fn)` for quick tools; `run<Program>()` Elm-style for testable pure logic with algebraic effects.
+- **Header-mostly.** `#include <maya/maya.hpp>` is the public surface. Widgets opt-in individually.
 
 ## Quickstart
 
-Static UI:
+Static UI — fully resolved at compile time:
 
 ```cpp
 #include <maya/maya.hpp>
@@ -39,33 +42,26 @@ int main() {
 }
 ```
 
-Interactive counter:
+Interactive counter — quick-tool API:
 
 ```cpp
-#include <maya/maya.hpp>
-using namespace maya;
-using namespace maya::dsl;
-
-int main() {
-    Signal<int> count{0};
-    run(
-        {.title = "counter"},
-        [&](const Event& ev) {
-            if (key(ev, '+')) count.update([](int& n) { ++n; });
-            if (key(ev, '-')) count.update([](int& n) { --n; });
-            return !key(ev, 'q');
-        },
-        [&] {
-            return v(
-                text("Count: " + std::to_string(count.get())) | Bold | Fg<100, 200, 255>,
-                t<"[+/-] change  [q] quit"> | Dim
-            ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
-        }
-    );
-}
+Signal<int> count{0};
+run({.title = "counter"},
+    [&](const Event& ev) {
+        if (key(ev, '+')) count.update([](int& n) { ++n; });
+        if (key(ev, '-')) count.update([](int& n) { --n; });
+        return !key(ev, 'q');
+    },
+    [&] {
+        return v(
+            text("Count: " + std::to_string(count.get())) | Bold | Fg<100, 200, 255>,
+            t<"[+/-] change  [q] quit"> | Dim
+        ) | border_<Round> | bcol<50, 55, 70> | pad<1>;
+    }
+);
 ```
 
-Elm architecture for complex apps:
+Same counter — Elm-style `Program` for testable pure logic:
 
 ```cpp
 struct Counter {
@@ -91,8 +87,6 @@ struct Counter {
 int main() { run<Counter>({.title = "counter"}); }
 ```
 
-Two APIs, same runtime. `run(event_fn, render_fn)` for quick tools. `run<P>()` when you want testable pure logic and algebraic effects.
-
 ## Examples
 
 26 examples ship with the framework:
@@ -116,30 +110,11 @@ Two APIs, same runtime. `run(event_fn, render_fn)` for quick tools. `run<P>()` w
 </tr>
 </table>
 
-Also: FPS raycaster, raymarcher, fluid simulation, mandelbrot zoom, matrix rain, particle systems, sorting visualizations, spectrum analyzer, breakout, snake, space shooter, music player, system monitor, AI agent simulation, and more. All under [`examples/`](examples/).
+Plus FPS raycaster, raymarcher, fluid sim, mandelbrot zoom, matrix rain, particle systems, spectrum analyzer, breakout, snake, music player, system monitor, AI agent demos, and more. All under [`examples/`](examples/).
 
-## Features
+[**moha**](https://github.com/1ay1/moha) — a native terminal client for Claude — is built on maya in production.
 
-### DSL
-
-- Compile-time UI trees with `|` pipe operators
-- Type-state safety — can't set border color without a border, can't apply layout to text
-- `t<"...">` for compile-time text, `text()` for runtime
-- Composes naturally: `v()`, `h()`, `text()`, `border_<>`, `pad<>`, `Fg<>`, `Bold`
-
-### Layout
-
-- Flexbox via Yoga — `grow()`, `gap()`, `width()`, `height()`, `align()`, `justify()`
-- Fullscreen and inline rendering modes (alternate screen or native scrollback)
-
-### Rendering
-
-- Double-buffered with dirty-region tracking
-- SIMD-accelerated frame diff (AVX2 / SSE4.2 / NEON) — only changed cells write to terminal
-- 64-bit packed cells for O(1) comparison
-- Cache-line aligned buffers, style interning via open-addressing hash map
-
-### Widgets (69)
+## Widgets
 
 **Data:** Line chart · Bar chart · Gauge · Sparkline · Heatmap · Flame chart · Waterfall · Token stream · Context window · Git graph
 
@@ -151,19 +126,19 @@ Also: FPS raycaster, raymarcher, fluid simulation, mandelbrot zoom, matrix rain,
 
 **Agent UI:** Tool call · Bash tool · Read tool · Edit tool · Write tool · Fetch tool · Message · Thinking block · Streaming cursor · Activity bar · Permission prompt · Model badge · Cost tracker · Git status · File changes · System banner · Error block · Turn divider · Conversation view · Plan view · API usage
 
-### Architecture
+## Runtime
 
-- Elm-style `Program` concept: `Model` + `Msg` + `init` / `update` / `view` / `subscribe`
-- Effects as data: `Cmd<Msg>` (quit, batch, after, task) and `Sub<Msg>` (keys, mouse, timers)
-- Type-state render pipeline (Idle → Cleared → Painted → Opened → Closed)
-- Signal/slot reactivity (SolidJS-inspired)
-- Keyboard, mouse, resize, focus/blur, paste events
+- Elm-style `Program` concept: `Model` + `Msg` + `init` / `update` / `view` / `subscribe`.
+- Effects as data: `Cmd<Msg>` (`quit`, `batch`, `after`, `task`) and `Sub<Msg>` (keys, mouse, timers).
+- Signal / slot reactivity (SolidJS-inspired).
+- Type-state render pipeline: Idle → Cleared → Painted → Opened → Closed.
+- Keyboard, mouse, resize, focus/blur, and bracketed-paste events out of the box.
 
 ## Headers
 
 ```cpp
-#include <maya/maya.hpp>           // DSL, run<P>(), events, signals, styles — the public API
-#include <maya/widget/input.hpp>   // widgets are included individually
+#include <maya/maya.hpp>           // DSL, run<P>(), events, signals, styles — public API
+#include <maya/widget/input.hpp>   // widgets included individually
 #include <maya/internal.hpp>       // canvas, diff engine, SIMD, terminal I/O (unstable)
 ```
 
@@ -206,7 +181,7 @@ cmake --build build -j$(sysctl -n hw.ncpu)
 
 ### Windows
 
-**MSYS2 (recommended):**
+**MSYS2** (recommended):
 ```bash
 pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake
 cmake -B build -G "MinGW Makefiles"
@@ -219,7 +194,7 @@ cmake -B build -G "Visual Studio 17 2025"
 cmake --build build --config Release
 ```
 
-**WSL2:** Follow the Linux instructions.
+**WSL2:** follow the Linux instructions.
 
 ### Tests
 
@@ -247,4 +222,4 @@ target_link_libraries(my_app PRIVATE maya::maya)
 
 ## License
 
-MIT
+MIT.

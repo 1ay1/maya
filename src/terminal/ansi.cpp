@@ -303,6 +303,20 @@ bool contains(const std::string& s, std::string_view needle) {
 } // namespace
 
 [[nodiscard]] bool env_supports_synchronized_output() {
+    // Explicit override — for users on terminals not in the positive
+    // list below (custom builds, niche ones, or behind ssh / tmux
+    // without identification env passthrough).  Modern terminals
+    // silently ignore unknown private CSIs, so a misconfigured FORCE
+    // is a no-op rather than a corrupt-output hazard.
+    if (auto v = env_str("MAYA_FORCE_SYNC");
+        !v.empty() && v != "0" && v != "false" && v != "no") {
+        return true;
+    }
+    if (auto v = env_str("MAYA_NO_SYNC");
+        !v.empty() && v != "0" && v != "false" && v != "no") {
+        return false;
+    }
+
     // Explicit non-supporters first — short-circuits the positive list
     // and prevents a stray $TERM=xterm-256color from misleading us on
     // Apple Terminal.

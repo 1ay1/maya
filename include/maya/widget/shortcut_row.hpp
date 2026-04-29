@@ -56,56 +56,53 @@ public:
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        using namespace dsl;
         // Capture by value so the lambda outlives this call.
-        Config cfg = cfg_;
-        return Element{ComponentElement{
-            .render = [cfg = std::move(cfg)](int w, int /*h*/) -> Element {
-                using namespace dsl;
-                if (w <= 0) return Element{TextElement{}};
+        return component([cfg = cfg_](int w, int /*h*/) -> Element {
+            using namespace dsl;
+            if (w <= 0) return blank().build();
 
-                const Color muted = Color::bright_black();
-                const bool show_label = (w >= cfg.label_min_width);
+            const Color muted = Color::bright_black();
+            const bool show_label = (w >= cfg.label_min_width);
 
-                std::vector<int> kept;
-                kept.reserve(cfg.bindings.size());
-                if (w >= cfg.full_min_width) {
-                    for (int i = 0; i < static_cast<int>(cfg.bindings.size()); ++i)
-                        kept.push_back(i);
-                } else {
-                    // Sort by priority desc, keep top half (rounded up).
-                    std::vector<int> idx(cfg.bindings.size());
-                    for (std::size_t i = 0; i < idx.size(); ++i)
-                        idx[i] = static_cast<int>(i);
-                    std::stable_sort(idx.begin(), idx.end(),
-                        [&](int a, int b) {
-                            return cfg.bindings[a].priority
-                                 > cfg.bindings[b].priority;
-                        });
-                    int keep_n = static_cast<int>((idx.size() + 1) / 2);
-                    idx.resize(static_cast<std::size_t>(keep_n));
-                    std::sort(idx.begin(), idx.end());
-                    kept = std::move(idx);
+            std::vector<int> kept;
+            kept.reserve(cfg.bindings.size());
+            if (w >= cfg.full_min_width) {
+                for (int i = 0; i < static_cast<int>(cfg.bindings.size()); ++i)
+                    kept.push_back(i);
+            } else {
+                // Sort by priority desc, keep top half (rounded up).
+                std::vector<int> idx(cfg.bindings.size());
+                for (std::size_t i = 0; i < idx.size(); ++i)
+                    idx[i] = static_cast<int>(i);
+                std::stable_sort(idx.begin(), idx.end(),
+                    [&](int a, int b) {
+                        return cfg.bindings[a].priority
+                             > cfg.bindings[b].priority;
+                    });
+                int keep_n = static_cast<int>((idx.size() + 1) / 2);
+                idx.resize(static_cast<std::size_t>(keep_n));
+                std::sort(idx.begin(), idx.end());
+                kept = std::move(idx);
+            }
+
+            std::vector<Element> row;
+            row.reserve(kept.size() * 4 + 1);
+            row.push_back(text(" "));
+            bool first = true;
+            for (int i : kept) {
+                const auto& b = cfg.bindings[static_cast<std::size_t>(i)];
+                if (!first) row.push_back(text("   "));   // gap
+                first = false;
+                row.push_back(text(b.key,
+                                   Style{}.with_fg(cfg.text_color).with_bold()));
+                if (show_label && !b.label.empty()) {
+                    row.push_back(text(" "));
+                    row.push_back(text(b.label, fg_dim_(muted)));
                 }
-
-                std::vector<Element> row;
-                row.reserve(kept.size() * 4 + 1);
-                row.push_back(text(" "));
-                bool first = true;
-                for (int i : kept) {
-                    const auto& b = cfg.bindings[static_cast<std::size_t>(i)];
-                    if (!first) row.push_back(text("   "));   // gap
-                    first = false;
-                    row.push_back(text(b.key,
-                                       Style{}.with_fg(cfg.text_color).with_bold()));
-                    if (show_label && !b.label.empty()) {
-                        row.push_back(text(" "));
-                        row.push_back(text(b.label, fg_dim_(muted)));
-                    }
-                }
-                return h(std::move(row)).build();
-            },
-            .layout = {},
-        }};
+            }
+            return h(std::move(row)).build();
+        });
     }
 
 private:

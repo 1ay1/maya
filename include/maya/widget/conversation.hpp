@@ -62,19 +62,16 @@ private:
     // Width-aware thin dim rule, indented 3 columns. The "next turn
     // starts here" handhold without the heaviness of a full-weight rule.
     static Element divider_rule() {
-        return Element{ComponentElement{
-            .render = [](int w, int /*h*/) -> Element {
-                std::string line;
-                constexpr int kIndent = 3;
-                for (int i = 0; i < kIndent; ++i) line += ' ';
-                for (int i = kIndent; i < w; ++i) line += "\xe2\x94\x80"; // ─
-                return Element{TextElement{
-                    .content = std::move(line),
-                    .style   = Style{}.with_fg(Color::bright_black()).with_dim(),
-                }};
-            },
-            .layout = {},
-        }};
+        using namespace dsl;
+        return component([](int w, int /*h*/) -> Element {
+            if (w <= 0) return blank().build();
+            std::string line;
+            constexpr int kIndent = 3;
+            for (int i = 0; i < kIndent; ++i) line += ' ';
+            for (int i = kIndent; i < w; ++i) line += "\xe2\x94\x80"; // ─
+            return text(std::move(line),
+                        Style{}.with_fg(Color::bright_black()).with_dim()).build();
+        });
     }
 };
 

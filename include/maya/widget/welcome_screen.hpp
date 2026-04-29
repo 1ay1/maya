@@ -46,7 +46,7 @@ public:
         std::string              tagline;
 
         // Center chip row: caller-built model badge sits beside a profile chip
-        Element                  model_badge{TextElement{}};
+        Element                  model_badge;       // default-empty
         std::string              profile_label;   // raw — widget renders verbatim
         Color                    profile_color = Color::magenta();
 

@@ -25,8 +25,8 @@ namespace maya {
 class Overlay {
 public:
     struct Config {
-        Element base{TextElement{}};
-        Element overlay{TextElement{}};
+        Element base;       // default-empty
+        Element overlay;    // default-empty
         bool    present = false;
     };
 

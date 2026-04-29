@@ -45,7 +45,7 @@ public:
         using namespace dsl;
         const Color muted = Color::bright_black();
 
-        if (cfg_.max <= 0) return Element{TextElement{}};
+        if (cfg_.max <= 0) return blank().build();
 
         const bool has_tokens = cfg_.used > 0;
         const int  pct = has_tokens

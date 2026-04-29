@@ -194,8 +194,8 @@ public:
             small_caps_(cfg_.profile.label),
             Style{}.with_fg(cfg_.profile.color).with_bold()));
 
-        auto hint_element = Element{ComponentElement{
-            .render = [hint_left_builder, hint_right](int w, int /*h*/) -> Element {
+        Element hint_element = component(
+            [hint_left_builder, hint_right](int w, int /*h*/) -> Element {
                 auto left = hint_left_builder(w);
                 return h(
                     h(left),
@@ -203,8 +203,7 @@ public:
                     h(hint_right),
                     text(" ")
                 ).build();
-            }
-        }};
+            });
 
         // ── Box composition with optional bottom-right line-count caption.
         int line_count = static_cast<int>(split_lines(cfg_.text).size());

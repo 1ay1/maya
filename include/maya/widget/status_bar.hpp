@@ -54,7 +54,7 @@ public:
         TitleChip::Config            breadcrumb;       // empty title = hide
         PhaseChip::Config            phase;
         TokenStreamSparkline::Config token_stream;
-        Element                      model_badge{TextElement{}};
+        Element                      model_badge;     // default-empty
         ContextGauge::Config         context;          // max=0 = hide
 
         // Status row.
@@ -96,60 +96,57 @@ private:
     Config cfg_;
 
     [[nodiscard]] Element activity_row() const {
-        Config cfg = cfg_;
-        return Element{ComponentElement{
-            .render = [cfg = std::move(cfg)](int w, int /*h*/) -> Element {
-                using namespace dsl;
-                if (w <= 0) return Element{TextElement{}};
+        using namespace dsl;
+        return component([cfg = cfg_](int w, int /*h*/) -> Element {
+            using namespace dsl;
+            if (w <= 0) return blank().build();
 
-                const Color muted = Color::bright_black();
-                const Color pcolor = cfg.phase_color;
-                const bool  active = cfg.phase.breathing;
+            const Color muted = Color::bright_black();
+            const Color pcolor = cfg.phase_color;
+            const bool  active = cfg.phase.breathing;
 
-                // Width-adaptive copies of the sub-configs.
-                PhaseChip::Config pc = cfg.phase;
-                pc.verb_width   = (w < cfg.phase_verb_min_width)    ? 0    : 10;
-                if (w < cfg.phase_elapsed_min_width) pc.elapsed_secs = -1.0f;
+            // Width-adaptive copies of the sub-configs.
+            PhaseChip::Config pc = cfg.phase;
+            pc.verb_width   = (w < cfg.phase_verb_min_width)    ? 0    : 10;
+            if (w < cfg.phase_elapsed_min_width) pc.elapsed_secs = -1.0f;
 
-                ContextGauge::Config ctx = cfg.context;
-                ctx.show_bar = (w >= cfg.ctx_bar_min_width);
+            ContextGauge::Config ctx = cfg.context;
+            ctx.show_bar = (w >= cfg.ctx_bar_min_width);
 
-                // ── Left group: breadcrumb (when wide enough) + ▌ rail + phase chip.
-                std::vector<Element> lparts;
-                lparts.push_back(text(" "));
-                if (!cfg.breadcrumb.title.empty()
-                    && w >= cfg.breadcrumb_min_width) {
-                    TitleChip::Config bc = cfg.breadcrumb;
-                    bc.max_chars = (w >= 170) ? 28 : (w >= 150) ? 20 : 14;
-                    lparts.push_back(TitleChip{bc}.build());
-                    lparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));   // ·
-                }
-                Style rail_style = active
-                    ? Style{}.with_fg(pcolor).with_bold()
-                    : Style{}.with_fg(pcolor).with_dim();
-                lparts.push_back(text("\xe2\x96\x8c", rail_style));             // ▌
-                lparts.push_back(text(" "));
-                lparts.push_back(PhaseChip{pc}.build());
-                auto left = h(std::move(lparts));
+            // ── Left group: breadcrumb (when wide enough) + ▌ rail + phase chip.
+            std::vector<Element> lparts;
+            lparts.push_back(text(" "));
+            if (!cfg.breadcrumb.title.empty()
+                && w >= cfg.breadcrumb_min_width) {
+                TitleChip::Config bc = cfg.breadcrumb;
+                bc.max_chars = (w >= 170) ? 28 : (w >= 150) ? 20 : 14;
+                lparts.push_back(TitleChip{bc}.build());
+                lparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));   // ·
+            }
+            Style rail_style = active
+                ? Style{}.with_fg(pcolor).with_bold()
+                : Style{}.with_fg(pcolor).with_dim();
+            lparts.push_back(text("\xe2\x96\x8c", rail_style));             // ▌
+            lparts.push_back(text(" "));
+            lparts.push_back(PhaseChip{pc}.build());
+            auto left = h(std::move(lparts));
 
-                // ── Right group: tok-stream + model + ctx.
-                std::vector<Element> rparts;
-                if (w >= cfg.token_stream_min_width) {
-                    rparts.push_back(TokenStreamSparkline{cfg.token_stream}.build());
-                    rparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));
-                }
-                rparts.push_back(cfg.model_badge);
-                if (cfg.context.max > 0) {
-                    rparts.push_back(text(" \xc2\xb7 ", fg_dim_(muted)));
-                    rparts.push_back(ContextGauge{ctx}.build());
-                }
-                rparts.push_back(text(" "));
-                auto right = h(std::move(rparts));
+            // ── Right group: tok-stream + model + ctx.
+            std::vector<Element> rparts;
+            if (w >= cfg.token_stream_min_width) {
+                rparts.push_back(TokenStreamSparkline{cfg.token_stream}.build());
+                rparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));
+            }
+            rparts.push_back(cfg.model_badge);
+            if (cfg.context.max > 0) {
+                rparts.push_back(text(" \xc2\xb7 ", fg_dim_(muted)));
+                rparts.push_back(ContextGauge{ctx}.build());
+            }
+            rparts.push_back(text(" "));
+            auto right = h(std::move(rparts));
 
-                return h(left, spacer(), right).build();
-            },
-            .layout = {},
-        }};
+            return h(left, spacer(), right).build();
+        });
     }
 
     static Style fg_dim_(Color c) {

@@ -84,6 +84,25 @@ target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+
+# ── Unicode width table regeneration (manual target) ─────────────────────
+# `cmake --build build --target maya_unicode_regen` re-runs the generator
+# script over the pinned UCD files in maya/data/ and overwrites
+# include/maya/text/unicode_width_table.hpp. The generated header is
+# checked in, so the regular build never needs Python — this target is
+# only for bumping to a new Unicode revision (drop newer .txt files into
+# maya/data/, then run this target, then commit the new .hpp).
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_custom_target(maya_unicode_regen
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_unicode_width.py
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        BYPRODUCTS ${CMAKE_CURRENT_SOURCE_DIR}/include/maya/text/unicode_width_table.hpp
+        COMMENT "Regenerating maya/include/maya/text/unicode_width_table.hpp from pinned UCD"
+        VERBATIM
+    )
+endif()
 if(MSVC)
     # CMake has no /std:c++26 for MSVC yet. Publicly require C++23 and
     # opt PRIVATEly into /std:c++latest — consumers linking maya stay
@@ -209,6 +228,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_widgets.cpp
         tests/test_promoted.cpp
         tests/test_markdown.cpp
+        tests/test_unicode_width.cpp
     )
 
     foreach(src ${MAYA_TEST_SOURCES})

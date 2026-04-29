@@ -66,14 +66,24 @@ public:
                  : (rate >= 20.0f) ? Color::yellow()
                                    : Color::red();
 
-        // Rate field — always 5 display columns. Keep the decimal point
-        // visible across the typical streaming range (0–999.9 tok/s) so
-        // it doesn't pop in/out of existence as the rate crosses 100 —
-        // %5.1f fits "999.9" exactly, no overflow.
+        // Rate field — always exactly 5 display columns. The decimal
+        // point stays visible across the entire streaming range so it
+        // doesn't pop in/out as the rate crosses a format boundary.
+        //
+        // Two snprintf gotchas drive the threshold choices:
+        //   1. %5.1f rounds: rate ∈ [999.95, 1000.0) prints as "1000.0"
+        //      — 6 chars, overflows the 5-char slot and shifts the dot
+        //      from col 3 to col 4. So we cap %5.1f at 999.5 (pre-rounding).
+        //   2. %5.0f for the kilo range drops the dot. We avoid that by
+        //      switching to %4.1fk (e.g. " 1.0k", " 9.9k") which keeps
+        //      a dot through 9999.5 tok/s.
+        // Above 9999.5 we accept losing the dot — rates that high are
+        // off the chart for any sensible token-per-second display.
         char rate_buf[16];
-        if      (rate <   1000.0f) std::snprintf(rate_buf, sizeof(rate_buf), "%5.1f",  static_cast<double>(rate));
-        else if (rate < 100000.0f) std::snprintf(rate_buf, sizeof(rate_buf), "%5.0f",  static_cast<double>(rate));
-        else                       std::snprintf(rate_buf, sizeof(rate_buf), "%4.0fk", static_cast<double>(rate) / 1000.0);
+        if      (rate <   999.5f) std::snprintf(rate_buf, sizeof(rate_buf), "%5.1f",  static_cast<double>(rate));
+        else if (rate <  9999.5f) std::snprintf(rate_buf, sizeof(rate_buf), "%4.1fk", static_cast<double>(rate) / 1000.0);
+        else if (rate < 99999.5f) std::snprintf(rate_buf, sizeof(rate_buf), "%4.0fk", static_cast<double>(rate) / 1000.0);
+        else                      std::snprintf(rate_buf, sizeof(rate_buf), " 100k");
 
         // Sparkline — pad on LEFT with lowest block so right edge stays
         // pinned and new samples appear on the right.

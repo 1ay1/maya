@@ -65,7 +65,10 @@ public:
         ::kevent(kq_, changes, nchanges, nullptr, 0, nullptr);
     }
 
-    void set_wake_fd(NativeHandle fd) noexcept {
+    // Uniform name across platforms. `fd < 0` (invalid_handle) leaves
+    // wake unregistered — kqueue won't add the fd, wait() just won't
+    // surface a wake flag.
+    void set_wake_handle(NativeHandle fd) noexcept {
         wake_fd_ = fd;
         if (kq_ >= 0 && fd >= 0 && !wake_registered_) {
             struct kevent ev;

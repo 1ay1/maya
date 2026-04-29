@@ -26,6 +26,7 @@
 #include <utility>
 
 #include <fcntl.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include "../../core/expected.hpp"
@@ -72,6 +73,26 @@ struct ResizePipe {
     ResizePipe& operator=(const ResizePipe&) = delete;
 
     ~ResizePipe() noexcept {
+        // Block SIGWINCH for the duration of teardown. Without this,
+        // a handler invocation that has already executed `int fd =
+        // g_signal_write_fd;` but hasn't yet called `write(fd, ...)`
+        // could race our close(write_fd) and (a) get EBADF — harmless
+        // — or (b) write a stray byte to whatever fd the kernel
+        // recycles for `write_fd` next. Tiny window, but the cost of
+        // closing it is one sigprocmask pair.
+        sigset_t mask, prev;
+        sigemptyset(&mask);
+        sigaddset(&mask, SIGWINCH);
+#if defined(__APPLE__) || defined(__linux__) || defined(__unix__)
+        // pthread_sigmask is the multi-thread-safe variant; sigprocmask
+        // is undefined behaviour in the presence of multiple threads
+        // per POSIX. Maya apps may have detached workers running, so
+        // use pthread_sigmask whenever we have it.
+        ::pthread_sigmask(SIG_BLOCK, &mask, &prev);
+#else
+        ::sigprocmask(SIG_BLOCK, &mask, &prev);
+#endif
+
         // Order is load-bearing.  (1) un-install the handler so no NEW
         // signal will run our function; pending signals delivered while
         // the new disposition is being installed will see SIG_DFL
@@ -87,6 +108,12 @@ struct ResizePipe {
 
         if (read_fd  >= 0) ::close(read_fd);
         if (write_fd >= 0) ::close(write_fd);
+
+#if defined(__APPLE__) || defined(__linux__) || defined(__unix__)
+        ::pthread_sigmask(SIG_SETMASK, &prev, nullptr);
+#else
+        ::sigprocmask(SIG_SETMASK, &prev, nullptr);
+#endif
     }
 };
 

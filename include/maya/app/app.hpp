@@ -49,18 +49,6 @@
 #include <variant>
 #include <vector>
 
-// platform detection must be visible before the POSIX header gate below;
-// MAYA_PLATFORM_WIN32 is defined inside platform/detect.hpp.
-#include "../platform/detect.hpp"
-
-#if !MAYA_PLATFORM_WIN32
-#include <fcntl.h>
-#include <unistd.h>
-#ifdef __linux__
-#include <sys/eventfd.h>
-#endif
-#endif
-
 #include "../core/cmd.hpp"
 #include "../core/concepts.hpp"
 #include "../core/expected.hpp"
@@ -397,18 +385,13 @@ private:
     // -- Wake signaling (background task → UI thread) -------------------------
     // The fd/handle is owned by BackgroundQueue: it must live as long as any
     // detached IsolatedTask thread that may try to signal it, even past the
-    // runtime's lifetime. The runtime borrows it via these setters and
-    // multiplexes it through event_source_'s wait().
+    // runtime's lifetime. The runtime borrows it via this setter and
+    // multiplexes it through event_source_'s wait(). Handle-vs-fd is hidden
+    // by platform::NativeHandle (int on POSIX, HANDLE on Win32).
 public:
-#if MAYA_PLATFORM_WIN32
     void set_wake_handle(platform::NativeHandle h) noexcept {
         if (event_source_) event_source_->set_wake_handle(h);
     }
-#else
-    void set_wake_fd(int fd) noexcept {
-        if (event_source_) event_source_->set_wake_fd(fd);
-    }
-#endif
 
 private:
     // -- State ----------------------------------------------------------------
@@ -457,66 +440,61 @@ namespace detail {
 template <typename Msg>
 struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
     // ── Wake mechanism (queue-owned, lifetime-stable) ─────────────────────
-#if MAYA_PLATFORM_WIN32
-    platform::NativeHandle  wake_handle_ = platform::invalid_handle;
-#elif defined(__linux__)
-    int                     wake_fd_ = -1;   // eventfd: read==write
-#else
-    int                     wake_read_fd_  = -1;
-    int                     wake_write_fd_ = -1;
-#endif
+    // platform::NativeWakeFd hides eventfd / pipe / NT-event differences.
+    // If construction failed (rare — sandboxed eventfd, fd table full,
+    // CreateEventW returned NULL) wake_.valid() is false; signal/drain
+    // become safe no-ops and the runtime's unconditional drain in the
+    // main loop surfaces messages with ~100ms latency. No message loss.
+    platform::NativeWakeFd  wake_;
 
     // ── Message side (worker → UI) ────────────────────────────────────────
     std::mutex              mutex_;
     std::vector<Msg>        messages_;
 
     // ── Task side (UI → workers) ──────────────────────────────────────────
-    std::mutex                          work_mutex_;
-    std::condition_variable             work_cv_;
-    std::deque<std::function<void()>>   work_;
-    std::vector<std::thread>            workers_;
-    int                                 idle_workers_ = 0;
-    bool                                shutdown_ = false;
-    unsigned                            max_workers_ =
+    // std::condition_variable_any so we can wait with a stop_token; std::jthread
+    // owns the cooperative-shutdown stop_source, joins on destruction, and
+    // makes the explicit shutdown flag obsolete. std::move_only_function
+    // avoids copy requirements that std::function imposes on captures —
+    // tasks routinely move-capture unique_ptrs / move-only socket handles.
+    std::mutex                                       work_mutex_;
+    std::condition_variable_any                      work_cv_;
+    std::deque<std::move_only_function<void()>>      work_;
+    std::vector<std::jthread>                        workers_;
+    int                                              idle_workers_ = 0;
+    unsigned                                         max_workers_ =
         std::max(4u, std::thread::hardware_concurrency());
 
-    BackgroundQueue() {
+    explicit BackgroundQueue(platform::NativeWakeFd w) noexcept
+        : wake_(std::move(w))
+    {
         workers_.reserve(max_workers_);
-
-#if MAYA_PLATFORM_WIN32
-        wake_handle_ = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-#elif defined(__linux__)
-        wake_fd_ = ::eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-#else
-        int fds[2];
-        if (::pipe(fds) == 0) {
-            for (int fd : fds) {
-                int flags = ::fcntl(fd, F_GETFL);
-                if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-                ::fcntl(fd, F_SETFD, FD_CLOEXEC);
-            }
-            wake_read_fd_  = fds[0];
-            wake_write_fd_ = fds[1];
-        }
-#endif
     }
     BackgroundQueue(const BackgroundQueue&) = delete;
     BackgroundQueue& operator=(const BackgroundQueue&) = delete;
 
-    // Read side accessors for the runtime's event_source.
-#if MAYA_PLATFORM_WIN32
+    // Factory — propagates wake-fd construction failure to the caller.
+    // The caller may decide to fall back to a no-wake queue (signal/drain
+    // become no-ops; messages drain via the runtime's unconditional poll).
+    [[nodiscard]] static auto create()
+        -> Result<std::shared_ptr<BackgroundQueue>>
+    {
+        MAYA_TRY_DECL(auto wake, platform::NativeWakeFd::create());
+        return ok(std::make_shared<BackgroundQueue>(std::move(wake)));
+    }
+
+    // Whether the wake mechanism is alive. Surface to the runtime so
+    // diagnostics / event-source registration can decide how to handle
+    // a degraded queue (fall back to polling drain).
+    [[nodiscard]] bool wake_ok() const noexcept { return wake_.valid(); }
+
+    // Read side handle for the runtime's event source. Returns the
+    // platform's invalid sentinel (-1 / INVALID_HANDLE_VALUE) if the
+    // wake fd failed to construct — event sources skip registration in
+    // that case and we degrade to polling drain.
     [[nodiscard]] platform::NativeHandle wake_handle() const noexcept {
-        return wake_handle_;
+        return wake_.native_handle();
     }
-#else
-    [[nodiscard]] int wake_read_fd() const noexcept {
-#ifdef __linux__
-        return wake_fd_;
-#else
-        return wake_read_fd_;
-#endif
-    }
-#endif
 
     void send(Msg m) {
         bool need_signal;
@@ -530,7 +508,7 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
             need_signal = messages_.empty();
             messages_.push_back(std::move(m));
         }
-        if (need_signal) signal_wake();
+        if (need_signal) wake_.signal();
     }
 
     auto drain() -> std::vector<Msg> {
@@ -540,34 +518,21 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
         return out;
     }
 
-    void drain_wake() noexcept {
-#if MAYA_PLATFORM_WIN32
-        if (wake_handle_ != platform::invalid_handle)
-            ::ResetEvent(wake_handle_);
-#elif defined(__linux__)
-        if (wake_fd_ >= 0) {
-            uint64_t val;
-            (void)::read(wake_fd_, &val, sizeof(val));
-        }
-#else
-        if (wake_read_fd_ < 0) return;
-        char buf[4096];
-        while (::read(wake_read_fd_, buf, sizeof(buf)) > 0) {}
-#endif
-    }
+    void drain_wake() noexcept { wake_.drain(); }
 
     // Enqueue a task. Spawns a worker only when every existing one is busy
     // and we're still under the cap. Done under a single lock — workers_ is
-    // pre-reserved so emplace_back never reallocates, and std::thread ctor
+    // pre-reserved so emplace_back never reallocates, and std::jthread ctor
     // throwing (e.g. EAGAIN at the system thread cap) leaves workers_
-    // unchanged because the strong-exception guarantee of vector::emplace_back
-    // rolls back the slot on throw.
-    void post(std::function<void()> fn) {
+    // unchanged because vector::emplace_back has the strong-exception
+    // guarantee when the move ctor is noexcept (jthread's is).
+    void post(std::move_only_function<void()> fn) {
         std::lock_guard lk(work_mutex_);
         work_.push_back(std::move(fn));
         if (idle_workers_ == 0 && workers_.size() < max_workers_) {
             try {
-                workers_.emplace_back([this] { worker_loop(); });
+                workers_.emplace_back(
+                    [this](std::stop_token stop) { worker_loop(stop); });
             } catch (const std::system_error&) {
                 // Thread cap reached. Existing workers (if any) will pick
                 // up the work via the notify_one below; the next post()
@@ -579,38 +544,35 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
     }
 
     ~BackgroundQueue() {
-        {
-            std::lock_guard lk(work_mutex_);
-            shutdown_ = true;
-        }
+        // Request all workers to stop. condition_variable_any::wait with
+        // a stop_token returns immediately on stop_requested(), so no
+        // explicit notify_all is needed — but we send one anyway in case
+        // a worker is between iterations.
+        for (auto& t : workers_) t.request_stop();
         work_cv_.notify_all();
-        for (auto& t : workers_) {
-            if (t.joinable()) t.join();
-        }
-        // Safe to close after join — workers may have called signal_wake
-        // during their final task, but those writes complete before the
-        // worker exits, and join() blocks until exit.
-#if MAYA_PLATFORM_WIN32
-        if (wake_handle_ != platform::invalid_handle)
-            ::CloseHandle(wake_handle_);
-#elif defined(__linux__)
-        if (wake_fd_ >= 0) ::close(wake_fd_);
-#else
-        if (wake_read_fd_  >= 0) ::close(wake_read_fd_);
-        if (wake_write_fd_ >= 0) ::close(wake_write_fd_);
-#endif
+        // jthread's destructor joins automatically; clearing the vector
+        // forces those joins now (rather than at our own destruction
+        // order, which lets us close wake_ knowing no worker is alive).
+        workers_.clear();
+        // wake_'s destructor closes the underlying fd/handle. Detached
+        // IsolatedTask threads each hold a shared_ptr<BackgroundQueue>,
+        // so this destructor only runs once they've all exited too —
+        // a wedged isolated task can't write to a recycled fd.
     }
 
 private:
-    void worker_loop() {
-        for (;;) {
-            std::function<void()> task;
+    void worker_loop(std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            std::move_only_function<void()> task;
             {
                 std::unique_lock lk(work_mutex_);
                 ++idle_workers_;
-                work_cv_.wait(lk, [this] { return !work_.empty() || shutdown_; });
+                // wait_v(stop_token, predicate): returns when predicate is
+                // true OR stop is requested. Eliminates the manual
+                // shutdown_ flag — stop_token IS the shutdown signal.
+                work_cv_.wait(lk, stop, [this] { return !work_.empty(); });
                 --idle_workers_;
-                if (work_.empty() && shutdown_) return;
+                if (work_.empty()) return;     // stop_requested + empty
                 task = std::move(work_.front());
                 work_.pop_front();
             }
@@ -621,31 +583,38 @@ private:
             try { task(); } catch (...) {}
         }
     }
-
-    void signal_wake() noexcept {
-#if MAYA_PLATFORM_WIN32
-        if (wake_handle_ != platform::invalid_handle)
-            ::SetEvent(wake_handle_);
-#elif defined(__linux__)
-        if (wake_fd_ < 0) return;
-        uint64_t val = 1;
-        (void)::write(wake_fd_, &val, sizeof(val));
-#else
-        if (wake_write_fd_ < 0) return;
-        char byte = 1;
-        (void)::write(wake_write_fd_, &byte, 1);
-#endif
-    }
 };
+
+// Robust steady_clock + duration addition: clamp to time_point::max() if the
+// duration would overflow. C++ specifies signed-integer overflow as UB, so a
+// raw `now + huge_delay` is undefined. This shows up if a caller passes
+// chrono::milliseconds::max() as a "fire never" sentinel.
+inline auto saturate_add(std::chrono::steady_clock::time_point t,
+                         std::chrono::milliseconds            d) noexcept
+    -> std::chrono::steady_clock::time_point
+{
+    using Tp  = std::chrono::steady_clock::time_point;
+    if (d.count() < 0) return t;
+    const auto headroom = Tp::max() - t;
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(headroom) <= d)
+        return Tp::max();
+    return t + d;
+}
 
 template <typename Msg>
 struct CmdContext {
     Runtime&          rt;
     std::vector<Msg>& pending;
 
+    // TimerEntry tags each scheduled fire with the originating Sub::Every
+    // interval (zero for one-shot Cmd::After). The re-arm logic in the
+    // main loop matches by interval so two distinct Sub::Every
+    // subscriptions don't cancel each other's re-arms (they would with a
+    // pure "any timer pending" check).
     struct TimerEntry {
         std::chrono::steady_clock::time_point fire_at;
-        Msg                                    msg;
+        Msg                                   msg;
+        std::chrono::milliseconds             interval{0};   // 0 = one-shot
     };
     std::vector<TimerEntry>& timers;
     std::shared_ptr<BackgroundQueue<Msg>> bg_queue;
@@ -661,8 +630,9 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
         },
         [&](const typename Cmd<Msg>::After& a) {
             ctx.timers.push_back({
-                std::chrono::steady_clock::now() + a.delay,
+                saturate_add(std::chrono::steady_clock::now(), a.delay),
                 a.msg,
+                std::chrono::milliseconds{0},   // one-shot
             });
         },
         [&](const typename Cmd<Msg>::SetTitle& s) {
@@ -827,18 +797,31 @@ void run(RunConfig cfg = {}) {
     }
     auto rt = std::move(*result);
 
-    // Background task queue — tasks spawned by Cmd::task run on worker threads
-    // and deliver messages here. The queue OWNS its wake mechanism; we plug
-    // the read side into the runtime's event_source so poll() wakes on
-    // dispatch. shared_ptr ensures the queue (and its wake fd) outlive any
-    // detached IsolatedTask thread that captured it, so a wedged task's
-    // late dispatch never writes to a recycled fd.
-    auto bg_queue = std::make_shared<detail::BackgroundQueue<Msg>>();
-#if MAYA_PLATFORM_WIN32
+    // Background task queue — tasks spawned by Cmd::task run on worker
+    // threads and deliver messages here. The queue OWNS its wake
+    // mechanism (platform::NativeWakeFd: eventfd / pipe / NT event); we
+    // plug the read-side native handle into the runtime's event_source
+    // so poll() wakes on dispatch. shared_ptr ensures the queue (and
+    // its wake handle) outlive any detached IsolatedTask thread that
+    // captured it, so a wedged task's late dispatch never writes to a
+    // recycled fd.
+    //
+    // If wake-fd construction failed (rare — sandboxed eventfd, fd
+    // table full, CreateEventW returned NULL), fall back to a queue
+    // with an invalid wake handle. The runtime's main loop drains the
+    // queue every iteration regardless of the wake flag, so messages
+    // surface with ~100ms latency instead of being event-driven —
+    // never lost.
+    std::shared_ptr<detail::BackgroundQueue<Msg>> bg_queue;
+    if (auto bgq = detail::BackgroundQueue<Msg>::create()) {
+        bg_queue = std::move(*bgq);
+    } else {
+        // Construct a queue with a no-op wake. Tasks still dispatch
+        // synchronously through send(); the runtime polls.
+        bg_queue = std::make_shared<detail::BackgroundQueue<Msg>>(
+            platform::NativeWakeFd{});
+    }
     rt.set_wake_handle(bg_queue->wake_handle());
-#else
-    rt.set_wake_fd(bg_queue->wake_read_fd());
-#endif
 
     // Interpreter bookkeeping (not part of Model — these are runtime state)
     std::vector<Msg> pending_msgs;
@@ -943,15 +926,24 @@ void run(RunConfig cfg = {}) {
         }
 
         // Drain background task messages.
-        // The wake protocol guarantees: if any send() pushed a message,
-        // exactly one wake is pending in the fd until consumed. Drain the
-        // fd first so additional sends after drain() will signal again
-        // (their empty→non-empty check sees the queue empty post-swap).
-        if (poll_result->wake) {
-            bg_queue->drain_wake();
-            for (auto& m : bg_queue->drain())
-                pending_msgs.push_back(std::move(m));
-        }
+        //
+        // The wake protocol normally guarantees: if any send() pushed a
+        // message, exactly one wake is pending in the fd until consumed.
+        // Drain the fd FIRST so additional sends after drain() will signal
+        // again (their empty→non-empty check sees the queue empty
+        // post-swap).
+        //
+        // We drain `messages_` unconditionally — not gated on
+        // poll_result->wake — so that if the wake mechanism is broken
+        // (`bg_queue->wake_ok() == false`, e.g. eventfd blocked by
+        // seccomp, fd table full, or NT event create failed) the
+        // 100ms idle timeout still surfaces the messages. Worst case is
+        // event-driven dispatch degrades to polling-style ~100ms
+        // latency; messages are never lost. The mutex acquire is ~30ns
+        // when uncontested.
+        if (poll_result->wake) bg_queue->drain_wake();
+        for (auto& m : bg_queue->drain())
+            pending_msgs.push_back(std::move(m));
 
         // Flush parser timeouts (e.g., bare Escape)
         for (auto& ev : rt.flush_timeouts()) {
@@ -987,22 +979,34 @@ void run(RunConfig cfg = {}) {
             // Rebuild subscriptions from current model
             current_sub = get_sub();
 
-            // Re-seed timer subscriptions
+            // Re-seed timer subscriptions. Each Sub::Every entry needs
+            // exactly one timer scheduled at all times. Match by `interval`
+            // (the timer's tag) so two distinct Sub::Every subscriptions
+            // with different periods don't collide — a previous heuristic
+            // that checked "any timer within interval" would skip
+            // re-arming Sub::Every(100ms) whenever a Sub::Every(50ms)
+            // had a fire within 100ms.
+            //
+            // Two Sub::Every subs that share an interval will coalesce
+            // into a single timer (both msgs would be sent). That's an
+            // acceptable degenerate case — apps rarely want two
+            // identical periods, and if they do, they can pick distinct
+            // intervals like 100ms vs 101ms to disambiguate.
             auto now = std::chrono::steady_clock::now();
             std::vector<std::pair<std::chrono::milliseconds, Msg>> timer_specs;
             detail::collect_timers(current_sub, timer_specs);
             for (auto& [interval, msg] : timer_specs) {
+                if (interval.count() <= 0) continue;   // ill-formed sub
                 bool already_pending = false;
                 for (auto& t : timers) {
-                    auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                        t.fire_at - now);
-                    if (remaining <= interval) {
-                        already_pending = true;
-                        break;
-                    }
+                    if (t.interval == interval) { already_pending = true; break; }
                 }
                 if (!already_pending) {
-                    timers.push_back({now + interval, std::move(msg)});
+                    timers.push_back({
+                        detail::saturate_add(now, interval),
+                        std::move(msg),
+                        interval,
+                    });
                 }
             }
 

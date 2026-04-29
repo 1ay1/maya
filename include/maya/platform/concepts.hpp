@@ -81,4 +81,31 @@ concept ResizeSource = requires(T& t) {
     { t.native_handle() } -> std::same_as<NativeHandle>;
 } && std::movable<T> && (!std::copyable<T>);
 
+// ============================================================================
+// WakeFdBackend — many-writer / one-reader inter-thread wake
+// ============================================================================
+// A native handle (eventfd / pipe / NT auto-reset event) that any number
+// of threads can `signal()` and the UI thread drains by reading the
+// `native_handle()` to readiness through the EventMultiplexer.
+//
+// `valid()` lets callers detect construction failure without exceptions —
+// if it returns false, signal()/drain() must be no-ops and
+// native_handle() returns the invalid sentinel so EventMultiplexer
+// implementations skip registration.
+//
+// Backends:
+//   POSIX (Linux): eventfd, falls back to self-pipe if eventfd is blocked
+//                  by seccomp / fd table pressure.
+//   POSIX (BSD/macOS): self-pipe with O_NONBLOCK + FD_CLOEXEC.
+//   Win32: CreateEventW (manual-reset).
+
+template <typename T>
+concept WakeFdBackend = requires(T& t, const T& ct) {
+    { T::create() } -> std::same_as<Result<T>>;
+    { ct.native_handle() } -> std::same_as<NativeHandle>;
+    { ct.valid() } -> std::same_as<bool>;
+    { t.signal() } noexcept;
+    { t.drain() } noexcept;
+} && std::movable<T> && (!std::copyable<T>);
+
 } // namespace maya::platform

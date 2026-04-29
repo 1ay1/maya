@@ -45,7 +45,14 @@ public:
         , stdout_(::GetStdHandle(STD_OUTPUT_HANDLE))
     {}
 
-    void set_wake_handle(HANDLE h) noexcept { wake_ = h; }
+    void set_wake_handle(HANDLE h) noexcept {
+        // CreateEventW returns NULL on failure; INVALID_HANDLE_VALUE is a
+        // separate sentinel. Accept either as "no wake" so a failed
+        // BackgroundQueue construction (silently passing NULL) doesn't
+        // get added to WaitForMultipleObjects, which would fail it
+        // outright with ERROR_INVALID_HANDLE.
+        wake_ = (h == nullptr) ? INVALID_HANDLE_VALUE : h;
+    }
 
     [[nodiscard]] auto wait(
         std::chrono::milliseconds timeout,
@@ -54,20 +61,37 @@ public:
         ReadyFlags flags{};
         flags.writeable = true;
 
-        DWORD ms = static_cast<DWORD>(timeout.count());
+        // Cap to INFINITE if the chrono value would overflow DWORD —
+        // happens if a caller passes std::chrono::milliseconds::max() or
+        // similar "wait forever" sentinel. Direct cast would wrap to a
+        // small value and busy-poll.
+        const auto count = timeout.count();
+        DWORD ms = (count < 0)
+                        ? 0u
+                 : (count > static_cast<long long>(INFINITE - 1))
+                        ? INFINITE
+                        : static_cast<DWORD>(count);
 
         if (wake_ != INVALID_HANDLE_VALUE) {
             HANDLE handles[2] = { stdin_, wake_ };
             DWORD result = ::WaitForMultipleObjects(2, handles, FALSE, ms);
-            (void)result;
-            // Check each handle independently — WaitForMultipleObjects
-            // only reports the lowest signaled index, so we must probe both.
+            if (result == WAIT_FAILED) {
+                // Hard kernel error (handle invalidated, etc.). Surface it
+                // so the runtime can shut down cleanly instead of spinning
+                // on a broken wait.
+                return err<ReadyFlags>(Error::io("WaitForMultipleObjects failed"));
+            }
+            // WAIT_TIMEOUT and WAIT_OBJECT_0+i both leave us probing each
+            // handle individually below; WaitForMultipleObjects only
+            // reports the lowest signaled index.
             if (::WaitForSingleObject(stdin_, 0) == WAIT_OBJECT_0)
                 drain_system_events(flags);
             if (::WaitForSingleObject(wake_, 0) == WAIT_OBJECT_0)
                 flags.wake = true;
         } else {
             DWORD result = ::WaitForSingleObject(stdin_, ms);
+            if (result == WAIT_FAILED)
+                return err<ReadyFlags>(Error::io("WaitForSingleObject failed"));
             if (result == WAIT_OBJECT_0) {
                 drain_system_events(flags);
             }

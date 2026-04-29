@@ -16,14 +16,17 @@
     #include "macos/terminal.hpp"
     #include "macos/event_source.hpp"
     #include "macos/signal.hpp"
+    #include "macos/wake_fd.hpp"
 #elif MAYA_PLATFORM_POSIX
     #include "posix/terminal.hpp"
     #include "posix/event_source.hpp"
     #include "posix/signal.hpp"
+    #include "posix/wake_fd.hpp"
 #elif MAYA_PLATFORM_WIN32
     #include "win32/terminal.hpp"
     #include "win32/event_source.hpp"
     #include "win32/signal.hpp"
+    #include "win32/wake_fd.hpp"
 #endif
 
 namespace maya::platform {
@@ -36,14 +39,17 @@ namespace maya::platform {
     using NativeTerminal     = macos::MacTerminal;
     using NativeEventSource  = macos::MacEventSource;
     using NativeResizeSignal = macos::MacResizeSignal;
+    using NativeWakeFd       = macos::MacWakeFd;
 #elif MAYA_PLATFORM_WIN32
     using NativeTerminal     = win32::Win32Terminal;
     using NativeEventSource  = win32::Win32EventSource;
     using NativeResizeSignal = win32::Win32ResizeSignal;
+    using NativeWakeFd       = win32::Win32WakeFd;
 #else
     using NativeTerminal     = posix::PosixTerminal;
     using NativeEventSource  = posix::PosixEventSource;
     using NativeResizeSignal = posix::PosixResizeSignal;
+    using NativeWakeFd       = posix::PosixWakeFd;
 #endif
 
 // ============================================================================
@@ -65,5 +71,9 @@ static_assert(EventMultiplexer<NativeEventSource>,
 static_assert(ResizeSource<NativeResizeSignal>,
     "Native resize signal does not satisfy ResizeSource concept. "
     "Check that install(), pending(), drain(), native_handle() are implemented.");
+
+static_assert(WakeFdBackend<NativeWakeFd>,
+    "Native wake fd does not satisfy WakeFdBackend concept. "
+    "Check that create(), native_handle(), valid(), signal(), drain() are implemented.");
 
 } // namespace maya::platform

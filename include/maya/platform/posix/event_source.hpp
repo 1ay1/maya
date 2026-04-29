@@ -32,7 +32,10 @@ public:
     PosixEventSource(NativeHandle term_fd, NativeHandle sig_fd) noexcept
         : terminal_fd_(term_fd), signal_fd_(sig_fd) {}
 
-    void set_wake_fd(NativeHandle fd) noexcept { wake_fd_ = fd; }
+    // Uniform name across platforms — the parameter is the queue's
+    // wake-side native handle (fd on POSIX). `invalid_handle` (-1)
+    // disables wake multiplexing; poll just won't see it ready.
+    void set_wake_handle(NativeHandle fd) noexcept { wake_fd_ = fd; }
 
     [[nodiscard]] auto wait(
         std::chrono::milliseconds timeout,

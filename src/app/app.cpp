@@ -6,18 +6,7 @@
 #include "maya/core/overload.hpp"
 #include "maya/core/scope_exit.hpp"
 #include "maya/platform/select.hpp"
-
-#if !MAYA_PLATFORM_WIN32
-#include <fcntl.h>
-#include <unistd.h>
-#ifdef __linux__
-#include <sys/eventfd.h>
-#endif
-#endif
-
-#if MAYA_PLATFORM_MACOS
-#include <pthread.h>
-#endif
+#include "maya/platform/thread.hpp"
 
 namespace maya::detail {
 
@@ -86,10 +75,9 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     rt.render_ctx_.height     = rt.size_.height.raw();
     rt.render_ctx_.generation = 0;
 
-#if MAYA_PLATFORM_MACOS
-    // Tell macOS scheduler this is a user-interactive thread.
-    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-#endif
+    // Schedule hint — see platform/thread.hpp. macOS: QoS user-interactive.
+    // Linux/Win32: no-op.
+    platform::set_ui_thread_priority();
 
     return ok(std::move(rt));
 }
@@ -445,9 +433,7 @@ Status canvas_run_impl(
 {
     using Clock = std::chrono::steady_clock;
 
-#if MAYA_PLATFORM_MACOS
-    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
-#endif
+    platform::set_ui_thread_priority();
 
     MAYA_TRY_DECL(auto cooked, Terminal<Cooked>::create());
     MAYA_TRY_DECL(auto raw, std::move(cooked).enable_raw_mode());

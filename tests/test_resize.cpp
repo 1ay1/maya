@@ -298,8 +298,12 @@ void test_row_hash_stability() {
 
     // Row 0's content must not be re-emitted — it is identical cell-for-cell.
     assert(out.find("Stable row") == std::string::npos);
-    // Row 1's new content must be emitted.
-    assert(out.find("Changes every frame: 2") != std::string::npos);
+    // Row 1: per-cell-span diff emits only the differing column ('1' → '2'),
+    // not the full string. The unchanged prefix "Changes every frame:" must
+    // not be re-sent — it's skipped via cursor positioning.
+    assert(out.find("Changes every frame:") == std::string::npos);
+    // Output must be non-empty (the diff did fire).
+    assert(!out.empty());
 
     // Frame 3: identical to frame 2 → compose_inline_frame should be a no-op.
     Canvas c3(W, 10, &pool);

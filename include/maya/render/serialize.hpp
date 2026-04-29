@@ -67,12 +67,15 @@ struct InlineFrameState {
 /// Writes nothing (returns with `out` unchanged) when the current canvas
 /// is byte-for-byte identical to the previous one. Otherwise emits the
 /// minimal ANSI sequence that:
-///   1. wraps the update in DEC 2026 synchronized output,
+///   1. (optionally) wraps the update in DEC 2026 synchronized output,
 ///   2. hides the cursor,
 ///   3. moves to the first row that actually changed (never into
 ///      scrollback — rows that rolled off-screen are treated as
 ///      committed and skipped),
-///   4. rewrites from there down through the new content,
+///   4. for each row in [first_changed, content_rows): emits only the
+///      sub-span of cells that differ from the cached prev row (so an
+///      unchanged middle row costs just \r\n, and a row whose only
+///      change is one digit costs ~5 bytes — not the whole row),
 ///   5. erases any rows the frame shrank past (still on-screen only),
 ///   6. restores the cursor.
 ///
@@ -80,11 +83,19 @@ struct InlineFrameState {
 /// `content_height(canvas)`). `term_h` is the terminal height — used to
 /// clamp cursor-up moves so we never try to "scroll back" into history.
 /// `state` is updated with the new cell buffer on successful composition.
+///
+/// `synchronized_output` toggles the DEC 2026 wrapper. Default true for
+/// backward compat; pass false on terminals that don't honor mode 2026
+/// (Apple Terminal, plain xterm, tmux without `terminal-features ',sync'`).
+/// The sequence is silently ignored by terminals that don't recognise it,
+/// so the practical effect is byte savings rather than correctness — but
+/// the answer is also a useful upstream signal for tick-rate gating.
 void compose_inline_frame(const Canvas& canvas,
                           int content_rows,
                           int term_h,
                           const StylePool& pool,
                           InlineFrameState& state,
-                          std::string& out);
+                          std::string& out,
+                          bool synchronized_output = true);
 
 } // namespace maya

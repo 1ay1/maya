@@ -141,13 +141,16 @@ public:
 
     // =========================================================================
     // δ(Painted, open_frame()) → Opened
-    // Effect: appends hide_cursor + sync_start to out_.
-    //         The terminal will not display partial updates until close_frame().
+    // Effect: appends hide_cursor (+ sync_start when sync_output is true)
+    //         to out_. With sync_output, the terminal won't display partial
+    //         updates until close_frame() (DEC mode 2026 BSU/ESU). On
+    //         terminals that don't honor 2026 the wrapper is silently
+    //         ignored — pass false to skip sending the bytes at all.
     // =========================================================================
     [[nodiscard]] RenderPipeline<stage::Opened>
-    open_frame() && requires std::same_as<S, stage::Painted> {
+    open_frame(bool sync_output = true) && requires std::same_as<S, stage::Painted> {
         out_ += ansi::hide_cursor;
-        out_ += ansi::sync_start;
+        if (sync_output) out_ += ansi::sync_start;
         return {back_, pool_, theme_, out_};
     }
 
@@ -199,13 +202,16 @@ public:
 
     // =========================================================================
     // δ(Opened, close_frame()) → Closed
-    // Effect: appends SGR-reset + sync_end to out_.
-    //         After this, out_ is a complete, self-contained ANSI frame.
+    // Effect: appends SGR-reset (+ sync_end when sync_output is true) to
+    //         out_. After this, out_ is a complete, self-contained ANSI
+    //         frame. `sync_output` MUST match the value passed to
+    //         open_frame() — sending sync_end without a matching sync_start
+    //         is harmless but pointless.
     // =========================================================================
     RenderPipeline<stage::Closed>
-    close_frame() && requires std::same_as<S, stage::Opened> {
+    close_frame(bool sync_output = true) && requires std::same_as<S, stage::Opened> {
         out_ += ansi::reset;
-        out_ += ansi::sync_end;
+        if (sync_output) out_ += ansi::sync_end;
         return {back_, pool_, theme_, out_};
     }
 };

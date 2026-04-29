@@ -66,10 +66,13 @@ public:
                  : (rate >= 20.0f) ? Color::yellow()
                                    : Color::red();
 
-        // Rate field — always 5 display columns.
+        // Rate field — always 5 display columns. Keep the decimal point
+        // visible across the typical streaming range (0–999.9 tok/s) so
+        // it doesn't pop in/out of existence as the rate crosses 100 —
+        // %5.1f fits "999.9" exactly, no overflow.
         char rate_buf[16];
-        if      (rate <    100.0f) std::snprintf(rate_buf, sizeof(rate_buf), "%5.1f",  static_cast<double>(rate));
-        else if (rate <  10000.0f) std::snprintf(rate_buf, sizeof(rate_buf), "%5.0f",  static_cast<double>(rate));
+        if      (rate <   1000.0f) std::snprintf(rate_buf, sizeof(rate_buf), "%5.1f",  static_cast<double>(rate));
+        else if (rate < 100000.0f) std::snprintf(rate_buf, sizeof(rate_buf), "%5.0f",  static_cast<double>(rate));
         else                       std::snprintf(rate_buf, sizeof(rate_buf), "%4.0fk", static_cast<double>(rate) / 1000.0);
 
         // Sparkline — pad on LEFT with lowest block so right edge stays

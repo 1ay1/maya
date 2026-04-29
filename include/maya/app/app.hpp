@@ -277,6 +277,16 @@ public:
     [[nodiscard]] const Theme& theme() const noexcept { return theme_; }
     [[nodiscard]] bool is_inline() const noexcept { return inline_terminal_.has_value(); }
 
+    // Does the host terminal honor DEC mode 2026 (synchronized update)?
+    // Detected once at Runtime::create() via env-var heuristic; immutable
+    // afterwards. When true, every frame is wrapped in CSI ?2026h … l so
+    // the terminal swaps the back buffer atomically (no flicker even on
+    // multi-row updates). When false, the renderer skips emitting the
+    // wrapper and applications can lower their tick rate to compensate.
+    [[nodiscard]] bool supports_synchronized_output() const noexcept {
+        return sync_output_;
+    }
+
     // Poll the event source for ready flags.
     struct PollResult { bool resize = false; bool input = false; bool wake = false; };
     auto poll(std::chrono::milliseconds timeout) -> Result<PollResult>;
@@ -381,6 +391,10 @@ private:
     Size          size_{};
     RenderContext render_ctx_;
     uint32_t      resize_generation_  = 0;
+    // Cached at create() — avoids re-querying env on every frame, and
+    // gives subscribe()/view() callers a stable answer they can use for
+    // tick-rate gating. See ansi::env_supports_synchronized_output().
+    bool          sync_output_        = true;
 
     // -- Wake signaling (background task → UI thread) -------------------------
     // The fd/handle is owned by BackgroundQueue: it must live as long as any

@@ -229,5 +229,31 @@ private:
 [[nodiscard]] std::string hyperlink_end();
 [[nodiscard]] std::string set_clipboard(std::string_view base64_data);
 
+// ============================================================================
+// Terminal capability hints
+// ============================================================================
+
+// Heuristic: does the host terminal honor DEC mode 2026 (synchronized
+// update / "BSU/ESU")? When true, an entire repaint can be wrapped in
+// CSI ?2026h … CSI ?2026l and the terminal swaps the back buffer
+// atomically — no flicker even if the update spans many bytes. When
+// false, the terminal renders bytes as they arrive, so progressive
+// repaints are visible (the source of "slow-terminal flicker").
+//
+// Sending the codes is harmless either way (unknown CSI is silently
+// dropped), but the answer is useful upstream:
+//   - Maya gates the per-frame sync wrapper on it (saves a few bytes).
+//   - Apps may reduce their tick frequency / coalesce more aggressively
+//     when sync is unavailable, since each repaint has a visible cost.
+//
+// Detection is environment-variable driven (no DA1 round-trip): we
+// recognize the markers that modern terminals leave in the environment
+// (KITTY_WINDOW_ID, WT_SESSION, GHOSTTY_RESOURCES_DIR, $TERM_PROGRAM
+// for WezTerm/iTerm/vscode, $TERM containing kitty/foot/ghostty/etc.).
+// Apple_Terminal is explicitly known to NOT support sync. Unknown ⇒
+// false, on the conservative assumption that we'd rather slow down than
+// flicker.
+[[nodiscard]] bool env_supports_synchronized_output();
+
 } // namespace ansi
 } // namespace maya

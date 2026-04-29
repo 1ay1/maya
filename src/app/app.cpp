@@ -57,6 +57,9 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     rt.event_source_    = std::move(event_source);
     rt.writer_          = std::make_unique<Writer>(output_h);
     rt.theme_           = cfg.theme;
+    // Cache the terminal-capability heuristic once. Cheap getenv() walk;
+    // doing it lazily would just re-run it on every frame for no gain.
+    rt.sync_output_     = ansi::env_supports_synchronized_output();
 
     // Set terminal title if provided.
     if (!cfg.title.empty()) {
@@ -220,7 +223,8 @@ auto Runtime::render(const Element& root) -> Status {
 
                 const int term_h = std::max(1, size_.height.raw());
                 out_.clear();
-                compose_inline_frame(canvas_, ch, term_h, pool_, fresh, out_);
+                compose_inline_frame(canvas_, ch, term_h, pool_, fresh, out_,
+                                     sync_output_);
                 if (out_.empty()) return coherent::InlineSynced{std::move(fresh)};
 
                 if (auto wr = writer_->write_raw(out_); !wr) {
@@ -259,7 +263,8 @@ auto Runtime::render(const Element& root) -> Status {
 
                 const int term_h = std::max(1, size_.height.raw());
                 out_.clear();
-                compose_inline_frame(canvas_, ch, term_h, pool_, s.state, out_);
+                compose_inline_frame(canvas_, ch, term_h, pool_, s.state, out_,
+                                     sync_output_);
                 if (out_.empty()) {
                     return coherent::InlineSynced{std::move(s.state)};
                 }
@@ -298,8 +303,8 @@ auto Runtime::render(const Element& root) -> Status {
             auto opened = RenderPipeline<stage::Idle>::start(canvas_, pool_, theme_, out_)
                 .clear()
                 .paint(root, layout_nodes_)
-                .open_frame();
-            std::move(opened).write_diff(s.front).close_frame();
+                .open_frame(sync_output_);
+            std::move(opened).write_diff(s.front).close_frame(sync_output_);
             if (auto wr = writer_->write_raw(out_); !wr) {
                 write_status = wr;
                 return coherent::Divergent{};       // drop the stale front
@@ -318,13 +323,13 @@ auto Runtime::render(const Element& root) -> Status {
             auto opened = RenderPipeline<stage::Idle>::start(canvas_, pool_, theme_, out_)
                 .clear()
                 .paint(root, layout_nodes_)
-                .open_frame();
+                .open_frame(sync_output_);
             // Home + serialize every row (no \x1b[2J — flashes inside DEC
             // sync). serialize() appends \x1b[K per row to wipe stale
             // trailing content.
             out_ += "\x1b[H";
             serialize(canvas_, pool_, out_);
-            std::move(opened).close_frame();
+            std::move(opened).close_frame(sync_output_);
             if (auto wr = writer_->write_raw(out_); !wr) {
                 write_status = wr;
                 return coherent::Divergent{};

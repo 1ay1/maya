@@ -1,6 +1,8 @@
 #include "maya/terminal/ansi.hpp"
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <string>
 #include <string_view>
@@ -277,6 +279,87 @@ void StyleApplier::append_param(std::string& params, std::string_view p) {
 
 [[nodiscard]] std::string set_clipboard(std::string_view base64_data) {
     return std::format("\x1b]52;c;{}\x07", base64_data);
+}
+
+// ============================================================================
+// env_supports_synchronized_output — env-var heuristic for DEC mode 2026
+// ============================================================================
+// We avoid a DA1/DECRQM round-trip on purpose: terminals that ignore
+// the query never reply, so the probe degrades to "wait the timeout
+// every startup" — exactly the wrong tradeoff. Modern terminals
+// reliably leave a fingerprint in the environment; that's enough.
+
+namespace {
+
+std::string env_str(const char* name) {
+    const char* v = std::getenv(name);
+    return v ? std::string{v} : std::string{};
+}
+
+bool contains(const std::string& s, std::string_view needle) {
+    return !needle.empty() && s.find(needle) != std::string::npos;
+}
+
+} // namespace
+
+[[nodiscard]] bool env_supports_synchronized_output() {
+    // Explicit non-supporters first — short-circuits the positive list
+    // and prevents a stray $TERM=xterm-256color from misleading us on
+    // Apple Terminal.
+    const auto term_program = env_str("TERM_PROGRAM");
+    if (term_program == "Apple_Terminal") return false;
+
+    // Per-terminal env markers. Presence is unambiguous — these vars
+    // are only set by the named terminal.
+    if (!env_str("KITTY_WINDOW_ID").empty())         return true;
+    if (!env_str("ALACRITTY_LOG").empty())           return true;
+    if (!env_str("ALACRITTY_WINDOW_ID").empty())     return true;
+    if (!env_str("GHOSTTY_RESOURCES_DIR").empty())   return true;
+    if (!env_str("WEZTERM_EXECUTABLE").empty())      return true;
+    if (!env_str("WT_SESSION").empty())              return true; // Windows Terminal
+    if (!env_str("KONSOLE_VERSION").empty())         return true; // Konsole 22.04+
+
+    // VTE 0.62.0 (libvte 6200) is when sync output landed. The
+    // VTE_VERSION env var is YYYYMM-style int (e.g. "6402" for vte 0.64.2);
+    // anything ≥ 6200 is safe.
+    if (auto vte = env_str("VTE_VERSION"); !vte.empty()) {
+        int n = std::atoi(vte.c_str());
+        if (n >= 6200) return true;
+    }
+
+    if (term_program == "WezTerm")     return true;
+    if (term_program == "ghostty")     return true;
+    if (term_program == "vscode")      return true;
+    if (term_program == "Hyper")       return true;
+    if (term_program == "iTerm.app") {
+        // iTerm 3.5+ supports sync. Pre-3.5 is rare in 2024+, but the
+        // env tells us — TERM_PROGRAM_VERSION is "3.5.6" / "3.4.23".
+        auto ver = env_str("TERM_PROGRAM_VERSION");
+        int major = 0, minor = 0;
+        if (std::sscanf(ver.c_str(), "%d.%d", &major, &minor) >= 1) {
+            return (major > 3) || (major == 3 && minor >= 5);
+        }
+        return false; // unknown version on iTerm — be safe
+    }
+
+    // $TERM-based fallbacks for terminals that don't set a dedicated env
+    // var (or for users who set TERM explicitly via a wrapper).
+    const auto term = env_str("TERM");
+    if (contains(term, "kitty"))    return true;
+    if (contains(term, "ghostty"))  return true;
+    if (contains(term, "wezterm"))  return true;
+    if (contains(term, "alacritty"))return true;
+    if (contains(term, "foot"))     return true;
+    if (contains(term, "rio"))      return true;
+
+    // tmux/screen sit between us and the host terminal. They support
+    // 2026 passthrough only when explicitly configured (terminal-features
+    // ',sync' on tmux 3.4+); we can't tell from env alone, so assume no.
+    if (contains(term, "tmux") || term == "screen" || contains(term, "screen-")) {
+        return false;
+    }
+
+    return false;
 }
 
 } // namespace ansi

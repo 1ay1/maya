@@ -98,7 +98,7 @@ public:
             std::string content = "  \u2502 " + std::string{line};
 
             // Build with styled runs: border char in severity color, text dimmed
-            std::size_t border_end = 5;  // "  │ " is 5 bytes (2 spaces + 3-byte UTF-8 + space)
+            std::size_t border_end = std::string_view("  │ ").size();
             std::size_t content_len = content.size();
             auto text_style = Style{};
 

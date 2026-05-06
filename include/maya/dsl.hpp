@@ -651,6 +651,8 @@ using maya::detail::hstack;
 using maya::detail::center;
 using maya::detail::zstack;
 using maya::detail::component;
+using maya::detail::nothing;
+using maya::detail::list_ref;
 
 // ── User-defined literal for text nodes ─────────────────────────────────────
 //

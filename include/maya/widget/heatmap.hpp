@@ -64,12 +64,13 @@ public:
             return Element{TextElement{.content = ""}};
         }
 
-        // Find longest Y label for padding
-        std::size_t y_label_width = 0;
+        // Find longest Y label for padding — measure in display columns,
+        // not bytes, so wide-char labels (CJK / emoji) align correctly.
+        int y_label_width = 0;
         for (const auto& l : y_labels_) {
-            y_label_width = std::max(y_label_width, l.size());
+            y_label_width = std::max(y_label_width, string_width(l));
         }
-        int y_pad = y_labels_.empty() ? 0 : static_cast<int>(y_label_width) + 1;
+        int y_pad = y_labels_.empty() ? 0 : y_label_width + 1;
 
         // Each cell is 2 characters wide ("██") for better aspect ratio
         constexpr int cell_width = 2;
@@ -83,23 +84,27 @@ public:
             std::string content;
             std::vector<StyledRun> runs;
 
-            // Y-axis label
+            // Y-axis label — pad in display columns, not bytes, so
+            // wide-char labels right-align correctly.
             if (!y_labels_.empty()) {
                 std::string label;
                 if (r < static_cast<int>(y_labels_.size())) {
                     label = y_labels_[static_cast<size_t>(r)];
                 }
-                // Right-pad to y_label_width
-                while (label.size() < y_label_width) {
-                    label = " " + label;
-                }
-                label += " ";
+                int lw = string_width(label);
+                std::string padded;
+                padded.reserve(label.size() +
+                               static_cast<std::size_t>(y_label_width - lw + 1));
+                if (lw < y_label_width)
+                    padded.append(static_cast<std::size_t>(y_label_width - lw), ' ');
+                padded += label;
+                padded += ' ';
 
                 runs.push_back(StyledRun{
-                    content.size(), label.size(),
+                    content.size(), padded.size(),
                     Style{}.with_dim(),
                 });
-                content += label;
+                content += padded;
             }
 
             // Data cells
@@ -142,13 +147,15 @@ public:
             std::size_t label_start = content.size();
             for (int c = 0; c < num_cols && c < static_cast<int>(x_labels_.size()); ++c) {
                 std::string lbl = x_labels_[static_cast<size_t>(c)];
-                // Truncate or pad to cell_width
-                if (static_cast<int>(lbl.size()) > cell_width) {
-                    lbl = lbl.substr(0, static_cast<size_t>(cell_width));
-                }
-                while (static_cast<int>(lbl.size()) < cell_width) {
-                    lbl += " ";
-                }
+                // Truncate / pad to `cell_width` display columns, not
+                // bytes — multi-byte labels would otherwise be sliced
+                // mid-codepoint and produce invalid UTF-8.
+                int lw = string_width(lbl);
+                if (lw > cell_width)
+                    lbl = truncate_end(lbl, cell_width);
+                lw = string_width(lbl);
+                if (lw < cell_width)
+                    lbl.append(static_cast<std::size_t>(cell_width - lw), ' ');
                 content += lbl;
             }
 

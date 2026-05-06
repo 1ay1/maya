@@ -211,8 +211,11 @@ public:
                     }
                     int avail = p.end - p.start;
                     auto ltxt = ranges[static_cast<size_t>(p.range_idx)].label_text;
-                    if (static_cast<int>(ltxt.size()) > avail)
-                        ltxt = ltxt.substr(0, static_cast<size_t>(avail));
+                    // Column-safe truncation: previous version sliced
+                    // by byte count, which split UTF-8 mid-codepoint and
+                    // miscounted wide chars.
+                    if (string_width(ltxt) > avail)
+                        ltxt = truncate_end(ltxt, avail);
                     lbl_parts.push_back(text(std::move(ltxt),
                         Style{}.with_fg(ranges[static_cast<size_t>(p.range_idx)].color).with_dim()));
                     pos = p.end;

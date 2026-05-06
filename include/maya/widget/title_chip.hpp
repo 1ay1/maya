@@ -55,10 +55,11 @@ public:
 private:
     Config cfg_;
 
-    static std::string truncate(std::string_view s, std::size_t max_chars) {
-        if (s.size() <= max_chars) return std::string{s};
-        if (max_chars <= 1) return "\xe2\x80\xa6";    // …
-        return std::string{s.substr(0, max_chars - 1)} + "\xe2\x80\xa6";
+    static std::string truncate(std::string_view s, std::size_t max_cols) {
+        // UTF-8 + wide-char-safe via the framework helper. The previous
+        // implementation indexed by byte count, splitting multi-byte
+        // sequences in the middle (CJK / emoji titles → garbage).
+        return truncate_end(s, static_cast<int>(max_cols));
     }
 };
 

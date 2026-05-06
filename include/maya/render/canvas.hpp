@@ -248,12 +248,38 @@ public:
     // -- Cell access ----------------------------------------------------------
 
     /// Set a cell at (x, y). Clipped or out-of-bounds coordinates are silently ignored.
+    ///
+    /// Wide-character invariant: when `width == 1` (the lead cell of a
+    /// wide glyph), the trail cell at (x+1, y) MUST also be writable — a
+    /// lead without its trail is an orphan that the renderer will treat
+    /// as a normal-width character (so the trail's previous content
+    /// becomes visible). If x+1 would fall outside the canvas or the
+    /// current clip rect, refuse the lead too. Same rule for the trail
+    /// (`width == 2`): refuse it if its lead would be invisible. This
+    /// removes a whole class of "blank cells appear inside text after a
+    /// resize" bugs without the caller needing to know about clip math.
     MAYA_ALWAYS_INLINE void set(int x, int y, char32_t ch, uint16_t style_id, uint8_t width = 0) {
         if (__builtin_expect(!in_bounds(x, y), 0)) return;
         // Fast clip check using cached bounds — avoids vector access per cell.
         if (has_clip_ && __builtin_expect(
                 x < clip_x0_ || x >= clip_x1_ || y < clip_y0_ || y >= clip_y1_, 0))
             return;
+
+        // Wide-char paired-cell guard. The lead and trail must both pass
+        // the clip; otherwise we'd create an orphan that draws stale
+        // content from the previous frame. Cheap branch — `width == 0`
+        // (the dominant case) skips both checks.
+        if (__builtin_expect(width != 0, 0)) {
+            if (width == 1) {
+                // Lead — trail at (x+1, y) must be writable.
+                if (x + 1 >= width_) return;
+                if (has_clip_ && (x + 1 >= clip_x1_)) return;
+            } else if (width == 2) {
+                // Trail — lead at (x-1, y) must have been writable.
+                if (x <= 0) return;
+                if (has_clip_ && (x - 1 < clip_x0_)) return;
+            }
+        }
 
         auto idx = cell_index(x, y);
         uint64_t packed = Cell{ch, style_id, 0, width}.pack();
@@ -300,6 +326,44 @@ public:
 
     /// Returns true if (x, y) falls outside the current clip region.
     [[nodiscard]] bool is_clipped(int x, int y) const noexcept;
+
+    /// Number of clip rectangles currently on the stack — exposed so the
+    /// renderer can assert "stack is empty between frames" and recover
+    /// gracefully if a paint callback threw between push and pop.
+    [[nodiscard]] std::size_t clip_depth() const noexcept {
+        return clip_stack_.size();
+    }
+
+    /// Force-clear the clip stack. Called between frames to recover from
+    /// any unmatched push_clip/pop_clip pair (e.g. after a paint callback
+    /// threw and unwound past pop_clip). Cheap — empties a vector.
+    void reset_clips() noexcept;
+
+    /// RAII clip guard. Pushing/popping in pairs is required for
+    /// correctness, and writing the pop manually is fragile in the
+    /// presence of early returns or exceptions. Use this instead:
+    ///
+    ///   if (auto _ = canvas.clip_scope(rect)) {
+    ///       paint_children();
+    ///   }
+    ///
+    /// The pop happens deterministically when the guard goes out of scope,
+    /// even if `paint_children` throws. The boolean conversion always
+    /// returns true so the `if` is just syntactic sugar that scopes the
+    /// guard to the controlled statement.
+    class [[nodiscard]] ClipScope {
+        Canvas* c_;
+    public:
+        ClipScope(Canvas& c, Rect clip) : c_(&c) { c_->push_clip(clip); }
+        ~ClipScope() { if (c_) c_->pop_clip(); }
+        ClipScope(const ClipScope&) = delete;
+        ClipScope& operator=(const ClipScope&) = delete;
+        ClipScope(ClipScope&& o) noexcept : c_(o.c_) { o.c_ = nullptr; }
+        ClipScope& operator=(ClipScope&&) = delete;
+        explicit operator bool() const noexcept { return true; }
+    };
+
+    [[nodiscard]] ClipScope clip_scope(Rect clip) { return {*this, clip}; }
 
     // -- Sizing ---------------------------------------------------------------
 

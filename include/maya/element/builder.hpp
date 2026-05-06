@@ -340,6 +340,36 @@ namespace detail {
     return ComponentBuilder{std::move(render_fn)};
 }
 
+// ============================================================================
+// nothing() - Zero-height placeholder (transparent empty fragment)
+// ============================================================================
+// Use for view slots that should consume no rows when their content is
+// absent (e.g. an in-flight thinking block when the agent isn't thinking).
+// Returns an empty ElementList — a flex fragment with no children, which
+// the layout engine treats as zero rows / zero columns. Distinct from
+// blank() which is a one-row spacer.
+
+[[nodiscard]] inline Element nothing() {
+    return Element{ElementList{}};
+}
+
+// ============================================================================
+// list_ref() - Borrow a vector of Elements without copying
+// ============================================================================
+// Renders the pointed-to vector as a transparent fragment, identical
+// in semantics to wrapping the vector in an ElementList — but without
+// the per-frame deep copy. Suitable when the application's Model
+// holds a stable vector (e.g. frozen scrollback) and view() is
+// called synchronously between updates so the pointer remains valid.
+
+[[nodiscard]] inline Element list_ref(const std::vector<Element>* items) {
+    return Element{ElementListRef{items}};
+}
+
+[[nodiscard]] inline Element list_ref(const std::vector<Element>& items) {
+    return Element{ElementListRef{&items}};
+}
+
 } // namespace detail
 
 // ============================================================================

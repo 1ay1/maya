@@ -97,6 +97,31 @@ struct ComponentElement {
 };
 
 // ============================================================================
+// ElementListRef - Non-owning fragment for stable application-side data
+// ============================================================================
+// Like ElementList, but holds a pointer to an externally-owned vector
+// rather than copying it. The application guarantees that the pointed-to
+// vector outlives the rendering pass (typically because it lives in the
+// application's Model and view() runs synchronously between updates).
+//
+// Why it exists: the dominant cost in long-running streaming sessions
+// is `Element{ElementList{model.frozen}}` deep-copying a 240-element
+// vector every frame. With ElementListRef the application can write
+// `Element{ElementListRef{&model.frozen}}` and pay zero copy cost —
+// the renderer treats it as a transparent fragment, identical to
+// ElementList semantically, and reads the items in place.
+//
+// Safety: the pointer must remain valid for the duration of the
+// render pass. Since maya's runtime calls update() and view() on a
+// single thread (the UI thread) and renders synchronously, the
+// application-side vector stored in Model is automatically stable
+// for the duration of view() → render().
+
+struct ElementListRef {
+    const std::vector<Element>* items_ref = nullptr;
+};
+
+// ============================================================================
 // Element - The tagged union of all element types
 // ============================================================================
 // Wraps std::variant for type-safe, zero-overhead dispatch. Every node in a
@@ -104,11 +129,15 @@ struct ComponentElement {
 //
 // BoxElement       - A flex container with children, border, padding, etc.
 // TextElement      - A leaf node displaying styled text.
-// ElementList      - A transparent fragment (vector of Element).
+// ElementList      - A transparent owned fragment (vector of Element).
+// ElementListRef   - A transparent borrowed fragment (pointer to a vector
+//                    owned by the application). Zero-copy alternative to
+//                    ElementList for stable application-side data.
 // ComponentElement - A lazy element that renders after receiving its size.
 
 struct Element {
-    using Variant = std::variant<BoxElement, TextElement, ElementList, ComponentElement>;
+    using Variant = std::variant<BoxElement, TextElement, ElementList,
+                                 ElementListRef, ComponentElement>;
 
     Variant inner;
 
@@ -117,6 +146,7 @@ struct Element {
     Element(BoxElement b) : inner(std::move(b)) {}
     Element(TextElement t) : inner(std::move(t)) {}
     Element(ElementList l) : inner(std::move(l)) {}
+    Element(ElementListRef r) : inner(r) {}
     Element(ComponentElement c) : inner(std::move(c)) {}
 
     // Default: empty text element

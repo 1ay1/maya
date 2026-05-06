@@ -313,6 +313,11 @@ void Canvas::pop_clip() {
     update_clip_cache();
 }
 
+void Canvas::reset_clips() noexcept {
+    clip_stack_.clear();
+    update_clip_cache();
+}
+
 bool Canvas::is_clipped(int x, int y) const noexcept {
     if (!has_clip_) return false;
     return x < clip_x0_ || x >= clip_x1_ || y < clip_y0_ || y >= clip_y1_;

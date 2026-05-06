@@ -3942,47 +3942,12 @@ Element md_block_to_element(const md::Block& block) {
                     rows.push_back(make_border_line(2));
                     return detail::vstack()(std::move(rows));
                 },
-                // Custom measure: report the actual visual-row count so
-                // the parent vstack allocates enough vertical space.
-                // Without this, ComponentElement defaults to {max, 1}
-                // and the table is clipped to its top border.
-                // Captures `data` by-value (shared_ptr keeps the table
-                // state alive for the closure's lifetime) plus the
-                // stateless helper lambdas.
-                .measure = [data, distribute_cols, wrap_cell_lines]
-                           (int max_w) -> Size {
-                    int avail = std::max(1, max_w);
-                    int ncols = data->ncols;
-                    auto col_w = distribute_cols(avail, ncols, data->ideal);
-                    int header_lines = 1;
-                    for (int c = 0; c < ncols; ++c) {
-                        header_lines = std::max(header_lines,
-                            wrap_cell_lines(
-                                data->header_flat[static_cast<size_t>(c)].content,
-                                col_w[static_cast<size_t>(c)]));
-                    }
-                    int data_lines = 0;
-                    for (auto& row : data->rows_flat) {
-                        int rl = 1;
-                        for (int c = 0; c < ncols; ++c) {
-                            rl = std::max(rl,
-                                wrap_cell_lines(
-                                    row[static_cast<size_t>(c)].content,
-                                    col_w[static_cast<size_t>(c)]));
-                        }
-                        data_lines += rl;
-                    }
-                    // 3 chrome rows (top border, header sep, bottom border)
-                    // + header lines + data lines + (N-1) inter-row
-                    // separators between data rows. Must match the row
-                    // count produced by the render closure exactly,
-                    // otherwise the parent vstack clips the bottom rows.
-                    int row_seps = data->rows_flat.size() > 1
-                                 ? static_cast<int>(data->rows_flat.size()) - 1
-                                 : 0;
-                    int total = 3 + header_lines + data_lines + row_seps;
-                    return {Columns{max_w}, Rows{total}};
-                },
+                // No custom measure — the renderer auto-derives the
+                // table's height by running the render callback and
+                // counting the rows of the produced tree.  This
+                // removes the previous hand-rolled measure that had to
+                // mirror render() exactly (and caused clipped rows
+                // when the two formulas drifted).
                 .layout = {},
             }};
         },
@@ -4250,6 +4215,17 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     build_dirty_ = true;
 }
 
+// Internal: append codepoint-clean bytes that have already passed through
+// the StreamSink.  Public entry points all funnel here.
+void StreamingMarkdown::append_safe(std::string_view safe_bytes) {
+    if (safe_bytes.empty()) return;
+    source_.append(safe_bytes.data(), safe_bytes.size());
+    build_dirty_ = true;
+
+    size_t boundary = find_block_boundary();
+    if (boundary > committed_) commit_range(boundary);
+}
+
 void StreamingMarkdown::set_content(std::string_view content) {
     // Fast-path: unchanged → no work. This dominates because the view layer
     // calls set_content(streaming_text) every single frame.
@@ -4259,33 +4235,46 @@ void StreamingMarkdown::set_content(std::string_view content) {
         return;
     }
 
-    // Growth with identical prefix → append only the new bytes (avoids a
-    // full reallocation + recopy of source_ when tokens trickle in).
+    // Growth with identical prefix → append only the new bytes through the
+    // StreamSink so partial-codepoint suffixes are buffered safely.  This
+    // dominates real-world streaming usage (each frame's set_content is
+    // the previous frame's content + a few new bytes).
     if (content.size() > source_.size() &&
         (source_.empty() || std::memcmp(content.data(), source_.data(),
                                         source_.size()) == 0)) {
-        source_.append(content.data() + source_.size(),
-                       content.size() - source_.size());
-    } else {
-        clear();
-        source_.assign(content.data(), content.size());
+        std::string_view delta{content.data() + source_.size(),
+                               content.size() - source_.size()};
+        std::string safe = sink_.feed(delta);
+        if (!safe.empty()) append_safe(safe);
+        return;
     }
-    build_dirty_ = true;
 
-    size_t boundary = find_block_boundary();
-    if (boundary > committed_) commit_range(boundary);
+    // Replace path: the new content diverges from the old prefix, so we
+    // can't just append.  Reset and feed everything through the sink to
+    // keep the codepoint-integrity guarantee.
+    clear();
+    std::string safe = sink_.feed(content);
+    if (!safe.empty()) append_safe(safe);
 }
 
 void StreamingMarkdown::append(std::string_view text) {
     if (text.empty()) return;
-    source_.append(text.data(), text.size());
-    build_dirty_ = true;
-
-    size_t boundary = find_block_boundary();
-    if (boundary > committed_) commit_range(boundary);
+    // Route every incoming chunk through the sink so the source_ buffer
+    // never contains a half-written multi-byte codepoint or ANSI escape.
+    // Anything mid-sequence is held in the sink's carry buffer until its
+    // continuation arrives in a later append.
+    std::string safe = sink_.feed(text);
+    if (!safe.empty()) append_safe(safe);
 }
 
 void StreamingMarkdown::finish() {
+    // Drain any held tail bytes from the sink before committing.  At
+    // end-of-stream we accept that a half-decoded codepoint may surface
+    // (it's better than dropping bytes silently); the renderer will
+    // display invalid bytes as the U+FFFD replacement glyph.
+    std::string pending = sink_.flush();
+    if (!pending.empty()) append_safe(pending);
+
     if (committed_ < source_.size()) {
         commit_range(source_.size());
         in_code_fence_ = false;
@@ -4298,8 +4287,64 @@ void StreamingMarkdown::clear() {
     blocks_.clear();
     ref_defs_.clear();
     in_code_fence_ = false;
+    sink_.reset();
     build_dirty_ = true;
     cached_tail_size_ = 0;
+}
+
+// Render the uncommitted tail as a monotonic in-progress paragraph.
+//
+// MONOTONICITY PROOF: this function never produces an element whose
+// height *decreases* as bytes are appended to `tail`.
+//
+//   - Inside an open code fence: we render the tail as a literal text
+//     element with TextWrap::Wrap, so its height is ceil(byte_count / W)
+//     for terminal width W — strictly nondecreasing in byte_count.
+//
+//   - Otherwise: we parse `tail` as INLINE-only markdown (no block
+//     recognition) via parse_inlines() and render through the same
+//     wrapped-paragraph builder (build_inline_row).  Inline parse
+//     produces a flat sequence of styled text spans whose total
+//     character count is monotonic in byte_count.  Block markers at
+//     line starts (|, -, *, >, #, etc.) are invisible to parse_inlines
+//     and render as literal characters — so the tail never reflows
+//     between "paragraph" and "table" / "list" / "blockquote" mid-stream.
+//
+//   - The block-level interpretation only happens when find_block_boundary
+//     advances past the tail (on a blank line or closing fence), at
+//     which point commit_range() moves the bytes into blocks_ as a
+//     properly-formatted Element and a new (empty) tail begins.  The
+//     formatting "snap" is one-time per block and lands at a moment
+//     when the inline diff sees a single coherent transition.
+//
+// This is the layer that makes ghosting structurally impossible for
+// streaming markdown — there is no frame in which the renderer is
+// asked to compare two element trees of different shape.
+Element StreamingMarkdown::render_tail(std::string_view tail) const {
+    // Skip leading newlines (whitespace from a prior commit boundary).
+    std::size_t start = 0;
+    while (start < tail.size() && tail[start] == '\n') ++start;
+    if (start >= tail.size()) {
+        return Element{TextElement{}};
+    }
+    std::string_view body = tail.substr(start);
+
+    if (in_code_fence_) {
+        // Inside an open code fence: render the literal bytes (including
+        // the opening fence marker if it's still in this tail).  Wrap
+        // mode keeps height monotonic in byte count.
+        return Element{TextElement{
+            .content = std::string{body},
+            .style   = Style{}.with_fg(colors::code_fg),
+            .wrap    = TextWrap::Wrap,
+        }};
+    }
+
+    // Inline-only parse — no block recognition, ever.  Bold/italic/code
+    // spans / links DO render so prose still feels live; pipes, dashes,
+    // and other block markers stay literal until commit.
+    auto spans = parse_inlines(body);
+    return build_inline_row(spans);
 }
 
 const Element& StreamingMarkdown::build() const {
@@ -4329,20 +4374,12 @@ const Element& StreamingMarkdown::build() const {
         return finish_cache(
             detail::vstack().padding(0, 0, 0, 2)(blocks_[0]));
 
-    // Parse the tail directly (skip collect_ref_defs — tail refs would only
-    // matter if text after the tail cites them, which by definition has not
-    // been written yet, and link resolution already sees ref_defs_ via the
-    // guard below).
     std::vector<Element> all;
     all.reserve(total);
     for (auto& b : blocks_) all.push_back(b);
 
     if (has_tail) {
-        RefDefsGuard guard(&ref_defs_);
-        auto tail_doc = parse_markdown_impl(tail, 0);
-        for (auto& block : tail_doc.blocks) {
-            all.push_back(md_block_to_element(block));
-        }
+        all.push_back(render_tail(tail));
     }
 
     return finish_cache(

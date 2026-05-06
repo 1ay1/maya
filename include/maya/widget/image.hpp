@@ -115,7 +115,9 @@ public:
 
     [[nodiscard]] Element build() const {
         if (width_ == 0 || height_ == 0) {
-            return Element{TextElement{}};
+            // Zero-dimension image: consume zero rows so the parent
+            // doesn't allocate a row that holds stale prior content.
+            return dsl::nothing();
         }
 
         // Each braille cell covers 2 pixels wide, 4 pixels tall

@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "../element/builder.hpp"
+#include "../text/stream_sink.hpp"
 
 namespace maya {
 namespace md {
@@ -171,24 +172,57 @@ struct Document {
 [[nodiscard]] Element markdown(std::string_view source);
 
 // ============================================================================
-// StreamingMarkdown — Progressive per-block rendering for streaming text
+// StreamingMarkdown — Progressive monotonic rendering for streaming text
 // ============================================================================
-// Like Claude Code: completed blocks are parsed as markdown and cached.
-// The trailing incomplete block is parsed each frame (not raw text).
-// Each frame does O(new_chars) work for committed blocks, not O(total_chars).
+//
+// Two-tier rendering — the strong invariant that makes this widget
+// impossible to ghost regardless of how the input is chunked:
+//
+//   1. **Committed prefix.**  Every byte before the last structural
+//      boundary (blank line, closing code fence, end of heading) has
+//      been parsed as full markdown and cached as Elements.  These
+//      blocks are never re-rendered or re-classified.
+//
+//   2. **Opaque tail.**  Bytes since the last boundary are rendered as
+//      a single in-progress paragraph with INLINE-only markdown (bold,
+//      italic, code spans, links).  Block markers at line starts
+//      (`|`, `-`, `*`, `>`, `#`, `\`\`\``) render as literal characters
+//      until the boundary detector commits them, at which point the
+//      whole block snaps into its formatted form in the committed prefix.
+//
+//   3. **Byte integrity.**  All input flows through an internal
+//      maya::StreamSink — split UTF-8 codepoints and half-written ANSI
+//      escapes are buffered until their continuation arrives, so the
+//      cell grid never sees a partially-decoded glyph.
+//
+// Together these three invariants guarantee that the element-tree
+// height is a monotonic function of the stream's byte position:
+// appending bytes can only extend the rendered output, never reflow
+// or shrink it.  The renderer's row diff therefore never has to chase
+// retroactive height changes — there is no ghosting class to fight.
 //
 // Usage:
 //   StreamingMarkdown md;
-//   md.append("# Hello\n\nSome **bold");   // "# Hello" → rendered as heading
-//   md.append(" text**\n\nMore...");        // "Some **bold text**" → rendered
-//   auto ui = md.build();
-//   md.finish();  // finalize last block
+//   md.feed("# Hello\n\nSome **bold");
+//   md.feed(" text**\n\nA tabl");
+//   md.feed("e:\n| a | b |\n|---|---|\n| 1 | 2 |\n\n");
+//   auto ui = md.build();   // committed: heading, paragraph, table
+//   md.finish();             // commit any pending tail at end-of-stream
+//
+// Pre-existing `append()` / `set_content()` continue to work and route
+// through the same path — feed() is the recommended name for new code.
 
 class StreamingMarkdown {
-    std::string source_;
+    std::string source_;                // codepoint-safe accumulated bytes
     size_t committed_ = 0;              // bytes parsed into finalized blocks
-    std::vector<Element> blocks_;       // cached rendered blocks
-    bool in_code_fence_ = false;        // tracking ``` state
+    std::vector<Element> blocks_;       // cached rendered blocks (immutable)
+    bool in_code_fence_ = false;        // tracking ``` state for boundaries
+
+    // Codepoint / escape-sequence safety net.  Every byte the user feeds
+    // passes through here before being appended to source_, so source_ is
+    // always a valid UTF-8 string with no half-written ANSI sequences —
+    // even if the caller chunks input mid-codepoint or mid-CSI.
+    StreamSink sink_;
 
     // Ref-defs accumulated across every committed parse.  The tail parse
     // reuses this map so links pointing at earlier-committed `[label]: url`
@@ -199,8 +233,8 @@ class StreamingMarkdown {
     // ── per-frame cache ────────────────────────────────────────────────
     // build() is called every frame by the view layer. When neither source_
     // nor committed_ has moved since the last build, we return the cached
-    // Element directly — no parse, no assembly.  Any mutator (append /
-    // set_content / finish / clear) bumps `build_dirty_`.
+    // Element directly — no parse, no assembly.  Any mutator (feed /
+    // append / set_content / finish / clear) bumps `build_dirty_`.
     mutable Element cached_build_;
     mutable bool    build_dirty_  = true;
     mutable size_t  cached_tail_size_ = 0;   // tail length when cache was built
@@ -212,28 +246,46 @@ class StreamingMarkdown {
     // Parse [committed_, boundary) — stash its ref defs, render its blocks.
     void commit_range(size_t boundary);
 
+    // Render the uncommitted tail as a monotonic in-progress paragraph
+    // (or as plain text inside an open code fence).  See class header.
+    [[nodiscard]] Element render_tail(std::string_view tail) const;
+
+    // Internal append — assumes bytes are already codepoint-clean.  Public
+    // entry points (feed / append / set_content) route through StreamSink.
+    void append_safe(std::string_view safe_bytes);
+
 public:
     StreamingMarkdown() = default;
 
-    /// Replace the full content (for compatibility with streaming that
-    /// replaces the entire string each frame, like `msg.content = ...`).
+    /// Feed bytes — the canonical streaming entry point.  Bytes that
+    /// would split a multi-byte codepoint or an in-flight ANSI escape
+    /// are held internally until their continuation arrives.  Safe to
+    /// call with any chunk size, including 1 byte.
+    void feed(std::string_view bytes) { append(bytes); }
+
+    /// Replace the full content (for SSE-style streaming that resends
+    /// the entire string each frame, like `msg.content = ...`).
     void set_content(std::string_view content);
 
-    /// Append new text (for true incremental streaming).
+    /// Append bytes incrementally.  Equivalent to feed(); kept for
+    /// back-compat with existing call sites.
     void append(std::string_view text);
 
-    /// Finalize: parse any remaining tail as markdown (call when stream ends).
+    /// Finalize: drain any held bytes from the StreamSink, commit the
+    /// remaining tail as full markdown, and lock the widget.  Call at
+    /// end-of-stream.
     void finish();
 
     /// Reset all state for a new stream.
     void clear();
 
-    /// Build the element tree: cached blocks + parsed tail. Returns a
-    /// reference into the per-frame cache; the reference is valid until the
-    /// next mutator call (append/set_content/finish/clear).
+    /// Build the element tree: cached blocks + monotonic tail.  Returns
+    /// a reference into the per-frame cache; valid until the next
+    /// mutator call.
     [[nodiscard]] const Element& build() const;
 
-    /// Current full source text.
+    /// Current full source text (codepoint-clean; never contains a
+    /// half-written multi-byte sequence).
     [[nodiscard]] const std::string& source() const noexcept { return source_; }
 };
 

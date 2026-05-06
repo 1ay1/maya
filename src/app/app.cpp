@@ -190,6 +190,11 @@ auto Runtime::render(const Element& root) -> Status {
             canvas_.set_style_pool(&pool_);
             canvas_.resize(w, std::max(kMinCanvasHeight, canvas_.height()));
         }
+        // Recover from any unmatched push_clip in the previous frame's
+        // paint pass (e.g. a paint callback that threw past pop_clip).
+        // Cheap — empties a vector — and guarantees the next paint
+        // starts from an unbounded clip.
+        canvas_.reset_clips();
 
         Status write_status = ok();
         in_coherence_ = std::visit(overload{

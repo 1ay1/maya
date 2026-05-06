@@ -69,13 +69,13 @@ public:
         parts.push_back(text(cfg_.glyph, glyph_style));
 
         if (cfg_.verb_width > 0) {
-            std::string out = cfg_.verb;
-            int dw = static_cast<int>(out.size());
-            if (dw > cfg_.verb_width) {
-                out = out.substr(0, static_cast<std::size_t>(cfg_.verb_width - 1))
-                    + "\xe2\x80\xa6";   // …
-                dw = cfg_.verb_width;
-            }
+            // UTF-8 + wide-char-safe truncation. The previous version
+            // substr'd by byte count, which split multi-byte sequences
+            // (e.g. CJK verbs) and miscounted padding for wide glyphs.
+            std::string out = (string_width(cfg_.verb) > cfg_.verb_width)
+                ? truncate_end(cfg_.verb, cfg_.verb_width)
+                : cfg_.verb;
+            int dw = string_width(out);
             if (dw < cfg_.verb_width)
                 out.append(static_cast<std::size_t>(cfg_.verb_width - dw), ' ');
             parts.push_back(text(" "));

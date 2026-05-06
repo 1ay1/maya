@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <ranges>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "maya/core/overload.hpp"
@@ -12,6 +14,65 @@
 namespace maya {
 
 namespace render_detail {
+
+// ============================================================================
+// Cross-frame ComponentElement render cache
+// ============================================================================
+// Two purposes, scaling-superlinear in long sessions:
+//
+//   1. Within one frame, the auto-measure path (build_layout_tree →
+//      measure callback → render) produces an Element tree that the
+//      subsequent paint pass also needs.  Without a cache, paint would
+//      call render() again — doubling render cost per component per frame.
+//
+//   2. Across frames, when the application uses dsl::list_ref(stable_vec)
+//      the ComponentElement instances inside have stable addresses.
+//      A pointer + width key lets us recognise the SAME logical
+//      component frame after frame and skip render() entirely whenever
+//      neither the address nor the width changed.  For a long
+//      conversation with 100 frozen turn cards and 1 streaming turn,
+//      the win is enormous: the 100 stable cards render() exactly once
+//      ever (until something invalidates them); only the streaming
+//      card pays the per-frame cost.
+//
+// Eviction policy: at the start of every top-level render_tree() call we
+// drop entries whose last_frame_used predates the previous frame.  Each
+// hit during measure / paint stamps last_frame_used to the current
+// frame, so stable entries survive indefinitely while ephemeral ones
+// (new pointer each frame) age out within one frame of last access.
+//
+// Why cache by pointer rather than by hash: pointer comparison is one
+// instruction; hashing an Element's content tree is O(content) and would
+// dominate the savings.  The application opts into the cross-frame
+// behaviour by holding the ComponentElement in a stable vector
+// (typically through dsl::list_ref); ephemeral usage falls back to
+// the within-frame cache automatically.
+
+namespace {
+
+struct ComponentCacheEntry {
+    int      width  = -1;         // width at which the result was rendered
+    int      height = 0;          // measured natural height at that width
+    Element  result;              // cached render() output
+    std::uint64_t last_frame = 0; // bumped on every hit
+};
+
+struct ComponentCache {
+    std::unordered_map<const ComponentElement*, ComponentCacheEntry> entries;
+    std::uint64_t current_frame = 0;
+};
+
+inline ComponentCache& component_cache() {
+    thread_local ComponentCache c;
+    return c;
+}
+
+inline int& render_depth() {
+    thread_local int d = 0;
+    return d;
+}
+
+}  // anonymous
 
 // ============================================================================
 // Stateless enum mappers (anonymous namespace — internal linkage)
@@ -152,6 +213,22 @@ std::size_t build_layout_tree(
             return idx;
         },
 
+        [&](const ElementListRef& node) -> std::size_t {
+            // Borrowed fragment — same shape as ElementList but reads
+            // through a pointer instead of owning the vector. This is
+            // the zero-copy path for stable application-side data
+            // (model.frozen and similar).
+            std::size_t idx = nodes.size();
+            nodes.emplace_back();
+            if (node.items_ref) {
+                for (const auto& child : *node.items_ref) {
+                    std::size_t child_idx = build_layout_tree(child, nodes, /*theme=*/{});
+                    nodes[idx].children.push_back(child_idx);
+                }
+            }
+            return idx;
+        },
+
         [&](const ComponentElement& node) -> std::size_t {
             // Component: a leaf that defers rendering to paint time.
             // Participates in flex layout via its FlexStyle properties.
@@ -174,8 +251,10 @@ std::size_t build_layout_tree(
             ls.align_self  = map_align(node.layout.align_self);
 
             if (node.measure) {
-                // Custom measure: lets the component report its content
-                // size so it sizes correctly in auto_height layouts.
+                // Legacy: caller-supplied measure callback. The widget
+                // is responsible for keeping it in sync with render().
+                // Drift between the two silently clips rows — see the
+                // auto-measure fallback below for the contract-safe path.
                 ln.measure = layout::MeasureFn{
                     [](const void* ctx, int max_width) -> Size {
                         auto& fn = *static_cast<const std::function<Size(int)>*>(ctx);
@@ -183,9 +262,66 @@ std::size_t build_layout_tree(
                     },
                     &node.measure
                 };
+            } else if (node.render) {
+                // Auto-measure: derive the natural size by RUNNING render
+                // and measuring the result.  This makes measure/render
+                // disagreement structurally impossible — there's only
+                // one callback to write, and the framework guarantees
+                // they're consistent because measure literally invokes
+                // render and counts the rows.
+                //
+                // Cost: render() is called twice per frame (once during
+                // layout, once during paint).  For pure-data components
+                // (the common case) this is cheap.  Components with
+                // expensive render can opt into the legacy `measure`
+                // callback above for explicit caching.
+                ln.measure = layout::MeasureFn{
+                    [](const void* ctx, int max_width) -> Size {
+                        auto& comp = *static_cast<const ComponentElement*>(ctx);
+                        if (!comp.render || max_width <= 0) {
+                            return {Columns{std::max(0, max_width)}, Rows{1}};
+                        }
+                        constexpr int kBigH = 1 << 20;
+
+                        auto& cache = component_cache();
+                        auto it = cache.entries.find(&comp);
+                        if (it != cache.entries.end() &&
+                            it->second.width == max_width)
+                        {
+                            // Cross-frame hit: same component instance,
+                            // same width.  Reuse the cached render AND
+                            // the cached height — no render() call, no
+                            // layout pass at all.  This is the steady-
+                            // state cost of a stable component: O(1).
+                            it->second.last_frame = cache.current_frame;
+                            return {Columns{max_width},
+                                    Rows{it->second.height}};
+                        }
+
+                        // Cache miss: render, layout, store both.
+                        Element child = comp.render(max_width, kBigH);
+
+                        std::vector<layout::LayoutNode> tmp;
+                        tmp.reserve(8);
+                        std::size_t root = build_layout_tree(child, tmp, {});
+                        tmp[root].style.width  = Dimension::fixed(max_width);
+                        tmp[root].style.height = Dimension::auto_();
+                        layout::compute(tmp, root, max_width, kBigH);
+                        int h = std::max(1,
+                            tmp[root].computed.size.height.raw());
+
+                        cache.entries[&comp] = {
+                            max_width,
+                            h,
+                            std::move(child),
+                            cache.current_frame
+                        };
+                        return {Columns{max_width}, Rows{h}};
+                    },
+                    &node
+                };
             } else {
-                // Default: return available width × 1 row minimum.
-                // flex-grow can expand from there.
+                // No render at all — degenerate placeholder.
                 ln.measure = layout::MeasureFn{
                     [](const void*, int max_width) -> Size {
                         return {Columns{max_width}, Rows{1}};
@@ -323,7 +459,10 @@ void paint_element(
                 paint_border(canvas, node.border, abs_rect, border_style_id);
             }
 
-            // 3. Push clip for overflow:hidden/scroll.
+            // 3. Push clip for overflow:hidden/scroll. RAII guard ensures
+            //    the pop happens even if a child's paint throws — without
+            //    this, a thrown paint callback would leave a stale clip
+            //    on the stack and silently mangle subsequent rendering.
             bool clipping = (node.overflow == Overflow::Hidden ||
                              node.overflow == Overflow::Scroll);
 
@@ -333,8 +472,9 @@ void paint_element(
             int content_w = std::max(0, aw - node.inner_horizontal());
             int content_h = std::max(0, ah - node.inner_vertical());
 
+            std::optional<Canvas::ClipScope> guard;
             if (clipping) {
-                canvas.push_clip(Rect{
+                guard.emplace(canvas, Rect{
                     {Columns{content_x}, Rows{content_y}},
                     {Columns{content_w}, Rows{content_h}}
                 });
@@ -372,21 +512,20 @@ void paint_element(
                     sub[sub_root].style.height = Dimension::fixed(content_h);
                     layout::compute(sub, sub_root, content_w, content_h);
 
-                    canvas.push_clip(Rect{
-                        {Columns{content_x}, Rows{content_y}},
-                        {Columns{content_w}, Rows{content_h}}
-                    });
-                    paint_element(overlay, canvas, pool, sub, sub_root,
-                                  content_x, content_y);
-                    canvas.pop_clip();
+                    {
+                        auto _ = canvas.clip_scope(Rect{
+                            {Columns{content_x}, Rows{content_y}},
+                            {Columns{content_w}, Rows{content_h}}
+                        });
+                        paint_element(overlay, canvas, pool, sub, sub_root,
+                                      content_x, content_y);
+                    }   // clip auto-popped here, even on throw
 
                     if (!was_in_use) overlay_in_use = false;
                 }
             }
 
-            if (clipping) {
-                canvas.pop_clip();
-            }
+            // Outer `guard` (if engaged) auto-pops here as the lambda returns.
         },
 
         [&](const TextElement& node) {
@@ -467,6 +606,25 @@ void paint_element(
             }
         },
 
+        [&](const ElementListRef& node) {
+            // Borrowed-fragment paint: identical shape to ElementList,
+            // but reads through the application-supplied pointer. Zero
+            // copy of the items vector — only the per-child paint
+            // recursion happens here.
+            if (!node.items_ref) return;
+            for (const auto& [child, child_layout_idx] :
+                     std::views::zip(*node.items_ref, ln.children)) {
+                paint_element(
+                    child,
+                    canvas,
+                    pool,
+                    layout_nodes,
+                    child_layout_idx,
+                    ax,
+                    ay);
+            }
+        },
+
         [&](const ComponentElement& node) {
             // Lazy component: call the render callback with the allocated size,
             // then render the resulting element tree into this region.
@@ -477,7 +635,33 @@ void paint_element(
             int content_x = ax + node.layout.padding.left;
             int content_y = ay + node.layout.padding.top;
 
-            Element child = node.render(content_w, content_h);
+            // Reuse the rendered Element from the auto-measure pass.  In
+            // the steady state this is a cross-frame hit — the entry
+            // was populated on the FIRST frame the component appeared
+            // and has been refreshed (last_frame_used bumped) on every
+            // subsequent frame.  Read by reference, not by move: the
+            // entry must survive for the next frame's measure to find.
+            Element child;
+            auto& cache = component_cache();
+            auto it = cache.entries.find(&node);
+            if (it != cache.entries.end() && it->second.width == content_w) {
+                child = it->second.result;          // copy — cheap shared tree
+                it->second.last_frame = cache.current_frame;
+            } else {
+                // Width mismatch or missing entry (defensive — measure
+                // populates the entry; this path runs only if the
+                // measure callback wasn't invoked, e.g. a parent that
+                // sized the child manually).  Render but don't store
+                // a height (we don't have one without a layout pass);
+                // the next frame's measure will populate it properly.
+                child = node.render(content_w, content_h);
+                cache.entries[&node] = {
+                    content_w,
+                    /*height=*/content_h,
+                    child,
+                    cache.current_frame
+                };
+            }
 
             // Reuse a thread-local scratch buffer for the sub-layout tree.
             // This avoids a heap allocation per component per frame — typical
@@ -499,13 +683,14 @@ void paint_element(
             sub_nodes[sub_root].style.height = Dimension::fixed(content_h);
             layout::compute(sub_nodes, sub_root, content_w, content_h);
 
-            canvas.push_clip(Rect{
-                {Columns{content_x}, Rows{content_y}},
-                {Columns{content_w}, Rows{content_h}}
-            });
-            paint_element(child, canvas, pool, sub_nodes, sub_root,
-                          content_x, content_y);
-            canvas.pop_clip();
+            {
+                auto _ = canvas.clip_scope(Rect{
+                    {Columns{content_x}, Rows{content_y}},
+                    {Columns{content_w}, Rows{content_h}}
+                });
+                paint_element(child, canvas, pool, sub_nodes, sub_root,
+                              content_x, content_y);
+            }
             if (!use_local) tl_in_use = false;
         }
     });
@@ -543,6 +728,41 @@ void render_tree(
     // Set the render context if not already set by the parent overload or App.
     RenderContext ctx{canvas.width(), canvas.height(), render_generation(), auto_height};
     RenderContextGuard guard(ctx);
+
+    // Cross-frame ComponentElement render cache management.
+    //
+    // At the OUTERMOST render_tree call: bump the frame counter and
+    // evict entries whose last_frame_used is older than the previous
+    // frame.  Stable entries (same ComponentElement* still in the
+    // tree) get their timestamps refreshed during this frame's
+    // measure/paint and survive; ephemeral entries (one-shot
+    // components built fresh each frame) age out within a frame of
+    // last access.
+    //
+    // Nested render_tree calls (a component recursively rendering
+    // another tree) inherit the existing frame counter — they see the
+    // same cache state as their parent.
+    auto& depth = render_detail::render_depth();
+    bool top_level = (depth == 0);
+    ++depth;
+    if (top_level) {
+        auto& cache = render_detail::component_cache();
+        // Evict before bumping current_frame so entries from the
+        // previous frame are still tagged "last_frame == previous".
+        const std::uint64_t prev = cache.current_frame;
+        for (auto it = cache.entries.begin(); it != cache.entries.end(); ) {
+            if (it->second.last_frame < prev) {
+                it = cache.entries.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        ++cache.current_frame;
+    }
+    struct Cleanup {
+        int* d;
+        ~Cleanup() { if (d) --*d; }
+    } cleanup{&depth};
 
     // Phase 1: Build the layout tree (reusing the caller's vector).
     layout_nodes.clear();
@@ -585,14 +805,15 @@ void render_tree_at(
     layout::compute(layout_nodes, root_idx, w, h);
 
     // Phase 4: Clip to the sub-region and paint with offset — no clear.
-    canvas.push_clip(Rect{
-        {Columns{x}, Rows{y}},
-        {Columns{w}, Rows{h}}
-    });
-    render_detail::paint_element(
-        root, canvas, pool, layout_nodes, root_idx,
-        /*offset_x=*/x, /*offset_y=*/y);
-    canvas.pop_clip();
+    {
+        auto _ = canvas.clip_scope(Rect{
+            {Columns{x}, Rows{y}},
+            {Columns{w}, Rows{h}}
+        });
+        render_detail::paint_element(
+            root, canvas, pool, layout_nodes, root_idx,
+            /*offset_x=*/x, /*offset_y=*/y);
+    }
 }
 
 } // namespace maya

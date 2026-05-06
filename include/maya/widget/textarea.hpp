@@ -139,9 +139,15 @@ public:
         int cursor_line = 0, cursor_col = 0;
         find_cursor_pos(val, cur, cursor_line, cursor_col);
 
-        // Compute visible window
+        // Compute visible window.  Use the pure (no-mutation) variant
+        // so render is idempotent — the framework's auto-measure path
+        // calls render twice per frame (once for height, once for
+        // paint), and a const_cast-mutating compute_scroll left them
+        // disagreeing about scroll offset → first row of the textarea
+        // would silently shift between measure and paint.
         int vis = cfg_.visible_lines > 0 ? cfg_.visible_lines : total_lines;
-        int scroll = const_cast<TextArea*>(this)->compute_scroll(cursor_line, total_lines, vis);
+        int scroll = compute_scroll_pure(cursor_line, total_lines, vis,
+                                         scroll_offset_);
 
         int start = scroll;
         int end = std::min(scroll + vis, total_lines);
@@ -321,12 +327,26 @@ private:
     }
 
     int compute_scroll(int cursor_line, int total_lines, int visible) {
+        // Stateful variant — mutates scroll_offset_.  Called from
+        // event handlers / public mutators when the textarea is
+        // actively edited.  NOT called from build().
         if (visible >= total_lines) { scroll_offset_ = 0; return 0; }
         if (cursor_line < scroll_offset_) scroll_offset_ = cursor_line;
         if (cursor_line >= scroll_offset_ + visible)
             scroll_offset_ = cursor_line - visible + 1;
         scroll_offset_ = std::clamp(scroll_offset_, 0, total_lines - visible);
         return scroll_offset_;
+    }
+
+    // Pure variant — used by build() so render() is idempotent under
+    // the framework's measure-then-paint contract.
+    static int compute_scroll_pure(int cursor_line, int total_lines,
+                                   int visible, int saved_offset) noexcept {
+        if (visible >= total_lines) return 0;
+        int off = saved_offset;
+        if (cursor_line < off) off = cursor_line;
+        if (cursor_line >= off + visible) off = cursor_line - visible + 1;
+        return std::clamp(off, 0, total_lines - visible);
     }
 
     static size_t utf8_char_len(const std::string& s, size_t pos) {

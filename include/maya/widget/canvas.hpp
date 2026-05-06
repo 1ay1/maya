@@ -106,7 +106,12 @@ public:
 
     [[nodiscard]] Element build() const {
         if (width_ == 0 || height_ == 0) {
-            return Element{TextElement{}};
+            // Zero-dimension canvas: consume zero rows.  Returning a
+            // 1-row blank TextElement here would trick the parent
+            // vstack into allocating a row that the canvas can't
+            // legitimately fill, leaving stale content from the
+            // previous frame in that row.
+            return dsl::nothing();
         }
 
         // Each row is one line of half-block characters.

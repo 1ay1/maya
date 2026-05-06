@@ -71,6 +71,12 @@ word_wrap(std::string_view text, int max_width);
 // ============================================================================
 // Truncation helpers
 // ============================================================================
+// These respect UTF-8 codepoint boundaries AND display widths — wide
+// (CJK / emoji) characters count as 2 columns, multi-byte sequences are
+// never split mid-codepoint.  Widgets that need to fit text into a
+// column budget MUST use these instead of `s.substr(0, max_w-1) + "…"`,
+// which silently corrupts multi-byte content (split UTF-8 → invalid
+// renders, byte-size off by N for wide chars → padding misalignment).
 
 namespace detail {
 
@@ -87,6 +93,15 @@ truncate_start(std::string_view text, int max_width);
 truncate_middle(std::string_view text, int max_width);
 
 } // namespace detail
+
+// ── Public re-exports — promote the safe truncation helpers out of
+// `detail::` so widgets can find them without leaning on internal
+// namespaces.  Widget authors should ALWAYS use these instead of
+// `s.substr(0, n)` (byte-indexed, splits codepoints) or
+// `if (s.size() > N) s.resize(N)` (byte size != display width).
+using detail::truncate_end;
+using detail::truncate_start;
+using detail::truncate_middle;
 
 // ============================================================================
 // TextElement - A leaf element that displays styled text

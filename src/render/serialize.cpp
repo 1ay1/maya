@@ -11,9 +11,20 @@
 namespace maya {
 
 void InlineFrameState::commit_prefix(int rows) noexcept {
+    // Bounds: clamp to [0, prev_rows].  Negative / zero is a no-op; an
+    // over-commit (rows >= prev_rows) is interpreted as "everything is
+    // scrollback now" and resets the state cleanly — no UB, no
+    // out-of-bounds memmove on the caller.  This is the contract the
+    // application can rely on regardless of how it tracks row counts.
     if (rows <= 0 || prev_rows <= 0 || prev_width <= 0) return;
     if (rows >= prev_rows) { reset(); return; }
 
+    // Both `shift` and `remaining` are products of int * int → size_t.
+    // The rows < prev_rows guard above plus the prev_rows * W ≤
+    // prev_cells.size() invariant established by compose_inline_frame
+    // mean the arithmetic cannot overflow on valid state — but we still
+    // bound-check the memmove against actual buffer size in case the
+    // application reset prev_cells externally between frames.
     const std::size_t W = static_cast<std::size_t>(prev_width);
     const std::size_t shift = static_cast<std::size_t>(rows) * W;
     const std::size_t remaining = static_cast<std::size_t>(prev_rows - rows) * W;
@@ -23,6 +34,17 @@ void InlineFrameState::commit_prefix(int rows) noexcept {
         std::memmove(data, data + shift, remaining * sizeof(uint64_t));
     }
     prev_rows -= rows;
+
+    // Cursor invariant: the next compose_inline_frame call assumes the
+    // terminal cursor is at row (prev_rows - 1) in the post-commit
+    // numbering.  That holds here because the caller (Runtime::
+    // commit_inline_prefix) only mutates the renderer's mental model;
+    // the actual terminal cursor is wherever the last write left it,
+    // and the relative cursor moves used by compose_inline_frame
+    // (cursor_up / \r\n) target rows by their distance from the
+    // current cursor row, not absolute coordinates.  As long as the
+    // application calls commit_prefix BEFORE the next render(), the
+    // delta math is consistent.
 }
 
 int content_height(const Canvas& canvas) noexcept {
@@ -211,6 +233,18 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 // xterm). The bytes save nothing visible either way, but knowing the
 // answer upstream lets the application coalesce paints more
 // aggressively when sync isn't available.
+// Bounded multiplication for content_rows × width.  Returns SIZE_MAX on
+// overflow — the caller treats that as "drop the prev cache, do a full
+// repaint" rather than silently corrupting prev_cells with a wrapped
+// size that re-uses uninitialized capacity.
+[[nodiscard]] static constexpr std::size_t safe_cells(int rows, int W) noexcept {
+    if (rows <= 0 || W <= 0) return 0;
+    const auto r = static_cast<std::size_t>(rows);
+    const auto w = static_cast<std::size_t>(W);
+    if (r > (std::size_t)(-1) / w) return (std::size_t)(-1);
+    return r * w;
+}
+
 void compose_inline_frame(const Canvas& canvas,
                           int content_rows,
                           int term_h,
@@ -223,7 +257,17 @@ void compose_inline_frame(const Canvas& canvas,
     if (W <= 0 || content_rows <= 0 || term_h <= 0) return;
 
     // Width change invalidates the cached cell buffer — row layouts shift.
+    // Reset clears prev_width / prev_rows but doesn't free prev_cells; the
+    // next resize will reuse the allocation if it's already big enough.
     if (state.prev_width != W) state.reset();
+
+    // Pre-reserve `out` so the per-row ANSI emission doesn't trip a
+    // reallocation cascade.  Rough heuristic: 24 bytes per row of pure
+    // movement + EL + style switches, plus ~200 bytes for the frame
+    // wrapper.  Streaming workloads rarely write more than a few rows
+    // per frame, so this dominates the actual byte count and saves
+    // 2-3 reallocations on the hot path.
+    out.reserve(out.size() + 256 + static_cast<std::size_t>(content_rows) * 24);
 
     const uint64_t* cells = canvas.cells();
     const int prev_rows       = state.prev_rows;
@@ -231,10 +275,10 @@ void compose_inline_frame(const Canvas& canvas,
     const int updatable_start = prev_rows - prev_on_screen;
     const int common          = std::min(content_rows, prev_rows);
 
+    const std::size_t need_prev = safe_cells(prev_rows, W);
     const bool have_prev =
-        prev_rows > 0 &&
-        static_cast<std::size_t>(prev_rows) * static_cast<std::size_t>(W)
-            <= state.prev_cells.size();
+        prev_rows > 0 && need_prev != (std::size_t)(-1) &&
+        need_prev <= state.prev_cells.size();
     const uint64_t* prev = have_prev ? state.prev_cells.data() : nullptr;
 
     // Locate the first row that actually differs from the cached copy.
@@ -263,9 +307,15 @@ void compose_inline_frame(const Canvas& canvas,
     if (prev_rows == 0) {
         serialize(canvas, pool, out, content_rows);
         if (synchronized_output) out += ansi::sync_end;
-        // Cache the new cell buffer for next frame's comparison.
-        const std::size_t new_size =
-            static_cast<std::size_t>(content_rows) * static_cast<std::size_t>(W);
+        // Cache the new cell buffer for next frame's comparison.  This is
+        // the one path that legitimately needs a full memcpy because
+        // prev_cells is empty.  Overflow check protects against pathological
+        // inputs (e.g. content_rows = INT_MAX from a buggy auto_height).
+        const std::size_t new_size = safe_cells(content_rows, W);
+        if (new_size == (std::size_t)(-1)) {
+            state.reset();   // prev_cells unchanged; caller falls back to Divergent next frame
+            return;
+        }
         if (state.prev_cells.size() < new_size) state.prev_cells.resize(new_size);
         std::memcpy(state.prev_cells.data(), cells, new_size * sizeof(uint64_t));
         state.prev_width = W;
@@ -369,11 +419,44 @@ void compose_inline_frame(const Canvas& canvas,
 
     if (synchronized_output) out += ansi::sync_end;
 
-    // Commit: cache the new cell buffer for next frame's comparison.
-    const std::size_t new_size =
-        static_cast<std::size_t>(content_rows) * static_cast<std::size_t>(W);
-    if (state.prev_cells.size() < new_size) state.prev_cells.resize(new_size);
-    std::memcpy(state.prev_cells.data(), cells, new_size * sizeof(uint64_t));
+    // ── Commit: cache the new cell buffer for next frame's comparison ──
+    //
+    // Performance-critical path.  The naive implementation memcpy's the
+    // entire canvas every frame, which scales linearly with content_rows
+    // and dominates frame cost as soon as content gets long (8 MB at
+    // 5000×200, 250 MB/s of pure cache update at 30 fps — that's why
+    // long sessions feel sluggish).
+    //
+    // The row diff just proved that rows [0, first_changed) are
+    // byte-identical between `cells` and `prev`.  We can therefore:
+    //
+    //   1. Skip the prefix entirely — leave prev_cells as-is for those
+    //      rows (they already match `cells` by definition).
+    //   2. Memcpy only the changed/new tail: rows [first_changed,
+    //      content_rows).  For a streaming workload where first_changed
+    //      is near content_rows-N, this is O(N×W) instead of O(content_rows×W).
+    //
+    // Correctness: the next frame's `bulk_eq` walk reads from prev_cells
+    // and compares to the next frame's `cells`.  Whether we copied row k
+    // into prev_cells via the naive memcpy or skipped it (because it was
+    // already equal), the byte content of prev_cells[k] is the same.
+    const std::size_t new_total = safe_cells(content_rows, W);
+    if (new_total == (std::size_t)(-1)) {
+        // Pathological input — drop the cache and fall back to Divergent.
+        state.reset();
+        return;
+    }
+    if (state.prev_cells.size() < new_total)
+        state.prev_cells.resize(new_total);
+
+    const std::size_t prefix_cells =
+        static_cast<std::size_t>(first_changed) * static_cast<std::size_t>(W);
+    if (new_total > prefix_cells) {
+        std::memcpy(
+            state.prev_cells.data() + prefix_cells,
+            cells + prefix_cells,
+            (new_total - prefix_cells) * sizeof(uint64_t));
+    }
     state.prev_width = W;
     state.prev_rows  = content_rows;
 }

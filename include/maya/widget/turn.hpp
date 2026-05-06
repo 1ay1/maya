@@ -87,6 +87,16 @@ public:
         bool                  checkpoint_above = false;
         std::string           checkpoint_label = "Restore checkpoint";
         Color                 checkpoint_color = Color::yellow();
+
+        // Set to true on the 2nd+ turn within a same-speaker run. The
+        // header row (glyph + label + meta) is suppressed and the
+        // Conversation widget skips the inter-turn divider, so the rail
+        // and body of consecutive same-speaker turns flow as one block.
+        // The agent-loop case ("agent did 3 reads in 3 API rounds")
+        // visually reads as one logical action without collapsing the
+        // underlying per-response Message structure that the Anthropic
+        // protocol requires.
+        bool                  continuation = false;
     };
 
     explicit Turn(Config c) : cfg_(std::move(c)) {}
@@ -98,6 +108,8 @@ public:
         const Color muted = Color::bright_black();
 
         // ── Header row: glyph + bold label + spacer + dim meta.
+        //    Suppressed entirely on continuation turns — the previous
+        //    turn in the run already showed it.
         auto header = h(
             text(cfg_.glyph, Style{}.with_fg(cfg_.rail_color)),
             text(" "),
@@ -125,12 +137,19 @@ public:
             text(cfg_.error, Style{}.with_fg(Color::red()).with_dim().with_italic())
         );
 
-        auto inner = v(
-            header,
-            blank(),
-            body_rows,
-            when(!cfg_.error.empty(), v(blank(), error_row))
-        ) | grow(1.0f);
+        // Two DSL branches build distinct compile-time tree types, so we
+        // can't ternary directly — fold each to Element separately.
+        Element inner = cfg_.continuation
+            ? (v(
+                body_rows,
+                when(!cfg_.error.empty(), v(blank(), error_row))
+              ) | grow(1.0f)).build()
+            : (v(
+                header,
+                blank(),
+                body_rows,
+                when(!cfg_.error.empty(), v(blank(), error_row))
+              ) | grow(1.0f)).build();
 
         Element rail = maya::detail::box()
             .direction(FlexDirection::Row)
@@ -139,7 +158,7 @@ public:
                            .bottom = false, .left = true})
             .padding(0, 0, 0, 2)
             .grow(1.0f)
-          (inner.build());
+          (std::move(inner));
 
         // ── Optional checkpoint divider above the rail.
         if (!cfg_.checkpoint_above) return rail;

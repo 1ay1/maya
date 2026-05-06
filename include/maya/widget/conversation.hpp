@@ -48,7 +48,10 @@ public:
         std::vector<Element> rows;
         rows.reserve(cfg_.turns.size() * 2 + 1);
         for (std::size_t i = 0; i < cfg_.turns.size(); ++i) {
-            if (i > 0) rows.push_back(divider_rule());
+            // Skip the inter-turn rule before a continuation turn so the
+            // rail flows uninterrupted through a same-speaker run.
+            if (i > 0 && !cfg_.turns[i].continuation)
+                rows.push_back(divider_rule());
             rows.push_back(Turn{cfg_.turns[i]}.build());
         }
         if (cfg_.in_flight)

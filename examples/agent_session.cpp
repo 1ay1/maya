@@ -1363,16 +1363,48 @@ static Element actions_panel(const Model& m, bool live) {
         e.elapsed_seconds = t.elapsed;
         e.category_color  = tool_color(t.kind);
         e.status          = t.status;
-        if (!t.body.empty()) {
+        // Map each ToolKind to the body-preview rendering that fits its
+        // shape: a Read shows line numbers, an Edit shows diff coloring, a
+        // Grep parses path:line:text columns, etc. The fallback CodeBlock
+        // covers Agent (free-text trace) and any unknown kinds. We render
+        // the body slot whenever we have content OR the tool is in flight
+        // — the "awaiting…" skeleton lets the user tell a stuck tool from
+        // a slow one before the first byte arrives.
+        const bool body_streaming = t.body.empty() &&
+            t.status == AgentEventStatus::Running;
+        if (!t.body.empty() || body_streaming) {
+            e.body.text         = t.body;
+            e.body.failed       = (t.status == AgentEventStatus::Failed);
+            e.body.is_streaming = body_streaming;
+
             switch (t.kind) {
                 case ToolKind::Edit:
                     e.body.kind = ToolBodyPreview::Kind::GitDiff;
                     break;
+                case ToolKind::Bash:
+                    e.body.kind = ToolBodyPreview::Kind::BashOutput;
+                    break;
+                case ToolKind::Read:
+                    e.body.kind = ToolBodyPreview::Kind::FileRead;
+                    break;
+                case ToolKind::Write:
+                    e.body.kind = ToolBodyPreview::Kind::FileWrite;
+                    break;
+                case ToolKind::Fetch:
+                    // Json self-sniffs and falls back to CodeBlock when the
+                    // body isn't JSON, so it's safe as the unconditional
+                    // pick for fetch responses.
+                    e.body.kind = ToolBodyPreview::Kind::Json;
+                    break;
+                case ToolKind::Grep:
+                    e.body.kind = ToolBodyPreview::Kind::GrepMatches;
+                    break;
+                case ToolKind::Agent:
+                case ToolKind::Todo:
                 default:
                     e.body.kind = ToolBodyPreview::Kind::CodeBlock;
                     break;
             }
-            e.body.text = t.body;
         }
         events.push_back(std::move(e));
     }

@@ -33,6 +33,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -96,6 +98,17 @@ public:
 
         // FileRead: gutter starts at this line number.
         int  start_line  = 1;
+
+        // FileRead: cross-tool semantics. When the assistant has previously
+        // located interesting lines via Grep, the caller can pass those
+        // line numbers here. The rendered Read body then (a) summarises
+        // them in a header row `▸ matches: 1, 42, 61`, and (b) for any
+        // listed line that falls within the rendered head, replaces the
+        // gutter's leading space with `▸` and brightens the code style —
+        // so the user's eye lands on the relevant line instead of having
+        // to scan and cross-reference. std::set keeps lookup logarithmic
+        // and gives the deterministic ascending order the summary needs.
+        std::set<int> highlight_lines;
 
         // Suppress placeholder rendering. Default behaviour for an empty
         // body in a Running tool is to render NOTHING — the timeline's
@@ -244,26 +257,34 @@ private:
         return v(each_with_elision(p, fg_dim_(c))).build();
     }
 
-    // ── BashOutput: tail-only ─────────────────────────────────────────────
+    // ── BashOutput: structured extraction → tail-only fallback ────────────
     //
-    // Terminal output is tail-heavy: build summaries, test counts, error
-    // messages, and exit lines all live at the end. Showing the head as
-    // well wastes timeline rows on `[==========]` boilerplate.  We render
-    // only the last `bash_tail` lines.
+    // For terminal output the user is asking ONE QUESTION ("did the command
+    // do what it was supposed to?"), and for several common output shapes —
+    // unit-test runners, compiler diagnostics — we can answer it in 1-3
+    // rows instead of dumping 4 lines of `[==========]` noise.  We try
+    // each known shape in order of specificity; if none match, we fall
+    // back to the previous tail-only rendering.  The fallback path stays
+    // intact for unknown / freeform output (which is most of bash usage).
     //
-    // Failure is NOT recoloured here. The surrounding AgentTimeline event
-    // already paints its connector and status icon red on failure; coloring
-    // the body too would be double-flagging the same signal. The failed
-    // path's only addition is an inline `· exit N` suffix on the final
-    // line, which carries information the timeline header doesn't.
+    // Failure is NOT recoloured.  The surrounding AgentTimeline event
+    // already paints its connector and status icon red on failure;
+    // colouring the body too would be double-flagging.  The failed path's
+    // only addition is an inline `· exit N` suffix on the final tail line.
     [[nodiscard]] Element bash_output() const {
         using namespace dsl;
         if (cfg_.text.empty()) {
             return cfg_.is_streaming ? placeholder_or_blank("awaiting output")
                                      : blank();
         }
-        // head=0 means "tail only"; head_tail returns the last `bash_tail`
-        // lines and reports the rest as elided.
+        if (auto e = try_render_test_summary())     return *e;
+        if (auto e = try_render_compiler_errors())  return *e;
+        return bash_output_tail();
+    }
+
+    // Fallback: dim head-elided + tail, optional `· exit N` on last line.
+    [[nodiscard]] Element bash_output_tail() const {
+        using namespace dsl;
         const auto p = head_tail(cfg_.text, /*head=*/0, cfg_.bash_tail);
 
         const Style line_st = fg_dim_(cfg_.text_color);
@@ -280,8 +301,6 @@ private:
             std::string_view ln = p.lines[std::size_t(i)];
             const bool last = (i + 1 == n);
 
-            // Append "· exit N" inline to the last line on failure — keeps
-            // the chrome on one row and avoids the wasted body slot.
             if (last && cfg_.failed && cfg_.exit_code != 0) {
                 std::string content;
                 content.reserve(ln.size() + 16);
@@ -312,51 +331,402 @@ private:
         return v(rows).build();
     }
 
-    // ── FileRead: head + line gutter ──────────────────────────────────────
+    // ── Test-runner summary detection ─────────────────────────────────────
+    //
+    // Looks for the integer that immediately precedes the literal text
+    // "tests passed" or "tests failed" anywhere in the body.  This catches
+    // the common shapes:
+    //
+    //   gtest:  "[==========] 4 tests passed."
+    //   ctest:  "100% tests passed, 0 tests failed out of 4"
+    //   cargo:  "test result: ok. 4 passed; 0 failed; …"   (close but not exact)
+    //   jest:   "Tests:       4 passed, 4 total"
+    //
+    // We strictly require the literal string "tests passed" / "tests
+    // failed" so we don't mis-fire on prose like "4 tests" in a
+    // documentation comment.  Cargo/jest use slightly different wording
+    // and aren't matched here — easy follow-up if the demand is there.
+    [[nodiscard]] std::optional<Element> try_render_test_summary() const {
+        using namespace dsl;
+        const auto passed = count_before(cfg_.text, "tests passed");
+        const auto failed = count_before(cfg_.text, "tests failed");
+        if (!passed && !failed) return std::nullopt;
+
+        const int p = passed.value_or(0);
+        const int f = failed.value_or(0);
+        const int total = p + f;
+        if (total == 0) return std::nullopt;
+
+        char buf[96];
+        std::vector<StyledRun> runs;
+        std::string content;
+
+        const Style ok_st  = Style{}.with_fg(success()).with_bold();
+        const Style bad_st = Style{}.with_fg(danger()).with_bold();
+        const Style txt_st = Style{}.with_fg(cfg_.text_color);
+
+        if (f == 0) {
+            std::snprintf(buf, sizeof(buf), "\xe2\x9c\x93 %d/%d tests passed", p, total);
+            const std::string s{buf};
+            // Glyph + space = 4 bytes UTF-8 + ' '
+            const std::size_t glyph_len = std::string{"\xe2\x9c\x93 "}.size();
+            runs.push_back({0, glyph_len, ok_st});
+            runs.push_back({glyph_len, s.size() - glyph_len, txt_st});
+            content = std::move(buf);
+        } else {
+            std::snprintf(buf, sizeof(buf), "\xe2\x9c\x97 %d/%d tests failed", f, total);
+            const std::string s{buf};
+            const std::size_t glyph_len = std::string{"\xe2\x9c\x97 "}.size();
+            runs.push_back({0, glyph_len, bad_st});
+            runs.push_back({glyph_len, s.size() - glyph_len, txt_st});
+            content = std::move(buf);
+        }
+
+        std::vector<Element> rows;
+        rows.push_back(Element{TextElement{
+            .content = std::move(content),
+            .style   = {},
+            .wrap    = TextWrap::NoWrap,
+            .runs    = std::move(runs),
+        }});
+
+        // On failure, list up to 3 failing test names if we can extract
+        // them via the conventional `[  FAILED  ]` marker.  Each row stays
+        // 1 line tall to honour AgentTimeline's per-child stripe contract.
+        if (f > 0) {
+            const std::vector<std::string_view> names =
+                extract_failing_test_names(cfg_.text, /*max=*/3);
+            const Style fail_row_st = Style{}.with_fg(danger());
+            for (const auto& name : names) {
+                std::string row;
+                row.reserve(name.size() + 4);
+                row += "    ";
+                row += name;
+                rows.push_back(text_row(std::move(row), fail_row_st));
+            }
+            if (static_cast<int>(names.size()) < f) {
+                std::string more;
+                more.reserve(32);
+                more += "    \xe2\x8b\xaf ";
+                more += std::to_string(f - static_cast<int>(names.size()));
+                more += " more failing";
+                rows.push_back(text_row(std::move(more),
+                    Style{}.with_fg(muted()).with_italic()));
+            }
+        }
+        return v(rows).build();
+    }
+
+    // ── Compiler / linter diagnostic detection ────────────────────────────
+    //
+    // Looks for lines matching `path:line(:col)?: error:` or similar and
+    // renders them as a structured chip:
+    //
+    //   ✗ 2 errors in src/foo.cpp
+    //        42:7  undeclared identifier 'bar'
+    //        43:1  expected ';'
+    //
+    // When errors span multiple files we drop the per-file grouping and
+    // just show the first three lines verbatim — diff-quality across-file
+    // error rendering is a rabbit hole we don't need to enter for the
+    // common single-file build-error case.
+    [[nodiscard]] std::optional<Element> try_render_compiler_errors() const {
+        using namespace dsl;
+        std::vector<Diag> diags = parse_compiler_diags(cfg_.text);
+        if (diags.empty()) return std::nullopt;
+
+        // Determine whether all the errors live in the same file.  When
+        // they do we can use the tighter "N errors in path" header; if
+        // not we fall back to a generic "N issues" header so we don't lie
+        // about scope.
+        bool single_file = true;
+        for (std::size_t i = 1; i < diags.size(); ++i)
+            if (diags[i].path != diags[0].path) { single_file = false; break; }
+
+        const int n_err = static_cast<int>(std::count_if(
+            diags.begin(), diags.end(),
+            [](const Diag& d) { return d.severity == Diag::Error; }));
+        const int n_total = static_cast<int>(diags.size());
+        const Style hdr_glyph_st = Style{}.with_fg(danger()).with_bold();
+        const Style hdr_txt_st   = Style{}.with_fg(cfg_.text_color);
+        const Style coord_st     = Style{}.with_fg(muted());
+        const Style msg_st       = Style{}.with_fg(cfg_.text_color);
+
+        // Header
+        std::string header;
+        std::vector<StyledRun> hdr_runs;
+        const std::string glyph = "\xe2\x9c\x97 ";   // ✗
+        hdr_runs.push_back({0, glyph.size(), hdr_glyph_st});
+        header += glyph;
+
+        const std::size_t txt_off = header.size();
+        if (single_file) {
+            header += std::to_string(n_err > 0 ? n_err : n_total);
+            header += (n_err == 1 || n_total == 1) ? " issue in "
+                                                   : " issues in ";
+            header += diags[0].path;
+        } else {
+            header += std::to_string(n_total);
+            header += (n_total == 1) ? " issue across files"
+                                     : " issues across files";
+        }
+        hdr_runs.push_back({txt_off, header.size() - txt_off, hdr_txt_st});
+
+        std::vector<Element> rows;
+        rows.reserve(diags.size() + 2);
+        rows.push_back(Element{TextElement{
+            .content = std::move(header),
+            .style   = {},
+            .wrap    = TextWrap::NoWrap,
+            .runs    = std::move(hdr_runs),
+        }});
+
+        // Up to 3 diagnostic rows.  Each: "    42:7  msg" with "42:7"
+        // dim-muted (chrome) and msg in default fg.
+        const int shown = std::min<int>(3, static_cast<int>(diags.size()));
+        for (int i = 0; i < shown; ++i) {
+            const Diag& d = diags[std::size_t(i)];
+            char coord[24];
+            if (d.col > 0) std::snprintf(coord, sizeof(coord), "%d:%d", d.line, d.col);
+            else           std::snprintf(coord, sizeof(coord), "%d",    d.line);
+            std::string row;
+            std::vector<StyledRun> rrun;
+            row += "    ";
+            const std::size_t coff = row.size();
+            row += coord;
+            rrun.push_back({coff, std::string{coord}.size(), coord_st});
+            row += "  ";
+            const std::size_t moff = row.size();
+            row += d.msg;
+            rrun.push_back({moff, d.msg.size(), msg_st});
+            rows.push_back(Element{TextElement{
+                .content = std::move(row),
+                .style   = {},
+                .wrap    = TextWrap::NoWrap,
+                .runs    = std::move(rrun),
+            }});
+        }
+        if (shown < static_cast<int>(diags.size())) {
+            std::string more;
+            more.reserve(32);
+            more += "    \xe2\x8b\xaf ";
+            more += std::to_string(static_cast<int>(diags.size()) - shown);
+            more += " more";
+            rows.push_back(text_row(std::move(more),
+                Style{}.with_fg(muted()).with_italic()));
+        }
+        return v(rows).build();
+    }
+
+    // Pull the integer that immediately precedes `tag` in `body`.
+    // Returns nullopt if `tag` is absent or not preceded by a digit run.
+    [[nodiscard]] static std::optional<int>
+    count_before(std::string_view body, std::string_view tag) noexcept {
+        auto pos = body.find(tag);
+        if (pos == std::string_view::npos) return std::nullopt;
+        std::size_t i = pos;
+        while (i > 0 && body[i - 1] == ' ') --i;
+        const std::size_t end = i;
+        while (i > 0 && body[i - 1] >= '0' && body[i - 1] <= '9') --i;
+        if (i == end) return std::nullopt;
+        int n = 0;
+        for (auto j = i; j < end; ++j) n = n * 10 + (body[j] - '0');
+        return n;
+    }
+
+    // Up to `max` failing test names extracted from gtest-style markers.
+    [[nodiscard]] static std::vector<std::string_view>
+    extract_failing_test_names(std::string_view body, int max) noexcept {
+        constexpr std::string_view kMarker = "[  FAILED  ] ";
+        std::vector<std::string_view> out;
+        std::size_t i = 0;
+        while (out.size() < std::size_t(max)) {
+            auto p = body.find(kMarker, i);
+            if (p == std::string_view::npos) break;
+            const std::size_t name_start = p + kMarker.size();
+            // Skip any leading whitespace just in case
+            std::size_t name_end = name_start;
+            while (name_end < body.size()
+                   && body[name_end] != '\n'
+                   && body[name_end] != ',') ++name_end;
+            if (name_end > name_start) {
+                std::string_view name = body.substr(name_start, name_end - name_start);
+                // Trim trailing space and parenthesised duration.
+                while (!name.empty() && name.back() == ' ') name.remove_suffix(1);
+                if (!name.empty() && name.back() == ')') {
+                    auto op = name.rfind('(');
+                    if (op != std::string_view::npos) {
+                        std::string_view trimmed = name.substr(0, op);
+                        while (!trimmed.empty() && trimmed.back() == ' ')
+                            trimmed.remove_suffix(1);
+                        if (!trimmed.empty()) name = trimmed;
+                    }
+                }
+                // Skip the gtest summary line which lists every failing
+                // test name on a single comma-separated row.
+                if (name.find(' ') == std::string_view::npos)
+                    out.push_back(name);
+            }
+            i = name_end;
+        }
+        return out;
+    }
+
+    // ── Compiler diagnostic line parser ───────────────────────────────────
+
+    struct Diag {
+        enum Sev : std::uint8_t { Error, Warning, Note };
+        std::string path;
+        int         line = 0;
+        int         col  = 0;
+        Sev         severity = Error;
+        std::string msg;
+    };
+
+    [[nodiscard]] static std::vector<Diag>
+    parse_compiler_diags(std::string_view body) {
+        std::vector<Diag> out;
+        std::size_t pos = 0;
+        while (pos < body.size()) {
+            const auto nl = body.find('\n', pos);
+            const std::string_view ln = body.substr(
+                pos, (nl == std::string_view::npos ? body.size() : nl) - pos);
+            if (auto d = parse_diag_line(ln)) out.push_back(std::move(*d));
+            if (nl == std::string_view::npos) break;
+            pos = nl + 1;
+        }
+        return out;
+    }
+
+    [[nodiscard]] static std::optional<Diag>
+    parse_diag_line(std::string_view ln) {
+        // Required shape: <path>:<line>(:<col>)?: <severity>: <msg>
+        // Severities: error, warning, note, fatal error
+        // Reject lines that don't look like file paths (no slash, no dot).
+        const auto p1 = ln.find(':');
+        if (p1 == std::string_view::npos || p1 == 0) return std::nullopt;
+        const std::string_view path = ln.substr(0, p1);
+        if (path.find('/') == std::string_view::npos
+         && path.find('.') == std::string_view::npos) return std::nullopt;
+
+        const auto p2 = ln.find(':', p1 + 1);
+        if (p2 == std::string_view::npos) return std::nullopt;
+        const std::string_view linum_sv = ln.substr(p1 + 1, p2 - p1 - 1);
+        if (linum_sv.empty()) return std::nullopt;
+        int linum = 0;
+        for (char c : linum_sv) {
+            if (c < '0' || c > '9') return std::nullopt;
+            linum = linum * 10 + (c - '0');
+        }
+
+        std::size_t rest_start = p2 + 1;
+        int col = 0;
+        const auto p3 = ln.find(':', rest_start);
+        if (p3 != std::string_view::npos) {
+            const std::string_view col_sv = ln.substr(rest_start, p3 - rest_start);
+            bool digits = !col_sv.empty();
+            for (char c : col_sv) if (c < '0' || c > '9') { digits = false; break; }
+            if (digits) {
+                for (char c : col_sv) col = col * 10 + (c - '0');
+                rest_start = p3 + 1;
+            }
+        }
+
+        std::string_view rest = ln.substr(rest_start);
+        while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
+
+        Diag::Sev sev = Diag::Error;
+        std::string_view sev_tag;
+        if      (rest.starts_with("error:"))         { sev = Diag::Error;   sev_tag = "error:"; }
+        else if (rest.starts_with("fatal error:"))   { sev = Diag::Error;   sev_tag = "fatal error:"; }
+        else if (rest.starts_with("warning:"))       { sev = Diag::Warning; sev_tag = "warning:"; }
+        else if (rest.starts_with("note:"))          { sev = Diag::Note;    sev_tag = "note:"; }
+        else                                          return std::nullopt;
+
+        rest.remove_prefix(sev_tag.size());
+        while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
+
+        return Diag{
+            std::string{path}, linum, col, sev, std::string{rest},
+        };
+    }
+
+    // ── FileRead: head + line gutter (+ optional highlight_lines) ─────────
     //
     // File reads are head-heavy: the assistant just opened a file and the
-    // user wants to confirm it's the right one. Showing 5 leading lines
-    // with a line-number gutter is enough to anchor "yes, that's the file
-    // I'm thinking of." If the file is bigger than the head budget we
-    // append a single dim "⋯ N more" row — which is also exactly what the
-    // existing elision_marker would emit, so we stay consistent.
+    // user wants to confirm it's the right one.  Showing 5 leading lines
+    // with a line-number gutter anchors "yes, that's the file."
+    //
+    // When the caller supplies `highlight_lines` (typically the line
+    // numbers a previous Grep flagged on the same path), we
+    //   1. emit a leading `▸ matches: 1, 42, 61` summary header row so the
+    //      reader knows the relevant lines even if they're outside the
+    //      rendered head, and
+    //   2. for any highlighted line that DOES fall in the rendered range,
+    //      replace the gutter's leading space with `▸` and brighten the
+    //      code style — so the eye lands on it immediately.
+    //
+    // The summary row ALWAYS appears when highlight_lines is non-empty,
+    // because the most common case in a long real file is that the
+    // matches don't all fit in the head budget; without the summary the
+    // reader would never know lines 42 and 61 exist.
     [[nodiscard]] Element file_read() const {
         using namespace dsl;
         if (cfg_.text.empty()) {
             return cfg_.is_streaming ? placeholder_or_blank("reading file")
                                      : blank();
         }
-        // head-only: tail=0 makes head_tail render the first read_head
-        // lines and put the elision marker AFTER them.
         const auto p = head_tail(cfg_.text, cfg_.read_head, /*tail=*/0);
 
         const Style gutter_st = Style{}.with_fg(muted());
         const Style pipe_st   = Style{}.with_fg(muted());
         const Style code_st   = Style{}.with_fg(cfg_.text_color);
+        // Highlighted lines: arrow gutter + bright code.  We use a brighter
+        // fg via the with_bold() weight rather than a separate accent
+        // colour so the rest of the body's tonal balance is preserved.
+        const Style hi_arrow_st = Style{}.with_fg(accent()).with_bold();
+        const Style hi_code_st  = Style{}.with_fg(cfg_.text_color).with_bold();
 
         std::vector<Element> rows;
-        rows.reserve(p.lines.size() + 1);
+        rows.reserve(p.lines.size() + 2);
 
+        // 1. Optional matches header.
+        if (!cfg_.highlight_lines.empty())
+            rows.push_back(highlight_summary_row());
+
+        // 2. Gutter rows.
         int line_num = cfg_.start_line;
         for (int i = 0; i < static_cast<int>(p.lines.size()); ++i) {
             std::string_view ln = p.lines[std::size_t(i)];
+            const bool hi = cfg_.highlight_lines.count(line_num) > 0;
 
-            // Gutter: " 42 │ "
+            // Gutter: "▸42 │ " when highlighted, " 42 │ " otherwise.  Both
+            // shapes are exactly the same display width so consecutive
+            // rows stay column-aligned regardless of which are flagged.
             char numbuf[8];
-            std::snprintf(numbuf, sizeof(numbuf), "%4d", line_num);
+            std::snprintf(numbuf, sizeof(numbuf), "%3d", line_num);
             const std::size_t numlen = std::char_traits<char>::length(numbuf);
+            constexpr std::string_view kArrow = "\xe2\x96\xb8";   // ▸  (3 bytes, 1 col)
+            constexpr std::string_view kSpace = " ";
 
             std::string content;
-            content.reserve(numlen + 5 + ln.size());
+            content.reserve(numlen + 8 + ln.size());
+            const std::size_t lead_off = content.size();
+            content += hi ? kArrow : kSpace;
+            const std::size_t lead_len = hi ? kArrow.size() : kSpace.size();
+            const std::size_t num_off = content.size();
             content += numbuf;
-            content += " \xe2\x94\x82 ";   // " │ " — 1+3+1 = 5 bytes
+            const std::size_t pipe_off = content.size();
+            content += " \xe2\x94\x82 ";   // " │ "  (5 bytes)
 
             std::vector<StyledRun> runs;
-            runs.push_back({0, numlen, gutter_st});
-            runs.push_back({content.size() - 5, 5, pipe_st});
+            runs.push_back({lead_off, lead_len, hi ? hi_arrow_st : gutter_st});
+            runs.push_back({num_off,  numlen,   gutter_st});
+            runs.push_back({pipe_off, 5,        pipe_st});
             const std::size_t code_off = content.size();
             content += ln;
-            if (!ln.empty()) runs.push_back({code_off, ln.size(), code_st});
+            if (!ln.empty())
+                runs.push_back({code_off, ln.size(), hi ? hi_code_st : code_st});
 
             rows.push_back(Element{TextElement{
                 .content = std::move(content),
@@ -367,12 +737,36 @@ private:
             ++line_num;
         }
 
-        // Trailing elision row when there's more file below the head
-        // budget. Line numbers don't continue past this point — the user
-        // is told there's more, not exactly which lines were skipped.
+        // 3. Trailing elision row.
         if (p.elided > 0) rows.push_back(elision_marker(p.elided));
 
         return v(rows).build();
+    }
+
+    // Summary header for FileRead's highlight_lines: `▸ matches: 1, 42, 61`.
+    // Truncated to 5 line numbers + "+N more" to keep it on one line.
+    [[nodiscard]] Element highlight_summary_row() const {
+        constexpr int kMaxNums = 5;
+        std::vector<int> nums(cfg_.highlight_lines.begin(),
+                              cfg_.highlight_lines.end());
+        const int total = static_cast<int>(nums.size());
+
+        std::string content = "\xe2\x96\xb8 matches: ";
+        const int shown = std::min(kMaxNums, total);
+        for (int i = 0; i < shown; ++i) {
+            if (i > 0) content += ", ";
+            content += std::to_string(nums[std::size_t(i)]);
+        }
+        if (shown < total) {
+            content += " +";
+            content += std::to_string(total - shown);
+            content += " more";
+        }
+        return Element{TextElement{
+            .content = std::move(content),
+            .style   = Style{}.with_fg(accent()).with_dim(),
+            .wrap    = TextWrap::NoWrap,
+        }};
     }
 
     // ── FileWrite: subtle "+" prefix + lines/bytes footer ─────────────────
@@ -591,78 +985,116 @@ private:
         return v(rows).build();
     }
 
-    // ── GrepMatches: path:line:text rows ──────────────────────────────────
+    // ── GrepMatches: grouped path → match-row layout ──────────────────────
     //
-    // Each grep result line follows `path:linenum:text`. Splitting it out
-    // lets us tint the path and line number independently of the matched
-    // body — the path becomes a glanceable scan-column, the line number
-    // anchors a follow-up Read, and the match itself stays in the default
-    // foreground so the EYE LANDS THERE FIRST. Path/line are dim chrome,
-    // the colon separators muted, the match the focal point. Lines that
-    // don't fit the canonical shape (in-tree header, stray comment) just
-    // render as plain text in the default fg.
+    // Mirrors `git grep --heading` and ripgrep's default: each unique path
+    // becomes a header line, with its match rows indented beneath as a
+    // right-aligned line-number column followed by the matched text.
+    //
+    //     tests/test_auth.cpp
+    //         1   // Flaky in CI — investigate.
+    //        42       // FIXME: timeout under load
+    //        61       EXPECT_NO_TIMEOUT(refresh_pair());
+    //     tests/CMakeLists.txt
+    //        18       test_auth
+    //
+    // Two structural wins over the previous flat layout: (a) the path
+    // shows up once per group instead of repeating as wallpaper, and
+    // (b) the right-aligned line column gives Grep a TABLE silhouette
+    // that the eye recognises without reading the contents — the kind of
+    // distinctive shape signature the body needs to feel different from
+    // BashOutput at peripheral-vision range.
+    //
+    // Lines that don't fit the canonical `path:line:text` shape pass
+    // through as plain text in the default fg.
     [[nodiscard]] Element grep_matches() const {
         using namespace dsl;
         if (cfg_.text.empty()) {
             return cfg_.is_streaming ? placeholder_or_blank("searching")
                                      : blank();
         }
+
+        // Pass 1: parse into typed records, preserving order.
+        struct Match {
+            std::string_view path;
+            std::string_view linum;     // raw, for column alignment
+            std::string_view rest;
+            bool             parsed = false;   // false → render as raw row
+            std::string_view raw;
+        };
         const auto all = split_lines(cfg_.text);
-        const int total = static_cast<int>(all.size());
-        const int shown = std::min(total, cfg_.max_matches_shown);
-
-        // Discipline: chrome dim, match default-fg. Path/line are dim
-        // muted (no color) so the eye doesn't snag on them when scanning;
-        // the colored part is the MATCH TEXT itself, in the default fg.
-        const Style path_st = Style{}.with_fg(muted());
-        const Style num_st  = Style{}.with_fg(muted());
-        const Style sep_st  = Style{}.with_fg(muted());
-        const Style body_st = Style{}.with_fg(cfg_.text_color);
-
-        std::vector<Element> rows;
-        rows.reserve(static_cast<std::size_t>(shown) + 1);
-
-        for (int i = 0; i < shown; ++i) {
-            std::string_view ln = all[std::size_t(i)];
-
-            // Find first colon. If followed by digits + colon, treat as the
-            // canonical `path:line:text` shape; otherwise just emit the raw
-            // line dimmed.
+        std::vector<Match> matches;
+        matches.reserve(all.size());
+        for (auto ln : all) {
             const auto p1 = ln.find(':');
-            if (p1 == std::string_view::npos) {
-                rows.push_back(text(std::string{ln}, body_st).build());
-                continue;
-            }
-            const auto p2 = ln.find(':', p1 + 1);
-            // Validate the middle segment is digits-only.
-            bool digits = (p2 != std::string_view::npos) && (p2 > p1 + 1);
+            const auto p2 = (p1 == std::string_view::npos)
+                          ? std::string_view::npos
+                          : ln.find(':', p1 + 1);
+            bool digits = (p1 != std::string_view::npos)
+                       && (p2 != std::string_view::npos)
+                       && (p2 > p1 + 1);
             for (std::size_t j = p1 + 1; j < p2 && digits; ++j)
                 if (ln[j] < '0' || ln[j] > '9') digits = false;
+            if (digits) {
+                matches.push_back(Match{
+                    ln.substr(0, p1),
+                    ln.substr(p1 + 1, p2 - p1 - 1),
+                    ln.substr(p2 + 1),
+                    true,
+                    {}
+                });
+            } else {
+                matches.push_back(Match{{}, {}, {}, false, ln});
+            }
+        }
 
-            if (!digits) {
-                rows.push_back(text(std::string{ln}, body_st).build());
+        // Compute the line-number column width across ALL parsed matches
+        // so the indented column stays uniform — even when the first few
+        // groups have shorter line numbers than the later ones.
+        std::size_t num_col_w = 1;
+        for (const auto& m : matches)
+            if (m.parsed) num_col_w = std::max(num_col_w, m.linum.size());
+
+        // Limit total displayed records to max_matches_shown (counting
+        // both parsed matches and pass-through rows; the limit is about
+        // visual budget, not a strict match-count).
+        const int total = static_cast<int>(matches.size());
+        const int shown = std::min(total, cfg_.max_matches_shown);
+
+        const Style path_st = Style{}.with_fg(accent());                // header
+        const Style num_st  = Style{}.with_fg(muted());                 // gutter
+        const Style body_st = Style{}.with_fg(cfg_.text_color);         // match
+        const Style raw_st  = Style{}.with_fg(cfg_.text_color);
+
+        std::vector<Element> rows;
+        rows.reserve(static_cast<std::size_t>(shown) + 4);
+
+        std::string_view current_path;
+        for (int i = 0; i < shown; ++i) {
+            const auto& m = matches[std::size_t(i)];
+            if (!m.parsed) {
+                rows.push_back(text(std::string{m.raw}, raw_st).build());
+                current_path = {};   // a stray row breaks the group
                 continue;
             }
-
-            std::string_view path  = ln.substr(0, p1);
-            std::string_view linum = ln.substr(p1 + 1, p2 - p1 - 1);
-            std::string_view rest  = ln.substr(p2 + 1);
-
+            if (m.path != current_path) {
+                rows.push_back(text(std::string{m.path}, path_st).build());
+                current_path = m.path;
+            }
+            // "    42   match text" — leading 4-space indent, right-aligned
+            // line number padded to num_col_w, two-space gap, match.
             std::string content;
-            content.reserve(ln.size() + 4);
             std::vector<StyledRun> runs;
-
-            runs.push_back({content.size(), path.size(), path_st});
-            content += path;
-            runs.push_back({content.size(), 1, sep_st});
-            content += ':';
-            runs.push_back({content.size(), linum.size(), num_st});
-            content += linum;
-            runs.push_back({content.size(), 1, sep_st});
-            content += ':';
-            runs.push_back({content.size(), rest.size(), body_st});
-            content += rest;
-
+            content += "    ";
+            const std::size_t pad = num_col_w - m.linum.size();
+            content.append(pad, ' ');
+            const std::size_t num_off = content.size();
+            content += m.linum;
+            runs.push_back({num_off, m.linum.size(), num_st});
+            content += "  ";
+            const std::size_t rest_off = content.size();
+            content += m.rest;
+            runs.push_back({rest_off, m.rest.size(), body_st});
             rows.push_back(Element{TextElement{
                 .content = std::move(content),
                 .style   = {},

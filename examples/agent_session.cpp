@@ -1354,6 +1354,39 @@ static Element actions_panel(const Model& m, bool live) {
         else                                                       ++inspect;
     }
 
+    // Cross-tool semantics: scan completed Greps once up-front and build
+    // a `path → {line numbers}` index.  Subsequent Read tools that open
+    // any of those paths inherit the grep hits as `highlight_lines`, so
+    // the body anchors the user's eye on lines the assistant flagged
+    // earlier in the same turn instead of forcing a re-scan.
+    std::unordered_map<std::string, std::set<int>> grep_hits;
+    for (const auto& t : m.tools) {
+        if (t.kind != ToolKind::Grep || t.body.empty()) continue;
+        std::size_t pos = 0;
+        while (pos < t.body.size()) {
+            const auto nl  = t.body.find('\n', pos);
+            const auto end = (nl == std::string::npos) ? t.body.size() : nl;
+            const std::string_view ln(t.body.data() + pos, end - pos);
+            const auto p1 = ln.find(':');
+            const auto p2 = (p1 == std::string_view::npos)
+                          ? std::string_view::npos : ln.find(':', p1 + 1);
+            bool digits = (p1 != std::string_view::npos)
+                       && (p2 != std::string_view::npos)
+                       && (p2 > p1 + 1);
+            for (std::size_t j = p1 + 1; j < p2 && digits; ++j)
+                if (ln[j] < '0' || ln[j] > '9') digits = false;
+            if (digits) {
+                std::string path{ln.substr(0, p1)};
+                int linum = 0;
+                for (std::size_t j = p1 + 1; j < p2; ++j)
+                    linum = linum * 10 + (ln[j] - '0');
+                if (linum > 0) grep_hits[std::move(path)].insert(linum);
+            }
+            if (nl == std::string::npos) break;
+            pos = nl + 1;
+        }
+    }
+
     std::vector<AgentTimelineEvent> events;
     events.reserve(m.tools.size());
     for (const auto& t : m.tools) {
@@ -1384,9 +1417,16 @@ static Element actions_panel(const Model& m, bool live) {
                 case ToolKind::Bash:
                     e.body.kind = ToolBodyPreview::Kind::BashOutput;
                     break;
-                case ToolKind::Read:
+                case ToolKind::Read: {
                     e.body.kind = ToolBodyPreview::Kind::FileRead;
+                    // Inherit grep hits on this same path, if any.  The
+                    // FileRead body will summarise them in a header and
+                    // brighten any visible matching line.
+                    auto it = grep_hits.find(t.detail);
+                    if (it != grep_hits.end())
+                        e.body.highlight_lines = it->second;
                     break;
+                }
                 case ToolKind::Write:
                     e.body.kind = ToolBodyPreview::Kind::FileWrite;
                     break;

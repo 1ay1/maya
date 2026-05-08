@@ -34,8 +34,32 @@ namespace maya {
 
 class Conversation {
 public:
+    // A pre-built turn Element + the continuation flag. The host
+    // (moha) maintains its own (thread, message) → Element cache and
+    // hands settled turns straight through as Element values, so a
+    // long session's per-frame cost stays O(visible_live_turns)
+    // instead of O(visible_total_turns × tool_cards_per_turn). This
+    // is the same pattern the agent_session example uses with
+    // `m.frozen` + `list_ref` — settled rendering is computed once
+    // per turn lifetime, not once per frame. The continuation bit
+    // drives the inter-turn rule below so callers don't have to
+    // recreate that layout policy in their host.
+    struct PreBuilt {
+        Element element;
+        bool    continuation = false;
+    };
+
     struct Config {
+        // Original config-based path. Kept for callers that haven't
+        // adopted the Element cache yet — every Turn::Config in this
+        // vector gets `Turn{cfg}.build()` called on it once per frame.
         std::vector<Turn::Config>                turns;
+        // Fast path: when non-empty, takes precedence over `turns`.
+        // Each entry is a fully-built turn Element; the build()
+        // method just lays them out with dividers between
+        // non-continuation entries — no per-turn Element
+        // reconstruction.
+        std::vector<PreBuilt>                    built_turns;
         std::optional<ActivityIndicator::Config> in_flight;
     };
 
@@ -46,13 +70,19 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
         std::vector<Element> rows;
-        rows.reserve(cfg_.turns.size() * 2 + 1);
-        for (std::size_t i = 0; i < cfg_.turns.size(); ++i) {
+        const bool use_built = !cfg_.built_turns.empty();
+        const std::size_t n = use_built ? cfg_.built_turns.size()
+                                        : cfg_.turns.size();
+        rows.reserve(n * 2 + 1);
+        for (std::size_t i = 0; i < n; ++i) {
             // Skip the inter-turn rule before a continuation turn so the
             // rail flows uninterrupted through a same-speaker run.
-            if (i > 0 && !cfg_.turns[i].continuation)
+            const bool continuation = use_built ? cfg_.built_turns[i].continuation
+                                                : cfg_.turns[i].continuation;
+            if (i > 0 && !continuation)
                 rows.push_back(divider_rule());
-            rows.push_back(Turn{cfg_.turns[i]}.build());
+            rows.push_back(use_built ? cfg_.built_turns[i].element
+                                     : Turn{cfg_.turns[i]}.build());
         }
         if (cfg_.in_flight)
             rows.push_back(ActivityIndicator{*cfg_.in_flight}.build());

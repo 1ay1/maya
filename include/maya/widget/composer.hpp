@@ -111,11 +111,27 @@ public:
 
         std::vector<Element> body_rows;
         if (!has_text) {
-            std::string placeholder =
-                is_awaiting  ? "awaiting permission \xe2\x80\x94 respond above\xe2\x80\xa6" :
-                is_executing ? "running tool \xe2\x80\x94 type to queue\xe2\x80\xa6"        :
-                is_streaming ? "streaming \xe2\x80\x94 type to queue\xe2\x80\xa6"           :
-                               "type a message\xe2\x80\xa6";
+            // When queued items exist and the composer is empty, lead
+            // with the recall affordance — host's ↑ keybinding pulls
+            // them back into the buffer for editing. Mirrors Claude
+            // Code's "Press up to edit queued messages" hint (binary
+            // offset 84591379). Suffix the contextual phase verb so
+            // the user keeps the "type to add another" affordance
+            // visible too.
+            std::string placeholder;
+            if (cfg_.queued > 0) {
+                placeholder = "press \xe2\x86\x91 to edit queued";          // ↑
+                if (is_awaiting)       placeholder += " \xe2\x80\x94 awaiting permission above\xe2\x80\xa6";
+                else if (is_executing) placeholder += " \xe2\x80\x94 type to queue another\xe2\x80\xa6";
+                else if (is_streaming) placeholder += " \xe2\x80\x94 type to queue another\xe2\x80\xa6";
+                else                   placeholder += " \xe2\x80\x94 or type a new message\xe2\x80\xa6";
+            } else {
+                placeholder =
+                    is_awaiting  ? "awaiting permission \xe2\x80\x94 respond above\xe2\x80\xa6" :
+                    is_executing ? "running tool \xe2\x80\x94 type to queue\xe2\x80\xa6"        :
+                    is_streaming ? "streaming \xe2\x80\x94 type to queue\xe2\x80\xa6"           :
+                                   "type a message\xe2\x80\xa6";
+            }
             body_rows.push_back(h(
                 prompt_chip,
                 text("\xe2\x96\x8e", fg_dim_(muted)),                          // dim cursor

@@ -108,22 +108,12 @@ public:
             profile_chip,
             spacer());
 
-        // Starters card.
-        std::vector<Element> starter_rows;
-        starter_rows.push_back(text(" " + small_caps_(cfg_.starters_title) + " ",
-                                    Style{}.with_fg(muted).with_bold()));
-        starter_rows.push_back(blank());
-        for (const auto& s : cfg_.starters) {
-            starter_rows.push_back(h(
-                text("\xe2\x80\xa2 ", fg_dim_(cfg_.accent_color)),         // •
-                text(s, fg_dim_(cfg_.text_color))
-            ).build());
-        }
-        auto starters_card = (v(starter_rows)
-                              | padding(0, 2, 0, 2)
-                              | border(BorderStyle::Round)
-                              | bcolor(muted)).build();
-        auto starters_row = h(spacer(), starters_card, spacer());
+        // Starters card — the "Try • …" panel. Opt-in: when the host
+        // passes an empty `starters` list the entire bordered card and
+        // its bracketing blank rows are skipped, so the welcome screen
+        // collapses straight from chips_row → bottom hint without
+        // leaving a hole or rendering an empty frame.
+        const bool show_starters = !cfg_.starters.empty();
 
         // Bottom hint row: intro · key label · key label · …
         std::vector<Element> hint_parts;
@@ -138,18 +128,38 @@ public:
         hint_parts.push_back(spacer());
         auto hint = h(hint_parts);
 
-        return (v(
-            blank(), blank(),
-            wordmark,
-            blank(),
-            tagline,
-            blank(), blank(),
-            chips_row,
-            blank(), blank(),
-            starters_row,
-            blank(), blank(),
-            hint
-        ) | padding(0, 1) | grow(1.0f)).build();
+        std::vector<Element> rows;
+        rows.push_back(blank());
+        rows.push_back(blank());
+        rows.push_back(wordmark);
+        rows.push_back(blank());
+        rows.push_back(tagline);
+        rows.push_back(blank());
+        rows.push_back(blank());
+        rows.push_back(chips_row);
+        rows.push_back(blank());
+        rows.push_back(blank());
+        if (show_starters) {
+            std::vector<Element> starter_rows;
+            starter_rows.push_back(text(" " + small_caps_(cfg_.starters_title) + " ",
+                                        Style{}.with_fg(muted).with_bold()));
+            starter_rows.push_back(blank());
+            for (const auto& s : cfg_.starters) {
+                starter_rows.push_back(h(
+                    text("\xe2\x80\xa2 ", fg_dim_(cfg_.accent_color)),     // •
+                    text(s, fg_dim_(cfg_.text_color))
+                ).build());
+            }
+            auto starters_card = (v(starter_rows)
+                                  | padding(0, 2, 0, 2)
+                                  | border(BorderStyle::Round)
+                                  | bcolor(muted)).build();
+            rows.push_back(h(spacer(), starters_card, spacer()));
+            rows.push_back(blank());
+            rows.push_back(blank());
+        }
+        rows.push_back(hint);
+        return (v(rows) | padding(0, 1) | grow(1.0f)).build();
     }
 
 private:

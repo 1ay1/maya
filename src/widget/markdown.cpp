@@ -4120,23 +4120,23 @@ Element markdown(std::string_view source) {
 // StreamingMarkdown — progressive per-block rendering
 // ============================================================================
 
-size_t StreamingMarkdown::find_block_boundary() const noexcept {
-    bool in_fence = in_code_fence_;
-    size_t last_boundary = committed_;
-
+size_t StreamingMarkdown::find_block_boundary() noexcept {
+    // Resumable scan — see the scan_* / in_code_fence_ comments in the
+    // header for the full design. The body below is byte-for-byte the
+    // same boundary detection logic the prior const version had; only
+    // the bookkeeping around it (cursor / fence parity / last-boundary)
+    // is now persisted across calls instead of re-derived from
+    // committed_ every time.
+    //
     // The scan walks ONE LINE START at a time: i points at the byte
-    // following a '\n' (or i == 0).  The previous version of this
-    // function checked for blank lines via `source_[i] == '\n' &&
-    // source_[i+1] == '\n'` — but with `i = eol + 1` the loop never
-    // landed on the FIRST '\n' of a pair, so the check fired only when
-    // source_[0] itself was '\n'.  In practice that meant blank-line
-    // commits never happened mid-stream and every block (heading, list,
-    // table, blockquote) stayed in the inline-only tail until finish()
-    // was called at end of stream.  The check below detects the blank
-    // by looking BACKWARD: at line start, source_[i] == '\n' implies
+    // following a '\n' (or i == 0).  Detecting the blank-line separator
+    // looks BACKWARD at line start: source_[i] == '\n' implies
     // source_[i-1] was also '\n' (or i == 0), i.e. we just crossed a
-    // \n\n separator.  Same correction applies to the heading marker.
-    size_t i = committed_;
+    // \n\n separator. Same correction applies to the heading marker.
+    size_t i             = scan_cursor_;
+    bool   in_fence      = scan_in_fence_;
+    size_t last_boundary = scan_last_boundary_;
+
     while (i < source_.size()) {
         bool at_line_start = (i == 0 || source_[i - 1] == '\n');
 
@@ -4189,6 +4189,15 @@ size_t StreamingMarkdown::find_block_boundary() const noexcept {
         i = eol + 1;
     }
 
+    // Persist where the scanner stopped so the next call resumes here.
+    // i is either == source_.size() (drained), or pointing at a byte
+    // we couldn't advance past (find('\n', i) returned npos because
+    // the current line hasn't terminated yet) — both correct resume
+    // points; new bytes appended to source_ will be visible on the
+    // next call without re-walking the prefix.
+    scan_cursor_        = i;
+    scan_in_fence_      = in_fence;
+    scan_last_boundary_ = last_boundary;
     return last_boundary;
 }
 
@@ -4224,6 +4233,23 @@ void StreamingMarkdown::commit_range(size_t boundary) {
 
     committed_ = boundary;
     build_dirty_ = true;
+
+    // Keep scanner state coherent with the new committed_:
+    //   • scan_last_boundary_ has just been "consumed" — anchor it to
+    //     committed_ so the next find call doesn't re-return the same
+    //     boundary as if it were still pending.
+    //   • finish() can call commit_range(source_.size()) which jumps
+    //     committed_ past scan_cursor_; in that case the scanner needs
+    //     to be repositioned to committed_ and its fence parity
+    //     resynchronised with in_code_fence_ (which the loop above
+    //     just updated to the parity at boundary). For the normal
+    //     append_safe path (boundary == scan_last_boundary_ ≤
+    //     scan_cursor_) this branch is a no-op.
+    scan_last_boundary_ = committed_;
+    if (scan_cursor_ < committed_) {
+        scan_cursor_   = committed_;
+        scan_in_fence_ = in_code_fence_;
+    }
 }
 
 // Internal: append codepoint-clean bytes that have already passed through
@@ -4301,6 +4327,10 @@ void StreamingMarkdown::clear() {
     sink_.reset();
     build_dirty_ = true;
     cached_tail_size_ = 0;
+    // Reset the resumable boundary scanner.
+    scan_cursor_        = 0;
+    scan_in_fence_      = false;
+    scan_last_boundary_ = 0;
 }
 
 // Render the uncommitted tail as a monotonic in-progress paragraph.

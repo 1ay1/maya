@@ -216,7 +216,43 @@ class StreamingMarkdown {
     std::string source_;                // codepoint-safe accumulated bytes
     size_t committed_ = 0;              // bytes parsed into finalized blocks
     std::vector<Element> blocks_;       // cached rendered blocks (immutable)
-    bool in_code_fence_ = false;        // tracking ``` state for boundaries
+    bool in_code_fence_ = false;        // ``` fence state at committed_
+                                        // (used by render_tail to know
+                                        // whether the in-progress tail
+                                        // starts inside an open fence)
+
+    // ── Resumable boundary scanner ──
+    //
+    // Earlier `find_block_boundary` rescanned [committed_, source_.size())
+    // on every call. With the view layer calling build() once per frame
+    // and append() landing a few bytes between frames, that meant each
+    // frame paid O(committed_to_eos) just to relocate the next block
+    // separator — the per-frame O(source_) tax that made late tokens
+    // in long replies feel sluggish (50 KB transcript → 50 KB scan
+    // every frame; ~30 fps × 50 KB = 1.5 MB/s of pure boundary scan
+    // for one streaming message).
+    //
+    // The scan is monotonic: every byte the scanner has already visited
+    // tells us nothing new on a re-run. So persist the cursor + the
+    // fence parity at the cursor + the best boundary found so far, and
+    // resume on the next call. New work per call is O(bytes added since
+    // last call), matching the actual incoming token rate.
+    //
+    // Invariants:
+    //   • scan_cursor_ ≥ committed_ at all times (commit_range only
+    //     advances committed_ up to a boundary the scanner already
+    //     returned, never past scan_cursor_).
+    //   • scan_in_fence_ is the ``` parity at scan_cursor_ specifically.
+    //     `in_code_fence_` above is the parity at committed_; the two
+    //     can diverge because commit_range advances committed_ to a
+    //     scanner-found boundary while scan_cursor_ may already be
+    //     deeper.
+    //   • scan_last_boundary_ ≥ committed_; reset to committed_ inside
+    //     commit_range so a "consumed" boundary doesn't get returned
+    //     again on the next find call.
+    size_t scan_cursor_         = 0;
+    bool   scan_in_fence_       = false;
+    size_t scan_last_boundary_  = 0;
 
     // Codepoint / escape-sequence safety net.  Every byte the user feeds
     // passes through here before being appended to source_, so source_ is
@@ -241,7 +277,8 @@ class StreamingMarkdown {
 
     // Find the end of the last complete block boundary.
     // Returns the byte offset up to which blocks are "complete".
-    [[nodiscard]] size_t find_block_boundary() const noexcept;
+    // Non-const because it advances the resumable scanner state above.
+    [[nodiscard]] size_t find_block_boundary() noexcept;
 
     // Parse [committed_, boundary) — stash its ref defs, render its blocks.
     void commit_range(size_t boundary);

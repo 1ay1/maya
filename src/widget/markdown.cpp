@@ -4202,7 +4202,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
 }
 
 // Parse [committed_, boundary), extend ref_defs_ with any new defs, push
-// rendered blocks onto blocks_, and advance the fence-state tracker.  Shared
+// rendered blocks onto prefix_->blocks, and advance the fence-state tracker.  Shared
 // between set_content() and append() — both need the exact same transition.
 void StreamingMarkdown::commit_range(size_t boundary) {
     auto new_text = std::string_view{source_}.substr(committed_,
@@ -4215,10 +4215,12 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     RefDefsGuard guard(&ref_defs_);
     auto parsed = parse_markdown_impl(cleaned, 0);
 
-    blocks_.reserve(blocks_.size() + parsed.blocks.size());
+    auto& prefix_blocks = prefix_->blocks;
+    prefix_blocks.reserve(prefix_blocks.size() + parsed.blocks.size());
     for (auto& block : parsed.blocks) {
-        blocks_.push_back(md_block_to_element(block));
+        prefix_blocks.push_back(md_block_to_element(block));
     }
+    if (!parsed.blocks.empty()) ++prefix_->generation;
 
     for (size_t j = committed_; j < boundary; ++j) {
         bool at_line_start = (j == 0 || source_[j - 1] == '\n');
@@ -4321,7 +4323,14 @@ void StreamingMarkdown::finish() {
 void StreamingMarkdown::clear() {
     source_.clear();
     committed_ = 0;
-    blocks_.clear();
+    // Replace the prefix snapshot rather than mutating the existing one
+    // — any ComponentElement still capturing the old shared_ptr (held
+    // inside cached_build_ until that's reassigned below) sees the
+    // pre-clear content, and the next build() will allocate a fresh
+    // prefix_ + ComponentElement so the renderer's component_cache
+    // misses cleanly on the new instance instead of holding stale
+    // entries against an unrelated subsequent stream.
+    prefix_ = std::make_shared<CommittedPrefix>();
     ref_defs_.clear();
     in_code_fence_ = false;
     sink_.reset();
@@ -4338,6 +4347,13 @@ void StreamingMarkdown::clear() {
     tail_inline_cache_prefix_.clear();
     tail_inline_cache_content_.clear();
     tail_inline_cache_runs_.clear();
+    // Reset the build-cache shape flags so the next build() falls into
+    // the full-rebuild path rather than trying to mutate a stale
+    // structural template.
+    cached_prefix_gen_ = 0;
+    cached_has_tail_   = false;
+    cached_has_prefix_ = false;
+    cached_build_      = Element{TextElement{""}};
 }
 
 // Render the uncommitted tail as a monotonic in-progress paragraph.
@@ -4360,7 +4376,7 @@ void StreamingMarkdown::clear() {
 //
 //   - The block-level interpretation only happens when find_block_boundary
 //     advances past the tail (on a blank line or closing fence), at
-//     which point commit_range() moves the bytes into blocks_ as a
+//     which point commit_range() moves the bytes into prefix_->blocks as a
 //     properly-formatted Element and a new (empty) tail begins.  The
 //     formatting "snap" is one-time per block and lands at a moment
 //     when the inline diff sees a single coherent transition.
@@ -4565,42 +4581,99 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
 }
 
 const Element& StreamingMarkdown::build() const {
-    // Cache: if nothing has changed since the last build, return the cached
-    // Element. This is the dominant case — the view calls build() once per
-    // frame and most frames add zero bytes.
+    // Untouched-since-last-build: return cached. Dominant case when the
+    // widget is idle (no streaming).
     if (!build_dirty_) return cached_build_;
 
-    std::string_view tail;
-    if (committed_ < source_.size()) {
-        tail = std::string_view{source_}.substr(committed_);
-    }
+    std::string_view tail = (committed_ < source_.size())
+        ? std::string_view{source_}.substr(committed_)
+        : std::string_view{};
+    const bool has_tail   = !tail.empty();
+    const bool has_prefix = !prefix_->blocks.empty();
 
-    bool has_tail = !tail.empty();
-    size_t total = blocks_.size() + (has_tail ? 1 : 0);
-
-    auto finish_cache = [&](Element e) -> const Element& {
-        cached_build_     = std::move(e);
-        cached_tail_size_ = tail.size();
-        build_dirty_      = false;
+    // ── Empty special case ──
+    if (!has_prefix && !has_tail) {
+        cached_build_      = Element{TextElement{""}};
+        cached_tail_size_  = 0;
+        cached_prefix_gen_ = prefix_->generation;
+        cached_has_tail_   = false;
+        cached_has_prefix_ = false;
+        build_dirty_       = false;
         return cached_build_;
-    };
-
-    if (total == 0) return finish_cache(Element{TextElement{""}});
-
-    if (total == 1 && !has_tail)
-        return finish_cache(
-            detail::vstack().padding(0, 0, 0, 2)(blocks_[0]));
-
-    std::vector<Element> all;
-    all.reserve(total);
-    for (auto& b : blocks_) all.push_back(b);
-
-    if (has_tail) {
-        all.push_back(render_tail(tail));
     }
 
-    return finish_cache(
-        detail::vstack().gap(1).padding(0, 0, 0, 2)(std::move(all)));
+    // ── Tail-only fast path ──
+    //
+    // The hot streaming case: prefix unchanged, has_tail/has_prefix
+    // shape unchanged, only the tail's content moved. We can mutate
+    // cached_build_'s tail child in place — children[0] (the prefix
+    // ComponentElement) keeps its address, the renderer's
+    // component_cache stays warm, and only render_tail's lightweight
+    // inline-cache path runs.
+    if (cached_prefix_gen_ == prefix_->generation
+        && cached_has_prefix_ == has_prefix
+        && cached_has_tail_   == has_tail
+        && std::holds_alternative<BoxElement>(cached_build_.inner)) {
+        auto& box = std::get<BoxElement>(cached_build_.inner);
+        const std::size_t expected = (has_prefix ? 1u : 0u) + (has_tail ? 1u : 0u);
+        if (box.children.size() == expected) {
+            if (has_tail) {
+                // Swap in the new tail. children.back() is the tail
+                // slot regardless of whether prefix is present:
+                //   [prefix, tail] → children[1]
+                //   [tail]         → children[0]
+                box.children.back() = render_tail(tail);
+            }
+            cached_tail_size_ = tail.size();
+            build_dirty_      = false;
+            return cached_build_;
+        }
+    }
+
+    // ── Full rebuild ──
+    //
+    // Either the prefix generation moved (commit_range fired), the
+    // shape (has_prefix / has_tail) changed, or the cache was reset.
+    // Build the outer vstack with up to two children:
+    //   children[0] = prefix ComponentElement (when has_prefix)
+    //   children[last] = tail element (when has_tail)
+    //
+    // The prefix is wrapped in a ComponentElement whose render() pulls
+    // from the captured shared_ptr<CommittedPrefix>. Its address lives
+    // inside cached_build_'s children[0] — stable across frames until
+    // we hit this rebuild path again — so the renderer's
+    // component_cache can amortise the per-block layout + paint
+    // across all subsequent frames at the same width.
+    std::vector<Element> outer_children;
+    outer_children.reserve(2);
+
+    if (has_prefix) {
+        // Capture by value: the lambda outlives any single build() call
+        // (it's owned by cached_build_), and prefix_ might be replaced
+        // by clear()/set_content's reset path.
+        auto p = prefix_;
+        ComponentElement comp;
+        comp.render = [p](int /*w*/, int /*h*/) -> Element {
+            // Inner vstack carries the same gap=1 cadence the old flat
+            // builder used between adjacent blocks. No padding on the
+            // inner — the outer vstack carries the left-pad.
+            return detail::vstack().gap(1)(p->blocks).build();
+        };
+        outer_children.push_back(Element{std::move(comp)});
+    }
+    if (has_tail) {
+        outer_children.push_back(render_tail(tail));
+    }
+
+    cached_build_ = (
+        detail::vstack().gap(1).padding(0, 0, 0, 2)(std::move(outer_children))
+    ).build();
+    cached_tail_size_  = tail.size();
+    cached_prefix_gen_ = prefix_->generation;
+    cached_has_tail_   = has_tail;
+    cached_has_prefix_ = has_prefix;
+    build_dirty_       = false;
+    return cached_build_;
 }
 
 } // namespace maya

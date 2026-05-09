@@ -16,6 +16,8 @@
 // Usage:
 //   auto ui = markdown("## Hello\nThis is **bold** and `code`.");
 
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -213,9 +215,31 @@ struct Document {
 // through the same path — feed() is the recommended name for new code.
 
 class StreamingMarkdown {
+    // ── Committed-prefix snapshot ──
+    //
+    // The settled blocks live behind a shared_ptr so we can capture them
+    // by value into the prefix ComponentElement's render() lambda
+    // without copying — and so the renderer's cross-frame
+    // component_cache (keyed by ComponentElement* + width) can amortise
+    // layout + paint of every settled block down to one call per
+    // (instance, width) pair instead of N children walked every frame.
+    //
+    // commit_range pushes new blocks here and bumps `generation`. The
+    // ComponentElement instance held inside cached_build_ stays alive
+    // (and at a stable address) across frames as long as the generation
+    // hasn't moved, which is the property the component_cache needs to
+    // hit. When the generation does move, build() rebuilds the
+    // ComponentElement (giving it a new address) so the cache cleanly
+    // misses, re-renders, and stores the new entry.
+    struct CommittedPrefix {
+        std::vector<Element> blocks;
+        std::uint64_t        generation = 0;
+    };
+    mutable std::shared_ptr<CommittedPrefix> prefix_ =
+        std::make_shared<CommittedPrefix>();
+
     std::string source_;                // codepoint-safe accumulated bytes
     size_t committed_ = 0;              // bytes parsed into finalized blocks
-    std::vector<Element> blocks_;       // cached rendered blocks (immutable)
     bool in_code_fence_ = false;        // ``` fence state at committed_
                                         // (used by render_tail to know
                                         // whether the in-progress tail
@@ -274,6 +298,16 @@ class StreamingMarkdown {
     mutable Element cached_build_;
     mutable bool    build_dirty_  = true;
     mutable size_t  cached_tail_size_ = 0;   // tail length when cache was built
+    // Generation reflected in cached_build_'s prefix component slot —
+    // used to short-circuit the rebuild when only the tail changed.
+    mutable std::uint64_t cached_prefix_gen_ = 0;
+    // Whether cached_build_ currently holds a tail child slot. If this
+    // flips between frames the cache can't be mutated in place; a full
+    // rebuild is needed to reshape the outer vstack.
+    mutable bool          cached_has_tail_   = false;
+    // Whether cached_build_ currently holds a prefix child slot. Same
+    // reason — flipping this requires a structural rebuild.
+    mutable bool          cached_has_prefix_ = false;
 
     // ── render_tail inline-parse cache ─────────────────────────────────
     // The plain-inline path of render_tail (the bottom branch — no open

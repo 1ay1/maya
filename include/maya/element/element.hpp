@@ -12,7 +12,9 @@
 //   3. Define ElementList (needs vector<Element>, which works with incomplete Element)
 //   4. Define Element (now all variant alternatives are complete types)
 
+#include <atomic>
 #include <concepts>
+#include <cstdint>
 #include <functional>
 #include <type_traits>
 #include <utility>
@@ -82,6 +84,30 @@ struct ElementList {
 //       return LineChart({.series = ..., .width = w, .height = h});
 //   }).grow(1)
 
+namespace detail {
+
+// Per-process unique generation for ComponentElement instances. The
+// renderer's cross-frame component_cache keys on
+// (ComponentElement*, generation) — the pointer alone is not enough,
+// because the allocator can reuse a freed ComponentElement's address
+// for a fresh one and the cache would alias the new instance to the
+// old's render output. The generation is stamped at default
+// construction; copy/move propagate it (a value-copied
+// ComponentElement is the same logical instance — no fresh
+// generation), so address-stable storage like a vector slot whose
+// element is mutated in place keeps its cache identity.
+//
+// Atomic relaxed: any monotonic uniqueness ordering across threads is
+// sufficient — the cache only needs to detect "this isn't the same
+// instance I cached before," not establish happens-before with
+// anything else.
+[[nodiscard]] inline std::uint64_t next_component_generation() noexcept {
+    static std::atomic<std::uint64_t> counter{1};
+    return counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+} // namespace detail
+
 struct ComponentElement {
     /// Called during painting with the allocated width and height.
     std::function<Element(int width, int height)> render;
@@ -94,6 +120,17 @@ struct ComponentElement {
 
     /// Layout properties — participates in flexbox just like BoxElement.
     FlexStyle layout{};
+
+    /// Per-instance identity for the renderer's cross-frame
+    /// component_cache. See detail::next_component_generation() for
+    /// the rationale; in short: ComponentElement* alone is not a
+    /// stable cache key because the allocator can reuse an address.
+    /// Stamped at default-construction; copy/move propagate so a
+    /// ComponentElement sitting in a stable slot (a Box's children
+    /// vector that doesn't reallocate, the variant storage of a
+    /// member-held Element) keeps its identity across mutations of
+    /// neighbouring slots.
+    std::uint64_t generation = detail::next_component_generation();
 };
 
 // ============================================================================

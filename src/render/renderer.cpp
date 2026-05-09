@@ -55,6 +55,14 @@ struct ComponentCacheEntry {
     int      height = 0;          // measured natural height at that width
     Element  result;              // cached render() output
     std::uint64_t last_frame = 0; // bumped on every hit
+    // Generation of the ComponentElement instance whose render() output
+    // produced `result`. The pointer alone (the map key) is not a
+    // stable identity — the allocator can reuse a freed
+    // ComponentElement's address for a fresh, unrelated instance, and
+    // a pointer-only cache would alias the new instance to the old's
+    // cached render. Comparing generations on lookup catches that case
+    // and treats it as a miss.
+    std::uint64_t generation = 0;
 };
 
 struct ComponentCache {
@@ -285,20 +293,30 @@ std::size_t build_layout_tree(
 
                         auto& cache = component_cache();
                         auto it = cache.entries.find(&comp);
-                        if (it != cache.entries.end() &&
-                            it->second.width == max_width)
+                        if (it != cache.entries.end()
+                            && it->second.width      == max_width
+                            && it->second.generation == comp.generation)
                         {
-                            // Cross-frame hit: same component instance,
-                            // same width.  Reuse the cached render AND
-                            // the cached height — no render() call, no
-                            // layout pass at all.  This is the steady-
-                            // state cost of a stable component: O(1).
+                            // Cross-frame hit: same component instance
+                            // (matched on (ptr, generation), so address
+                            // reuse for an unrelated instance is treated
+                            // as a miss), same width.  Reuse the cached
+                            // render AND the cached height — no
+                            // render() call, no layout pass at all.
+                            // This is the steady-state cost of a stable
+                            // component: O(1).
                             it->second.last_frame = cache.current_frame;
                             return {Columns{max_width},
                                     Rows{it->second.height}};
                         }
 
-                        // Cache miss: render, layout, store both.
+                        // Cache miss (no entry, width changed, OR same
+                        // pointer but different generation — i.e., the
+                        // ComponentElement at this address is a fresh
+                        // instance that happened to land where a freed
+                        // one used to live). Render, layout, store —
+                        // overwriting any stale entry under the same
+                        // key.
                         Element child = comp.render(max_width, kBigH);
 
                         std::vector<layout::LayoutNode> tmp;
@@ -314,7 +332,8 @@ std::size_t build_layout_tree(
                             max_width,
                             h,
                             std::move(child),
-                            cache.current_frame
+                            cache.current_frame,
+                            comp.generation
                         };
                         return {Columns{max_width}, Rows{h}};
                     },
@@ -730,22 +749,27 @@ void paint_element(
             Element child;
             auto& cache = component_cache();
             auto it = cache.entries.find(&node);
-            if (it != cache.entries.end() && it->second.width == content_w) {
+            if (it != cache.entries.end()
+                && it->second.width      == content_w
+                && it->second.generation == node.generation) {
                 child = it->second.result;          // copy — cheap shared tree
                 it->second.last_frame = cache.current_frame;
             } else {
-                // Width mismatch or missing entry (defensive — measure
-                // populates the entry; this path runs only if the
-                // measure callback wasn't invoked, e.g. a parent that
-                // sized the child manually).  Render but don't store
-                // a height (we don't have one without a layout pass);
-                // the next frame's measure will populate it properly.
+                // Width mismatch, missing entry, or pointer-aliased
+                // entry from a prior unrelated instance (different
+                // generation). Render and overwrite. Defensive path —
+                // measure populates the entry for the steady state;
+                // this fires only when the measure callback wasn't
+                // invoked (a parent that sized the child manually) or
+                // address reuse hit the cache after the prior
+                // instance was freed.
                 child = node.render(content_w, content_h);
                 cache.entries[&node] = {
                     content_w,
                     /*height=*/content_h,
                     child,
-                    cache.current_frame
+                    cache.current_frame,
+                    node.generation
                 };
             }
 

@@ -36,12 +36,27 @@ public:
 
     [[nodiscard]] Element build() const {
         if (!cfg_.present) return cfg_.base;
+        // The wrapper that owns bg + horizontal centering used to be
+        // an `auto`-width vstack hugging cfg_.overlay. That's fine for
+        // a fixed-size overlay, but it traps any `Dimension::percent`
+        // settings inside `cfg_.overlay`: percent resolves against the
+        // immediate parent's WIDTH, and an auto-width parent's width
+        // is the overlay's NATURAL content size — circular, so a
+        // percent gets you "85% of natural" instead of "85% of
+        // terminal". Giving the bg-vstack an explicit `percent(100)`
+        // width breaks the cycle: it spans the full screen, percent
+        // settings on cfg_.overlay now resolve against the terminal,
+        // and `align_items(Center)` keeps the overlay visually
+        // centered in the wide bg strip. No API change for callers —
+        // a fixed-width overlay still renders the same.
         return detail::zstack({
             cfg_.base,
             detail::vstack()
                 .align_items(Align::Center)
                 .justify(Justify::End)(
                     detail::vstack()
+                        .width(Dimension::percent(100))
+                        .align_items(Align::Center)
                         .bg(Color::default_color())(cfg_.overlay))
         });
     }

@@ -1428,6 +1428,18 @@ static std::string normalize_ref_label(std::string_view label) {
 // are NOT treated as reference defs.
 static std::string collect_ref_defs(std::string_view source,
                                     std::unordered_map<std::string, md::LinkRef>& defs) {
+    // Early-out: a `[label]: url` line REQUIRES a literal '[' somewhere
+    // in the source. The committed prose chunks coming from the
+    // streaming markdown widget are most-of-the-time bracket-free
+    // paragraphs; the per-line trim + ascii_lower + label parse below
+    // is wasted work on those. memchr-style search for '[' is O(n) but
+    // SIMD-friendly and bypasses every line break / trim that the loop
+    // otherwise has to do. When there's no '[' we can skip both passes:
+    // no defs to collect, and the returned string is the source verbatim.
+    if (source.find('[') == std::string_view::npos) {
+        return std::string{source};
+    }
+
     std::string out;
     out.reserve(source.size());
 
@@ -3137,6 +3149,20 @@ static Element highlight_code(const std::string& code, const std::string& lang_t
 // into one TextElement with styled runs.  This lets word wrapping operate on
 // the full concatenated text as a single flow.
 
+// Short-circuit Style merge when the base is default. Style::merge does
+// 8 conditional assigns; for an empty `base` the result is just `over`,
+// so we can hand it back directly. The check itself is cheap (a few
+// loads + an &&-chain that the compiler folds well). Most flatten_inline
+// recursion chains feed `inherited` from a prior merge, so `base` is
+// rarely empty in steady state — but the helper keeps the common case
+// fast and the cold case correct, and it's a single inline that the
+// optimiser collapses into the merge body when `base.empty()` would
+// otherwise be a constant.
+[[nodiscard]] static inline Style fold_style(const Style& base, Style over) noexcept {
+    if (base.empty()) return over;
+    return base.merge(over);
+}
+
 static void flatten_inline(const md::Inline& span, const Style& inherited,
                            std::string& out, std::vector<StyledRun>& runs) {
     std::visit(overload{
@@ -3145,15 +3171,15 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             out += t.content;
         },
         [&](const md::Bold& b) {
-            auto sty = inherited.merge(Style{}.with_bold().with_fg(colors::bold_fg));
+            auto sty = fold_style(inherited, Style{}.with_bold().with_fg(colors::bold_fg));
             for (auto& child : b.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::Italic& it) {
-            auto sty = inherited.merge(Style{}.with_italic().with_fg(colors::italic_fg));
+            auto sty = fold_style(inherited, Style{}.with_italic().with_fg(colors::italic_fg));
             for (auto& child : it.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::BoldItalic& bi) {
-            auto sty = inherited.merge(Style{}.with_bold().with_italic().with_fg(colors::bold_fg));
+            auto sty = fold_style(inherited, Style{}.with_bold().with_italic().with_fg(colors::bold_fg));
             for (auto& child : bi.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::Code& c) {
@@ -3180,17 +3206,17 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             out += display;
         },
         [&](const md::Strike& s) {
-            auto sty = inherited.merge(Style{}.with_strikethrough().with_fg(colors::strike_fg));
+            auto sty = fold_style(inherited, Style{}.with_strikethrough().with_fg(colors::strike_fg));
             for (auto& child : s.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::Highlight& h) {
-            auto sty = inherited.merge(
+            auto sty = fold_style(inherited,
                 Style{}.with_bg(colors::highlight_bg).with_fg(colors::highlight_fg));
             for (auto& child : h.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::Sub& sb) {
             size_t start = out.size();
-            auto sty = inherited.merge(Style{}.with_fg(colors::strike_fg));
+            auto sty = fold_style(inherited, Style{}.with_fg(colors::strike_fg));
             out += "_{";
             for (auto& child : sb.children) flatten_inline(child, sty, out, runs);
             out += "}";
@@ -3199,7 +3225,7 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
         },
         [&](const md::Sup& sp) {
             size_t start = out.size();
-            auto sty = inherited.merge(Style{}.with_fg(colors::strike_fg));
+            auto sty = fold_style(inherited, Style{}.with_fg(colors::strike_fg));
             out += "^{";
             for (auto& child : sp.children) flatten_inline(child, sty, out, runs);
             out += "}";
@@ -3208,7 +3234,7 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
         },
         [&](const md::Kbd& k) {
             auto bracket_sty = Style{}.with_fg(colors::kbd_border);
-            auto inner_sty = inherited.merge(
+            auto inner_sty = fold_style(inherited,
                 Style{}.with_bold().with_fg(colors::kbd_fg));
             runs.push_back({out.size(), 1, bracket_sty});
             out += "[";
@@ -3217,7 +3243,7 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             out += "]";
         },
         [&](const md::Abbr& a) {
-            auto sty = inherited.merge(Style{}.with_underline());
+            auto sty = fold_style(inherited, Style{}.with_underline());
             for (auto& child : a.children) flatten_inline(child, sty, out, runs);
             if (!a.title.empty()) {
                 std::string suffix = " (" + a.title + ")";

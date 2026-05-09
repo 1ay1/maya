@@ -4124,10 +4124,22 @@ size_t StreamingMarkdown::find_block_boundary() const noexcept {
     bool in_fence = in_code_fence_;
     size_t last_boundary = committed_;
 
+    // The scan walks ONE LINE START at a time: i points at the byte
+    // following a '\n' (or i == 0).  The previous version of this
+    // function checked for blank lines via `source_[i] == '\n' &&
+    // source_[i+1] == '\n'` — but with `i = eol + 1` the loop never
+    // landed on the FIRST '\n' of a pair, so the check fired only when
+    // source_[0] itself was '\n'.  In practice that meant blank-line
+    // commits never happened mid-stream and every block (heading, list,
+    // table, blockquote) stayed in the inline-only tail until finish()
+    // was called at end of stream.  The check below detects the blank
+    // by looking BACKWARD: at line start, source_[i] == '\n' implies
+    // source_[i-1] was also '\n' (or i == 0), i.e. we just crossed a
+    // \n\n separator.  Same correction applies to the heading marker.
     size_t i = committed_;
     while (i < source_.size()) {
-        // Check for code/math fence toggle — only at line start
         bool at_line_start = (i == 0 || source_[i - 1] == '\n');
+
         if (at_line_start) {
             bool is_code_fence = i + 3 <= source_.size() &&
                 ((source_[i] == '`' && source_[i+1] == '`' && source_[i+2] == '`') ||
@@ -4135,41 +4147,40 @@ size_t StreamingMarkdown::find_block_boundary() const noexcept {
             bool is_math_fence = !is_code_fence && i + 2 <= source_.size() &&
                 source_[i] == '$' && source_[i+1] == '$';
             if (is_code_fence || is_math_fence) {
+                // Opening fence commits any prose that preceded it: the
+                // paragraph above can be rendered immediately with its
+                // final styling, even if no blank line separates them.
+                if (!in_fence) last_boundary = i;
                 size_t eol = source_.find('\n', i);
                 if (eol == std::string::npos) break;
                 in_fence = !in_fence;
                 i = eol + 1;
-                if (!in_fence) {
+                if (!in_fence) last_boundary = i;
+                continue;
+            }
+
+            if (!in_fence) {
+                // Blank line: we're at the second '\n' of a \n\n pair
+                // (or source begins with '\n' at i == 0).  Commit up to
+                // and including the second '\n'; the next block starts
+                // at i + 1.
+                if (source_[i] == '\n') {
+                    last_boundary = i + 1;
+                    i = i + 1;
+                    continue;
+                }
+                // ATX heading at line start.  Commit the prose before
+                // the heading; the heading line itself stays in the
+                // tail until a later boundary (next blank, next heading,
+                // fence open, or stream end) advances past it.  A list
+                // marker (`-` `*` `+`) / blockquote (`>`) / table row
+                // (`|`) is deliberately NOT treated as a boundary — a
+                // list/blockquote/table is a single cohesive block and
+                // committing each row separately would stretch a tight
+                // list into singletons separated by the inter-block gap.
+                if (source_[i] == '#') {
                     last_boundary = i;
                 }
-                continue;
-            }
-        }
-
-        // Check for blank line (block separator) outside code fences
-        if (!in_fence && source_[i] == '\n') {
-            size_t next = i + 1;
-            if (next < source_.size() && source_[next] == '\n') {
-                last_boundary = next + 1;
-                i = next + 1;
-                continue;
-            }
-            // Single newline + heading marker = boundary. Headings are
-            // atomic (one line, no continuation), so committing on `#` is
-            // safe and keeps the cache hot.
-            //
-            // List markers (`-` `*` `+`), blockquote (`>`), and table rows
-            // (`|`) are deliberately NOT treated as boundaries: a list /
-            // blockquote / table is a single multi-line block, and the
-            // parser only renders it as one cohesive Element when it sees
-            // the whole thing in one parse. If we commit each list item
-            // separately, the streaming view shows each item as its own
-            // top-level block with the inter-block gap(1) between them —
-            // the same content reads as a tight list once finalized but
-            // as a stretched-out list of singletons mid-stream. Worth the
-            // extra re-parse work on the tail to keep the visual stable.
-            if (next < source_.size() && source_[next] == '#') {
-                last_boundary = next;
             }
         }
 
@@ -4338,6 +4349,106 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             .style   = Style{}.with_fg(colors::code_fg),
             .wrap    = TextWrap::Wrap,
         }};
+    }
+
+    // ── Open code fence at tail start: render in its committed shape
+    //    (round border + language label + syntax-highlighted body) so
+    //    the user sees the formatted code block from the moment the
+    //    opening ``` arrives, not after the closing ``` lands.  The
+    //    closing fence hasn't arrived (find_block_boundary would have
+    //    committed past it), so the tail is a verbatim opener line +
+    //    in-progress body.  Monotonic in byte count: body grows row by
+    //    row inside the same border frame.
+    if (body.size() >= 3 &&
+        ((body[0] == '`' && body[1] == '`' && body[2] == '`') ||
+         (body[0] == '~' && body[1] == '~' && body[2] == '~')))
+    {
+        auto eol = body.find('\n');
+        std::string lang;
+        std::string code;
+        if (eol == std::string_view::npos) {
+            // Opener line not yet terminated: treat the post-fence
+            // characters as the language hint and the body as empty.
+            // The ``` itself is hidden so the row doesn't flicker the
+            // marker bytes before the line break arrives.
+            std::string_view lsv = body.substr(3);
+            while (!lsv.empty() && (lsv.back() == ' ' || lsv.back() == '\r'))
+                lsv.remove_suffix(1);
+            while (!lsv.empty() && lsv.front() == ' ')
+                lsv.remove_prefix(1);
+            lang = std::string{lsv};
+        } else {
+            std::string_view lsv = body.substr(3, eol - 3);
+            while (!lsv.empty() && (lsv.back() == ' ' || lsv.back() == '\r'))
+                lsv.remove_suffix(1);
+            while (!lsv.empty() && lsv.front() == ' ')
+                lsv.remove_prefix(1);
+            lang = std::string{lsv};
+            code = std::string{body.substr(eol + 1)};
+        }
+        auto builder = detail::vstack()
+            .border(BorderStyle::Round)
+            .border_color(colors::code_border)
+            .padding(0, 1, 0, 1);
+        if (!lang.empty()) {
+            std::string label = " " + lang + " ";
+            if (lang == "mermaid" || lang == "matrix" ||
+                lang == "math"    || lang == "latex"  ||
+                lang == "dot"     || lang == "graphviz")
+            {
+                label = " " + lang + " (diagram) ";
+            }
+            builder = std::move(builder).border_text(
+                std::move(label),
+                BorderTextPos::Top,
+                BorderTextAlign::Start);
+        }
+        return builder(highlight_code(code, lang));
+    }
+
+    // ── ATX heading at tail start: render the first line in its
+    //    committed shape (bold + heading colour, hash markers stripped)
+    //    so the heading style appears as soon as `# ` is typed instead
+    //    of waiting for the next blank line to commit.  Any following
+    //    lines render as inline below the heading — they're still
+    //    streaming and may be a paragraph, list, or whatever.  Once a
+    //    real boundary advances past the heading line, the committed
+    //    parse takes over and shows the same heading styling.
+    int hashes = 0;
+    while (hashes < 6 && static_cast<size_t>(hashes) < body.size() &&
+           body[hashes] == '#') ++hashes;
+    if (hashes > 0 && static_cast<size_t>(hashes) < body.size() &&
+        body[hashes] == ' ')
+    {
+        auto eol = body.find('\n');
+        std::string_view first = (eol == std::string_view::npos)
+                                ? body
+                                : body.substr(0, eol);
+        std::string_view rest  = (eol == std::string_view::npos)
+                                ? std::string_view{}
+                                : body.substr(eol + 1);
+        std::string_view text  = first.substr(static_cast<size_t>(hashes) + 1);
+
+        Style sty = Style{}.with_bold();
+        switch (hashes) {
+            case 1: sty = sty.with_fg(colors::heading1); break;
+            case 2: sty = sty.with_fg(colors::heading2); break;
+            case 3: sty = sty.with_fg(colors::heading3); break;
+            default: sty = sty.with_fg(colors::heading3).with_dim(); break;
+        }
+        Element heading_el = Element{TextElement{
+            .content = std::string{text},
+            .style   = sty,
+        }};
+        // Skip leading newlines on the rest before the inline parse so
+        // we don't render a blank row between the heading and follow-up.
+        while (!rest.empty() && rest.front() == '\n') rest.remove_prefix(1);
+        if (rest.empty()) return heading_el;
+        auto spans = parse_inlines(rest);
+        return detail::vstack().gap(1)(
+            std::move(heading_el),
+            build_inline_row(spans)
+        );
     }
 
     // Inline-only parse — no block recognition, ever.  Bold/italic/code

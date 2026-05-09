@@ -531,36 +531,108 @@ void paint_element(
         [&](const TextElement& node) {
             const auto& lines = node.format(aw);
 
-            // Truncation modes append an ellipsis that doesn't exist in
-            // node.content, so the run-alignment loop below walks past
-            // content.size() trying to find each `line` as a substring.
-            // It overshoots, then breaks the painted chunk down to one
-            // byte at a time — fine for ASCII, fatal for the multi-byte
-            // ellipsis itself (U+2026, 3 bytes) and any UTF-8 glyph in
-            // node.style territory before it. The terminal sees partial
-            // continuation bytes and replaces them with U+FFFD `���`.
-            //
-            // Conservative fix: when truncation is in play AND there are
-            // styled runs, fall through to the single-style path. The
-            // truncated row loses its per-run accent colour (e.g. the
-            // muted line-number gutter on a clipped FileRead row) but
-            // renders the actual bytes correctly. Untruncated rows in
-            // the same element keep their styling — `runs` only loses
-            // out on the row that actually overflowed.
-            const bool truncates = (node.wrap == TextWrap::TruncateEnd ||
-                                    node.wrap == TextWrap::TruncateStart ||
-                                    node.wrap == TextWrap::TruncateMiddle);
-
-            if (node.runs.empty() || truncates) {
-                // Fast path: single style for the whole element.
+            if (node.runs.empty()) {
                 uint16_t style_id = pool.intern(node.style);
                 for (const auto& [row, line] :
                          lines | std::views::enumerate | std::views::take(ah)) {
                     canvas.write_text(ax, ay + static_cast<int>(row), line, style_id);
                 }
-            } else {
-                // Styled runs: paint each character segment with its own style.
-                // Track byte offset into `content` as we walk wrapped lines.
+                return;
+            }
+
+            // Truncation modes produce a single line that differs from
+            // content (ellipsis appended/prepended). The word-wrap path
+            // below aligns runs via substring matching against content;
+            // that search fails on truncated output because the ellipsis
+            // bytes don't exist in content, causing the loop to overshoot
+            // and split multi-byte UTF-8 (U+FFFD on the terminal).
+            //
+            // Fix: for TruncateEnd/Start, map the truncated line's byte
+            // ranges back to content positions explicitly. The prefix/
+            // suffix portions are byte-identical to their corresponding
+            // content spans; only the ellipsis is synthetic.
+            const bool truncates = (node.wrap == TextWrap::TruncateEnd ||
+                                    node.wrap == TextWrap::TruncateStart ||
+                                    node.wrap == TextWrap::TruncateMiddle);
+            if (truncates && lines.size() == 1) {
+                const auto& line = lines[0];
+                const int y = ay;
+                constexpr std::string_view kEll = "\xe2\x80\xa6";
+
+                auto run_sid_at = [&](std::size_t pos) -> uint16_t {
+                    std::size_t ri = 0;
+                    while (ri + 1 < node.runs.size() &&
+                           pos >= node.runs[ri].byte_offset +
+                                  node.runs[ri].byte_length)
+                        ++ri;
+                    return pool.intern(
+                        node.runs[std::min(ri, node.runs.size() - 1)].style);
+                };
+
+                // Paint line bytes [ls..le) with runs, where ls maps to
+                // content byte cs. Returns x after the painted segment.
+                auto paint_seg = [&](const std::string& ln,
+                                     std::size_t ls, std::size_t le,
+                                     std::size_t cs,
+                                     int x0, int yy) -> int {
+                    int xc = x0;
+                    std::size_t ri = 0;
+                    while (ri + 1 < node.runs.size() &&
+                           cs >= node.runs[ri].byte_offset +
+                                 node.runs[ri].byte_length)
+                        ++ri;
+                    for (std::size_t b = ls; b < le; ) {
+                        std::size_t cb = cs + (b - ls);
+                        while (ri + 1 < node.runs.size() &&
+                               cb >= node.runs[ri].byte_offset +
+                                     node.runs[ri].byte_length)
+                            ++ri;
+                        const auto& r = node.runs[
+                            std::min(ri, node.runs.size() - 1)];
+                        std::size_t re = r.byte_offset + r.byte_length;
+                        std::size_t rem = (re > cb) ? (re - cb) : 1;
+                        std::size_t ce = std::min(le, b + rem);
+                        if (ce <= b) ce = b + 1;
+                        auto sv = std::string_view(ln).substr(b, ce - b);
+                        canvas.write_text(xc, yy, sv, pool.intern(r.style));
+                        xc += string_width(sv);
+                        b = ce;
+                    }
+                    return xc;
+                };
+
+                if (line == node.content) {
+                    paint_seg(line, 0, line.size(), 0, ax, y);
+                    return;
+                }
+
+                if (node.wrap == TextWrap::TruncateEnd &&
+                    line.size() >= kEll.size())
+                {
+                    std::size_t plen = line.size() - kEll.size();
+                    int xc = paint_seg(line, 0, plen, 0, ax, y);
+                    canvas.write_text(xc, y, kEll, run_sid_at(plen));
+                    return;
+                }
+
+                if (node.wrap == TextWrap::TruncateStart &&
+                    line.size() >= kEll.size())
+                {
+                    std::size_t slen = line.size() - kEll.size();
+                    std::size_t M = node.content.size() - slen;
+                    canvas.write_text(ax, y, kEll, run_sid_at(M));
+                    paint_seg(line, kEll.size(), line.size(), M,
+                              ax + 1, y);
+                    return;
+                }
+
+                uint16_t sid = pool.intern(node.style);
+                canvas.write_text(ax, y, line, sid);
+                return;
+            }
+
+            // Word-wrap / NoWrap with styled runs — substring matching.
+            {
                 std::size_t content_byte = 0;
                 std::size_t run_idx = 0;
 
@@ -568,19 +640,14 @@ void paint_element(
                          lines | std::views::enumerate | std::views::take(ah)) {
                     int y = ay + static_cast<int>(row);
 
-                    // Skip whitespace that word_wrap consumed between lines.
-                    // word_wrap may skip leading spaces on continuation lines,
-                    // and the source line has a newline we need to skip.
                     while (content_byte < node.content.size() &&
                            node.content.substr(content_byte, line.size()) != line) {
                         ++content_byte;
                     }
 
-                    // Paint this line character by character with correct styles
                     int x_cursor = ax;
                     std::size_t line_byte = 0;
                     while (line_byte < line.size()) {
-                        // Find which run covers content_byte + line_byte
                         std::size_t abs_byte = content_byte + line_byte;
                         while (run_idx + 1 < node.runs.size() &&
                                abs_byte >= node.runs[run_idx].byte_offset +
@@ -588,7 +655,6 @@ void paint_element(
                             ++run_idx;
                         }
 
-                        // Determine how many bytes of this run remain on this line
                         const auto& run = node.runs[std::min(run_idx, node.runs.size() - 1)];
                         std::size_t run_end = run.byte_offset + run.byte_length;
                         std::size_t chunk_end;

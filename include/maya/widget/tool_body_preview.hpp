@@ -319,7 +319,7 @@ private:
                 rows.push_back(Element{TextElement{
                     .content = std::move(content),
                     .style   = {},
-                    .wrap    = TextWrap::NoWrap,
+                    .wrap    = TextWrap::TruncateEnd,
                     .runs    = std::move(runs),
                 }});
             } else {
@@ -386,7 +386,7 @@ private:
         rows.push_back(Element{TextElement{
             .content = std::move(content),
             .style   = {},
-            .wrap    = TextWrap::NoWrap,
+            .wrap    = TextWrap::TruncateEnd,
             .runs    = std::move(runs),
         }});
 
@@ -477,7 +477,7 @@ private:
         rows.push_back(Element{TextElement{
             .content = std::move(header),
             .style   = {},
-            .wrap    = TextWrap::NoWrap,
+            .wrap    = TextWrap::TruncateEnd,
             .runs    = std::move(hdr_runs),
         }});
 
@@ -502,7 +502,7 @@ private:
             rows.push_back(Element{TextElement{
                 .content = std::move(row),
                 .style   = {},
-                .wrap    = TextWrap::NoWrap,
+                .wrap    = TextWrap::TruncateEnd,
                 .runs    = std::move(rrun),
             }});
         }
@@ -731,7 +731,7 @@ private:
             rows.push_back(Element{TextElement{
                 .content = std::move(content),
                 .style   = {},
-                .wrap    = TextWrap::NoWrap,
+                .wrap    = TextWrap::TruncateEnd,
                 .runs    = std::move(runs),
             }});
             ++line_num;
@@ -765,7 +765,7 @@ private:
         return Element{TextElement{
             .content = std::move(content),
             .style   = Style{}.with_fg(accent()).with_dim(),
-            .wrap    = TextWrap::NoWrap,
+            .wrap    = TextWrap::TruncateEnd,
         }};
     }
 
@@ -805,7 +805,7 @@ private:
             rows.push_back(Element{TextElement{
                 .content = std::move(content),
                 .style   = {},
-                .wrap    = TextWrap::NoWrap,
+                .wrap    = TextWrap::TruncateEnd,
                 .runs    = std::move(runs),
             }});
         }
@@ -829,7 +829,7 @@ private:
         return Element{TextElement{
             .content = std::move(content),
             .style   = st,
-            .wrap    = TextWrap::NoWrap,
+            .wrap    = TextWrap::TruncateEnd,
         }};
     }
 
@@ -1098,7 +1098,7 @@ private:
             rows.push_back(Element{TextElement{
                 .content = std::move(content),
                 .style   = {},
-                .wrap    = TextWrap::NoWrap,
+                .wrap    = TextWrap::TruncateEnd,
                 .runs    = std::move(runs),
             }});
         }
@@ -1287,7 +1287,7 @@ private:
             rows.push_back(Element{TextElement{
                 .content = std::move(ln.content),
                 .style   = {},
-                .wrap    = TextWrap::NoWrap,
+                .wrap    = TextWrap::TruncateEnd,
                 .runs    = std::move(ln.runs),
             }});
         };

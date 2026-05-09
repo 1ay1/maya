@@ -4406,56 +4406,29 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
         return builder(highlight_code(code, lang));
     }
 
-    // ── ATX heading at tail start: render the first line in its
-    //    committed shape (bold + heading colour, hash markers stripped)
-    //    so the heading style appears as soon as `# ` is typed instead
-    //    of waiting for the next blank line to commit.  Any following
-    //    lines render as inline below the heading — they're still
-    //    streaming and may be a paragraph, list, or whatever.  Once a
-    //    real boundary advances past the heading line, the committed
-    //    parse takes over and shows the same heading styling.
-    int hashes = 0;
-    while (hashes < 6 && static_cast<size_t>(hashes) < body.size() &&
-           body[hashes] == '#') ++hashes;
-    if (hashes > 0 && static_cast<size_t>(hashes) < body.size() &&
-        body[hashes] == ' ')
-    {
-        auto eol = body.find('\n');
-        std::string_view first = (eol == std::string_view::npos)
-                                ? body
-                                : body.substr(0, eol);
-        std::string_view rest  = (eol == std::string_view::npos)
-                                ? std::string_view{}
-                                : body.substr(eol + 1);
-        std::string_view text  = first.substr(static_cast<size_t>(hashes) + 1);
-
-        Style sty = Style{}.with_bold();
-        switch (hashes) {
-            case 1: sty = sty.with_fg(colors::heading1); break;
-            case 2: sty = sty.with_fg(colors::heading2); break;
-            case 3: sty = sty.with_fg(colors::heading3); break;
-            default: sty = sty.with_fg(colors::heading3).with_dim(); break;
-        }
-        Element heading_el = Element{TextElement{
-            .content = std::string{text},
-            .style   = sty,
-        }};
-        // Skip leading newlines on the rest before the inline parse so
-        // we don't render a blank row between the heading and follow-up.
-        while (!rest.empty() && rest.front() == '\n') rest.remove_prefix(1);
-        if (rest.empty()) return heading_el;
-        auto spans = parse_inlines(rest);
-        return detail::vstack().gap(1)(
-            std::move(heading_el),
-            build_inline_row(spans)
-        );
-    }
-
-    // Inline-only parse — no block recognition, ever.  Bold/italic/code
-    // spans / links DO render so prose still feels live; pipes, dashes,
-    // and other block markers stay literal until commit.
-    auto spans = parse_inlines(body);
-    return build_inline_row(spans);
+    // Full block parse on the in-progress tail so lists, tables,
+    // blockquotes, and the rest of the block grammar render in their
+    // committed shape word-by-word instead of waiting for the next
+    // blank line to commit.  Trade-off: a few constructs CAN reflow
+    // mid-stream (Setext heading promotes a paragraph when "===" /
+    // "---" arrives on the next line; a paragraph row promotes to a
+    // table header when "|---|" arrives below; a "[ref]: url" line
+    // disappears once recognised as a reference def) — accepted as the
+    // cost of live formatting.  Reference defs from the tail are
+    // collected into a LOCAL copy of ref_defs_ so resolution sees
+    // already-committed defs without permanently leaking tail bytes
+    // back into the widget's def map.
+    auto local_refs = ref_defs_;
+    std::string cleaned = collect_ref_defs(body, local_refs);
+    RefDefsGuard guard(&local_refs);
+    auto parsed = parse_markdown_impl(cleaned, 0);
+    if (parsed.blocks.empty()) return Element{TextElement{}};
+    if (parsed.blocks.size() == 1)
+        return md_block_to_element(parsed.blocks[0]);
+    std::vector<Element> rows;
+    rows.reserve(parsed.blocks.size());
+    for (auto& b : parsed.blocks) rows.push_back(md_block_to_element(b));
+    return detail::vstack().gap(1)(std::move(rows));
 }
 
 const Element& StreamingMarkdown::build() const {

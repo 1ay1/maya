@@ -231,9 +231,25 @@ class StreamingMarkdown {
     // hit. When the generation does move, build() rebuilds the
     // ComponentElement (giving it a new address) so the cache cleanly
     // misses, re-renders, and stores the new entry.
+    //
+    // `blocks` holds `shared_ptr<const Element>` so each rendered block
+    // is heap-allocated with a stable address. Reasons:
+    //   1. push_back is a pointer copy (16 B) instead of a variant
+    //      move-construct that drags the per-block BoxElement body
+    //      around. On a 1000-paragraph commit history that's the
+    //      difference between a few hundred bytes of memmove and a
+    //      few hundred KB.
+    //   2. Vector reallocation when capacity grows only moves
+    //      shared_ptrs — the Element trees themselves don't move, so
+    //      anything else holding pointers into the prefix (a future
+    //      per-block layout cache, debug tooling) sees stable
+    //      addresses.
+    //   3. `const` on the pointed-to Element is the structural promise
+    //      that committed blocks are immutable — the next prefix
+    //      generation gets a fresh shared_ptr, never an in-place edit.
     struct CommittedPrefix {
-        std::vector<Element> blocks;
-        std::uint64_t        generation = 0;
+        std::vector<std::shared_ptr<const Element>> blocks;
+        std::uint64_t                                generation = 0;
     };
     mutable std::shared_ptr<CommittedPrefix> prefix_ =
         std::make_shared<CommittedPrefix>();

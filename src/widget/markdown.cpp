@@ -4218,7 +4218,12 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     auto& prefix_blocks = prefix_->blocks;
     prefix_blocks.reserve(prefix_blocks.size() + parsed.blocks.size());
     for (auto& block : parsed.blocks) {
-        prefix_blocks.push_back(md_block_to_element(block));
+        // Heap-allocate the rendered Element and stash a shared_ptr.
+        // Subsequent prefix generations reference the same heap
+        // Elements (no move/copy of the BoxElement body when the
+        // blocks vector reallocates past capacity).
+        prefix_blocks.push_back(
+            std::make_shared<const Element>(md_block_to_element(block)));
     }
     if (!parsed.blocks.empty()) ++prefix_->generation;
 
@@ -4654,10 +4659,23 @@ const Element& StreamingMarkdown::build() const {
         auto p = prefix_;
         ComponentElement comp;
         comp.render = [p](int /*w*/, int /*h*/) -> Element {
-            // Inner vstack carries the same gap=1 cadence the old flat
-            // builder used between adjacent blocks. No padding on the
-            // inner — the outer vstack carries the left-pad.
-            return detail::vstack().gap(1)(p->blocks).build();
+            // Materialise the inner vstack on cache miss. Each
+            // shared_ptr<const Element> is dereferenced once into a
+            // value-typed Element (the variant body is moved into the
+            // children vector slot — no recursive deep clone of the
+            // BoxElement subtree, just a pointer-swap of its inner
+            // vector<Element>). The shared_ptr keeps the heap Element
+            // alive while this output lives in the renderer's
+            // component_cache; subsequent cache hits skip this whole
+            // function. Inner vstack carries gap=1 (matching the
+            // pre-component cadence between adjacent blocks); outer
+            // vstack provides the left-pad and the prefix-vs-tail gap.
+            std::vector<Element> kids;
+            kids.reserve(p->blocks.size());
+            for (const auto& sp : p->blocks) {
+                kids.push_back(*sp);
+            }
+            return detail::vstack().gap(1)(std::move(kids)).build();
         };
         outer_children.push_back(Element{std::move(comp)});
     }

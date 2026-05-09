@@ -3647,6 +3647,28 @@ Element md_block_to_element(const md::Block& block) {
                 std::vector<int> ideal;
                 Style header_base;
                 Style cell_base;
+                // Width-keyed render cache. Cell content is fixed at
+                // parse time; only the wrapping (and therefore the row
+                // count) depends on the available width. The closure
+                // below is otherwise the most expensive
+                // md_block_to_element output — every paint re-wraps
+                // every cell and re-builds every line. Memoising on
+                // `avail_w` collapses the steady-state cost to a
+                // single Element copy: the renderer's component_cache
+                // already short-circuits render() entirely on a hit
+                // there, so this kicks in on the wider class of cache
+                // misses (component_cache eviction, fresh
+                // ComponentElement instance after a prefix
+                // regeneration that re-materialised this same table
+                // block at a new tree slot, …).
+                //
+                // mutable: the render lambda runs on a const-ref to
+                // TableData via the shared_ptr; the cache slot is
+                // logically const (same input always yields same
+                // output) so the standard memoisation justification
+                // for `mutable` applies.
+                mutable int     cached_w = -1;
+                mutable Element cached_render;
             };
             auto data = std::make_shared<TableData>(TableData{
                 ncols,
@@ -3666,6 +3688,19 @@ Element md_block_to_element(const md::Block& block) {
             return Element{ComponentElement{
                 .render = [data, distribute_cols]
                           (int avail_w, int /*h*/) -> Element {
+                    // Width-cache fast path. Returns a copy of the
+                    // cached Element — cheap relative to re-running
+                    // the wrap pipeline, and unavoidable because the
+                    // signature returns by value. The component_cache
+                    // ABOVE this catches the more common
+                    // (instance, width) hit and skips render()
+                    // entirely; this layer is the one that survives
+                    // component_cache evictions and prefix-regen
+                    // rebuilds (where the table's outer
+                    // ComponentElement gets a new address but `data`
+                    // — captured via shared_ptr — is preserved).
+                    if (avail_w == data->cached_w) return data->cached_render;
+
                     int ncols = data->ncols;
                     const auto& header_flat = data->header_flat;
                     const auto& rows_flat   = data->rows_flat;
@@ -3940,7 +3975,16 @@ Element md_block_to_element(const md::Block& block) {
                             rows.push_back(std::move(v));
                     }
                     rows.push_back(make_border_line(2));
-                    return detail::vstack()(std::move(rows));
+                    auto built = detail::vstack()(std::move(rows)).build();
+                    // Memoise. Subsequent paints at the same width
+                    // hand back the cached copy without re-walking
+                    // any cell. Different widths overwrite the slot
+                    // (a single-entry cache is enough — terminal
+                    // resizes are rare relative to per-frame paints,
+                    // and we only ever render at one width per pass).
+                    data->cached_w      = avail_w;
+                    data->cached_render = built;
+                    return built;
                 },
                 // No custom measure — the renderer auto-derives the
                 // table's height by running the render callback and

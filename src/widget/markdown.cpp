@@ -2160,7 +2160,8 @@ namespace colors {
     constexpr auto heading1    = Color::bright_white();
     constexpr auto heading2    = Color::bright_white();
     constexpr auto heading3    = Color::bright_white();
-    constexpr auto heading_dim = Color::bright_black();
+    constexpr auto heading_dim  = Color::bright_black();
+    constexpr auto heading_rule = Color::bright_black();
     constexpr auto bold_fg     = Color::bright_white();
     constexpr auto italic_fg   = Color::bright_white();
     constexpr auto code_fg     = Color::bright_yellow();
@@ -2215,6 +2216,10 @@ namespace syntax {
     inline const Style& punct()    { static const Style s = Style{}.with_fg(Color::bright_black()); return s; }
     inline const Style& plain()    { static const Style s = Style{}.with_fg(Color::white()); return s; }
     inline const Style& shellvar() { static const Style s = Style{}.with_fg(Color::bright_cyan()); return s; }
+    // Gutter line-number column for code blocks ≥ 5 lines. dim +
+    // bright_black so it sits visually behind the code without
+    // competing with the syntax-highlighted body.
+    inline const Style& gutter()   { static const Style s = Style{}.with_fg(Color::bright_black()).with_dim(); return s; }
 
     // Diff highlighting
     inline const Style& diff_add()  { static const Style s = Style{}.with_fg(Color::green()); return s; }
@@ -3134,6 +3139,122 @@ static Element highlight_code(const std::string& code, const std::string& lang_t
         }
     }
 
+    // ── Gutter pass: prepend a right-aligned line-number column to each
+    //    line. Height of the rendered block is unchanged — exactly one
+    //    line out per line in, so monotonicity is preserved (a code
+    //    fence that committed at K rows still commits at K rows).
+    //
+    //    Skip on small blocks (< 5 lines): the gutter is visual noise
+    //    on a 2-line snippet, where the line numbers are obvious from
+    //    position alone. The threshold matches what users intuitively
+    //    expect — a "code listing" rather than a "snippet".
+    {
+        auto count_lines = [](std::string_view s) -> int {
+            int n = 0;
+            for (char c : s) if (c == '\n') ++n;
+            if (!s.empty() && s.back() != '\n') ++n;
+            return n;
+        };
+        const int line_count = count_lines(out);
+        constexpr int kGutterMinLines = 5;
+        if (line_count >= kGutterMinLines) {
+            // Width of the line-number column. log10-style.
+            int w_digits = 1;
+            for (int v = line_count; v >= 10; v /= 10) ++w_digits;
+            constexpr std::string_view kSep =
+                " \xe2\x94\x82 ";  // " │ " (U+2502 = ~3 cells wide visually with pad)
+            const std::size_t kSepBytes = kSep.size();
+            const Style& gstyle = syntax::gutter();
+
+            // Pre-split runs at newline boundaries so no run spans
+            // a line break — block comments in C-style languages emit
+            // a single run for the whole comment, including embedded
+            // \n. Splitting up-front lets the line-shift remap below
+            // be a simple per-line offset add rather than a byte-by-
+            // byte run split-walk.
+            std::vector<StyledRun> runs_split;
+            runs_split.reserve(runs.size() * 2);
+            for (const auto& r : runs) {
+                std::size_t cur = r.byte_offset;
+                const std::size_t end = cur + r.byte_length;
+                while (cur < end) {
+                    std::size_t nl = out.find('\n', cur);
+                    std::size_t seg_end = (nl == std::string::npos || nl >= end)
+                                        ? end : nl;
+                    if (seg_end > cur) {
+                        runs_split.push_back({cur, seg_end - cur, r.style});
+                    }
+                    if (nl != std::string::npos && nl < end) {
+                        runs_split.push_back({nl, 1, r.style});
+                        cur = nl + 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Build line-start offset table for the original `out`.
+            std::vector<std::size_t> line_starts;
+            line_starts.reserve(static_cast<std::size_t>(line_count) + 1);
+            line_starts.push_back(0);
+            for (std::size_t k = 0; k < out.size(); ++k) {
+                if (out[k] == '\n') line_starts.push_back(k + 1);
+            }
+            // Sentinel for the binary-search remap below: any run
+            // offset is < out.size() < line_starts.back() + ε.
+
+            // Emit out2 with per-line gutter prefixes.
+            std::string out2;
+            out2.reserve(out.size() + line_starts.size()
+                         * (static_cast<std::size_t>(w_digits) + kSepBytes));
+            std::vector<StyledRun> runs2;
+            runs2.reserve(runs_split.size() + line_starts.size() * 2);
+
+            for (std::size_t i = 0; i < line_starts.size(); ++i) {
+                // Gutter for line i+1.
+                char buf[24];
+                int n = std::snprintf(buf, sizeof(buf), "%*zu",
+                                      w_digits, i + 1);
+                runs2.push_back({out2.size(), static_cast<std::size_t>(n), gstyle});
+                out2.append(buf, static_cast<std::size_t>(n));
+                runs2.push_back({out2.size(), kSepBytes, gstyle});
+                out2.append(kSep);
+
+                // Line content.
+                std::size_t s = line_starts[i];
+                std::size_t e = (i + 1 < line_starts.size())
+                              ? line_starts[i + 1]
+                              : out.size();
+                out2.append(out.data() + s, e - s);
+            }
+
+            // Remap each split run.
+            const std::size_t per_line_shift =
+                static_cast<std::size_t>(w_digits) + kSepBytes;
+            for (const auto& r : runs_split) {
+                // Find which line this run sits on. line_starts is
+                // sorted; r.byte_offset is in [line_starts[i],
+                // line_starts[i+1]) for the line index i.
+                auto it = std::upper_bound(
+                    line_starts.begin(), line_starts.end(), r.byte_offset);
+                std::size_t line_idx = static_cast<std::size_t>(
+                    (it - line_starts.begin())) - 1;
+                std::size_t shift = (line_idx + 1) * per_line_shift;
+                runs2.push_back({r.byte_offset + shift,
+                                 r.byte_length, r.style});
+            }
+
+            // Sort by offset for traversal-friendly downstream use.
+            std::sort(runs2.begin(), runs2.end(),
+                [](const StyledRun& a, const StyledRun& b) {
+                    return a.byte_offset < b.byte_offset;
+                });
+
+            out = std::move(out2);
+            runs = std::move(runs2);
+        }
+    }
+
     return Element{TextElement{
         .content = std::move(out),
         .style = syntax::plain(),
@@ -3421,17 +3542,55 @@ Element md_block_to_element(const md::Block& block) {
                 default: sty = sty.with_fg(colors::heading3).with_dim(); break;
             }
 
-            // Zed style: clean heading text, no underlines or decorations.
             std::string content;
             std::vector<StyledRun> runs;
             for (auto& s : h.spans) {
                 flatten_inline(s, sty, content, runs);
             }
-            return Element{TextElement{
+            Element heading_text = Element{TextElement{
                 .content = std::move(content),
                 .style = sty,
                 .runs = std::move(runs),
             }};
+
+            // Underline rule for # / ## only — gives the heading
+            // typographic weight without compromising monotonicity:
+            // headings commit atomically, so the +1 row arrives in
+            // a single snap and never reflows. h3+ stay
+            // single-line because they're already visually distinct
+            // via the bold + heading_dim treatment, and adding a
+            // rule under every h3 in a tutorial-style doc would be
+            // visual noise.
+            //
+            // Glyph choice: U+2550 (═) for h1 — heaviest, matches
+            // the "section break" feel; U+2500 (─) for h2 —
+            // lighter, matches the "subsection" feel. Both rendered
+            // in heading_rule (= bright_black) so they sit visually
+            // *under* the heading text without competing with it.
+            if (h.level == 1 || h.level == 2) {
+                const char* rule_glyph =
+                    (h.level == 1) ? "\xe2\x95\x90"   // ═ U+2550
+                                   : "\xe2\x94\x80"; // ─ U+2500
+                const Style rule_style =
+                    Style{}.with_fg(colors::heading_rule).with_dim();
+                Element rule = Element{ComponentElement{
+                    .render = [rule_glyph, rule_style]
+                              (int w, int /*h*/) -> Element {
+                        if (w <= 0) return Element{TextElement{}};
+                        std::string line;
+                        line.reserve(static_cast<std::size_t>(w) * 3);
+                        for (int i = 0; i < w; ++i) line.append(rule_glyph);
+                        return Element{TextElement{
+                            .content = std::move(line),
+                            .style   = rule_style,
+                        }};
+                    },
+                }};
+                return detail::vstack()(
+                    std::move(heading_text), std::move(rule)
+                ).build();
+            }
+            return heading_text;
         },
         [](const md::CodeBlock& c) -> Element {
             // Zed style: round border, subtle bg, language label top-left

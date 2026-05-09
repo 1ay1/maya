@@ -275,6 +275,35 @@ class StreamingMarkdown {
     mutable bool    build_dirty_  = true;
     mutable size_t  cached_tail_size_ = 0;   // tail length when cache was built
 
+    // ── render_tail inline-parse cache ─────────────────────────────────
+    // The plain-inline path of render_tail (the bottom branch — no open
+    // fence, no ATX heading at tail start) is the hot path on a streaming
+    // assistant message: it ran parse_inlines(body) + flatten_inline over
+    // the WHOLE tail every frame, costing O(tail) per frame even though
+    // most of the tail is unchanged from the previous frame.
+    //
+    // Strategy: cache the (content, runs) flatten_inline output for the
+    // PREFIX UP TO THE LAST '\n' in the tail. Only the live line (after
+    // the last '\n') is re-parsed each frame. Markdown emphasis / code
+    // spans don't span newlines in practice, so splitting at '\n' is a
+    // safe parser-state boundary — anything cached is independently
+    // valid and the live line's parse never needs context from before
+    // the split.
+    //
+    // Invalidation: render_tail compares the current stable prefix
+    // (body up to last '\n') byte-by-byte against the cached prefix. A
+    // mismatch (commit_range advanced, content was rewritten via
+    // set_content's replace path, etc.) triggers a full re-parse and
+    // refreshes the cache.
+    //
+    // Per-frame cost goes from O(tail) to O(live_line_length) on the
+    // common case; on a 2 KB tail with a few KB of in-progress text,
+    // that's the difference between ~2 KB of inline-parser work and
+    // the ~80 B of work for the trailing partial line.
+    mutable std::string             tail_inline_cache_prefix_;
+    mutable std::string             tail_inline_cache_content_;
+    mutable std::vector<StyledRun>  tail_inline_cache_runs_;
+
     // Find the end of the last complete block boundary.
     // Returns the byte offset up to which blocks are "complete".
     // Non-const because it advances the resumable scanner state above.

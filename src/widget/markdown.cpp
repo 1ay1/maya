@@ -4331,6 +4331,13 @@ void StreamingMarkdown::clear() {
     scan_cursor_        = 0;
     scan_in_fence_      = false;
     scan_last_boundary_ = 0;
+    // Reset the inline-tail cache. Strictly speaking the prefix-match
+    // check at render_tail entry is self-correcting (any new tail will
+    // mismatch and re-parse), but clearing here avoids carrying KB of
+    // stale string state past a logical reset.
+    tail_inline_cache_prefix_.clear();
+    tail_inline_cache_content_.clear();
+    tail_inline_cache_runs_.clear();
 }
 
 // Render the uncommitted tail as a monotonic in-progress paragraph.
@@ -4487,8 +4494,74 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
     // rows and ghosting is structurally impossible.  Lists / tables /
     // blockquotes pay a one-frame "snap" when the trailing blank line
     // commits the whole thing as one cohesive block.
-    auto spans = parse_inlines(body);
-    return build_inline_row(spans);
+    //
+    // ── Sliding cache: parse only the live line ──
+    //
+    // Split body at the last '\n'. The "stable prefix" (everything
+    // through and including the last '\n') is cache-keyed by its bytes;
+    // the "live line" (post-newline tail) is re-parsed every frame.
+    // Markdown emphasis / code-span / link delimiters never cross
+    // newline boundaries in well-formed input — when the model emits
+    // `**bold**\nNext line`, the parser state at the '\n' is "fresh,
+    // no open delimiters" — so the split is parser-state-safe.
+    //
+    // Cost transition: prior code re-parsed the full body (O(tail)
+    // per frame). Now per-frame work is O(live_line_length) on the
+    // common case, with an O(tail) refresh once per newline boundary
+    // (rare: bytes arrive faster than line breaks during streaming).
+    auto last_nl = body.rfind('\n');
+    std::string_view stable_prefix = (last_nl == std::string_view::npos)
+        ? std::string_view{}
+        : body.substr(0, last_nl + 1);
+    std::string_view live_line = (last_nl == std::string_view::npos)
+        ? body
+        : body.substr(last_nl + 1);
+
+    // Refresh the prefix cache only if it differs from what's stored.
+    // String compare is O(prefix_len) bytewise but allocation-free —
+    // orders of magnitude cheaper than re-running parse_inlines on
+    // the same bytes.
+    if (tail_inline_cache_prefix_.size() != stable_prefix.size()
+        || std::string_view{tail_inline_cache_prefix_} != stable_prefix) {
+        tail_inline_cache_content_.clear();
+        tail_inline_cache_runs_.clear();
+        if (!stable_prefix.empty()) {
+            auto prefix_spans = parse_inlines(stable_prefix);
+            const Style base = Style{}.with_fg(colors::text);
+            for (const auto& s : prefix_spans) {
+                flatten_inline(s, base, tail_inline_cache_content_,
+                               tail_inline_cache_runs_);
+            }
+        }
+        tail_inline_cache_prefix_.assign(stable_prefix);
+    }
+
+    // Build the result: cached prefix runs + freshly-parsed live-line
+    // runs. flatten_inline writes run offsets relative to `out.size()`
+    // at write time, so seeding `content` / `runs` from the cache
+    // keeps the appended-line offsets globally correct.
+    std::string content                  = tail_inline_cache_content_;
+    std::vector<StyledRun> runs          = tail_inline_cache_runs_;
+    if (!live_line.empty()) {
+        auto live_spans = parse_inlines(live_line);
+        const Style base = Style{}.with_fg(colors::text);
+        for (const auto& s : live_spans) {
+            flatten_inline(s, base, content, runs);
+        }
+    }
+
+    if (runs.empty()) return Element{TextElement{}};
+    if (runs.size() == 1) {
+        return Element{TextElement{
+            .content = std::move(content),
+            .style   = runs[0].style,
+        }};
+    }
+    return Element{TextElement{
+        .content = std::move(content),
+        .style   = Style{}.with_fg(colors::text),
+        .runs    = std::move(runs),
+    }};
 }
 
 const Element& StreamingMarkdown::build() const {

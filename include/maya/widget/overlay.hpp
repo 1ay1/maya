@@ -36,19 +36,31 @@ public:
 
     [[nodiscard]] Element build() const {
         if (!cfg_.present) return cfg_.base;
-        // The wrapper that owns bg + horizontal centering used to be
-        // an `auto`-width vstack hugging cfg_.overlay. That's fine for
-        // a fixed-size overlay, but it traps any `Dimension::percent`
-        // settings inside `cfg_.overlay`: percent resolves against the
-        // immediate parent's WIDTH, and an auto-width parent's width
-        // is the overlay's NATURAL content size — circular, so a
-        // percent gets you "85% of natural" instead of "85% of
-        // terminal". Giving the bg-vstack an explicit `percent(100)`
-        // width breaks the cycle: it spans the full screen, percent
-        // settings on cfg_.overlay now resolve against the terminal,
-        // and `align_items(Center)` keeps the overlay visually
-        // centered in the wide bg strip. No API change for callers —
-        // a fixed-width overlay still renders the same.
+        // The bg-vstack used to be auto-width, hugging cfg_.overlay's
+        // natural content size. That trapped any flex sizing inside
+        // the overlay: `Dimension::percent` resolved against natural
+        // content (circular), `align_self(Stretch)` matched the same
+        // natural width, and a pickers list of long mp3 names with
+        // `text(...) | clip` would never expand even on a 200-col
+        // terminal — the parent's "available width" was just the
+        // overlay's own natural width.
+        //
+        // The fix: the bg-vstack is now `width(percent(100))` so it
+        // spans the full screen, with `padding(0, 2)` for breathing
+        // room from the terminal edges. Default align_items=Stretch
+        // (Yoga) means cfg_.overlay's natural sizing genuinely
+        // stretches to the bg-vstack's content width — caller
+        // controls actual width through `min_width` / `max_width` on
+        // its own root vstack:
+        //
+        //   vstack()
+        //     .min_width(Dimension::fixed(50))   // narrow-term floor
+        //     .max_width(Dimension::fixed(180))  // wide-term ceiling
+        //     ...                                // no .width() needed
+        //
+        // Existing fixed-width callers (legacy modals that set
+        // .width(Dimension::fixed(N)) explicitly) keep working — the
+        // child's explicit width overrides the stretch.
         return detail::zstack({
             cfg_.base,
             detail::vstack()
@@ -56,7 +68,7 @@ public:
                 .justify(Justify::End)(
                     detail::vstack()
                         .width(Dimension::percent(100))
-                        .align_items(Align::Center)
+                        .padding(0, 2)
                         .bg(Color::default_color())(cfg_.overlay))
         });
     }

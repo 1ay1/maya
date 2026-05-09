@@ -192,7 +192,17 @@ void serialize(const Canvas& canvas, const StylePool& pool,
             emit_cell_run(canvas, pool, y, 0, last_col + 1, current_style, out);
         }
         // EL 0 cleans up any stale content from a prior frame whose row
-        // was wider than the current one.
+        // was wider than the current one. Reset SGR first so the erased
+        // cells don't inherit attributes from the last emitted cell —
+        // particularly underline / inverse / bg-color, which most
+        // modern terminals (alacritty, kitty, vte-based, iTerm 3.5+)
+        // apply to EL'd cells per the spec. Without this, a row whose
+        // last cell is styled (e.g. a [link](url) at row end) would
+        // visually extend its underline to end-of-row.
+        if (current_style != 0) {
+            out.append(pool.sgr(0));
+            current_style = 0;
+        }
         out += "\x1b[K";
     }
 
@@ -400,6 +410,15 @@ void compose_inline_frame(const Canvas& canvas,
             // (≥ first non-blank tail); without need_emit it's at
             // x_first_diff (which is past x_last_visible in the trailing-
             // blank-only diff case, so visible content stays intact).
+            // Reset SGR before EL so the erased region inherits no
+            // attributes from the last emitted cell — see the parallel
+            // fix in `serialize()` above for the rationale (underline /
+            // inverse / bg painted into erased cells by spec-compliant
+            // terminals).
+            if (current_style != 0) {
+                out.append(pool.sgr(0));
+                current_style = 0;
+            }
             out += "\x1b[K";
         }
     }
@@ -411,6 +430,9 @@ void compose_inline_frame(const Canvas& canvas,
     // Cursor is at row last_row_to_visit. Step into the abandoned region
     // and clear each leftover line, then pop back up so the next frame's
     // cursor-row assumption (prev_rows - 1 = content_rows - 1) holds.
+    // Note: ansi::reset is emitted just above (line 408 in this function),
+    // so SGR is already at default by the time we get here — \e[2K
+    // erases unstyled rows correctly without an additional reset.
     if (content_rows < prev_rows) {
         int extra = std::min(prev_rows - content_rows, prev_on_screen);
         for (int i = 0; i < extra; ++i) out += "\r\n\x1b[2K";

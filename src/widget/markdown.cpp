@@ -4399,10 +4399,12 @@ void StreamingMarkdown::clear() {
     // Reset the build-cache shape flags so the next build() falls into
     // the full-rebuild path rather than trying to mutate a stale
     // structural template.
-    cached_prefix_gen_ = 0;
-    cached_has_tail_   = false;
-    cached_has_prefix_ = false;
-    cached_build_      = Element{TextElement{""}};
+    cached_prefix_gen_    = 0;
+    cached_has_tail_      = false;
+    cached_has_prefix_    = false;
+    cached_tail_in_fence_ = false;
+    cached_tail_bytes_.clear();
+    cached_build_         = Element{TextElement{""}};
 }
 
 // Render the uncommitted tail as a monotonic in-progress paragraph.
@@ -4659,6 +4661,17 @@ const Element& StreamingMarkdown::build() const {
     // ComponentElement) keeps its address, the renderer's
     // component_cache stays warm, and only render_tail's lightweight
     // inline-cache path runs.
+    //
+    // Sub-fast-path: if the tail body bytes AND the committed-side
+    // fence parity are byte-identical to the cache, render_tail's
+    // output is provably identical to what's already in
+    // children.back() — skip the call and the assignment entirely,
+    // leaving cached_build_ wholly untouched. The bytes-equality check
+    // matters for the case where build_dirty_ flipped (e.g., a feed
+    // arrived) but the resulting tail body didn't actually change
+    // (commit_range absorbed the new bytes; the body shape happened
+    // to round-trip; any future code path that bumps build_dirty_
+    // without changing the tail).
     if (cached_prefix_gen_ == prefix_->generation
         && cached_has_prefix_ == has_prefix
         && cached_has_tail_   == has_tail
@@ -4667,11 +4680,22 @@ const Element& StreamingMarkdown::build() const {
         const std::size_t expected = (has_prefix ? 1u : 0u) + (has_tail ? 1u : 0u);
         if (box.children.size() == expected) {
             if (has_tail) {
-                // Swap in the new tail. children.back() is the tail
-                // slot regardless of whether prefix is present:
-                //   [prefix, tail] → children[1]
-                //   [tail]         → children[0]
-                box.children.back() = render_tail(tail);
+                const bool tail_unchanged =
+                    cached_tail_in_fence_ == in_code_fence_
+                    && cached_tail_bytes_.size() == tail.size()
+                    && (tail.empty()
+                        || std::memcmp(cached_tail_bytes_.data(),
+                                       tail.data(), tail.size()) == 0);
+                if (!tail_unchanged) {
+                    // Swap in the new tail. children.back() is the
+                    // tail slot regardless of whether prefix is
+                    // present:
+                    //   [prefix, tail] → children[1]
+                    //   [tail]         → children[0]
+                    box.children.back() = render_tail(tail);
+                    cached_tail_bytes_.assign(tail);
+                    cached_tail_in_fence_ = in_code_fence_;
+                }
             }
             cached_tail_size_ = tail.size();
             build_dirty_      = false;
@@ -4730,11 +4754,14 @@ const Element& StreamingMarkdown::build() const {
     cached_build_ = (
         detail::vstack().gap(1).padding(0, 0, 0, 2)(std::move(outer_children))
     ).build();
-    cached_tail_size_  = tail.size();
-    cached_prefix_gen_ = prefix_->generation;
-    cached_has_tail_   = has_tail;
-    cached_has_prefix_ = has_prefix;
-    build_dirty_       = false;
+    cached_tail_size_     = tail.size();
+    cached_prefix_gen_    = prefix_->generation;
+    cached_has_tail_      = has_tail;
+    cached_has_prefix_    = has_prefix;
+    cached_tail_in_fence_ = in_code_fence_;
+    if (has_tail) cached_tail_bytes_.assign(tail);
+    else          cached_tail_bytes_.clear();
+    build_dirty_          = false;
     return cached_build_;
 }
 

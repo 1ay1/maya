@@ -324,6 +324,16 @@ class StreamingMarkdown {
     // Whether cached_build_ currently holds a prefix child slot. Same
     // reason — flipping this requires a structural rebuild.
     mutable bool          cached_has_prefix_ = false;
+    // The body bytes that produced cached_build_'s tail child, plus
+    // the committed-side fence parity at that time. Together they
+    // uniquely determine render_tail's output. When the next build
+    // finds them both unchanged, the tail Element is byte-identical
+    // to last frame's — we can skip render_tail AND the
+    // children.back() assignment entirely, leaving cached_build_
+    // wholly untouched. Makes the "nothing changed semantically →
+    // nothing is rebuilt" property explicit.
+    mutable std::string cached_tail_bytes_;
+    mutable bool        cached_tail_in_fence_ = false;
 
     // ── render_tail inline-parse cache ─────────────────────────────────
     // The plain-inline path of render_tail (the bottom branch — no open

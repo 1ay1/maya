@@ -1,6 +1,9 @@
 #include "maya/app/app.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <format>
 
 #include "maya/core/overload.hpp"
@@ -167,6 +170,13 @@ auto Runtime::flush_timeouts() -> std::vector<Event> {
 // Inline: compose_inline_frame (row-diff, scrollback-preserving)
 
 auto Runtime::render(const Element& root) -> Status {
+    static const bool prof = std::getenv("MAYA_FRAME_PROF") != nullptr;
+    auto t_frame_start = std::chrono::steady_clock::now();
+    auto since = [&](auto t0) {
+        return std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - t0).count() / 1000.0;
+    };
+
     const int w = is_inline()
         ? std::max(1, size_.width.raw() - 1)
         : size_.width.raw();
@@ -248,8 +258,10 @@ auto Runtime::render(const Element& root) -> Status {
                 } else {
                     canvas_.clear();
                 }
+                auto t_rt0 = std::chrono::steady_clock::now();
                 render_tree(root, canvas_, pool_, theme_, layout_nodes_,
                             /*auto_height=*/true);
+                double rt_ms = since(t_rt0);
                 int ch = content_height(canvas_);
                 if (ch >= canvas_.height() && !layout_nodes_.empty()) {
                     int needed = layout_nodes_[0].computed.size.height.raw();
@@ -268,16 +280,31 @@ auto Runtime::render(const Element& root) -> Status {
 
                 const int term_h = std::max(1, size_.height.raw());
                 out_.clear();
+                auto t_cf0 = std::chrono::steady_clock::now();
                 compose_inline_frame(canvas_, ch, term_h, pool_, s.state, out_,
                                      sync_output_);
+                double cf_ms = since(t_cf0);
                 if (out_.empty()) {
+                    if (prof)
+                        std::fprintf(stderr,
+                            "maya-frame: rt=%.2f cf=%.2f total=%.2f nodes=%zu rows=%d w=%d (skip-write)\n",
+                            rt_ms, cf_ms, since(t_frame_start),
+                            layout_nodes_.size(), ch, w);
                     return coherent::InlineSynced{std::move(s.state)};
                 }
 
-                if (auto wr = writer_->write_raw(out_); !wr) {
+                auto t_w0 = std::chrono::steady_clock::now();
+                auto wr = writer_->write_raw(out_);
+                double w_ms = since(t_w0);
+                if (!wr) {
                     write_status = wr;
                     return coherent::Divergent{};   // drop the stale state
                 }
+                if (prof)
+                    std::fprintf(stderr,
+                        "maya-frame: rt=%.2f cf=%.2f w=%.2f total=%.2f nodes=%zu out=%zu rows=%d w=%d\n",
+                        rt_ms, cf_ms, w_ms, since(t_frame_start),
+                        layout_nodes_.size(), out_.size(), ch, w);
                 return coherent::InlineSynced{std::move(s.state)};
             },
         }, in_coherence_);

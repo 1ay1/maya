@@ -531,7 +531,27 @@ void paint_element(
         [&](const TextElement& node) {
             const auto& lines = node.format(aw);
 
-            if (node.runs.empty()) {
+            // Truncation modes append an ellipsis that doesn't exist in
+            // node.content, so the run-alignment loop below walks past
+            // content.size() trying to find each `line` as a substring.
+            // It overshoots, then breaks the painted chunk down to one
+            // byte at a time — fine for ASCII, fatal for the multi-byte
+            // ellipsis itself (U+2026, 3 bytes) and any UTF-8 glyph in
+            // node.style territory before it. The terminal sees partial
+            // continuation bytes and replaces them with U+FFFD `���`.
+            //
+            // Conservative fix: when truncation is in play AND there are
+            // styled runs, fall through to the single-style path. The
+            // truncated row loses its per-run accent colour (e.g. the
+            // muted line-number gutter on a clipped FileRead row) but
+            // renders the actual bytes correctly. Untruncated rows in
+            // the same element keep their styling — `runs` only loses
+            // out on the row that actually overflowed.
+            const bool truncates = (node.wrap == TextWrap::TruncateEnd ||
+                                    node.wrap == TextWrap::TruncateStart ||
+                                    node.wrap == TextWrap::TruncateMiddle);
+
+            if (node.runs.empty() || truncates) {
                 // Fast path: single style for the whole element.
                 uint16_t style_id = pool.intern(node.style);
                 for (const auto& [row, line] :

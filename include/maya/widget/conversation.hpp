@@ -55,10 +55,17 @@ public:
         // vector gets `Turn{cfg}.build()` called on it once per frame.
         std::vector<Turn::Config>                turns;
         // Fast path: when non-empty, takes precedence over `turns`.
-        // Each entry is a fully-built turn Element; the build()
-        // method just lays them out with dividers between
-        // non-continuation entries — no per-turn Element
-        // reconstruction.
+        // Each entry is a fully-built turn Element; build() lays them
+        // out with dividers between non-continuation entries.
+        //
+        // Per-frame cost: build() copies each `element` into the rows
+        // vector once. To make the ComponentElements inside survive
+        // those copies, hosts that want render-cache-stable settled
+        // turns should hand in Elements whose ComponentElement
+        // wrappers carry a `cache_id` (see element.hpp). Maya keeps
+        // the rendered result indexed by id rather than by pointer,
+        // so the freshly-copied wrapper at this slot still hits the
+        // cache produced by the original.
         std::vector<PreBuilt>                    built_turns;
         std::optional<ActivityIndicator::Config> in_flight;
     };

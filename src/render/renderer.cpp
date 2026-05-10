@@ -66,13 +66,59 @@ struct ComponentCacheEntry {
 };
 
 struct ComponentCache {
+    // Pointer-keyed cache: address-stable ComponentElements (typically
+    // those held in a stable vector slot the host doesn't reallocate)
+    // hit here. Pointer compare is one instruction so this is the
+    // first-class hot path.
     std::unordered_map<const ComponentElement*, ComponentCacheEntry> entries;
+    // Content-keyed cache: when a ComponentElement carries a non-empty
+    // `cache_id`, lookups go through this map instead. This lets the
+    // content survive value-copies through containers (e.g. a settled
+    // turn Element pushed into a fresh per-frame vector by a widget's
+    // build() function) — every copy presents the same id and finds
+    // the same cache entry, even though &comp differs each frame.
+    std::unordered_map<std::string, ComponentCacheEntry>             entries_by_id;
     std::uint64_t current_frame = 0;
 };
 
 inline ComponentCache& component_cache() {
     thread_local ComponentCache c;
     return c;
+}
+
+// Look up a ComponentElement in the cross-frame cache, preferring the
+// content-keyed map when the component carries a non-empty cache_id.
+// Returns nullptr on miss; caller stores via store_component_cache().
+inline ComponentCacheEntry* find_component_cache(ComponentCache& cache,
+                                                 const ComponentElement& comp,
+                                                 int width) noexcept {
+    if (!comp.cache_id.empty()) {
+        auto it = cache.entries_by_id.find(comp.cache_id);
+        if (it != cache.entries_by_id.end()
+            && it->second.width      == width
+            && it->second.generation == comp.generation) {
+            return &it->second;
+        }
+        return nullptr;
+    }
+    auto it = cache.entries.find(&comp);
+    if (it != cache.entries.end()
+        && it->second.width      == width
+        && it->second.generation == comp.generation) {
+        return &it->second;
+    }
+    return nullptr;
+}
+
+// Insert / overwrite a cache entry under the appropriate key.
+inline void store_component_cache(ComponentCache& cache,
+                                  const ComponentElement& comp,
+                                  ComponentCacheEntry entry) {
+    if (!comp.cache_id.empty()) {
+        cache.entries_by_id[comp.cache_id] = std::move(entry);
+    } else {
+        cache.entries[&comp] = std::move(entry);
+    }
 }
 
 inline int& render_depth() {
@@ -292,31 +338,19 @@ std::size_t build_layout_tree(
                         constexpr int kBigH = 1 << 20;
 
                         auto& cache = component_cache();
-                        auto it = cache.entries.find(&comp);
-                        if (it != cache.entries.end()
-                            && it->second.width      == max_width
-                            && it->second.generation == comp.generation)
-                        {
-                            // Cross-frame hit: same component instance
-                            // (matched on (ptr, generation), so address
-                            // reuse for an unrelated instance is treated
-                            // as a miss), same width.  Reuse the cached
-                            // render AND the cached height — no
-                            // render() call, no layout pass at all.
-                            // This is the steady-state cost of a stable
-                            // component: O(1).
-                            it->second.last_frame = cache.current_frame;
+                        if (auto* entry = find_component_cache(cache, comp, max_width)) {
+                            // Cross-frame hit (pointer-keyed for stable
+                            // ComponentElement slots, content-keyed via
+                            // cache_id for value-copied wrappers). Reuse
+                            // the cached render and height — no
+                            // render() call, no recursive layout.
+                            entry->last_frame = cache.current_frame;
                             return {Columns{max_width},
-                                    Rows{it->second.height}};
+                                    Rows{entry->height}};
                         }
 
-                        // Cache miss (no entry, width changed, OR same
-                        // pointer but different generation — i.e., the
-                        // ComponentElement at this address is a fresh
-                        // instance that happened to land where a freed
-                        // one used to live). Render, layout, store —
-                        // overwriting any stale entry under the same
-                        // key.
+                        // Cache miss. Render, layout, store under
+                        // whichever key matches comp.cache_id's state.
                         Element child = comp.render(max_width, kBigH);
 
                         std::vector<layout::LayoutNode> tmp;
@@ -328,13 +362,13 @@ std::size_t build_layout_tree(
                         int h = std::max(1,
                             tmp[root].computed.size.height.raw());
 
-                        cache.entries[&comp] = {
+                        store_component_cache(cache, comp, {
                             max_width,
                             h,
                             std::move(child),
                             cache.current_frame,
                             comp.generation
-                        };
+                        });
                         return {Columns{max_width}, Rows{h}};
                     },
                     &node
@@ -748,12 +782,9 @@ void paint_element(
             // entry must survive for the next frame's measure to find.
             Element child;
             auto& cache = component_cache();
-            auto it = cache.entries.find(&node);
-            if (it != cache.entries.end()
-                && it->second.width      == content_w
-                && it->second.generation == node.generation) {
-                child = it->second.result;          // copy — cheap shared tree
-                it->second.last_frame = cache.current_frame;
+            if (auto* entry = find_component_cache(cache, node, content_w)) {
+                child = entry->result;              // copy — cheap shared tree
+                entry->last_frame = cache.current_frame;
             } else {
                 // Width mismatch, missing entry, or pointer-aliased
                 // entry from a prior unrelated instance (different
@@ -764,13 +795,13 @@ void paint_element(
                 // address reuse hit the cache after the prior
                 // instance was freed.
                 child = node.render(content_w, content_h);
-                cache.entries[&node] = {
+                store_component_cache(cache, node, {
                     content_w,
                     /*height=*/content_h,
                     child,
                     cache.current_frame,
                     node.generation
-                };
+                });
             }
 
             // Reuse a thread-local scratch buffer for the sub-layout tree.
@@ -859,10 +890,20 @@ void render_tree(
         auto& cache = render_detail::component_cache();
         // Evict before bumping current_frame so entries from the
         // previous frame are still tagged "last_frame == previous".
+        // Both maps share the same eviction policy — an entry that
+        // wasn't touched in the immediately preceding frame is gone
+        // by the next one, regardless of which key it lives under.
         const std::uint64_t prev = cache.current_frame;
         for (auto it = cache.entries.begin(); it != cache.entries.end(); ) {
             if (it->second.last_frame < prev) {
                 it = cache.entries.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        for (auto it = cache.entries_by_id.begin(); it != cache.entries_by_id.end(); ) {
+            if (it->second.last_frame < prev) {
+                it = cache.entries_by_id.erase(it);
             } else {
                 ++it;
             }

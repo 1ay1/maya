@@ -131,6 +131,27 @@ struct ComponentElement {
     /// member-held Element) keeps its identity across mutations of
     /// neighbouring slots.
     std::uint64_t generation = detail::next_component_generation();
+
+    /// Optional content-stable cache key. Empty by default — pointer
+    /// keying takes over and the lifecycle above applies.
+    ///
+    /// Set this to a host-meaningful identifier (e.g. a (thread, msg)
+    /// slug) when the component represents content that's logically
+    /// the same across frames even though the ComponentElement
+    /// instance gets value-copied through containers each frame. The
+    /// renderer's cross-frame component cache prefers this key when
+    /// non-empty, so the new copies still hit the cache produced by
+    /// the original — turning per-frame deep-copy churn (a fresh
+    /// ComponentElement* every frame, never matching anything in the
+    /// pointer-keyed cache) into O(1) measure + paint.
+    ///
+    /// Equality is by string value; pick something cheap to compare
+    /// (short, hashable). Collisions across unrelated components map
+    /// them to the same cache slot — be careful that your id
+    /// uniquely identifies the rendered content within the running
+    /// app. Empty string means "use pointer keying," matching the
+    /// pre-cache_id behaviour for any caller that hasn't opted in.
+    std::string cache_id;
 };
 
 // ============================================================================

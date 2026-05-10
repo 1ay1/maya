@@ -84,22 +84,32 @@ Element settled_turn(std::shared_ptr<Counter> counter, int turn_idx,
 }
 
 // Wrap a stable inner Element in a fresh ComponentElement each call.
-// `id` non-empty → renderer's content cache matches across frames;
-// empty → pointer keying takes over and the wrapper's fresh address
-// every frame causes a full miss every frame.
-Element wrap(std::shared_ptr<Element> sp, std::string id) {
-    return component([sp](int /*w*/, int /*h*/) -> Element {
+// `use_shared_ctor=true` → take the public path that maya consumers
+// hit when handing a `shared_ptr<Element>` to any Element slot
+// (implicit constructor; the renderer keys its cross-frame cache on
+// the shared_ptr's address). `false` → wrap manually via component()
+// with no cache identity, exercising the pointer-keyed fallback —
+// the wrapper's address is fresh every frame, so this path full-
+// misses every frame and quantifies what the implicit-ctor path
+// saves us from.
+Element wrap(std::shared_ptr<Element> sp, bool use_shared_ctor) {
+    if (use_shared_ctor) {
+        // Implicit Element(shared_ptr<const Element>) conversion —
+        // the entire public surface for "render this stable thing
+        // efficiently across frames". No id string, no method chain.
+        return Element{std::shared_ptr<const Element>{std::move(sp)}};
+    }
+    return component([sp = std::move(sp)](int /*w*/, int /*h*/) -> Element {
         return *sp;
-    }).cache_id(std::move(id));
+    });
 }
 
 Element build_frame(const std::vector<std::shared_ptr<Element>>& bodies,
-                    bool use_cache_id, const std::string& id_prefix = "t:") {
+                    bool use_shared_ctor) {
     std::vector<Element> rows;
     rows.reserve(bodies.size());
     for (std::size_t i = 0; i < bodies.size(); ++i) {
-        std::string id = use_cache_id ? id_prefix + std::to_string(i) : std::string{};
-        rows.push_back(wrap(bodies[i], std::move(id)));
+        rows.push_back(wrap(bodies[i], use_shared_ctor));
     }
     return v(rows).build();
 }
@@ -138,15 +148,15 @@ void test_cache_id_hits_across_frames() {
     Canvas canvas(80, 5000, &pool);
 
     for (int f = 0; f < kFrames; ++f) {
-        Element root = build_frame(bodies, /*use_cache_id=*/true, "case1:");
+        Element root = build_frame(bodies, /*use_shared_ctor=*/true);
         (void)render_us(root, canvas, pool);
     }
 
     int total = counter->n.load();
-    std::printf("[cache_id]      N=%d frames=%d → inner renders = %d (expect %d)\n",
+    std::printf("[shared-ctor]   N=%d frames=%d → inner renders = %d (expect %d)\n",
                 N, kFrames, total, N);
-    CHECK(total == N, "  cache_id is not honoured: %d renders vs %d expected\n",
-          total, N);
+    CHECK(total == N, "  implicit shared_ptr ctor did not engage cross-frame cache: "
+          "%d renders vs %d expected\n", total, N);
 }
 
 void test_no_cache_id_misses_every_frame() {
@@ -163,15 +173,15 @@ void test_no_cache_id_misses_every_frame() {
     Canvas canvas(80, 5000, &pool);
 
     for (int f = 0; f < kFrames; ++f) {
-        Element root = build_frame(bodies, /*use_cache_id=*/false);
+        Element root = build_frame(bodies, /*use_shared_ctor=*/false);
         (void)render_us(root, canvas, pool);
     }
 
     int total = counter->n.load();
-    std::printf("[no-id]         N=%d frames=%d → inner renders = %d (expect %d)\n",
+    std::printf("[plain-component] N=%d frames=%d → inner renders = %d (expect %d)\n",
                 N, kFrames, total, N * kFrames);
     CHECK(total == N * kFrames,
-          "  no-id path should miss every frame: %d vs %d expected\n",
+          "  plain component() path should miss every frame: %d vs %d expected\n",
           total, N * kFrames);
 }
 
@@ -181,9 +191,9 @@ void test_warm_frame_time_at_high_turn_count() {
     constexpr int kFrames = 30;
     const std::vector<int> kSizes = {25, 50, 100, 200};
 
-    std::printf("\n== warm-frame render time vs turn count (cache_id ON) ==\n");
+    std::printf("\n== warm-frame render time vs turn count ==\n");
     std::printf("  %5s | %10s | %10s | %6s | %12s\n",
-                "N", "cache_id us", "no-id us", "ratio", "us per turn");
+                "N", "shared us", "plain us", "ratio", "us per turn");
     std::printf("  ------+------------+------------+--------+--------------\n");
 
     double last_ratio = 0.0;
@@ -199,17 +209,17 @@ void test_warm_frame_time_at_high_turn_count() {
 
         // Cold pass under each variant — measured separately so the
         // warm steady-state isn't distorted by first-time miss cost.
-        (void)render_us(build_frame(bodies, true, "perf:" + std::to_string(N) + ":"), canvas, pool);
-        (void)render_us(build_frame(bodies, false), canvas, pool);
+        (void)render_us(build_frame(bodies, /*use_shared_ctor=*/true), canvas, pool);
+        (void)render_us(build_frame(bodies, /*use_shared_ctor=*/false), canvas, pool);
 
         double sum_id = 0;
         for (int f = 0; f < kFrames; ++f)
-            sum_id += render_us(build_frame(bodies, true, "perf:" + std::to_string(N) + ":"), canvas, pool);
+            sum_id += render_us(build_frame(bodies, /*use_shared_ctor=*/true), canvas, pool);
         double avg_id = sum_id / kFrames;
 
         double sum_no = 0;
         for (int f = 0; f < kFrames; ++f)
-            sum_no += render_us(build_frame(bodies, false), canvas, pool);
+            sum_no += render_us(build_frame(bodies, /*use_shared_ctor=*/false), canvas, pool);
         double avg_no = sum_no / kFrames;
 
         double ratio = avg_no / std::max(1.0, avg_id);
@@ -219,14 +229,13 @@ void test_warm_frame_time_at_high_turn_count() {
         last_ratio = ratio;
     }
 
-    // At the largest N the cache_id path must be substantially faster
-    // than the pointer-keyed miss path. 3x is a deliberately loose
-    // floor (locally we see 4-5x; QEMU + slow CI compress the gap).
-    // A regression that drops the content cache (e.g., generation
-    // check accidentally re-introduced, eviction loop forgets the id
-    // map) collapses the ratio to ~1.0 and trips this CHECK.
+    // At the largest N the shared-ptr path must be substantially
+    // faster than the plain component() path. 3x is a deliberately
+    // loose floor (locally we see 4-8x); a regression that breaks
+    // the content cache or its cells layer collapses the ratio to
+    // ~1.0 and trips this CHECK.
     CHECK(last_ratio > 3.0,
-          "  cache_id speedup vs pointer-keyed miss path collapsed to %.2fx\n",
+          "  shared-ptr speedup vs plain component() collapsed to %.2fx\n",
           last_ratio);
 }
 
@@ -275,13 +284,12 @@ void test_long_session_with_virtualization() {
             all_bodies.begin() + start,
             all_bodies.begin() + turn + 1);
 
-        // Each turn keeps its own (stable) cache_id derived from its
-        // global index — same contract as agentty's "turn:thread:msg".
+        // Each turn's shared_ptr address IS its cross-frame identity
+        // — same as agentty's per-message cache feeding maya.
         std::vector<Element> rows;
         rows.reserve(window.size());
         for (std::size_t i = 0; i < window.size(); ++i) {
-            int global_idx = start + static_cast<int>(i);
-            rows.push_back(wrap(window[i], "long:" + std::to_string(global_idx)));
+            rows.push_back(wrap(window[i], /*use_shared_ctor=*/true));
         }
         Element root = v(rows).build();
 
@@ -345,7 +353,7 @@ void test_width_change_invalidates_then_restabilises() {
     StylePool pool;
     Canvas canvas(80, 5000, &pool);
 
-    auto frame = [&]() { return build_frame(bodies, true, "width:"); };
+    auto frame = [&]() { return build_frame(bodies, /*use_shared_ctor=*/true); };
 
     // Warm up at width 80.
     Element f1 = frame();
@@ -402,13 +410,13 @@ void test_live_tail_dominates_settled_prefix() {
             bodies.push_back(std::make_shared<Element>(settled_turn(counter, i)));
 
         // Build a frame: K cached settled wrappers + 1 fresh live tail
-        // (no cache_id, fully rebuilt every frame).
+        // (no shared_ptr, fully rebuilt every frame — represents the
+        // active streaming turn in a live agent session).
         auto build = [&]() {
             std::vector<Element> rows;
             rows.reserve(K + 1);
             for (int i = 0; i < K; ++i)
-                rows.push_back(wrap(bodies[i], "live:" + std::to_string(K) + ":" + std::to_string(i)));
-            // Live tail: fresh Element, no cache_id, rebuilt each call.
+                rows.push_back(wrap(bodies[i], /*use_shared_ctor=*/true));
             rows.push_back(settled_turn(counter, /*idx=*/9999));
             return v(rows).build();
         };
@@ -476,14 +484,14 @@ void test_ephemeral_components_do_not_leak() {
 
     auto t0 = std::chrono::steady_clock::now();
     for (int f = 0; f < kFrames; ++f) {
-        Element root = build_frame(bodies, /*use_cache_id=*/false);
+        Element root = build_frame(bodies, /*use_shared_ctor=*/false);
         (void)render_us(root, canvas, pool);
     }
     auto wall_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t0).count();
 
     int total = counter->n.load();
-    std::printf("[no-leak]       N=%d × %d frames (no cache_id) → "
+    std::printf("[no-leak]       N=%d × %d frames (plain component) → "
                 "%d inner renders, %.0f ms wall, %.1f us/frame\n",
                 N, kFrames, total, wall_ms, wall_ms * 1000.0 / kFrames);
     // Every frame full miss → counter exactly N*kFrames. Off by any

@@ -15,7 +15,10 @@
 #include <atomic>
 #include <concepts>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
+#include <memory>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -206,6 +209,52 @@ struct Element {
     Element(ElementList l) : inner(std::move(l)) {}
     Element(ElementListRef r) : inner(r) {}
     Element(ComponentElement c) : inner(std::move(c)) {}
+
+    // Implicit conversion from `shared_ptr<const Element>`: the
+    // application keeps a long-lived Element (typically a memoised
+    // settled item — a settled chat turn, a frozen list row) on the
+    // heap via shared_ptr; handing maya the shared_ptr instead of
+    // the Element by value lets the renderer key its cross-frame
+    // cache on the underlying pointer address (stable across copies
+    // of THIS wrapper) and skip rerendering / relayout / repainting
+    // the subtree on every frame. The caller writes naturally —
+    // `cfg.built_turns.push_back({my_sp, continuation})` — and never
+    // sees the cache infrastructure.
+    //
+    // Lifetime: the constructed wrapper holds a copy of the
+    // shared_ptr, so the underlying Element stays alive as long as
+    // any frame still references the wrapper. Width changes
+    // automatically invalidate the cache entry through the existing
+    // (id, width) keying inside the renderer.
+    Element(std::shared_ptr<const Element> sp) {
+        ComponentElement c;
+        // Derive a stable cross-frame identity from the shared
+        // object's address. shared_ptr guarantees the address is
+        // unique while any copy is live; copies of this wrapper
+        // share the same control block, so the derived id is equal
+        // across frames.
+        char buf[32];
+        auto* raw = sp.get();
+        std::snprintf(buf, sizeof(buf), "@%lx",
+                      static_cast<unsigned long>(
+                          reinterpret_cast<std::uintptr_t>(raw)));
+        c.cache_id = std::string{buf};
+        c.render = [sp = std::move(sp)](int /*w*/, int /*h*/) -> Element {
+            return *sp;
+        };
+        inner = std::move(c);
+    }
+
+    // Non-const-shared-ptr convenience overload. C++ won't chain the
+    // standard-library `shared_ptr<T>` → `shared_ptr<const T>`
+    // conversion with the user-defined `shared_ptr<const Element>` →
+    // `Element` ctor across a brace-enclosed init (only one
+    // user-defined conversion is allowed in such contexts). Provide
+    // a direct overload so the natural call site
+    // `{my_sp_to_element, continuation_flag}` compiles without the
+    // caller adding an explicit cast.
+    Element(std::shared_ptr<Element> sp)
+        : Element(std::shared_ptr<const Element>{std::move(sp)}) {}
 
     // Default: empty text element
     Element() : inner(TextElement{}) {}

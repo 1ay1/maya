@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <new>
 #include <string_view>
 #include <vector>
@@ -293,6 +294,45 @@ public:
     /// Direct access to the packed cell value at (x, y) for fast diff.
     MAYA_ALWAYS_INLINE [[nodiscard]] uint64_t get_packed(int x, int y) const noexcept {
         return cells_[static_cast<std::size_t>(y * width_ + x)];
+    }
+
+    /// Blit `n` packed cells from `src` into row `y`, starting at column
+    /// `x`. Respects the current clip rect and updates max_y_ if the
+    /// blitted row carries any non-blank content.
+    ///
+    /// Why this exists: the renderer's component cache stores pre-painted
+    /// cell regions (packed uint64_t per cell) per cache_id entry. The
+    /// cache-hit path needs to copy those cells into the live canvas
+    /// without re-decoding each one. Per-cell `set()` would work but
+    /// would pay style-pool intern + per-cell clip math; a row memcpy
+    /// after the clip math is done once amortises both. `row_has_content`
+    /// is the host's promise that at least one cell in the row is
+    /// non-blank — saves the scan to update max_y_ when the host already
+    /// knows from cache-population time.
+    MAYA_ALWAYS_INLINE void blit_packed_row(int x, int y,
+                                            const uint64_t* src,
+                                            int n,
+                                            bool row_has_content) {
+        if (y < 0 || y >= height_) return;
+        if (n <= 0) return;
+        int x0 = std::max(0, x);
+        int x1 = std::min(width_, x + n);
+        if (has_clip_) {
+            if (y < clip_y0_ || y >= clip_y1_) return;
+            x0 = std::max(x0, clip_x0_);
+            x1 = std::min(x1, clip_x1_);
+        }
+        if (x1 <= x0) return;
+
+        std::size_t dst_off = static_cast<std::size_t>(y * width_ + x0);
+        int src_off = x0 - x;
+        int count = x1 - x0;
+        // Plain memcpy of packed cells. cells_ is std::vector<uint64_t>
+        // so alignment is guaranteed; src is also uint64_t-aligned by
+        // the caller (cache entry storage).
+        std::memcpy(&cells_[dst_off], src + src_off,
+                    static_cast<std::size_t>(count) * sizeof(uint64_t));
+        if (row_has_content && y > max_y_) max_y_ = y;
     }
 
     // -- Text rendering -------------------------------------------------------

@@ -63,6 +63,29 @@ struct ComponentCacheEntry {
     // cached render. Comparing generations on lookup catches that case
     // and treats it as a miss.
     std::uint64_t generation = 0;
+
+    // Painted-cell cache: a (height × width) grid of packed cell
+    // values captured the first time this entry is painted. On every
+    // subsequent paint we blit these cells into the canvas instead of
+    // re-running build_layout_tree + layout::compute + paint_element
+    // over the cached Element. That walk was the residual O(child_size)
+    // per-cached-turn cost the test suite isolated as ~1.2 us/turn —
+    // blit collapses it to a memcpy per row.
+    //
+    // `cells` length is `width * cells_rows`. `cells_rows` is the
+    // actual height we painted (≤ `height`; auto_height layouts can
+    // produce slack rows we don't want to clobber on the host
+    // canvas). `cells_max_y` records the highest row index that
+    // carried non-blank content at population time — the blit only
+    // calls into the canvas's max_y tracker for those rows.
+    //
+    // Empty `cells` ⇒ not yet populated (the entry was created by the
+    // measure-phase miss path; paint-phase miss will populate). Width
+    // mismatch already evicts via `find_component_cache`, so the
+    // (width, cells) invariant stays consistent across resize.
+    std::vector<std::uint64_t> cells;
+    int cells_rows  = 0;
+    int cells_max_y = -1;
 };
 
 struct ComponentCache {
@@ -785,28 +808,46 @@ void paint_element(
             int content_x = ax + node.layout.padding.left;
             int content_y = ay + node.layout.padding.top;
 
-            // Reuse the rendered Element from the auto-measure pass.  In
-            // the steady state this is a cross-frame hit — the entry
-            // was populated on the FIRST frame the component appeared
-            // and has been refreshed (last_frame_used bumped) on every
-            // subsequent frame.
-            //
-            // Read the cached Element by const reference, not by copy:
-            // the recursive layout / paint walk that follows reads it
-            // in place, and any nested ComponentElements inside keep
-            // their pointer identity across frames. That is what makes
-            // the cache_id win actually flow through to the inner
-            // tree — without this, `entry->result` would be value-
-            // copied into a local Element every frame, every nested
-            // ComponentElement inside would land at a fresh address,
-            // and the pointer-keyed cache would miss for all of them
-            // (forcing every nested render to re-run despite the
-            // outer's content cache_id matching). Held storage keeps
-            // a fallback Element when the miss path has to render
-            // fresh.
+            auto& cache = component_cache();
+
+            // ── Fast path: cached cells exist for this entry ────────────
+            // The first paint of an entry captures its painted cells
+            // (see the miss path below). Every subsequent frame reaches
+            // this branch and copies the cells straight onto the
+            // canvas — a memcpy per row, no build_layout_tree, no
+            // layout::compute, no recursive paint_element walk over
+            // the cached Element. This is what makes per-cached-turn
+            // cost O(width) rather than O(child_tree_size).
+            if (auto* entry = find_component_cache(cache, node, content_w);
+                entry && !entry->cells.empty() && entry->cells_rows > 0)
+            {
+                entry->last_frame = cache.current_frame;
+
+                auto _ = canvas.clip_scope(Rect{
+                    {Columns{content_x}, Rows{content_y}},
+                    {Columns{content_w}, Rows{content_h}}
+                });
+                const int rows = std::min(entry->cells_rows, content_h);
+                const int max_y = entry->cells_max_y;
+                for (int y = 0; y < rows; ++y) {
+                    canvas.blit_packed_row(
+                        content_x, content_y + y,
+                        entry->cells.data() + static_cast<std::size_t>(y) * entry->width,
+                        entry->width,
+                        /*row_has_content=*/y <= max_y);
+                }
+                return;
+            }
+
+            // ── Slow path: render + lay out + paint, then capture cells ─
+            // Either no entry, no cells yet (just-populated by the
+            // measure miss path), or width mismatch (entry stale from
+            // a prior terminal width). In all three cases we have to
+            // run the recursive paint pipeline; we then snapshot the
+            // resulting cells into the entry so every subsequent
+            // frame takes the fast path above.
             const Element* child_ptr = nullptr;
             Element        fresh_render;
-            auto& cache = component_cache();
             if (auto* entry = find_component_cache(cache, node, content_w)) {
                 child_ptr = &entry->result;
                 entry->last_frame = cache.current_frame;
@@ -827,9 +868,6 @@ void paint_element(
                     cache.current_frame,
                     node.generation
                 });
-                // Read back through the cache so child_ptr points at
-                // the stored entry's stable copy, not the local
-                // `fresh_render` whose address dies at function exit.
                 if (auto* entry = find_component_cache(cache, node, content_w)) {
                     child_ptr = &entry->result;
                 } else {
@@ -839,10 +877,6 @@ void paint_element(
             const Element& child = *child_ptr;
 
             // Reuse a thread-local scratch buffer for the sub-layout tree.
-            // This avoids a heap allocation per component per frame — typical
-            // apps have 10-50 components, so this saves 10-50 allocations/frame.
-            // Guard against recursion: if a component renders another component,
-            // the inner call gets its own local vector to avoid clobbering.
             thread_local std::vector<layout::LayoutNode> tl_sub_nodes;
             thread_local bool tl_in_use = false;
 
@@ -858,15 +892,80 @@ void paint_element(
             sub_nodes[sub_root].style.height = Dimension::fixed(content_h);
             layout::compute(sub_nodes, sub_root, content_w, content_h);
 
+            const int max_y_before = canvas.max_content_row();
+
             {
                 auto _ = canvas.clip_scope(Rect{
                     {Columns{content_x}, Rows{content_y}},
                     {Columns{content_w}, Rows{content_h}}
                 });
+                // Blank our region before paint so the captured cells
+                // (below) contain ONLY this component's output, not
+                // stale content from earlier frames that the
+                // clear_rows() bound at the top of render_live may not
+                // have covered (it only clears up to prev_rows + 4;
+                // content that's grown past that horizon leaves
+                // residue). Cost: content_w * content_h cell writes,
+                // paid once per (cache_id, width) and amortized across
+                // every subsequent fast-path blit. We only run this
+                // when the entry is going to be cells-cached.
+                const bool will_cache =
+                    !node.cache_id.empty() && content_w > 0 && content_h > 0;
+                if (will_cache) {
+                    canvas.fill(
+                        Rect{{Columns{content_x}, Rows{content_y}},
+                             {Columns{content_w}, Rows{content_h}}},
+                        U' ', /*style_id=*/0);
+                }
                 paint_element(child, canvas, pool, sub_nodes, sub_root,
                               content_x, content_y);
             }
             if (!use_local) tl_in_use = false;
+
+            // ── Capture the painted region into the cache entry ─────────
+            // Re-lookup the entry AFTER paint_element — recursive
+            // cache inserts during the walk above can rehash the map
+            // and invalidate any pointer we held from earlier. Same
+            // map operation pattern as the find before; the lookup is
+            // a single hashmap probe.
+            //
+            // Capture is gated on cache_id being set: pointer-keyed
+            // entries are by definition ephemeral (the wrapper has a
+            // fresh address each frame), and caching cells for them
+            // would burn memory that's evicted next frame anyway.
+            if (!node.cache_id.empty()) {
+                if (auto* entry = find_component_cache(cache, node, content_w)) {
+                    const int max_y_after = canvas.max_content_row();
+                    int captured_rows = content_h;
+                    if (entry->height > 0 && entry->height < captured_rows)
+                        captured_rows = entry->height;
+                    if (captured_rows > 0) {
+                        entry->cells_rows = captured_rows;
+                        // Highest non-blank row inside our region.
+                        // If paint didn't bump max_y_, nothing
+                        // visible got drawn — cells_max_y = -1 lets
+                        // the fast path skip the max_y_ update.
+                        entry->cells_max_y =
+                            (max_y_after > max_y_before
+                             && max_y_after >= content_y)
+                                ? std::min(max_y_after - content_y,
+                                           captured_rows - 1)
+                                : -1;
+                        entry->cells.assign(
+                            static_cast<std::size_t>(captured_rows)
+                                * static_cast<std::size_t>(content_w),
+                            uint64_t{U' '});
+                        for (int y = 0; y < captured_rows; ++y) {
+                            for (int x = 0; x < content_w; ++x) {
+                                entry->cells[
+                                    static_cast<std::size_t>(y) * content_w + x] =
+                                    canvas.get_packed(content_x + x,
+                                                      content_y + y);
+                            }
+                        }
+                    }
+                }
+            }
         }
     });
 }

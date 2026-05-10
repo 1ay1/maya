@@ -433,24 +433,20 @@ void test_live_tail_dominates_settled_prefix() {
     std::printf("                50 settled + 1 live: %.1f us\n", t_50_settled);
 
     // Per-turn marginal cost — what each cached settled turn adds to
-    // the per-frame budget. Today this is the recursive
-    // build_layout_tree + paint walk over the cached child Element
-    // (cache_id only short-circuits render(), not layout/paint of the
-    // result). On a small synthetic turn body the per-turn cost
-    // measures around 1 us; budgeting 5 us catches the regression
-    // where the content cache stops collapsing render() calls.
-    //
-    // This IS the residual cost the user feels as "still gets a
-    // little slow with time" — it's bounded per turn, but
-    // proportional to (visible_window × per-turn-tree-size). The
-    // next-level fix is caching the laid-out child or the painted
-    // canvas region; until then this CHECK locks in the current
-    // budget.
+    // the per-frame budget. With the canvas-region cache (every
+    // cache_id entry stores its painted cells and the fast path
+    // blits row-by-row) this is now a memcpy per row of the cached
+    // region, not a recursive build_layout_tree + layout::compute +
+    // paint_element walk. On the synthetic turn body it measures
+    // around 0.2 us; a 1.5 us budget catches the regression where
+    // either the cells cache stops populating or the paint phase
+    // falls back to recursive layout/paint over the cached Element.
     double per_turn_marginal_us = (t_50_settled - t_0_settled) / 50.0;
     std::printf("                marginal per-turn cost: %.2f us\n",
                 per_turn_marginal_us);
-    CHECK(per_turn_marginal_us < 5.0,
-          "  per-turn cached cost regressed to %.2f us (budget 5.0 us)\n",
+    CHECK(per_turn_marginal_us < 1.5,
+          "  per-turn cached cost regressed to %.2f us (budget 1.5 us); "
+          "the canvas-region cache likely fell back to recursive paint.\n",
           per_turn_marginal_us);
 }
 

@@ -17,6 +17,18 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ── Linux-specific aggressive optimization ────────────────────────────────
+#
+# MAYA_NATIVE_TUNING gates -march=native / -mtune=native. Default ON for
+# local dev (the producing host == the running host), but consumers shipping
+# a portable binary MUST turn it off — `-march=native` bakes the build
+# host's specific microarchitecture into the binary, and the result will
+# SIGILL on any chip lacking those features. Particularly visible on
+# aarch64, where CI runners (Graviton2/3/4) emit instructions older
+# Cortex-A cores can't decode. With this OFF the build relies on the
+# compiler's default baseline (`-march=x86-64` / `armv8-a`) which every
+# chip of the relevant arch supports.
+option(MAYA_NATIVE_TUNING "Bake the host CPU into the binary (-march=native -mtune=native). OFF for portable / standalone releases." ON)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # LTO across all translation units — lets GCC inline across .cpp boundaries,
     # devirtualize, and eliminate dead code globally. Respect a caller-supplied
@@ -27,11 +39,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
     endif()
 
+    if(MAYA_NATIVE_TUNING)
+        set(MAYA_ARCH_FLAGS -march=native -mtune=native)
+    else()
+        set(MAYA_ARCH_FLAGS)   # rely on the compiler's default arch baseline
+    endif()
+
     # Shared flags for library and examples
     set(MAYA_LINUX_CXX_FLAGS
         -O3
-        -march=native                # AVX2/BMI2/FMA on the host CPU
-        -mtune=native                # schedule for host microarchitecture
+        ${MAYA_ARCH_FLAGS}           # native tuning gated on MAYA_NATIVE_TUNING
         -funroll-loops               # unroll small loops
         -ftree-vectorize             # auto-vectorize where SIMD fits
         -fprefetch-loop-arrays       # insert prefetch for sequential access
@@ -125,7 +142,7 @@ else()
     target_compile_options(maya PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:
             -O3
-            -march=native
+            $<$<BOOL:${MAYA_NATIVE_TUNING}>:-march=native>
             -funroll-loops
         >
         $<$<CXX_COMPILER_ID:MSVC>:
@@ -196,7 +213,7 @@ if(MAYA_BUILD_EXAMPLES)
             target_compile_options(${tgt} PRIVATE
                 $<$<CXX_COMPILER_ID:GNU,Clang>:
                     -O3
-                    -march=native
+                    $<$<BOOL:${MAYA_NATIVE_TUNING}>:-march=native>
                     -funroll-loops
                 >
                 $<$<CXX_COMPILER_ID:MSVC>:/O2 /GL>
@@ -238,7 +255,8 @@ if(MAYA_BUILD_TESTS)
         target_link_libraries(${tgt} PRIVATE maya)
         target_compile_options(${tgt} PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:
-                -O2 -march=native
+                -O2
+                $<$<BOOL:${MAYA_NATIVE_TUNING}>:-march=native>
             >
         )
         add_test(NAME ${tgt} COMMAND ${tgt})

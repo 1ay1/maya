@@ -315,6 +315,21 @@ public:
         return *this;
     }
 
+    /// Stamp a content-stable cache identity on this component.
+    /// Empty (default) keeps the renderer's pointer-keyed caching
+    /// behaviour; non-empty switches to content-keyed caching, where
+    /// every ComponentElement with this id resolves to the same
+    /// cross-frame cache entry regardless of address. Use when the
+    /// component represents content that's logically the same across
+    /// frames but flows through value-copying containers — settled
+    /// items in a per-frame rebuilt vector, fragment splices, etc.
+    /// The id must uniquely identify the rendered content within the
+    /// running app; pick something cheap to compare (short, hashable).
+    auto cache_id(std::string id) -> ComponentBuilder& {
+        element_.cache_id = std::move(id);
+        return *this;
+    }
+
     /// Implicit conversion to Element.
     operator Element() const& {
         return Element{element_};

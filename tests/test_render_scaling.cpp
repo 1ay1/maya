@@ -88,11 +88,9 @@ Element settled_turn(std::shared_ptr<Counter> counter, int turn_idx,
 // empty → pointer keying takes over and the wrapper's fresh address
 // every frame causes a full miss every frame.
 Element wrap(std::shared_ptr<Element> sp, std::string id) {
-    Element e = component([sp](int /*w*/, int /*h*/) -> Element {
+    return component([sp](int /*w*/, int /*h*/) -> Element {
         return *sp;
-    });
-    std::get<ComponentElement>(e.inner).cache_id = std::move(id);
-    return e;
+    }).cache_id(std::move(id));
 }
 
 Element build_frame(const std::vector<std::shared_ptr<Element>>& bodies,

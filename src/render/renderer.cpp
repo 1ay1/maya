@@ -89,14 +89,25 @@ inline ComponentCache& component_cache() {
 // Look up a ComponentElement in the cross-frame cache, preferring the
 // content-keyed map when the component carries a non-empty cache_id.
 // Returns nullptr on miss; caller stores via store_component_cache().
+//
+// Generation handling diverges between the two paths:
+//   - Pointer keying: generation MUST match. The pointer alone is not
+//     a stable identity (the allocator can recycle a freed
+//     ComponentElement's address); the generation check rejects the
+//     aliased entry.
+//   - Content keying: generation is IGNORED. The whole point of
+//     cache_id is that the host is promising "same id ⇒ same content"
+//     — and the host gets there by constructing fresh
+//     ComponentElement instances every frame (each with a brand-new
+//     generation), so a generation match would never happen and the
+//     cache would always miss. cache_id IS the cross-frame identity.
 inline ComponentCacheEntry* find_component_cache(ComponentCache& cache,
                                                  const ComponentElement& comp,
                                                  int width) noexcept {
     if (!comp.cache_id.empty()) {
         auto it = cache.entries_by_id.find(comp.cache_id);
         if (it != cache.entries_by_id.end()
-            && it->second.width      == width
-            && it->second.generation == comp.generation) {
+            && it->second.width == width) {
             return &it->second;
         }
         return nullptr;
@@ -778,12 +789,26 @@ void paint_element(
             // the steady state this is a cross-frame hit — the entry
             // was populated on the FIRST frame the component appeared
             // and has been refreshed (last_frame_used bumped) on every
-            // subsequent frame.  Read by reference, not by move: the
-            // entry must survive for the next frame's measure to find.
-            Element child;
+            // subsequent frame.
+            //
+            // Read the cached Element by const reference, not by copy:
+            // the recursive layout / paint walk that follows reads it
+            // in place, and any nested ComponentElements inside keep
+            // their pointer identity across frames. That is what makes
+            // the cache_id win actually flow through to the inner
+            // tree — without this, `entry->result` would be value-
+            // copied into a local Element every frame, every nested
+            // ComponentElement inside would land at a fresh address,
+            // and the pointer-keyed cache would miss for all of them
+            // (forcing every nested render to re-run despite the
+            // outer's content cache_id matching). Held storage keeps
+            // a fallback Element when the miss path has to render
+            // fresh.
+            const Element* child_ptr = nullptr;
+            Element        fresh_render;
             auto& cache = component_cache();
             if (auto* entry = find_component_cache(cache, node, content_w)) {
-                child = entry->result;              // copy — cheap shared tree
+                child_ptr = &entry->result;
                 entry->last_frame = cache.current_frame;
             } else {
                 // Width mismatch, missing entry, or pointer-aliased
@@ -794,15 +819,24 @@ void paint_element(
                 // invoked (a parent that sized the child manually) or
                 // address reuse hit the cache after the prior
                 // instance was freed.
-                child = node.render(content_w, content_h);
+                fresh_render = node.render(content_w, content_h);
                 store_component_cache(cache, node, {
                     content_w,
                     /*height=*/content_h,
-                    child,
+                    fresh_render,
                     cache.current_frame,
                     node.generation
                 });
+                // Read back through the cache so child_ptr points at
+                // the stored entry's stable copy, not the local
+                // `fresh_render` whose address dies at function exit.
+                if (auto* entry = find_component_cache(cache, node, content_w)) {
+                    child_ptr = &entry->result;
+                } else {
+                    child_ptr = &fresh_render;
+                }
             }
+            const Element& child = *child_ptr;
 
             // Reuse a thread-local scratch buffer for the sub-layout tree.
             // This avoids a heap allocation per component per frame — typical

@@ -228,6 +228,7 @@ if(MAYA_BUILD_TESTS)
 
     set(MAYA_TEST_SOURCES
         tests/test_render.cpp
+        tests/test_render_scaling.cpp
         tests/test_types.cpp
         tests/test_color.cpp
         tests/test_style.cpp

@@ -939,7 +939,28 @@ void paint_element(
                     int captured_rows = content_h;
                     if (entry->height > 0 && entry->height < captured_rows)
                         captured_rows = entry->height;
-                    if (captured_rows > 0) {
+                    // Skip cache capture when the read rect overruns
+                    // the canvas — happens on the first pass of the
+                    // inline grow-and-retry loop in app.cpp before
+                    // the canvas is resized to fit. Capturing
+                    // partial-blank rows from OOB reads poisons the
+                    // cache: garbage style IDs in the cached cells
+                    // are blitted into the next frame's canvas, and
+                    // emit_cell_run then dereferences a bad StylePool
+                    // entry. Invalidate any stale entry from an
+                    // earlier smaller-layout frame so the fast path
+                    // can't serve undersized cells.
+                    const int canvas_w = canvas.width();
+                    const int canvas_h = canvas.height();
+                    const bool fits_on_canvas =
+                        content_x >= 0 && content_y >= 0 &&
+                        content_x + content_w <= canvas_w &&
+                        content_y + captured_rows <= canvas_h;
+                    if (!fits_on_canvas) {
+                        entry->cells.clear();
+                        entry->cells_rows = 0;
+                        entry->cells_max_y = -1;
+                    } else if (captured_rows > 0) {
                         entry->cells_rows = captured_rows;
                         // Highest non-blank row inside our region.
                         // If paint didn't bump max_y_, nothing

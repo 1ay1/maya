@@ -112,7 +112,20 @@ std::string StylePool::build_sgr(const Style& s) {
     *p++ = '\x1b'; *p++ = '['; *p++ = '0';
 
     if (s.bold)          { *p++ = ';'; *p++ = '1'; }
-    if (s.dim)           { *p++ = ';'; *p++ = '2'; }
+    // SGR 2 (faint) deliberately suppressed. Windows Terminal renders
+    // SGR 2 by reducing brightness ~50%, which on already-dark colors
+    // (bright_black, dim cyan, etc.) collapses below the readable
+    // contrast floor — entire chrome elements vanish on the user's
+    // theme. Other terminals (Alacritty, kitty, iTerm2, Ghostty)
+    // honor SGR 2 with milder reductions but still measurably hurt
+    // contrast on low-contrast themes (Solarized, Gruvbox-light). The
+    // hierarchy effect "dim" was meant to provide is already carried
+    // by color choice (bright_black for muted text); dropping the SGR
+    // attribute keeps the same color and stops the disappearing-text
+    // bug. `s.dim` is still honored in hashing/equality so the cache
+    // doesn't alias dim and non-dim styles, but it never reaches the
+    // wire.
+    // if (s.dim)           { *p++ = ';'; *p++ = '2'; }
     if (s.italic)        { *p++ = ';'; *p++ = '3'; }
     if (s.underline)     { *p++ = ';'; *p++ = '4'; }
     if (s.inverse)       { *p++ = ';'; *p++ = '7'; }

@@ -23,93 +23,61 @@ working doc: items move out as they ship.
 - `TextElement::format` returns `WrappedLine{text, byte_offset}` —
   drops the O(content × lines) substring scan in the painter's
   word-wrap+runs path.
+- **A6**: `ScrollbackMarker` — typed token for `InlineFrameState`
+  scrollback commits. Constructed via `scrollback_marker(rows)` which
+  clamps to live `prev_rows`; consumed by `commit(marker)`. Forces
+  callers to query current state instead of carrying a stale int.
+  `commit_prefix(int)` retained for source compat.
+- **B7**: `StylePool::write_transition_sgr` — differential SGR
+  transitions. Emits only the attribute toggles + fg/bg setters that
+  changed between `prev_id` and `new_id` instead of the full
+  reset-and-set form. ~50%+ byte reduction per style change on
+  style-heavy content (syntax highlighting, markdown runs). Falls back
+  to the cached full sequence when `prev_id == UINT16_MAX` so
+  terminal-state-unknown emissions still land in a known SGR config.
+- **B1**: `Writer::ns_per_byte()` — EMA of wire latency measured
+  across each `write_all` syscall loop. Drives B8's coalesce threshold:
+  fast ttys (low ns-per-byte) pass `min_changed_rows = 0` and behave
+  exactly as before; slow ttys (ssh hop, PuTTY) raise the threshold to
+  2 or 4 so a streak of tiny diffs coalesces into one larger flush.
+- **B8**: `compose_inline_frame(min_changed_rows = N)` — when the
+  row-diff scan finds `changed_rows ∈ (0, N]` AND `content_rows ==
+  prev_rows`, the function returns with `out` and `state` untouched so
+  the next frame's diff accumulates against the same `prev_cells`.
+  Bounded by `InlineFrameState::held_count ≤ kMaxConsecutiveHolds=2`
+  so a perpetual tiny diff still surfaces within ~32ms.
+- **B9**: `Sub::AnimationFrame{Msg}` — push-based animation
+  subscription. The model declares "I want a tick each frame while
+  this is in my subscription" and stops including it when the animation
+  settles. The runtime pumps collected msgs at
+  `kAnimationFrameInterval` cadence. Idle frames (no AnimationFrame
+  sub present) render zero bytes. The pull-based
+  `request_animation_frame()` deadline path remains for backward
+  compat.
+- **Open ghost composer (b9f493f)**: fixed via two converging changes —
+  `88516a6` (cache_id derived from owner_less-keyed weak_ptr identity,
+  closes the pointer-recycling cache aliasing class) and `69688c5`
+  (`Cmd::force_redraw()` / `Runtime::force_redraw()` host-triggered
+  coherence collapse, mirrors `handle_resize`'s Divergent transition
+  for first-input-after-streaming). The agentty host wires
+  `force_redraw` on stream-settled → next-user-input edges.
 
-## Open bug — composer/footer ghost
-
-**Symptom**: while streaming markdown (or any UI where the footer is
-positioned above the terminal foot), typing into the composer shifts
-the footer downward to the terminal bottom and leaves a ghost copy of
-the footer at its old position. Persists after streaming finishes.
-**Fixed by terminal resize.**
-
-**Diagnostic value of "fixed by resize"**: `handle_resize` collapses
-both `fs_coherence_` and `in_coherence_` to `Divergent` AND bumps
-`render_generation_`. Divergent wipes the `InlineFrameState`; the
-generation bump invalidates `component_cache` pointer-keyed entries.
-So the corrupting state is in one (or both) of:
-
-- `InlineFrameState::prev_cells` desynced from terminal screen
-  state.
-- `component_cache` cell-region cache (`ComponentCacheEntry::cells`)
-  holding cells captured for a different (component, width) than the
-  current frame's blit target.
-
-**Reproducibility checkpoint**: present at HEAD = `b9f493f`. Was NOT
-caused by `bbc625b` / `aba6a95` / `9f69375` / `bb00a7c` (those four
-were dropped via force-push, bug remains).
-
-**Hypotheses to investigate** (none confirmed):
-
-1. *Cursor-cap class*: at some intermediate frame, painted height
-   exceeded `term_h`, `prev_rows` overshot the terminal, subsequent
-   `compose_inline_frame` calls used `cursor_up` capped at
-   `prev_on_screen - 1`, all emissions landed at the wrong physical
-   row. Pre-existing for `inline.cpp::render_live`-style overflow
-   scenarios; `inline-autogrow.md` describes this class.
-2. *Content-keyed `cache_id` pointer collision* (element.hpp:229+):
-   the implicit `shared_ptr<const Element>` → `Element` ctor derives
-   `cache_id` from `sp.get()` (raw pointer). If a `shared_ptr` is
-   freed and the allocator hands the same address to a new
-   `shared_ptr`, the new ComponentElement gets a `cache_id` colliding
-   with the cached entry of the dead one. Content-keyed lookup
-   bypasses the generation check — old `cells` get blitted into a
-   region painted for unrelated content. Fix candidates:
-   `std::owner_hash`-derived id, or weak_ptr stored in the cache
-   entry for liveness check.
-3. *Streaming-markdown prefix `ComponentElement` mutation*: the
-   tail-only fast path in `StreamingMarkdown::build` mutates
-   `cached_build_.children.back()` in place. If the *prefix*
-   ComponentElement's lambda captures a `prefix_` that gets replaced
-   between frames in an unexpected order, the cache could return
-   cells for a stale prefix while the new lambda renders new content.
-
-**Next step when we pick this up**: instrument with
-`MAYA_FRAME_PROF` to capture per-frame `prev_rows` / `content_rows` /
-`term_h` and the (cache_id, width) of every cache hit during the
-reproducer. Diff against a clean session. If hypothesis (1), see
-shadow-of-wire (A1) below. If (2), patch the implicit ctor's cache_id
-derivation.
-
-## Items deferred from the original proposal
+## Items deferred — open
 
 Each is independently shippable; ordering reflects expected value /
 risk ratio.
 
-### A6 — typed `ScrollbackMarker` token for `commit_prefix`
-
-Shipped earlier as `bbc625b`, dropped in the force-push. Low risk,
-small additive change (kept `commit_prefix(int)` for source compat).
-Re-applying is straightforward; deferred only because the marginal
-safety win is small without an open bug it directly addresses.
-
-### B7 — differential SGR transitions
-
-Shipped earlier as `aba6a95`, dropped in the force-push. Real
-slow-terminal win on style-heavy content (markdown, syntax
-highlighting): emits only the changed attributes per transition
-instead of the cached full `\x1b[0;...m` reset. Wire bytes change but
-tests are property-based. Re-applying is straightforward; falls back
-to full reset when `prev_id == UINT16_MAX` so terminal-state-unknown
-emissions are safe.
-
 ### B10 — bounded canvas clear by previous `max_y_+1`
 
 Shipped earlier as `9f69375`, reverted as `bb00a7c` (caused a ghost
-the user observed). The invariant ("cells beyond `max_y_` are blank")
-looked watertight on paper. Three plausible interactions with
-`last_col_`, full-canvas `damage_`, or the cell-region cache need
-isolating before re-attempting. If we revisit, do it AFTER the open
-ghost bug is understood — they may share a root cause.
+the user observed at the time). The originating ghost composer bug
+has since been root-caused and fixed (88516a6 + 69688c5 above), so
+B10 is now safe to retry. Still risky in isolation — the full
+`canvas.clear()` per frame is now a load-bearing invariant
+(489347b's commit message: "every cell starts blank each frame ...
+eliminates the whole stale-cell-leak class"). If we revisit, do it
+behind a feature flag with a one-week observation window before
+flipping the default.
 
 ### B5 — compile-time style → permanent style_id
 
@@ -142,23 +110,6 @@ on sparse-streaming frames. Doesn't add new anti-ghost guarantees on
 top of what's already shipped (the unconditional clear closes the
 489347b-class bug at the painter layer). Skipped per direction.
 
-### B1 + B8 + B9 — bandwidth budget, coalescing, animation-as-sub
-
-Multi-piece Runtime-layer work. The most direct "slow terminals get
-faster" win.
-
-- **B1**: measure write latency in `Writer`, expose a budget signal.
-- **B8**: when a frame's diff is below `min_changed_cells` threshold,
-  hold for one more tick and coalesce.
-- **B9**: replace `request_animation_frame` pull with a
-  `Sub::AnimationFrame(Msg)` subscription so idle frames render zero
-  bytes.
-
-These three are designed to compose: the budget tells coalescing
-what threshold to use; animation-as-sub lets the budget actually
-downgrade frame rate without the application knowing. Each piece is
-moderate effort, integration risk is in the Runtime loop ordering.
-
 ### A3 — typed widget strips
 
 Explicitly deferred in the original proposal. The biggest refactor;
@@ -170,13 +121,10 @@ A1 + B10 are settled — those share an invariant that A3 builds on.
 
 ## Order to pick up later
 
-1. **Reproduce + diagnose the ghost composer** with profiling
-   instrumentation. Until we know the root cause, more refactors
-   risk piling onto a latent bug.
-2. **A6** + **B7** — low-risk re-applications of the dropped commits.
-3. **B1 + B8 + B9** — slow-terminal payoff; can land in pieces.
-4. **B10 retry** only after the ghost composer root cause is
-   understood (likely shares the underlying state divergence).
-5. **B4 / B5** — perf items, after profile data shows demand.
-6. **A1 / A2 / A3** — structural refactors, biggest scope, lowest
-   urgency now that the open bug is being chased separately.
+1. **B10 retry** — the original blocker (ghost composer) is now
+   root-caused and fixed; B10's invariant ("cells beyond `max_y_+1`
+   are blank") deserves a fresh look behind a feature flag.
+2. **B4 / B5** — perf items, after profile data shows demand.
+3. **A1 / A2 / A3** — structural refactors, biggest scope, lowest
+   urgency now that the open bug is fixed and B1+B8+B9 deliver the
+   bulk of the slow-terminal payoff.

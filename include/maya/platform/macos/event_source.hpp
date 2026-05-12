@@ -118,6 +118,12 @@ public:
             if (events[i].filter == EVFILT_READ &&
                 static_cast<int>(events[i].ident) == terminal_fd_) {
                 flags.input = true;
+                // EV_EOF on the terminal fd means the slave side of the
+                // pty has gone away — closing the terminal window, ssh
+                // disconnect, etc. Surface it as `hangup` so the runtime
+                // can drain any pending bytes (events[i].data > 0) and
+                // then exit instead of busy-looping on read()=0.
+                if (events[i].flags & EV_EOF) flags.hangup = true;
             }
             if (events[i].filter == EVFILT_SIGNAL &&
                 events[i].ident == static_cast<uintptr_t>(SIGWINCH)) {

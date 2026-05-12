@@ -86,12 +86,18 @@ public:
         }
 
         ReadyFlags flags{};
-        flags.input     = (pfds[stdin_idx].revents & POLLIN) != 0;
+        const short stdin_rev = pfds[stdin_idx].revents;
+        flags.input     = (stdin_rev & POLLIN) != 0;
         flags.resize    = sig_idx >= 0 && (pfds[sig_idx].revents & POLLIN) != 0;
         flags.wake      = wake_idx >= 0 && (pfds[wake_idx].revents & POLLIN) != 0;
         flags.writeable = want_write
             ? (pfds[write_idx].revents & POLLOUT) != 0
             : true;  // not watching — assume writeable (blocking I/O)
+        // POLLHUP on stdin = controlling terminal closed. Surface it so
+        // the runtime drains any final input (POLLIN may also be set if
+        // bytes remain) and then exits, rather than busy-looping on
+        // read()=0 forever.
+        flags.hangup    = (stdin_rev & (POLLHUP | POLLERR | POLLNVAL)) != 0;
         return ok(flags);
     }
 

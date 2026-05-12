@@ -1,29 +1,59 @@
 #pragma once
 // maya::widget::WelcomeScreen — empty-thread brand splash + orientation.
 //
-// Quiet brand presence at the top of an empty conversation: an ASCII
-// wordmark (bold for all rows except the last, which is dim — the
-// classic CLI wordmark "depth" trick), a tagline, a center chip row
-// with the active model + profile, a bordered starter-prompts card,
-// and a bottom hint row of keyboard shortcuts.
+// Quiet brand presence at the top of an empty conversation:
+//
+//   • A chunky 6×7 PIXEL-ART WORDMARK reading "» AGENTTY" — drawn into
+//     a half-block canvas, not the terminal font. The leading double-
+//     chevron reads as "this command is executing."
+//   • Three layered animations:
+//       — Phase 1 [0, ~1.3 s]: CASCADE DROP. Each glyph starts off-
+//         screen above the canvas and falls into place with a 100 ms
+//         stagger and ease-out cubic — like the letters are being
+//         dealt onto the screen one at a time.
+//       — Phase 2 forever after: PER-LETTER WAVE. Every glyph
+//         independently bobs vertically with a sine offset that is
+//         phase-shifted by the letter's index, so the motion reads
+//         as a slow sine wave traveling left → right through the
+//         wordmark, continuously. ±1.5 px amplitude, 2.2 s period.
+//       — Heartbeat pulse: every ~3.2 s the entire wordmark flashes
+//         bright_white for 80 ms — a system-alive blink layered on
+//         top of the wave.
+//
+//   • A tagline (italic, dim).
+//   • A center chip row with model + profile chip.
+//   • An optional bordered "Try" starter card.
+//   • A bottom hint row of keyboard shortcuts.
+//
+// The animation clock lives entirely inside `build()` (a function-local
+// static). The widget detects "I just became visible again" by noting
+// the wall-clock gap since the previous build call — a long gap (default
+// 500 ms) means the widget was off-screen, and the animation restarts.
+// Once the spiral is complete, every frame renders the same Element tree
+// and maya's diff collapses to a no-op (zero terminal write, zero
+// perpetual CPU).
 //
 //   maya::WelcomeScreen{{
-//       .wordmark       = {"┌┬┐┌─┐┬ ┬┌─┐", "││││ │├─┤├─┤", "┴ ┴└─┘┴ ┴┴ ┴"},
-//       .wordmark_color = Color::magenta(),
+//       .sigil_color    = Color::magenta(),
 //       .tagline        = "a calm middleware between you and the model",
 //       .model_badge    = ModelBadge{"claude-opus-4-7"}.build(),
 //       .profile_label  = "write",
 //       .profile_color  = Color::magenta(),
-//       .starters       = {"Implement a small feature",
-//                          "Refactor or clean up this file"},
 //       .hints          = {{"^K", " palette", Color::cyan()},
 //                          {"^J", " threads", Color::cyan()}},
 //   }}.build();
 
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "../app/app.hpp"
 #include "../dsl.hpp"
 #include "../element/element.hpp"
 #include "../style/border.hpp"
@@ -41,8 +71,12 @@ public:
     };
 
     struct Config {
-        std::vector<std::string> wordmark;        // typically 3 rows of box-drawing
-        Color                    wordmark_color = Color::magenta();
+        // Brand mark color. The sigil's body uses this; the freshest 2-3
+        // dots at the spiral's drawing tip flash bright_white, and old
+        // dots fade to bright_black — giving a comet-tail look without
+        // leaving the named-ANSI palette.
+        Color                    sigil_color = Color::magenta();
+
         std::string              tagline;
 
         // Center chip row: caller-built model badge sits beside a profile chip
@@ -60,6 +94,10 @@ public:
 
         Color                    accent_color = Color::magenta();
         Color                    text_color   = Color::bright_white();
+
+        // Sigil intro: total draw-in time in ms. Set to 0 to render the
+        // completed spiral statically from frame 1 (skip the intro).
+        int                      sigil_draw_ms = 1800;
     };
 
     explicit WelcomeScreen(Config c) : cfg_(std::move(c)) {}
@@ -78,23 +116,22 @@ public:
             return centered(text(std::move(s), st));
         };
 
-        // Wordmark — bold for every row except the last, which uses
-        // dim accent (gives the glyph block a sense of "shadow").
-        std::vector<Element> wm_rows;
-        wm_rows.reserve(cfg_.wordmark.size());
-        for (std::size_t i = 0; i < cfg_.wordmark.size(); ++i) {
-            const bool last = (i + 1 == cfg_.wordmark.size());
-            Style st = last
-                ? fg_dim_(cfg_.wordmark_color)
-                : Style{}.with_fg(cfg_.wordmark_color).with_bold();
-            wm_rows.push_back(centered_text(cfg_.wordmark[i], st));
-        }
-        auto wordmark = v(wm_rows);
+        const int age_ms = tick_animation_clock_();
+        // The sigil has two phases — a one-shot draw-in then a perpetual
+        // concentric ripple — both rely on per-frame redraws. The widget
+        // is only built while the welcome screen is on-screen (Thread
+        // dispatches to Conversation as soon as the thread has a
+        // message), so calling unconditionally is the right scope: when
+        // the screen disappears, build() stops being called, no more
+        // frame requests, deadline lapses, runtime returns to idle.
+        request_animation_frame();
+
+        auto sigil = centered(render_sigil_(age_ms));
 
         auto tagline = centered_text(cfg_.tagline,
                                      Style{}.with_fg(muted).with_italic());
 
-        // Profile chip: ▌ INVERSE-LABEL ▐ — same shape moha's status bar uses.
+        // Profile chip: ▌ INVERSE-LABEL ▐
         auto profile_chip = h(
             text("\xe2\x96\x8c", Style{}.with_fg(cfg_.profile_color)),    // ▌
             text(" " + cfg_.profile_label + " ",
@@ -108,14 +145,9 @@ public:
             profile_chip,
             spacer());
 
-        // Starters card — the "Try • …" panel. Opt-in: when the host
-        // passes an empty `starters` list the entire bordered card and
-        // its bracketing blank rows are skipped, so the welcome screen
-        // collapses straight from chips_row → bottom hint without
-        // leaving a hole or rendering an empty frame.
         const bool show_starters = !cfg_.starters.empty();
 
-        // Bottom hint row: intro · key label · key label · …
+        // Bottom hint row
         std::vector<Element> hint_parts;
         hint_parts.push_back(spacer());
         hint_parts.push_back(text(cfg_.hint_intro, fg_dim_(muted)));
@@ -130,8 +162,7 @@ public:
 
         std::vector<Element> rows;
         rows.push_back(blank());
-        rows.push_back(blank());
-        rows.push_back(wordmark);
+        rows.push_back(sigil);
         rows.push_back(blank());
         rows.push_back(tagline);
         rows.push_back(blank());
@@ -164,6 +195,283 @@ public:
 
 private:
     Config cfg_;
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Animation clock — owned by the widget, not the host.
+    // ─────────────────────────────────────────────────────────────────────
+    // Returns elapsed ms since the most recent "mount". Function-local
+    // statics persist across frames; the gap heuristic detects remount
+    // (long gap since previous build = was off-screen → restart).
+    static int tick_animation_clock_() noexcept {
+        using clock = std::chrono::steady_clock;
+        constexpr auto kRemountGapMs = std::chrono::milliseconds{500};
+
+        static clock::time_point first_build_at{};
+        static clock::time_point last_build_at{};
+        static bool              initialized = false;
+
+        const auto now = clock::now();
+        if (!initialized || (now - last_build_at) > kRemountGapMs) {
+            first_build_at = now;
+            initialized    = true;
+        }
+        last_build_at = now;
+        return static_cast<int>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - first_build_at).count());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // The wordmark — "agentty" drawn as a custom 5×8 pixel-art bitmap
+    // font, rendered through half-block glyphs (▀ / ▄ / █). Each
+    // terminal cell holds two vertical pixels; unset pixels emit a
+    // plain space so the terminal background shows through cleanly.
+    //
+    // Animation:
+    //   Phase 1 [0, sigil_draw_ms]:  one-shot left→right wipe. The
+    //     letters appear as a bright_white "shimmer band" sweeps
+    //     across the canvas; pixels behind the band lock in at
+    //     sigil_color, pixels ahead are not yet drawn.
+    //   Phase 2 [sigil_draw_ms, ∞]:  perpetual sinusoidal shimmer. The
+    //     wordmark is fully drawn in sigil_color; the shimmer band
+    //     keeps sliding back and forth across it (sine timing for
+    //     natural deceleration at the endpoints), highlighting
+    //     whichever pixels it's currently passing through.
+    // ─────────────────────────────────────────────────────────────────────
+
+    // 6×7 pixel-art font. Chunky uppercase, no serifs. '#' = lit,
+    // ' ' = empty. The leading '»' glyph adds an "executing command"
+    // beat at the front of the wordmark.
+    static constexpr int kFontW = 6;
+    static constexpr int kFontH = 7;
+
+    struct Glyph { const char* rows[kFontH]; };
+
+    [[nodiscard]] static const Glyph& glyph_for_(char c) noexcept {
+        static constexpr Glyph CHEV{{
+            "      ",
+            "#  #  ",
+            "## ## ",
+            " ## ##",
+            "## ## ",
+            "#  #  ",
+            "      ",
+        }};
+        static constexpr Glyph A{{
+            "  ##  ",
+            " #  # ",
+            "#    #",
+            "######",
+            "#    #",
+            "#    #",
+            "#    #",
+        }};
+        static constexpr Glyph G{{
+            " #### ",
+            "#    #",
+            "#     ",
+            "#  ###",
+            "#    #",
+            "#    #",
+            " #### ",
+        }};
+        static constexpr Glyph E{{
+            "######",
+            "#     ",
+            "#     ",
+            "##### ",
+            "#     ",
+            "#     ",
+            "######",
+        }};
+        static constexpr Glyph N{{
+            "#    #",
+            "##   #",
+            "# #  #",
+            "#  # #",
+            "#   ##",
+            "#    #",
+            "#    #",
+        }};
+        static constexpr Glyph T{{
+            "######",
+            "  ##  ",
+            "  ##  ",
+            "  ##  ",
+            "  ##  ",
+            "  ##  ",
+            "  ##  ",
+        }};
+        static constexpr Glyph Y{{
+            "#    #",
+            "#    #",
+            " #  # ",
+            "  ##  ",
+            "  ##  ",
+            "  ##  ",
+            "  ##  ",
+        }};
+        static constexpr Glyph BLANK{{
+            "      ", "      ", "      ", "      ",
+            "      ", "      ", "      ",
+        }};
+        switch (c) {
+            case 'a': case 'A': return A;
+            case 'g': case 'G': return G;
+            case 'e': case 'E': return E;
+            case 'n': case 'N': return N;
+            case 't': case 'T': return T;
+            case 'y': case 'Y': return Y;
+            case '>':           return CHEV;
+            default:            return BLANK;
+        }
+    }
+
+    [[nodiscard]] Element render_sigil_(int age_ms) const {
+        using namespace dsl;
+
+        // Layout: chevron + AGENTTY, 1-pixel spacer between glyphs.
+        static constexpr std::string_view kText  = ">AGENTTY";
+        static constexpr int               kSpacer = 1;
+        constexpr int PW = static_cast<int>(kText.size()) * kFontW
+                         + (static_cast<int>(kText.size()) - 1) * kSpacer;
+
+        // Canvas vertical layout: a 1-px pad on top + the kFontH font
+        // body + a 2-px pad on bottom (enough room for the ±1.5 px
+        // bob in Phase 2 plus the heartbeat flash to look uncramped).
+        constexpr int kPadTop     = 1;
+        constexpr int kPadBottom  = 2;
+        constexpr int kLetterY    = kPadTop;
+        constexpr int PH          = kFontH + kPadTop + kPadBottom;
+        constexpr int CH          = (PH + 1) / 2;
+        constexpr int kGridRows   = CH * 2;
+
+        // ── Animation parameters ────────────────────────────────────
+        // Cascade drop
+        constexpr int   kStaggerMs       = 100;
+        constexpr int   kDropDurationMs  = 500;
+        const     int   kPhase1EndMs     = static_cast<int>(kText.size() - 1)
+                                         * kStaggerMs + kDropDurationMs;
+        // Per-letter bob (Phase 2)
+        constexpr float kBobAmp          = 1.5f;        // px
+        constexpr float kBobPeriodMs     = 2200.0f;
+        constexpr float kBobLetterPhase  = 0.7f;        // rad / letter
+        // Heartbeat pulse
+        constexpr int   kPulsePeriod     = 3200;
+        constexpr int   kPulseWidth      = 80;
+
+        // Heartbeat — only fires after Phase 1 settles so the cascade
+        // entry doesn't get strobed.
+        const bool in_pulse = age_ms > kPhase1EndMs
+            && ((age_ms - kPhase1EndMs) % kPulsePeriod) < kPulseWidth;
+
+        // Per-letter Y offset. Combines cascade drop (Phase 1) and
+        // sine bob (Phase 2). Negative = above letter's home row.
+        auto letter_y_offset = [&](int li) -> float {
+            const int drop_start = li * kStaggerMs;
+            const int drop_end   = drop_start + kDropDurationMs;
+            // Off-screen-above starting position — full kFontH + the
+            // top pad, so the bottom-row pixels are also above the
+            // canvas before the drop animates.
+            const float kOff = -static_cast<float>(kFontH + kPadTop + 1);
+            if (age_ms < drop_start) return kOff;
+            if (age_ms < drop_end) {
+                const float t = static_cast<float>(age_ms - drop_start)
+                              / static_cast<float>(kDropDurationMs);
+                const float eased = 1.0f
+                                  - (1.0f - t) * (1.0f - t) * (1.0f - t);
+                return kOff * (1.0f - eased);
+            }
+            // Phase 2 — per-letter sine bob with phase offset.
+            const float t = static_cast<float>(age_ms - drop_end);
+            const float phase = 2.0f * 3.14159265f * t / kBobPeriodMs
+                              + static_cast<float>(li) * kBobLetterPhase;
+            return std::sin(phase) * kBobAmp;
+        };
+
+        // Pixel grid — taller than kFontH to give the bob room and
+        // pad an even number of rows for the half-block cell loop.
+        std::vector<std::optional<Color>> px(
+            static_cast<std::size_t>(PW * kGridRows));
+
+        const Color pixel_color = in_pulse
+            ? Color::bright_white()
+            : cfg_.sigil_color;
+
+        for (std::size_t li = 0; li < kText.size(); ++li) {
+            const Glyph& g      = glyph_for_(kText[li]);
+            const int    base_x = static_cast<int>(li) * (kFontW + kSpacer);
+            // Snap to integer pixel offset — terminal pixels are
+            // integer-grid, anti-aliased bob would just create flicker.
+            const int    dy     = static_cast<int>(
+                std::lround(letter_y_offset(static_cast<int>(li))));
+            for (int row = 0; row < kFontH; ++row) {
+                const char* row_str = g.rows[row];
+                for (int col = 0; col < kFontW; ++col) {
+                    if (row_str[col] != '#') continue;
+                    const int x = base_x + col;
+                    const int y = kLetterY + row + dy;
+                    if (y < 0 || y >= kGridRows) continue;
+                    px[static_cast<std::size_t>(y)
+                       * static_cast<std::size_t>(PW)
+                       + static_cast<std::size_t>(x)] = pixel_color;
+                }
+            }
+        }
+
+        // Render each cell row as a horizontal sequence of per-cell
+        // half-block elements. 24×6 = 144 cells total — well below
+        // the threshold where Element-count overhead matters.
+        std::vector<Element> rows;
+        rows.reserve(static_cast<std::size_t>(CH));
+        for (int cy = 0; cy < CH; ++cy) {
+            std::vector<Element> cells;
+            cells.reserve(static_cast<std::size_t>(PW));
+            for (int x = 0; x < PW; ++x) {
+                const auto top = px[static_cast<std::size_t>((cy * 2) * PW + x)];
+                const auto bot = px[static_cast<std::size_t>((cy * 2 + 1) * PW + x)];
+                cells.push_back(half_block_cell_(top, bot));
+            }
+            rows.push_back(h(std::move(cells)).build());
+        }
+        return v(std::move(rows)).build();
+    }
+
+    // Compose one cell from optional top/bottom pixel colors. Empty top &
+    // bottom → plain space (cell takes the terminal background, no
+    // black silhouette). Single-side → ▀ or ▄ with fg only (bg stays
+    // default). Both sides same color → █. Mixed → ▀ with fg=top,
+    // bg=bottom — the standard half-block trick.
+    static Element half_block_cell_(std::optional<Color> top,
+                                     std::optional<Color> bot)
+    {
+        using namespace dsl;
+        if (!top && !bot)               return text(" ");
+        if (top && !bot)                return text("\xe2\x96\x80",
+                                                    Style{}.with_fg(*top));
+        if (!top && bot)                return text("\xe2\x96\x84",
+                                                    Style{}.with_fg(*bot));
+        if (top && bot && color_eq_(*top, *bot))
+                                        return text("\xe2\x96\x88",
+                                                    Style{}.with_fg(*top));
+        return text("\xe2\x96\x80",
+                    Style{}.with_fg(*top).with_bg(*bot));
+    }
+
+    // Coarse equality on Color: enough to spot "both halves are the same
+    // shade so render █ instead of ▀ with redundant bg" — saves SGR
+    // bytes on the diff stream and reads cleaner in screenshots.
+    static bool color_eq_(const Color& a, const Color& b) noexcept {
+        if (a.kind() != b.kind()) return false;
+        switch (a.kind()) {
+            case Color::Kind::Default: return true;
+            case Color::Kind::Named:
+            case Color::Kind::Indexed: return a.index() == b.index();
+            case Color::Kind::Rgb:
+                return a.r() == b.r() && a.g() == b.g() && a.b() == b.b();
+        }
+        return false;
+    }
 
     static std::string small_caps_(std::string_view s) {
         std::string out;

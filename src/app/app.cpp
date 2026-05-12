@@ -652,6 +652,12 @@ Status canvas_run_impl(
             }
         }
 
+        // Controlling terminal closed — drain any final bytes above, then
+        // exit. Without this the next wait() returns immediately (kqueue
+        // EV_EOF / poll POLLHUP stay latched), read() returns 0, and we
+        // spin at 100% CPU until SIGKILL.
+        if (ready.hangup) running = false;
+
         if (running && !pending_frame.has_value() && Clock::now() >= next_frame) {
             next_frame += frame_ns;
             if (Clock::now() > next_frame + frame_ns)

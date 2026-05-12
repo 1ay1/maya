@@ -106,6 +106,42 @@ struct RunConfig {
 };
 
 // ============================================================================
+// request_animation_frame — widget-side "I'm animating, please redraw soon"
+// ============================================================================
+// Pull-based animation signal for event-driven mode (fps = 0). A widget
+// that wants a smooth animation calls request_animation_frame() from its
+// build() function on every frame the animation should continue. The
+// runtime tops up an animation deadline; if `now < deadline`, the main
+// loop wakes within ~16 ms and renders again. When the widget stops
+// calling (animation finished), the deadline passes and the loop returns
+// to its normal idle wait. No global fps bump, no per-app subscriptions,
+// no Model state.
+//
+// Single-threaded UI; storage is a process-wide inline variable. Safe
+// to call multiple times per frame (idempotent — the deadline is taken
+// as max-of-existing-and-new).
+
+namespace detail {
+// "Animation is live until this time." The widget keeps it alive by
+// calling request_animation_frame() every paint, which slides this
+// forward by ~kAnimationLeeway. When the widget stops calling, the
+// deadline lapses and the loop returns to its normal idle wait.
+inline std::chrono::steady_clock::time_point animation_deadline_{};
+
+// Leeway must exceed kAnimationFrameInterval (below) so that after a
+// poll wakeup-and-render cycle the deadline is still in the future —
+// otherwise the very first cycle ends the animation. 50 ms covers ~3
+// frame intervals at 60 fps, giving comfortable margin under jitter.
+inline constexpr auto kAnimationLeeway        = std::chrono::milliseconds{50};
+inline constexpr auto kAnimationFrameInterval = std::chrono::milliseconds{16};   // ~60 fps cap
+}  // namespace detail
+
+inline void request_animation_frame() noexcept {
+    detail::animation_deadline_ =
+        std::chrono::steady_clock::now() + detail::kAnimationLeeway;
+}
+
+// ============================================================================
 // Key event predicates — pure functions for use inside subscribe() filters
 // ============================================================================
 
@@ -906,6 +942,17 @@ void run(RunConfig cfg = {}) {
                     std::max(std::chrono::milliseconds(0), until));
             }
         }
+        // Animation-frame request: a widget called request_animation_frame()
+        // during its last build(). While the deadline is in the future,
+        // cap our poll timeout to one animation frame interval (~16 ms,
+        // ~60 fps) so we wake up frequently enough to advance the
+        // animation. Deadline leeway (>frame interval) guarantees the
+        // post-poll check `now < deadline` survives one cycle.
+        if (!needs_render
+            && std::chrono::steady_clock::now() < detail::animation_deadline_)
+        {
+            poll_timeout = std::min(poll_timeout, detail::kAnimationFrameInterval);
+        }
 
         // Wait for events
         auto poll_result = rt.poll(poll_timeout);
@@ -988,6 +1035,14 @@ void run(RunConfig cfg = {}) {
 
         // fps-driven continuous rendering
         if (cfg.fps > 0) needs_render = true;
+
+        // Animation-frame request: a widget asked for another paint by
+        // calling request_animation_frame() during the last build(). If
+        // we're still inside the deadline, repaint — the widget's next
+        // build() can extend the deadline (animation continues) or skip
+        // the call entirely (deadline lapses, loop returns to idle wait).
+        if (std::chrono::steady_clock::now() < detail::animation_deadline_)
+            needs_render = true;
 
         if (needs_render) {
             // Rebuild subscriptions from current model

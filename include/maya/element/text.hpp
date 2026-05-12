@@ -122,6 +122,23 @@ struct StyledRun {
     Style       style;
 };
 
+/// One display-ready line produced by TextElement::format().
+///
+/// `byte_offset` is the position within the source `content` where this
+/// line's text begins. For TextWrap::Wrap / NoWrap this is the natural
+/// offset of the wrapped substring (which the painter uses to align
+/// styled runs to wrapped output without a per-frame O(content × lines)
+/// substring search).
+///
+/// For truncation modes (TruncateEnd / TruncateStart / TruncateMiddle)
+/// `text` is synthetic — it contains an inserted ellipsis that isn't
+/// present in `content`, so `byte_offset` is left as 0 and the painter
+/// uses a separate explicit-mapping branch for those modes.
+struct WrappedLine {
+    std::string text;
+    std::size_t byte_offset = 0;
+};
+
 struct TextElement {
     std::string content;
     Style       style = {};
@@ -143,7 +160,7 @@ struct TextElement {
     mutable std::size_t              cached_content_size = 0;
     mutable TextWrap                 cached_wrap = TextWrap::Wrap;
     mutable Size                     cached_size{Columns{0}, Rows{1}};
-    mutable std::vector<std::string> cached_lines;
+    mutable std::vector<WrappedLine> cached_lines;
 
     // -- Measurement ---------------------------------------------------------
 
@@ -154,10 +171,12 @@ struct TextElement {
     // -- Rendering helpers ---------------------------------------------------
 
     /// Return the display-ready lines for a given width constraint.
-    /// Word-wrapped or truncated as configured.  Returned by const-ref
-    /// against the element's cache; the reference is valid as long as the
-    /// element lives.
-    [[nodiscard]] const std::vector<std::string>& format(int max_width) const;
+    /// Word-wrapped or truncated as configured. Each WrappedLine carries
+    /// both the text and the byte offset into `content` where it
+    /// originated (used by the renderer to align styled runs without an
+    /// O(content × lines) substring search). The reference is valid as
+    /// long as the element lives.
+    [[nodiscard]] const std::vector<WrappedLine>& format(int max_width) const;
 };
 
 } // namespace maya

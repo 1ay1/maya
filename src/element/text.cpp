@@ -325,7 +325,7 @@ Size TextElement::measure(int max_width) const {
     return cached_size;
 }
 
-const std::vector<std::string>& TextElement::format(int max_width) const {
+const std::vector<WrappedLine>& TextElement::format(int max_width) const {
     // Cache hit: same width + wrap + content length → return cached lines.
     if (cached_width == max_width
         && cached_wrap == wrap
@@ -337,7 +337,7 @@ const std::vector<std::string>& TextElement::format(int max_width) const {
     cached_lines.clear();
 
     if (content.empty()) {
-        cached_lines.emplace_back("");
+        cached_lines.push_back({/*text=*/"", /*byte_offset=*/0});
         cached_size = {Columns{0}, Rows{1}};
     } else {
         switch (wrap) {
@@ -345,6 +345,7 @@ const std::vector<std::string>& TextElement::format(int max_width) const {
                 auto views = word_wrap(content, max_width);
                 cached_lines.reserve(views.size());
                 int widest = 0;
+                const char* base = content.data();
                 for (auto& v : views) {
                     // ASCII fast path: byte length == display width.
                     std::size_t len = v.size();
@@ -357,7 +358,12 @@ const std::vector<std::string>& TextElement::format(int max_width) const {
                     }
                     int w = all_ascii ? static_cast<int>(len) : string_width(v);
                     if (w > widest) widest = w;
-                    cached_lines.emplace_back(v);
+                    // word_wrap returns string_views into `content`, so
+                    // the byte offset is just v.data() - content.data().
+                    // Storing it here removes the O(content × lines)
+                    // substring search the painter used to do per frame.
+                    const auto offset = static_cast<std::size_t>(v.data() - base);
+                    cached_lines.push_back({std::string{v}, offset});
                 }
                 cached_size = {Columns{widest},
                                Rows{static_cast<int>(cached_lines.size())}};
@@ -366,32 +372,44 @@ const std::vector<std::string>& TextElement::format(int max_width) const {
 
             case TextWrap::NoWrap: {
                 int widest = 0;
+                const char* base = content.data();
                 for (auto part : content | std::views::split('\n')) {
                     std::string_view sv{part};
                     int w = string_width(sv);
                     if (w > widest) widest = w;
-                    cached_lines.emplace_back(sv);
+                    const auto offset = sv.empty()
+                        ? 0
+                        : static_cast<std::size_t>(sv.data() - base);
+                    cached_lines.push_back({std::string{sv}, offset});
                 }
-                if (cached_lines.empty()) cached_lines.emplace_back("");
+                if (cached_lines.empty())
+                    cached_lines.push_back({/*text=*/"", /*byte_offset=*/0});
                 cached_size = {Columns{widest},
                                Rows{static_cast<int>(cached_lines.size())}};
                 break;
             }
 
+            // Truncation modes produce a single synthetic line — the
+            // ellipsis bytes don't exist in `content`, so byte_offset is
+            // 0 and the painter takes its explicit-mapping branch for
+            // these wrap modes (no substring search involved).
             case TextWrap::TruncateEnd:
-                cached_lines.emplace_back(detail::truncate_end(content, max_width));
+                cached_lines.push_back(
+                    {detail::truncate_end(content, max_width), 0});
                 cached_size = {Columns{std::min(string_width(content), max_width)},
                                Rows{1}};
                 break;
 
             case TextWrap::TruncateStart:
-                cached_lines.emplace_back(detail::truncate_start(content, max_width));
+                cached_lines.push_back(
+                    {detail::truncate_start(content, max_width), 0});
                 cached_size = {Columns{std::min(string_width(content), max_width)},
                                Rows{1}};
                 break;
 
             case TextWrap::TruncateMiddle:
-                cached_lines.emplace_back(detail::truncate_middle(content, max_width));
+                cached_lines.push_back(
+                    {detail::truncate_middle(content, max_width), 0});
                 cached_size = {Columns{std::min(string_width(content), max_width)},
                                Rows{1}};
                 break;

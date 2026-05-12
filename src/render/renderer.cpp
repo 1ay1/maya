@@ -622,27 +622,23 @@ void paint_element(
                 uint16_t style_id = pool.intern(node.style);
                 for (const auto& [row, line] :
                          lines | std::views::enumerate | std::views::take(ah)) {
-                    canvas.write_text(ax, ay + static_cast<int>(row), line, style_id);
+                    canvas.write_text(ax, ay + static_cast<int>(row),
+                                      line.text, style_id);
                 }
                 return;
             }
 
             // Truncation modes produce a single line that differs from
             // content (ellipsis appended/prepended). The word-wrap path
-            // below aligns runs via substring matching against content;
-            // that search fails on truncated output because the ellipsis
-            // bytes don't exist in content, causing the loop to overshoot
-            // and split multi-byte UTF-8 (U+FFFD on the terminal).
-            //
-            // Fix: for TruncateEnd/Start, map the truncated line's byte
-            // ranges back to content positions explicitly. The prefix/
-            // suffix portions are byte-identical to their corresponding
-            // content spans; only the ellipsis is synthetic.
+            // below aligns runs to wrapped output via the byte offset
+            // cached in WrappedLine; truncated lines hold synthetic
+            // ellipsis bytes that don't appear in content, so they take
+            // this explicit-mapping branch instead.
             const bool truncates = (node.wrap == TextWrap::TruncateEnd ||
                                     node.wrap == TextWrap::TruncateStart ||
                                     node.wrap == TextWrap::TruncateMiddle);
             if (truncates && lines.size() == 1) {
-                const auto& line = lines[0];
+                const auto& line = lines[0].text;
                 const int y = ay;
                 constexpr std::string_view kEll = "\xe2\x80\xa6";
 
@@ -718,23 +714,26 @@ void paint_element(
                 return;
             }
 
-            // Word-wrap / NoWrap with styled runs — substring matching.
+            // Word-wrap / NoWrap with styled runs.
+            //
+            // Each WrappedLine carries its byte_offset into content
+            // (populated by format(); see element/text.cpp). Run
+            // alignment is therefore O(runs_per_line) per line instead
+            // of the legacy O(content_size × lines) substring search.
+            // run_idx is monotonic across lines because both lines and
+            // runs are sorted by content offset.
             {
-                std::size_t content_byte = 0;
                 std::size_t run_idx = 0;
 
                 for (const auto& [row, line] :
                          lines | std::views::enumerate | std::views::take(ah)) {
                     int y = ay + static_cast<int>(row);
-
-                    while (content_byte < node.content.size() &&
-                           node.content.substr(content_byte, line.size()) != line) {
-                        ++content_byte;
-                    }
+                    const std::string& line_text = line.text;
+                    const std::size_t content_byte = line.byte_offset;
 
                     int x_cursor = ax;
                     std::size_t line_byte = 0;
-                    while (line_byte < line.size()) {
+                    while (line_byte < line_text.size()) {
                         std::size_t abs_byte = content_byte + line_byte;
                         while (run_idx + 1 < node.runs.size() &&
                                abs_byte >= node.runs[run_idx].byte_offset +
@@ -746,20 +745,20 @@ void paint_element(
                         std::size_t run_end = run.byte_offset + run.byte_length;
                         std::size_t chunk_end;
                         if (run_end > abs_byte) {
-                            chunk_end = std::min(line.size(), line_byte + (run_end - abs_byte));
+                            chunk_end = std::min(line_text.size(),
+                                                 line_byte + (run_end - abs_byte));
                         } else {
                             chunk_end = line_byte + 1;
                         }
                         if (chunk_end <= line_byte) chunk_end = line_byte + 1;
 
-                        auto chunk = line.substr(line_byte, chunk_end - line_byte);
+                        auto chunk = std::string_view(line_text)
+                                         .substr(line_byte, chunk_end - line_byte);
                         uint16_t sid = pool.intern(run.style);
                         canvas.write_text(x_cursor, y, chunk, sid);
                         x_cursor += string_width(chunk);
                         line_byte = chunk_end;
                     }
-
-                    content_byte += line.size();
                 }
             }
         },

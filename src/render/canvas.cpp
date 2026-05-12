@@ -395,10 +395,33 @@ void Canvas::fill(Rect region, char32_t ch, uint16_t style_id) {
 
 void Canvas::clear() {
     uint64_t blank = default_cell();
-    simd::streaming_fill(cells_.data(), cells_.size(), blank);
+    // Bounded clear: only fill rows that had visible content last frame.
+    //
+    // Invariant: cells beyond max_y_ are always blank. Holds inductively:
+    //   - Construction (cells_.resize(..., default_cell())) initialises
+    //     every cell to blank, max_y_ starts at -1.
+    //   - resize(w, h) re-assigns the whole grid to blank, resets max_y_.
+    //   - Every prior clear() cleared up to its own max_y_+1. Rows it
+    //     left untouched were either never painted (still blank from
+    //     construction) or were blanked by an earlier clear (because
+    //     that earlier max_y_ was >= those rows).
+    //
+    // So we can fill only [0, max_y_+1) and rows beyond are guaranteed
+    // blank already. For inline mode where a 500-row canvas typically
+    // holds ~50 rows of content, this is ~10× less memory traffic per
+    // frame (the streaming_fill is the dominant clear cost).
+    //
+    // damage_ stays full_rect: paint may extend past the previous
+    // max_y_ this frame, and the diff has to cover that new region.
+    const int rows_to_clear = std::clamp(max_y_ + 1, 0, height_);
+    if (rows_to_clear > 0) {
+        simd::streaming_fill(cells_.data(),
+                             static_cast<std::size_t>(rows_to_clear * width_),
+                             blank);
+        std::fill(last_col_.begin(), last_col_.begin() + rows_to_clear, -1);
+    }
     damage_ = full_rect();
     max_y_ = -1;
-    std::fill(last_col_.begin(), last_col_.end(), -1);
 }
 
 void Canvas::clear_rows(int n) {

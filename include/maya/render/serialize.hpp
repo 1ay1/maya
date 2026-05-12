@@ -32,6 +32,39 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 // Inline frame composition
 // ============================================================================
 
+struct InlineFrameState;  // forward
+
+/// Opaque token representing "commit this many rows of the current
+/// frame's prev_cells to scrollback." Constructed only via
+/// `InlineFrameState::scrollback_marker(rows)`, which clamps `rows` to
+/// the state's actual `prev_rows` at the time of the call. Consuming
+/// the marker via `InlineFrameState::commit(marker)` is the only way
+/// to advance the state's scrollback boundary through the typed path.
+///
+/// The marker carries no state pointer / generation — single-threaded
+/// inline rendering means the marker is created and consumed in close
+/// temporal proximity within the same Runtime tick. The safety the
+/// type provides is "you can't construct a row count from thin air" —
+/// the application has to obtain a marker from a live state, which
+/// forces them to read the current `prev_rows` rather than carrying a
+/// stale int around.
+class ScrollbackMarker {
+public:
+    /// Empty marker — committing it is a no-op. Useful as a default
+    /// when no scrollback advance is wanted this tick.
+    constexpr ScrollbackMarker() noexcept = default;
+
+    /// Number of rows the marker will commit when consumed.
+    [[nodiscard]] constexpr int rows() const noexcept { return rows_; }
+
+    [[nodiscard]] constexpr bool empty() const noexcept { return rows_ <= 0; }
+
+private:
+    int rows_ = 0;
+    constexpr explicit ScrollbackMarker(int r) noexcept : rows_(r) {}
+    friend struct InlineFrameState;
+};
+
 /// Persistent state for the inline (row-diff) renderer.
 ///
 /// Holds a copy of the last-rendered cell buffer so successive frames can
@@ -49,6 +82,22 @@ struct InlineFrameState {
         prev_rows  = 0;
     }
 
+    /// Build a typed marker for committing `rows` rows of scrollback.
+    /// Clamped to [0, prev_rows]; passing prev_rows means "commit
+    /// everything that's currently considered prev frame." Returns an
+    /// empty marker (no-op when consumed) when prev_rows == 0.
+    [[nodiscard]] ScrollbackMarker scrollback_marker(int rows) const noexcept {
+        if (rows <= 0 || prev_rows <= 0) return ScrollbackMarker{};
+        return ScrollbackMarker{std::min(rows, prev_rows)};
+    }
+
+    /// Commit the marker. Shifts `prev_cells` up by marker.rows() rows
+    /// and decrements `prev_rows`. A marker that targets all the rows
+    /// (or more) clears the state cleanly via `reset()`.
+    void commit(ScrollbackMarker marker) noexcept {
+        commit_prefix(marker.rows());
+    }
+
     /// Mark the top `rows` rows of the current prev frame as committed to
     /// terminal scrollback.  Shifts `prev_cells` up by `rows * prev_width`
     /// and decrements `prev_rows`.
@@ -59,6 +108,11 @@ struct InlineFrameState {
     /// viewport).  Without this call, `compose_inline_frame` would treat
     /// the shorter tree as "content removed from the bottom" and erase
     /// visible rows.
+    ///
+    /// New code should prefer `scrollback_marker(rows) + commit(marker)`
+    /// — the typed path forces the caller to query the live state's
+    /// prev_rows rather than carrying a stale int. This signature is
+    /// retained for source compatibility with existing consumers.
     void commit_prefix(int rows) noexcept;
 };
 

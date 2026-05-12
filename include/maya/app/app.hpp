@@ -361,10 +361,14 @@ public:
     // effect in fullscreen mode or when render coherence is Divergent
     // (there is no prev-frame state to commit against — the next render
     // will be a full repaint anyway).
+    //
+    // Routes through the typed ScrollbackMarker path so the rows-to-commit
+    // is clamped against the live state's prev_rows at the moment of the
+    // commit (rather than the application's possibly-stale view).
     void commit_inline_prefix(int rows) noexcept {
         if (!is_inline()) return;
         if (auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_))
-            s->state.commit_prefix(rows);
+            s->state.commit(s->state.scrollback_marker(rows));
     }
 
     // Force the next render to be a full repaint by collapsing both

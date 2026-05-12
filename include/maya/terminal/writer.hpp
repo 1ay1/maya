@@ -88,6 +88,14 @@ class Writer : MoveOnly {
     std::string flush_buf_;       // reused across frames to avoid alloc
     size_t reserve_hint_ = 4096;  // adaptive buffer size hint
 
+    /// EMA of nanoseconds-per-byte achieved by the underlying tty across
+    /// successful writes. 0 until the first sample. Higher = slower
+    /// pipe (ssh over high-latency link, slow VTE, locked-down windows
+    /// console). The Runtime uses this as a bandwidth-budget signal for
+    /// coalescing decisions: when ns_per_byte is high, hold small-diff
+    /// frames for one tick and merge with the next.
+    mutable double ns_per_byte_ema_ = 0.0;
+
     // A typical frame pushes 50–150 ops (one per style change + text run in
     // a view of moderate depth). Reserving up front avoids the geometric
     // reallocation chain on the first frame, and from frame 2 onward
@@ -139,6 +147,12 @@ public:
 
     /// Write as many bytes as possible without blocking.
     [[nodiscard]] auto write_some(std::string_view data) const -> Result<std::size_t>;
+
+    /// EMA of ns-per-byte measured across recent `write_all` calls. 0
+    /// before the first sample lands. Use as a cheap "is the wire slow?"
+    /// signal — values above kSlowTtyThreshold suggest deferring small
+    /// diffs.
+    [[nodiscard]] double ns_per_byte() const noexcept { return ns_per_byte_ema_; }
 
 private:
     void optimize();

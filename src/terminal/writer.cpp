@@ -1,6 +1,7 @@
 #include "maya/terminal/writer.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <format>
 #include <ranges>
@@ -248,6 +249,11 @@ auto Writer::write_all(std::string_view data) const -> Status {
     std::size_t remaining = data.size();
     bool wrote_any   = false;
 
+    // Measure wire time for the bandwidth-budget EMA. Sampled only on
+    // fully-successful writes — partial / would-block cases skew the
+    // average because the timer captures the blocked wait too.
+    const auto t0 = std::chrono::steady_clock::now();
+
     while (remaining > 0) {
         auto result = platform::io_write(handle_, ptr, remaining);
         if (!result) {
@@ -267,6 +273,18 @@ auto Writer::write_all(std::string_view data) const -> Status {
         wrote_any  = true;
         ptr       += n;
         remaining -= n;
+    }
+
+    // Update EMA. alpha = 0.125 — a single slow frame doesn't lock the
+    // budget for many seconds, while a streak of slow frames still moves
+    // the EMA toward the slow estimate in ~8 frames.
+    if (const std::size_t total = data.size(); total > 0) {
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        const double sample = static_cast<double>(ns) / static_cast<double>(total);
+        if (ns_per_byte_ema_ == 0.0) ns_per_byte_ema_ = sample;
+        else                         ns_per_byte_ema_ = 0.125 * sample
+                                                      + 0.875 * ns_per_byte_ema_;
     }
     return ok();
 }

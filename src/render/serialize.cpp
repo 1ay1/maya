@@ -265,13 +265,20 @@ void serialize(const Canvas& canvas, const StylePool& pool,
     return r * w;
 }
 
+// Maximum frames `compose_inline_frame` may hold a small diff before
+// forcing emission. Two consecutive holds means the worst-case
+// accumulated diff is bounded at 2*min_changed_rows rows — still small
+// enough that the eventual flush is one cheap frame, not a wall.
+static constexpr int kMaxConsecutiveHolds = 2;
+
 void compose_inline_frame(const Canvas& canvas,
                           int content_rows,
                           int term_h,
                           const StylePool& pool,
                           InlineFrameState& state,
                           std::string& out,
-                          bool synchronized_output)
+                          bool synchronized_output,
+                          int min_changed_rows)
 {
     const int W = canvas.width();
     if (W <= 0 || content_rows <= 0 || term_h <= 0) return;
@@ -301,22 +308,46 @@ void compose_inline_frame(const Canvas& canvas,
         need_prev <= state.prev_cells.size();
     const uint64_t* prev = have_prev ? state.prev_cells.data() : nullptr;
 
-    // Locate the first row that actually differs from the cached copy.
-    // Rows in scrollback (y < updatable_start) are immutable — skip them.
+    // Locate the first row that actually differs from the cached copy
+    // AND (when coalescing is requested) count the total changed-row
+    // count. Rows in scrollback (y < updatable_start) are immutable —
+    // skip them. The full walk is only done when the coalesce knob is
+    // active; otherwise we bail at the first hit as before.
     int first_changed = common;
+    int changed_rows  = 0;
     if (have_prev) {
         for (int y = updatable_start; y < common; ++y) {
             if (!simd::bulk_eq(cells + y * W, prev + y * W,
                                static_cast<std::size_t>(W)))
             {
-                first_changed = y;
-                break;
+                if (first_changed == common) first_changed = y;
+                ++changed_rows;
+                if (min_changed_rows <= 0) break;
             }
         }
     }
 
     // Nothing to do: common range matches and no rows added or removed.
-    if (first_changed == common && content_rows == prev_rows) return;
+    if (first_changed == common && content_rows == prev_rows) {
+        state.held_count = 0;
+        return;
+    }
+
+    // Bandwidth coalesce: when the diff touches few rows AND the frame
+    // didn't grow/shrink, hold this emit and let the next frame's diff
+    // accumulate against the same prev_cells. State is NOT mutated — the
+    // next call's bulk_eq walk runs against the same baseline, so the
+    // accumulated change strictly contains this frame's change.
+    if (min_changed_rows > 0
+        && content_rows == prev_rows
+        && changed_rows > 0
+        && changed_rows <= min_changed_rows
+        && state.held_count < kMaxConsecutiveHolds)
+    {
+        ++state.held_count;
+        return;
+    }
+    state.held_count = 0;
 
     // ── Frame open ─────────────────────────────────────────────────────
     if (synchronized_output) out += ansi::sync_start;

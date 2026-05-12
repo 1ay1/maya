@@ -288,8 +288,20 @@ auto Runtime::render(const Element& root) -> Status {
                 const int term_h = std::max(1, size_.height.raw());
                 out_.clear();
                 auto t_cf0 = std::chrono::steady_clock::now();
+                // Bandwidth-coalesce threshold from the writer's measured
+                // ns-per-byte EMA: fast terminals emit every frame
+                // (threshold 0); on slow ttys we hold tiny diffs for up
+                // to kMaxConsecutiveHolds frames so a streak of 1-row
+                // changes lands as one larger flush instead of N small
+                // ones. Empirical knee points — local alacritty/kitty
+                // sit at ns_per_byte 10–80, ssh over typical fiber at
+                // 200–800, slow PuTTY / saturated tmux at 1000+.
+                int min_rows = 0;
+                const double nspb = writer_->ns_per_byte();
+                if (nspb > 3000.0)      min_rows = 4;
+                else if (nspb > 500.0)  min_rows = 2;
                 compose_inline_frame(canvas_, ch, term_h, pool_, s.state, out_,
-                                     sync_output_);
+                                     sync_output_, min_rows);
                 double cf_ms = since(t_cf0);
                 if (out_.empty()) {
                     if (prof)

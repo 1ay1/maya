@@ -805,6 +805,10 @@ void dispatch_through_sub(const Sub<Msg>& sub, const Event& ev,
         [&](const typename Sub<Msg>::Every&) {
             // Timer subscriptions are handled by the timer loop, not event dispatch.
         },
+        [&](const typename Sub<Msg>::AnimationFrame&) {
+            // Animation-frame subscriptions tick at kAnimationFrameInterval
+            // — handled by the main loop's animation pump, not event dispatch.
+        },
     }, sub.inner);
 }
 
@@ -819,6 +823,24 @@ void collect_timers(const Sub<Msg>& sub,
         },
         [&](const typename Sub<Msg>::Every& e) {
             out.push_back({e.interval, e.msg});
+        },
+        [](const auto&) {},
+    }, sub.inner);
+}
+
+/// Collect every AnimationFrame msg currently in the sub tree. The main
+/// loop pumps these at the kAnimationFrameInterval cadence; when the
+/// returned vector is empty, no animation is active and the loop idles
+/// normally.
+template <typename Msg>
+void collect_animation_frames(const Sub<Msg>& sub, std::vector<Msg>& out) {
+    std::visit(overload{
+        [](const typename Sub<Msg>::None&)  {},
+        [&](const typename Sub<Msg>::Batch& b) {
+            for (auto& s : b.subs) collect_animation_frames(s, out);
+        },
+        [&](const typename Sub<Msg>::AnimationFrame& a) {
+            out.push_back(a.msg);
         },
         [](const auto&) {},
     }, sub.inner);
@@ -942,6 +964,14 @@ void run(RunConfig cfg = {}) {
 
     bool needs_render = true;
 
+    // Animation-frame pump (push-based — Sub::AnimationFrame). Tracks
+    // when we last delivered AnimationFrame msgs so we tick at the
+    // kAnimationFrameInterval cadence regardless of how often the loop
+    // wakes. Distinct from the pull-based detail::animation_deadline_
+    // path (request_animation_frame()) which we still honour for
+    // backward compat.
+    auto last_anim_tick = std::chrono::steady_clock::time_point{};
+
     // ── Main event loop ──────────────────────────────────────────────────
     while (rt.is_running()) {
         // Compute poll timeout: min of 100ms, fps frame time, nearest timer.
@@ -1064,6 +1094,35 @@ void run(RunConfig cfg = {}) {
         // the call entirely (deadline lapses, loop returns to idle wait).
         if (std::chrono::steady_clock::now() < detail::animation_deadline_)
             needs_render = true;
+
+        // Sub::AnimationFrame pump — push-based animation msgs at
+        // ~kAnimationFrameInterval cadence. If any AnimationFrame subs
+        // are present in the current_sub tree, every kAnimationFrameInterval
+        // we push their msgs into pending_msgs (then drain into update()),
+        // and top up the animation_deadline_ so the loop keeps waking. When
+        // the model's subscribe() drops the AnimationFrame entry, the next
+        // collect call returns empty, the deadline lapses, and the loop
+        // returns to idle wait — zero bytes per idle frame.
+        {
+            std::vector<Msg> anim_msgs;
+            detail::collect_animation_frames(current_sub, anim_msgs);
+            if (!anim_msgs.empty()) {
+                auto now = std::chrono::steady_clock::now();
+                if (now - last_anim_tick >= detail::kAnimationFrameInterval) {
+                    last_anim_tick = now;
+                    for (auto& am : anim_msgs)
+                        pending_msgs.push_back(std::move(am));
+                    drain_pending();
+                    needs_render = true;
+                }
+                // Keep the loop ticking at frame cadence so the next
+                // iteration wakes on time.
+                detail::animation_deadline_ =
+                    std::max(detail::animation_deadline_,
+                             std::chrono::steady_clock::now()
+                             + detail::kAnimationLeeway);
+            }
+        }
 
         if (needs_render) {
             // Rebuild subscriptions from current model

@@ -77,9 +77,19 @@ struct InlineFrameState {
     int           prev_width = 0;
     int           prev_rows  = 0;  // content_rows from the last composed frame
 
+    /// Number of consecutive frames `compose_inline_frame` has held in
+    /// the bandwidth coalescer (changed_rows <= min_changed_rows). Reset
+    /// to 0 on every actually-emitted frame; bounded by
+    /// `kMaxConsecutiveHolds` (defined in serialize.cpp) so a stuck
+    /// model with a tiny perpetual diff still surfaces at a known
+    /// minimum cadence. Single-frame guard: prevents reuse for >1
+    /// consecutive frame, keeps the accumulated "held diff" bounded.
+    int           held_count = 0;
+
     void reset() noexcept {
         prev_width = 0;
         prev_rows  = 0;
+        held_count = 0;
     }
 
     /// Build a typed marker for committing `rows` rows of scrollback.
@@ -144,12 +154,20 @@ struct InlineFrameState {
 /// The sequence is silently ignored by terminals that don't recognise it,
 /// so the practical effect is byte savings rather than correctness — but
 /// the answer is also a useful upstream signal for tick-rate gating.
+/// `min_changed_rows` — the bandwidth-coalesce threshold. When > 0 and
+/// the frame's diff touches at most `min_changed_rows` rows AND the
+/// frame neither grew nor shrank (`content_rows == prev_rows`), the
+/// function returns with `out` unchanged AND `state` unchanged: the
+/// next frame's diff will be computed against the same prev_cells, so
+/// the small change accumulates. Bounded by a max-consecutive-hold so a
+/// trickle of tiny changes still surfaces. Pass 0 to disable.
 void compose_inline_frame(const Canvas& canvas,
                           int content_rows,
                           int term_h,
                           const StylePool& pool,
                           InlineFrameState& state,
                           std::string& out,
-                          bool synchronized_output = true);
+                          bool synchronized_output = true,
+                          int min_changed_rows = 0);
 
 } // namespace maya

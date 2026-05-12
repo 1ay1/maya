@@ -42,11 +42,19 @@ void render_live(const Element& root, int width, StylePool& pool,
 
     if (st.term_h <= 0) st.term_h = detect_terminal_height();
 
-    if (st.frame.prev_rows > 0) {
-        st.canvas.clear_rows(st.frame.prev_rows + 4);
-    } else {
-        st.canvas.clear();
-    }
+    // Full canvas clear every frame so every cell starts blank and any
+    // cell the current paint doesn't explicitly write stays blank. The
+    // previous bounded clear (clear_rows(prev_rows + 4)) left cells past
+    // its horizon retaining content from earlier frames; when a Turn's
+    // height shifted between frames (streaming response, scroll, a new
+    // tool panel appearing) the stale cells happened to match prev_cells
+    // at those rows, so compose_inline_frame's diff stayed silent and
+    // the terminal kept displaying the previous frame's content — ghost
+    // composers, duplicated markdown lines, broken vertical rails. Full
+    // clear costs ~6-30 µs per frame (500 × W u64 std::fill, fits in
+    // L2), negligible compared to layout + paint, and eliminates the
+    // whole class of stale-cell leaks.
+    st.canvas.clear();
 
     render_tree(root, st.canvas, pool, theme::dark, st.layout_nodes, /*auto_height=*/true);
 

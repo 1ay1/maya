@@ -367,6 +367,20 @@ public:
             s->state.commit_prefix(rows);
     }
 
+    // Force the next render to be a full repaint by collapsing both
+    // coherence variants to Divergent — same internal effect as
+    // handle_resize(), without requiring a SIGWINCH. The next render's
+    // compose_inline_frame sees prev_rows=0 and emits the full live
+    // frame fresh from the cursor's current position via serialize();
+    // the trailing \r\n's scroll the OLD live-frame rows up into
+    // terminal scrollback and write the NEW live frame into the
+    // viewport bottom. Used to clear the "ghost composer" pattern that
+    // emerges when the terminal scrolls during streaming.
+    void force_redraw() noexcept {
+        fs_coherence_ = coherent::Divergent{};
+        in_coherence_ = coherent::Divergent{};
+    }
+
     // Final cleanup (show cursor, reset, newline).
     auto cleanup() -> Status;
 
@@ -742,6 +756,9 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
         },
         [&](const typename Cmd<Msg>::CommitScrollback& c) {
             ctx.rt.commit_inline_prefix(c.rows);
+        },
+        [&](const typename Cmd<Msg>::ForceRedraw&) {
+            ctx.rt.force_redraw();
         },
     }, cmd.inner);
 }

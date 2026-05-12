@@ -102,9 +102,29 @@ public:
         int rows;
     };
 
+    /// Force the next render to be a full repaint by collapsing the
+    /// inline-mode coherence state to Divergent. The next render's
+    /// compose_inline_frame sees prev_rows=0 and emits the entire live
+    /// frame fresh from the cursor's current position via serialize(),
+    /// which (a) pushes the OLD live frame's rows up into terminal
+    /// scrollback via the trailing \r\n's and (b) writes the NEW live
+    /// frame into the viewport bottom. Mirrors what Runtime::handle_resize
+    /// does internally on SIGWINCH — except the host can request it
+    /// explicitly without a resize event.
+    ///
+    /// Use cases:
+    ///   - First keystroke after a long streaming session where the
+    ///     terminal may have committed transient composer/footer cells
+    ///     into scrollback (the "ghost composer" pattern).
+    ///   - Restoring a clean viewport when the host detects the user
+    ///     scrolled during streaming.
+    ///   - Any moment where the host knows the diff path has nothing
+    ///     useful left to compare against.
+    struct ForceRedraw {};
+
     using Variant = std::variant<None, Quit, Batch, After, SetTitle,
                                  WriteClipboard, Task, IsolatedTask,
-                                 CommitScrollback>;
+                                 CommitScrollback, ForceRedraw>;
     Variant inner;
 
     // -- Smart constructors ---------------------------------------------------
@@ -140,6 +160,12 @@ public:
 
     [[nodiscard]] static auto commit_scrollback(int rows) -> Cmd {
         return {CommitScrollback{rows}};
+    }
+
+    /// Schedule a full repaint on the next render — mirrors handle_resize's
+    /// coherence-collapse. See `ForceRedraw` doc above.
+    [[nodiscard]] static auto force_redraw() -> Cmd {
+        return {ForceRedraw{}};
     }
 
     /// Combine multiple Cmds. Flattens nested batches and strips Nones.

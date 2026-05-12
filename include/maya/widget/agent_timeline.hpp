@@ -118,34 +118,41 @@ private:
     Config cfg_;
 
     // ── Stats row: small-caps category badges separated by mid-dots.
+    //    Dots stay bright_black (truly ornamental — separators between
+    //    badges). Counts use ANSI 7 (mid-gray, legible) so "INSPECT 2 ·
+    //    MUTATE 1" doesn't collapse below readability on low-contrast
+    //    terminal themes.
     [[nodiscard]] Element stats_row() const {
         using namespace dsl;
-        const Color muted = Color::bright_black();
+        const Color sep_color   = Color::bright_black();   // ornamental dots
+        const Color count_color = Color::white();          // legible mid-gray
 
         std::vector<Element> parts;
         parts.reserve(cfg_.stats.size() * 3);
         for (std::size_t i = 0; i < cfg_.stats.size(); ++i) {
             const auto& s = cfg_.stats[i];
             if (i > 0)
-                parts.push_back(text("  \xc2\xb7  ", Style{}.with_fg(muted)));
+                parts.push_back(text("  \xc2\xb7  ", Style{}.with_fg(sep_color)));
             parts.push_back(text(small_caps(s.label),
                                  Style{}.with_fg(s.color).with_bold()));
             parts.push_back(text(" " + std::to_string(s.count),
-                                 Style{}.with_fg(muted)));
+                                 Style{}.with_fg(count_color)));
         }
         return (h(parts) | grow(1.0f)).build();
     }
 
-    // ── Footer row: `   ✓ DONE   3 actions   1.4s`.
+    // ── Footer row: `   ✓ DONE   3 actions   1.4s`. The DONE glyph +
+    //    label carry the status color; the summary uses ANSI 7 (legible
+    //    mid-gray) so the count + duration stays readable instead of
+    //    collapsing into background on dark themes.
     [[nodiscard]] static Element footer_row(const AgentTimelineFooter& f) {
         using namespace dsl;
-        const Color muted = Color::bright_black();
         return h(
             text("   "),
             text(f.glyph + " ", Style{}.with_fg(f.color).with_bold()),
             text(small_caps(f.text), Style{}.with_fg(f.color).with_bold()),
             text("   "),
-            text(f.summary, Style{}.with_fg(muted))
+            text(f.summary, Style{}.with_fg(Color::white()))
         ).build();
     }
 
@@ -169,7 +176,7 @@ private:
             text("  "),
             text(ev.name, name_style(ev.status, ev.category_color, is_active)),
             text("  "),
-            text(ev.detail, detail_style(is_active)),
+            text(ev.detail, detail_style(ev.category_color, is_active)),
             spacer(),
             when(is_terminal,
                  text(format_duration(ev.elapsed_seconds),
@@ -222,10 +229,12 @@ private:
                          : Style{}.with_fg(cat).with_dim();
     }
 
-    static Style detail_style(bool is_active) {
-        const Color muted = Color::bright_black();
-        return is_active ? Style{}.with_fg(muted).with_italic()
-                         : Style{}.with_fg(muted).with_dim().with_italic();
+    static Style detail_style(Color cat, bool /*is_active*/) {
+        // Tool detail (file path / args / command) renders in the
+        // tool's category color + italic. The whole header row
+        // ("✓ Name detail elapsed") now flows in the category hue —
+        // strong visual identity per tool.
+        return Style{}.with_fg(cat).with_italic();
     }
 
     // ── Pure helpers (formatting / glyphs / colors) ────────────────────

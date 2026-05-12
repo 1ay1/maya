@@ -83,6 +83,14 @@ public:
         std::string text;
         Color       text_color = Color::bright_white();
 
+        // Color used for the BODY CHROME (line-number gutter, pipe
+        // separator `│`, the trailing "⋯ N more" elision marker). Host
+        // typically passes the tool's category color so a Bash body's
+        // chrome reads cyan, an Edit body's chrome reads magenta, etc.
+        // — visually framing the dim body content in the category hue.
+        // Defaults to ANSI 7 white (legible mid-gray).
+        Color       chrome_color = Color::white();
+
         // EditDiff
         std::vector<EditHunk> hunks;
 
@@ -122,6 +130,13 @@ public:
         // the reason a Write event has a body at all (the path is in the
         // header), so this stays on by default.
         bool show_footer_stats = true;
+
+        // When true, the body renderer skips all head/tail elision and
+        // shows EVERY line / hunk / item. Used for Write and Edit where
+        // the user wants to see exactly what was written or changed, not
+        // a head-only preview with "⋯ N more". Affects code_block,
+        // file_write, edit_diff, git_diff, todo_list.
+        bool show_all = false;
 
         // Tunables. Defaults are tuned for the timeline body slot, not a
         // standalone preview pane:
@@ -167,7 +182,14 @@ public:
 private:
     Config cfg_;
 
-    static constexpr Color muted()   { return Color::bright_black(); }
+    // `muted()` is the LEGIBLE-secondary tier — line gutters, footer
+    // summaries, elision markers, hint labels. ANSI 7 ("white") renders
+    // as a clearly readable mid-gray on dark themes (typical ~#C0C0C0)
+    // and as a slightly-recessed gray on light themes — visibly
+    // subordinate to bright_white prose but never collapsing below the
+    // readable floor the way bright_black (ANSI 8, ~#5C5C5C on dark
+    // themes) does on low-contrast terminals.
+    static constexpr Color muted()   { return Color::white(); }
     static constexpr Color success() { return Color::green(); }
     static constexpr Color danger()  { return Color::red(); }
     static constexpr Color info()    { return Color::blue(); }
@@ -215,6 +237,17 @@ private:
         return out;
     }
 
+    // Show every line with no elision. Used when cfg_.show_all is set
+    // (Write, Edit) so the user sees the full content rather than a
+    // head/tail preview.
+    static ElidedPreview all_lines(std::string_view s) {
+        ElidedPreview out;
+        out.lines = split_lines(s);
+        out.elision_at = -1;
+        out.elided     = 0;
+        return out;
+    }
+
     static int count_lines(std::string_view s) noexcept {
         if (s.empty()) return 0;
         int n = 0;
@@ -246,15 +279,46 @@ private:
                          Style{}.with_fg(muted()).with_italic()).build();
     }
 
-    // ── CodeBlock: dim'd head+tail preview, single style ──────────────────
+    // ── CodeBlock: row-numbered head+tail preview (uniform contract).
+    //    Marker = right-aligned row number. Used by grep / glob /
+    //    list_dir / web_search / git_status / git_log / git_commit —
+    //    tools where the body is line-oriented free text and the
+    //    "what row of output am I on" cue helps scanning.
     [[nodiscard]] Element code_block(std::string_view body, Color c) const {
         using namespace dsl;
         if (body.empty()) {
             return cfg_.is_streaming ? placeholder_or_blank("awaiting output")
                                      : blank();
         }
-        const auto p = head_tail(body, cfg_.code_head, cfg_.code_tail);
-        return v(each_with_elision(p, fg_dim_(c))).build();
+        const auto p = cfg_.show_all
+            ? all_lines(body)
+            : head_tail(body, cfg_.code_head, cfg_.code_tail);
+        // Gutter (row numbers) renders in dim mid-gray so it recedes
+        // behind the content's category-colored chrome (pipe). Numbers
+        // are reference; the pipe carries the category band.
+        const Style marker_st = Style{}.with_fg(muted());
+        const Style content_st = Style{}.with_fg(c);
+
+        std::vector<Element> rows;
+        rows.reserve(p.lines.size() + 1);
+
+        // Track TRUE line number in the original content. When the
+        // elision marker fires, jump line_num by p.elided so the tail
+        // rows show their actual positions (e.g., 1, 2, 3, ⋯ 506 more,
+        // 510, 511, 512 of a 512-line output) instead of consecutive
+        // rendered-row indices.
+        int line_num = 1;
+        for (int i = 0; i < static_cast<int>(p.lines.size()); ++i) {
+            if (i == p.elision_at && p.elided > 0) {
+                rows.push_back(elision_marker(p.elided));
+                line_num += p.elided;
+            }
+            char numbuf[8];
+            std::snprintf(numbuf, sizeof(numbuf), "%3d", line_num++);
+            rows.push_back(make_row(numbuf, marker_st,
+                                    p.lines[std::size_t(i)], content_st));
+        }
+        return v(rows).build();
     }
 
     // ── BashOutput: structured extraction → tail-only fallback ────────────
@@ -282,16 +346,20 @@ private:
         return bash_output_tail();
     }
 
-    // Fallback: dim head-elided + tail, optional `· exit N` on last line.
+    // Fallback for bash: row-marker is "  >" so each tail line reads as
+    // a shell-prompt entry. Last row appends ` · exit N` in red when
+    // the command failed (preserves the post-content failure cue).
     [[nodiscard]] Element bash_output_tail() const {
         using namespace dsl;
         const auto p = head_tail(cfg_.text, /*head=*/0, cfg_.bash_tail);
 
-        const Style line_st = fg_dim_(cfg_.text_color);
-        const Style exit_st = Style{}.with_fg(danger()).with_dim();
+        const Style marker_st = Style{}.with_fg(cfg_.chrome_color);
+        const Style line_st   = Style{}.with_fg(cfg_.text_color);
 
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 1);
+
+        constexpr std::string_view kPrompt = "  >";   // right-aligned 3-col
 
         const int n = static_cast<int>(p.lines.size());
         for (int i = 0; i < n; ++i) {
@@ -302,28 +370,24 @@ private:
             const bool last = (i + 1 == n);
 
             if (last && cfg_.failed && cfg_.exit_code != 0) {
-                std::string content;
-                content.reserve(ln.size() + 16);
-                content += ln;
-
-                char buf[24];
-                std::snprintf(buf, sizeof(buf),
+                // Compose content with the inline exit-code suffix, then
+                // emit through make_row so the row's chrome stays uniform.
+                char suf[24];
+                std::snprintf(suf, sizeof(suf),
                               "  \xc2\xb7 exit %d", cfg_.exit_code);
-
-                std::vector<StyledRun> runs;
-                runs.push_back({0, ln.size(), line_st});
-                std::size_t off = content.size();
-                content += buf;
-                runs.push_back({off, std::string{buf}.size(), exit_st});
-
-                rows.push_back(Element{TextElement{
-                    .content = std::move(content),
-                    .style   = {},
-                    .wrap    = TextWrap::TruncateEnd,
-                    .runs    = std::move(runs),
-                }});
+                std::string content;
+                content.reserve(ln.size() + std::string{suf}.size());
+                content += ln;
+                const std::size_t exit_off = content.size();
+                content += suf;
+                (void)exit_off;
+                // For simplicity we color the whole content (line + suffix)
+                // in line_st; the failure cue carries on the timeline
+                // border + ✗ icon. Inline `· exit N` stays readable as
+                // tail text; double-coloring would crowd the row.
+                rows.push_back(make_row(kPrompt, marker_st, content, line_st));
             } else {
-                rows.push_back(text_row(std::string{ln}, line_st));
+                rows.push_back(make_row(kPrompt, marker_st, ln, line_st));
             }
         }
 
@@ -676,10 +740,13 @@ private:
             return cfg_.is_streaming ? placeholder_or_blank("reading file")
                                      : blank();
         }
-        const auto p = head_tail(cfg_.text, cfg_.read_head, /*tail=*/0);
+        const auto p = cfg_.show_all
+            ? all_lines(cfg_.text)
+            : head_tail(cfg_.text, cfg_.read_head, /*tail=*/0);
 
+        // Gutter (line numbers) dim; pipe carries the category band.
         const Style gutter_st = Style{}.with_fg(muted());
-        const Style pipe_st   = Style{}.with_fg(muted());
+        const Style pipe_st   = Style{}.with_fg(cfg_.chrome_color);
         const Style code_st   = Style{}.with_fg(cfg_.text_color);
         // Highlighted lines: arrow gutter + bright code.  We use a brighter
         // fg via the with_bold() weight rather than a separate accent
@@ -782,42 +849,40 @@ private:
             return cfg_.is_streaming ? placeholder_or_blank("awaiting content")
                                      : blank();
         }
-        const auto p = head_tail(cfg_.text, cfg_.code_head, cfg_.code_tail);
+        // Write defaults to show_all so the user sees exactly what got
+        // written. Falls back to head-only preview if show_all=false.
+        const auto p = cfg_.show_all
+            ? all_lines(cfg_.text)
+            : head_tail(cfg_.text, cfg_.code_head, /*tail=*/0);
 
-        const Style mark_st = Style{}.with_fg(success()).with_dim();
-        const Style code_st = Style{}.with_fg(cfg_.text_color);
+        // Gutter (line numbers) dim; pipe (inside make_row) carries the
+        // category band via cfg_.chrome_color.
+        const Style marker_st = Style{}.with_fg(muted());
+        const Style code_st   = Style{}.with_fg(cfg_.text_color);
 
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 2);
 
-        for (int i = 0; i < static_cast<int>(p.lines.size()); ++i) {
-            if (i == p.elision_at && p.elided > 0)
-                rows.push_back(elision_marker(p.elided));
-
-            std::string_view ln = p.lines[std::size_t(i)];
-            std::string content = "+ ";
-            content += ln;
-
-            std::vector<StyledRun> runs;
-            runs.push_back({0, 2, mark_st});
-            if (!ln.empty()) runs.push_back({2, ln.size(), code_st});
-
-            rows.push_back(Element{TextElement{
-                .content = std::move(content),
-                .style   = {},
-                .wrap    = TextWrap::TruncateEnd,
-                .runs    = std::move(runs),
-            }});
+        int line_num = 1;
+        for (std::size_t i = 0; i < p.lines.size(); ++i) {
+            char numbuf[8];
+            std::snprintf(numbuf, sizeof(numbuf), "%3d", line_num++);
+            rows.push_back(make_row(numbuf, marker_st, p.lines[i], code_st));
         }
 
+        if (p.elided > 0) rows.push_back(elision_marker(p.elided));
+
         if (cfg_.show_footer_stats) {
+            // Trailing summary row — italic, chrome-colored, NOT part of
+            // the marker contract (different visual role from per-row
+            // markers; this is a post-content fact about the file).
             const int total = count_lines(cfg_.text);
             char buf[64];
-            std::snprintf(buf, sizeof(buf), "%d line%s \xc2\xb7 %s",
+            std::snprintf(buf, sizeof(buf), "    %d line%s \xc2\xb7 %s",
                           total, total == 1 ? "" : "s",
                           format_bytes(cfg_.text.size()).c_str());
             rows.push_back(dsl::text(std::string{buf},
-                Style{}.with_fg(muted()).with_dim()).build());
+                Style{}.with_fg(cfg_.chrome_color).with_italic()).build());
         }
 
         return v(rows).build();
@@ -839,7 +904,9 @@ private:
         if (cfg_.hunks.empty()) return blank();
 
         const int total_hunks = static_cast<int>(cfg_.hunks.size());
-        const int shown = std::min(total_hunks, cfg_.max_edit_hunks_shown);
+        const int shown = cfg_.show_all
+            ? total_hunks
+            : std::min(total_hunks, cfg_.max_edit_hunks_shown);
 
         std::vector<Element> rows;
         rows.reserve(static_cast<std::size_t>(shown) * 12);
@@ -876,32 +943,38 @@ private:
         return v(rows).build();
     }
 
+    // Emit a diff-side (removed or added) through the uniform row
+    // contract: marker is " - " / " + " (right-aligned 3-col) in the
+    // diff hue (red/green); content reads in text_tertiary (dim body
+    // baseline) so the marker carries the diff signal without coloring
+    // every line of code.
     void push_diff_side(std::vector<Element>& rows, std::string_view body,
                         char marker, Color c) const {
         using namespace dsl;
         if (body.empty()) return;
-        const auto p = head_tail(body, cfg_.edit_head_per_side,
-                                       cfg_.edit_tail_per_side);
-        const Style mark_style = Style{}.with_fg(c).with_dim();
-        const Style line_style = Style{}.with_fg(c);
-        const std::string mk = std::string{marker} + " ";
+        const auto p = cfg_.show_all
+            ? all_lines(body)
+            : head_tail(body, cfg_.edit_head_per_side,
+                              cfg_.edit_tail_per_side);
+        const Style marker_st  = Style{}.with_fg(c).with_bold();
+        const Style content_st = Style{}.with_fg(cfg_.text_color);
+
+        std::string mk = "  ";
+        mk += marker;   // 3-col right-aligned: "  -" / "  +"
 
         for (int i = 0; i < static_cast<int>(p.lines.size()); ++i) {
-            if (i == p.elision_at && p.elided > 0) {
-                rows.push_back(dsl::h(
-                    text(mk, mark_style),
-                    text("\xe2\x8b\xaf " + std::to_string(p.elided) + " more",
-                         Style{}.with_fg(muted()).with_italic())
-                ).build());
-            }
-            rows.push_back(dsl::h(
-                text(mk, mark_style),
-                text(std::string{p.lines[static_cast<std::size_t>(i)]}, line_style)
-            ).build());
+            if (i == p.elision_at && p.elided > 0)
+                rows.push_back(elision_marker(p.elided));
+            rows.push_back(make_row(mk, marker_st,
+                                    p.lines[std::size_t(i)], content_st));
         }
     }
 
-    // ── GitDiff: per-line coloring (+/−/@@ markers) ───────────────────────
+    // ── GitDiff: unified diff through the uniform row contract.
+    //    Marker carries the diff signal (`-`/`+`/` ` in red/green/chrome);
+    //    content stays in the dim body tier. `+++`/`---`/`diff` header
+    //    lines + `@@` hunk separators render through make_row with a `~`
+    //    marker in muted so they read as section breaks.
     [[nodiscard]] Element git_diff() const {
         using namespace dsl;
         if (cfg_.text.empty()) {
@@ -910,34 +983,51 @@ private:
         }
         if (cfg_.text == "no changes") return blank();
 
-        const auto p = head_tail(cfg_.text, cfg_.code_head, cfg_.code_tail);
+        const auto p = cfg_.show_all
+            ? all_lines(cfg_.text)
+            : head_tail(cfg_.text, cfg_.code_head, cfg_.code_tail);
 
-        const Style hdr_st = fg_dim_(muted());
-        const Style ctx_st = fg_dim_(cfg_.text_color);
-        const Style add_st = Style{}.with_fg(success());
-        const Style rem_st = Style{}.with_fg(danger());
-
-        auto pick_style = [&](std::string_view ln) -> Style {
-            if (ln.starts_with("+++") || ln.starts_with("---")
-             || ln.starts_with("diff "))               return hdr_st;
-            if (ln.starts_with("@@"))                  return hdr_st;
-            if (!ln.empty() && ln[0] == '+')           return add_st;
-            if (!ln.empty() && ln[0] == '-')           return rem_st;
-            return ctx_st;
-        };
+        const Style chrome_st  = Style{}.with_fg(cfg_.chrome_color);
+        const Style content_st = Style{}.with_fg(cfg_.text_color);
+        const Style add_st     = Style{}.with_fg(success()).with_bold();
+        const Style rem_st     = Style{}.with_fg(danger()).with_bold();
 
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 1);
         for (int i = 0; i < static_cast<int>(p.lines.size()); ++i) {
             if (i == p.elision_at && p.elided > 0)
                 rows.push_back(elision_marker(p.elided));
-            std::string_view ln = p.lines[static_cast<std::size_t>(i)];
-            rows.push_back(text(std::string{ln}, pick_style(ln)).build());
+            std::string_view ln = p.lines[std::size_t(i)];
+            std::string_view body = ln;
+            std::string_view marker;
+            Style marker_st;
+            if (ln.starts_with("+++") || ln.starts_with("---")
+             || ln.starts_with("diff ")
+             || ln.starts_with("@@")) {
+                marker     = "  ~";
+                marker_st  = chrome_st;
+            } else if (!ln.empty() && ln[0] == '+') {
+                marker     = "  +";
+                marker_st  = add_st;
+                body       = ln.substr(1);
+            } else if (!ln.empty() && ln[0] == '-') {
+                marker     = "  -";
+                marker_st  = rem_st;
+                body       = ln.substr(1);
+            } else {
+                marker     = "   ";
+                marker_st  = chrome_st;
+                if (!ln.empty() && ln[0] == ' ') body = ln.substr(1);
+            }
+            rows.push_back(make_row(marker, marker_st, body, content_st));
         }
         return v(rows).build();
     }
 
     // ── TodoList: checkbox list ───────────────────────────────────────────
+    // TodoList: uniform contract with status glyph as marker. Glyph
+    // carries the status semantics (✓ done = green, ◍ in-progress =
+    // info, ○ pending = chrome), content reads in body color tier.
     [[nodiscard]] Element todo_list() const {
         using namespace dsl;
         if (cfg_.todos.empty()) return blank();
@@ -945,43 +1035,32 @@ private:
         const int total = static_cast<int>(cfg_.todos.size());
         const int shown = std::min(total, cfg_.max_todos_shown);
 
-        auto row = [](const TodoItem& td) {
-            const char* glyph;
-            Style icon_st, body_st;
+        std::vector<Element> rows;
+        rows.reserve(static_cast<std::size_t>(shown) + 1);
+
+        for (int i = 0; i < shown; ++i) {
+            const auto& td = cfg_.todos[std::size_t(i)];
+            std::string_view marker_glyph;
+            Style marker_st;
+            Style body_st = Style{}.with_fg(cfg_.text_color);
             switch (td.status) {
                 case TodoItem::Status::Completed:
-                    glyph   = "\xe2\x9c\x93";   // ✓
-                    icon_st = Style{}.with_fg(success()).with_bold();
-                    body_st = fg_dim_(muted());
+                    marker_glyph = "  \xe2\x9c\x93";   // ✓ right-aligned 3-col
+                    marker_st    = Style{}.with_fg(success()).with_bold();
                     break;
                 case TodoItem::Status::InProgress:
-                    glyph   = "\xe2\x97\x8d";   // ◍
-                    icon_st = Style{}.with_fg(info()).with_bold();
-                    body_st = Style{}.with_fg(Color::bright_white());
+                    marker_glyph = "  \xe2\x97\x8d";   // ◍
+                    marker_st    = Style{}.with_fg(info()).with_bold();
                     break;
                 case TodoItem::Status::Pending:
                 default:
-                    glyph   = "\xe2\x97\x8b";   // ○
-                    icon_st = fg_dim_(muted());
-                    body_st = fg_dim_(Color::bright_white());
+                    marker_glyph = "  \xe2\x97\x8b";   // ○
+                    marker_st    = Style{}.with_fg(cfg_.chrome_color);
                     break;
             }
-            return dsl::h(
-                text(std::string{glyph} + " ", icon_st),
-                text(td.content, body_st)
-            ).build();
-        };
-
-        std::vector<Element> rows;
-        rows.reserve(static_cast<std::size_t>(shown) + 1);
-        for (int i = 0; i < shown; ++i)
-            rows.push_back(row(cfg_.todos[static_cast<std::size_t>(i)]));
-        if (shown < total) {
-            rows.push_back(text(
-                "\xe2\x8b\xaf " + std::to_string(total - shown) + " more",
-                Style{}.with_fg(muted()).with_italic()
-            ).build());
+            rows.push_back(make_row(marker_glyph, marker_st, td.content, body_st));
         }
+        if (shown < total) rows.push_back(elision_marker(total - shown));
         return v(rows).build();
     }
 
@@ -1310,15 +1389,69 @@ private:
     // for visual weight; a single horizontal-ellipsis glyph + count, left-
     // aligned at a 4-col indent, reads as a quiet "more here" without
     // pulling the eye.
-    static Element elision_marker(int hidden) {
+    // Instance method (not static) so it picks up cfg_.chrome_color —
+    // each tool's elision marker reads in the tool's category hue,
+    // visually tying the "⋯ N more" tag to the surrounding body chrome.
+    [[nodiscard]] Element elision_marker(int hidden) const {
         // U+22EF MIDLINE HORIZONTAL ELLIPSIS — single-cell wide.
         return dsl::text("    \xe2\x8b\xaf " + std::to_string(hidden) + " more",
-                         Style{}.with_fg(muted()).with_italic()).build();
+                         Style{}.with_fg(cfg_.chrome_color).with_italic()).build();
+    }
+
+    // ── Uniform row contract ──────────────────────────────────────────────
+    // Every tool body's per-row layout follows the same shape:
+    //
+    //    "<marker> │ <content>"
+    //
+    //   * marker  — short kind-specific identifier (line number, `>`, `+`,
+    //               `☐`, etc.). Caller decides width / glyph; helper just
+    //               styles + concatenates.
+    //   * ` │ `   — separator, painted in `cfg_.chrome_color` so the
+    //               whole tool's chrome reads as one band.
+    //   * content — body text, painted in `content_style` (typically
+    //               dim text_tertiary).
+    //
+    // This is what gives a turn-with-mixed-tools its tabular feel: the
+    // pipe column lines up at the same horizontal offset for every kind,
+    // and the leading marker tells you what kind of row it is (a file
+    // line, a shell-prompt output line, an added line of code, a todo,
+    // etc.) at the same horizontal position.
+    [[nodiscard]] Element
+    make_row(std::string_view marker, Style marker_style,
+             std::string_view content, Style content_style) const {
+        const Style pipe_style = Style{}.with_fg(cfg_.chrome_color);
+
+        std::string out;
+        out.reserve(marker.size() + content.size() + 8);
+
+        const std::size_t marker_off = 0;
+        out.append(marker);
+        const std::size_t pipe_off = out.size();
+        out += " \xe2\x94\x82 ";   // " │ "  (UTF-8 5 bytes, 3 cols)
+        const std::size_t content_off = out.size();
+        out.append(content);
+
+        std::vector<StyledRun> runs;
+        if (!marker.empty())
+            runs.push_back({marker_off, marker.size(), marker_style});
+        runs.push_back({pipe_off, 5, pipe_style});
+        if (!content.empty())
+            runs.push_back({content_off, content.size(), content_style});
+
+        return Element{TextElement{
+            .content = std::move(out),
+            .style   = {},
+            .wrap    = TextWrap::TruncateEnd,
+            .runs    = std::move(runs),
+        }};
     }
 
     // Project elided lines into a vector of styled text Elements,
     // inserting the "… N hidden" marker at the elision position.
-    static std::vector<Element> each_with_elision(const ElidedPreview& p, Style st) {
+    // Instance method (not static) so the elision marker can read
+    // cfg_.chrome_color via the now-non-static elision_marker.
+    [[nodiscard]] std::vector<Element>
+    each_with_elision(const ElidedPreview& p, Style st) const {
         using namespace dsl;
         std::vector<Element> out;
         out.reserve(p.lines.size() + 1);

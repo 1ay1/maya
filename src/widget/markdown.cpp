@@ -4936,8 +4936,21 @@ const Element& StreamingMarkdown::build() const {
         outer_children.push_back(render_tail(tail));
     }
 
+    // align_self(Stretch) forces this vstack to claim the parent's full
+    // cross-axis size, regardless of how much its OWN children would
+    // naturally span. Without this, early streaming frames where the
+    // tail is a short inline-only paragraph (one wrapped row or less)
+    // produce a vstack whose natural width = tail length = short, and
+    // any parent header doing justify-content: space-between against
+    // that width packs its children to the left. Setting Stretch makes
+    // the streaming widget's width invariant across the
+    // short-tail → multi-row-tail → committed-blocks transitions —
+    // the parent's flex math sees the same number every frame, so the
+    // header layout doesn't flicker between content-sized and
+    // terminal-sized.
     cached_build_ = (
-        detail::vstack().gap(1).padding(0, 0, 0, 2)(std::move(outer_children))
+        detail::vstack().gap(1).padding(0, 0, 0, 2)
+            .align_self(Align::Stretch)(std::move(outer_children))
     ).build();
     cached_tail_size_     = tail.size();
     cached_prefix_gen_    = prefix_->generation;

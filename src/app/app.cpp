@@ -253,11 +253,18 @@ auto Runtime::render(const Element& root) -> Status {
             // the InlineFrameState is owned here by `s.state`, so the
             // row-diff has access to its own canonical record.
             [&](coherent::InlineSynced& s) -> coherent::InlineState {
-                if (s.state.prev_rows > 0) {
-                    canvas_.clear_rows(s.state.prev_rows + 4);
-                } else {
-                    canvas_.clear();
-                }
+                // Full clear every frame. The bounded clear_rows(prev_rows + 4)
+                // variant left cells past its horizon retaining content from
+                // earlier frames; when a Turn's height shifted between frames
+                // (streaming response, scroll, a new tool panel appearing) the
+                // stale cells happened to match prev_cells at those rows so
+                // compose_inline_frame's diff stayed silent and the terminal
+                // kept displaying the previous frame's content — ghost
+                // composers, duplicated markdown lines, broken vertical rails.
+                // This mirrors the fix in detail::render_live (commit 489347b)
+                // for the Runtime path, which run<Program> / run(event_fn,
+                // render_fn) actually exercise.
+                canvas_.clear();
                 auto t_rt0 = std::chrono::steady_clock::now();
                 render_tree(root, canvas_, pool_, theme_, layout_nodes_,
                             /*auto_height=*/true);

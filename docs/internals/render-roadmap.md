@@ -18,113 +18,153 @@ working doc: items move out as they ship.
 - `Canvas::set_wide` — atomic paired wide-char write; orphan
   trail/lead unrepresentable in the API.
 - `render::emit::erase_to_eol_safe` — centralised the
-  SGR-reset-before-EL invariant in one header. Three inlined emit
-  sites now route through it.
+  SGR-reset-before-EL invariant in one header.
 - `TextElement::format` returns `WrappedLine{text, byte_offset}` —
   drops the O(content × lines) substring scan in the painter's
   word-wrap+runs path.
 - **A6**: `ScrollbackMarker` — typed token for `InlineFrameState`
-  scrollback commits. Constructed via `scrollback_marker(rows)` which
-  clamps to live `prev_rows`; consumed by `commit(marker)`. Forces
-  callers to query current state instead of carrying a stale int.
-  `commit_prefix(int)` retained for source compat.
+  scrollback commits, clamped to live `prev_rows`. Forces callers to
+  query current state instead of carrying a stale int.
 - **B7**: `StylePool::write_transition_sgr` — differential SGR
-  transitions. Emits only the attribute toggles + fg/bg setters that
-  changed between `prev_id` and `new_id` instead of the full
-  reset-and-set form. ~50%+ byte reduction per style change on
-  style-heavy content (syntax highlighting, markdown runs). Falls back
-  to the cached full sequence when `prev_id == UINT16_MAX` so
-  terminal-state-unknown emissions still land in a known SGR config.
-- **B1**: `Writer::ns_per_byte()` — EMA of wire latency measured
-  across each `write_all` syscall loop. Drives B8's coalesce threshold:
-  fast ttys (low ns-per-byte) pass `min_changed_rows = 0` and behave
-  exactly as before; slow ttys (ssh hop, PuTTY) raise the threshold to
-  2 or 4 so a streak of tiny diffs coalesces into one larger flush.
+  transitions, emits only the attribute toggles + fg/bg setters that
+  changed between `prev_id` and `new_id`. ~50%+ byte reduction per
+  style change on style-heavy content.
+- **B1**: `Writer::ns_per_byte()` — EMA of wire latency across each
+  `write_all` syscall loop. Drives B8's coalesce threshold.
 - **B8**: `compose_inline_frame(min_changed_rows = N)` — when the
-  row-diff scan finds `changed_rows ∈ (0, N]` AND `content_rows ==
-  prev_rows`, the function returns with `out` and `state` untouched so
-  the next frame's diff accumulates against the same `prev_cells`.
-  Bounded by `InlineFrameState::held_count ≤ kMaxConsecutiveHolds=2`
-  so a perpetual tiny diff still surfaces within ~32ms.
+  row-diff scan finds `changed_rows ∈ (0, N]` AND
+  `content_rows == prev_rows`, returns with `out` and `state`
+  untouched so the next frame accumulates against the same
+  `prev_cells`. Bounded by `held_count ≤ kMaxConsecutiveHolds=2`.
 - **B9**: `Sub::AnimationFrame{Msg}` — push-based animation
-  subscription. The model declares "I want a tick each frame while
-  this is in my subscription" and stops including it when the animation
-  settles. The runtime pumps collected msgs at
-  `kAnimationFrameInterval` cadence. Idle frames (no AnimationFrame
-  sub present) render zero bytes. The pull-based
-  `request_animation_frame()` deadline path remains for backward
-  compat.
-- **Open ghost composer (b9f493f)**: fixed via two converging changes —
-  `88516a6` (cache_id derived from owner_less-keyed weak_ptr identity,
-  closes the pointer-recycling cache aliasing class) and `69688c5`
+  subscription. Idle frames render zero bytes. The pull-based
+  `request_animation_frame()` remains for backward compat.
+- **B10**: `Canvas::clear` bounded by previous `max_y_+1` — ~10× less
+  memory traffic per inline frame on a 500-row canvas with ~50 rows
+  of content. The invariant ("cells beyond `max_y_` are blank") holds
+  inductively. Originally caused a ghost, since root-caused and
+  fixed via 88516a6 + 69688c5.
+- **A1**: `prev_cells` shadow-of-wire — `compose_inline_frame`'s per-
+  row loop writes the just-emitted slice into `prev_cells` in place
+  (`[x_first_diff, x_last_diff+1]` for common rows, full row for
+  new rows) instead of bulk-memcpying `[first_changed*W,
+  content_rows*W]` at end of frame. Sparse-streaming frames drop
+  from "copy every row below first_changed" to "copy only changed
+  segments per row".
+- **A2**: `CanvasStage{Drained, Painted}` runtime enum — transitions
+  flipped by `set`/`fill`/`blit_packed_row`/`clear`/`clear_rows`/
+  `resize`. Documents the paint lifecycle in one named field;
+  compile-time type-state would template every Canvas user, so the
+  runtime form is the shippable cut.
+- **B5**: `intern_const(pool, style)` — defaulted-lambda-tag template
+  so each call site instantiates a unique specialisation with its own
+  static thread_local `cached_id`, keyed on `StylePool::pool_id()`
+  (process-wide monotone counter, bumped on construction and on
+  `clear()`). Skips the hash + slot-probe of `pool.intern()` on every
+  paint after the first call.
+- **Open ghost composer (b9f493f)**: fixed via `88516a6` (cache_id
+  derived from owner_less-keyed weak_ptr identity, closes the
+  pointer-recycling cache aliasing class) and `69688c5`
   (`Cmd::force_redraw()` / `Runtime::force_redraw()` host-triggered
   coherence collapse, mirrors `handle_resize`'s Divergent transition
-  for first-input-after-streaming). The agentty host wires
-  `force_redraw` on stream-settled → next-user-input edges.
+  for first-input-after-streaming).
 
 ## Items deferred — open
 
-Each is independently shippable; ordering reflects expected value /
-risk ratio.
-
-### B10 — bounded canvas clear by previous `max_y_+1`
-
-Shipped earlier as `9f69375`, reverted as `bb00a7c` (caused a ghost
-the user observed at the time). The originating ghost composer bug
-has since been root-caused and fixed (88516a6 + 69688c5 above), so
-B10 is now safe to retry. Still risky in isolation — the full
-`canvas.clear()` per frame is now a load-bearing invariant
-(489347b's commit message: "every cell starts blank each frame ...
-eliminates the whole stale-cell-leak class"). If we revisit, do it
-behind a feature flag with a one-week observation window before
-flipping the default.
-
-### B5 — compile-time style → permanent style_id
-
-Per-pool cache identity is tricky (pools are per-render-state, can be
-destroyed and recreated). Marginal perf — `StylePool::intern` is
-already O(1) on a hash table with pre-cached SGR. Reach for this
-only after a profile shows intern as a hot path.
-
-### B4 — auto-measure unconditionally caches rendered child within frame
-
-The current cache already covers stable-pointer + cache_id'd
-components. The double-render claim from the original proposal
-applies only to ephemeral components without `cache_id` — and those
-are caught by within-frame pointer caching too. Needs a profile
-before chasing.
-
-### A2 — type-state `Canvas<Drained>` → `<Painted>` → `<Diffed>`
-
-True compile-time type-state would rewrite every Canvas user — every
-widget, every `paint_element`, every `canvas_run` example. Too
-API-invasive for a single commit. If we want progress here, the
-shippable form is a runtime stage enum + debug assertions; promote
-to compile-time later.
-
-### A1 — `prev_cells` becomes shadow-of-wire
-
-Per-emit shadow update in `emit_cell_run` + `compose_inline_frame`
-instead of the end-of-function bulk memcpy. Semantic clarity + perf
-on sparse-streaming frames. Doesn't add new anti-ghost guarantees on
-top of what's already shipped (the unconditional clear closes the
-489347b-class bug at the painter layer). Skipped per direction.
-
 ### A3 — typed widget strips
 
-Explicitly deferred in the original proposal. The biggest refactor;
-changes the widget contract from "Element-returning function" to
-"Strip-producing function" so the renderer never reads back from the
-canvas. Closes the OOB cache-capture class entirely (rather than
-just the autogrow window already handled by B2). Don't tackle until
-A1 + B10 are settled — those share an invariant that A3 builds on.
+The biggest item left, and the only structural piece still on the
+table. Replaces the canvas-based painter with a strip-based composer.
+
+**What it changes.** The renderer's intermediate representation today
+is a 2D `Canvas` of packed cells. Widgets return Element trees, the
+painter walks them and writes cells, the diff/serialize path reads
+cells back to emit ANSI. A3 swaps the cell grid for `Strip` (one per
+row, each a list of `(text, style)` runs already in wire-ready form).
+The renderer never reads back — strips ARE what gets emitted.
+
+The widget API (`Element`-returning functions) can stay; only the
+internal pipeline changes. Cache layer goes from "cells per
+`(cache_id, width)`" to "StripFrame per `(cache_id, width)`".
+
+**Wins.**
+- Closes the cache-capture bug class entirely. No 2D buffer to read
+  out of bounds, leak stale cells from, or alias via recycled
+  pointers. (All three mitigated by other fixes — see "open ghost
+  composer" above — but A3 closes the class structurally rather than
+  case-by-case.)
+- Drops the "every cell starts blank each frame" load-bearing
+  invariant. Strips are built fresh per frame; there's no shared
+  surface to leak through.
+- Style integration with the diff falls out naturally — B7's
+  differential SGR was bolted onto a cell-comparison diff; with
+  strips, style is part of the run, transitions live where the
+  data does.
+- Width-change invalidation is per-component instead of canvas-wide.
+- Per-row strip equality + concat is cache-friendlier than packed-
+  uint64 cell compare on sparse-change frames. (Marginal; we already
+  SIMD-bulk-eq rows.)
+
+**Costs.**
+- Overlay / focus-ring / popup painting becomes awkward — currently
+  trivial (write cells over existing ones).
+- Wide-char and grapheme alignment moves from the canvas's explicit
+  `width=1/2` markers into strip cursor-math.
+- Every Element variant in the painter rewrites (TextElement,
+  ComponentElement, BoxElement, BorderElement, ImageElement,
+  ElementList, ElementListRef, FlexElement, ...). Every cache
+  codepath rewrites. The diff and serialize paths get strip-based
+  equivalents alongside the existing cell-based ones during the
+  migration.
+- Both paths must coexist behind a feature flag during the cutover
+  — added complexity until the last codepath converts.
+
+**Scope estimate.** 8-15 hours of focused work for the maya-internal
+parts plus a multi-day soak in moha to shake out edge cases (wide
+chars, layout-shift frames, scrollback boundary cases). Not a single-
+session task.
+
+**When to do it.** Open question. The bug class A3 closes has been
+mitigated by other fixes; the wins are architectural insurance and
+clean-up against future complexity (overlays, scene composition).
+For maya's current target (chat-UI / agent-TUI use cases) the
+existing architecture works. Revisit when:
+- New requirements demand overlay / transparency / scene-level
+  composition that the cell-grid model fights, OR
+- Profiling identifies the canvas-cell intermediate as a real cost,
+  OR
+- A new cache-capture bug surfaces that the existing fixes don't
+  cover.
+
+When picked up, sequence:
+
+1. Define `Strip` / `StyledRun` / `StripFrame` types behind
+   `MAYA_STRIP_RENDERER=1` so both paths can coexist.
+2. Strip composer for `TextElement` first (simplest leaf).
+3. Composer for `ElementList` / `ElementListRef` (vstack concat).
+4. Composer for `BoxElement` (flex children, h/v stack composition).
+5. Composer for `ComponentElement` (preserve current cache shape but
+   with StripFrame storage).
+6. Composer for remaining Element variants in dependency order.
+7. Strip-based `diff_strips` + inline-frame composer.
+8. Wire into `Runtime::render` behind the flag.
+9. Soak on moha. Convert tests.
+10. Flip the default; remove the canvas path after a stability window.
+
+### B4 — auto-measure within-frame cache
+
+The current `component_cache` already memoizes rendered `child` per
+`(cache_id, width)` across measure→paint within a frame, so for
+cache_id'd components there's no double-render. What's still
+duplicated is the `build_layout_tree` + `layout::compute` walk
+between measure (`width=fixed, height=auto`) and paint (`width=fixed,
+height=fixed`) — different constraints, so the cached layout tree
+isn't reusable directly. A speculative win would be caching only the
+tree-build (not the compute), which is 8-100 nodes per component;
+likely sub-microsecond. Needs profile data before chasing.
 
 ## Order to pick up later
 
-1. **B10 retry** — the original blocker (ghost composer) is now
-   root-caused and fixed; B10's invariant ("cells beyond `max_y_+1`
-   are blank") deserves a fresh look behind a feature flag.
-2. **B4 / B5** — perf items, after profile data shows demand.
-3. **A1 / A2 / A3** — structural refactors, biggest scope, lowest
-   urgency now that the open bug is fixed and B1+B8+B9 deliver the
-   bulk of the slow-terminal payoff.
+1. **A3** — structural cleanup; do it when the trigger conditions
+   above hit. Not before.
+2. **B4** — perf item, after profile data shows demand.

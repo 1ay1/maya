@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -107,6 +108,56 @@ namespace detail {
 [[nodiscard]] inline std::uint64_t next_component_generation() noexcept {
     static std::atomic<std::uint64_t> counter{1};
     return counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Mint a stable identity for a shared_ptr<const Element>, keyed on the
+// control block (so all copies of the same shared_ptr hash to the same
+// id, and a freshly-allocated shared_ptr that happens to reuse a
+// previously-freed raw data pointer is recognised as DIFFERENT).
+//
+// Why this isn't just `sp.get()`: the implicit ctor below derives a
+// `cache_id` string used by the renderer's content-keyed
+// component_cache. If two shared_ptrs to *different* logical content
+// happen to land at the same raw address (allocator recycling — common
+// when shared_ptrs churn during streaming/scrolling), a get()-derived
+// cache_id collides and the renderer blits stale cells from the dead
+// shared_ptr's cache entry under the new one. Observed in agentty as
+// a hard-to-reproduce ghost composer + footer that resize cleared.
+//
+// The map keys weak_ptrs by std::owner_less, which compares CONTROL
+// BLOCKS (the bookkeeping object make_shared allocates alongside the
+// managed object; lifetime spans all shared_ptr/weak_ptr copies, freed
+// only when the last reference is gone). Control-block addresses can
+// still be recycled by the system allocator, but a new control block
+// allocated at a previously-used address is a different node by
+// owner_less — owner_before reads the internal pointer's identity,
+// not just its bits.
+//
+// Bounded growth: the map is thread_local and we sweep expired entries
+// when it grows past a soft cap (1024). Typical session sizes stay
+// well under that; the sweep is O(N) but only runs at the cap so
+// amortised per-call cost is O(1).
+[[nodiscard]] inline std::uint64_t id_for_shared(
+    const std::shared_ptr<const Element>& sp)
+{
+    using Key = std::weak_ptr<const Element>;
+    using Cmp = std::owner_less<Key>;
+    thread_local std::map<Key, std::uint64_t, Cmp> ids;
+    static std::atomic<std::uint64_t> next_id{1};
+
+    Key key = sp;
+    if (auto it = ids.find(key); it != ids.end()) {
+        return it->second;
+    }
+    if (ids.size() >= 1024) {
+        for (auto it = ids.begin(); it != ids.end(); ) {
+            if (it->first.expired()) it = ids.erase(it);
+            else ++it;
+        }
+    }
+    auto id = next_id.fetch_add(1, std::memory_order_relaxed);
+    ids.emplace(std::move(key), id);
+    return id;
 }
 
 } // namespace detail
@@ -228,16 +279,22 @@ struct Element {
     // (id, width) keying inside the renderer.
     Element(std::shared_ptr<const Element> sp) {
         ComponentElement c;
-        // Derive a stable cross-frame identity from the shared
-        // object's address. shared_ptr guarantees the address is
-        // unique while any copy is live; copies of this wrapper
-        // share the same control block, so the derived id is equal
-        // across frames.
-        char buf[32];
-        auto* raw = sp.get();
-        std::snprintf(buf, sizeof(buf), "@%lx",
-                      static_cast<unsigned long>(
-                          reinterpret_cast<std::uintptr_t>(raw)));
+        // Stable cross-frame identity keyed on the shared_ptr's control
+        // block — copies of the same shared_ptr produce the same id;
+        // distinct shared_ptrs produce distinct ids even if their raw
+        // data pointers alias (allocator recycling).
+        //
+        // The earlier version of this ctor derived cache_id from
+        // sp.get() directly, which collided cache entries across the
+        // lifetimes of unrelated shared_ptrs that happened to land at
+        // the same heap address. That surfaced as the streaming
+        // composer / footer ghost: a cell strip captured for a
+        // long-dead shared_ptr blitted under a freshly-allocated
+        // shared_ptr at the same address, painting old content over
+        // the live layout's position.
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "#%lx",
+                      static_cast<unsigned long>(detail::id_for_shared(sp)));
         c.cache_id = std::string{buf};
         c.render = [sp = std::move(sp)](int /*w*/, int /*h*/) -> Element {
             return *sp;

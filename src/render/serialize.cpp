@@ -98,8 +98,11 @@ void emit_cell_run(const Canvas& canvas, const StylePool& pool,
         if (w == 2) [[unlikely]] continue; // wide-char second half placeholder
 
         if (sid != current_style) [[unlikely]] {
+            // Differential SGR — see StylePool::write_transition_sgr.
+            // Saves bytes per transition by skipping the redundant
+            // `0;` reset when previous state is known.
             flush_ascii();
-            out.append(pool.sgr(sid));
+            pool.write_transition_sgr(current_style, sid, out);
             current_style = sid;
         }
 

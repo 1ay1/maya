@@ -172,10 +172,15 @@ void diff(
             const auto character = static_cast<char32_t>(new_packed & 0xFFFFFFFF);
             const auto cell_w = static_cast<uint8_t>(new_packed >> 56);
 
-            // Style transition — pre-cached SGR, single memcpy.
+            // Style transition — differential SGR. Emits only the bits
+            // that changed (attribute toggles, fg/bg setters), saving
+            // the leading `0;` reset + redundant attribute re-emission
+            // on every transition. Falls back to the pre-cached full
+            // sequence when current_style == UINT16_MAX (terminal state
+            // unknown at frame start).
             if (style_id != current_style) {
                 flush_ascii();
-                out.append(pool.sgr(style_id));
+                pool.write_transition_sgr(current_style, style_id, out);
                 current_style = style_id;
             }
 

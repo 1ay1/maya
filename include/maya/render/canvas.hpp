@@ -199,6 +199,27 @@ public:
         return sgr_cache_[id];
     }
 
+    /// Emit the minimal SGR sequence that transitions the terminal from
+    /// the SGR state corresponding to `prev_id` to the state for `new_id`,
+    /// appended directly to `out`.
+    ///
+    /// When `prev_id == UINT16_MAX` (the "unknown state" sentinel — no
+    /// SGR has been emitted yet this frame) we fall back to the full
+    /// reset-and-set sequence via the pre-cached `sgr_cache_[new_id]`,
+    /// because the terminal may carry residual SGR from outside maya's
+    /// control. Otherwise we emit only the differential — attribute
+    /// toggles for the bits that changed (e.g. `\x1b[22m` to turn off
+    /// bold) and color setters for the fg / bg that changed. The leading
+    /// `0;` reset is omitted, saving 2 bytes per transition; the more
+    /// significant win is on transitions that change only a single
+    /// attribute (e.g. fg color flip in a syntax-highlighted block),
+    /// where the full reset would re-emit every preserved attribute.
+    ///
+    /// Same prev_id == new_id is a no-op (caller is expected to gate but
+    /// we re-check for safety).
+    void write_transition_sgr(uint16_t prev_id, uint16_t new_id,
+                              std::string& out) const;
+
     /// Number of interned styles.
     [[nodiscard]] std::size_t size() const noexcept { return styles_.size(); }
 

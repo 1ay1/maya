@@ -106,6 +106,100 @@ char* StylePool::append_color_sgr(char* p, const Color& c, bool is_fg) noexcept 
     __builtin_unreachable();
 }
 
+void StylePool::write_transition_sgr(uint16_t prev_id, uint16_t new_id,
+                                     std::string& out) const {
+    if (prev_id == new_id) return;
+
+    // Unknown terminal state (no SGR emitted yet this frame). Fall back
+    // to the full reset-and-set form so the terminal lands at a known
+    // configuration regardless of any residual SGR from before maya
+    // took over the screen.
+    if (prev_id == UINT16_MAX) {
+        out.append(sgr_cache_[new_id]);
+        return;
+    }
+
+    const Style& from = styles_[prev_id];
+    const Style& to   = styles_[new_id];
+
+    char buf[96];
+    char* p = buf;
+    *p++ = '\x1b'; *p++ = '[';
+    bool first = true;
+    auto sep = [&]() noexcept { if (!first) *p++ = ';'; first = false; };
+
+    // Attribute toggles. SGR 22 = bold-off (per spec, also turns off
+    // dim; we suppress dim emission entirely so the conflation is
+    // moot here — see build_sgr for the SGR-2 suppression rationale).
+    if (from.bold != to.bold) {
+        sep();
+        if (to.bold) *p++ = '1';
+        else        { *p++ = '2'; *p++ = '2'; }
+    }
+    if (from.italic != to.italic) {
+        sep();
+        if (to.italic) *p++ = '3';
+        else          { *p++ = '2'; *p++ = '3'; }
+    }
+    if (from.underline != to.underline) {
+        sep();
+        if (to.underline) *p++ = '4';
+        else             { *p++ = '2'; *p++ = '4'; }
+    }
+    if (from.inverse != to.inverse) {
+        sep();
+        if (to.inverse) *p++ = '7';
+        else           { *p++ = '2'; *p++ = '7'; }
+    }
+    if (from.strikethrough != to.strikethrough) {
+        sep();
+        if (to.strikethrough) *p++ = '9';
+        else                 { *p++ = '2'; *p++ = '9'; }
+    }
+
+    // Color::Default is the "occlude but emit no color SGR" sentinel —
+    // skip it as if absent. fg / bg are emitted only when the
+    // effective-color state actually changes.
+    auto effective_fg = [](const std::optional<Color>& c) -> const Color* {
+        if (c.has_value() && c->kind() != Color::Kind::Default) return &*c;
+        return nullptr;
+    };
+    const Color* from_fg = effective_fg(from.fg);
+    const Color* to_fg   = effective_fg(to.fg);
+    if ((from_fg == nullptr) != (to_fg == nullptr)
+        || (from_fg && to_fg && !(*from_fg == *to_fg)))
+    {
+        sep();
+        if (to_fg) {
+            p = append_color_sgr(p, *to_fg, /*is_fg=*/true);
+        } else {
+            // Explicit fg disabled → ANSI 39 (default fg).
+            *p++ = '3'; *p++ = '9';
+        }
+    }
+
+    const Color* from_bg = effective_fg(from.bg);
+    const Color* to_bg   = effective_fg(to.bg);
+    if ((from_bg == nullptr) != (to_bg == nullptr)
+        || (from_bg && to_bg && !(*from_bg == *to_bg)))
+    {
+        sep();
+        if (to_bg) {
+            p = append_color_sgr(p, *to_bg, /*is_fg=*/false);
+        } else {
+            *p++ = '4'; *p++ = '9';
+        }
+    }
+
+    // No SGR-affecting changes (can happen when two distinct style IDs
+    // differ only in `dim`, which we don't emit). Skip emission entirely
+    // — emitting `\x1b[m` would mean SGR reset, the opposite of "no-op".
+    if (first) return;
+
+    *p++ = 'm';
+    out.append(buf, static_cast<std::size_t>(p - buf));
+}
+
 std::string StylePool::build_sgr(const Style& s) {
     char buf[64];
     char* p = buf;

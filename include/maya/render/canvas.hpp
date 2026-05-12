@@ -285,7 +285,16 @@ public:
         auto idx = cell_index(x, y);
         uint64_t packed = Cell{ch, style_id, 0, width}.pack();
         cells_[idx] = packed;  // unconditional write; diff will skip unchanged cells
-        if ((ch != U' ' || style_id != 0) && y > max_y_) max_y_ = y;
+        const bool visible = (ch != U' ' || style_id != 0);
+        if (visible) {
+            if (y > max_y_) max_y_ = y;
+            // Per-row last-content column cache. Monotonically grows
+            // toward the right edge until clear()/clear_rows()/resize()
+            // resets it. Serialize/diff use this in lieu of a per-frame
+            // backward linear scan to find row trim points.
+            if (x > last_col_[static_cast<std::size_t>(y)])
+                last_col_[static_cast<std::size_t>(y)] = x;
+        }
     }
 
     /// Read the cell at (x, y). Out-of-bounds returns a default cell.
@@ -332,7 +341,17 @@ public:
         // the caller (cache entry storage).
         std::memcpy(&cells_[dst_off], src + src_off,
                     static_cast<std::size_t>(count) * sizeof(uint64_t));
-        if (row_has_content && y > max_y_) max_y_ = y;
+        if (row_has_content) {
+            if (y > max_y_) max_y_ = y;
+            // Conservatively bump the per-row last-content column to the
+            // blit's right edge. We don't inspect individual cells because
+            // the caller's row_has_content promise doesn't tell us where
+            // inside the strip the content sits; over-reporting trims
+            // less aggressively but never produces wrong output.
+            const int blit_last = x1 - 1;
+            if (blit_last > last_col_[static_cast<std::size_t>(y)])
+                last_col_[static_cast<std::size_t>(y)] = blit_last;
+        }
     }
 
     // -- Text rendering -------------------------------------------------------
@@ -355,6 +374,15 @@ public:
     /// The highest row index that received non-space content since last clear.
     /// Returns -1 if nothing was written. O(1) — avoids scanning the canvas.
     [[nodiscard]] int max_content_row() const noexcept { return max_y_; }
+
+    /// The highest column index in row `y` with non-blank+default content
+    /// since the last clear. Returns -1 if the row is entirely blank.
+    /// O(1) — maintained incrementally by set()/write_text(). Used by
+    /// serialize/diff in place of a per-frame backward linear scan.
+    [[nodiscard]] int last_content_col(int y) const noexcept {
+        if (static_cast<unsigned>(y) >= static_cast<unsigned>(height_)) return -1;
+        return last_col_[static_cast<std::size_t>(y)];
+    }
 
     // -- Clip stack -----------------------------------------------------------
 
@@ -465,6 +493,10 @@ private:
     int width_  = 0;
     int height_ = 0;
     int max_y_  = -1;  // highest row with non-space content (O(1) content_height)
+    // Per-row last-content column. `-1` = row is blank-default. Updated
+    // by set()/fill()/write_text(); reset by clear()/clear_rows()/resize().
+    // Size always equals height_. Reads via last_content_col() are O(1).
+    std::vector<int> last_col_;
     StylePool* style_pool_ = nullptr;
     Rect damage_{};
     std::vector<Rect> clip_stack_;

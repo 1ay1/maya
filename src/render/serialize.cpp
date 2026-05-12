@@ -117,6 +117,12 @@ void emit_cell_run(const Canvas& canvas, const StylePool& pool,
 // Find the last column of row y whose cell carries visible content
 // (non-blank glyph or any styling). Returns -1 if the row is entirely
 // blank+unstyled. Mirrors the trim logic used by serialize().
+//
+// Callers that have access to the Canvas should use canvas.last_content_col(y)
+// instead — that's O(1) (incrementally maintained by set()/fill()/write_text)
+// vs this function's O(W) backward scan. The function is retained for the
+// inline diff path where the comparison buffer is a raw uint64_t* with no
+// owning Canvas (state.prev_cells from a previous frame).
 [[nodiscard]] int last_visible_col(const uint64_t* row, int W) noexcept {
     for (int x = W - 1; x >= 0; --x) {
         const uint64_t p = row[x];
@@ -186,8 +192,9 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 
         // Trim trailing blanks: only emit through the last visible cell.
         // Styled spaces (sid != 0) are treated as content — they may carry
-        // background color, inverse, etc.
-        const int last_col = last_visible_col(cells + y * W, W);
+        // background color, inverse, etc. last_content_col() is O(1) —
+        // canvas maintains it incrementally.
+        const int last_col = canvas.last_content_col(y);
         if (last_col >= 0) {
             emit_cell_run(canvas, pool, y, 0, last_col + 1, current_style, out);
         }
@@ -379,8 +386,8 @@ void compose_inline_frame(const Canvas& canvas,
         const int x_first_diff = first_diff_col(cur_row, prev_row, W);
         if (x_first_diff >= W) continue; // row is identical — no emission
 
-        const int x_last_diff   = last_diff_col(cur_row, prev_row, W);
-        const int x_last_visible = last_visible_col(cur_row, W);
+        const int x_last_diff    = last_diff_col(cur_row, prev_row, W);
+        const int x_last_visible = canvas.last_content_col(y);
 
         // Emit cells through the last *visible* differing column. If the
         // tail of the diff is "current row went blank where prev had

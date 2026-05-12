@@ -212,6 +212,7 @@ Canvas::Canvas(int width, int height, StylePool* pool)
     , damage_{{Columns{0}, Rows{0}}, {Columns{width}, Rows{height}}}
 {
     cells_.resize(static_cast<std::size_t>(width_ * height_), default_cell());
+    last_col_.assign(static_cast<std::size_t>(height_), -1);
 }
 
 Cell Canvas::get(int x, int y) const noexcept {
@@ -287,8 +288,15 @@ void Canvas::fill(Rect region, char32_t ch, uint16_t style_id) {
         }
     }
 
-    // Track max painted row for non-space or styled content.
-    if ((ch != U' ' || style_id != 0) && y1 - 1 > max_y_) max_y_ = y1 - 1;
+    // Track max painted row + per-row last-content column for non-blank fills.
+    if (ch != U' ' || style_id != 0) {
+        if (y1 - 1 > max_y_) max_y_ = y1 - 1;
+        const int new_last = x1 - 1;
+        for (int y = y0; y < y1; ++y) {
+            if (new_last > last_col_[static_cast<std::size_t>(y)])
+                last_col_[static_cast<std::size_t>(y)] = new_last;
+        }
+    }
 }
 
 void Canvas::clear() {
@@ -296,6 +304,7 @@ void Canvas::clear() {
     simd::streaming_fill(cells_.data(), cells_.size(), blank);
     damage_ = full_rect();
     max_y_ = -1;
+    std::fill(last_col_.begin(), last_col_.end(), -1);
 }
 
 void Canvas::clear_rows(int n) {
@@ -307,6 +316,7 @@ void Canvas::clear_rows(int n) {
     std::fill(cells_.data(), cells_.data() + count, blank);
     damage_ = Rect{{Columns{0}, Rows{0}}, {Columns{width_}, Rows{rows}}};
     max_y_ = -1;
+    std::fill(last_col_.begin(), last_col_.begin() + rows, -1);
 }
 
 void Canvas::push_clip(Rect clip) {
@@ -341,6 +351,7 @@ void Canvas::resize(int w, int h) {
     height_ = h;
     max_y_ = -1;
     cells_.assign(static_cast<std::size_t>(w * h), default_cell());
+    last_col_.assign(static_cast<std::size_t>(h), -1);
     damage_ = full_rect();
     clip_stack_.clear();
     update_clip_cache();

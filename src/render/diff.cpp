@@ -106,13 +106,14 @@ void diff(
         // ── Pre-scan: find last non-blank column in new canvas ───────────
         // This enables the EL optimisation below: instead of writing each
         // trailing blank cell individually, one \x1b[K clears them all.
-        int last_content = x0 - 1;
-        for (int scan = x1 - 1; scan >= x0; --scan) {
-            if (new_cells[new_row_base + scan] != blank) {
-                last_content = scan;
-                break;
-            }
-        }
+        //
+        // Canvas tracks per-row last-content column incrementally — read
+        // it in O(1) and clamp into our [x0, x1) damage window instead of
+        // scanning backward each call.
+        const int cached_last = new_canvas.last_content_col(y);
+        int last_content = (cached_last < x0) ? x0 - 1
+                         : (cached_last >= x1) ? x1 - 1
+                         : cached_last;
         // Inner loop only needs to process up to last_content (inclusive).
         const auto content_end = static_cast<std::size_t>(last_content + 1);
 

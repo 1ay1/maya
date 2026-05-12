@@ -1,6 +1,7 @@
 #include "maya/render/canvas.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <new>
 
 namespace maya {
@@ -52,7 +53,15 @@ void AlignedBuffer::assign(std::size_t count, uint64_t value) {
 // StylePool
 // ============================================================================
 
+// Process-wide monotone counter for StylePool identity. Starts at 1 so
+// `pool_id_ == 0` is a recognisable "uninitialised" sentinel for any
+// thread-local cache that needs one.
+namespace {
+std::atomic<uint64_t> g_next_pool_id{1};
+}
+
 StylePool::StylePool() {
+    pool_id_ = g_next_pool_id.fetch_add(1, std::memory_order_relaxed);
     styles_.reserve(64);
     sgr_cache_.reserve(64);
     styles_.emplace_back();  // ID 0 = default (empty) style
@@ -64,6 +73,11 @@ StylePool::StylePool() {
 }
 
 void StylePool::clear() {
+    // Bump pool_id_ so any thread_local intern_const cache that
+    // recorded the old id sees a mismatch on next lookup and
+    // re-interns. Without this, calling clear() leaves stale
+    // intern_const cache slots pointing to ids that were just dropped.
+    pool_id_ = g_next_pool_id.fetch_add(1, std::memory_order_relaxed);
     styles_.resize(1);
     sgr_cache_.resize(1);
     size_ = 1;
@@ -391,6 +405,7 @@ void Canvas::fill(Rect region, char32_t ch, uint16_t style_id) {
                 last_col_[static_cast<std::size_t>(y)] = new_last;
         }
     }
+    stage_ = CanvasStage::Painted;
 }
 
 void Canvas::clear() {
@@ -422,6 +437,7 @@ void Canvas::clear() {
     }
     damage_ = full_rect();
     max_y_ = -1;
+    stage_ = CanvasStage::Drained;
 }
 
 void Canvas::clear_rows(int n) {
@@ -434,6 +450,7 @@ void Canvas::clear_rows(int n) {
     damage_ = Rect{{Columns{0}, Rows{0}}, {Columns{width_}, Rows{rows}}};
     max_y_ = -1;
     std::fill(last_col_.begin(), last_col_.begin() + rows, -1);
+    stage_ = CanvasStage::Drained;
 }
 
 void Canvas::push_clip(Rect clip) {
@@ -472,6 +489,7 @@ void Canvas::resize(int w, int h) {
     damage_ = full_rect();
     clip_stack_.clear();
     update_clip_cache();
+    stage_ = CanvasStage::Drained;
 }
 
 void Canvas::mark_damage(Rect region) {

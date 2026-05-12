@@ -374,6 +374,26 @@ void compose_inline_frame(const Canvas& canvas,
         return;
     }
 
+    // A1 shadow-of-wire: pre-resize prev_cells now (before the per-row
+    // loop writes to it). Cells we don't touch are guaranteed to match
+    // canvas by the inductive invariant (rows < first_changed haven't
+    // changed; cells outside [x_first_diff, x_last_diff] in a changed
+    // row haven't changed; new rows get a full-row copy in the loop).
+    const std::size_t new_total_pre = safe_cells(content_rows, W);
+    if (new_total_pre == (std::size_t)(-1)) {
+        // Pathological size — drop the cache, fall back to Divergent
+        // next frame.
+        state.reset();
+        return;
+    }
+    if (state.prev_cells.size() < new_total_pre)
+        state.prev_cells.resize(new_total_pre);
+    // Resize may have moved storage; re-take the pointer. `prev` is
+    // const because the diff scan reads from it; we use a separate
+    // mutable handle for the shadow writes.
+    prev          = state.prev_cells.data();
+    uint64_t* prev_w = state.prev_cells.data();
+
     // ── Position cursor at row first_changed, col 0 ────────────────────
     // Cursor is currently at the last row of the previously-rendered
     // frame (prev_rows - 1) at some column inside the content. Move
@@ -418,50 +438,74 @@ void compose_inline_frame(const Canvas& canvas,
         // Find the changed sub-span. For new rows (no prev), this is
         // [first_non_blank, last_non_blank+1).
         const int x_first_diff = first_diff_col(cur_row, prev_row, W);
-        if (x_first_diff >= W) continue; // row is identical — no emission
 
-        const int x_last_diff    = last_diff_col(cur_row, prev_row, W);
-        const int x_last_visible = canvas.last_content_col(y);
+        if (x_first_diff < W) {
+            const int x_last_diff    = last_diff_col(cur_row, prev_row, W);
+            const int x_last_visible = canvas.last_content_col(y);
 
-        // Emit cells through the last *visible* differing column. If the
-        // tail of the diff is "current row went blank where prev had
-        // content", we don't print blanks — we let EL clean it up below.
-        const int x_end_emit = std::max(x_first_diff,
-                                        std::min(x_last_diff + 1,
-                                                 x_last_visible + 1));
+            // Emit cells through the last *visible* differing column.
+            // If the tail of the diff is "current row went blank where
+            // prev had content", we don't print blanks — we let EL
+            // clean it up below.
+            const int x_end_emit = std::max(x_first_diff,
+                                            std::min(x_last_diff + 1,
+                                                     x_last_visible + 1));
 
-        // Cursor is at col 0 (we just emitted \r or \r\n at row start).
-        // We move it forward to x_first_diff exactly once — for either
-        // the cell-emit path or the EL-only path — so we never overwrite
-        // unchanged cells at the start of the row.
-        const bool need_el = is_new_row || x_last_diff > x_last_visible;
-        const bool need_emit = x_end_emit > x_first_diff;
+            // Cursor is at col 0 (we just emitted \r or \r\n at row
+            // start). We move it forward to x_first_diff exactly once
+            // — for either the cell-emit path or the EL-only path —
+            // so we never overwrite unchanged cells at the start of
+            // the row.
+            const bool need_el   = is_new_row || x_last_diff > x_last_visible;
+            const bool need_emit = x_end_emit > x_first_diff;
 
-        if (need_emit || need_el) {
-            write_cursor_forward(out, x_first_diff);
-        }
-        if (need_emit) {
-            emit_cell_run(canvas, pool, y, x_first_diff, x_end_emit,
-                          current_style, out);
-            // cursor now at col x_end_emit
-        }
-        if (need_el) {
-            // EL erases from cursor to end of line, preserving cells before
-            // the cursor. After need_emit the cursor sits at x_end_emit
-            // (≥ first non-blank tail); without need_emit it's at
-            // x_first_diff (which is past x_last_visible in the trailing-
-            // blank-only diff case, so visible content stays intact).
-            // Reset SGR before EL so the erased region inherits no
-            // attributes from the last emitted cell — see the parallel
-            // fix in `serialize()` above for the rationale (underline /
-            // inverse / bg painted into erased cells by spec-compliant
-            // terminals).
-            if (current_style != 0) {
-                out.append(pool.sgr(0));
-                current_style = 0;
+            if (need_emit || need_el) {
+                write_cursor_forward(out, x_first_diff);
             }
-            out += "\x1b[K";
+            if (need_emit) {
+                emit_cell_run(canvas, pool, y, x_first_diff, x_end_emit,
+                              current_style, out);
+                // cursor now at col x_end_emit
+            }
+            if (need_el) {
+                // EL erases from cursor to end of line, preserving
+                // cells before the cursor. Reset SGR before EL so the
+                // erased region inherits no attributes from the last
+                // emitted cell.
+                if (current_style != 0) {
+                    out.append(pool.sgr(0));
+                    current_style = 0;
+                }
+                out += "\x1b[K";
+            }
+
+            // A1 shadow-of-wire: update prev_cells for the cells the
+            // wire now shows. For a common-range row, only
+            // [x_first_diff, x_last_diff+1) can differ; cells outside
+            // that range matched prev by the definition of
+            // first_diff_col / last_diff_col. For a new row prev_cells
+            // doesn't have valid content yet, so copy the whole row.
+            if (is_new_row) {
+                std::memcpy(prev_w + (std::size_t)y * W,
+                            cur_row,
+                            (std::size_t)W * sizeof(uint64_t));
+            } else {
+                const std::size_t lo = (std::size_t)x_first_diff;
+                const std::size_t hi = (std::size_t)x_last_diff + 1;
+                std::memcpy(prev_w + (std::size_t)y * W + lo,
+                            cur_row + lo,
+                            (hi - lo) * sizeof(uint64_t));
+            }
+        } else if (is_new_row) {
+            // All-blank new row — prev_cells has no entry yet. Copy the
+            // (blank-packed) row so next frame's bulk_eq sees
+            // blank-vs-blank match instead of zero-vs-default_cell.
+            std::memcpy(prev_w + (std::size_t)y * W,
+                        cur_row,
+                        (std::size_t)W * sizeof(uint64_t));
         }
+        // else: common-range identical row — prev_cells already
+        // matches by induction; nothing to update.
     }
 
     out += "\x1b[?7h";    // restore DECAWM
@@ -482,44 +526,29 @@ void compose_inline_frame(const Canvas& canvas,
 
     if (synchronized_output) out += ansi::sync_end;
 
-    // ── Commit: cache the new cell buffer for next frame's comparison ──
+    // ── Commit: prev_cells is already up-to-date ───────────────────────
     //
-    // Performance-critical path.  The naive implementation memcpy's the
-    // entire canvas every frame, which scales linearly with content_rows
-    // and dominates frame cost as soon as content gets long (8 MB at
-    // 5000×200, 250 MB/s of pure cache update at 30 fps — that's why
-    // long sessions feel sluggish).
+    // A1 shadow-of-wire: the per-row loop wrote each emitted slice into
+    // prev_cells as it ran, so the bulk end-of-function memcpy that
+    // older versions did here is no longer needed. Rows in
+    // [0, first_changed) were byte-identical to begin with and are
+    // untouched. Rows in [first_changed, content_rows) had their
+    // canvas-visible portion copied into prev_cells inside the loop.
+    // The buffer was pre-resized before the loop started, so writes
+    // always landed in valid storage.
     //
-    // The row diff just proved that rows [0, first_changed) are
-    // byte-identical between `cells` and `prev`.  We can therefore:
+    // Correctness: next frame's bulk_eq walks prev_cells[y][0..W]
+    // against canvas[y][0..W] for y < min(content_rows, prev_rows).
+    // By induction every cell in that range either matched last frame
+    // (untouched here) or was just written from canvas (this frame's
+    // shadow update) — so prev_cells equals the wire content.
     //
-    //   1. Skip the prefix entirely — leave prev_cells as-is for those
-    //      rows (they already match `cells` by definition).
-    //   2. Memcpy only the changed/new tail: rows [first_changed,
-    //      content_rows).  For a streaming workload where first_changed
-    //      is near content_rows-N, this is O(N×W) instead of O(content_rows×W).
-    //
-    // Correctness: the next frame's `bulk_eq` walk reads from prev_cells
-    // and compares to the next frame's `cells`.  Whether we copied row k
-    // into prev_cells via the naive memcpy or skipped it (because it was
-    // already equal), the byte content of prev_cells[k] is the same.
-    const std::size_t new_total = safe_cells(content_rows, W);
-    if (new_total == (std::size_t)(-1)) {
-        // Pathological input — drop the cache and fall back to Divergent.
-        state.reset();
-        return;
-    }
-    if (state.prev_cells.size() < new_total)
-        state.prev_cells.resize(new_total);
-
-    const std::size_t prefix_cells =
-        static_cast<std::size_t>(first_changed) * static_cast<std::size_t>(W);
-    if (new_total > prefix_cells) {
-        std::memcpy(
-            state.prev_cells.data() + prefix_cells,
-            cells + prefix_cells,
-            (new_total - prefix_cells) * sizeof(uint64_t));
-    }
+    // Perf: instead of O((content_rows - first_changed) × W × 8) bytes
+    // memcpy'd unconditionally, the actual cost is the sum of the
+    // changed-slice widths per visited row plus a full-row copy for
+    // new rows. Sparse streaming frames (one line in a long transcript
+    // changing) drop from "copy every row below first_changed" to
+    // "copy a few hundred bytes per changed row".
     state.prev_width = W;
     state.prev_rows  = content_rows;
 }

@@ -223,6 +223,14 @@ public:
     /// Number of interned styles.
     [[nodiscard]] std::size_t size() const noexcept { return styles_.size(); }
 
+    /// Process-wide unique identifier assigned at construction. Stable
+    /// for the lifetime of this StylePool — a different pool instance
+    /// always gets a different id, even when memory is recycled. Used
+    /// by `intern_const<S>(pool)` (render-roadmap B5) to validate that
+    /// a thread-local cached style_id is still valid for the current
+    /// pool.
+    [[nodiscard]] uint64_t pool_id() const noexcept { return pool_id_; }
+
     /// Reset the pool back to only the default style.
     void clear();
 
@@ -238,6 +246,7 @@ private:
     std::size_t size_     = 0;
     std::size_t capacity_ = 0;
     std::size_t mask_     = 0;
+    uint64_t    pool_id_  = 0;  // Set by StylePool() ctor via next_pool_id_.
 
     // ── SGR cache builder ────────────────────────────────────────────────
     static char* write_uint_sgr(char* p, unsigned n) noexcept;
@@ -252,6 +261,52 @@ private:
 };
 
 // ============================================================================
+// intern_const(pool, style) — cached style_id for a stable style value
+// ============================================================================
+//
+// Render-roadmap B5. For a `Style` that's stable at a call site (a
+// constexpr global, a theme entry that doesn't change between frames),
+// skip the hash + slot-probe of `pool.intern()` on every paint by
+// stashing the resolved id in a thread_local cache slot.
+//
+// Style isn't a structural type — `std::optional<Color>` has private
+// base classes — so we can't use it as a non-type template parameter.
+// Instead, each call site gets its own cache via a defaulted lambda
+// template parameter: every textual occurrence of `intern_const(pool,
+// ...)` produces a unique lambda closure type at that source location,
+// which instantiates a distinct template specialisation with its own
+// static thread_local slot. Two different lines in the same TU never
+// share cache state. Two different translation units with the same
+// line of code also get distinct instantiations.
+//
+// Contract: at a given call site, `s` should evaluate to the SAME
+// style on every call. A site that toggles between styleA / styleB
+// will cache one of them and return that for the other. Use this for
+// constants; use plain `pool.intern(s)` for dynamic styles.
+//
+// Cache invalidation: keyed on `pool.pool_id()`, which bumps on
+// StylePool construction AND on `clear()`. A stale slot from a
+// previous pool generation falls through to re-intern.
+//
+// Concurrency: each thread holds its own slot. First call on a new
+// thread pays the intern cost; subsequent calls are a load + compare.
+template <auto Tag = []{}>
+[[nodiscard]] MAYA_ALWAYS_INLINE uint16_t intern_const(StylePool& pool,
+                                                       const Style& s) noexcept {
+    (void)Tag;  // unused — its only purpose is to make each call site unique
+    static thread_local uint16_t cached_id   = UINT16_MAX;
+    static thread_local uint64_t cached_pool = 0;
+    if (const uint64_t pid = pool.pool_id();
+        cached_pool == pid && cached_id != UINT16_MAX) [[likely]]
+    {
+        return cached_id;
+    }
+    cached_id   = pool.intern(s);
+    cached_pool = pool.pool_id();
+    return cached_id;
+}
+
+// ============================================================================
 // Canvas - A 2D grid of packed cells
 // ============================================================================
 // The core rendering surface. Two canvases (front and back) form the
@@ -261,11 +316,43 @@ private:
 // All coordinate systems are 0-based. The origin (0,0) is the top-left
 // corner of the canvas.
 
+// ============================================================================
+// Canvas Stage — runtime type-state for paint/diff lifecycle
+// ============================================================================
+//
+// A Canvas moves through three stages each frame:
+//
+//   Drained — every cell is the default_cell(). Entered via the
+//             constructor, resize(), clear(), or clear_rows().
+//             Painters may write; readers (serialize/diff/compose)
+//             may still run but will see only blanks.
+//
+//   Painted — at least one cell has been written this frame.
+//             Subsequent writes stay in Painted. Readers consume
+//             this stage to emit the frame.
+//
+// The shippable form per render-roadmap A2: tracked at runtime as a
+// `Stage` member, exposed via `stage()`, transitioned by the existing
+// mutators, and asserted by readers in debug builds (MAYA_DEBUG_STAGE).
+// The compile-time type-state version would be too API-invasive — it
+// would template every Canvas user — but the runtime version still
+// gives us the lifecycle contract in one named field plus optional
+// runtime checking, which is what the production codepath needs.
+enum class CanvasStage : uint8_t {
+    Drained,   ///< Cells are all default_cell(); no writes since last drain.
+    Painted,   ///< At least one cell has been written since last drain.
+};
+
 class Canvas {
 public:
     Canvas() = default;
 
     Canvas(int width, int height, StylePool* pool);
+
+    /// Current paint-lifecycle stage. Mutating ops (set/fill/blit/
+    /// write_text/...) transition Drained → Painted; clearing ops
+    /// (clear/clear_rows/resize) transition any → Drained.
+    [[nodiscard]] CanvasStage stage() const noexcept { return stage_; }
 
     // -- Cell access ----------------------------------------------------------
 
@@ -316,6 +403,7 @@ public:
             if (x > last_col_[static_cast<std::size_t>(y)])
                 last_col_[static_cast<std::size_t>(y)] = x;
         }
+        stage_ = CanvasStage::Painted;
     }
 
     /// Read the cell at (x, y). Out-of-bounds returns a default cell.
@@ -373,6 +461,7 @@ public:
             if (blit_last > last_col_[static_cast<std::size_t>(y)])
                 last_col_[static_cast<std::size_t>(y)] = blit_last;
         }
+        stage_ = CanvasStage::Painted;
     }
 
     // -- Text rendering -------------------------------------------------------
@@ -524,6 +613,11 @@ private:
     // Cached clip bounds — avoids vector back() on every set() call.
     bool has_clip_ = false;
     int clip_x0_ = 0, clip_y0_ = 0, clip_x1_ = 0, clip_y1_ = 0;
+    // A2 lifecycle stage. Mutators flip to Painted; clear/clear_rows/
+    // resize flip back to Drained. Lives next to other small flags so
+    // it shares a cache line with has_clip_ / clip bounds — no
+    // additional memory traffic in the hot path.
+    CanvasStage stage_ = CanvasStage::Drained;
 };
 
 } // namespace maya

@@ -10,6 +10,7 @@
 
 #include "maya/core/overload.hpp"
 #include "maya/core/render_context.hpp"
+#include "maya/core/scroll_state.hpp"
 
 namespace maya {
 
@@ -244,6 +245,13 @@ std::size_t build_layout_tree(
             ls.gap             = node.layout.gap;
             ls.padding         = node.layout.padding;
             ls.margin          = node.layout.margin;
+            // overflow propagates to layout so the shrink loop can opt out
+            // when a container will clip its children (scroll viewports
+            // need children to keep their natural sizes — the renderer
+            // translates by scroll_x/y during paint).
+            ls.overflow        = (node.overflow == Overflow::Hidden ? layout::Overflow::Hidden
+                                : node.overflow == Overflow::Scroll ? layout::Overflow::Scroll
+                                : layout::Overflow::Visible);
 
             // Border consumes 1 cell per visible side.
             if (node.has_border()) {
@@ -567,7 +575,108 @@ void paint_element(
                 });
             }
 
-            // 4. Recurse into children, pairing each child element with its layout index.
+            // 3b. Writeback: record info into the attached ScrollState
+            //     based on this box's role in the scroll system.
+            //
+            //     - Viewport: compute content extent from children, write
+            //       max_x/max_y, store the viewport's painted rect.
+            //     - VerticalBar / HorizontalBar: store the bar's painted
+            //       rect so mouse hover hit-testing in ScrollState::handle
+            //       can route wheel events to the right axis.
+            //
+            //     We always record bounds (even if max didn't change) so
+            //     resize and scroll-position changes don't desync the
+            //     hover hit-rects.
+            if (node.scroll_state != nullptr &&
+                node.scroll_role != ScrollRole::None) {
+                auto* s = node.scroll_state;
+                // First writeback for this state THIS PAINT: clear bar
+                // lists so a state that previously had bars but now
+                // doesn't (e.g., user removed the scrollbar widget)
+                // stops claiming hit regions. Also register with the
+                // live-state list for auto-dispatch.
+                if (s->paint_gen_seen != detail::paint_generation) {
+                    s->paint_gen_seen = detail::paint_generation;
+                    s->bars_h.clear();
+                    s->bars_v.clear();
+                    s->bar_h_bounds = {};
+                    s->bar_v_bounds = {};
+                    detail::live_scroll_states.push_back(s);
+                }
+
+                if (node.scroll_role == ScrollRole::Viewport) {
+                    int content_extent_w = 0;
+                    int content_extent_h = 0;
+                    for (auto child_layout_idx : ln.children) {
+                        const auto& cn = layout_nodes[child_layout_idx];
+                        const int right  = cn.computed.pos.x.value + cn.computed.size.width.value;
+                        const int bottom = cn.computed.pos.y.value + cn.computed.size.height.value;
+                        if (right  > content_extent_w) content_extent_w = right;
+                        if (bottom > content_extent_h) content_extent_h = bottom;
+                    }
+                    const int inner_origin_x = (has_b && node.border.sides.left ? 1 : 0) + node.layout.padding.left;
+                    const int inner_origin_y = (has_b && node.border.sides.top  ? 1 : 0) + node.layout.padding.top;
+                    const int content_w_total = std::max(0, content_extent_w - inner_origin_x);
+                    const int content_h_total = std::max(0, content_extent_h - inner_origin_y);
+                    const int new_max_x = std::max(0, content_w_total - content_w);
+                    const int new_max_y = std::max(0, content_h_total - content_h);
+                    if (new_max_x != s->max_x || new_max_y != s->max_y) {
+                        detail::scroll_writeback_dirty = true;
+                    }
+                    s->max_x = new_max_x;
+                    s->max_y = new_max_y;
+                    s->viewport_bounds = {content_x, content_y, content_w, content_h};
+                    s->clamp();
+                } else if (node.scroll_role == ScrollRole::VerticalBar ||
+                           node.scroll_role == ScrollRole::HorizontalBar) {
+                    // Record the bar's NATURAL extent — the sum of its
+                    // children's painted sizes — not the (possibly
+                    // stretched) outer box. A scrollbar widget emits
+                    // exactly `viewport_w` cells of glyphs; if the
+                    // container stretches the widget to a larger width
+                    // (default flexbox align: Stretch), the trailing
+                    // cells are empty and clicks there must NOT count
+                    // toward the bar — otherwise the hit-test math
+                    // diverges from the rendered thumb position.
+                    int natural_w = 0;
+                    int natural_h = 0;
+                    for (auto child_layout_idx : ln.children) {
+                        const auto& cn = layout_nodes[child_layout_idx];
+                        const int right  = cn.computed.pos.x.value + cn.computed.size.width.value;
+                        const int bottom = cn.computed.pos.y.value + cn.computed.size.height.value;
+                        if (right  > natural_w) natural_w = right;
+                        if (bottom > natural_h) natural_h = bottom;
+                    }
+                    const int inner_origin_x = (has_b && node.border.sides.left ? 1 : 0) + node.layout.padding.left;
+                    const int inner_origin_y = (has_b && node.border.sides.top  ? 1 : 0) + node.layout.padding.top;
+                    natural_w = std::max(0, natural_w - inner_origin_x);
+                    natural_h = std::max(0, natural_h - inner_origin_y);
+                    // If the bar has no children somehow (shouldn't
+                    // happen for a real scrollbar widget) fall back to
+                    // the outer size.
+                    const int rect_w = natural_w > 0 ? std::min(aw, natural_w) : aw;
+                    const int rect_h = natural_h > 0 ? std::min(ah, natural_h) : ah;
+                    const ScrollRect r{ax, ay, rect_w, rect_h};
+                    if (node.scroll_role == ScrollRole::VerticalBar) {
+                        s->bars_v.push_back(r);
+                        s->bar_v_bounds = r;
+                    } else {
+                        s->bars_h.push_back(r);
+                        s->bar_h_bounds = r;
+                    }
+                }
+            }
+
+            // 4. Recurse into children. Apply paint-time scroll offset by
+            //    shifting the origin handed to descendants — yoga laid them
+            //    out at natural positions in this box's coordinate space,
+            //    we translate during paint. The clip rect pushed above for
+            //    overflow:Hidden/Scroll prevents anything outside the inner
+            //    content rect from being painted, so descendants effectively
+            //    "scroll" within the viewport. This is the same mechanism
+            //    the web uses (overflow:scroll + scrollTop on the element).
+            const int child_ox = ax - node.layout.scroll_x;
+            const int child_oy = ay - node.layout.scroll_y;
             for (const auto& [child, child_layout_idx] :
                      std::views::zip(node.children, ln.children)) {
                 paint_element(
@@ -576,8 +685,8 @@ void paint_element(
                     pool,
                     layout_nodes,
                     child_layout_idx,
-                    ax,
-                    ay);
+                    child_ox,
+                    child_oy);
             }
 
             // 5. Stack overlays: children beyond index 0 are painted on top
@@ -1040,6 +1149,13 @@ void render_tree(
     bool top_level = (depth == 0);
     ++depth;
     if (top_level) {
+        // Bump scroll paint generation and clear the live-states list.
+        // Each top-level render walk re-populates the list via the
+        // writeback below; any state whose tree was removed since the
+        // last paint stops receiving auto-dispatched events.
+        ++detail::paint_generation;
+        detail::live_scroll_states.clear();
+
         auto& cache = render_detail::component_cache();
         // Evict before bumping current_frame so entries from the
         // previous frame are still tagged "last_frame == previous".

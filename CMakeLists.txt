@@ -248,6 +248,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_markdown.cpp
         tests/test_unicode_width.cpp
         tests/test_stream_sink.cpp
+        tests/test_scroll.cpp
     )
 
     foreach(src ${MAYA_TEST_SOURCES})

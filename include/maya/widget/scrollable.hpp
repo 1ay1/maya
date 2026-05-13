@@ -1,133 +1,117 @@
 #pragma once
-// maya::widget::scrollable — Scrollable container with viewport clipping
+// maya::widget::Scrollable — backwards-compat wrapper over the framework
+// scroll primitive (FlexStyle::scroll_x/y + ScrollState + dsl::scroll pipe).
 //
-// Wraps content taller than the viewport and allows scrolling.
-// Renders a scroll indicator on the right edge.
+// New code should prefer the primitive directly:
 //
-// Usage:
-//   Scrollable scroll({.height = 10});
-//   scroll.set_content(my_tall_element);
-//   // In event handler: scroll.scroll_down(), scroll.scroll_up()
-//   auto ui = scroll.build();
+//   ScrollState s;
+//   auto ui = my_content | dsl::scroll(s, /*viewport_h=*/8);
+//   // In event_fn:
+//   if (auto* k = as_key(ev)) s.handle(*k, /*viewport=*/8);
+//   if (auto* m = as_mouse(ev)) s.handle(*m);
+//
+// This class stays for existing callers (and the agent-UI widgets that
+// embed it) and lets you keep the imperative set_content / build pattern.
+// Internally it just owns a ScrollState and assembles the same primitive
+// the pipe form does — no negative-margin hacks, no flex-shrink games.
 
+#include "../core/scroll_state.hpp"
 #include "../dsl.hpp"
 #include "../element/element.hpp"
 #include "../style/style.hpp"
 #include "../style/color.hpp"
 #include "../terminal/input.hpp"
+#include "scrollbar.hpp"
 
 #include <algorithm>
 #include <string>
-#include <vector>
+#include <utility>
 
 namespace maya {
 
 struct ScrollConfig {
-    int height = 10;             ///< Visible viewport height in rows
-    int scroll_amount = 1;       ///< Rows per scroll step
-    bool show_indicator = true;  ///< Show scroll position indicator
+    int  height          = 10;     ///< Visible viewport height in rows (y axis)
+    int  width           = 0;      ///< Visible viewport width in cols (0 = use parent width)
+    int  scroll_amount   = 1;      ///< Rows per scroll step (vertical)
+    bool show_indicator  = true;   ///< Show scroll position indicator (y axis only, for compat)
     Color indicator_color  = Color::bright_black();
     Color indicator_active = Color::bright_black();
 };
 
 class Scrollable {
     ScrollConfig cfg_;
-    int offset_ = 0;
-    int content_height_ = 0;
-    Element content_{TextElement{}};
+    ScrollState  state_;
+    Element      content_{TextElement{}};
 
 public:
-    explicit Scrollable(ScrollConfig cfg = {}) : cfg_(cfg) {}
+    explicit Scrollable(ScrollConfig cfg = {}) : cfg_(cfg) {
+        state_.step_y = std::max(1, cfg.scroll_amount);
+    }
 
+    // -- Content --
     void set_content(Element elem) { content_ = std::move(elem); }
-    void set_content_height(int h) { content_height_ = h; }
 
+    // The pre-shim API required the caller to set this so scroll_down/up
+    // would clamp correctly even before the first render. The renderer
+    // now writes back max_y after layout, so this is only needed for
+    // pre-render scroll calls. Treat it as a primer for state_.max_y;
+    // the writeback will overwrite with the authoritative value on the
+    // next paint.
+    void set_content_height(int h) {
+        state_.max_y = std::max(0, h - cfg_.height);
+    }
+
+    // -- Scroll API (delegates to ScrollState) --
     void scroll_up(int n = 0) {
-        int amount = n > 0 ? n : cfg_.scroll_amount;
-        offset_ = std::max(0, offset_ - amount);
+        state_.scroll_by(0, -(n > 0 ? n : cfg_.scroll_amount));
     }
-
     void scroll_down(int n = 0) {
-        int amount = n > 0 ? n : cfg_.scroll_amount;
-        int max_offset = std::max(0, content_height_ - cfg_.height);
-        offset_ = std::min(max_offset, offset_ + amount);
+        state_.scroll_by(0, +(n > 0 ? n : cfg_.scroll_amount));
     }
+    void scroll_to_top()    { state_.scroll_to_top(); }
+    void scroll_to_bottom() { state_.scroll_to_bottom(); }
 
-    void scroll_to_top() { offset_ = 0; }
-    void scroll_to_bottom() {
-        offset_ = std::max(0, content_height_ - cfg_.height);
-    }
+    [[nodiscard]] int offset()         const noexcept { return state_.y; }
+    [[nodiscard]] int height()         const noexcept { return cfg_.height; }
+    [[nodiscard]] int content_height() const noexcept { return state_.max_y + cfg_.height; }
+    [[nodiscard]] ScrollState&       state()       noexcept { return state_; }
+    [[nodiscard]] const ScrollState& state() const noexcept { return state_; }
 
-    [[nodiscard]] int offset()  const noexcept { return offset_; }
-    [[nodiscard]] int height()  const noexcept { return cfg_.height; }
-    [[nodiscard]] int content_height() const noexcept { return content_height_; }
-
-    /// Handle scroll-related key events (Page Up/Down, arrow keys when focused).
-    /// Returns true if the event was consumed.
+    // -- Event handlers --
     bool handle(const KeyEvent& ev) {
-        if (auto* sk = std::get_if<SpecialKey>(&ev.key)) {
-            switch (*sk) {
-                case SpecialKey::Up:       scroll_up();             return true;
-                case SpecialKey::Down:     scroll_down();           return true;
-                case SpecialKey::PageUp:   scroll_up(cfg_.height);  return true;
-                case SpecialKey::PageDown: scroll_down(cfg_.height); return true;
-                case SpecialKey::Home:     scroll_to_top();         return true;
-                case SpecialKey::End:      scroll_to_bottom();      return true;
-                default: break;
-            }
-        }
-        return false;
+        return state_.handle(ev, cfg_.height, cfg_.width);
     }
-
-    /// Handle mouse scroll events.
-    /// Returns true if the event was consumed.
     bool handle_mouse(const MouseEvent& me) {
-        if (me.kind == MouseEventKind::Press) {
-            if (me.button == MouseButton::ScrollUp)   { scroll_up();   return true; }
-            if (me.button == MouseButton::ScrollDown) { scroll_down(); return true; }
-        }
-        return false;
+        return state_.handle(me);
     }
 
-    /// Build the scrollable view.
-    /// Uses overflow:hidden on a fixed-height box with margin-top offset to clip content.
+    // -- Build --
     [[nodiscard]] Element build() const {
-        // Build scroll indicator column
-        std::string indicator;
-        if (cfg_.show_indicator && content_height_ > cfg_.height) {
-            int track_h = cfg_.height;
-            // Thumb size: proportional to visible fraction
-            int thumb_h = std::max(1, track_h * cfg_.height / content_height_);
-            // Thumb position
-            int max_off = std::max(1, content_height_ - cfg_.height);
-            int thumb_pos = (track_h - thumb_h) * offset_ / max_off;
+        // Mutable reference for the DSL pipe (it needs &state to wire the
+        // writeback pointer). The widget owns the state, so this cast is
+        // safe — Scrollable::build() being const is a backwards-compat
+        // promise to existing callers, not a real invariant on this class.
+        auto& s = const_cast<ScrollState&>(state_);
 
-            for (int i = 0; i < track_h; ++i) {
-                bool in_thumb = (i >= thumb_pos && i < thumb_pos + thumb_h);
-                indicator += in_thumb
-                    ? "\xe2\x94\x83"   // ┃ (thick vertical — active thumb)
-                    : "\xe2\x94\x82";  // │ (thin vertical — track)
-                if (i < track_h - 1) indicator += '\n';
-            }
-        }
+        Element viewport = (cfg_.width > 0)
+            ? (dsl::v(content_) | dsl::scroll(s, cfg_.width, cfg_.height)).build()
+            : (dsl::v(content_) | dsl::scroll(s, cfg_.height)).build();
 
-        // Inner content shifted upward by offset using negative top margin
-        auto content_box = (dsl::v(content_) | dsl::margin(-offset_, 0, 0, 0)).build();
+        if (!cfg_.show_indicator || state_.max_y == 0)
+            return viewport;
 
-        if (cfg_.show_indicator && content_height_ > cfg_.height) {
-            return dsl::h(
-                (dsl::v(std::move(content_box)) | dsl::height(cfg_.height) | dsl::overflow(Overflow::Hidden)).build(),
-                Element{TextElement{
-                    .content = indicator,
-                    .style   = Style{}.with_fg(cfg_.indicator_color),
-                }}
-            ).build();
-        }
-
-        return (dsl::v(std::move(content_box)) | dsl::height(cfg_.height) | dsl::overflow(Overflow::Hidden)).build();
+        // Reuse the scrollbar widget — single source of truth for the
+        // thumb math and glyph repertoire. Colors map onto ScrollbarStyle
+        // (only the foreground; bg follows whatever parent paints).
+        ScrollbarStyle st;
+        st.track_color = cfg_.indicator_color;
+        st.thumb_color = cfg_.indicator_active;
+        return dsl::h(
+            std::move(viewport),
+            scrollbar_y(state_, cfg_.height, st)
+        ).build();
     }
 
-    /// Implicit conversion to Element.
     operator Element() const { return build(); }
 };
 

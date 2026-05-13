@@ -497,6 +497,8 @@ void InputParser::parse_sgr_mouse(std::string_view params_str, uint8_t final_byt
     else if (button_bits == 3)  button = MouseButton::None; // release (X10)
     else if (button_bits == 64) button = MouseButton::ScrollUp;
     else if (button_bits == 65) button = MouseButton::ScrollDown;
+    else if (button_bits == 66) button = MouseButton::ScrollLeft;   // SGR horizontal wheel
+    else if (button_bits == 67) button = MouseButton::ScrollRight;
 
     events.emplace_back(MouseEvent{
         .button = button,

@@ -54,6 +54,7 @@
 #include "../core/expected.hpp"
 #include "../core/overload.hpp"
 #include "../core/render_context.hpp"
+#include "../core/scroll_state.hpp"
 #include "../core/types.hpp"
 #include "../element/builder.hpp"
 #include "../element/element.hpp"
@@ -1047,6 +1048,12 @@ void run(RunConfig cfg = {}) {
             auto events = rt.read_events();
             if (!events) break;
             for (auto& ev : *events) {
+                // Auto-dispatch to scroll states painted in the
+                // previous frame (default behavior — opt out per
+                // state with auto_dispatch = false).
+                for (auto* s : detail::live_scroll_states) {
+                    if (s && s->auto_dispatch) (void)s->handle_event(ev);
+                }
                 detail::dispatch_through_sub(current_sub, ev, pending_msgs);
             }
         }
@@ -1073,6 +1080,9 @@ void run(RunConfig cfg = {}) {
 
         // Flush parser timeouts (e.g., bare Escape)
         for (auto& ev : rt.flush_timeouts()) {
+            for (auto* s : detail::live_scroll_states) {
+                if (s && s->auto_dispatch) (void)s->handle_event(ev);
+            }
             detail::dispatch_through_sub(current_sub, ev, pending_msgs);
         }
 
@@ -1177,6 +1187,14 @@ void run(RunConfig cfg = {}) {
             auto status = rt.render(P::view(model));
             if (!status) break;
             needs_render = false;
+            // Same scroll-writeback re-render as the simple run() path:
+            // if a ScrollState's max_* changed during this paint, the
+            // current view used stale zeros. Re-render so the next view
+            // sees the fresh values.
+            if (detail::scroll_writeback_dirty) {
+                detail::scroll_writeback_dirty = false;
+                needs_render = true;
+            }
         }
     }
 
@@ -1233,12 +1251,28 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
     bool needs_render = true;
 
     auto dispatch = [&](const Event& ev) {
+        // Auto-dispatch to scroll states that were painted in the
+        // previous frame. Any state with auto_dispatch = true (default)
+        // gets the event before the user's event_fn — so scrollbars
+        // and viewport content "just work" without per-app boilerplate.
+        // The framework consumes the result; we still pass the event
+        // through to the user so they can layer their own behavior.
+        for (auto* s : detail::live_scroll_states) {
+            if (s && s->auto_dispatch) (void)s->handle_event(ev);
+        }
         if constexpr (std::is_void_v<std::invoke_result_t<EventFn, const Event&>>) {
             event_fn(ev);
             if (detail::quit_requested) rt.request_quit();
         } else {
             if (!event_fn(ev)) rt.request_quit();
         }
+        // Mirror Program<P> (see needs_render flip after Sub dispatch above):
+        // event-driven apps using plain widget state (no Signal, no Program)
+        // must still repaint after input. The SIMD diff makes the cost of a
+        // potentially-unchanged frame negligible (zero terminal writes if no
+        // cells changed) — far cheaper than the alternative of silently
+        // swallowing user input.
+        needs_render = true;
     };
 
     while (rt.is_running()) {
@@ -1282,6 +1316,14 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
             auto status = rt.render(root);
             if (!status) break;
             needs_render = false;
+            // If a ScrollState's max_* changed during this paint, the
+            // view function we just ran read stale zeros for them.
+            // Schedule an immediate second render so the next frame's
+            // status text and clamping logic see the fresh values.
+            if (detail::scroll_writeback_dirty) {
+                detail::scroll_writeback_dirty = false;
+                needs_render = true;
+            }
         }
     }
 

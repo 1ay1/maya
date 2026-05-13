@@ -41,6 +41,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/scroll_state.hpp"
 #include "element/builder.hpp"
 #include "style/border.hpp"
 #include "style/color.hpp"
@@ -788,6 +789,15 @@ struct RAlign  { Align a; };
 struct RJust   { Justify j; };
 struct ROvf    { Overflow o; };
 
+// Scroll pipe — bundles overflow:Hidden + scroll_x/y + writeback pointer +
+// optional explicit viewport size. w/h of 0 mean "don't set" (the inner
+// box keeps whatever sizing it had / inherits from grow/parent).
+struct RScroll {
+    ScrollState* state;
+    int viewport_w = 0;
+    int viewport_h = 0;
+};
+
 // -- Runtime pipe factories --
 
 [[nodiscard]] inline RPad    padding(int all)                  { return {all,all,all,all}; }
@@ -808,6 +818,22 @@ struct ROvf    { Overflow o; };
 [[nodiscard]] inline RJust   justify(Justify j)                 { return {j}; }
 [[nodiscard]] inline ROvf    overflow(Overflow o)               { return {o}; }
 
+// Scroll factories. Vertical is the common case; horizontal is opt-in via
+// scrollx() or the 2-arg form. Passing 0 for a viewport size means "let
+// the box size itself" — pair with | grow or with another | height(...)
+// further down the pipe.
+//
+//   content | scroll(state, 8)            // y-axis only, viewport 8 rows tall
+//   content | scroll(state, 40, 8)        // both axes, 40 cols × 8 rows
+//   content | scrolly(state, 8)           // y-axis only
+//   content | scrollx(state, 40)          // x-axis only
+//   content | scroll(state) | grow        // 2D, fill remaining space
+[[nodiscard]] inline RScroll scroll(ScrollState& s)                  { return {&s, 0, 0}; }
+[[nodiscard]] inline RScroll scroll(ScrollState& s, int viewport_h)  { return {&s, 0, viewport_h}; }
+[[nodiscard]] inline RScroll scroll(ScrollState& s, int w, int h)    { return {&s, w, h}; }
+[[nodiscard]] inline RScroll scrolly(ScrollState& s, int h)          { return {&s, 0, h}; }
+[[nodiscard]] inline RScroll scrollx(ScrollState& s, int w)          { return {&s, w, 0}; }
+
 [[nodiscard]] inline RBText btext(std::string s,
     BorderTextPos p = BorderTextPos::Top,
     BorderTextAlign a = BorderTextAlign::Start) {
@@ -821,7 +847,8 @@ struct WrappedNode {
     static constexpr bool is_wrapped_tag_ = true;
     static constexpr uint16_t PAD=1,GAP=2,BRD=4,BCOL=8,BTXT=16,
                               GRW=32,WD=64,HT=128,STY=256,
-                              MGN=512,ALN=1024,JST=2048,OVF=4096;
+                              MGN=512,ALN=1024,JST=2048,OVF=4096,
+                              SCRL=8192;
 
     Inner inner;
     int pt_=0, pr_=0, pb_=0, pl_=0, gap_=0;
@@ -837,6 +864,8 @@ struct WrappedNode {
     Align aln_{};
     Justify jst_{};
     Overflow ovf_{};
+    ScrollState* scrl_state_ = nullptr;
+    int scrl_vw_ = 0, scrl_vh_ = 0;
     uint16_t f_=0;
 
     operator Element() const { return build(); }
@@ -863,6 +892,23 @@ struct WrappedNode {
             if (f_&ALN)  box->layout.align_items = aln_;
             if (f_&JST)  box->layout.justify = jst_;
             if (f_&OVF)  box->overflow = ovf_;
+            if (f_&SCRL) {
+                // Apply scroll AFTER explicit width/height pipes so the
+                // user can override the viewport size with | width/| height
+                // if they wired the pipe with viewport=0.
+                // overflow=Hidden does double duty: clips paint to viewport,
+                // and (as of the layout patch in yoga.cpp) tells the shrink
+                // loop to let children keep natural sizes. No wrapper box
+                // needed — the renderer's paint-time scroll_x/y translation
+                // shows only the viewport-sized window.
+                box->overflow = Overflow::Hidden;
+                box->layout.scroll_x = scrl_state_->x;
+                box->layout.scroll_y = scrl_state_->y;
+                box->scroll_state    = scrl_state_;
+                box->scroll_role     = ScrollRole::Viewport;
+                if (scrl_vw_ > 0) box->layout.width  = Dimension::fixed(scrl_vw_);
+                if (scrl_vh_ > 0) box->layout.height = Dimension::fixed(scrl_vh_);
+            }
             return inner_elem;
         }
         auto b = maya::detail::box();
@@ -879,7 +925,23 @@ struct WrappedNode {
         if (f_&ALN)  b.align_items(aln_);
         if (f_&JST)  b.justify(jst_);
         if (f_&OVF)  b.overflow(ovf_);
-        return b(std::move(inner_elem));
+        // Scroll on the wrapper case: we need to build first so we can
+        // reach into the resulting BoxElement and set the fields the
+        // builder doesn't expose. See the as_box() branch above for the
+        // mirror image.
+        Element built = b(std::move(inner_elem));
+        if (f_&SCRL) {
+            if (auto* bx = maya::as_box(built)) {
+                bx->overflow = Overflow::Hidden;
+                bx->layout.scroll_x = scrl_state_->x;
+                bx->layout.scroll_y = scrl_state_->y;
+                bx->scroll_state    = scrl_state_;
+                bx->scroll_role     = ScrollRole::Viewport;
+                if (scrl_vw_ > 0) bx->layout.width  = Dimension::fixed(scrl_vw_);
+                if (scrl_vh_ > 0) bx->layout.height = Dimension::fixed(scrl_vh_);
+            }
+        }
+        return built;
     }
 };
 
@@ -952,6 +1014,14 @@ template <Node N> [[nodiscard]] auto operator|(N n, RJust t) {
 template <Node N> [[nodiscard]] auto operator|(N n, ROvf t) {
     auto w = as_wrapped(std::move(n));
     w.ovf_=t.o; w.f_ |= decltype(w)::OVF; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RScroll t) {
+    auto w = as_wrapped(std::move(n));
+    w.scrl_state_ = t.state;
+    w.scrl_vw_    = t.viewport_w;
+    w.scrl_vh_    = t.viewport_h;
+    w.f_ |= decltype(w)::SCRL;
+    return w;
 }
 
 // -- Compile-time pipe tags forwarded through WrappedNode --

@@ -9,6 +9,15 @@ namespace maya::layout {
 
 namespace detail {
 
+// "Unconstrained" sentinel for available_w / available_h when we want a
+// child to compute its natural size — used when a parent has overflow ≠
+// Visible (the child will be clipped or scrolled, so it should keep its
+// intrinsic dimensions instead of being squeezed to fit the viewport).
+// Big enough to never trigger shrink in practice, small enough to leave
+// integer arithmetic headroom (no overflow when multiplied by typical
+// flex weights).
+inline constexpr int kUnconstrained = 1 << 24;
+
 std::pair<int, int> resolve_definite_size(
     const FlexStyle& style,
     int parent_width,
@@ -125,14 +134,29 @@ void compute_node(
         if (!basis.is_auto()) {
             hypo_main = basis.resolve(main_avail);
         } else if (child.measure) {
-            // Measure leaf to get intrinsic size
-            int measure_w = row ? main_avail : content_w;
-            Size ms = child.measure(std::max(0, measure_w - (row ? inner_horizontal(cs) : inner_horizontal(cs))));
+            // Measure leaf to get intrinsic size. When the parent will
+            // clip / scroll its children, measure unconstrained so text
+            // doesn't wrap to fit the viewport (the renderer will
+            // translate by scroll_x/y and clip — wrapping would hide
+            // the scrollable extent).
+            const int measure_w = (style.overflow != Overflow::Visible)
+                ? kUnconstrained
+                : (row ? main_avail : content_w);
+            Size ms = child.measure(std::max(0, measure_w - inner_horizontal(cs)));
             hypo_main = row ? ms.width.value + inner_horizontal(cs) : ms.height.value + inner_vertical(cs);
         } else {
-            // Recurse to determine child's natural size.
-            int child_avail_w = row ? main_avail : content_w;
-            int child_avail_h = row ? content_h  : main_avail;
+            // Recurse to determine child's natural size. When this
+            // container will clip / scroll its children (overflow ≠
+            // Visible), pass an effectively-infinite available space so
+            // the descendants compute natural sizes rather than running
+            // their own shrink loops against the parent's narrow
+            // viewport. This is what makes 2D scrolling work: an inner
+            // h-row inside a scroll viewport keeps its full 30-cell
+            // width instead of being squashed to 8.
+            const int child_avail_w = (style.overflow != Overflow::Visible)
+                ? kUnconstrained : (row ? main_avail : content_w);
+            const int child_avail_h = (style.overflow != Overflow::Visible)
+                ? kUnconstrained : (row ? content_h  : main_avail);
             compute_node(nodes, ci, child_avail_w, child_avail_h, content_w, content_h);
 
             hypo_main = row ? nodes[ci].computed.size.width.value
@@ -233,8 +257,16 @@ void compute_node(
                     }
                 }
             }
-        } else if (free_space < 0 && main_definite) {
-            // Shrink overflowing items via flex_shrink
+        } else if (free_space < 0 && main_definite
+                && style.overflow == Overflow::Visible) {
+            // Shrink overflowing items via flex_shrink — but ONLY when the
+            // container will actually display the overflow. Containers
+            // marked Hidden or Scroll will clip / scroll their children,
+            // so the children should keep their natural sizes instead of
+            // being collapsed by the shrink-largest-first tiebreaker.
+            // (This is what the maya scroll primitive relies on: children
+            // remain at full size, renderer translates by scroll_x/y at
+            // paint time, clip rect drops anything outside the viewport.)
             float total_shrink_weighted = 0.0f;
             for (auto& it : line.items) {
                 total_shrink_weighted +=
@@ -299,35 +331,51 @@ void compute_node(
             int inner_w = std::max(0, child_w - inner_horizontal(cs));
             int inner_h = std::max(0, child_h - inner_vertical(cs));
             if (!child.children.empty()) {
-                bool cross_definite = row ? (def_h >= 0) : (def_w >= 0);
-                auto saved_w = cs.width;
-                auto saved_h = cs.height;
-                bool main_changed = (item.main != item.hypothetical);
-                if (row) {
-                    // Force width (main) only when grow/shrink changed it
-                    // or it was already explicit — otherwise let the child
-                    // recompute its intrinsic width at the resolved cross size.
-                    if (main_changed || !saved_w.is_auto())
-                        child.style.width = Dimension::fixed(child_w);
-                    if (cross_definite || !saved_h.is_auto())
-                        child.style.height = Dimension::fixed(child_h);
+                if (style.overflow != Overflow::Visible) {
+                    // Container will clip / scroll — let the child compute
+                    // its natural size on both axes, unconstrained by the
+                    // viewport. The renderer's paint-time scroll translation
+                    // and clip rect handle visibility.
+                    compute_node(nodes, item.index, kUnconstrained, kUnconstrained,
+                                 content_w, content_h);
+                    child_w = child.computed.size.width.value;
+                    child_h = child.computed.size.height.value;
                 } else {
-                    // Force height (main) only when grow/shrink changed it
-                    // or it was already explicit — auto-height children must
-                    // recompute after their cross (width) is resolved, since
-                    // narrower widths cause text to wrap to more lines.
-                    if (main_changed || !saved_h.is_auto())
-                        child.style.height = Dimension::fixed(child_h);
-                    if (cross_definite || !saved_w.is_auto())
-                        child.style.width = Dimension::fixed(child_w);
+                    bool cross_definite = row ? (def_h >= 0) : (def_w >= 0);
+                    auto saved_w = cs.width;
+                    auto saved_h = cs.height;
+                    bool main_changed = (item.main != item.hypothetical);
+                    if (row) {
+                        // Force width (main) only when grow/shrink changed it
+                        // or it was already explicit — otherwise let the child
+                        // recompute its intrinsic width at the resolved cross size.
+                        if (main_changed || !saved_w.is_auto())
+                            child.style.width = Dimension::fixed(child_w);
+                        if (cross_definite || !saved_h.is_auto())
+                            child.style.height = Dimension::fixed(child_h);
+                    } else {
+                        // Force height (main) only when grow/shrink changed it
+                        // or it was already explicit — auto-height children must
+                        // recompute after their cross (width) is resolved, since
+                        // narrower widths cause text to wrap to more lines.
+                        if (main_changed || !saved_h.is_auto())
+                            child.style.height = Dimension::fixed(child_h);
+                        if (cross_definite || !saved_w.is_auto())
+                            child.style.width = Dimension::fixed(child_w);
+                    }
+                    compute_node(nodes, item.index, child_w, child_h, content_w, content_h);
+                    child.style.width  = saved_w;
+                    child.style.height = saved_h;
+                    child_w = child.computed.size.width.value;
+                    child_h = child.computed.size.height.value;
                 }
-                compute_node(nodes, item.index, child_w, child_h, content_w, content_h);
-                child.style.width  = saved_w;
-                child.style.height = saved_h;
-                child_w = child.computed.size.width.value;
-                child_h = child.computed.size.height.value;
             } else if (child.measure) {
-                Size ms = child.measure(inner_w);
+                // Same unconstrained-measure rule as section 3a above:
+                // when the parent will clip / scroll, measure the leaf
+                // at its natural size rather than wrap to viewport width.
+                const int probe_w = (style.overflow != Overflow::Visible)
+                    ? kUnconstrained : inner_w;
+                Size ms = child.measure(probe_w);
                 if (cs.width.is_auto() && !row) {
                     child_w = clamp_dim(ms.width.value + inner_horizontal(cs),
                                         cs.min_width, cs.max_width, parent_width);
@@ -457,12 +505,19 @@ void compute_node(
 
                 case Align::Stretch:
                     item.cross_offset = cross_cursor;
-                    // Stretch the cross dimension to fill the line
-                    item.cross = line.cross_size;
-                    if (row) {
-                        nodes[item.index].computed.size.height = Rows{item.cross};
-                    } else {
-                        nodes[item.index].computed.size.width = Columns{item.cross};
+                    // Stretch the cross dimension to fill the line — UNLESS
+                    // the container's overflow will clip / scroll its
+                    // children, in which case children keep their natural
+                    // cross size so a wider inner row (e.g. inside a 2D
+                    // scroll viewport) doesn't get crushed to the
+                    // viewport width.
+                    if (style.overflow == Overflow::Visible) {
+                        item.cross = line.cross_size;
+                        if (row) {
+                            nodes[item.index].computed.size.height = Rows{item.cross};
+                        } else {
+                            nodes[item.index].computed.size.width = Columns{item.cross};
+                        }
                     }
                     break;
 

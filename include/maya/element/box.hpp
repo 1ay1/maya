@@ -106,6 +106,20 @@ struct FlexStyle {
     /// Padding and margin (in cells).
     Edges<int> padding{};
     Edges<int> margin{};
+
+    /// Scroll offset applied to descendants at paint time.
+    ///
+    /// The renderer subtracts these from the origin passed to children when
+    /// painting, AFTER the clip rect for overflow:Hidden/Scroll is pushed.
+    /// Yoga layout is unaffected — children sit at their natural positions
+    /// in the box's coordinate space; the renderer shifts during paint.
+    ///
+    /// Use Overflow::Hidden (or Scroll) on the same box, or descendants will
+    /// paint over your siblings. The maya::dsl scroll() pipe takes care of
+    /// this for you; set these manually only if you're building a custom
+    /// scroll mechanism.
+    int scroll_x = 0;
+    int scroll_y = 0;
 };
 
 // ============================================================================
@@ -119,12 +133,38 @@ struct FlexStyle {
 // include order ensures that Element (the variant) is complete before
 // this header is processed.
 
+struct ScrollState;   // fwd-decl; defined in core/scroll_state.hpp
+
+/// Tags a box as part of a scroll system so the renderer's writeback
+/// knows what to record into the attached ScrollState:
+///   - Viewport: compute max_x/max_y from children, record viewport bounds
+///   - VerticalBar: record bar_v_bounds (for hover hit-test, future drag)
+///   - HorizontalBar: record bar_h_bounds (for hover-over-bar scrolling)
+enum class ScrollRole : uint8_t {
+    None,
+    Viewport,
+    VerticalBar,
+    HorizontalBar,
+};
+
 struct BoxElement {
     FlexStyle              layout{};
     Style                  style{};
     BorderConfig           border{.style = BorderStyle::None};
     Overflow               overflow = Overflow::Visible;
     bool                   is_stack = false;
+
+    /// Non-owning back-pointer to caller-owned ScrollState. When set, the
+    /// renderer writes max_x/max_y back after layout so the user can clamp
+    /// future scrolls. Lifetime: must outlive the current render pass.
+    /// Cleared/reset every frame as the user rebuilds the element tree.
+    ScrollState*           scroll_state = nullptr;
+
+    /// What this box is, relative to the attached scroll_state. The DSL
+    /// scroll() pipe sets this to Viewport; the scrollbar_y / scrollbar_x
+    /// widgets set it to VerticalBar / HorizontalBar. Default None means
+    /// "no scroll role" — scroll_state is ignored if set.
+    ScrollRole             scroll_role = ScrollRole::None;
     // No `{}` initializer here. With one, the compiler must instantiate
     // vector<Element>::vector() (and its `_GLIBCXX20_CONSTEXPR` destructor,
     // which does pointer arithmetic on Element*) while parsing this header —

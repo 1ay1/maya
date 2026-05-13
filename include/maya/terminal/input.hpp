@@ -85,6 +85,7 @@ struct KeyEvent {
 enum class MouseButton : uint8_t {
     Left, Right, Middle,
     ScrollUp, ScrollDown,
+    ScrollLeft, ScrollRight,   // SGR mouse codes 66 / 67 (horizontal wheel)
     None,
 };
 

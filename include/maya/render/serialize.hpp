@@ -86,10 +86,30 @@ struct InlineFrameState {
     /// consecutive frame, keeps the accumulated "held diff" bounded.
     int           held_count = 0;
 
+    /// Distance (in viewport rows) from the terminal's bottom row to
+    /// the cursor's actual position after the previous compose. 0
+    /// means the cursor is at viewport row `term_h - 1` (the steady
+    /// state during heavy streaming when each frame extends the live
+    /// region to the viewport bottom). Non-zero after a shrink that
+    /// moved the cursor up by `extra` rows — without tracking this,
+    /// the next compose's `prev_on_screen = min(prev_rows, term_h)`
+    /// over-counts on-screen rows by `bottom_offset`, the cursor_up
+    /// budget overshoots by the same amount, the terminal silently
+    /// clamps at viewport row 0, and the subsequent per-row emits land
+    /// shifted DOWN by `bottom_offset` — the symptom users see as
+    /// "composer rushes to terminal-bottom on keypress after a long
+    /// stream while scrolled up, leaving a ghost at its old position."
+    /// Updated at end of every successful emit as
+    ///   max(0, old_bottom_offset + (prev_rows_old - content_rows))
+    /// so shrink raises it, grow lowers it (clamped at 0 once cursor
+    /// reaches viewport bottom).
+    int           bottom_offset = 0;
+
     void reset() noexcept {
-        prev_width = 0;
-        prev_rows  = 0;
-        held_count = 0;
+        prev_width    = 0;
+        prev_rows     = 0;
+        held_count    = 0;
+        bottom_offset = 0;
     }
 
     /// Build a typed marker for committing `rows` rows of scrollback.

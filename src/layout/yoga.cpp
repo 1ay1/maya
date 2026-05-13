@@ -130,45 +130,32 @@ void compute_node(
             basis = row ? cs.width : cs.height;
         }
 
-        // Per-axis "let children overflow" rule:
-        //   The container allows overflow on an axis when overflow ≠
-        //   Visible AND that axis has an explicit dimension (something
-        //   for the content to overflow PAST). An auto dimension means
-        //   the container shrink-wraps to content — overflow is
-        //   meaningless and we want normal wrap-to-parent behavior.
-        //   In practice:
-        //     scroll(state, h)         → 1D vertical (def_w=auto,
-        //                                 def_h=fixed): only allow v
-        //                                 overflow. Children wrap to
-        //                                 viewport width as usual.
-        //     scroll(state, w, h)      → 2D (both definite): children
-        //                                 keep natural widths and
-        //                                 heights; no wrap, no shrink.
-        const bool h_overflow_allowed =
-            (style.overflow != Overflow::Visible) && (def_w >= 0);
-        const bool v_overflow_allowed =
-            (style.overflow != Overflow::Visible) && (def_h >= 0);
-
         int hypo_main;
         if (!basis.is_auto()) {
             hypo_main = basis.resolve(main_avail);
         } else if (child.measure) {
-            // Text wraps based on width. Pass unconstrained ONLY when
-            // the container allows horizontal overflow — otherwise the
-            // text would refuse to wrap to the visible viewport width,
-            // which (for a vertical-only scroll) is the wrong behavior
-            // and explodes the layout tree to natural single-line widths.
-            const int measure_w = h_overflow_allowed
+            // Measure leaf to get intrinsic size. When the parent will
+            // clip / scroll its children, measure unconstrained so text
+            // doesn't wrap to fit the viewport (the renderer will
+            // translate by scroll_x/y and clip — wrapping would hide
+            // the scrollable extent).
+            const int measure_w = (style.overflow != Overflow::Visible)
                 ? kUnconstrained
                 : (row ? main_avail : content_w);
             Size ms = child.measure(std::max(0, measure_w - inner_horizontal(cs)));
             hypo_main = row ? ms.width.value + inner_horizontal(cs) : ms.height.value + inner_vertical(cs);
         } else {
-            // Recurse with unconstrained available ONLY on axes the
-            // container allows to overflow (per the rule above).
-            const int child_avail_w = h_overflow_allowed
+            // Recurse to determine child's natural size. When this
+            // container will clip / scroll its children (overflow ≠
+            // Visible), pass an effectively-infinite available space so
+            // the descendants compute natural sizes rather than running
+            // their own shrink loops against the parent's narrow
+            // viewport. This is what makes 2D scrolling work: an inner
+            // h-row inside a scroll viewport keeps its full 30-cell
+            // width instead of being squashed to 8.
+            const int child_avail_w = (style.overflow != Overflow::Visible)
                 ? kUnconstrained : (row ? main_avail : content_w);
-            const int child_avail_h = v_overflow_allowed
+            const int child_avail_h = (style.overflow != Overflow::Visible)
                 ? kUnconstrained : (row ? content_h  : main_avail);
             compute_node(nodes, ci, child_avail_w, child_avail_h, content_w, content_h);
 
@@ -343,22 +330,13 @@ void compute_node(
             // Recursively compute children of this child
             int inner_w = std::max(0, child_w - inner_horizontal(cs));
             int inner_h = std::max(0, child_h - inner_vertical(cs));
-            // Same per-axis overflow rule as 3a above.
-            const bool h_overflow_allowed =
-                (style.overflow != Overflow::Visible) && (def_w >= 0);
-            const bool v_overflow_allowed =
-                (style.overflow != Overflow::Visible) && (def_h >= 0);
-
             if (!child.children.empty()) {
-                if (h_overflow_allowed || v_overflow_allowed) {
-                    // Container clips / scrolls on at least one axis.
-                    // Pass kUnconstrained on each axis the container
-                    // allows to overflow; let the other axis keep the
-                    // resolved size so normal wrap behavior still
-                    // applies on the non-overflowing axis.
-                    const int recurse_w = h_overflow_allowed ? kUnconstrained : child_w;
-                    const int recurse_h = v_overflow_allowed ? kUnconstrained : child_h;
-                    compute_node(nodes, item.index, recurse_w, recurse_h,
+                if (style.overflow != Overflow::Visible) {
+                    // Container will clip / scroll — let the child compute
+                    // its natural size on both axes, unconstrained by the
+                    // viewport. The renderer's paint-time scroll translation
+                    // and clip rect handle visibility.
+                    compute_node(nodes, item.index, kUnconstrained, kUnconstrained,
                                  content_w, content_h);
                     child_w = child.computed.size.width.value;
                     child_h = child.computed.size.height.value;
@@ -392,10 +370,10 @@ void compute_node(
                     child_h = child.computed.size.height.value;
                 }
             } else if (child.measure) {
-                // Same per-axis overflow rule as 3a — only pass
-                // kUnconstrained when the parent allows horizontal
-                // overflow (otherwise text needs to wrap to inner_w).
-                const int probe_w = h_overflow_allowed
+                // Same unconstrained-measure rule as section 3a above:
+                // when the parent will clip / scroll, measure the leaf
+                // at its natural size rather than wrap to viewport width.
+                const int probe_w = (style.overflow != Overflow::Visible)
                     ? kUnconstrained : inner_w;
                 Size ms = child.measure(probe_w);
                 if (cs.width.is_auto() && !row) {
@@ -525,20 +503,15 @@ void compute_node(
                     item.cross_offset = cross_cursor + (line.cross_size - item.cross) / 2;
                     break;
 
-                case Align::Stretch: {
+                case Align::Stretch:
                     item.cross_offset = cross_cursor;
-                    // Disable stretch only when the container both
-                    //  (a) will clip/scroll its children (overflow ≠
-                    //      Visible), AND
-                    //  (b) has an explicit cross-axis dim (so the
-                    //      content can meaningfully overflow PAST it).
-                    // For 1D vertical scroll (column, def_w=auto),
-                    // this leaves the normal stretch-to-width behavior
-                    // intact — text inside still wraps to viewport width.
-                    const bool cross_def = row ? (def_h >= 0) : (def_w >= 0);
-                    const bool disable_stretch =
-                        (style.overflow != Overflow::Visible) && cross_def;
-                    if (!disable_stretch) {
+                    // Stretch the cross dimension to fill the line — UNLESS
+                    // the container's overflow will clip / scroll its
+                    // children, in which case children keep their natural
+                    // cross size so a wider inner row (e.g. inside a 2D
+                    // scroll viewport) doesn't get crushed to the
+                    // viewport width.
+                    if (style.overflow == Overflow::Visible) {
                         item.cross = line.cross_size;
                         if (row) {
                             nodes[item.index].computed.size.height = Rows{item.cross};
@@ -547,7 +520,6 @@ void compute_node(
                         }
                     }
                     break;
-                }
 
                 // SpaceBetween/Around/Evenly are not standard for align_items
                 // per-item; treat them as Start.

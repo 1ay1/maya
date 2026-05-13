@@ -353,10 +353,62 @@ void compose_inline_frame(const Canvas& canvas,
     if (synchronized_output) out += ansi::sync_start;
     out += ansi::hide_cursor;
 
-    // First-ever render: no cursor positioning needed; serialize() handles
-    // DECAWM, EL, and row separators on its own.
+    // First-ever render (prev_rows == 0). Used in three situations:
+    //
+    //   (a) Very first compose at startup — host's cursor is wherever
+    //       it was left (typically term_h - 1 after the host wrote a
+    //       trailing newline).
+    //   (b) Divergent → Synced transition after resize / write failure
+    //       — `\x1b[2J\x1b[3J\x1b[H` already cleared and homed the
+    //       cursor to row 0.
+    //   (c) Soft force_redraw — `Runtime::force_redraw()` zeroes
+    //       prev_rows on the existing InlineSynced state without any
+    //       pre-clear; cursor is wherever the previous compose ended
+    //       it (could be mid-viewport if a shrink had moved it up).
+    //
+    // Old behavior was just `serialize(canvas, pool, out, content_rows)`:
+    // emit content_rows rows from the cursor's current position. The
+    // intermediate `\r\n`s scroll the terminal when the cursor reaches
+    // term_h - 1, pushing whatever was above into native scrollback
+    // and pinning the frame's bottom at term_h - 1. That's correct for
+    // (a) and (b), but produces the "composer rushes to terminal-
+    // bottom and leaves a duplicate above" symptom for (c): when the
+    // cursor was at viewport row K < term_h - 1 (e.g. after a
+    // shrink), the fresh serialize scrolls the frame down by
+    // (term_h - 1 - K) rows.
+    //
+    // Soft in-place redraw fixes (c) without regressing (a) or (b):
+    //
+    //   1. cursor_up(content_rows - 1) — move up to where the frame's
+    //      top should land. Terminal clamps at viewport row 0 if the
+    //      requested up exceeds the available distance, so we never
+    //      go above the viewport.
+    //   2. \r — col 0.
+    //   3. serialize(…) — emit content_rows rows. Each \r\n advances
+    //      the cursor; if the cursor ever reaches term_h - 1, the
+    //      remaining \r\n's scroll exactly the rows that need to go
+    //      into native scrollback (i.e. content rows that overflow
+    //      the viewport upward).
+    //   4. \x1b[J — erase from cursor to end of screen, clearing any
+    //      blank rows below the new frame's bottom (e.g. the rows
+    //      cleared by a previous shrink that are now stale).
+    //
+    // For case (c) with content_rows fitting above the cursor
+    // (content_rows - 1 ≤ K): cursor_up lands at K - content_rows + 1,
+    // serialize emits without scrolling, cursor ends at K. The
+    // composer is back at the same viewport row it was at before the
+    // redraw — no rush, no ghost.
+    //
+    // For (a) and (b) where K is at viewport edge: cursor_up either
+    // does nothing useful (clamps at row 0 for (b)) or moves toward
+    // the top (for (a) with content_rows < term_h). Either way the
+    // final layout matches the old behavior.
     if (prev_rows == 0) {
+        const int up = std::min(content_rows - 1, std::max(0, term_h - 1));
+        if (up > 0) ansi::write_cursor_up(out, up);
+        out += '\r';
         serialize(canvas, pool, out, content_rows);
+        out += "\x1b[J";  // erase below cursor — clears stale blank rows
         if (synchronized_output) out += ansi::sync_end;
         // Cache the new cell buffer for next frame's comparison.  This is
         // the one path that legitimately needs a full memcpy because

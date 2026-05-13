@@ -374,15 +374,29 @@ public:
     // Force the next render to be a full repaint by collapsing both
     // coherence variants to Divergent — same internal effect as
     // handle_resize(), without requiring a SIGWINCH. The next render's
-    // compose_inline_frame sees prev_rows=0 and emits the full live
-    // frame fresh from the cursor's current position via serialize();
-    // the trailing \r\n's scroll the OLD live-frame rows up into
-    // terminal scrollback and write the NEW live frame into the
-    // viewport bottom. Used to clear the "ghost composer" pattern that
-    // emerges when the terminal scrolls during streaming.
+    // For inline mode: zero prev_rows on the existing InlineSynced
+    // state. Next compose's first-ever-render path (which now does a
+    // SOFT in-place redraw: cursor_up + serialize + \x1b[J) repaints
+    // the live frame without scrolling content into native scrollback
+    // when the frame fits above the current cursor. This is the
+    // intended behavior for the "stream finished, user about to
+    // resume" use case — the composer stays at its current viewport
+    // row, the diff path's stale prev_cells is refreshed, no
+    // "composer rushes to terminal-bottom" jolt.
+    //
+    // If the inline state is Divergent (rare — happens after a write
+    // failure), leave it. The next render's Divergent → Synced
+    // transition does the aggressive `\x1b[2J\x1b[3J\x1b[H` clear,
+    // which is appropriate when the renderer doesn't know what's on
+    // screen.
+    //
+    // Fullscreen always goes Divergent (no soft-redraw equivalent for
+    // the alternate-screen-buffer model).
     void force_redraw() noexcept {
         fs_coherence_ = coherent::Divergent{};
-        in_coherence_ = coherent::Divergent{};
+        if (auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_)) {
+            s->state.prev_rows = 0;
+        }
     }
 
     // Final cleanup (show cursor, reset, newline).

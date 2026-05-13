@@ -298,17 +298,7 @@ void compose_inline_frame(const Canvas& canvas,
 
     const uint64_t* cells = canvas.cells();
     const int prev_rows       = state.prev_rows;
-    // prev_on_screen is the live-frame portion still in the viewport.
-    // The cursor is at `bottom_offset` rows above viewport-bottom (0 in
-    // steady state, > 0 after a shrink that scrolled the cursor up
-    // without scrolling content into native scrollback). The visible
-    // portion is therefore `term_h - bottom_offset` rows, NOT `term_h`.
-    // Using `term_h` here over-counts on-screen rows when bottom_offset
-    // > 0, the cursor_up budget below overshoots, the terminal clamps
-    // at viewport row 0 silently, and subsequent emits land shifted —
-    // visible as composer "rushing to bottom" on keypress.
-    const int effective_term_h = std::max(1, term_h - state.bottom_offset);
-    const int prev_on_screen  = std::min(prev_rows, effective_term_h);
+    const int prev_on_screen  = std::min(prev_rows, term_h);
     const int updatable_start = prev_rows - prev_on_screen;
     const int common          = std::min(content_rows, prev_rows);
 
@@ -381,12 +371,6 @@ void compose_inline_frame(const Canvas& canvas,
         std::memcpy(state.prev_cells.data(), cells, new_size * sizeof(uint64_t));
         state.prev_width = W;
         state.prev_rows  = content_rows;
-        // First-ever render: serialize emitted content_rows rows starting
-        // from the host's cursor position. If content fits in the
-        // viewport, cursor ends at viewport row content_rows - 1 with
-        // `term_h - content_rows` rows of empty space below; otherwise
-        // scrolling pinned cursor at viewport bottom.
-        state.bottom_offset = std::max(0, term_h - content_rows);
         return;
     }
 
@@ -565,15 +549,6 @@ void compose_inline_frame(const Canvas& canvas,
     // new rows. Sparse streaming frames (one line in a long transcript
     // changing) drop from "copy every row below first_changed" to
     // "copy a few hundred bytes per changed row".
-    // Update bottom_offset to reflect the cursor's new viewport
-    // position. Shrink (content_rows < prev_rows) moves cursor up,
-    // raising the offset; grow lowers it (clamped at 0 when the
-    // cursor returns to viewport-bottom). The cursor net movement
-    // across the per-row emit + shrink path is (content_rows -
-    // prev_rows): grow pushes cursor down by that many rows (capped
-    // at term_h - 1 = bottom_offset 0); shrink pulls it up.
-    state.bottom_offset =
-        std::max(0, state.bottom_offset + (prev_rows - content_rows));
     state.prev_width = W;
     state.prev_rows  = content_rows;
 }

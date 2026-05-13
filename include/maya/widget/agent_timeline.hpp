@@ -169,6 +169,13 @@ private:
                                || ev.status == AgentEventStatus::Failed
                                || ev.status == AgentEventStatus::Rejected);
 
+        // `detail` is clipped (TruncateEnd) — when a tool's args don't fit
+        // (long `powershell -c "…"` commands, paths past the right edge),
+        // default Wrap would let the text bleed into N visual rows while
+        // the parent h() still measures the row as 1 line, so the next
+        // event's body / connector renders on top of the wrapped overflow.
+        // The body preview below is the place for full content; the
+        // header stays a 1-line summary with an ellipsis at the cut.
         rows.push_back((h(
             text(tree_glyph(i, cfg_.events.size()), tree_style(ev.category_color, is_active)),
             text(" "),
@@ -176,7 +183,7 @@ private:
             text("  "),
             text(ev.name, name_style(ev.status, ev.category_color, is_active)),
             text("  "),
-            text(ev.detail, detail_style(ev.category_color, is_active)),
+            text(ev.detail, detail_style(ev.category_color, is_active)) | clip,
             spacer(),
             when(is_terminal,
                  text(format_duration(ev.elapsed_seconds),

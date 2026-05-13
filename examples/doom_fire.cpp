@@ -33,7 +33,7 @@ static int g_w = 0, g_h = 0;
 static bool g_source = true;
 static int g_wind = 0;
 static int g_palette = 0;
-static int g_intensity = 3;  // 1-5 decay rate
+static int g_intensity = 3;  // 1-5 heat (higher = taller flames; mapped to inverse decay below)
 
 // Ember particles
 struct Ember {
@@ -201,8 +201,11 @@ static void paint(Canvas& canvas, int w, int h) {
 
     int fire_h = h * 2;  // pixel height in half-blocks
 
-    // Propagate fire upward with intensity-dependent decay
-    std::uniform_int_distribution<int> decay_dist(0, g_intensity);
+    // Propagate fire upward with intensity-dependent decay. The control
+    // exposes 1..5 as HEAT (higher = taller flames), so invert here: a
+    // higher intensity means a SMALLER decay range. 5 → decay ∈ [0,1],
+    // 1 → decay ∈ [0,5].
+    std::uniform_int_distribution<int> decay_dist(0, 6 - g_intensity);
     std::uniform_int_distribution<int> wind_dist(0, std::abs(g_wind));
     std::uniform_int_distribution<int> spread_dist(-1, 1);
 

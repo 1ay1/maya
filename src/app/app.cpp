@@ -211,14 +211,28 @@ auto Runtime::render(const Element& root) -> Status {
             // Divergent → Synced: erase the previously-rendered frame,
             // start a brand-new InlineFrameState, paint, write.
             [&](coherent::Divergent) -> coherent::InlineState {
-                // No prev_rows to track from a Divergent state.  The
-                // erase write only matters when there's something on
-                // screen — but we don't know what's on screen, so play
-                // safe and emit it once.  Failure stays Divergent.
-                if (auto wr = writer_->write_raw("\x1b[2J\x1b[3J\x1b[H"); !wr) {
-                    write_status = wr;
-                    return coherent::Divergent{};
-                }
+                // No prev_rows to track from a Divergent state. The
+                // previous code emitted `\x1b[2J\x1b[3J\x1b[H` here to
+                // clear-screen + clear-scrollback + home-cursor before
+                // a fresh paint — but `\x1b[3J` WIPES the terminal's
+                // saved-lines buffer (scrollback), destroying the
+                // host's session history. That's antithetical to
+                // inline-mode convention (Claude Code, Ink, htop's
+                // inline mode all keep host scrollback intact).
+                //
+                // With compose's first-ever-render path now doing a
+                // soft in-place redraw (cursor_up + serialize +
+                // \x1b[J), we don't need a pre-clear at all. The
+                // cursor stays wherever the host last left it
+                // (typically term_h - 1 after a shell prompt at
+                // startup, or wherever the previous compose finished
+                // before a write failure). Soft redraw cursor_ups
+                // by content_rows - 1 (clamping at viewport row 0),
+                // emits content_rows rows via serialize, then
+                // \x1b[J clears anything below. The live frame lands
+                // above-or-at the cursor's previous row; host's
+                // terminal content above stays visible; scrollback
+                // is fully preserved.
                 InlineFrameState fresh;
                 canvas_.clear();
                 render_tree(root, canvas_, pool_, theme_, layout_nodes_,

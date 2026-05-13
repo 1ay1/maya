@@ -86,10 +86,53 @@ struct InlineFrameState {
     /// consecutive frame, keeps the accumulated "held diff" bounded.
     int           held_count = 0;
 
+    /// Cursor's viewport row at end of the last successful compose.
+    /// -1 = unknown / fresh state (compose will assume term_h - 1 for
+    /// the initial K, matching the typical inline-mode steady state).
+    ///
+    /// Why this exists: maya's diff path positions the cursor relative
+    /// to the live frame ("cursor is at relative row prev_rows - 1").
+    /// The cursor_up budget for emitting at first_changed is computed
+    /// as min(-delta, prev_on_screen - 1), where prev_on_screen used
+    /// to be min(prev_rows, term_h). That hid an assumption: the live
+    /// frame's last row sits at viewport row term_h - 1 (the steady
+    /// state during streaming, because each \r\n at the bottom scrolls
+    /// and pins the cursor there). But the shrink path's cursor_up(extra)
+    /// at end of a content-shrinking compose moves the cursor UP without
+    /// extra content scrolling in — and now the cursor's actual viewport
+    /// row is term_h - 1 - extra. The next compose's cursor_up budget
+    /// overshoots by `extra`; the terminal silently clamps at viewport
+    /// row 0; subsequent per-row emits land shifted DOWN. The bug
+    /// surfaces as "composer rushes to terminal-bottom on first
+    /// keypress, leaves a duplicate at its old position."
+    ///
+    /// Tracking the cursor's exact viewport row by simulating each
+    /// emitted cursor-movement sequence (cursor_up, \r\n with scrolling,
+    /// cursor_down) inside compose lets prev_on_screen reflect what's
+    /// actually reachable: K + 1 rows from the live frame's bottom up
+    /// to viewport row 0. A previous attempt used a closed-form
+    /// formula `max(0, old + (prev_rows - content_rows))` and drifted
+    /// because edge cases (cursor_up clamping at row 0, \r\n scrolling
+    /// when cursor at bottom, per-row loop emitting zero rows) cause
+    /// the actual cursor movement to diverge from the formula. The
+    /// simulation tracks each step's effect under the same clamping
+    /// rules the terminal applies, so the model can't drift.
+    int           cursor_viewport_row = -1;
+
     void reset() noexcept {
-        prev_width = 0;
-        prev_rows  = 0;
-        held_count = 0;
+        prev_width          = 0;
+        prev_rows           = 0;
+        held_count          = 0;
+        cursor_viewport_row = -1;
+    }
+
+    /// Tell the renderer that the cursor is now at viewport `row`
+    /// (0-indexed from top). Use after the host emits a sequence
+    /// that puts the cursor at a known position outside compose's
+    /// control — e.g. the `\x1b[H` in the Divergent → Synced
+    /// transition that homes the cursor to row 0.
+    void cursor_at_row(int row) noexcept {
+        cursor_viewport_row = row;
     }
 
     /// Build a typed marker for committing `rows` rows of scrollback.

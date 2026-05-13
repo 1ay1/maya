@@ -298,7 +298,28 @@ void compose_inline_frame(const Canvas& canvas,
 
     const uint64_t* cells = canvas.cells();
     const int prev_rows       = state.prev_rows;
-    const int prev_on_screen  = std::min(prev_rows, term_h);
+
+    // Cursor's viewport row at start of compose. -1 sentinel = first
+    // call (or after reset()), assume bottom-anchored. We simulate
+    // each cursor-affecting emit below to keep this accurate; at end
+    // of compose we save it back so the next call sees the actual
+    // position instead of assuming term_h - 1.
+    int K = (state.cursor_viewport_row < 0)
+          ? std::max(0, term_h - 1)
+          : std::clamp(state.cursor_viewport_row, 0, std::max(0, term_h - 1));
+
+    // prev_on_screen is bounded by the cursor's actual reach (K rows
+    // above the cursor + 1 for the cursor's own row), not by the
+    // entire viewport height. When the previous shrink moved the
+    // cursor up to viewport row K < term_h - 1, only K + 1 rows of
+    // the live frame are actually reachable via cursor_up; the rows
+    // above are in native scrollback (immutable). The earlier
+    // formulation `min(prev_rows, term_h)` over-counted by exactly
+    // the cursor's distance from viewport-bottom, the cursor_up
+    // budget overshot, the terminal silently clamped at row 0, and
+    // subsequent emits landed shifted DOWN — the "composer rushes
+    // to bottom on keypress" symptom.
+    const int prev_on_screen  = std::min(prev_rows, K + 1);
     const int updatable_start = prev_rows - prev_on_screen;
     const int common          = std::min(content_rows, prev_rows);
 
@@ -371,6 +392,12 @@ void compose_inline_frame(const Canvas& canvas,
         std::memcpy(state.prev_cells.data(), cells, new_size * sizeof(uint64_t));
         state.prev_width = W;
         state.prev_rows  = content_rows;
+        // serialize() emitted content_rows rows separated by \r\n.
+        // Starting at viewport row K, after (content_rows - 1) \r\n's
+        // the cursor advances by content_rows - 1 rows, scrolling
+        // when it would cross viewport-bottom. clamped at term_h - 1.
+        state.cursor_viewport_row =
+            std::min(std::max(0, term_h - 1), K + content_rows - 1);
         return;
     }
 
@@ -407,13 +434,19 @@ void compose_inline_frame(const Canvas& canvas,
             int up = std::min(-delta, prev_on_screen - 1);
             if (up > 0) ansi::write_cursor_up(out, up);
             out += '\r';
+            K = std::max(0, K - up);
         } else if (delta == 0) {
             out += '\r';
+            // K unchanged (\r is just carriage return).
         } else {
             // Growing past previous bottom — first \r\n scrolls the
             // terminal, then cursor_down advances within the new region.
             out += "\r\n";
-            if (delta > 1) ansi::write_cursor_down(out, delta - 1);
+            K = std::min(std::max(0, term_h - 1), K + 1);
+            if (delta > 1) {
+                ansi::write_cursor_down(out, delta - 1);
+                K = std::min(std::max(0, term_h - 1), K + (delta - 1));
+            }
         }
     }
 
@@ -427,7 +460,10 @@ void compose_inline_frame(const Canvas& canvas,
     // the cursor (\r\n) without emitting any cell content.
     const int last_row_to_visit = content_rows - 1;
     for (int y = first_changed; y <= last_row_to_visit; ++y) {
-        if (y > first_changed) out += "\r\n";  // advance to row y, col 0
+        if (y > first_changed) {
+            out += "\r\n";  // advance to row y, col 0
+            K = std::min(std::max(0, term_h - 1), K + 1);
+        }
 
         const uint64_t* cur_row  = cells + y * W;
         const uint64_t* prev_row = (have_prev && y < prev_rows)
@@ -520,11 +556,23 @@ void compose_inline_frame(const Canvas& canvas,
     // erases unstyled rows correctly without an additional reset.
     if (content_rows < prev_rows) {
         int extra = std::min(prev_rows - content_rows, prev_on_screen);
-        for (int i = 0; i < extra; ++i) out += "\r\n\x1b[2K";
-        if (extra > 0) ansi::write_cursor_up(out, extra);
+        for (int i = 0; i < extra; ++i) {
+            out += "\r\n\x1b[2K";
+            K = std::min(std::max(0, term_h - 1), K + 1);
+            // \x1b[2K is line-erase only; cursor row unchanged.
+        }
+        if (extra > 0) {
+            ansi::write_cursor_up(out, extra);
+            K = std::max(0, K - extra);
+        }
     }
 
     if (synchronized_output) out += ansi::sync_end;
+
+    // Save the cursor's final viewport row so the next compose's
+    // prev_on_screen reflects the actual reachable region instead of
+    // assuming term_h - 1.
+    state.cursor_viewport_row = K;
 
     // ── Commit: prev_cells is already up-to-date ───────────────────────
     //

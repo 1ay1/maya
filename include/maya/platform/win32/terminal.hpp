@@ -75,10 +75,29 @@ public:
     // -- Raw mode -------------------------------------------------------------
 
     [[nodiscard]] auto enable_raw() -> Status {
-        // Input: character-at-a-time, VT sequences, window events
+        // Input: character-at-a-time, VT sequences, window events.
+        //
+        // We also turn OFF three default-on conhost flags that ruin TUI feel:
+        //   - ENABLE_QUICK_EDIT_MODE: a stray click-drag in the terminal
+        //     freezes all WriteFile output until the user presses a key.
+        //     This is the #1 source of "Windows TUI feels laggy" — output
+        //     stalls look identical to a slow renderer to the user.
+        //   - ENABLE_MOUSE_INPUT: even without VT mouse tracking, the
+        //     console pushes MOUSE_EVENT records into stdin on every mouse
+        //     move, waking the event loop dozens of times per second and
+        //     forcing wasted PeekConsoleInput/ReadFile churn.
+        //   - ENABLE_INSERT_MODE: alters how typed/pasted text is processed
+        //     under the hood; we want raw input.
+        //
+        // Changing QUICK_EDIT or INSERT requires ENABLE_EXTENDED_FLAGS in the
+        // same SetConsoleMode call — without it, those bits are silently
+        // ignored by conhost. orig_in_mode_ captured before we set the bit
+        // restores cleanly on disable_raw().
         DWORD in_mode = orig_in_mode_;
-        in_mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT);
-        in_mode |= ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_WINDOW_INPUT;
+        in_mode &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT
+                   | ENABLE_QUICK_EDIT_MODE | ENABLE_MOUSE_INPUT | ENABLE_INSERT_MODE);
+        in_mode |= ENABLE_VIRTUAL_TERMINAL_INPUT | ENABLE_WINDOW_INPUT
+                 | ENABLE_EXTENDED_FLAGS;
         if (!::SetConsoleMode(stdin_, in_mode))
             return err(Error::terminal("SetConsoleMode(stdin) failed"));
 
@@ -117,8 +136,15 @@ public:
     }
 
     [[nodiscard]] auto read_raw() -> Result<std::string> {
-        // Wait briefly for input (100ms, matching POSIX VTIME=1).
-        DWORD wait = ::WaitForSingleObject(stdin_, 100);
+        // Non-blocking readiness check. The caller (Runtime::poll →
+        // Win32EventSource::wait) has already blocked on
+        // WaitForMultipleObjects and confirmed stdin is signaled with a
+        // real input event in the queue, so a 100 ms wait here is just
+        // dead latency on the false-positive path (e.g. drain consumed
+        // the trailing system events between poll and read_raw). Use a
+        // zero-timeout poll to keep the early-out for that case without
+        // ever blocking the event loop.
+        DWORD wait = ::WaitForSingleObject(stdin_, 0);
         if (wait == WAIT_TIMEOUT)
             return ok(std::string{});
 

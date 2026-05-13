@@ -220,11 +220,6 @@ auto Runtime::render(const Element& root) -> Status {
                     return coherent::Divergent{};
                 }
                 InlineFrameState fresh;
-                // \x1b[H homed the cursor to viewport row 0; tell the
-                // state so the first compose's cursor-row tracker
-                // starts from the correct position instead of the
-                // default term_h - 1.
-                fresh.cursor_at_row(0);
                 canvas_.clear();
                 render_tree(root, canvas_, pool_, theme_, layout_nodes_,
                             /*auto_height=*/true);

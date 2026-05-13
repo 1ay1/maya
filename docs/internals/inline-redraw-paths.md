@@ -1,0 +1,283 @@
+# Inline-mode redraw paths — three cases, three behaviors
+
+Engineering record for the render-correctness work that fixed the
+"composer rushes to terminal-bottom on first keypress after a long
+stream" symptom, the related scrollback-wipe at startup, and the
+interactions between them. Final commits: `aa35eba` (maya) +
+`8bf8ac9` (moha). This doc covers what was actually wrong, two
+failed attempts, and the design that eventually worked.
+
+## What the user saw
+
+Three distinct bug surfaces, all rooted in the inline renderer's
+first-ever-render path:
+
+1. **Composer rushes to bottom.** Reproducer: start a streaming
+   response that overflows the terminal, scroll UP during streaming
+   and stay there, wait for stream to finish, scroll back DOWN
+   (composer + status_bar visible mid-viewport with blank rows
+   below), press any key. The composer + footer suddenly jump down
+   to the terminal's last rows, leaving a duplicate of their old
+   position visible above them.
+2. **Scrollback wiped at startup.** Reproducer: run agentty from a
+   shell with visible history. Maya's first render erased the entire
+   terminal scrollback, destroying the user's session history.
+3. **Live frame at top instead of inline.** Reproducer: same as
+   (2) but the perceptible symptom — agentty started by painting at
+   viewport row 0 (top), not at the cursor's current position. This
+   broke the inline-mode convention where TUIs append below host
+   content.
+
+(2) and (3) were the same root cause as (1) — all three live in the
+diff path's "first-ever render" branch, fired by different triggers
+that we initially conflated.
+
+## The Cmd::force_redraw lineage (and why it was the wrong fix)
+
+The original commit `69688c5` added `Cmd::force_redraw()` to clear
+the post-streaming "ghost composer" symptom. The bug was: during a
+long streaming session, transient composer/footer cells got
+committed to terminal scrollback as the live frame scrolled past
+`term_h - 1`; on the next user input, those stale rows were visible
+on screen but maya's `prev_cells` no longer matched them, so the
+diff path emitted bytes that landed at wrong positions, leaving a
+visible ghost.
+
+`Cmd::force_redraw()` collapsed `in_coherence_` to `Divergent`. The
+next render hit the Divergent path, which emitted
+`\x1b[2J\x1b[3J\x1b[H` (clear viewport + **clear scrollback** +
+home cursor) and then re-painted the entire frame fresh from row 0
+via `serialize()`. That fixed the ghost — but at the cost of:
+
+- Wiping the user's scrollback every time force_redraw fired.
+- Producing the "composer rushes to terminal-bottom" jolt because
+  the fresh serialize from the home position scrolled the frame
+  down to its viewport-bottom-anchored position.
+
+The user's correct intuition: force_redraw was a sledgehammer fix
+for a symptom that should be handled gently. The diff path's state
+needed refreshing, but the screen didn't need wiping.
+
+## Failed attempt #1: closed-form `bottom_offset`
+
+First fix attempt: track the cursor's distance from terminal-bottom
+in `InlineFrameState::bottom_offset`. The formula was
+
+```cpp
+state.bottom_offset =
+    std::max(0, state.bottom_offset + (prev_rows - content_rows));
+```
+
+— shrink raises it (cursor moved up), grow lowers it (cursor moved
+down, clamped at 0 when scrolling). `compose_inline_frame`'s
+`prev_on_screen = min(prev_rows, term_h - bottom_offset)` used this
+to scope the cursor_up budget correctly.
+
+**Worked for the original bug. Broke other things.** The formula
+assumed every cursor movement happened cleanly, but the diff path
+has edge cases where cursor moves differ from row-count deltas:
+
+- `cursor_up` clamps at viewport row 0 when it would overshoot.
+- `\r\n` at viewport row `term_h - 1` scrolls instead of advancing.
+- The per-row loop emits **zero** rows when `first_changed >
+  last_row_to_visit` (large shrink with no on-screen diff).
+- The shrink loop's `cursor_up(extra)` clamps if `extra` exceeds
+  the available room.
+
+Each of these makes the actual cursor end up at a different
+viewport row than the formula predicts. Across many turns,
+`bottom_offset` drifted; eventually `term_h - bottom_offset` shrank
+toward 1, the diff path emitted only the bottom row each frame,
+and the shrink path's `\r\n` scrolling committed chrome rows to
+terminal-native scrollback on every compose. The visible symptom
+was a parade of stacked composer + status bar copies in scrollback.
+
+Reverted in `edffdc7`.
+
+## Failed attempt #2: simulate the cursor
+
+Second attempt: model `cursor_viewport_row` precisely by walking
+each emitted sequence under the same clamping rules the terminal
+applies:
+
+```cpp
+// cursor_up(up):    K = max(0, K - up)
+// \r\n:             K = min(term_h - 1, K + 1)   // scrolls at bottom
+// cursor_down(n):   K = min(term_h - 1, K + n)
+```
+
+In principle this is exact — every cursor-affecting emit gets
+mirrored in K, so K can't drift from reality. In practice the bug
+was elsewhere: when streaming chunks arrived after some idle time,
+the chrome disappeared and the new stream content emitted at
+viewport row 0 with blank rows below. Likely cause: the K-tracking
+correctly captured cursor position but the `prev_on_screen = K + 1`
+scoping interacted badly with `commit_prefix` (which shifts
+`prev_cells` without updating K) or with some other reset path I
+hadn't traced. Didn't fully diagnose before reverting.
+
+Reverted in `f620030`. Lesson: cursor tracking in the diff path
+has too many subtle interactions to retrofit cleanly. The next
+attempt avoided modifying the diff path entirely.
+
+## The fix that worked
+
+Instead of tracking the cursor's viewport position, **route
+force_redraw through a different code path than resize**. Three
+triggers, three behaviors, differentiated by one already-existing
+piece of state: `InlineFrameState::prev_width`.
+
+### The state-based differentiation
+
+```
+prev_width == 0, prev_rows == 0     →  case (A): startup / Divergent reset
+prev_width >  0, prev_rows == 0     →  case (B): force_redraw soft redraw
+prev_width >  0, prev_rows >  0     →  normal diff path
+```
+
+`prev_width` is set the first time `compose_inline_frame` emits
+content. It only resets to 0 on `state.reset()`. So a fresh state
+(no emit ever happened) is distinguishable from a previously-
+emitted state with `prev_rows` zeroed by force_redraw.
+
+### Case (A): startup / Divergent reset
+
+`prev_width == 0` (the truly-fresh state).
+
+`compose_inline_frame`'s first-ever-render branch calls
+`serialize(canvas, pool, out, content_rows)` from the cursor's
+current position. Each row separator (`\r\n`) advances the cursor;
+if the cursor reaches `term_h - 1`, subsequent `\r\n`s scroll. The
+live frame appears AT the cursor's starting position and grows
+downward (the inline-mode convention).
+
+For **startup**, the cursor is wherever the host shell left it
+(typically `term_h - 1` after a prompt). The live frame appears at
+the bottom of the viewport; host content above remains visible;
+scrollback is preserved untouched.
+
+For **Divergent reset** caused by resize or write-failure recovery,
+the Divergent path emits `\x1b[2J\x1b[3J\x1b[H` first — clear
+viewport + clear scrollback + home cursor. The cursor is then at
+row 0. Serialize emits from there; the frame fills the top of the
+viewport. Scrollback is wiped (acceptable per design decision —
+resize layouts are sufficiently different that preserving the
+previous-width content would just look broken).
+
+Startup is **not** routed through Divergent. `Runtime::create`
+pre-seeds `in_coherence_` to `coherent::InlineSynced{}` with a
+fresh `InlineFrameState`. The first render hits the Synced visit;
+`compose` sees `prev_width == 0` and falls through to (A) — but
+without the Divergent path's `\x1b[2J\x1b[3J\x1b[H` ever being
+emitted. That's how startup keeps scrollback intact.
+
+### Case (B): force_redraw soft redraw
+
+`prev_width > 0` AND `prev_rows == 0`.
+
+`Runtime::force_redraw()` zeroes `prev_rows` on the existing
+`InlineSynced` state but **leaves `prev_width` alone**. The next
+`compose` sees `prev_rows == 0` (so the first-ever-render branch
+fires) but `prev_width > 0` (so it knows a previous frame is on
+the wire). It does a SOFT redraw:
+
+1. `cursor_up(min(content_rows - 1, term_h - 1))` — move up to
+   where the new frame's top should land. The terminal clamps at
+   viewport row 0 if the request exceeds available distance.
+2. `\r` — column 0.
+3. `serialize(canvas, pool, out, content_rows)` — emit content_rows
+   rows. Each `\r\n` advances the cursor; if the cursor reaches
+   `term_h - 1`, the remaining `\r\n`s scroll exactly the rows
+   that need to overflow into native scrollback.
+4. `\x1b[J` — erase from cursor to end of screen, clearing any
+   blank rows below the new frame's bottom (e.g. rows left blank
+   by a previous shrink).
+
+**For the user's bug scenario**: cursor was at viewport row K mid-
+screen after a stream-finish shrink, content_rows fits above the
+cursor (`content_rows ≤ K + 1`). cursor_up lands at
+`K - content_rows + 1`. serialize emits without scrolling. Cursor
+returns to row K. The composer is back at the same viewport row
+it was at before the redraw — no rush, no ghost. Scrollback fully
+preserved.
+
+**For the overflow case** (`content_rows > K + 1`, e.g. mid-stream
+force_redraw with a huge frame): cursor_up clamps at row 0,
+serialize emits `content_rows` rows, the overflow scrolls into
+native scrollback exactly as a normal stream would. Same behavior
+as the old force_redraw for that case.
+
+### The Divergent path still does the aggressive clear
+
+Resize and write-failure recovery still go through the Divergent
+path, which still emits `\x1b[2J\x1b[3J\x1b[H` and then runs the
+fresh paint via case (A). This was a deliberate call by the user
+("resize can wipe the scrollback") — a resize means the layout
+constraints just changed and any previous frame's positioning is
+now wrong, so a full reset is the appropriate response. The
+scrollback wipe (`\x1b[3J`) is a side effect, accepted in the
+resize case because the previous-width content in scrollback
+would have been rendered at the wrong column count anyway.
+
+## Why this works where the cursor-tracking attempts didn't
+
+The cursor-tracking approaches tried to retrofit a piece of
+runtime state (where the cursor actually is) into the diff path's
+existing math. That math has too many edge cases (the per-row
+loop's zero-iteration case, the shrink path's scrolling behavior,
+the cursor_up clamp at row 0, commit_prefix's row-count shift
+without cursor adjustment) for the retrofit to be correct without
+also rewriting the diff path itself.
+
+The state-based differentiation sidesteps the problem entirely:
+
+- The normal diff path is unchanged (no cursor tracking, no
+  modified prev_on_screen math).
+- The force_redraw case (B) uses cursor_up + serialize + \x1b[J
+  — a sequence that's CORRECT BY CONSTRUCTION regardless of where
+  the cursor is, as long as the terminal's natural clamping
+  behavior is what we want. If `content_rows - 1` is more than
+  the cursor's distance from row 0, the cursor clamps — we don't
+  need to know how far it actually moved, because the next
+  `serialize` emits content_rows rows from wherever the cursor
+  landed and \x1b[J clears below either way.
+- Startup case (A) is the unchanged old behavior, just no longer
+  routed through Divergent.
+
+No drift, no edge cases, no retrofit. Each case has well-defined
+input state and a code path that handles it correctly.
+
+## Invariants for future readers
+
+1. `state.prev_width == 0` ⟺ no successful frame has ever been
+   emitted from this state. Set on the first successful emit;
+   reset only by `state.reset()`.
+2. `state.prev_rows == 0` AND `state.prev_width > 0` ⟺
+   `force_redraw` was called between this compose and the last
+   successful emit.
+3. The Divergent → Synced transition uses a fresh
+   `InlineFrameState` (prev_width = 0), routing it to case (A).
+4. The default `Runtime` state for inline mode is
+   `InlineSynced{InlineFrameState{}}`, NOT `Divergent`. Setting it
+   to Divergent (e.g. for fullscreen mode) is the explicit signal
+   that the aggressive scrollback-wiping clear should happen.
+
+## File map
+
+- `maya/include/maya/render/serialize.hpp` — `InlineFrameState`
+  declaration (the state struct).
+- `maya/src/render/serialize.cpp` — `compose_inline_frame`'s
+  first-ever-render branch with the (A)/(B) differentiation.
+- `maya/include/maya/app/app.hpp` — `Runtime::force_redraw()` that
+  zeroes `prev_rows` on the existing `InlineSynced` state instead
+  of collapsing to Divergent.
+- `maya/src/app/app.cpp` — `Runtime::create()` pre-seeds
+  `in_coherence_` to `InlineSynced{}` for inline mode; the
+  Divergent path's `\x1b[2J\x1b[3J\x1b[H` pre-clear is kept for
+  resize / write-fail.
+- `agentty/src/runtime/app/update/stream.cpp` — `StreamFinished`
+  handler arms `m.ui.needs_force_redraw = true` so the next user
+  input fires `Cmd::force_redraw()`.
+- `agentty/src/runtime/app/update.cpp` — consumes
+  `needs_force_redraw` on user-input messages, batches
+  `Cmd::force_redraw()` alongside the regular Cmd.

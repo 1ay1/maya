@@ -85,6 +85,20 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     // Linux/Win32: no-op.
     platform::set_ui_thread_priority();
 
+    // Inline mode: start in InlineSynced with a fresh InlineFrameState
+    // (prev_width = 0, prev_rows = 0). The first render's compose hits
+    // the first-ever-render path with prev_width == 0, which does the
+    // inline-mode growth from cursor's current position (no scrollback
+    // wipe, host content stays visible above). Default-initialised
+    // in_coherence_ would be Divergent, whose path emits
+    // \x1b[2J\x1b[3J\x1b[H — appropriate for resize and write-fail
+    // recovery, but wrong for startup. Pre-seeding InlineSynced
+    // routes startup through the Synced case, preserving the host's
+    // shell content above the live frame.
+    if (rt.is_inline()) {
+        rt.in_coherence_ = coherent::InlineSynced{InlineFrameState{}};
+    }
+
     return ok(std::move(rt));
 }
 
@@ -211,28 +225,31 @@ auto Runtime::render(const Element& root) -> Status {
             // Divergent → Synced: erase the previously-rendered frame,
             // start a brand-new InlineFrameState, paint, write.
             [&](coherent::Divergent) -> coherent::InlineState {
-                // No prev_rows to track from a Divergent state. The
-                // previous code emitted `\x1b[2J\x1b[3J\x1b[H` here to
-                // clear-screen + clear-scrollback + home-cursor before
-                // a fresh paint — but `\x1b[3J` WIPES the terminal's
-                // saved-lines buffer (scrollback), destroying the
-                // host's session history. That's antithetical to
-                // inline-mode convention (Claude Code, Ink, htop's
-                // inline mode all keep host scrollback intact).
+                // Divergent is entered by resize (handle_resize sets
+                // in_coherence_ = Divergent) or by a write-failure
+                // recovery path. Both cases need a full reset of the
+                // terminal viewport: the layout's width/height
+                // assumptions just changed and any previous paint
+                // is now in the wrong place. \x1b[2J clears the
+                // viewport, \x1b[3J clears the saved-lines buffer
+                // (per the user's call: "resize can wipe the
+                // scrollback"), \x1b[H homes the cursor. Then
+                // compose's first-ever-render path emits the fresh
+                // frame at row 0 (case A in compose: prev_width == 0).
                 //
-                // With compose's first-ever-render path now doing a
-                // soft in-place redraw (cursor_up + serialize +
-                // \x1b[J), we don't need a pre-clear at all. The
-                // cursor stays wherever the host last left it
-                // (typically term_h - 1 after a shell prompt at
-                // startup, or wherever the previous compose finished
-                // before a write failure). Soft redraw cursor_ups
-                // by content_rows - 1 (clamping at viewport row 0),
-                // emits content_rows rows via serialize, then
-                // \x1b[J clears anything below. The live frame lands
-                // above-or-at the cursor's previous row; host's
-                // terminal content above stays visible; scrollback
-                // is fully preserved.
+                // STARTUP does NOT enter this path — the Runtime
+                // constructor initialises in_coherence_ to
+                // InlineSynced{} with a fresh InlineFrameState
+                // (prev_width = 0). The first render hits the Synced
+                // case below, compose's first-ever-render fires, and
+                // because state.prev_width == 0 it does the
+                // inline-mode growth (serialize from host's cursor
+                // position). Host's terminal content stays visible
+                // above; scrollback preserved.
+                if (auto wr = writer_->write_raw("\x1b[2J\x1b[3J\x1b[H"); !wr) {
+                    write_status = wr;
+                    return coherent::Divergent{};
+                }
                 InlineFrameState fresh;
                 canvas_.clear();
                 render_tree(root, canvas_, pool_, theme_, layout_nodes_,

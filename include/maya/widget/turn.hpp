@@ -29,8 +29,21 @@
 //       },
 //       .error      = "stream cut off mid-tool",
 //       .checkpoint_above = msg.has_checkpoint,
+//       .cache_id   = "turn:" + msg.id,                    // memoize
 //   }}.build();
+//
+// Performance:
+//   When `cache_id` is non-empty Turn wraps its output in a
+//   maya::component() with that key. The renderer's content-keyed
+//   cells cache then short-circuits both layout (one node per turn)
+//   and paint (one row-blit per cached turn) on every subsequent
+//   frame — independent of the body's size. Settled turns in a long
+//   conversation drop to O(1) per frame; only the actively-mutating
+//   turn pays the build/parse cost. Leave cache_id empty on the live
+//   turn (or change it on each content edit) so the cache properly
+//   misses and rebuilds.
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <variant>
@@ -97,13 +110,52 @@ public:
         // underlying per-response Message structure that the Anthropic
         // protocol requires.
         bool                  continuation = false;
+
+        // Content-stable cache key. When non-empty, Turn wraps its
+        // output in maya::component(...).cache_id(cache_id), so the
+        // renderer reuses the previously-painted cells on every
+        // subsequent frame and skips re-running the body construction
+        // (markdown parse, tool-card builds, permission lookups). The
+        // key MUST change whenever the rendered output would change —
+        // typically that's the message id + a content generation
+        // counter ("turn:42:gen-7") so an edit reliably invalidates.
+        // Empty keeps the legacy per-frame build path; use that for
+        // the live turn whose content mutates as tokens stream in.
+        std::string           cache_id;
     };
 
-    explicit Turn(Config c) : cfg_(std::move(c)) {}
+    explicit Turn(Config c)
+        : cfg_(std::make_shared<const Config>(std::move(c))) {}
 
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        using namespace dsl;
+        if (cfg_->cache_id.empty()) {
+            // No caching opted in — preserve the legacy build path
+            // (eager construction, no ComponentElement wrapper).
+            return build_inner(*cfg_);
+        }
+        // Memoized path: defer construction into a component() whose
+        // render lambda the renderer only invokes on cache miss. The
+        // lambda captures a shared_ptr<const Config> (16 B) — small
+        // enough to fit the std::function SBO on every mainstream
+        // C++ runtime, so the per-frame allocation count is zero
+        // even though the lambda is reconstructed each frame.
+        auto cfg = cfg_;
+        std::string id = cfg_->cache_id;
+        return maya::detail::component(
+            [cfg = std::move(cfg)](int /*w*/, int /*h*/) -> Element {
+                return build_inner(*cfg);
+            })
+            .grow(1.0f)
+            .cache_id(std::move(id));
+    }
+
+private:
+    std::shared_ptr<const Config> cfg_;
+
+    [[nodiscard]] static Element build_inner(const Config& cfg) {
         using namespace dsl;
         const Color muted = Color::bright_black();
 
@@ -111,19 +163,19 @@ public:
         //    Suppressed entirely on continuation turns — the previous
         //    turn in the run already showed it.
         auto header = h(
-            text(cfg_.glyph, Style{}.with_fg(cfg_.rail_color)),
+            text(cfg.glyph, Style{}.with_fg(cfg.rail_color)),
             text(" "),
-            text(cfg_.label, Style{}.with_fg(cfg_.rail_color).with_bold()),
+            text(cfg.label, Style{}.with_fg(cfg.rail_color).with_bold()),
             spacer(),
-            text(cfg_.meta, Style{}.with_fg(muted)),
+            text(cfg.meta, Style{}.with_fg(muted)),
             text(" ")
         ) | grow(1.0f);
 
         // ── Body: render each slot, blank line between consecutive ones.
         std::vector<Element> body_rows;
-        body_rows.reserve(cfg_.body.size() * 2);
+        body_rows.reserve(cfg.body.size() * 2);
         bool first = true;
-        for (const auto& slot : cfg_.body) {
+        for (const auto& slot : cfg.body) {
             Element rendered = render_slot(slot);
             if (is_blank(rendered)) continue;
             if (!first) body_rows.push_back(blank());
@@ -134,26 +186,26 @@ public:
         // ── Optional error banner under body.
         auto error_row = h(
             text("\xe2\x9a\xa0  ", Style{}.with_fg(Color::red()).with_bold()),    // ⚠
-            text(cfg_.error, Style{}.with_fg(Color::red()).with_dim().with_italic())
+            text(cfg.error, Style{}.with_fg(Color::red()).with_dim().with_italic())
         );
 
         // Two DSL branches build distinct compile-time tree types, so we
         // can't ternary directly — fold each to Element separately.
-        Element inner = cfg_.continuation
+        Element inner = cfg.continuation
             ? (v(
                 body_rows,
-                when(!cfg_.error.empty(), v(blank(), error_row))
+                when(!cfg.error.empty(), v(blank(), error_row))
               ) | grow(1.0f)).build()
             : (v(
                 header,
                 blank(),
                 body_rows,
-                when(!cfg_.error.empty(), v(blank(), error_row))
+                when(!cfg.error.empty(), v(blank(), error_row))
               ) | grow(1.0f)).build();
 
         Element rail = maya::detail::box()
             .direction(FlexDirection::Row)
-            .border(BorderStyle::Bold, cfg_.rail_color)
+            .border(BorderStyle::Bold, cfg.rail_color)
             .border_sides({.top = false, .right = false,
                            .bottom = false, .left = true})
             .padding(0, 0, 0, 2)
@@ -161,18 +213,15 @@ public:
           (std::move(inner));
 
         // ── Optional checkpoint divider above the rail.
-        if (!cfg_.checkpoint_above) return rail;
+        if (!cfg.checkpoint_above) return rail;
         return v(
             CheckpointDivider{{
-                .label = cfg_.checkpoint_label,
-                .color = cfg_.checkpoint_color,
+                .label = cfg.checkpoint_label,
+                .color = cfg.checkpoint_color,
             }}.build(),
             std::move(rail)
         ).build();
     }
-
-private:
-    Config cfg_;
 
     [[nodiscard]] static Element render_slot(const BodySlot& slot) {
         using namespace dsl;

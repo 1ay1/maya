@@ -318,6 +318,19 @@ public:
         return *this;
     }
 
+    // Set the content-stable cache key. Non-empty values route this
+    // component through the renderer's content-keyed component_cache,
+    // so a fresh ComponentElement value-copied through containers
+    // each frame still hits the cells captured on the first paint.
+    // Use a host-meaningful identifier (e.g. "turn:" + msg_id +
+    // ":" + content_gen) that changes IFF the rendered content
+    // changes — empty cache_id keeps the legacy pointer-keyed
+    // behaviour and pays the full render cost every frame.
+    auto cache_id(std::string id) -> ComponentBuilder& {
+        element_.cache_id = std::move(id);
+        return *this;
+    }
+
     /// Implicit conversion to Element.
     operator Element() const& {
         return Element{element_};

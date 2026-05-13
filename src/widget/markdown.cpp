@@ -4330,12 +4330,17 @@ Element md_block_to_element(const md::Block& block) {
     }, block.inner);
 }
 
-Element markdown(std::string_view source) {
-    auto doc = parse_markdown(source);
+// Build the Element tree from a freshly-parsed document. Pulled out of
+// `markdown()` so the memo path below can share the assembly logic
+// without duplicating the empty/one-block/many-block branches.
+namespace {
+
+[[nodiscard]] Element assemble_markdown(md::Document&& doc) {
     if (doc.blocks.empty()) return Element{TextElement{""}};
 
     if (doc.blocks.size() == 1)
-        return detail::vstack().padding(0, 0, 0, 2)(md_block_to_element(doc.blocks[0]));
+        return detail::vstack().padding(0, 0, 0, 2)(
+            md_block_to_element(doc.blocks[0]));
 
     std::vector<Element> blocks;
     blocks.reserve(doc.blocks.size());
@@ -4343,6 +4348,121 @@ Element markdown(std::string_view source) {
         blocks.push_back(md_block_to_element(block));
 
     return detail::vstack().gap(1).padding(0, 0, 0, 2)(std::move(blocks));
+}
+
+// ── markdown() content-keyed LRU memo ───────────────────────────────────────
+//
+// Without this, every `maya::Turn` that uses `Turn::MarkdownText{...}`
+// (the common path for settled assistant messages) re-runs
+// parse_markdown + the full block-to-Element walk on every frame the
+// renderer requests it. In a moha session with N settled turns and one
+// live composer, that's O(sum of body bytes) per keystroke — the
+// dominant per-frame cost the user reports as "lag grows with
+// conversation length."
+//
+// Strategy:
+//   * Bound the cache to a small fixed entry count (kCap). Each entry
+//     owns a copy of the source string and a shared_ptr<const Element>
+//     to the built tree. Memory ceiling is ~kCap × avg_body_size ≈
+//     low-MB for typical moha sessions (kCap=64, ~32KB/turn).
+//   * Key on a 64-bit content hash plus exact length match plus a
+//     memcmp tiebreak. The combined check is collision-proof; the
+//     hash alone narrows the search to ~1 candidate.
+//   * MRU promotion via swap-to-back so LRU eviction is `pop_back`.
+//   * shared_ptr<const Element>: caller receives the cached tree via
+//     the Element(shared_ptr<const Element>) implicit conversion,
+//     which auto-derives a stable cache_id from the control block.
+//     The renderer's content-keyed component_cache then short-circuits
+//     layout AND paint of the cached subtree to a cells-blit — so the
+//     win compounds: parse skipped here, tree walk skipped in the
+//     renderer.
+//
+// All state is thread_local — the renderer runs on a single thread per
+// app, so no synchronisation is needed and the cache stays warm across
+// the whole UI thread's lifetime.
+
+constexpr std::size_t kMarkdownCacheCap = 64;
+
+// FNV-1a 64-bit over the source bytes. ~1 cycle/byte on the most
+// constrained ARMv6 target; for a 10 KB body that's well under 50 µs
+// on a Raspberry Pi 1 — and it's only paid on cache miss anyway since
+// the hot path takes the hit branch below.
+[[nodiscard]] inline std::uint64_t hash_markdown_source(
+    std::string_view s) noexcept
+{
+    constexpr std::uint64_t kOffset = 0xcbf29ce484222325ULL;
+    constexpr std::uint64_t kPrime  = 0x100000001b3ULL;
+    std::uint64_t h = kOffset;
+    for (unsigned char c : s) {
+        h ^= c;
+        h *= kPrime;
+    }
+    return h;
+}
+
+struct MarkdownCacheEntry {
+    std::uint64_t hash;
+    std::string   source;       // owned for memcmp tiebreak
+    Element       built;        // assembled Element tree; copied on hit
+};
+
+[[nodiscard]] inline std::vector<MarkdownCacheEntry>& markdown_cache() {
+    thread_local std::vector<MarkdownCacheEntry> cache;
+    return cache;
+}
+
+} // anonymous
+
+Element markdown(std::string_view source) {
+    // ── Tiny inputs: skip the cache entirely.
+    // The memo overhead (hash + linear probe + LRU bookkeeping) is
+    // larger than parsing a few bytes of markdown. Threshold is
+    // deliberately small — most "trivially short" body slots in moha
+    // (single-token labels, "(empty)" placeholders) take this path
+    // and don't push real settled content out of the cache.
+    if (source.size() < 32) {
+        return assemble_markdown(parse_markdown(source));
+    }
+
+    auto& cache = markdown_cache();
+    const std::uint64_t h = hash_markdown_source(source);
+
+    // ── Hit path: linear scan (cache is small, predictable, branch-friendly).
+    // On hit we MRU-promote by swapping the entry to the tail and
+    // return a deep copy of the cached Element. NOTE: we intentionally
+    // do NOT wrap the result in a shared_ptr (which would auto-cast
+    // into a ComponentElement via the implicit Element ctor). Wrapping
+    // would let the renderer's content-keyed component_cache cells-blit
+    // future paints, BUT it forces the auto-measure path to run an
+    // extra inner layout::compute on every cache miss — exactly the
+    // regression that broke test_markdown's deep_blockquote stress
+    // case. Apps that want cells-cache acceleration should opt in at
+    // the WIDGET level (Turn::cache_id) where the outer wrapper makes
+    // the inner markdown free anyway. The parse-only memo here is
+    // strictly additive — it saves the bytes-to-AST work for
+    // unchanged content, nothing else.
+    for (std::size_t i = 0; i < cache.size(); ++i) {
+        auto& e = cache[i];
+        if (e.hash == h
+            && e.source.size() == source.size()
+            && std::memcmp(e.source.data(), source.data(), source.size()) == 0)
+        {
+            if (i + 1 != cache.size()) std::swap(cache[i], cache.back());
+            return cache.back().built;   // variant copy, O(tree)
+        }
+    }
+
+    // ── Miss: parse, assemble, store, evict oldest if needed.
+    Element built = assemble_markdown(parse_markdown(source));
+    if (cache.size() >= kMarkdownCacheCap) {
+        // Drop the LRU (front) — single shift only happens when the
+        // cache is full, which is itself the steady state, but the
+        // shift cost is O(kCap × sizeof(entry)) ≈ small for kCap=64,
+        // and dwarfed by the parse work we just did on this miss.
+        cache.erase(cache.begin());
+    }
+    cache.push_back({h, std::string{source}, built});
+    return built;
 }
 
 // ============================================================================

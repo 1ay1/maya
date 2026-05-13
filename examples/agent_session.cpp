@@ -1571,12 +1571,7 @@ static Element status_bar(const Model& m) {
 // ── Welcome screen (empty thread) ──────────────────────────────────────────
 static Element welcome_view() {
     WelcomeScreen::Config c;
-    c.wordmark = {
-        "\xe2\x95\xad\xe2\x94\x80 maya \xe2\x94\x80\xe2\x95\xae", // ╭─ maya ─╮
-        "\xe2\x94\x82 agent \xe2\x94\x82",                        // │ agent │
-        "\xe2\x95\xb0\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x95\xaf", // ╰──────╯
-    };
-    c.wordmark_color = Color::magenta();
+    c.sigil_color    = Color::magenta();
     c.tagline        = "Real SSE-streamed agent simulation, all local.";
     c.model_badge    = ModelBadge("claude-opus-4-7").build();
     c.profile_label  = "demo";

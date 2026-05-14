@@ -94,6 +94,12 @@ void print(const Element& root) {
     std::string buf;
     detail::LiveState st;
     detail::render_live(root, width, pool, buf, st);
+    // Restore DECAWM/cursor visibility owned by InlineFrameState.
+    // compose_inline_frame leaves DECAWM off across frames to save
+    // bytes on slow ttys; finalize() emits the restore.
+    buf.clear();
+    st.frame.finalize(buf);
+    if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);
 }
@@ -104,6 +110,9 @@ void print(const Element& root, int width) {
     std::string buf;
     detail::LiveState st;
     detail::render_live(root, width, pool, buf, st);
+    buf.clear();
+    st.frame.finalize(buf);
+    if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);
 }

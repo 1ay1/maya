@@ -2773,7 +2773,7 @@ static inline bool is_op_char(char c) {
     return kOpChar[static_cast<unsigned char>(c)];
 }
 
-static Element highlight_code(const std::string& code, const std::string& lang_tag) {
+static Element highlight_code_impl(const std::string& code, const std::string& lang_tag) {
     LangId lang = detect_lang(lang_tag);
 
     // Special case: diff gets its own highlighter
@@ -3260,6 +3260,52 @@ static Element highlight_code(const std::string& code, const std::string& lang_t
         .style = syntax::plain(),
         .runs = std::move(runs),
     }};
+}
+
+// ============================================================================
+// highlight_code — memoising wrapper
+// ============================================================================
+// The highlighter is pure: same `(lang_tag, code)` produces the same
+// Element every call. For long agent transcripts the same code block is
+// re-rendered tens or hundreds of times — once per inline frame — so a
+// content-keyed cache turns the recurring cost into a hash lookup.
+//
+// Cache is thread_local (renderer is single-threaded per app instance
+// in practice; this avoids contention if the host ever spawns a side
+// renderer). FIFO-evicts in halves when capacity is exceeded so we
+// never grow unbounded across long sessions. Keying combines a 64-bit
+// FNV-1a hash of `code` with a hash of `lang_tag`; the cached Element
+// is returned by copy, which for the typical TextElement case is a
+// string + runs vector — cheap relative to running the highlighter.
+static Element highlight_code(const std::string& code, const std::string& lang_tag) {
+    struct CacheEntry {
+        uint64_t key;
+        Element  elem;
+    };
+    static constexpr std::size_t kMaxEntries = 256;
+    thread_local std::vector<CacheEntry> cache;
+
+    auto fnv1a = [](std::string_view sv, uint64_t seed) noexcept -> uint64_t {
+        uint64_t h = seed;
+        for (unsigned char c : sv) {
+            h ^= c;
+            h *= 1099511628211ULL;
+        }
+        return h;
+    };
+    const uint64_t key = fnv1a(code, fnv1a(lang_tag, 14695981039346656037ULL));
+
+    for (auto& e : cache) {
+        if (e.key == key) return e.elem;
+    }
+
+    Element elem = highlight_code_impl(code, lang_tag);
+
+    if (cache.size() >= kMaxEntries) {
+        cache.erase(cache.begin(), cache.begin() + kMaxEntries / 2);
+    }
+    cache.push_back({key, elem});
+    return elem;
 }
 
 // ============================================================================

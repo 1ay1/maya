@@ -350,8 +350,15 @@ void compose_inline_frame(const Canvas& canvas,
     state.held_count = 0;
 
     // ── Frame open ─────────────────────────────────────────────────────
+    // hide_cursor and DECAWM-off are emitted once and persisted across
+    // frames (see InlineFrameState::{cursor_hidden, decawm_off}). Saves
+    // ~16 bytes per frame on slow ttys where every escape costs RTT or
+    // glyph-cache work. State.finalize() restores both on shutdown.
     if (synchronized_output) out += ansi::sync_start;
-    out += ansi::hide_cursor;
+    if (!state.cursor_hidden) {
+        out += ansi::hide_cursor;
+        state.cursor_hidden = true;
+    }
 
     // First-ever render (prev_rows == 0). Two distinct sub-cases,
     // differentiated by `state.prev_width`:
@@ -474,7 +481,12 @@ void compose_inline_frame(const Canvas& canvas,
     }
 
     // DECAWM off for the entire frame body — emitted once, not per row.
-    out += "\x1b[?7l";
+    // Persisted across frames via state.decawm_off; only the first frame
+    // (or first after a state.reset()) pays the 5-byte escape.
+    if (!state.decawm_off) {
+        out += "\x1b[?7l";
+        state.decawm_off = true;
+    }
     uint16_t current_style = UINT16_MAX;
 
     // ── Per-row, per-cell-span emission ────────────────────────────────
@@ -564,7 +576,11 @@ void compose_inline_frame(const Canvas& canvas,
         // matches by induction; nothing to update.
     }
 
-    out += "\x1b[?7h";    // restore DECAWM
+    // DECAWM is NOT restored here — it persists off across frames via
+    // state.decawm_off. The next frame's diff path skips re-emitting
+    // \x1b[?7l because state.decawm_off is already true. On shutdown
+    // (or width change → state.reset()) the owner calls
+    // state.finalize(out) to restore.
     out += ansi::reset;   // drop residual SGR
 
     // ── Shrink: erase rows past the new content_rows ───────────────────

@@ -86,10 +86,36 @@ struct InlineFrameState {
     /// consecutive frame, keeps the accumulated "held diff" bounded.
     int           held_count = 0;
 
+    /// Terminal-mode flags persisted across frames. compose_inline_frame
+    /// flips `decawm_off`/`cursor_hidden` to true the first time it
+    /// emits the corresponding sequence; subsequent frames skip the
+    /// per-frame re-emission and the bracket exit. reset() clears them
+    /// so the next composition re-establishes the modes from scratch
+    /// (cursor position is also unknown after reset). Owners call
+    /// `finalize(out)` on shutdown to restore the terminal.
+    bool decawm_off    = false;
+    bool cursor_hidden = false;
+
     void reset() noexcept {
-        prev_width = 0;
-        prev_rows  = 0;
-        held_count = 0;
+        prev_width    = 0;
+        prev_rows     = 0;
+        held_count    = 0;
+        decawm_off    = false;
+        cursor_hidden = false;
+    }
+
+    /// Append the bytes needed to restore terminal state owned by this
+    /// frame (cursor visibility, DECAWM). Clears the flags so further
+    /// calls are no-ops. Safe to call multiple times.
+    void finalize(std::string& out) {
+        if (cursor_hidden) {
+            out.append("\x1b[?25h");
+            cursor_hidden = false;
+        }
+        if (decawm_off) {
+            out.append("\x1b[?7h");
+            decawm_off = false;
+        }
     }
 
     /// Build a typed marker for committing `rows` rows of scrollback.

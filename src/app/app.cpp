@@ -96,7 +96,14 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     // routes startup through the Synced case, preserving the host's
     // shell content above the live frame.
     if (rt.is_inline()) {
-        rt.in_coherence_ = coherent::InlineSynced{InlineFrameState{}};
+        // enable_inline_mode already emitted hide_cursor in the setup
+        // sequence — pre-seed cursor_hidden=true so compose's first
+        // frame doesn't redundantly re-emit it. DECAWM is left at the
+        // host's default (on); compose will turn it off on its first
+        // emit and the Terminal<InlineMode> destructor restores.
+        InlineFrameState seed;
+        seed.cursor_hidden = true;
+        rt.in_coherence_ = coherent::InlineSynced{std::move(seed)};
     }
 
     return ok(std::move(rt));
@@ -202,6 +209,35 @@ auto Runtime::render(const Element& root) -> Status {
     RenderContextGuard ctx_guard(render_ctx_);
 
     if (is_inline()) {
+        // ── Backpressure check ─────────────────────────────────────────
+        // On slow ttys (serial console, framebuffer, ssh-over-high-RTT),
+        // the kernel write buffer fills faster than the consumer drains
+        // it. When that happens, skip this render entirely — the model
+        // tree may have advanced by then (more tokens streamed in), but
+        // because prev_cells wasn't updated the NEXT non-skipped render
+        // composes one combined diff against the original baseline. The
+        // visual lags reality by however many frames the wire is
+        // backlogged, but it's always self-consistent and the work is
+        // O(one frame) instead of O(N skipped frames).
+        //
+        // On modern terminals (Kitty, WezTerm, Windows Terminal, local
+        // xterm) the kernel buffer never fills under interactive
+        // workloads — poll_writable returns true immediately and the
+        // only cost is the syscall (~µs). No profile, no flag, just a
+        // signal that adapts to the actual transport speed.
+        //
+        // Only consult backpressure if a frame has already been emitted
+        // (in_coherence_ is InlineSynced with prev_rows > 0). Skipping
+        // the first-ever render would leave the user with a blank
+        // screen until the wire wakes up — a worse UX than blocking
+        // briefly.
+        if (auto* synced = std::get_if<coherent::InlineSynced>(&in_coherence_);
+            synced && synced->state.prev_rows > 0)
+        {
+            if (!platform::io_poll_writable(output_handle_))
+                return ok();
+        }
+
         // ── Inline path: dispatch on coherence variant ──────────────────
         // std::visit selects the rendering function whose precondition
         // matches the current state.  The InlineFrameState (prev_cells +

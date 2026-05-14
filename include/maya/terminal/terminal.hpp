@@ -257,11 +257,19 @@ public:
             // shell from seeing CSI-u or CSI 27;… sequences it can't decode
             // after we hand control back.  Trailing \r\n moves the user's
             // shell prompt onto a fresh line below the last rendered frame.
+            //
+            // \x1b[?7h restores DECAWM. compose_inline_frame leaves DECAWM
+            // off across frames as a byte-saving optimisation (avoids the
+            // 10-byte \x1b[?7l\x1b[?7h bracket per frame on slow ttys); the
+            // shell expects auto-wrap on, so we restore here. Emitted
+            // unconditionally — the sequence is idempotent and the destructor
+            // path doesn't know the InlineFrameState's flag.
             std::string seq;
             seq.reserve(64);
             seq += ansi::modify_other_keys_off;
             seq += ansi::kkp_pop;
             seq += ansi::disable_bracketed_paste;
+            seq += "\x1b[?7h";   // DECAWM on
             seq += ansi::show_cursor;
             seq += ansi::reset;
             seq += "\r\n";

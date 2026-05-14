@@ -107,8 +107,8 @@ inline constexpr SimdCaps simd_caps = {
 #if defined(__x86_64__) || defined(_M_X64)
     .sse2 = true,                  // x86-64 baseline
 #endif
-#if defined(__aarch64__) || defined(_M_ARM64)
-    .neon = true,                  // AArch64 baseline
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__ARM_NEON)
+    .neon = true,                  // AArch64 baseline, ARMv7+NEON build
 #endif
 #if defined(__ARM_FEATURE_SVE)
     .sve = true,

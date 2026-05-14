@@ -19,7 +19,7 @@
     #include "avx2.hpp"     // includes sse2.hpp -> scalar.hpp
 #elif defined(__x86_64__) || defined(_M_X64)
     #include "sse2.hpp"     // includes scalar.hpp
-#elif defined(__aarch64__) || defined(_M_ARM64)
+#elif defined(__aarch64__) || defined(_M_ARM64) || defined(__ARM_NEON)
     #include "neon.hpp"     // includes scalar.hpp
 #else
     #include "scalar.hpp"
@@ -41,7 +41,7 @@ using Best =
     Avx2;
 #elif defined(__x86_64__) || defined(_M_X64)
     Sse2;
-#elif defined(__aarch64__) || defined(_M_ARM64)
+#elif defined(__aarch64__) || defined(_M_ARM64) || defined(__ARM_NEON)
     Neon;
 #else
     Scalar;

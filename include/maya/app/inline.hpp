@@ -173,6 +173,14 @@ void live(LiveConfig cfg, RenderFn&& render_fn) {
         }
     }
 
+    // Restore terminal state owned by InlineFrameState (DECAWM, and
+    // cursor visibility if compose_inline_frame ever toggled it). Done
+    // before the manual show_cursor below so the byte sequence stays
+    // clean even if compose's tracking diverged from cfg.cursor.
+    buf.clear();
+    state.frame.finalize(buf);
+    if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
+
     if (!cfg.cursor) std::fputs("\x1b[?25h", stdout); // show cursor
     std::fputc('\n', stdout);
     std::fflush(stdout);

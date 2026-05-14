@@ -14,6 +14,7 @@
 
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     #include <cerrno>
+    #include <poll.h>      // poll() for non-blocking writability check
     #include <sys/ioctl.h>
     #include <sys/uio.h>   // writev()
     #include <unistd.h>
@@ -162,6 +163,42 @@ struct IoVec {
         return err<std::size_t>(Error::io("ReadFile failed"));
     }
     return ok(static_cast<std::size_t>(bytes_read));
+#endif
+}
+
+// ============================================================================
+// io_poll_writable — non-blocking check for output writability
+// ============================================================================
+//
+// Returns true if `handle` accepts at least one byte of write right now.
+// On POSIX, a single poll() with POLLOUT and timeout=0. On Win32 the
+// console buffer for an interactive tty is large enough that this check
+// rarely matters; return true.
+//
+// Used by the inline renderer to detect kernel-buffer backpressure on
+// slow ttys (serial console, framebuffer, ssh over high-latency link)
+// and skip the paint cycle entirely — the next render coalesces the
+// diff naturally because `prev_cells` wasn't updated. Modern terminals
+// always return true and pay only the syscall cost (~µs).
+
+[[nodiscard]] inline bool io_poll_writable(
+    [[maybe_unused]] NativeHandle h) noexcept
+{
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    struct pollfd pfd{};
+    pfd.fd = h;
+    pfd.events = POLLOUT;
+    pfd.revents = 0;
+    int r = ::poll(&pfd, 1, 0);
+    if (r <= 0) {
+        // 0 = timeout (kernel buffer currently full)
+        // < 0 = error (EINTR / EBADF). On error, conservatively assume
+        // writable so we don't block forever on a transient fault.
+        return r < 0;
+    }
+    return (pfd.revents & POLLOUT) != 0;
+#else
+    return true;
 #endif
 }
 

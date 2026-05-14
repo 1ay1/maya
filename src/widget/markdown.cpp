@@ -4524,6 +4524,97 @@ Element markdown(std::string_view source) {
 // StreamingMarkdown — progressive per-block rendering
 // ============================================================================
 
+namespace {
+
+enum class IntraBlank : uint8_t { No, Yes, Unknown };
+
+// Classify a blank-line position `i` (where src[i] == '\n' and that '\n' is
+// at line start, meaning a \n\n separator has just landed) as either
+//   No      — an ordinary block boundary, commit here
+//   Yes     — intra-list whitespace, do NOT split the list at this point
+//   Unknown — next line hasn't arrived yet, defer the decision
+//
+// Why we need this: find_block_boundary commits on every blank line. A
+// loose ordered list like
+//   1. item one
+//
+//   2. item two
+//
+//   3. item three
+// emits two blank lines that BOTH satisfy the blank-line check. Without
+// this guard each item commits as its own single-item md::List block. The
+// rendered numbering is preserved (start_num carries through), but the
+// per-item ComponentElement caching + diff path is fragile across the
+// chain of mini-commits: a streaming-time frame where the live tail had
+// already shown item N as inline text, captured into native scrollback
+// before the commit re-rendered it as a proper list row, leaves the
+// scrollback row holding the inline version while the live frame writes
+// the list version one row higher. Net effect: individual items vanish
+// from the user's view of the conversation (reported as "items 1 and 4
+// of a numbered list disappear"). Keeping the list cohesive until it
+// genuinely ends means commit_range sees the whole thing once and renders
+// one md::List Element that the diff path treats as a single unit.
+//
+// The Unknown verdict matters because at streaming time we frequently
+// reach a blank line while the NEXT line is still arriving — we can't
+// tell yet whether it's "2. item two" (intra-list, defer) or "Plain
+// paragraph" (terminate list, commit). Returning Unknown stops the
+// scanner at the blank without consuming it; the next call resumes here
+// once more bytes land.
+IntraBlank classify_blank_line(std::string_view src, std::size_t i) noexcept {
+    // i is the position of the second '\n' in a \n\n pair (line-start
+    // sentinel). The previous character must be '\n', otherwise this
+    // wasn't called from the blank-line branch — defensive.
+    if (i == 0 || src[i - 1] != '\n') return IntraBlank::No;
+
+    // ── Look back: walk to the start of the line ending at src[i-1] ──
+    std::size_t prev_end = i - 1;            // exclusive of the '\n' at i-1
+    std::size_t prev_start = 0;
+    for (std::size_t k = prev_end; k > 0; --k) {
+        if (src[k - 1] == '\n') { prev_start = k; break; }
+    }
+    std::string_view prev_line = src.substr(prev_start, prev_end - prev_start);
+    bool prev_is_ol = ol_marker_len(prev_line) > 0;
+    bool prev_is_ul = ul_marker_len(prev_line) > 0;
+    if (!prev_is_ol && !prev_is_ul) return IntraBlank::No;
+    int prev_indent = count_indent(prev_line);
+
+    // ── Look forward: skip any additional consecutive blanks, then read
+    //                  the next line. Loose lists sometimes carry two
+    //                  blank lines between items; treat the whole run
+    //                  as one separator.
+    std::size_t j = i;
+    while (j < src.size() && src[j] == '\n') ++j;
+    if (j >= src.size()) return IntraBlank::Unknown;  // next line not here yet
+
+    std::size_t next_end = src.find('\n', j);
+    bool next_complete = (next_end != std::string_view::npos);
+    if (!next_complete) next_end = src.size();
+    std::string_view next_line = src.substr(j, next_end - j);
+
+    bool next_is_ol = ol_marker_len(next_line) > 0;
+    bool next_is_ul = ul_marker_len(next_line) > 0;
+
+    if (!next_is_ol && !next_is_ul) {
+        // Next line has no marker. If it's still incomplete we can't
+        // tell — it might become "2. ..." once a space + body arrives,
+        // or it might become "Plain paragraph". Wait.
+        if (!next_complete) return IntraBlank::Unknown;
+        return IntraBlank::No;
+    }
+
+    // Both prev and next are list markers. Same kind + same indent
+    // (±1, matching parse_markdown_impl's tolerance at line 1845) means
+    // they belong to the same list.
+    int next_indent = count_indent(next_line);
+    bool same_kind = (prev_is_ol && next_is_ol) || (prev_is_ul && next_is_ul);
+    bool same_indent = std::abs(next_indent - prev_indent) <= 1;
+    if (same_kind && same_indent) return IntraBlank::Yes;
+    return IntraBlank::No;
+}
+
+} // anonymous namespace
+
 size_t StreamingMarkdown::find_block_boundary() noexcept {
     // Resumable scan — see the scan_* / in_code_fence_ comments in the
     // header for the full design. The body below is byte-for-byte the
@@ -4565,10 +4656,29 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
 
             if (!in_fence) {
                 // Blank line: we're at the second '\n' of a \n\n pair
-                // (or source begins with '\n' at i == 0).  Commit up to
-                // and including the second '\n'; the next block starts
-                // at i + 1.
+                // (or source begins with '\n' at i == 0).  Default
+                // behaviour: commit up to and including the second '\n';
+                // the next block starts at i + 1.  Exception: intra-list
+                // whitespace (loose-list blanks between two same-kind
+                // list-item lines at the same indent) must NOT split
+                // the list — see classify_blank_line for the rationale.
                 if (source_[i] == '\n') {
+                    auto verdict = classify_blank_line(
+                        std::string_view{source_}, i);
+                    if (verdict == IntraBlank::Yes) {
+                        // Step past the blank without advancing
+                        // last_boundary; the list stays cohesive in
+                        // the tail until it genuinely ends.
+                        i = i + 1;
+                        continue;
+                    }
+                    if (verdict == IntraBlank::Unknown) {
+                        // Next line hasn't fully arrived. Stop the
+                        // scan here without consuming the blank so
+                        // the next call resumes from this position
+                        // when more bytes are present.
+                        break;
+                    }
                     last_boundary = i + 1;
                     i = i + 1;
                     continue;
@@ -5023,10 +5133,10 @@ const Element& StreamingMarkdown::build() const {
     //
     // The hot streaming case: prefix unchanged, has_tail/has_prefix
     // shape unchanged, only the tail's content moved. We can mutate
-    // cached_build_'s tail child in place — children[0] (the prefix
-    // ComponentElement) keeps its address, the renderer's
-    // component_cache stays warm, and only render_tail's lightweight
-    // inline-cache path runs.
+    // cached_build_'s tail child (the LAST child of the outer vstack)
+    // in place — every prefix child keeps its address and per-component
+    // caches stay warm, while only render_tail's lightweight inline-
+    // cache path runs.
     //
     // Sub-fast-path: if the tail body bytes AND the committed-side
     // fence parity are byte-identical to the cache, render_tail's
@@ -5043,7 +5153,9 @@ const Element& StreamingMarkdown::build() const {
         && cached_has_tail_   == has_tail
         && std::holds_alternative<BoxElement>(cached_build_.inner)) {
         auto& box = std::get<BoxElement>(cached_build_.inner);
-        const std::size_t expected = (has_prefix ? 1u : 0u) + (has_tail ? 1u : 0u);
+        const std::size_t prefix_n =
+            has_prefix ? prefix_->blocks.size() : 0u;
+        const std::size_t expected = prefix_n + (has_tail ? 1u : 0u);
         if (box.children.size() == expected) {
             if (has_tail) {
                 const bool tail_unchanged =
@@ -5073,58 +5185,42 @@ const Element& StreamingMarkdown::build() const {
     //
     // Either the prefix generation moved (commit_range fired), the
     // shape (has_prefix / has_tail) changed, or the cache was reset.
-    // Build the outer vstack with up to two children:
-    //   children[0] = prefix ComponentElement (when has_prefix)
-    //   children[last] = tail element (when has_tail)
+    // Build the outer vstack with N + (has_tail ? 1 : 0) children:
+    //   children[0 .. N-1] = committed prefix blocks (deep-copied)
+    //   children[last]     = render_tail() output (when has_tail)
     //
-    // The prefix is wrapped in a ComponentElement whose render() pulls
-    // from the captured shared_ptr<CommittedPrefix>. Its address lives
-    // inside cached_build_'s children[0] — stable across frames until
-    // we hit this rebuild path again — so the renderer's
-    // component_cache can amortise the per-block layout + paint
-    // across all subsequent frames at the same width.
+    // Why direct children instead of wrapping in a ComponentElement.
+    // The earlier approach wrapped each prefix shared_ptr<const Element>
+    // via the Element{sp} converting constructor, producing one
+    // ComponentElement per block whose cache_id was derived from sp
+    // identity. The renderer then cached per-block layout+paint cells
+    // by (sp, width), making per-commit cost O(new_block_size) instead
+    // of O(transcript_size). The trade was correctness: the
+    // ComponentElement cache hit a cells_rows < content_h blit path
+    // where the cached cell snapshot was shorter than the layout-
+    // allocated content height. When the inline frame later overflowed
+    // term_h and pushed rows into the terminal's native (immutable)
+    // scrollback, those short cell ranges left blank rows above and
+    // below the block's actual content — the "ghost rectangles" that
+    // accumulate after 2-3 turns of long streaming. Direct children
+    // bypass the cells cache entirely: every frame's layout walks the
+    // prefix's pre-built Element values directly, producing the same
+    // cells the live frame would have rendered, so the cells captured
+    // into native scrollback during overflow are correct.
+    //
+    // Cost: O(transcript_size) deep-copies of Element variant bodies
+    // per generation bump. Pricey on long sessions, but maybe_virtualize
+    // bounds the relevant tail of the transcript — older turns get
+    // committed to scrollback and their blocks drop out of the active
+    // prefix entirely.
     std::vector<Element> outer_children;
-    outer_children.reserve(2);
+    outer_children.reserve(
+        (has_prefix ? prefix_->blocks.size() : 0u) + (has_tail ? 1u : 0u));
 
     if (has_prefix) {
-        // Capture by value: the lambda outlives any single build() call
-        // (it's owned by cached_build_), and prefix_ might be replaced
-        // by clear()/set_content's reset path.
-        auto p = prefix_;
-        ComponentElement comp;
-        comp.render = [p](int /*w*/, int /*h*/) -> Element {
-            // Materialise the inner vstack on cache miss. Each block's
-            // shared_ptr goes through maya's `shared_ptr<const Element>
-            // → Element` converting constructor (element.hpp:280),
-            // which produces a ComponentElement whose `cache_id` is
-            // derived from the shared_ptr's identity (id_for_shared).
-            // The renderer then keys its component_cache on
-            // (block_sp_identity, width) per child, so:
-            //
-            //   - A commit (prefix generation bump) rebuilds this outer
-            //     ComponentElement and re-runs this lambda, but only
-            //     the NEWLY-appended block has a fresh shared_ptr →
-            //     fresh cache_id → cache miss. Every previously-
-            //     committed block reuses its cached layout+paint cells.
-            //
-            //   - A width change invalidates all entries (their key
-            //     includes width); they re-paint once and stay cached.
-            //
-            // The previous version did `kids.push_back(*sp)`, which
-            // deref'd into a `const Element&` and DEEP-COPIED the
-            // variant body — for a 50-block transcript every commit
-            // re-cloned all 50 block subtrees just to relocate the
-            // single new last one. Wrapping via `Element{sp}` reduces
-            // that to one shared_ptr ref-count bump per block plus one
-            // cache-miss materialisation for the new block alone.
-            std::vector<Element> kids;
-            kids.reserve(p->blocks.size());
-            for (const auto& sp : p->blocks) {
-                kids.push_back(Element{sp});
-            }
-            return detail::vstack().gap(1)(std::move(kids)).build();
-        };
-        outer_children.push_back(Element{std::move(comp)});
+        for (const auto& sp : prefix_->blocks) {
+            outer_children.push_back(*sp);  // deep-copy Element variant body
+        }
     }
     if (has_tail) {
         outer_children.push_back(render_tail(tail));

@@ -1113,12 +1113,17 @@ struct Messenger {
             .max_width(Dimension::fixed(bubble_w))
             (std::move(rows));
 
-        // Simple h(spacer, bubble) — parent vstack's default
-        // align_items=Stretch makes h fill the messages_inner width,
-        // and the spacer's grow=1 pushes bubble to the right edge.
-        // No width(percent), no align_self, no justify — those have
-        // all proven flaky in this codebase.
-        return h(spacer(), bubble).build();
+        // Force the row to span the full messages_inner width via
+        // explicit percent(100) on the builder. Without that, parent
+        // doesn't stretch us (the Viewport scroll role may bypass
+        // align_items=Stretch), the row collapses to bubble's natural
+        // width, and spacer has nothing to grow into. With it, spacer
+        // absorbs all leftover horizontal space and pushes bubble to
+        // the right edge.
+        return hstack()
+            .width(Dimension::percent(100))
+            .align_items(Align::Start)
+            (spacer(), bubble);
     }
 
     // Peer message — Telegram-mobile received shape but TUI:

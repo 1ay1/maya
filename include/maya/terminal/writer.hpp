@@ -96,6 +96,26 @@ class Writer : MoveOnly {
     /// frames for one tick and merge with the next.
     mutable double ns_per_byte_ema_ = 0.0;
 
+    /// Residue carried across renders. On a slow tty the kernel write
+    /// buffer fills before all bytes of a frame are accepted; the
+    /// remainder lands here and gets drained by `try_drain_residue()`
+    /// at the top of the next `Runtime::render`. Holding the bytes —
+    /// rather than blocking the event loop on `write()` — keeps
+    /// keystroke handling responsive when the wire is congested. The
+    /// caller (Runtime) MUST refuse to compose a new frame while
+    /// `has_residue()` is true: a new compose_inline_frame would update
+    /// prev_cells to reflect a frame the wire hasn't received yet,
+    /// breaking the next diff's correctness. See the comment in
+    /// `Runtime::render` for the drain-before-compose protocol.
+    std::string residue_;
+
+    /// The fd's original `F_GETFL` flags at Writer construction. Set
+    /// once in the constructor and restored in the destructor so the
+    /// user's shell doesn't inherit `O_NONBLOCK` on stdout. -1 means
+    /// "we never adjusted flags" (e.g. Windows path, or the fcntl
+    /// failed at startup); the destructor leaves the fd alone.
+    int prior_output_flags_ = -1;
+
     // A typical frame pushes 50–150 ops (one per style change + text run in
     // a view of moderate depth). Reserving up front avoids the geometric
     // reallocation chain on the first frame, and from frame 2 onward
@@ -104,12 +124,13 @@ class Writer : MoveOnly {
     static constexpr std::size_t kOpsReserveHint = 128;
 
 public:
-    explicit Writer(platform::NativeHandle h) noexcept : handle_(h) {
-        ops_.reserve(kOpsReserveHint);
-    }
+    explicit Writer(platform::NativeHandle h) noexcept;
     Writer() noexcept : handle_(platform::invalid_handle) {
         ops_.reserve(kOpsReserveHint);
     }
+    ~Writer();
+    Writer(Writer&& other) noexcept;
+    Writer& operator=(Writer&& other) noexcept;
 
     // ========================================================================
     // Operation submission
@@ -147,6 +168,45 @@ public:
 
     /// Write as many bytes as possible without blocking.
     [[nodiscard]] auto write_some(std::string_view data) const -> Result<std::size_t>;
+
+    /// Non-blocking, residue-buffered write. Drains any pending residue
+    /// first, then attempts the data. Whatever can't fit gets appended
+    /// to residue and returned as `ok()` — the caller treats the bytes
+    /// as committed in order. The contract:
+    ///
+    ///   - returns `ok()` on full delivery OR partial delivery with the
+    ///     unwritten suffix safely stashed in residue;
+    ///   - returns `would_block` only when residue had to grow AND the
+    ///     caller asked via `has_residue()`-style polling (current impl
+    ///     never returns would_block here — it always succeeds);
+    ///   - returns hard error on real I/O failure (the caller should
+    ///     transition to Divergent and discard the residue via
+    ///     `discard_residue()`).
+    ///
+    /// MUST be paired with `try_drain_residue()` at the start of the
+    /// next render; otherwise the caller risks composing a new frame
+    /// whose prev_cells reflects bytes still sitting in residue.
+    [[nodiscard]] auto write_or_buffer(std::string_view data) -> Status;
+
+    /// Attempt to drain pending residue without blocking. Returns
+    /// `ok()` if residue is now empty (safe to compose a new frame),
+    /// `would_block` if some residue remains (caller should defer the
+    /// current render and try again next tick), hard error otherwise.
+    [[nodiscard]] auto try_drain_residue() -> Status;
+
+    /// True iff the writer is holding undelivered bytes from a prior
+    /// non-blocking write. A frame composer MUST check this and defer
+    /// before calling compose_inline_frame, since a fresh compose
+    /// would update prev_cells to reflect bytes that haven't actually
+    /// reached the wire yet.
+    [[nodiscard]] bool has_residue() const noexcept { return !residue_.empty(); }
+
+    /// Discard pending residue without writing. Use ONLY when the
+    /// caller has just dropped its cell-cache (e.g. transitioning
+    /// to Divergent after a hard I/O error); the residue's bytes
+    /// reference cell positions that no longer have a defined
+    /// "prev" baseline.
+    void discard_residue() noexcept { residue_.clear(); }
 
     /// EMA of ns-per-byte measured across recent `write_all` calls. 0
     /// before the first sample lands. Use as a cheap "is the wire slow?"

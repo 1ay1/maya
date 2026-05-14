@@ -12,6 +12,10 @@
 #include <variant>
 #include <vector>
 
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    #include <fcntl.h>     // F_GETFL, F_SETFL, O_NONBLOCK
+#endif
+
 #include "maya/core/expected.hpp"
 #include "maya/core/overload.hpp"
 #include "maya/core/types.hpp"
@@ -19,6 +23,57 @@
 #include "maya/terminal/ansi.hpp"
 
 namespace maya {
+
+// ============================================================================
+// Construction / move / destruction
+// ============================================================================
+// The output fd is put into non-blocking mode at Writer construction so
+// a slow tty's full kernel buffer surfaces as EAGAIN rather than blocking
+// the event loop. The prior flags are stashed and restored in the dtor
+// so the user's shell — which shares the open file description with us —
+// doesn't inherit O_NONBLOCK on stdout after agentty exits.
+
+Writer::Writer(platform::NativeHandle h) noexcept : handle_(h) {
+    ops_.reserve(kOpsReserveHint);
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    if (h >= 0) {
+        int prev = ::fcntl(h, F_GETFL);
+        if (prev >= 0 && (prev & O_NONBLOCK) == 0) {
+            if (::fcntl(h, F_SETFL, prev | O_NONBLOCK) == 0) {
+                prior_output_flags_ = prev;
+            }
+        }
+    }
+#endif
+}
+
+Writer::~Writer() {
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    if (prior_output_flags_ >= 0 && handle_ >= 0) {
+        (void)::fcntl(handle_, F_SETFL, prior_output_flags_);
+    }
+#endif
+}
+
+Writer::Writer(Writer&& other) noexcept
+    : handle_(other.handle_)
+    , ops_(std::move(other.ops_))
+    , flush_buf_(std::move(other.flush_buf_))
+    , reserve_hint_(other.reserve_hint_)
+    , ns_per_byte_ema_(other.ns_per_byte_ema_)
+    , residue_(std::move(other.residue_))
+    , prior_output_flags_(std::exchange(other.prior_output_flags_, -1))
+{
+    other.handle_ = platform::invalid_handle;
+}
+
+Writer& Writer::operator=(Writer&& other) noexcept {
+    if (this != &other) {
+        this->~Writer();
+        new (this) Writer(std::move(other));
+    }
+    return *this;
+}
 
 // ============================================================================
 // Operation submission
@@ -103,6 +158,55 @@ auto Writer::flush() -> Status {
 
 auto Writer::write_raw(std::string_view data) -> Status {
     return write_all(data);
+}
+
+// ============================================================================
+// Non-blocking + residue-buffered path
+// ============================================================================
+//
+// On a tty with O_NONBLOCK set, every `::write` either succeeds in
+// emitting some bytes (possibly fewer than asked) or returns EAGAIN.
+// We never block. The "would have blocked" suffix lands in `residue_`
+// and the next render's first action is to retry it. While residue is
+// non-empty the caller is forbidden from running compose_inline_frame —
+// the cell-state shadow update inside that function assumes the wire
+// has actually accepted the emitted bytes, which would be a lie while
+// part of the previous frame sits in our buffer.
+
+auto Writer::try_drain_residue() -> Status {
+    if (residue_.empty()) return ok();
+    auto r = write_some(residue_);   // already loops on EINTR, stops on EAGAIN
+    if (!r) return std::unexpected{r.error()};
+    const std::size_t n = *r;
+    if (n >= residue_.size()) {
+        residue_.clear();
+        return ok();
+    }
+    if (n > 0) residue_.erase(0, n);
+    return err(Error::would_block());
+}
+
+auto Writer::write_or_buffer(std::string_view data) -> Status {
+    // Drain old residue first so the new bytes don't get reordered
+    // around bytes from a prior frame that haven't shipped yet.
+    if (!residue_.empty()) {
+        auto d = try_drain_residue();
+        if (!d && d.error().kind != ErrorKind::WouldBlock) {
+            return d;   // hard I/O error — caller handles
+        }
+        if (!residue_.empty()) {
+            // Wire still backed up. Queue the new bytes behind the
+            // residue so order is preserved when the buffer drains.
+            residue_.append(data);
+            return ok();
+        }
+    }
+    if (data.empty()) return ok();
+    auto r = write_some(data);
+    if (!r) return std::unexpected{r.error()};
+    const std::size_t n = *r;
+    if (n < data.size()) residue_.append(data.substr(n));
+    return ok();
 }
 
 auto Writer::write_some(std::string_view data) const -> Result<std::size_t> {

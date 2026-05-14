@@ -243,16 +243,34 @@ auto Runtime::render(const Element& root) -> Status {
     RenderContextGuard ctx_guard(render_ctx_);
 
     if (is_inline()) {
-        // No backpressure-based render skipping. A poll(POLLOUT)=full
-        // result would skip composer keystrokes immediately after a
-        // large turn emit on slow ttys (Pi-2 serial, ssh-over-high-RTT)
-        // — replaying the first-keystroke-lag failure mode the
-        // EMA-based coalescer hit. Keystroke responsiveness beats
-        // streaming-burst coalescing: block-writing on a slow tty is
-        // annoying but visible feedback per key is mandatory. Streaming
-        // bursts coalesce naturally via compose_inline_frame's
-        // no-change early return; the per-row diff path already keeps
-        // emit bytes proportional to actual change.
+        // ── Backpressure via non-blocking writer ───────────────────────
+        // Output fd is O_NONBLOCK (set by Writer ctor). On a congested
+        // tty the previous frame may have left bytes in the writer's
+        // residue buffer. Drain those first; if the wire still won't
+        // accept them, defer the new frame entirely — DO NOT compose,
+        // because compose_inline_frame would update prev_cells to
+        // reflect a frame the wire hasn't received, breaking the diff
+        // invariant on the next paint.
+        //
+        // Unlike the older poll(POLLOUT) skip, this can't run away into
+        // a feedback loop: prev_cells never lies, so when residue
+        // finally drains the next compose produces the same bounded
+        // diff (canvas vs wire) it would have on a fast tty. The cost
+        // of a deferred render is one event-loop iteration of delay,
+        // not an inflated next-frame cost.
+        if (writer_->has_residue()) {
+            auto d = writer_->try_drain_residue();
+            if (!d) {
+                if (d.error().kind == ErrorKind::WouldBlock) {
+                    return ok();   // wire still backed up; retry next tick
+                }
+                // Hard I/O error — toss the residue and the cell cache,
+                // let the Divergent path do a full clear next time.
+                writer_->discard_residue();
+                in_coherence_ = coherent::Divergent{};
+                return d;
+            }
+        }
 
         // ── Inline path: dispatch on coherence variant ──────────────────
         // std::visit selects the rendering function whose precondition
@@ -298,7 +316,8 @@ auto Runtime::render(const Element& root) -> Status {
                 // inline-mode growth (serialize from host's cursor
                 // position). Host's terminal content stays visible
                 // above; scrollback preserved.
-                if (auto wr = writer_->write_raw("\x1b[2J\x1b[3J\x1b[H"); !wr) {
+                if (auto wr = writer_->write_or_buffer("\x1b[2J\x1b[3J\x1b[H"); !wr) {
+                    writer_->discard_residue();
                     write_status = wr;
                     return coherent::Divergent{};
                 }
@@ -325,7 +344,8 @@ auto Runtime::render(const Element& root) -> Status {
                                      sync_output_);
                 if (out_.empty()) return coherent::InlineSynced{std::move(fresh)};
 
-                if (auto wr = writer_->write_raw(out_); !wr) {
+                if (auto wr = writer_->write_or_buffer(out_); !wr) {
+                    writer_->discard_residue();
                     write_status = wr;
                     return coherent::Divergent{};   // back to unknown pixels
                 }
@@ -405,9 +425,10 @@ auto Runtime::render(const Element& root) -> Status {
                 }
 
                 auto t_w0 = std::chrono::steady_clock::now();
-                auto wr = writer_->write_raw(out_);
+                auto wr = writer_->write_or_buffer(out_);
                 double w_ms = since(t_w0);
                 if (!wr) {
+                    writer_->discard_residue();
                     write_status = wr;
                     return coherent::Divergent{};   // drop the stale state
                 }

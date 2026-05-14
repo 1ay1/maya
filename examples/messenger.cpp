@@ -1110,20 +1110,16 @@ struct Messenger {
         Element bubble = vstack()
             .border(BorderStyle::Round, border_c)
             .padding(0, 1)
-            .max_width(Dimension::fixed(bubble_w))
+            .width(Dimension::fixed(bubble_w))   // FIXED, not max — for deterministic positioning
             (std::move(rows));
 
-        // Force the row to span the full messages_inner width via
-        // explicit percent(100) on the builder. Without that, parent
-        // doesn't stretch us (the Viewport scroll role may bypass
-        // align_items=Stretch), the row collapses to bubble's natural
-        // width, and spacer has nothing to grow into. With it, spacer
-        // absorbs all leftover horizontal space and pushes bubble to
-        // the right edge.
-        return hstack()
-            .width(Dimension::percent(100))
-            .align_items(Align::Start)
-            (spacer(), bubble);
+        // Flex-based right-align kept collapsing the bubble to zero
+        // width. Bypass flex entirely with explicit space-padding:
+        // pre-pad the row with the exact number of spaces needed to
+        // shove the bubble against the right edge. Boring but works.
+        int left_pad = std::max(0, mw - bubble_w - 6);  // 6 = messages_inner padding(1,2) × 2 + scrollbar + margin
+        std::string pad(static_cast<size_t>(left_pad), ' ');
+        return h(text(pad), bubble).build();
     }
 
     // Peer message — Telegram-mobile received shape but TUI:

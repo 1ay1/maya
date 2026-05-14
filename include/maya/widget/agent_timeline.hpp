@@ -106,12 +106,26 @@ public:
             rows.push_back(footer_row(*cfg_.footer));
         }
 
-        return (v(rows)
-                | border_<Round>
-                | pad<0, 1, 0, 1>
-                | bcolor(cfg_.border_color)
-                | btext(cfg_.title, BorderTextPos::Top, BorderTextAlign::Start)
-               ).build();
+        // align_self(Stretch) forces the panel to claim the parent's
+        // full cross-axis width regardless of how wide its rows
+        // naturally measure. Without it, the bordered card hugs its
+        // widest row (typically the stats row or the longest event
+        // detail) and the right border lands mid-viewport — the
+        // panel reads as "not responsive" as the terminal widens.
+        // The inner rows already carry grow(1.0f) so they fill the
+        // available width once the panel itself is stretched.
+        //
+        // Uses the runtime BoxBuilder (vstack()) instead of the
+        // compile-time `v(...)` node because the DSL pipe layer
+        // doesn't surface an align_self setter — the property has
+        // to be set on the builder before children are accepted.
+        return vstack()
+            .align_self(Align::Stretch)
+            .border(BorderStyle::Round)
+            .padding(0, 1, 0, 1)
+            .border_color(cfg_.border_color)
+            .border_text(cfg_.title, BorderTextPos::Top, BorderTextAlign::Start)
+            (rows);
     }
 
 private:

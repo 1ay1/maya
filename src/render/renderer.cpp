@@ -380,19 +380,32 @@ std::size_t build_layout_tree(
                         constexpr int kBigH = 1 << 20;
 
                         auto& cache = component_cache();
-                        if (auto* entry = find_component_cache(cache, comp, max_width)) {
-                            // Cross-frame hit (pointer-keyed for stable
-                            // ComponentElement slots, content-keyed via
-                            // cache_id for value-copied wrappers). Reuse
-                            // the cached render and height — no
-                            // render() call, no recursive layout.
-                            entry->last_frame = cache.current_frame;
-                            return {Columns{max_width},
-                                    Rows{entry->height}};
+                        // Only trust the cached height when the host
+                        // opted into cross-frame identity via cache_id.
+                        // Pointer-keyed entries can hold a stale `height`
+                        // measured from a render() output that closed
+                        // over mutable state — common in streaming
+                        // widgets (e.g. StreamingMarkdown's prefix
+                        // ComponentElement, whose closure captures a
+                        // shared_ptr<CommittedPrefix> whose blocks
+                        // mutate). Symmetric with the cells-cache
+                        // gating below at the paint sites: trust the
+                        // cache only when the contract was opted into.
+                        if (!comp.cache_id.empty()) {
+                            if (auto* entry = find_component_cache(cache, comp, max_width)) {
+                                entry->last_frame = cache.current_frame;
+                                return {Columns{max_width},
+                                        Rows{entry->height}};
+                            }
                         }
 
-                        // Cache miss. Render, layout, store under
-                        // whichever key matches comp.cache_id's state.
+                        // Miss (or pointer-keyed: always treated as
+                        // miss). Render, layout, store. Pointer-keyed
+                        // entries still get an entry stored so the
+                        // paint slow-path can find the same `result`
+                        // and avoid a second render() call within
+                        // this frame — but the entry won't be honored
+                        // across frames at the measure site.
                         Element child = comp.render(max_width, kBigH);
 
                         std::vector<layout::LayoutNode> tmp;
@@ -954,20 +967,29 @@ void paint_element(
             // run the recursive paint pipeline; we then snapshot the
             // resulting cells into the entry so every subsequent
             // frame takes the fast path above.
+            //
+            // Only honor a cached `entry->result` when the host opted
+            // into cross-frame identity via cache_id. Pointer-keyed
+            // entries can hold a stale Element tree from a render()
+            // that closed over mutable state (StreamingMarkdown's
+            // prefix is the canonical case — its lambda captures
+            // shared_ptr<CommittedPrefix> whose blocks vector mutates
+            // across commits). Symmetric with the cells-cache gating
+            // a few lines below at the capture site.
             const Element* child_ptr = nullptr;
             Element        fresh_render;
-            if (auto* entry = find_component_cache(cache, node, content_w)) {
-                child_ptr = &entry->result;
-                entry->last_frame = cache.current_frame;
+            ComponentCacheEntry* reuse_entry =
+                !node.cache_id.empty()
+                    ? find_component_cache(cache, node, content_w)
+                    : nullptr;
+            if (reuse_entry) {
+                child_ptr = &reuse_entry->result;
+                reuse_entry->last_frame = cache.current_frame;
             } else {
-                // Width mismatch, missing entry, or pointer-aliased
-                // entry from a prior unrelated instance (different
-                // generation). Render and overwrite. Defensive path —
-                // measure populates the entry for the steady state;
-                // this fires only when the measure callback wasn't
-                // invoked (a parent that sized the child manually) or
-                // address reuse hit the cache after the prior
-                // instance was freed.
+                // Render fresh. For pointer-keyed entries we still
+                // store the result so this frame's measure-then-paint
+                // pair can share a single render() call — but we
+                // don't trust it across frames.
                 fresh_render = node.render(content_w, content_h);
                 store_component_cache(cache, node, {
                     content_w,

@@ -383,11 +383,31 @@ void compose_inline_frame(const Canvas& canvas,
     if (prev_rows == 0) {
         if (state.prev_width > 0) {
             // Force_redraw case (B): in-place soft redraw.
+            //
+            // Cap the emit at the visible viewport (last term_h rows of
+            // the canvas) rather than the full content_rows. The frame
+            // already extends past viewport top — the tail above the
+            // viewport sits in native scrollback exactly as the stream
+            // originally committed it, and emitting it again would only
+            // (a) push the user's prior viewport content into scrollback
+            // via the bottom-edge \r\n scrolls serialize uses to walk
+            // rows, and (b) leave a duplicate copy of the just-finished
+            // turn one screen above the live one — the "everything gets
+            // re-printed from the beginning of the turn" symptom.
+            //
+            // The visible portion alone is enough to wipe any ghost
+            // cells in the viewport (the original reason force_redraw
+            // exists: composer outlines that survived a stream-finish
+            // shrink because the shrink only cleared rows past the new
+            // bottom, not stale composer cells already in mid-frame).
+            // Scrollback ghosts can't be touched by any inline-mode
+            // emit anyway — they're committed.
             const int up = std::min(content_rows - 1,
                                     std::max(0, term_h - 1));
             if (up > 0) ansi::write_cursor_up(out, up);
             out += '\r';
-            serialize(canvas, pool, out, content_rows);
+            const int start_row = std::max(0, content_rows - term_h);
+            serialize(canvas, pool, out, content_rows, start_row);
             out += "\x1b[J";
         } else {
             // Fresh state (A): inline-mode growth from cursor.
@@ -555,9 +575,26 @@ void compose_inline_frame(const Canvas& canvas,
     // so SGR is already at default by the time we get here — \e[2K
     // erases unstyled rows correctly without an additional reset.
     if (content_rows < prev_rows) {
-        int extra = std::min(prev_rows - content_rows, prev_on_screen);
-        for (int i = 0; i < extra; ++i) out += "\r\n\x1b[2K";
-        if (extra > 0) ansi::write_cursor_up(out, extra);
+        // Clear the abandoned region with a single ED (erase-in-display)
+        // from cursor to end of screen. The previous implementation
+        // walked the region with `\r\n\x1b[2K` per row, which at viewport
+        // bottom turned each `\r\n` into a scroll — committing the
+        // top-of-viewport row to native scrollback as a duplicate of
+        // rows the stream's natural overflow had already put there.
+        // The per-row cap attempt couldn't see the cursor's terminal
+        // row when first_changed > 0 (cursor lands mid-viewport, not
+        // at content_rows - 1), so it under-cleared and left old
+        // composer / status rows visible below the new frame.
+        //
+        // \x1b[J wipes from the cursor's current column through end of
+        // the cursor's row and every row below it inside the viewport;
+        // it never moves the cursor and never scrolls. Off-viewport
+        // abandoned rows don't exist on the terminal anyway. After
+        // this the cursor is exactly where the per-row loop left it —
+        // at the new content_rows - 1 — so the next frame's cursor-row
+        // assumption (prev_rows - 1 = content_rows - 1) holds without
+        // a cursor_up pop.
+        out += "\x1b[J";
     }
 
     if (synchronized_output) out += ansi::sync_end;

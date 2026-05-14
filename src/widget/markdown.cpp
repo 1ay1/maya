@@ -3593,8 +3593,17 @@ Element md_block_to_element(const md::Block& block) {
             return heading_text;
         },
         [](const md::CodeBlock& c) -> Element {
-            // Zed style: round border, subtle bg, language label top-left
+            // Zed style: round border, subtle bg, language label top-left.
+            // align_self(Stretch) anchors the right border at the parent's
+            // available width instead of the code's natural width.
+            // Without it, the border tracks the longest line — which
+            // changes during streaming as new lines arrive — so the
+            // right border drifts column-to-column between frames
+            // (visible later as phantom borders left in scrollback) and
+            // the panel reads as "not responsive" once the message
+            // settles.
             auto builder = detail::vstack()
+                .align_self(Align::Stretch)
                 .border(BorderStyle::Round)
                 .border_color(colors::code_border)
                 .padding(0, 1, 0, 1);
@@ -4675,7 +4684,13 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             lang = std::string{lsv};
             code = std::string{body.substr(eol + 1)};
         }
+        // Match md_block_to_element's CodeBlock styling exactly — same
+        // builder shape, same align_self(Stretch) so the in-flight tail
+        // render and the committed block render produce identical
+        // borders. Without the stretch the streaming-tail border tracks
+        // the longest emitted line, drifting frame-to-frame.
         auto builder = detail::vstack()
+            .align_self(Align::Stretch)
             .border(BorderStyle::Round)
             .border_color(colors::code_border)
             .padding(0, 1, 0, 1);

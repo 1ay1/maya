@@ -688,8 +688,26 @@ void paint_element(
             //    content rect from being painted, so descendants effectively
             //    "scroll" within the viewport. This is the same mechanism
             //    the web uses (overflow:scroll + scrollTop on the element).
-            const int child_ox = ax - node.layout.scroll_x;
-            const int child_oy = ay - node.layout.scroll_y;
+            //
+            // Prefer the LIVE scroll_state position over the value captured
+            // into `node.layout.scroll_y` at element-build time. The
+            // writeback above (3b) just ran s->clamp(), so s->y now
+            // reflects the freshly-computed max_y. The captured value in
+            // node.layout can be stale by an unbounded amount when the
+            // app sets y past max_y to express "stick to bottom after
+            // pushing new content" (a one-line idiom for chat scrollback).
+            // Without this branch the first frame after such a push
+            // translates by the stale (huge) value, pushing every child
+            // off-screen and producing a visible blank flicker before the
+            // writeback-dirty re-render corrects it.
+            const int live_scroll_x = (node.scroll_state != nullptr
+                                       && node.scroll_role == ScrollRole::Viewport)
+                ? node.scroll_state->x : node.layout.scroll_x;
+            const int live_scroll_y = (node.scroll_state != nullptr
+                                       && node.scroll_role == ScrollRole::Viewport)
+                ? node.scroll_state->y : node.layout.scroll_y;
+            const int child_ox = ax - live_scroll_x;
+            const int child_oy = ay - live_scroll_y;
             for (const auto& [child, child_layout_idx] :
                      std::views::zip(node.children, ln.children)) {
                 paint_element(

@@ -209,34 +209,16 @@ auto Runtime::render(const Element& root) -> Status {
     RenderContextGuard ctx_guard(render_ctx_);
 
     if (is_inline()) {
-        // ── Backpressure check ─────────────────────────────────────────
-        // On slow ttys (serial console, framebuffer, ssh-over-high-RTT),
-        // the kernel write buffer fills faster than the consumer drains
-        // it. When that happens, skip this render entirely — the model
-        // tree may have advanced by then (more tokens streamed in), but
-        // because prev_cells wasn't updated the NEXT non-skipped render
-        // composes one combined diff against the original baseline. The
-        // visual lags reality by however many frames the wire is
-        // backlogged, but it's always self-consistent and the work is
-        // O(one frame) instead of O(N skipped frames).
-        //
-        // On modern terminals (Kitty, WezTerm, Windows Terminal, local
-        // xterm) the kernel buffer never fills under interactive
-        // workloads — poll_writable returns true immediately and the
-        // only cost is the syscall (~µs). No profile, no flag, just a
-        // signal that adapts to the actual transport speed.
-        //
-        // Only consult backpressure if a frame has already been emitted
-        // (in_coherence_ is InlineSynced with prev_rows > 0). Skipping
-        // the first-ever render would leave the user with a blank
-        // screen until the wire wakes up — a worse UX than blocking
-        // briefly.
-        if (auto* synced = std::get_if<coherent::InlineSynced>(&in_coherence_);
-            synced && synced->state.prev_rows > 0)
-        {
-            if (!platform::io_poll_writable(output_handle_))
-                return ok();
-        }
+        // No backpressure-based render skipping. A poll(POLLOUT)=full
+        // result would skip composer keystrokes immediately after a
+        // large turn emit on slow ttys (Pi-2 serial, ssh-over-high-RTT)
+        // — replaying the first-keystroke-lag failure mode the
+        // EMA-based coalescer hit. Keystroke responsiveness beats
+        // streaming-burst coalescing: block-writing on a slow tty is
+        // annoying but visible feedback per key is mandatory. Streaming
+        // bursts coalesce naturally via compose_inline_frame's
+        // no-change early return; the per-row diff path already keeps
+        // emit bytes proportional to actual change.
 
         // ── Inline path: dispatch on coherence variant ──────────────────
         // std::visit selects the rendering function whose precondition

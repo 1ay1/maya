@@ -337,6 +337,14 @@ struct ScrollState {
         //   (2) ScrollLeft/Right    → horizontal scroll (native)
         //   (3) Shift/Alt+wheel     → horizontal scroll (fallback)
         //   (4) plain wheel         → vertical
+        //
+        // Multi-pane apps: a wheel event must scroll exactly ONE
+        // state — the one whose viewport sits under the cursor.
+        // Without a cursor-vs-viewport check, every painted state with
+        // auto_dispatch=true would consume the same wheel event and
+        // every pane would scroll in unison. The h-bar shortcut still
+        // works regardless of viewport because it's an explicit "hover
+        // the horizontal bar" gesture.
         const bool over_hbar = h_bar_at(mx, my) != nullptr;
         if (over_hbar) {
             if (me.button == MouseButton::ScrollUp)    { scroll_by(-sx, 0); return true; }
@@ -344,6 +352,16 @@ struct ScrollState {
             if (me.button == MouseButton::ScrollLeft)  { scroll_by(-sx, 0); return true; }
             if (me.button == MouseButton::ScrollRight) { scroll_by(+sx, 0); return true; }
         }
+        // For all other wheel routing, require the cursor to be inside
+        // this state's painted viewport (or v-bar). If the viewport
+        // wasn't painted yet (paint_gen_seen < 0) we accept the event —
+        // a single-pane app needs to scroll before its first paint
+        // generation completes.
+        const bool over_vbar = v_bar_at(mx, my) != nullptr;
+        const bool unpainted = viewport_bounds.w == 0 && viewport_bounds.h == 0;
+        const bool in_viewport = unpainted || over_vbar
+            || viewport_bounds.contains(mx, my);
+        if (!in_viewport) return false;
         if (me.button == MouseButton::ScrollLeft)  { scroll_by(-sx, 0); return true; }
         if (me.button == MouseButton::ScrollRight) { scroll_by(+sx, 0); return true; }
         if (me.mods.shift || me.mods.alt) {

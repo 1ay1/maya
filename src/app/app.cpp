@@ -6,6 +6,10 @@
 #include <cstdlib>
 #include <format>
 
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    #include <unistd.h>   // isatty, getpid, fileno
+#endif
+
 #include "maya/core/overload.hpp"
 #include "maya/core/scope_exit.hpp"
 #include "maya/platform/select.hpp"
@@ -191,7 +195,37 @@ auto Runtime::flush_timeouts() -> std::vector<Event> {
 // Inline: compose_inline_frame (row-diff, scrollback-preserving)
 
 auto Runtime::render(const Element& root) -> Status {
-    static const bool prof = std::getenv("MAYA_FRAME_PROF") != nullptr;
+    // MAYA_FRAME_PROF=1 enables per-frame timing output. Writing to a
+    // tty-attached stderr while inline mode owns stdout would interleave
+    // prof lines with cell bytes — visible garbage in the inline area
+    // and a permanently stale prev_cells (the renderer doesn't track
+    // foreign writes). Resolution:
+    //
+    //   - MAYA_FRAME_PROF=/path/to/log     → open that path (append).
+    //   - MAYA_FRAME_PROF=1 with stderr already redirected (not a tty)
+    //     → keep stderr; the user already pointed it somewhere safe.
+    //   - MAYA_FRAME_PROF=1 with stderr on a tty
+    //     → open /tmp/maya-frame-prof-<pid>.log instead. Deterministic
+    //       path; documented here so devs know where to tail from.
+    static FILE* const prof_out = []() -> FILE* {
+        const char* env = std::getenv("MAYA_FRAME_PROF");
+        if (!env || !*env) return nullptr;
+        if (env[0] == '/' || env[0] == '.' || env[0] == '~') {
+            FILE* fp = std::fopen(env, "a");
+            return fp ? fp : nullptr;
+        }
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+        if (!::isatty(::fileno(stderr))) return stderr;
+        char path[64];
+        std::snprintf(path, sizeof(path), "/tmp/maya-frame-prof-%d.log",
+                      static_cast<int>(::getpid()));
+        FILE* fp = std::fopen(path, "a");
+        return fp ? fp : nullptr;   // suppress if we can't open; corrupting the tty is worse
+#else
+        return stderr;
+#endif
+    }();
+    static const bool prof = prof_out != nullptr;
     auto t_frame_start = std::chrono::steady_clock::now();
     auto since = [&](auto t0) {
         return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -360,11 +394,13 @@ auto Runtime::render(const Element& root) -> Status {
                                      sync_output_);
                 double cf_ms = since(t_cf0);
                 if (out_.empty()) {
-                    if (prof)
-                        std::fprintf(stderr,
+                    if (prof) {
+                        std::fprintf(prof_out,
                             "maya-frame: rt=%.2f cf=%.2f total=%.2f nodes=%zu rows=%d w=%d (skip-write)\n",
                             rt_ms, cf_ms, since(t_frame_start),
                             layout_nodes_.size(), ch, w);
+                        std::fflush(prof_out);
+                    }
                     return coherent::InlineSynced{std::move(s.state)};
                 }
 
@@ -375,11 +411,13 @@ auto Runtime::render(const Element& root) -> Status {
                     write_status = wr;
                     return coherent::Divergent{};   // drop the stale state
                 }
-                if (prof)
-                    std::fprintf(stderr,
+                if (prof) {
+                    std::fprintf(prof_out,
                         "maya-frame: rt=%.2f cf=%.2f w=%.2f total=%.2f nodes=%zu out=%zu rows=%d w=%d\n",
                         rt_ms, cf_ms, w_ms, since(t_frame_start),
                         layout_nodes_.size(), out_.size(), ch, w);
+                    std::fflush(prof_out);
+                }
                 return coherent::InlineSynced{std::move(s.state)};
             },
         }, in_coherence_);

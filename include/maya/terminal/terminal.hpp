@@ -10,11 +10,22 @@
 // Generic over TerminalBackend — the platform backend is selected at
 // compile time via platform::NativeTerminal. No vtable, no indirection.
 
+#include <array>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <exception>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
+
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    #include <cerrno>       // errno, EINTR (for emergency_emit's retry loop)
+    #include <unistd.h>     // ::write, STDOUT_FILENO
+#endif
 
 #include "../core/expected.hpp"
 #include "../core/types.hpp"
@@ -25,6 +36,101 @@ namespace maya {
 
 // Forward declarations - input parsing lives in input.hpp
 class InputParser;
+
+// ============================================================================
+// Emergency terminal restore (std::set_terminate + std::atexit hook)
+// ============================================================================
+//
+// The Terminal destructor restores DECAWM, cursor visibility, KKP stack,
+// bracketed-paste, and raw-mode on normal scope exit. But uncaught
+// exceptions invoke `std::terminate` BEFORE any destructors run, and
+// raw `std::exit()` from a tool subprocess wrapper bypasses static
+// destructors entirely. Both leave the terminal in raw inline mode with
+// a hidden cursor, DECAWM off, and KKP pushed — the user's shell prints
+// garbage until they manually `reset` their tty.
+//
+// install_emergency_restore() stashes the bytes the destructor would
+// emit, then registers a `std::set_terminate` handler and an `atexit`
+// callback that write those bytes directly to STDOUT_FILENO via raw
+// `::write` (async-signal-safe, doesn't depend on a backend that may
+// already be destroyed by the time terminate runs). clear_emergency_
+// restore() disarms the handler on normal scope exit so a subsequent
+// exception in unrelated code doesn't re-emit stale sequences.
+
+namespace detail {
+
+struct EmergencyState {
+    std::atomic<bool>           active{false};
+    int                         fd{-1};
+    std::array<char, 128>       seq{};
+    std::size_t                 seq_len{0};
+    std::terminate_handler      prior_terminate{nullptr};
+};
+
+inline EmergencyState& emergency_state() {
+    static EmergencyState s;
+    return s;
+}
+
+inline void emergency_emit() noexcept {
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    auto& s = emergency_state();
+    if (!s.active.load(std::memory_order_acquire)) return;
+    if (s.fd < 0 || s.seq_len == 0) return;
+    // ::write is async-signal-safe. Short writes / EINTR are tolerable —
+    // anything is better than leaving the user's terminal raw.
+    std::size_t off = 0;
+    while (off < s.seq_len) {
+        auto n = ::write(s.fd, s.seq.data() + off, s.seq_len - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (n == 0) break;
+        off += static_cast<std::size_t>(n);
+    }
+#endif
+}
+
+[[noreturn]] inline void emergency_terminate_handler() noexcept {
+    emergency_emit();
+    auto prior = emergency_state().prior_terminate;
+    if (prior && prior != &emergency_terminate_handler) {
+        prior();
+    }
+    std::abort();
+}
+
+inline void emergency_atexit() noexcept {
+    emergency_emit();
+}
+
+inline void install_emergency_restore(std::string_view seq) noexcept {
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    auto& s = emergency_state();
+    const std::size_t n = std::min(seq.size(), s.seq.size());
+    if (n > 0) std::memcpy(s.seq.data(), seq.data(), n);
+    s.seq_len = n;
+    s.fd      = STDOUT_FILENO;
+    // Hook terminate + atexit exactly once per process. set_terminate
+    // returns the prior handler; we chain to it after our restore so
+    // any host-installed crash reporter still fires.
+    static std::once_flag installed;
+    std::call_once(installed, [&]{
+        s.prior_terminate = std::set_terminate(&emergency_terminate_handler);
+        (void)std::atexit(&emergency_atexit);
+    });
+    s.active.store(true, std::memory_order_release);
+#else
+    (void)seq;
+#endif
+}
+
+inline void clear_emergency_restore() noexcept {
+    emergency_state().active.store(false, std::memory_order_release);
+}
+
+} // namespace detail
 
 // ============================================================================
 // RawGuard - Standalone RAII guard for raw mode
@@ -157,6 +263,22 @@ public:
         if (!status) {
             return err<Terminal<InlineMode, Backend>>(status.error());
         }
+        // Arm the emergency restore: if anything between here and the
+        // destructor calls std::terminate / std::exit, these bytes get
+        // written via raw ::write so the user's tty isn't left raw.
+        // Mirrors the destructor's reverse sequence below.
+        {
+            std::string restore;
+            restore.reserve(64);
+            restore += ansi::modify_other_keys_off;
+            restore += ansi::kkp_pop;
+            restore += ansi::disable_bracketed_paste;
+            restore += "\x1b[?7h";    // DECAWM on
+            restore += ansi::show_cursor;
+            restore += ansi::reset;
+            restore += "\r\n";
+            detail::install_emergency_restore(restore);
+        }
         Terminal<InlineMode, Backend> result{PrivateTag{}, std::move(self.backend_)};
         self.moved_from_ = true;
         return ok(std::move(result));
@@ -184,6 +306,22 @@ public:
         if (!status) {
             // Self (Raw) will be destroyed, restoring raw -> cooked
             return err<Terminal<AltScreen, Backend>>(status.error());
+        }
+
+        // Emergency restore for alt-screen: terminate / atexit will
+        // pop back to the primary buffer, restore mouse/focus/paste,
+        // and show the cursor before we lose control.
+        {
+            std::string restore;
+            restore.reserve(128);
+            restore += ansi::kkp_pop;
+            restore += ansi::disable_bracketed_paste;
+            restore += ansi::disable_focus;
+            restore += ansi::disable_alt_scroll;
+            restore += ansi::disable_mouse;
+            restore += ansi::show_cursor;
+            restore += ansi::alt_screen_leave;
+            detail::install_emergency_restore(restore);
         }
 
         Terminal<AltScreen, Backend> result{PrivateTag{}, std::move(self.backend_)};
@@ -250,6 +388,10 @@ public:
             seq += ansi::alt_screen_leave;
             (void)backend_.write_all(seq);
             (void)backend_.disable_raw();
+            // Disarm the emergency handler — graceful path already
+            // emitted the restore, so a subsequent unrelated terminate
+            // shouldn't re-emit stale alt-screen-leave bytes.
+            detail::clear_emergency_restore();
         }
         else if constexpr (std::same_as<State, InlineMode>) {
             // Reverse of enable_inline_mode. Disabling both keyboard
@@ -275,6 +417,7 @@ public:
             seq += "\r\n";
             (void)backend_.write_all(seq);
             (void)backend_.disable_raw();
+            detail::clear_emergency_restore();
         }
         else if constexpr (std::same_as<State, Raw>) {
             (void)backend_.write_all(ansi::show_cursor);

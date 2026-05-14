@@ -5093,21 +5093,34 @@ const Element& StreamingMarkdown::build() const {
         auto p = prefix_;
         ComponentElement comp;
         comp.render = [p](int /*w*/, int /*h*/) -> Element {
-            // Materialise the inner vstack on cache miss. Each
-            // shared_ptr<const Element> is dereferenced once into a
-            // value-typed Element (the variant body is moved into the
-            // children vector slot — no recursive deep clone of the
-            // BoxElement subtree, just a pointer-swap of its inner
-            // vector<Element>). The shared_ptr keeps the heap Element
-            // alive while this output lives in the renderer's
-            // component_cache; subsequent cache hits skip this whole
-            // function. Inner vstack carries gap=1 (matching the
-            // pre-component cadence between adjacent blocks); outer
-            // vstack provides the left-pad and the prefix-vs-tail gap.
+            // Materialise the inner vstack on cache miss. Each block's
+            // shared_ptr goes through maya's `shared_ptr<const Element>
+            // → Element` converting constructor (element.hpp:280),
+            // which produces a ComponentElement whose `cache_id` is
+            // derived from the shared_ptr's identity (id_for_shared).
+            // The renderer then keys its component_cache on
+            // (block_sp_identity, width) per child, so:
+            //
+            //   - A commit (prefix generation bump) rebuilds this outer
+            //     ComponentElement and re-runs this lambda, but only
+            //     the NEWLY-appended block has a fresh shared_ptr →
+            //     fresh cache_id → cache miss. Every previously-
+            //     committed block reuses its cached layout+paint cells.
+            //
+            //   - A width change invalidates all entries (their key
+            //     includes width); they re-paint once and stay cached.
+            //
+            // The previous version did `kids.push_back(*sp)`, which
+            // deref'd into a `const Element&` and DEEP-COPIED the
+            // variant body — for a 50-block transcript every commit
+            // re-cloned all 50 block subtrees just to relocate the
+            // single new last one. Wrapping via `Element{sp}` reduces
+            // that to one shared_ptr ref-count bump per block plus one
+            // cache-miss materialisation for the new block alone.
             std::vector<Element> kids;
             kids.reserve(p->blocks.size());
             for (const auto& sp : p->blocks) {
-                kids.push_back(*sp);
+                kids.push_back(Element{sp});
             }
             return detail::vstack().gap(1)(std::move(kids)).build();
         };

@@ -52,6 +52,16 @@ struct LiveState {
     int               term_h       = 0;  // cached terminal height (refreshed on resize)
     InlineFrameState  frame;        // prev_cells + prev_width + prev_rows
     std::vector<layout::LayoutNode> layout_nodes;  // reused across frames
+
+    // Pre-reserve so the first frame's tree build doesn't pay an
+    // unbounded chain of std::vector reallocs (each doubling means the
+    // last realloc copies all previous nodes). 1024 nodes covers
+    // typical agentty / live-rendered trees (composer + scrollback +
+    // a few turns); deeper trees still grow on demand via vector's
+    // amortised doubling, but the steady-state working set lives
+    // entirely inside this initial capacity. Cost: 1024 *
+    // sizeof(LayoutNode) ≈ 184 KB — paid once per LiveState lifetime.
+    LiveState() { layout_nodes.reserve(1024); }
 };
 
 // Render element → serialize → write to stdout, preserving stable rows

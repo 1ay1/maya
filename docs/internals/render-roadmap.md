@@ -29,13 +29,16 @@ working doc: items move out as they ship.
   transitions, emits only the attribute toggles + fg/bg setters that
   changed between `prev_id` and `new_id`. ~50%+ byte reduction per
   style change on style-heavy content.
-- **B1**: `Writer::ns_per_byte()` — EMA of wire latency across each
-  `write_all` syscall loop. Drives B8's coalesce threshold.
-- **B8**: `compose_inline_frame(min_changed_rows = N)` — when the
-  row-diff scan finds `changed_rows ∈ (0, N]` AND
-  `content_rows == prev_rows`, returns with `out` and `state`
-  untouched so the next frame accumulates against the same
-  `prev_cells`. Bounded by `held_count ≤ kMaxConsecutiveHolds=2`.
+- **B1, B8**: bandwidth coalesce (`Writer::ns_per_byte` EMA +
+  `compose_inline_frame(min_changed_rows)` hold-and-accumulate) —
+  **removed**. The hold swallowed keystrokes on the typing path: a
+  1-row composer change would meet the hold criterion and the first
+  two keystrokes would only land when the third one forced a flush.
+  Streaming pacing at ~20 Hz makes the saved syscalls negligible
+  anyway. If a similar optimisation is ever needed it should live
+  ABOVE compose (the caller decides not to render this tick) rather
+  than inside it, where compose has no way to tell user input from
+  animation.
 - **B9**: `Sub::AnimationFrame{Msg}` — push-based animation
   subscription. Idle frames render zero bytes. The pull-based
   `request_animation_frame()` remains for backward compat.

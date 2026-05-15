@@ -102,6 +102,36 @@ public:
         int rows;
     };
 
+    /// Commit all rows of the last rendered inline frame that have
+    /// PROVABLY already overflowed the terminal viewport —
+    /// `max(0, prev_rows - term_h)`. This is a strict lower bound on
+    /// the rows already living in native scrollback as immutable
+    /// cells, computed inside the renderer from state it owns. The
+    /// host doesn't need to count anything; the renderer's prev_rows
+    /// + term_h answer the question precisely.
+    ///
+    /// Use this when the host wants to keep prev_cells from growing
+    /// unboundedly across a long session without risking the
+    /// over-commit ghosting failure mode (committing rows that are
+    /// still on-screen in the live viewport). Typical pattern: after
+    /// virtualizing old messages out of the view tree, send this Cmd
+    /// so prev_cells shrinks by everything that's definitely
+    /// scrollback, and let compose_inline_frame's natural shrink path
+    /// reconcile the surviving live-viewport rows.
+    ///
+    /// Safe because rows beyond term_h were pushed into native
+    /// scrollback by compose_inline_frame's own \r\n emits in prior
+    /// frames — by the time prev_rows > term_h holds, at least
+    /// `prev_rows - term_h` rows have already overflowed and are
+    /// immutable to the application. Equivalent to writing
+    /// `CommitScrollback{rt.inline_content_rows() - term_h}` if the
+    /// host had access to both numbers, but maya knows them itself
+    /// and the contract is clearer at the Cmd level.
+    ///
+    /// No effect in fullscreen mode or when `prev_rows <= term_h`
+    /// (everything still fits on screen — nothing has overflowed).
+    struct CommitScrollbackOverflow {};
+
     /// Force the next render to be a full repaint by collapsing the
     /// inline-mode coherence state to Divergent. The next render's
     /// compose_inline_frame sees prev_rows=0 and emits the entire live
@@ -124,7 +154,8 @@ public:
 
     using Variant = std::variant<None, Quit, Batch, After, SetTitle,
                                  WriteClipboard, Task, IsolatedTask,
-                                 CommitScrollback, ForceRedraw>;
+                                 CommitScrollback, CommitScrollbackOverflow,
+                                 ForceRedraw>;
     Variant inner;
 
     // -- Smart constructors ---------------------------------------------------
@@ -160,6 +191,13 @@ public:
 
     [[nodiscard]] static auto commit_scrollback(int rows) -> Cmd {
         return {CommitScrollback{rows}};
+    }
+
+    /// Commit every row of the last inline frame that has provably
+    /// already overflowed the viewport — see
+    /// `CommitScrollbackOverflow` doc for the safety argument.
+    [[nodiscard]] static auto commit_scrollback_overflow() -> Cmd {
+        return {CommitScrollbackOverflow{}};
     }
 
     /// Schedule a full repaint on the next render — mirrors handle_resize's
@@ -240,6 +278,9 @@ public:
             },
             [](const CommitScrollback& c) -> Cmd<B> {
                 return Cmd<B>::commit_scrollback(c.rows);
+            },
+            [](const CommitScrollbackOverflow&) -> Cmd<B> {
+                return Cmd<B>::commit_scrollback_overflow();
             },
         }, inner);
     }

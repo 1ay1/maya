@@ -372,6 +372,33 @@ public:
             s->state.commit(s->state.scrollback_marker(rows));
     }
 
+    // Commit every prev-frame row that has provably already overflowed
+    // the viewport — i.e. `max(0, prev_rows - term_h)` rows. Strict
+    // lower bound on rows already in native scrollback; safe to commit
+    // without risk of ghosting (over-committing rows still on screen).
+    //
+    // The host calls this after virtualizing old messages out of the
+    // view tree: prev_cells shrinks by everything that's definitely
+    // scrollback, and compose_inline_frame's natural shrink path
+    // reconciles the surviving live-viewport rows on the next render.
+    // Without this, prev_cells grows unboundedly across a long session
+    // (the renderer can't tell which rows the application has
+    // semantically retired) — 1–2 MB of resident memory per ~200-turn
+    // conversation, plus a memmove cost on the moment a real commit
+    // finally happens.
+    //
+    // No-op when prev_rows <= term_h (everything still fits on
+    // screen) or when in fullscreen / Divergent state.
+    void commit_inline_overflow() noexcept {
+        if (!is_inline()) return;
+        auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_);
+        if (!s) return;
+        const int term_h = std::max(1, size_.height.raw());
+        const int overflow_rows = s->state.prev_rows - term_h;
+        if (overflow_rows <= 0) return;
+        s->state.commit(s->state.scrollback_marker(overflow_rows));
+    }
+
     // Force the next render to be a full repaint by collapsing both
     // coherence variants to Divergent — same internal effect as
     // handle_resize(), without requiring a SIGWINCH. The next render's
@@ -795,6 +822,9 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
         },
         [&](const typename Cmd<Msg>::CommitScrollback& c) {
             ctx.rt.commit_inline_prefix(c.rows);
+        },
+        [&](const typename Cmd<Msg>::CommitScrollbackOverflow&) {
+            ctx.rt.commit_inline_overflow();
         },
         [&](const typename Cmd<Msg>::ForceRedraw&) {
             ctx.rt.force_redraw();

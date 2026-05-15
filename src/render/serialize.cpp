@@ -265,11 +265,18 @@ void serialize(const Canvas& canvas, const StylePool& pool,
     return r * w;
 }
 
-// Maximum frames `compose_inline_frame` may hold a small diff before
-// forcing emission. Two consecutive holds means the worst-case
-// accumulated diff is bounded at 2*min_changed_rows rows — still small
-// enough that the eventual flush is one cheap frame, not a wall.
-static constexpr int kMaxConsecutiveHolds = 2;
+// Bandwidth coalesce (the `min_changed_rows` parameter that held a
+// small diff across frames) was removed when the runtime concluded the
+// hold was actively harmful on the typing path — a 1-row composer
+// change would meet the hold criterion and swallow keystrokes until
+// the third one forced a flush. See app.cpp's compose_inline_frame
+// call site for the full diagnosis. The parameter, the per-state
+// `held_count` field, and the early-exit suppression in the per-row
+// diff scan all went with it. If a future renderer needs a similar
+// optimisation, the design should live ON TOP of the simple emit (a
+// caller-side decision to skip render entirely for a frame), not
+// inside compose where it has visibility into row-level state but no
+// way to tell whether the diff is user-input or animation.
 
 void compose_inline_frame(const Canvas& canvas,
                           int content_rows,
@@ -277,8 +284,7 @@ void compose_inline_frame(const Canvas& canvas,
                           const StylePool& pool,
                           InlineFrameState& state,
                           std::string& out,
-                          bool synchronized_output,
-                          int min_changed_rows)
+                          bool synchronized_output)
 {
     const int W = canvas.width();
     if (W <= 0 || content_rows <= 0 || term_h <= 0) return;
@@ -308,46 +314,27 @@ void compose_inline_frame(const Canvas& canvas,
         need_prev <= state.prev_cells.size();
     const uint64_t* prev = have_prev ? state.prev_cells.data() : nullptr;
 
-    // Locate the first row that actually differs from the cached copy
-    // AND (when coalescing is requested) count the total changed-row
-    // count. Rows in scrollback (y < updatable_start) are immutable —
-    // skip them. The full walk is only done when the coalesce knob is
-    // active; otherwise we bail at the first hit as before.
+    // Locate the first row that actually differs from the cached copy.
+    // Rows in scrollback (y < updatable_start) are immutable — skip
+    // them. Early-exit on the first hit: the per-row emit below walks
+    // from first_changed to content_rows-1 anyway, so the changed-rows
+    // count beyond the first hit isn't useful here.
     int first_changed = common;
-    int changed_rows  = 0;
     if (have_prev) {
         for (int y = updatable_start; y < common; ++y) {
             if (!simd::bulk_eq(cells + y * W, prev + y * W,
                                static_cast<std::size_t>(W)))
             {
-                if (first_changed == common) first_changed = y;
-                ++changed_rows;
-                if (min_changed_rows <= 0) break;
+                first_changed = y;
+                break;
             }
         }
     }
 
     // Nothing to do: common range matches and no rows added or removed.
     if (first_changed == common && content_rows == prev_rows) {
-        state.held_count = 0;
         return;
     }
-
-    // Bandwidth coalesce: when the diff touches few rows AND the frame
-    // didn't grow/shrink, hold this emit and let the next frame's diff
-    // accumulate against the same prev_cells. State is NOT mutated — the
-    // next call's bulk_eq walk runs against the same baseline, so the
-    // accumulated change strictly contains this frame's change.
-    if (min_changed_rows > 0
-        && content_rows == prev_rows
-        && changed_rows > 0
-        && changed_rows <= min_changed_rows
-        && state.held_count < kMaxConsecutiveHolds)
-    {
-        ++state.held_count;
-        return;
-    }
-    state.held_count = 0;
 
     // ── Frame open ─────────────────────────────────────────────────────
     // hide_cursor and DECAWM-off are emitted once and persisted across
@@ -391,24 +378,71 @@ void compose_inline_frame(const Canvas& canvas,
         if (state.prev_width > 0) {
             // Force_redraw case (B): in-place soft redraw.
             //
-            // Cap the emit at the visible viewport (last term_h rows of
-            // the canvas) rather than the full content_rows. The frame
-            // already extends past viewport top — the tail above the
-            // viewport sits in native scrollback exactly as the stream
-            // originally committed it, and emitting it again would only
-            // (a) push the user's prior viewport content into scrollback
-            // via the bottom-edge \r\n scrolls serialize uses to walk
-            // rows, and (b) leave a duplicate copy of the just-finished
-            // turn one screen above the live one — the "everything gets
-            // re-printed from the beginning of the turn" symptom.
+            // ── SCOPE CONTRACT ──────────────────────────────────────
             //
-            // The visible portion alone is enough to wipe any ghost
-            // cells in the viewport (the original reason force_redraw
-            // exists: composer outlines that survived a stream-finish
-            // shrink because the shrink only cleared rows past the new
-            // bottom, not stale composer cells already in mid-frame).
-            // Scrollback ghosts can't be touched by any inline-mode
-            // emit anyway — they're committed.
+            // This path is a VIEWPORT-ONLY recovery. It repaints the
+            // last `term_h` rows of the canvas in place; any rows of
+            // the inline frame that already overflowed into the
+            // terminal's native scrollback are NOT re-emitted, and
+            // (in inline mode) CANNOT be re-emitted.
+            //
+            // Rationale: inline mode shares the terminal viewport
+            // with the host's pre-existing scrollback (the shell
+            // prompts and program output that lived above the
+            // composer before agentty started). Any sequence capable
+            // of overwriting committed scrollback rows would by
+            // definition also overwrite the host's content — there
+            // is no "my scrollback" vs "host's scrollback"
+            // distinction at the VT level once a row scrolls off the
+            // top edge. The cells are owned by the terminal
+            // emulator and are immutable to the application.
+            //
+            // What this path DOES fix:
+            //   • Ghost cells inside the live viewport — composer
+            //     outline survivors of a stream-finish shrink, stale
+            //     status / footer rows below the new content_rows,
+            //     SGR residue from a half-written frame.
+            //   • prev_cells / wire desync — caller (Runtime::force_redraw)
+            //     zeroed prev_rows to mark "diff state is stale,
+            //     redraw fresh", so the per-row diff skips its
+            //     usual byte-identical fast paths and re-emits
+            //     every visible row.
+            //
+            // What this path DOES NOT fix:
+            //   • Scrollback corruption (a stray subprocess wrote
+            //     directly to fd 1 mid-frame; a tmux pane swap
+            //     mangled the rows above the viewport; a terminal
+            //     emulator dropped bytes during a resize). Those
+            //     rows are off-viewport, committed, and unreachable.
+            //     The user-facing recovery for that case is the
+            //     terminal emulator's own redraw (most emulators
+            //     bind their own Ctrl-L to a full repaint of the
+            //     emulator's local cell grid), or a resize event
+            //     that drops agentty into the Divergent path (which
+            //     DOES emit \x1b[2J\x1b[3J\x1b[H, wiping scrollback
+            //     and starting fresh — deliberately reserved for
+            //     resize / write-fail because the scrollback wipe
+            //     is destructive to the host's prior output).
+            //
+            // Callers wiring a user-facing "redraw" hotkey to this
+            // path (see agentty's RedrawScreen → Cmd::force_redraw
+            // in update/meta.cpp) should mirror this scope in their
+            // user-facing docs so users don't expect Ctrl-L to fix
+            // every kind of terminal corruption.
+            //
+            // ── EMIT SHAPE ──────────────────────────────────────────
+            //
+            // Cap the emit at the visible viewport (last term_h rows
+            // of the canvas) rather than the full content_rows. The
+            // frame already extends past viewport top — the tail
+            // above the viewport sits in native scrollback exactly
+            // as the stream originally committed it, and emitting it
+            // again would only (a) push the user's prior viewport
+            // content into scrollback via the bottom-edge \r\n
+            // scrolls serialize uses to walk rows, and (b) leave a
+            // duplicate copy of the just-finished turn one screen
+            // above the live one — the "everything gets re-printed
+            // from the beginning of the turn" symptom.
             const int up = std::min(content_rows - 1,
                                     std::max(0, term_h - 1));
             if (up > 0) ansi::write_cursor_up(out, up);

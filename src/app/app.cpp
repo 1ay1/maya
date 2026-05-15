@@ -85,6 +85,16 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     rt.render_ctx_.height     = rt.size_.height.raw();
     rt.render_ctx_.generation = 0;
 
+    // Pre-reserve layout_nodes_ so the first big-frame render doesn't
+    // pay a chain of std::vector reallocs (each doubling means the
+    // last realloc copies every node built so far). 1024 nodes covers
+    // typical agentty trees (composer + scrollback + a few turns);
+    // deeper trees still grow on demand via vector's amortised
+    // doubling, but the steady-state working set lives entirely
+    // inside this initial capacity. Cost: 1024 * sizeof(LayoutNode)
+    // ≈ 184 KB — paid once per Runtime lifetime.
+    rt.layout_nodes_.reserve(1024);
+
     // Schedule hint — see platform/thread.hpp. macOS: QoS user-interactive.
     // Linux/Win32: no-op.
     platform::set_ui_thread_priority();

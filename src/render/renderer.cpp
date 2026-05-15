@@ -1267,6 +1267,13 @@ void render_tree(
         // wasn't touched in the immediately preceding frame is gone
         // by the next one, regardless of which key it lives under.
         const std::uint64_t prev = cache.current_frame;
+
+        // Pointer-keyed entries: strict 1-frame eviction. Cross-frame
+        // pointer-keyed REUSE is forbidden anyway (the slow-path lookup
+        // gates on `last_frame == current_frame`, see the paint branch
+        // below) because the wrapper's lambda may have closed over
+        // mutable state, so keeping these around longer would just
+        // waste memory on entries we'll never trust again.
         for (auto it = cache.entries.begin(); it != cache.entries.end(); ) {
             if (it->second.last_frame < prev) {
                 it = cache.entries.erase(it);
@@ -1274,8 +1281,29 @@ void render_tree(
                 ++it;
             }
         }
+
+        // Content-keyed entries: 8-frame retention window. The host
+        // opted into cross-frame identity by setting cache_id; the
+        // cells captured under that id are valid for as long as the
+        // content the id stands for hasn't changed (a fresh
+        // ComponentElement with the same id presents the same
+        // semantic content). Strict 1-frame eviction here costs
+        // re-renders on flapping conditional components — e.g. a
+        // permission modal that appears for one event burst,
+        // disappears for a tick, then reappears — even though the
+        // cells were perfectly valid. 8 frames is enough to cover
+        // the gap across a typical event-driven idle
+        // (agentty runs fps=0, so this is "8 user inputs / ticks
+        // since last touch") without burning much memory: each
+        // cache_id entry is bounded by `term_w * term_h * 8 B` of
+        // cells, and the host-keyed id space is small (per-turn
+        // tool cards, per-message markdown blocks, per-modal
+        // wrappers — dozens, not thousands).
+        constexpr std::uint64_t kContentCacheRetention = 8;
+        const std::uint64_t content_cutoff =
+            (prev >= kContentCacheRetention) ? (prev - kContentCacheRetention + 1) : 0;
         for (auto it = cache.entries_by_id.begin(); it != cache.entries_by_id.end(); ) {
-            if (it->second.last_frame < prev) {
+            if (it->second.last_frame < content_cutoff) {
                 it = cache.entries_by_id.erase(it);
             } else {
                 ++it;

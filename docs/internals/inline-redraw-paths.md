@@ -207,6 +207,65 @@ serialize emits `content_rows` rows, the overflow scrolls into
 native scrollback exactly as a normal stream would. Same behavior
 as the old force_redraw for that case.
 
+### Scope contract: case (B) is viewport-only
+
+Case (B) is **deliberately bounded to the live viewport**. The
+emit caps at the last `term_h` rows of the canvas
+(`start_row = max(0, content_rows - term_h)`); any rows of the
+inline frame that have already overflowed into native scrollback
+are not re-emitted, and in inline mode **cannot** be re-emitted.
+
+This is a hard property of the medium, not a TODO. Inline mode
+shares the terminal viewport with the host's pre-existing
+scrollback — the shell prompts and program output that lived
+above the composer before maya started. Any escape capable of
+overwriting committed scrollback rows would also overwrite the
+host's content, because at the VT level there is no distinction
+between "my scrollback" and "the host's scrollback" once a row
+has scrolled off the top edge. The cells are owned by the
+terminal emulator and are immutable to the application.
+
+**What case (B) fixes:**
+
+- Ghost cells inside the live viewport — composer outline
+  survivors of a stream-finish shrink, stale status / footer
+  rows below the new `content_rows`, SGR residue from a
+  half-written frame.
+- `prev_cells` / wire desync — caller (`Runtime::force_redraw`)
+  zeroed `prev_rows` to mark "diff state is stale, redraw
+  fresh", so the per-row diff skips its usual byte-identical
+  fast paths and re-emits every visible row.
+
+**What case (B) does NOT fix:**
+
+- Scrollback corruption (a stray subprocess wrote directly to
+  fd 1 mid-frame; a tmux pane swap mangled the rows above the
+  viewport; a terminal emulator dropped bytes during a resize).
+  Those rows are off-viewport, committed, and unreachable.
+
+The user-facing recoveries for scrollback corruption are:
+
+1. **The terminal emulator's own redraw** — most emulators bind
+   their own Ctrl-L (or an equivalent menu item) to a full
+   repaint of the emulator's local cell grid, which IS able to
+   reach scrollback rows because the emulator owns them.
+2. **A resize event** — maya treats a resize as a
+   coherence-collapse, routing the next render through the
+   Divergent path. Divergent emits `\x1b[2J\x1b[3J\x1b[H` (wipe
+   viewport + wipe scrollback + home cursor) before painting
+   fresh from case (A). The scrollback wipe is destructive to
+   the host's prior output, which is why it is deliberately
+   gated on a resize event and never bound to a keystroke.
+
+**Implications for app authors wiring a user-facing "redraw"
+hotkey** (e.g. Ctrl-L → `Cmd::force_redraw`): mirror this scope
+in your user-facing docs. Users coming from full-screen apps
+(vim, htop, less) expect Ctrl-L to repair anything, because
+those apps own the entire alternate screen buffer and can
+repaint every visible cell. An inline-mode app shares the
+viewport with whatever was there first, and its redraw
+affordance must reflect that.
+
 ### The Divergent path still does the aggressive clear
 
 Resize and write-failure recovery still go through the Divergent

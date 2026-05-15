@@ -7,6 +7,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#ifdef MAYA_DEBUG_SHADOW_VERIFY
+#  include <cstdio>
+#  include <cstdlib>
+#endif
 
 namespace maya {
 
@@ -48,13 +52,20 @@ void InlineFrameState::commit_prefix(int rows) noexcept {
 }
 
 int content_height(const Canvas& canvas) noexcept {
-    // O(1) fast path: if the canvas tracked max_y_ during painting,
-    // we can skip the full scan entirely.
-    int max_row = canvas.max_content_row();
-    if (max_row >= 0) return max_row + 1;
-
-    // Fallback: scan from bottom (only needed if nothing was painted).
-    return 1; // at least 1 row
+    // O(1): canvas tracks max_y_ during painting. -1 ⇒ nothing was
+    // ever written this frame ⇒ zero rows of content.
+    //
+    // Returning 0 (not 1) is load-bearing for the inline path: the
+    // run-loop's empty-frame guard (`if (ch <= 0) ...` in app.cpp
+    // and inline.cpp) signals "no compose this tick, leave prev_rows
+    // alone." An off-by-one return of 1 here used to slip past that
+    // guard and cause compose_inline_frame to walk a single all-blank
+    // row through its first-render path, momentarily writing a stray
+    // line break into the host's terminal before the next real frame
+    // overdrew it. The visible symptom on startup was a one-row
+    // "hiccup" before the first turn appeared. Aligning the contract
+    // with what the canvas actually holds eliminates the ambiguity.
+    return canvas.max_content_row() + 1;
 }
 
 namespace {
@@ -615,37 +626,66 @@ void compose_inline_frame(const Canvas& canvas,
     // \x1b[?7l because state.decawm_off is already true. On shutdown
     // (or width change → state.reset()) the owner calls
     // state.finalize(out) to restore.
-    out += ansi::reset;   // drop residual SGR
+    //
+    // We DO NOT emit ansi::reset here — it has to happen AFTER the
+    // shrink path below, otherwise the shrink's re-emit of the bottom
+    // row would believe the wire is still in `current_style` while
+    // ansi::reset has just moved the wire to id 0. The mismatch would
+    // cause the re-emit to skip the SGR transition for the first
+    // styled run, drawing those cells in default style.
 
     // ── Shrink: erase rows past the new content_rows ───────────────────
-    // Cursor is at row last_row_to_visit. Step into the abandoned region
-    // and clear each leftover line, then pop back up so the next frame's
-    // cursor-row assumption (prev_rows - 1 = content_rows - 1) holds.
-    // Note: ansi::reset is emitted just above (line 408 in this function),
-    // so SGR is already at default by the time we get here — \e[2K
-    // erases unstyled rows correctly without an additional reset.
+    // The per-row loop left the cursor at row `last_row_to_visit`
+    // (= content_rows - 1) at SOME column — specifically the column
+    // where the row's last emit landed it (x_end_emit if the loop
+    // emitted, x_first_diff if it only did \x1b[K, col 0 if the row
+    // was unchanged-in-common and only \r\n was emitted). \x1b[J
+    // wipes from THAT column through end of screen, which is what we
+    // want for the rows below, but on the bottom row itself it
+    // preserves cells [0, cursor_col) and erases [cursor_col, W).
+    // That's correct only if `cursor_col` ≥ last_content_col + 1.
+    // The middle-slice-only-changed case (need_el false,
+    // x_end_emit < x_last_visible + 1) violates that and erases real
+    // content from the bottom row.
+    //
+    // Make the precondition local: re-anchor the cursor to col 0 with
+    // \r, re-emit the bottom row's visible content (idempotent — same
+    // cells already on the wire), then \x1b[J. The re-emit positions
+    // the cursor exactly at last_content_col + 1; \x1b[J then erases
+    // a guaranteed-empty tail on the bottom row plus every row below
+    // it. Cost: O(W) bytes for the bottom row at most, paid only when
+    // the frame actually shrinks (rare).
+    //
+    // We also need to keep prev_cells consistent with this re-emit.
+    // The bottom row was already shadowed in the per-row loop above
+    // (rows < prev_rows hit the `is_new_row=false` path; new rows hit
+    // the full-row copy). Re-emitting writes the SAME bytes the diff
+    // already wrote, so prev_cells is correct without further action.
     if (content_rows < prev_rows) {
-        // Clear the abandoned region with a single ED (erase-in-display)
-        // from cursor to end of screen. The previous implementation
-        // walked the region with `\r\n\x1b[2K` per row, which at viewport
-        // bottom turned each `\r\n` into a scroll — committing the
-        // top-of-viewport row to native scrollback as a duplicate of
-        // rows the stream's natural overflow had already put there.
-        // The per-row cap attempt couldn't see the cursor's terminal
-        // row when first_changed > 0 (cursor lands mid-viewport, not
-        // at content_rows - 1), so it under-cleared and left old
-        // composer / status rows visible below the new frame.
-        //
-        // \x1b[J wipes from the cursor's current column through end of
-        // the cursor's row and every row below it inside the viewport;
-        // it never moves the cursor and never scrolls. Off-viewport
-        // abandoned rows don't exist on the terminal anyway. After
-        // this the cursor is exactly where the per-row loop left it —
-        // at the new content_rows - 1 — so the next frame's cursor-row
-        // assumption (prev_rows - 1 = content_rows - 1) holds without
-        // a cursor_up pop.
+        out += '\r';
+        const int last_visible = canvas.last_content_col(last_row_to_visit);
+        if (last_visible >= 0) {
+            emit_cell_run(canvas, pool, last_row_to_visit,
+                          0, last_visible + 1,
+                          current_style, out);
+        }
+        // Reset SGR before \x1b[J so erased cells inherit no attrs
+        // from the last emitted cell.
+        if (current_style != 0) {
+            out.append(pool.sgr(0));
+            current_style = 0;
+        }
+        // \x1b[J wipes from cursor's current column through end of
+        // the cursor's row and every row below it inside the
+        // viewport; it never moves the cursor and never scrolls.
         out += "\x1b[J";
     }
+
+    // SGR reset at the tail: drop any residual style state so the
+    // next compose starts from a known floor (current_style sentinel
+    // becomes UINT16_MAX on entry; the wire is at id 0). Always safe
+    // — the shrink path above already reset to 0 when needed.
+    out += ansi::reset;   // drop residual SGR
 
     if (synchronized_output) out += ansi::sync_end;
 
@@ -674,6 +714,56 @@ void compose_inline_frame(const Canvas& canvas,
     // "copy a few hundred bytes per changed row".
     state.prev_width = W;
     state.prev_rows  = content_rows;
+
+    // ── Shadow-of-wire invariant check (debug builds only) ─────────────
+    //
+    // The single most load-bearing invariant in the inline renderer:
+    // `prev_cells[y][x]` must, at the end of every compose, equal
+    // `canvas.cells()[y*W + x]` for every (x, y) the wire is about
+    // to show — i.e. rows in [updatable_start, content_rows).
+    //
+    // Every historical "corrupted rows" bug in this file's git log
+    // was a version of THIS invariant being temporarily violated:
+    // over-commit_scrollback shift, cells_max_y heuristic stale,
+    // streaming-markdown cache aliasing, empty-CodeBlock ghost,
+    // partial-write residue inflation — all of them showed up
+    // downstream as either a `simd::bulk_eq` returning "unchanged"
+    // for a row that did change (frame freezes) or returning
+    // "changed" for a row that didn't (cursor walks redundantly,
+    // emitting bytes that drift the wire away from the shadow).
+    //
+    // Compile-time gate: define MAYA_DEBUG_SHADOW_VERIFY to enable
+    // (off by default; dev/CI builds only). When on, this loop walks
+    // every viewport-visible cell and aborts on the first mismatch
+    // with a precise (y, x) trace, turning a class of "intermittent
+    // ghost rows in production" into immediate test failures.
+    //
+    // Performance: O(prev_on_screen × W) u64 compares per frame, fully
+    // vectorisable. ~1μs on a 200×80 viewport. Never compiled into
+    // release.
+#ifdef MAYA_DEBUG_SHADOW_VERIFY
+    {
+        const uint64_t* shadow = state.prev_cells.data();
+        const int verify_start = std::max(0, state.prev_rows - prev_on_screen);
+        for (int y = verify_start; y < content_rows; ++y) {
+            for (int x = 0; x < W; ++x) {
+                const uint64_t s = shadow[static_cast<std::size_t>(y) * W + x];
+                const uint64_t c = cells [static_cast<std::size_t>(y) * W + x];
+                if (s != c) {
+                    std::fprintf(stderr,
+                        "\n[maya] SHADOW-OF-WIRE INVARIANT VIOLATED "
+                        "at (y=%d, x=%d): shadow=0x%016llx canvas=0x%016llx "
+                        "first_changed=%d content_rows=%d prev_rows_in=%d W=%d\n",
+                        y, x,
+                        static_cast<unsigned long long>(s),
+                        static_cast<unsigned long long>(c),
+                        first_changed, content_rows, prev_rows, W);
+                    std::abort();
+                }
+            }
+        }
+    }
+#endif
 }
 
 } // namespace maya

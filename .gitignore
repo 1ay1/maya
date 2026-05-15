@@ -16,3 +16,4 @@ Testing/Temporary/CTestCostData.txt
 .claude/settings.local.json
 .DS_Store
 build_debug
+build-test/

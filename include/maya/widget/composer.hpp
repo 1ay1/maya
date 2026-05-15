@@ -20,12 +20,14 @@
 //   }}.build();
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include "../app/app.hpp"        // request_animation_frame
 #include "../dsl.hpp"
 #include "../element/element.hpp"
 #include "../style/border.hpp"
@@ -96,10 +98,40 @@ public:
             has_text    ? cfg_.accent_color :
                           muted;
 
-        // ── Cursor injection.
+        // ── Cursor injection — blinking block.
+        //
+        // We can't drive the real terminal hardware cursor from inside a
+        // widget (the inline runtime doesn't expose a placement primitive
+        // here), so the cursor is a glyph painted into the text. We use
+        // U+2588 FULL BLOCK ('█') for the classic terminal cursor look,
+        // and blink it by swapping in a same-width SPACE on the "off"
+        // half-cycle. 530 ms full period (~265 ms on / 265 ms off) tracks
+        // the de-facto VT-style cadence ergonomically.
+        //
+        // Blink is suppressed while the agent is streaming or running a
+        // tool: in those states the user can still type (input queues),
+        // and a steady cursor reads as "yes, your keystrokes are landing
+        // somewhere" rather than competing with the spinner for the
+        // eye.
+        //
+        // We call request_animation_frame() so maya's event-driven loop
+        // (fps=0) keeps repainting while the composer is on-screen with
+        // a blinking cursor; without it the cursor would freeze in
+        // whichever phase the last user-driven repaint captured.
+        constexpr int kBlinkPeriodMs = 530;
+        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count();
+        const bool blink_off = !active
+            && ((now_ms / (kBlinkPeriodMs / 2)) % 2 != 0);
+        if (!active) request_animation_frame();
+
         std::string with_cursor = cfg_.text;
         int cur = std::min<int>(cfg_.cursor, static_cast<int>(cfg_.text.size()));
-        with_cursor.insert(static_cast<std::size_t>(cur), "\xe2\x96\x8e");  // ▎
+        const char* cursor_glyph = blink_off
+            ? " "                     // ASCII space (same column width as █)
+            : "\xe2\x96\x88";          // █ FULL BLOCK
+        with_cursor.insert(static_cast<std::size_t>(cur), cursor_glyph);
 
         // ── Prompt chip + body rows.
         Style prompt_style = (active || has_text || is_awaiting)
@@ -120,7 +152,9 @@ public:
             // visible too.
             std::string placeholder;
             if (cfg_.queued > 0) {
-                placeholder = "press \xe2\x86\x91 to edit queued";          // ↑
+                placeholder = cfg_.queued == 1
+                    ? std::string{"press \xe2\x86\x91 to edit queued"}            // ↑
+                    : std::string{"\xe2\x86\x91 drain queue • \xe2\x8c\xa5\xe2\x86\x91/\xe2\x8c\xa5\xe2\x86\x93 cycle items"};  // ↑ / ⌥↑ ⌥↓
                 if (is_awaiting)       placeholder += " \xe2\x80\x94 awaiting permission above\xe2\x80\xa6";
                 else if (is_executing) placeholder += " \xe2\x80\x94 type to queue another\xe2\x80\xa6";
                 else if (is_streaming) placeholder += " \xe2\x80\x94 type to queue another\xe2\x80\xa6";
@@ -134,7 +168,7 @@ public:
             }
             body_rows.push_back(h(
                 prompt_chip,
-                text("\xe2\x96\x8e", fg_dim_(muted)),                          // dim cursor
+                text(blink_off ? " " : "\xe2\x96\x88", fg_dim_(muted)),     // █ dim cursor
                 text(placeholder, Style{}.with_fg(muted).with_italic())
             ).build());
         } else {

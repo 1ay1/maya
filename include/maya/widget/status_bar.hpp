@@ -7,13 +7,18 @@
 //
 //   ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔   ← PhaseAccent (top, dim)
 //    TitleChip ·  PhaseChip   …    TokenStreamSparkline   ●Model · ContextGauge
-//    StatusBanner  (always 1 row tall — no jitter)
-//    ShortcutRow
 //   ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁   ← PhaseAccent (bottom)
+//
+// When `status_banner.text` is non-empty the activity row is replaced
+// by a full-width toast in the same vertical slot — bright foreground
+// + accent background span the whole row so transient status ("context
+// compacted", "retrying in 3s…", "error: rate limited") is impossible
+// to miss. The toast collapses back to the regular activity row the
+// moment its TTL expires; height stays constant either way.
 //
 // Width-adaptive: the activity row's optional pieces (breadcrumb,
 // token stream slot, ctx bar) drop progressively below their
-// thresholds. ShortcutRow handles its own width adaptation.
+// thresholds.
 //
 //   maya::StatusBar{{
 //       .phase_color   = phase_color(m.s.phase),
@@ -22,8 +27,7 @@
 //       .token_stream  = token_stream_sparkline_config(m),
 //       .model_badge   = model_badge_config(m).build(),
 //       .context       = context_gauge_config(m),
-//       .status_banner = status_banner_config(m),
-//       .shortcuts     = shortcut_row_config(m),
+//       .status_banner = status_banner_config(m),  // toast — hides activity row when present
 //   }}.build();
 
 #include <utility>
@@ -36,7 +40,6 @@
 #include "context_gauge.hpp"
 #include "phase_accent.hpp"
 #include "phase_chip.hpp"
-#include "shortcut_row.hpp"
 #include "status_banner.hpp"
 #include "title_chip.hpp"
 #include "token_stream_sparkline.hpp"
@@ -57,11 +60,8 @@ public:
         Element                      model_badge;     // default-empty
         ContextGauge::Config         context;          // max=0 = hide
 
-        // Status row.
+        // Status row — takes over the activity_row slot when present.
         StatusBanner::Config         status_banner;
-
-        // Shortcut row.
-        ShortcutRow::Config          shortcuts;
 
         // Width thresholds for activity-row pieces.
         int breadcrumb_min_width    = 130;
@@ -80,13 +80,22 @@ public:
 
         const Color pcolor = cfg_.phase_color;
 
+        // Toast takeover: when a status message is set, the middle row
+        // becomes a full-width banner instead of the regular activity
+        // strip. Same height, same surrounding accents — just the
+        // payload swaps. Maximally visible: bright fg + accent bg span
+        // the entire content row so the message reads as a screen-wide
+        // alert, not a tucked-in subtitle. Once the TTL expires the
+        // host clears `status_banner.text` and the activity row
+        // returns. Five-row layout collapses to three rows now that
+        // ShortcutRow is gone (shortcuts moved to the welcome screen).
         std::vector<Element> rows;
-        rows.reserve(5);
+        rows.reserve(3);
         rows.push_back(PhaseAccent{{.color = pcolor,
                                     .position = PhaseAccent::Position::Top}}.build());
-        rows.push_back(activity_row());
-        rows.push_back(StatusBanner{cfg_.status_banner}.build());
-        rows.push_back(ShortcutRow{cfg_.shortcuts}.build());
+        rows.push_back(cfg_.status_banner.text.empty()
+                           ? activity_row()
+                           : toast_row());
         rows.push_back(PhaseAccent{{.color = pcolor,
                                     .position = PhaseAccent::Position::Bottom}}.build());
         return v(std::move(rows)).build();
@@ -156,6 +165,40 @@ private:
         return already_muted
             ? Style{}.with_fg(c)
             : Style{}.with_fg(c).with_dim();
+    }
+
+    // Full-width toast row — the activity slot's high-visibility twin.
+    // A leading rail glyph + bold message text, painted on a colored
+    // background that spans the entire row so the notification is
+    // impossible to miss. Uses the StatusBanner config's `is_error` to
+    // pick between an error tint (red bg) and an info tint (the panel's
+    // current phase_color, used for retry / cancel / compact / etc).
+    [[nodiscard]] Element toast_row() const {
+        using namespace dsl;
+        const Color bg = cfg_.status_banner.is_error
+            ? cfg_.status_banner.error_color
+            : cfg_.phase_color;
+        const Color fg = Color::bright_white();
+        const std::string& msg = cfg_.status_banner.text;
+        const char* glyph = cfg_.status_banner.is_error
+            ? " \xe2\x9a\xa0  "   // ⚠
+            : " \xe2\x96\xb6  ";  // ▶
+
+        return component([bg, fg, msg, glyph](int w, int /*h*/) -> Element {
+            using namespace dsl;
+            if (w <= 0) return blank().build();
+            // Compose a single TextElement that spans the full row
+            // width — the bg attribute paints every cell, including
+            // the trailing pad, so the toast reads as one continuous
+            // colored band rather than a chip floating on the panel.
+            const std::string prefix = glyph;
+            std::string content = prefix + msg;
+            const int used = static_cast<int>(content.size());
+            if (used < w) content.append(static_cast<std::size_t>(w - used), ' ');
+            else if (used > w) content.resize(static_cast<std::size_t>(w));
+            return text(std::move(content),
+                        Style{}.with_fg(fg).with_bg(bg).with_bold()).build();
+        });
     }
 };
 

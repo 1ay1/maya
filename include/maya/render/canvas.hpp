@@ -427,6 +427,20 @@ public:
     /// is the host's promise that at least one cell in the row is
     /// non-blank — saves the scan to update max_y_ when the host already
     /// knows from cache-population time.
+    ///
+    /// Wide-glyph invariant: the source buffer may contain wide-char
+    /// lead (width==1) / trail (width==2) cell pairs. Clipping is by
+    /// column, so a clip edge that falls between a lead and its trail
+    /// would deposit an orphan half — the renderer/diff would then
+    /// treat the orphan trail (placeholder) as a skipped cell, and the
+    /// orphan lead as a normal-width glyph that overdraws the next
+    /// cell. Both produce visible corruption ("phantom characters" or
+    /// stale content bleeding out where the trail was clipped). We
+    /// neutralise both edges by overwriting any orphan half at
+    /// (x0, x1-1) with a default blank cell after the memcpy. The
+    /// memcpy stays a single contiguous copy on the dominant
+    /// no-wide-char path; the two-cell fix-up is unconditional but
+    /// cheap.
     MAYA_ALWAYS_INLINE void blit_packed_row(int x, int y,
                                             const uint64_t* src,
                                             int n,
@@ -450,16 +464,52 @@ public:
         // the caller (cache entry storage).
         std::memcpy(&cells_[dst_off], src + src_off,
                     static_cast<std::size_t>(count) * sizeof(uint64_t));
+
+        // Wide-glyph clip-edge repair. Decode the width byte (bits
+        // 56-63 of the packed cell) at the two cells we just wrote
+        // that sit on the clip boundary. A trail (width==2) at the
+        // LEFT edge means we clipped its lead away — replace the
+        // orphan with a blank. A lead (width==1) at the RIGHT edge
+        // means its trail lies outside the blitted region — same
+        // treatment. These are O(1) checks (no loop), unconditional
+        // (branch-predicts well: dominant case is width==0), and
+        // restore the invariant `set()` maintains for direct writes.
+        const uint64_t blank = default_cell();
+        {
+            const uint64_t left = cells_[dst_off];
+            if (__builtin_expect((left >> 56) == 2, 0))
+                cells_[dst_off] = blank;
+        }
+        if (count >= 1) {
+            const std::size_t right_off = dst_off + static_cast<std::size_t>(count - 1);
+            const uint64_t right = cells_[right_off];
+            if (__builtin_expect((right >> 56) == 1, 0))
+                cells_[right_off] = blank;
+        }
+
         if (row_has_content) {
             if (y > max_y_) max_y_ = y;
-            // Conservatively bump the per-row last-content column to the
-            // blit's right edge. We don't inspect individual cells because
-            // the caller's row_has_content promise doesn't tell us where
-            // inside the strip the content sits; over-reporting trims
-            // less aggressively but never produces wrong output.
-            const int blit_last = x1 - 1;
-            if (blit_last > last_col_[static_cast<std::size_t>(y)])
-                last_col_[static_cast<std::size_t>(y)] = blit_last;
+            // Per-row last-content column. The blit width is a poor
+            // proxy — cached cells captured from a sparsely-painted
+            // row will be mostly blank with a short content prefix,
+            // and over-reporting last_col_ forces serialize/diff to
+            // walk the trailing blanks every frame (still correct
+            // output, but emits redundant SGR resets + cursor-forward
+            // moves on every changed row of the inline frame, which
+            // shows up as visible flicker on slow ttys). Scan the
+            // written cells from the right edge to find the actual
+            // last non-blank column; bounded by `count` so it's cheap
+            // even on a wide cache strip. The blank sentinel matches
+            // `default_cell()` exactly — packed Cell{}.
+            int actual_last = -1;
+            for (int i = count - 1; i >= 0; --i) {
+                if (cells_[dst_off + static_cast<std::size_t>(i)] != blank) {
+                    actual_last = x0 + i;
+                    break;
+                }
+            }
+            if (actual_last > last_col_[static_cast<std::size_t>(y)])
+                last_col_[static_cast<std::size_t>(y)] = actual_last;
         }
         stage_ = CanvasStage::Painted;
     }

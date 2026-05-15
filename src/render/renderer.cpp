@@ -479,27 +479,44 @@ void paint_border(
     if (border.sides.bottom && border.sides.right)
         canvas.set(x1, y1, cp.bottom_right, style_id);
 
-    // Top edge.
+    // Edge loops: extend to the corner cells WHEN no corner is drawn
+    // there. A corner is only drawn when BOTH adjacent sides are
+    // present (see the conditions above). If a corner is absent, the
+    // edge owns that cell — otherwise the cell is just blank, which
+    // visibly fragments left-only / right-only / top-only / bottom-only
+    // borders (e.g. the Turn widget's bold left rail: top/bottom/right
+    // are all false, so rows y0 and y1 had no glyph at all, producing
+    // the missing-row gap at the top and bottom of every speaker turn).
+
+    // Top edge — extends to (x0, y0) when no left, to (x1, y0) when no right.
     if (border.sides.top) {
-        for (int x = x0 + 1; x < x1; ++x)
+        const int x_start = border.sides.left  ? x0 + 1 : x0;
+        const int x_end   = border.sides.right ? x1     : x1 + 1;
+        for (int x = x_start; x < x_end; ++x)
             canvas.set(x, y0, cp.top, style_id);
     }
 
-    // Bottom edge.
+    // Bottom edge — symmetric to top.
     if (border.sides.bottom) {
-        for (int x = x0 + 1; x < x1; ++x)
+        const int x_start = border.sides.left  ? x0 + 1 : x0;
+        const int x_end   = border.sides.right ? x1     : x1 + 1;
+        for (int x = x_start; x < x_end; ++x)
             canvas.set(x, y1, cp.bottom, style_id);
     }
 
-    // Left edge.
+    // Left edge — extends to (x0, y0) when no top, to (x0, y1) when no bottom.
     if (border.sides.left) {
-        for (int y = y0 + 1; y < y1; ++y)
+        const int y_start = border.sides.top    ? y0 + 1 : y0;
+        const int y_end   = border.sides.bottom ? y1     : y1 + 1;
+        for (int y = y_start; y < y_end; ++y)
             canvas.set(x0, y, cp.left, style_id);
     }
 
-    // Right edge.
+    // Right edge — symmetric to left.
     if (border.sides.right) {
-        for (int y = y0 + 1; y < y1; ++y)
+        const int y_start = border.sides.top    ? y0 + 1 : y0;
+        const int y_end   = border.sides.bottom ? y1     : y1 + 1;
+        for (int y = y_start; y < y_end; ++y)
             canvas.set(x1, y, cp.right, style_id);
     }
 
@@ -1122,16 +1139,6 @@ void paint_element(
                         entry->cells_max_y = -1;
                     } else if (captured_rows > 0) {
                         entry->cells_rows = captured_rows;
-                        // Highest non-blank row inside our region.
-                        // If paint didn't bump max_y_, nothing
-                        // visible got drawn — cells_max_y = -1 lets
-                        // the fast path skip the max_y_ update.
-                        entry->cells_max_y =
-                            (max_y_after > max_y_before
-                             && max_y_after >= content_y)
-                                ? std::min(max_y_after - content_y,
-                                           captured_rows - 1)
-                                : -1;
                         entry->cells.assign(
                             static_cast<std::size_t>(captured_rows)
                                 * static_cast<std::size_t>(content_w),
@@ -1144,6 +1151,51 @@ void paint_element(
                                                       content_y + y);
                             }
                         }
+                        // Compute cells_max_y by scanning the CAPTURED
+                        // cells, not by differencing canvas.max_y_
+                        // before/after. The canvas-delta heuristic
+                        // assumed paint always bumped max_y_ when it
+                        // wrote non-blank cells — but if a prior paint
+                        // in this same frame already pushed max_y_
+                        // above content_y + captured_rows, this
+                        // component's writes (which sit BELOW that
+                        // existing max_y_) don't move it, and the
+                        // heuristic concluded "nothing painted" even
+                        // though the cells carry real content. That
+                        // mismatch then poisons the fast path: the
+                        // blit calls row_has_content=false on rows
+                        // whose cells are actually non-blank, the
+                        // canvas's max_y_ stays underreported, and
+                        // Canvas::clear()'s "rows above max_y_ are
+                        // blank" invariant is violated — old painted
+                        // cells survive into next frame's diff and
+                        // get emitted (visible as the rendering
+                        // randomly breaking into stale row strips).
+                        //
+                        // Scanning the captured cells is O(captured_rows
+                        // * content_w) but only runs on cache miss
+                        // (slow path), so it's amortized across every
+                        // subsequent fast-path blit at this cache_id.
+                        int last_nonblank = -1;
+                        constexpr uint64_t kBlank = uint64_t{U' '};
+                        for (int y = captured_rows - 1; y >= 0; --y) {
+                            bool row_blank = true;
+                            const std::size_t row_off =
+                                static_cast<std::size_t>(y) * content_w;
+                            for (int x = 0; x < content_w; ++x) {
+                                if (entry->cells[row_off + x] != kBlank) {
+                                    row_blank = false;
+                                    break;
+                                }
+                            }
+                            if (!row_blank) { last_nonblank = y; break; }
+                        }
+                        entry->cells_max_y = last_nonblank;
+                        // Suppress unused-warning when the heuristic
+                        // is gone — keep the captures around in case
+                        // a future debug build wants them.
+                        (void)max_y_before;
+                        (void)max_y_after;
                     }
                 }
             }

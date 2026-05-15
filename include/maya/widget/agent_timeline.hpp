@@ -119,12 +119,26 @@ public:
         // compile-time `v(...)` node because the DSL pipe layer
         // doesn't surface an align_self setter — the property has
         // to be set on the builder before children are accepted.
+        // overflow:Hidden clips per-row content at the card's right
+        // border so long file-write / file-read content can never
+        // visibly bleed past the bordered rectangle. The row TextElement
+        // already declares wrap=TruncateEnd which should fit the text
+        // into the layout-allocated width, but with auto-width row
+        // containers there's a small flex-shrink window where children
+        // are measured before the parent's cross-stretch resolves the
+        // row's definite width — long content from a write tool's
+        // 100+ row body can land past the right border before the
+        // shrink pass converges, especially when the AgentTimeline
+        // gets stretched to a width that's narrower than the body
+        // rows' natural widths. The canvas-level clip is the
+        // structural guard against that escape hatch.
         return vstack()
             .align_self(Align::Stretch)
             .border(BorderStyle::Round)
             .padding(0, 1, 0, 1)
             .border_color(cfg_.border_color)
             .border_text(cfg_.title, BorderTextPos::Top, BorderTextAlign::Start)
+            .overflow(Overflow::Hidden)
             (rows);
     }
 

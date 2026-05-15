@@ -488,7 +488,6 @@ public:
         }
 
         if (row_has_content) {
-            if (y > max_y_) max_y_ = y;
             // Per-row last-content column. The blit width is a poor
             // proxy — cached cells captured from a sparsely-painted
             // row will be mostly blank with a short content prefix,
@@ -508,8 +507,19 @@ public:
                     break;
                 }
             }
-            if (actual_last > last_col_[static_cast<std::size_t>(y)])
-                last_col_[static_cast<std::size_t>(y)] = actual_last;
+            // Only bump max_y_ if we actually have visible content in
+            // this row — the wide-glyph clip-edge repair above can have
+            // blanked the entire blitted span, in which case the row
+            // is genuinely empty and bumping max_y_ would lie to
+            // content_height() (claiming content where there is none
+            // and forcing the diff path to walk + emit empty rows).
+            // Matches the discipline set() upholds: max_y_ tracks
+            // visible writes, not attempted writes.
+            if (actual_last >= 0) {
+                if (y > max_y_) max_y_ = y;
+                if (actual_last > last_col_[static_cast<std::size_t>(y)])
+                    last_col_[static_cast<std::size_t>(y)] = actual_last;
+            }
         }
         stage_ = CanvasStage::Painted;
     }

@@ -300,6 +300,28 @@ void compose_inline_frame(const Canvas& canvas,
     const int W = canvas.width();
     if (W <= 0 || content_rows <= 0 || term_h <= 0) return;
 
+#ifdef MAYA_DEBUG_SHADOW_VERIFY
+    // Compose precondition: `content_rows` must equal
+    // canvas.max_content_row() + 1 — i.e. the caller derived it from
+    // content_height(canvas). If they don't match, somebody computed
+    // content_rows from a different source (layout's computed height,
+    // a hard-coded value, etc.) and the row-emit loop will walk past
+    // the actual painted rows, serialising stale cells from previous
+    // frames into the live frame. Catch the violation at the source
+    // instead of letting it become a ghost-row report from a user.
+    {
+        const int expected = canvas.max_content_row() + 1;
+        if (content_rows != expected) {
+            std::fprintf(stderr,
+                "\n[maya] COMPOSE PRECONDITION VIOLATED: content_rows=%d "
+                "but canvas.max_content_row()+1=%d. The caller must derive "
+                "content_rows from content_height(canvas).\n",
+                content_rows, expected);
+            std::abort();
+        }
+    }
+#endif
+
     // Width change invalidates the cached cell buffer — row layouts shift.
     // Reset clears prev_width / prev_rows but doesn't free prev_cells; the
     // next resize will reuse the allocation if it's already big enough.

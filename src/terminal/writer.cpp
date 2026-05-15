@@ -363,9 +363,28 @@ auto Writer::write_all(std::string_view data) const -> Status {
         if (!result) {
             if (result.error().kind == ErrorKind::WouldBlock) {
                 if (!wrote_any) return err(Error::would_block());
-                // Partial write: BSU frame open. Send recovery so terminal
-                // doesn't stall waiting for sync-end.
-                static constexpr std::string_view recovery = "\x1b[?2026l\x1b[0m";
+                // Partial write of `data` left the wire mid-sequence: the
+                // accepted prefix can end inside a CSI (\x1b[12), an OSC
+                // (\x1b]0;par), a UTF-8 codepoint (\xe2\x96), a DCS, etc.
+                // The old recovery emitted a bare ESC next, relying on
+                // the VT spec's "new ESC cancels pending CSI". Real
+                // terminals (older VTE, conhost) instead PRINT the
+                // orphan parameter bytes as literal cells before honouring
+                // the new ESC — those cells then sit in the live frame
+                // invisible to the renderer's shadow and become permanent
+                // scrollback corruption when the row scrolls off.
+                //
+                // Use the byte-level cancellation codes from ECMA-48 §5.7
+                // first: 0x18 CAN and 0x1A SUB. Spec-compliant terminals
+                // discard the in-flight CS on either; non-compliant ones
+                // render a visible substitute glyph instead of consuming
+                // the orphan bytes as text — strictly better failure mode.
+                // ST (\x1b\\) closes any in-flight OSC/DCS/APC/PM string
+                // (which CAN/SUB don't terminate per §8.3.143). Then
+                // close any open synchronized-output bracket and drop
+                // residual SGR.
+                static constexpr std::string_view recovery =
+                    "\x18\x1a\x1b\\\x1b[?2026l\x1b[0m";
                 (void)platform::io_write(handle_, recovery.data(), recovery.size());
                 return err(Error::would_block());
             }

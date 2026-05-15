@@ -448,8 +448,24 @@ void Canvas::clear_rows(int n) {
     // For small regions (typical inline mode), regular fill keeps L1 warm.
     std::fill(cells_.data(), cells_.data() + count, blank);
     damage_ = Rect{{Columns{0}, Rows{0}}, {Columns{width_}, Rows{rows}}};
-    max_y_ = -1;
     std::fill(last_col_.begin(), last_col_.begin() + rows, -1);
+    // Partial clear: rows [n, height_) may still hold non-blank content,
+    // so max_y_ is NOT canvas-wide -1. Rescan the surviving rows from
+    // the bottom up via last_col_ (kept current by set/blit/fill).
+    // The previous unconditional `max_y_ = -1` left a corrupt state
+    // where last_content_col(y) for y >= n returned a valid column
+    // but max_content_row() returned -1, so content_height() said
+    // "0 rows" and the renderer would skip emitting the surviving
+    // rows entirely — silent corruption (live content invisible to
+    // the diff scan, but still on the wire from the prior frame).
+    int new_max_y = -1;
+    for (int y = height_ - 1; y >= rows; --y) {
+        if (last_col_[static_cast<std::size_t>(y)] >= 0) {
+            new_max_y = y;
+            break;
+        }
+    }
+    max_y_ = new_max_y;
     stage_ = CanvasStage::Drained;
 }
 

@@ -5218,9 +5218,32 @@ const Element& StreamingMarkdown::build() const {
         (has_prefix ? prefix_->blocks.size() : 0u) + (has_tail ? 1u : 0u));
 
     if (has_prefix) {
-        for (const auto& sp : prefix_->blocks) {
-            outer_children.push_back(*sp);  // deep-copy Element variant body
-        }
+        // Wrap the committed blocks in a single ComponentElement with a
+        // generation-derived cache_id. The renderer's component_cache
+        // then stores the rendered cells against this key; between
+        // commits (generation stable) every render hits the cache and
+        // blits cells directly, skipping the deep-copy lambda below
+        // entirely. On commit the generation bumps, the cache_id
+        // changes, the next render misses and re-runs the lambda once,
+        // then caches again. Avoids the per-block `Element{sp}`
+        // wrapper (visible blank-row bug) while still skipping the
+        // per-frame copy work the previous inline-into-outer_children
+        // path was paying at 100% CPU on long streams.
+        auto p = prefix_;
+        ComponentElement comp;
+        char id_buf[32];
+        std::snprintf(id_buf, sizeof(id_buf), "#strmd-prefix-%lu",
+                      static_cast<unsigned long>(p->generation));
+        comp.cache_id = id_buf;
+        comp.render = [p](int /*w*/, int /*h*/) -> Element {
+            std::vector<Element> kids;
+            kids.reserve(p->blocks.size());
+            for (const auto& sp : p->blocks) {
+                kids.push_back(*sp);
+            }
+            return detail::vstack().gap(1)(std::move(kids)).build();
+        };
+        outer_children.push_back(Element{std::move(comp)});
     }
     if (has_tail) {
         outer_children.push_back(render_tail(tail));

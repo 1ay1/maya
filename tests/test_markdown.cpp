@@ -872,6 +872,55 @@ static void st_set_content_grow_20k() {
     render_stream(md);
 }
 
+// Repeated render after N committed blocks — simulates a composer
+// keystroke / Tick happening BETWEEN model deltas: state hasn't
+// changed, but the host's view layer rebuilds and re-renders the
+// streaming widget every frame. Each render must hit the renderer's
+// content-keyed cache (cache_id on the outer prefix component) and
+// blit cached cells, NOT re-run the prefix lambda's deep-copy loop.
+//
+// Without working caching, cost is O(N) per render × K renders.
+// With working caching, first render captures cells; subsequent
+// renders blit — total cost is one slow path plus K × O(blit).
+//
+// Failure mode: if this exceeds the budget, the streaming-widget
+// caching isn't engaging and long-streaming sessions will peg CPU
+// on every keystroke, exactly what the user reported.
+static void st_render_after_commits_no_change() {
+    // Build a body that produces ~40 committed blocks (one per
+    // paragraph-style block in build_llm_body's mix). Then finish()
+    // so everything is committed (no tail). Then render 200 times
+    // with zero state changes.
+    auto body = build_llm_body(20'000);
+    StreamingMarkdown md;
+    md.set_content(body);
+    md.finish();
+    render_stream(md);            // prime — first render captures cells
+    for (int k = 0; k < 200; ++k) {
+        render_stream(md);        // every subsequent render must hit cache
+    }
+}
+
+// Same scenario as above but BETWEEN commits: append a few bytes (not
+// enough to cross a block boundary), render, append, render, etc.
+// The widget should NOT re-render the prefix from scratch — the prefix's
+// cache_id is keyed on prefix_->generation, which only advances when
+// commit_range actually fires. Between commits, every render is a hit.
+static void st_render_between_commits() {
+    auto body = build_llm_body(10'000);
+    StreamingMarkdown md;
+    md.set_content(body);
+    md.finish();                  // all committed; generation stable
+    // Now append a single byte and render, 200 times. None of the
+    // appends crosses a block boundary because the trailing bytes
+    // don't form a complete paragraph; the prefix stays at its
+    // current generation. Each render must hit the cache.
+    for (int k = 0; k < 200; ++k) {
+        md.append("x");
+        render_stream(md);
+    }
+}
+
 // Clear + re-stream: ensure cache invalidation is correct when clear() runs.
 static void st_clear_restream() {
     StreamingMarkdown md;
@@ -1237,6 +1286,8 @@ int main() {
     run("repeat build() ×100k",        2000ms, st_repeat_build_100k);
     run("growing unclosed code fence", 5000ms, st_growing_code_fence);
     run("set_content grow 20k",        5000ms, st_set_content_grow_20k);
+    run("render after commits ×200",   2000ms, st_render_after_commits_no_change);
+    run("render between commits ×200", 2000ms, st_render_between_commits);
     run("clear + restream ×10",        5000ms, st_clear_restream);
 
     std::println("\n── summary ──────────────────────────────────────────────");

@@ -380,26 +380,32 @@ std::size_t build_layout_tree(
                         constexpr int kBigH = 1 << 20;
 
                         auto& cache = component_cache();
-                        // Only trust the cached height when the host
-                        // opted into cross-frame identity via cache_id.
-                        // Pointer-keyed entries can hold a stale `height`
-                        // measured from a render() output that closed
-                        // over mutable state — common in streaming
-                        // widgets (e.g. StreamingMarkdown's prefix
-                        // ComponentElement, whose closure captures a
-                        // shared_ptr<CommittedPrefix> whose blocks
-                        // mutate). Symmetric with the cells-cache
-                        // gating below at the paint sites: trust the
-                        // cache only when the contract was opted into.
-                        if (!comp.cache_id.empty()) {
-                            if (auto* entry = find_component_cache(cache, comp, max_width)) {
+                        // Trust the cached height when:
+                        //  - cache_id is set (host opted into cross-frame
+                        //    identity), OR
+                        //  - the entry was stored this frame (pointer-keyed
+                        //    within-frame reuse: same render call satisfies
+                        //    both layout::compute's hypothetical (3a) and
+                        //    final (3d) measure passes — without this,
+                        //    every nested component renders twice per
+                        //    measure pass).
+                        // Pointer-keyed entries CAN hold a stale `height`
+                        // across frames (the wrapper instance is reused
+                        // but its closure captured mutable state — e.g.
+                        // StreamingMarkdown's prefix), so we reject
+                        // cross-frame pointer-keyed HITs.
+                        if (auto* entry = find_component_cache(cache, comp, max_width)) {
+                            const bool trust =
+                                !comp.cache_id.empty()
+                                || entry->last_frame == cache.current_frame;
+                            if (trust) {
                                 entry->last_frame = cache.current_frame;
                                 return {Columns{max_width},
                                         Rows{entry->height}};
                             }
                         }
 
-                        // Miss (or pointer-keyed: always treated as
+                        // Miss (or pointer-keyed cross-frame: treated as
                         // miss). Render, layout, store. Pointer-keyed
                         // entries still get an entry stored so the
                         // paint slow-path can find the same `result`
@@ -986,20 +992,26 @@ void paint_element(
             // resulting cells into the entry so every subsequent
             // frame takes the fast path above.
             //
-            // Only honor a cached `entry->result` when the host opted
-            // into cross-frame identity via cache_id. Pointer-keyed
-            // entries can hold a stale Element tree from a render()
-            // that closed over mutable state (StreamingMarkdown's
-            // prefix is the canonical case — its lambda captures
-            // shared_ptr<CommittedPrefix> whose blocks vector mutates
-            // across commits). Symmetric with the cells-cache gating
-            // a few lines below at the capture site.
+            // Honor a cached `entry->result` when:
+            //  - cache_id is set (host opted into cross-frame identity), OR
+            //  - the entry was stored this frame (within-frame reuse:
+            //    the measure pass just populated `result`, so we can
+            //    skip a redundant render() call here).
+            // Pointer-keyed entries CAN hold a stale Element tree from
+            // a prior frame's render() that closed over mutable state
+            // (StreamingMarkdown's prefix is the canonical case), so we
+            // reject cross-frame pointer-keyed result reuse.
             const Element* child_ptr = nullptr;
             Element        fresh_render;
-            ComponentCacheEntry* reuse_entry =
-                !node.cache_id.empty()
-                    ? find_component_cache(cache, node, content_w)
-                    : nullptr;
+            ComponentCacheEntry* reuse_entry = [&]() -> ComponentCacheEntry* {
+                if (auto* e = find_component_cache(cache, node, content_w)) {
+                    if (!node.cache_id.empty()
+                        || e->last_frame == cache.current_frame) {
+                        return e;
+                    }
+                }
+                return nullptr;
+            }();
             if (reuse_entry) {
                 child_ptr = &reuse_entry->result;
                 reuse_entry->last_frame = cache.current_frame;

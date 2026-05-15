@@ -170,19 +170,42 @@ private:
     // Full-width toast row — the activity slot's high-visibility twin.
     // A leading rail glyph + bold message text, painted on a colored
     // background that spans the entire row so the notification is
-    // impossible to miss. Uses the StatusBanner config's `is_error` to
-    // pick between an error tint (red bg) and an info tint (the panel's
-    // current phase_color, used for retry / cancel / compact / etc).
+    // impossible to miss. The background reflects the banner's `kind`:
+    //   Info  → phase_color (cyan/green/… — "things are happening")
+    //   Warn  → yellow      (retry, awaiting permission — "attention")
+    //   Error → red         (rate-limited, transport gave up)
+    // The foreground is then chosen for legible contrast against each
+    // bg: dark text on the bright info/warn tints (bright_white on cyan
+    // is the failure mode this widget existed to fix), bright_white on
+    // the deep error red. Picking from the named-ANSI set keeps the
+    // user's terminal theme in charge of the actual hue.
     [[nodiscard]] Element toast_row() const {
         using namespace dsl;
-        const Color bg = cfg_.status_banner.is_error
-            ? cfg_.status_banner.error_color
-            : cfg_.phase_color;
-        const Color fg = Color::bright_white();
+        using Kind = StatusBanner::Kind;
+        const Kind kind = cfg_.status_banner.effective_kind();
+
+        Color bg;
+        Color fg;
+        switch (kind) {
+            case Kind::Error:
+                bg = cfg_.status_banner.error_color;   // red
+                fg = Color::bright_white();            // white-on-red: classic alert contrast
+                break;
+            case Kind::Warn:
+                bg = cfg_.status_banner.warn_color;    // yellow
+                fg = Color::black();                   // dark-on-amber: the only readable choice
+                break;
+            case Kind::Info:
+            default:
+                bg = cfg_.phase_color;                 // tracks the phase (streaming=cyan, awaiting=yellow, …)
+                fg = Color::black();                   // bright_white on bright_cyan washes out on most themes
+                break;
+        }
+
         const std::string& msg = cfg_.status_banner.text;
-        const char* glyph = cfg_.status_banner.is_error
-            ? " \xe2\x9a\xa0  "   // ⚠
-            : " \xe2\x96\xb6  ";  // ▶
+        const char* glyph = (kind == Kind::Info)
+            ? " \xe2\x96\xb6  "   // ▶
+            : " \xe2\x9a\xa0  ";  // ⚠
 
         return component([bg, fg, msg, glyph](int w, int /*h*/) -> Element {
             using namespace dsl;

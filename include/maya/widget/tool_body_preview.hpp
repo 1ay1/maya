@@ -849,11 +849,26 @@ private:
             return cfg_.is_streaming ? placeholder_or_blank("awaiting content")
                                      : blank();
         }
-        // Write defaults to show_all so the user sees exactly what got
-        // written. Falls back to head-only preview if show_all=false.
+        // Tail-anchored preview: the user is glancing at a Write event
+        // mid-stream or post-finish to confirm "yes, this looks like
+        // the file I asked for" — the END of the body is what carries
+        // the most signal (the trailing brace closing the function the
+        // model just wrote, the final return statement, the last test
+        // case in a fixture). The opening lines are usually license
+        // headers and #includes that read the same across every Write.
+        //
+        // So: with show_all=false (default) we render the LAST
+        // cfg_.code_tail lines, with a single "⋯ N more above" marker
+        // on top accounting for everything that was elided. Line
+        // numbers reflect true positions in the file (e.g. 198, 199,
+        // 200 for a 200-line write) so the slice doesn't read as if
+        // it started at line 1.
+        //
+        // show_all=true keeps the full numbered render for callers
+        // that want it (no elision, line numbers from 1).
         const auto p = cfg_.show_all
             ? all_lines(cfg_.text)
-            : head_tail(cfg_.text, cfg_.code_head, /*tail=*/0);
+            : head_tail(cfg_.text, /*head=*/0, cfg_.code_tail);
 
         // Gutter (line numbers) dim; pipe (inside make_row) carries the
         // category band via cfg_.chrome_color.
@@ -863,14 +878,17 @@ private:
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 2);
 
-        int line_num = 1;
+        // Elision marker on top — the rendered tail starts at line
+        // (elided + 1) of the source. Pushed BEFORE the line loop so
+        // the visual order is "⋯ N more above" then the tail rows.
+        if (p.elided > 0) rows.push_back(elision_marker(p.elided));
+
+        int line_num = (p.elided > 0) ? (p.elided + 1) : 1;
         for (std::size_t i = 0; i < p.lines.size(); ++i) {
             char numbuf[8];
             std::snprintf(numbuf, sizeof(numbuf), "%3d", line_num++);
             rows.push_back(make_row(numbuf, marker_st, p.lines[i], code_st));
         }
-
-        if (p.elided > 0) rows.push_back(elision_marker(p.elided));
 
         if (cfg_.show_footer_stats) {
             // Trailing summary row — italic, chrome-colored, NOT part of

@@ -400,6 +400,26 @@ public:
         }
     }
 
+    // True iff the underlying writer is holding undelivered bytes from a
+    // prior non-blocking write — i.e. the last render() either fully or
+    // partially deferred its output because the tty pipe couldn't accept
+    // it. The runtime loop must re-fire a render on the next iteration
+    // (with a short poll timeout) so the deferred bytes drain rather than
+    // sitting in residue indefinitely waiting for an unrelated event.
+    //
+    // Without this signal, render() returning ok() after a WouldBlock
+    // looks identical to a fully-successful frame; the loop clears
+    // needs_render and the deferred bytes never get flushed until some
+    // foreground event (keystroke, stream delta, timer) happens to fire.
+    // On a resize-triggered full repaint (Divergent → Synced) where the
+    // emitted byte stream is large enough to saturate the writer, this
+    // surfaces as the viewport scrolling partway through the new frame
+    // and then sitting blank for several seconds until the next
+    // unrelated event triggers a retry.
+    [[nodiscard]] bool has_pending_writes() const noexcept {
+        return writer_ != nullptr && writer_->has_residue();
+    }
+
     // Final cleanup (show cursor, reset, newline).
     auto cleanup() -> Status;
 
@@ -999,6 +1019,18 @@ void run(RunConfig cfg = {}) {
         if (!needs_render && cfg.fps > 0) {
             poll_timeout = std::chrono::milliseconds(1000 / std::max(1, cfg.fps));
         }
+        // Deferred-write retry: if the last render() couldn't push its
+        // bytes to the wire (WouldBlock), the writer is sitting on
+        // residue and needs a re-fire to drain it. Bound the poll
+        // timeout to a single-digit-millisecond retry interval so the
+        // residue clears within a couple of loop iterations rather
+        // than waiting for an unrelated event to come along. Surfaces
+        // as the resize-triggered full repaint resuming smoothly
+        // instead of pausing for seconds when the tty buffer saturates.
+        if (rt.has_pending_writes()) {
+            poll_timeout = std::min(poll_timeout,
+                                    std::chrono::milliseconds(8));
+        }
         if (!timers.empty()) {
             auto now = std::chrono::steady_clock::now();
             for (auto& t : timers) {
@@ -1195,6 +1227,15 @@ void run(RunConfig cfg = {}) {
                 detail::scroll_writeback_dirty = false;
                 needs_render = true;
             }
+            // Deferred-write retry: if render() returned ok() but the
+            // writer is still holding residue (the tty pipe rejected
+            // part of the emit with WouldBlock — common on a
+            // resize-triggered full repaint that emits a large
+            // serialize stream), keep needs_render set so the next
+            // loop iteration drives the drain. Paired with the
+            // poll-timeout cap above, this finishes the frame within
+            // a few milliseconds instead of stalling for seconds.
+            if (rt.has_pending_writes()) needs_render = true;
         }
     }
 

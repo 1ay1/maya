@@ -5231,8 +5231,15 @@ const Element& StreamingMarkdown::build() const {
         // path was paying at 100% CPU on long streams.
         auto p = prefix_;
         ComponentElement comp;
-        char id_buf[32];
-        std::snprintf(id_buf, sizeof(id_buf), "#strmd-prefix-%lu",
+        // Per-instance hex + generation. instance_id_ is minted at widget
+        // construction from the same global counter ComponentElement uses
+        // for pointer-fallback identity (element.hpp::next_component_generation),
+        // so it's globally unique within the process and immune to the
+        // generation-counter aliasing that affected the previous
+        // "#strmd-prefix-N" scheme across StreamingMarkdown instances.
+        char id_buf[48];
+        std::snprintf(id_buf, sizeof(id_buf), "#strmd-%lx-%lu",
+                      static_cast<unsigned long>(instance_id_),
                       static_cast<unsigned long>(p->generation));
         comp.cache_id = id_buf;
         comp.render = [p](int /*w*/, int /*h*/) -> Element {

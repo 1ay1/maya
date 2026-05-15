@@ -254,6 +254,20 @@ class StreamingMarkdown {
     mutable std::shared_ptr<CommittedPrefix> prefix_ =
         std::make_shared<CommittedPrefix>();
 
+    // Per-instance discriminator stamped at construction. Embedded in the
+    // prefix ComponentElement's cache_id (markdown.cpp build()) so two
+    // StreamingMarkdown widgets at the same `prefix_->generation` don't
+    // collide on the renderer's content-keyed cache. Each agentty turn
+    // owns its own StreamingMarkdown via view_cache.message_md, and
+    // generation counters start at 0 in every instance — without a
+    // per-instance bit in the cache_id, "#strmd-prefix-N" aliases turn
+    // N's prefix cells onto turn M's region the moment both have hit N
+    // commits. Symptom: prefix text vanishes (last paint wins),
+    // scrollback rows commit blank (cells_rows < content_h) when the
+    // overflow `\r\n` scrolls them off the viewport top. Same shape as
+    // the bug the Element(shared_ptr) ctor solves via id_for_shared.
+    const std::uint64_t instance_id_ = detail::next_component_generation();
+
     std::string source_;                // codepoint-safe accumulated bytes
     size_t committed_ = 0;              // bytes parsed into finalized blocks
     bool in_code_fence_ = false;        // ``` fence state at committed_

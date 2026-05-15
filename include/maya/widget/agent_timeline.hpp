@@ -59,6 +59,30 @@ struct AgentTimelineEvent {
     Color                   category_color  = Color::blue();
     AgentEventStatus        status          = AgentEventStatus::Pending;
     ToolBodyPreview::Config body;                 // empty by default; rendered under `│` stripe
+
+    // Optional content-stable cache key for the rendered event
+    // sub-tree (header row + striped body rows).
+    //
+    // When non-empty AND the event is in a TERMINAL state
+    // (Done / Failed / Rejected), AgentTimeline::append_event wraps
+    // the per-event rows in a ComponentElement whose cache_id is
+    // this string. The renderer's content-keyed component_cache
+    // then stores the rendered cells against this key and serves
+    // every subsequent frame as a cell-blit — layout + paint of the
+    // tool body is skipped entirely.
+    //
+    // Why "terminal" only: a Running / Pending tool's card carries
+    // a live spinner frame in its status icon, and a Done card with
+    // a frame-dependent state somewhere inside would lock a stale
+    // spinner glyph into the cells. Terminal events render no
+    // frame-driven state (status icon collapses to a static ✓ / ✗ /
+    // ⊘), so their cell snapshot is byte-stable until the host
+    // mutates the event itself (which it signals by changing the
+    // cache_id, typically by including the tool's wire id).
+    //
+    // Default empty → every frame walks the event sub-tree, matching
+    // the pre-cache_id behaviour for callers that haven't opted in.
+    std::string             cache_id;
 };
 
 struct AgentTimelineStat {
@@ -187,15 +211,84 @@ private:
     // ── Per-event block: header row + (optional) body rows + (optional)
     //    inter-event connector. Pushed into `rows` so v() picks them up
     //    in order.
+    //
+    // Caching: when ev.cache_id is set AND the event is terminal
+    // (Done / Failed / Rejected), the (header + body) sub-tree is
+    // wrapped in a ComponentElement so the renderer's content-keyed
+    // cache blits cells across frames instead of re-walking
+    // ToolBodyPreview's tree. The inter-event connector stays
+    // outside the cached wrapper because its color depends on the
+    // NEXT event's status — caching it under THIS event's id would
+    // freeze the connector to whatever next-status existed at first
+    // population, missing later transitions like "the running tool
+    // below me just turned green."
     void append_event(std::vector<Element>& rows, std::size_t i) const {
         using namespace dsl;
         const auto& ev       = cfg_.events[i];
         const bool is_last   = (i + 1 == cfg_.events.size());
-        const bool is_active = (ev.status == AgentEventStatus::Pending
-                             || ev.status == AgentEventStatus::Running);
         const bool is_terminal = (ev.status == AgentEventStatus::Done
                                || ev.status == AgentEventStatus::Failed
                                || ev.status == AgentEventStatus::Rejected);
+
+        if (is_terminal && !ev.cache_id.empty()) {
+            ComponentElement comp;
+            comp.cache_id = ev.cache_id;
+            // Capture the event by value so the lambda owns its
+            // inputs — the caller's Config can be moved/destroyed
+            // between cache populate and cache hit, but the
+            // captured copy stays alive inside the cache entry's
+            // result. AgentTimelineEvent is small (a few strings +
+            // a ToolBodyPreview::Config); copy cost runs once on the
+            // miss frame and is dwarfed by the layout work the cache
+            // is about to amortise.
+            //
+            // Tree glyph: the cached subtree must be position-stable
+            // across frames where the host's event order may shift
+            // (typical when streaming events arrive interleaved with
+            // earlier events completing). We pass the current
+            // (i, total) computed glyph by value into the lambda so
+            // the very first capture reflects the position at that
+            // moment; hosts that care about the glyph staying in
+            // sync with later reorderings should include the
+            // position in cache_id (e.g. "tool:<id>:<i>:<n>") so a
+            // reorder forces a fresh cache entry.
+            std::string glyph{tree_glyph(i, cfg_.events.size())};
+            comp.render = [ev_copy = ev,
+                           glyph_copy = std::move(glyph)]
+                          (int /*w*/, int /*h*/) -> Element {
+                std::vector<Element> sub;
+                sub.reserve(4);
+                build_event_body(sub, ev_copy, /*is_terminal=*/true,
+                                 /*frame=*/0, glyph_copy);
+                return v(std::move(sub)).build();
+            };
+            rows.push_back(Element{std::move(comp)});
+        } else {
+            build_event_body(rows, ev, is_terminal, cfg_.frame,
+                             std::string{tree_glyph(i, cfg_.events.size())});
+        }
+
+        if (!is_last) {
+            const Color next_cc = event_connector_color(cfg_.events[i + 1].status);
+            rows.push_back(h(
+                text("   "),
+                text("\xe2\x94\x82", Style{}.with_fg(next_cc).with_dim())
+            ).build());
+        }
+    }
+
+    // Build the header row + body rows for a single event into `out`.
+    // Pure function of its inputs — caller passes the live `frame` for
+    // active spinner glyphs and the precomputed `glyph` so the cached
+    // path can capture a position at lambda construction time.
+    static void build_event_body(std::vector<Element>& out,
+                                 const AgentTimelineEvent& ev,
+                                 bool is_terminal,
+                                 int frame,
+                                 const std::string& glyph) {
+        using namespace dsl;
+        const bool is_active = (ev.status == AgentEventStatus::Pending
+                             || ev.status == AgentEventStatus::Running);
 
         // `detail` is clipped (TruncateEnd) — when a tool's args don't fit
         // (long `powershell -c "…"` commands, paths past the right edge),
@@ -204,10 +297,10 @@ private:
         // event's body / connector renders on top of the wrapped overflow.
         // The body preview below is the place for full content; the
         // header stays a 1-line summary with an ellipsis at the cut.
-        rows.push_back((h(
-            text(tree_glyph(i, cfg_.events.size()), tree_style(ev.category_color, is_active)),
+        out.push_back((h(
+            text(glyph, tree_style(ev.category_color, is_active)),
             text(" "),
-            status_icon(ev.status, cfg_.frame),
+            status_icon(ev.status, frame),
             text("  "),
             text(ev.name, name_style(ev.status, ev.category_color, is_active)),
             text("  "),
@@ -234,17 +327,9 @@ private:
         Element body_el = ToolBodyPreview{ev.body}.build();
         if (auto* bx = as_box(body_el)) {
             for (const auto& child : bx->children)
-                rows.push_back((h(body_rule, child) | grow(1.0f)).build());
+                out.push_back((h(body_rule, child) | grow(1.0f)).build());
         } else if (auto* t = as_text(body_el); t && !t->content.empty()) {
-            rows.push_back((h(body_rule, body_el) | grow(1.0f)).build());
-        }
-
-        if (!is_last) {
-            const Color next_cc = event_connector_color(cfg_.events[i + 1].status);
-            rows.push_back(h(
-                text("   "),
-                text("\xe2\x94\x82", Style{}.with_fg(next_cc).with_dim())
-            ).build());
+            out.push_back((h(body_rule, body_el) | grow(1.0f)).build());
         }
     }
 

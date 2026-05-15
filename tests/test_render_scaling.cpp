@@ -19,6 +19,8 @@
 
 #include <maya/maya.hpp>
 #include <maya/render/renderer.hpp>
+#include <maya/widget/agent_timeline.hpp>
+#include <maya/widget/tool_body_preview.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -507,6 +509,180 @@ void test_ephemeral_components_do_not_leak() {
           "  ephemeral-loop wall-time blew the 30s budget: %.0f ms\n", wall_ms);
 }
 
+// ── id_for_shared churn ────────────────────────────────────────────────────
+//
+// Stresses the thread-local weak_ptr→id map inside element.hpp:
+// id_for_shared. The renderer's content-keyed cache uses the
+// returned id as cache_id; correctness rules:
+//
+//   1. A shared_ptr handed twice must return the SAME id (so the
+//      cross-frame cache hits).
+//   2. After the original shared_ptr dies, a fresh shared_ptr at the
+//      same allocator-recycled raw address must return a DIFFERENT
+//      id (otherwise stale cells from the dead one are blitted under
+//      the new one — the ghost-composer bug the comments call out).
+//   3. Over many churn cycles the implementation must keep id
+//      identity correct AND not let the internal map grow without
+//      bound (the bulk-sweep + incremental-sweep paths handle this;
+//      this test exercises both by churning > kIncSweepEvery iters).
+//
+// We can't observe id_for_shared directly (it's in `detail`), but we
+// can observe its CONSEQUENCE: the renderer's render-call count. If
+// the cache_id derived from id_for_shared is wrong, either we miss
+// when we should hit (count too high) or we hit when we should miss
+// (count too low — stale cells served under fresh content).
+
+void test_id_for_shared_churn_recycles_ids() {
+    constexpr int kChurnCycles = 200;   // > kIncSweepEvery (64) → exercises sweep
+    auto counter = std::make_shared<Counter>();
+
+    StylePool pool;
+    Canvas canvas(80, 80, &pool);
+
+    int prior_renders = 0;
+    int cycles_with_fresh_render = 0;
+
+    // Each cycle: allocate a brand-new shared_ptr, hand it to the
+    // implicit Element(shared_ptr) ctor twice, render. The first
+    // wrap should miss (fresh id → no cells yet), the second should
+    // hit. Then drop the shared_ptr so the next cycle's allocation
+    // may recycle its control-block address.
+    for (int i = 0; i < kChurnCycles; ++i) {
+        auto sp = std::make_shared<Element>(settled_turn(counter, i));
+
+        // Frame N: first appearance → must render() once.
+        {
+            Element root = (v(
+                Element{std::shared_ptr<const Element>{sp}}
+            ) | grow(1.0f)).build();
+            (void)render_us(root, canvas, pool);
+        }
+        // Frame N+1: same shared_ptr → same id → cache hit, no render.
+        {
+            Element root = (v(
+                Element{std::shared_ptr<const Element>{sp}}
+            ) | grow(1.0f)).build();
+            (void)render_us(root, canvas, pool);
+        }
+
+        int now = counter->n.load();
+        int delta = now - prior_renders;
+        // Expectation: exactly +1 render per cycle (the first frame's
+        // miss). The second frame in the same cycle must hit cache C.
+        // Anything else means id_for_shared aliased ids across cycles
+        // (delta=0: stale-cell blit, correctness bug) or failed to
+        // cache within a cycle (delta=2: cache_id stability broken).
+        if (delta == 1) ++cycles_with_fresh_render;
+        prior_renders = now;
+        // sp goes out of scope here → control block freed → next
+        // iteration's make_shared may land at the same address.
+    }
+
+    std::printf("[churn]         %d/%d cycles had exactly 1 fresh render "
+                "(total renders = %d, expected = %d)\n",
+                cycles_with_fresh_render, kChurnCycles,
+                counter->n.load(), kChurnCycles);
+    CHECK(cycles_with_fresh_render == kChurnCycles,
+          "  id_for_shared churn corrupted cache identity: "
+          "%d/%d cycles off-count\n",
+          kChurnCycles - cycles_with_fresh_render, kChurnCycles);
+    CHECK(counter->n.load() == kChurnCycles,
+          "  total renders %d != cycles %d (id aliasing or cache mismatch)\n",
+          counter->n.load(), kChurnCycles);
+}
+
+// ── AgentTimeline per-event cache_id ───────────────────────────────────
+//
+// During an agentic loop where ONE tool is still running and several
+// have already settled, agentty's turn-level cache (gated on
+// is_turn_resolved — every tool terminal, no pending permission)
+// can't engage — the whole turn rebuilds every frame for the live
+// spinner. Per-event cache_ids on terminal events let those done
+// cards' cells be blitted across frames even while the turn as a
+// whole is in flight.
+//
+// We measure the difference: a timeline with N done events + 1 running,
+// rendered 200 frames. With cache_id set on the done events, per-frame
+// cost should NOT scale linearly with N — each done card's cell blit
+// is bounded, and only the running card pays full layout+paint.
+
+void test_agent_timeline_per_event_cache_id_bounds_cost() {
+    constexpr int kFrames = 200;
+    StylePool pool;
+    Canvas canvas(120, 5000, &pool);
+
+    auto make_done = [](int idx, bool with_cache_id) {
+        AgentTimelineEvent ev;
+        ev.name = "read";
+        ev.detail = "src/file.cpp";
+        ev.elapsed_seconds = 0.42f;
+        ev.category_color = Color::cyan();
+        ev.status = AgentEventStatus::Done;
+        ev.body.kind = ToolBodyPreview::Kind::FileRead;
+        std::string text;
+        for (int j = 0; j < 20; ++j)
+            text += "line " + std::to_string(j) + " content of the file\n";
+        ev.body.text = std::move(text);
+        if (with_cache_id) ev.cache_id = "tool:done-" + std::to_string(idx);
+        return ev;
+    };
+    auto make_running = []() {
+        AgentTimelineEvent ev;
+        ev.name = "bash";
+        ev.detail = "running";
+        ev.category_color = Color::green();
+        ev.status = AgentEventStatus::Running;
+        ev.body.kind = ToolBodyPreview::Kind::BashOutput;
+        ev.body.text = "intermediate...\n";
+        return ev;
+    };
+
+    auto measure = [&](int n_done, bool with_cache_id) -> double {
+        AgentTimeline::Config base_cfg;
+        base_cfg.title = "Actions";
+        for (int i = 0; i < n_done; ++i)
+            base_cfg.events.push_back(make_done(i, with_cache_id));
+        base_cfg.events.push_back(make_running());
+
+        auto t0 = std::chrono::steady_clock::now();
+        for (int f = 0; f < kFrames; ++f) {
+            AgentTimeline::Config cfg = base_cfg;
+            cfg.frame = f;
+            AgentTimeline tl{cfg};
+            Element root = tl.build();
+            std::vector<layout::LayoutNode> layout_nodes;
+            canvas.clear();
+            render_tree(root, canvas, pool, theme::dark, layout_nodes, true);
+        }
+        auto t1 = std::chrono::steady_clock::now();
+        return std::chrono::duration<double, std::micro>(t1 - t0).count() / kFrames;
+    };
+
+    double base_no    = measure(0, false);   // 1 running, baseline
+    double n10_no     = measure(10, false);  // 10 done + 1 running, NO cache_id
+    double n10_cached = measure(10, true);   // 10 done + 1 running, WITH cache_id
+
+    std::printf("[agent-timeline]  baseline (1 running):     %6.1f us/frame\n",
+                base_no);
+    std::printf("                  10 done + 1 (no cache):  %6.1f us/frame\n",
+                n10_no);
+    std::printf("                  10 done + 1 (cached):    %6.1f us/frame  (%.2fx speedup)\n",
+                n10_cached, n10_no / n10_cached);
+
+    // Structural invariant: with per-event cache_id the cost of 10
+    // done cards should be MEANINGFULLY less than without. A 1.2x
+    // floor is loose enough to survive CI / QEMU noise while still
+    // tripping if the cache wrapper silently stops engaging (e.g.
+    // someone moves the cache_id field, drops the ComponentElement
+    // wrap, or breaks the renderer's content-keyed lookup).
+    CHECK(n10_cached < n10_no,
+          "  per-event cache_id did not reduce cost: %.1f us cached >= %.1f us baseline\n",
+          n10_cached, n10_no);
+    CHECK(n10_no / n10_cached >= 1.2,
+          "  per-event cache_id speedup too small: %.2fx (expected >= 1.2x)\n",
+          n10_no / n10_cached);
+}
+
 } // namespace
 
 int main() {
@@ -517,6 +693,8 @@ int main() {
     test_width_change_invalidates_then_restabilises();
     test_live_tail_dominates_settled_prefix();
     test_ephemeral_components_do_not_leak();
+    test_id_for_shared_churn_recycles_ids();
+    test_agent_timeline_per_event_cache_id_bounds_cost();
     std::printf("\ntest_render_scaling: ok\n");
     return 0;
 }

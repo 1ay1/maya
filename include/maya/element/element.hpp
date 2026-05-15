@@ -133,28 +133,86 @@ namespace detail {
 // owner_less — owner_before reads the internal pointer's identity,
 // not just its bits.
 //
-// Bounded growth: the map is thread_local and we sweep expired entries
-// when it grows past a soft cap (1024). Typical session sizes stay
-// well under that; the sweep is O(N) but only runs at the cap so
-// amortised per-call cost is O(1).
+// Bounded growth: the map is thread_local and we evict expired entries
+// along three paths:
+//   1. Inline on lookup: if `find` lands on a node whose weak_ptr has
+//      expired, erase it immediately and treat the call as a miss.
+//      Costs one O(log N) erase to avoid the entry surviving until the
+//      next bulk sweep.
+//   2. Incremental on miss: every kIncSweepEvery inserts, scan a
+//      bounded prefix of the map (kIncSweepBudget entries) and erase
+//      any expired weak_ptrs we hit. Spreads the O(N) bulk-sweep cost
+//      across many calls so the p99 latency stays flat even on a
+//      low-power device (Raspberry Pi) where a single 1024-entry
+//      sweep is user-visible.
+//   3. Backstop bulk sweep: at the hard cap (kHardCap), do the
+//      original full scan. Should rarely trigger now that 1+2 keep
+//      the map drained, but stays in place to bound worst-case
+//      memory regardless of churn pattern.
+// Typical session sizes stay well under the cap; per-call cost is
+// O(log N) lookup + amortised O(1) sweep work.
 [[nodiscard]] inline std::uint64_t id_for_shared(
     const std::shared_ptr<const Element>& sp)
 {
     using Key = std::weak_ptr<const Element>;
     using Cmp = std::owner_less<Key>;
     thread_local std::map<Key, std::uint64_t, Cmp> ids;
+    // Sweep cursor for the incremental scan. We resume from the entry
+    // following the previous batch's last touched node on each tick,
+    // so over time every entry is visited even though no single call
+    // walks the whole map. Reset to begin() when it falls off the end.
+    thread_local typename std::map<Key, std::uint64_t, Cmp>::iterator
+        sweep_cursor = ids.end();
+    thread_local std::size_t inserts_since_sweep = 0;
     static std::atomic<std::uint64_t> next_id{1};
+
+    constexpr std::size_t kIncSweepEvery  = 64;     // tick every 64 inserts
+    constexpr std::size_t kIncSweepBudget = 16;     // visit ≤ 16 entries / tick
+    constexpr std::size_t kHardCap        = 1024;   // unchanged backstop
 
     Key key = sp;
     if (auto it = ids.find(key); it != ids.end()) {
-        return it->second;
+        // Inline erase-on-expired. owner_less treats a freed control
+        // block as distinct from a fresh one at the same address, so
+        // an expired hit means the OLD shared_ptr we cached identity
+        // for is gone; the new sp is logically different and must
+        // mint a fresh id. Erase before falling through to the
+        // insert path so the stale entry doesn't accumulate.
+        if (it->first.expired()) {
+            if (sweep_cursor == it) ++sweep_cursor;   // don't dangle the cursor
+            ids.erase(it);
+        } else {
+            return it->second;
+        }
     }
-    if (ids.size() >= 1024) {
+
+    // Incremental sweep tick. Amortises the bulk-sweep O(N) into
+    // O(kIncSweepBudget) per tick.
+    if (++inserts_since_sweep >= kIncSweepEvery) {
+        inserts_since_sweep = 0;
+        if (sweep_cursor == ids.end()) sweep_cursor = ids.begin();
+        for (std::size_t budget = 0;
+             budget < kIncSweepBudget && sweep_cursor != ids.end();
+             ++budget)
+        {
+            if (sweep_cursor->first.expired()) {
+                sweep_cursor = ids.erase(sweep_cursor);
+            } else {
+                ++sweep_cursor;
+            }
+        }
+    }
+
+    // Hard-cap backstop. Pathological churn can still race ahead of
+    // the incremental sweep — keep the full scan as a guarantee.
+    if (ids.size() >= kHardCap) {
         for (auto it = ids.begin(); it != ids.end(); ) {
             if (it->first.expired()) it = ids.erase(it);
             else ++it;
         }
+        sweep_cursor = ids.end();   // iterators invalidated
     }
+
     auto id = next_id.fetch_add(1, std::memory_order_relaxed);
     ids.emplace(std::move(key), id);
     return id;

@@ -100,7 +100,15 @@ struct List        { std::vector<ListItem> items; bool ordered; int start_num = 
 struct HRule       {};
 struct TableCell   { std::vector<Inline> spans; };
 struct TableRow    { std::vector<TableCell> cells; };
-struct Table       { TableRow header; std::vector<TableRow> rows; };
+// Per-column alignment from the GFM `|:--|:-:|--:|` delimiter row.
+// `aligns.size()` is always equal to `header.cells.size()`. Default
+// (no colons on either side) is `Left`.
+enum class TableAlign : std::uint8_t { Left, Center, Right };
+struct Table       {
+    TableRow header;
+    std::vector<TableRow> rows;
+    std::vector<TableAlign> aligns;
+};
 struct FootnoteDef { std::string label; std::vector<struct Block> children; };
 
 // GitHub alert block: `> [!NOTE] ...`
@@ -270,6 +278,21 @@ class StreamingMarkdown {
 
     std::string source_;                // codepoint-safe accumulated bytes
     size_t committed_ = 0;              // bytes parsed into finalized blocks
+
+    // Monotonic version counter — bumped whenever source_ or committed_
+    // changes in a way that could affect render_tail's output or the
+    // inline-tail cache's stable-prefix slice. Lets the per-frame
+    // build() / render_tail() short-circuits do O(1) compares against
+    // their cached version instead of O(tail) FNV-1a hashes on every
+    // frame. The hash defended against a phantom case (build_dirty_
+    // flipped but tail bytes round-tripped) that the call-graph never
+    // actually produces — every mutator that flips build_dirty_ also
+    // mutates bytes the tail depends on, so a single producer-side
+    // bump captures the invariant precisely.
+    //
+    // Wrap-around: at 30 fps × one bump/frame this would take ~19
+    // billion years to overflow a uint64_t — comfortably never.
+    std::uint64_t source_version_ = 0;
     bool in_code_fence_ = false;        // ``` fence state at committed_
                                         // (used by render_tail to know
                                         // whether the in-progress tail
@@ -360,6 +383,16 @@ class StreamingMarkdown {
     mutable std::uint64_t cached_tail_hash_     = 0;
     mutable std::size_t   cached_tail_len_      = 0;
     mutable bool          cached_tail_in_fence_ = false;
+    // Source version reflected in cached_build_'s tail child. When this
+    // matches source_version_ on entry to build(), the tail bytes are
+    // provably byte-identical to last frame (no append, no commit, no
+    // clear, no set_content-replace has run since), so render_tail can
+    // be skipped without computing the hash above. The hash fields stay
+    // as a defensive secondary key for the rare path where the version
+    // moved but commit_range happened to land the tail at its previous
+    // shape — keeps the invariant intact under any future mutator
+    // ordering changes.
+    mutable std::uint64_t cached_tail_version_  = 0;
 
     // ── render_tail inline-parse cache ─────────────────────────────────
     // The plain-inline path of render_tail (the bottom branch — no open
@@ -397,6 +430,15 @@ class StreamingMarkdown {
     mutable std::size_t             tail_inline_cache_prefix_len_  = 0;
     mutable std::string             tail_inline_cache_content_;
     mutable std::vector<StyledRun>  tail_inline_cache_runs_;
+    // Source version at which the inline cache above was populated.
+    // When source_version_ hasn't moved we can skip both the hash
+    // computation AND the length compare — the cache is guaranteed
+    // valid because the underlying bytes haven't changed. Only on a
+    // version mismatch do we fall back to the (hash, length) key,
+    // which still correctly handles the case where commit_range
+    // shifted bytes in a way that left the stable-prefix slice
+    // accidentally identical.
+    mutable std::uint64_t           tail_inline_cache_version_     = 0;
 
     // Find the end of the last complete block boundary.
     // Returns the byte offset up to which blocks are "complete".

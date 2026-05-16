@@ -94,7 +94,33 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             out += l.text;
         },
         [&](const md::Image& img) {
-            std::string display = "\xf0\x9f\x96\xbc " + img.alt;
+            // Pick the visible label:
+            //   1. The author-provided alt text, when present.
+            //   2. The URL's last path segment ("icon.png" out of
+            //      `https://x/a/b/icon.png`), so `![](url)` shows
+            //      something more useful than a lonely 🖼 glyph.
+            //   3. The URL title, when even the URL is empty (e.g.
+            //      reference image whose ref-def carries a title).
+            //   4. "image" — absolute last resort, so layout never
+            //      collapses to zero-width.
+            std::string label = img.alt;
+            if (label.empty()) {
+                std::string_view url = img.url;
+                // Strip query / fragment first so they don't leak into
+                // the label when the URL has no trailing filename
+                // (`https://x/?foo=1`).
+                auto q = url.find_first_of("?#");
+                if (q != std::string_view::npos) url = url.substr(0, q);
+                auto slash = url.find_last_of('/');
+                std::string_view tail =
+                    (slash == std::string_view::npos) ? url
+                                                      : url.substr(slash + 1);
+                if (!tail.empty()) label.assign(tail);
+            }
+            if (label.empty()) label = img.title;
+            if (label.empty()) label = "image";
+
+            std::string display = "\xf0\x9f\x96\xbc " + label;
             auto sty = Style{}.with_fg(colors::image_fg).with_italic();
             runs.push_back({out.size(), display.size(), sty});
             out += display;
@@ -127,14 +153,29 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             runs.push_back({out.size() - 1, 1, sty});
         },
         [&](const md::Kbd& k) {
-            auto bracket_sty = Style{}.with_fg(colors::kbd_border);
+            // Render <kbd>X</kbd> as a key-cap chip:
+            //
+            //   ╶ X ╴
+            //
+            // The bracket glyphs (U+2576 ╶ "box drawings light right" /
+            // U+2574 ╴ "box drawings light left") read as a chip
+            // outline at terminal resolution without the legibility
+            // hit of `[`/`]` (which collide with reference-link
+            // bracketed text in scanned prose). The inner text is
+            // bold + bright; the chrome rides in `kbd_border` and is
+            // dimmed so the chip outline is visible without
+            // out-competing the key glyphs themselves.
+            auto bracket_sty =
+                Style{}.with_fg(colors::kbd_border).with_dim();
             auto inner_sty = fold_style(inherited,
                 Style{}.with_bold().with_fg(colors::kbd_fg));
-            runs.push_back({out.size(), 1, bracket_sty});
-            out += "[";
+            static constexpr std::string_view kOpen  = "\xe2\x95\xb6 "; // ╶ + space
+            static constexpr std::string_view kClose = " \xe2\x95\xb4"; // space + ╴
+            runs.push_back({out.size(), kOpen.size(), bracket_sty});
+            out.append(kOpen);
             for (auto& child : k.children) flatten_inline(child, inner_sty, out, runs);
-            runs.push_back({out.size(), 1, bracket_sty});
-            out += "]";
+            runs.push_back({out.size(), kClose.size(), bracket_sty});
+            out.append(kClose);
         },
         [&](const md::Abbr& a) {
             auto sty = fold_style(inherited, Style{}.with_underline());
@@ -323,8 +364,33 @@ Element md_block_to_element(const md::Block& block) {
                 default: sty = sty.with_fg(colors::heading3).with_dim(); break;
             }
 
+            // h4 / h5 / h6 carry no underline rule and reuse the h3
+            // foreground at half luminance — visually they collapse
+            // into a single bold-grey blob in long docs. Stamp a
+            // small marker glyph in front of the text so the level is
+            // legible at a glance:
+            //
+            //   h4 → §  (section sign — "subsection")
+            //   h5 → ›  (single guillemet — "deeper")
+            //   h6 → ‣  (triangular bullet — "deepest")
+            //
+            // The marker is rendered in `list_bullet` so it reads as
+            // structural punctuation, not part of the heading body.
+            std::string_view marker;
+            switch (h.level) {
+                case 4: marker = "\xc2\xa7 ";       break;   // §
+                case 5: marker = "\xe2\x80\xba ";   break;   // ›
+                case 6: marker = "\xe2\x80\xa3 ";   break;   // ‣
+                default: break;
+            }
+
             std::string content;
             std::vector<StyledRun> runs;
+            if (!marker.empty()) {
+                runs.push_back({0, marker.size(),
+                                Style{}.with_fg(colors::list_bullet).with_bold()});
+                content.append(marker);
+            }
             for (auto& s : h.spans) {
                 flatten_inline(s, sty, content, runs);
             }
@@ -620,6 +686,7 @@ Element md_block_to_element(const md::Block& block) {
                 std::vector<FlatCell> header_flat;
                 std::vector<std::vector<FlatCell>> rows_flat;
                 std::vector<int> ideal;
+                std::vector<md::TableAlign> aligns;
                 Style header_base;
                 Style cell_base;
                 // Width-keyed render cache. Cell content is fixed at
@@ -645,11 +712,22 @@ Element md_block_to_element(const md::Block& block) {
                 mutable int     cached_w = -1;
                 mutable Element cached_render;
             };
+            // Aligns come from the GFM delimiter row; if for any reason
+            // the parser didn't fill them (truncated / legacy callers
+            // building md::Table by hand), default every column to
+            // Left. CommonMark spec default is Left, and silently
+            // mis-aligning is worse than ignoring user intent.
+            auto aligns_vec = tbl.aligns;
+            if (aligns_vec.size() != static_cast<size_t>(ncols)) {
+                aligns_vec.assign(static_cast<size_t>(ncols),
+                                  md::TableAlign::Left);
+            }
             auto data = std::make_shared<TableData>(TableData{
                 ncols,
                 std::move(header_flat),
                 std::move(rows_flat),
                 std::move(ideal),
+                std::move(aligns_vec),
                 header_base,
                 cell_base,
             });
@@ -843,6 +921,8 @@ Element md_block_to_element(const md::Block& block) {
                             for (int c = 0; c < ncols; ++c) {
                                 int cw = col_w[static_cast<size_t>(c)];
                                 int total = cw + pad * 2;
+                                md::TableAlign align =
+                                    data->aligns[static_cast<size_t>(c)];
                                 // Pull this cell's v-th line if present.
                                 const FlatCell* fc = nullptr;
                                 if (static_cast<int>(wrapped[static_cast<size_t>(c)].size()) > v)
@@ -855,10 +935,28 @@ Element md_block_to_element(const md::Block& block) {
                                     runs_part = fc->runs;
                                 }
                                 int content_w = string_width(content_part);
+                                int slack = std::max(0, cw - content_w);
 
-                                // Left pad
+                                // Distribute slack according to alignment.
+                                // `left_pad` and `right_pad` are the
+                                // EXTRA cells inside the column body,
+                                // ON TOP of the fixed `pad` cell on
+                                // each side of every cell. The fixed
+                                // pad keeps content visually clear of
+                                // the `│` borders.
+                                int left_pad  = 0;
+                                int right_pad = slack;
+                                if (align == md::TableAlign::Right) {
+                                    left_pad  = slack;
+                                    right_pad = 0;
+                                } else if (align == md::TableAlign::Center) {
+                                    left_pad  = slack / 2;
+                                    right_pad = slack - left_pad;
+                                }
+
+                                // Left fixed pad + alignment slack
                                 size_t cell_off = line.size();
-                                line.append(static_cast<size_t>(pad), ' ');
+                                line.append(static_cast<size_t>(pad + left_pad), ' ');
                                 // Content
                                 size_t content_off = line.size();
                                 line += content_part;
@@ -866,19 +964,20 @@ Element md_block_to_element(const md::Block& block) {
                                     line_runs.push_back(StyledRun{
                                         content_off + r.byte_offset,
                                         r.byte_length, r.style});
-                                // Right pad to fill the column
-                                int right = std::max(0, cw - content_w) + pad;
-                                line.append(static_cast<size_t>(right), ' ');
+                                // Right alignment slack + fixed pad
+                                int right_total = right_pad + pad;
+                                line.append(static_cast<size_t>(right_total), ' ');
                                 // Cell-spanning base style for the
                                 // padding cells (so background-color
                                 // styles, if any are added later, fill
                                 // the whole cell instead of just text).
                                 if (!runs_part.empty() || content_w == 0) {
                                     line_runs.push_back(StyledRun{
-                                        cell_off, static_cast<size_t>(pad), base});
+                                        cell_off,
+                                        static_cast<size_t>(pad + left_pad), base});
                                     line_runs.push_back(StyledRun{
                                         content_off + content_part.size(),
-                                        static_cast<size_t>(right), base});
+                                        static_cast<size_t>(right_total), base});
                                 }
                                 // Trailing │
                                 size_t s = line.size();
@@ -971,19 +1070,54 @@ Element md_block_to_element(const md::Block& block) {
             }};
         },
         [](const md::FootnoteDef& fn) -> Element {
-            std::vector<Element> parts;
-            parts.reserve(fn.children.size() + 1);
-            parts.push_back(Element{TextElement{
-                .content = "[" + fn.label + "]:",
-                .style = Style{}.with_fg(colors::footnote_fg).with_bold(),
-            }});
-            for (auto& child : fn.children) {
-                parts.push_back(detail::hstack()(
-                    Element{TextElement{.content = "  "}},
-                    md_block_to_element(child)
+            // Render as a hanging-indent list item:
+            //
+            //   [label]: first paragraph wraps under the label gutter.
+            //            continuation paragraphs align with the body.
+            //
+            // The previous version put the label on its own row and then
+            // indented every child by 2 spaces, leaving "[a]:" sitting
+            // alone above the body — it read as an empty definition
+            // rather than the start of one. Inlining the label with the
+            // first child mirrors how academic footnotes look on paper
+            // and how GitHub renders them in Markdown.
+            std::string label_str = "[" + fn.label + "] ";
+            auto label_style =
+                Style{}.with_fg(colors::footnote_fg).with_bold();
+            Element label_elem{TextElement{
+                .content = label_str,
+                .style = label_style,
+            }};
+
+            if (fn.children.empty()) {
+                return label_elem;
+            }
+
+            // Indent column whose width equals the visible label width.
+            // Continuation children sit under this column; the first
+            // child sits next to the label itself.
+            std::string indent_col(label_str.size(), ' ');
+            auto indent_elem = [&] {
+                return Element{TextElement{.content = indent_col}};
+            };
+
+            std::vector<Element> rows;
+            rows.reserve(fn.children.size());
+
+            // First child: hstack(label, body) so wrap-continuation lines
+            // of the body align under the body's first column.
+            rows.push_back(detail::hstack()(
+                label_elem,
+                md_block_to_element(fn.children.front())
+            ));
+            // Remaining children: hstack(blank indent, body).
+            for (std::size_t k = 1; k < fn.children.size(); ++k) {
+                rows.push_back(detail::hstack()(
+                    indent_elem(),
+                    md_block_to_element(fn.children[k])
                 ));
             }
-            return detail::vstack()(std::move(parts));
+            return detail::vstack()(std::move(rows));
         },
         [](const md::Alert& a) -> Element {
             // GitHub-style alert: colored gutter + kind header, children
@@ -1075,18 +1209,21 @@ Element md_block_to_element(const md::Block& block) {
         },
         [](const md::Details& d) -> Element {
             // Render as: "▸ summary" bolded, body indented beneath.
+            //
+            // Glyph note: ▸ (U+25B8) is THREE UTF-8 bytes (\xe2\x96\xb8),
+            // not two. Styling only the first 2 bytes leaks the third
+            // continuation byte into whatever style the summary text
+            // starts with, and the terminal sees a torn codepoint —
+            // visible as the `███ click` mojibake on screen. The run
+            // length is the literal prefix size, computed at compile time.
+            static constexpr std::string_view kPrefix = "\xe2\x96\xb8 "; // "▸ "
             std::string summary_text;
             std::vector<StyledRun> runs;
             Style base = Style{}.with_bold().with_fg(colors::bold_fg);
-            runs.push_back({0, 2, Style{}.with_fg(colors::list_bullet)});
-            summary_text += "\xe2\x96\xb8 ";  // ▸
-            size_t offset = summary_text.size();
+            runs.push_back({0, kPrefix.size(),
+                            Style{}.with_fg(colors::list_bullet)});
+            summary_text.append(kPrefix);
             for (auto& s : d.summary) flatten_inline(s, base, summary_text, runs);
-            for (size_t i = 1; i < runs.size(); ++i) {
-                // Offsets from flatten_inline are relative to `out` which
-                // already includes the "▸ " prefix, so nothing to shift.
-                (void)offset;
-            }
             Element header{TextElement{
                 .content = std::move(summary_text),
                 .style = base,
@@ -1101,6 +1238,11 @@ Element md_block_to_element(const md::Block& block) {
             out_rows.reserve(2);
             out_rows.push_back(std::move(header));
             if (!body_rows.empty()) {
+                // Indent body under the "▸ " gutter — the glyph is 1 cell
+                // wide and is followed by a space, so 2 leading spaces puts
+                // the body's first column directly under the summary's
+                // first letter. (Previously "  " lined up with the glyph,
+                // making the body look flush with the marker.)
                 out_rows.push_back(detail::hstack()(
                     Element{TextElement{
                         .content = "  ",

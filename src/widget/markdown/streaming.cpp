@@ -494,22 +494,57 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                     continue;
                 }
                 // ATX heading at line start.  Commit the prose before
-                // the heading; the heading line itself stays in the
-                // tail until a later boundary (next blank, next heading,
-                // fence open, or stream end) advances past it.  A list
-                // marker (`-` `*` `+`) / blockquote (`>`) is
-                // deliberately NOT treated as a boundary — a
-                // list/blockquote is a single cohesive block and
-                // committing each row separately would stretch a tight
-                // list into singletons separated by the inter-block gap.
+                // the heading; then, once the heading line itself is
+                // fully terminated by '\n', advance the boundary past
+                // it so the heading is rendered in its committed shape
+                // immediately — without waiting for a trailing blank
+                // line that may not arrive until the next paragraph
+                // lands (and during long streamed answers, may take
+                // seconds to do so).
                 //
-                // Tables ARE treated as a boundary once proven complete
-                // (see find_table_end below) — the rest of the table
-                // commits as one cohesive block on the first non-`|`
-                // line, instead of waiting for a trailing blank that
-                // may never arrive in a long-table message.
+                // The eager-commit mirrors the table / closing-fence
+                // behaviour: a structural block that's *provably*
+                // complete commits at the start of the following
+                // line; a still-arriving line stays in the tail where
+                // render_tail's ATX special case renders it in the
+                // committed style so the user sees no styling pop.
+                //
+                // Why this isn't extended to list / blockquote rows:
+                // a list/blockquote is a single cohesive block whose
+                // shape is only knowable once the block ENDS
+                // (intra-list blanks vs. terminating blanks).
+                // Committing each row separately would stretch a
+                // tight list into singletons separated by the inter-
+                // block gap — same trade we make for tables until
+                // find_table_end proves them complete.
                 if (source_[i] == '#') {
-                    last_boundary = i;
+                    // Verify it's an ATX heading shape (1–6 '#' then
+                    // a space) before treating it as a boundary —
+                    // bare '#' / '#tag' at line start is a plain
+                    // paragraph in CommonMark, not a heading.
+                    std::size_t hashes = 0;
+                    while (hashes < 6 && i + hashes < source_.size()
+                           && source_[i + hashes] == '#') ++hashes;
+                    bool is_atx = hashes >= 1 && hashes <= 6
+                        && i + hashes < source_.size()
+                        && (source_[i + hashes] == ' '
+                            || source_[i + hashes] == '\t');
+                    if (is_atx) {
+                        last_boundary = i;
+                        // If the heading line has fully arrived,
+                        // anchor the boundary past it so the next
+                        // paragraph/heading/etc. starts a fresh
+                        // commit. If it hasn't (`eol == npos`), fall
+                        // through to the line-step `break` below;
+                        // the resumable scan will retry once more
+                        // bytes land.
+                        std::size_t heading_eol = source_.find('\n', i);
+                        if (heading_eol != std::string::npos) {
+                            i = heading_eol + 1;
+                            last_boundary = i;
+                            continue;
+                        }
+                    }
                 }
                 if (source_[i] == '|') {
                     auto r = find_table_end(
@@ -598,6 +633,7 @@ void StreamingMarkdown::commit_range(size_t boundary) {
 
     committed_ = boundary;
     build_dirty_ = true;
+    ++source_version_;
 
     // Keep scanner state coherent with the new committed_:
     //   • scan_last_boundary_ has just been "consumed" — anchor it to
@@ -623,6 +659,7 @@ void StreamingMarkdown::append_safe(std::string_view safe_bytes) {
     if (safe_bytes.empty()) return;
     source_.append(safe_bytes.data(), safe_bytes.size());
     build_dirty_ = true;
+    ++source_version_;
 
     size_t boundary = find_block_boundary();
     if (boundary > committed_) commit_range(boundary);
@@ -686,6 +723,7 @@ void StreamingMarkdown::finish() {
 void StreamingMarkdown::clear() {
     source_.clear();
     committed_ = 0;
+    ++source_version_;
     // Replace the prefix snapshot rather than mutating the existing one
     // — any ComponentElement still capturing the old shared_ptr (held
     // inside cached_build_ until that's reassigned below) sees the
@@ -711,6 +749,7 @@ void StreamingMarkdown::clear() {
     tail_inline_cache_prefix_len_  = 0;
     tail_inline_cache_content_.clear();
     tail_inline_cache_runs_.clear();
+    tail_inline_cache_version_     = 0;
     // Reset the build-cache shape flags so the next build() falls into
     // the full-rebuild path rather than trying to mutate a stale
     // structural template.
@@ -907,26 +946,29 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
         : body.substr(last_nl + 1);
 
     // Refresh the prefix cache only if it differs from what's stored.
-    // Hash + length compare — zero allocations, single-pass over the
-    // prefix bytes (vs. the prior approach which kept a std::string copy
-    // and compared bytewise). Steady state with growing live line:
-    // hash matches, content/runs are reused verbatim, no copy of the
-    // multi-KB stable prefix every frame.
-    const std::uint64_t prefix_hash = fnv1a64(stable_prefix);
-    if (tail_inline_cache_prefix_len_  != stable_prefix.size()
-        || tail_inline_cache_prefix_hash_ != prefix_hash) {
-        tail_inline_cache_content_.clear();
-        tail_inline_cache_runs_.clear();
-        if (!stable_prefix.empty()) {
-            auto prefix_spans = parse_inlines(stable_prefix);
-            const Style base = Style{}.with_fg(colors::text);
-            for (const auto& s : prefix_spans) {
-                flatten_inline(s, base, tail_inline_cache_content_,
-                               tail_inline_cache_runs_);
+    // Fast path: source_version_ matches what populated the cache —
+    // bytes are guaranteed unchanged, no hash needed.  Slow path:
+    // version moved, fall back to the (hash, length) key to catch the
+    // case where commit_range shifted the tail base but the stable-
+    // prefix slice happened to round-trip to the same bytes.
+    if (tail_inline_cache_version_ != source_version_) {
+        const std::uint64_t prefix_hash = fnv1a64(stable_prefix);
+        if (tail_inline_cache_prefix_len_  != stable_prefix.size()
+            || tail_inline_cache_prefix_hash_ != prefix_hash) {
+            tail_inline_cache_content_.clear();
+            tail_inline_cache_runs_.clear();
+            if (!stable_prefix.empty()) {
+                auto prefix_spans = parse_inlines(stable_prefix);
+                const Style base = Style{}.with_fg(colors::text);
+                for (const auto& s : prefix_spans) {
+                    flatten_inline(s, base, tail_inline_cache_content_,
+                                   tail_inline_cache_runs_);
+                }
             }
+            tail_inline_cache_prefix_len_  = stable_prefix.size();
+            tail_inline_cache_prefix_hash_ = prefix_hash;
         }
-        tail_inline_cache_prefix_len_  = stable_prefix.size();
-        tail_inline_cache_prefix_hash_ = prefix_hash;
+        tail_inline_cache_version_ = source_version_;
     }
 
     // Build the result: cached prefix runs + freshly-parsed live-line
@@ -975,6 +1017,7 @@ const Element& StreamingMarkdown::build() const {
         cached_prefix_gen_ = prefix_->generation;
         cached_has_tail_   = false;
         cached_has_prefix_ = false;
+        cached_tail_version_ = source_version_;
         build_dirty_       = false;
         return cached_build_;
     }
@@ -1036,16 +1079,28 @@ const Element& StreamingMarkdown::build() const {
         const std::size_t expected = prefix_n + (has_tail ? 1u : 0u);
         if (box.children.size() == expected) {
             if (has_tail) {
-                // Hash + length + fence parity together uniquely identify
-                // render_tail's output. Compute the hash once; on hit we
-                // skip render_tail entirely. On miss we recompute the
-                // tail Element AND update the cached digest — zero heap
-                // copy of the tail bytes regardless of outcome.
-                const std::uint64_t tail_hash = fnv1a64(tail);
-                const bool tail_unchanged =
-                    cached_tail_in_fence_ == in_code_fence_
-                    && cached_tail_len_   == tail.size()
-                    && cached_tail_hash_  == tail_hash;
+                // Fast path: source_version_ matches what produced the
+                // current cached tail — the tail bytes are provably
+                // byte-identical to last frame (every mutator that
+                // touches source_/committed_ also bumps the version).
+                // O(1) compare, no hash walk.
+                //
+                // Slow path: version moved, fall back to the (fence,
+                // length, FNV-1a) digest. This catches the rare case
+                // where commit_range fired but the tail happened to
+                // land at the same bytes — lets us still skip
+                // render_tail when the body round-tripped.
+                bool tail_unchanged;
+                std::uint64_t tail_hash = 0;
+                if (cached_tail_version_ == source_version_) {
+                    tail_unchanged = true;
+                } else {
+                    tail_hash = fnv1a64(tail);
+                    tail_unchanged =
+                        cached_tail_in_fence_ == in_code_fence_
+                        && cached_tail_len_   == tail.size()
+                        && cached_tail_hash_  == tail_hash;
+                }
                 if (!tail_unchanged) {
                     // Swap in the new tail. children.back() is the
                     // tail slot regardless of whether prefix is
@@ -1057,6 +1112,7 @@ const Element& StreamingMarkdown::build() const {
                     cached_tail_len_      = tail.size();
                     cached_tail_in_fence_ = in_code_fence_;
                 }
+                cached_tail_version_ = source_version_;
             }
             cached_tail_size_ = tail.size();
             build_dirty_      = false;
@@ -1090,17 +1146,24 @@ const Element& StreamingMarkdown::build() const {
         if (box.children.size() == expected) {
             box.children[0] = make_prefix_component();
             if (has_tail) {
-                const std::uint64_t tail_hash = fnv1a64(tail);
-                const bool tail_unchanged =
-                    cached_tail_in_fence_ == in_code_fence_
-                    && cached_tail_len_   == tail.size()
-                    && cached_tail_hash_  == tail_hash;
+                bool tail_unchanged;
+                std::uint64_t tail_hash = 0;
+                if (cached_tail_version_ == source_version_) {
+                    tail_unchanged = true;
+                } else {
+                    tail_hash = fnv1a64(tail);
+                    tail_unchanged =
+                        cached_tail_in_fence_ == in_code_fence_
+                        && cached_tail_len_   == tail.size()
+                        && cached_tail_hash_  == tail_hash;
+                }
                 if (!tail_unchanged) {
                     box.children.back() = render_tail(tail);
                     cached_tail_hash_     = tail_hash;
                     cached_tail_len_      = tail.size();
                     cached_tail_in_fence_ = in_code_fence_;
                 }
+                cached_tail_version_ = source_version_;
             }
             cached_prefix_gen_ = prefix_->generation;
             cached_tail_size_  = tail.size();
@@ -1191,6 +1254,7 @@ const Element& StreamingMarkdown::build() const {
         cached_tail_hash_ = 0;
         cached_tail_len_  = 0;
     }
+    cached_tail_version_ = source_version_;
     build_dirty_          = false;
     return cached_build_;
 }

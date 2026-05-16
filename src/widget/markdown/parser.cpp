@@ -799,6 +799,35 @@ static void post_process_text_nodes(std::vector<md::Inline>& nodes) {
     nodes = std::move(out);
 }
 
+// ── Underscore intraword-flanking gates (CommonMark) ──────────────────────
+// `_` delimiters cannot open or close emphasis inside a word: `foo_bar_baz`
+// must NOT emphasize. `*` has no such restriction. These helpers are called
+// from the hot per-byte inner loop in `parse_inlines` (also from streaming
+// render_tail every frame against the live line), so they live as free
+// inline functions — stamping them as lambdas inside the loop body cost a
+// measurable hit on long replies. Pure functions of (text, position); no
+// state, no allocation.
+[[nodiscard]] static inline bool is_word_byte(char c) noexcept {
+    unsigned char uc = static_cast<unsigned char>(c);
+    return std::isalnum(uc) || uc == '_';
+}
+[[nodiscard]] static inline bool underscore_open_ok(std::string_view text,
+                                                    size_t open_at) noexcept {
+    // `*` always allowed; `_` only at a word boundary on the left.
+    if (text[open_at] != '_') return true;
+    if (open_at == 0) return true;
+    return !is_word_byte(text[open_at - 1]);
+}
+[[nodiscard]] static inline bool underscore_close_ok(std::string_view text,
+                                                     char delim_ch,
+                                                     size_t after_close) noexcept {
+    // For a `_` run the byte just past the closing delimiter must not be
+    // word-class. `*` always allowed.
+    if (delim_ch != '_') return true;
+    if (after_close >= text.size()) return true;
+    return !is_word_byte(text[after_close]);
+}
+
 std::vector<md::Inline> parse_inlines(std::string_view text) {
     std::vector<md::Inline> result;
     size_t i = 0;
@@ -895,16 +924,30 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
         }
 
         // Bold+italic: ***text*** or ___text___
+        // CommonMark: '_' delimiters do not open/close inside a word —
+        // `foo_bar_baz` must NOT emphasize. `*` has no such restriction.
+        // The underscore-flanking gates live as free functions just
+        // above this function (see `underscore_open_ok` /
+        // `underscore_close_ok`) so the lambda-construction cost
+        // doesn't land on every iteration of this hot loop — the
+        // render_tail path re-parses the live line on every frame
+        // and lambda churn was visible as a measurable per-keystroke
+        // slowdown on long streaming replies.
+
         if (i + 2 < text.size() &&
             ((text[i] == '*' && text[i+1] == '*' && text[i+2] == '*') ||
              (text[i] == '_' && text[i+1] == '_' && text[i+2] == '_'))) {
             auto delim = text.substr(i, 3);
-            size_t end = find_closing(text, delim, i + 3);
-            if (end != std::string_view::npos) {
-                auto inner = text.substr(i + 3, end - i - 3);
-                result.push_back(md::BoldItalic{parse_inlines(inner)});
-                i = end + 3;
-                continue;
+            char dc = text[i];
+            if (underscore_open_ok(text, i)) {
+                size_t end = find_closing(text, delim, i + 3);
+                if (end != std::string_view::npos &&
+                    underscore_close_ok(text, dc, end + 3)) {
+                    auto inner = text.substr(i + 3, end - i - 3);
+                    result.push_back(md::BoldItalic{parse_inlines(inner)});
+                    i = end + 3;
+                    continue;
+                }
             }
         }
 
@@ -913,12 +956,16 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             ((text[i] == '*' && text[i + 1] == '*') ||
              (text[i] == '_' && text[i + 1] == '_'))) {
             auto delim = text.substr(i, 2);
-            size_t end = find_closing(text, delim, i + 2);
-            if (end != std::string_view::npos) {
-                auto inner = text.substr(i + 2, end - i - 2);
-                result.push_back(md::Bold{parse_inlines(inner)});
-                i = end + 2;
-                continue;
+            char dc = text[i];
+            if (underscore_open_ok(text, i)) {
+                size_t end = find_closing(text, delim, i + 2);
+                if (end != std::string_view::npos &&
+                    underscore_close_ok(text, dc, end + 2)) {
+                    auto inner = text.substr(i + 2, end - i - 2);
+                    result.push_back(md::Bold{parse_inlines(inner)});
+                    i = end + 2;
+                    continue;
+                }
             }
         }
 
@@ -1002,14 +1049,16 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
         // Italic: *text* or _text_ (single delimiter)
         if (text[i] == '*' || text[i] == '_') {
             char delim_ch = text[i];
-            if (i + 1 < text.size() && text[i + 1] != delim_ch && text[i + 1] != ' ') {
+            if (i + 1 < text.size() && text[i + 1] != delim_ch && text[i + 1] != ' '
+                && underscore_open_ok(text, i)) {
                 // Bounded scan to avoid O(n²) on many unmatched delimiters
                 size_t scan_limit = std::min(text.size(), i + 1 + 2000);
                 size_t end = std::string_view::npos;
                 for (size_t s = i + 1; s < scan_limit; ++s) {
                     if (text[s] == delim_ch) { end = s; break; }
                 }
-                if (end != std::string_view::npos && text[end - 1] != ' ') {
+                if (end != std::string_view::npos && text[end - 1] != ' '
+                    && underscore_close_ok(text, delim_ch, end + 1)) {
                     auto inner = text.substr(i + 1, end - i - 1);
                     result.push_back(md::Italic{parse_inlines(inner)});
                     i = end + 1;
@@ -1303,6 +1352,29 @@ bool is_table_separator(std::string_view line) {
         if (c != '|' && c != '-' && c != ':' && c != ' ') return false;
     }
     return t.find('-') != std::string_view::npos;
+}
+
+std::vector<std::string_view> split_table_cells(std::string_view line);  // fwd decl
+
+// Parse the GFM delimiter row (`|:--|:-:|--:|`) into a per-column
+// alignment list. Cells whose trimmed content starts with `:` are
+// left-anchored on the left side; cells whose trimmed content ends
+// with `:` are right-anchored. Both → Center. Neither → Left
+// (CommonMark default for tables). The caller has already verified
+// `is_table_separator(line)` is true.
+std::vector<md::TableAlign> parse_table_alignments(std::string_view line) {
+    std::vector<md::TableAlign> out;
+    auto cells = split_table_cells(line);
+    out.reserve(cells.size());
+    for (auto& c : cells) {
+        auto t = trim(c);
+        bool left  = !t.empty() && t.front() == ':';
+        bool right = !t.empty() && t.back()  == ':';
+        if (left && right)      out.push_back(md::TableAlign::Center);
+        else if (right)         out.push_back(md::TableAlign::Right);
+        else                    out.push_back(md::TableAlign::Left);
+    }
+    return out;
 }
 
 std::vector<std::string_view> split_table_cells(std::string_view line) {
@@ -1758,12 +1830,42 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
                 bq_text += content;
                 ++i;
             }
-            // GitHub alert detection: first line is `[!NOTE]` / `[!TIP]` /
-            // `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]` (case-insensitive).
-            auto first_nl = bq_text.find('\n');
-            auto first_line = (first_nl == std::string::npos)
-                ? std::string_view{bq_text}
-                : std::string_view{bq_text}.substr(0, first_nl);
+            // GitHub alert detection: first non-blank line is one of
+            // `[!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` /
+            // `[!CAUTION]` (case-insensitive).
+            //
+            // Why "first non-blank" rather than "first": during
+            // streaming, blockquote content can arrive as
+            //   > 
+            //   > [!NOTE]
+            //   > body
+            // where the very first `>` line carries an empty payload
+            // (the model emitted `> ` then a newline before the alert
+            // tag). The original check only looked at line 0 of
+            // bq_text and missed those cases — the alert silently
+            // degraded to a plain blockquote depending on chunk
+            // boundaries.
+            std::size_t alert_line_start = 0;
+            while (alert_line_start < bq_text.size()) {
+                std::size_t eol = bq_text.find('\n', alert_line_start);
+                std::size_t end = (eol == std::string::npos)
+                                  ? bq_text.size() : eol;
+                auto cand = std::string_view{bq_text}
+                                .substr(alert_line_start,
+                                        end - alert_line_start);
+                if (!trim(cand).empty()) break;
+                if (eol == std::string::npos) {
+                    alert_line_start = bq_text.size();
+                    break;
+                }
+                alert_line_start = eol + 1;
+            }
+            std::size_t alert_eol = bq_text.find('\n', alert_line_start);
+            auto first_line = (alert_eol == std::string::npos)
+                ? std::string_view{bq_text}.substr(alert_line_start)
+                : std::string_view{bq_text}.substr(
+                      alert_line_start,
+                      alert_eol - alert_line_start);
             auto ft = trim(first_line);
             if (ft.size() > 3 && ft.front() == '[' && ft[1] == '!') {
                 auto close_b = ft.find(']');
@@ -1776,9 +1878,9 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
                     else if (tag == "warning")   kind = md::Alert::Kind::Warning;
                     else if (tag == "caution")   kind = md::Alert::Kind::Caution;
                     if (kind.has_value()) {
-                        auto rest = (first_nl == std::string::npos)
+                        auto rest = (alert_eol == std::string::npos)
                             ? std::string_view{}
-                            : std::string_view{bq_text}.substr(first_nl + 1);
+                            : std::string_view{bq_text}.substr(alert_eol + 1);
                         auto after_tag = ft.substr(close_b + 1);
                         std::string body;
                         body.reserve(after_tag.size() + rest.size() + 1);
@@ -1926,11 +2028,12 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
         // Table: | col | col |
         if (is_table_row(line)) {
             bool is_table = false;
+            std::string_view delim_line;
             if (i + 1 < lines.size()) {
-                auto next_line = lines[i + 1];
-                if (!next_line.empty() && next_line.back() == '\r')
-                    next_line.remove_suffix(1);
-                is_table = is_table_separator(next_line);
+                delim_line = lines[i + 1];
+                if (!delim_line.empty() && delim_line.back() == '\r')
+                    delim_line.remove_suffix(1);
+                is_table = is_table_separator(delim_line);
             }
             if (is_table) {
                 flush_paragraph();
@@ -1939,6 +2042,10 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
                 for (auto& cell : header_cells) {
                     header.cells.push_back(md::TableCell{parse_inlines(cell)});
                 }
+                auto aligns = parse_table_alignments(delim_line);
+                // Pad / truncate aligns to match the header column count
+                // so render.cpp can index by column without bounds checks.
+                aligns.resize(header.cells.size(), md::TableAlign::Left);
                 i += 2; // skip header + separator
 
                 std::vector<md::TableRow> rows;
@@ -1954,7 +2061,8 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
                     rows.push_back(std::move(row));
                     ++i;
                 }
-                doc.blocks.push_back(md::Table{std::move(header), std::move(rows)});
+                doc.blocks.push_back(md::Table{
+                    std::move(header), std::move(rows), std::move(aligns)});
                 continue;
             }
         }
@@ -1971,7 +2079,16 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
             // Only if paragraph_buf holds a single-line term (no embedded
             // newlines) — otherwise treat `:` as regular prose.
             if (paragraph_buf.find('\n') == std::string::npos) {
-                auto term_text = trim(paragraph_buf);
+                // Snapshot the term BEFORE clearing paragraph_buf —
+                // `trim()` returns a string_view aliasing paragraph_buf's
+                // storage, and `paragraph_buf.clear()` writes a '\0'
+                // terminator at index 0 (libstdc++ / libc++ both do this
+                // even though the capacity is preserved). Without the
+                // copy, parse_inlines would read the just-zeroed first
+                // byte and emit a Text node whose first character is
+                // '\0' — visible as the term losing its first letter
+                // ("term1" → "erm1").
+                std::string term_text{trim(paragraph_buf)};
                 paragraph_buf.clear();
 
                 md::DefItem item;

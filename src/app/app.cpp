@@ -408,6 +408,7 @@ auto Runtime::render(const Element& root) -> Status {
                     }
                 }
                 if (ch <= 0) {
+                    s.state.ghost_rows_above = s.state.wire_cursor_rows;
                     s.state.prev_rows = 0;
                     return coherent::InlineSynced{std::move(s.state)};
                 }

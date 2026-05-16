@@ -621,6 +621,7 @@ void compose_inline_frame(const Canvas& canvas,
         std::memcpy(state.prev_cells.data(), cells, new_size * sizeof(uint64_t));
         state.prev_width = W;
         state.prev_rows  = content_rows;
+        state.wire_cursor_rows = std::min(content_rows, term_h);
         return;
     }
 
@@ -901,6 +902,7 @@ void compose_inline_frame(const Canvas& canvas,
     // "copy a few hundred bytes per changed row".
     state.prev_width = W;
     state.prev_rows  = content_rows;
+    state.wire_cursor_rows = std::min(content_rows, term_h);
 
     // ── Production shadow-of-wire hash ─────────────────────────────────
     //

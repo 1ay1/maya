@@ -90,7 +90,7 @@ struct InlineFrameState {
     /// Rows of the prior frame still on screen that case-(B) soft
     /// redraw must erase ABOVE the new frame, not just below.
     ///
-    /// Set by `Runtime::force_redraw()` (to the live `prev_rows`)
+    /// Set by `Runtime::force_redraw()` (to `wire_cursor_rows`)
     /// *before* it zeroes `prev_rows`; consumed by
     /// `compose_inline_frame`'s case-(B) emit, which uses it to size
     /// the upward erase so the previous (possibly larger) frame's top
@@ -101,6 +101,18 @@ struct InlineFrameState {
     /// the next compose. Width-change `reset()` also clears it because
     /// the row counts are no longer meaningful at the new width.
     int ghost_rows_above = 0;
+
+    /// Viewport rows occupied by the prior frame as the terminal sees
+    /// it — i.e. `min(prev_rows_at_last_emit, term_h)`. Set at the end
+    /// of every successful compose; intentionally NOT mutated by
+    /// `commit_prefix` (commits move rows into native scrollback in
+    /// the renderer's bookkeeping but do not change the terminal
+    /// cursor row, so the on-screen offset from the prior emit is
+    /// invariant under commits). `force_redraw()` snapshots this into
+    /// `ghost_rows_above` so the case-(B) upward erase walks the
+    /// correct number of rows even when commits happened between
+    /// the last emit and the redraw.
+    int wire_cursor_rows = 0;
 
     /// Production shadow-of-wire verifier. After each successful
     /// compose, `shadow_hash` is set to a deterministic 64-bit hash
@@ -126,6 +138,7 @@ struct InlineFrameState {
         cursor_hidden     = false;
         shadow_hash       = static_cast<uint64_t>(-1);
         ghost_rows_above  = 0;
+        wire_cursor_rows  = 0;
     }
 
     /// Append the bytes needed to restore terminal state owned by this

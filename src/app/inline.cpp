@@ -48,6 +48,7 @@ void render_live(const Element& root, int width, StylePool& pool,
     // repaint by zeroing prev_rows — same recovery shape as
     // force_redraw(), but without wiping scrollback.
     if (!verify_shadow_hash(st.frame)) {
+        st.frame.ghost_rows_above = st.frame.wire_cursor_rows;
         st.frame.prev_rows     = 0;
         st.frame.cursor_hidden = false;
         st.frame.decawm_off    = false;
@@ -85,6 +86,7 @@ void render_live(const Element& root, int width, StylePool& pool,
     }
 
     if (ch <= 0) {
+        st.frame.ghost_rows_above = st.frame.wire_cursor_rows;
         st.frame.prev_rows = 0;
         return;
     }

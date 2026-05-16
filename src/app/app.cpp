@@ -471,6 +471,33 @@ auto Runtime::render(const Element& root) -> Status {
             fs_coherence_ = coherent::Divergent{};
     }
 
+    // ── Backpressure via non-blocking writer (parity with inline) ──────
+    // Output fd is O_NONBLOCK. If the previous frame couldn't be fully
+    // drained, its tail sits in the writer's residue. Drain it before
+    // composing a new frame; if the wire still won't accept, defer this
+    // render entirely — DO NOT compose, because front-canvas diffing
+    // would update `front` to reflect bytes the wire hasn't received,
+    // breaking the diff invariant. `has_pending_writes()` keeps the
+    // outer event loop spinning at ~8 ms intervals until residue clears
+    // (see app.hpp:1058 and 1266). Before this change the fullscreen
+    // path used `write_raw` and propagated WouldBlock as a hard error,
+    // tearing down the program on the first frame that exceeded the
+    // tty buffer (common: doom-fire style heavy first frames in a
+    // small pty).
+    if (writer_->has_residue()) {
+        auto d = writer_->try_drain_residue();
+        if (!d) {
+            if (d.error().kind == ErrorKind::WouldBlock) {
+                return ok();   // wire still backed up; retry next tick
+            }
+            // Hard I/O error — toss residue and demote to Divergent so
+            // the next successful render does a full serialize.
+            writer_->discard_residue();
+            fs_coherence_ = coherent::Divergent{};
+            return d;
+        }
+    }
+
     Status write_status = ok();
     fs_coherence_ = std::visit(overload{
         // Synced → Synced (success) or Synced → Divergent (write fail).
@@ -481,13 +508,22 @@ auto Runtime::render(const Element& root) -> Status {
                 .paint(root, layout_nodes_)
                 .open_frame(sync_output_);
             std::move(opened).write_diff(s.front).close_frame(sync_output_);
-            if (auto wr = writer_->write_raw(out_); !wr) {
+            // write_or_buffer: ships what fits, stashes the rest in
+            // residue. The residue is drained at the top of the next
+            // render (above); until then `has_residue()` keeps the
+            // event loop polling at 8 ms. Hard I/O errors still demote
+            // to Divergent — discard_residue() because the buffered
+            // tail is from a frame we're about to abandon.
+            if (auto wr = writer_->write_or_buffer(out_); !wr) {
+                writer_->discard_residue();
                 write_status = wr;
                 return coherent::Divergent{};       // drop the stale front
             }
-            // Front ↔ back swap.  The just-written canvas content is now
-            // the canonical front; the old front becomes the recyclable
-            // back buffer for the next paint.
+            // Front ↔ back swap.  The just-composed canvas content is
+            // now the canonical front (the bytes are either on the
+            // wire or safely in residue, which drains before next
+            // compose); the old front becomes the recyclable back
+            // buffer for the next paint.
             std::swap(s.front, canvas_);
             canvas_.reset_damage();
             return coherent::FullscreenSynced{std::move(s.front)};
@@ -506,13 +542,14 @@ auto Runtime::render(const Element& root) -> Status {
             out_ += "\x1b[H";
             serialize(canvas_, pool_, out_);
             std::move(opened).close_frame(sync_output_);
-            if (auto wr = writer_->write_raw(out_); !wr) {
+            if (auto wr = writer_->write_or_buffer(out_); !wr) {
+                writer_->discard_residue();
                 write_status = wr;
                 return coherent::Divergent{};
             }
-            // canvas_ now mirrors what's on the terminal — promote it to
-            // the new front.  Allocate a fresh back of matching size for
-            // the next paint cycle.
+            // canvas_ now mirrors what's on the terminal (or will, once
+            // residue drains) — promote it to the new front. Allocate
+            // a fresh back of matching size for the next paint cycle.
             Canvas new_back(canvas_.width(), canvas_.height(), &pool_);
             Canvas new_front = std::exchange(canvas_, std::move(new_back));
             canvas_.reset_damage();

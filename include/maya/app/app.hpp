@@ -424,6 +424,18 @@ public:
         fs_coherence_ = coherent::Divergent{};
         if (auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_)) {
             s->state.prev_rows = 0;
+            // Force_redraw exists because terminal state has
+            // demonstrably diverged from our model (user hit Ctrl-L,
+            // foreign process scribbled on the tty, etc). The shadow
+            // cells get refreshed via prev_rows=0 above, but the
+            // cached "already emitted" flags for hide_cursor /
+            // DECAWM-off are independent state that may also have
+            // been clobbered by the divergence event. Reset them so
+            // the next compose unconditionally re-emits the escapes
+            // and the wire's cursor visibility / wrap mode match
+            // what the renderer assumes.
+            s->state.cursor_hidden = false;
+            s->state.decawm_off    = false;
         }
     }
 

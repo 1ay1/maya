@@ -42,6 +42,18 @@ void render_live(const Element& root, int width, StylePool& pool,
 
     if (st.term_h <= 0) st.term_h = detect_terminal_height();
 
+    // Production shadow-of-wire check: if the cells we'd diff
+    // against no longer match the hash we recorded at the end of
+    // the last compose, somebody scribbled on them. Force a full
+    // repaint by zeroing prev_rows — same recovery shape as
+    // force_redraw(), but without wiping scrollback.
+    if (!verify_shadow_hash(st.frame)) {
+        st.frame.prev_rows     = 0;
+        st.frame.cursor_hidden = false;
+        st.frame.decawm_off    = false;
+        st.frame.shadow_hash   = static_cast<uint64_t>(-1);
+    }
+
     // Full canvas clear every frame so every cell starts blank and any
     // cell the current paint doesn't explicitly write stays blank. The
     // previous bounded clear (clear_rows(prev_rows + 4)) left cells past

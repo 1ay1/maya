@@ -14,6 +14,26 @@
 
 namespace maya {
 
+bool verify_shadow_hash(const InlineFrameState& state) noexcept {
+    // No hash computed yet — fresh state, nothing to verify against.
+    // Treat as trusted; the first successful compose will set the
+    // baseline.
+    if (state.shadow_hash == static_cast<uint64_t>(-1)) return true;
+    if (state.prev_width <= 0 || state.prev_rows <= 0) return true;
+
+    const std::size_t W = static_cast<std::size_t>(state.prev_width);
+    const std::size_t n = static_cast<std::size_t>(state.prev_rows) * W;
+    if (n > state.prev_cells.size()) return false;
+
+    uint64_t h = 14695981039346656037ULL;
+    const uint64_t* p = state.prev_cells.data();
+    for (std::size_t i = 0; i < n; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h == state.shadow_hash;
+}
+
 void InlineFrameState::commit_prefix(int rows) noexcept {
     // Bounds: clamp to [0, prev_rows].  Negative / zero is a no-op; an
     // over-commit (rows >= prev_rows) is interpreted as "everything is
@@ -38,6 +58,20 @@ void InlineFrameState::commit_prefix(int rows) noexcept {
         std::memmove(data, data + shift, remaining * sizeof(uint64_t));
     }
     prev_rows -= rows;
+
+    // Re-hash the now-shifted prev_cells so verify_shadow_hash on
+    // the next render compares against the post-shift state instead
+    // of false-positive on the legitimate scrollback advance.
+    if (shadow_hash != static_cast<uint64_t>(-1)) {
+        uint64_t h = 14695981039346656037ULL;
+        const std::size_t n =
+            static_cast<std::size_t>(prev_rows) * W;
+        for (std::size_t i = 0; i < n; ++i) {
+            h ^= prev_cells.data()[i];
+            h *= 1099511628211ULL;
+        }
+        shadow_hash = h;
+    }
 
     // Cursor invariant: the next compose_inline_frame call assumes the
     // terminal cursor is at row (prev_rows - 1) in the post-commit
@@ -325,7 +359,17 @@ void compose_inline_frame(const Canvas& canvas,
     // Width change invalidates the cached cell buffer — row layouts shift.
     // Reset clears prev_width / prev_rows but doesn't free prev_cells; the
     // next resize will reuse the allocation if it's already big enough.
-    if (state.prev_width != W) state.reset();
+    if (state.prev_width != W) {
+        state.reset();
+        // Width-flap memory recovery: if the buffer is dramatically
+        // larger than what this frame needs, release the excess so
+        // a transient wide-window state can't pin memory forever.
+        // shrink_to_fit_if_oversized's 2x threshold prevents
+        // allocator thrashing on small steady-state variations.
+        state.prev_cells.shrink_to_fit_if_oversized(
+            static_cast<std::size_t>(content_rows)
+            * static_cast<std::size_t>(W));
+    }
 
     // Pre-reserve `out` so the per-row ANSI emission doesn't trip a
     // reallocation cascade.  Rough heuristic: 24 bytes per row of pure
@@ -596,9 +640,18 @@ void compose_inline_frame(const Canvas& canvas,
         // and idempotent when the row really hadn't changed (same
         // bytes re-written to the wire, prev_cells re-copied from
         // canvas). Cost: at most one full-width row's worth of
-        // bytes per frame, only when content_rows > term_h.
+        // bytes per frame, only when content_rows >= term_h.
+        //
+        // Boundary case: when content_rows == term_h exactly, the
+        // viewport is full but no row has scrolled off yet. The
+        // very next frame that grows by one row WILL scroll this
+        // y=0 row off. Treat y=0 as scroll-off-risk in that case
+        // too — the wire-vs-canvas reconciliation happens this
+        // frame, while we still own the row; the next frame's
+        // commit makes it permanent.
         const bool will_scroll_off =
-            (content_rows > term_h) && (y == content_rows - term_h);
+            (content_rows >= term_h)
+            && (y == std::max(0, content_rows - term_h));
 
         // Find the changed sub-span. For new rows (no prev), this is
         // [first_non_blank, last_non_blank+1). For the will-scroll-off
@@ -772,6 +825,31 @@ void compose_inline_frame(const Canvas& canvas,
     // "copy a few hundred bytes per changed row".
     state.prev_width = W;
     state.prev_rows  = content_rows;
+
+    // ── Production shadow-of-wire hash ─────────────────────────────────
+    //
+    // Hash the entire prev_cells[0, content_rows*W) range with a fast
+    // FNV-1a-style fold. verify_shadow_hash() recomputes from the
+    // same range before the next compose; mismatch ⇒ someone mutated
+    // prev_cells (or the underlying allocation) outside the compose
+    // path and the diff would silently emit wrong bytes. The runtime
+    // demotes to Divergent on mismatch.
+    //
+    // Range is the full prev frame [0, content_rows) rather than just
+    // the visible viewport: simpler invariant (one hash covers every
+    // byte the diff might consult next frame), and commit_prefix
+    // handles scrollback shifts by re-hashing after the memmove.
+    {
+        const uint64_t* shadow_base = state.prev_cells.data();
+        uint64_t h = 14695981039346656037ULL;
+        const std::size_t n =
+            static_cast<std::size_t>(content_rows) * W;
+        for (std::size_t i = 0; i < n; ++i) {
+            h ^= shadow_base[i];
+            h *= 1099511628211ULL;
+        }
+        state.shadow_hash = h;
+    }
 
     // ── Shadow-of-wire invariant check (debug builds only) ─────────────
     //

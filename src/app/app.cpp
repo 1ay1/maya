@@ -366,6 +366,20 @@ auto Runtime::render(const Element& root) -> Status {
             // the InlineFrameState is owned here by `s.state`, so the
             // row-diff has access to its own canonical record.
             [&](coherent::InlineSynced& s) -> coherent::InlineState {
+                // Production shadow-of-wire check. If the shadow
+                // cells were mutated outside compose between the
+                // previous successful render and now (host bug,
+                // memory corruption, double-free, a stack overflow
+                // that scribbled the AlignedBuffer), the prev_cells
+                // we'd diff against is a lie. Detect and recover by
+                // dropping into Divergent so the next pass emits a
+                // full repaint from a known-blank terminal rather
+                // than a half-overwritten frame. Same cost (~1µs on
+                // 200×80) as the debug verifier; failure path is
+                // graceful instead of abort().
+                if (!verify_shadow_hash(s.state)) {
+                    return coherent::Divergent{};
+                }
                 // Full clear every frame. The bounded clear_rows(prev_rows + 4)
                 // variant left cells past its horizon retaining content from
                 // earlier frames; when a Turn's height shifted between frames

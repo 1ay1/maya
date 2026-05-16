@@ -222,4 +222,24 @@ private:
     [[nodiscard]] auto write_all(std::string_view data) const -> Status;
 };
 
+namespace detail {
+
+/// Return the longest prefix of `data` that ends at a byte boundary
+/// safe to leave the wire on — not inside a UTF-8 multi-byte
+/// codepoint, not inside any ESC-introduced control sequence (CSI /
+/// OSC / DCS / APC / PM / SOS / two-byte ESC), not on a lone
+/// continuation byte. Used by Writer's residue path to guarantee
+/// every kernel-bound write ends at a complete unit, so a partial
+/// accept can never strand the wire mid-sequence (the historical
+/// source of the "orphan parameter bytes printed as text" corruption
+/// the older recovery sequence had to clean up).
+///
+/// Exposed under `detail::` for testability; production code should
+/// not call it directly — Writer applies it at the right moments
+/// (write_or_buffer, try_drain_residue) so callers don't have to
+/// think about it.
+[[nodiscard]] std::size_t safe_break_len(std::string_view data) noexcept;
+
+} // namespace detail
+
 } // namespace maya

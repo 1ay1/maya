@@ -59,6 +59,15 @@ public:
     void resize(std::size_t count, uint64_t fill_value = 0);
     void assign(std::size_t count, uint64_t value);
 
+    /// Release capacity when `count` is dramatically smaller than
+    /// currently allocated. Useful after a width oscillation where
+    /// the cell buffer grew during a brief wide-window state and is
+    /// now permanently stuck at that size. Threshold is 2x — i.e.
+    /// shrink only when at most half the current capacity is needed,
+    /// to avoid thrashing the allocator on small steady-state
+    /// variations.
+    void shrink_to_fit_if_oversized(std::size_t count) noexcept;
+
     [[nodiscard]] uint64_t* data() noexcept { return data_; }
     [[nodiscard]] const uint64_t* data() const noexcept { return data_; }
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
@@ -165,10 +174,26 @@ public:
         while (true) {
             auto& slot = slots_[idx];
             if (slot.hash == 0) [[unlikely]] {
-                // Saturate: if we've exhausted the uint16_t ID space, return
-                // the closest existing style rather than wrapping around.
+                // Saturate: the uint16_t id space is full. Collapse
+                // every new style to id 0 (the default style) rather
+                // than aliasing onto the last-inserted entry —
+                // "closest existing style" silently merges every
+                // overflowing style into one arbitrary previously-seen
+                // style, producing a visible-but-misattributed style
+                // (e.g. all overflowed styles render as whatever the
+                // 65534th style happened to be). Collapsing to default
+                // makes overflow self-announcing: text reverts to
+                // plain styling, which is the conservative failure
+                // mode and matches what `prev_id == UINT16_MAX` does
+                // for unknown terminal state.
+                //
+                // The bool flag below is set so external diagnostics
+                // can surface the condition once (an animation that
+                // generates a fresh shade per frame is the practical
+                // way to hit this).
                 if (styles_.size() >= max_styles) [[unlikely]] {
-                    return static_cast<uint16_t>(styles_.size() - 1);
+                    overflow_ = true;
+                    return 0;
                 }
                 // Empty slot — insert new style.
                 auto id = static_cast<uint16_t>(styles_.size());
@@ -232,6 +257,14 @@ public:
     /// pool.
     [[nodiscard]] uint64_t pool_id() const noexcept { return pool_id_; }
 
+    /// True if `intern()` has ever been asked for a style after the
+    /// uint16_t id space saturated. Once set, stays set until
+    /// `clear()` is called — overflow is a one-way condition for the
+    /// pool's lifetime. Callers (diagnostics, optional warning UI)
+    /// can poll this between frames; we don't surface it from the
+    /// hot path to avoid syscalls.
+    [[nodiscard]] bool overflowed() const noexcept { return overflow_; }
+
     /// Reset the pool back to only the default style.
     void clear();
 
@@ -248,6 +281,7 @@ private:
     std::size_t capacity_ = 0;
     std::size_t mask_     = 0;
     uint64_t    pool_id_  = 0;  // Set by StylePool() ctor via next_pool_id_.
+    bool        overflow_ = false;  // intern() hit the uint16_t cap
 
     // ── SGR cache builder ────────────────────────────────────────────────
     static char* write_uint_sgr(char* p, unsigned n) noexcept;
@@ -401,8 +435,18 @@ public:
             // toward the right edge until clear()/clear_rows()/resize()
             // resets it. Serialize/diff use this in lieu of a per-frame
             // backward linear scan to find row trim points.
-            if (x > last_col_[static_cast<std::size_t>(y)])
-                last_col_[static_cast<std::size_t>(y)] = x;
+            //
+            // Wide-lead cells (width=1) reach two columns wide; advance
+            // last_col_ to x+1 even though we haven't written the trail
+            // cell yet (paired-cell guard above guarantees the trail
+            // slot is in bounds, and the caller's very next set() call
+            // will fill it with the placeholder). This closes the
+            // mid-write window where a reader between the lead set()
+            // and the trail set() would see last_col_=x and clip the
+            // trail.
+            const int new_last = (width == 1) ? x + 1 : x;
+            if (new_last > last_col_[static_cast<std::size_t>(y)])
+                last_col_[static_cast<std::size_t>(y)] = new_last;
         }
         stage_ = CanvasStage::Painted;
     }
@@ -613,6 +657,23 @@ public:
     /// Clear only rows [0, n). Much faster than clear() for inline mode
     /// where only a small portion of a tall canvas has content.
     void clear_rows(int n);
+
+    /// Drain a single row back to default_cell() and reset its
+    /// per-row bookkeeping (last_col_[y] → -1, max_y_ rescanned if y
+    /// was the previous max). Use this from a widget that performs
+    /// multi-pass paint within a single frame and wants to discard
+    /// an earlier pass's contribution to that row's trim metadata
+    /// before the next pass writes shorter content.
+    ///
+    /// Without this hook, `set()` / `write_text()` only ever GROW
+    /// `last_col_[y]` — a row written wider in pass 1 then
+    /// overwritten shorter in pass 2 keeps the wider trim, and the
+    /// diff path emits cells out to that stale extent before EL'ing.
+    /// The cells in [shorter, wider) on canvas are blank by then so
+    /// the visible result is correct, but the diff burns bytes
+    /// re-emitting blanks per frame instead of letting the EL
+    /// optimisation handle them in one shot.
+    void clear_row(int y) noexcept;
 
     /// The highest row index that received non-space content since last clear.
     /// Returns -1 if nothing was written. O(1) — avoids scanning the canvas.

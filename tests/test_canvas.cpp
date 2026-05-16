@@ -1,5 +1,6 @@
 // Tests for Canvas, StylePool, and Cell
 #include <maya/maya.hpp>
+#include <array>
 #include <cassert>
 #include <print>
 
@@ -300,6 +301,137 @@ void test_cell_default_character() {
     std::println("PASS\n");
 }
 
+// Wide-character orphan blit-edge repair. blit_packed_row_impl must
+// blank an orphan wide-lead at the right clip edge and an orphan
+// wide-trail at the left clip edge, otherwise the next paint sees
+// stale glyphs at those cells (the renderer would treat the orphan
+// trail's placeholder as a normal cell, or the orphan lead as a
+// normal-width char that overdraws its neighbour).
+void test_canvas_blit_wide_orphan_right_edge() {
+    std::println("--- test_canvas_blit_wide_orphan_right_edge ---");
+    StylePool pool;
+    Canvas canvas(10, 2, &pool);
+
+    // Build a 4-cell source: [A][wide-lead 'X'][wide-trail][B].
+    std::array<uint64_t, 4> src{
+        Cell{U'A', 0, 0, 0}.pack(),
+        Cell{U'X', 0, 0, 1}.pack(),     // wide lead
+        Cell{U' ', 0, 0, 2}.pack(),     // wide trail placeholder
+        Cell{U'B', 0, 0, 0}.pack(),
+    };
+
+    // Clip so the blit lands only at columns [0, 2). The wide lead
+    // at source index 1 ends up at canvas col 1 with its trail
+    // CHOPPED off (the clip ends at col 2 exclusive but the trail
+    // would have been at col 2). blit must blank the orphan lead.
+    canvas.push_clip(Rect{{Columns{0}, Rows{0}}, {Columns{2}, Rows{2}}});
+    canvas.blit_packed_row(0, 0, src.data(), 4, /*row_has_content=*/true);
+    canvas.pop_clip();
+
+    // Col 0 keeps 'A'; col 1 must be a blank cell (orphan lead
+    // repaired). The diff would otherwise emit a styled wide-lead
+    // glyph here and the renderer-side wide-trail handling would
+    // skip the next cell as a placeholder — corrupting the row.
+    Cell c0 = canvas.get(0, 0);
+    Cell c1 = canvas.get(1, 0);
+    assert(c0.character == U'A');
+    assert(c1.character == U' ');
+    assert(c1.width == 0);
+    std::println("PASS\n");
+}
+
+void test_canvas_blit_wide_orphan_left_edge() {
+    std::println("--- test_canvas_blit_wide_orphan_left_edge ---");
+    StylePool pool;
+    Canvas canvas(10, 2, &pool);
+
+    // Same source layout as above.
+    std::array<uint64_t, 4> src{
+        Cell{U'A', 0, 0, 0}.pack(),
+        Cell{U'X', 0, 0, 1}.pack(),
+        Cell{U' ', 0, 0, 2}.pack(),
+        Cell{U'B', 0, 0, 0}.pack(),
+    };
+
+    // Clip so only columns [2, 4) of the blit land on canvas.
+    // Source cell 2 (the wide trail) ends up at canvas col 2 —
+    // with its lead clipped away. blit must blank the orphan trail.
+    canvas.push_clip(Rect{{Columns{2}, Rows{0}}, {Columns{2}, Rows{2}}});
+    canvas.blit_packed_row(0, 0, src.data(), 4, /*row_has_content=*/true);
+    canvas.pop_clip();
+
+    Cell c2 = canvas.get(2, 0);
+    Cell c3 = canvas.get(3, 0);
+    assert(c2.character == U' ');
+    assert(c2.width == 0);
+    assert(c3.character == U'B');
+    std::println("PASS\n");
+}
+
+// StylePool's uint16_t id space saturates at 65535. Beyond that,
+// intern() must return id 0 (default style) and the `overflowed()`
+// flag must surface the condition. Filling 65k+ styles would be
+// slow; instead use the test-only knowledge that the cap is
+// `max_styles` and just push past it.
+void test_style_pool_overflow_returns_default() {
+    std::println("--- test_style_pool_overflow_returns_default ---");
+    StylePool pool;
+    assert(!pool.overflowed());
+
+    // Fill the pool with distinct styles up to the cap. Use a
+    // structurally-varying color so each intern is unique.
+    auto make_style = [](uint32_t i) {
+        return Style{}.with_fg(Color::rgb(
+            (i      ) & 0xFF,
+            (i >> 8 ) & 0xFF,
+            (i >> 16) & 0xFF));
+    };
+
+    // intern up to (but not past) max_styles — 1 (id 0 is default).
+    constexpr uint32_t kCap =
+        static_cast<uint32_t>(StylePool::max_styles);
+    uint16_t last_valid = 0;
+    for (uint32_t i = 1; i < kCap; ++i) {
+        last_valid = pool.intern(make_style(i));
+    }
+    assert(!pool.overflowed());
+    assert(last_valid != 0);
+
+    // One more should trip the saturation.
+    uint16_t over = pool.intern(make_style(kCap + 1));
+    assert(over == 0);
+    assert(pool.overflowed());
+
+    // clear() resets the overflow flag.
+    pool.clear();
+    assert(!pool.overflowed());
+    std::println("PASS\n");
+}
+
+// Canvas::clear_row drains one row's cells and resets last_col_[y],
+// rescanning max_y_ if the cleared row was the previous max.
+void test_canvas_clear_row() {
+    std::println("--- test_canvas_clear_row ---");
+    StylePool pool;
+    Canvas canvas(10, 4, &pool);
+    canvas.write_text(0, 0, "row0", 0);
+    canvas.write_text(0, 2, "row2", 0);
+    assert(canvas.max_content_row() == 2);
+    assert(canvas.last_content_col(0) == 3);
+    assert(canvas.last_content_col(2) == 3);
+
+    canvas.clear_row(2);
+    assert(canvas.last_content_col(2) == -1);
+    assert(canvas.max_content_row() == 0);
+    Cell c = canvas.get(0, 2);
+    assert(c.character == U' ');
+
+    canvas.clear_row(0);
+    assert(canvas.last_content_col(0) == -1);
+    assert(canvas.max_content_row() == -1);
+    std::println("PASS\n");
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     test_canvas_dimensions();
@@ -326,5 +458,9 @@ int main() {
     test_cell_pack_unpack_char();
     test_cell_pack_unpack_style_id();
     test_cell_default_character();
-    std::println("=== ALL 24 TESTS PASSED ===");
+    test_canvas_blit_wide_orphan_right_edge();
+    test_canvas_blit_wide_orphan_left_edge();
+    test_style_pool_overflow_returns_default();
+    test_canvas_clear_row();
+    std::println("=== ALL 28 TESTS PASSED ===");
 }

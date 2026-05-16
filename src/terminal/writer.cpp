@@ -24,6 +24,93 @@
 
 namespace maya {
 
+namespace detail {
+
+[[nodiscard]] std::size_t safe_break_len(std::string_view data) noexcept {
+    const std::size_t n = data.size();
+    std::size_t pos  = 0;
+    std::size_t safe = 0;
+    while (pos < n) {
+        const auto b = static_cast<unsigned char>(data[pos]);
+        if (b == 0x1B) {
+            // ESC — need at least the next byte to classify.
+            if (pos + 1 >= n) break;
+            const auto c = static_cast<unsigned char>(data[pos + 1]);
+            if (c == '[') {
+                // CSI … final-byte 0x40–0x7E. Parameter bytes 0x30–0x3F,
+                // intermediate 0x20–0x2F, final 0x40–0x7E.
+                std::size_t k = pos + 2;
+                while (k < n) {
+                    const auto cb = static_cast<unsigned char>(data[k]);
+                    if (cb >= 0x40 && cb <= 0x7E) { ++k; break; }
+                    ++k;
+                }
+                if (k > n || (k <= n && k > 0
+                              && (static_cast<unsigned char>(data[k - 1]) < 0x40
+                                  || static_cast<unsigned char>(data[k - 1]) > 0x7E)))
+                {
+                    // Reached end without a final byte — incomplete.
+                    break;
+                }
+                pos = k;
+                safe = pos;
+                continue;
+            }
+            if (c == ']' || c == 'P' || c == '^' || c == '_' || c == 'X') {
+                // OSC ']'/DCS 'P'/PM '^'/APC '_'/SOS 'X' — terminated by
+                // ST (\x1b\\) or, by convention, BEL (\x07) for OSC.
+                std::size_t k = pos + 2;
+                bool terminated = false;
+                while (k < n) {
+                    const auto cb = static_cast<unsigned char>(data[k]);
+                    if (cb == 0x07) { ++k; terminated = true; break; }
+                    if (cb == 0x1B && k + 1 < n
+                        && static_cast<unsigned char>(data[k + 1]) == '\\')
+                    {
+                        k += 2; terminated = true; break;
+                    }
+                    ++k;
+                }
+                if (!terminated) break;
+                pos = k;
+                safe = pos;
+                continue;
+            }
+            // Two-byte ESC sequence: ESC + <final>. The final byte was
+            // already in range above. Consume both.
+            pos += 2;
+            safe = pos;
+            continue;
+        }
+        if (b == 0x18 || b == 0x1A) {
+            // CAN / SUB cancel any in-flight control sequence. Treat
+            // as a complete unit.
+            ++pos;
+            safe = pos;
+            continue;
+        }
+        if (b < 0x80) {
+            // Plain ASCII / C0.
+            ++pos;
+            safe = pos;
+            continue;
+        }
+        // UTF-8 lead: determine sequence length from the top bits.
+        std::size_t seqlen = 1;
+        if      ((b & 0xE0) == 0xC0) seqlen = 2;
+        else if ((b & 0xF0) == 0xE0) seqlen = 3;
+        else if ((b & 0xF8) == 0xF0) seqlen = 4;
+        // Continuation byte without a lead, or 5/6-byte sequences (illegal
+        // in modern UTF-8): treat as a single byte to make progress.
+        if (pos + seqlen > n) break;     // incomplete codepoint
+        pos += seqlen;
+        safe = pos;
+    }
+    return safe;
+}
+
+} // namespace detail
+
 // ============================================================================
 // Construction / move / destruction
 // ============================================================================
@@ -175,7 +262,22 @@ auto Writer::write_raw(std::string_view data) -> Status {
 
 auto Writer::try_drain_residue() -> Status {
     if (residue_.empty()) return ok();
-    auto r = write_some(residue_);   // already loops on EINTR, stops on EAGAIN
+    // Cap the physical write at the longest safe-ending prefix of
+    // residue_, so even a 1-byte kernel accept can't leave the wire
+    // mid-CSI. The unsafe tail stays in residue_ as raw bytes and
+    // joins the next safe prefix the next time we drain (or, if
+    // appended bytes complete the in-flight sequence, becomes safe
+    // outright on the next safe_break_len pass).
+    const std::size_t safe = detail::safe_break_len(residue_);
+    if (safe == 0) {
+        // The current buffer starts mid-sequence and has no safe
+        // breakpoint yet — nothing to ship without risking a split.
+        // Report WouldBlock so the caller polls again; appended bytes
+        // will eventually complete the sequence.
+        return err(Error::would_block());
+    }
+    std::string_view head{residue_.data(), safe};
+    auto r = write_some(head);   // already loops on EINTR, stops on EAGAIN
     if (!r) return std::unexpected{r.error()};
     const std::size_t n = *r;
     if (n >= residue_.size()) {
@@ -202,7 +304,16 @@ auto Writer::write_or_buffer(std::string_view data) -> Status {
         }
     }
     if (data.empty()) return ok();
-    auto r = write_some(data);
+    // Cap the physical write at the longest safe-ending prefix of
+    // `data`. Without this cap, a partial accept can leave the wire
+    // mid-sequence and the next bytes (whether from this same call
+    // or a future drain) join mid-stream, producing garbage. The
+    // bytes beyond `safe` go straight to residue_ — they're a
+    // well-formed continuation that the next drain will ship as a
+    // unit.
+    const std::size_t safe = detail::safe_break_len(data);
+    std::string_view head = data.substr(0, safe);
+    auto r = write_some(head);
     if (!r) return std::unexpected{r.error()};
     const std::size_t n = *r;
     if (n < data.size()) residue_.append(data.substr(n));

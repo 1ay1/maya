@@ -87,11 +87,29 @@ struct InlineFrameState {
     bool decawm_off    = false;
     bool cursor_hidden = false;
 
+    /// Production shadow-of-wire verifier. After each successful
+    /// compose, `shadow_hash` is set to a deterministic 64-bit hash
+    /// over the visible-viewport portion of `prev_cells`. Before the
+    /// next compose runs, the runtime can re-hash the same range and
+    /// compare; a mismatch means somebody mutated prev_cells outside
+    /// the compose path (or memory corruption) — the shadow is no
+    /// longer trustworthy and the next render must go through the
+    /// Divergent recovery path rather than emit a diff against a
+    /// poisoned reference. UINT64_MAX is the "not yet computed"
+    /// sentinel set by reset() and by the constructor. The cost is
+    /// O(visible_rows × W) of u64 mixing per frame — ~1µs on a
+    /// 200×80 viewport, which the debug verifier (MAYA_DEBUG_
+    /// SHADOW_VERIFY) already pays unconditionally; production carries
+    /// the same overhead but with the failure routed to graceful
+    /// recovery instead of abort().
+    uint64_t shadow_hash = static_cast<uint64_t>(-1);
+
     void reset() noexcept {
         prev_width    = 0;
         prev_rows     = 0;
         decawm_off    = false;
         cursor_hidden = false;
+        shadow_hash   = static_cast<uint64_t>(-1);
     }
 
     /// Append the bytes needed to restore terminal state owned by this
@@ -177,5 +195,22 @@ void compose_inline_frame(const Canvas& canvas,
                           InlineFrameState& state,
                           std::string& out,
                           bool synchronized_output = true);
+
+/// Re-compute the shadow-of-wire hash over `state.prev_cells` and
+/// compare it to the value `compose_inline_frame` stored at the end
+/// of the previous render. Returns true when the hash still matches
+/// (shadow is intact) or when no hash has been computed yet
+/// (`state.shadow_hash == UINT64_MAX`, fresh state). Returns false
+/// only when a prior compose recorded a hash and the current
+/// prev_cells contents no longer reproduce it — i.e. the shadow has
+/// been mutated outside the compose path, by either a host-side bug
+/// or memory corruption.
+///
+/// Cost mirrors the hash-write at the end of compose: a single linear
+/// pass over the viewport-visible cell range, ~1µs on a 200×80
+/// viewport. The runtime checks this once per render before deciding
+/// whether to take the InlineSynced fast path or demote to Divergent
+/// and force a full re-paint.
+[[nodiscard]] bool verify_shadow_hash(const InlineFrameState& state) noexcept;
 
 } // namespace maya

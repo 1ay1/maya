@@ -64,6 +64,17 @@ struct ComponentCacheEntry {
     // cached render. Comparing generations on lookup catches that case
     // and treats it as a miss.
     std::uint64_t generation = 0;
+    // Wallclock timestamp of the last hit. Used by content-keyed
+    // (cache_id) eviction so a long idle that produces no frames
+    // doesn't immediately drop entries the user is still interacting
+    // with — fps=0 makes "frames since last hit" a poor proxy for
+    // "how long ago." Set on every hit; checked at top-of-frame
+    // eviction. Default-constructed time_point compares less-than any
+    // sane now(), so a fresh-but-not-yet-touched entry is eligible
+    // for eviction on the first sweep after store — but stays alive
+    // for at least one frame because the SAME-FRAME hit-stamp at
+    // measure/paint moves last_touched_at to now().
+    std::chrono::steady_clock::time_point last_touched_at{};
 
     // Painted-cell cache: a (height × width) grid of packed cell
     // values captured the first time this entry is painted. On every
@@ -417,6 +428,8 @@ std::size_t build_layout_tree(
                                 || entry->last_frame == cache.current_frame;
                             if (trust) {
                                 entry->last_frame = cache.current_frame;
+                                entry->last_touched_at =
+                                    std::chrono::steady_clock::now();
                                 return {Columns{max_width},
                                         Rows{entry->height}};
                             }
@@ -445,7 +458,8 @@ std::size_t build_layout_tree(
                             h,
                             std::move(child),
                             cache.current_frame,
-                            comp.generation
+                            comp.generation,
+                            std::chrono::steady_clock::now()
                         });
                         return {Columns{max_width}, Rows{h}};
                     },
@@ -1001,6 +1015,7 @@ void paint_element(
                 entry && !entry->cells.empty() && entry->cells_rows > 0)
             {
                 entry->last_frame = cache.current_frame;
+                entry->last_touched_at = std::chrono::steady_clock::now();
 
                 auto _ = canvas.clip_scope(Rect{
                     {Columns{content_x}, Rows{content_y}},
@@ -1056,6 +1071,7 @@ void paint_element(
             if (reuse_entry) {
                 child_ptr = &reuse_entry->result;
                 reuse_entry->last_frame = cache.current_frame;
+                reuse_entry->last_touched_at = std::chrono::steady_clock::now();
             } else {
                 // Render fresh. For pointer-keyed entries we still
                 // store the result so this frame's measure-then-paint
@@ -1069,7 +1085,8 @@ void paint_element(
                     /*height=*/content_h,
                     fresh_render,
                     cache.current_frame,
-                    node.generation
+                    node.generation,
+                    std::chrono::steady_clock::now()
                 });
                 child_ptr = stored ? &stored->result : &fresh_render;
             }
@@ -1176,7 +1193,13 @@ void paint_element(
                                 * static_cast<std::size_t>(content_w));
                         entry->cells_row_last_col.assign(
                             static_cast<std::size_t>(captured_rows), -1);
-                        constexpr uint64_t kBlank = uint64_t{U' '};
+                        // Use the canonical pack of a default-constructed
+                        // Cell rather than open-coding the byte pattern. If
+                        // Cell defaults ever shift (e.g. sentinel hyperlink
+                        // ids, non-zero width default) this site tracks them
+                        // automatically instead of silently mis-trimming the
+                        // cached row tail.
+                        constexpr uint64_t kBlank = Cell{}.pack();
                         int last_nonblank = -1;
                         for (int y = 0; y < captured_rows; ++y) {
                             uint64_t* dst =
@@ -1293,28 +1316,26 @@ void render_tree(
             }
         }
 
-        // Content-keyed entries: 8-frame retention window. The host
+        // Content-keyed entries: 2-second wallclock retention. The host
         // opted into cross-frame identity by setting cache_id; the
         // cells captured under that id are valid for as long as the
         // content the id stands for hasn't changed (a fresh
         // ComponentElement with the same id presents the same
-        // semantic content). Strict 1-frame eviction here costs
-        // re-renders on flapping conditional components — e.g. a
-        // permission modal that appears for one event burst,
-        // disappears for a tick, then reappears — even though the
-        // cells were perfectly valid. 8 frames is enough to cover
-        // the gap across a typical event-driven idle
-        // (agentty runs fps=0, so this is "8 user inputs / ticks
-        // since last touch") without burning much memory: each
-        // cache_id entry is bounded by `term_w * term_h * 8 B` of
-        // cells, and the host-keyed id space is small (per-turn
-        // tool cards, per-message markdown blocks, per-modal
-        // wrappers — dozens, not thousands).
-        constexpr std::uint64_t kContentCacheRetention = 8;
-        const std::uint64_t content_cutoff =
-            (prev >= kContentCacheRetention) ? (prev - kContentCacheRetention + 1) : 0;
+        // semantic content). Frame-count retention misbehaves under
+        // event-driven (fps=0) operation — 8 frames can be 30 seconds
+        // of idle, evicting nothing meaningful; under animation 8
+        // frames is 0.3 s and evicts entries the user is still
+        // interacting with. Switch to wallclock so eviction tracks
+        // the user's notion of "how long ago" instead of the engine's
+        // frame counter.
+        using clock = std::chrono::steady_clock;
+        constexpr auto kContentCacheRetention = std::chrono::seconds(2);
+        const auto cutoff = clock::now() - kContentCacheRetention;
         for (auto it = cache.entries_by_id.begin(); it != cache.entries_by_id.end(); ) {
-            if (it->second.last_frame < content_cutoff) {
+            // Entries that have never been touched (default time_point
+            // is the epoch) are also evicted by the same predicate —
+            // it's been longer than 2 s since the epoch.
+            if (it->second.last_touched_at < cutoff) {
                 it = cache.entries_by_id.erase(it);
             } else {
                 ++it;

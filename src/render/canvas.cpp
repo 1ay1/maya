@@ -49,6 +49,27 @@ void AlignedBuffer::assign(std::size_t count, uint64_t value) {
     simd::streaming_fill(data_, count, value);
 }
 
+void AlignedBuffer::shrink_to_fit_if_oversized(std::size_t count) noexcept {
+    // Only shrink when at most half the current capacity is needed.
+    // This prevents thrashing when width oscillates within a small
+    // band (e.g. a window-manager resize gesture); we only release
+    // memory when a meaningful step-down has stabilised.
+    if (capacity_ < 2 * count + 64) return;
+    if (count == 0) {
+        free();
+        size_ = capacity_ = 0;
+        return;
+    }
+    auto* new_data = static_cast<uint64_t*>(
+        ::operator new(count * sizeof(uint64_t), std::align_val_t{64}));
+    const std::size_t copy = std::min(size_, count);
+    if (data_ && copy > 0) std::copy(data_, data_ + copy, new_data);
+    if (data_) ::operator delete(data_, std::align_val_t{64});
+    data_ = new_data;
+    size_ = copy;
+    capacity_ = count;
+}
+
 // ============================================================================
 // StylePool
 // ============================================================================
@@ -81,6 +102,7 @@ void StylePool::clear() {
     styles_.resize(1);
     sgr_cache_.resize(1);
     size_ = 1;
+    overflow_ = false;
     std::fill(slots_.begin(), slots_.end(), Slot{});
     insert_slot(hash_style(styles_[0]), 0);
 }
@@ -489,6 +511,25 @@ void Canvas::clear() {
     damage_ = full_rect();
     max_y_ = -1;
     stage_ = CanvasStage::Drained;
+}
+
+void Canvas::clear_row(int y) noexcept {
+    if (static_cast<unsigned>(y) >= static_cast<unsigned>(height_)) return;
+    const uint64_t blank = default_cell();
+    uint64_t* base = cells_.data();
+    const std::size_t row_off = static_cast<std::size_t>(y) * width_;
+    std::fill(base + row_off, base + row_off + width_, blank);
+    last_col_[static_cast<std::size_t>(y)] = -1;
+    if (y == max_y_) {
+        // Rescan downward from y-1 to find the new max_y_.
+        int new_max = -1;
+        for (int yy = y - 1; yy >= 0; --yy) {
+            if (last_col_[static_cast<std::size_t>(yy)] >= 0) { new_max = yy; break; }
+        }
+        max_y_ = new_max;
+    }
+    // damage_ stays unchanged: the diff still has to cover the rows
+    // this widget will overwrite this frame.
 }
 
 void Canvas::clear_rows(int n) {

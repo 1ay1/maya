@@ -452,42 +452,31 @@ void compose_inline_frame(const Canvas& canvas,
     //       Composer stays at its viewport row — no "rushes to
     //       bottom" jolt, scrollback preserved.
     if (prev_rows == 0) {
-        // Audit finding #2 (scrollback-corruption-audit.md): the case-B
-        // soft-redraw assumes the cursor sits `content_rows - 1` rows
-        // below the top of the live frame and emits a relative
-        // cursor_up + serialize(...) from there. When content_rows >
-        // term_h that assumption is unsatisfiable — the cursor can be
-        // at most `term_h - 1` rows below viewport top, so the
-        // cursor_up clamps short and the subsequent serialize's
-        // bottom-edge \r\n's scroll native scrollback up by
-        // (content_rows - term_h) rows. Symptom in agentty: a copy of
-        // the just-finished turn re-appears one screen above the
-        // live one whenever the user has scrolled up. Path:
-        //   1. transient empty frame zeros prev_rows (inline.cpp,
-        //      app.cpp), keeping prev_width > 0.
-        //   2. next frame's content_rows exceeds term_h (long
-        //      transcript).
-        //   3. compose hits case (B), drifts scrollback, leaves a
-        //      duplicate of the tail in native scrollback.
+        // Audit finding #2 history: an earlier case-(B) implementation
+        // emitted serialize() from canvas row 0 with a cursor_up capped
+        // at term_h-1; when content_rows > term_h the bottom-edge
+        // \r\n's scrolled native scrollback by (content_rows - term_h)
+        // rows, leaving a ghost copy of the just-finished turn one
+        // screen above the live one. That bug was originally patched
+        // by routing oversized force_redraws through a hard
+        // \x1b[2J\x1b[3J\x1b[H reset — which fixed the ghost but
+        // wiped the host's pre-launch scrollback every time it fired.
         //
-        // Fix: when the content can't possibly fit in the viewport,
-        // treat the redraw as a Divergent recovery — emit the safe
-        // hard reset (\x1b[2J\x1b[3J\x1b[H) and grow from the home
-        // position. This costs the user their scrollback once,
-        // deterministically, rather than nudging it on every fire.
-        const bool oversized = state.prev_width > 0 && content_rows > term_h;
-        if (oversized) {
-            out += "\x1b[2J\x1b[3J\x1b[H";
-            serialize(canvas, pool, out, content_rows);
-            if (synchronized_output) out += ansi::sync_end;
-            const std::size_t new_size = safe_cells(content_rows, W);
-            if (new_size == (std::size_t)(-1)) { state.reset(); return; }
-            if (state.prev_cells.size() < new_size) state.prev_cells.resize(new_size);
-            std::memcpy(state.prev_cells.data(), cells, new_size * sizeof(uint64_t));
-            state.prev_width = W;
-            state.prev_rows  = content_rows;
-            return;
-        }
+        // The current case-(B) emit shape (below) is already scrollback-
+        // safe for oversized content: it caps the cursor_up at term_h-1
+        // AND caps the serialize at start_row = max(0, content_rows -
+        // term_h), so only the last term_h rows of canvas land in the
+        // viewport via term_h-1 inter-row \r\n's — exactly filling the
+        // existing viewport, zero bottom-edge scrolls, zero scrollback
+        // mutation. Rows of the inline frame already above viewport top
+        // stay in native scrollback as the stream originally committed
+        // them (see the SCOPE CONTRACT comment in the path below).
+        //
+        // So: no oversized special-case here. The hard \x1b[2J\x1b[3J\x1b[H
+        // reset is reserved for the Divergent path (resize / write-fail
+        // recovery), where the layout assumptions actually changed and
+        // a full repaint from home is the correct response — see
+        // app.cpp's resize handler.
         if (state.prev_width > 0) {
             // Force_redraw case (B): in-place soft redraw.
             //
@@ -547,15 +536,22 @@ void compose_inline_frame(const Canvas& canvas,
             //
             // Cap the emit at the visible viewport (last term_h rows
             // of the canvas) rather than the full content_rows. The
-            // frame already extends past viewport top — the tail
-            // above the viewport sits in native scrollback exactly
-            // as the stream originally committed it, and emitting it
-            // again would only (a) push the user's prior viewport
-            // content into scrollback via the bottom-edge \r\n
-            // scrolls serialize uses to walk rows, and (b) leave a
-            // duplicate copy of the just-finished turn one screen
-            // above the live one — the "everything gets re-printed
-            // from the beginning of the turn" symptom.
+            // frame may extend past viewport top — the tail above the
+            // viewport sits in native scrollback exactly as the
+            // stream originally committed it, and emitting it again
+            // would only (a) push the user's prior viewport content
+            // into scrollback via the bottom-edge \r\n scrolls
+            // serialize uses to walk rows, and (b) leave a duplicate
+            // copy of the just-finished turn one screen above the
+            // live one — the "everything gets re-printed from the
+            // beginning of the turn" symptom.
+            //
+            // The viewport-cap is what makes this path scrollback-safe
+            // for oversized content (content_rows > term_h) too:
+            // start_row clamps to content_rows - term_h, the cursor_up
+            // clamps to term_h - 1, serialize emits exactly term_h
+            // rows with term_h - 1 inter-row \r\n's — fills the
+            // viewport in place, no bottom-edge scroll.
             const int up = std::min(content_rows - 1,
                                     std::max(0, term_h - 1));
             if (up > 0) ansi::write_cursor_up(out, up);

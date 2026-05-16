@@ -452,6 +452,42 @@ void compose_inline_frame(const Canvas& canvas,
     //       Composer stays at its viewport row — no "rushes to
     //       bottom" jolt, scrollback preserved.
     if (prev_rows == 0) {
+        // Audit finding #2 (scrollback-corruption-audit.md): the case-B
+        // soft-redraw assumes the cursor sits `content_rows - 1` rows
+        // below the top of the live frame and emits a relative
+        // cursor_up + serialize(...) from there. When content_rows >
+        // term_h that assumption is unsatisfiable — the cursor can be
+        // at most `term_h - 1` rows below viewport top, so the
+        // cursor_up clamps short and the subsequent serialize's
+        // bottom-edge \r\n's scroll native scrollback up by
+        // (content_rows - term_h) rows. Symptom in agentty: a copy of
+        // the just-finished turn re-appears one screen above the
+        // live one whenever the user has scrolled up. Path:
+        //   1. transient empty frame zeros prev_rows (inline.cpp,
+        //      app.cpp), keeping prev_width > 0.
+        //   2. next frame's content_rows exceeds term_h (long
+        //      transcript).
+        //   3. compose hits case (B), drifts scrollback, leaves a
+        //      duplicate of the tail in native scrollback.
+        //
+        // Fix: when the content can't possibly fit in the viewport,
+        // treat the redraw as a Divergent recovery — emit the safe
+        // hard reset (\x1b[2J\x1b[3J\x1b[H) and grow from the home
+        // position. This costs the user their scrollback once,
+        // deterministically, rather than nudging it on every fire.
+        const bool oversized = state.prev_width > 0 && content_rows > term_h;
+        if (oversized) {
+            out += "\x1b[2J\x1b[3J\x1b[H";
+            serialize(canvas, pool, out, content_rows);
+            if (synchronized_output) out += ansi::sync_end;
+            const std::size_t new_size = safe_cells(content_rows, W);
+            if (new_size == (std::size_t)(-1)) { state.reset(); return; }
+            if (state.prev_cells.size() < new_size) state.prev_cells.resize(new_size);
+            std::memcpy(state.prev_cells.data(), cells, new_size * sizeof(uint64_t));
+            state.prev_width = W;
+            state.prev_rows  = content_rows;
+            return;
+        }
         if (state.prev_width > 0) {
             // Force_redraw case (B): in-place soft redraw.
             //

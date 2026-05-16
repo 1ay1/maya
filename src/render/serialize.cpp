@@ -552,16 +552,60 @@ void compose_inline_frame(const Canvas& canvas,
             // clamps to term_h - 1, serialize emits exactly term_h
             // rows with term_h - 1 inter-row \r\n's — fills the
             // viewport in place, no bottom-edge scroll.
-            const int up = std::min(content_rows - 1,
-                                    std::max(0, term_h - 1));
-            if (up > 0) ansi::write_cursor_up(out, up);
-            out += '\r';
-            const int start_row = std::max(0, content_rows - term_h);
-            serialize(canvas, pool, out, content_rows, start_row);
-            out += "\x1b[J";
+            //
+            // ── Shrink case: erase prior frame's top rows ──────────
+            //
+            // \x1b[J at the tail only erases from the cursor
+            // downward. When the new frame is SHORTER than what
+            // force_redraw zeroed (state.ghost_rows_above), the rows
+            // above the new frame's top still hold the prior frame's
+            // content and would stay visible. We pre-position the
+            // cursor above the new frame's top, EL-erase one row,
+            // and walk down — total erased rows =
+            // min(ghost_rows_above, term_h) - emit_rows. Done BEFORE
+            // the new-frame emit so the cursor ends in the same
+            // place the existing math expects.
+            const int ghost = state.ghost_rows_above;
+            const int emit_rows  = std::min(content_rows, term_h);
+            const int ghost_vis  = std::min(ghost, term_h);
+            const int extra_top  = std::max(0, ghost_vis - emit_rows);
+            if (extra_top > 0) {
+                // Cursor was at the prior frame's last visible row
+                // (physical row ghost_vis - 1 from the prior frame's
+                // top). Move up to the prior frame's top row, then
+                // EL-erase + \n-walk down extra_top rows. Each
+                // iteration ends at col 0 of the next row, so the
+                // final cursor sits at the new frame's top row,
+                // col 0 — exactly where the existing emit shape
+                // expects to be after its own cursor_up + \r.
+                ansi::write_cursor_up(out, ghost_vis - 1);
+                out += '\r';
+                for (int i = 0; i < extra_top; ++i) {
+                    out += "\x1b[K";
+                    out += '\n';   // LF only — cursor already at col 0
+                }
+                // After the loop the cursor is at the row that will
+                // become the new frame's top, col 0. The existing
+                // cursor_up below would over-move from here, so skip
+                // it: emit serialize directly. We're already at the
+                // right row; '\r' is a no-op (already at col 0).
+                const int start_row = std::max(0, content_rows - term_h);
+                serialize(canvas, pool, out, content_rows, start_row);
+                out += "\x1b[J";
+            } else {
+                const int up = std::min(content_rows - 1,
+                                        std::max(0, term_h - 1));
+                if (up > 0) ansi::write_cursor_up(out, up);
+                out += '\r';
+                const int start_row = std::max(0, content_rows - term_h);
+                serialize(canvas, pool, out, content_rows, start_row);
+                out += "\x1b[J";
+            }
+            state.ghost_rows_above = 0;
         } else {
             // Fresh state (A): inline-mode growth from cursor.
             serialize(canvas, pool, out, content_rows);
+            state.ghost_rows_above = 0;
         }
         if (synchronized_output) out += ansi::sync_end;
         // Cache the new cell buffer for next frame's comparison.  This is

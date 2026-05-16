@@ -423,6 +423,13 @@ public:
     void force_redraw() noexcept {
         fs_coherence_ = coherent::Divergent{};
         if (auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_)) {
+            // Stash the live prev_rows BEFORE zeroing it. compose's
+            // case-(B) soft redraw uses this to size an upward erase
+            // so the prior frame's top doesn't stay painted above
+            // a shorter new frame (\x1b[J only erases below the
+            // cursor; without ghost_rows_above the rows above the
+            // case-(B) repaint would survive when content shrinks).
+            s->state.ghost_rows_above = s->state.prev_rows;
             s->state.prev_rows = 0;
             // Force_redraw exists because terminal state has
             // demonstrably diverged from our model (user hit Ctrl-L,

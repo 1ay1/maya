@@ -87,6 +87,21 @@ struct InlineFrameState {
     bool decawm_off    = false;
     bool cursor_hidden = false;
 
+    /// Rows of the prior frame still on screen that case-(B) soft
+    /// redraw must erase ABOVE the new frame, not just below.
+    ///
+    /// Set by `Runtime::force_redraw()` (to the live `prev_rows`)
+    /// *before* it zeroes `prev_rows`; consumed by
+    /// `compose_inline_frame`'s case-(B) emit, which uses it to size
+    /// the upward erase so the previous (possibly larger) frame's top
+    /// is wiped, not left visible above the freshly-painted shorter
+    /// frame. Cleared back to 0 by case-(B) after the erase emits.
+    ///
+    /// Zero in steady state. Non-zero only between force_redraw and
+    /// the next compose. Width-change `reset()` also clears it because
+    /// the row counts are no longer meaningful at the new width.
+    int ghost_rows_above = 0;
+
     /// Production shadow-of-wire verifier. After each successful
     /// compose, `shadow_hash` is set to a deterministic 64-bit hash
     /// over the visible-viewport portion of `prev_cells`. Before the
@@ -105,11 +120,12 @@ struct InlineFrameState {
     uint64_t shadow_hash = static_cast<uint64_t>(-1);
 
     void reset() noexcept {
-        prev_width    = 0;
-        prev_rows     = 0;
-        decawm_off    = false;
-        cursor_hidden = false;
-        shadow_hash   = static_cast<uint64_t>(-1);
+        prev_width        = 0;
+        prev_rows         = 0;
+        decawm_off        = false;
+        cursor_hidden     = false;
+        shadow_hash       = static_cast<uint64_t>(-1);
+        ghost_rows_above  = 0;
     }
 
     /// Append the bytes needed to restore terminal state owned by this

@@ -934,17 +934,21 @@ private:
             const int minus = count_lines(h.old_text);
             const int plus  = count_lines(h.new_text);
 
-            // Per-hunk header — only when there's more than one hunk.
+            // Per-hunk header. For multi-hunk edits we tag with
+            // `edit i/N  ·  −2 / +3` so the user can locate which
+            // splice they're looking at. For single-hunk edits the
+            // `edit 1/1` tag would be pure noise, so we keep just the
+            // stat chip (`−2 / +3`) — still useful at a glance, gone
+            // are the days where you have to count rows to know the
+            // net edit size.
+            std::string header;
             if (total_hunks > 1) {
-                std::string tag  = "edit " + std::to_string(i + 1) + "/"
-                                 + std::to_string(total_hunks) + "  \xc2\xb7  ";
-                std::string stat = "\xe2\x88\x92" + std::to_string(minus)
-                                 + " / +" + std::to_string(plus);
-                rows.push_back(dsl::h(
-                    text(std::move(tag),  fg_dim_(muted())),
-                    text(std::move(stat), fg_dim_(muted()))
-                ).build());
+                header  = "edit " + std::to_string(i + 1) + "/"
+                       + std::to_string(total_hunks) + "  \xc2\xb7  ";
             }
+            header += "\xe2\x88\x92" + std::to_string(minus)
+                   + " / +" + std::to_string(plus);
+            rows.push_back(text(std::move(header), fg_dim_(muted())).build());
 
             push_diff_side(rows, h.old_text, '-', danger());
             push_diff_side(rows, h.new_text, '+', success());

@@ -331,23 +331,67 @@ Cell Canvas::get(int x, int y) const noexcept {
 void Canvas::write_text(int x, int y, std::string_view text, uint16_t style_id) {
     if (__builtin_expect(!in_bounds(x, y), 0)) return;
 
+    // Clipped row range. y is fixed for this call, so the y-bounds /
+    // y-clip checks are hoisted out of the per-character loop.
+    if (has_clip_ && (y < clip_y0_ || y >= clip_y1_)) return;
+
+    // Per-row clipped x range. Hoisted, so the per-character branch
+    // collapses to a single "are we past the right edge?" check.
+    const int x_min = has_clip_ ? std::max(0, clip_x0_) : 0;
+    const int x_max = has_clip_ ? std::min(width_, clip_x1_) : width_;
+
     int cx = x;
     std::size_t pos = 0;
     const std::size_t len = text.size();
     const char* data = text.data();
 
-    // ASCII fast path: most TUI text is ASCII. Batch-set without decode_utf8.
+    // Highest x written this call — used to update last_col_/max_y_
+    // once at the end instead of per-character. Starts at -1 so an
+    // entirely-clipped or control-only call leaves bookkeeping intact.
+    int highest_x = -1;
+    bool any_visible = false;
+
+    uint64_t* base = cells_.data();
+    const std::size_t row_off = static_cast<std::size_t>(y) * static_cast<std::size_t>(width_);
+
+    // ASCII fast path — batches the run of printable ASCII into a
+    // straight write loop. The inner body is bounds-free (we clipped
+    // x_max upfront) and goes straight to the cells_ buffer with a
+    // pre-packed cell template; we just OR in the codepoint per byte.
+    // For an 80-column ASCII run that's ~80 writes with no overhead
+    // per cell beyond the codepoint write itself.
     while (pos < len) {
         // Scan run of printable ASCII bytes.
         while (pos < len) {
             auto byte = static_cast<unsigned char>(data[pos]);
             if (byte >= 0x80 || byte < 0x20) break;
-            set(cx, y, static_cast<char32_t>(byte), style_id, 0);
+            if (cx >= x_max) {
+                // Past the right clip/canvas edge — walk the rest of
+                // the ASCII run as no-ops (we still need to advance
+                // pos so the outer loop sees the non-ASCII boundary).
+                // The decode_utf8 branch below will skip non-ASCII
+                // characters that fall past the edge for the same
+                // reason.
+                ++pos;
+                ++cx;
+                continue;
+            }
+            if (cx >= x_min) {
+                base[row_off + static_cast<std::size_t>(cx)] =
+                    Cell{static_cast<char32_t>(byte), style_id, 0, 0}.pack();
+                const bool visible = (byte != ' ' || style_id != 0);
+                if (visible) {
+                    if (cx > highest_x) highest_x = cx;
+                    any_visible = true;
+                }
+            }
             ++cx;
             ++pos;
         }
 
-        // Handle non-ASCII / control characters.
+        // Handle non-ASCII / control characters one at a time — the
+        // slow path falls back to set() so the wide-glyph paired-cell
+        // guard runs and updates last_col_/max_y_ for us.
         if (pos < len) {
             auto byte = static_cast<unsigned char>(data[pos]);
             if (byte < 0x20) { ++pos; continue; } // skip control
@@ -362,6 +406,13 @@ void Canvas::write_text(int x, int y, std::string_view text, uint16_t style_id) 
                 ++cx;
             }
         }
+    }
+
+    if (any_visible) {
+        if (y > max_y_) max_y_ = y;
+        if (highest_x > last_col_[static_cast<std::size_t>(y)])
+            last_col_[static_cast<std::size_t>(y)] = highest_x;
+        stage_ = CanvasStage::Painted;
     }
 }
 

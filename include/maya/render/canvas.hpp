@@ -11,6 +11,7 @@
 // area, and a clip stack supports overflow:hidden containers.
 
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <new>
@@ -445,6 +446,34 @@ public:
                                             const uint64_t* src,
                                             int n,
                                             bool row_has_content) {
+        // Sentinel value: caller has no precomputed last-col info, do
+        // the right-edge scan ourselves. -1 means "row is blank" only
+        // when row_has_content is also false.
+        blit_packed_row_impl(x, y, src, n, row_has_content,
+                             /*known_last_col=*/INT_MIN);
+    }
+
+    /// Blit overload with a precomputed last-content column hint. The
+    /// caller (typically the renderer's cells-cache fast path)
+    /// captured the rightmost non-blank column when populating its
+    /// cache, so we don't need to re-scan the row from the right on
+    /// every paint. Pass -1 for a known-blank row; pass the absolute
+    /// last-content column (in source-buffer coords, i.e. 0 ≤ c < n)
+    /// otherwise.
+    MAYA_ALWAYS_INLINE void blit_packed_row(int x, int y,
+                                            const uint64_t* src,
+                                            int n,
+                                            bool row_has_content,
+                                            int known_last_col) {
+        blit_packed_row_impl(x, y, src, n, row_has_content, known_last_col);
+    }
+
+private:
+    MAYA_ALWAYS_INLINE void blit_packed_row_impl(int x, int y,
+                                                 const uint64_t* src,
+                                                 int n,
+                                                 bool row_has_content,
+                                                 int known_last_col) {
         if (y < 0 || y >= height_) return;
         if (n <= 0) return;
         int x0 = std::max(0, x);
@@ -488,23 +517,65 @@ public:
         }
 
         if (row_has_content) {
-            // Per-row last-content column. The blit width is a poor
-            // proxy — cached cells captured from a sparsely-painted
-            // row will be mostly blank with a short content prefix,
-            // and over-reporting last_col_ forces serialize/diff to
-            // walk the trailing blanks every frame (still correct
-            // output, but emits redundant SGR resets + cursor-forward
-            // moves on every changed row of the inline frame, which
-            // shows up as visible flicker on slow ttys). Scan the
-            // written cells from the right edge to find the actual
-            // last non-blank column; bounded by `count` so it's cheap
-            // even on a wide cache strip. The blank sentinel matches
-            // `default_cell()` exactly — packed Cell{}.
             int actual_last = -1;
-            for (int i = count - 1; i >= 0; --i) {
-                if (cells_[dst_off + static_cast<std::size_t>(i)] != blank) {
-                    actual_last = x0 + i;
-                    break;
+            if (known_last_col != INT_MIN) {
+                // Caller-supplied hint. Map src-relative column to
+                // canvas-absolute column, then intersect with the
+                // clipped span [x0, x1). known_last_col == -1 means
+                // the row is genuinely blank in the source — nothing
+                // to update.
+                if (known_last_col >= 0) {
+                    const int abs_col = x + known_last_col;
+                    if (abs_col >= x0 && abs_col < x1) {
+                        // Hint is inside the clipped span. Check that
+                        // the wide-glyph repair above didn't blank it.
+                        const std::size_t hint_off =
+                            dst_off + static_cast<std::size_t>(abs_col - x0);
+                        if (cells_[hint_off] != blank) {
+                            actual_last = abs_col;
+                        } else {
+                            // Right-edge repair blanked the hint cell.
+                            // Fall back to a scan from where the
+                            // hint pointed — typically just one or
+                            // two cells back.
+                            for (int i = static_cast<int>(hint_off - dst_off) - 1;
+                                 i >= 0; --i) {
+                                if (cells_[dst_off +
+                                           static_cast<std::size_t>(i)]
+                                        != blank) {
+                                    actual_last = x0 + i;
+                                    break;
+                                }
+                            }
+                        }
+                    } else if (abs_col >= x1) {
+                        // Hint sits past the clip. The last visible
+                        // cell of our blit is at x1-1; scan back from
+                        // there. Most cells in that tail are likely
+                        // non-blank (we clipped off the right edge of
+                        // a content row), so this is typically a
+                        // single-iteration scan.
+                        for (int i = count - 1; i >= 0; --i) {
+                            if (cells_[dst_off +
+                                       static_cast<std::size_t>(i)]
+                                    != blank) {
+                                actual_last = x0 + i;
+                                break;
+                            }
+                        }
+                    }
+                    // abs_col < x0: hint sits before our clipped
+                    // region. The blitted slice is entirely past the
+                    // last content cell — row is blank in our view.
+                }
+            } else {
+                // No hint — scan from the right edge. Same code as
+                // before the overload was added.
+                for (int i = count - 1; i >= 0; --i) {
+                    if (cells_[dst_off + static_cast<std::size_t>(i)] != blank) {
+                        actual_last = x0 + i;
+                        break;
+                    }
                 }
             }
             // Only bump max_y_ if we actually have visible content in
@@ -523,6 +594,8 @@ public:
         }
         stage_ = CanvasStage::Painted;
     }
+
+public:
 
     // -- Text rendering -------------------------------------------------------
 

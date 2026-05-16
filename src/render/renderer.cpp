@@ -87,6 +87,15 @@ struct ComponentCacheEntry {
     std::vector<std::uint64_t> cells;
     int cells_rows  = 0;
     int cells_max_y = -1;
+    // Per-row rightmost non-blank column (length == cells_rows). Captured
+    // alongside the cells in the slow path, then handed to
+    // blit_packed_row on the fast path so the canvas can update its
+    // last_col_ tracker without re-scanning the row from the right.
+    // Saves O(content_w) per cached row per frame on long transcripts
+    // — the per-frame inline-mode paint walks every cached prefix block
+    // and previously paid that scan even though we knew the answer at
+    // capture time. Empty when cells is empty.
+    std::vector<int> cells_row_last_col;
 };
 
 struct ComponentCache {
@@ -145,15 +154,23 @@ inline ComponentCacheEntry* find_component_cache(ComponentCache& cache,
     return nullptr;
 }
 
-// Insert / overwrite a cache entry under the appropriate key.
-inline void store_component_cache(ComponentCache& cache,
-                                  const ComponentElement& comp,
-                                  ComponentCacheEntry entry) {
+// Insert / overwrite a cache entry under the appropriate key. Returns a
+// pointer to the stored entry so the caller can keep working without a
+// second lookup. Pointer is valid until the next mutation of the
+// matching map (insert/erase): the typical caller (paint slow path)
+// uses it for one read/write before paint_element runs, then
+// re-resolves after paint because the recursive walk may have inserted
+// other entries and rehashed the map.
+inline ComponentCacheEntry* store_component_cache(ComponentCache& cache,
+                                                  const ComponentElement& comp,
+                                                  ComponentCacheEntry entry) {
     if (!comp.cache_id.empty()) {
-        cache.entries_by_id[comp.cache_id] = std::move(entry);
-    } else {
-        cache.entries[&comp] = std::move(entry);
+        auto [it, _] = cache.entries_by_id.insert_or_assign(
+            comp.cache_id, std::move(entry));
+        return &it->second;
     }
+    auto [it, _] = cache.entries.insert_or_assign(&comp, std::move(entry));
+    return &it->second;
 }
 
 inline int& render_depth() {
@@ -991,12 +1008,19 @@ void paint_element(
                 });
                 const int rows = std::min(entry->cells_rows, content_h);
                 const int max_y = entry->cells_max_y;
+                const bool have_per_row =
+                    static_cast<int>(entry->cells_row_last_col.size()) == entry->cells_rows;
                 for (int y = 0; y < rows; ++y) {
+                    const bool row_has_content = (y <= max_y);
+                    const int hint = have_per_row
+                        ? entry->cells_row_last_col[static_cast<std::size_t>(y)]
+                        : INT_MIN;
                     canvas.blit_packed_row(
                         content_x, content_y + y,
                         entry->cells.data() + static_cast<std::size_t>(y) * entry->width,
                         entry->width,
-                        /*row_has_content=*/y <= max_y);
+                        row_has_content,
+                        hint);
                 }
                 return;
             }
@@ -1036,20 +1060,18 @@ void paint_element(
                 // Render fresh. For pointer-keyed entries we still
                 // store the result so this frame's measure-then-paint
                 // pair can share a single render() call — but we
-                // don't trust it across frames.
+                // don't trust it across frames. store_component_cache
+                // returns the inserted entry pointer so we don't pay
+                // a second hashmap probe to get back at it.
                 fresh_render = node.render(content_w, content_h);
-                store_component_cache(cache, node, {
+                auto* stored = store_component_cache(cache, node, {
                     content_w,
                     /*height=*/content_h,
                     fresh_render,
                     cache.current_frame,
                     node.generation
                 });
-                if (auto* entry = find_component_cache(cache, node, content_w)) {
-                    child_ptr = &entry->result;
-                } else {
-                    child_ptr = &fresh_render;
-                }
+                child_ptr = stored ? &stored->result : &fresh_render;
             }
             const Element& child = *child_ptr;
 
@@ -1137,63 +1159,52 @@ void paint_element(
                         entry->cells.clear();
                         entry->cells_rows = 0;
                         entry->cells_max_y = -1;
+                        entry->cells_row_last_col.clear();
                     } else if (captured_rows > 0) {
+                        // Fast capture: per-row memcpy direct from
+                        // canvas backing store. Replaces the prior
+                        // double-loop (`get_packed` per cell, plus an
+                        // initial `assign(N, blank)` to allocate). One
+                        // pass over the data, no redundant zero-init.
                         entry->cells_rows = captured_rows;
-                        entry->cells.assign(
+                        const std::size_t row_bytes =
+                            static_cast<std::size_t>(content_w) * sizeof(uint64_t);
+                        const int canvas_w_eff = canvas.width();
+                        const uint64_t* cbase = canvas.cells();
+                        entry->cells.resize(
                             static_cast<std::size_t>(captured_rows)
-                                * static_cast<std::size_t>(content_w),
-                            uint64_t{U' '});
-                        for (int y = 0; y < captured_rows; ++y) {
-                            for (int x = 0; x < content_w; ++x) {
-                                entry->cells[
-                                    static_cast<std::size_t>(y) * content_w + x] =
-                                    canvas.get_packed(content_x + x,
-                                                      content_y + y);
-                            }
-                        }
-                        // Compute cells_max_y by scanning the CAPTURED
-                        // cells, not by differencing canvas.max_y_
-                        // before/after. The canvas-delta heuristic
-                        // assumed paint always bumped max_y_ when it
-                        // wrote non-blank cells — but if a prior paint
-                        // in this same frame already pushed max_y_
-                        // above content_y + captured_rows, this
-                        // component's writes (which sit BELOW that
-                        // existing max_y_) don't move it, and the
-                        // heuristic concluded "nothing painted" even
-                        // though the cells carry real content. That
-                        // mismatch then poisons the fast path: the
-                        // blit calls row_has_content=false on rows
-                        // whose cells are actually non-blank, the
-                        // canvas's max_y_ stays underreported, and
-                        // Canvas::clear()'s "rows above max_y_ are
-                        // blank" invariant is violated — old painted
-                        // cells survive into next frame's diff and
-                        // get emitted (visible as the rendering
-                        // randomly breaking into stale row strips).
-                        //
-                        // Scanning the captured cells is O(captured_rows
-                        // * content_w) but only runs on cache miss
-                        // (slow path), so it's amortized across every
-                        // subsequent fast-path blit at this cache_id.
-                        int last_nonblank = -1;
+                                * static_cast<std::size_t>(content_w));
+                        entry->cells_row_last_col.assign(
+                            static_cast<std::size_t>(captured_rows), -1);
                         constexpr uint64_t kBlank = uint64_t{U' '};
-                        for (int y = captured_rows - 1; y >= 0; --y) {
-                            bool row_blank = true;
-                            const std::size_t row_off =
-                                static_cast<std::size_t>(y) * content_w;
-                            for (int x = 0; x < content_w; ++x) {
-                                if (entry->cells[row_off + x] != kBlank) {
-                                    row_blank = false;
+                        int last_nonblank = -1;
+                        for (int y = 0; y < captured_rows; ++y) {
+                            uint64_t* dst =
+                                entry->cells.data()
+                                + static_cast<std::size_t>(y)
+                                  * static_cast<std::size_t>(content_w);
+                            const uint64_t* src =
+                                cbase
+                                + static_cast<std::size_t>(content_y + y)
+                                  * static_cast<std::size_t>(canvas_w_eff)
+                                + static_cast<std::size_t>(content_x);
+                            std::memcpy(dst, src, row_bytes);
+                            // Find this row's rightmost non-blank in
+                            // the same pass. Bounded by content_w; on
+                            // a typical content row the very first
+                            // step succeeds.
+                            int row_last = -1;
+                            for (int x = content_w - 1; x >= 0; --x) {
+                                if (dst[static_cast<std::size_t>(x)] != kBlank) {
+                                    row_last = x;
                                     break;
                                 }
                             }
-                            if (!row_blank) { last_nonblank = y; break; }
+                            entry->cells_row_last_col[
+                                static_cast<std::size_t>(y)] = row_last;
+                            if (row_last >= 0) last_nonblank = y;
                         }
                         entry->cells_max_y = last_nonblank;
-                        // Suppress unused-warning when the heuristic
-                        // is gone — keep the captures around in case
-                        // a future debug build wants them.
                         (void)max_y_before;
                         (void)max_y_after;
                     }

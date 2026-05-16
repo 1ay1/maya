@@ -338,16 +338,28 @@ class StreamingMarkdown {
     // Whether cached_build_ currently holds a prefix child slot. Same
     // reason — flipping this requires a structural rebuild.
     mutable bool          cached_has_prefix_ = false;
-    // The body bytes that produced cached_build_'s tail child, plus
-    // the committed-side fence parity at that time. Together they
-    // uniquely determine render_tail's output. When the next build
-    // finds them both unchanged, the tail Element is byte-identical
-    // to last frame's — we can skip render_tail AND the
-    // children.back() assignment entirely, leaving cached_build_
-    // wholly untouched. Makes the "nothing changed semantically →
-    // nothing is rebuilt" property explicit.
-    mutable std::string cached_tail_bytes_;
-    mutable bool        cached_tail_in_fence_ = false;
+    // 64-bit FNV-1a hash of the tail bytes that produced cached_build_'s
+    // tail child, plus the tail length (so two different-length tails
+    // can't alias) plus the committed-side fence parity at that time.
+    // Together they uniquely determine render_tail's output. When the
+    // next build finds them all unchanged, the tail Element is
+    // byte-identical to last frame's — we can skip render_tail AND
+    // the children.back() assignment entirely, leaving cached_build_
+    // wholly untouched.
+    //
+    // Why a hash instead of holding the bytes: the prior
+    // std::string-of-bytes form copied the whole tail on every change
+    // (`cached_tail_bytes_.assign(tail)`), which on a multi-KB live
+    // paragraph dominated the per-frame cost — heap traffic
+    // proportional to the unchanged-prefix size, paid every frame the
+    // live line grew by one byte. Hash compare is O(tail) on the
+    // refresh, but ZERO heap allocations and no copy; the recompute
+    // overlaps the inline-flatten work that would have happened
+    // anyway, and the steady state (tail unchanged) is a single
+    // 64-bit compare with no allocation at all.
+    mutable std::uint64_t cached_tail_hash_     = 0;
+    mutable std::size_t   cached_tail_len_      = 0;
+    mutable bool          cached_tail_in_fence_ = false;
 
     // ── render_tail inline-parse cache ─────────────────────────────────
     // The plain-inline path of render_tail (the bottom branch — no open
@@ -374,7 +386,15 @@ class StreamingMarkdown {
     // common case; on a 2 KB tail with a few KB of in-progress text,
     // that's the difference between ~2 KB of inline-parser work and
     // the ~80 B of work for the trailing partial line.
-    mutable std::string             tail_inline_cache_prefix_;
+    //
+    // The stable-prefix identity is now a (hash, length) pair instead
+    // of a copy of the bytes — same cost-saving rationale as the tail
+    // hash above (no heap copy of the prefix every time it grows by a
+    // line). Collisions are vanishingly unlikely with FNV-1a 64 + a
+    // length tiebreak; on miss we re-flatten, so worst-case is one
+    // unnecessary refresh — never wrong output.
+    mutable std::uint64_t           tail_inline_cache_prefix_hash_ = 0;
+    mutable std::size_t             tail_inline_cache_prefix_len_  = 0;
     mutable std::string             tail_inline_cache_content_;
     mutable std::vector<StyledRun>  tail_inline_cache_runs_;
 

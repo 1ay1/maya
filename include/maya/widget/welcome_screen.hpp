@@ -147,18 +147,21 @@ public:
 
         const bool show_starters = !cfg_.starters.empty();
 
-        // Bottom hint row
-        std::vector<Element> hint_parts;
-        hint_parts.push_back(spacer());
-        hint_parts.push_back(text(cfg_.hint_intro, fg_dim_(muted)));
-        for (const auto& hint : cfg_.hints) {
-            hint_parts.push_back(text("  \xc2\xb7  ", fg_dim_(muted)));
-            hint_parts.push_back(text(hint.key,
-                                      Style{}.with_fg(hint.key_color).with_bold()));
-            hint_parts.push_back(text(hint.label, fg_dim_(muted)));
-        }
-        hint_parts.push_back(spacer());
-        auto hint = h(hint_parts);
+        // Bottom hint row — responsive. At wide widths the chips lay
+        // out on a single centered line with `intro · key label · key
+        // label · …`; as the terminal narrows the row wraps into
+        // additional centered lines (greedy fit), and below a hard
+        // floor the labels collapse to keys-only. The whole thing is
+        // a ComponentElement because we need the allocated width to
+        // pick the layout — a static h(...) of all parts would let
+        // maya's per-cell wrap shred the chips into a column (the
+        // `·` separator becoming its own dangling row), which is the
+        // failure mode this branch fixes.
+        auto hint = Element{ComponentElement{
+            .render = [cfg = cfg_, muted](int w, int /*h*/) -> Element {
+                return render_hints_(cfg, muted, w);
+            },
+        }};
 
         std::vector<Element> rows;
         rows.push_back(blank());
@@ -219,6 +222,97 @@ private:
         return static_cast<int>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 now - first_build_at).count());
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Responsive hint-row layout.
+    // ──────────────────────────────────────────────────────────────────
+    // Greedy line-fill: place the `intro · key label · key label …`
+    // sequence one chip at a time, opening a new centered row whenever
+    // the next chip would overflow the allocated `avail` width. Below
+    // a hard floor (kKeysOnlyFloor cols) labels are dropped so the
+    // chips degrade to `^K · ^J · ^T …`; if even that doesn't fit,
+    // the keys themselves greedily wrap. Width 0 means "layout has
+    // not allocated yet" — we fall back to the single-line form so
+    // the first frame's render is sensible.
+    [[nodiscard]] static Element render_hints_(
+        const Config& cfg, Color muted, int avail)
+    {
+        using namespace dsl;
+        constexpr int kKeysOnlyFloor = 40;
+        constexpr const char* kSep = "  \xc2\xb7  ";   // "  ·  "
+        const int sep_w = string_width(kSep);
+        const bool drop_labels = avail > 0 && avail < kKeysOnlyFloor;
+
+        struct Chip { Element key; Element label; int width; bool has_label; };
+        std::vector<Chip> chips;
+        chips.reserve(cfg.hints.size() + 1);
+
+        // Treat the intro ("type to begin") as a labelless chip so it
+        // participates in the same wrap logic — at very narrow widths
+        // it'd otherwise force the first row to be wider than the rest.
+        if (!cfg.hint_intro.empty()) {
+            chips.push_back(Chip{
+                .key       = text(cfg.hint_intro, fg_dim_(muted)),
+                .label     = text(""),
+                .width     = string_width(cfg.hint_intro),
+                .has_label = false,
+            });
+        }
+        for (const auto& h_ : cfg.hints) {
+            Element key = text(h_.key,
+                               Style{}.with_fg(h_.key_color).with_bold());
+            if (drop_labels) {
+                chips.push_back(Chip{
+                    .key       = std::move(key),
+                    .label     = text(""),
+                    .width     = string_width(h_.key),
+                    .has_label = false,
+                });
+            } else {
+                chips.push_back(Chip{
+                    .key       = std::move(key),
+                    .label     = text(h_.label, fg_dim_(muted)),
+                    .width     = string_width(h_.key) + string_width(h_.label),
+                    .has_label = true,
+                });
+            }
+        }
+
+        // Single-line fallback when width is unknown (first frame) or
+        // generously wide — also the happy path most users see.
+        const int max_line = (avail > 0) ? avail : (1 << 30);
+
+        std::vector<std::vector<int>> lines;   // chip indices per line
+        lines.emplace_back();
+        int line_w = 0;
+        for (int i = 0; i < static_cast<int>(chips.size()); ++i) {
+            const int add = chips[static_cast<std::size_t>(i)].width
+                          + (lines.back().empty() ? 0 : sep_w);
+            if (!lines.back().empty() && line_w + add > max_line) {
+                lines.emplace_back();
+                line_w = 0;
+            }
+            lines.back().push_back(i);
+            line_w += add;
+        }
+
+        std::vector<Element> rendered_lines;
+        rendered_lines.reserve(lines.size());
+        for (const auto& line : lines) {
+            std::vector<Element> parts;
+            parts.reserve(line.size() * 4 + 2);
+            parts.push_back(spacer());
+            for (std::size_t k = 0; k < line.size(); ++k) {
+                if (k != 0) parts.push_back(text(kSep, fg_dim_(muted)));
+                const auto& c = chips[static_cast<std::size_t>(line[k])];
+                parts.push_back(c.key);
+                if (c.has_label) parts.push_back(c.label);
+            }
+            parts.push_back(spacer());
+            rendered_lines.push_back(h(std::move(parts)).build());
+        }
+        return v(std::move(rendered_lines)).build();
     }
 
     // ─────────────────────────────────────────────────────────────────────

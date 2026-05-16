@@ -138,6 +138,14 @@ public:
         // file_write, edit_diff, git_diff, todo_list.
         bool show_all = false;
 
+        // When true (default), every line-oriented body renders ONLY the
+        // last N lines (live tail) — no head section, no "⋯ N more"
+        // elision marker in the middle. The user wants a single
+        // continuous tail of fresh output, not a head+tail split. Affects
+        // CodeBlock, FileRead, GitDiff, EditDiff per-side, BashOutput,
+        // Json. `show_all` overrides this (renders everything).
+        bool tail_only = true;
+
         // Tunables. Defaults are tuned for the timeline body slot, not a
         // standalone preview pane:
         //  - code_head/tail: a head+tail elision profile for free text
@@ -248,6 +256,28 @@ private:
         return out;
     }
 
+    // Top-level elision dispatcher. Honors cfg_.show_all (render every
+    // line) and cfg_.tail_only (render only the last `tail` lines, no
+    // head, no "⋯ N more" marker). This is the single funnel every
+    // body renderer should call instead of head_tail() directly so the
+    // user-facing knobs stay in one place.
+    [[nodiscard]] ElidedPreview
+    elide(std::string_view s, int head, int tail) const {
+        if (cfg_.show_all) return all_lines(s);
+        if (cfg_.tail_only) {
+            // Pick the larger of head/tail as the tail budget so we
+            // honor whatever the caller meant by "how much body to
+            // show" — head-heavy tools (FileRead, GitDiff with head>tail)
+            // still get a meaningfully sized tail.
+            const int t = (head > tail) ? head : tail;
+            auto p = head_tail(s, 0, t);
+            p.elision_at = -1;     // suppress marker emit at boundary
+            p.elided     = 0;       // suppress "⋯ N more" row
+            return p;
+        }
+        return head_tail(s, head, tail);
+    }
+
     static int count_lines(std::string_view s) noexcept {
         if (s.empty()) return 0;
         int n = 0;
@@ -290,9 +320,7 @@ private:
             return cfg_.is_streaming ? placeholder_or_blank("awaiting output")
                                      : blank();
         }
-        const auto p = cfg_.show_all
-            ? all_lines(body)
-            : head_tail(body, cfg_.code_head, cfg_.code_tail);
+        const auto p = elide(body, cfg_.code_head, cfg_.code_tail);
         // Gutter (row numbers) renders in dim mid-gray so it recedes
         // behind the content's category-colored chrome (pipe). Numbers
         // are reference; the pipe carries the category band.
@@ -351,7 +379,7 @@ private:
     // the command failed (preserves the post-content failure cue).
     [[nodiscard]] Element bash_output_tail() const {
         using namespace dsl;
-        const auto p = head_tail(cfg_.text, /*head=*/0, cfg_.bash_tail);
+        const auto p = elide(cfg_.text, /*head=*/0, cfg_.bash_tail);
 
         const Style marker_st = Style{}.with_fg(cfg_.chrome_color);
         const Style line_st   = Style{}.with_fg(cfg_.text_color);
@@ -740,9 +768,7 @@ private:
             return cfg_.is_streaming ? placeholder_or_blank("reading file")
                                      : blank();
         }
-        const auto p = cfg_.show_all
-            ? all_lines(cfg_.text)
-            : head_tail(cfg_.text, cfg_.read_head, /*tail=*/0);
+        const auto p = elide(cfg_.text, cfg_.read_head, /*tail=*/0);
 
         // Gutter (line numbers) dim; pipe carries the category band.
         const Style gutter_st = Style{}.with_fg(muted());
@@ -866,14 +892,21 @@ private:
         //
         // show_all=true keeps the full numbered render for callers
         // that want it (no elision, line numbers from 1).
-        const auto p = cfg_.show_all
-            ? all_lines(cfg_.text)
-            : head_tail(cfg_.text, /*head=*/0, cfg_.code_tail);
+        const auto p = elide(cfg_.text, /*head=*/0, cfg_.code_tail);
 
-        // Gutter (line numbers) dim; pipe (inside make_row) carries the
-        // category band via cfg_.chrome_color.
-        const Style marker_st = Style{}.with_fg(muted());
-        const Style code_st   = Style{}.with_fg(cfg_.text_color);
+        // Render the body as a green-tinted "add" diff band so a Write
+        // event reads in the same visual language as a +-side hunk in
+        // git_diff / edit_diff. The whole-file write is conceptually
+        // a single large addition; matching palette keeps the timeline
+        // coherent when a Write sits next to an Edit or a git_diff.
+        const Color add_bg    = Color::rgb(20, 50, 28);
+        const Color add_fg_br = Color::rgb(150, 230, 160);
+
+        // Line-number gutter rides the same bg so the gutter doesn't
+        // cut a dim stripe through the green band; pipe inside make_row
+        // still uses cfg_.chrome_color.
+        const Style marker_st = Style{}.with_fg(add_fg_br).with_bg(add_bg);
+        const Style code_st   = Style{}.with_fg(add_fg_br).with_bg(add_bg);
 
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 2);
@@ -948,7 +981,14 @@ private:
             }
             header += "\xe2\x88\x92" + std::to_string(minus)
                    + " / +" + std::to_string(plus);
-            rows.push_back(text(std::move(header), fg_dim_(muted())).build());
+            // Hunk header sits between the bg-tinted - and + sides; give
+            // it its own subtle slate band so the diff region reads as a
+            // continuous tri-color stack (slate header → red removes →
+            // green adds) instead of a jagged "tint, blank, tint" strip.
+            const Color hdr_bg = Color::rgb(28, 34, 50);
+            const Color hdr_fg = Color::rgb(170, 180, 210);
+            rows.push_back(text(std::move(header),
+                Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold()).build());
 
             push_diff_side(rows, h.old_text, '-', danger());
             push_diff_side(rows, h.new_text, '+', success());
@@ -966,20 +1006,29 @@ private:
     }
 
     // Emit a diff-side (removed or added) through the uniform row
-    // contract: marker is " - " / " + " (right-aligned 3-col) in the
-    // diff hue (red/green); content reads in text_tertiary (dim body
-    // baseline) so the marker carries the diff signal without coloring
-    // every line of code.
+    // contract: marker is " - " / " + " (right-aligned 3-col) bold in
+    // the diff hue; content reads in the matching bright fg with a
+    // subtle whole-line bg tint so the side reads as a colored band
+    // (matching git_diff's coloring discipline). The bg is intentionally
+    // low-saturation so the card chrome stays legible.
     void push_diff_side(std::vector<Element>& rows, std::string_view body,
                         char marker, Color c) const {
         using namespace dsl;
         if (body.empty()) return;
-        const auto p = cfg_.show_all
-            ? all_lines(body)
-            : head_tail(body, cfg_.edit_head_per_side,
-                              cfg_.edit_tail_per_side);
-        const Style marker_st  = Style{}.with_fg(c).with_bold();
-        const Style content_st = Style{}.with_fg(cfg_.text_color);
+        const auto p = elide(body, cfg_.edit_head_per_side,
+                                   cfg_.edit_tail_per_side);
+
+        // Match git_diff's palette so a multi-hunk Edit and a unified
+        // git_diff render side-by-side without color drift.
+        const bool is_add = (marker == '+');
+        const Color bg     = is_add ? Color::rgb(20, 50, 28)
+                                    : Color::rgb(60, 22, 26);
+        const Color fg_br  = is_add ? Color::rgb(150, 230, 160)
+                                    : Color::rgb(240, 150, 155);
+        (void)c;   // c was the legacy fg; kept in signature for callers
+
+        const Style marker_st  = Style{}.with_fg(fg_br).with_bg(bg).with_bold();
+        const Style content_st = Style{}.with_fg(fg_br).with_bg(bg);
 
         std::string mk = "  ";
         mk += marker;   // 3-col right-aligned: "  -" / "  +"
@@ -997,6 +1046,13 @@ private:
     //    content stays in the dim body tier. `+++`/`---`/`diff` header
     //    lines + `@@` hunk separators render through make_row with a `~`
     //    marker in muted so they read as section breaks.
+    //
+    //    Diff coloring: bright fg (green/red) for the +/- glyph AND the
+    //    line body, plus a subtle whole-line background tint so the
+    //    diff regions read as colored bands instead of just-tinted
+    //    glyphs. RGB values are deliberately low-saturation (≈8% tint
+    //    on a black terminal) so the body chrome and the surrounding
+    //    card don't fight — the bg is a hint, the fg carries the signal.
     [[nodiscard]] Element git_diff() const {
         using namespace dsl;
         if (cfg_.text.empty()) {
@@ -1005,14 +1061,26 @@ private:
         }
         if (cfg_.text == "no changes") return blank();
 
-        const auto p = cfg_.show_all
-            ? all_lines(cfg_.text)
-            : head_tail(cfg_.text, cfg_.code_head, cfg_.code_tail);
+        const auto p = elide(cfg_.text, cfg_.code_head, cfg_.code_tail);
+
+        // Subtle whole-line tints. Low-saturation so the gutter pipe +
+        // muted prose around the card stay legible; the fg carries the
+        // diff signal, the bg just creates a band the eye can follow.
+        const Color add_bg     = Color::rgb(20, 50, 28);   // ≈ #14321c — green tint
+        const Color rem_bg     = Color::rgb(60, 22, 26);   // ≈ #3c161a — red tint
+        const Color hunk_bg    = Color::rgb(28, 34, 50);   // ≈ #1c2232 — blue-grey for @@
+        const Color add_fg_br  = Color::rgb(150, 230, 160);
+        const Color rem_fg_br  = Color::rgb(240, 150, 155);
+        const Color hunk_fg    = Color::rgb(140, 170, 220);
 
         const Style chrome_st  = Style{}.with_fg(cfg_.chrome_color);
         const Style content_st = Style{}.with_fg(cfg_.text_color);
-        const Style add_st     = Style{}.with_fg(success()).with_bold();
-        const Style rem_st     = Style{}.with_fg(danger()).with_bold();
+        const Style add_marker_st  = Style{}.with_fg(add_fg_br).with_bg(add_bg).with_bold();
+        const Style add_body_st    = Style{}.with_fg(add_fg_br).with_bg(add_bg);
+        const Style rem_marker_st  = Style{}.with_fg(rem_fg_br).with_bg(rem_bg).with_bold();
+        const Style rem_body_st    = Style{}.with_fg(rem_fg_br).with_bg(rem_bg);
+        const Style hunk_marker_st = Style{}.with_fg(hunk_fg).with_bg(hunk_bg).with_bold();
+        const Style hunk_body_st   = Style{}.with_fg(hunk_fg).with_bg(hunk_bg);
 
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 1);
@@ -1023,25 +1091,31 @@ private:
             std::string_view body = ln;
             std::string_view marker;
             Style marker_st;
+            Style row_body_st = content_st;
             if (ln.starts_with("+++") || ln.starts_with("---")
-             || ln.starts_with("diff ")
-             || ln.starts_with("@@")) {
-                marker     = "  ~";
-                marker_st  = chrome_st;
+             || ln.starts_with("diff ")) {
+                marker      = "  ~";
+                marker_st   = chrome_st;
+            } else if (ln.starts_with("@@")) {
+                marker      = "  ~";
+                marker_st   = hunk_marker_st;
+                row_body_st = hunk_body_st;
             } else if (!ln.empty() && ln[0] == '+') {
-                marker     = "  +";
-                marker_st  = add_st;
-                body       = ln.substr(1);
+                marker      = "  +";
+                marker_st   = add_marker_st;
+                row_body_st = add_body_st;
+                body        = ln.substr(1);
             } else if (!ln.empty() && ln[0] == '-') {
-                marker     = "  -";
-                marker_st  = rem_st;
-                body       = ln.substr(1);
+                marker      = "  -";
+                marker_st   = rem_marker_st;
+                row_body_st = rem_body_st;
+                body        = ln.substr(1);
             } else {
-                marker     = "   ";
-                marker_st  = chrome_st;
+                marker      = "   ";
+                marker_st   = chrome_st;
                 if (!ln.empty() && ln[0] == ' ') body = ln.substr(1);
             }
-            rows.push_back(make_row(marker, marker_st, body, content_st));
+            rows.push_back(make_row(marker, marker_st, body, row_body_st));
         }
         return v(rows).build();
     }
@@ -1377,7 +1451,9 @@ private:
         // empty last line (artifact of newline-after-close).
         while (!lines.empty() && lines.back().content.empty()) lines.pop_back();
 
-        // Apply head/tail elision at the line level.
+        // Apply head/tail elision at the line level — honoring
+        // cfg_.show_all (render every line) and cfg_.tail_only (render
+        // only the last N lines, no head, no "⋯ N more" marker).
         const int total = static_cast<int>(lines.size());
         const int head  = cfg_.code_head;
         const int tail  = cfg_.code_tail;
@@ -1392,8 +1468,15 @@ private:
                 .runs    = std::move(ln.runs),
             }});
         };
-        if (total <= head + tail) {
+        if (cfg_.show_all || total <= head + tail) {
             for (auto& ln : lines) push_line(ln);
+        } else if (cfg_.tail_only) {
+            // Tail-only: render only the last max(head, tail) lines,
+            // no head section, no elision marker.
+            const int t = (head > tail) ? head : tail;
+            const int start = (total > t) ? (total - t) : 0;
+            for (int k = start; k < total; ++k)
+                push_line(lines[std::size_t(k)]);
         } else {
             for (int k = 0; k < head; ++k)
                 push_line(lines[std::size_t(k)]);

@@ -5,8 +5,8 @@
 <h1 align="center">maya</h1>
 
 <p align="center">
-  Terminal UI for C++26.<br>
-  Compile-time DSL · flexbox layout · SIMD-diffed frames · 69 widgets · cross-platform.
+  C++26 TUI framework with type-state compile-time DSL, Yoga flexbox,<br>
+  SIMD cell-diff renderer, and Elm-style runtime.
 </p>
 
 <p align="center">

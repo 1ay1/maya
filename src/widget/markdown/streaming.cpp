@@ -403,16 +403,24 @@ TableScanResult find_table_end(std::string_view src,
         }
         auto line = src.substr(pos, eol - pos);
         std::size_t off = first_non_space(line);
-        if (off >= line.size()) {
-            // Blank line. The default blank-line rule will commit
-            // here — hand off cleanly. Tell the caller to STOP the
-            // scan at this line start (we don't want to advance past
-            // the table-header line before the blank-line rule has
-            // had a chance to fire normally).
-            return {TableScan::Incomplete, 0};
-        }
-        if (line[off] != '|') {
-            // Found the finality boundary.
+        if (off >= line.size() || line[off] != '|') {
+            // Finality boundary. Either a blank line (off >= size) or
+            // a non-pipe line: both end the table. The table's header
+            // + delimiter row are already verified above, so the
+            // bytes [line_start, pos) are PROVABLY a complete table
+            // and can commit now — even if N more tables (each with
+            // their own trailing blanks) follow, they will each
+            // commit at their own blank-line boundary instead of
+            // queueing behind the first non-pipe line in the buffer.
+            //
+            // Previously the blank-line branch returned Incomplete
+            // "so the default blank-line rule fires" — but the outer
+            // scanner sees Incomplete and breaks BEFORE reaching its
+            // own blank-line check, so the table (and every
+            // subsequent block separated only by blank lines) sat
+            // uncommitted until a non-pipe line finally landed.
+            // Symptom: multiple tables stream in invisibly, then
+            // burst-render together when the next paragraph arrives.
             return {TableScan::EndsAt, pos};
         }
         pos = eol + 1;
@@ -573,6 +581,106 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                     // TableScan::NotATable — fall through to the
                     // normal line-step loop. The `|` is just a
                     // literal pipe in prose.
+                }
+
+                // Horizontal rule at line start. CommonMark HR: a
+                // line containing ONLY repeated `*`, `_`, or `-`
+                // (≥3 of the same char), with optional interior
+                // spaces, optionally indented ≤3 spaces. Like ATX
+                // headings, an HR is a single fully-proven block as
+                // soon as the line terminates by '\n' — we can
+                // commit the prose before it AND the HR itself in
+                // one transition.
+                //
+                // Setext ambiguity: `---` (and `===`, which we never
+                // treat as HR) on a line directly under a non-blank
+                // text line is a setext h2 underline, not an HR.
+                // The blank-line rule above commits prose at every
+                // `\n\n`, so by the time we get HERE inspecting a
+                // line at `i`, the previous line is EITHER part of
+                // an uncommitted run (could be a setext target) OR
+                // already committed (separated by `\n\n`). Only the
+                // FORMER case poses setext risk.
+                //
+                // Conservative gate: only eager-commit `*`/`_` HRs
+                // unconditionally (setext doesn't apply — it only
+                // uses `=` and `-`). For `-`-style HRs, require the
+                // PREVIOUS line to be empty (blank-line separator
+                // already in place, so no setext attachment is
+                // possible). The fall-through for `-` after text
+                // preserves the existing commit-on-blank-line
+                // behaviour, which correctly resolves to either HR
+                // or setext at commit time via parse_markdown_impl.
+                {
+                    char c0 = source_[i];
+                    if (c0 == '*' || c0 == '_' || c0 == '-') {
+                        std::size_t hr_eol = source_.find('\n', i);
+                        if (hr_eol != std::string::npos) {
+                            // Inspect the line bytes (excluding the
+                            // trailing '\n').
+                            std::string_view ln{source_.data() + i,
+                                                hr_eol - i};
+                            // Allow ≤3 leading spaces (GFM).
+                            std::size_t k = 0;
+                            while (k < 4 && k < ln.size() && ln[k] == ' ') ++k;
+                            // Must be the same marker char throughout
+                            // the line, with only spaces / '\r'
+                            // allowed between markers, and ≥3 marker
+                            // chars total.
+                            char marker = (k < ln.size()) ? ln[k] : '\0';
+                            bool is_hr_shape = (marker == '*'
+                                             || marker == '_'
+                                             || marker == '-');
+                            std::size_t markers = 0;
+                            if (is_hr_shape) {
+                                for (std::size_t q = k; q < ln.size(); ++q) {
+                                    char cc = ln[q];
+                                    if (cc == marker) { ++markers; continue; }
+                                    if (cc == ' ' || cc == '\t' || cc == '\r')
+                                        continue;
+                                    is_hr_shape = false;
+                                    break;
+                                }
+                            }
+                            if (is_hr_shape && markers >= 3) {
+                                // Setext-safety gate for `-`: only
+                                // eager-commit when the previous
+                                // line is blank (so this can't be
+                                // an h2 underline of the line
+                                // above). `*` and `_` are always
+                                // safe.
+                                bool safe = (marker != '-');
+                                if (!safe) {
+                                    // i is at a line start; previous
+                                    // byte is the '\n' that ended
+                                    // the prior line. Walk back one
+                                    // more byte: if it's also '\n'
+                                    // (or i == 1, i.e. the prior
+                                    // line was the empty line at
+                                    // source start), the prior line
+                                    // is blank.
+                                    if (i == 0) {
+                                        safe = true;
+                                    } else if (i >= 2 && source_[i - 2] == '\n') {
+                                        safe = true;
+                                    } else if (i == 1) {
+                                        // source_ == "\n---\n": the
+                                        // line above is empty.
+                                        safe = true;
+                                    }
+                                }
+                                if (safe) {
+                                    last_boundary = i;
+                                    i = hr_eol + 1;
+                                    last_boundary = i;
+                                    continue;
+                                }
+                            }
+                        }
+                        // No '\n' yet — the line is still arriving,
+                        // fall through to the normal line-step.
+                        // Next call resumes here.
+                    }
                 }
             }
         }
@@ -923,6 +1031,309 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
     // blockquotes pay a one-frame "snap" when the trailing blank line
     // commits the whole thing as one cohesive block.
     //
+    // ── Eager list / blockquote rendering for completed rows ──
+    //
+    // Exception to the rule above: when the tail STARTS with a list
+    // marker (`- `, `* `, `+ `, `\d+. `, `\d+) `) or a blockquote
+    // marker (`> `), we can render each FULLY-TERMINATED row in its
+    // committed shape immediately. Long lists are the worst offender
+    // for the perceived "wait for the page" lag: a 12-item bullet list
+    // stays in classify_blank_line's intra-blank limbo for the entire
+    // duration of the stream, rendered as raw `* item` text in body
+    // colour, and snaps to a styled list only when the model emits
+    // its first non-list line. Same for blockquotes — `> ` markers
+    // sit literal until end-of-quote.
+    //
+    // Monotonicity argument: each fully-terminated row has a height
+    // determined by its bytes alone (text wrap inside its column).
+    // The LIVE row (last line, no trailing `\n`) stays literal so
+    // further bytes can extend it without snapping shape. Once a `\n`
+    // lands on the live row, it joins the rendered rows above on the
+    // next frame — a one-row monotonic add, identical in cost to
+    // committing one extra line of an inline paragraph.
+    //
+    // We feed the rows through parse_markdown_impl so the rendered
+    // Element is byte-identical to what commit_range would eventually
+    // produce — no snap when commit finally fires. The live row falls
+    // through to the inline-only path below as a separate Element
+    // sitting under the rendered list.
+    auto is_list_row_start = [](std::string_view line) noexcept -> bool {
+        return ul_marker_len(line) > 0 || ol_marker_len(line) > 0;
+    };
+    auto is_quote_row_start = [](std::string_view line) noexcept -> bool {
+        // Skip up to 3 leading spaces (GFM tolerance), then `> ` or `>`
+        // at end-of-line.
+        std::size_t k = 0;
+        while (k < 4 && k < line.size() && line[k] == ' ') ++k;
+        if (k >= line.size() || line[k] != '>') return false;
+        // Bare `>` or `> ...` both qualify.
+        return k + 1 == line.size() || line[k + 1] == ' ' || line[k + 1] == '\t';
+    };
+
+    // Probe the first line of the tail to decide whether to engage the
+    // eager renderer. We deliberately don't engage on a tail whose
+    // first line is plain prose followed by list rows — the prose
+    // already prints inline and treating mid-buffer list rows as a
+    // separate list would split the tail into two visually distinct
+    // sections that the eventual commit would re-merge differently.
+    auto first_line_end = body.find('\n');
+    std::string_view first_line = (first_line_end == std::string_view::npos)
+        ? body
+        : body.substr(0, first_line_end);
+    const bool tail_is_list  = is_list_row_start(first_line);
+    const bool tail_is_quote = !tail_is_list && is_quote_row_start(first_line);
+
+    if ((tail_is_list || tail_is_quote) && first_line_end != std::string_view::npos) {
+        // Walk lines forward, greedily consuming everything that still
+        // belongs to the same block (list rows + their continuations,
+        // or `> `-prefixed rows). Stop at the first line that breaks
+        // the pattern OR at the live row (the trailing partial line
+        // with no `\n`).
+        std::size_t cursor = 0;
+        std::size_t last_committed_end = 0;   // end of last fully-terminated in-block row
+        while (cursor < body.size()) {
+            auto eol = body.find('\n', cursor);
+            if (eol == std::string_view::npos) {
+                // Live row — leave for the inline fallback.
+                break;
+            }
+            std::string_view line = body.substr(cursor, eol - cursor);
+            bool in_block;
+            if (tail_is_list) {
+                // A list "row" is either a new item marker OR a
+                // continuation (indented or blank, where the blank's
+                // intra-list semantics already kept us cohesive).
+                if (is_list_row_start(line)) {
+                    in_block = true;
+                } else if (line.empty()) {
+                    // Blank inside the list (loose-list separator).
+                    // Keep going — classify_blank_line's verdict at
+                    // commit time will decide whether this terminates;
+                    // for rendering we just need bytes that
+                    // parse_markdown_impl will recognise.
+                    in_block = true;
+                } else if (count_indent(line) >= 2) {
+                    // Indented continuation of the previous item.
+                    in_block = true;
+                } else {
+                    in_block = false;
+                }
+            } else {
+                // Blockquote: lines are `> ...` or `>` (lazy
+                // continuations are CommonMark legal but we conservatively
+                // require the marker to keep the eager path simple).
+                in_block = is_quote_row_start(line);
+            }
+            if (!in_block) break;
+            cursor = eol + 1;
+            last_committed_end = cursor;
+        }
+
+        if (last_committed_end > 0) {
+            // Parse the proven-complete rows as a real markdown
+            // document. parse_markdown_impl on a slice ending in `\n`
+            // produces a single List or Blockquote block (plus possibly
+            // a trailing empty paragraph for the loose blank, which
+            // assemble_markdown's vstack handles).
+            std::string_view rendered_slice = body.substr(0, last_committed_end);
+            ::maya::md_detail::RefDefsScope guard(
+                const_cast<std::unordered_map<std::string, md::LinkRef>*>(&ref_defs_));
+            auto parsed = parse_markdown_impl(std::string{rendered_slice}, 0);
+
+            std::vector<Element> kids;
+            kids.reserve(parsed.blocks.size() + 1);
+            for (auto& block : parsed.blocks) {
+                kids.push_back(md_block_to_element(block));
+            }
+
+            // Live row (post-last-`\n` partial) renders as inline text,
+            // same monotonicity rules as the paragraph fallback below.
+            // We don't fold it into the parsed list because doing so
+            // would change the parsed list's shape on the next frame
+            // when the row terminates — the snap we're trying to
+            // avoid.
+            std::string_view live_row = body.substr(last_committed_end);
+            // Trim leading blank lines so a separator between the
+            // rendered list and the live row doesn't paint a stray
+            // empty row.
+            while (!live_row.empty() && live_row.front() == '\n')
+                live_row.remove_prefix(1);
+            if (!live_row.empty()) {
+                auto live_spans = parse_inlines(live_row);
+                std::string content;
+                std::vector<StyledRun> runs;
+                const Style base = Style{}.with_fg(colors::text);
+                for (const auto& s : live_spans) {
+                    flatten_inline(s, base, content, runs);
+                }
+                Element live_el;
+                if (runs.empty()) {
+                    live_el = Element{TextElement{}};
+                } else if (runs.size() == 1) {
+                    live_el = Element{TextElement{
+                        .content = std::move(content),
+                        .style   = runs[0].style,
+                    }};
+                } else {
+                    live_el = Element{TextElement{
+                        .content = std::move(content),
+                        .style   = Style{}.with_fg(colors::text),
+                        .runs    = std::move(runs),
+                    }};
+                }
+                kids.push_back(std::move(live_el));
+            }
+
+            if (kids.size() == 1) return std::move(kids.front());
+            return detail::vstack().gap(1)(std::move(kids)).build();
+        }
+        // Fell through (no fully-terminated rows yet) — the inline
+        // fallback below renders the partial markers as literal text,
+        // same as the historical behaviour. Once the first row gets
+        // its `\n` we'll take the eager path on the next frame.
+    }
+
+    // ── Eager table rendering ─────────────────────────────────────────
+    //
+    // Tables are the worst offender for "wait for the page to format".
+    // Without this branch the user sees raw `|` / `---` text from the
+    // moment the model emits the header until either (a) a blank line
+    // lands below the table (the boundary scanner commits) or (b) a
+    // non-`|` line lands below (find_table_end commits). On a long
+    // table that's many seconds of unstyled pipes scrolling past.
+    //
+    // Eager rule:
+    //   * tail starts with `|` (after ≤3 spaces tolerance — GFM)
+    //   * the header line is fully terminated by `\n`
+    //   * the delimiter line is fully terminated AND well-formed
+    //     (only `|`, `-`, `:`, space, `\r`, with at least one `-`)
+    //
+    // When all three hold we feed [header, delim, body-rows…] through
+    // parse_markdown_impl exactly the way commit_range would, then
+    // render via md_block_to_element. Any partial trailing row (no
+    // closing `\n`) is held back and rendered as inline literal text
+    // BELOW the formatted table, same monotonicity trick the eager
+    // list path uses.
+    //
+    // Monotonicity: each fully-terminated body row contributes a
+    // fixed number of visual rows to the rendered table (column-
+    // wrapped). New `\n`-terminated rows can only ADD rows. The live
+    // partial row stays inline below until its `\n` lands, at which
+    // point it folds into the table on the next frame (one-row add,
+    // identical Element identity for the rows already shown — the
+    // table's ComponentElement keys on `data` shared_ptr identity,
+    // not on this temporary fresh build, so the inner cells cache
+    // misses cleanly on the new row count without ghosting).
+    if (body.size() >= 1 && first_line_end != std::string_view::npos) {
+        auto first_non_space_off = [](std::string_view s) -> std::size_t {
+            std::size_t k = 0;
+            while (k < 4 && k < s.size() && s[k] == ' ') ++k;
+            return k;
+        };
+        std::size_t hoff = first_non_space_off(first_line);
+        const bool header_pipe = hoff < first_line.size()
+                                 && first_line[hoff] == '|';
+        if (header_pipe) {
+            // Need a fully-terminated delimiter line.
+            std::size_t delim_start = first_line_end + 1;
+            std::size_t delim_end = body.find('\n', delim_start);
+            if (delim_end != std::string_view::npos) {
+                std::string_view delim_line =
+                    body.substr(delim_start, delim_end - delim_start);
+                std::size_t doff = first_non_space_off(delim_line);
+                bool delim_pipe = doff < delim_line.size()
+                                  && delim_line[doff] == '|';
+                bool delim_has_dash = false;
+                bool delim_ok = delim_pipe;
+                if (delim_ok) {
+                    for (std::size_t k = doff;
+                         k < delim_line.size(); ++k) {
+                        char c = delim_line[k];
+                        if (c == '-') { delim_has_dash = true; continue; }
+                        if (c == '|' || c == ':' || c == ' '
+                            || c == '\t' || c == '\r') continue;
+                        delim_ok = false; break;
+                    }
+                }
+                if (delim_ok && delim_has_dash) {
+                    // Walk body rows: every fully-terminated `|`-prefixed
+                    // line after the delimiter. Stop at the first non-
+                    // `|` line OR at the live (unterminated) row.
+                    std::size_t cursor = delim_end + 1;
+                    std::size_t last_row_end = cursor; // end of header+delim+complete rows
+                    while (cursor < body.size()) {
+                        std::size_t eol = body.find('\n', cursor);
+                        if (eol == std::string_view::npos) break;
+                        std::string_view line =
+                            body.substr(cursor, eol - cursor);
+                        std::size_t off = first_non_space_off(line);
+                        if (off >= line.size() || line[off] != '|')
+                            break;
+                        cursor = eol + 1;
+                        last_row_end = cursor;
+                    }
+
+                    // Parse the proven-complete slice as a real markdown
+                    // document — yields exactly one md::Table block
+                    // matching what commit_range would eventually emit.
+                    std::string_view table_slice =
+                        body.substr(0, last_row_end);
+                    ::maya::md_detail::RefDefsScope guard(
+                        const_cast<std::unordered_map<
+                            std::string, md::LinkRef>*>(&ref_defs_));
+                    auto parsed = parse_markdown_impl(
+                        std::string{table_slice}, 0);
+
+                    std::vector<Element> kids;
+                    kids.reserve(parsed.blocks.size() + 1);
+                    for (auto& block : parsed.blocks) {
+                        kids.push_back(md_block_to_element(block));
+                    }
+
+                    // Live trailing row (partial, no `\n`). Render as
+                    // inline literal text so further bytes extend it
+                    // without snapping the table's shape.
+                    std::string_view live_row =
+                        body.substr(last_row_end);
+                    while (!live_row.empty() && live_row.front() == '\n')
+                        live_row.remove_prefix(1);
+                    if (!live_row.empty()) {
+                        auto live_spans = parse_inlines(live_row);
+                        std::string content;
+                        std::vector<StyledRun> runs;
+                        const Style base =
+                            Style{}.with_fg(colors::text);
+                        for (const auto& s : live_spans) {
+                            flatten_inline(s, base, content, runs);
+                        }
+                        Element live_el;
+                        if (runs.empty()) {
+                            live_el = Element{TextElement{}};
+                        } else if (runs.size() == 1) {
+                            live_el = Element{TextElement{
+                                .content = std::move(content),
+                                .style   = runs[0].style,
+                            }};
+                        } else {
+                            live_el = Element{TextElement{
+                                .content = std::move(content),
+                                .style   = Style{}.with_fg(colors::text),
+                                .runs    = std::move(runs),
+                            }};
+                        }
+                        kids.push_back(std::move(live_el));
+                    }
+
+                    if (kids.size() == 1) return std::move(kids.front());
+                    return detail::vstack().gap(1)(std::move(kids)).build();
+                }
+            }
+        }
+        // Header+delim not both ready yet → fall through to inline
+        // path; the literal `|` text stays visible until the next
+        // frame lands more bytes and we can try the eager path again.
+    }
+
     // ── Sliding cache: parse only the live line ──
     //
     // Split body at the last '\n'. The "stable prefix" (everything

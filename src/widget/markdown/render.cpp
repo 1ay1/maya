@@ -588,7 +588,22 @@ Element md_block_to_element(const md::Block& block) {
                 constexpr int pad = 1;
                 int chrome = 1 + ncols_ + 2 * ncols_ * pad;
                 int avail_cells = std::max(ncols_, avail_w - chrome);
-                constexpr int kMinCol = 6;
+                // Floor every column at kMinColPref so cell content
+                // stays legible at typical widths. But when the
+                // terminal itself can't accommodate even that floor
+                // (very narrow window, narrow side panel), shrink the
+                // floor toward 1 so the produced table is provably
+                // ≤ avail_w — otherwise the renderer emits rows wider
+                // than the viewport and the TERMINAL inserts its own
+                // hard wrap at column 0, splitting the `│` borders
+                // across visual lines (the symptom on screenshots:
+                // continuation text like "paginated" landing in
+                // column 0 with no leading separator).
+                constexpr int kMinColPref = 6;
+                int kMinCol = kMinColPref;
+                if (kMinCol * ncols_ > avail_cells) {
+                    kMinCol = std::max(1, avail_cells / ncols_);
+                }
                 int ideal_sum = 0;
                 for (int v : ideal_) ideal_sum += v;
                 std::vector<int> col_w(static_cast<size_t>(ncols_));

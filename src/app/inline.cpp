@@ -86,8 +86,16 @@ void render_live(const Element& root, int width, StylePool& pool,
     }
 
     if (ch <= 0) {
+        // Force a full repaint on the next non-empty frame so we don't
+        // diff against stale prev_cells, and drop our memory of the
+        // terminal-mode escapes — if the host reset the terminal
+        // between frames (signal handler, subprocess, etc.) we must
+        // re-emit them on the next paint or the new frame will paint
+        // with autowrap on and wide content will wrap into garbage.
         st.frame.ghost_rows_above = st.frame.wire_cursor_rows;
         st.frame.prev_rows = 0;
+        st.frame.cursor_hidden = false;
+        st.frame.decawm_off = false;
         return;
     }
 
@@ -95,8 +103,30 @@ void render_live(const Element& root, int width, StylePool& pool,
     compose_inline_frame(st.canvas, ch, st.term_h, pool, st.frame, buf);
     if (buf.empty()) return;
 
-    std::fwrite(buf.data(), 1, buf.size(), stdout);
+    const std::size_t want = buf.size();
+    const std::size_t got  = std::fwrite(buf.data(), 1, want, stdout);
     std::fflush(stdout);
+
+    // Short write — the wire received a prefix of the frame but
+    // compose_inline_frame already updated prev_cells / shadow_hash as
+    // though the whole frame was delivered. Next frame's diff would
+    // believe the wire matches the shadow and silently skip emitting
+    // the cells that were truncated, leaving permanent corruption
+    // (a half-drawn box border, a missing right edge, the classic
+    // "sometimes the frame is broken" symptom).
+    //
+    // Recovery: invalidate the shadow and stage a force-redraw so
+    // the next compose goes through case (B) and repaints the
+    // viewport in place. ghost_rows_above is sized from the prior
+    // emit's wire_cursor_rows so the upward erase covers the
+    // (possibly larger) previous frame.
+    if (got != want) {
+        st.frame.ghost_rows_above = st.frame.wire_cursor_rows;
+        st.frame.prev_rows = 0;
+        st.frame.cursor_hidden = false;
+        st.frame.decawm_off = false;
+        st.frame.shadow_hash = static_cast<uint64_t>(-1);
+    }
 }
 
 } // namespace detail

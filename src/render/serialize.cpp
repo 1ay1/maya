@@ -208,6 +208,45 @@ void emit_cell_run(const Canvas& canvas, const StylePool& pool,
     return W;
 }
 
+// Wide-glyph diff-edge snapping. The diff helpers above operate on raw
+// packed u64 cells and have no notion of wide-char pairing. If the
+// reported first/last diff column lands ON the trail half (width==2)
+// of a wide glyph in EITHER cur or prev, emit_cell_run will silently
+// `continue` over that trail and never repaint the lead — leaving the
+// wire's old lead glyph in place while the shadow records the new
+// canvas bytes as flushed. Snap the edge outward by one cell so the
+// emit covers the entire wide pair.
+//
+// snap_first_diff_left:  if cur[x] OR prev[x] has width==2, return x-1
+//                        (clamped to 0).
+// snap_last_diff_right:  if cur[x] OR prev[x] has width==1 (lead),
+//                        return x+1 (clamped to W-1).
+//
+// Both inputs (cur, prev) need to be checked: a layout shift can leave
+// a stale wide pair in prev whose lead aligns with new content in cur,
+// and vice versa.
+[[nodiscard]] static inline uint8_t cell_width(uint64_t packed) noexcept {
+    return static_cast<uint8_t>(packed >> 56);
+}
+
+[[nodiscard]] int snap_first_diff_left(int x, const uint64_t* cur,
+                                       const uint64_t* prev, int W) noexcept {
+    if (x <= 0 || x >= W) return x;
+    const uint8_t cw = cell_width(cur[x]);
+    const uint8_t pw = prev ? cell_width(prev[x]) : 0;
+    if (cw == 2 || pw == 2) return x - 1;
+    return x;
+}
+
+[[nodiscard]] int snap_last_diff_right(int x, const uint64_t* cur,
+                                       const uint64_t* prev, int W) noexcept {
+    if (x < 0 || x >= W - 1) return x;
+    const uint8_t cw = cell_width(cur[x]);
+    const uint8_t pw = prev ? cell_width(prev[x]) : 0;
+    if (cw == 1 || pw == 1) return x + 1;
+    return x;
+}
+
 // Write CSI <n> C (cursor forward) for n > 0. n == 0 is a no-op.
 void write_cursor_forward(std::string& out, int n) {
     if (n <= 0) return;
@@ -763,14 +802,22 @@ void compose_inline_frame(const Canvas& canvas,
         // [first_non_blank, last_non_blank+1). For the will-scroll-off
         // row, force a full-row consideration so any wire-vs-canvas
         // skew is corrected before the row leaves our control.
-        const int x_first_diff = will_scroll_off
+        const int x_first_diff_raw = will_scroll_off
                                  ? 0
                                  : first_diff_col(cur_row, prev_row, W);
+        const int x_first_diff = will_scroll_off
+                                 ? 0
+                                 : snap_first_diff_left(x_first_diff_raw,
+                                                        cur_row, prev_row, W);
 
         if (x_first_diff < W) {
-            const int x_last_diff    = will_scroll_off
+            const int x_last_diff_raw = will_scroll_off
                                        ? W - 1
                                        : last_diff_col(cur_row, prev_row, W);
+            const int x_last_diff    = will_scroll_off
+                                       ? W - 1
+                                       : snap_last_diff_right(x_last_diff_raw,
+                                                              cur_row, prev_row, W);
             const int x_last_visible = canvas.last_content_col(y);
 
             // Emit cells through the last *visible* differing column.

@@ -258,7 +258,15 @@ void serialize(const Canvas& canvas, const StylePool& pool,
             out.append(pool.sgr(0));
             current_style = 0;
         }
-        out += "\x1b[K";
+        // Skip EL when the row filled through col W-1: DECAWM-off leaves
+        // the cursor AT col W-1 (no advance past the right edge,
+        // ECMA-48 §8.3.118), and \x1b[K from there would erase that
+        // rightmost cell — the last-column corruption symptom on
+        // full-width content (code-block right borders, full-width
+        // rules). Nothing past W-1 exists to erase anyway.
+        if (last_col < W - 1) {
+            out += "\x1b[K";
+        }
     }
 
     out += "\x1b[?7h";   // re-enable auto-wrap
@@ -565,39 +573,60 @@ void compose_inline_frame(const Canvas& canvas,
             // min(ghost_rows_above, term_h) - emit_rows. Done BEFORE
             // the new-frame emit so the cursor ends in the same
             // place the existing math expects.
-            const int ghost = state.ghost_rows_above;
+            // Cursor's actual physical viewport row at entry: wire_rows - 1.
+            // Decisions below must derive from this, NOT from term_h - 1
+            // (which assumes the cursor is at the viewport bottom and is
+            // wrong whenever the live frame was shorter than the viewport).
+            const int wire_rows  = std::min(std::max(1, state.ghost_rows_above),
+                                            term_h);
+            const int cursor_row = wire_rows - 1;
             const int emit_rows  = std::min(content_rows, term_h);
-            const int ghost_vis  = std::min(ghost, term_h);
-            const int extra_top  = std::max(0, ghost_vis - emit_rows);
-            if (extra_top > 0) {
-                // Cursor was at the prior frame's last visible row
-                // (physical row ghost_vis - 1 from the prior frame's
-                // top). Move up to the prior frame's top row, then
-                // EL-erase + \n-walk down extra_top rows. Each
-                // iteration ends at col 0 of the next row, so the
-                // final cursor sits at the new frame's top row,
-                // col 0 — exactly where the existing emit shape
-                // expects to be after its own cursor_up + \r.
-                ansi::write_cursor_up(out, ghost_vis - 1);
+            const int start_row  = std::max(0, content_rows - term_h);
+
+            // Where the new frame's top must land for its bottom to coincide
+            // with the cursor (cursor_row). If negative, the new frame is
+            // taller than the cursor's offset from viewport top — the excess
+            // must scroll the viewport so host content above goes into native
+            // scrollback (the same effect normal streaming produces).
+            const int new_top   = cursor_row - (emit_rows - 1);
+            const int extra_top = (new_top > 0) ? new_top : 0;
+            const int scroll_n  = (new_top < 0) ? -new_top : 0;
+
+            if (scroll_n > 0) {
+                // Frame doesn't fit above the cursor. Walk to the bottom
+                // edge, emit scroll_n newlines (each \n at row term_h - 1
+                // scrolls the viewport), then move up to the new frame's
+                // top row and serialize.
+                const int down_to_bottom = (term_h - 1) - cursor_row;
+                if (down_to_bottom > 0)
+                    ansi::write_cursor_down(out, down_to_bottom);
+                out += '\r';
+                for (int i = 0; i < scroll_n; ++i) out += '\n';
+                if (emit_rows - 1 > 0)
+                    ansi::write_cursor_up(out, emit_rows - 1);
+                out += '\r';
+                serialize(canvas, pool, out, content_rows, start_row);
+                out += "\x1b[J";
+            } else if (extra_top > 0) {
+                // Stale rows sit above the new frame's top — EL-erase them.
+                // Walk up to the old frame's top, then EL+LF down past the
+                // stale rows. After the loop the cursor sits at col 0 of
+                // the new frame's top row.
+                if (cursor_row > 0)
+                    ansi::write_cursor_up(out, cursor_row);
                 out += '\r';
                 for (int i = 0; i < extra_top; ++i) {
                     out += "\x1b[K";
-                    out += '\n';   // LF only — cursor already at col 0
+                    out += '\n';
                 }
-                // After the loop the cursor is at the row that will
-                // become the new frame's top, col 0. The existing
-                // cursor_up below would over-move from here, so skip
-                // it: emit serialize directly. We're already at the
-                // right row; '\r' is a no-op (already at col 0).
-                const int start_row = std::max(0, content_rows - term_h);
                 serialize(canvas, pool, out, content_rows, start_row);
                 out += "\x1b[J";
             } else {
-                const int up = std::min(content_rows - 1,
-                                        std::max(0, term_h - 1));
-                if (up > 0) ansi::write_cursor_up(out, up);
+                // New frame fits exactly above the cursor with no stale
+                // rows to clean above. Move up to the new frame's top.
+                if (emit_rows - 1 > 0)
+                    ansi::write_cursor_up(out, emit_rows - 1);
                 out += '\r';
-                const int start_row = std::max(0, content_rows - term_h);
                 serialize(canvas, pool, out, content_rows, start_row);
                 out += "\x1b[J";
             }
@@ -766,7 +795,10 @@ void compose_inline_frame(const Canvas& canvas,
             if (need_emit) {
                 emit_cell_run(canvas, pool, y, x_first_diff, x_end_emit,
                               current_style, out);
-                // cursor now at col x_end_emit
+                // cursor now at col x_end_emit — BUT with DECAWM off,
+                // an emit that reached col W-1 leaves the cursor AT W-1
+                // rather than advancing to col W. The EL branch below
+                // accounts for this so the rightmost cell isn't erased.
             }
             if (need_el) {
                 // EL erases from cursor to end of line, preserving
@@ -777,7 +809,18 @@ void compose_inline_frame(const Canvas& canvas,
                     out.append(pool.sgr(0));
                     current_style = 0;
                 }
-                out += "\x1b[K";
+                // DECAWM-off precondition: if the emit filled through
+                // col W-1, cursor sits AT W-1 — \x1b[K from there would
+                // erase the cell we just painted. Skip EL in that case:
+                // there's nothing to erase to the right of the cursor
+                // (cursor IS at the right edge). If the row was empty
+                // (need_emit=false), cursor is at x_first_diff which is
+                // strictly < W by the entry guard, so EL is safe.
+                const bool cursor_at_right_edge =
+                    need_emit && (x_end_emit >= W);
+                if (!cursor_at_right_edge) {
+                    out += "\x1b[K";
+                }
             }
 
             // A1 shadow-of-wire: update prev_cells for the cells the
@@ -857,16 +900,44 @@ void compose_inline_frame(const Canvas& canvas,
                           0, last_visible + 1,
                           current_style, out);
         }
-        // Reset SGR before \x1b[J so erased cells inherit no attrs
+        // Reset SGR before erase so erased cells inherit no attrs
         // from the last emitted cell.
         if (current_style != 0) {
             out.append(pool.sgr(0));
             current_style = 0;
         }
-        // \x1b[J wipes from cursor's current column through end of
-        // the cursor's row and every row below it inside the
-        // viewport; it never moves the cursor and never scrolls.
-        out += "\x1b[J";
+        // Now position cursor and erase the rows that the new (shorter)
+        // frame no longer covers. There are two cases governed by where
+        // the emit left the cursor under DECAWM-off semantics:
+        //
+        //   (a) last_visible < W-1 (or empty row):
+        //       Cursor naturally landed at col last_visible+1 < W
+        //       (or col 0 from the leading \r if the row was empty).
+        //       \x1b[J from there erases the bottom row's tail plus
+        //       every row below. Cursor stays at (last_row_to_visit,
+        //       last_visible+1) — the next compose's diff math assumes
+        //       cursor row == prev_rows - 1, which holds.
+        //
+        //   (b) last_visible == W-1 (row fully painted):
+        //       Cursor is stuck AT col W-1 (DECAWM-off doesn't advance
+        //       past the right edge, ECMA-48 §8.3.118). \x1b[J here
+        //       would erase the rightmost cell — the last-column
+        //       corruption symptom on full-width content (code-block
+        //       right borders, full-width rules). Instead walk down
+        //       one row with \r\n, \x1b[J from there (which doesn't
+        //       touch last_row_to_visit at all), then \x1b[A back to
+        //       restore the cursor-row invariant the next compose
+        //       depends on. \n at row `last_row_to_visit + 1 = content_rows`
+        //       won't scroll: prev_rows > content_rows means at least
+        //       row content_rows existed in the prior frame, so it's
+        //       inside the viewport (prev_rows ≤ term_h holds because
+        //       wire_cursor_rows clamps prev_rows at term_h on every
+        //       compose).
+        if (last_visible < W - 1) {
+            out += "\x1b[J";
+        } else {
+            out += "\r\n\x1b[J\x1b[A";
+        }
     }
 
     // SGR reset at the tail: drop any residual style state so the

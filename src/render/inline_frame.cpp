@@ -2,26 +2,44 @@
 //
 // See include/maya/render/inline_frame.hpp for the type-system contract.
 //
-// This file is small by design: every method is either a value-move
-// transition (cheap; AlignedBuffer's move is pointer-swap) or a wrapper
-// around the existing compose_inline_frame_v2 / FrameBytes::commit_to
-// chain. The witness chain's machinery lives upstream; this layer is
-// the type-state glue that makes the chain's preconditions structural.
+// Most methods are value-move transitions or wrappers around
+// `compose_inline_frame_v2` + `FrameBytes::commit_to`. The HardReset
+// path is the only one that emits a non-compose sequence directly:
+// the `\x1b[2J\x1b[3J\x1b[H` wipe followed by a fresh paint.
 
 #include "maya/render/inline_frame.hpp"
+#include "maya/terminal/writer.hpp"
 
 #include <cassert>
 #include <utility>
 
 namespace maya::inline_frame {
 
+namespace detail {
+
+// Common helper: dispatch a CommitOutcome (Synced/Stale/HardReset) into
+// the RenderOutcome variant. Shared by every render() implementation.
+RenderOutcome lift_commit_outcome(CommitOutcome outcome) noexcept {
+    return std::visit([](auto&& arm) -> RenderOutcome {
+        using T = std::decay_t<decltype(arm)>;
+        if constexpr (std::is_same_v<T, commit::Synced>) {
+            return InlineFrame<Synced>{std::move(arm.state)};
+        } else if constexpr (std::is_same_v<T, commit::Stale>) {
+            return InlineFrame<Stale>{std::move(arm.state)};
+        } else {
+            static_assert(std::is_same_v<T, commit::HardReset>);
+            return InlineFrame<HardReset>{};
+        }
+    }, std::move(outcome));
+}
+
+} // namespace detail
+
 // ─────────────────────────────────────────────────────────────────────────
 // Empty → Fresh / Sealed
 // ─────────────────────────────────────────────────────────────────────────
 
 InlineFrame<Fresh> InlineFrame<Empty>::seed() && noexcept {
-    // Fresh starts with a default-constructed InlineFrameState.
-    // prev_width == 0 routes compose into case (A) on first render.
     return InlineFrame<Fresh>{};
 }
 
@@ -30,13 +48,12 @@ InlineFrame<Sealed> InlineFrame<Empty>::finalize(std::string&) && noexcept {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Fresh → Synced / Stale (first render)
+// Fresh → Synced / Stale / HardReset (first render)
 // ─────────────────────────────────────────────────────────────────────────
 //
-// The first render emits via compose's case (A): serialize from the
-// cursor's current position, growing the frame downward via row
-// separators. The state's prev_width == 0 routes compose down this
-// path automatically.
+// State's prev_width == 0 routes compose into case (A): emit from
+// cursor's current position via serialize(). Host content above the
+// cursor stays visible.
 
 RenderOutcome InlineFrame<Fresh>::render(
     const Canvas& canvas,
@@ -46,10 +63,6 @@ RenderOutcome InlineFrame<Fresh>::render(
     Writer& writer,
     bool synchronized_output) &&
 {
-    // Synthesize a witness that trivially passes — the Fresh state has
-    // no shadow to verify against (shadow_hash is the sentinel). The
-    // verify_shadow function returns a populated optional for fresh
-    // states; we extract and consume it.
     auto wit = verify_shadow(state_);
     assert(wit.has_value() && "verify_shadow must accept a Fresh state");
 
@@ -58,15 +71,7 @@ RenderOutcome InlineFrame<Fresh>::render(
         std::move(state_), *std::move(wit),
         synchronized_output);
 
-    auto outcome = std::move(capsule).commit_to(writer);
-    return std::visit([](auto&& arm) -> RenderOutcome {
-        using T = std::decay_t<decltype(arm)>;
-        if constexpr (std::is_same_v<T, maya::commit::Synced>) {
-            return InlineFrame<Synced>{std::move(arm.state)};
-        } else {
-            return InlineFrame<Stale>{std::move(arm.state)};
-        }
-    }, std::move(outcome));
+    return detail::lift_commit_outcome(std::move(capsule).commit_to(writer));
 }
 
 InlineFrame<Sealed> InlineFrame<Fresh>::finalize(std::string& out) && noexcept {
@@ -75,12 +80,8 @@ InlineFrame<Sealed> InlineFrame<Fresh>::finalize(std::string& out) && noexcept {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Synced → Synced / Stale (incremental render)
+// Synced → Synced / Stale / HardReset (incremental render)
 // ─────────────────────────────────────────────────────────────────────────
-//
-// The witness is required by signature. The caller obtained it from
-// verify() and is consuming it here. compose_inline_frame_v2's
-// internal re-verification closes the issuance-to-consumption window.
 
 RenderOutcome InlineFrame<Synced>::render(
     const Canvas& canvas,
@@ -96,22 +97,13 @@ RenderOutcome InlineFrame<Synced>::render(
         std::move(state_), std::move(witness),
         synchronized_output);
 
-    auto outcome = std::move(capsule).commit_to(writer);
-    return std::visit([](auto&& arm) -> RenderOutcome {
-        using T = std::decay_t<decltype(arm)>;
-        if constexpr (std::is_same_v<T, maya::commit::Synced>) {
-            return InlineFrame<Synced>{std::move(arm.state)};
-        } else {
-            return InlineFrame<Stale>{std::move(arm.state)};
-        }
-    }, std::move(outcome));
+    return detail::lift_commit_outcome(std::move(capsule).commit_to(writer));
 }
 
 InlineFrame<Stale> InlineFrame<Synced>::demote_to_stale() && noexcept {
-    // Move into Stale, applying the force-redraw recovery shape:
-    // ghost_rows_above captures wire_cursor_rows so the next case-(B)
-    // render erases the prior frame's territory before painting the
-    // new frame.
+    // Soft demotion: prepare for case-(B) recovery. The wire's content
+    // is plausibly the last frame we painted; the next render walks
+    // the cursor up and re-paints in place, erasing below.
     InlineFrameState s = std::move(state_);
     s.ghost_rows_above = s.wire_cursor_rows;
     s.prev_rows        = 0;
@@ -121,19 +113,25 @@ InlineFrame<Stale> InlineFrame<Synced>::demote_to_stale() && noexcept {
     return InlineFrame<Stale>{std::move(s)};
 }
 
+InlineFrame<HardReset> InlineFrame<Synced>::demote_to_hard_reset() && noexcept {
+    // Hard demotion: the wire's content is unknown. The next render
+    // emits a full wipe and starts fresh; we drop our state entirely
+    // because none of its invariants can be trusted.
+    return InlineFrame<HardReset>{};
+}
+
 InlineFrame<Sealed> InlineFrame<Synced>::finalize(std::string& out) && noexcept {
     state_.finalize(out);
     return InlineFrame<Sealed>{};
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Stale → Synced / Stale (recovery render)
+// Stale → Synced / Stale / HardReset (soft recovery render)
 // ─────────────────────────────────────────────────────────────────────────
 //
-// The state's prev_rows == 0 and ghost_rows_above > 0 route compose
-// down case (B). No witness is required because there's nothing to
-// verify — the shadow was already declared poisoned by entry into
-// Stale.
+// State's prev_rows == 0 and ghost_rows_above > 0 route compose into
+// case (B): walk cursor up, paint in place, erase below. No
+// scrollback wipe.
 
 RenderOutcome InlineFrame<Stale>::render(
     const Canvas& canvas,
@@ -143,8 +141,6 @@ RenderOutcome InlineFrame<Stale>::render(
     Writer& writer,
     bool synchronized_output) &&
 {
-    // Synthesize a fresh witness — for a state with shadow_hash = -1
-    // verify_shadow returns a populated optional unconditionally.
     auto wit = verify_shadow(state_);
     assert(wit.has_value() && "verify_shadow must accept a Stale state");
 
@@ -153,19 +149,54 @@ RenderOutcome InlineFrame<Stale>::render(
         std::move(state_), *std::move(wit),
         synchronized_output);
 
-    auto outcome = std::move(capsule).commit_to(writer);
-    return std::visit([](auto&& arm) -> RenderOutcome {
-        using T = std::decay_t<decltype(arm)>;
-        if constexpr (std::is_same_v<T, maya::commit::Synced>) {
-            return InlineFrame<Synced>{std::move(arm.state)};
-        } else {
-            return InlineFrame<Stale>{std::move(arm.state)};
-        }
-    }, std::move(outcome));
+    return detail::lift_commit_outcome(std::move(capsule).commit_to(writer));
+}
+
+InlineFrame<HardReset> InlineFrame<Stale>::escalate_to_hard_reset() && noexcept {
+    // The Stale render failed too. Drop the state; emit a wipe next.
+    return InlineFrame<HardReset>{};
 }
 
 InlineFrame<Sealed> InlineFrame<Stale>::finalize(std::string& out) && noexcept {
     state_.finalize(out);
+    return InlineFrame<Sealed>{};
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// HardReset → Synced / Stale / HardReset (full reset render)
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Emit `\x1b[2J\x1b[3J\x1b[H` to wipe the viewport AND saved-lines,
+// homing the cursor. Then run a fresh case-(A) paint by routing
+// through Fresh. This path is destructive to host scrollback above
+// the viewport — appropriate only when the wire is genuinely in an
+// unknown state (post-resize, post-write-failure).
+
+RenderOutcome InlineFrame<HardReset>::render(
+    const Canvas& canvas,
+    ContentRows rows,
+    int term_h,
+    const StylePool& pool,
+    Writer& writer,
+    bool synchronized_output) &&
+{
+    // 1. Wipe sequence. If this write fails, we stay in HardReset and
+    //    the next render retries.
+    {
+        Status st = writer.write_or_buffer("\x1b[2J\x1b[3J\x1b[H");
+        if (!st) {
+            writer.discard_residue();
+            return InlineFrame<HardReset>{};
+        }
+    }
+
+    // 2. Fresh-state paint (case A). Build a Fresh and run its render.
+    InlineFrame<Fresh> fresh{};
+    return std::move(fresh).render(canvas, rows, term_h, pool, writer,
+                                   synchronized_output);
+}
+
+InlineFrame<Sealed> InlineFrame<HardReset>::finalize(std::string&) && noexcept {
     return InlineFrame<Sealed>{};
 }
 

@@ -103,11 +103,14 @@ namespace maya {
 // used by the InlineFrame<Tag> type-state in inline_frame.hpp.
 
 namespace commit {
-    struct Synced  { InlineFrameState state; };
-    struct Stale   { InlineFrameState state; Status reason; };
+    struct Synced     { InlineFrameState state; };
+    struct Stale      { InlineFrameState state; Status reason; };
+    struct HardReset  { Status reason; };
 }
 
-using CommitOutcome = std::variant<commit::Synced, commit::Stale>;
+using CommitOutcome = std::variant<commit::Synced,
+                                   commit::Stale,
+                                   commit::HardReset>;
 
 // ─────────────────────────────────────────────────────────────────────────
 // FrameBytes — pre-committed bytes + their successor state
@@ -153,6 +156,11 @@ public:
     /// render forces a full redraw; the prior state's invariants are
     /// preserved on the wire because nothing was emitted.
     [[nodiscard]] commit::Stale abandon() && noexcept;
+
+    /// Convenience: drop the bytes and synthesize a HardReset (e.g.
+    /// when the runtime detected a write failure out-of-band and is
+    /// abandoning this frame's bytes as part of the recovery).
+    [[nodiscard]] commit::HardReset abandon_to_hard_reset(Status reason) && noexcept;
 
 private:
     FrameBytes(std::string bytes, InlineFrameState successor) noexcept

@@ -27,11 +27,13 @@
 #include "../core/types.hpp"
 #include "../element/element.hpp"
 #include "../render/canvas.hpp"
+#include "../render/inline_frame.hpp"
 #include "../render/renderer.hpp"
 #include "../render/serialize.hpp"
 #include "../style/theme.hpp"
 #include "../platform/io.hpp"
 #include "../terminal/ansi.hpp"
+#include "../terminal/writer.hpp"
 
 #include "quit.hpp"
 
@@ -47,11 +49,21 @@ int detect_terminal_height() noexcept;
 /// Persistent state for the inline renderer's erase-and-rewrite loop.
 /// Passed by reference across frames.
 struct LiveState {
-    Canvas            canvas;        // persistent canvas (avoids per-frame alloc)
-    int               canvas_width = 0;  // cached canvas width for reuse
-    int               term_h       = 0;  // cached terminal height (refreshed on resize)
-    InlineFrameState  frame;        // prev_cells + prev_width + prev_rows
+    Canvas                         canvas;        // persistent canvas (avoids per-frame alloc)
+    int                            canvas_width = 0;  // cached canvas width for reuse
+    int                            term_h       = 0;  // cached terminal height (refreshed on resize)
+    inline_frame::InlineCoherence  frame =
+        inline_frame::InlineFrame<inline_frame::Empty>{};
     std::vector<layout::LayoutNode> layout_nodes;  // reused across frames
+
+    // Writer is owned by LiveState rather than constructed per-call so
+    // residue (bytes left over from a non-blocking partial write) is
+    // preserved across render_live invocations. Without this every
+    // call would construct a fresh Writer, drop any pending residue
+    // on the floor, and risk the next compose's prev_cells reflecting
+    // bytes the wire never received — the canonical inline-corruption
+    // pattern the Witness Chain is designed to prevent.
+    std::optional<Writer>          writer;
 
     // Pre-reserve so the first frame's tree build doesn't pay an
     // unbounded chain of std::vector reallocs (each doubling means the
@@ -183,12 +195,11 @@ void live(LiveConfig cfg, RenderFn&& render_fn) {
         }
     }
 
-    // Restore terminal state owned by InlineFrameState (DECAWM, and
-    // cursor visibility if compose_inline_frame ever toggled it). Done
-    // before the manual show_cursor below so the byte sequence stays
-    // clean even if compose's tracking diverged from cfg.cursor.
+    // Restore DECAWM/cursor visibility owned by the inline frame state.
+    // compose_inline_frame leaves DECAWM off across frames to save
+    // bytes on slow ttys; finalize() emits the restore.
     buf.clear();
-    state.frame.finalize(buf);
+    inline_frame::finalize_coherence(std::move(state.frame), buf);
     if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
 
     if (!cfg.cursor) std::fputs("\x1b[?25h", stdout); // show cursor

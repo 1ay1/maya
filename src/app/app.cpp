@@ -99,26 +99,20 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     // Linux/Win32: no-op.
     platform::set_ui_thread_priority();
 
-    // Inline mode: start in InlineSynced with a fresh InlineFrameState
-    // (prev_width = 0, prev_rows = 0). The first render's compose hits
-    // the first-ever-render path with prev_width == 0, which does the
-    // inline-mode growth from cursor's current position (no scrollback
-    // wipe, host content stays visible above). Default-initialised
-    // in_coherence_ would be Divergent, whose path emits
-    // \x1b[2J\x1b[3J\x1b[H — appropriate for resize and write-fail
-    // recovery, but wrong for startup. Pre-seeding InlineSynced
-    // routes startup through the Synced case, preserving the host's
-    // shell content above the live frame.
-    if (rt.is_inline()) {
-        // enable_inline_mode already emitted hide_cursor in the setup
-        // sequence — pre-seed cursor_hidden=true so compose's first
-        // frame doesn't redundantly re-emit it. DECAWM is left at the
-        // host's default (on); compose will turn it off on its first
-        // emit and the Terminal<InlineMode> destructor restores.
-        InlineFrameState seed;
-        seed.cursor_hidden = true;
-        rt.in_coherence_ = coherent::InlineSynced{std::move(seed)};
-    }
+    // Inline mode: start in the Witness Chain's `Empty` state. The first
+    // render's path seeds it to `Fresh` (via `seed()`) and runs compose's
+    // case (A) — emit from the cursor's current position via serialize(),
+    // growing downward without disturbing host content above.
+    //
+    // We can't pre-seed `cursor_hidden = true` the way the legacy state
+    // could because InlineFrame<Empty> has no state to carry. The cost
+    // is that compose emits the hide_cursor escape on its first frame
+    // when it would have been a no-op under the legacy seed — a 6-byte
+    // wire cost paid exactly once per session. Worth it for the type-
+    // state guarantee that the runtime starts from a state the chain
+    // can construct, not one synthesized by side-effect.
+    (void)rt;   // is_inline()-conditional init no longer needed; the default
+                // `InlineFrame<Empty>{}` field initializer covers it.
 
     return ok(std::move(rt));
 }
@@ -155,12 +149,40 @@ void Runtime::handle_resize() {
         render_ctx_.height     = size_.height.raw();
         render_ctx_.generation = resize_generation_;
         // A resize invalidates both the prev-frame cell grid (fullscreen
-        // diff) and the row-diff state (inline) — collapse both coherence
-        // variants to Divergent so the next render does a full repaint.
-        // Dropping the FullscreenSynced/InlineSynced alternative releases
-        // the front canvas / prev-frame InlineFrameState back to the heap.
+        // diff) and the row-diff state (inline). Fullscreen collapses to
+        // Divergent (next render does a full repaint). Inline transitions
+        // to HardReset (next render emits \x1b[2J\x1b[3J\x1b[H and starts
+        // fresh) when there's a Synced/Stale state to drop; Empty/Fresh
+        // stay where they are because they haven't yet emitted anything.
         fs_coherence_ = coherent::Divergent{};
-        in_coherence_ = coherent::Divergent{};
+        in_coherence_ = std::visit(
+            [](auto&& arm) -> inline_frame::InlineCoherence {
+                using T = std::decay_t<decltype(arm)>;
+                if constexpr (std::is_same_v<T,
+                        inline_frame::InlineFrame<inline_frame::Synced>>) {
+                    return std::move(arm).demote_to_hard_reset();
+                } else if constexpr (std::is_same_v<T,
+                        inline_frame::InlineFrame<inline_frame::Stale>>) {
+                    return std::move(arm).escalate_to_hard_reset();
+                } else if constexpr (std::is_same_v<T,
+                        inline_frame::InlineFrame<inline_frame::Fresh>>) {
+                    // Resize before first render: the wire hasn't seen
+                    // anything from us yet. Stay Fresh; the next render's
+                    // case (A) paints at the new dimensions from the
+                    // cursor's current position without disturbing the
+                    // host content above.
+                    return std::move(arm);
+                } else if constexpr (std::is_same_v<T,
+                        inline_frame::InlineFrame<inline_frame::HardReset>>) {
+                    return std::move(arm);   // already in hard-reset
+                } else if constexpr (std::is_same_v<T,
+                        inline_frame::InlineFrame<inline_frame::Empty>>) {
+                    return std::move(arm);   // nothing on screen yet
+                } else {
+                    // Sealed: finalize already ran; resize is a no-op.
+                    return std::move(arm);
+                }
+            }, std::move(in_coherence_));
     }
 }
 
@@ -272,20 +294,33 @@ auto Runtime::render(const Element& root) -> Status {
                 if (d.error().kind == ErrorKind::WouldBlock) {
                     return ok();   // wire still backed up; retry next tick
                 }
-                // Hard I/O error — toss the residue and the cell cache,
-                // let the Divergent path do a full clear next time.
+                // Hard I/O error — toss the residue and demote inline
+                // coherence to HardReset so the next render does a
+                // full reset.
                 writer_->discard_residue();
-                in_coherence_ = coherent::Divergent{};
+                in_coherence_ = std::visit(
+                    [](auto&& arm) -> inline_frame::InlineCoherence {
+                        using T = std::decay_t<decltype(arm)>;
+                        if constexpr (std::is_same_v<T,
+                                inline_frame::InlineFrame<inline_frame::Synced>>)
+                            return std::move(arm).demote_to_hard_reset();
+                        else if constexpr (std::is_same_v<T,
+                                inline_frame::InlineFrame<inline_frame::Stale>>)
+                            return std::move(arm).escalate_to_hard_reset();
+                        else
+                            return std::move(arm);
+                    }, std::move(in_coherence_));
                 return d;
             }
         }
 
-        // ── Inline path: dispatch on coherence variant ──────────────────
-        // std::visit selects the rendering function whose precondition
-        // matches the current state.  The InlineFrameState (prev_cells +
-        // prev_rows) lives only inside InlineSynced — compose_inline_frame
-        // can ONLY be called from the Synced lambda where it has a state
-        // to diff against.
+        // ── Inline path: Witness Chain dispatch ─────────────────────────
+        // std::visit selects the InlineFrame<Tag>::render whose
+        // precondition matches the current coherence state. Each arm
+        // returns a new InlineCoherence directly — the type system
+        // guarantees every legal transition is encoded by the return
+        // type, and that the only path into Synced is through a
+        // successful commit_to of a witness-verified compose.
         constexpr int kMinCanvasHeight = 500;
 
         if (canvas_.width() != w || canvas_.height() < kMinCanvasHeight) {
@@ -294,178 +329,91 @@ auto Runtime::render(const Element& root) -> Status {
         }
         // Recover from any unmatched push_clip in the previous frame's
         // paint pass (e.g. a paint callback that threw past pop_clip).
-        // Cheap — empties a vector — and guarantees the next paint
-        // starts from an unbounded clip.
         canvas_.reset_clips();
+        canvas_.clear();
 
-        Status write_status = ok();
-        in_coherence_ = std::visit(overload{
-            // Divergent → Synced: erase the previously-rendered frame,
-            // start a brand-new InlineFrameState, paint, write.
-            [&](coherent::Divergent) -> coherent::InlineState {
-                // Divergent is entered by resize (handle_resize sets
-                // in_coherence_ = Divergent) or by a write-failure
-                // recovery path. Both cases need a full reset of the
-                // terminal viewport: the layout's width/height
-                // assumptions just changed and any previous paint
-                // is now in the wrong place. \x1b[2J clears the
-                // viewport, \x1b[3J clears the saved-lines buffer
-                // (per the user's call: "resize can wipe the
-                // scrollback"), \x1b[H homes the cursor. Then
-                // compose's first-ever-render path emits the fresh
-                // frame at row 0 (case A in compose: prev_width == 0).
-                //
-                // STARTUP does NOT enter this path — the Runtime
-                // constructor initialises in_coherence_ to
-                // InlineSynced{} with a fresh InlineFrameState
-                // (prev_width = 0). The first render hits the Synced
-                // case below, compose's first-ever-render fires, and
-                // because state.prev_width == 0 it does the
-                // inline-mode growth (serialize from host's cursor
-                // position). Host's terminal content stays visible
-                // above; scrollback preserved.
-                if (auto wr = writer_->write_or_buffer("\x1b[2J\x1b[3J\x1b[H"); !wr) {
-                    writer_->discard_residue();
-                    write_status = wr;
-                    return coherent::Divergent{};
-                }
-                InlineFrameState fresh;
+        auto t_rt0 = std::chrono::steady_clock::now();
+        render_tree(root, canvas_, pool_, theme_, layout_nodes_,
+                    /*auto_height=*/true);
+        double rt_ms = since(t_rt0);
+
+        int ch = content_height(canvas_);
+        if (ch >= canvas_.height() && !layout_nodes_.empty()) {
+            int needed = layout_nodes_[0].computed.size.height.raw();
+            if (needed > canvas_.height()) {
+                canvas_.resize(w, needed + 8);
                 canvas_.clear();
                 render_tree(root, canvas_, pool_, theme_, layout_nodes_,
                             /*auto_height=*/true);
-                int ch = content_height(canvas_);
-                if (ch >= canvas_.height() && !layout_nodes_.empty()) {
-                    int needed = layout_nodes_[0].computed.size.height.raw();
-                    if (needed > canvas_.height()) {
-                        canvas_.resize(w, needed + 8);
-                        canvas_.clear();
-                        render_tree(root, canvas_, pool_, theme_, layout_nodes_,
-                                    /*auto_height=*/true);
-                        ch = content_height(canvas_);
+                ch = content_height(canvas_);
+            }
+        }
+
+        if (ch <= 0) {
+            // Empty frame — leave coherence as-is; the wire is unchanged.
+            return ok();
+        }
+
+        const int  term_h = std::max(1, size_.height.raw());
+        const auto rows   = content_rows(canvas_);   // typed witness
+        auto t_cf0 = std::chrono::steady_clock::now();
+
+        in_coherence_ = std::visit(
+            [&](auto&& arm) -> inline_frame::InlineCoherence {
+                using T = std::decay_t<decltype(arm)>;
+                using namespace inline_frame;
+
+                auto lift = [](auto&& outcome) -> InlineCoherence {
+                    return std::visit(
+                        [](auto&& a) -> InlineCoherence { return std::move(a); },
+                        std::move(outcome));
+                };
+
+                if constexpr (std::is_same_v<T, InlineFrame<Empty>>) {
+                    auto fresh = std::move(arm).seed();
+                    return lift(std::move(fresh).render(
+                        canvas_, rows, term_h, pool_, *writer_,
+                        sync_output_));
+                }
+                else if constexpr (std::is_same_v<T, InlineFrame<Fresh>>) {
+                    return lift(std::move(arm).render(
+                        canvas_, rows, term_h, pool_, *writer_,
+                        sync_output_));
+                }
+                else if constexpr (std::is_same_v<T, InlineFrame<Synced>>) {
+                    auto wit = arm.verify();
+                    if (!wit) {
+                        return std::move(arm).demote_to_stale();
                     }
+                    return lift(std::move(arm).render(
+                        canvas_, rows, term_h, pool_, *writer_,
+                        *std::move(wit), sync_output_));
                 }
-                if (ch <= 0) return coherent::InlineSynced{std::move(fresh)};
+                else if constexpr (std::is_same_v<T, InlineFrame<Stale>>) {
+                    return lift(std::move(arm).render(
+                        canvas_, rows, term_h, pool_, *writer_,
+                        sync_output_));
+                }
+                else if constexpr (std::is_same_v<T, InlineFrame<HardReset>>) {
+                    return lift(std::move(arm).render(
+                        canvas_, rows, term_h, pool_, *writer_,
+                        sync_output_));
+                }
+                else {
+                    static_assert(std::is_same_v<T, InlineFrame<Sealed>>);
+                    return std::move(arm);   // sealed: no-op
+                }
+            }, std::move(in_coherence_));
 
-                const int term_h = std::max(1, size_.height.raw());
-                out_.clear();
-                compose_inline_frame(canvas_, ch, term_h, pool_, fresh, out_,
-                                     sync_output_);
-                if (out_.empty()) return coherent::InlineSynced{std::move(fresh)};
-
-                if (auto wr = writer_->write_or_buffer(out_); !wr) {
-                    writer_->discard_residue();
-                    write_status = wr;
-                    return coherent::Divergent{};   // back to unknown pixels
-                }
-                return coherent::InlineSynced{std::move(fresh)};
-            },
-
-            // Synced → Synced (success) or Synced → Divergent (write fail):
-            // the InlineFrameState is owned here by `s.state`, so the
-            // row-diff has access to its own canonical record.
-            [&](coherent::InlineSynced& s) -> coherent::InlineState {
-                // Production shadow-of-wire check. If the shadow
-                // cells were mutated outside compose between the
-                // previous successful render and now (host bug,
-                // memory corruption, double-free, a stack overflow
-                // that scribbled the AlignedBuffer), the prev_cells
-                // we'd diff against is a lie. Detect and recover by
-                // dropping into Divergent so the next pass emits a
-                // full repaint from a known-blank terminal rather
-                // than a half-overwritten frame. Same cost (~1µs on
-                // 200×80) as the debug verifier; failure path is
-                // graceful instead of abort().
-                if (!verify_shadow_hash(s.state)) {
-                    return coherent::Divergent{};
-                }
-                // Full clear every frame. The bounded clear_rows(prev_rows + 4)
-                // variant left cells past its horizon retaining content from
-                // earlier frames; when a Turn's height shifted between frames
-                // (streaming response, scroll, a new tool panel appearing) the
-                // stale cells happened to match prev_cells at those rows so
-                // compose_inline_frame's diff stayed silent and the terminal
-                // kept displaying the previous frame's content — ghost
-                // composers, duplicated markdown lines, broken vertical rails.
-                // This mirrors the fix in detail::render_live (commit 489347b)
-                // for the Runtime path, which run<Program> / run(event_fn,
-                // render_fn) actually exercise.
-                canvas_.clear();
-                auto t_rt0 = std::chrono::steady_clock::now();
-                render_tree(root, canvas_, pool_, theme_, layout_nodes_,
-                            /*auto_height=*/true);
-                double rt_ms = since(t_rt0);
-                int ch = content_height(canvas_);
-                if (ch >= canvas_.height() && !layout_nodes_.empty()) {
-                    int needed = layout_nodes_[0].computed.size.height.raw();
-                    if (needed > canvas_.height()) {
-                        canvas_.resize(w, needed + 8);
-                        canvas_.clear();
-                        render_tree(root, canvas_, pool_, theme_, layout_nodes_,
-                                    /*auto_height=*/true);
-                        ch = content_height(canvas_);
-                    }
-                }
-                if (ch <= 0) {
-                    s.state.ghost_rows_above = s.state.wire_cursor_rows;
-                    s.state.prev_rows = 0;
-                    return coherent::InlineSynced{std::move(s.state)};
-                }
-
-                const int term_h = std::max(1, size_.height.raw());
-                out_.clear();
-                auto t_cf0 = std::chrono::steady_clock::now();
-                // Always emit every frame's diff (no bandwidth coalesce).
-                //
-                // The previous heuristic — hold tiny diffs (<=2 or <=4
-                // rows) for up to kMaxConsecutiveHolds frames when
-                // ns_per_byte_ema_ crossed slow-tty thresholds — saved
-                // a handful of WriteFile calls during streaming bursts
-                // but cost us correctness on the typing path. With
-                // fps=0 a keystroke produces a single render, and a
-                // 1-row composer-line change easily meets the
-                // hold criterion: the first two keystrokes get
-                // swallowed and only land when the third forces a
-                // flush. On Windows conhost especially, WriteFile is
-                // slow enough to push the EMA past 500 ns/B on the
-                // first few frames, so the bug manifests immediately
-                // and feels like "input is not instantaneous".
-                //
-                // Streaming reveal already paces renders at ~20 Hz
-                // (50 ms tick); every terminal can handle that without
-                // help. Pay the syscalls.
-                compose_inline_frame(canvas_, ch, term_h, pool_, s.state, out_,
-                                     sync_output_);
-                double cf_ms = since(t_cf0);
-                if (out_.empty()) {
-                    if (prof) {
-                        std::fprintf(prof_out,
-                            "maya-frame: rt=%.2f cf=%.2f total=%.2f nodes=%zu rows=%d w=%d (skip-write)\n",
-                            rt_ms, cf_ms, since(t_frame_start),
-                            layout_nodes_.size(), ch, w);
-                        std::fflush(prof_out);
-                    }
-                    return coherent::InlineSynced{std::move(s.state)};
-                }
-
-                auto t_w0 = std::chrono::steady_clock::now();
-                auto wr = writer_->write_or_buffer(out_);
-                double w_ms = since(t_w0);
-                if (!wr) {
-                    writer_->discard_residue();
-                    write_status = wr;
-                    return coherent::Divergent{};   // drop the stale state
-                }
-                if (prof) {
-                    std::fprintf(prof_out,
-                        "maya-frame: rt=%.2f cf=%.2f w=%.2f total=%.2f nodes=%zu out=%zu rows=%d w=%d\n",
-                        rt_ms, cf_ms, w_ms, since(t_frame_start),
-                        layout_nodes_.size(), out_.size(), ch, w);
-                    std::fflush(prof_out);
-                }
-                return coherent::InlineSynced{std::move(s.state)};
-            },
-        }, in_coherence_);
-        return write_status;
+        double cf_ms = since(t_cf0);
+        if (prof) {
+            std::fprintf(prof_out,
+                "maya-frame: rt=%.2f cf=%.2f total=%.2f nodes=%zu rows=%d w=%d\n",
+                rt_ms, cf_ms, since(t_frame_start),
+                layout_nodes_.size(), ch, w);
+            std::fflush(prof_out);
+        }
+        return ok();
     }
 
     // ── Fullscreen path: dispatch on coherence variant ──────────────────

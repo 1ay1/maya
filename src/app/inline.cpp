@@ -23,18 +23,33 @@ int detect_terminal_height() noexcept {
 
 
 void render_live(const Element& root, int width, StylePool& pool,
-                   std::string& buf, LiveState& st) {
+                   std::string& /*buf*/, LiveState& st) {
+    // The Witness Chain owns its own byte buffer inside FrameBytes;
+    // the legacy `buf` parameter is no longer used at this layer.
+    // It is retained in the signature so the simple print()/live()
+    // public API keeps source compatibility with hosts that allocate
+    // their own scratch string — the parameter is just ignored.
+
     constexpr int kMinHeight = 500;
 
-    // Invalidate state on width change. compose_inline_frame also resets
-    // its own cache on width change, but we must reallocate the canvas.
     if (st.canvas_width != width) {
         int h = std::max(kMinHeight, st.canvas.height());
         st.canvas = Canvas{width, h, &pool};
         st.canvas_width = width;
-        st.frame.reset();
-        // Refresh terminal height on width changes — typical resize events
-        // change both dimensions together.
+        // Width change invalidates the prev-frame cell grid. Demote
+        // any state that holds one; Empty/Fresh/HardReset stay as-is.
+        st.frame = std::visit(
+            [](auto&& arm) -> inline_frame::InlineCoherence {
+                using T = std::decay_t<decltype(arm)>;
+                if constexpr (std::is_same_v<T,
+                        inline_frame::InlineFrame<inline_frame::Synced>>)
+                    return std::move(arm).demote_to_hard_reset();
+                else if constexpr (std::is_same_v<T,
+                        inline_frame::InlineFrame<inline_frame::Stale>>)
+                    return std::move(arm).escalate_to_hard_reset();
+                else
+                    return std::move(arm);
+            }, std::move(st.frame));
         st.term_h = detect_terminal_height();
     } else {
         st.canvas.set_style_pool(&pool);
@@ -42,38 +57,23 @@ void render_live(const Element& root, int width, StylePool& pool,
 
     if (st.term_h <= 0) st.term_h = detect_terminal_height();
 
-    // Production shadow-of-wire check: if the cells we'd diff
-    // against no longer match the hash we recorded at the end of
-    // the last compose, somebody scribbled on them. Force a full
-    // repaint by zeroing prev_rows — same recovery shape as
-    // force_redraw(), but without wiping scrollback.
-    if (!verify_shadow_hash(st.frame)) {
-        st.frame.ghost_rows_above = st.frame.wire_cursor_rows;
-        st.frame.prev_rows     = 0;
-        st.frame.cursor_hidden = false;
-        st.frame.decawm_off    = false;
-        st.frame.shadow_hash   = static_cast<uint64_t>(-1);
+    // Lazy-init the LiveState's Writer on stdout. Owning it here
+    // (rather than constructing per-call) preserves the writer's
+    // residue buffer across render_live invocations — critical
+    // for slow ttys where a single frame may not drain in one call.
+    if (!st.writer.has_value()) {
+        st.writer.emplace(platform::stdout_handle());
     }
 
     // Full canvas clear every frame so every cell starts blank and any
-    // cell the current paint doesn't explicitly write stays blank. The
-    // previous bounded clear (clear_rows(prev_rows + 4)) left cells past
-    // its horizon retaining content from earlier frames; when a Turn's
-    // height shifted between frames (streaming response, scroll, a new
-    // tool panel appearing) the stale cells happened to match prev_cells
-    // at those rows, so compose_inline_frame's diff stayed silent and
-    // the terminal kept displaying the previous frame's content — ghost
-    // composers, duplicated markdown lines, broken vertical rails. Full
-    // clear costs ~6-30 µs per frame (500 × W u64 std::fill, fits in
-    // L2), negligible compared to layout + paint, and eliminates the
-    // whole class of stale-cell leaks.
+    // cell the current paint doesn't explicitly write stays blank.
     st.canvas.clear();
 
-    render_tree(root, st.canvas, pool, theme::dark, st.layout_nodes, /*auto_height=*/true);
+    render_tree(root, st.canvas, pool, theme::dark, st.layout_nodes,
+                /*auto_height=*/true);
 
     int ch = content_height(st.canvas);
 
-    // Content filled the canvas — grow using the layout-computed height.
     if (ch >= st.canvas.height() && !st.layout_nodes.empty()) {
         int needed = st.layout_nodes[0].computed.size.height.raw();
         if (needed > st.canvas.height()) {
@@ -85,48 +85,54 @@ void render_live(const Element& root, int width, StylePool& pool,
         }
     }
 
-    if (ch <= 0) {
-        // Force a full repaint on the next non-empty frame so we don't
-        // diff against stale prev_cells, and drop our memory of the
-        // terminal-mode escapes — if the host reset the terminal
-        // between frames (signal handler, subprocess, etc.) we must
-        // re-emit them on the next paint or the new frame will paint
-        // with autowrap on and wide content will wrap into garbage.
-        st.frame.ghost_rows_above = st.frame.wire_cursor_rows;
-        st.frame.prev_rows = 0;
-        st.frame.cursor_hidden = false;
-        st.frame.decawm_off = false;
-        return;
-    }
+    if (ch <= 0) return;
 
-    buf.clear();
-    compose_inline_frame(st.canvas, ch, st.term_h, pool, st.frame, buf);
-    if (buf.empty()) return;
+    const int  term_h = st.term_h;
+    const auto rows   = content_rows(st.canvas);
 
-    const std::size_t want = buf.size();
-    const std::size_t got  = std::fwrite(buf.data(), 1, want, stdout);
-    std::fflush(stdout);
+    // Witness Chain dispatch — same pattern as Runtime::render.
+    st.frame = std::visit(
+        [&](auto&& arm) -> inline_frame::InlineCoherence {
+            using T = std::decay_t<decltype(arm)>;
+            using namespace inline_frame;
 
-    // Short write — the wire received a prefix of the frame but
-    // compose_inline_frame already updated prev_cells / shadow_hash as
-    // though the whole frame was delivered. Next frame's diff would
-    // believe the wire matches the shadow and silently skip emitting
-    // the cells that were truncated, leaving permanent corruption
-    // (a half-drawn box border, a missing right edge, the classic
-    // "sometimes the frame is broken" symptom).
-    //
-    // Recovery: invalidate the shadow and stage a force-redraw so
-    // the next compose goes through case (B) and repaints the
-    // viewport in place. ghost_rows_above is sized from the prior
-    // emit's wire_cursor_rows so the upward erase covers the
-    // (possibly larger) previous frame.
-    if (got != want) {
-        st.frame.ghost_rows_above = st.frame.wire_cursor_rows;
-        st.frame.prev_rows = 0;
-        st.frame.cursor_hidden = false;
-        st.frame.decawm_off = false;
-        st.frame.shadow_hash = static_cast<uint64_t>(-1);
-    }
+            auto lift = [](auto&& outcome) -> InlineCoherence {
+                return std::visit(
+                    [](auto&& a) -> InlineCoherence { return std::move(a); },
+                    std::move(outcome));
+            };
+
+            if constexpr (std::is_same_v<T, InlineFrame<Empty>>) {
+                auto fresh = std::move(arm).seed();
+                return lift(std::move(fresh).render(
+                    st.canvas, rows, term_h, pool, *st.writer, true));
+            }
+            else if constexpr (std::is_same_v<T, InlineFrame<Fresh>>) {
+                return lift(std::move(arm).render(
+                    st.canvas, rows, term_h, pool, *st.writer, true));
+            }
+            else if constexpr (std::is_same_v<T, InlineFrame<Synced>>) {
+                auto wit = arm.verify();
+                if (!wit) {
+                    return std::move(arm).demote_to_stale();
+                }
+                return lift(std::move(arm).render(
+                    st.canvas, rows, term_h, pool, *st.writer,
+                    *std::move(wit), true));
+            }
+            else if constexpr (std::is_same_v<T, InlineFrame<Stale>>) {
+                return lift(std::move(arm).render(
+                    st.canvas, rows, term_h, pool, *st.writer, true));
+            }
+            else if constexpr (std::is_same_v<T, InlineFrame<HardReset>>) {
+                return lift(std::move(arm).render(
+                    st.canvas, rows, term_h, pool, *st.writer, true));
+            }
+            else {
+                static_assert(std::is_same_v<T, InlineFrame<Sealed>>);
+                return std::move(arm);
+            }
+        }, std::move(st.frame));
 }
 
 } // namespace detail
@@ -142,7 +148,7 @@ void print(const Element& root) {
     // compose_inline_frame leaves DECAWM off across frames to save
     // bytes on slow ttys; finalize() emits the restore.
     buf.clear();
-    st.frame.finalize(buf);
+    inline_frame::finalize_coherence(std::move(st.frame), buf);
     if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);
@@ -155,7 +161,7 @@ void print(const Element& root, int width) {
     detail::LiveState st;
     detail::render_live(root, width, pool, buf, st);
     buf.clear();
-    st.frame.finalize(buf);
+    inline_frame::finalize_coherence(std::move(st.frame), buf);
     if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);

@@ -61,6 +61,7 @@
 #include "../platform/select.hpp"
 #include "../render/canvas.hpp"
 #include "../render/diff.hpp"
+#include "../render/inline_frame.hpp"
 #include "../render/pipeline.hpp"
 #include "../render/renderer.hpp"
 #include "../render/serialize.hpp"
@@ -287,20 +288,25 @@ namespace detail {
 //
 // std::visit on either variant gives compile-time exhaustiveness: adding
 // a new state forces every dispatcher to handle it or fail to build.
+//
+// INLINE COHERENCE NOTE
+// ————————————————————————————————————————————
+// The inline path no longer uses `coherent::InlineState`. It now uses
+// `maya::inline_frame::InlineCoherence` (the Witness Chain), which has
+// six type-tagged states (Empty / Fresh / Synced / Stale / HardReset /
+// Sealed) instead of the previous two (InlineSynced / Divergent). The
+// chain enforces every render precondition at compile time — see
+// docs/internals/witness-chain.md. The legacy InlineSynced/Divergent
+// types remain for FULLSCREEN coherence; inline mode uses InlineCoherence.
 namespace coherent {
 
 struct FullscreenSynced {
     Canvas front;   // canonical "what the terminal currently displays"
 };
 
-struct InlineSynced {
-    InlineFrameState state;
-};
-
 struct Divergent {};
 
 using FullscreenState = std::variant<FullscreenSynced, Divergent>;
-using InlineState     = std::variant<InlineSynced,     Divergent>;
 
 } // namespace coherent
 
@@ -346,126 +352,82 @@ public:
     void set_title(std::string_view title);
 
     // Row count of the last composed inline frame (0 in fullscreen mode
-    // or before the first render).  Callers can use this as a cheap proxy
-    // for tree height when deciding to virtualize.  Returns 0 in the
-    // Divergent state (the prev_rows is part of InlineFrameState which
-    // only exists inside InlineSynced — by construction).
+    // or before the first render). Callers can use this as a cheap proxy
+    // for tree height when deciding to virtualize. Returns 0 in any
+    // inline state that doesn't carry a row count (Empty, Fresh,
+    // HardReset, Sealed) — by construction these states have no
+    // committed-frame row count to report.
     [[nodiscard]] int inline_content_rows() const noexcept {
-        if (auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_))
-            return s->state.prev_rows;
+        if (auto* s = std::get_if<inline_frame::InlineFrame<inline_frame::Synced>>(
+                &in_coherence_))
+            return s->rows();
+        if (auto* s = std::get_if<inline_frame::InlineFrame<inline_frame::Stale>>(
+                &in_coherence_))
+            return s->rows();
         return 0;
     }
 
     // Mark prev-frame rows as committed to scrollback.
     //
-    // SAFETY: the `rows` argument is now ADVISORY. The actual rows
+    // SAFETY: the `rows` argument is ADVISORY. The actual rows
     // committed are `min(rows, max(0, prev_rows - term_h))` — only
     // rows that have provably overflowed the viewport are ever
-    // removed from prev_cells. A caller that over-claims (the
-    // historical scrollback-corruption root cause: agentty's
-    // maybe_virtualize used kSliceChunk * kRowsPerDroppedMessageLower
-    // = 8 as a guess at rendered height of dropped messages, which
-    // could exceed the rows that physically scrolled and left
-    // never-cleared ghost rows between the renderer's model and the
-    // wire) is now silently clamped to the safe value rather than
-    // corrupting prev_cells alignment.
+    // removed from prev_cells. A caller that over-claims is silently
+    // clamped to the safe value rather than corrupting prev_cells
+    // alignment.
     //
-    // Callers that want the strictly-provable behavior should use
-    // `commit_inline_overflow()` directly. This entry point is
-    // retained for backwards compatibility with the row-counted
-    // Cmd::commit_scrollback(int) variant.
-    //
-    // No effect in fullscreen mode or when render coherence is
-    // Divergent (there is no prev-frame state to commit against —
-    // the next render will be a full repaint anyway).
+    // Only meaningful when inline coherence is Synced; any other state
+    // (Empty, Fresh, Stale, HardReset, Sealed) has no committed-frame
+    // row count to commit against and the call is a no-op.
     void commit_inline_prefix(int rows) noexcept {
         if (!is_inline()) return;
         if (rows <= 0) return;
-        auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_);
+        auto* s = std::get_if<inline_frame::InlineFrame<inline_frame::Synced>>(
+            &in_coherence_);
         if (!s) return;
         const int term_h = std::max(1, size_.height.raw());
-        const int safe_max = std::max(0, s->state.prev_rows - term_h);
+        const int safe_max = std::max(0, s->rows() - term_h);
         const int safe_rows = std::min(rows, safe_max);
         if (safe_rows <= 0) return;
-        s->state.commit(s->state.scrollback_marker(safe_rows));
+        // Move the Synced out, commit, store the new Synced back.
+        // ScrollbackMarker is consumed by `commit()`; the typed token
+        // guarantees `safe_rows <= prev_rows` at issue time.
+        in_coherence_ = std::move(*s).commit(s->scrollback_marker(safe_rows));
     }
 
     // Commit every prev-frame row that has provably already overflowed
-    // the viewport — i.e. `max(0, prev_rows - term_h)` rows. Strict
-    // lower bound on rows already in native scrollback; safe to commit
-    // without risk of ghosting (over-committing rows still on screen).
-    //
-    // The host calls this after virtualizing old messages out of the
-    // view tree: prev_cells shrinks by everything that's definitely
-    // scrollback, and compose_inline_frame's natural shrink path
-    // reconciles the surviving live-viewport rows on the next render.
-    // Without this, prev_cells grows unboundedly across a long session
-    // (the renderer can't tell which rows the application has
-    // semantically retired) — 1–2 MB of resident memory per ~200-turn
-    // conversation, plus a memmove cost on the moment a real commit
-    // finally happens.
-    //
-    // No-op when prev_rows <= term_h (everything still fits on
-    // screen) or when in fullscreen / Divergent state.
+    // the viewport — i.e. `max(0, prev_rows - term_h)` rows.
     void commit_inline_overflow() noexcept {
         if (!is_inline()) return;
-        auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_);
+        auto* s = std::get_if<inline_frame::InlineFrame<inline_frame::Synced>>(
+            &in_coherence_);
         if (!s) return;
         const int term_h = std::max(1, size_.height.raw());
-        const int overflow_rows = s->state.prev_rows - term_h;
+        const int overflow_rows = s->rows() - term_h;
         if (overflow_rows <= 0) return;
-        s->state.commit(s->state.scrollback_marker(overflow_rows));
+        in_coherence_ = std::move(*s).commit(s->scrollback_marker(overflow_rows));
     }
 
-    // Force the next render to be a full repaint by collapsing both
-    // coherence variants to Divergent — same internal effect as
-    // handle_resize(), without requiring a SIGWINCH. The next render's
-    // For inline mode: zero prev_rows on the existing InlineSynced
-    // state. Next compose's first-ever-render path (which now does a
-    // SOFT in-place redraw: cursor_up + serialize + \x1b[J) repaints
-    // the live frame without scrolling content into native scrollback
-    // when the frame fits above the current cursor. This is the
-    // intended behavior for the "stream finished, user about to
-    // resume" use case — the composer stays at its current viewport
-    // row, the diff path's stale prev_cells is refreshed, no
-    // "composer rushes to terminal-bottom" jolt.
+    // Force the next render to be a full repaint.
     //
-    // If the inline state is Divergent (rare — happens after a write
-    // failure), leave it. The next render's Divergent → Synced
-    // transition does the aggressive `\x1b[2J\x1b[3J\x1b[H` clear,
-    // which is appropriate when the renderer doesn't know what's on
-    // screen.
+    // For inline mode: demote the current Synced/Fresh state to Stale,
+    // which routes the next render through compose's case (B) soft
+    // redraw — cursor walks up, paints in place, erases below, no
+    // scrollback wipe. The composer stays at its current viewport
+    // row; host content above is preserved.
+    //
+    // If the inline state is already Stale or HardReset, leave it.
     //
     // Fullscreen always goes Divergent (no soft-redraw equivalent for
     // the alternate-screen-buffer model).
     void force_redraw() noexcept {
         fs_coherence_ = coherent::Divergent{};
-        if (auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_)) {
-            // Stash the live wire_cursor_rows BEFORE zeroing prev_rows.
-            // wire_cursor_rows tracks the cursor's actual viewport-row
-            // offset from the last successful emit and is invariant under
-            // commit_prefix (commits move rows into native scrollback in
-            // bookkeeping but never move the on-screen cursor). prev_rows
-            // is NOT a valid substitute: a commit_prefix between the last
-            // emit and this force_redraw shrinks prev_rows without
-            // shifting the cursor, so using prev_rows here would
-            // undershoot the upward erase and leave the prior frame's
-            // top rows painted above the new frame.
-            s->state.ghost_rows_above = s->state.wire_cursor_rows;
-            s->state.prev_rows = 0;
-            // Force_redraw exists because terminal state has
-            // demonstrably diverged from our model (user hit Ctrl-L,
-            // foreign process scribbled on the tty, etc). The shadow
-            // cells get refreshed via prev_rows=0 above, but the
-            // cached "already emitted" flags for hide_cursor /
-            // DECAWM-off are independent state that may also have
-            // been clobbered by the divergence event. Reset them so
-            // the next compose unconditionally re-emits the escapes
-            // and the wire's cursor visibility / wrap mode match
-            // what the renderer assumes.
-            s->state.cursor_hidden = false;
-            s->state.decawm_off    = false;
+        if (auto* s = std::get_if<inline_frame::InlineFrame<inline_frame::Synced>>(
+                &in_coherence_)) {
+            in_coherence_ = std::move(*s).demote_to_stale();
         }
+        // Fresh/Stale/HardReset already produce the right behavior on
+        // the next render. Empty/Sealed are non-render states; ignore.
     }
 
     // True iff the underlying writer is holding undelivered bytes from a
@@ -530,18 +492,18 @@ private:
     Canvas                          canvas_;
     std::string                     out_;
     std::vector<layout::LayoutNode> layout_nodes_;
-    // Initial state matters: in inline mode, Divergent means "previous
-    // content from us is on the terminal, must erase before re-painting"
-    // — but on the very first frame nothing of ours has been drawn, so
-    // the terminal IS the user's shell.  Defaulting to Divergent would
-    // emit \x1b[2J\x1b[3J\x1b[H and erase their scrollback.  Defaulting
-    // to InlineSynced{} (empty InlineFrameState) means "we know what
-    // we've drawn: nothing", so compose_inline_frame paints from the
-    // cursor downward without disturbing what's above.  Fullscreen has
-    // no equivalent concern because alt-screen entry already cleared
-    // the buffer — Divergent's "home + serialize" path is benign there.
+    // Initial state matters: in inline mode, defaulting to anything
+    // that emits a hard-reset (\x1b[2J\x1b[3J\x1b[H) would wipe the
+    // user's shell scrollback on startup. The Witness Chain's
+    // `InlineFrame<Empty>` is the safe initial state — the runtime's
+    // first render path seeds it to `Fresh`, which routes compose
+    // through case (A): emit from the cursor's current position via
+    // serialize(), growing downward without disturbing host content
+    // above. Fullscreen has no equivalent concern because alt-screen
+    // entry already cleared the buffer — Divergent's "home + serialize"
+    // path is benign there.
     coherent::FullscreenState       fs_coherence_ = coherent::Divergent{};
-    coherent::InlineState           in_coherence_ = coherent::InlineSynced{};
+    inline_frame::InlineCoherence   in_coherence_ = inline_frame::InlineFrame<inline_frame::Empty>{};
 
     // -- Configuration --------------------------------------------------------
     Theme         theme_              = theme::dark;

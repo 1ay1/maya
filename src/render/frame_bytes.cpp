@@ -126,19 +126,22 @@ FrameBytes compose_inline_frame_v2(
 // FrameBytes::commit_to — typed atomic write
 // ─────────────────────────────────────────────────────────────────────────
 //
-// Writer::write_or_buffer already provides the byte-level atomicity
-// (residue path for partial accept, hard-error surface for I/O
-// failure). Our job is to fuse that result with the state advance:
+// Writer::write_or_buffer provides byte-level atomicity: a residue
+// path for partial writes, and a hard-error surface for genuine I/O
+// failure. Our job is to fuse that result with the state advance:
 //
 //   - empty FrameBytes (compose produced no diff) → trivially Synced
 //     with the moved successor.
 //   - non-empty + write succeeds → Synced with the moved successor.
-//   - non-empty + write fails → Stale with the recovery shape.
+//   - non-empty + write fails hard → HardReset (no carried state).
+//     The wire is in an unknown state after a mid-frame I/O failure;
+//     the only safe next move is the \x1b[2J\x1b[3J\x1b[H wipe
+//     emitted by InlineFrame<HardReset>::render. We DROP the
+//     in-flight successor because none of its invariants hold any
+//     more (prev_cells now reflects bytes the wire never received).
 
 CommitOutcome FrameBytes::commit_to(Writer& writer) && noexcept {
     if (bytes_.empty()) {
-        // Compose decided no bytes need to be sent (no diff vs prev).
-        // Successor state is unchanged from what compose handed us.
         return commit::Synced{std::move(successor_)};
     }
 
@@ -147,46 +150,20 @@ CommitOutcome FrameBytes::commit_to(Writer& writer) && noexcept {
         return commit::Synced{std::move(successor_)};
     }
 
-    // Hard I/O error. Build the recovery state:
-    //
-    //   - ghost_rows_above = successor's wire_cursor_rows (the rows
-    //     the failed frame was supposed to occupy; the next render's
-    //     case-(B) emit will erase them).
-    //   - prev_rows zeroed so the next compose enters case (B).
-    //   - cursor_hidden / decawm_off cleared so terminal-mode escapes
-    //     are re-emitted after the failure (host shell may have
-    //     restored modes during the gap).
-    //   - shadow_hash sentinel so verify_shadow on the next render
-    //     treats this state as fresh (no false positives).
-    //
-    // The successor we built was already loaded with wire_cursor_rows
-    // by compose_inline_frame — we read that value before resetting.
-    InlineFrameState recovery = std::move(successor_);
-    const int prior_wire_rows = recovery.wire_cursor_rows;
-    recovery.ghost_rows_above = prior_wire_rows;
-    recovery.prev_rows        = 0;
-    recovery.cursor_hidden    = false;
-    recovery.decawm_off       = false;
-    recovery.shadow_hash      = static_cast<std::uint64_t>(-1);
-    // Tell the writer to flush any residue + restore terminal modes
-    // before the next render runs. Best-effort; ignore the result.
+    // Hard I/O error. Drop the residue (it would re-send bytes the
+    // wire might have received partially) and surface HardReset so
+    // the next render emits the wipe sequence and starts fresh.
     writer.discard_residue();
-    return commit::Stale{std::move(recovery), st};
+    return commit::HardReset{st};
 }
 
 // abandon: discard bytes without writing. The bytes never reached the
-// wire, so the wire still reflects the PRIOR frame, not the successor
-// state compose computed. The recovery shape is therefore based on
-// the successor's wire_cursor_rows (which equals min(prev_rows_at_
-// successor, term_h), and since we never wrote, the wire actually
-// shows what the previous frame painted — but we cannot tell whether
-// the previous frame fully landed, so we conservatively demote to
-// Stale).
-//
-// In practice abandon() is called when the runtime decides between
-// compose and commit_to that the frame should not ship (e.g. quit
-// arrived). The next render — if any — routes through case (B) and
-// repaints in place.
+// wire, so the wire still shows what the prior frame painted — but
+// our model (`successor_`) was already updated to reflect a frame the
+// wire never received. Demote to Stale: the next render goes through
+// case (B) and soft-redraws in place. This is the right shape because
+// the wire's content is plausibly the prior frame's; the recovery
+// just needs to refresh the cells the canvas now describes.
 
 commit::Stale FrameBytes::abandon() && noexcept {
     InlineFrameState recovery = std::move(successor_);
@@ -197,6 +174,14 @@ commit::Stale FrameBytes::abandon() && noexcept {
     recovery.decawm_off       = false;
     recovery.shadow_hash      = static_cast<std::uint64_t>(-1);
     return commit::Stale{std::move(recovery), ok()};
+}
+
+// abandon_to_hard_reset: the runtime has decided that the wire is
+// genuinely in an unknown state (e.g. it observed a write error from
+// a parallel codepath) and the bytes we're holding are inappropriate
+// to send. Drop them; surface HardReset.
+commit::HardReset FrameBytes::abandon_to_hard_reset(Status reason) && noexcept {
+    return commit::HardReset{reason};
 }
 
 } // namespace maya

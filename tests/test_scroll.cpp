@@ -287,7 +287,7 @@ static void test_dsl_pipe_sets_fields() {
     Element e = (v(text("a"), text("b")) | scroll(s, /*h=*/5)).build();
     auto* bx = as_box(e);
     assert(bx != nullptr);
-    assert(bx->overflow == Overflow::Hidden);
+    assert(bx->overflow == Overflow::Scroll);
     assert(bx->layout.scroll_x == 3);
     assert(bx->layout.scroll_y == 7);
     assert(bx->scroll_state == &s);

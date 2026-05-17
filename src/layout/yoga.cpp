@@ -134,28 +134,26 @@ void compute_node(
         if (!basis.is_auto()) {
             hypo_main = basis.resolve(main_avail);
         } else if (child.measure) {
-            // Measure leaf to get intrinsic size. When the parent will
-            // clip / scroll its children, measure unconstrained so text
-            // doesn't wrap to fit the viewport (the renderer will
-            // translate by scroll_x/y and clip — wrapping would hide
-            // the scrollable extent).
-            const int measure_w = (style.overflow != Overflow::Visible)
+            // Measure leaf to get intrinsic size. Only scroll viewports
+            // measure unconstrained — we want long text inside a scroll
+            // viewport to keep its full width so the user can scroll to
+            // see it. Hidden containers (plain clip without scroll
+            // state) should pass the constrained width so children wrap
+            // to fit, matching CSS overflow:hidden semantics.
+            const int measure_w = (style.overflow == Overflow::Scroll)
                 ? kUnconstrained
                 : (row ? main_avail : content_w);
             Size ms = child.measure(std::max(0, measure_w - inner_horizontal(cs)));
             hypo_main = row ? ms.width.value + inner_horizontal(cs) : ms.height.value + inner_vertical(cs);
         } else {
-            // Recurse to determine child's natural size. When this
-            // container will clip / scroll its children (overflow ≠
-            // Visible), pass an effectively-infinite available space so
-            // the descendants compute natural sizes rather than running
-            // their own shrink loops against the parent's narrow
-            // viewport. This is what makes 2D scrolling work: an inner
-            // h-row inside a scroll viewport keeps its full 30-cell
-            // width instead of being squashed to 8.
-            const int child_avail_w = (style.overflow != Overflow::Visible)
+            // Recurse to determine child's natural size. Scroll viewports
+            // pass infinite available so descendants compute natural
+            // sizes (allowing inner content wider than the viewport to
+            // be scrolled into view). Hidden containers behave like
+            // Visible for layout — only paint-time clipping differs.
+            const int child_avail_w = (style.overflow == Overflow::Scroll)
                 ? kUnconstrained : (row ? main_avail : content_w);
-            const int child_avail_h = (style.overflow != Overflow::Visible)
+            const int child_avail_h = (style.overflow == Overflow::Scroll)
                 ? kUnconstrained : (row ? content_h  : main_avail);
             compute_node(nodes, ci, child_avail_w, child_avail_h, content_w, content_h);
 
@@ -258,15 +256,12 @@ void compute_node(
                 }
             }
         } else if (free_space < 0 && main_definite
-                && style.overflow == Overflow::Visible) {
-            // Shrink overflowing items via flex_shrink — but ONLY when the
-            // container will actually display the overflow. Containers
-            // marked Hidden or Scroll will clip / scroll their children,
-            // so the children should keep their natural sizes instead of
-            // being collapsed by the shrink-largest-first tiebreaker.
-            // (This is what the maya scroll primitive relies on: children
-            // remain at full size, renderer translates by scroll_x/y at
-            // paint time, clip rect drops anything outside the viewport.)
+                && style.overflow != Overflow::Scroll) {
+            // Shrink overflowing items via flex_shrink — but ONLY when
+            // the container won't scroll. Scroll viewports want
+            // children to keep natural sizes so the user can scroll
+            // through wider content; Visible and Hidden both shrink as
+            // CSS specifies.
             float total_shrink_weighted = 0.0f;
             for (auto& it : line.items) {
                 total_shrink_weighted +=
@@ -331,16 +326,21 @@ void compute_node(
             int inner_w = std::max(0, child_w - inner_horizontal(cs));
             int inner_h = std::max(0, child_h - inner_vertical(cs));
             if (!child.children.empty()) {
-                if (style.overflow != Overflow::Visible) {
-                    // Container will clip / scroll — let the child compute
-                    // its natural size on both axes, unconstrained by the
-                    // viewport. The renderer's paint-time scroll translation
-                    // and clip rect handle visibility.
+                if (style.overflow == Overflow::Scroll) {
+                    // Scroll viewport — children keep natural cross sizes
+                    // so wider inner content can be scrolled into view.
+                    // The renderer's paint-time scroll translation and
+                    // clip rect handle visibility.
                     compute_node(nodes, item.index, kUnconstrained, kUnconstrained,
                                  content_w, content_h);
                     child_w = child.computed.size.width.value;
                     child_h = child.computed.size.height.value;
                 } else {
+                    // Visible OR Hidden: children stretch to the cross-axis
+                    // size we just resolved. Hidden simply clips at paint
+                    // time — it should not change layout behaviour, so
+                    // bordered cards with align_items=Stretch still get
+                    // their children stretched as CSS specifies.
                     bool cross_definite = row ? (def_h >= 0) : (def_w >= 0);
                     auto saved_w = cs.width;
                     auto saved_h = cs.height;
@@ -506,12 +506,13 @@ void compute_node(
                 case Align::Stretch:
                     item.cross_offset = cross_cursor;
                     // Stretch the cross dimension to fill the line — UNLESS
-                    // the container's overflow will clip / scroll its
-                    // children, in which case children keep their natural
-                    // cross size so a wider inner row (e.g. inside a 2D
-                    // scroll viewport) doesn't get crushed to the
-                    // viewport width.
-                    if (style.overflow == Overflow::Visible) {
+                    // the container is a scroll viewport, where children must
+                    // keep their natural cross size so a wider inner row can
+                    // be horizontally scrolled into view. overflow=Hidden
+                    // (plain clip, no scroll state) DOES want stretch so that
+                    // bordered cards with align_items=Stretch behave like
+                    // every other CSS flex parent.
+                    if (style.overflow != Overflow::Scroll) {
                         item.cross = line.cross_size;
                         if (row) {
                             nodes[item.index].computed.size.height = Rows{item.cross};

@@ -896,12 +896,14 @@ struct WrappedNode {
                 // Apply scroll AFTER explicit width/height pipes so the
                 // user can override the viewport size with | width/| height
                 // if they wired the pipe with viewport=0.
-                // overflow=Hidden does double duty: clips paint to viewport,
-                // and (as of the layout patch in yoga.cpp) tells the shrink
-                // loop to let children keep natural sizes. No wrapper box
-                // needed — the renderer's paint-time scroll_x/y translation
-                // shows only the viewport-sized window.
-                box->overflow = Overflow::Hidden;
+                // overflow=Scroll signals to the layout engine that
+                // children should keep their natural sizes (so wider
+                // inner content can be scrolled into view) and to the
+                // renderer that paint should clip + translate by
+                // scroll_x/y. overflow=Hidden, by contrast, is plain
+                // CSS clipping with no viewport semantics — children
+                // stretch and shrink as normal.
+                box->overflow = Overflow::Scroll;
                 box->layout.scroll_x = scrl_state_->x;
                 box->layout.scroll_y = scrl_state_->y;
                 box->scroll_state    = scrl_state_;
@@ -932,7 +934,7 @@ struct WrappedNode {
         Element built = b(std::move(inner_elem));
         if (f_&SCRL) {
             if (auto* bx = maya::as_box(built)) {
-                bx->overflow = Overflow::Hidden;
+                bx->overflow = Overflow::Scroll;
                 bx->layout.scroll_x = scrl_state_->x;
                 bx->layout.scroll_y = scrl_state_->y;
                 bx->scroll_state    = scrl_state_;

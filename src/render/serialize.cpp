@@ -759,44 +759,32 @@ void compose_inline_frame(const Canvas& canvas,
                                  : nullptr;
         const bool is_new_row    = (y >= prev_rows);
 
-        // Top-of-viewport row about to be committed to native
-        // scrollback. The next frame that grows past term_h scrolls
-        // this row off the top via the bottom-edge \r\n's the loop
-        // emits — at which point the terminal's emulator captures
-        // whatever bytes are on this row, forever, into its own
-        // scrollback buffer that we cannot rewrite (see the SCOPE
-        // CONTRACT comment further up).
+        // Rows about to be committed to native scrollback by this
+        // frame's bottom-edge \r\n's. Once any of these rows scrolls
+        // off, the emulator captures the bytes currently on the wire
+        // for that row — forever, into its own scrollback that we
+        // cannot rewrite. If prev_cells says "matches canvas" but the
+        // wire actually shows old content (stale shadow, wide-char
+        // boundary mis-snap, layout shift between frames), that
+        // stale content commits.
         //
-        // The diff path normally emits only [x_first_diff,
-        // x_end_emit) for this row; if a layout shift in a later
-        // frame moved a right-edge glyph (e.g. a CodeBlock border or
-        // an HRule) but the per-row bulk_eq missed the cell because
-        // an earlier frame's prev_cells already shadowed it as
-        // "matches canvas", the wire still shows the OLD glyph
-        // position when the row scrolls off — leaving a permanently
-        // truncated border in scrollback ("phantom borders left in
-        // scrollback" — render.cpp's CodeBlock comment names the
-        // class).
+        // Defence: force a full-row re-emit for every row that this
+        // frame will scroll off, plus the topmost still-visible row
+        // (next frame's growth will scroll it). Previously the
+        // heuristic protected only the topmost about-to-commit row
+        // (single y == content_rows - term_h); if the frame grew by
+        // more than one row in a single frame, the lower
+        // about-to-commit rows still leaked.
         //
-        // Force the diff to consider the entire row for this single
-        // y. The downstream emit + shadow update collapses to
-        // "emit through last_content_col + 1, EL the rest, full-row
-        // shadow copy" — identical in shape to is_new_row handling,
-        // and idempotent when the row really hadn't changed (same
-        // bytes re-written to the wire, prev_cells re-copied from
-        // canvas). Cost: at most one full-width row's worth of
-        // bytes per frame, only when content_rows >= term_h.
-        //
-        // Boundary case: when content_rows == term_h exactly, the
-        // viewport is full but no row has scrolled off yet. The
-        // very next frame that grows by one row WILL scroll this
-        // y=0 row off. Treat y=0 as scroll-off-risk in that case
-        // too — the wire-vs-canvas reconciliation happens this
-        // frame, while we still own the row; the next frame's
-        // commit makes it permanent.
+        // Rows scrolled off THIS frame: [prev_visible_top, new_visible_top).
+        // Topmost still-visible row (next frame's risk): y == new_visible_top.
+        // Union: [prev_visible_top, new_visible_top].
+        const int new_visible_top = std::max(0, content_rows - term_h);
+        const int prev_visible_top = std::max(0, prev_rows - term_h);
         const bool will_scroll_off =
             (content_rows >= term_h)
-            && (y == std::max(0, content_rows - term_h));
+            && (y >= prev_visible_top)
+            && (y <= new_visible_top);
 
         // Find the changed sub-span. For new rows (no prev), this is
         // [first_non_blank, last_non_blank+1). For the will-scroll-off

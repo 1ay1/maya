@@ -356,20 +356,38 @@ public:
         return 0;
     }
 
-    // Mark the top `rows` rows of the current prev frame as committed to
-    // scrollback so the next frame can render a shorter tree without the
-    // renderer interpreting it as "content removed from the bottom".  No
-    // effect in fullscreen mode or when render coherence is Divergent
-    // (there is no prev-frame state to commit against — the next render
-    // will be a full repaint anyway).
+    // Mark prev-frame rows as committed to scrollback.
     //
-    // Routes through the typed ScrollbackMarker path so the rows-to-commit
-    // is clamped against the live state's prev_rows at the moment of the
-    // commit (rather than the application's possibly-stale view).
+    // SAFETY: the `rows` argument is now ADVISORY. The actual rows
+    // committed are `min(rows, max(0, prev_rows - term_h))` — only
+    // rows that have provably overflowed the viewport are ever
+    // removed from prev_cells. A caller that over-claims (the
+    // historical scrollback-corruption root cause: agentty's
+    // maybe_virtualize used kSliceChunk * kRowsPerDroppedMessageLower
+    // = 8 as a guess at rendered height of dropped messages, which
+    // could exceed the rows that physically scrolled and left
+    // never-cleared ghost rows between the renderer's model and the
+    // wire) is now silently clamped to the safe value rather than
+    // corrupting prev_cells alignment.
+    //
+    // Callers that want the strictly-provable behavior should use
+    // `commit_inline_overflow()` directly. This entry point is
+    // retained for backwards compatibility with the row-counted
+    // Cmd::commit_scrollback(int) variant.
+    //
+    // No effect in fullscreen mode or when render coherence is
+    // Divergent (there is no prev-frame state to commit against —
+    // the next render will be a full repaint anyway).
     void commit_inline_prefix(int rows) noexcept {
         if (!is_inline()) return;
-        if (auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_))
-            s->state.commit(s->state.scrollback_marker(rows));
+        if (rows <= 0) return;
+        auto* s = std::get_if<coherent::InlineSynced>(&in_coherence_);
+        if (!s) return;
+        const int term_h = std::max(1, size_.height.raw());
+        const int safe_max = std::max(0, s->state.prev_rows - term_h);
+        const int safe_rows = std::min(rows, safe_max);
+        if (safe_rows <= 0) return;
+        s->state.commit(s->state.scrollback_marker(safe_rows));
     }
 
     // Commit every prev-frame row that has provably already overflowed

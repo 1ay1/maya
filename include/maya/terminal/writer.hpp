@@ -206,7 +206,28 @@ public:
     /// to Divergent after a hard I/O error); the residue's bytes
     /// reference cell positions that no longer have a defined
     /// "prev" baseline.
-    void discard_residue() noexcept { residue_.clear(); }
+    ///
+    /// Best-effort flush of a defensive sync-block close + SGR reset
+    /// before clearing. compose_inline_frame wraps every frame in
+    /// `\x1b[?2026h ... \x1b[?2026l`; if a previous write_or_buffer
+    /// shipped the open but parked the close in residue, discarding
+    /// the residue would leave the terminal stuck inside a sync block.
+    /// Most terminals will then withhold display of any subsequent
+    /// output (including the post-Divergent full redraw) until either
+    /// a timeout fires or another close arrives. Emitting one here is
+    /// idempotent (closing an already-closed block is a no-op per
+    /// DEC's spec) and costs 8 bytes on a code path that already
+    /// committed to a full redraw.
+    void discard_residue() noexcept {
+        if (!residue_.empty()) {
+            static constexpr std::string_view sync_close =
+                "\x1b[?2026l\x1b[0m";
+            (void)platform::io_write(handle_,
+                                     sync_close.data(),
+                                     sync_close.size());
+        }
+        residue_.clear();
+    }
 
     /// EMA of ns-per-byte measured across recent `write_all` calls. 0
     /// before the first sample lands. Use as a cheap "is the wire slow?"

@@ -840,6 +840,17 @@ void StreamingMarkdown::clear() {
     // misses cleanly on the new instance instead of holding stale
     // entries against an unrelated subsequent stream.
     prefix_ = std::make_shared<CommittedPrefix>();
+    // Rotate the per-instance discriminator embedded in the prefix
+    // ComponentElement's cache_id. Without this rotation the first
+    // post-clear commit produces generation=1 and a cache_id of
+    // "#strmd-<instance_id_>-1" — byte-identical to the cache_id of
+    // the pre-clear stream's first commit. That pre-clear entry is
+    // retained in the renderer's content-keyed component cache
+    // (entries_by_id, ~2-second wallclock TTL), so the post-clear
+    // commit hits it and blits the pre-clear cells at the post-clear
+    // region. Bumping instance_id_ on every clear() makes the
+    // cache_id strictly monotonic across logical resets.
+    instance_id_ = detail::next_component_generation();
     ref_defs_.clear();
     in_code_fence_ = false;
     sink_.reset();

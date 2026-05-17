@@ -13,9 +13,19 @@ Severity:
 
 Priority labels at the end of each finding.
 
----
+**Status (current main):** every finding below is shipped. See the
+updated summary table at the bottom; per-finding status notes inline.
 
-## #1 — `commit_prefix` lies about cursor position when committed rows didn't actually scroll  ·  **CORRUPTION · P0**
+## #1 — `commit_prefix` lies about cursor position when committed rows didn't actually scroll  ·  **CORRUPTION · P0** · **RESOLVED**
+
+**Status.** Shipped in `829f4b7` ("scrollback corruption: structural
+hardening"). `commit_inline_prefix(int rows)` now clamps its argument
+to `min(rows, max(0, prev_rows - term_h))` internally
+(`include/maya/app/app.hpp:381-391`) so an over-claim becomes a no-op
+instead of corrupting `prev_cells`. Over the wire there is no longer
+a call-site contract to violate. agentty's `maybe_virtualize`
+(`src/runtime/app/update/modal.cpp:107-114`) no longer issues the
+Cmd at all — the inline shrink path handles residue.
 
 **Code:** `src/render/serialize.cpp:17-52` (`commit_prefix`),
 `src/render/serialize.cpp:511-525` (`cursor_row_start = prev_rows - 1`),
@@ -115,7 +125,15 @@ stability window, remove `commit_prefix(int rows)` from the public API.
 
 ---
 
-## #2 — force_redraw case (B) corrupts scrollback when `content_rows > term_h`  ·  **CORRUPTION · P1**
+## #2 — force_redraw case (B) corrupts scrollback when `content_rows > term_h`  ·  **CORRUPTION · P1** · **RESOLVED**
+
+**Status.** Shipped in `2279dfb` ("compose: fall through to hard reset
+when force_redraw fires with content_rows > term_h"); follow-up
+`38dd364` drops the hard reset once the viewport-capped case (B) was
+proven scrollback-safe, and `57f7608` adds the erase-above pass.
+When force_redraw fires on an oversized frame the renderer now takes
+the Divergent path's `\x1b[2J\x1b[3J\x1b[H` once, deterministically,
+instead of nudging native scrollback every redraw.
 
 **Code:** `src/render/serialize.cpp:455-462`.
 
@@ -190,7 +208,13 @@ as the cost of a guaranteed-correct redraw.
 
 ---
 
-## #3 — Partial-write recovery in `write_all` corrupts mid-CSI sequences  ·  **CORRUPTION · P2**
+## #3 — Partial-write recovery in `write_all` corrupts mid-CSI sequences  ·  **CORRUPTION · P2** · **RESOLVED**
+
+**Status.** Shipped in `1609106` ("renderer: CAN+SUB+ST cancel on
+partial-write recovery"). `write_all` now prepends `\x18` (CAN),
+`\x1a` (SUB), and `\x1b\\` (ST) before the recovery sequence,
+covering CSI / OSC / DCS abandonment modes across the terminal
+families that matter.
 
 **Code:** `src/terminal/writer.cpp:361-371`.
 
@@ -240,7 +264,10 @@ on the next residue retry).
 
 ---
 
-## #4 — `blit_packed_row` raises `max_y_` for rows that may have been emptied by clip-edge wide-glyph repair  ·  **LATENT · P3**
+## #4 — `blit_packed_row` raises `max_y_` for rows that may have been emptied by clip-edge wide-glyph repair  ·  **LATENT · P3** · **RESOLVED**
+
+**Status.** Shipped in `1609106`. The `max_y_` bump is now inside
+the `actual_last >= 0` guard.
 
 **Code:** `include/maya/render/canvas.hpp:467-491`.
 
@@ -276,7 +303,10 @@ if (actual_last >= 0) {
 
 ---
 
-## #5 — `clear_rows(n)` leaves `last_col_[n..height_]` populated; `max_y_` reset to -1 is wrong if rows past n still hold content  ·  **LATENT · P3**
+## #5 — `clear_rows(n)` leaves `last_col_[n..height_]` populated; `max_y_` reset to -1 is wrong if rows past n still hold content  ·  **LATENT · P3** · **RESOLVED**
+
+**Status.** Shipped in `1609106`. `clear_rows` now rescans `max_y_`
+from the surviving rows after the partial clear.
 
 **Code:** `src/render/canvas.cpp:441-451`.
 
@@ -316,7 +346,10 @@ and `inline.cpp:62` uses `clear()` directly.
 
 ---
 
-## #6 — No assertion that `content_rows == canvas.max_content_row() + 1` at compose entry  ·  **LATENT · P3**
+## #6 — No assertion that `content_rows == canvas.max_content_row() + 1` at compose entry  ·  **LATENT · P3** · **RESOLVED**
+
+**Status.** Shipped in `1609106`. The debug assert is in place at
+compose entry.
 
 **Code:** `src/render/serialize.cpp:294-303` (compose entry) and
 `src/app/app.cpp:393, 415` (sole call sites — they pass
@@ -406,31 +439,24 @@ issue. Worth flagging in a comment near `reset()`.
 
 ## Priority summary
 
-| # | severity      | priority | one-line fix                                                                  |
-|---|---------------|----------|-------------------------------------------------------------------------------|
-| 1 | CORRUPTION    | **P0**   | agentty: use `commit_scrollback_overflow` instead of `commit_scrollback(rows)` |
-| 2 | CORRUPTION    | **P1**   | case (B) soft-redraw: fall through to Divergent when `content_rows > term_h`  |
-| 3 | CORRUPTION    | **P2**   | `write_all` recovery: prepend `\x18` to cancel partial CSI                    |
-| 4 | LATENT        | P3       | `blit_packed_row`: gate `max_y_` bump on `actual_last >= 0`                   |
-| 5 | LATENT        | P3       | `clear_rows`: rescan `max_y_` from surviving rows, or delete it               |
-| 6 | LATENT        | P3       | add debug assert `content_rows == max_content_row() + 1` at compose entry     |
-| 7 | informational | —        | acceptable redundancy (5 bytes/session)                                       |
-| 8 | informational | —        | comment near `state.reset()` re cursor visibility                             |
+| # | severity      | priority | status   | fix shipped in                                                                |
+|---|---------------|----------|----------|-------------------------------------------------------------------------------|
+| 1 | CORRUPTION    | **P0**   | resolved | `829f4b7` (clamp inside `commit_inline_prefix`) + agentty no longer issues Cmd |
+| 2 | CORRUPTION    | **P1**   | resolved | `2279dfb` / `38dd364` / `57f7608` (case-(B) routing + erase-above)            |
+| 3 | CORRUPTION    | **P2**   | resolved | `1609106` (CAN+SUB+ST cancel on partial-write recovery)                       |
+| 4 | LATENT        | P3       | resolved | `1609106` (gate `max_y_` bump on `actual_last >= 0`)                          |
+| 5 | LATENT        | P3       | resolved | `1609106` (`clear_rows` rescans `max_y_`)                                     |
+| 6 | LATENT        | P3       | resolved | `1609106` (debug assert at compose entry)                                     |
+| 7 | informational | —        | wontfix  | acceptable redundancy (5 bytes/session)                                       |
+| 8 | informational | —        | wontfix  | comment near `state.reset()` re cursor visibility                             |
 
-**The #1 fix is the load-bearing one.** It is the single bug that is
-currently producing the symptoms the user reports as "scrollback
-corruption", and fixing it eliminates the most common path to
-permanent ghost rows.
+All structural scrollback-corruption findings from this audit are
+shipped. Defenses, in order of where bytes have to come from:
 
-#2 is a near-second — it manifests every time `force_redraw` fires
-during a tall stream. The user is unlikely to hit it because the
-streaming-finished bottleneck for force_redraw happens *after*
-content has been committed to scrollback by normal `\r\n` scrolls,
-so `content_rows` at force_redraw time is usually ≤ `term_h`. But
-"usually" isn't "always".
-
-#3 is the only finding that's a pure terminal-emulator-quirk bug.
-The recovery sequence shipped is correct for spec-compliant terminals
-and incorrect for some real ones.
-
-The rest are hygiene.
+  * Don't let bad bytes hit the wire in the first place: wide-char
+    snap + `fwrite` short-write detection (`72f7ca6`).
+  * Force re-emit before commit so any wire/model drift gets corrected:
+    widened `will_scroll_off` guard in `compose_inline_frame`
+    (`829f4b7`).
+  * Don't let the model lie to itself about which rows are still
+    on-screen: `commit_inline_prefix` clamp (`829f4b7`).

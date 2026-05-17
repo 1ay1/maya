@@ -133,7 +133,7 @@ void render_live(const Element& root, int width, StylePool& pool,
 
 void print(const Element& root) {
     platform::ensure_utf8();
-    int width = detail::detect_terminal_width() - 1;
+    int width = detail::detect_terminal_width();
     StylePool pool;
     std::string buf;
     detail::LiveState st;

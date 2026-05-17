@@ -242,9 +242,7 @@ auto Runtime::render(const Element& root) -> Status {
             std::chrono::steady_clock::now() - t0).count() / 1000.0;
     };
 
-    const int w = is_inline()
-        ? std::max(1, size_.width.raw() - 1)
-        : size_.width.raw();
+    const int w = size_.width.raw();
     if (w <= 0) return ok();
 
     render_ctx_.width       = w;

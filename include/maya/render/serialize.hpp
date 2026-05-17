@@ -256,6 +256,19 @@ struct InlineFrameState {
 
 /// Compose the byte stream for one inline frame into `out`.
 ///
+/// **DEPRECATED FOR APPLICATION CODE.** Use the Witness Chain instead:
+///
+///   - `compose_inline_frame_v2(...)` for the typed compose path that
+///     requires `ContentRows` + `ShadowWitness` and returns
+///     `FrameBytes`, or
+///   - `inline_frame::InlineFrame<Tag>::render(...)` for the full
+///     type-state-machine API (the Runtime and print/live use this).
+///
+/// This raw entry point is retained as an internal helper (the chain
+/// composes onto it under friend access) and for the low-level
+/// scrollback-correctness test suite which exercises the byte-emit
+/// algorithm directly. NO PRODUCTION CODE PATH calls this any more.
+///
 /// Writes nothing (returns with `out` unchanged) when the current canvas
 /// is byte-for-byte identical to the previous one. Otherwise emits the
 /// minimal ANSI sequence that:
@@ -277,11 +290,7 @@ struct InlineFrameState {
 /// `state` is updated with the new cell buffer on successful composition.
 ///
 /// `synchronized_output` toggles the DEC 2026 wrapper. Default true for
-/// backward compat; pass false on terminals that don't honor mode 2026
-/// (Apple Terminal, plain xterm, tmux without `terminal-features ',sync'`).
-/// The sequence is silently ignored by terminals that don't recognise it,
-/// so the practical effect is byte savings rather than correctness — but
-/// the answer is also a useful upstream signal for tick-rate gating.
+/// backward compat; pass false on terminals that don't honor mode 2026.
 void compose_inline_frame(const Canvas& canvas,
                           int content_rows,
                           int term_h,
@@ -292,19 +301,15 @@ void compose_inline_frame(const Canvas& canvas,
 
 /// Re-compute the shadow-of-wire hash over `state.prev_cells` and
 /// compare it to the value `compose_inline_frame` stored at the end
-/// of the previous render. Returns true when the hash still matches
-/// (shadow is intact) or when no hash has been computed yet
-/// (`state.shadow_hash == UINT64_MAX`, fresh state). Returns false
-/// only when a prior compose recorded a hash and the current
-/// prev_cells contents no longer reproduce it — i.e. the shadow has
-/// been mutated outside the compose path, by either a host-side bug
-/// or memory corruption.
+/// of the previous render.
 ///
-/// Cost mirrors the hash-write at the end of compose: a single linear
-/// pass over the viewport-visible cell range, ~1µs on a 200×80
-/// viewport. The runtime checks this once per render before deciding
-/// whether to take the InlineSynced fast path or demote to Divergent
-/// and force a full re-paint.
+/// **DEPRECATED FOR APPLICATION CODE.** Use `verify_shadow(state)`
+/// instead — it returns a typed `std::optional<ShadowWitness>` that
+/// the Witness Chain consumes through `compose_inline_frame_v2`,
+/// making "compose without verifying the shadow" a compile error.
+/// This boolean form is retained for the low-level test surface that
+/// wants to assert the hash invariant directly. NO PRODUCTION CODE
+/// PATH calls this any more.
 [[nodiscard]] bool verify_shadow_hash(const InlineFrameState& state) noexcept;
 
 // ============================================================================

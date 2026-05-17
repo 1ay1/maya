@@ -13,6 +13,8 @@
 // rewrites only that row and everything below it. Rows still on-screen
 // are overwritten in place; rows that scrolled into history stay put.
 
+#include <cstdint>
+#include <optional>
 #include <string>
 
 #include "canvas.hpp"
@@ -22,6 +24,69 @@ namespace maya {
 /// Find the last non-empty row in a canvas (1-based height).
 /// Returns the number of rows that contain visible content.
 int content_height(const Canvas& canvas) noexcept;
+
+// ============================================================================
+// ContentRows — derivation witness for the row count passed to compose
+// ============================================================================
+//
+// Part of the Witness Chain (see docs/internals/witness-chain.md).
+//
+// Theorem T2 (no-corruption) requires that compose_inline_frame's
+// per-row emit loop walks exactly the rows the canvas painted — no
+// fewer (missed cells), no more (serialising stale cells from prior
+// frames into the live frame). The runtime check
+// `content_rows == canvas.max_content_row() + 1` enforces this only
+// when MAYA_DEBUG_SHADOW_VERIFY is defined; otherwise the precondition
+// is a comment.
+//
+// ContentRows lifts the precondition into the type system. It is a
+// thin wrapper around `int` with a private constructor; the only
+// producer is `content_rows(canvas)` below. A future overload of
+// `compose_inline_frame` taking ContentRows instead of `int` will
+// reject every call site that derives the row count from anywhere
+// other than the canvas — layout-computed heights, hard-coded
+// constants, off-by-one arithmetic on prev_rows, etc.
+//
+// The bound canvas pointer carries provenance for debug builds: if a
+// caller computes ContentRows from canvas A and passes it to compose
+// alongside canvas B, the runtime `assert` catches the mix-up. The
+// pointer is intentionally not part of the type's identity (no
+// templating on canvas address); doing so would force every call site
+// to be templated for no real safety benefit — the *intent* of the
+// type is to make "derive from the wrong source" uncompilable, and
+// the single-producer rule is what delivers that.
+
+class ContentRows {
+public:
+    [[nodiscard]] constexpr int value() const noexcept { return rows_; }
+
+    /// Debug-only provenance check. compose_inline_frame asserts this
+    /// matches the canvas it was passed; mismatch is a programming
+    /// error (computed rows from a different canvas than rendered).
+    [[nodiscard]] constexpr const Canvas* source_canvas() const noexcept {
+        return source_;
+    }
+
+private:
+    constexpr ContentRows(int r, const Canvas* src) noexcept
+        : rows_(r), source_(src) {}
+    friend ContentRows content_rows(const Canvas&) noexcept;
+
+    int            rows_;
+    const Canvas*  source_;
+};
+
+/// The sole producer of ContentRows. Derives the row count from the
+/// canvas's painted region (canvas.max_content_row() + 1) and binds
+/// the result to that canvas for downstream provenance verification.
+///
+/// Use this in place of the raw `content_height(canvas)` call site
+/// whenever the result will be passed to compose_inline_frame, so the
+/// type system witnesses that the row count came from the canvas the
+/// frame will paint.
+[[nodiscard]] inline ContentRows content_rows(const Canvas& canvas) noexcept {
+    return ContentRows{content_height(canvas), &canvas};
+}
 
 /// Serialize `rows` rows of the canvas starting at `start_row`
 /// (or all rows if rows <= 0).
@@ -241,5 +306,119 @@ void compose_inline_frame(const Canvas& canvas,
 /// whether to take the InlineSynced fast path or demote to Divergent
 /// and force a full re-paint.
 [[nodiscard]] bool verify_shadow_hash(const InlineFrameState& state) noexcept;
+
+// ============================================================================
+// ShadowWitness — proof that a state's shadow currently matches the wire
+// ============================================================================
+//
+// Part of the Witness Chain (see docs/internals/witness-chain.md).
+//
+// Theorem T2 (no-corruption) hinges on `compose_inline_frame` diffing
+// against a shadow that genuinely reflects what the terminal is
+// displaying. Today the runtime calls `verify_shadow_hash(state)` and
+// branches on the bool; forgetting the check or running compose
+// against a state whose shadow has drifted is a runtime-only failure
+// mode that has historically slipped past review (the FNV-1a hash
+// catches it, but only because somebody remembered to call the
+// function).
+//
+// ShadowWitness lifts the precondition into the type system. It is a
+// move-only token whose constructor is private; the *only* producer is
+// `verify_shadow(state)` below, which returns `std::optional<
+// ShadowWitness>` — `nullopt` when the shadow is poisoned, a populated
+// optional when the shadow is provably intact at the moment of the
+// call. A future overload of `compose_inline_frame` will take
+// `ShadowWitness&&` as a required argument, making "compose without
+// verifying the shadow" a compile error.
+//
+// Provenance binding
+// ——————————————————
+// Each witness carries a pointer to the InlineFrameState it was
+// issued against and the hash value at issue time. compose's
+// consumption re-hashes (closing the brief window between issuance
+// and consumption — if the cells were mutated during that span, the
+// re-hash will not match) and asserts the pointer matches the state
+// it was passed alongside. A witness from state A passed to compose
+// with state B fires the assertion in debug; in release the
+// re-hash will catch the mismatch (state B's cells produce a
+// different hash than state A recorded).
+//
+// Re-hash failure inside compose is treated as memory corruption
+// (the cells changed between consecutive function calls within a
+// single Runtime tick) and triggers std::terminate. This is a
+// stronger response than the Divergent recovery path, because the
+// scenario is fundamentally outside the application's control — a
+// concurrent write to private memory implies either a thread-safety
+// bug or a hardware error, and continuing to run is worse than
+// stopping.
+//
+// Move-only is load-bearing: it prevents a stale witness from being
+// reused across frames. Once consumed by compose, the witness's
+// storage is moved-from; a second consumption is a use-after-move
+// and produces a witness-with-null-state that fails the consumption
+// assertion. Compilers warn on use-after-move under -Wmoved-from.
+
+class ShadowWitness {
+public:
+    ShadowWitness(ShadowWitness&& o) noexcept
+        : state_(o.state_), hash_at_issue_(o.hash_at_issue_) {
+        o.state_ = nullptr;
+        o.hash_at_issue_ = 0;
+    }
+    ShadowWitness& operator=(ShadowWitness&& o) noexcept {
+        if (this != &o) {
+            state_         = o.state_;
+            hash_at_issue_ = o.hash_at_issue_;
+            o.state_         = nullptr;
+            o.hash_at_issue_ = 0;
+        }
+        return *this;
+    }
+    ShadowWitness(const ShadowWitness&)            = delete;
+    ShadowWitness& operator=(const ShadowWitness&) = delete;
+
+    /// True for a freshly-constructed witness, false after move-from.
+    /// Consumers (compose_inline_frame_v2) assert this before use.
+    [[nodiscard]] bool valid() const noexcept { return state_ != nullptr; }
+
+    /// Pointer-identity of the state the witness was issued against.
+    /// Used by compose to detect cross-state misuse.
+    [[nodiscard]] const InlineFrameState* bound_to() const noexcept {
+        return state_;
+    }
+
+    /// Hash value recorded at issue. compose re-hashes the state's
+    /// prev_cells on consumption and compares against this value.
+    [[nodiscard]] std::uint64_t hash_at_issue() const noexcept {
+        return hash_at_issue_;
+    }
+
+private:
+    ShadowWitness(const InlineFrameState* s, std::uint64_t h) noexcept
+        : state_(s), hash_at_issue_(h) {}
+    friend std::optional<ShadowWitness> verify_shadow(const InlineFrameState&) noexcept;
+
+    const InlineFrameState* state_;
+    std::uint64_t           hash_at_issue_;
+};
+
+/// The sole producer of ShadowWitness. Re-hashes `state.prev_cells`
+/// over the current `prev_rows × prev_width` range and compares
+/// against `state.shadow_hash`:
+///
+///   - Match (or fresh state with no prior hash) → returns a populated
+///     optional carrying the witness. The witness binds to `state` by
+///     address; passing it to compose alongside a different state is
+///     a programming error (debug assertion).
+///
+///   - Mismatch → returns std::nullopt. The runtime must NOT call
+///     `compose_inline_frame_v2` on this state; the only safe response
+///     is to demote to Divergent and re-paint from a clear viewport.
+///
+/// Cost: O(prev_rows × prev_width) of u64 FNV-1a folding, fully
+/// vectorisable by the compiler. ~1µs on a 200×80 viewport. This is
+/// the same hash `compose_inline_frame` already computes and stores;
+/// `verify_shadow` is the symmetric reader.
+[[nodiscard]] std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexcept;
 
 } // namespace maya

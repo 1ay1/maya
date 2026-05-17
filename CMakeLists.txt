@@ -95,6 +95,8 @@ add_library(maya
     src/render/renderer.cpp
     src/render/diff.cpp
     src/render/serialize.cpp
+    src/render/frame_bytes.cpp
+    src/render/inline_frame.cpp
     src/widget/markdown.cpp
     src/widget/markdown/parser.cpp
     src/widget/markdown/syntax.cpp
@@ -253,6 +255,8 @@ if(MAYA_BUILD_TESTS)
         tests/test_unicode_width.cpp
         tests/test_stream_sink.cpp
         tests/test_scroll.cpp
+        tests/test_wire_row.cpp
+        tests/test_inline_frame.cpp
     )
 
     foreach(src ${MAYA_TEST_SOURCES})

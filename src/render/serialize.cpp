@@ -34,6 +34,38 @@ bool verify_shadow_hash(const InlineFrameState& state) noexcept {
     return h == state.shadow_hash;
 }
 
+// ShadowWitness producer. Refolds prev_cells with the same FNV-1a
+// kernel verify_shadow_hash uses, returning either a populated
+// optional carrying the witness (the hash matched, or the state was
+// fresh) or nullopt (hash mismatch — the shadow is poisoned).
+//
+// Note we hash even on the "fresh" path so the witness carries a
+// concrete value, not the UINT64_MAX sentinel. That way the
+// re-verification done by compose_inline_frame_v2 on consumption is
+// always comparing against a real folded hash, never against the
+// sentinel.
+std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexcept {
+    // Fresh state: no prior shadow exists, so trivially "matches".
+    // Witness carries the current empty-state hash.
+    if (state.shadow_hash == static_cast<uint64_t>(-1) ||
+        state.prev_width <= 0 || state.prev_rows <= 0) {
+        return ShadowWitness{&state, 0ULL};
+    }
+
+    const std::size_t W = static_cast<std::size_t>(state.prev_width);
+    const std::size_t n = static_cast<std::size_t>(state.prev_rows) * W;
+    if (n > state.prev_cells.size()) return std::nullopt;
+
+    uint64_t h = 14695981039346656037ULL;
+    const uint64_t* p = state.prev_cells.data();
+    for (std::size_t i = 0; i < n; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    if (h != state.shadow_hash) return std::nullopt;
+    return ShadowWitness{&state, h};
+}
+
 void InlineFrameState::commit_prefix(int rows) noexcept {
     // Bounds: clamp to [0, prev_rows].  Negative / zero is a no-op; an
     // over-commit (rows >= prev_rows) is interpreted as "everything is

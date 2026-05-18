@@ -328,8 +328,17 @@ private:
                  // up against the elapsed with zero spacer. Result: the
                  // elapsed stays right-aligned and always has ≥2 cols of
                  // breathing room before it.
+                 //
+                 // `| nowrap`: text nodes default to TextWrap::Wrap, so
+                 // if yoga decides to shrink THIS cell (it's shrinkable
+                 // by default) below its natural width, the elapsed
+                 // glyphs would break to a second visual row and render
+                 // on top of the connector below. NoWrap keeps the row
+                 // a single line; the card's Overflow::Hidden clips any
+                 // horizontal bleed at the border instead of wrapping.
                  text("  " + format_duration(ev.elapsed_seconds),
-                      Style{}.with_fg(duration_color(ev.elapsed_seconds))))
+                      Style{}.with_fg(duration_color(ev.elapsed_seconds)))
+                 | nowrap)
         ) | grow(1.0f)).build());
 
         // Build the body via ToolBodyPreview, then stripe each child row

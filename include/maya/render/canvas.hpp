@@ -464,7 +464,7 @@ public:
     /// blitted row carries any non-blank content.
     ///
     /// Why this exists: the renderer's component cache stores pre-painted
-    /// cell regions (packed uint64_t per cell) per cache_id entry. The
+    /// cell regions (packed uint64_t per cell) per hash_id entry. The
     /// cache-hit path needs to copy those cells into the live canvas
     /// without re-decoding each one. Per-cell `set()` would work but
     /// would pay style-pool intern + per-cell clip math; a row memcpy

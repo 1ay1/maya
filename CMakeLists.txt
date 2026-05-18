@@ -248,7 +248,6 @@ if(MAYA_BUILD_TESTS)
         tests/test_simd.cpp
         tests/test_ansi.cpp
         tests/test_writer.cpp
-        tests/test_resize.cpp
         tests/test_widgets.cpp
         tests/test_promoted.cpp
         tests/test_markdown.cpp

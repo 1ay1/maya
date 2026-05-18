@@ -3,7 +3,7 @@
 // See include/maya/render/inline_frame.hpp for the type-system contract.
 //
 // Most methods are value-move transitions or wrappers around
-// `compose_inline_frame_v2` + `FrameBytes::commit_to`. The HardReset
+// `compose_inline_frame` + `FrameBytes::commit_to`. The HardReset
 // path is the only one that emits a non-compose sequence directly:
 // the `\x1b[2J\x1b[3J\x1b[H` wipe followed by a fresh paint.
 
@@ -66,7 +66,7 @@ RenderOutcome InlineFrame<Fresh>::render(
     auto wit = verify_shadow(state_);
     assert(wit.has_value() && "verify_shadow must accept a Fresh state");
 
-    FrameBytes capsule = compose_inline_frame_v2(
+    FrameBytes capsule = compose_inline_frame(
         canvas, rows, term_h, pool,
         std::move(state_), *std::move(wit),
         synchronized_output);
@@ -92,7 +92,7 @@ RenderOutcome InlineFrame<Synced>::render(
     ShadowWitness&& witness,
     bool synchronized_output) &&
 {
-    FrameBytes capsule = compose_inline_frame_v2(
+    FrameBytes capsule = compose_inline_frame(
         canvas, rows, term_h, pool,
         std::move(state_), std::move(witness),
         synchronized_output);
@@ -144,7 +144,7 @@ RenderOutcome InlineFrame<Stale>::render(
     auto wit = verify_shadow(state_);
     assert(wit.has_value() && "verify_shadow must accept a Stale state");
 
-    FrameBytes capsule = compose_inline_frame_v2(
+    FrameBytes capsule = compose_inline_frame(
         canvas, rows, term_h, pool,
         std::move(state_), *std::move(wit),
         synchronized_output);

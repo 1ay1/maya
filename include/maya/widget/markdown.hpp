@@ -263,24 +263,25 @@ class StreamingMarkdown {
         std::make_shared<CommittedPrefix>();
 
     // Per-instance discriminator stamped at construction and rotated
-    // on clear(). Embedded in the prefix ComponentElement's cache_id
+    // on clear(). Mixed into the prefix ComponentElement's hash_id
     // (markdown.cpp build()) so two StreamingMarkdown widgets at the
     // same `prefix_->generation` don't collide on the renderer's
-    // content-keyed cache. Each agentty turn owns its own
+    // hash-keyed cache. Each agentty turn owns its own
     // StreamingMarkdown via view_cache.message_md, and generation
     // counters start at 0 in every instance — without a per-instance
-    // bit in the cache_id, "#strmd-prefix-N" aliases turn N's prefix
-    // cells onto turn M's region the moment both have hit N commits.
-    // Symptom: prefix text vanishes (last paint wins), scrollback
-    // rows commit blank (cells_rows < content_h) when the overflow
-    // `\r\n` scrolls them off the viewport top. Same shape as the
-    // bug the Element(shared_ptr) ctor solves via id_for_shared.
+    // mixin, the hash for ("strmd-prefix", generation=N) would alias
+    // turn N's prefix cells onto turn M's region the moment both have
+    // hit N commits. Symptom: prefix text vanishes (last paint wins),
+    // scrollback rows commit blank (cells_rows < content_h) when the
+    // overflow `\r\n` scrolls them off the viewport top. Same shape
+    // as the bug the Element(shared_ptr) ctor solves via
+    // id_for_shared.
     //
     // Rotated on clear() so a logical reset (same widget instance,
     // new stream) can't alias the pre-clear prefix cells onto the
     // post-clear prefix region. Without the rotation, the first
-    // post-clear commit produces generation=1 and a cache_id matching
-    // the (still-present, retained for ~2 seconds in entries_by_id)
+    // post-clear commit produces generation=1 and a hash matching
+    // the (still-present, retained for ~2 seconds in entries_by_hash)
     // entry from the pre-clear stream's generation=1 — blits the old
     // bitmap at the new region's coordinates.
     std::uint64_t instance_id_ = detail::next_component_generation();

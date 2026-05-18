@@ -62,8 +62,8 @@ public:
         // vector once. To make the ComponentElements inside survive
         // those copies, hosts that want render-cache-stable settled
         // turns should hand in Elements whose ComponentElement
-        // wrappers carry a `cache_id` (see element.hpp). Maya keeps
-        // the rendered result indexed by id rather than by pointer,
+        // wrappers carry a `hash_id` (see element.hpp). Maya keeps
+        // the rendered result indexed by hash rather than by pointer,
         // so the freshly-copied wrapper at this slot still hits the
         // cache produced by the original.
         std::vector<PreBuilt>                    built_turns;

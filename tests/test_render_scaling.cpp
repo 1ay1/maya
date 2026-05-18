@@ -1,10 +1,10 @@
 // test_render_scaling.cpp — rigorous characterisation of the
-// content-keyed component cache (ComponentElement::cache_id) under
+// hash-keyed component cache (ComponentElement::hash_id) under
 // realistic agent-app conditions.
 //
 // What "proper" means here:
 //   - Structural assertions (counter equality) where behaviour must be
-//     exact regardless of timing — a cache_id miss is a bug, not a
+//     exact regardless of timing — a hash_id miss is a bug, not a
 //     slow path.
 //   - Timing budgets where behaviour is a perf claim — these have
 //     deliberately loose floors so the test stays robust on slow CI /
@@ -134,9 +134,9 @@ double render_us(const Element& root, Canvas& canvas, StylePool& pool) {
 // will get re-rendered as it's evicted and re-inserted. Direct cache
 // size readout would need a new public hook; flagged as a follow-up.
 
-// ── Test 1: cache_id is honoured every frame after the first ────────────────
+// ── Test 1: hash_id is honoured every frame after the first ────────────────
 
-void test_cache_id_hits_across_frames() {
+void test_hash_id_hits_across_frames() {
     constexpr int N = 50;
     constexpr int kFrames = 10;
     auto counter = std::make_shared<Counter>();
@@ -161,7 +161,7 @@ void test_cache_id_hits_across_frames() {
           "%d renders vs %d expected\n", total, N);
 }
 
-void test_no_cache_id_misses_every_frame() {
+void test_no_hash_id_misses_every_frame() {
     constexpr int N = 50;
     constexpr int kFrames = 10;
     auto counter = std::make_shared<Counter>();
@@ -442,7 +442,7 @@ void test_live_tail_dominates_settled_prefix() {
 
     // Per-turn marginal cost — what each cached settled turn adds to
     // the per-frame budget. With the canvas-region cache (every
-    // cache_id entry stores its painted cells and the fast path
+    // hash_id entry stores its painted cells and the fast path
     // blits row-by-row) this is now a memcpy per row of the cached
     // region, not a recursive build_layout_tree + layout::compute +
     // paint_element walk. On the synthetic turn body it measures
@@ -460,7 +460,7 @@ void test_live_tail_dominates_settled_prefix() {
 
 // ── Test 6: ephemeral components don't leak the cache ───────────────────────
 //
-// Components without cache_id are pointer-keyed. Each frame
+// Components without hash_id are pointer-keyed. Each frame
 // constructs fresh wrappers → fresh addresses → cache miss. The
 // LRU eviction on each top-level render_tree call drops entries
 // whose last_frame predates the previous one, so the pointer-keyed
@@ -512,8 +512,8 @@ void test_ephemeral_components_do_not_leak() {
 // ── id_for_shared churn ────────────────────────────────────────────────────
 //
 // Stresses the thread-local weak_ptr→id map inside element.hpp:
-// id_for_shared. The renderer's content-keyed cache uses the
-// returned id as cache_id; correctness rules:
+// id_for_shared. The renderer's hash-keyed cache uses the
+// returned id as the hash_id input; correctness rules:
 //
 //   1. A shared_ptr handed twice must return the SAME id (so the
 //      cross-frame cache hits).
@@ -528,7 +528,7 @@ void test_ephemeral_components_do_not_leak() {
 //
 // We can't observe id_for_shared directly (it's in `detail`), but we
 // can observe its CONSEQUENCE: the renderer's render-call count. If
-// the cache_id derived from id_for_shared is wrong, either we miss
+// the id derived from id_for_shared is wrong, either we miss
 // when we should hit (count too high) or we hit when we should miss
 // (count too low — stale cells served under fresh content).
 
@@ -571,7 +571,7 @@ void test_id_for_shared_churn_recycles_ids() {
         // miss). The second frame in the same cycle must hit cache C.
         // Anything else means id_for_shared aliased ids across cycles
         // (delta=0: stale-cell blit, correctness bug) or failed to
-        // cache within a cycle (delta=2: cache_id stability broken).
+        // cache within a cycle (delta=2: hash_id stability broken).
         if (delta == 1) ++cycles_with_fresh_render;
         prior_renders = now;
         // sp goes out of scope here → control block freed → next
@@ -591,27 +591,27 @@ void test_id_for_shared_churn_recycles_ids() {
           counter->n.load(), kChurnCycles);
 }
 
-// ── AgentTimeline per-event cache_id ───────────────────────────────────
+// ── AgentTimeline per-event hash_id ───────────────────────────────────
 //
 // During an agentic loop where ONE tool is still running and several
 // have already settled, agentty's turn-level cache (gated on
 // is_turn_resolved — every tool terminal, no pending permission)
 // can't engage — the whole turn rebuilds every frame for the live
-// spinner. Per-event cache_ids on terminal events let those done
+// spinner. Per-event hash_ids on terminal events let those done
 // cards' cells be blitted across frames even while the turn as a
 // whole is in flight.
 //
 // We measure the difference: a timeline with N done events + 1 running,
-// rendered 200 frames. With cache_id set on the done events, per-frame
+// rendered 200 frames. With hash_id set on the done events, per-frame
 // cost should NOT scale linearly with N — each done card's cell blit
 // is bounded, and only the running card pays full layout+paint.
 
-void test_agent_timeline_per_event_cache_id_bounds_cost() {
+void test_agent_timeline_per_event_hash_id_bounds_cost() {
     constexpr int kFrames = 200;
     StylePool pool;
     Canvas canvas(120, 5000, &pool);
 
-    auto make_done = [](int idx, bool with_cache_id) {
+    auto make_done = [](int idx, bool with_hash_id) {
         AgentTimelineEvent ev;
         ev.name = "read";
         ev.detail = "src/file.cpp";
@@ -623,7 +623,12 @@ void test_agent_timeline_per_event_cache_id_bounds_cost() {
         for (int j = 0; j < 20; ++j)
             text += "line " + std::to_string(j) + " content of the file\n";
         ev.body.text = std::move(text);
-        if (with_cache_id) ev.cache_id = "tool:done-" + std::to_string(idx);
+        if (with_hash_id) {
+            ev.hash_id = CacheIdBuilder{}
+                .add(std::string_view{"tool:done"})
+                .add(idx)
+                .build();
+        }
         return ev;
     };
     auto make_running = []() {
@@ -637,11 +642,11 @@ void test_agent_timeline_per_event_cache_id_bounds_cost() {
         return ev;
     };
 
-    auto measure = [&](int n_done, bool with_cache_id) -> double {
+    auto measure = [&](int n_done, bool with_hash_id) -> double {
         AgentTimeline::Config base_cfg;
         base_cfg.title = "Actions";
         for (int i = 0; i < n_done; ++i)
-            base_cfg.events.push_back(make_done(i, with_cache_id));
+            base_cfg.events.push_back(make_done(i, with_hash_id));
         base_cfg.events.push_back(make_running());
 
         auto t0 = std::chrono::steady_clock::now();
@@ -659,8 +664,8 @@ void test_agent_timeline_per_event_cache_id_bounds_cost() {
     };
 
     double base_no    = measure(0, false);   // 1 running, baseline
-    double n10_no     = measure(10, false);  // 10 done + 1 running, NO cache_id
-    double n10_cached = measure(10, true);   // 10 done + 1 running, WITH cache_id
+    double n10_no     = measure(10, false);  // 10 done + 1 running, NO hash_id
+    double n10_cached = measure(10, true);   // 10 done + 1 running, WITH hash_id
 
     std::printf("[agent-timeline]  baseline (1 running):     %6.1f us/frame\n",
                 base_no);
@@ -669,32 +674,32 @@ void test_agent_timeline_per_event_cache_id_bounds_cost() {
     std::printf("                  10 done + 1 (cached):    %6.1f us/frame  (%.2fx speedup)\n",
                 n10_cached, n10_no / n10_cached);
 
-    // Structural invariant: with per-event cache_id the cost of 10
+    // Structural invariant: with per-event hash_id the cost of 10
     // done cards should be MEANINGFULLY less than without. A 1.2x
     // floor is loose enough to survive CI / QEMU noise while still
     // tripping if the cache wrapper silently stops engaging (e.g.
-    // someone moves the cache_id field, drops the ComponentElement
-    // wrap, or breaks the renderer's content-keyed lookup).
+    // someone moves the hash_id field, drops the ComponentElement
+    // wrap, or breaks the renderer's hash-keyed lookup).
     CHECK(n10_cached < n10_no,
-          "  per-event cache_id did not reduce cost: %.1f us cached >= %.1f us baseline\n",
+          "  per-event hash_id did not reduce cost: %.1f us cached >= %.1f us baseline\n",
           n10_cached, n10_no);
     CHECK(n10_no / n10_cached >= 1.2,
-          "  per-event cache_id speedup too small: %.2fx (expected >= 1.2x)\n",
+          "  per-event hash_id speedup too small: %.2fx (expected >= 1.2x)\n",
           n10_no / n10_cached);
 }
 
 } // namespace
 
 int main() {
-    test_cache_id_hits_across_frames();
-    test_no_cache_id_misses_every_frame();
+    test_hash_id_hits_across_frames();
+    test_no_hash_id_misses_every_frame();
     test_warm_frame_time_at_high_turn_count();
     test_long_session_with_virtualization();
     test_width_change_invalidates_then_restabilises();
     test_live_tail_dominates_settled_prefix();
     test_ephemeral_components_do_not_leak();
     test_id_for_shared_churn_recycles_ids();
-    test_agent_timeline_per_event_cache_id_bounds_cost();
+    test_agent_timeline_per_event_hash_id_bounds_cost();
     std::printf("\ntest_render_scaling: ok\n");
     return 0;
 }

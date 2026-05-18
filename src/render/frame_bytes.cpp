@@ -1,10 +1,9 @@
 // maya::render::frame_bytes — Implementation
 //
 // See include/maya/render/frame_bytes.hpp for the type-system contract.
-// This file implements the wrapper around the existing
-// `compose_inline_frame` that lifts the call into the Witness Chain:
-// every state mutation is funneled through a return value rather than
-// an out-parameter, and byte delivery is fused with state advance via
+// This file implements the witness-chain `compose_inline_frame`: every
+// state mutation is funneled through a return value rather than an
+// out-parameter, and byte delivery is fused with state advance via
 // FrameBytes::commit_to.
 
 #include "maya/render/frame_bytes.hpp"
@@ -15,12 +14,25 @@
 
 namespace maya {
 
+// Internal byte-emitter, defined in serialize.cpp. The witness-chain
+// `compose_inline_frame` below is the only caller; it drives this
+// helper after consuming a ShadowWitness so the in-place mutation it
+// performs is safe under the chain's invariants. There is no public
+// header for this symbol — callers outside this TU cannot reach it.
+void compose_inline_frame_impl(const Canvas& canvas,
+                               int content_rows,
+                               int term_h,
+                               const StylePool& pool,
+                               InlineFrameState& state,
+                               std::string& out,
+                               bool synchronized_output);
+
 // ─────────────────────────────────────────────────────────────────────────
-// compose_inline_frame_v2
+// compose_inline_frame
 // ─────────────────────────────────────────────────────────────────────────
 //
-// Wraps the legacy in-place `compose_inline_frame` with the
-// witness-chain calling convention:
+// Drives the internal byte-emitter with the witness-chain calling
+// convention:
 //
 //   1. Consume the witness. Re-verify the hash against the state we
 //      were handed (closes the window between verify_shadow returning
@@ -49,7 +61,7 @@ namespace maya {
 //      bytes plus the successor become a FrameBytes — the linear
 //      capsule the caller must consume via commit_to.
 
-FrameBytes compose_inline_frame_v2(
+FrameBytes compose_inline_frame(
     const Canvas& canvas,
     ContentRows content_rows,
     int term_h,
@@ -111,12 +123,12 @@ FrameBytes compose_inline_frame_v2(
     //     so any accidental reuse fires the valid() assertion.
     (void)ShadowWitness{std::move(witness)};
 
-    // (4) Run the legacy compose. It mutates `state` in place;
-    //     after this call `state` IS the successor.
+    // (4) Drive the internal byte-emitter. It mutates `state` in
+    //     place; after this call `state` IS the successor.
     std::string out;
     out.reserve(1024);   // typical inline frame; grows as needed.
-    compose_inline_frame(canvas, content_rows.value(), term_h, pool,
-                         state, out, synchronized_output);
+    compose_inline_frame_impl(canvas, content_rows.value(), term_h, pool,
+                              state, out, synchronized_output);
 
     // (5) Capsule. FrameBytes::commit_to consumes both arms.
     return FrameBytes{std::move(out), std::move(state)};

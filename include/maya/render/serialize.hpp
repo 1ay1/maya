@@ -254,63 +254,14 @@ struct InlineFrameState {
     void commit_prefix(int rows) noexcept;
 };
 
-/// Compose the byte stream for one inline frame into `out`.
+/// Compose the byte stream for one inline frame.
 ///
-/// **DEPRECATED FOR APPLICATION CODE.** Use the Witness Chain instead:
-///
-///   - `compose_inline_frame_v2(...)` for the typed compose path that
-///     requires `ContentRows` + `ShadowWitness` and returns
-///     `FrameBytes`, or
-///   - `inline_frame::InlineFrame<Tag>::render(...)` for the full
-///     type-state-machine API (the Runtime and print/live use this).
-///
-/// This raw entry point is retained as an internal helper (the chain
-/// composes onto it under friend access) and for the low-level
-/// scrollback-correctness test suite which exercises the byte-emit
-/// algorithm directly. NO PRODUCTION CODE PATH calls this any more.
-///
-/// Writes nothing (returns with `out` unchanged) when the current canvas
-/// is byte-for-byte identical to the previous one. Otherwise emits the
-/// minimal ANSI sequence that:
-///   1. (optionally) wraps the update in DEC 2026 synchronized output,
-///   2. hides the cursor,
-///   3. moves to the first row that actually changed (never into
-///      scrollback — rows that rolled off-screen are treated as
-///      committed and skipped),
-///   4. for each row in [first_changed, content_rows): emits only the
-///      sub-span of cells that differ from the cached prev row (so an
-///      unchanged middle row costs just \r\n, and a row whose only
-///      change is one digit costs ~5 bytes — not the whole row),
-///   5. erases any rows the frame shrank past (still on-screen only),
-///   6. restores the cursor.
-///
-/// `content_rows` is the new frame's row count (typically
-/// `content_height(canvas)`). `term_h` is the terminal height — used to
-/// clamp cursor-up moves so we never try to "scroll back" into history.
-/// `state` is updated with the new cell buffer on successful composition.
-///
-/// `synchronized_output` toggles the DEC 2026 wrapper. Default true for
-/// backward compat; pass false on terminals that don't honor mode 2026.
-void compose_inline_frame(const Canvas& canvas,
-                          int content_rows,
-                          int term_h,
-                          const StylePool& pool,
-                          InlineFrameState& state,
-                          std::string& out,
-                          bool synchronized_output = true);
-
-/// Re-compute the shadow-of-wire hash over `state.prev_cells` and
-/// compare it to the value `compose_inline_frame` stored at the end
-/// of the previous render.
-///
-/// **DEPRECATED FOR APPLICATION CODE.** Use `verify_shadow(state)`
-/// instead — it returns a typed `std::optional<ShadowWitness>` that
-/// the Witness Chain consumes through `compose_inline_frame_v2`,
-/// making "compose without verifying the shadow" a compile error.
-/// This boolean form is retained for the low-level test surface that
-/// wants to assert the hash invariant directly. NO PRODUCTION CODE
-/// PATH calls this any more.
-[[nodiscard]] bool verify_shadow_hash(const InlineFrameState& state) noexcept;
+/// Public API: see `inline_frame::InlineFrame<Tag>::render(...)` and
+/// the witness-chain entrypoint declared in `frame_bytes.hpp`. There
+/// is no out-parameter / mutating-state form — the Witness Chain is
+/// the only path. Callers without a Witness Chain state should drive
+/// rendering through `maya::print` / `maya::live` / `maya::Runtime`,
+/// which manage the chain internally.
 
 // ============================================================================
 // ShadowWitness — proof that a state's shadow currently matches the wire
@@ -320,21 +271,14 @@ void compose_inline_frame(const Canvas& canvas,
 //
 // Theorem T2 (no-corruption) hinges on `compose_inline_frame` diffing
 // against a shadow that genuinely reflects what the terminal is
-// displaying. Today the runtime calls `verify_shadow_hash(state)` and
-// branches on the bool; forgetting the check or running compose
-// against a state whose shadow has drifted is a runtime-only failure
-// mode that has historically slipped past review (the FNV-1a hash
-// catches it, but only because somebody remembered to call the
-// function).
-//
-// ShadowWitness lifts the precondition into the type system. It is a
-// move-only token whose constructor is private; the *only* producer is
-// `verify_shadow(state)` below, which returns `std::optional<
-// ShadowWitness>` — `nullopt` when the shadow is poisoned, a populated
-// optional when the shadow is provably intact at the moment of the
-// call. A future overload of `compose_inline_frame` will take
-// `ShadowWitness&&` as a required argument, making "compose without
-// verifying the shadow" a compile error.
+// displaying. ShadowWitness lifts that precondition into the type
+// system: it is a move-only token whose constructor is private, and
+// the only producer is `verify_shadow(state)` below — which returns
+// `std::optional<ShadowWitness>` (nullopt when the shadow is poisoned,
+// populated when it provably matches the wire at the moment of the
+// call). The compose entrypoint requires `ShadowWitness&&` as an
+// argument, so "compose without verifying the shadow" is a compile
+// error.
 //
 // Provenance binding
 // ——————————————————
@@ -383,7 +327,7 @@ public:
     ShadowWitness& operator=(const ShadowWitness&) = delete;
 
     /// True for a freshly-constructed witness, false after move-from.
-    /// Consumers (compose_inline_frame_v2) assert this before use.
+    /// Consumers (compose_inline_frame) assert this before use.
     [[nodiscard]] bool valid() const noexcept { return state_ != nullptr; }
 
     /// Pointer-identity of the state the witness was issued against.
@@ -417,12 +361,12 @@ private:
 ///     a programming error (debug assertion).
 ///
 ///   - Mismatch → returns std::nullopt. The runtime must NOT call
-///     `compose_inline_frame_v2` on this state; the only safe response
+///     `compose_inline_frame` on this state; the only safe response
 ///     is to demote to Divergent and re-paint from a clear viewport.
 ///
 /// Cost: O(prev_rows × prev_width) of u64 FNV-1a folding, fully
 /// vectorisable by the compiler. ~1µs on a 200×80 viewport. This is
-/// the same hash `compose_inline_frame` already computes and stores;
+/// the same hash compose stores at the end of the prior frame;
 /// `verify_shadow` is the symmetric reader.
 [[nodiscard]] std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexcept;
 

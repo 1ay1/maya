@@ -8,23 +8,25 @@
 // inseparable from the byte delivery — either both happen or neither.
 // ─────────────────────────────────────────────────────────────────────────
 //
-// Background. Today the inline render path is three uncorrelated steps:
+// Background. Previously the inline render path was three uncorrelated
+// steps:
 //
-//   compose_inline_frame(canvas, ..., state, /*out*/ buf, ...);
+//   compose_into_buf(canvas, ..., state, /*out*/ buf, ...);
 //   auto status = writer.write_or_buffer(buf);
 //   if (!status) { state.shadow_hash = -1; state.prev_rows = 0; ... }
 //
-// `compose_inline_frame` mutates `state` in place to reflect the bytes
-// it just produced; `write_or_buffer` then attempts to ship those bytes
-// to the kernel. If the kernel returns a hard error, the state has
-// already advanced to "we just rendered frame N" while the wire is
-// still at frame N-1 (or worse, halfway between them). The current
-// recovery code in `app.cpp` patches this by manually resetting state
-// fields on write failure, but the *type* of the state never indicates
+// The compose mutated `state` in place to reflect the bytes it just
+// produced; `write_or_buffer` then attempted to ship those bytes to
+// the kernel. If the kernel returned a hard error, the state had
+// already advanced to "we just rendered frame N" while the wire was
+// still at frame N-1 (or worse, halfway between them). The recovery
+// code in `app.cpp` patched this by manually resetting state fields
+// on write failure, but the *type* of the state never indicated
 // "this advancement is provisional until the bytes ship."
 //
-// FrameBytes inverts the relationship. `compose` no longer mutates the
-// state in place; it returns a FrameBytes value carrying:
+// FrameBytes inverts the relationship. `compose_inline_frame` no
+// longer mutates the state in place; it returns a FrameBytes value
+// carrying:
 //
 //   - the byte buffer to write
 //   - the SUCCESSOR state value (what `state` should become if the
@@ -116,9 +118,9 @@ using CommitOutcome = std::variant<commit::Synced,
 // FrameBytes — pre-committed bytes + their successor state
 // ─────────────────────────────────────────────────────────────────────────
 //
-// Constructed only by `compose_inline_frame_v2` (friend). Consumed
-// only by `commit_to(writer) &&` or `abandon() &&`. The byte buffer
-// is private; there is no public way to inspect or copy it.
+// Constructed only by `compose_inline_frame` (friend). Consumed only
+// by `commit_to(writer) &&` or `abandon() &&`. The byte buffer is
+// private; there is no public way to inspect or copy it.
 
 class FrameBytes {
 public:
@@ -166,7 +168,7 @@ private:
     FrameBytes(std::string bytes, InlineFrameState successor) noexcept
         : bytes_(std::move(bytes)), successor_(std::move(successor)) {}
 
-    friend FrameBytes compose_inline_frame_v2(
+    friend FrameBytes compose_inline_frame(
         const Canvas&, ContentRows, int, const StylePool&,
         InlineFrameState&&, ShadowWitness&&, bool);
 
@@ -175,7 +177,7 @@ private:
 };
 
 // ─────────────────────────────────────────────────────────────────────────
-// compose_inline_frame_v2 — the witness-chain compose
+// compose_inline_frame — the witness-chain compose
 // ─────────────────────────────────────────────────────────────────────────
 //
 // New signature, witness-chain version:
@@ -199,13 +201,9 @@ private:
 //
 // Returns FrameBytes carrying the byte stream and the successor state.
 // The caller invokes `.commit_to(writer)` on the result to ship the
-// bytes and receive the typed outcome.
-//
-// This overload does NOT mutate the InlineFrameState passed in (it
-// was already moved-from at the call site). The legacy
-// `compose_inline_frame(... InlineFrameState&, std::string&, ...)`
-// remains for the test surface and gradual migration.
-[[nodiscard]] FrameBytes compose_inline_frame_v2(
+// bytes and receive the typed outcome. This is the only public compose
+// entrypoint — there is no in-place mutating form.
+[[nodiscard]] FrameBytes compose_inline_frame(
     const Canvas& canvas,
     ContentRows content_rows,
     int term_h,

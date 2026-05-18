@@ -64,8 +64,8 @@ struct ComponentCacheEntry {
     // cached render. Comparing generations on lookup catches that case
     // and treats it as a miss.
     std::uint64_t generation = 0;
-    // Wallclock timestamp of the last hit. Used by content-keyed
-    // (cache_id) eviction so a long idle that produces no frames
+    // Wallclock timestamp of the last hit. Used by hash-keyed
+    // (hash_id) eviction so a long idle that produces no frames
     // doesn't immediately drop entries the user is still interacting
     // with — fps=0 makes "frames since last hit" a poor proxy for
     // "how long ago." Set on every hit; checked at top-of-frame
@@ -115,13 +115,14 @@ struct ComponentCache {
     // hit here. Pointer compare is one instruction so this is the
     // first-class hot path.
     std::unordered_map<const ComponentElement*, ComponentCacheEntry> entries;
-    // Content-keyed cache: when a ComponentElement carries a non-empty
-    // `cache_id`, lookups go through this map instead. This lets the
-    // content survive value-copies through containers (e.g. a settled
-    // turn Element pushed into a fresh per-frame vector by a widget's
-    // build() function) — every copy presents the same id and finds
-    // the same cache entry, even though &comp differs each frame.
-    std::unordered_map<std::string, ComponentCacheEntry>             entries_by_id;
+    // Hash-keyed cache (Witness Chain): when a ComponentElement
+    // carries a non-empty `hash_id` (typed CacheId), lookups go
+    // through this map. The 64-bit hash is collision-bounded by the
+    // FNV-1a + type-tag construction, so two unrelated widgets can't
+    // alias each other's entries unless their typed hash inputs are
+    // bit-identical — the same probabilistic floor (2⁻⁶⁴) the
+    // shadow-of-wire hash already accepts.
+    std::unordered_map<CacheId, ComponentCacheEntry>                 entries_by_hash;
     std::uint64_t current_frame = 0;
 };
 
@@ -130,27 +131,27 @@ inline ComponentCache& component_cache() {
     return c;
 }
 
-// Look up a ComponentElement in the cross-frame cache, preferring the
-// content-keyed map when the component carries a non-empty cache_id.
+// Look up a ComponentElement in the cross-frame cache. Priority order:
+//   1. hash_id (typed CacheId)  — Witness Chain content keying.
+//   2. &comp + generation       — pointer-keyed fallback for
+//                                 components that opted out of
+//                                 cross-frame caching.
+//
 // Returns nullptr on miss; caller stores via store_component_cache().
 //
-// Generation handling diverges between the two paths:
+// Generation handling diverges between the paths:
 //   - Pointer keying: generation MUST match. The pointer alone is not
 //     a stable identity (the allocator can recycle a freed
 //     ComponentElement's address); the generation check rejects the
 //     aliased entry.
-//   - Content keying: generation is IGNORED. The whole point of
-//     cache_id is that the host is promising "same id ⇒ same content"
-//     — and the host gets there by constructing fresh
-//     ComponentElement instances every frame (each with a brand-new
-//     generation), so a generation match would never happen and the
-//     cache would always miss. cache_id IS the cross-frame identity.
+//   - hash_id: generation is IGNORED. The id IS the cross-frame
+//     identity.
 inline ComponentCacheEntry* find_component_cache(ComponentCache& cache,
                                                  const ComponentElement& comp,
                                                  int width) noexcept {
-    if (!comp.cache_id.empty()) {
-        auto it = cache.entries_by_id.find(comp.cache_id);
-        if (it != cache.entries_by_id.end()
+    if (!comp.hash_id.empty()) {
+        auto it = cache.entries_by_hash.find(comp.hash_id);
+        if (it != cache.entries_by_hash.end()
             && it->second.width == width) {
             return &it->second;
         }
@@ -175,9 +176,9 @@ inline ComponentCacheEntry* find_component_cache(ComponentCache& cache,
 inline ComponentCacheEntry* store_component_cache(ComponentCache& cache,
                                                   const ComponentElement& comp,
                                                   ComponentCacheEntry entry) {
-    if (!comp.cache_id.empty()) {
-        auto [it, _] = cache.entries_by_id.insert_or_assign(
-            comp.cache_id, std::move(entry));
+    if (!comp.hash_id.empty()) {
+        auto [it, _] = cache.entries_by_hash.insert_or_assign(
+            comp.hash_id, std::move(entry));
         return &it->second;
     }
     auto [it, _] = cache.entries.insert_or_assign(&comp, std::move(entry));
@@ -409,7 +410,7 @@ std::size_t build_layout_tree(
 
                         auto& cache = component_cache();
                         // Trust the cached height when:
-                        //  - cache_id is set (host opted into cross-frame
+                        //  - hash_id is set (host opted into cross-frame
                         //    identity), OR
                         //  - the entry was stored this frame (pointer-keyed
                         //    within-frame reuse: same render call satisfies
@@ -424,7 +425,7 @@ std::size_t build_layout_tree(
                         // cross-frame pointer-keyed HITs.
                         if (auto* entry = find_component_cache(cache, comp, max_width)) {
                             const bool trust =
-                                !comp.cache_id.empty()
+                                !comp.hash_id.empty()
                                 || entry->last_frame == cache.current_frame;
                             if (trust) {
                                 entry->last_frame = cache.current_frame;
@@ -1049,7 +1050,7 @@ void paint_element(
             // frame takes the fast path above.
             //
             // Honor a cached `entry->result` when:
-            //  - cache_id is set (host opted into cross-frame identity), OR
+            //  - hash_id is set (host opted into cross-frame identity), OR
             //  - the entry was stored this frame (within-frame reuse:
             //    the measure pass just populated `result`, so we can
             //    skip a redundant render() call here).
@@ -1061,7 +1062,7 @@ void paint_element(
             Element        fresh_render;
             ComponentCacheEntry* reuse_entry = [&]() -> ComponentCacheEntry* {
                 if (auto* e = find_component_cache(cache, node, content_w)) {
-                    if (!node.cache_id.empty()
+                    if (!node.hash_id.empty()
                         || e->last_frame == cache.current_frame) {
                         return e;
                     }
@@ -1122,11 +1123,11 @@ void paint_element(
                 // have covered (it only clears up to prev_rows + 4;
                 // content that's grown past that horizon leaves
                 // residue). Cost: content_w * content_h cell writes,
-                // paid once per (cache_id, width) and amortized across
+                // paid once per (hash_id, width) and amortized across
                 // every subsequent fast-path blit. We only run this
                 // when the entry is going to be cells-cached.
                 const bool will_cache =
-                    !node.cache_id.empty() && content_w > 0 && content_h > 0;
+                    !node.hash_id.empty() && content_w > 0 && content_h > 0;
                 if (will_cache) {
                     canvas.fill(
                         Rect{{Columns{content_x}, Rows{content_y}},
@@ -1145,11 +1146,11 @@ void paint_element(
             // map operation pattern as the find before; the lookup is
             // a single hashmap probe.
             //
-            // Capture is gated on cache_id being set: pointer-keyed
+            // Capture is gated on hash_id being set: pointer-keyed
             // entries are by definition ephemeral (the wrapper has a
             // fresh address each frame), and caching cells for them
             // would burn memory that's evicted next frame anyway.
-            if (!node.cache_id.empty()) {
+            if (!node.hash_id.empty()) {
                 if (auto* entry = find_component_cache(cache, node, content_w)) {
                     const int max_y_after = canvas.max_content_row();
                     int captured_rows = content_h;
@@ -1297,9 +1298,9 @@ void render_tree(
         auto& cache = render_detail::component_cache();
         // Evict before bumping current_frame so entries from the
         // previous frame are still tagged "last_frame == previous".
-        // Both maps share the same eviction policy — an entry that
-        // wasn't touched in the immediately preceding frame is gone
-        // by the next one, regardless of which key it lives under.
+        // The two maps share the same intent (an entry not touched
+        // in the immediately preceding frame is gone), but use
+        // different retention windows tuned to their identity model.
         const std::uint64_t prev = cache.current_frame;
 
         // Pointer-keyed entries: strict 1-frame eviction. Cross-frame
@@ -1316,8 +1317,8 @@ void render_tree(
             }
         }
 
-        // Content-keyed entries: 2-second wallclock retention. The host
-        // opted into cross-frame identity by setting cache_id; the
+        // Hash-keyed entries: 2-second wallclock retention. The host
+        // opted into cross-frame identity by setting hash_id; the
         // cells captured under that id are valid for as long as the
         // content the id stands for hasn't changed (a fresh
         // ComponentElement with the same id presents the same
@@ -1325,18 +1326,14 @@ void render_tree(
         // event-driven (fps=0) operation — 8 frames can be 30 seconds
         // of idle, evicting nothing meaningful; under animation 8
         // frames is 0.3 s and evicts entries the user is still
-        // interacting with. Switch to wallclock so eviction tracks
-        // the user's notion of "how long ago" instead of the engine's
-        // frame counter.
+        // interacting with. Wallclock tracks the user's notion of
+        // "how long ago" instead of the engine's frame counter.
         using clock = std::chrono::steady_clock;
         constexpr auto kContentCacheRetention = std::chrono::seconds(2);
         const auto cutoff = clock::now() - kContentCacheRetention;
-        for (auto it = cache.entries_by_id.begin(); it != cache.entries_by_id.end(); ) {
-            // Entries that have never been touched (default time_point
-            // is the epoch) are also evicted by the same predicate —
-            // it's been longer than 2 s since the epoch.
+        for (auto it = cache.entries_by_hash.begin(); it != cache.entries_by_hash.end(); ) {
             if (it->second.last_touched_at < cutoff) {
-                it = cache.entries_by_id.erase(it);
+                it = cache.entries_by_hash.erase(it);
             } else {
                 ++it;
             }

@@ -876,7 +876,7 @@ static void st_set_content_grow_20k() {
 // keystroke / Tick happening BETWEEN model deltas: state hasn't
 // changed, but the host's view layer rebuilds and re-renders the
 // streaming widget every frame. Each render must hit the renderer's
-// content-keyed cache (cache_id on the outer prefix component) and
+// hash-keyed cache (hash_id on the outer prefix component) and
 // blit cached cells, NOT re-run the prefix lambda's deep-copy loop.
 //
 // Without working caching, cost is O(N) per render × K renders.
@@ -904,7 +904,7 @@ static void st_render_after_commits_no_change() {
 // Same scenario as above but BETWEEN commits: append a few bytes (not
 // enough to cross a block boundary), render, append, render, etc.
 // The widget should NOT re-render the prefix from scratch — the prefix's
-// cache_id is keyed on prefix_->generation, which only advances when
+// hash_id is keyed on prefix_->generation, which only advances when
 // commit_range actually fires. Between commits, every render is a hit.
 static void st_render_between_commits() {
     auto body = build_llm_body(10'000);

@@ -318,16 +318,22 @@ public:
         return *this;
     }
 
-    // Set the content-stable cache key. Non-empty values route this
-    // component through the renderer's content-keyed component_cache,
-    // so a fresh ComponentElement value-copied through containers
-    // each frame still hits the cells captured on the first paint.
-    // Use a host-meaningful identifier (e.g. "turn:" + msg_id +
-    // ":" + content_gen) that changes IFF the rendered content
-    // changes — empty cache_id keeps the legacy pointer-keyed
-    // behaviour and pays the full render cost every frame.
-    auto cache_id(std::string id) -> ComponentBuilder& {
-        element_.cache_id = std::move(id);
+    // Set the content-stable cache key (Witness Chain).
+    //
+    // Non-empty CacheId values route this component through the
+    // renderer's hash-keyed component_cache, so a fresh
+    // ComponentElement value-copied through containers each frame
+    // still hits the cells captured on the first paint. Construct
+    // the id via `CacheIdBuilder{}.add(...).build()` — the typed
+    // builder mixes type tags into the FNV-1a hash, so two ids
+    // built from semantically-different inputs can't collide via
+    // string-concatenation accidents (e.g. "tool:1:23" vs
+    // "tool:12:3").
+    //
+    // An empty CacheId keeps the pointer-keyed behaviour and pays
+    // the full render cost every frame.
+    auto hash_id(CacheId id) -> ComponentBuilder& {
+        element_.hash_id = id;
         return *this;
     }
 

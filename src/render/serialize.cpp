@@ -14,34 +14,15 @@
 
 namespace maya {
 
-bool verify_shadow_hash(const InlineFrameState& state) noexcept {
-    // No hash computed yet — fresh state, nothing to verify against.
-    // Treat as trusted; the first successful compose will set the
-    // baseline.
-    if (state.shadow_hash == static_cast<uint64_t>(-1)) return true;
-    if (state.prev_width <= 0 || state.prev_rows <= 0) return true;
-
-    const std::size_t W = static_cast<std::size_t>(state.prev_width);
-    const std::size_t n = static_cast<std::size_t>(state.prev_rows) * W;
-    if (n > state.prev_cells.size()) return false;
-
-    uint64_t h = 14695981039346656037ULL;
-    const uint64_t* p = state.prev_cells.data();
-    for (std::size_t i = 0; i < n; ++i) {
-        h ^= p[i];
-        h *= 1099511628211ULL;
-    }
-    return h == state.shadow_hash;
-}
-
-// ShadowWitness producer. Refolds prev_cells with the same FNV-1a
-// kernel verify_shadow_hash uses, returning either a populated
-// optional carrying the witness (the hash matched, or the state was
-// fresh) or nullopt (hash mismatch — the shadow is poisoned).
+// ShadowWitness producer. Folds prev_cells with FNV-1a and compares
+// to the value compose stored at the end of the prior frame,
+// returning either a populated optional carrying the witness (the
+// hash matched, or the state was fresh) or nullopt (hash mismatch —
+// the shadow is poisoned).
 //
 // Note we hash even on the "fresh" path so the witness carries a
 // concrete value, not the UINT64_MAX sentinel. That way the
-// re-verification done by compose_inline_frame_v2 on consumption is
+// re-verification done by compose_inline_frame on consumption is
 // always comparing against a real folded hash, never against the
 // sentinel.
 std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexcept {
@@ -91,8 +72,8 @@ void InlineFrameState::commit_prefix(int rows) noexcept {
     }
     prev_rows -= rows;
 
-    // Re-hash the now-shifted prev_cells so verify_shadow_hash on
-    // the next render compares against the post-shift state instead
+    // Re-hash the now-shifted prev_cells so the next render's
+    // shadow-verify compares against the post-shift state instead
     // of false-positive on the legitimate scrollback advance.
     if (shadow_hash != static_cast<uint64_t>(-1)) {
         uint64_t h = 14695981039346656037ULL;
@@ -402,13 +383,30 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 // inside compose where it has visibility into row-level state but no
 // way to tell whether the diff is user-input or animation.
 
-void compose_inline_frame(const Canvas& canvas,
-                          int content_rows,
-                          int term_h,
-                          const StylePool& pool,
-                          InlineFrameState& state,
-                          std::string& out,
-                          bool synchronized_output)
+// Internal byte-emitter for the inline frame path.
+//
+// This is the actual byte-producer that walks the canvas, diffs
+// against `state.prev_cells`, and emits VT sequences. It is NOT a
+// public symbol — the only legitimate caller is the witness-chain
+// entrypoint `compose_inline_frame` in frame_bytes.cpp, which fuses
+// this in-place mutation into the linear FrameBytes capsule so the
+// state advance and byte delivery are inseparable.
+//
+// Direct callers cannot exist outside frame_bytes.cpp because the
+// public surface for inline composition is the Witness Chain
+// (`InlineFrame<Tag>::render`, which calls `compose_inline_frame`
+// which calls THIS function). Bypassing the chain would mean
+// composing without proving the shadow matches the wire — exactly
+// the corruption surface the chain was built to close. The function
+// is declared as a non-static symbol so it links across the TU
+// boundary, but it has no public header declaration.
+void compose_inline_frame_impl(const Canvas& canvas,
+                               int content_rows,
+                               int term_h,
+                               const StylePool& pool,
+                               InlineFrameState& state,
+                               std::string& out,
+                               bool synchronized_output)
 {
     const int W = canvas.width();
     if (W <= 0 || content_rows <= 0 || term_h <= 0) return;
@@ -1045,7 +1043,7 @@ void compose_inline_frame(const Canvas& canvas,
     // ── Production shadow-of-wire hash ─────────────────────────────────
     //
     // Hash the entire prev_cells[0, content_rows*W) range with a fast
-    // FNV-1a-style fold. verify_shadow_hash() recomputes from the
+    // FNV-1a-style fold. verify_shadow() recomputes from the
     // same range before the next compose; mismatch ⇒ someone mutated
     // prev_cells (or the underlying allocation) outside the compose
     // path and the diff would silently emit wrong bytes. The runtime

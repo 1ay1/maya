@@ -29,18 +29,18 @@
 //       },
 //       .error      = "stream cut off mid-tool",
 //       .checkpoint_above = msg.has_checkpoint,
-//       .cache_id   = "turn:" + msg.id,                    // memoize
+//       .hash_id    = CacheIdBuilder{}.add("turn"sv).add(msg.id).build(),
 //   }}.build();
 //
 // Performance:
-//   When `cache_id` is non-empty Turn wraps its output in a
-//   maya::component() with that key. The renderer's content-keyed
+//   When `hash_id` is non-empty Turn wraps its output in a
+//   maya::component() with that key. The renderer's hash-keyed
 //   cells cache then short-circuits both layout (one node per turn)
 //   and paint (one row-blit per cached turn) on every subsequent
 //   frame — independent of the body's size. Settled turns in a long
 //   conversation drop to O(1) per frame; only the actively-mutating
-//   turn pays the build/parse cost. Leave cache_id empty on the live
-//   turn (or change it on each content edit) so the cache properly
+//   turn pays the build/parse cost. Leave hash_id empty on the live
+//   turn (or rebuild it on each content edit) so the cache properly
 //   misses and rebuilds.
 
 #include <memory>
@@ -111,17 +111,18 @@ public:
         // protocol requires.
         bool                  continuation = false;
 
-        // Content-stable cache key. When non-empty, Turn wraps its
-        // output in maya::component(...).cache_id(cache_id), so the
-        // renderer reuses the previously-painted cells on every
+        // Content-stable cache key (Witness Chain). When non-empty,
+        // Turn wraps its output in maya::component(...).hash_id(...),
+        // so the renderer reuses the previously-painted cells on every
         // subsequent frame and skips re-running the body construction
         // (markdown parse, tool-card builds, permission lookups). The
-        // key MUST change whenever the rendered output would change —
-        // typically that's the message id + a content generation
-        // counter ("turn:42:gen-7") so an edit reliably invalidates.
-        // Empty keeps the legacy per-frame build path; use that for
-        // the live turn whose content mutates as tokens stream in.
-        std::string           cache_id;
+        // id MUST change whenever the rendered output would change —
+        // typically derive it as `CacheIdBuilder{}.add("turn"sv)
+        // .add(msg_id).add(content_gen).build()` so an edit reliably
+        // invalidates. An empty CacheId keeps the legacy per-frame
+        // build path; use that for the live turn whose content
+        // mutates as tokens stream in.
+        CacheId               hash_id;
     };
 
     explicit Turn(Config c)
@@ -131,9 +132,9 @@ public:
 
     [[nodiscard]] Element build() const {
         using namespace dsl;
-        if (cfg_->cache_id.empty()) {
-            // No caching opted in — preserve the legacy build path
-            // (eager construction, no ComponentElement wrapper).
+        if (cfg_->hash_id.empty()) {
+            // No caching opted in — preserve the eager build path
+            // (no ComponentElement wrapper).
             return build_inner(*cfg_);
         }
         // Memoized path: defer construction into a component() whose
@@ -143,13 +144,12 @@ public:
         // C++ runtime, so the per-frame allocation count is zero
         // even though the lambda is reconstructed each frame.
         auto cfg = cfg_;
-        std::string id = cfg_->cache_id;
         return maya::detail::component(
             [cfg = std::move(cfg)](int /*w*/, int /*h*/) -> Element {
                 return build_inner(*cfg);
             })
             .grow(1.0f)
-            .cache_id(std::move(id));
+            .hash_id(cfg_->hash_id);
     }
 
 private:

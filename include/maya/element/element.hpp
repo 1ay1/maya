@@ -42,6 +42,7 @@ struct ElementList;
 
 #include "box.hpp"
 #include "text.hpp"
+#include "../render/cache_id.hpp"
 
 // ============================================================================
 // Step 3-4: Define ElementList and Element now that all types are available
@@ -116,13 +117,13 @@ namespace detail {
 // previously-freed raw data pointer is recognised as DIFFERENT).
 //
 // Why this isn't just `sp.get()`: the implicit ctor below derives a
-// `cache_id` string used by the renderer's content-keyed
+// `hash_id` (CacheId) used by the renderer's hash-keyed
 // component_cache. If two shared_ptrs to *different* logical content
 // happen to land at the same raw address (allocator recycling — common
 // when shared_ptrs churn during streaming/scrolling), a get()-derived
-// cache_id collides and the renderer blits stale cells from the dead
-// shared_ptr's cache entry under the new one. Observed in agentty as
-// a hard-to-reproduce ghost composer + footer that resize cleared.
+// id would collide and the renderer would blit stale cells from the
+// dead shared_ptr's cache entry under the new one. Observed in agentty
+// as a hard-to-reproduce ghost composer + footer that resize cleared.
 //
 // The map keys weak_ptrs by std::owner_less, which compares CONTROL
 // BLOCKS (the bookkeeping object make_shared allocates alongside the
@@ -244,26 +245,33 @@ struct ComponentElement {
     /// neighbouring slots.
     std::uint64_t generation = detail::next_component_generation();
 
-    /// Optional content-stable cache key. Empty by default — pointer
-    /// keying takes over and the lifecycle above applies.
+    /// Content-stable cache identity (Witness Chain).
     ///
-    /// Set this to a host-meaningful identifier (e.g. a (thread, msg)
-    /// slug) when the component represents content that's logically
-    /// the same across frames even though the ComponentElement
-    /// instance gets value-copied through containers each frame. The
-    /// renderer's cross-frame component cache prefers this key when
-    /// non-empty, so the new copies still hit the cache produced by
-    /// the original — turning per-frame deep-copy churn (a fresh
-    /// ComponentElement* every frame, never matching anything in the
-    /// pointer-keyed cache) into O(1) measure + paint.
+    /// Default empty — pointer keying takes over and the
+    /// lifecycle above applies.
     ///
-    /// Equality is by string value; pick something cheap to compare
-    /// (short, hashable). Collisions across unrelated components map
-    /// them to the same cache slot — be careful that your id
-    /// uniquely identifies the rendered content within the running
-    /// app. Empty string means "use pointer keying," matching the
-    /// pre-cache_id behaviour for any caller that hasn't opted in.
-    std::string cache_id;
+    /// Set this to a typed `CacheId` (constructed via
+    /// `CacheIdBuilder{}.add(...).build()`) when the component
+    /// represents content that's logically the same across frames
+    /// even though the ComponentElement instance gets value-copied
+    /// through containers each frame. The renderer's cross-frame
+    /// component cache prefers this key when non-empty, so the new
+    /// copies still hit the cache produced by the original —
+    /// turning per-frame deep-copy churn (a fresh ComponentElement*
+    /// every frame, never matching anything in the pointer-keyed
+    /// cache) into O(1) measure + paint.
+    ///
+    /// The typed builder mixes type tags into the FNV-1a hash, so
+    /// two ids built from semantically-different inputs can't
+    /// collide via string-concatenation accidents — the historical
+    /// `std::string cache_id` field was removed because that exact
+    /// failure mode (forgotten separator, stale generation, recycled
+    /// shared_ptr identity) caused observable cell corruption.
+    ///
+    /// Collisions across unrelated components map them to the same
+    /// cache slot — be careful that your id uniquely identifies the
+    /// rendered content. Empty means "use pointer keying."
+    CacheId hash_id;
 };
 
 // ============================================================================
@@ -342,18 +350,17 @@ struct Element {
         // distinct shared_ptrs produce distinct ids even if their raw
         // data pointers alias (allocator recycling).
         //
-        // The earlier version of this ctor derived cache_id from
-        // sp.get() directly, which collided cache entries across the
-        // lifetimes of unrelated shared_ptrs that happened to land at
-        // the same heap address. That surfaced as the streaming
-        // composer / footer ghost: a cell strip captured for a
-        // long-dead shared_ptr blitted under a freshly-allocated
-        // shared_ptr at the same address, painting old content over
-        // the live layout's position.
-        char buf[24];
-        std::snprintf(buf, sizeof(buf), "#%lx",
-                      static_cast<unsigned long>(detail::id_for_shared(sp)));
-        c.cache_id = std::string{buf};
+        // The earlier ctor derived the id from sp.get() directly, which
+        // collided cache entries across the lifetimes of unrelated
+        // shared_ptrs that happened to land at the same heap address.
+        // That surfaced as the streaming composer / footer ghost: a
+        // cell strip captured for a long-dead shared_ptr blitted under
+        // a freshly-allocated shared_ptr at the same address.
+        const std::uint64_t cb = detail::id_for_shared(sp);
+        c.hash_id = CacheIdBuilder{}
+            .add(std::string_view{"shared_ptr<Element>"})
+            .add(cb)
+            .build();
         c.render = [sp = std::move(sp)](int /*w*/, int /*h*/) -> Element {
             return *sp;
         };

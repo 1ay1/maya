@@ -88,8 +88,8 @@ namespace {
 //   * MRU promotion via swap-to-back so LRU eviction is `pop_back`.
 //   * shared_ptr<const Element>: caller receives the cached tree via
 //     the Element(shared_ptr<const Element>) implicit conversion,
-//     which auto-derives a stable cache_id from the control block.
-//     The renderer's content-keyed component_cache then short-circuits
+//     which auto-derives a stable hash_id from the control block.
+//     The renderer's hash-keyed component_cache then short-circuits
 //     layout AND paint of the cached subtree to a cells-blit — so the
 //     win compounds: parse skipped here, tree walk skipped in the
 //     renderer.
@@ -164,12 +164,12 @@ Element markdown(std::string_view source) {
     // return a deep copy of the cached Element. NOTE: we intentionally
     // do NOT wrap the result in a shared_ptr (which would auto-cast
     // into a ComponentElement via the implicit Element ctor). Wrapping
-    // would let the renderer's content-keyed component_cache cells-blit
+    // would let the renderer's hash-keyed component_cache cells-blit
     // future paints, BUT it forces the auto-measure path to run an
     // extra inner layout::compute on every cache miss — exactly the
     // regression that broke test_markdown's deep_blockquote stress
     // case. Apps that want cells-cache acceleration should opt in at
-    // the WIDGET level (Turn::cache_id) where the outer wrapper makes
+    // the WIDGET level (Turn::hash_id) where the outer wrapper makes
     // the inner markdown free anyway. The parse-only memo here is
     // strictly additive — it saves the bytes-to-AST work for
     // unchanged content, nothing else.
@@ -840,16 +840,16 @@ void StreamingMarkdown::clear() {
     // misses cleanly on the new instance instead of holding stale
     // entries against an unrelated subsequent stream.
     prefix_ = std::make_shared<CommittedPrefix>();
-    // Rotate the per-instance discriminator embedded in the prefix
-    // ComponentElement's cache_id. Without this rotation the first
-    // post-clear commit produces generation=1 and a cache_id of
-    // "#strmd-<instance_id_>-1" — byte-identical to the cache_id of
-    // the pre-clear stream's first commit. That pre-clear entry is
-    // retained in the renderer's content-keyed component cache
-    // (entries_by_id, ~2-second wallclock TTL), so the post-clear
+    // Rotate the per-instance discriminator mixed into the prefix
+    // ComponentElement's hash_id. Without this rotation the first
+    // post-clear commit produces generation=1 and a CacheId built
+    // from ("strmd-prefix", instance_id_, 1) — hash-identical to the
+    // pre-clear stream's first commit. That pre-clear entry is
+    // retained in the renderer's hash-keyed component cache
+    // (entries_by_hash, ~2-second wallclock TTL), so the post-clear
     // commit hits it and blits the pre-clear cells at the post-clear
     // region. Bumping instance_id_ on every clear() makes the
-    // cache_id strictly monotonic across logical resets.
+    // hash_id strictly monotonic across logical resets.
     instance_id_ = detail::next_component_generation();
     ref_defs_.clear();
     in_code_fence_ = false;
@@ -1466,20 +1466,20 @@ const Element& StreamingMarkdown::build() const {
 
     // Helper: build the prefix ComponentElement for the current
     // generation. Used by both the full-rebuild path and the
-    // commit-fast-path below. Hoisted into a lambda so the cache_id
-    // formatting and lambda-capture wiring don't drift between the two
-    // call sites (a previous bug where they did caused the prefix
+    // commit-fast-path below. Hoisted into a lambda so the hash_id
+    // construction and lambda-capture wiring don't drift between the
+    // two call sites (a previous bug where they did caused the prefix
     // ComponentElement to skip its cache invalidation on commit and
     // ghost the previous frame's prefix bitmap into the new prefix's
     // layout slot).
     auto make_prefix_component = [&]() -> Element {
         auto p = prefix_;
         ComponentElement comp;
-        char id_buf[48];
-        std::snprintf(id_buf, sizeof(id_buf), "#strmd-%lx-%lu",
-                      static_cast<unsigned long>(instance_id_),
-                      static_cast<unsigned long>(p->generation));
-        comp.cache_id = id_buf;
+        comp.hash_id = CacheIdBuilder{}
+            .add(std::string_view{"strmd-prefix"})
+            .add(static_cast<std::uint64_t>(instance_id_))
+            .add(static_cast<std::uint64_t>(p->generation))
+            .build();
         comp.render = [p](int /*w*/, int /*h*/) -> Element {
             std::vector<Element> kids;
             kids.reserve(p->blocks.size());
@@ -1548,7 +1548,7 @@ const Element& StreamingMarkdown::build() const {
     // shape (has_prefix / has_tail) is unchanged. We can mutate the
     // existing BoxElement in place: swap children[0] (the prefix
     // ComponentElement) for a fresh one carrying the new generation in
-    // its cache_id, and refresh the tail child if needed. The outer
+    // its hash_id, and refresh the tail child if needed. The outer
     // BoxElement's layout/border/padding config stays as-is — no
     // builder pipeline, no ElementBuilder allocation, no .build()
     // call, no walk over the unrelated metadata fields.
@@ -1605,7 +1605,7 @@ const Element& StreamingMarkdown::build() const {
     // Why direct children instead of wrapping in a ComponentElement.
     // The earlier approach wrapped each prefix shared_ptr<const Element>
     // via the Element{sp} converting constructor, producing one
-    // ComponentElement per block whose cache_id was derived from sp
+    // ComponentElement per block whose hash_id was derived from sp
     // identity. The renderer then cached per-block layout+paint cells
     // by (sp, width), making per-commit cost O(new_block_size) instead
     // of O(transcript_size). The trade was correctness: the
@@ -1632,11 +1632,11 @@ const Element& StreamingMarkdown::build() const {
 
     if (has_prefix) {
         // Wrap the committed blocks in a single ComponentElement with a
-        // generation-derived cache_id. The renderer's component_cache
+        // generation-derived hash_id. The renderer's component_cache
         // then stores the rendered cells against this key; between
         // commits (generation stable) every render hits the cache and
         // blits cells directly, skipping the deep-copy lambda below
-        // entirely. On commit the generation bumps, the cache_id
+        // entirely. On commit the generation bumps, the hash_id
         // changes, the next render misses and re-runs the lambda once,
         // then caches again. Avoids the per-block `Element{sp}`
         // wrapper (visible blank-row bug) while still skipping the

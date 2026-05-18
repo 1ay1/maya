@@ -60,16 +60,16 @@ struct AgentTimelineEvent {
     AgentEventStatus        status          = AgentEventStatus::Pending;
     ToolBodyPreview::Config body;                 // empty by default; rendered under `│` stripe
 
-    // Optional content-stable cache key for the rendered event
-    // sub-tree (header row + striped body rows).
+    // Optional content-stable cache key (Witness Chain) for the
+    // rendered event sub-tree (header row + striped body rows).
     //
     // When non-empty AND the event is in a TERMINAL state
     // (Done / Failed / Rejected), AgentTimeline::append_event wraps
-    // the per-event rows in a ComponentElement whose cache_id is
-    // this string. The renderer's content-keyed component_cache
-    // then stores the rendered cells against this key and serves
-    // every subsequent frame as a cell-blit — layout + paint of the
-    // tool body is skipped entirely.
+    // the per-event rows in a ComponentElement whose hash_id is
+    // this CacheId. The renderer's hash-keyed component_cache then
+    // stores the rendered cells against this key and serves every
+    // subsequent frame as a cell-blit — layout + paint of the tool
+    // body is skipped entirely.
     //
     // Why "terminal" only: a Running / Pending tool's card carries
     // a live spinner frame in its status icon, and a Done card with
@@ -78,11 +78,12 @@ struct AgentTimelineEvent {
     // frame-driven state (status icon collapses to a static ✓ / ✗ /
     // ⊘), so their cell snapshot is byte-stable until the host
     // mutates the event itself (which it signals by changing the
-    // cache_id, typically by including the tool's wire id).
+    // hash_id, typically by mixing the tool's wire id into the
+    // CacheIdBuilder).
     //
     // Default empty → every frame walks the event sub-tree, matching
-    // the pre-cache_id behaviour for callers that haven't opted in.
-    std::string             cache_id;
+    // the pre-cache behaviour for callers that haven't opted in.
+    CacheId                 hash_id;
 };
 
 struct AgentTimelineStat {
@@ -212,9 +213,9 @@ private:
     //    inter-event connector. Pushed into `rows` so v() picks them up
     //    in order.
     //
-    // Caching: when ev.cache_id is set AND the event is terminal
+    // Caching: when ev.hash_id is set AND the event is terminal
     // (Done / Failed / Rejected), the (header + body) sub-tree is
-    // wrapped in a ComponentElement so the renderer's content-keyed
+    // wrapped in a ComponentElement so the renderer's hash-keyed
     // cache blits cells across frames instead of re-walking
     // ToolBodyPreview's tree. The inter-event connector stays
     // outside the cached wrapper because its color depends on the
@@ -230,9 +231,9 @@ private:
                                || ev.status == AgentEventStatus::Failed
                                || ev.status == AgentEventStatus::Rejected);
 
-        if (is_terminal && !ev.cache_id.empty()) {
+        if (is_terminal && !ev.hash_id.empty()) {
             ComponentElement comp;
-            comp.cache_id = ev.cache_id;
+            comp.hash_id = ev.hash_id;
             // Capture the event by value so the lambda owns its
             // inputs — the caller's Config can be moved/destroyed
             // between cache populate and cache hit, but the
@@ -249,9 +250,9 @@ private:
             // (i, total) computed glyph by value into the lambda so
             // the very first capture reflects the position at that
             // moment; hosts that care about the glyph staying in
-            // sync with later reorderings should include the
-            // position in cache_id (e.g. "tool:<id>:<i>:<n>") so a
-            // reorder forces a fresh cache entry.
+            // sync with later reorderings should mix the position
+            // into hash_id (CacheIdBuilder{}.add(tool_id).add(i)
+            // .add(n).build()) so a reorder forces a fresh entry.
             std::string glyph{tree_glyph(i, cfg_.events.size())};
             comp.render = [ev_copy = ev,
                            glyph_copy = std::move(glyph)]

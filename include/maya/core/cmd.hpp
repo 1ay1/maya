@@ -282,6 +282,9 @@ public:
             [](const CommitScrollbackOverflow&) -> Cmd<B> {
                 return Cmd<B>::commit_scrollback_overflow();
             },
+            [](const ForceRedraw&) -> Cmd<B> {
+                return Cmd<B>::force_redraw();
+            },
         }, inner);
     }
 

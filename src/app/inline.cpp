@@ -22,23 +22,17 @@ int detect_terminal_height() noexcept {
 }
 
 
-void render_live(const Element& root, int width, StylePool& pool,
-                   std::string& /*buf*/, LiveState& st) {
-    // The Witness Chain owns its own byte buffer inside FrameBytes;
-    // the legacy `buf` parameter is no longer used at this layer.
-    // It is retained in the signature so the simple print()/live()
-    // public API keeps source compatibility with hosts that allocate
-    // their own scratch string — the parameter is just ignored.
-
+LiveState render_live(const Element& root, int width, StylePool& pool,
+                      LiveState st) {
     constexpr int kMinHeight = 500;
 
-    if (st.canvas_width != width) {
-        int h = std::max(kMinHeight, st.canvas.height());
-        st.canvas = Canvas{width, h, &pool};
-        st.canvas_width = width;
+    if (st.canvas_width_ != width) {
+        int h = std::max(kMinHeight, st.canvas_.height());
+        st.canvas_ = Canvas{width, h, &pool};
+        st.canvas_width_ = width;
         // Width change invalidates the prev-frame cell grid. Demote
         // any state that holds one; Empty/Fresh/HardReset stay as-is.
-        st.frame = std::visit(
+        st.frame_ = std::visit(
             [](auto&& arm) -> inline_frame::InlineCoherence {
                 using T = std::decay_t<decltype(arm)>;
                 if constexpr (std::is_same_v<T,
@@ -49,49 +43,46 @@ void render_live(const Element& root, int width, StylePool& pool,
                     return std::move(arm).escalate_to_hard_reset();
                 else
                     return std::move(arm);
-            }, std::move(st.frame));
-        st.term_h = detect_terminal_height();
+            }, std::move(st.frame_));
     } else {
-        st.canvas.set_style_pool(&pool);
+        st.canvas_.set_style_pool(&pool);
     }
-
-    if (st.term_h <= 0) st.term_h = detect_terminal_height();
 
     // Lazy-init the LiveState's Writer on stdout. Owning it here
     // (rather than constructing per-call) preserves the writer's
     // residue buffer across render_live invocations — critical
     // for slow ttys where a single frame may not drain in one call.
-    if (!st.writer.has_value()) {
-        st.writer.emplace(platform::stdout_handle());
+    if (!st.writer_.has_value()) {
+        st.writer_.emplace(platform::stdout_handle());
     }
 
     // Full canvas clear every frame so every cell starts blank and any
     // cell the current paint doesn't explicitly write stays blank.
-    st.canvas.clear();
+    st.canvas_.clear();
 
-    render_tree(root, st.canvas, pool, theme::dark, st.layout_nodes,
+    render_tree(root, st.canvas_, pool, theme::dark, st.layout_nodes_,
                 /*auto_height=*/true);
 
-    int ch = content_height(st.canvas);
+    int ch = content_height(st.canvas_);
 
-    if (ch >= st.canvas.height() && !st.layout_nodes.empty()) {
-        int needed = st.layout_nodes[0].computed.size.height.raw();
-        if (needed > st.canvas.height()) {
-            st.canvas.resize(width, needed + 8);
-            st.canvas.clear();
-            render_tree(root, st.canvas, pool, theme::dark,
-                        st.layout_nodes, /*auto_height=*/true);
-            ch = content_height(st.canvas);
+    if (ch >= st.canvas_.height() && !st.layout_nodes_.empty()) {
+        int needed = st.layout_nodes_[0].computed.size.height.raw();
+        if (needed > st.canvas_.height()) {
+            st.canvas_.resize(width, needed + 8);
+            st.canvas_.clear();
+            render_tree(root, st.canvas_, pool, theme::dark,
+                        st.layout_nodes_, /*auto_height=*/true);
+            ch = content_height(st.canvas_);
         }
     }
 
-    if (ch <= 0) return;
+    if (ch <= 0) return st;
 
     const TermRows term_h = query_term_rows(platform::stdout_handle());
-    const auto     rows   = content_rows(st.canvas);
+    const auto     rows   = content_rows(st.canvas_);
 
     // Witness Chain dispatch — same pattern as Runtime::render.
-    st.frame = std::visit(
+    st.frame_ = std::visit(
         [&](auto&& arm) -> inline_frame::InlineCoherence {
             using T = std::decay_t<decltype(arm)>;
             using namespace inline_frame;
@@ -105,11 +96,11 @@ void render_live(const Element& root, int width, StylePool& pool,
             if constexpr (std::is_same_v<T, InlineFrame<Empty>>) {
                 auto fresh = std::move(arm).seed();
                 return lift(std::move(fresh).render(
-                    st.canvas, rows, term_h, pool, *st.writer, true));
+                    st.canvas_, rows, term_h, pool, *st.writer_, true));
             }
             else if constexpr (std::is_same_v<T, InlineFrame<Fresh>>) {
                 return lift(std::move(arm).render(
-                    st.canvas, rows, term_h, pool, *st.writer, true));
+                    st.canvas_, rows, term_h, pool, *st.writer_, true));
             }
             else if constexpr (std::is_same_v<T, InlineFrame<Synced>>) {
                 auto wit = arm.verify();
@@ -117,22 +108,24 @@ void render_live(const Element& root, int width, StylePool& pool,
                     return std::move(arm).demote_to_stale();
                 }
                 return lift(std::move(arm).render(
-                    st.canvas, rows, term_h, pool, *st.writer,
+                    st.canvas_, rows, term_h, pool, *st.writer_,
                     *std::move(wit), true));
             }
             else if constexpr (std::is_same_v<T, InlineFrame<Stale>>) {
                 return lift(std::move(arm).render(
-                    st.canvas, rows, term_h, pool, *st.writer, true));
+                    st.canvas_, rows, term_h, pool, *st.writer_, true));
             }
             else if constexpr (std::is_same_v<T, InlineFrame<HardReset>>) {
                 return lift(std::move(arm).render(
-                    st.canvas, rows, term_h, pool, *st.writer, true));
+                    st.canvas_, rows, term_h, pool, *st.writer_, true));
             }
             else {
                 static_assert(std::is_same_v<T, InlineFrame<Sealed>>);
                 return std::move(arm);
             }
-        }, std::move(st.frame));
+        }, std::move(st.frame_));
+
+    return st;
 }
 
 } // namespace detail
@@ -143,12 +136,13 @@ void print(const Element& root) {
     StylePool pool;
     std::string buf;
     detail::LiveState st;
-    detail::render_live(root, width, pool, buf, st);
+    st = detail::render_live(root, width, pool, std::move(st));
     // Restore DECAWM/cursor visibility owned by InlineFrameState.
     // compose_inline_frame leaves DECAWM off across frames to save
-    // bytes on slow ttys; finalize() emits the restore.
+    // bytes on slow ttys; finalize emits the restore and consumes
+    // the witness chain.
     buf.clear();
-    inline_frame::finalize_coherence(std::move(st.frame), buf);
+    std::move(st).finalize(buf);
     if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);
@@ -159,9 +153,9 @@ void print(const Element& root, int width) {
     StylePool pool;
     std::string buf;
     detail::LiveState st;
-    detail::render_live(root, width, pool, buf, st);
+    st = detail::render_live(root, width, pool, std::move(st));
     buf.clear();
-    inline_frame::finalize_coherence(std::move(st.frame), buf);
+    std::move(st).finalize(buf);
     if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);

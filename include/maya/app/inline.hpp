@@ -47,39 +47,62 @@ int detect_terminal_width() noexcept;
 int detect_terminal_height() noexcept;
 
 /// Persistent state for the inline renderer's erase-and-rewrite loop.
-/// Passed by reference across frames.
-struct LiveState {
-    Canvas                         canvas;        // persistent canvas (avoids per-frame alloc)
-    int                            canvas_width = 0;  // cached canvas width for reuse
-    int                            term_h       = 0;  // cached terminal height (refreshed on resize)
-    inline_frame::InlineCoherence  frame =
+///
+/// Move-only and field-private: the Witness Chain inside `frame_` is the
+/// only legal entry point that may touch the cell grid / writer residue.
+/// Outside code cannot reseat `frame_`, replay an old `writer_`, or stamp
+/// a stale `canvas_width_` — every such hazard is now a compile error.
+///
+/// Lifecycle: `LiveState{}` → repeated `render_live(root, w, pool, std::move(state))`
+/// → terminal `std::move(state).finalize(buf)`. Each step consumes the
+/// previous value and returns the next; there is no in-place mutator path.
+class [[nodiscard("LiveState owns the live inline frame — dropping it strands the witness chain and the writer's residue, corrupting the next render")]] LiveState {
+public:
+    // Pre-reserve so the first frame's tree build doesn't pay an
+    // unbounded chain of vector reallocs. 1024 nodes covers typical
+    // live-rendered trees; deeper trees still grow on demand.
+    LiveState() { layout_nodes_.reserve(1024); }
+
+    LiveState(const LiveState&)            = delete;
+    LiveState& operator=(const LiveState&) = delete;
+    LiveState(LiveState&&) noexcept            = default;
+    LiveState& operator=(LiveState&&) noexcept = default;
+
+    /// Consume the state and emit any finalization bytes (DECAWM /
+    /// cursor restore) the witness chain still owes the wire.
+    /// After this call the state is gone — accidental reuse is a
+    /// use-after-move, caught by the variant's monostate.
+    void finalize(std::string& buf) && {
+        inline_frame::finalize_coherence(std::move(frame_), buf);
+    }
+
+private:
+    Canvas                          canvas_;            // persistent canvas (avoids per-frame alloc)
+    int                             canvas_width_ = 0;  // cached width — drives resize-demotion
+    inline_frame::InlineCoherence   frame_ =
         inline_frame::InlineFrame<inline_frame::Empty>{};
-    std::vector<layout::LayoutNode> layout_nodes;  // reused across frames
+    std::vector<layout::LayoutNode> layout_nodes_;
 
     // Writer is owned by LiveState rather than constructed per-call so
     // residue (bytes left over from a non-blocking partial write) is
-    // preserved across render_live invocations. Without this every
-    // call would construct a fresh Writer, drop any pending residue
-    // on the floor, and risk the next compose's prev_cells reflecting
-    // bytes the wire never received — the canonical inline-corruption
-    // pattern the Witness Chain is designed to prevent.
-    std::optional<Writer>          writer;
+    // preserved across render_live invocations. Dropping it between
+    // frames would lose residue and let the next compose's prev_cells
+    // reflect bytes the wire never received — the canonical inline-
+    // corruption pattern the Witness Chain is designed to prevent.
+    std::optional<Writer>           writer_;
 
-    // Pre-reserve so the first frame's tree build doesn't pay an
-    // unbounded chain of std::vector reallocs (each doubling means the
-    // last realloc copies all previous nodes). 1024 nodes covers
-    // typical agentty / live-rendered trees (composer + scrollback +
-    // a few turns); deeper trees still grow on demand via vector's
-    // amortised doubling, but the steady-state working set lives
-    // entirely inside this initial capacity. Cost: 1024 *
-    // sizeof(LayoutNode) ≈ 184 KB — paid once per LiveState lifetime.
-    LiveState() { layout_nodes.reserve(1024); }
+    // render_live is the sole authorised mutator of these fields; the
+    // live<> template loop chains LiveState values by move only.
+    friend LiveState render_live(const Element& root, int width,
+                                 StylePool& pool, LiveState state);
 };
 
 // Render element → serialize → write to stdout, preserving stable rows
-// in scrollback.
-void render_live(const Element& root, int width, StylePool& pool,
-                   std::string& buf, LiveState& state);
+// in scrollback. Consumes the state by value and returns the next one;
+// callers must chain by move (`state = render_live(..., std::move(state));`).
+[[nodiscard("render_live returns the next LiveState — dropping it loses the witness chain, the writer residue, and the cached canvas; the next frame will corrupt scrollback")]]
+LiveState render_live(const Element& root, int width, StylePool& pool,
+                      LiveState state);
 
 } // namespace detail
 
@@ -159,6 +182,7 @@ void live(LiveConfig cfg, RenderFn&& render_fn) {
 
     if (!cfg.cursor) std::fputs("\x1b[?25l", stdout); // hide cursor
 
+
     using Clock = std::chrono::steady_clock;
     auto last = Clock::now();
 
@@ -183,11 +207,11 @@ void live(LiveConfig cfg, RenderFn&& render_fn) {
 
         if (detail::quit_requested) {
             // Final render before exit
-            detail::render_live(root, width, pool, buf, state);
+            state = detail::render_live(root, width, pool, std::move(state));
             break;
         }
 
-        detail::render_live(root, width, pool, buf, state);
+        state = detail::render_live(root, width, pool, std::move(state));
 
         auto elapsed = Clock::now() - now;
         if (elapsed < frame_duration) {
@@ -197,9 +221,10 @@ void live(LiveConfig cfg, RenderFn&& render_fn) {
 
     // Restore DECAWM/cursor visibility owned by the inline frame state.
     // compose_inline_frame leaves DECAWM off across frames to save
-    // bytes on slow ttys; finalize() emits the restore.
+    // bytes on slow ttys; finalize consumes the witness chain and
+    // emits the restore. The state is gone after this call.
     buf.clear();
-    inline_frame::finalize_coherence(std::move(state.frame), buf);
+    std::move(state).finalize(buf);
     if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
 
     if (!cfg.cursor) std::fputs("\x1b[?25h", stdout); // show cursor

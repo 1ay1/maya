@@ -15,6 +15,11 @@ maya::print(markdown("# Hello"));
 
 **Scrolling**: Terminal's native scrollback. Content is just text on stdout.
 
+**Safety**: internally constructs a `LiveState` (move-only, private fields)
+and consumes it via `std::move(state).finalize(buf)`. There is no way for
+user code to hold or mutate the witness chain, so the inline scrollback
+cannot be corrupted from outside maya. See `examples/inline_progress.cpp`.
+
 ---
 
 ## 2. Inline Run Mode (`Mode::Inline`)

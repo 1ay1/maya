@@ -16,8 +16,11 @@
 // Usage:
 //   auto ui = markdown("## Hello\nThis is **bold** and `code`.");
 
+#include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -255,8 +258,34 @@ class StreamingMarkdown {
     //   3. `const` on the pointed-to Element is the structural promise
     //      that committed blocks are immutable — the next prefix
     //      generation gets a fresh shared_ptr, never an in-place edit.
+public:
+    /// Discriminator for a committed block's *kind*. Matches the
+    /// active variant of md::Block 1:1 but stays an opaque enum so the
+    /// header doesn't drag in the full md::Block visitor surface.
+    /// Used by host-side UIs (fold pickers, find, copy-block) that
+    /// want to filter by block type without re-parsing.
+    enum class BlockKind : std::uint8_t {
+        Paragraph, Heading, CodeBlock, Blockquote, List, HRule,
+        Table, FootnoteDef, Alert, DefList, Details, HtmlBlock,
+        Other = 0xFF,
+    };
+
+    /// Per-block metadata, parallel to CommittedPrefix::blocks. The
+    /// source byte range is the *primary key* for any UI state that
+    /// must survive a reparse — fold, scroll-offset-inside-code-block,
+    /// "this block is highlighted" — exactly the Zed pattern.
+    struct BlockMeta {
+        std::size_t  source_offset = 0;  ///< byte index of the block's first byte in source_
+        std::size_t  source_end    = 0;  ///< exclusive end
+        BlockKind    kind          = BlockKind::Other;
+        std::uint16_t line_count   = 0;  ///< body line count (display hint for fold stub)
+        std::string  lang;               ///< only set for CodeBlock
+    };
+
+private:
     struct CommittedPrefix {
         std::vector<std::shared_ptr<const Element>> blocks;
+        std::vector<BlockMeta>                      metas;   ///< parallel to blocks
         std::uint64_t                                generation = 0;
     };
     mutable std::shared_ptr<CommittedPrefix> prefix_ =
@@ -307,6 +336,32 @@ class StreamingMarkdown {
                                         // (used by render_tail to know
                                         // whether the in-progress tail
                                         // starts inside an open fence)
+
+    // Host-set: "more bytes are coming". When true, build() wraps
+    // its output in a ComponentElement that re-renders on every
+    // animation frame so the trailing cursor caret blinks. Cleared
+    // by finish() (stream done) and by clear() (logical reset).
+    bool live_ = false;
+
+    // ── Per-build size tracking for age-based animation ──
+    //
+    // Each time build() runs and the source has grown since the
+    // previous build, we stamp `last_grow_ms_` with the current
+    // monotonic time. The finalize() lambda compares the current
+    // time against this stamp to age out the trailing-edge effects
+    // (scramble → resolve, hot → cool color trail). Without this we
+    // can only animate based on absolute time, which gives every
+    // visible char the same animation phase — the eye reads that as
+    // "some lights are flashing", not "text is appearing".
+    //
+    // The tracking is approximate: we don't time-stamp individual
+    // bytes (too much state), we time-stamp the "trailing batch" as
+    // a whole and assume the model emits at a roughly steady rate.
+    // Combined with the typewriter reveal in moha (which feeds bytes
+    // at a fixed rate of ~220 chars/sec), this gives each char an
+    // age that's accurate to within a frame.
+    mutable std::size_t last_seen_size_ = 0;
+    mutable std::int64_t last_grow_ms_   = 0;
 
     // ── Resumable boundary scanner ──
     //
@@ -359,11 +414,23 @@ class StreamingMarkdown {
     // Element directly — no parse, no assembly.  Any mutator (feed /
     // append / set_content / finish / clear) bumps `build_dirty_`.
     mutable Element cached_build_;
+    // Live-mode wrapper. When live_ is true, build() returns this
+    // instead of cached_build_; it’s a vstack of [cached_build_,
+    // cursor_row] rebuilt every frame and requests an animation
+    // frame so the cursor blinks. Cheap to rebuild (two Element
+    // copies into a vstack) so we don’t cache it across frames.
+    mutable Element cached_live_;
     mutable bool    build_dirty_  = true;
     mutable size_t  cached_tail_size_ = 0;   // tail length when cache was built
     // Generation reflected in cached_build_'s prefix component slot —
     // used to short-circuit the rebuild when only the tail changed.
     mutable std::uint64_t cached_prefix_gen_ = 0;
+    // Generation reflected in cached_build_'s rendered prefix. When
+    // folds_ changes (toggle_fold / set_fold / unfold_all) we bump
+    // fold_generation_; the cache's fold_gen lagging means the
+    // prefix component lambda baked in a stale fold snapshot and
+    // must be rebuilt.
+    mutable std::uint64_t cached_fold_gen_   = 0;
     // Whether cached_build_ currently holds a tail child slot. If this
     // flips between frames the cache can't be mutated in place; a full
     // rebuild is needed to reshape the outer vstack.
@@ -450,6 +517,85 @@ class StreamingMarkdown {
     // accidentally identical.
     mutable std::uint64_t           tail_inline_cache_version_     = 0;
 
+    // ── Per-block fold state ───────────────────────────────────────────
+    // Keyed by BlockMeta::source_offset so fold state survives the rare
+    // "set_content with diverging prefix" path (where commit_range is
+    // replayed from scratch but the byte offsets of any unchanged
+    // leading prefix are stable). Map iterators stay valid across
+    // mutations of the prefix vector and ordered iteration enables
+    // simple host-side "unfold all" pickers.
+    //
+    // Folding is purely a render-time concern: a folded block's
+    // shared_ptr<const Element> stays untouched in prefix_->blocks (so
+    // unfolding never has to re-parse); build() substitutes a one-line
+    // stub Element. Mutating folds_ bumps fold_generation_ which is
+    // mixed into the prefix ComponentElement's hash_id — this forces
+    // the renderer's component_cache to miss cleanly so the stub
+    // actually appears instead of replaying the cached-unfolded cells.
+    std::map<std::size_t, bool>   folds_;
+    std::uint64_t                 fold_generation_ = 0;
+
+    // ── Async parse (offload) ──────────────────────────────────────────
+    // For one-shot large content swaps — loading a settled message of
+    // tens of KB, scrollback replay, paste of a long markdown blob.
+    // The steady-state streaming path stays synchronous because each
+    // delta is small and the incremental commit_range/find_block_boundary
+    // chain is already O(delta).
+    //
+    // Model:
+    //   • set_content_async() stores the requested source and, if no
+    //     parse is in flight, spawns a worker that parses the whole
+    //     string into a CommittedPrefix snapshot off-thread.
+    //   • build() (foreground only) calls maybe_apply_async_() which
+    //     checks the result slot's ready flag without blocking and,
+    //     on ready, atomic-swaps the new prefix in. If the caller has
+    //     since asked for a different source (latest_request_source_
+    //     != source after swap), a follow-up worker is spawned —
+    //     this is the single-flight coalescing Zed uses.
+    //   • Worker thread runs the full markdown parse + assemble, never
+    //     touches `this` except through the lock-protected slot.
+    //
+    // Concurrency: the slot is the only mutable state shared with the
+    // worker. We use a std::mutex on the slot itself plus an atomic
+    // `ready` flag so the foreground's poll is wait-free in the
+    // common (not-ready) case.
+    struct AsyncResult {
+        // Inputs the worker consumed; foreground compares these
+        // against the current request to decide whether the result
+        // is still relevant.
+        std::string                                 source;
+        // Outputs: drop-in replacements for prefix_'s contents and
+        // for the fence/committed_/ref_defs state the foreground
+        // would have arrived at via the synchronous incremental
+        // path.
+        std::vector<std::shared_ptr<const Element>> blocks;
+        std::vector<BlockMeta>                      metas;
+        std::unordered_map<std::string, md::LinkRef> ref_defs;
+        bool                                        in_code_fence = false;
+        // Set true by the worker just before exit. Read by
+        // foreground's poll. Atomic so the bool flip publishes the
+        // string/vector writes above (the mutex provides full
+        // sync; the atomic lets the foreground skip the lock when
+        // the worker hasn't finished).
+        std::atomic<bool>                           ready{false};
+    };
+    mutable std::shared_ptr<AsyncResult>     async_slot_;
+    mutable std::mutex                       async_mu_;
+    // The most recent source set_content_async was called with.
+    // Compared against async_slot_->source when a result lands to
+    // decide whether to apply it directly (current) or queue another
+    // parse (stale). Empty optional == no async pending.
+    mutable std::optional<std::string>       async_latest_source_;
+
+    // Apply any ready async result. Foreground-only. No-op if no
+    // result is ready. May spawn a follow-up worker.
+    void maybe_apply_async_() const;
+    // Spawn a worker on the requested source. Foreground-only; safe
+    // to call repeatedly — coalesces by storing the request in
+    // async_latest_source_ and only spawning when no in-flight worker
+    // exists.
+    void spawn_async_worker_(std::string source) const;
+
     // Find the end of the last complete block boundary.
     // Returns the byte offset up to which blocks are "complete".
     // Non-const because it advances the resumable scanner state above.
@@ -479,6 +625,29 @@ public:
     /// the entire string each frame, like `msg.content = ...`).
     void set_content(std::string_view content);
 
+    /// Same as set_content but offloads the work to a worker thread
+    /// when the content diverges from the current prefix (the case
+    /// that would otherwise stall the render thread on a large parse,
+    /// e.g. loading an old thread, pasting a long blob, snapshotting
+    /// scrollback). For pure-append growth (the streaming case) this
+    /// stays on the synchronous incremental path — the per-delta cost
+    /// is already O(delta) and the thread-handoff overhead would
+    /// dominate.
+    ///
+    /// While the worker is in flight build() keeps returning the
+    /// PREVIOUS frame's element tree (Zed's "keep existing content
+    /// visible until new parse completes" trick), so the UI never
+    /// blanks. Coalesces: if multiple set_content_async calls land
+    /// before the worker finishes, only the most recent one is parsed
+    /// when the worker drains.
+    void set_content_async(std::string_view content);
+
+    /// True iff a background parse is in flight. Hosts can use this
+    /// to render a subtle "still loading" hint, but the widget itself
+    /// is fully usable while pending (build() returns the previous
+    /// element tree).
+    [[nodiscard]] bool is_parsing() const noexcept;
+
     /// Append bytes incrementally.  Equivalent to feed(); kept for
     /// back-compat with existing call sites.
     void append(std::string_view text);
@@ -491,6 +660,15 @@ public:
     /// Reset all state for a new stream.
     void clear();
 
+    /// Set whether this widget is currently "live" — i.e. the
+    /// host expects more bytes to arrive. While live, build() paints
+    /// a blinking cursor caret after the tail so the user sees the
+    /// stream is alive even mid-token. Re-renders are driven by
+    /// request_animation_frame() so the blink happens at ~30 fps
+    /// regardless of byte arrival rate. Default: false (settled).
+    void set_live(bool live) noexcept { live_ = live; }
+    [[nodiscard]] bool is_live() const noexcept { return live_; }
+
     /// Build the element tree: cached blocks + monotonic tail.  Returns
     /// a reference into the per-frame cache; valid until the next
     /// mutator call.
@@ -499,6 +677,57 @@ public:
     /// Current full source text (codepoint-clean; never contains a
     /// half-written multi-byte sequence).
     [[nodiscard]] const std::string& source() const noexcept { return source_; }
+
+    // ── Block introspection (Zed-style byte-offset keyed UI state) ──
+
+    /// Number of committed (parsed) top-level blocks. Excludes the
+    /// in-progress tail.
+    [[nodiscard]] std::size_t block_count() const noexcept {
+        return prefix_->metas.size();
+    }
+
+    /// Read-only view of a committed block's metadata. Index in
+    /// [0, block_count()). Reference is valid until the next mutator
+    /// (feed/append/set_content/clear).
+    [[nodiscard]] const BlockMeta& block_meta(std::size_t i) const noexcept {
+        return prefix_->metas[i];
+    }
+
+    /// Binary search: which committed block contains source byte
+    /// offset `off`, if any. Returns the index in [0, block_count())
+    /// such that block_meta(i).source_offset <= off < source_end,
+    /// or nullopt if `off` lies in the uncommitted tail / past EOS.
+    /// O(log block_count()).
+    [[nodiscard]] std::optional<std::size_t>
+    block_for_offset(std::size_t off) const noexcept;
+
+    /// Toggle the fold state of the block at `source_offset` (must
+    /// match a BlockMeta::source_offset exactly). Returns the new
+    /// folded state (true = folded). No-op + returns false for an
+    /// unknown offset.
+    bool toggle_fold(std::size_t source_offset);
+
+    /// Explicit setter — useful for batch "fold all code blocks > N
+    /// lines" passes. Same offset semantics as toggle_fold.
+    void set_fold(std::size_t source_offset, bool folded);
+
+    /// Query.
+    [[nodiscard]] bool is_folded(std::size_t source_offset) const noexcept;
+
+    /// Clear every fold. Cheap; mostly for tests.
+    void unfold_all();
+
+    /// Fold every committed block whose line_count exceeds
+    /// `threshold_lines`, restricted to the kinds in
+    /// `kinds_mask` (bitmask over BlockKind). Idempotent. Useful
+    /// for the host to call once a settled assistant message is
+    /// committed so very long code blocks collapse to a one-row
+    /// stub by default — the user can still toggle them open.
+    ///
+    /// Pass `(1u << static_cast<unsigned>(BlockKind::CodeBlock))` to
+    /// fold only long code blocks (the common preset).
+    void auto_fold_long_blocks(std::uint16_t threshold_lines,
+                               std::uint32_t kinds_mask);
 };
 
 } // namespace maya

@@ -67,21 +67,36 @@ namespace maya {
 //   alert_*       — kept on their semantic ANSI slot.
 // ============================================================================
 namespace colors {
-    inline constexpr auto text         = Color::white();
+    // Body prose uses the terminal's DEFAULT foreground rather than
+    // an explicit ANSI 7. Two wins from this one change:
+    //   1. The body adopts the user's carefully-tuned theme color
+    //      (typically a soft warm/cool gray on dark themes, a near
+    //      black on light), so prose feels native instead of
+    //      maxed-out white that fights the chrome.
+    //   2. There's now a clear typographic step between body
+    //      (default) and emphasis (bright_white / bright_cyan / etc.),
+    //      so **bold** and `code` actually POP. Previously body was
+    //      ANSI 7 and bold was ANSI 15 — on many themes these render
+    //      indistinguishably and emphasis silently disappeared.
+    inline constexpr auto text         = Color::default_color();
     inline constexpr auto heading1     = Color::bright_cyan();
     inline constexpr auto heading2     = Color::cyan();
     inline constexpr auto heading3     = Color::bright_blue();
     inline constexpr auto heading_dim  = Color::blue();
     inline constexpr auto heading_rule = Color::bright_black();
     inline constexpr auto bold_fg      = Color::bright_white();
-    inline constexpr auto italic_fg    = Color::white();
-    inline constexpr auto code_fg      = Color::cyan();
+    // Italics shift to the muted gray slot so they read as soft
+    // commentary against the default-fg body, instead of looking
+    // identical to plain prose with a (terminal-dependent, often
+    // invisible) italic flag.
+    inline constexpr auto italic_fg    = Color::bright_black();
+    inline constexpr auto code_fg      = Color::bright_cyan();
     inline constexpr auto code_bg      = Color::black();
     inline constexpr auto link_fg      = Color::bright_blue();
     inline constexpr auto image_fg     = Color::bright_magenta();
     inline constexpr auto strike_fg    = Color::bright_black();
     inline constexpr auto quote_bar    = Color::bright_yellow();
-    inline constexpr auto quote_text   = Color::white();
+    inline constexpr auto quote_text   = Color::default_color();
     inline constexpr auto list_bullet  = Color::bright_blue();
     inline constexpr auto list_num     = Color::bright_blue();
     inline constexpr auto checkbox_fg  = Color::bright_green();

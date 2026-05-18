@@ -16,9 +16,12 @@
 #include <cstring>
 #include <exception>
 #include <future>
+#include <optional>
 #include <print>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 
 using namespace maya;
 using namespace std::chrono_literals;
@@ -936,6 +939,119 @@ static void st_clear_restream() {
     }
 }
 
+// New: byte-offset reverse lookup + fold roundtrip + auto-fold.
+static void st_block_meta_and_fold() {
+    StreamingMarkdown md;
+    const std::string body =
+        "# Title\n\n"
+        "A first paragraph.\n\n"
+        "```rust\nfn a() {}\nfn b() {}\n```\n\n"
+        "A trailing paragraph.\n";
+    md.set_content(body);
+    md.finish();
+
+    // Must have committed at least 4 blocks: heading, para, code, para.
+    if (md.block_count() < 4)
+        throw std::runtime_error("expected >=4 committed blocks, got "
+            + std::to_string(md.block_count()));
+
+    // block_for_offset on a byte inside the heading must return 0.
+    auto first = md.block_for_offset(2);
+    if (!first || *first != 0)
+        throw std::runtime_error("block_for_offset(2) != 0");
+
+    // Find the code block by kind and toggle it.
+    std::optional<std::size_t> code_off;
+    for (std::size_t i = 0; i < md.block_count(); ++i) {
+        if (md.block_meta(i).kind == StreamingMarkdown::BlockKind::CodeBlock) {
+            code_off = md.block_meta(i).source_offset;
+            break;
+        }
+    }
+    if (!code_off) throw std::runtime_error("no code block in commit");
+
+    // Code block has line_count > 1 — verify the metadata before
+    // touching the fold map. (auto_fold respects any pre-existing
+    // entry, including an explicit-unfold one, so this must precede
+    // the toggle_fold roundtrip below.)
+    {
+        bool seen_long_code = false;
+        for (std::size_t i = 0; i < md.block_count(); ++i) {
+            const auto& m = md.block_meta(i);
+            if (m.kind == StreamingMarkdown::BlockKind::CodeBlock
+                && m.line_count > 1) { seen_long_code = true; break; }
+        }
+        if (!seen_long_code)
+            throw std::runtime_error("code block line_count not > 1");
+    }
+    md.auto_fold_long_blocks(
+        1u,
+        1u << static_cast<unsigned>(StreamingMarkdown::BlockKind::CodeBlock));
+    if (!md.is_folded(*code_off)) {
+        std::string diag = "auto_fold did not fold long code block; per-block meta: ";
+        for (std::size_t i = 0; i < md.block_count(); ++i) {
+            const auto& m = md.block_meta(i);
+            diag += "[" + std::to_string(i) + " kind="
+                +  std::to_string(static_cast<int>(m.kind))
+                +  " off=" + std::to_string(m.source_offset)
+                +  " end=" + std::to_string(m.source_end)
+                +  " lc="  + std::to_string(m.line_count) + "] ";
+        }
+        throw std::runtime_error(diag);
+    }
+    // Heading and paragraphs (line_count <= 1) must remain unfolded.
+    if (md.is_folded(md.block_meta(0).source_offset))
+        throw std::runtime_error("auto_fold folded a non-codeblock");
+    md.unfold_all();
+    if (md.is_folded(*code_off))
+        throw std::runtime_error("unfold_all did not clear folds");
+
+    // Manual toggle roundtrip on a fresh fold map.
+    if (md.is_folded(*code_off))
+        throw std::runtime_error("code block folded by default");
+    bool folded = md.toggle_fold(*code_off);
+    if (!folded) throw std::runtime_error("toggle_fold did not fold");
+    render_stream(md);
+    folded = md.toggle_fold(*code_off);
+    if (folded) throw std::runtime_error("toggle_fold did not unfold");
+}
+
+// New: set_content_async on a small input falls through to the
+// synchronous path; on a large diverging input it eventually
+// applies via build() polling. We can't easily test wall-clock
+// async, but we CAN verify that after a `set_content_async` +
+// repeated build() polls, the source matches.
+static void st_set_content_async_roundtrip() {
+    StreamingMarkdown md;
+
+    // Small input: synchronous fallthrough.
+    md.set_content_async("hello **world**\n");
+    render_stream(md);
+    if (md.source() != "hello **world**\n")
+        throw std::runtime_error("small async did not apply synchronously");
+
+    // Large divergent input: queues a worker. Poll up to ~2 s.
+    std::string big;
+    big.reserve(40'000);
+    for (int i = 0; i < 500; ++i) {
+        big += "# Header " + std::to_string(i) + "\n\n";
+        big += "Paragraph body with **bold** and `code` and a [link](https://example.com).\n\n";
+        big += "```c\nint x_" + std::to_string(i) + " = 0;\n```\n\n";
+    }
+    md.set_content_async(big);
+
+    // Foreground polling loop: build() is what runs maybe_apply_async_.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (md.source() != big) {
+        render_stream(md);
+        if (std::chrono::steady_clock::now() > deadline)
+            throw std::runtime_error("async parse did not land within 5 s");
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (md.block_count() == 0)
+        throw std::runtime_error("async parse landed empty");
+}
+
 // ───────────────────────────── main ─────────────────────────────────────────
 
 int main() {
@@ -1289,6 +1405,8 @@ int main() {
     run("render after commits ×200",   2000ms, st_render_after_commits_no_change);
     run("render between commits ×200", 2000ms, st_render_between_commits);
     run("clear + restream ×10",        5000ms, st_clear_restream);
+    run("block meta + fold",            2000ms, st_block_meta_and_fold);
+    run("set_content_async roundtrip",  8000ms, st_set_content_async_roundtrip);
 
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",

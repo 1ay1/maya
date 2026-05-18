@@ -77,14 +77,18 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             for (auto& child : bi.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::Code& c) {
-            // Inline code: pure colored text, no surrounding space padding.
-            // The padding was legacy from a chip-style render that paired
-            // with a bg fill; without the bg, the spaces are invisible ink
-            // that only widens the word, forcing ugly mid-sentence wraps
-            // (e.g. `foo` on its own line, content on the next). Zed / GH
-            // CLI style: inline code is just a different color — it reads
-            // as distinct without needing a box.
-            auto sty = Style{}.with_fg(colors::code_fg);
+            // Inline code: bright_cyan fg on a faint bg — a chip, not
+            // just colored text. Pure-color was indistinguishable from
+            // a regularly-styled word on themes where bright_cyan
+            // collapses toward the body fg, so identifiers like
+            // `Domain` / `StreamState` blended into prose. The bg fills
+            // strictly the code RUN (no padding spaces) so wrapping
+            // behaves identically to plain text — the historical
+            // "chip with spaces" wrap bug doesn't reappear. On terminals
+            // without true-color the ANSI black slot still produces a
+            // visible step against default bg.
+            auto sty = Style{}.with_fg(colors::code_fg)
+                              .with_bg(colors::code_bg);
             runs.push_back({out.size(), c.content.size(), sty});
             out += c.content;
         },
@@ -289,10 +293,18 @@ static Element render_list(const md::List& l, int depth) {
             prefix = "  " + std::to_string(num++) + ". ";
             prefix_style = Style{}.with_fg(colors::list_num);
         } else if (depth == 0) {
-            prefix = "  \xe2\x80\xa2 ";  // "  • " — simple bullet
-            prefix_style = Style{}.with_fg(colors::list_bullet);
+            // ▸ (U+25B8, black right-pointing small triangle) reads as
+            // a directional "item start" cue — heavier than • (which
+            // disappears against dense prose on most themes) and
+            // unambiguously punctuation, not stray text. Bold + bullet
+            // color so it's the visual anchor for each list item.
+            prefix = "  \xe2\x96\xb8 ";  // "  ▸ "
+            prefix_style = Style{}.with_fg(colors::list_bullet).with_bold();
         } else {
-            prefix = "    \xe2\x97\xa6 ";  // "    ◦ " — nested, extra indent
+            // Nested items step down in visual weight: hollow ◦
+            // signals "sub-item" without competing with the parent
+            // ▸. Extra two-space indent reinforces the hierarchy.
+            prefix = "    \xe2\x97\xa6 ";  // "    ◦ "
             prefix_style = Style{}.with_fg(colors::list_bullet);
         }
 
@@ -386,8 +398,25 @@ Element md_block_to_element(const md::Block& block) {
 
             std::string content;
             std::vector<StyledRun> runs;
+
+            // h1 / h2 get a leading three-quarter-block (▍, U+258D)
+            // in the heading color: a vertical accent bar fused to the
+            // title. Reads as a section anchor without consuming a
+            // separate row — the underline rule below still owns the
+            // row-spend. h3 stays clean (already bold + heading_blue),
+            // h4–h6 keep their existing marker glyph (§ › ‣). The
+            // block is in heading_fg + bold so it tracks whichever
+            // level is active, not a fixed accent.
+            if (h.level == 1 || h.level == 2) {
+                static constexpr std::string_view kAccent =
+                    "\xe2\x96\x8d "; // ▍ + space
+                Style accent_sty = sty;       // same fg + bold
+                runs.push_back({0, kAccent.size(), accent_sty});
+                content.append(kAccent);
+            }
+
             if (!marker.empty()) {
-                runs.push_back({0, marker.size(),
+                runs.push_back({content.size(), marker.size(),
                                 Style{}.with_fg(colors::list_bullet).with_bold()});
                 content.append(marker);
             }
@@ -453,7 +482,14 @@ Element md_block_to_element(const md::Block& block) {
                 .align_self(Align::Stretch)
                 .border(BorderStyle::Round)
                 .border_color(colors::code_border)
-                .padding(0, 1, 0, 1);
+                .padding(0, 1, 0, 1)
+                // NoWrap inside (syntax.cpp) means long lines extend
+                // past the available width; clip them at the right
+                // border instead of letting the terminal hard-wrap
+                // continuation bytes into column 0 of the next row
+                // (which lands them under — or through — the line-
+                // number gutter).
+                .overflow(Overflow::Hidden);
 
             if (!c.lang.empty()) {
                 std::string label = " " + c.lang + " ";

@@ -619,6 +619,9 @@ static Element highlight_diff(const std::string& code) {
     return Element{TextElement{
         .content = std::move(out),
         .style = syntax::plain(),
+        // Same rationale as highlight_code_impl’s return: diff
+        // lines are atomic and must not soft-wrap into the gutter.
+        .wrap = TextWrap::NoWrap,
         .runs = std::move(runs),
     }};
 }
@@ -1116,6 +1119,17 @@ static Element highlight_code_impl(const std::string& code, const std::string& l
     return Element{TextElement{
         .content = std::move(out),
         .style = syntax::plain(),
+        // Code blocks must not soft-wrap: a long identifier or
+        // command line is one logical unit, and breaking it at a
+        // column boundary spills continuation bytes back to column
+        // 0 — directly under (or through) the line-number gutter.
+        // Visible symptom: the next line’s gutter digit lands
+        // *inside* the wrapped tail of the previous line. Hand the
+        // overflow to the parent box’s clip rect instead; the
+        // CodeBlock builder in render.cpp opts into
+        // Overflow::Hidden so the tail simply truncates at the
+        // right border.
+        .wrap = TextWrap::NoWrap,
         .runs = std::move(runs),
     }};
 }

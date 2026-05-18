@@ -203,13 +203,21 @@ private:
             })
             .grow(1.0f);
 
-        // ── Body: render each slot back-to-back (no inter-slot blank).
+        // ── Body: render each slot with a one-row gap between
+        //    consecutive non-blank slots. The gap matters most at the
+        //    markdown→tool-panel boundary: without it the prose runs
+        //    flush into the bordered actions card, fusing two distinct
+        //    sections into one wall of text. Skipped slots (is_blank)
+        //    don't trigger the gap so empty bodies stay zero-row.
         std::vector<Element> body_rows;
-        body_rows.reserve(cfg.body.size());
+        body_rows.reserve(cfg.body.size() * 2);
+        bool any_emitted = false;
         for (const auto& slot : cfg.body) {
             Element rendered = render_slot(slot);
             if (is_blank(rendered)) continue;
+            if (any_emitted) body_rows.push_back(blank().build());
             body_rows.push_back(std::move(rendered));
+            any_emitted = true;
         }
 
         // ── Optional error banner under body.

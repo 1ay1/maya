@@ -117,9 +117,7 @@ public:
             text("\xe2\x9a\xa1 ", Style{}.with_fg(rc)),                  // ⚡
             text(std::string{rate_buf}, rate_style),
             text(" t/s ", fg_dim_(muted)),
-            text(std::move(spark), spark_style),
-            text(" "),
-            text(format_tokens_(cfg_.total), fg_dim_(muted))
+            text(std::move(spark), spark_style)
         ).build();
     }
 
@@ -127,7 +125,9 @@ private:
     Config cfg_;
 
     // 5-char tokens: "999.9" / "99.9k" / "9.9M". Space-padded on the left.
-    static std::string format_tokens_(int n) {
+    // Retained for callers / future revisions; not used by the
+    // current build() (total field was dropped from the chip).
+    [[maybe_unused]] static std::string format_tokens_(int n) {
         char buf[16];
         if (n >= 1'000'000) {
             std::snprintf(buf, sizeof(buf), "%5.1fM",

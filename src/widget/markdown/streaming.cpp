@@ -10,10 +10,17 @@
 // md_detail::{flatten_inline}.
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <memory>
+#include <mutex>
+#include <optional>
+#include <thread>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -27,6 +34,7 @@
 #include "maya/text/stream_sink.hpp"
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
+#include "maya/app/app.hpp"   // request_animation_frame()
 
 namespace maya {
 
@@ -716,15 +724,127 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     ::maya::md_detail::RefDefsScope guard(&ref_defs_);
     auto parsed = parse_markdown_impl(cleaned, 0);
 
+    // ── Derive per-block source ranges over [committed_, boundary). ──
+    // Walk blank-line separators outside ``` / ~~~ / $$ fences; the
+    // resulting segment list mirrors the parser's top-level block
+    // segmentation closely (paragraphs / headings / lists / tables /
+    // code blocks each occupy one segment). When the segment count
+    // matches the parser's block count we attribute 1:1; otherwise we
+    // fall back to a monotone synthetic offset so the fold/lookup APIs
+    // still have a unique stable key per block.
+    //
+    // Approximation accepted: the offsets are correct for the common
+    // case (one segment == one block), and remain UNIQUE + MONOTONE in
+    // every case, which is all the fold map + binary-search reverse
+    // lookup require for correctness. Refinement (parser emitting
+    // exact source ranges per block) can drop in without changing the
+    // public API.
+    const size_t base = committed_;
+    std::vector<std::pair<size_t, size_t>> seg_ranges;  // [start, end) in source_
+    seg_ranges.reserve(parsed.blocks.size() + 1);
+    {
+        bool seg_in_fence = false;
+        size_t seg_start = base;
+        size_t k = base;
+        // Skip leading blank lines so the first segment starts at real
+        // content (matches the parser's behaviour of trimming leading
+        // whitespace between blocks).
+        while (k < boundary && source_[k] == '\n') ++k;
+        seg_start = k;
+        while (k < boundary) {
+            bool at_ls = (k == base || source_[k - 1] == '\n');
+            if (at_ls && k + 3 <= boundary &&
+                ((source_[k] == '`' && source_[k+1] == '`' && source_[k+2] == '`') ||
+                 (source_[k] == '~' && source_[k+1] == '~' && source_[k+2] == '~'))) {
+                seg_in_fence = !seg_in_fence;
+                // advance to end of fence line
+                size_t eol = std::string_view{source_}.find('\n', k);
+                if (eol == std::string_view::npos || eol >= boundary) { k = boundary; break; }
+                k = eol + 1;
+                // A closing fence ends the segment at its line.
+                if (!seg_in_fence) {
+                    if (k > seg_start) seg_ranges.emplace_back(seg_start, k);
+                    while (k < boundary && source_[k] == '\n') ++k;
+                    seg_start = k;
+                }
+                continue;
+            }
+            if (!seg_in_fence && at_ls && source_[k] == '\n') {
+                // blank line separator
+                if (k > seg_start) seg_ranges.emplace_back(seg_start, k);
+                while (k < boundary && source_[k] == '\n') ++k;
+                seg_start = k;
+                continue;
+            }
+            ++k;
+        }
+        if (seg_start < boundary)
+            seg_ranges.emplace_back(seg_start, boundary);
+    }
+
+    auto kind_of = [](const md::Block& b) noexcept -> StreamingMarkdown::BlockKind {
+        using K = StreamingMarkdown::BlockKind;
+        return std::visit([](const auto& x) noexcept -> K {
+            using T = std::decay_t<decltype(x)>;
+            if constexpr (std::is_same_v<T, md::Paragraph>)       return K::Paragraph;
+            else if constexpr (std::is_same_v<T, md::Heading>)    return K::Heading;
+            else if constexpr (std::is_same_v<T, md::CodeBlock>)  return K::CodeBlock;
+            else if constexpr (std::is_same_v<T, md::Blockquote>) return K::Blockquote;
+            else if constexpr (std::is_same_v<T, md::List>)       return K::List;
+            else if constexpr (std::is_same_v<T, md::HRule>)      return K::HRule;
+            else if constexpr (std::is_same_v<T, md::Table>)      return K::Table;
+            else if constexpr (std::is_same_v<T, md::FootnoteDef>) return K::FootnoteDef;
+            else if constexpr (std::is_same_v<T, md::Alert>)      return K::Alert;
+            else if constexpr (std::is_same_v<T, md::DefList>)    return K::DefList;
+            else if constexpr (std::is_same_v<T, md::Details>)    return K::Details;
+            else if constexpr (std::is_same_v<T, md::HtmlBlock>)  return K::HtmlBlock;
+            else return K::Other;
+        }, b.inner);
+    };
+    auto lang_of = [](const md::Block& b) noexcept -> std::string {
+        if (auto* c = std::get_if<md::CodeBlock>(&b.inner)) return c->lang;
+        return {};
+    };
+
     auto& prefix_blocks = prefix_->blocks;
+    auto& prefix_metas  = prefix_->metas;
     prefix_blocks.reserve(prefix_blocks.size() + parsed.blocks.size());
-    for (auto& block : parsed.blocks) {
-        // Heap-allocate the rendered Element and stash a shared_ptr.
-        // Subsequent prefix generations reference the same heap
-        // Elements (no move/copy of the BoxElement body when the
-        // blocks vector reallocates past capacity).
+    prefix_metas.reserve (prefix_metas.size()  + parsed.blocks.size());
+
+    const bool seg_match = seg_ranges.size() == parsed.blocks.size();
+    // Synthetic monotone offset used when segment count diverges from
+    // block count. Starts at `base` so it preserves the "newer commit
+    // == larger offset" ordering binary search relies on.
+    size_t synth = base;
+    for (std::size_t bi = 0; bi < parsed.blocks.size(); ++bi) {
+        auto& block = parsed.blocks[bi];
+
+        BlockMeta meta;
+        if (seg_match) {
+            meta.source_offset = seg_ranges[bi].first;
+            meta.source_end    = seg_ranges[bi].second;
+        } else {
+            meta.source_offset = synth;
+            // End at the next synth or `boundary` so ranges remain
+            // non-overlapping and ordered.
+            meta.source_end    = (bi + 1 < parsed.blocks.size())
+                ? (synth + 1) : boundary;
+            synth += 1;
+        }
+        meta.kind = kind_of(block);
+        meta.lang = lang_of(block);
+        // line_count: count '\n' inside the attributed source slice,
+        // clamped to uint16 max so a 65k-line code block doesn't wrap.
+        std::size_t lc = 0;
+        if (meta.source_end > meta.source_offset && meta.source_end <= source_.size()) {
+            for (std::size_t q = meta.source_offset; q < meta.source_end; ++q)
+                if (source_[q] == '\n') ++lc;
+        }
+        meta.line_count = static_cast<std::uint16_t>(std::min<std::size_t>(lc, 0xFFFFu));
+
         prefix_blocks.push_back(
             std::make_shared<const Element>(md_block_to_element(block)));
+        prefix_metas.push_back(std::move(meta));
     }
     if (!parsed.blocks.empty()) ++prefix_->generation;
 
@@ -826,6 +946,11 @@ void StreamingMarkdown::finish() {
         commit_range(source_.size());
         in_code_fence_ = false;
     }
+
+    // Stream is over: drop the blinking cursor so the settled
+    // message doesn't keep requesting animation frames forever.
+    live_ = false;
+    build_dirty_ = true;
 }
 
 void StreamingMarkdown::clear() {
@@ -873,12 +998,34 @@ void StreamingMarkdown::clear() {
     // the full-rebuild path rather than trying to mutate a stale
     // structural template.
     cached_prefix_gen_    = 0;
+    cached_fold_gen_      = 0;
     cached_has_tail_      = false;
     cached_has_prefix_    = false;
     cached_tail_in_fence_ = false;
     cached_tail_hash_     = 0;
     cached_tail_len_      = 0;
     cached_build_         = Element{TextElement{""}};
+    cached_live_          = Element{TextElement{""}};
+    live_                 = false;
+
+    // Fold map keys at byte offsets in the prior source_; that source
+    // is gone, so the keys are meaningless. Bumping fold_generation_
+    // is paired with the new prefix_ here so any stub Elements still
+    // capturing the previous fold_generation_ via their hash_id miss
+    // cleanly on the renderer's component cache.
+    folds_.clear();
+    ++fold_generation_;
+
+    // Drop any in-flight async parse: its result will be stale once
+    // it lands (source it parsed no longer matches us) and
+    // maybe_apply_async_ will discard it on the version mismatch.
+    // Clearing the latest-source sentinel ensures we don't spawn a
+    // follow-up worker for the discarded result.
+    {
+        std::lock_guard<std::mutex> lk(async_mu_);
+        async_slot_.reset();
+        async_latest_source_.reset();
+    }
 }
 
 // Render the uncommitted tail as a monotonic in-progress paragraph.
@@ -1422,9 +1569,460 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
 }
 
 const Element& StreamingMarkdown::build() const {
+    // Live-mode wrapper helper. When live_ is false this is a single
+    // ref-return; when true it rebuilds cached_live_ as a vstack of
+    // [cached_build_, blinking_cursor_row] and requests an animation
+    // frame so the next paint advances the blink phase. Defined as a
+    // lambda over `this` so each return-site in build() collapses to
+    // `return finalize();`.
+    auto finalize = [this]() -> const Element& {
+        if (!live_) return cached_build_;
+
+        // ── Geeky-as-fuck live animation ──
+        //
+        // Three layered effects on the trailing edge of the live tail:
+        //
+        //   (1) SCRAMBLE → RESOLVE
+        //       Newly-arrived chars start as random ASCII/box glyphs
+        //       and "decrypt" into the real char over ~180ms. Drives
+        //       a strong "text materialising in real time" feel.
+        //
+        //   (2) HOT → COOL GRADIENT TRAIL
+        //       The last ~24 codepoints follow a per-char color
+        //       gradient indexed by age:
+        //           freshest  →  hot magenta + bold
+        //           young     →  bright cyan
+        //           settling  →  ice blue, dim
+        //           locked    →  base fg
+        //       Each char migrates leftward through the gradient as
+        //       new ones arrive on the right.
+        //
+        //   (3) PULSING BLOCK CARET with TRAILING TRACER
+        //       Wide block (▊) cycling magenta→cyan, plus a thin
+        //       trailing dim half-block to the right that fades over
+        //       300ms — makes the caret feel like it's leaving a
+        //       trail as it moves forward.
+        //
+        // All three driven by request_animation_frame so they
+        // continue ticking at ~60 fps. Pure visual layer: cached_build_
+        // is not touched; every frame builds cached_live_ fresh from
+        // a shallow copy + mutated tail-leaf TextElement.
+
+        const auto now = std::chrono::steady_clock::now();
+        const std::int64_t ms_total = std::chrono::duration_cast<
+            std::chrono::milliseconds>(now.time_since_epoch()).count();
+
+        // Update grow-time stamp: if source has grown since last
+        // build(), record this frame's wall time as the moment the
+        // trailing edge moved. last_seen_size_ tracks the size we
+        // observed last frame.
+        if (source_.size() > last_seen_size_) {
+            last_grow_ms_   = ms_total;
+            last_seen_size_ = source_.size();
+        } else if (source_.size() < last_seen_size_) {
+            // Source shrank (clear / set_content rollback) — reset.
+            last_seen_size_ = source_.size();
+            last_grow_ms_   = ms_total;
+        }
+        const std::int64_t age_at_tail_ms = ms_total - last_grow_ms_;
+
+        // Walk a copy of cached_build_ down its rightmost spine to
+        // the last leaf TextElement.
+        auto find_last_text = [](Element& root) -> TextElement* {
+            Element* cur = &root;
+            for (;;) {
+                if (auto* t = std::get_if<TextElement>(&cur->inner)) {
+                    return t->content.empty() ? nullptr : t;
+                }
+                if (auto* b = std::get_if<BoxElement>(&cur->inner)) {
+                    if (b->children.empty()) return nullptr;
+                    cur = &b->children.back();
+                    continue;
+                }
+                return nullptr;
+            }
+        };
+
+        // Step back N UTF-8 codepoints from end of `s`.
+        auto utf8_step_back = [](std::string_view s,
+                                 std::size_t n) -> std::size_t {
+            std::size_t i = s.size();
+            while (n > 0 && i > 0) {
+                --i;
+                while (i > 0 &&
+                       (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80) {
+                    --i;
+                }
+                --n;
+            }
+            return i;
+        };
+
+        // Tunables.
+        constexpr std::size_t kTrailLen    = 24;   // codepoints in gradient
+        constexpr std::size_t kScrambleLen = 4;    // codepoints scrambled
+        constexpr std::int64_t kScrambleMs = 180;  // scramble → resolve
+        constexpr std::int64_t kCharStepMs = 28;   // per-char age delta
+
+        // Effective age for codepoint at position `i_from_tail`
+        // (0 = newest, increasing leftward). Newest char's age is
+        // the actual wall-clock since source grew; each earlier char
+        // is kCharStepMs older. Clamped so even the oldest in the
+        // trail has a non-trivial age — prevents the whole trail
+        // from snapping color when bytes arrive in a burst.
+        auto age_for = [&](std::size_t i_from_tail) -> std::int64_t {
+            return age_at_tail_ms +
+                static_cast<std::int64_t>(i_from_tail) * kCharStepMs;
+        };
+
+        // Trail color: lerp through a 4-stop palette by age.
+        //   age 0       → hot magenta (255, 90, 200) + bold
+        //   age 120ms   → bright cyan (120, 230, 255) + bold
+        //   age 320ms   → ice blue    (140, 180, 220) dim
+        //   age 700ms+  → base fg (no override)
+        // Returns nullopt for ages past the trail — caller leaves
+        // those chars' original style alone.
+        auto trail_style = [&](std::int64_t age_ms)
+            -> std::optional<Style>
+        {
+            if (age_ms >= 700) return std::nullopt;
+            // Lerp helpers.
+            auto lerp = [](double a, double b, double t) {
+                return a + (b - a) * t;
+            };
+            double r, g, b;
+            bool bold = false;
+            bool dim  = false;
+            if (age_ms < 120) {
+                const double t = age_ms / 120.0;
+                r = lerp(255, 120, t);
+                g = lerp( 90, 230, t);
+                b = lerp(200, 255, t);
+                bold = true;
+            } else if (age_ms < 320) {
+                const double t = (age_ms - 120) / 200.0;
+                r = lerp(120, 140, t);
+                g = lerp(230, 180, t);
+                b = lerp(255, 220, t);
+                bold = t < 0.5;
+            } else {
+                // 320 → 700: fade from ice blue to invisible-on-base
+                // by reducing saturation. We approximate by lerping
+                // toward a neutral light gray.
+                const double t = (age_ms - 320) / 380.0;
+                r = lerp(140, 200, t);
+                g = lerp(180, 200, t);
+                b = lerp(220, 200, t);
+                dim = true;
+            }
+            Style s = Style{}.with_fg(Color::rgb(
+                static_cast<std::uint8_t>(r),
+                static_cast<std::uint8_t>(g),
+                static_cast<std::uint8_t>(b)));
+            if (bold) s = s.with_bold();
+            if (dim)  s = s.with_dim();
+            return s;
+        };
+
+        // Scramble glyphs: a curated set of ASCII / box-drawing /
+        // dingbat chars that read as "digital noise". We pick one
+        // deterministically from (i_from_tail, ms_total) so a given
+        // char's scramble glyph CHANGES across frames — the
+        // characteristic Matrix "churning" effect.
+        static constexpr const char* kScrambleGlyphs[] = {
+            "#", "$", "%", "&", "*", "+", "=", "?", "@",
+            "!", "~", "^", "<", ">", "|", "/", "\\",
+            "\xe2\x96\x91",  // ░
+            "\xe2\x96\x92",  // ▒
+            "\xe2\x96\x93",  // ▓
+            "\xe2\x96\xa0",  // ■
+            "\xe2\x96\xa1",  // □
+            "\xe2\x97\x86",  // ◆
+            "\xe2\x97\x87",  // ◇
+            "\xe2\x97\x8f",  // ●
+            "\xe2\x97\x8b",  // ○
+            "\xe2\x9c\xa6",  // ✦
+            "\xe2\x9c\xa8",  // ✨ (sparkle — occasional accent)
+            "\xce\xb1", "\xce\xb2", "\xce\xb3", "\xce\xb4",  // αβγδ
+            "\xce\xbb", "\xcf\x80", "\xcf\x83", "\xcf\x86",  // λπσφ
+            "0", "1", "7", "8", "X", "Z",
+        };
+        constexpr std::size_t kScrambleN =
+            sizeof(kScrambleGlyphs) / sizeof(kScrambleGlyphs[0]);
+
+        // Cheap deterministic hash for picking a scramble glyph.
+        auto scramble_pick = [&](std::size_t cp_idx,
+                                 std::int64_t age_ms) -> std::string_view {
+            // Quantise time so we don't change glyph EVERY frame —
+            // we churn at ~45ms intervals so individual frames don't
+            // look like static. (Faster = noisier, slower = sleepier.)
+            const std::uint64_t time_bucket =
+                static_cast<std::uint64_t>(ms_total / 45);
+            std::uint64_t h = 0x9e3779b97f4a7c15ull;
+            h ^= cp_idx + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= time_bucket + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= static_cast<std::uint64_t>(age_ms) + 0x9e3779b9
+                 + (h << 6) + (h >> 2);
+            return std::string_view{kScrambleGlyphs[h % kScrambleN]};
+        };
+
+        // Shallow copy of cached_build_; we'll splice a freshly-built
+        // tail TextElement onto its rightmost leaf.
+        //
+        // Note: this copies the outer vstack BoxElement and its
+        // children vector. Children are:
+        //   [prefix_component, tail_text]  (or one of those alone)
+        // The prefix is a ComponentElement — its copy is O(1) (one
+        // std::function copy + shared_ptr refcount bump). The actual
+        // committed-prefix content lives inside the lambda's captured
+        // shared_ptr<CommittedPrefix>; copying the ComponentElement
+        // does NOT touch the prefix block trees, and the renderer's
+        // component_cache (keyed on hash_id) keeps the painted cells
+        // warm across frames. So this copy is O(1) regardless of
+        // transcript length — long sessions stay cheap.
+        //
+        // The tail TextElement copy DOES copy its content std::string
+        // which is up to one paragraph / code block of bytes. We
+        // mitigate below by mutating only the trailing kTrailLen
+        // codepoints in place rather than rebuilding the whole string.
+        Element animated_body = cached_build_;
+        if (TextElement* tail = find_last_text(animated_body)) {
+            const std::string_view orig = tail->content;
+
+            // Find the trail window WITHOUT scanning the entire
+            // content. Walk backward from the end byte-by-byte until
+            // we've passed kTrailLen codepoints (a UTF-8 codepoint
+            // start is any byte whose top 2 bits are not 10). Then
+            // index codepoints only within [trail_byte_start, end).
+            // O(kTrailLen) per frame, independent of tail length.
+            const std::size_t trail_byte_start =
+                utf8_step_back(orig, kTrailLen);
+            const std::string_view trail_slice =
+                orig.substr(trail_byte_start);
+
+            // Codepoint boundaries WITHIN the trail slice only.
+            std::vector<std::size_t> trail_cp_offs;
+            trail_cp_offs.reserve(kTrailLen + 1);
+            for (std::size_t i = 0; i < trail_slice.size();) {
+                trail_cp_offs.push_back(i);
+                ++i;
+                while (i < trail_slice.size() &&
+                       (static_cast<unsigned char>(trail_slice[i]) & 0xC0) == 0x80)
+                    ++i;
+            }
+            trail_cp_offs.push_back(trail_slice.size());
+            const std::size_t trail_n =
+                trail_cp_offs.empty() ? 0 : (trail_cp_offs.size() - 1);
+
+            if (trail_n == 0) {
+                // Empty trail (shouldn't happen given we checked
+                // tail non-empty above, but defensive). Skip
+                // mutation; caret row below still paints.
+                goto trail_done;
+            }
+
+            // Scramble window is the rightmost min(kScrambleLen,
+            // trail_n) codepoints.
+            const std::size_t scramble_n =
+                std::min(trail_n, kScrambleLen);
+            const std::size_t scramble_cp_start_local =
+                trail_n - scramble_n;
+
+            // Build the new content in-place: prefix bytes are
+            // unchanged (we just reference them via the existing
+            // string), then we splice trail bytes that may have a
+            // scramble glyph substituted for the real cp.
+            //
+            // Strategy: reserve a tail-sized buffer (small — bounded
+            // by trail_slice.size() + ~kScrambleLen * worst-case-utf8
+            // width). Append-build the trail. Then assign:
+            //   tail->content = prefix_bytes + new_trail_bytes
+            //
+            // To avoid a full-content copy we use std::string's
+            // resize+memcpy idiom: keep the original prefix by
+            // truncating to trail_byte_start, then append the new
+            // trail.
+            std::string new_trail;
+            new_trail.reserve(trail_slice.size() + scramble_n * 3);
+
+            // Carry-forward original runs that fall before the trail.
+            std::vector<StyledRun> new_runs;
+            new_runs.reserve(
+                (tail->runs.empty() ? 1 : tail->runs.size())
+                + trail_n + 2);
+
+            if (trail_byte_start > 0) {
+                if (tail->runs.empty()) {
+                    new_runs.push_back(StyledRun{
+                        .byte_offset = 0,
+                        .byte_length = trail_byte_start,
+                        .style       = tail->style,
+                    });
+                } else {
+                    for (const auto& r : tail->runs) {
+                        if (r.byte_offset >= trail_byte_start) break;
+                        const std::size_t end =
+                            r.byte_offset + r.byte_length;
+                        const std::size_t clipped =
+                            std::min(end, trail_byte_start);
+                        new_runs.push_back(StyledRun{
+                            .byte_offset = r.byte_offset,
+                            .byte_length = clipped - r.byte_offset,
+                            .style       = r.style,
+                        });
+                        if (end > trail_byte_start) break;
+                    }
+                }
+            }
+
+            // Walk the trail codepoint-by-codepoint, emitting either
+            // the real char (with a trail color overlay) or a scramble
+            // glyph.
+            for (std::size_t k = 0; k < trail_n; ++k) {
+                const std::size_t i_from_tail = trail_n - 1 - k;
+                const std::int64_t age = age_for(i_from_tail);
+
+                std::string_view real_cp{
+                    trail_slice.data() + trail_cp_offs[k],
+                    trail_cp_offs[k + 1] - trail_cp_offs[k]};
+
+                const bool in_scramble_window =
+                    k >= scramble_cp_start_local;
+                const bool scrambling =
+                    in_scramble_window && age < kScrambleMs;
+
+                std::string_view emitted;
+                std::string scramble_owned;
+                if (scrambling) {
+                    scramble_owned = std::string{
+                        scramble_pick(trail_byte_start + trail_cp_offs[k],
+                                      age)};
+                    emitted = scramble_owned;
+                } else {
+                    emitted = real_cp;
+                }
+
+                const std::size_t out_byte_off =
+                    trail_byte_start + new_trail.size();
+                new_trail.append(emitted.data(), emitted.size());
+                const std::size_t out_byte_len =
+                    (trail_byte_start + new_trail.size()) - out_byte_off;
+
+                // Pick the style.
+                Style s;
+                if (scrambling) {
+                    const bool flick =
+                        ((ms_total / 60 + k) & 1) == 0;
+                    s = Style{}
+                        .with_fg(flick
+                            ? Color::rgb(255,  80, 180)
+                            : Color::rgb(255, 160,  60))
+                        .with_bold();
+                } else if (auto ts = trail_style(age)) {
+                    s = *ts;
+                } else {
+                    s = tail->style;
+                }
+                new_runs.push_back(StyledRun{
+                    .byte_offset = out_byte_off,
+                    .byte_length = out_byte_len,
+                    .style       = s,
+                });
+            }
+
+            // Truncate to the prefix and append the rebuilt trail.
+            // resize(trail_byte_start) does NOT reallocate; the
+            // existing capacity is preserved.
+            tail->content.resize(trail_byte_start);
+            tail->content.append(new_trail);
+            tail->runs = std::move(new_runs);
+            // Force re-wrap on the copy ONLY when scramble is active.
+            // Scramble may substitute a 1-byte ASCII for a 3-byte box
+            // glyph, changing content byte length and invalidating the
+            // wrap cache's content_size key. When no scramble is
+            // active (age_at_tail >= kScrambleMs across the entire
+            // window) the trail bytes are byte-identical to the
+            // original tail — the wrap cache from the source render is
+            // still valid and re-wrapping would be wasted O(content)
+            // work on every animation frame. On a multi-KB code-block
+            // tail this avoidance is the difference between smooth
+            // and chokes-the-renderer.
+            const bool scramble_active =
+                age_at_tail_ms < kScrambleMs +
+                static_cast<std::int64_t>(scramble_n) * kCharStepMs;
+            if (scramble_active) {
+                tail->cached_width = -1;
+            }
+        }
+        trail_done:;
+
+        // ── Caret row with trailing tracer ──
+        //
+        // Main caret: wide block, color pulses magenta→cyan via a
+        // triangular wave on ~650ms period.
+        // Trailing tracer: a dim half-block to the right of the
+        // caret that's only visible during the "forward stroke" of
+        // the pulse (gives the impression the caret just moved).
+        constexpr std::int64_t kCaretPeriodMs = 650;
+        const double caret_phase =
+            static_cast<double>(ms_total % kCaretPeriodMs)
+            / static_cast<double>(kCaretPeriodMs);
+        const double tri = (caret_phase < 0.5)
+            ? (caret_phase * 2.0)
+            : (2.0 - caret_phase * 2.0);
+        // Caret: lerp magenta (220, 80, 200) → cyan (100, 230, 255).
+        const std::uint8_t cr = static_cast<std::uint8_t>(
+            220.0 + (100.0 - 220.0) * tri);
+        const std::uint8_t cg = static_cast<std::uint8_t>(
+             80.0 + (230.0 -  80.0) * tri);
+        const std::uint8_t cb = static_cast<std::uint8_t>(
+            200.0 + (255.0 - 200.0) * tri);
+        // Tracer brightness follows the caret's forward stroke
+        // (first half of the cycle) and fades on the return.
+        const double tracer_intensity = (caret_phase < 0.5)
+            ? (1.0 - caret_phase * 2.0)   // 1 → 0 as phase 0 → 0.5
+            : 0.0;
+        const std::uint8_t tr = static_cast<std::uint8_t>(
+            60.0 + (140.0 - 60.0) * tracer_intensity);
+        const std::uint8_t tg = static_cast<std::uint8_t>(
+            60.0 + (160.0 - 60.0) * tracer_intensity);
+        const std::uint8_t tb = static_cast<std::uint8_t>(
+            80.0 + (200.0 - 80.0) * tracer_intensity);
+        Element caret_row = (
+            detail::hstack().padding(0, 0, 0, 2)(
+                Element{TextElement{
+                    .content = std::string{"\xe2\x96\x88"}, // █ full block
+                    .style   = Style{}
+                        .with_fg(Color::rgb(cr, cg, cb))
+                        .with_bold(),
+                }},
+                Element{TextElement{
+                    .content = std::string{"\xe2\x96\x8c"}, // ▌ half block
+                    .style   = Style{}
+                        .with_fg(Color::rgb(tr, tg, tb))
+                        .with_dim(),
+                }}
+            )
+        ).build();
+
+        cached_live_ = (
+            detail::vstack()(
+                std::move(animated_body),
+                std::move(caret_row)
+            )
+        ).build();
+
+        ::maya::request_animation_frame();
+        return cached_live_;
+    };
+
+    // Poll any landed async parse — may mutate prefix_/source_ and
+    // flip build_dirty_, so it must run BEFORE the early-out.
+    maybe_apply_async_();
+
     // Untouched-since-last-build: return cached. Dominant case when the
     // widget is idle (no streaming).
-    if (!build_dirty_) return cached_build_;
+    if (!build_dirty_) return finalize();
 
     std::string_view tail = (committed_ < source_.size())
         ? std::string_view{source_}.substr(committed_)
@@ -1441,7 +2039,7 @@ const Element& StreamingMarkdown::build() const {
         cached_has_prefix_ = false;
         cached_tail_version_ = source_version_;
         build_dirty_       = false;
-        return cached_build_;
+        return finalize();
     }
 
     // ── Tail-only fast path ──
@@ -1474,17 +2072,66 @@ const Element& StreamingMarkdown::build() const {
     // layout slot).
     auto make_prefix_component = [&]() -> Element {
         auto p = prefix_;
+        // Snapshot the fold map so the render lambda's behaviour is
+        // stable per ComponentElement instance — unrelated edits
+        // (typing into the composer) that don't change the prefix
+        // won't reshape this component, but a fold toggle bumps
+        // fold_generation_ which changes hash_id and forces a
+        // re-render with the updated map.
+        std::map<std::size_t, bool> fold_snapshot = folds_;
         ComponentElement comp;
         comp.hash_id = CacheIdBuilder{}
             .add(std::string_view{"strmd-prefix"})
             .add(static_cast<std::uint64_t>(instance_id_))
             .add(static_cast<std::uint64_t>(p->generation))
+            .add(static_cast<std::uint64_t>(fold_generation_))
             .build();
-        comp.render = [p](int /*w*/, int /*h*/) -> Element {
+        comp.render = [p, folds = std::move(fold_snapshot)](int /*w*/, int /*h*/) -> Element {
             std::vector<Element> kids;
             kids.reserve(p->blocks.size());
-            for (const auto& sp : p->blocks) {
-                kids.push_back(*sp);
+            for (std::size_t i = 0; i < p->blocks.size(); ++i) {
+                const auto& meta = (i < p->metas.size())
+                    ? p->metas[i] : BlockMeta{};
+                auto fit = folds.find(meta.source_offset);
+                const bool folded = fit != folds.end() && fit->second;
+                if (folded) {
+                    // Render a single-line stub. Use a styled
+                    // dim summary derived from BlockMeta so a
+                    // long code block collapses to one row
+                    // labelled with its language and line
+                    // count.
+                    const char* kind_label = "block";
+                    switch (meta.kind) {
+                        case BlockKind::CodeBlock:  kind_label = "code";       break;
+                        case BlockKind::Table:      kind_label = "table";      break;
+                        case BlockKind::List:       kind_label = "list";       break;
+                        case BlockKind::Blockquote: kind_label = "blockquote"; break;
+                        case BlockKind::Paragraph:  kind_label = "paragraph";  break;
+                        case BlockKind::Heading:    kind_label = "heading";    break;
+                        case BlockKind::HtmlBlock:  kind_label = "html";       break;
+                        default: break;
+                    }
+                    char buf[160];
+                    if (!meta.lang.empty()) {
+                        std::snprintf(buf, sizeof(buf),
+                            "\xe2\x96\xb8 %u line%s of %s (%s) hidden \xe2\x80\x94 unfold",
+                            static_cast<unsigned>(meta.line_count),
+                            meta.line_count == 1 ? "" : "s",
+                            kind_label, meta.lang.c_str());
+                    } else {
+                        std::snprintf(buf, sizeof(buf),
+                            "\xe2\x96\xb8 %u line%s of %s hidden \xe2\x80\x94 unfold",
+                            static_cast<unsigned>(meta.line_count),
+                            meta.line_count == 1 ? "" : "s",
+                            kind_label);
+                    }
+                    kids.push_back(Element{TextElement{
+                        .content = std::string{buf},
+                        .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+                    }});
+                } else {
+                    kids.push_back(*p->blocks[i]);
+                }
             }
             return detail::vstack().gap(1)(std::move(kids)).build();
         };
@@ -1492,6 +2139,7 @@ const Element& StreamingMarkdown::build() const {
     };
 
     if (cached_prefix_gen_ == prefix_->generation
+        && cached_fold_gen_  == fold_generation_
         && cached_has_prefix_ == has_prefix
         && cached_has_tail_   == has_tail
         && std::holds_alternative<BoxElement>(cached_build_.inner)) {
@@ -1538,7 +2186,7 @@ const Element& StreamingMarkdown::build() const {
             }
             cached_tail_size_ = tail.size();
             build_dirty_      = false;
-            return cached_build_;
+            return finalize();
         }
     }
 
@@ -1559,7 +2207,8 @@ const Element& StreamingMarkdown::build() const {
     // the outer vstack from scratch — a small cost individually but
     // taken at exactly the rate the user is most sensitive to
     // (visible UI tearing / pause when each new block lands).
-    if (cached_prefix_gen_ != prefix_->generation
+    if ((cached_prefix_gen_ != prefix_->generation
+         || cached_fold_gen_  != fold_generation_)
         && cached_has_prefix_ == has_prefix && has_prefix
         && cached_has_tail_   == has_tail
         && std::holds_alternative<BoxElement>(cached_build_.inner)) {
@@ -1588,9 +2237,10 @@ const Element& StreamingMarkdown::build() const {
                 cached_tail_version_ = source_version_;
             }
             cached_prefix_gen_ = prefix_->generation;
+            cached_fold_gen_   = fold_generation_;
             cached_tail_size_  = tail.size();
             build_dirty_       = false;
-            return cached_build_;
+            return finalize();
         }
     }
 
@@ -1666,6 +2316,7 @@ const Element& StreamingMarkdown::build() const {
     ).build();
     cached_tail_size_     = tail.size();
     cached_prefix_gen_    = prefix_->generation;
+    cached_fold_gen_      = fold_generation_;
     cached_has_tail_      = has_tail;
     cached_has_prefix_    = has_prefix;
     cached_tail_in_fence_ = in_code_fence_;
@@ -1678,7 +2329,324 @@ const Element& StreamingMarkdown::build() const {
     }
     cached_tail_version_ = source_version_;
     build_dirty_          = false;
-    return cached_build_;
+    return finalize();
+}
+
+// ── Block introspection / folding ────────────────────────────────────
+
+std::optional<std::size_t>
+StreamingMarkdown::block_for_offset(std::size_t off) const noexcept {
+    const auto& metas = prefix_->metas;
+    if (metas.empty()) return std::nullopt;
+    // Binary search for the greatest i with metas[i].source_offset <= off.
+    auto it = std::upper_bound(metas.begin(), metas.end(), off,
+        [](std::size_t v, const BlockMeta& m) noexcept {
+            return v < m.source_offset;
+        });
+    if (it == metas.begin()) return std::nullopt;
+    --it;
+    const std::size_t idx = static_cast<std::size_t>(it - metas.begin());
+    // off must lie within the block's attributed range. Beyond
+    // source_end (e.g. into the tail) returns nullopt.
+    if (off >= it->source_end) return std::nullopt;
+    return idx;
+}
+
+bool StreamingMarkdown::is_folded(std::size_t source_offset) const noexcept {
+    auto it = folds_.find(source_offset);
+    return it != folds_.end() && it->second;
+}
+
+void StreamingMarkdown::set_fold(std::size_t source_offset, bool folded) {
+    // Validate against the current block set so we don't accumulate
+    // map entries for stale offsets (an offset that doesn't match any
+    // known block has no rendering meaning).
+    bool known = false;
+    for (const auto& m : prefix_->metas) {
+        if (m.source_offset == source_offset) { known = true; break; }
+    }
+    if (!known) return;
+    bool& slot = folds_[source_offset];
+    if (slot == folded) return;
+    slot = folded;
+    ++fold_generation_;
+    build_dirty_ = true;
+}
+
+bool StreamingMarkdown::toggle_fold(std::size_t source_offset) {
+    const bool now = !is_folded(source_offset);
+    set_fold(source_offset, now);
+    // set_fold no-ops on an unknown offset; reflect the actual state.
+    return is_folded(source_offset);
+}
+
+void StreamingMarkdown::unfold_all() {
+    if (folds_.empty()) return;
+    folds_.clear();
+    ++fold_generation_;
+    build_dirty_ = true;
+}
+
+void StreamingMarkdown::auto_fold_long_blocks(std::uint16_t threshold_lines,
+                                              std::uint32_t kinds_mask) {
+    bool any = false;
+    for (const auto& m : prefix_->metas) {
+        const std::uint32_t bit = 1u << static_cast<unsigned>(m.kind);
+        if (!(bit & kinds_mask)) continue;
+        if (m.line_count <= threshold_lines) continue;
+        // Only fold blocks the user hasn't already explicitly
+        // unfolded — if they typed the unfold key, respect it. A
+        // missing entry (the dominant case on the first auto-fold
+        // pass) gets the auto-fold; an entry set to `false` is the
+        // user's explicit "keep open" and stays unfolded.
+        if (folds_.contains(m.source_offset)) continue;
+        folds_[m.source_offset] = true;
+        any = true;
+    }
+    if (any) {
+        ++fold_generation_;
+        build_dirty_ = true;
+    }
+}
+
+// ── Async parse ──────────────────────────────────────────────────────
+
+bool StreamingMarkdown::is_parsing() const noexcept {
+    // No need to lock for a coarse "in flight?" probe — the slot
+    // pointer is set under the mutex and read here without; the
+    // worker only flips `ready` and then the foreground destroys
+    // the slot. A torn read of the shared_ptr is benign (returns
+    // false negative for one frame at worst).
+    return static_cast<bool>(async_slot_);
+}
+
+void StreamingMarkdown::set_content_async(std::string_view content) {
+    // Same fast-path as set_content: no-op on unchanged.
+    if (content.size() == source_.size() &&
+        (content.empty() || std::memcmp(content.data(), source_.data(),
+                                        content.size()) == 0)) {
+        return;
+    }
+    // Pure-append growth → cheap incremental sync path is strictly
+    // better than handing the delta off to a worker (the steady-state
+    // streaming case). The expensive case async exists for is the
+    // "divergent prefix" / large initial set path below.
+    if (content.size() > source_.size() &&
+        (source_.empty() || std::memcmp(content.data(), source_.data(),
+                                        source_.size()) == 0)) {
+        set_content(content);
+        return;
+    }
+
+    // Below a threshold the synchronous reset-and-parse path is faster
+    // than thread handoff; pay the cost inline. 16 KB is a generous
+    // ceiling — pasting a long markdown blob comfortably exceeds it
+    // while typical short composer edits stay below.
+    constexpr std::size_t kAsyncThreshold = 16 * 1024;
+    if (content.size() < kAsyncThreshold) {
+        set_content(content);
+        return;
+    }
+
+    // Divergent and large → schedule a background parse. Keep the
+    // current cached_build_ visible until the worker lands so the UI
+    // doesn't blank.
+    std::string requested{content};
+    {
+        std::lock_guard<std::mutex> lk(async_mu_);
+        async_latest_source_ = requested;
+        // If a worker is already in flight, just update the latest
+        // request — maybe_apply_async_ will spawn a follow-up on
+        // arrival of the in-flight result. This is the Zed-style
+        // single-flight coalescer.
+        if (async_slot_) return;
+    }
+    spawn_async_worker_(std::move(requested));
+}
+
+void StreamingMarkdown::spawn_async_worker_(std::string source) const {
+    auto slot = std::make_shared<AsyncResult>();
+    slot->source = source;
+    {
+        std::lock_guard<std::mutex> lk(async_mu_);
+        async_slot_ = slot;
+    }
+
+    // Detached worker: result lifetime is tied to the shared_ptr in
+    // the slot, which the foreground holds the only other copy of.
+    // If the StreamingMarkdown is destroyed while a worker is alive,
+    // the foreground's slot copy is dropped on destruction; the
+    // worker writes into its own slot copy (still alive), and the
+    // result is then silently discarded when the worker's local
+    // shared_ptr falls out of scope.
+    std::thread([slot, src = std::move(source)]() mutable {
+        // Re-parse from scratch. We can't reuse the host's incremental
+        // state because that lives on the foreground thread; instead
+        // we run the full top-level parse on the worker. Output is
+        // the rendered Element list + per-block metadata + the
+        // ref-defs map a fresh parse produces.
+        std::unordered_map<std::string, md::LinkRef> defs;
+        std::string cleaned = collect_ref_defs(std::string_view{src}, defs);
+        ::maya::md_detail::RefDefsScope guard(&defs);
+        auto parsed = parse_markdown_impl(cleaned, 0);
+
+        // Compute segment ranges over the full src — same algorithm
+        // as the foreground commit_range above, just bounded by the
+        // whole buffer.
+        std::vector<std::pair<std::size_t, std::size_t>> seg_ranges;
+        seg_ranges.reserve(parsed.blocks.size() + 1);
+        {
+            bool seg_in_fence = false;
+            std::size_t k = 0;
+            while (k < src.size() && src[k] == '\n') ++k;
+            std::size_t seg_start = k;
+            while (k < src.size()) {
+                bool at_ls = (k == 0 || src[k - 1] == '\n');
+                if (at_ls && k + 3 <= src.size() &&
+                    ((src[k] == '`' && src[k+1] == '`' && src[k+2] == '`') ||
+                     (src[k] == '~' && src[k+1] == '~' && src[k+2] == '~'))) {
+                    seg_in_fence = !seg_in_fence;
+                    std::size_t eol = src.find('\n', k);
+                    if (eol == std::string::npos) { k = src.size(); break; }
+                    k = eol + 1;
+                    if (!seg_in_fence) {
+                        if (k > seg_start) seg_ranges.emplace_back(seg_start, k);
+                        while (k < src.size() && src[k] == '\n') ++k;
+                        seg_start = k;
+                    }
+                    continue;
+                }
+                if (!seg_in_fence && at_ls && src[k] == '\n') {
+                    if (k > seg_start) seg_ranges.emplace_back(seg_start, k);
+                    while (k < src.size() && src[k] == '\n') ++k;
+                    seg_start = k;
+                    continue;
+                }
+                ++k;
+            }
+            if (seg_start < src.size())
+                seg_ranges.emplace_back(seg_start, src.size());
+        }
+        const bool seg_match = seg_ranges.size() == parsed.blocks.size();
+
+        slot->blocks.reserve(parsed.blocks.size());
+        slot->metas.reserve (parsed.blocks.size());
+        std::size_t synth = 0;
+        for (std::size_t bi = 0; bi < parsed.blocks.size(); ++bi) {
+            auto& block = parsed.blocks[bi];
+            BlockMeta meta;
+            if (seg_match) {
+                meta.source_offset = seg_ranges[bi].first;
+                meta.source_end    = seg_ranges[bi].second;
+            } else {
+                meta.source_offset = synth;
+                meta.source_end = (bi + 1 < parsed.blocks.size())
+                    ? (synth + 1) : src.size();
+                synth += 1;
+            }
+            meta.kind = std::visit([](const auto& x) noexcept -> BlockKind {
+                using T = std::decay_t<decltype(x)>;
+                if constexpr (std::is_same_v<T, md::Paragraph>)       return BlockKind::Paragraph;
+                else if constexpr (std::is_same_v<T, md::Heading>)    return BlockKind::Heading;
+                else if constexpr (std::is_same_v<T, md::CodeBlock>)  return BlockKind::CodeBlock;
+                else if constexpr (std::is_same_v<T, md::Blockquote>) return BlockKind::Blockquote;
+                else if constexpr (std::is_same_v<T, md::List>)       return BlockKind::List;
+                else if constexpr (std::is_same_v<T, md::HRule>)      return BlockKind::HRule;
+                else if constexpr (std::is_same_v<T, md::Table>)      return BlockKind::Table;
+                else if constexpr (std::is_same_v<T, md::FootnoteDef>) return BlockKind::FootnoteDef;
+                else if constexpr (std::is_same_v<T, md::Alert>)      return BlockKind::Alert;
+                else if constexpr (std::is_same_v<T, md::DefList>)    return BlockKind::DefList;
+                else if constexpr (std::is_same_v<T, md::Details>)    return BlockKind::Details;
+                else if constexpr (std::is_same_v<T, md::HtmlBlock>)  return BlockKind::HtmlBlock;
+                else return BlockKind::Other;
+            }, block.inner);
+            if (auto* c = std::get_if<md::CodeBlock>(&block.inner)) meta.lang = c->lang;
+            std::size_t lc = 0;
+            for (std::size_t q = meta.source_offset; q < meta.source_end && q < src.size(); ++q)
+                if (src[q] == '\n') ++lc;
+            meta.line_count = static_cast<std::uint16_t>(std::min<std::size_t>(lc, 0xFFFFu));
+            slot->blocks.push_back(
+                std::make_shared<const Element>(md_block_to_element(block)));
+            slot->metas.push_back(std::move(meta));
+        }
+        slot->ref_defs = std::move(defs);
+        // in_code_fence at end-of-source — count ``` / ~~~ fence
+        // toggles at line starts.
+        bool fence = false;
+        for (std::size_t j = 0; j < src.size(); ++j) {
+            bool at_ls = (j == 0 || src[j - 1] == '\n');
+            if (!at_ls) continue;
+            if (j + 3 <= src.size() &&
+                ((src[j] == '`' && src[j+1] == '`' && src[j+2] == '`') ||
+                 (src[j] == '~' && src[j+1] == '~' && src[j+2] == '~')))
+                fence = !fence;
+        }
+        slot->in_code_fence = fence;
+        // Publish: release-store on `ready` so the foreground's
+        // acquire-load sees the populated vectors above.
+        slot->ready.store(true, std::memory_order_release);
+    }).detach();
+}
+
+void StreamingMarkdown::maybe_apply_async_() const {
+    std::shared_ptr<AsyncResult> slot;
+    std::optional<std::string>   latest_after;
+    {
+        std::lock_guard<std::mutex> lk(async_mu_);
+        if (!async_slot_) return;
+        if (!async_slot_->ready.load(std::memory_order_acquire)) return;
+        slot = std::move(async_slot_);  // detach from member
+        latest_after = async_latest_source_;
+    }
+
+    // Decide what to do with the landed result:
+    //   A. The caller's latest request matches what this worker
+    //      parsed → adopt the result; clear latest_source.
+    //   B. The caller has since asked for a different source →
+    //      discard this result, spawn a follow-up on the new
+    //      request.
+    const bool current = latest_after && *latest_after == slot->source;
+    if (current) {
+        // Adopt. This is the foreground thread (build() calls us),
+        // so mutating self's state is safe with no extra locks.
+        auto self = const_cast<StreamingMarkdown*>(this);
+        self->source_ = slot->source;
+        self->committed_ = slot->source.size();
+        self->in_code_fence_ = slot->in_code_fence;
+        self->ref_defs_ = std::move(slot->ref_defs);
+        self->sink_.reset();
+        auto fresh = std::make_shared<CommittedPrefix>();
+        fresh->blocks = std::move(slot->blocks);
+        fresh->metas  = std::move(slot->metas);
+        // Generation must STRICTLY exceed the prior gen so the
+        // prefix ComponentElement's hash_id changes and the
+        // renderer's cache misses cleanly.
+        fresh->generation = self->prefix_->generation + 1;
+        self->prefix_ = std::move(fresh);
+        self->build_dirty_ = true;
+        ++self->source_version_;
+        // Reset scanner / sink state to the new committed end.
+        self->scan_cursor_ = self->committed_;
+        self->scan_in_fence_ = self->in_code_fence_;
+        self->scan_last_boundary_ = self->committed_;
+        // Drop fold map entries that no longer correspond to any
+        // block in the new prefix (offsets shifted under us).
+        std::vector<std::size_t> drop;
+        for (auto& kv : self->folds_) {
+            bool known = false;
+            for (const auto& m : self->prefix_->metas)
+                if (m.source_offset == kv.first) { known = true; break; }
+            if (!known) drop.push_back(kv.first);
+        }
+        for (auto k : drop) self->folds_.erase(k);
+        {
+            std::lock_guard<std::mutex> lk(self->async_mu_);
+            self->async_latest_source_.reset();
+        }
+    } else if (latest_after) {
+        // Stale: spawn a follow-up for the most recent request.
+        spawn_async_worker_(std::move(*latest_after));
+    }
 }
 
 // ── Cross-TU bridge ──────────────────────────────────────────────────

@@ -115,11 +115,15 @@ public:
         // and live_tail; we just concatenate.
         if (cfg_.frozen != nullptr) {
             std::vector<Element> rows;
-            rows.reserve(cfg_.live_tail.size() + 2);
+            rows.reserve(cfg_.live_tail.size() + 3);
             rows.push_back(list_ref(*cfg_.frozen));
             for (const auto& e : cfg_.live_tail) rows.push_back(e);
             if (cfg_.in_flight)
                 rows.push_back(ActivityIndicator{*cfg_.in_flight}.build());
+            // Trailing flex spacer absorbs the leftover vertical space
+            // so the last Turn doesn't stretch its rail downward into
+            // the gap above the composer.
+            rows.push_back(spacer().build());
             return (v(rows) | padding(0, 1) | grow(1.0f)).build();
         }
 
@@ -127,7 +131,7 @@ public:
         const bool use_built = !cfg_.built_turns.empty();
         const std::size_t n = use_built ? cfg_.built_turns.size()
                                         : cfg_.turns.size();
-        rows.reserve(n * 2 + 1);
+        rows.reserve(n * 2 + 2);
         for (std::size_t i = 0; i < n; ++i) {
             // Skip the inter-turn rule before a continuation turn so the
             // rail flows uninterrupted through a same-speaker run.
@@ -140,6 +144,7 @@ public:
         }
         if (cfg_.in_flight)
             rows.push_back(ActivityIndicator{*cfg_.in_flight}.build());
+        rows.push_back(spacer().build());
         return (v(rows) | padding(0, 1) | grow(1.0f)).build();
     }
 

@@ -5,7 +5,6 @@
 //
 //   ─── [↺ Restore checkpoint] ──────────────  (optional, above rail)
 //   ┃ ❯ You                                        12:34  ·  turn 1
-//   ┃
 //   ┃ <body slot 0>
 //   ┃
 //   ┃ <body slot 1>            (Turn auto-spaces between slots)
@@ -204,16 +203,13 @@ private:
             })
             .grow(1.0f);
 
-        // ── Body: render each slot, blank line between consecutive ones.
+        // ── Body: render each slot back-to-back (no inter-slot blank).
         std::vector<Element> body_rows;
-        body_rows.reserve(cfg.body.size() * 2);
-        bool first = true;
+        body_rows.reserve(cfg.body.size());
         for (const auto& slot : cfg.body) {
             Element rendered = render_slot(slot);
             if (is_blank(rendered)) continue;
-            if (!first) body_rows.push_back(blank());
             body_rows.push_back(std::move(rendered));
-            first = false;
         }
 
         // ── Optional error banner under body.
@@ -222,19 +218,29 @@ private:
             text(cfg.error, Style{}.with_fg(Color::red()).with_dim().with_italic())
         );
 
+        // Optional error row (zero-row when absent). when()'s default
+        // else-branch is blank() — a 1-row empty TextElement — which
+        // would leave a phantom row at the bottom of every error-less
+        // Turn. nothing() collapses to zero rows.
+        auto error_block = [&]() -> Element {
+            if (cfg.error.empty()) return nothing();
+            return v(blank(), error_row).build();
+        };
+
         // Two DSL branches build distinct compile-time tree types, so we
         // can't ternary directly — fold each to Element separately.
+        // Blank row under the header separates it from the body.
         Element inner = cfg.continuation
-            ? (v(
+            ? v(
                 body_rows,
-                when(!cfg.error.empty(), v(blank(), error_row))
-              ) | grow(1.0f)).build()
-            : (v(
+                error_block()
+              ).build()
+            : v(
                 header,
                 blank(),
                 body_rows,
-                when(!cfg.error.empty(), v(blank(), error_row))
-              ) | grow(1.0f)).build();
+                error_block()
+              ).build();
 
         Element rail = maya::detail::box()
             .direction(FlexDirection::Row)
@@ -242,7 +248,6 @@ private:
             .border_sides({.top = false, .right = false,
                            .bottom = false, .left = true})
             .padding(0, 0, 0, 2)
-            .grow(1.0f)
           (std::move(inner));
 
         // ── Optional checkpoint divider above the rail.

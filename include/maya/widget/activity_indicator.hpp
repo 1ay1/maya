@@ -152,15 +152,13 @@ public:
             //
             //   FULL    indent + offset + hex + gutter + detail
             //   NODET   indent + offset + hex + gutter
-            //   NOGUT   indent + offset + hex
-            //   NOOFF   indent + hex
-            //   ASCII   indent + ascii-only (just the letters tape)
+            //   NOHEX   indent + offset + gutter
+            //   NOOFF   indent + gutter
             //
-            // The fallback chain guarantees the chosen variant has
-            // budget for at least max(4, max_word_len) bytes — so
-            // the active word is always fully visible, and the row
-            // never wraps.
-            enum Variant { FULL, NODET, NOGUT, NOOFF, ASCII };
+            // The word lives in the gutter, so we drop hex BEFORE
+            // gutter — the active word is the row's whole point and
+            // must stay visible at every width the row can render.
+            enum Variant { FULL, NODET, NOHEX, NOOFF };
 
             constexpr int kPerByteHex   = 4;   // "xx " + last has no space, +1 added back
             constexpr int kPerByteAscii = 1;
@@ -169,20 +167,27 @@ public:
             const int det_cost    = detail.empty() ? 0
                 : static_cast<int>(detail.size()) + 5;   // "  ·  " + detail
             // Chrome cost = everything that's NOT the per-byte budget.
+            // Every variant includes the two outer `|` pipes of the
+            // gutter (2 cols) since we never drop the gutter.
             auto fixed_chrome = [&](Variant v) -> int {
                 switch (v) {
-                    case FULL:  return indent_cost + off_cost + 2 + 2 + 2 + det_cost - 1;
-                    case NODET: return indent_cost + off_cost + 2 + 2 + 2          - 1;
-                    case NOGUT: return indent_cost + off_cost + 2                  - 1;
-                    case NOOFF: return indent_cost                                 - 1;
-                    case ASCII: return indent_cost + 2;   // |...|
+                    // FULL: indent + off + 2sp + hex + 2sp + gutter(2) + detail
+                    case FULL:  return indent_cost + off_cost + 2 + 2 + 2 + det_cost;
+                    // NODET: indent + off + 2sp + hex + 2sp + gutter(2)
+                    case NODET: return indent_cost + off_cost + 2 + 2 + 2;
+                    // NOHEX: indent + off + 2sp + gutter(2)
+                    case NOHEX: return indent_cost + off_cost + 2 + 2;
+                    // NOOFF: indent + gutter(2)
+                    case NOOFF: return indent_cost + 2;
                 }
                 return 0;
             };
+            // Per-column cost in the byte window. FULL/NODET have
+            // both hex (3 cols/byte: "xx ") AND ascii (1 col/byte).
+            // NOHEX/NOOFF have just ascii.
             auto per_byte = [&](Variant v) -> int {
-                if (v == ASCII) return kPerByteAscii;
-                if (v == NOGUT || v == NOOFF) return kPerByteHex - 1; // no gutter glyph
-                return kPerByteHex;
+                if (v == FULL || v == NODET) return kPerByteHex;  // 3 hex + 1 ascii = 4
+                return kPerByteAscii;                              // 1
             };
             // Need enough bytes to fit the word; floor at 4 so a row
             // never collapses to nothing.
@@ -193,7 +198,7 @@ public:
                 return b / per_byte(v);
             };
             Variant variant = FULL;
-            for (Variant cand : {FULL, NODET, NOGUT, NOOFF, ASCII}) {
+            for (Variant cand : {FULL, NODET, NOHEX, NOOFF}) {
                 if (cols_for(cand) >= floor_bytes) { variant = cand; break; }
                 variant = cand;   // keep the leanest even if still tight
             }
@@ -375,22 +380,21 @@ public:
             std::vector<Element> parts;
             parts.reserve(8);
             parts.push_back(text("  "));
-            if (variant != ASCII && variant != NOOFF) {
+            if (variant != NOOFF) {
                 parts.push_back(std::move(off_e));
                 parts.push_back(text("  "));
             }
-            if (variant != ASCII) {
+            if (variant == FULL || variant == NODET) {
                 parts.push_back(std::move(hex_e));
+                parts.push_back(text("  "));
             }
-            if (variant == FULL || variant == NODET || variant == ASCII) {
-                if (variant != ASCII) parts.push_back(text("  "));
-                parts.push_back(std::move(ascii_e));
-            }
+            // Gutter is always shown — it carries the word.
+            parts.push_back(std::move(ascii_e));
             if (variant == FULL && !detail.empty()) {
                 parts.push_back(text("  \xc2\xb7  ") | fgc(muted) | Italic);
                 parts.push_back(text(detail) | fgc(muted) | Italic);
             }
-            return h(std::move(parts)).build();
+            return v(blank(), h(std::move(parts))).build();
         });
     }
 

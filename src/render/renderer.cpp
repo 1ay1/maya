@@ -553,8 +553,8 @@ void paint_border(
     }
 
     // Border title text (still uses write_text — rare path, variable-length string).
-    if (border.text.has_value() && !border.text->content.empty()) {
-        const auto& bt = *border.text;
+    auto paint_btext = [&](const BorderText& bt) {
+        if (bt.content.empty()) return;
         int edge_y = (bt.position == BorderTextPos::Top) ? y0 : y1;
         int avail = x1 - x0 - 1;
         if (avail <= 0) return;
@@ -576,7 +576,10 @@ void paint_border(
 
         text_x = std::clamp(text_x, x0 + 1, x1 - 1);
         canvas.write_text(text_x, edge_y, bt.content, style_id);
-    }
+    };
+
+    if (border.text.has_value())     paint_btext(*border.text);
+    if (border.text_end.has_value()) paint_btext(*border.text_end);
 }
 
 // ============================================================================

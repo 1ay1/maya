@@ -103,6 +103,12 @@ class AgentTimeline {
 public:
     struct Config {
         std::string                          title;
+        // Optional right-aligned segment on the same (top) border edge.
+        // Used to pin a duration / status pill to the right side of the
+        // panel header while the main title stays left-anchored — a
+        // single `title` string alone is start-aligned and can't express
+        // that split.
+        std::string                          title_end;
         Color                                border_color = Color::bright_black();
         int                                  frame        = 0;
         std::vector<AgentTimelineStat>       stats;
@@ -157,14 +163,18 @@ public:
         // gets stretched to a width that's narrower than the body
         // rows' natural widths. The canvas-level clip is the
         // structural guard against that escape hatch.
-        return vstack()
+        auto box = vstack()
             .align_self(Align::Stretch)
             .border(BorderStyle::Round)
             .padding(0, 1, 0, 1)
             .border_color(cfg_.border_color)
             .border_text(cfg_.title, BorderTextPos::Top, BorderTextAlign::Start)
-            .overflow(Overflow::Hidden)
-            (rows);
+            .overflow(Overflow::Hidden);
+        if (!cfg_.title_end.empty()) {
+            box = std::move(box).border_text_end(
+                cfg_.title_end, BorderTextPos::Top, BorderTextAlign::End);
+        }
+        return std::move(box)(rows);
     }
 
 private:
@@ -309,7 +319,16 @@ private:
             text(ev.detail, detail_style(ev.category_color, is_active)) | clip,
             spacer(),
             when(is_terminal,
-                 text(format_duration(ev.elapsed_seconds),
+                 // Leading 2-col pad lives INSIDE the elapsed text so the
+                 // trailing segment is unconditionally wider than just the
+                 // duration glyphs. When the row is at its width limit,
+                 // this forces `detail | clip` to shrink (yoga's flex
+                 // arithmetic: hypothetical > available → truncate the
+                 // shrink-eligible cell) instead of letting detail butt
+                 // up against the elapsed with zero spacer. Result: the
+                 // elapsed stays right-aligned and always has ≥2 cols of
+                 // breathing room before it.
+                 text("  " + format_duration(ev.elapsed_seconds),
                       Style{}.with_fg(duration_color(ev.elapsed_seconds))))
         ) | grow(1.0f)).build());
 

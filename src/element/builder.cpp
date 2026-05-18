@@ -84,6 +84,17 @@ auto BoxBuilder::border_text(std::string_view content,
     return *this;
 }
 
+auto BoxBuilder::border_text_end(std::string_view content,
+                                 BorderTextPos pos,
+                                 BorderTextAlign align) -> BoxBuilder& {
+    element_.border.text_end = BorderText{
+        .content = std::string{content},
+        .position = pos,
+        .align = align,
+    };
+    return *this;
+}
+
 auto BoxBuilder::grow(float g) -> BoxBuilder& {
     element_.layout.grow = g;
     return *this;

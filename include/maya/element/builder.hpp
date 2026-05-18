@@ -142,6 +142,13 @@ public:
     auto border_text(std::string_view content,
                      BorderTextPos pos,
                      BorderTextAlign align) -> BoxBuilder&;
+    // Second border-text slot (independent position+align). Use for a
+    // right-aligned subtitle on the same edge as a left-aligned title:
+    //   .border_text(" Title ", Top, Start)
+    //   .border_text_end(" 87ms ", Top, End)
+    auto border_text_end(std::string_view content,
+                         BorderTextPos pos = BorderTextPos::Top,
+                         BorderTextAlign align = BorderTextAlign::End) -> BoxBuilder&;
     auto grow(float g = 1.0f) -> BoxBuilder&;
     auto shrink(float s) -> BoxBuilder&;
     auto basis(Dimension d) -> BoxBuilder&;

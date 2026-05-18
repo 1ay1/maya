@@ -36,9 +36,14 @@ public:
         return component([c = cfg_.color, p = cfg_.position]
                          (int w, int /*h*/) -> Element {
             if (w <= 0) return blank().build();
+            // ─ (U+2500) — single thin horizontal line, one row tall,
+            // inked across the full cell. Same glyph for top and bottom
+            // so the status bar sits flush against the composer with no
+            // empty half-row of breathing space (the old ▔/▁ half-blocks
+            // left a transparent half-row above/below their ink).
             const char* glyph = (p == Position::Top)
-                ? "\xe2\x96\x94"   // ▔  upper-half block
-                : "\xe2\x96\x81";  // ▁  lower-half block
+                ? "\xe2\x94\x80"   // ─
+                : "\xe2\x94\x80";  // ─
             std::string line;
             line.reserve(static_cast<std::size_t>(w) * 3);
             for (int i = 0; i < w; ++i) line += glyph;

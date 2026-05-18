@@ -34,6 +34,8 @@
 #include "../style/color.hpp"
 #include "../style/style.hpp"
 
+#include "divider.hpp"
+
 namespace maya {
 
 class Composer {
@@ -183,16 +185,15 @@ public:
             }
         }
 
-        // ── Sizing: grow with content, but cap at 8 (or 16 expanded).
-        // Pin to min_rows during activity so layout reflows above don't
-        // bob the composer's top edge.
-        int row_count = static_cast<int>(body_rows.size());
-        int max_rows  = cfg_.expanded ? 16 : 8;
-        int min_rows  = 3;
-        int rows      = active ? min_rows
-                               : std::clamp(row_count, min_rows, max_rows);
-
-        auto inner = (v(std::move(body_rows)) | padding(0, 1) | height(rows)).build();
+        // ── Sizing: let the inner column size itself from its rendered
+        // rows so soft-wrapped long lines actually push the composer's
+        // top edge up. Earlier we pinned `height(rows)` from
+        // `body_rows.size()` for jitter-stability, but that only counted
+        // explicit '\n' breaks — a single long word-wrapped line clipped
+        // to 1 row and overflowed visibly. The status bar pins the bottom
+        // of the screen, so growing upward is the correct direction and
+        // doesn't bob the user's eye.
+        auto inner = (v(std::move(body_rows)) | padding(0, 1)).build();
 
         // ── Hint row: width-adaptive left, ambient right.
         auto kbd = [tc = cfg_.text_color](const char* k) {
@@ -246,19 +247,37 @@ public:
 
         Element hint_element = component(
             [hint_left_builder, hint_right](int w, int /*h*/) -> Element {
+                using namespace dsl;
                 auto left = hint_left_builder(w);
-                return h(
+                // 2-col indent so the hint row lines up with body text:
+                // `inner` has padding(0,1) (→1 col left), and body row 0
+                // starts with the "❯ " prompt (→2 cols). Match that exactly
+                // by adding padding(0,1) here and prepending 2 spaces so
+                // ↵ sits directly under the first body character.
+                return (h(
+                    text("  "),
                     h(left),
                     spacer(),
                     h(hint_right),
                     text(" ")
-                ).build();
+                ) | padding(0, 1)).build();
             });
 
         // ── Box composition with optional bottom-right line-count caption.
         int line_count = static_cast<int>(split_lines(cfg_.text).size());
 
-        auto box = v(inner, std::move(hint_element))
+        // ── Divider between body and hint row — hairline rule in the
+        // box color so the input area visually splits from the
+        // chrome (key hints + ambient counters + profile chip).
+        // Left padding = 3 to clear `inner`'s padding(0,1) plus the
+        // 2-col "❯ " prompt, so the rule's left end sits exactly under
+        // the first body character. Right padding = 1 matches `inner`.
+        auto rule = (Divider{DividerConfig{
+            .line       = BorderStyle::Single,
+            .line_style = Style{}.with_fg(box_color).with_dim(),
+        }}.build() | padding(0, 1, 0, 3)).build();
+
+        auto box = v(inner, std::move(rule), std::move(hint_element))
                    | border(BorderStyle::Round)
                    | bcolor(box_color);
 

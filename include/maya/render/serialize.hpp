@@ -18,6 +18,7 @@
 #include <string>
 
 #include "canvas.hpp"
+#include "../platform/io.hpp"
 
 namespace maya {
 
@@ -56,7 +57,7 @@ int content_height(const Canvas& canvas) noexcept;
 // type is to make "derive from the wrong source" uncompilable, and
 // the single-producer rule is what delivers that.
 
-class ContentRows {
+class [[nodiscard("ContentRows is the typed witness that the row count came from the canvas about to be painted — dropping it forces another canvas walk to recompute")]] ContentRows {
 public:
     [[nodiscard]] constexpr int value() const noexcept { return rows_; }
 
@@ -88,6 +89,63 @@ private:
     return ContentRows{content_height(canvas), &canvas};
 }
 
+// ============================================================================
+// TermRows — derivation witness for the terminal-viewport height
+// ============================================================================
+//
+// Part of the Witness Chain. Compose's case-(B) emit reads `term_h` to
+// decide how many rows above the new frame to erase, and the per-row
+// loop reads it to decide which rows will scroll off into native
+// scrollback this frame. A stale `term_h` (caller cached it before a
+// resize) causes the case-(B) erase to walk the wrong distance — the
+// classic "ghost rows above the new frame" symptom.
+//
+// `TermRows` lifts the read-now-or-cache-and-pray decision into the
+// type system. The sole producer is `query_term_rows(handle)` which
+// goes straight to `platform::query_terminal_size` at the call site;
+// you cannot construct a TermRows from a stored int, you cannot
+// default-construct one, you cannot pass an old TermRows value to a
+// later compose (the type is `[[nodiscard]]` and move-only-by-default
+// for value semantics, but more importantly the *intent* of the type
+// is that it gets re-queried per compose).
+//
+// The runtime is welcome to keep an `int` cache of last-known
+// terminal height for layout decisions; compose just refuses to take
+// it as input. The cost of querying per compose is one ioctl(2)
+// (TIOCGWINSZ) — ~200ns on Linux — paid once per render tick, which
+// is rounding error against the cost of even a tiny compose.
+class [[nodiscard("TermRows is the typed witness for terminal viewport height — dropping it forces another platform query")]] TermRows {
+public:
+    [[nodiscard]] constexpr int value() const noexcept { return rows_; }
+
+private:
+    constexpr explicit TermRows(int r) noexcept : rows_(r) {}
+    friend TermRows query_term_rows(platform::NativeHandle) noexcept;
+    friend constexpr TermRows term_rows_for_test(int) noexcept;
+
+    int rows_;
+};
+
+/// The sole production producer of `TermRows`. Calls
+/// `platform::query_terminal_size(handle)` at the call site, returns
+/// the height bound into the typed witness. Pass the result directly
+/// to `compose_inline_frame` / `InlineFrame<Tag>::render` — carrying
+/// it across more than one render tick defeats the purpose.
+///
+/// Returns a TermRows of value 24 if the platform query fails, so
+/// the type can still flow through call paths that don't have a
+/// real tty (e.g. when stdout is redirected to a file).
+[[nodiscard]] TermRows query_term_rows(platform::NativeHandle handle) noexcept;
+
+/// Test-only constructor for TermRows. Production code uses
+/// `query_term_rows(handle)`; tests that don't have a real terminal
+/// can synthesize a TermRows of any value via this constexpr factory.
+/// Marked `_for_test` so the production-vs-test distinction is
+/// visible at every call site.
+[[nodiscard]] constexpr TermRows term_rows_for_test(int rows) noexcept {
+    return TermRows{rows};
+}
+
 /// Serialize `rows` rows of the canvas starting at `start_row`
 /// (or all rows if rows <= 0).
 void serialize(const Canvas& canvas, const StylePool& pool,
@@ -114,7 +172,7 @@ struct FinalizeResult;   // forward — returned by InlineFrameState::finalize()
 /// the application has to obtain a marker from a live state, which
 /// forces them to read the current `prev_rows` rather than carrying a
 /// stale int around.
-class ScrollbackMarker {
+class [[nodiscard("ScrollbackMarker is a single-use commit token — dropping it loses the scrollback advance for this tick")]] ScrollbackMarker {
 public:
     /// Empty marker — committing it is a no-op. Useful as a default
     /// when no scrollback advance is wanted this tick.
@@ -223,7 +281,7 @@ class  Canvas;
 ///   3. Aliasing bugs ("someone snuck a pointer to state.shadow_hash
 ///      and bumped it") are impossible: there is no addressable
 ///      field, only accessors that return by value.
-class InlineFrameState {
+class [[nodiscard("InlineFrameState is the renderer's only handle to its shadow-of-wire — dropping the value loses the model of what the terminal is displaying")]] InlineFrameState {
 public:
     /// The unique public constructor. Produces the initial empty
     /// value (prev_rows = 0, shadow_hash = sentinel, no terminal
@@ -330,7 +388,7 @@ private:
     // re-verifies the witness across the move boundary by reading
     // the moved-in state's hashable cells.
     friend FrameBytes compose_inline_frame(
-        const Canvas&, ContentRows, int, const StylePool&,
+        const Canvas&, ContentRows, TermRows, const StylePool&,
         InlineFrameState&&, ShadowWitness&&, bool);
 
     // ── Storage (private) ───────────────────────────────────────────
@@ -414,7 +472,7 @@ struct FinalizeResult {
 // and produces a witness-with-null-state that fails the consumption
 // assertion. Compilers warn on use-after-move under -Wmoved-from.
 
-class ShadowWitness {
+class [[nodiscard("ShadowWitness is single-use proof that the shadow matches the wire — dropping it forces the next render to re-verify or fall through to recovery")]] ShadowWitness {
 public:
     ShadowWitness(ShadowWitness&& o) noexcept
         : state_(o.state_), hash_at_issue_(o.hash_at_issue_) {

@@ -14,6 +14,12 @@
 
 namespace maya {
 
+TermRows query_term_rows(platform::NativeHandle handle) noexcept {
+    const auto sz = platform::query_terminal_size(handle);
+    const int h = sz.height.raw();
+    return TermRows{h > 0 ? h : 24};
+}
+
 // ShadowWitness producer. Folds prev_cells with FNV-1a and compares
 // to the value compose stored at the end of the prior frame,
 // returning either a populated optional carrying the witness (the

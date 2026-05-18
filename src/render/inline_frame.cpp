@@ -58,7 +58,7 @@ InlineFrame<Sealed> InlineFrame<Empty>::finalize(std::string&) && noexcept {
 RenderOutcome InlineFrame<Fresh>::render(
     const Canvas& canvas,
     ContentRows rows,
-    int term_h,
+    TermRows term_h,
     const StylePool& pool,
     Writer& writer,
     bool synchronized_output) &&
@@ -87,7 +87,7 @@ InlineFrame<Sealed> InlineFrame<Fresh>::finalize(std::string& out) && noexcept {
 RenderOutcome InlineFrame<Synced>::render(
     const Canvas& canvas,
     ContentRows rows,
-    int term_h,
+    TermRows term_h,
     const StylePool& pool,
     Writer& writer,
     ShadowWitness&& witness,
@@ -136,7 +136,7 @@ InlineFrame<Sealed> InlineFrame<Synced>::finalize(std::string& out) && noexcept 
 RenderOutcome InlineFrame<Stale>::render(
     const Canvas& canvas,
     ContentRows rows,
-    int term_h,
+    TermRows term_h,
     const StylePool& pool,
     Writer& writer,
     bool synchronized_output) &&
@@ -176,7 +176,7 @@ InlineFrame<Sealed> InlineFrame<Stale>::finalize(std::string& out) && noexcept {
 RenderOutcome InlineFrame<HardReset>::render(
     const Canvas& canvas,
     ContentRows rows,
-    int term_h,
+    TermRows term_h,
     const StylePool& pool,
     Writer& writer,
     bool synchronized_output) &&

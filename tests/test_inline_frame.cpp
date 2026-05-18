@@ -89,6 +89,14 @@ static_assert(!std::is_constructible_v<ShadowWitness>);
 static_assert(!std::is_constructible_v<ContentRows, int>);
 static_assert(!std::is_constructible_v<ContentRows>);
 
+// (f.2) TermRows has no public constructor either. The only producer
+//     is `query_term_rows(handle)`; the test-only escape hatch is
+//     `term_rows_for_test(int)`. A direct integer construction is
+//     a compile error — you cannot pass a cached row count from a
+//     prior tick.
+static_assert(!std::is_constructible_v<TermRows, int>);
+static_assert(!std::is_constructible_v<TermRows>);
+
 // (g) InlineFrameState is non-copyable. Copies would create two
 //     parallel shadows of the same wire region — the bug class
 //     ShadowWitness was designed to detect at runtime. Making it
@@ -183,7 +191,7 @@ static void test_empty_to_fresh_to_synced() {
 
     // Fresh → render → outcome
     auto outcome = std::move(fresh).render(
-        c, content_rows(c), 24, pool, writer, /*sync=*/false);
+        c, content_rows(c), term_rows_for_test(24), pool, writer, /*sync=*/false);
 
     bool was_synced = std::visit([](auto&& arm) {
         using T = std::decay_t<decltype(arm)>;
@@ -222,7 +230,7 @@ static void test_synced_verify_render() {
             // Stale arm: the test plumbing failed; abort.
             std::abort();
         }
-    }, InlineFrame<Empty>{}.seed().render(c1, content_rows(c1), 24, pool, writer, false));
+    }, InlineFrame<Empty>{}.seed().render(c1, content_rows(c1), term_rows_for_test(24), pool, writer, false));
 
     CHECK(s.rows() == 3);
     CHECK(s.width() == 80);
@@ -234,7 +242,7 @@ static void test_synced_verify_render() {
     // Second render: same canvas, no diff expected.
     Canvas c2 = labeled_canvas(80, 3, pool);
     auto outcome = std::move(s).render(
-        c2, content_rows(c2), 24, pool, writer, std::move(*wit), false);
+        c2, content_rows(c2), term_rows_for_test(24), pool, writer, std::move(*wit), false);
 
     bool stayed_synced = std::visit([](auto&& arm) {
         using T = std::decay_t<decltype(arm)>;
@@ -266,7 +274,7 @@ static void test_demote_then_recover() {
         using T = std::decay_t<decltype(arm)>;
         if constexpr (std::is_same_v<T, InlineFrame<Synced>>) return std::move(arm);
         else std::abort();
-    }, InlineFrame<Empty>{}.seed().render(c1, content_rows(c1), 24, pool, writer, false));
+    }, InlineFrame<Empty>{}.seed().render(c1, content_rows(c1), term_rows_for_test(24), pool, writer, false));
 
     // Demote.
     InlineFrame<Stale> stale = std::move(s).demote_to_stale();
@@ -274,7 +282,7 @@ static void test_demote_then_recover() {
     // Re-render via Stale's render method (case B).
     Canvas c2 = labeled_canvas(80, 3, pool);
     auto outcome = std::move(stale).render(
-        c2, content_rows(c2), 24, pool, writer, false);
+        c2, content_rows(c2), term_rows_for_test(24), pool, writer, false);
 
     bool recovered = std::visit([](auto&& arm) {
         using T = std::decay_t<decltype(arm)>;
@@ -306,7 +314,7 @@ static void test_scrollback_marker_monotone() {
         using T = std::decay_t<decltype(arm)>;
         if constexpr (std::is_same_v<T, InlineFrame<Synced>>) return std::move(arm);
         else std::abort();
-    }, InlineFrame<Empty>{}.seed().render(c, content_rows(c), 24, pool, writer, false));
+    }, InlineFrame<Empty>{}.seed().render(c, content_rows(c), term_rows_for_test(24), pool, writer, false));
 
     CHECK(s.rows() == 6);
 
@@ -347,7 +355,7 @@ static void test_finalize_to_sealed() {
         using T = std::decay_t<decltype(arm)>;
         if constexpr (std::is_same_v<T, InlineFrame<Synced>>) return std::move(arm);
         else std::abort();
-    }, InlineFrame<Empty>{}.seed().render(c, content_rows(c), 24, pool, writer, false));
+    }, InlineFrame<Empty>{}.seed().render(c, content_rows(c), term_rows_for_test(24), pool, writer, false));
 
     std::string finalize_buf;
     InlineFrame<Sealed> sealed = std::move(s).finalize(finalize_buf);

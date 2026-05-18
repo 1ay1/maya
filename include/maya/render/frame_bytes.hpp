@@ -122,7 +122,7 @@ using CommitOutcome = std::variant<commit::Synced,
 // by `commit_to(writer) &&` or `abandon() &&`. The byte buffer is
 // private; there is no public way to inspect or copy it.
 
-class FrameBytes {
+class [[nodiscard("FrameBytes is a linear capsule — dropping it without commit_to() or abandon() ships nothing while logically advancing the renderer's state, desynchronising the shadow from the wire")]] FrameBytes {
 public:
     FrameBytes(const FrameBytes&)            = delete;
     FrameBytes& operator=(const FrameBytes&) = delete;
@@ -169,7 +169,7 @@ private:
         : bytes_(std::move(bytes)), successor_(std::move(successor)) {}
 
     friend FrameBytes compose_inline_frame(
-        const Canvas&, ContentRows, int, const StylePool&,
+        const Canvas&, ContentRows, TermRows, const StylePool&,
         InlineFrameState&&, ShadowWitness&&, bool);
 
     std::string      bytes_;
@@ -185,10 +185,11 @@ private:
 //   - Canvas&           — the painted canvas.
 //   - ContentRows       — row count derived from THIS canvas (typed
 //                         witness; see serialize.hpp).
-//   - int term_h        — terminal height. Pass directly; lifting this
-//                         into a type adds noise without adding safety
-//                         since term_h is read from a syscall, not a
-//                         derivation that can go wrong.
+//   - TermRows          — terminal viewport height (typed witness;
+//                         see serialize.hpp). The sole production
+//                         producer is `query_term_rows(handle)` —
+//                         a raw int from a stored cache is
+//                         uncompilable.
 //   - StylePool&        — interning pool (unchanged).
 //   - InlineFrameState&& — consumed by value-move. The caller transfers
 //                         ownership of the state to compose; what they
@@ -206,7 +207,7 @@ private:
 [[nodiscard]] FrameBytes compose_inline_frame(
     const Canvas& canvas,
     ContentRows content_rows,
-    int term_h,
+    TermRows term_h,
     const StylePool& pool,
     InlineFrameState&& state,
     ShadowWitness&& witness,

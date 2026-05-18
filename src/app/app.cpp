@@ -354,7 +354,14 @@ auto Runtime::render(const Element& root) -> Status {
             return ok();
         }
 
-        const int  term_h = std::max(1, size_.height.raw());
+        // Typed terminal-rows witness. Re-queried via
+        // `query_term_rows(output_handle_)` per render so a resize
+        // between the layout pass and the compose can't desync the
+        // viewport bounds compose uses to decide what scrolls off
+        // (the case-(B) erase distance + the will_scroll_off
+        // heuristic both consume this value). Cheap — a single
+        // TIOCGWINSZ ioctl on POSIX.
+        const TermRows term_h = query_term_rows(output_handle_);
         const auto rows   = content_rows(canvas_);   // typed witness
         auto t_cf0 = std::chrono::steady_clock::now();
 

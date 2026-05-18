@@ -158,7 +158,7 @@ namespace detail {
 // ─────────────────────────────────────────────────────────────────────────
 
 template <>
-class InlineFrame<Empty> {
+class [[nodiscard("InlineFrame<Empty> carries the renderer's only handle to its state; dropping the value forfeits every subsequent render")]] InlineFrame<Empty> {
 public:
     InlineFrame() noexcept = default;
     InlineFrame(const InlineFrame&)            = delete;
@@ -181,7 +181,7 @@ public:
 // position via serialize(). No diff because there is no prev_cells.
 
 template <>
-class InlineFrame<Fresh> {
+class [[nodiscard("InlineFrame<Fresh> carries the renderer's only handle to its state; dropping the value forfeits every subsequent render")]] InlineFrame<Fresh> {
 public:
     InlineFrame(const InlineFrame&)            = delete;
     InlineFrame& operator=(const InlineFrame&) = delete;
@@ -192,7 +192,7 @@ public:
     [[nodiscard]] RenderOutcome render(
         const Canvas& canvas,
         ContentRows rows,
-        int term_h,
+        TermRows term_h,
         const StylePool& pool,
         Writer& writer,
         bool synchronized_output = true) &&;
@@ -215,7 +215,7 @@ private:
 // ─────────────────────────────────────────────────────────────────────────
 
 template <>
-class InlineFrame<Synced> {
+class [[nodiscard("InlineFrame<Synced> carries the renderer's only handle to its state; dropping the value forfeits every subsequent render")]] InlineFrame<Synced> {
 public:
     InlineFrame(const InlineFrame&)            = delete;
     InlineFrame& operator=(const InlineFrame&) = delete;
@@ -234,7 +234,7 @@ public:
     [[nodiscard]] RenderOutcome render(
         const Canvas& canvas,
         ContentRows rows,
-        int term_h,
+        TermRows term_h,
         const StylePool& pool,
         Writer& writer,
         ShadowWitness&& witness,
@@ -289,7 +289,7 @@ private:
 // wipe — host's pre-existing content above the viewport is preserved.
 
 template <>
-class InlineFrame<Stale> {
+class [[nodiscard("InlineFrame<Stale> carries the renderer's only handle to its state; dropping the value forfeits every subsequent render")]] InlineFrame<Stale> {
 public:
     InlineFrame(const InlineFrame&)            = delete;
     InlineFrame& operator=(const InlineFrame&) = delete;
@@ -299,7 +299,7 @@ public:
     [[nodiscard]] RenderOutcome render(
         const Canvas& canvas,
         ContentRows rows,
-        int term_h,
+        TermRows term_h,
         const StylePool& pool,
         Writer& writer,
         bool synchronized_output = true) &&;
@@ -337,7 +337,7 @@ private:
 // unknown (post-resize, post-write-failure).
 
 template <>
-class InlineFrame<HardReset> {
+class [[nodiscard("InlineFrame<HardReset> must be rendered to wipe-and-recover; dropping it leaves the wire in an unknown state")]] InlineFrame<HardReset> {
 public:
     // No carried state — HardReset is a tag the runtime can synthesize
     // freely to express "the wire is in an unknown state and the next
@@ -355,7 +355,7 @@ public:
     [[nodiscard]] RenderOutcome render(
         const Canvas& canvas,
         ContentRows rows,
-        int term_h,
+        TermRows term_h,
         const StylePool& pool,
         Writer& writer,
         bool synchronized_output = true) &&;

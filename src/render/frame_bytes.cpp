@@ -65,7 +65,7 @@ compose_inline_frame_impl(const Canvas& canvas,
 FrameBytes compose_inline_frame(
     const Canvas& canvas,
     ContentRows content_rows,
-    int term_h,
+    TermRows term_h,
     const StylePool& pool,
     InlineFrameState&& state,
     ShadowWitness&& witness,
@@ -131,7 +131,7 @@ FrameBytes compose_inline_frame(
     //     reason about; the byte buffer and the new state value are
     //     simply the result of a function call.
     auto [out, successor] = compose_inline_frame_impl(
-        canvas, content_rows.value(), term_h, pool,
+        canvas, content_rows.value(), term_h.value(), pool,
         std::move(state), synchronized_output);
 
     // (5) Capsule. FrameBytes::commit_to consumes both arms.

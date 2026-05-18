@@ -87,8 +87,8 @@ void render_live(const Element& root, int width, StylePool& pool,
 
     if (ch <= 0) return;
 
-    const int  term_h = st.term_h;
-    const auto rows   = content_rows(st.canvas);
+    const TermRows term_h = query_term_rows(platform::stdout_handle());
+    const auto     rows   = content_rows(st.canvas);
 
     // Witness Chain dispatch — same pattern as Runtime::render.
     st.frame = std::visit(

@@ -54,7 +54,7 @@ public:
         // adopted the Element cache yet — every Turn::Config in this
         // vector gets `Turn{cfg}.build()` called on it once per frame.
         std::vector<Turn::Config>                turns;
-        // Fast path: when non-empty, takes precedence over `turns`.
+        // Middle path: when non-empty, takes precedence over `turns`.
         // Each entry is a fully-built turn Element; build() lays them
         // out with dividers between non-continuation entries.
         //
@@ -67,6 +67,39 @@ public:
         // so the freshly-copied wrapper at this slot still hits the
         // cache produced by the original.
         std::vector<PreBuilt>                    built_turns;
+
+        // Fastest path (agent_session pattern). When `frozen != nullptr`,
+        // takes precedence over both `built_turns` and `turns`.
+        //
+        // `frozen` is a BORROWED pointer to the host's append-only
+        // vector of fully-built scrollback Elements (one row per entry:
+        // turn body, or a divider/gap pushed by the host). build()
+        // hands maya a `list_ref(*frozen)` — zero-copy across frames,
+        // regardless of how large the prefix grows. Every Element
+        // inside benefits from maya's hash_id-keyed layout + cell
+        // cache, so per-frame cost stays O(visible_live) instead of
+        // O(total_turns).
+        //
+        // The host owns inter-turn dividers: push them into `*frozen`
+        // at the moments you want them (typically a one-row gap
+        // before each fresh-speaker turn). This widget adds NO
+        // dividers when the frozen path is active — what you see is
+        // exactly the rows in `*frozen`, followed by `live_tail` (if
+        // non-empty), followed by `in_flight` (if set).
+        //
+        // Lifetime: the pointer must outlive build(). Typical use is
+        // a member of the host's model that lives across frames.
+        const std::vector<Element>*              frozen           = nullptr;
+
+        // The live tail — one entry per in-flight or unfrozen Turn.
+        // Rendered after the frozen prefix in order. The host is
+        // responsible for any leading divider/gap between the last
+        // frozen row and the first live entry — push that into
+        // `*frozen` at the time it freezes the previous turn, OR
+        // prepend a gap as the first `live_tail` entry. Same rule
+        // for between live entries: include the gap yourself.
+        std::vector<Element>                     live_tail;
+
         std::optional<ActivityIndicator::Config> in_flight;
     };
 
@@ -76,6 +109,20 @@ public:
 
     [[nodiscard]] Element build() const {
         using namespace dsl;
+
+        // ── Fastest path: borrowed frozen prefix + live tail. ─────
+        // The host owns dividers inside *frozen and between frozen
+        // and live_tail; we just concatenate.
+        if (cfg_.frozen != nullptr) {
+            std::vector<Element> rows;
+            rows.reserve(cfg_.live_tail.size() + 2);
+            rows.push_back(list_ref(*cfg_.frozen));
+            for (const auto& e : cfg_.live_tail) rows.push_back(e);
+            if (cfg_.in_flight)
+                rows.push_back(ActivityIndicator{*cfg_.in_flight}.build());
+            return (v(rows) | padding(0, 1) | grow(1.0f)).build();
+        }
+
         std::vector<Element> rows;
         const bool use_built = !cfg_.built_turns.empty();
         const std::size_t n = use_built ? cfg_.built_turns.size()
@@ -95,6 +142,12 @@ public:
             rows.push_back(ActivityIndicator{*cfg_.in_flight}.build());
         return (v(rows) | padding(0, 1) | grow(1.0f)).build();
     }
+
+    // Build the standard width-aware dim inter-turn rule. Exposed so
+    // hosts using the `frozen` path can push the same divider Element
+    // into their frozen vector at turn boundaries, matching the look
+    // of the legacy auto-dividers from the built_turns path.
+    [[nodiscard]] static Element divider() { return divider_rule(); }
 
 private:
     Config cfg_;

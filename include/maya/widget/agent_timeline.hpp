@@ -298,6 +298,7 @@ private:
         // event's body / connector renders on top of the wrapped overflow.
         // The body preview below is the place for full content; the
         // header stays a 1-line summary with an ellipsis at the cut.
+        //
         out.push_back((h(
             text(glyph, tree_style(ev.category_color, is_active)),
             text(" "),

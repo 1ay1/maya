@@ -162,14 +162,47 @@ private:
         // ── Header row: glyph + bold label + spacer + dim meta.
         //    Suppressed entirely on continuation turns — the previous
         //    turn in the run already showed it.
-        auto header = h(
-            text(cfg.glyph, Style{}.with_fg(cfg.rail_color)),
-            text(" "),
-            text(cfg.label, Style{}.with_fg(cfg.rail_color).with_bold()),
-            spacer(),
-            text(cfg.meta, Style{}.with_fg(muted)),
-            text(" ")
-        ) | grow(1.0f);
+        //
+        //    Wrapped in a component(...) so the row is built with an
+        //    EXPLICIT width pulled from the layout pass. The plain
+        //    h(...) | grow(1.0f) form measures the row at hypothetical
+        //    sizes first — the spacer's flex_grow only distributes
+        //    when its container's main axis is `main_definite`, which
+        //    transitively requires the row's own style.width to be
+        //    fixed. Inside an auto-width chain (Conversation → Turn
+        //    rail → inner vstack), that never reliably resolves on
+        //    the first pass, so the spacer collapses to zero and the
+        //    meta strip lands flush against the label.
+        //
+        //    Inside the component lambda we KNOW the width (the layout
+        //    engine hands us its resolved content_w) so we set
+        //    width(Dimension::fixed(w)) on the row — the row's own
+        //    compute_node then reports main_definite=true and the
+        //    spacer claims its share of free space deterministically.
+        Color rail_c = cfg.rail_color;
+        std::string glyph_s = cfg.glyph;
+        std::string label_s = cfg.label;
+        std::string meta_s  = cfg.meta;
+        Element header = maya::detail::component(
+            [rail_c, glyph_s = std::move(glyph_s),
+             label_s = std::move(label_s), meta_s = std::move(meta_s), muted]
+            (int /*w*/, int /*h*/) -> Element {
+                using namespace dsl;
+                // The renderer's slow path forces the returned sub-tree's
+                // root width to the parent's content_w before laying it
+                // out, so we DON'T bake a width on the hstack here.
+                // Setting width(fixed(w)) would lock the row to whatever
+                // the measure pass passed (typically kUnconstrained),
+                // pushing the meta strip past the canvas right edge.
+                return maya::detail::hstack()
+                  (text(glyph_s, Style{}.with_fg(rail_c)).build(),
+                   text(" ").build(),
+                   text(label_s, Style{}.with_fg(rail_c).with_bold()).build(),
+                   spacer().build(),
+                   text(meta_s, Style{}.with_fg(muted)).build(),
+                   text(" ").build());
+            })
+            .grow(1.0f);
 
         // ── Body: render each slot, blank line between consecutive ones.
         std::vector<Element> body_rows;

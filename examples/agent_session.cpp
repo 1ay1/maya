@@ -65,10 +65,13 @@
 #include <maya/widget/thinking.hpp>
 #include <maya/widget/todo_list.hpp>
 #include <maya/widget/token_stream_sparkline.hpp>
+#include <maya/widget/turn.hpp>
 #include <maya/widget/welcome_screen.hpp>
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <ctime>
 #include <memory>
 #include <random>
 #include <string>
@@ -305,6 +308,14 @@ struct Model {
 
     StreamingMarkdown       md;
     bool                    md_active = false;
+
+    // Assistant body slots accumulated across the turn. Each commit
+    // point (thinking → frozen, tools batch → frozen, text block →
+    // frozen) APPENDS to this vector instead of pushing pieces flat
+    // to `frozen`. At MessageStop we wrap the whole vector in a
+    // Role::Assistant Turn and push that single Element to `frozen`,
+    // matching agentty's "one Anthropic message = one Turn" shape.
+    std::vector<Element>    assistant_body;
 
     // Composer state (functional input box).
     std::string             composer_text;
@@ -1509,6 +1520,105 @@ static Element ctx_banner(const Model& m) {
     return b.build();
 }
 
+// ============================================================================
+// Turn-wrapped views — agentty-style chrome.
+//
+// agentty wraps every chat message in maya::Turn{glyph + speaker label +
+// meta + rail + body}. To make this example a faithful reproduction of
+// agentty's rendering pipeline we do the same here: the user message
+// goes through a Role::User Turn, the assistant content (thinking,
+// actions panel, plan, todos, markdown) goes through a single
+// Role::Assistant Turn whose body slots are pushed in agent-session
+// order.
+// ============================================================================
+
+static std::string turn_meta_now(int turn_number) {
+    // Compact "HH:MM · turn N" — same shape format_turn_meta() builds in
+    // agentty (sans elapsed since this demo doesn't track per-turn start
+    // wall-clock). The leading and inter-segment middle-dots are the
+    // same encoding agentty uses for the header meta strip.
+    std::time_t now = std::time(nullptr);
+    std::tm     tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &now);
+#else
+    localtime_r(&now, &tm);
+#endif
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%02d:%02d", tm.tm_hour, tm.tm_min);
+    std::string meta = buf;
+    meta += "  \xc2\xb7  turn ";
+    meta += std::to_string(turn_number);
+    return meta;
+}
+
+static Element user_turn_element(const Model& m, std::string_view prompt) {
+    Turn::Config cfg;
+    cfg.glyph      = "\xe2\x9d\xaf";              // ❯
+    cfg.label      = "You";
+    cfg.rail_color = Color::magenta();
+    cfg.meta       = turn_meta_now(m.turn_number);
+    cfg.body.emplace_back(
+        Turn::PlainText{std::string{prompt}, Color::bright_white()});
+    return Turn{std::move(cfg)}.build();
+}
+
+// Build a settled assistant Turn from the accumulated body slots in
+// `m.assistant_body`. Used by the freeze path at MessageStop / commit
+// boundaries — one Turn per Anthropic-style assistant Message, header
+// + rail + every body slot the turn produced.
+static Element settled_assistant_turn_element(const Model& m) {
+    Turn::Config cfg;
+    cfg.glyph      = "\xe2\x9c\xa6";              // ✦
+    cfg.label      = "Opus 4.7";
+    cfg.rail_color = Color::bright_magenta();
+    cfg.meta       = turn_meta_now(m.turn_number);
+    for (const auto& e : m.assistant_body)
+        cfg.body.emplace_back(e);   // BodySlot accepts Element directly
+    return Turn{std::move(cfg)}.build();
+}
+
+// Build a live assistant Turn whose body interleaves accumulated body
+// slots (already-completed text blocks / tool batches inside the same
+// Anthropic Message) PLUS the in-flight live state (thinking, actions,
+// plan, todos, markdown). Returns none() if there's nothing to show
+// — caller skips the gap+turn in that frame.
+static Element assistant_turn_element(const Model& m) {
+    const bool nothing =
+        m.assistant_body.empty()
+        && !m.thinking_active && m.tools.empty() && m.plan.empty()
+        && m.todos.empty() && !m.md_active && m.ctx_warning.empty();
+    if (nothing) return none();
+
+    Turn::Config cfg;
+    cfg.glyph      = "\xe2\x9c\xa6";              // ✦
+    cfg.label      = "Opus 4.7";
+    cfg.rail_color = Color::bright_magenta();
+    cfg.meta       = turn_meta_now(m.turn_number);
+
+    // Already-rolled-up slots (every text block / tool batch that's
+    // closed during this in-flight turn — see TextBlockStop /
+    // AssistantDelta first-time handlers).
+    for (const auto& e : m.assistant_body)
+        cfg.body.emplace_back(e);
+
+    // In-flight live state.
+    if (m.thinking_active)
+        cfg.body.emplace_back(m.thinking.build());
+    if (!m.tools.empty())
+        cfg.body.emplace_back(actions_panel(m, /*live=*/true));
+    if (!m.plan.empty())
+        cfg.body.emplace_back(plan_card(m));
+    if (!m.todos.empty())
+        cfg.body.emplace_back(todos_card(m));
+    if (!m.ctx_warning.empty())
+        cfg.body.emplace_back(ctx_banner(m));
+    if (m.md_active)
+        cfg.body.emplace_back(AssistantMessage::build(m.md.build()));
+
+    return Turn{std::move(cfg)}.build();
+}
+
 // ── Composer (functional) ──────────────────────────────────────────────────
 static Element composer_view(const Model& m) {
     Composer::Config c;
@@ -1606,33 +1716,25 @@ static Element view(const Model& m) {
             return list_ref(m.frozen);
         }),
 
-        // In-flight user message
+        // In-flight user message — wrapped in a Role::User Turn to mirror
+        // agentty's chrome (glyph + "You" + meta + rail).
         dyn([&]() -> Element {
             if (m.user_committed || m.user_prompt.empty()) return none();
-            return v(blank(), UserMessage::build(m.user_prompt)).build();
+            return v(blank(), user_turn_element(m, m.user_prompt)).build();
         }),
 
-        // Live thinking
+        // Live assistant content — ONE Role::Assistant Turn whose body
+        // interleaves thinking, actions, plan, todos, markdown in the
+        // order they accumulate during the turn. This is the agentty
+        // pattern: every assistant Message gets wrapped in a Turn with
+        // a header that can shrink to 0 rows when the body overflows.
         dyn([&]() -> Element {
-            if (!m.thinking_active) return none();
-            return v(blank(), m.thinking).build();
-        }),
-
-        // Live actions panel — emptied on commit, so .empty() is the
-        // commit signal.
-        dyn([&]() -> Element {
-            if (m.tools.empty()) return none();
-            return v(blank(), actions_panel(m, /*live=*/true)).build();
-        }),
-
-        // Plan / Todos (cleared on commit too)
-        dyn([&]() -> Element {
-            if (m.plan.empty()) return none();
-            return v(blank(), plan_card(m)).build();
-        }),
-        dyn([&]() -> Element {
-            if (m.todos.empty()) return none();
-            return v(blank(), todos_card(m)).build();
+            Element e = assistant_turn_element(m);
+            if (std::holds_alternative<ElementList>(e.inner)) {
+                auto& l = std::get<ElementList>(e.inner);
+                if (l.items.empty()) return e;
+            }
+            return v(blank(), std::move(e)).build();
         }),
 
         // Permission prompt
@@ -1644,18 +1746,6 @@ static Element view(const Model& m) {
                 p,
                 t<"  press [space] to allow, [n] to deny"> | Dim
             ).build();
-        }),
-
-        // Context warning banner (cleared on commit)
-        dyn([&]() -> Element {
-            if (m.ctx_warning.empty()) return none();
-            return v(blank(), ctx_banner(m)).build();
-        }),
-
-        // Streaming markdown response (md is reset on each TextBlockStop)
-        dyn([&]() -> Element {
-            if (!m.md_active) return none();
-            return v(blank(), AssistantMessage::build(m.md.build())).build();
         }),
 
         // Closing summary callout — appears once per Done turn.
@@ -1716,6 +1806,7 @@ static void reset_turn(Model& m) {
     m.ctx_warning.clear();
     m.md                 = StreamingMarkdown{};
     m.md_active          = false;
+    m.assistant_body.clear();
     m.perm_open          = false;
     m.pending_perm_cmd.clear();
 }
@@ -1867,6 +1958,18 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
             std::visit(overload{
                 [&](ev::SessionStart&) {
                     m.phase = Phase::Thinking;
+                    // Commit the user message NOW (agentty pattern):
+                    // every settled turn pair is one user Turn followed
+                    // by one assistant Turn. The assistant body slots
+                    // accumulate in m.assistant_body across the turn
+                    // and get wrapped in a single Role::Assistant Turn
+                    // at MessageStop.
+                    if (!m.user_committed && !m.user_prompt.empty()) {
+                        m.frozen.push_back(gap());
+                        m.frozen.push_back(user_turn_element(m, m.user_prompt));
+                        m.user_committed = true;
+                    }
+                    m.assistant_body.clear();
                 },
                 [&](ev::ThinkingDelta& e) {
                     if (!m.thinking_active) {
@@ -1880,17 +1983,13 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
                 [&](ev::ThinkingStop&) {
                     m.thinking.set_active(false);
                     m.thinking_active = false;
-                    m.frozen.push_back(gap());
-                    m.frozen.push_back(m.thinking.build());
+                    // Append to assistant body — committed inside the
+                    // wrapping assistant Turn at MessageStop.
+                    m.assistant_body.push_back(m.thinking.build());
                     m.thinking = ThinkingBlock{};
                     m.phase = Phase::Tooling;
                 },
                 [&](ev::ToolBegin& e) {
-                    if (!m.user_committed) {
-                        m.frozen.push_back(gap());
-                        m.frozen.push_back(UserMessage::build(m.user_prompt));
-                        m.user_committed = true;
-                    }
                     LiveTool t;
                     t.id     = e.id;
                     t.kind   = e.kind;
@@ -1973,35 +2072,32 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
                 },
                 [&](ev::AssistantDelta& e) {
                     if (!m.md_active) {
-                        // Commit any in-flight panels to scrollback before
-                        // the assistant bubble starts streaming. Clearing
-                        // the live data after each commit means the next
-                        // round of tools / plan / todos starts a fresh
-                        // panel — supporting interleaved blocks within a
-                        // single agent turn.
+                        // Roll up in-flight live panels into the
+                        // assistant body BEFORE the prose block starts
+                        // — same interleave-within-one-message shape
+                        // agentty produces. These become body slots of
+                        // the single assistant Turn we push at
+                        // MessageStop.
                         if (!m.tools.empty()) {
-                            m.frozen.push_back(gap());
-                            m.frozen.push_back(actions_panel(m, /*live=*/false));
+                            m.assistant_body.push_back(
+                                actions_panel(m, /*live=*/false));
                             m.tools.clear();
                         }
                         if (!m.plan.empty()) {
                             for (auto& it : m.plan)
                                 it.status = TaskStatus::Completed;
-                            m.frozen.push_back(gap());
-                            m.frozen.push_back(plan_card(m));
+                            m.assistant_body.push_back(plan_card(m));
                             m.plan.clear();
                         }
                         if (!m.todos.empty()) {
                             for (auto& it : m.todos)
                                 it.status = TodoItemStatus::Completed;
                             m.todos_status = TodoListStatus::Done;
-                            m.frozen.push_back(gap());
-                            m.frozen.push_back(todos_card(m));
+                            m.assistant_body.push_back(todos_card(m));
                             m.todos.clear();
                         }
                         if (!m.ctx_warning.empty()) {
-                            m.frozen.push_back(gap());
-                            m.frozen.push_back(ctx_banner(m));
+                            m.assistant_body.push_back(ctx_banner(m));
                             m.ctx_warning.clear();
                         }
                         m.md = StreamingMarkdown{};
@@ -2012,13 +2108,12 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
                     m.phase = Phase::Streaming;
                 },
                 [&](ev::TextBlockStop&) {
-                    // Close the current text content block but keep the
-                    // turn alive — more tools and more text blocks can
-                    // follow. Real Anthropic streams interleave like this.
+                    // Append the just-closed text block to the assistant
+                    // body; more tools / text blocks may follow inside
+                    // the same Turn.
                     if (m.md_active) {
                         m.md.finish();
-                        m.frozen.push_back(gap());
-                        m.frozen.push_back(
+                        m.assistant_body.push_back(
                             AssistantMessage::build(m.md.build()));
                         m.md = StreamingMarkdown{};
                         m.md_active = false;
@@ -2026,23 +2121,30 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
                     m.phase = Phase::Tooling;
                 },
                 [&](ev::MessageStop&) {
-                    // Final commit. Same shape as TextBlockStop, but also
-                    // settles tools / plan / todos / changes that may not
-                    // have been rolled into an assistant block (e.g. a
-                    // turn that ends mid-tool or with no closing prose).
+                    // Final commit. Roll any remaining live state into
+                    // the assistant body, then wrap the entire body in
+                    // ONE Role::Assistant Turn and push it to frozen.
+                    // Mirrors agentty's one-Message-equals-one-Turn
+                    // shape exactly.
                     if (m.md_active) {
                         m.md.finish();
-                        m.frozen.push_back(gap());
-                        m.frozen.push_back(
+                        m.assistant_body.push_back(
                             AssistantMessage::build(m.md.build()));
                         m.md = StreamingMarkdown{};
                         m.md_active = false;
                     }
                     if (!m.tools.empty()) {
-                        m.frozen.push_back(gap());
-                        m.frozen.push_back(actions_panel(m, /*live=*/false));
+                        m.assistant_body.push_back(
+                            actions_panel(m, /*live=*/false));
                         m.tools.clear();
                     }
+
+                    if (!m.assistant_body.empty()) {
+                        m.frozen.push_back(gap());
+                        m.frozen.push_back(settled_assistant_turn_element(m));
+                        m.assistant_body.clear();
+                    }
+
                     if (!m.changes.empty()) {
                         m.frozen.push_back(gap());
                         m.frozen.push_back(changes_card(m));

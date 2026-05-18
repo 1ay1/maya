@@ -97,7 +97,8 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 // Inline frame composition
 // ============================================================================
 
-struct InlineFrameState;  // forward
+class InlineFrameState;  // forward — defined below
+struct FinalizeResult;   // forward — returned by InlineFrameState::finalize() &&
 
 /// Opaque token representing "commit this many rows of the current
 /// frame's prev_cells to scrollback." Constructed only via
@@ -127,131 +128,237 @@ public:
 private:
     int rows_ = 0;
     constexpr explicit ScrollbackMarker(int r) noexcept : rows_(r) {}
-    friend struct InlineFrameState;
+    friend class InlineFrameState;
 };
+
+// Forward declarations of the only types allowed to touch the state's
+// private fields. These are the renderer internals — the byte-emitter,
+// the witness-chain capsule, and the per-tag wrapper classes.
+namespace inline_frame {
+    struct Empty;
+    struct Fresh;
+    struct Synced;
+    struct Stale;
+    struct HardReset;
+    struct Sealed;
+    template <class Tag> class InlineFrame;
+}
+class  FrameBytes;
+class  ShadowWitness;
+struct StylePool;
+class  Canvas;
+[[nodiscard]] std::optional<ShadowWitness> verify_shadow(const InlineFrameState&) noexcept;
 
 /// Persistent state for the inline (row-diff) renderer.
 ///
-/// Holds a copy of the last-rendered cell buffer so successive frames can
-/// be compared exactly via `simd::bulk_eq` instead of hashed (no collisions).
-/// Carry the same instance across frames; call `reset()` to invalidate
-/// after a write failure, `\x1b[2J` clear, or any other event that
-/// desynchronises the terminal from the cached state.
-struct InlineFrameState {
-    AlignedBuffer prev_cells;
-    int           prev_width = 0;
-    int           prev_rows  = 0;  // content_rows from the last composed frame
+/// Holds a copy of the last-rendered cell buffer so successive frames
+/// can be compared exactly via `simd::bulk_eq` instead of hashed (no
+/// collisions). Carried inside `InlineFrame<Tag>` (the Witness Chain)
+/// — never held directly by application code.
+///
+/// ─────────────────────────────────────────────────────────────────
+/// Encapsulation (part of the Witness Chain's compile-time proof)
+/// ─────────────────────────────────────────────────────────────────
+///
+/// All mutable fields are PRIVATE. The only code that can advance
+/// them is the friend set below: the byte-emitter
+/// `compose_inline_frame_impl`, the witness producer `verify_shadow`,
+/// the FrameBytes capsule (commit / abandon successor handling), and
+/// the six `InlineFrame<Tag>` classes (state-machine transitions).
+///
+/// Why: the on-wire scrollback invariant
+///
+///     prev_cells[0 .. prev_rows × prev_width) ≡ visible viewport
+///
+/// depends on prev_cells, prev_rows, prev_width, and shadow_hash all
+/// advancing in lockstep with the bytes that actually shipped. An
+/// outside writer that nudges any one of them desynchronises the
+/// shadow from the wire — the next diff is computed against a fiction
+/// and the terminal corrupts. Making the fields private moves "don't
+/// touch these" from a comment into a compile error.
+///
+/// The state is non-copyable for the same reason: two parallel copies
+/// of the same prev_cells would let two compose passes both think
+/// they own the wire, which is exactly the bug class ShadowWitness
+/// was invented to detect at runtime. With non-copyable + private
+/// fields, the runtime detector becomes a belt over suspenders: the
+/// compiler refuses to even produce the suspect program.
+/// ─────────────────────────────────────────────────────────────────
+/// Immutability (type-theoretic discipline)
+/// ─────────────────────────────────────────────────────────────────
+///
+/// Logically, `InlineFrameState` is a value in an algebraic data type:
+///
+///     State = { prev_cells; prev_rows; prev_width; flags; shadow; … }
+///
+/// and every operation that "advances" the state is a pure function
+/// `State → (Output, State)`. The implementation realises this with
+/// move-only semantics: the only public mutators are rvalue-qualified
+/// (`&&`), so they consume the current value and return a *new*
+/// value. There is no `set_X(v)` method, no public assignment of any
+/// field, no `void reset()` that re-uses the old name; the only way
+/// to obtain a state with different invariants is to call a function
+/// that returns one.
+///
+/// Internally (inside friends), the moved-in value is a function-
+/// local owned object — the function can write into that local
+/// freely before returning the result. The write is unobservable to
+/// any outside code because the outside code has already given up
+/// the state by value-move. From the type system's perspective the
+/// operation is indistinguishable from a pure transformation.
+///
+/// Consequences:
+///
+///   1. Two parallel views of the same `prev_cells` cannot exist.
+///      Move-only + private fields ensure it; the only way to obtain
+///      a state is from a returning factory, and each returning
+///      factory destroys its predecessor.
+///
+///   2. Reordering a sequence of state-advancing operations changes
+///      the type of every intermediate, surfacing the wrong order as
+///      a compile error. E.g. you cannot call `finalize` and then
+///      try to `committed` the same state — finalize returned its
+///      result by value, and the original state is gone.
+///
+///   3. Aliasing bugs ("someone snuck a pointer to state.shadow_hash
+///      and bumped it") are impossible: there is no addressable
+///      field, only accessors that return by value.
+class InlineFrameState {
+public:
+    /// The unique public constructor. Produces the initial empty
+    /// value (prev_rows = 0, shadow_hash = sentinel, no terminal
+    /// modes claimed). All further states descend from this one via
+    /// the `&&`-qualified advancing operations below.
+    InlineFrameState() noexcept = default;
 
-    /// Terminal-mode flags persisted across frames. compose_inline_frame
-    /// flips `decawm_off`/`cursor_hidden` to true the first time it
-    /// emits the corresponding sequence; subsequent frames skip the
-    /// per-frame re-emission and the bracket exit. reset() clears them
-    /// so the next composition re-establishes the modes from scratch
-    /// (cursor position is also unknown after reset). Owners call
-    /// `finalize(out)` on shutdown to restore the terminal.
-    bool decawm_off    = false;
-    bool cursor_hidden = false;
+    // Move-only. Copies would create parallel shadows of the same
+    // wire region; see the type-level rationale above.
+    InlineFrameState(const InlineFrameState&)            = delete;
+    InlineFrameState& operator=(const InlineFrameState&) = delete;
+    InlineFrameState(InlineFrameState&&) noexcept            = default;
+    InlineFrameState& operator=(InlineFrameState&&) noexcept = default;
 
-    /// Rows of the prior frame still on screen that case-(B) soft
-    /// redraw must erase ABOVE the new frame, not just below.
-    ///
-    /// Set by `Runtime::force_redraw()` (to `wire_cursor_rows`)
-    /// *before* it zeroes `prev_rows`; consumed by
-    /// `compose_inline_frame`'s case-(B) emit, which uses it to size
-    /// the upward erase so the previous (possibly larger) frame's top
-    /// is wiped, not left visible above the freshly-painted shorter
-    /// frame. Cleared back to 0 by case-(B) after the erase emits.
-    ///
-    /// Zero in steady state. Non-zero only between force_redraw and
-    /// the next compose. Width-change `reset()` also clears it because
-    /// the row counts are no longer meaningful at the new width.
-    int ghost_rows_above = 0;
+    // ── Pure read accessors ─────────────────────────────────────────
+    // Return by value. The state never exposes a reference or
+    // pointer to any of its fields — outsiders cannot observe
+    // identity, only contents.
+    [[nodiscard]] int      prev_width()       const noexcept { return prev_width_; }
+    [[nodiscard]] int      prev_rows()        const noexcept { return prev_rows_; }
+    [[nodiscard]] int      wire_cursor_rows() const noexcept { return wire_cursor_rows_; }
+    [[nodiscard]] uint64_t shadow_hash()      const noexcept { return shadow_hash_; }
 
-    /// Viewport rows occupied by the prior frame as the terminal sees
-    /// it — i.e. `min(prev_rows_at_last_emit, term_h)`. Set at the end
-    /// of every successful compose; intentionally NOT mutated by
-    /// `commit_prefix` (commits move rows into native scrollback in
-    /// the renderer's bookkeeping but do not change the terminal
-    /// cursor row, so the on-screen offset from the prior emit is
-    /// invariant under commits). `force_redraw()` snapshots this into
-    /// `ghost_rows_above` so the case-(B) upward erase walks the
-    /// correct number of rows even when commits happened between
-    /// the last emit and the redraw.
-    int wire_cursor_rows = 0;
+    // ── Pure advancing operations ───────────────────────────────────
+    // Each consumes `*this` by rvalue-move and returns the successor
+    // state by value. Calling them on an lvalue is a compile error —
+    // the caller has to `std::move(state).X()` and the source is
+    // gone after the call.
 
-    /// Production shadow-of-wire verifier. After each successful
-    /// compose, `shadow_hash` is set to a deterministic 64-bit hash
-    /// over the visible-viewport portion of `prev_cells`. Before the
-    /// next compose runs, the runtime can re-hash the same range and
-    /// compare; a mismatch means somebody mutated prev_cells outside
-    /// the compose path (or memory corruption) — the shadow is no
-    /// longer trustworthy and the next render must go through the
-    /// Divergent recovery path rather than emit a diff against a
-    /// poisoned reference. UINT64_MAX is the "not yet computed"
-    /// sentinel set by reset() and by the constructor. The cost is
-    /// O(visible_rows × W) of u64 mixing per frame — ~1µs on a
-    /// 200×80 viewport, which the debug verifier (MAYA_DEBUG_
-    /// SHADOW_VERIFY) already pays unconditionally; production carries
-    /// the same overhead but with the failure routed to graceful
-    /// recovery instead of abort().
-    uint64_t shadow_hash = static_cast<uint64_t>(-1);
-
-    void reset() noexcept {
-        prev_width        = 0;
-        prev_rows         = 0;
-        decawm_off        = false;
-        cursor_hidden     = false;
-        shadow_hash       = static_cast<uint64_t>(-1);
-        ghost_rows_above  = 0;
-        wire_cursor_rows  = 0;
+    /// Return a fresh state with every invariant cleared. The
+    /// underlying `prev_cells` buffer allocation is retained
+    /// (AlignedBuffer move is a pointer swap) so the next compose
+    /// can re-use the capacity, but every observable field is set
+    /// to its initial value. Equivalent in observable behaviour to
+    /// `InlineFrameState{}` with retained capacity.
+    [[nodiscard]] InlineFrameState reset_state() && noexcept {
+        InlineFrameState s{std::move(*this)};
+        s.prev_width_        = 0;
+        s.prev_rows_         = 0;
+        s.decawm_off_        = false;
+        s.cursor_hidden_     = false;
+        s.shadow_hash_       = static_cast<uint64_t>(-1);
+        s.ghost_rows_above_  = 0;
+        s.wire_cursor_rows_  = 0;
+        return s;
     }
 
-    /// Append the bytes needed to restore terminal state owned by this
-    /// frame (cursor visibility, DECAWM). Clears the flags so further
-    /// calls are no-ops. Safe to call multiple times.
-    void finalize(std::string& out) {
-        if (cursor_hidden) {
-            out.append("\x1b[?25h");
-            cursor_hidden = false;
-        }
-        if (decawm_off) {
-            out.append("\x1b[?7h");
-            decawm_off = false;
-        }
-    }
+    /// Emit the bytes that restore terminal-mode flags this state
+    /// claims (cursor visibility, DECAWM), and return the successor
+    /// in which those flags are no longer claimed. The returned
+    /// state's `finalize()` is observably a no-op.
+    [[nodiscard]] FinalizeResult finalize() && noexcept;
 
     /// Build a typed marker for committing `rows` rows of scrollback.
     /// Clamped to [0, prev_rows]; passing prev_rows means "commit
-    /// everything that's currently considered prev frame." Returns an
-    /// empty marker (no-op when consumed) when prev_rows == 0.
+    /// everything that's currently considered prev frame." Returns
+    /// an empty marker (no-op when consumed) when prev_rows == 0.
+    /// This is a const read — the marker is consumed by
+    /// `committed()`, not by issuing it.
     [[nodiscard]] ScrollbackMarker scrollback_marker(int rows) const noexcept {
-        if (rows <= 0 || prev_rows <= 0) return ScrollbackMarker{};
-        return ScrollbackMarker{std::min(rows, prev_rows)};
+        if (rows <= 0 || prev_rows_ <= 0) return ScrollbackMarker{};
+        return ScrollbackMarker{std::min(rows, prev_rows_)};
     }
 
-    /// Commit the marker. Shifts `prev_cells` up by marker.rows() rows
-    /// and decrements `prev_rows`. A marker that targets all the rows
-    /// (or more) clears the state cleanly via `reset()`.
-    void commit(ScrollbackMarker marker) noexcept {
-        commit_prefix(marker.rows());
+    /// Consume the marker and return the successor state with
+    /// `marker.rows()` rows shifted off the top of prev_cells. A
+    /// marker that targets all rows (or more) returns a reset
+    /// state. The shadow_hash is recomputed over the post-shift
+    /// cells so the next compose's verify_shadow sees a consistent
+    /// reference.
+    [[nodiscard]] InlineFrameState committed(ScrollbackMarker marker) && noexcept;
+
+    /// Recovery factory: return the state shape required after a
+    /// soft failure (FrameBytes::abandon, Synced::demote_to_stale).
+    /// `prev_rows` is zeroed, `shadow_hash` is sentinel'd, and
+    /// `ghost_rows_above` is set to the prior wire_cursor_rows so
+    /// the next compose's case-(B) emit walks the correct upward
+    /// erase distance.
+    [[nodiscard]] InlineFrameState abandoned_for_recovery() && noexcept {
+        InlineFrameState s{std::move(*this)};
+        const int prior_wire_rows = s.wire_cursor_rows_;
+        s.ghost_rows_above_ = prior_wire_rows;
+        s.prev_rows_        = 0;
+        s.cursor_hidden_    = false;
+        s.decawm_off_       = false;
+        s.shadow_hash_      = static_cast<uint64_t>(-1);
+        return s;
     }
 
-    /// Mark the top `rows` rows of the current prev frame as committed to
-    /// terminal scrollback.  Shifts `prev_cells` up by `rows * prev_width`
-    /// and decrements `prev_rows`.
-    ///
-    /// Use this when the caller knows the next frame's tree intentionally
-    /// omits content that was at the top of the previous frame (e.g. a
-    /// chat UI that slices old messages once they've scrolled above the
-    /// viewport).  Without this call, `compose_inline_frame` would treat
-    /// the shorter tree as "content removed from the bottom" and erase
-    /// visible rows.
-    ///
-    /// New code should prefer `scrollback_marker(rows) + commit(marker)`
-    /// — the typed path forces the caller to query the live state's
-    /// prev_rows rather than carrying a stale int. This signature is
-    /// retained for source compatibility with existing consumers.
-    void commit_prefix(int rows) noexcept;
+private:
+    // ── Friend set: the only code allowed to touch private fields ───
+    //
+    // The byte-emitter takes the state by &&, writes into a function-
+    // local owned copy, and returns the result; friendship lets it
+    // touch the storage of the local it just took ownership of.
+    friend std::pair<std::string, InlineFrameState>
+    compose_inline_frame_impl(const Canvas&, int, int,
+                              const StylePool&,
+                              InlineFrameState&&, bool);
+    friend std::optional<ShadowWitness> verify_shadow(const InlineFrameState&) noexcept;
+    friend class FrameBytes;
+    template <class Tag> friend class inline_frame::InlineFrame;
+    // The witness-chain free function lives in frame_bytes.cpp; it
+    // re-verifies the witness across the move boundary by reading
+    // the moved-in state's hashable cells.
+    friend FrameBytes compose_inline_frame(
+        const Canvas&, ContentRows, int, const StylePool&,
+        InlineFrameState&&, ShadowWitness&&, bool);
+
+    // ── Storage (private) ───────────────────────────────────────────
+    // Logically immutable — written only by friends that took the
+    // state by &&-move and own the storage they're writing to. The
+    // C++ `const`-keyword would forbid move-assignment (needed for
+    // the chain's `state_ = std::move(other)`); immutability is
+    // therefore enforced by the public API, not by the storage
+    // qualifier.
+    AlignedBuffer prev_cells_;
+    int           prev_width_       = 0;
+    int           prev_rows_        = 0;
+    bool          decawm_off_       = false;
+    bool          cursor_hidden_    = false;
+    int           ghost_rows_above_ = 0;
+    int           wire_cursor_rows_ = 0;
+    uint64_t      shadow_hash_      = static_cast<uint64_t>(-1);
+};
+
+/// Return value of `InlineFrameState::finalize() &&`. Carries the
+/// bytes the terminal needs to restore modes the state claimed, plus
+/// the successor state that no longer claims them. Defined at
+/// namespace scope because the nested-class variant would create a
+/// member of incomplete type (the enclosing class is incomplete
+/// inside its own definition).
+struct FinalizeResult {
+    std::string      restore_bytes;
+    InlineFrameState sealed;
 };
 
 /// Compose the byte stream for one inline frame.
@@ -335,6 +442,12 @@ public:
     [[nodiscard]] const InlineFrameState* bound_to() const noexcept {
         return state_;
     }
+
+    /// Default constructor exists only for the move-from invariant
+    /// (a moved-from witness must be safely destructible). It is
+    /// deliberately deleted so external callers cannot synthesize a
+    /// witness — the only producer is `verify_shadow(state)` below.
+    ShadowWitness() = delete;
 
     /// Hash value recorded at issue. compose re-hashes the state's
     /// prev_cells on consumption and compares against this value.

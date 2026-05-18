@@ -89,6 +89,48 @@ static_assert(!std::is_constructible_v<ShadowWitness>);
 static_assert(!std::is_constructible_v<ContentRows, int>);
 static_assert(!std::is_constructible_v<ContentRows>);
 
+// (g) InlineFrameState is non-copyable. Copies would create two
+//     parallel shadows of the same wire region — the bug class
+//     ShadowWitness was designed to detect at runtime. Making it
+//     non-copyable means the suspect program does not compile.
+static_assert(!std::is_copy_constructible_v<InlineFrameState>);
+static_assert(!std::is_copy_assignable_v<InlineFrameState>);
+static_assert(std::is_move_constructible_v<InlineFrameState>);
+static_assert(std::is_move_assignable_v<InlineFrameState>);
+
+// (h) Every state-advancing operation is rvalue-qualified. They
+//     consume the state by &&-move and return a fresh value — no
+//     in-place mutation through an lvalue is possible. The
+//     compiler refuses to bind an rvalue method to an lvalue; we
+//     prove the &&-qualification with the SFINAE trait below.
+template <class T, class = void> struct can_finalize_lvalue : std::false_type {};
+template <class T> struct can_finalize_lvalue<T,
+    std::void_t<decltype(std::declval<T&>().finalize())>> : std::true_type {};
+static_assert(!can_finalize_lvalue<InlineFrameState>::value,
+    "InlineFrameState::finalize must be rvalue-qualified — lvalue calls would mutate in place");
+
+template <class T, class = void> struct can_reset_lvalue : std::false_type {};
+template <class T> struct can_reset_lvalue<T,
+    std::void_t<decltype(std::declval<T&>().reset_state())>> : std::true_type {};
+static_assert(!can_reset_lvalue<InlineFrameState>::value,
+    "InlineFrameState::reset_state must be rvalue-qualified");
+
+template <class T, class = void> struct can_commit_lvalue : std::false_type {};
+template <class T> struct can_commit_lvalue<T,
+    std::void_t<decltype(std::declval<T&>().committed(std::declval<ScrollbackMarker>()))>> : std::true_type {};
+static_assert(!can_commit_lvalue<InlineFrameState>::value,
+    "InlineFrameState::committed must be rvalue-qualified");
+
+// (i) No setter / no public field assignment. The accessors are
+//     `const noexcept` and return by value; there is no way to
+//     obtain a reference to any internal field.
+static_assert(std::is_same_v<decltype(std::declval<const InlineFrameState&>().prev_rows()), int>,
+    "prev_rows must return by value, not by reference");
+static_assert(std::is_same_v<decltype(std::declval<const InlineFrameState&>().prev_width()), int>,
+    "prev_width must return by value, not by reference");
+static_assert(std::is_same_v<decltype(std::declval<const InlineFrameState&>().shadow_hash()), std::uint64_t>,
+    "shadow_hash must return by value, not by reference");
+
 // ─────────────────────────────────────────────────────────────────────────
 // 2. Happy path: Empty → Fresh → Synced via a (mock) Writer
 // ─────────────────────────────────────────────────────────────────────────

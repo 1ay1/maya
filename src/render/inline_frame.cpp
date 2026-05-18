@@ -75,7 +75,8 @@ RenderOutcome InlineFrame<Fresh>::render(
 }
 
 InlineFrame<Sealed> InlineFrame<Fresh>::finalize(std::string& out) && noexcept {
-    state_.finalize(out);
+    auto fin = std::move(state_).finalize();
+    out.append(fin.restore_bytes);
     return InlineFrame<Sealed>{};
 }
 
@@ -101,16 +102,14 @@ RenderOutcome InlineFrame<Synced>::render(
 }
 
 InlineFrame<Stale> InlineFrame<Synced>::demote_to_stale() && noexcept {
-    // Soft demotion: prepare for case-(B) recovery. The wire's content
-    // is plausibly the last frame we painted; the next render walks
-    // the cursor up and re-paints in place, erasing below.
-    InlineFrameState s = std::move(state_);
-    s.ghost_rows_above = s.wire_cursor_rows;
-    s.prev_rows        = 0;
-    s.cursor_hidden    = false;
-    s.decawm_off       = false;
-    s.shadow_hash      = static_cast<std::uint64_t>(-1);
-    return InlineFrame<Stale>{std::move(s)};
+    // Soft demotion: prepare for case-(B) recovery. The wire's
+    // content is plausibly the last frame we painted; the next
+    // render walks the cursor up and re-paints in place, erasing
+    // below. The shape transformation is a pure factory on the
+    // state — no aliases survive across this call.
+    return InlineFrame<Stale>{
+        std::move(state_).abandoned_for_recovery()
+    };
 }
 
 InlineFrame<HardReset> InlineFrame<Synced>::demote_to_hard_reset() && noexcept {
@@ -121,7 +120,8 @@ InlineFrame<HardReset> InlineFrame<Synced>::demote_to_hard_reset() && noexcept {
 }
 
 InlineFrame<Sealed> InlineFrame<Synced>::finalize(std::string& out) && noexcept {
-    state_.finalize(out);
+    auto fin = std::move(state_).finalize();
+    out.append(fin.restore_bytes);
     return InlineFrame<Sealed>{};
 }
 
@@ -158,7 +158,8 @@ InlineFrame<HardReset> InlineFrame<Stale>::escalate_to_hard_reset() && noexcept 
 }
 
 InlineFrame<Sealed> InlineFrame<Stale>::finalize(std::string& out) && noexcept {
-    state_.finalize(out);
+    auto fin = std::move(state_).finalize();
+    out.append(fin.restore_bytes);
     return InlineFrame<Sealed>{};
 }
 

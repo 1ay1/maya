@@ -17,15 +17,16 @@ namespace maya {
 // Internal byte-emitter, defined in serialize.cpp. The witness-chain
 // `compose_inline_frame` below is the only caller; it drives this
 // helper after consuming a ShadowWitness so the in-place mutation it
-// performs is safe under the chain's invariants. There is no public
-// header for this symbol — callers outside this TU cannot reach it.
-void compose_inline_frame_impl(const Canvas& canvas,
-                               int content_rows,
-                               int term_h,
-                               const StylePool& pool,
-                               InlineFrameState& state,
-                               std::string& out,
-                               bool synchronized_output);
+// performs (on its own moved-in local) is safe under the chain's
+// invariants. There is no public header for this symbol — callers
+// outside this TU cannot reach it.
+std::pair<std::string, InlineFrameState>
+compose_inline_frame_impl(const Canvas& canvas,
+                          int content_rows,
+                          int term_h,
+                          const StylePool& pool,
+                          InlineFrameState&& state_in,
+                          bool synchronized_output);
 
 // ─────────────────────────────────────────────────────────────────────────
 // compose_inline_frame
@@ -91,12 +92,12 @@ FrameBytes compose_inline_frame(
         // and compose entered — a fundamental violation that is
         // unrecoverable.
         std::uint64_t h = 14695981039346656037ULL;
-        if (state.prev_width > 0 && state.prev_rows > 0 &&
-            state.shadow_hash != static_cast<std::uint64_t>(-1)) {
-            const std::size_t W = static_cast<std::size_t>(state.prev_width);
-            const std::size_t n = static_cast<std::size_t>(state.prev_rows) * W;
-            if (n <= state.prev_cells.size()) {
-                const std::uint64_t* p = state.prev_cells.data();
+        if (state.prev_width_ > 0 && state.prev_rows_ > 0 &&
+            state.shadow_hash_ != static_cast<std::uint64_t>(-1)) {
+            const std::size_t W = static_cast<std::size_t>(state.prev_width_);
+            const std::size_t n = static_cast<std::size_t>(state.prev_rows_) * W;
+            if (n <= state.prev_cells_.size()) {
+                const std::uint64_t* p = state.prev_cells_.data();
                 for (std::size_t i = 0; i < n; ++i) {
                     h ^= p[i];
                     h *= 1099511628211ULL;
@@ -123,15 +124,18 @@ FrameBytes compose_inline_frame(
     //     so any accidental reuse fires the valid() assertion.
     (void)ShadowWitness{std::move(witness)};
 
-    // (4) Drive the internal byte-emitter. It mutates `state` in
-    //     place; after this call `state` IS the successor.
-    std::string out;
-    out.reserve(1024);   // typical inline frame; grows as needed.
-    compose_inline_frame_impl(canvas, content_rows.value(), term_h, pool,
-                              state, out, synchronized_output);
+    // (4) Drive the internal byte-emitter. It takes the state by
+    //     &&-move, mutates a function-local owned copy, and returns
+    //     `(bytes, successor)` — a pure transformation in the type
+    //     system's eyes. We have no observable state mutation to
+    //     reason about; the byte buffer and the new state value are
+    //     simply the result of a function call.
+    auto [out, successor] = compose_inline_frame_impl(
+        canvas, content_rows.value(), term_h, pool,
+        std::move(state), synchronized_output);
 
     // (5) Capsule. FrameBytes::commit_to consumes both arms.
-    return FrameBytes{std::move(out), std::move(state)};
+    return FrameBytes{std::move(out), std::move(successor)};
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -178,14 +182,16 @@ CommitOutcome FrameBytes::commit_to(Writer& writer) && noexcept {
 // just needs to refresh the cells the canvas now describes.
 
 commit::Stale FrameBytes::abandon() && noexcept {
-    InlineFrameState recovery = std::move(successor_);
-    const int prior_wire_rows = recovery.wire_cursor_rows;
-    recovery.ghost_rows_above = prior_wire_rows;
-    recovery.prev_rows        = 0;
-    recovery.cursor_hidden    = false;
-    recovery.decawm_off       = false;
-    recovery.shadow_hash      = static_cast<std::uint64_t>(-1);
-    return commit::Stale{std::move(recovery), ok()};
+    // Type-theoretic shape: we receive the successor by value-move
+    // (no aliases survive), pass it through the recovery factory
+    // (a pure `State -> State` operation that returns the post-
+    // abandon shape), and wrap it in the typed arm. The outer
+    // caller observes only `commit::Stale{new_state}` — no mutation
+    // of any object they hold a reference to.
+    return commit::Stale{
+        std::move(successor_).abandoned_for_recovery(),
+        ok(),
+    };
 }
 
 // abandon_to_hard_reset: the runtime has decided that the wire is

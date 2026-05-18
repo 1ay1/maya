@@ -248,21 +248,22 @@ public:
     /// render emits `\x1b[2J\x1b[3J\x1b[H` and starts fresh.
     [[nodiscard]] InlineFrame<HardReset> demote_to_hard_reset() && noexcept;
 
-    /// Commit `marker.rows()` rows of scrollback. Shifts prev_cells
-    /// up; returns a new Synced with prev_rows reduced.
+    /// Commit `marker.rows()` rows of scrollback. Returns a new
+    /// Synced whose underlying state has `prev_cells` shifted up
+    /// and `prev_rows` reduced. The old state is consumed.
     [[nodiscard]] InlineFrame<Synced> commit(ScrollbackMarker marker) && noexcept {
-        state_.commit(marker);
-        return InlineFrame<Synced>{std::move(state_)};
+        InlineFrameState s = std::move(state_).committed(marker);
+        return InlineFrame<Synced>{std::move(s)};
     }
 
     [[nodiscard]] ScrollbackMarker scrollback_marker(int rows) const noexcept {
         return state_.scrollback_marker(rows);
     }
 
-    [[nodiscard]] int rows()  const noexcept { return state_.prev_rows; }
-    [[nodiscard]] int width() const noexcept { return state_.prev_width; }
+    [[nodiscard]] int rows()  const noexcept { return state_.prev_rows(); }
+    [[nodiscard]] int width() const noexcept { return state_.prev_width(); }
     [[nodiscard]] int wire_cursor_rows() const noexcept {
-        return state_.wire_cursor_rows;
+        return state_.wire_cursor_rows();
     }
 
     [[nodiscard]] InlineFrame<Sealed> finalize(std::string& out) && noexcept;
@@ -303,8 +304,8 @@ public:
         Writer& writer,
         bool synchronized_output = true) &&;
 
-    [[nodiscard]] int rows()  const noexcept { return state_.prev_rows; }
-    [[nodiscard]] int width() const noexcept { return state_.prev_width; }
+    [[nodiscard]] int rows()  const noexcept { return state_.prev_rows(); }
+    [[nodiscard]] int width() const noexcept { return state_.prev_width(); }
 
     /// Escalate to HardReset (e.g. when a Stale render's write also
     /// fails — the soft path is no longer trustworthy).

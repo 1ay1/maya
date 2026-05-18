@@ -28,74 +28,86 @@ namespace maya {
 std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexcept {
     // Fresh state: no prior shadow exists, so trivially "matches".
     // Witness carries the current empty-state hash.
-    if (state.shadow_hash == static_cast<uint64_t>(-1) ||
-        state.prev_width <= 0 || state.prev_rows <= 0) {
+    if (state.shadow_hash_ == static_cast<uint64_t>(-1) ||
+        state.prev_width_ <= 0 || state.prev_rows_ <= 0) {
         return ShadowWitness{&state, 0ULL};
     }
 
-    const std::size_t W = static_cast<std::size_t>(state.prev_width);
-    const std::size_t n = static_cast<std::size_t>(state.prev_rows) * W;
-    if (n > state.prev_cells.size()) return std::nullopt;
+    const std::size_t W = static_cast<std::size_t>(state.prev_width_);
+    const std::size_t n = static_cast<std::size_t>(state.prev_rows_) * W;
+    if (n > state.prev_cells_.size()) return std::nullopt;
 
     uint64_t h = 14695981039346656037ULL;
-    const uint64_t* p = state.prev_cells.data();
+    const uint64_t* p = state.prev_cells_.data();
     for (std::size_t i = 0; i < n; ++i) {
         h ^= p[i];
         h *= 1099511628211ULL;
     }
-    if (h != state.shadow_hash) return std::nullopt;
+    if (h != state.shadow_hash_) return std::nullopt;
     return ShadowWitness{&state, h};
 }
 
-void InlineFrameState::commit_prefix(int rows) noexcept {
-    // Bounds: clamp to [0, prev_rows].  Negative / zero is a no-op; an
-    // over-commit (rows >= prev_rows) is interpreted as "everything is
-    // scrollback now" and resets the state cleanly — no UB, no
-    // out-of-bounds memmove on the caller.  This is the contract the
-    // application can rely on regardless of how it tracks row counts.
-    if (rows <= 0 || prev_rows <= 0 || prev_width <= 0) return;
-    if (rows >= prev_rows) { reset(); return; }
+FinalizeResult InlineFrameState::finalize() && noexcept {
+    std::string out;
+    if (cursor_hidden_) out.append("\x1b[?25h");
+    if (decawm_off_)    out.append("\x1b[?7h");
+    InlineFrameState s{std::move(*this)};
+    s.cursor_hidden_ = false;
+    s.decawm_off_    = false;
+    return FinalizeResult{std::move(out), std::move(s)};
+}
+
+InlineFrameState InlineFrameState::committed(ScrollbackMarker marker) && noexcept {
+    InlineFrameState s{std::move(*this)};
+    const int rows = marker.rows();
+
+    // Bounds: clamp to [0, prev_rows].  Negative / zero is a no-op;
+    // an over-commit (rows >= prev_rows) is interpreted as
+    // "everything is scrollback now" and returns a reset state.
+    if (rows <= 0 || s.prev_rows_ <= 0 || s.prev_width_ <= 0) return s;
+    if (rows >= s.prev_rows_) return std::move(s).reset_state();
 
     // Both `shift` and `remaining` are products of int * int → size_t.
     // The rows < prev_rows guard above plus the prev_rows * W ≤
     // prev_cells.size() invariant established by compose_inline_frame
-    // mean the arithmetic cannot overflow on valid state — but we still
-    // bound-check the memmove against actual buffer size in case the
-    // application reset prev_cells externally between frames.
-    const std::size_t W = static_cast<std::size_t>(prev_width);
+    // mean the arithmetic cannot overflow on valid state — but we
+    // still bound-check the memmove against actual buffer size in
+    // case the application reset prev_cells externally between
+    // frames.
+    const std::size_t W = static_cast<std::size_t>(s.prev_width_);
     const std::size_t shift = static_cast<std::size_t>(rows) * W;
-    const std::size_t remaining = static_cast<std::size_t>(prev_rows - rows) * W;
+    const std::size_t remaining = static_cast<std::size_t>(s.prev_rows_ - rows) * W;
 
-    uint64_t* data = prev_cells.data();
-    if (data != nullptr && shift + remaining <= prev_cells.size()) {
+    uint64_t* data = s.prev_cells_.data();
+    if (data != nullptr && shift + remaining <= s.prev_cells_.size()) {
         std::memmove(data, data + shift, remaining * sizeof(uint64_t));
     }
-    prev_rows -= rows;
+    s.prev_rows_ -= rows;
 
     // Re-hash the now-shifted prev_cells so the next render's
     // shadow-verify compares against the post-shift state instead
     // of false-positive on the legitimate scrollback advance.
-    if (shadow_hash != static_cast<uint64_t>(-1)) {
+    if (s.shadow_hash_ != static_cast<uint64_t>(-1)) {
         uint64_t h = 14695981039346656037ULL;
         const std::size_t n =
-            static_cast<std::size_t>(prev_rows) * W;
+            static_cast<std::size_t>(s.prev_rows_) * W;
         for (std::size_t i = 0; i < n; ++i) {
-            h ^= prev_cells.data()[i];
+            h ^= s.prev_cells_.data()[i];
             h *= 1099511628211ULL;
         }
-        shadow_hash = h;
+        s.shadow_hash_ = h;
     }
 
-    // Cursor invariant: the next compose_inline_frame call assumes the
-    // terminal cursor is at row (prev_rows - 1) in the post-commit
-    // numbering.  That holds here because the caller (Runtime::
-    // commit_inline_prefix) only mutates the renderer's mental model;
-    // the actual terminal cursor is wherever the last write left it,
-    // and the relative cursor moves used by compose_inline_frame
-    // (cursor_up / \r\n) target rows by their distance from the
-    // current cursor row, not absolute coordinates.  As long as the
-    // application calls commit_prefix BEFORE the next render(), the
-    // delta math is consistent.
+    // Cursor invariant: the next compose_inline_frame call assumes
+    // the terminal cursor is at row (prev_rows - 1) in the
+    // post-commit numbering. That holds here because committing
+    // only mutates the renderer's mental model; the actual terminal
+    // cursor is wherever the last write left it, and the relative
+    // cursor moves used by compose_inline_frame (cursor_up / \r\n)
+    // target rows by their distance from the current cursor row,
+    // not absolute coordinates. As long as the application commits
+    // BEFORE the next render(), the delta math is consistent.
+    return s;
 }
 
 int content_height(const Canvas& canvas) noexcept {
@@ -400,16 +412,27 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 // the corruption surface the chain was built to close. The function
 // is declared as a non-static symbol so it links across the TU
 // boundary, but it has no public header declaration.
-void compose_inline_frame_impl(const Canvas& canvas,
-                               int content_rows,
-                               int term_h,
-                               const StylePool& pool,
-                               InlineFrameState& state,
-                               std::string& out,
-                               bool synchronized_output)
+std::pair<std::string, InlineFrameState>
+compose_inline_frame_impl(const Canvas& canvas,
+                          int content_rows,
+                          int term_h,
+                          const StylePool& pool,
+                          InlineFrameState&& state_in,
+                          bool synchronized_output)
 {
+    // Take ownership of the moved-in state. From here on `state` is
+    // a function-local value; mutating it is unobservable to any
+    // outside code (the caller gave up the value by &&-move). The
+    // result is returned by value at the end — the operation is
+    // mathematically a pure `(canvas, state_in) → (bytes, state_out)`
+    // even though we write into the local for implementation
+    // simplicity.
+    InlineFrameState state{std::move(state_in)};
+    std::string out;
+
     const int W = canvas.width();
-    if (W <= 0 || content_rows <= 0 || term_h <= 0) return;
+    if (W <= 0 || content_rows <= 0 || term_h <= 0)
+        return {std::move(out), std::move(state)};
 
 #ifdef MAYA_DEBUG_SHADOW_VERIFY
     // Compose precondition: `content_rows` must equal
@@ -436,14 +459,14 @@ void compose_inline_frame_impl(const Canvas& canvas,
     // Width change invalidates the cached cell buffer — row layouts shift.
     // Reset clears prev_width / prev_rows but doesn't free prev_cells; the
     // next resize will reuse the allocation if it's already big enough.
-    if (state.prev_width != W) {
-        state.reset();
+    if (state.prev_width_ != W) {
+        state = std::move(state).reset_state();
         // Width-flap memory recovery: if the buffer is dramatically
         // larger than what this frame needs, release the excess so
         // a transient wide-window state can't pin memory forever.
         // shrink_to_fit_if_oversized's 2x threshold prevents
         // allocator thrashing on small steady-state variations.
-        state.prev_cells.shrink_to_fit_if_oversized(
+        state.prev_cells_.shrink_to_fit_if_oversized(
             static_cast<std::size_t>(content_rows)
             * static_cast<std::size_t>(W));
     }
@@ -457,7 +480,7 @@ void compose_inline_frame_impl(const Canvas& canvas,
     out.reserve(out.size() + 256 + static_cast<std::size_t>(content_rows) * 24);
 
     const uint64_t* cells = canvas.cells();
-    const int prev_rows       = state.prev_rows;
+    const int prev_rows       = state.prev_rows_;
     const int prev_on_screen  = std::min(prev_rows, term_h);
     const int updatable_start = prev_rows - prev_on_screen;
     const int common          = std::min(content_rows, prev_rows);
@@ -465,8 +488,8 @@ void compose_inline_frame_impl(const Canvas& canvas,
     const std::size_t need_prev = safe_cells(prev_rows, W);
     const bool have_prev =
         prev_rows > 0 && need_prev != (std::size_t)(-1) &&
-        need_prev <= state.prev_cells.size();
-    const uint64_t* prev = have_prev ? state.prev_cells.data() : nullptr;
+        need_prev <= state.prev_cells_.size();
+    const uint64_t* prev = have_prev ? state.prev_cells_.data() : nullptr;
 
     // Locate the first row that actually differs from the cached copy.
     // Rows in scrollback (y < updatable_start) are immutable — skip
@@ -487,7 +510,7 @@ void compose_inline_frame_impl(const Canvas& canvas,
 
     // Nothing to do: common range matches and no rows added or removed.
     if (first_changed == common && content_rows == prev_rows) {
-        return;
+        return {std::move(out), std::move(state)};
     }
 
     // ── Frame open ─────────────────────────────────────────────────────
@@ -496,9 +519,9 @@ void compose_inline_frame_impl(const Canvas& canvas,
     // ~16 bytes per frame on slow ttys where every escape costs RTT or
     // glyph-cache work. State.finalize() restores both on shutdown.
     if (synchronized_output) out += ansi::sync_start;
-    if (!state.cursor_hidden) {
+    if (!state.cursor_hidden_) {
         out += ansi::hide_cursor;
-        state.cursor_hidden = true;
+        state.cursor_hidden_ = true;
     }
 
     // First-ever render (prev_rows == 0). Two distinct sub-cases,
@@ -554,7 +577,7 @@ void compose_inline_frame_impl(const Canvas& canvas,
         // recovery), where the layout assumptions actually changed and
         // a full repaint from home is the correct response — see
         // app.cpp's resize handler.
-        if (state.prev_width > 0) {
+        if (state.prev_width_ > 0) {
             // Force_redraw case (B): in-place soft redraw.
             //
             // ── SCOPE CONTRACT ──────────────────────────────────────
@@ -646,7 +669,7 @@ void compose_inline_frame_impl(const Canvas& canvas,
             // Decisions below must derive from this, NOT from term_h - 1
             // (which assumes the cursor is at the viewport bottom and is
             // wrong whenever the live frame was shorter than the viewport).
-            const int wire_rows  = std::min(std::max(1, state.ghost_rows_above),
+            const int wire_rows  = std::min(std::max(1, state.ghost_rows_above_),
                                             term_h);
             const int cursor_row = wire_rows - 1;
             const int emit_rows  = std::min(content_rows, term_h);
@@ -699,11 +722,11 @@ void compose_inline_frame_impl(const Canvas& canvas,
                 serialize(canvas, pool, out, content_rows, start_row);
                 out += "\x1b[J";
             }
-            state.ghost_rows_above = 0;
+            state.ghost_rows_above_ = 0;
         } else {
             // Fresh state (A): inline-mode growth from cursor.
             serialize(canvas, pool, out, content_rows);
-            state.ghost_rows_above = 0;
+            state.ghost_rows_above_ = 0;
         }
         if (synchronized_output) out += ansi::sync_end;
         // Cache the new cell buffer for next frame's comparison.  This is
@@ -712,15 +735,17 @@ void compose_inline_frame_impl(const Canvas& canvas,
         // inputs (e.g. content_rows = INT_MAX from a buggy auto_height).
         const std::size_t new_size = safe_cells(content_rows, W);
         if (new_size == (std::size_t)(-1)) {
-            state.reset();   // prev_cells unchanged; caller falls back to Divergent next frame
-            return;
+            // Pathological size — drop the cache; caller falls back to
+            // Divergent on the next render.
+            state = std::move(state).reset_state();
+            return {std::move(out), std::move(state)};
         }
-        if (state.prev_cells.size() < new_size) state.prev_cells.resize(new_size);
-        std::memcpy(state.prev_cells.data(), cells, new_size * sizeof(uint64_t));
-        state.prev_width = W;
-        state.prev_rows  = content_rows;
-        state.wire_cursor_rows = std::min(content_rows, term_h);
-        return;
+        if (state.prev_cells_.size() < new_size) state.prev_cells_.resize(new_size);
+        std::memcpy(state.prev_cells_.data(), cells, new_size * sizeof(uint64_t));
+        state.prev_width_ = W;
+        state.prev_rows_  = content_rows;
+        state.wire_cursor_rows_ = std::min(content_rows, term_h);
+        return {std::move(out), std::move(state)};
     }
 
     // A1 shadow-of-wire: pre-resize prev_cells now (before the per-row
@@ -732,16 +757,16 @@ void compose_inline_frame_impl(const Canvas& canvas,
     if (new_total_pre == (std::size_t)(-1)) {
         // Pathological size — drop the cache, fall back to Divergent
         // next frame.
-        state.reset();
-        return;
+        state = std::move(state).reset_state();
+        return {std::move(out), std::move(state)};
     }
-    if (state.prev_cells.size() < new_total_pre)
-        state.prev_cells.resize(new_total_pre);
+    if (state.prev_cells_.size() < new_total_pre)
+        state.prev_cells_.resize(new_total_pre);
     // Resize may have moved storage; re-take the pointer. `prev` is
     // const because the diff scan reads from it; we use a separate
     // mutable handle for the shadow writes.
-    prev          = state.prev_cells.data();
-    uint64_t* prev_w = state.prev_cells.data();
+    prev          = state.prev_cells_.data();
+    uint64_t* prev_w = state.prev_cells_.data();
 
     // ── Position cursor at row first_changed, col 0 ────────────────────
     // Cursor is currently at the last row of the previously-rendered
@@ -769,9 +794,9 @@ void compose_inline_frame_impl(const Canvas& canvas,
     // DECAWM off for the entire frame body — emitted once, not per row.
     // Persisted across frames via state.decawm_off; only the first frame
     // (or first after a state.reset()) pays the 5-byte escape.
-    if (!state.decawm_off) {
+    if (!state.decawm_off_) {
         out += "\x1b[?7l";
-        state.decawm_off = true;
+        state.decawm_off_ = true;
     }
     uint16_t current_style = UINT16_MAX;
 
@@ -1036,9 +1061,9 @@ void compose_inline_frame_impl(const Canvas& canvas,
     // new rows. Sparse streaming frames (one line in a long transcript
     // changing) drop from "copy every row below first_changed" to
     // "copy a few hundred bytes per changed row".
-    state.prev_width = W;
-    state.prev_rows  = content_rows;
-    state.wire_cursor_rows = std::min(content_rows, term_h);
+    state.prev_width_ = W;
+    state.prev_rows_  = content_rows;
+    state.wire_cursor_rows_ = std::min(content_rows, term_h);
 
     // ── Production shadow-of-wire hash ─────────────────────────────────
     //
@@ -1054,7 +1079,7 @@ void compose_inline_frame_impl(const Canvas& canvas,
     // byte the diff might consult next frame), and commit_prefix
     // handles scrollback shifts by re-hashing after the memmove.
     {
-        const uint64_t* shadow_base = state.prev_cells.data();
+        const uint64_t* shadow_base = state.prev_cells_.data();
         uint64_t h = 14695981039346656037ULL;
         const std::size_t n =
             static_cast<std::size_t>(content_rows) * W;
@@ -1062,7 +1087,7 @@ void compose_inline_frame_impl(const Canvas& canvas,
             h ^= shadow_base[i];
             h *= 1099511628211ULL;
         }
-        state.shadow_hash = h;
+        state.shadow_hash_ = h;
     }
 
     // ── Shadow-of-wire invariant check (debug builds only) ─────────────
@@ -1093,8 +1118,8 @@ void compose_inline_frame_impl(const Canvas& canvas,
     // release.
 #ifdef MAYA_DEBUG_SHADOW_VERIFY
     {
-        const uint64_t* shadow = state.prev_cells.data();
-        const int verify_start = std::max(0, state.prev_rows - prev_on_screen);
+        const uint64_t* shadow = state.prev_cells_.data();
+        const int verify_start = std::max(0, state.prev_rows_ - prev_on_screen);
         for (int y = verify_start; y < content_rows; ++y) {
             for (int x = 0; x < W; ++x) {
                 const uint64_t s = shadow[static_cast<std::size_t>(y) * W + x];
@@ -1114,6 +1139,7 @@ void compose_inline_frame_impl(const Canvas& canvas,
         }
     }
 #endif
+    return {std::move(out), std::move(state)};
 }
 
 } // namespace maya

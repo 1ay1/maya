@@ -126,7 +126,14 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        const int vh = std::max(1, cfg_.viewport_h);
+        // viewport_h is the MAX rows the scrollable region paints.
+        // When the item list is shorter, shrink the viewport to match
+        // so a 9-item list doesn't leave 5 rows of empty space inside
+        // the border. Floor at 1 row so a zero-item list (placeholder
+        // "no matches" only) still has a paintable cell.
+        const int cap = std::max(1, cfg_.viewport_h);
+        const int item_count = static_cast<int>(cfg_.items.size());
+        const int vh = std::min(cap, std::max(1, item_count));
 
         // Auto-scroll: clamp state->y so the selected row sits inside
         // the viewport. Only fires when the selection is out of view,
@@ -134,16 +141,21 @@ public:
         // their position (until they move the cursor again).
         if (cfg_.scroll
             && cfg_.selected >= 0
-            && cfg_.selected < static_cast<int>(cfg_.items.size())) {
+            && cfg_.selected < item_count) {
             auto& s = *cfg_.scroll;
-            const int total = static_cast<int>(cfg_.items.size());
             if (cfg_.selected < s.y)
                 s.y = cfg_.selected;
             else if (cfg_.selected >= s.y + vh)
                 s.y = cfg_.selected - vh + 1;
-            const int max_y = std::max(0, total - vh);
+            const int max_y = std::max(0, item_count - vh);
             if (s.y > max_y) s.y = max_y;
             if (s.y < 0)     s.y = 0;
+        } else if (cfg_.scroll && item_count <= vh) {
+            // List fits entirely inside the viewport — reset to top so
+            // a previously-scrolled state (from a longer match set,
+            // e.g. before the user typed a more specific query) doesn't
+            // leave the list paint-shifted off the top edge.
+            cfg_.scroll->y = 0;
         }
 
         std::vector<Element> rows;

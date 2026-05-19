@@ -252,11 +252,39 @@ IntraBlank classify_blank_line(std::string_view src, std::size_t i) noexcept {
     // wasn't called from the blank-line branch — defensive.
     if (i == 0 || src[i - 1] != '\n') return IntraBlank::No;
 
-    // ── Look back: walk to the start of the line ending at src[i-1] ──
+    // ── Look back: walk to the start of the line ending at src[i-1].
+    //
+    // Bounded scan: a list-marker line is at most a few dozen bytes
+    // ("  123. body" plus modest body). Pathological inputs (a streamed
+    // reply with hundreds of intra-list blanks, each prior "line"
+    // happening to be very long) used to make this an O(n) walk per
+    // blank, called O(n) times per frame from find_block_boundary —
+    // O(n²) on long streamed lists. Cap at kMaxListMarkerLineLen
+    // bytes: if no '\n' is found within that window the prior "line"
+    // is far too long to be a list-marker line, so the IntraBlank::No
+    // verdict is correct without ever inspecting the bytes.
+    constexpr std::size_t kMaxListMarkerLineLen = 256;
     std::size_t prev_end = i - 1;            // exclusive of the '\n' at i-1
     std::size_t prev_start = 0;
-    for (std::size_t k = prev_end; k > 0; --k) {
-        if (src[k - 1] == '\n') { prev_start = k; break; }
+    std::size_t scan_floor = (prev_end > kMaxListMarkerLineLen)
+                                ? (prev_end - kMaxListMarkerLineLen)
+                                : 0;
+    bool found_start = false;
+    for (std::size_t k = prev_end; k > scan_floor; --k) {
+        if (src[k - 1] == '\n') { prev_start = k; found_start = true; break; }
+    }
+    if (!found_start && scan_floor == 0) {
+        // Reached the buffer start without seeing a '\n' — prev_start
+        // really is 0, treat the entire prefix as the previous line.
+        prev_start = 0;
+        found_start = true;
+    }
+    if (!found_start) {
+        // Hit the look-back cap without finding a line start. The
+        // prior "line" is longer than kMaxListMarkerLineLen and so
+        // cannot be a list marker; the blank line therefore is not
+        // an intra-list separator.
+        return IntraBlank::No;
     }
     std::string_view prev_line = src.substr(prev_start, prev_end - prev_start);
     bool prev_is_ol = ol_marker_len(prev_line) > 0;
@@ -465,8 +493,34 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
             bool is_code_fence = i + 3 <= source_.size() &&
                 ((source_[i] == '`' && source_[i+1] == '`' && source_[i+2] == '`') ||
                  (source_[i] == '~' && source_[i+1] == '~' && source_[i+2] == '~'));
-            bool is_math_fence = !is_code_fence && i + 2 <= source_.size() &&
-                source_[i] == '$' && source_[i+1] == '$';
+            // Math fence ($$): treat as a block fence ONLY when the
+            // opener line is exactly "$$" (optionally with trailing
+            // whitespace and/or \r), terminated by '\n'. Plain `$$`
+            // followed by any content is paragraph-level inline math
+            // (KaTeX inline) or just dollar signs in prose; treating
+            // it as a block fence would bury the rest of the message
+            // in an opaque fence until the next $$ surfaces. Parser
+            // doesn't emit a Math block kind either, so an over-eager
+            // detection here guarantees a commit-time snap.
+            bool is_math_fence = false;
+            if (!is_code_fence && i + 2 <= source_.size() &&
+                source_[i] == '$' && source_[i+1] == '$') {
+                std::size_t eol = source_.find('\n', i);
+                if (eol != std::string::npos) {
+                    bool only_ws = true;
+                    for (std::size_t q = i + 2; q < eol; ++q) {
+                        char cc = source_[q];
+                        if (cc != ' ' && cc != '\t' && cc != '\r') {
+                            only_ws = false; break;
+                        }
+                    }
+                    is_math_fence = only_ws;
+                }
+                // If the opener line isn't terminated yet we can't
+                // prove it's $$-only — leave is_math_fence false and
+                // fall through to the normal line-step; a later call
+                // with the '\n' present will re-evaluate.
+            }
             if (is_code_fence || is_math_fence) {
                 // Opening fence commits any prose that preceded it: the
                 // paragraph above can be rendered immediately with its
@@ -661,20 +715,36 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                                 if (!safe) {
                                     // i is at a line start; previous
                                     // byte is the '\n' that ended
-                                    // the prior line. Walk back one
-                                    // more byte: if it's also '\n'
-                                    // (or i == 1, i.e. the prior
-                                    // line was the empty line at
-                                    // source start), the prior line
-                                    // is blank.
+                                    // the prior line. The line
+                                    // ABOVE is blank if walking back
+                                    // past any '\r' that precedes
+                                    // that '\n' lands on another
+                                    // '\n' (CRLF terminator) or on
+                                    // the buffer start.
+                                    //
+                                    // CRLF tolerance matters: pasted
+                                    // markdown and some shells emit
+                                    // "\r\n". Without this, a `---`
+                                    // after a CRLF-terminated blank
+                                    // line was classified "unsafe"
+                                    // and fell through to the blank-
+                                    // line commit — cosmetically
+                                    // correct but the HR sat in the
+                                    // tail as literal `---` until the
+                                    // next paragraph landed.
                                     if (i == 0) {
                                         safe = true;
-                                    } else if (i >= 2 && source_[i - 2] == '\n') {
-                                        safe = true;
-                                    } else if (i == 1) {
-                                        // source_ == "\n---\n": the
-                                        // line above is empty.
-                                        safe = true;
+                                    } else {
+                                        // Walk back past the '\n' at
+                                        // i-1 and any '\r' before it.
+                                        std::size_t back = i;
+                                        if (back > 0 && source_[back - 1] == '\n') --back;
+                                        while (back > 0 && source_[back - 1] == '\r') --back;
+                                        if (back == 0) {
+                                            safe = true;
+                                        } else if (source_[back - 1] == '\n') {
+                                            safe = true;
+                                        }
                                     }
                                 }
                                 if (safe) {
@@ -742,6 +812,24 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     const size_t base = committed_;
     std::vector<std::pair<size_t, size_t>> seg_ranges;  // [start, end) in source_
     seg_ranges.reserve(parsed.blocks.size() + 1);
+    // Local helper: is the line starting at `pos` a $$-only math
+    // fence opener? Same semantics as the boundary scanner's gate —
+    // `$$` followed only by spaces/tabs/\r up to '\n'. The two
+    // walkers MUST agree on this predicate; if commit_range here
+    // ever treats a $$-followed-by-text line as a fence while the
+    // scanner doesn't (or vice versa) the seg-vs-block attribution
+    // drifts.
+    auto is_math_fence_line = [&](size_t pos, size_t end) -> bool {
+        if (pos + 2 > end) return false;
+        if (source_[pos] != '$' || source_[pos+1] != '$') return false;
+        size_t eol = std::string_view{source_}.find('\n', pos);
+        if (eol == std::string_view::npos || eol >= end) return false;
+        for (size_t q = pos + 2; q < eol; ++q) {
+            char cc = source_[q];
+            if (cc != ' ' && cc != '\t' && cc != '\r') return false;
+        }
+        return true;
+    };
     {
         bool seg_in_fence = false;
         size_t seg_start = base;
@@ -753,9 +841,12 @@ void StreamingMarkdown::commit_range(size_t boundary) {
         seg_start = k;
         while (k < boundary) {
             bool at_ls = (k == base || source_[k - 1] == '\n');
-            if (at_ls && k + 3 <= boundary &&
+            bool is_code_open = at_ls && k + 3 <= boundary &&
                 ((source_[k] == '`' && source_[k+1] == '`' && source_[k+2] == '`') ||
-                 (source_[k] == '~' && source_[k+1] == '~' && source_[k+2] == '~'))) {
+                 (source_[k] == '~' && source_[k+1] == '~' && source_[k+2] == '~'));
+            bool is_math_open = !is_code_open && at_ls &&
+                                is_math_fence_line(k, boundary);
+            if (is_code_open || is_math_open) {
                 seg_in_fence = !seg_in_fence;
                 // advance to end of fence line
                 size_t eol = std::string_view{source_}.find('\n', k);
@@ -854,8 +945,12 @@ void StreamingMarkdown::commit_range(size_t boundary) {
         bool is_code = j + 3 <= boundary &&
             ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
              (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'));
-        bool is_math = !is_code && j + 2 <= boundary &&
-            source_[j] == '$' && source_[j+1] == '$';
+        // Math: $$-alone-on-line (gated identically to the boundary
+        // scanner and the seg walker above). Treating `$$foo` as a
+        // fence here would flip in_code_fence_ without the scanner
+        // agreeing — a divergence that buries subsequent paragraphs
+        // in an opaque fence forever.
+        bool is_math = !is_code && is_math_fence_line(j, boundary);
         if (is_code || is_math) in_code_fence_ = !in_code_fence_;
     }
 
@@ -863,22 +958,19 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     build_dirty_ = true;
     ++source_version_;
 
-    // Keep scanner state coherent with the new committed_:
-    //   • scan_last_boundary_ has just been "consumed" — anchor it to
-    //     committed_ so the next find call doesn't re-return the same
-    //     boundary as if it were still pending.
-    //   • finish() can call commit_range(source_.size()) which jumps
-    //     committed_ past scan_cursor_; in that case the scanner needs
-    //     to be repositioned to committed_ and its fence parity
-    //     resynchronised with in_code_fence_ (which the loop above
-    //     just updated to the parity at boundary). For the normal
-    //     append_safe path (boundary == scan_last_boundary_ ≤
-    //     scan_cursor_) this branch is a no-op.
+    // Keep scanner state coherent with the new committed_. The
+    // earlier conditional resync only fired when commit_range jumped
+    // past scan_cursor_ (the finish() path); for the normal
+    // append_safe path scan_in_fence_ was left untouched on the
+    // assumption it already equalled in_code_fence_. That invariant
+    // is fragile: any future eager-commit branch that advances
+    // last_boundary past lines without re-evaluating fence parity
+    // can let the two drift. Unconditional resync removes the
+    // dependency on that invariant — cheap (two stores) and makes
+    // the post-commit state a proven function of in_code_fence_.
     scan_last_boundary_ = committed_;
-    if (scan_cursor_ < committed_) {
-        scan_cursor_   = committed_;
-        scan_in_fence_ = in_code_fence_;
-    }
+    if (scan_cursor_ < committed_) scan_cursor_ = committed_;
+    scan_in_fence_ = in_code_fence_;
 }
 
 // Internal: append codepoint-clean bytes that have already passed through

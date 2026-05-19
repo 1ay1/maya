@@ -32,6 +32,7 @@
 
 #include <utility>
 #include <vector>
+#include <cmath>
 
 #include "../dsl.hpp"
 #include "../element/element.hpp"
@@ -175,37 +176,28 @@ private:
     //   Warn  → yellow      (retry, awaiting permission — "attention")
     //   Error → red         (rate-limited, transport gave up)
     // The foreground is then chosen for legible contrast against each
-    // bg: dark text on the bright info/warn tints (bright_white on cyan
-    // is the failure mode this widget existed to fix), bright_white on
-    // the deep error red. Picking from the named-ANSI set keeps the
-    // user's terminal theme in charge of the actual hue.
+    // bg by `pick_fg_for_bg` (luminance-based), which fixes the
+    // black-on-grey invisibility bug in the Idle phase where
+    // `phase_color` is `bright_black`.
     [[nodiscard]] Element toast_row() const {
         using namespace dsl;
         using Kind = StatusBanner::Kind;
         const Kind kind = cfg_.status_banner.effective_kind();
 
-        Color bg;
-        Color fg;
-        switch (kind) {
-            case Kind::Error:
-                bg = cfg_.status_banner.error_color;   // red
-                fg = Color::bright_white();            // white-on-red: classic alert contrast
-                break;
-            case Kind::Warn:
-                bg = cfg_.status_banner.warn_color;    // yellow
-                fg = Color::black();                   // dark-on-amber: the only readable choice
-                break;
-            case Kind::Info:
-            default:
-                bg = cfg_.phase_color;                 // tracks the phase (streaming=cyan, awaiting=yellow, …)
-                fg = Color::black();                   // bright_white on bright_cyan washes out on most themes
-                break;
-        }
+        // Pick a safer Info bg: if the phase color is too dark or too
+        // light to host black/white text comfortably, fall back to a
+        // neutral mid-tone derived from the phase color. Warn/Error
+        // keep their semantic colors — they're chosen for visibility.
+        Color bg = (kind == Kind::Error) ? cfg_.status_banner.error_color
+                 : (kind == Kind::Warn)  ? cfg_.status_banner.warn_color
+                                         : info_bg(cfg_.phase_color);
+        Color fg = pick_fg_for_bg(bg);
 
         const std::string& msg = cfg_.status_banner.text;
-        const char* glyph = (kind == Kind::Info)
-            ? " \xe2\x96\xb6  "   // ▶
-            : " \xe2\x9a\xa0  ";  // ⚠
+        const char* glyph =
+            (kind == Kind::Error) ? " \xe2\x9c\x97  "   // ✗
+          : (kind == Kind::Warn)  ? " \xe2\x9a\xa0  "   // ⚠
+                                  : " \xe2\x96\xb6  ";  // ▶
 
         return component([bg, fg, msg, glyph](int w, int /*h*/) -> Element {
             using namespace dsl;
@@ -214,14 +206,109 @@ private:
             // width — the bg attribute paints every cell, including
             // the trailing pad, so the toast reads as one continuous
             // colored band rather than a chip floating on the panel.
+            //
+            // Note: no `with_bold()` here. On many terminals bold
+            // remaps fg to the bright variant of its ANSI slot, which
+            // sabotages the luminance contrast we just computed
+            // (e.g. bold black → bright_black on dark amber).
             const std::string prefix = glyph;
             std::string content = prefix + msg;
             const int used = static_cast<int>(content.size());
             if (used < w) content.append(static_cast<std::size_t>(w - used), ' ');
             else if (used > w) content.resize(static_cast<std::size_t>(w));
             return text(std::move(content),
-                        Style{}.with_fg(fg).with_bg(bg).with_bold()).build();
+                        Style{}.with_fg(fg).with_bg(bg)).build();
         });
+    }
+
+    // Approximate sRGB relative luminance of `c`, in [0, 1].
+    // For named ANSI colors we use a tuned table (terminal palettes
+    // vary, but the rank order — black darkest, bright_white
+    // lightest — is stable). For RGB/indexed we compute properly.
+    [[nodiscard]] static float luminance(Color c) noexcept {
+        switch (c.kind()) {
+            case Color::Kind::Named: {
+                // 16-slot ANSI luminance, hand-tuned to typical
+                // xterm/iterm/wezterm/alacritty defaults.
+                static constexpr float kAnsiLum[16] = {
+                    0.00f, // 0  black
+                    0.30f, // 1  red
+                    0.45f, // 2  green
+                    0.55f, // 3  yellow
+                    0.20f, // 4  blue
+                    0.30f, // 5  magenta
+                    0.50f, // 6  cyan
+                    0.75f, // 7  white       (typically light grey)
+                    0.35f, // 8  bright_black (typically dark grey)
+                    0.50f, // 9  bright_red
+                    0.70f, // 10 bright_green
+                    0.85f, // 11 bright_yellow
+                    0.40f, // 12 bright_blue
+                    0.50f, // 13 bright_magenta
+                    0.75f, // 14 bright_cyan
+                    1.00f, // 15 bright_white
+                };
+                return kAnsiLum[c.index() & 0xF];
+            }
+            case Color::Kind::Rgb: {
+                auto srgb = [](uint8_t v) {
+                    float x = static_cast<float>(v) / 255.0f;
+                    return x <= 0.03928f ? x / 12.92f
+                                         : std::pow((x + 0.055f) / 1.055f, 2.4f);
+                };
+                return 0.2126f * srgb(c.r())
+                     + 0.7152f * srgb(c.g())
+                     + 0.0722f * srgb(c.b());
+            }
+            case Color::Kind::Indexed: {
+                // Reasonable approximation for the 6x6x6 cube + greys.
+                uint8_t i = c.index();
+                if (i < 16) {
+                    Color named{static_cast<AnsiColor>(i)};
+                    return luminance(named);
+                }
+                if (i >= 232) {
+                    // 24-step greyscale ramp
+                    float v = (static_cast<float>(i - 232) + 1.0f) / 25.0f;
+                    return v;
+                }
+                int n  = i - 16;
+                int r6 = (n / 36) % 6;
+                int g6 = (n / 6) % 6;
+                int b6 = n % 6;
+                auto ramp = [](int s) -> uint8_t {
+                    static constexpr uint8_t k[6] = {0, 95, 135, 175, 215, 255};
+                    return k[s];
+                };
+                return luminance(Color::rgb(ramp(r6), ramp(g6), ramp(b6)));
+            }
+            case Color::Kind::Default:
+                // Caller's terminal default — assume mid-grey so we
+                // pick a fg that's readable either way (bright_white).
+                return 0.5f;
+        }
+        return 0.5f;
+    }
+
+    // Pick black or bright_white for foreground based on bg luminance.
+    // Threshold ~0.55: leans toward bright_white so muted/dark info
+    // bgs (bright_black in Idle) render as white-on-grey rather than
+    // the previous black-on-grey (invisible).
+    [[nodiscard]] static Color pick_fg_for_bg(Color bg) noexcept {
+        return luminance(bg) >= 0.55f ? Color::black() : Color::bright_white();
+    }
+
+    // If the phase color sits in the no-contrast band (very dark, like
+    // `bright_black` in Idle), swap to a richer mid-tone so the toast
+    // is visibly distinct from the surrounding panel chrome.
+    [[nodiscard]] static Color info_bg(Color phase) noexcept {
+        float L = luminance(phase);
+        if (L < 0.25f) {
+            // Dark phase color (Idle/muted) → use blue for an
+            // unmistakable "info" band rather than dark-grey-on-panel.
+            return Color::blue();
+        }
+        return phase;
     }
 };
 

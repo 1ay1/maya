@@ -112,10 +112,11 @@ public:
         // are reachable via the scrollbar. Capped to ≥ 1 by build().
         int                          viewport_h   = 14;
 
-        // Scrollbar style. Defaults to the line preset (thin track,
-        // heavy thumb) which matches the other dim ornamentation in
-        // the picker chrome.
-        ScrollbarStyle               scrollbar_style = ScrollbarStyle::line();
+        // Scrollbar style. Defaults to the neon preset (line track,
+        // bright cyan thumb) so the scroll affordance pops on dark
+        // terminal themes. Override in Config if a particular picker
+        // wants to match a different accent color.
+        ScrollbarStyle               scrollbar_style = ScrollbarStyle::neon();
     };
 
     explicit Picker(Config c) : cfg_(std::move(c)) {}

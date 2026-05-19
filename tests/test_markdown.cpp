@@ -939,6 +939,791 @@ static void st_clear_restream() {
     }
 }
 
+// ── Wedge-scanner regression tests ─────────────────────────────────────────
+//
+// Pins the failure mode where find_block_boundary's scanner stops advancing
+// committed_ past some boundary mid-stream, leaving every later block stuck
+// in the tail rendered as raw inline text (the "## headings as text after a
+// code fence" symptom observed in agentty).
+//
+// The invariant under test: during a live stream of valid markdown, the
+// streaming widget must commit non-trailing blocks promptly. block_count()
+// after byte-by-byte streaming a corpus with N blocks (without calling
+// finish()) must be >= N-1 — at most the live trailing block can be
+// uncommitted. Anything lower means the scanner wedged.
+//
+// These tests deliberately do NOT call finish() before the assertion.
+// finish() commits everything by definition and would mask a wedged scanner.
+
+// Helper: stream bytes one at a time, render every `render_every` appends,
+// and return block_count() at the end (without calling finish()).
+static std::size_t drip_and_count(std::string_view corpus,
+                                   std::size_t render_every = 64)
+{
+    StreamingMarkdown md;
+    std::size_t since_render = 0;
+    for (char c : corpus) {
+        md.append(std::string_view{&c, 1});
+        if (++since_render >= render_every) {
+            render_stream(md);
+            since_render = 0;
+        }
+    }
+    render_stream(md);            // one final render w/o finish()
+    return md.block_count();
+}
+
+// Helper: same corpus, one-shot oneshot via set_content + finish.
+static std::size_t oneshot_count(std::string_view corpus) {
+    StreamingMarkdown md;
+    md.set_content(corpus);
+    md.finish();
+    render_stream(md);
+    return md.block_count();
+}
+
+// ── code fence followed by paragraphs ──────────────────────────────────────
+// Direct reproduction of the screenshot-2 corpus shape: closing fence then
+// `</details>` then `---` then headings + paragraphs. If the scanner sees the
+// closing ``` and doesn't advance past it, every subsequent block stays in
+// the tail and renders as raw text. With proper commits, we expect ≥6 blocks
+// (code, html-block, hr, heading, heading, paragraph) — assert ≥5 to give
+// the live trailing block one block of slack.
+static void st_post_fence_commits_during_stream() {
+    std::string_view corpus =
+        "```yaml\n"
+        "database:\n"
+        "  host: localhost\n"
+        "  port: 5432\n"
+        "```\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "---\n"
+        "\n"
+        "## 12. Special Characters and Escaping\n"
+        "\n"
+        "### Escaped Characters\n"
+        "\n"
+        "\\*This is not italic\\*\n"
+        "\n"
+        "trailing live paragraph\n";
+
+    const std::size_t streamed = drip_and_count(corpus);
+    const std::size_t oneshot  = oneshot_count(corpus);
+    if (oneshot < 4) {
+        throw std::runtime_error(
+            "test corpus produces only " + std::to_string(oneshot) +
+            " oneshot blocks — fix the corpus to exercise the failure mode");
+    }
+    // Allow the live trailing block to stay uncommitted.
+    if (streamed + 1 < oneshot) {
+        throw std::runtime_error(
+            "scanner wedged: streamed block_count=" + std::to_string(streamed) +
+            ", oneshot block_count=" + std::to_string(oneshot) +
+            " — gap of " + std::to_string(oneshot - streamed) +
+            " > 1 means a non-trailing block failed to commit during the "
+            "stream");
+    }
+}
+
+// ── GFM alert callout followed by paragraph ────────────────────────────────
+// Screenshot-1 corpus shape: `> [!NOTE]` blockquote then a blank line then a
+// follow-up paragraph. The alert must commit as an Alert block AND the
+// follow-up must commit as a separate Paragraph before the live edge.
+static void st_alert_then_followup_commits() {
+    std::string_view corpus =
+        "> [!NOTE]\n"
+        "> Password must be at least 12 characters long and contain:\n"
+        "> - At least one uppercase letter\n"
+        "> - At least one lowercase letter\n"
+        "> - At least one number\n"
+        "> - At least one special character\n"
+        "\n"
+        "## 15. Mixed Content Stress Test\n"
+        "\n"
+        "This section combines multiple features.\n"
+        "\n"
+        "live trailing paragraph\n";
+
+    const std::size_t streamed = drip_and_count(corpus);
+    const std::size_t oneshot  = oneshot_count(corpus);
+    if (oneshot < 3) {
+        throw std::runtime_error(
+            "alert corpus produces only " + std::to_string(oneshot) +
+            " oneshot blocks — corpus too short to exercise the bug");
+    }
+    if (streamed + 1 < oneshot) {
+        throw std::runtime_error(
+            "scanner wedged on alert path: streamed=" +
+            std::to_string(streamed) +
+            ", oneshot=" + std::to_string(oneshot));
+    }
+}
+
+// ── <details>/</details> followed by content ───────────────────────────────
+// Documented HTML-block path. If the scanner waits for a terminator that
+// never comes (or one whose newline arrives in a separate chunk), every
+// later block stays in the tail.
+static void st_details_then_content_commits() {
+    std::string_view corpus =
+        "<details>\n"
+        "<summary>Click me</summary>\n"
+        "\n"
+        "hidden body line\n"
+        "</details>\n"
+        "\n"
+        "# Real heading after\n"
+        "\n"
+        "First real paragraph.\n"
+        "\n"
+        "Second paragraph.\n"
+        "\n"
+        "live trailing line\n";
+
+    const std::size_t streamed = drip_and_count(corpus);
+    const std::size_t oneshot  = oneshot_count(corpus);
+    if (oneshot < 4) {
+        throw std::runtime_error(
+            "details corpus too short: " + std::to_string(oneshot) + " blocks");
+    }
+    if (streamed + 1 < oneshot) {
+        throw std::runtime_error(
+            "scanner wedged on details path: streamed=" +
+            std::to_string(streamed) +
+            ", oneshot=" + std::to_string(oneshot));
+    }
+}
+
+// ── Drip-feed a full screenshot-style corpus ───────────────────────────────
+// Combined stress: every flavor of post-fence content that's been observed
+// to wedge the scanner. Asserts the end-of-stream block count is within 1
+// of oneshot. Not just a smoke test — the explicit (streamed + 1 < oneshot)
+// failure prints the gap so future regressions report which block kind got
+// stuck.
+static void st_mixed_corpus_byte_by_byte() {
+    std::string corpus;
+    corpus += "# Top heading\n\n";
+    corpus += "Intro paragraph with **bold** and `code`.\n\n";
+    corpus += "```json\n{\"key\": \"value\"}\n```\n\n";
+    corpus += "> [!WARNING]\n> body line\n> - bullet\n\n";
+    corpus += "<details>\n<summary>S</summary>\nbody\n</details>\n\n";
+    corpus += "---\n\n";
+    corpus += "## Section two\n\n";
+    corpus += "| A | B |\n|---|---|\n| 1 | 2 |\n\n";
+    corpus += "1. ordered one\n2. ordered two\n\n";
+    corpus += "Final paragraph before live edge.\n\n";
+    corpus += "live paragraph";
+
+    const std::size_t streamed = drip_and_count(corpus, /*render_every=*/16);
+    const std::size_t oneshot  = oneshot_count(corpus);
+    if (oneshot < 8) {
+        throw std::runtime_error(
+            "mixed corpus too short: " + std::to_string(oneshot) + " blocks");
+    }
+    if (streamed + 1 < oneshot) {
+        throw std::runtime_error(
+            "scanner wedged on mixed corpus: streamed=" +
+            std::to_string(streamed) +
+            ", oneshot=" + std::to_string(oneshot) +
+            " (gap=" + std::to_string(oneshot - streamed) + ")");
+    }
+}
+
+// ── Source-bytes round-trip ────────────────────────────────────────────────
+// Defense-in-depth: regardless of block_count, the bytes the widget holds
+// after byte-by-byte streaming must equal the input. Catches the class of
+// bugs where set_content/append silently drop bytes on certain chunk
+// boundaries.
+static void st_streamed_source_matches_input() {
+    std::string_view corpus =
+        "```\nfence body\n```\n\n"
+        "> [!NOTE]\n> body\n\n"
+        "<details>\n<summary>S</summary>\nx\n</details>\n\n"
+        "paragraph\n";
+    StreamingMarkdown md;
+    for (char c : corpus) md.append(std::string_view{&c, 1});
+    if (md.source() != corpus) {
+        throw std::runtime_error(
+            "source() mismatch: input.size=" + std::to_string(corpus.size()) +
+            " source().size=" + std::to_string(md.source().size()));
+    }
+}
+
+// ── Comprehensive markdown corpus + realistic SSE chunking ────────────────
+//
+// One ~4 KB markdown document that exercises every BlockKind plus every
+// inline feature the parser advertises. Streamed through multiple chunk
+// patterns that match how real Anthropic SSE deltas arrive on the wire:
+//
+//   • token-sized small deltas (1-10 bytes; most common)
+//   • word-sized medium deltas (5-30 bytes)
+//   • occasional large bursts (50-200 bytes)
+//   • lone-newline deltas
+//   • splits exactly at markdown syntax markers (the boundaries most
+//     likely to confuse a scanner that expects to see a full marker)
+//
+// Invariant under test (per chunk pattern): after streaming the whole
+// corpus + finish(), the widget's source() must equal the corpus and
+// block_count() must equal what set_content()+finish() produces on the
+// same corpus in one shot. Any drift signals a scanner that processed
+// the bytes differently across chunk boundaries.
+
+static std::string_view kFullMarkdownCorpus() {
+    static const std::string kCorpus = []{
+        std::string s;
+        s.reserve(5000);
+
+        // ── headings (ATX 1-6 + setext both flavors)
+        s += "# Top-level H1 heading\n\n";
+        s += "Setext H1 alt\n=============\n\n";
+        s += "## H2 heading\n\n";
+        s += "Setext H2 alt\n-------------\n\n";
+        s += "### H3 heading\n\n";
+        s += "#### H4 heading\n\n";
+        s += "##### H5 heading\n\n";
+        s += "###### H6 heading\n\n";
+
+        // ── paragraph w/ every inline feature
+        s += "A paragraph with **bold**, __also bold__, *italic*, "
+             "_also italic_, ***bold italic***, ~~strikethrough~~, "
+             "and `inline code` plus ``code with ` backtick`` inside.\n\n";
+        s += "Backslash escapes: \\*not italic\\*, \\[not a link\\], "
+             "\\`not code\\`, \\\\ literal slash.\n\n";
+        s += "HTML entities: &copy; 2026 &mdash; &lt;tag&gt; &amp; "
+             "&nbsp; &#x2713; &#10003;.\n\n";
+        s += "Hard break with two spaces  \nnext line of same paragraph.\n\n";
+        s += "Hard break with backslash\\\nnext line.\n\n";
+
+        // ── HTML inline tags
+        s += "Press <kbd>Ctrl</kbd>+<kbd>C</kbd> to copy. "
+             "<strong>strong</strong> and <em>em</em>. "
+             "<span style=\"color:red\">span</span>. "
+             "H<sub>2</sub>O and E=mc<sup>2</sup>. "
+             "==highlight== or <mark>tagged highlight</mark>. "
+             "x~sub~ and x^sup^. <abbr title=\"World Wide Web\">WWW</abbr>. "
+             "Line one<br>line two<br/>line three.\n\n";
+
+        // ── links: inline, ref, collapsed, shortcut, autolink, anchor
+        s += "Inline [link](https://example.com/a \"title\"). "
+             "Ref [link][ref1]. Collapsed [link][]. Shortcut [link]. "
+             "Autolink <https://example.com/auto>. "
+             "Email <user@example.com>. "
+             "Bare https://example.com/bare?q=1. "
+             "Anchor [section](#h2-heading).\n\n";
+        s += "[ref1]: https://example.com/ref \"ref title\"\n";
+        s += "[link]: https://example.com/collapsed\n\n";
+
+        // ── images
+        s += "Inline image: ![alt](https://e.com/x.png).\n";
+        s += "Image with title: ![alt](https://e.com/x.png \"img title\").\n";
+        s += "Image ref: ![alt][img1].\n";
+        s += "Clickable image: [![alt](https://e.com/x.png)](https://e.com).\n\n";
+        s += "[img1]: https://e.com/ref.png\n\n";
+
+        // ── code blocks (every flavor + every common language)
+        s += "```rust\n";
+        s += "fn main() {\n";
+        s += "    let x: i32 = 42;\n";
+        s += "    println!(\"{}\", x);\n";
+        s += "}\n";
+        s += "```\n\n";
+        s += "```python\n";
+        s += "def fib(n: int) -> int:\n";
+        s += "    return n if n < 2 else fib(n-1) + fib(n-2)\n";
+        s += "```\n\n";
+        s += "```cpp\n";
+        s += "template<class T> auto add(T a, T b) -> T { return a + b; }\n";
+        s += "```\n\n";
+        s += "```json\n";
+        s += "{\"username\":\"johndoe\",\"email\":\"john@example.com\"}\n";
+        s += "```\n\n";
+        s += "```yaml\n";
+        s += "database:\n";
+        s += "  host: localhost\n";
+        s += "  port: 5432\n";
+        s += "```\n\n";
+        s += "```\n";
+        s += "plain code block, no language\n";
+        s += "```\n\n";
+        s += "~~~bash\n";
+        s += "echo \"tilde-fenced code\"\n";
+        s += "~~~\n\n";
+        s += "    indented code block\n";
+        s += "    second line of indented code\n\n";
+
+        // ── math
+        s += "Inline math: $a^2 + b^2 = c^2$ Pythagorean.\n\n";
+        s += "Display math:\n\n";
+        s += "$$\n";
+        s += "\\int_0^1 x^2 \\, dx = \\frac{1}{3}\n";
+        s += "$$\n\n";
+
+        // ── diagram fences
+        s += "```mermaid\n";
+        s += "graph TD; A-->B; B-->C;\n";
+        s += "```\n\n";
+
+        // ── blockquotes (single, multi, nested)
+        s += "> Single-line quote.\n\n";
+        s += "> Multi-line quote.\n";
+        s += "> Second quoted line.\n";
+        s += "> Third quoted line.\n\n";
+        s += "> outer quote\n";
+        s += ">> nested quote\n";
+        s += ">>> deeply nested\n\n";
+        s += "> quote with embedded **bold** and `code`.\n\n";
+
+        // ── GFM alerts (all 5)
+        s += "> [!NOTE]\n";
+        s += "> Note alert body with **emphasis**.\n";
+        s += "> Multi-line note body.\n\n";
+        s += "> [!TIP]\n";
+        s += "> Tip alert body.\n\n";
+        s += "> [!IMPORTANT]\n";
+        s += "> Important alert body.\n\n";
+        s += "> [!WARNING]\n";
+        s += "> Warning alert body.\n";
+        s += "> - bullet inside alert\n";
+        s += "> - second bullet\n\n";
+        s += "> [!CAUTION]\n";
+        s += "> Caution alert body.\n\n";
+
+        // ── lists (unordered all markers, ordered both styles, nested,
+        // task lists, list-with-paragraph continuation)
+        s += "- Dash item one\n";
+        s += "- Dash item two\n";
+        s += "- Dash item three\n\n";
+        s += "* Star item one\n";
+        s += "* Star item two\n\n";
+        s += "+ Plus item one\n";
+        s += "+ Plus item two\n\n";
+        s += "1. Ordered dot one\n";
+        s += "2. Ordered dot two\n";
+        s += "3. Ordered dot three\n\n";
+        s += "1) Ordered paren one\n";
+        s += "2) Ordered paren two\n\n";
+        s += "- [x] completed task\n";
+        s += "- [ ] open task\n";
+        s += "- [X] also completed\n\n";
+        s += "- outer one\n";
+        s += "  - inner a\n";
+        s += "    - deeper alpha\n";
+        s += "    - deeper beta\n";
+        s += "  - inner b\n";
+        s += "- outer two\n\n";
+        s += "1. ordered outer\n";
+        s += "   - nested unordered\n";
+        s += "   - second nested\n";
+        s += "2. ordered next\n\n";
+        s += "- Item with paragraph\n\n";
+        s += "  Continuation paragraph for first item.\n\n";
+        s += "  ```rust\n";
+        s += "  // code inside list item\n";
+        s += "  ```\n\n";
+        s += "- Second list item after paragraph.\n\n";
+
+        // ── tables
+        s += "| Feature | Status | Notes |\n";
+        s += "|---------|:------:|------:|\n";
+        s += "| Tables  | ✓      | works |\n";
+        s += "| Align   | yes    | LCR   |\n";
+        s += "|         |        | empty |\n\n";
+
+        // ── horizontal rules
+        s += "---\n\n";
+        s += "***\n\n";
+        s += "___\n\n";
+
+        // ── footnotes
+        s += "A claim with a footnote[^note1] and another[^note2].\n\n";
+        s += "[^note1]: First footnote definition.\n";
+        s += "[^note2]: Second footnote with **emphasis**.\n\n";
+
+        // ── HTML blocks
+        s += "<div class=\"box\">\n";
+        s += "Block-level div content.\n";
+        s += "</div>\n\n";
+        s += "<section>\n";
+        s += "<p>Section paragraph.</p>\n";
+        s += "</section>\n\n";
+
+        // ── <details>/<summary>
+        s += "<details>\n";
+        s += "<summary>Click to expand</summary>\n";
+        s += "\n";
+        s += "Hidden body with **bold** and `code`.\n";
+        s += "\n";
+        s += "- nested list\n";
+        s += "- second item\n";
+        s += "</details>\n\n";
+
+        // ── definition list
+        s += "Term one\n";
+        s += ": Definition of term one.\n";
+        s += "\n";
+        s += "Term two\n";
+        s += ": First definition of term two.\n";
+        s += ": Second definition of term two.\n\n";
+
+        // ── mentions + shortcodes
+        s += "Mention @octocat for review. Issue #123 referenced. "
+             "Cross-repo @1ay1/agentty#1.\n\n";
+        s += "Emoji shortcodes :smile: :rocket: :+1: :tada:.\n\n";
+
+        // ── unicode coverage
+        s += "Unicode BMP: café naïve façade.\n";
+        s += "CJK: 你好世界 こんにちは 안녕하세요.\n";
+        s += "Emoji: 🚀 🎉 ✨ 👍.\n";
+        s += "Combining marks: e\xCC\x81 (é).\n";
+        s += "Arrows: → ← ↑ ↓ ⇒ ⇐ ⇑ ⇓.\n";
+        s += "Math symbols: ∑ ∫ √ ∞ ≠ ≤ ≥.\n\n";
+
+        // ── final live-edge paragraph (intentionally no trailing newline
+        // so the corpus ends mid-block; mimics a stream cut while the
+        // model is still generating)
+        s += "Trailing live paragraph without terminator";
+
+        return s;
+    }();
+    return kCorpus;
+}
+
+// ── Deterministic SSE chunking simulator ───────────────────────────────────
+//
+// Splits a corpus into a sequence of variable-size slices mimicking the
+// per-delta sizes we observe from Anthropic's SSE stream. A simple xorshift
+// PRNG keeps it reproducible across runs. Distribution (approximate, from
+// agentty's own DEBUG_API capture on real chat traffic):
+//   50%  1-4 bytes      (single tokens, lone whitespace, syntax markers)
+//   30%  5-15 bytes     (typical word-sized deltas)
+//   15%  16-60 bytes    (multi-word phrases)
+//    5%  60-200 bytes   (burst flushes after server-side batching)
+//
+// Also occasionally forces a split at a markdown syntax char (`*`, `_`,
+// `` ` ``, `#`, `\n`) to exercise the boundaries most likely to confuse
+// scanners that expect to see a full marker at once.
+struct SseChunker {
+    std::uint64_t state;
+    explicit SseChunker(std::uint64_t seed) : state(seed ? seed : 1) {}
+    std::uint64_t next() noexcept {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    }
+    std::size_t pick_size(std::size_t remaining) noexcept {
+        if (remaining == 0) return 0;
+        const std::uint64_t r = next() % 100;
+        std::size_t bucket;
+        if      (r < 50) bucket = 1 + (next() % 4);     // 1-4
+        else if (r < 80) bucket = 5 + (next() % 11);    // 5-15
+        else if (r < 95) bucket = 16 + (next() % 45);   // 16-60
+        else             bucket = 60 + (next() % 141);  // 60-200
+        return std::min(bucket, remaining);
+    }
+    // 1 in N: try to align the next break to a markdown syntax char in
+    // the next ~32 bytes. Forces split-at-marker boundaries the random
+    // path would miss.
+    bool should_align_to_syntax() noexcept { return (next() % 9) == 0; }
+};
+
+static std::vector<std::string_view>
+chunk_sse_style(std::string_view corpus, std::uint64_t seed)
+{
+    SseChunker rng{seed};
+    std::vector<std::string_view> out;
+    out.reserve(corpus.size() / 6 + 1);
+    std::size_t pos = 0;
+    while (pos < corpus.size()) {
+        std::size_t take = rng.pick_size(corpus.size() - pos);
+        if (rng.should_align_to_syntax()) {
+            // Look ahead up to 16 bytes for a syntax marker; if found
+            // before our random `take`, cut there instead so the marker
+            // straddles the next chunk boundary.
+            const std::size_t look =
+                std::min<std::size_t>(16, corpus.size() - pos);
+            for (std::size_t k = 1; k < look; ++k) {
+                char c = corpus[pos + k];
+                if (c == '*' || c == '_' || c == '`' || c == '#'
+                    || c == '\n' || c == '|' || c == '>') {
+                    take = k;
+                    break;
+                }
+            }
+        }
+        out.push_back(corpus.substr(pos, take));
+        pos += take;
+    }
+    return out;
+}
+
+// Stream the corpus via a given chunking, finish(), and verify final state
+// matches the oneshot baseline. The "name" string ends up in any failure
+// message so the test output identifies which chunking pattern broke.
+static void verify_chunked_matches_oneshot(std::string_view corpus,
+                                            const std::vector<std::string_view>& chunks,
+                                            std::string_view pattern_name)
+{
+    // Oneshot baseline (computed once per call — cheap).
+    StreamingMarkdown baseline;
+    baseline.set_content(corpus);
+    baseline.finish();
+    render_stream(baseline);
+    const std::size_t baseline_blocks = baseline.block_count();
+
+    // Streamed path through the supplied chunking. Render every ~16 chunks
+    // (≈ 30 fps cadence on realistic deltas) so the build cache exercises
+    // mid-stream paths, not just the final state.
+    StreamingMarkdown md;
+    int since_render = 0;
+    for (auto chunk : chunks) {
+        md.append(chunk);
+        if (++since_render >= 16) {
+            render_stream(md);
+            since_render = 0;
+        }
+    }
+    render_stream(md);
+
+    // Bytes must round-trip exactly.
+    if (md.source() != corpus) {
+        throw std::runtime_error(
+            std::string{pattern_name} + ": source() ≠ corpus after stream "
+            "(input.size=" + std::to_string(corpus.size()) +
+            " source.size=" + std::to_string(md.source().size()) + ")");
+    }
+
+    // Once committed, block_count must match oneshot exactly. Any drift
+    // means the scanner processed the same bytes differently depending
+    // on chunk boundaries — exactly the bug class we're hunting.
+    md.finish();
+    render_stream(md);
+    if (md.block_count() != baseline_blocks) {
+        throw std::runtime_error(
+            std::string{pattern_name} + ": block_count drift — streamed=" +
+            std::to_string(md.block_count()) +
+            ", oneshot=" + std::to_string(baseline_blocks));
+    }
+}
+
+// ── Full-corpus scenarios ──────────────────────────────────────────────────
+// Run the comprehensive corpus through six independently-seeded SSE
+// chunkings + a degenerate byte-by-byte run + a "split at every markdown
+// syntax char" run. Eight independent witnesses; any one failing localises
+// the bug class.
+
+static void st_full_corpus_oneshot() {
+    auto corpus = kFullMarkdownCorpus();
+    StreamingMarkdown md;
+    md.set_content(corpus);
+    md.finish();
+    render_stream(md);
+    if (md.source() != corpus)
+        throw std::runtime_error("oneshot source mismatch");
+    if (md.block_count() < 30)
+        throw std::runtime_error(
+            "comprehensive corpus only produced " +
+            std::to_string(md.block_count()) + " blocks — corpus too thin");
+}
+
+static void st_full_corpus_byte_by_byte() {
+    auto corpus = kFullMarkdownCorpus();
+    std::vector<std::string_view> chunks;
+    chunks.reserve(corpus.size());
+    for (std::size_t i = 0; i < corpus.size(); ++i)
+        chunks.push_back(corpus.substr(i, 1));
+    verify_chunked_matches_oneshot(corpus, chunks, "byte-by-byte");
+}
+
+static void st_full_corpus_sse_seed1() {
+    auto corpus = kFullMarkdownCorpus();
+    verify_chunked_matches_oneshot(
+        corpus, chunk_sse_style(corpus, 0xC0FFEEull), "sse-seed1");
+}
+static void st_full_corpus_sse_seed2() {
+    auto corpus = kFullMarkdownCorpus();
+    verify_chunked_matches_oneshot(
+        corpus, chunk_sse_style(corpus, 0xDECADEull), "sse-seed2");
+}
+static void st_full_corpus_sse_seed3() {
+    auto corpus = kFullMarkdownCorpus();
+    verify_chunked_matches_oneshot(
+        corpus, chunk_sse_style(corpus, 0xFEEDFACEull), "sse-seed3");
+}
+static void st_full_corpus_sse_seed4() {
+    auto corpus = kFullMarkdownCorpus();
+    verify_chunked_matches_oneshot(
+        corpus, chunk_sse_style(corpus, 0xA5A5A5A5ull), "sse-seed4");
+}
+static void st_full_corpus_sse_seed5() {
+    auto corpus = kFullMarkdownCorpus();
+    verify_chunked_matches_oneshot(
+        corpus, chunk_sse_style(corpus, 0x13371337ull), "sse-seed5");
+}
+
+// Split at every markdown syntax marker — pathological pattern that puts
+// `*`, `_`, `` ` ``, `#`, `\n`, `|`, `>` on its own chunk boundary every
+// time one appears. Catches scanners that read one byte ahead to decide
+// whether a `*` is emphasis-start or list-marker.
+static void st_full_corpus_split_at_syntax() {
+    auto corpus = kFullMarkdownCorpus();
+    std::vector<std::string_view> chunks;
+    chunks.reserve(corpus.size() / 4 + 1);
+    std::size_t pos = 0;
+    for (std::size_t i = 0; i < corpus.size(); ++i) {
+        char c = corpus[i];
+        if (c == '*' || c == '_' || c == '`' || c == '#'
+            || c == '\n' || c == '|' || c == '>') {
+            if (i > pos) chunks.push_back(corpus.substr(pos, i - pos));
+            chunks.push_back(corpus.substr(i, 1));
+            pos = i + 1;
+        }
+    }
+    if (pos < corpus.size()) chunks.push_back(corpus.substr(pos));
+    verify_chunked_matches_oneshot(corpus, chunks, "split-at-syntax");
+}
+
+// Pathological alternating chunk sizes (1, 2, 3, 1, 2, 3, ...) — exercises
+// scanner reentry at non-aligned byte counts. The "small fixed cycle"
+// pattern catches off-by-one bugs that random chunking might miss.
+static void st_full_corpus_fixed_cycle() {
+    auto corpus = kFullMarkdownCorpus();
+    std::vector<std::string_view> chunks;
+    chunks.reserve(corpus.size() / 2);
+    const std::size_t kCycle[] = {1, 2, 3, 5, 7};
+    std::size_t pos = 0, idx = 0;
+    while (pos < corpus.size()) {
+        std::size_t take = std::min(kCycle[idx % 5], corpus.size() - pos);
+        chunks.push_back(corpus.substr(pos, take));
+        pos += take;
+        ++idx;
+    }
+    verify_chunked_matches_oneshot(corpus, chunks, "fixed-cycle");
+}
+
+// Burst pattern: 30 tiny appends, then one big append, repeat. Mimics the
+// agentty pacer's drip behaviour (clamp(size/8, 32, 256) bytes per Tick)
+// fed by a server that buffers mid-paragraph and flushes on punctuation.
+static void st_full_corpus_burst_pattern() {
+    auto corpus = kFullMarkdownCorpus();
+    std::vector<std::string_view> chunks;
+    chunks.reserve(corpus.size() / 8);
+    std::size_t pos = 0;
+    int burst_idx = 0;
+    while (pos < corpus.size()) {
+        std::size_t take;
+        if (burst_idx < 30) take = std::min<std::size_t>(2, corpus.size() - pos);
+        else                take = std::min<std::size_t>(180, corpus.size() - pos);
+        chunks.push_back(corpus.substr(pos, take));
+        pos += take;
+        burst_idx = (burst_idx + 1) % 31;
+    }
+    verify_chunked_matches_oneshot(corpus, chunks, "burst");
+}
+
+// ── Chunk-boundary stress ──────────────────────────────────────────────────
+// One-byte-at-a-time streaming runs the boundary scanner past every
+// possible byte offset, which makes "scanner forgets state across a chunk"
+// bugs nearly impossible to hit. Real SSE deltas can drop 2..N bytes in a
+// single chunk and split a `\n` from its preceding line. Run the same
+// corpus under several chunk-size moduli to surface those splits.
+static void st_post_fence_commits_chunked() {
+    std::string_view corpus =
+        "```yaml\n"
+        "database:\n"
+        "  host: localhost\n"
+        "```\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "---\n"
+        "\n"
+        "## 12. Special Characters\n"
+        "\n"
+        "\\*not italic\\*\n"
+        "\n"
+        "trailing live paragraph\n";
+    const std::size_t oneshot = oneshot_count(corpus);
+
+    for (std::size_t chunk : {2u, 3u, 4u, 7u, 13u, 32u}) {
+        StreamingMarkdown md;
+        for (std::size_t off = 0; off < corpus.size(); off += chunk) {
+            std::size_t take = std::min(chunk, corpus.size() - off);
+            md.append(corpus.substr(off, take));
+            render_stream(md);
+        }
+        if (md.block_count() + 1 < oneshot) {
+            throw std::runtime_error(
+                "scanner wedged at chunk=" + std::to_string(chunk) +
+                ": streamed=" + std::to_string(md.block_count()) +
+                ", oneshot=" + std::to_string(oneshot));
+        }
+    }
+}
+
+// ── Height-shape divergence: tail render vs committed render ───────────────
+// The structural property Option A would enforce: rendering bytes through
+// the live "tail" path (uncommitted) and rendering them through the
+// committed-block path must produce the same height. Today they differ —
+// that height delta is the source of scrollback corruption.
+//
+// Test: stream a body up to JUST BEFORE the closing fence (so it sits in
+// the tail), measure content height. Then append the closing fence + a
+// blank line (which commits), measure again. Then re-render the same
+// committed state and measure once more.
+//
+// The committed-state heights (frames 2 and 3) must match.
+// The tail-render height (frame 1) currently differs — that's the bug.
+static void st_tail_vs_committed_height_consistency() {
+    // Step 1: stream the unclosed-fence prefix.
+    StreamingMarkdown md;
+    md.set_content(
+        "Intro paragraph.\n"
+        "\n"
+        "```cpp\n"
+        "int x = 1;\n"
+        "int y = 2;\n"
+        "int z = x + y;\n"
+    );
+    Element e1 = md.build();
+    StylePool pool1;
+    Canvas c1(80, /*h=*/200, &pool1);
+    render_tree(e1, c1, pool1, theme::dark, /*auto_height=*/true);
+    const int h_tail = content_height(c1);
+
+    // Step 2: append the closing fence + blank line. That commits.
+    md.append("```\n\n");
+    Element e2 = md.build();
+    StylePool pool2;
+    Canvas c2(80, /*h=*/200, &pool2);
+    render_tree(e2, c2, pool2, theme::dark, /*auto_height=*/true);
+    const int h_committed = content_height(c2);
+
+    // Step 3: re-render the same state. Must be byte-identical to step 2.
+    Element e3 = md.build();
+    StylePool pool3;
+    Canvas c3(80, /*h=*/200, &pool3);
+    render_tree(e3, c3, pool3, theme::dark, /*auto_height=*/true);
+    const int h_recommitted = content_height(c3);
+
+    if (h_committed != h_recommitted) {
+        throw std::runtime_error(
+            "committed-state height not stable across frames: " +
+            std::to_string(h_committed) + " vs " +
+            std::to_string(h_recommitted));
+    }
+    // Diagnostic-only: not a hard assertion. If h_tail != h_committed,
+    // that's the dual-path height-shift bug. We record it so the test
+    // output documents the gap; today it's expected to differ.
+    if (h_tail != h_committed) {
+        std::print("[info] tail-shape height={} != committed-shape height={} "
+                   "(expected today; option-A makes them equal) ",
+                   h_tail, h_committed);
+        std::fflush(stdout);
+    }
+}
+
 // New: byte-offset reverse lookup + fold roundtrip + auto-fold.
 static void st_block_meta_and_fold() {
     StreamingMarkdown md;
@@ -1405,6 +2190,28 @@ int main() {
     run("render after commits ×200",   2000ms, st_render_after_commits_no_change);
     run("render between commits ×200", 2000ms, st_render_between_commits);
     run("clear + restream ×10",        5000ms, st_clear_restream);
+    // Wedge-scanner regression tests — pin the failure mode where
+    // find_block_boundary stops advancing past mid-stream boundaries and
+    // every later block renders as raw inline text (screenshot-2 symptom).
+    run("post-fence commits drip-fed",  3000ms, st_post_fence_commits_during_stream);
+    run("alert + followup commits",     3000ms, st_alert_then_followup_commits);
+    run("details + content commits",    3000ms, st_details_then_content_commits);
+    run("mixed corpus byte-by-byte",    5000ms, st_mixed_corpus_byte_by_byte);
+    run("streamed source = input",      2000ms, st_streamed_source_matches_input);
+    run("post-fence chunked",           5000ms, st_post_fence_commits_chunked);
+    run("tail vs committed height",     3000ms, st_tail_vs_committed_height_consistency);
+    // Comprehensive corpus exercising every BlockKind + every inline
+    // feature, streamed via every realistic SSE chunking pattern.
+    run("full corpus oneshot",          3000ms, st_full_corpus_oneshot);
+    run("full corpus byte-by-byte",     15000ms, st_full_corpus_byte_by_byte);
+    run("full corpus sse seed 1",       5000ms, st_full_corpus_sse_seed1);
+    run("full corpus sse seed 2",       5000ms, st_full_corpus_sse_seed2);
+    run("full corpus sse seed 3",       5000ms, st_full_corpus_sse_seed3);
+    run("full corpus sse seed 4",       5000ms, st_full_corpus_sse_seed4);
+    run("full corpus sse seed 5",       5000ms, st_full_corpus_sse_seed5);
+    run("full corpus split-at-syntax",  10000ms, st_full_corpus_split_at_syntax);
+    run("full corpus fixed cycle",      8000ms, st_full_corpus_fixed_cycle);
+    run("full corpus burst pattern",    8000ms, st_full_corpus_burst_pattern);
     run("block meta + fold",            2000ms, st_block_meta_and_fold);
     run("set_content_async roundtrip",  8000ms, st_set_content_async_roundtrip);
 

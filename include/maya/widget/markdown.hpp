@@ -395,6 +395,16 @@ private:
     size_t scan_cursor_         = 0;
     bool   scan_in_fence_       = false;
     size_t scan_last_boundary_  = 0;
+    // Streaming-scanner state that keeps lists / <details> blocks /
+    // definition lists cohesive across blank lines, and keeps fence
+    // parity correct when content like `~~~` or ``` ` ``` is nested.
+    // `scan_fence_char_` is '`' or '~' for the current open code fence;
+    // `scan_fence_len_` is the opening run length. `scan_html_block_idx_`
+    // is -1 when not in an open block-HTML element, else an index into
+    // the block-HTML tag table in streaming.cpp.
+    char   scan_fence_char_     = '\0';
+    size_t scan_fence_len_      = 0;
+    int8_t scan_html_block_idx_ = -1;
 
     // Codepoint / escape-sequence safety net.  Every byte the user feeds
     // passes through here before being appended to source_, so source_ is

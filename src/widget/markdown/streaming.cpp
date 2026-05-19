@@ -10,6 +10,7 @@
 // md_detail::{flatten_inline}.
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -287,10 +288,138 @@ IntraBlank classify_blank_line(std::string_view src, std::size_t i) noexcept {
         return IntraBlank::No;
     }
     std::string_view prev_line = src.substr(prev_start, prev_end - prev_start);
+
+    // ── Def-list cohesion ──────────────────────────────────────────────
+    // PHP-Markdown-Extra-style definition lists look like
+    //   term one
+    //   : def of term one
+    //   <blank>
+    //   term two
+    //   : def of term two
+    // parse_markdown_impl stitches both terms into a single DefList block.
+    // The streaming scanner sees the blank between them and (by default)
+    // commits — splitting one DefList into two single-term DefLists. To
+    // stay symmetric: if prev_line is a `: …` definition AND the next
+    // significant line is a candidate term (non-special leading char)
+    // followed by another `: …` line, this blank is intra-def-list.
+    auto is_def_line = [](std::string_view ln) noexcept -> bool {
+        auto t = ln;
+        // Up to 3 leading spaces tolerance (matches the parser's
+        // implicit whitespace handling on def lines).
+        std::size_t lead = 0;
+        while (lead < 3 && lead < t.size() && t[lead] == ' ') ++lead;
+        if (lead + 1 >= t.size()) return false;
+        if (t[lead] != ':') return false;
+        char after = t[lead + 1];
+        return after == ' ' || after == '\t';
+    };
+    if (is_def_line(prev_line)) {
+        // Walk forward past blanks.
+        std::size_t fj = i;
+        while (fj < src.size() && src[fj] == '\n') ++fj;
+        if (fj >= src.size()) return IntraBlank::Unknown;
+        // Read the first candidate-term line.
+        std::size_t term_end = src.find('\n', fj);
+        bool term_complete = (term_end != std::string_view::npos);
+        if (!term_complete) return IntraBlank::Unknown;
+        std::string_view term_line = src.substr(fj, term_end - fj);
+        auto term_trim = term_line;
+        // Strip trailing \r for CRLF tolerance.
+        if (!term_trim.empty() && term_trim.back() == '\r')
+            term_trim.remove_suffix(1);
+        if (term_trim.empty()) return IntraBlank::No;
+        // A term cannot start with one of the marker characters the
+        // parser breaks on (see parse_markdown_impl's def-list
+        // continuation loop).
+        char tc = term_trim.front();
+        if (tc == ':' || tc == '#' || tc == '>' || tc == '|'
+            || tc == '-' || tc == '*' || tc == '+' || tc == '`') {
+            // Not a term — the def list ended at the prior blank.
+            return IntraBlank::No;
+        }
+        // Peek the line AFTER the candidate-term. It must be a `: …`
+        // line to confirm the def-list continues.
+        std::size_t peek_start = term_end + 1;
+        if (peek_start >= src.size()) return IntraBlank::Unknown;
+        std::size_t peek_end = src.find('\n', peek_start);
+        bool peek_complete = (peek_end != std::string_view::npos);
+        if (!peek_complete) {
+            // Without the terminator we can't be sure whether the
+            // partial line is still going to gain a `: ` prefix; defer.
+            return IntraBlank::Unknown;
+        }
+        std::string_view peek_line =
+            src.substr(peek_start, peek_end - peek_start);
+        if (is_def_line(peek_line)) return IntraBlank::Yes;
+        return IntraBlank::No;
+    }
+
     bool prev_is_ol = ol_marker_len(prev_line) > 0;
     bool prev_is_ul = ul_marker_len(prev_line) > 0;
-    if (!prev_is_ol && !prev_is_ul) return IntraBlank::No;
-    int prev_indent = count_indent(prev_line);
+    int  prev_indent;
+    if (prev_is_ol || prev_is_ul) {
+        prev_indent = count_indent(prev_line);
+    } else {
+        // prev_line isn't a list marker. We might still be INSIDE a list
+        // block — the immediately-previous line could be an indented
+        // continuation paragraph or indented fenced code that belongs to
+        // an earlier list-marker line. Walk further back through
+        // blank/indented lines to find the most recent non-indented
+        // non-blank line; if THAT line is a list marker, we're inside
+        // a list and this blank is still intra-list.
+        //
+        // Without this, a list item with multiple continuation blocks
+        // separated by blanks (parser-legal CommonMark) prematurely
+        // commits at the SECOND blank when only the immediately prior
+        // line is checked. That over-commits the list into N separate
+        // blocks where oneshot parsing yields a single cohesive list.
+        bool prev_is_indented = !prev_line.empty()
+                              && count_indent(prev_line) >= 2;
+        if (!prev_is_indented) return IntraBlank::No;
+
+        // Walk back: skip indented and blank lines, looking for the
+        // most recent non-indented non-blank line. Same byte cap as
+        // the outer scan to keep this bounded under pathological
+        // streamed lists.
+        std::size_t lb_floor = (i > kMaxListMarkerLineLen)
+                                ? (i - kMaxListMarkerLineLen)
+                                : 0;
+        std::size_t scan_start = prev_start;
+        bool found_anchor = false;
+        std::string_view anchor_line;
+        while (scan_start > lb_floor) {
+            // Find the line ending just before scan_start.
+            // scan_start points at line-start of the line we just
+            // inspected; the byte before that (scan_start - 1) is the
+            // '\n' that terminated the line above.
+            if (scan_start == 0) break;
+            // scan_start - 1 should be '\n'.
+            std::size_t line_end = scan_start - 1;       // exclusive
+            std::size_t line_start = 0;
+            for (std::size_t k = line_end; k > lb_floor; --k) {
+                if (src[k - 1] == '\n') { line_start = k; break; }
+            }
+            std::string_view cand =
+                src.substr(line_start, line_end - line_start);
+            bool blank = cand.empty()
+                      || (cand.size() == 1 && cand[0] == '\r');
+            bool indented = !blank && count_indent(cand) >= 2;
+            if (!blank && !indented) {
+                anchor_line = cand;
+                found_anchor = true;
+                break;
+            }
+            if (line_start == 0) break;
+            scan_start = line_start;
+        }
+        if (!found_anchor) return IntraBlank::No;
+        bool anchor_is_ol = ol_marker_len(anchor_line) > 0;
+        bool anchor_is_ul = ul_marker_len(anchor_line) > 0;
+        if (!anchor_is_ol && !anchor_is_ul) return IntraBlank::No;
+        prev_is_ol  = anchor_is_ol;
+        prev_is_ul  = anchor_is_ul;
+        prev_indent = count_indent(anchor_line);
+    }
 
     // ── Look forward: skip any additional consecutive blanks, then read
     //                  the next line. Loose lists sometimes carry two
@@ -309,11 +438,31 @@ IntraBlank classify_blank_line(std::string_view src, std::size_t i) noexcept {
     bool next_is_ul = ul_marker_len(next_line) > 0;
 
     if (!next_is_ol && !next_is_ul) {
-        // Next line has no marker. If it's still incomplete we can't
-        // tell — it might become "2. ..." once a space + body arrives,
-        // or it might become "Plain paragraph". Wait.
-        if (!next_complete) return IntraBlank::Unknown;
-        return IntraBlank::No;
+        // Next line has no marker. Two reasons to still treat the blank
+        // as intra-list:
+        //
+        //  (i)  The next line is INDENTED enough to be a list-item
+        //       continuation paragraph (parser rule:
+        //       `cur_indent > base_indent + 1`, which for top-level
+        //       lists means indent ≥ 2). Treating this as a commit
+        //       boundary splits the item into a list block + a
+        //       stranded indented-code-block, which the oneshot parser
+        //       would have folded into one list block — the streamed
+        //       block_count drifts above the oneshot baseline.
+        //
+        //  (ii) The next line is still arriving and we can't yet tell
+        //       whether it'll be "2. ..." (a sibling item) or
+        //       "Plain paragraph" (terminator). Defer.
+        if (next_complete) {
+            int next_indent_for_cont = count_indent(next_line);
+            if (next_indent_for_cont > prev_indent + 1
+                && !next_line.empty())
+            {
+                return IntraBlank::Yes;
+            }
+            return IntraBlank::No;
+        }
+        return IntraBlank::Unknown;
     }
 
     // Both prev and next are list markers. Same kind + same indent
@@ -467,6 +616,113 @@ TableScanResult find_table_end(std::string_view src,
     return {TableScan::Incomplete, 0};
 }
 
+// ── Block-HTML opener/closer detection ─────────────────────────────────────
+//
+// The streaming scanner stays cohesive across blank lines inside a known
+// block-HTML element (`<details>`, `<div>`, …) so its eventual
+// `commit_range` parse sees the same byte slice the oneshot parser would.
+// Without this, the scanner commits at the first blank line inside the
+// block; the next commit then re-parses each surviving fragment as a
+// standalone document, and the rendered block_count drifts above the
+// oneshot baseline by one per blank.
+//
+// The allowlist matches the block-tag set in
+// parse_markdown_impl + `<details>` (the latter has its own special
+// parser arm). Tags here MUST stay byte-aligned with the parser's list
+// so the scanner's "we're inside an HTML block" state can't desync from
+// what the parser will eventually consume.
+inline constexpr std::array<std::string_view, 15> kStreamingHtmlBlockTags{{
+    "details",
+    "div", "table", "ul", "ol", "dl", "p", "pre",
+    "blockquote", "form", "figure", "section", "article",
+    "aside", "nav",
+}};
+
+[[nodiscard]] inline int8_t streaming_html_open_idx(
+    std::string_view src, std::size_t i) noexcept
+{
+    // Match `<NAME[whitespace/attrs/>]` at position i, returning the
+    // allowlist index if NAME (lowercased) is in kStreamingHtmlBlockTags,
+    // else -1. Caller must already have verified that i is at line
+    // start. Up to 3 spaces of indent are allowed (CommonMark
+    // tolerance for block elements).
+    std::size_t p = i;
+    int leading_sp = 0;
+    while (leading_sp < 3 && p < src.size() && src[p] == ' ') {
+        ++leading_sp; ++p;
+    }
+    if (p >= src.size() || src[p] != '<') return -1;
+    ++p;
+    if (p >= src.size()) return -1;
+    // Read tag name (ASCII alpha + digit/-).
+    std::size_t name_start = p;
+    while (p < src.size()) {
+        char c = src[p];
+        bool ok = (c >= 'a' && c <= 'z')
+               || (c >= 'A' && c <= 'Z')
+               || (c >= '0' && c <= '9')
+               || c == '-';
+        if (!ok) break;
+        ++p;
+    }
+    if (p == name_start) return -1;
+    // Tag must end at whitespace, `>`, `/`, or EOL — anything else
+    // (e.g. attribute char with no preceding space) is malformed
+    // HTML; treat as not-a-block.
+    if (p < src.size()) {
+        char c = src[p];
+        if (c != ' ' && c != '\t' && c != '\r' && c != '\n'
+            && c != '>' && c != '/') {
+            return -1;
+        }
+    }
+    // Lowercase compare against the allowlist.
+    std::size_t name_len = p - name_start;
+    if (name_len == 0 || name_len > 16) return -1;
+    std::array<char, 16> lowered{};
+    for (std::size_t k = 0; k < name_len; ++k) {
+        char c = src[name_start + k];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        lowered[k] = c;
+    }
+    std::string_view name{lowered.data(), name_len};
+    for (std::size_t k = 0; k < kStreamingHtmlBlockTags.size(); ++k) {
+        if (name == kStreamingHtmlBlockTags[k]) {
+            return static_cast<int8_t>(k);
+        }
+    }
+    return -1;
+}
+
+[[nodiscard]] inline bool streaming_html_line_is_closer(
+    std::string_view src, std::size_t line_start, int8_t tag_idx) noexcept
+{
+    // Does the line beginning at `line_start` start with `</NAME>` where
+    // NAME (case-insensitive) matches kStreamingHtmlBlockTags[tag_idx]?
+    // CommonMark allows up to 3 spaces of leading indent.
+    if (tag_idx < 0 || tag_idx >= static_cast<int8_t>(
+            kStreamingHtmlBlockTags.size())) return false;
+    std::size_t p = line_start;
+    int leading_sp = 0;
+    while (leading_sp < 3 && p < src.size() && src[p] == ' ') {
+        ++leading_sp; ++p;
+    }
+    if (p + 1 >= src.size() || src[p] != '<' || src[p + 1] != '/') return false;
+    p += 2;
+    auto tag = kStreamingHtmlBlockTags[static_cast<std::size_t>(tag_idx)];
+    if (p + tag.size() > src.size()) return false;
+    for (std::size_t k = 0; k < tag.size(); ++k) {
+        char c = src[p + k];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if (c != tag[k]) return false;
+    }
+    p += tag.size();
+    if (p >= src.size()) return false;
+    // Closer must end the tag with `>` (optionally after whitespace).
+    while (p < src.size() && (src[p] == ' ' || src[p] == '\t')) ++p;
+    return p < src.size() && src[p] == '>';
+}
+
 } // anonymous namespace
 
 size_t StreamingMarkdown::find_block_boundary() noexcept {
@@ -485,9 +741,42 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
     size_t i             = scan_cursor_;
     bool   in_fence      = scan_in_fence_;
     size_t last_boundary = scan_last_boundary_;
+    char   fence_char    = scan_fence_char_;
+    size_t fence_len     = scan_fence_len_;
+    int8_t html_idx      = scan_html_block_idx_;
 
     while (i < source_.size()) {
         bool at_line_start = (i == 0 || source_[i - 1] == '\n');
+
+        // ── HTML block mode ────────────────────────────────────────────
+        // While inside an unclosed `<details>` / `<div>` / etc., do NOT
+        // commit on blank lines. Walk line by line until we see the
+        // matching closer at line start; THEN commit just past it (the
+        // entire block-HTML element is one committed unit, matching
+        // what oneshot parse_markdown_impl would produce).
+        if (html_idx >= 0) {
+            if (at_line_start &&
+                streaming_html_line_is_closer(
+                    std::string_view{source_}, i, html_idx))
+            {
+                std::size_t eol = source_.find('\n', i);
+                if (eol == std::string::npos) {
+                    // Closer line isn't terminated yet — defer the
+                    // commit boundary until '\n' lands; the next call
+                    // resumes here.
+                    break;
+                }
+                i = eol + 1;
+                last_boundary = i;
+                html_idx = -1;
+                continue;
+            }
+            // Not the closer: step past this line.
+            std::size_t eol = source_.find('\n', i);
+            if (eol == std::string::npos) break;
+            i = eol + 1;
+            continue;
+        }
 
         if (at_line_start) {
             bool is_code_fence = i + 3 <= source_.size() &&
@@ -535,6 +824,33 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
             }
 
             if (!in_fence) {
+                // Block HTML opener at line start (`<details>`, `<div>`,
+                // etc. from the allowlist). The entire element — from
+                // the opening tag through its closing tag, inclusive of
+                // any blank lines inside — commits as one unit, matching
+                // what parse_markdown_impl does. Without this, blank
+                // lines inside <details>…</details> would each be
+                // treated as a block boundary and the eventual oneshot
+                // re-parse of each fragment yields a different shape.
+                if (source_[i] == '<' || source_[i] == ' ') {
+                    int8_t opener = streaming_html_open_idx(
+                        std::string_view{source_}, i);
+                    if (opener >= 0) {
+                        // Opening tag commits any prose preceding it
+                        // (analogous to the code-fence opener).
+                        last_boundary = i;
+                        // The opener's own line must be fully landed
+                        // before we can safely advance into html-block
+                        // mode (otherwise an in-progress tag like
+                        // `<details` with no `>` yet would commit a
+                        // half-tag and snap once the closer arrives).
+                        std::size_t eol = source_.find('\n', i);
+                        if (eol == std::string::npos) break;
+                        html_idx = opener;
+                        i = eol + 1;
+                        continue;
+                    }
+                }
                 // Blank line: we're at the second '\n' of a \n\n pair
                 // (or source begins with '\n' at i == 0).  Default
                 // behaviour: commit up to and including the second '\n';
@@ -774,9 +1090,12 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
     // the current line hasn't terminated yet) — both correct resume
     // points; new bytes appended to source_ will be visible on the
     // next call without re-walking the prefix.
-    scan_cursor_        = i;
-    scan_in_fence_      = in_fence;
-    scan_last_boundary_ = last_boundary;
+    scan_cursor_         = i;
+    scan_in_fence_       = in_fence;
+    scan_last_boundary_  = last_boundary;
+    scan_fence_char_     = fence_char;
+    scan_fence_len_      = fence_len;
+    scan_html_block_idx_ = html_idx;
     return last_boundary;
 }
 
@@ -939,6 +1258,12 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     }
     if (!parsed.blocks.empty()) ++prefix_->generation;
 
+    // Walker over [committed_, boundary): tracks the canonical
+    // `in_code_fence_` parity AT committed_=boundary, plus the
+    // currently-open fence's character and length so the conditional
+    // scanner-state resync below can mirror them into scan_fence_*_.
+    char   cf_char = scan_fence_char_;
+    size_t cf_len  = scan_fence_len_;
     for (size_t j = committed_; j < boundary; ++j) {
         bool at_line_start = (j == 0 || source_[j - 1] == '\n');
         if (!at_line_start) continue;
@@ -951,26 +1276,76 @@ void StreamingMarkdown::commit_range(size_t boundary) {
         // agreeing — a divergence that buries subsequent paragraphs
         // in an opaque fence forever.
         bool is_math = !is_code && is_math_fence_line(j, boundary);
-        if (is_code || is_math) in_code_fence_ = !in_code_fence_;
+        if (is_code || is_math) {
+            if (!in_code_fence_) {
+                // Opening fence: record char + opening run length
+                // so a closing fence must use the same char with at
+                // least that many of it. is_math openers behave like
+                // a 2-char `$$` fence.
+                if (is_code) {
+                    cf_char = source_[j];
+                    size_t run = 0;
+                    while (j + run < boundary && source_[j + run] == cf_char) ++run;
+                    cf_len = run;
+                } else {
+                    cf_char = '$';
+                    cf_len  = 2;
+                }
+            } else {
+                // Closing fence: clear tracker.
+                cf_char = '\0';
+                cf_len  = 0;
+            }
+            in_code_fence_ = !in_code_fence_;
+        }
     }
 
     committed_ = boundary;
     build_dirty_ = true;
     ++source_version_;
 
-    // Keep scanner state coherent with the new committed_. The
-    // earlier conditional resync only fired when commit_range jumped
-    // past scan_cursor_ (the finish() path); for the normal
-    // append_safe path scan_in_fence_ was left untouched on the
-    // assumption it already equalled in_code_fence_. That invariant
-    // is fragile: any future eager-commit branch that advances
-    // last_boundary past lines without re-evaluating fence parity
-    // can let the two drift. Unconditional resync removes the
-    // dependency on that invariant — cheap (two stores) and makes
-    // the post-commit state a proven function of in_code_fence_.
+    // Keep scanner state coherent with the new committed_.
+    //
+    // The scanner persists state at scan_cursor_, which is typically
+    // >= committed_ (the scanner walks ahead of what's committed; the
+    // last-known good boundary is returned, leaving partial blocks
+    // beyond it for the next call). in_code_fence_ tracks parity AT
+    // committed_, computed by the walker above over [prev_committed,
+    // committed_). The two are NOT interchangeable:
+    //
+    //   • prose-before-fence commit case: scanner saw an opener at
+    //     position O > committed_, advanced scan_cursor_ to >= O,
+    //     set scan_in_fence_=true, and returned last_boundary=O.
+    //     commit_range commits [prev, O); the walker sees no fences
+    //     in that range → in_code_fence_=false. Unconditionally
+    //     copying in_code_fence_ into scan_in_fence_ here would
+    //     erase the scanner's correct knowledge that scan_cursor_
+    //     is past the opener. Next find_block_boundary call would
+    //     scan content WITHOUT the in-fence guard, mis-treating
+    //     literal "```" inside the fence as a new opener/closer
+    //     and ultimately committing block boundaries inside the
+    //     fenced region. The eventual oneshot re-parse of those
+    //     mid-fence slices then mis-attributes everything as one
+    //     unclosed-fence block, dropping multiple oneshot blocks.
+    //
+    //   • finish() jump-ahead case: caller forces a commit past
+    //     scan_cursor_ (e.g. finish() sets boundary = source_.size()).
+    //     Now the scanner's persisted state is stale (it never
+    //     visited the bytes between scan_cursor_ and committed_).
+    //     in_code_fence_ at committed_ IS the source of truth here;
+    //     resync everything to it.
+    //
+    // Conditional resync — preserve scanner state when it's ahead;
+    // adopt walker state when commit_range jumped past it.
     scan_last_boundary_ = committed_;
-    if (scan_cursor_ < committed_) scan_cursor_ = committed_;
-    scan_in_fence_ = in_code_fence_;
+    if (scan_cursor_ < committed_) {
+        scan_cursor_ = committed_;
+        scan_in_fence_ = in_code_fence_;
+        // Fence-char/len at committed_ are recorded in cf_char/cf_len
+        // by the walker above.
+        scan_fence_char_ = cf_char;
+        scan_fence_len_  = cf_len;
+    }
 }
 
 // Internal: append codepoint-clean bytes that have already passed through

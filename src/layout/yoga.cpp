@@ -345,29 +345,54 @@ void compute_node(
                     auto saved_w = cs.width;
                     auto saved_h = cs.height;
                     bool main_changed = (item.main != item.hypothetical);
-                    if (row) {
-                        // Force width (main) only when grow/shrink changed it
-                        // or it was already explicit — otherwise let the child
-                        // recompute its intrinsic width at the resolved cross size.
-                        if (main_changed || !saved_w.is_auto())
-                            child.style.width = Dimension::fixed(child_w);
-                        if (cross_definite || !saved_h.is_auto())
-                            child.style.height = Dimension::fixed(child_h);
+                    bool needs_main_override = row
+                        ? (main_changed || !saved_w.is_auto())
+                        : (main_changed || !saved_h.is_auto());
+                    bool needs_cross_override = row
+                        ? (cross_definite || !saved_h.is_auto())
+                        : (cross_definite || !saved_w.is_auto());
+
+                    if (!needs_main_override && !needs_cross_override) {
+                        // 3a already computed this child at the same available
+                        // width with no forced dimensions — recomputing would
+                        // return the identical layout. Skipping it removes an
+                        // O(branching^depth) blowup on deeply-nested trees
+                        // (e.g. blockquote/list nests): every interior node
+                        // would otherwise re-traverse all its descendants in
+                        // both the hypothetical-sizing pass (§3a) and this
+                        // resolved-sizing pass. The cross-axis stretch that
+                        // 3e applies still writes the outer node's computed
+                        // cross dimension, matching the previous behaviour
+                        // (which also did not re-flow interior children when
+                        // the cross dim was auto and the parent wasn't
+                        // cross-definite).
+                        child_w = child.computed.size.width.value;
+                        child_h = child.computed.size.height.value;
                     } else {
-                        // Force height (main) only when grow/shrink changed it
-                        // or it was already explicit — auto-height children must
-                        // recompute after their cross (width) is resolved, since
-                        // narrower widths cause text to wrap to more lines.
-                        if (main_changed || !saved_h.is_auto())
-                            child.style.height = Dimension::fixed(child_h);
-                        if (cross_definite || !saved_w.is_auto())
-                            child.style.width = Dimension::fixed(child_w);
+                        if (row) {
+                            // Force width (main) only when grow/shrink changed it
+                            // or it was already explicit — otherwise let the child
+                            // recompute its intrinsic width at the resolved cross size.
+                            if (main_changed || !saved_w.is_auto())
+                                child.style.width = Dimension::fixed(child_w);
+                            if (cross_definite || !saved_h.is_auto())
+                                child.style.height = Dimension::fixed(child_h);
+                        } else {
+                            // Force height (main) only when grow/shrink changed it
+                            // or it was already explicit — auto-height children must
+                            // recompute after their cross (width) is resolved, since
+                            // narrower widths cause text to wrap to more lines.
+                            if (main_changed || !saved_h.is_auto())
+                                child.style.height = Dimension::fixed(child_h);
+                            if (cross_definite || !saved_w.is_auto())
+                                child.style.width = Dimension::fixed(child_w);
+                        }
+                        compute_node(nodes, item.index, child_w, child_h, content_w, content_h);
+                        child.style.width  = saved_w;
+                        child.style.height = saved_h;
+                        child_w = child.computed.size.width.value;
+                        child_h = child.computed.size.height.value;
                     }
-                    compute_node(nodes, item.index, child_w, child_h, content_w, content_h);
-                    child.style.width  = saved_w;
-                    child.style.height = saved_h;
-                    child_w = child.computed.size.width.value;
-                    child_h = child.computed.size.height.value;
                 }
             } else if (child.measure) {
                 // Same unconstrained-measure rule as section 3a above:

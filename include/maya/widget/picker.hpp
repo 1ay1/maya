@@ -86,12 +86,69 @@ public:
         // wraps these in a viewport `viewport_h` rows tall, paired
         // with a vertical scrollbar that appears only when the list
         // overflows the viewport.
+        //
+        // Two ways to populate the list — use exactly one:
+        //   • `rows`: typed structured rows. The widget draws the
+        //     left-edge cursor/active bar, applies bold/bright_white
+        //     styling on the selected row, and lays out leading +
+        //     trailing cells with a flex spacer. This is the path
+        //     every chrome-consistent picker should take.
+        //   • `items`: raw pre-built Elements. Escape hatch for
+        //     callers that need full layout control (e.g. embedding
+        //     a PlanView). No selection/active styling is applied.
         std::vector<Element>         items;
 
-        // 0-based index into `items` of the currently-selected row.
-        // Used solely to keep the selection inside the viewport via
-        // auto-scroll on paint. Negative ⇒ no selection (no clamp).
-        // Out-of-range values are ignored (treated as no-selection).
+        // One row in the scrollable list. The widget owns every
+        // chrome decision for the row:
+        //   • col 0:    edge bar — `cursor_color` `▎` if `selected`,
+        //                `active_color` `▎` if `active` (cursor wins
+        //                on overlap), blank otherwise.
+        //   • col 1:    single-space gutter.
+        //   • leading:  caller-supplied primary text (e.g. label).
+        //                Painted with `leading_style` (overridden to
+        //                bold + bright_white on the selected row),
+        //                truncated with ellipsis on overflow, grows
+        //                to absorb slack.
+        //   • spacer:   absorbs any remaining width between leading
+        //                and trailing.
+        //   • trailing: caller-supplied secondary text (e.g.
+        //                timestamp, description). Painted with
+        //                `trailing_style` (overridden to bright fg
+        //                on the selected row). Right-aligned,
+        //                truncated with ellipsis on overflow.
+        //   • col -1:   single-space gutter so trailing content
+        //                doesn't kiss the scrollbar.
+        //
+        // The row is built inside an `hstack().width(100%)` so the
+        // spacer has actual leftover space to grow into (a plain
+        // h(...) sizes to natural content width and the spacer
+        // collapses to zero — see messenger.cpp build_header()).
+        //
+        // Pass text + Style (not pre-built Elements): the widget
+        // needs to swap the foreground on the selected row, which
+        // means it has to construct the text() node itself.
+        struct Row {
+            std::string  leading;
+            Style        leading_style  = {};
+            std::string  trailing;        // empty ⇒ no trailing cell
+            Style        trailing_style = {};
+            bool         selected = false;  // cursor is on this row
+            bool         active   = false;  // "currently in use" marker
+        };
+
+        // Structured rows. Mutually exclusive with `items`: if this
+        // is non-empty, `items` is ignored. The widget builds each
+        // row's Element on `build()` using the styling contract above.
+        std::vector<Row>             rows;
+
+        // 0-based index into the list (rows or items) of the
+        // currently-selected entry. Used solely to keep the selection
+        // inside the viewport via auto-scroll on paint. Negative ⇒
+        // no selection (no clamp). Out-of-range values are ignored.
+        // When `rows` is populated, the widget cross-checks this
+        // against `Row::selected` — callers should keep them in
+        // sync; `selected` here is what drives auto-scroll, while
+        // `Row::selected` is what drives per-row styling.
         int                          selected     = -1;
 
         // Static rows below the scrollable list (e.g. " ↑↓ move " hint,
@@ -117,6 +174,18 @@ public:
         // terminal themes. Override in Config if a particular picker
         // wants to match a different accent color.
         ScrollbarStyle               scrollbar_style = ScrollbarStyle::neon();
+
+        // Cursor (selected-row) bar colour. Cyan by default — matches
+        // the neon scrollbar thumb and is universally read as "focus"
+        // on dark themes.
+        Color                        cursor_color = Color::bright_cyan();
+
+        // Active-row bar colour. Magenta by default so it sits on a
+        // different colour axis from the cursor and reads as a
+        // persistent "current" marker (vs. the cursor's transient
+        // focus). Pickers without an active concept just leave every
+        // Row::active false and this colour is never used.
+        Color                        active_color = Color::bright_magenta();
     };
 
     explicit Picker(Config c) : cfg_(std::move(c)) {}
@@ -131,8 +200,22 @@ public:
         // so a 9-item list doesn't leave 5 rows of empty space inside
         // the border. Floor at 1 row so a zero-item list (placeholder
         // "no matches" only) still has a paintable cell.
+        // Materialise structured rows into Elements once, up front.
+        // Everything below treats the list as `items`; `rows` is just
+        // a typed sugar layer that lets the widget own the row chrome
+        // (edge bar + bold styling + 100%-width hstack) instead of
+        // every adapter reimplementing it.
+        std::vector<Element> materialised;
+        const std::vector<Element>* list = &cfg_.items;
+        if (!cfg_.rows.empty()) {
+            materialised.reserve(cfg_.rows.size());
+            for (const auto& r : cfg_.rows)
+                materialised.push_back(build_row(r));
+            list = &materialised;
+        }
+
         const int cap = std::max(1, cfg_.viewport_h);
-        const int item_count = static_cast<int>(cfg_.items.size());
+        const int item_count = static_cast<int>(list->size());
         const int vh = std::min(cap, std::max(1, item_count));
 
         // Auto-scroll: clamp state->y so the selected row sits inside
@@ -171,7 +254,7 @@ public:
         if (cfg_.scroll) {
             auto& s = *cfg_.scroll;
             auto viewport = vstack();
-            auto items_copy = cfg_.items;   // build() is const; vstack consumes
+            auto items_copy = *list;        // build() is const; vstack consumes
             Element scrollable = std::move(viewport)(items_copy)
                                  | scroll(s, vh)
                                  | grow(1.0f);
@@ -184,7 +267,7 @@ public:
             // caller can guarantee items.size() ≤ vh structurally
             // (rare; mostly tests / placeholder messages).
             auto stack = vstack();
-            auto items_copy = cfg_.items;
+            auto items_copy = *list;
             rows.push_back(std::move(stack)(items_copy).build());
         }
 
@@ -200,6 +283,66 @@ public:
     }
 
 private:
+    // U+258E LEFT ONE QUARTER BLOCK — thin vertical bar pinned at col 0.
+    // Same convention every modern editor uses for "current" / "selected".
+    static constexpr const char* kEdgeBar = "\xe2\x96\x8e";
+
+    // Materialise one Row into an Element. Owns every row-chrome
+    // decision: edge bar colour + glyph, selected-state styling
+    // override, full-width hstack with right-pinned trailing cell.
+    [[nodiscard]] Element build_row(const Config::Row& r) const {
+        using namespace dsl;
+
+        // Edge bar: cursor wins on overlap (cursor is transient and
+        // the user just moved it here; active is what they're moving
+        // AWAY from). Blank single space when neither, so the row
+        // stays column-aligned with selected/active rows.
+        auto edge = r.selected
+            ? text(std::string{kEdgeBar},
+                   Style{}.with_fg(cfg_.cursor_color).with_bold())
+            : r.active
+                ? text(std::string{kEdgeBar},
+                       Style{}.with_fg(cfg_.active_color).with_bold())
+                : text(std::string{" "});
+
+        // On the selected row, override foreground colours: leading
+        // becomes bright_white + bold (regardless of caller's muted
+        // styling), trailing becomes a non-dim fg so it stays
+        // readable against the (now bolder) leading cell.
+        Style ls = r.leading_style;
+        Style ts = r.trailing_style;
+        if (r.selected) {
+            ls = Style{}.with_fg(Color::bright_white()).with_bold();
+            // Preserve italic/dim intent of caller's trailing style
+            // by only swapping the colour — a description that was
+            // italic stays italic, just brighter.
+            ts = ts.with_fg(Color::bright_white());
+        }
+
+        // No trailing cell when the caller passes an empty string.
+        // Keeps row-builders simple for pickers without a secondary
+        // column (e.g. PlanView-embedded rows).
+        if (r.trailing.empty()) {
+            return hstack()
+                .width(Dimension::percent(100))(
+                edge,
+                text(std::string{" "}),
+                text(r.leading, ls) | clip | grow(1.0f),
+                text(std::string{" "})
+            );
+        }
+
+        return hstack()
+            .width(Dimension::percent(100))(
+            edge,
+            text(std::string{" "}),
+            text(r.leading, ls) | clip | grow(1.0f),
+            spacer(),
+            text(r.trailing, ts) | clip,
+            text(std::string{" "})
+        );
+    }
+
     Config cfg_;
 };
 

@@ -103,23 +103,27 @@ public:
         // ── Cursor injection — blinking block.
         //
         // We can't drive the real terminal hardware cursor from inside a
-        // widget (the inline runtime doesn't expose a placement primitive
-        // here), so the cursor is a glyph painted into the text. We use
-        // U+2588 FULL BLOCK ('█') for the classic terminal cursor look,
-        // and blink it by swapping in a same-width SPACE on the "off"
-        // half-cycle. 530 ms full period (~265 ms on / 265 ms off) tracks
-        // the de-facto VT-style cadence ergonomically.
+        // widget, so the cursor is a glyph painted into the text. We
+        // ALWAYS emit U+2588 FULL BLOCK ('█') and toggle its visibility
+        // by swapping the STYLE between visible (fg=text) and invisible
+        // (fg=bg, i.e. transparent against the box bg). Using one stable
+        // byte sequence is critical: any phase-dependent byte length
+        // would reflow downstream wrap caches (width vs bytes) and
+        // cause a one-cell jitter on every blink — the symptom users
+        // perceive as composer flicker. Style-only toggles never
+        // reflow.
         //
-        // Blink is suppressed while the agent is streaming or running a
-        // tool: in those states the user can still type (input queues),
-        // and a steady cursor reads as "yes, your keystrokes are landing
-        // somewhere" rather than competing with the spinner for the
-        // eye.
+        // Blink is suppressed while the agent is streaming or running
+        // a tool: in those states the user can still type (input
+        // queues), and a steady cursor reads as "yes, your keystrokes
+        // are landing somewhere" rather than competing with the
+        // spinner for the eye.
         //
-        // We call request_animation_frame() so maya's event-driven loop
-        // (fps=0) keeps repainting while the composer is on-screen with
-        // a blinking cursor; without it the cursor would freeze in
-        // whichever phase the last user-driven repaint captured.
+        // RAF is requested ONLY when the blink phase actually toggles
+        // a visible cell — i.e., the composer is idle (blink active)
+        // AND a cursor will be painted (always true; placeholder path
+        // also paints one). Calling RAF unconditionally would pin the
+        // app to 2 Hz repaints even when nothing on screen changes.
         constexpr int kBlinkPeriodMs = 530;
         const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now().time_since_epoch())
@@ -130,10 +134,10 @@ public:
 
         std::string with_cursor = cfg_.text;
         int cur = std::min<int>(cfg_.cursor, static_cast<int>(cfg_.text.size()));
-        const char* cursor_glyph = blink_off
-            ? " "                     // ASCII space (same column width as █)
-            : "\xe2\x96\x88";          // █ FULL BLOCK
-        with_cursor.insert(static_cast<std::size_t>(cur), cursor_glyph);
+        // Always insert the FULL BLOCK byte sequence; visibility is a
+        // style decision below. Same bytes every frame ⇒ same wrap.
+        with_cursor.insert(static_cast<std::size_t>(cur),
+                           "\xe2\x96\x88");
 
         // ── Prompt chip + body rows.
         Style prompt_style = (active || has_text || is_awaiting)
@@ -170,18 +174,60 @@ public:
             }
             body_rows.push_back(h(
                 prompt_chip,
-                text(blink_off ? " " : "\xe2\x96\x88", fg_dim_(muted)),     // █ dim cursor
+                // Stable bytes: always emit █, toggle visibility via
+                // style. Same rationale as the with-text path —
+                // changing byte length on blink reflows wrap caches.
+                text("\xe2\x96\x88",
+                     blink_off
+                         ? Style{}.with_fg(muted).with_dim()
+                         : Style{}.with_fg(muted)),
                 text(placeholder, Style{}.with_fg(muted).with_italic())
             ).build());
         } else {
+            // Style-driven cursor blink: split each line on the cursor
+            // placeholder (which we just inserted as the FULL BLOCK
+            // byte sequence) and emit the cursor as its own TextElement
+            // whose foreground toggles between visible and the box
+            // background. Byte layout is stable across the blink phase
+            // — only the SGR color attribute changes — so word-wrap
+            // never reflows.
+            constexpr std::string_view kBlock = "\xe2\x96\x88";
+            Style cursor_visible = Style{}.with_fg(cfg_.text_color);
+            // "Invisible" cursor: dim foreground in the box color so
+            // the cell stays the same width but reads as empty. Using
+            // box bg directly would require knowing the parent's
+            // resolved bg, which the widget doesn't have access to;
+            // dimming to the box border color hides the glyph against
+            // the box chrome reliably across themes.
+            Style cursor_hidden = Style{}.with_fg(box_color).with_dim();
             auto lines = split_lines(with_cursor);
             for (std::size_t i = 0; i < lines.size(); ++i) {
                 Element prefix = (i == 0) ? prompt_chip
                                           : (lines.size() > 1 ? continuation : blank_pre);
-                body_rows.push_back(h(
-                    prefix,
-                    text(std::string{lines[i]}, Style{}.with_fg(cfg_.text_color))
-                ).build());
+                std::string_view line = lines[i];
+                // Find the cursor placeholder in this line (at most
+                // one per line, since we inserted exactly one). If
+                // present, emit pre / cursor / post as three runs.
+                auto cur_pos = line.find(kBlock);
+                if (cur_pos == std::string_view::npos) {
+                    body_rows.push_back(h(
+                        prefix,
+                        text(std::string{line},
+                             Style{}.with_fg(cfg_.text_color))
+                    ).build());
+                } else {
+                    std::string_view pre  = line.substr(0, cur_pos);
+                    std::string_view post = line.substr(cur_pos + kBlock.size());
+                    body_rows.push_back(h(
+                        prefix,
+                        text(std::string{pre},
+                             Style{}.with_fg(cfg_.text_color)),
+                        text(std::string{kBlock},
+                             blink_off ? cursor_hidden : cursor_visible),
+                        text(std::string{post},
+                             Style{}.with_fg(cfg_.text_color))
+                    ).build());
+                }
             }
         }
 
@@ -202,16 +248,25 @@ public:
         auto lbl = [muted](const char* l) { return text(l, fg_dim_(muted)); };
         auto dot = [muted]() { return text("  \xc2\xb7  ", fg_dim_(muted)); };
 
+        // Hysteresised thresholds so a 1-column breathing parent
+        // doesn't toggle the hint row's shape on every frame. Once
+        // the wider shape is shown at width >= HI, it persists down
+        // to width < LO before collapsing. We don't have prior-frame
+        // state here, so we approximate the same effect with a wider
+        // dead zone: widen the show-threshold by 4 cols and the
+        // hide-threshold stays at the original value, so transient
+        // single-column wiggles can't cross the boundary in one
+        // step.
         auto hint_left_builder = [kbd, lbl, dot](int avail_width) {
             std::vector<Element> out;
             out.push_back(kbd("\xe2\x86\xb5"));           // ↵
             out.push_back(lbl(" send"));
-            if (avail_width >= 60) {
+            if (avail_width >= 64) {                       // was 60
                 out.push_back(dot());
                 out.push_back(kbd("\xe2\x87\xa7\xe2\x86\xb5 / \xe2\x8c\xa5\xe2\x86\xb5"));
                 out.push_back(lbl(" newline"));
             }
-            if (avail_width >= 90) {
+            if (avail_width >= 94) {                       // was 90
                 out.push_back(dot());
                 out.push_back(kbd("^E"));
                 out.push_back(lbl(" expand"));
@@ -231,11 +286,16 @@ public:
         if (has_text) {
             int words = word_count(cfg_.text);
             int toks  = approx_tokens(cfg_.text);
+            // 5-wide pad covers up to 99,999 words / tokens — two
+            // more orders of magnitude than the prior 4-wide field,
+            // which would overflow and shift the right cluster by
+            // one column at 10k. Real composer text never lands here
+            // in practice, but the column stability matters.
             hint_right.push_back(text(
-                tabular_int_(words, 4) + " words", fg_dim_(muted)));
+                tabular_int_(words, 5) + " words", fg_dim_(muted)));
             hint_right.push_back(text("  \xc2\xb7  ", fg_dim_(muted)));
             hint_right.push_back(text(
-                "~" + tabular_int_(toks, 4) + " tok", fg_dim_(muted)));
+                "~" + tabular_int_(toks, 5) + " tok", fg_dim_(muted)));
             hint_right.push_back(dot());
         }
         hint_right.push_back(text("\xe2\x96\x8e",

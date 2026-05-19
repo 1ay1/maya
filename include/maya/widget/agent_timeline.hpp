@@ -126,7 +126,20 @@ public:
         std::vector<Element> rows;
         rows.reserve(cfg_.events.size() * 4 + 4);
 
-        const bool show_stats = cfg_.events.size() > 1 && !cfg_.stats.empty();
+        // Stats row visibility is gated only on the host having
+        // provided stats — NOT on the event count. The previous
+        // `events.size() > 1` gate produced a +2-row height bump the
+        // instant a second tool joined a panel mid-stream, which on
+        // panels straddling the scrollback↔viewport seam stranded the
+        // pre-bump top edge in native scrollback (visible as a
+        // half-floating "A C T I O N S" header above the live panel).
+        // Holding the row from frame 1 onward keeps the panel's
+        // intrinsic row count monotone across its lifecycle: rows can
+        // only be appended (more events, footer transition), never
+        // inserted above already-emitted content. One extra row of
+        // chrome on single-tool turns is the cost; visual stability
+        // across multi-tool turns is the payoff.
+        const bool show_stats = !cfg_.stats.empty();
         if (show_stats) {
             rows.push_back(stats_row());
             rows.push_back(blank());

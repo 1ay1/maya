@@ -17,13 +17,38 @@ implementation lives in:
 - `include/maya/render/wire_row.hpp`     — Layer 1
 - `include/maya/render/serialize.hpp`    — Layer 2 (`ContentRows`)
                                            and Layer 3 (`ShadowWitness`)
+- `include/maya/render/canvas_witness.hpp` — Layer 0 (canvas caches)
 - `include/maya/render/frame_bytes.hpp`  — Layer 4
 - `include/maya/render/inline_frame.hpp` — Layer 5 (apex)
 
-## The theorem in three parts
+## The theorem in four parts
 
-The integrity claim decomposes into three sub-claims, each closed by a
+The integrity claim decomposes into four sub-claims, each closed by a
 distinct layer of the chain.
+
+**T0 (canvas-cache integrity).** For every `Canvas` value reaching
+`diff()`, the cached metadata — `last_content_col(y)` and
+`max_content_row()` — is an exact function of the cell buffer. No diff
+is ever computed against a canvas whose trailing-blank extent is
+stale-high (the historical "shorter header painted over longer; old
+tail not cleared" ghost-row class).
+
+> *Proof.* `diff(CanvasWitness&&, CanvasWitness&&, ...)` is the only
+> witness-gated diff entry point; the legacy raw-Canvas overload is
+> kept solely so the existing 20+ scrollback tests keep exercising the
+> production path while the migration bakes in. `CanvasWitness` is
+> move-only with a private constructor friended only to
+> `verify_canvas`. `verify_canvas` re-derives `last_col_[y]` and
+> `max_y_` from `cells_` (slow O(W·H) scan) and returns `nullopt` on
+> disagreement — the host's only recovery is `clear_row()` + repaint,
+> never "emit anyway." On match it records FNV-1a hashes of both the
+> cells buffer and the (last_col_, max_y_) tuple. Inside `diff()`,
+> both hashes are recomputed against the moved-in canvases and
+> compared with the witness-recorded values; mismatch triggers
+> `std::abort` (memory-corruption / use-after-free signal,
+> single-threaded renderer). Therefore every byte that `diff()` emits
+> is computed against a canvas whose cached metadata is true at the
+> moment of emit. ∎
 
 **T1 (no-ghost).** The renderer emits no cursor-positioning escape
 sequence that targets a row above the viewport top.
@@ -72,8 +97,11 @@ corresponding canvas coordinate.
 > targets a row index that has overflowed the viewport at any prior
 > emit. ∎
 
-Together, T1+T2+T3 imply Scrollback Integrity:
+Together, T0+T1+T2+T3 imply Scrollback Integrity:
 
+- T0 ensures the cells `diff()` reads, and the trailing-blank cache
+  the EL optimisation trusts, are coherent with one another — closing
+  the "stacked header / stale tail" ghost class.
 - T1 keeps the cursor inside the viewport, so no escape sequence
   reaches above the live region.
 - T2 ensures whatever is written to the viewport is the truth (matches

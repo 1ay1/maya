@@ -97,6 +97,7 @@ add_library(maya
     src/render/serialize.cpp
     src/render/frame_bytes.cpp
     src/render/inline_frame.cpp
+    src/render/canvas_witness.cpp
     src/widget/markdown.cpp
     src/widget/markdown/parser.cpp
     src/widget/markdown/syntax.cpp

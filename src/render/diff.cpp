@@ -1,7 +1,9 @@
 #include "maya/render/diff.hpp"
+#include "maya/render/canvas_witness.hpp"
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 
 #if defined(__GNUC__) || defined(__clang__)
 #  define MAYA_PREFETCH_R(addr) __builtin_prefetch((addr), 0, 1)
@@ -240,6 +242,46 @@ void diff(
     }
     // Flush remaining ASCII.
     flush_ascii();
+}
+
+// ============================================================================
+// Witness-gated diff (Layer 0 of the chain).
+// ============================================================================
+//
+// Preconditions enforced *by the type system*:
+//   - Each CanvasWitness was minted by verify_canvas() — i.e. at issue
+//     time, last_col_/max_y_ were coherent with cells_ and the cells/caches
+//     hashes were recorded on the witness.
+//   - Witnesses are move-only; each consumes exactly one verify_canvas()
+//     call. Re-using a witness, or fabricating one, is a compile error.
+//
+// Postcondition enforced *at runtime* (A4 hedge):
+//   - The cells & caches hashes are recomputed on entry against the canvas
+//     each witness binds. Mismatch ⇒ std::abort. Single-threaded renderer;
+//     the only causes are use-after-free, buffer overrun in adjacent code,
+//     or a host bug that mutated the canvas after verify. Each of those
+//     would silently produce ghost rows on the legacy path — here, the
+//     process dies loudly instead.
+void diff(
+    CanvasWitness&& old_witness,
+    CanvasWitness&& new_witness,
+    const StylePool& pool,
+    std::string& out)
+{
+    const Canvas& old_canvas = old_witness.canvas();
+    const Canvas& new_canvas = new_witness.canvas();
+
+    if (hash_canvas_cells(old_canvas)  != old_witness.cells_hash_at_issue()  ||
+        hash_canvas_caches(old_canvas) != old_witness.caches_hash_at_issue() ||
+        hash_canvas_cells(new_canvas)  != new_witness.cells_hash_at_issue()  ||
+        hash_canvas_caches(new_canvas) != new_witness.caches_hash_at_issue()) {
+        // Drift between verify_canvas() and diff(). Unrecoverable: emitting
+        // bytes computed against either side would land an inconsistent
+        // frame on the wire and corrupt scrollback.
+        std::abort();
+    }
+
+    diff(old_canvas, new_canvas, pool, out);
 }
 
 } // namespace maya

@@ -24,6 +24,7 @@
 #include <string>
 
 #include "canvas.hpp"
+#include "canvas_witness.hpp"
 #include "../core/simd.hpp"
 #include "../platform/detect.hpp"
 #include "../terminal/ansi.hpp"
@@ -107,6 +108,25 @@ MAYA_FORCEINLINE void write_cup(std::string& out, int col, int row) {
 void diff(
     const Canvas& old_canvas,
     const Canvas& new_canvas,
+    const StylePool& pool,
+    std::string& out);
+
+// ============================================================================
+// Witness-gated diff (Layer 0 of the chain).
+// ============================================================================
+//
+// The legacy overload above trusts that last_col_/max_y_/cells of both
+// canvases are coherent. The overload below cannot be called without first
+// proving that via verify_canvas(). It re-hashes both canvases on entry
+// and std::aborts on drift (A4 hedge, mirroring ShadowWitness in Layer 3).
+//
+// The witnesses are consumed by rvalue reference: a CanvasWitness is
+// move-only and has no other public consumer, so each verify_canvas() call
+// pairs with exactly one diff() call. Forgetting to verify is a compile
+// error at every host call site that constructs the parameters by type.
+void diff(
+    CanvasWitness&& old_witness,
+    CanvasWitness&& new_witness,
     const StylePool& pool,
     std::string& out);
 

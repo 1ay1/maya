@@ -65,11 +65,42 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
+        // Vertical layout discipline:
+        //   • Thread grows to fill the leftover height, shrinks freely
+        //     down to min_height=0 if the bottom siblings need their
+        //     full natural sizes.
+        //   • ChangesStrip, Composer, StatusBar are PINNED at their
+        //     natural heights via shrink(0). Without this, flex would
+        //     proportionally shrink every child when content exceeds
+        //     the available height — making the composer vanish during
+        //     streaming until a terminal resize forces a relayout.
+        //
+        // Mirrors the messenger example's discipline (build_messages_box
+        // grows; header_box / composer_box use fixed heights + shrink(0)).
+        auto thread_box = (vstack()
+            .grow(1.0f)
+            .shrink(1.0f)
+            .min_height(Dimension::fixed(0))
+            .overflow(Overflow::Hidden)
+            (Thread{cfg_.thread}.build())).build();
+
+        auto strip_box = (vstack()
+            .grow(0).shrink(0)
+            (ChangesStrip{cfg_.changes_strip}.build())).build();
+
+        auto composer_box = (vstack()
+            .grow(0).shrink(0)
+            (Composer{cfg_.composer}.build())).build();
+
+        auto status_box = (vstack()
+            .grow(0).shrink(0)
+            (StatusBar{cfg_.status_bar}.build())).build();
+
         auto base = (v(
-            v(Thread{cfg_.thread}.build()) | grow(1.0f),
-            ChangesStrip{cfg_.changes_strip}.build(),
-            Composer{cfg_.composer}.build(),
-            StatusBar{cfg_.status_bar}.build()
+            std::move(thread_box),
+            std::move(strip_box),
+            std::move(composer_box),
+            std::move(status_box)
         ) | pad<1> | grow(1.0f)).build();
 
         Overlay::Config oc;

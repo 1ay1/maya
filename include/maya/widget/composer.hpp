@@ -346,7 +346,18 @@ public:
                 " " + std::to_string(line_count) + " lines ",
                 BorderTextPos::Bottom, BorderTextAlign::End);
         }
-        return (std::move(box) | grow(1.0f)).build();
+        // No `| grow(1.0f)` here: the composer is a natural-height
+        // sibling of the Thread inside AppLayout's column. The Thread
+        // is the ONLY element that should grow vertically; giving the
+        // composer a non-zero grow factor makes it compete with the
+        // Thread for slack space, and during streaming — when the
+        // Thread's natural height oscillates with every delta — the
+        // composer's allocated rows oscillate too (visible as flicker)
+        // or get squeezed to zero (composer disappears entirely until
+        // a terminal resize forces a relayout). Width-fill stays
+        // intact because AppLayout's column applies the parent's
+        // default cross-axis Stretch.
+        return box.build();
     }
 
 private:

@@ -2005,11 +2005,23 @@ const Element& StreamingMarkdown::build() const {
             )
         ).build();
 
+        // Mirror cached_build_'s cross-axis sizing. Stretch is
+        // load-bearing here: parent flex layouts use this widget's
+        // reported width for space-between math; the BoxElement
+        // default of Align::Start collapses the live wrapper to its
+        // children's natural width, which then shrinks the message's
+        // allotted columns and explodes per-row wrap — the new row
+        // count overshoots the inline frame's reserved height and the
+        // tail rows paint over the composer below.
+        //
+        // Padding/gap stay on the inner cached_build_ (already set in
+        // the full-rebuild path) so we don't double-apply them here.
         cached_live_ = (
-            detail::vstack()(
-                std::move(animated_body),
-                std::move(caret_row)
-            )
+            detail::vstack()
+                .align_self(Align::Stretch)(
+                    std::move(animated_body),
+                    std::move(caret_row)
+                )
         ).build();
 
         ::maya::request_animation_frame();

@@ -36,6 +36,7 @@
 
 #include "../dsl.hpp"
 #include "../element/element.hpp"
+#include "../element/text.hpp"
 #include "../style/color.hpp"
 
 #include "context_gauge.hpp"
@@ -199,24 +200,56 @@ private:
           : (kind == Kind::Warn)  ? " \xe2\x9a\xa0  "   // ⚠
                                   : " \xe2\x96\xb6  ";  // ▶
 
+        // No `with_bold()` on the painted band: on many terminals bold
+        // remaps fg to the bright variant of its ANSI slot, which
+        // sabotages the luminance contrast we just computed
+        // (e.g. bold black → bright_black on dark amber).
         return component([bg, fg, msg, glyph](int w, int /*h*/) -> Element {
             using namespace dsl;
             if (w <= 0) return blank().build();
-            // Compose a single TextElement that spans the full row
-            // width — the bg attribute paints every cell, including
-            // the trailing pad, so the toast reads as one continuous
-            // colored band rather than a chip floating on the panel.
+
+            // Truly width-responsive composition. All sizing goes
+            // through `text::string_width` (display columns, wide-char
+            // aware) instead of byte length — a 3-byte glyph like "▶"
+            // is 1 column, and CJK in the message body is 2 columns.
             //
-            // Note: no `with_bold()` here. On many terminals bold
-            // remaps fg to the bright variant of its ANSI slot, which
-            // sabotages the luminance contrast we just computed
-            // (e.g. bold black → bright_black on dark amber).
-            const std::string prefix = glyph;
-            std::string content = prefix + msg;
-            const int used = static_cast<int>(content.size());
-            if (used < w) content.append(static_cast<std::size_t>(w - used), ' ');
-            else if (used > w) content.resize(static_cast<std::size_t>(w));
-            return text(std::move(content),
+            // Budget order (shrink most-disposable first):
+            //   1. full:     " ▶  message..."      (glyph + 2sp gap + msg)
+            //   2. tight:    " ▶ msg…"             (glyph + 1sp + truncated)
+            //   3. tiny:     " msg…"                (drop glyph entirely)
+            //   4. minimal:  "…" or even blank      (still a colored band)
+            // The trailing pad is painted at the bg color so the
+            // toast reads as one continuous band the full row wide.
+            const std::string g_str{glyph};
+            const int g_w   = string_width(g_str);
+            const int msg_w = string_width(msg);
+
+            std::string body;
+            if (g_w + msg_w + 1 <= w) {
+                // Full fit with the original glyph + leading space.
+                body = g_str + msg;
+            } else if (g_w + 2 < w) {
+                // Glyph fits with at least 1 char of message + ellipsis.
+                const int budget = w - g_w;     // room left for message
+                body = g_str + truncate_end(msg, budget);
+            } else if (w >= 3) {
+                // Drop the glyph entirely; just truncate the message.
+                // Lead with a single space so the colored band has a
+                // bit of breathing room before the text.
+                body = " " + truncate_end(msg, w - 1);
+            } else {
+                // Pathologically narrow (w ≤ 2). Render only the
+                // background band — better an unmistakable colored
+                // strip than a clipped, unreadable glyph.
+                body.clear();
+            }
+
+            // Pad to exactly `w` display columns with bg-painted spaces.
+            const int used = string_width(body);
+            if (used < w) body.append(static_cast<std::size_t>(w - used), ' ');
+            // No `else` for over-budget: truncate_end already capped us.
+
+            return text(std::move(body),
                         Style{}.with_fg(fg).with_bg(bg)).build();
         });
     }

@@ -537,6 +537,85 @@ void Runtime::set_title(std::string_view title) {
 }
 
 // ============================================================================
+// Runtime::write_clipboard — system clipboard via OSC 52
+// ============================================================================
+//
+// OSC 52 protocol:
+//
+//   ESC ] 52 ; c ; <base64-encoded-utf8> ST
+//
+// The `c` selector targets the regular clipboard (vs `p` for primary on
+// X11). Bytes are base64-encoded so binary / multi-line payloads survive
+// the terminal's escape-sequence parser unaltered. Empty payload clears
+// the clipboard — routed through the encoder uniformly, no special-case.
+//
+// Cross-platform story:
+//
+//   Transport: writer_ → platform::io_write, which dispatches to
+//   POSIX `::write()` on Linux/macOS and Win32 `::WriteFile()` on
+//   Windows. The platform abstraction is the same one set_title()
+//   uses and matches every other byte that leaves the runtime.
+//
+//   Protocol: OSC 52 is interpreted by the terminal emulator, not
+//   the OS. Native support: xterm, kitty, alacritty, wezterm, foot,
+//   ghostty, rio, iTerm2 (opt-in: Prefs → General → Selection →
+//   "Applications in terminal may access clipboard"), Windows
+//   Terminal 1.7+, tmux/screen with set-clipboard enabled.
+//   Terminals without OSC 52 support discard the OSC string
+//   silently per ECMA-48 §8.3.89.
+//
+// Bytes go through write_or_buffer (not write_raw) so the sequence
+// queues behind any pending render residue instead of landing
+// mid-frame on the wire — interleaving OSC 52 bytes into an
+// unfinished CSI / OSC from the previous compose corrupts the wire's
+// shadow against prev_cells and causes a visible repaint glitch.
+//
+// Terminator: ST (ESC \) rather than BEL. ST is the spec terminator
+// per ECMA-48 §8.3.143; BEL is the historic xterm shorthand. ST
+// survives tmux's set-clipboard passthrough cleanly on every tmux
+// version we've tested; BEL is mangled by some older builds.
+void Runtime::write_clipboard(std::string_view text) {
+    // RFC 4648 standard alphabet — OSC 52 requires standard (not URL-safe)
+    // base64. Padding is required per the OSC 52 spec; terminals reject
+    // non-padded payloads inconsistently.
+    static constexpr char kB64[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    std::string encoded;
+    encoded.reserve((text.size() + 2) / 3 * 4);
+    std::size_t i = 0;
+    const auto* src = reinterpret_cast<const unsigned char*>(text.data());
+    while (i + 3 <= text.size()) {
+        std::uint32_t v = (std::uint32_t(src[i])     << 16)
+                        | (std::uint32_t(src[i + 1]) <<  8)
+                        |  std::uint32_t(src[i + 2]);
+        encoded.push_back(kB64[(v >> 18) & 0x3F]);
+        encoded.push_back(kB64[(v >> 12) & 0x3F]);
+        encoded.push_back(kB64[(v >>  6) & 0x3F]);
+        encoded.push_back(kB64[ v        & 0x3F]);
+        i += 3;
+    }
+    const std::size_t rem = text.size() - i;
+    if (rem == 1) {
+        std::uint32_t v = std::uint32_t(src[i]) << 16;
+        encoded.push_back(kB64[(v >> 18) & 0x3F]);
+        encoded.push_back(kB64[(v >> 12) & 0x3F]);
+        encoded.push_back('=');
+        encoded.push_back('=');
+    } else if (rem == 2) {
+        std::uint32_t v = (std::uint32_t(src[i])     << 16)
+                        | (std::uint32_t(src[i + 1]) <<  8);
+        encoded.push_back(kB64[(v >> 18) & 0x3F]);
+        encoded.push_back(kB64[(v >> 12) & 0x3F]);
+        encoded.push_back(kB64[(v >>  6) & 0x3F]);
+        encoded.push_back('=');
+    }
+
+    auto seq = std::format("\x1b]52;c;{}\x1b\\", encoded);
+    (void)writer_->write_or_buffer(seq);
+}
+
+// ============================================================================
 // Runtime::cleanup — final terminal cleanup
 // ============================================================================
 

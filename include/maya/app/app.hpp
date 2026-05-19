@@ -351,6 +351,20 @@ public:
     // Set terminal title via OSC 0.
     void set_title(std::string_view title);
 
+    // Copy `text` to the system clipboard via OSC 52. Cross-platform
+    // — the transport (writer_ → platform::io_write) abstracts
+    // POSIX::write / Win32::WriteFile, and the escape sequence
+    // itself is interpreted by the terminal emulator, not the OS.
+    // Empty `text` clears the clipboard.
+    //
+    // Compatibility: kitty, alacritty, wezterm, foot, ghostty, rio,
+    // xterm, iTerm2 (opt-in via Prefs), Windows Terminal 1.7+, tmux
+    // with `set -g set-clipboard on`. Apple Terminal.app and
+    // conhost.exe ignore the sequence silently — no fallback path
+    // here, hosts that need guaranteed clipboard access can layer
+    // xclip / wl-copy / pbcopy / clip.exe at a higher level.
+    void write_clipboard(std::string_view text);
+
     // Row count of the last composed inline frame (0 in fullscreen mode
     // or before the first render). Callers can use this as a cheap proxy
     // for tree height when deciding to virtualize. Returns 0 in any
@@ -772,7 +786,7 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
             ctx.rt.set_title(s.title);
         },
         [&](const typename Cmd<Msg>::WriteClipboard& w) {
-            (void)w; // TODO: implement OSC 52 clipboard write
+            ctx.rt.write_clipboard(w.content);
         },
         [&](const typename Cmd<Msg>::Task& t) {
             if (ctx.bg_queue) {

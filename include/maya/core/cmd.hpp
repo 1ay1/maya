@@ -132,24 +132,47 @@ public:
     /// (everything still fits on screen — nothing has overflowed).
     struct CommitScrollbackOverflow {};
 
-    /// Force the next render to be a full repaint by collapsing the
-    /// inline-mode coherence state to Divergent. The next render's
-    /// compose_inline_frame sees prev_rows=0 and emits the entire live
-    /// frame fresh from the cursor's current position via serialize(),
-    /// which (a) pushes the OLD live frame's rows up into terminal
-    /// scrollback via the trailing \r\n's and (b) writes the NEW live
-    /// frame into the viewport bottom. Mirrors what Runtime::handle_resize
-    /// does internally on SIGWINCH — except the host can request it
-    /// explicitly without a resize event.
+    /// Soft repaint of the live viewport. Demotes the inline
+    /// coherence state Synced → Stale, routing the next render
+    /// through compose's case (B): walk cursor up by the prior
+    /// frame's painted-region height, re-emit every visible row
+    /// in place, tail-erase with `\x1b[J`.
     ///
-    /// Use cases:
-    ///   - First keystroke after a long streaming session where the
-    ///     terminal may have committed transient composer/footer cells
-    ///     into scrollback (the "ghost composer" pattern).
-    ///   - Restoring a clean viewport when the host detects the user
-    ///     scrolled during streaming.
-    ///   - Any moment where the host knows the diff path has nothing
-    ///     useful left to compare against.
+    /// **This is NOT a hard reset.** It does not emit
+    /// `\x1b[2J\x1b[3J\x1b[H`. Pre-agentty shell scrollback above
+    /// the viewport is preserved. Only `Runtime::handle_resize`
+    /// (SIGWINCH) emits the hard wipe — there is no host-callable
+    /// hard-reset Cmd.
+    ///
+    /// Use cases (narrow):
+    ///   - Ghost cells **inside** the live viewport: composer
+    ///     outline survivors of a stream-finish shrink, stale
+    ///     status / footer rows below the new content_rows, SGR
+    ///     residue from a half-written frame.
+    ///   - User-facing "redraw screen" hotkey (Ctrl-L) when the
+    ///     in-viewport rendering looks wrong.
+    ///
+    /// **Hazard — do NOT use on wholesale model swap.** Case (B)'s
+    /// scroll-to-fit branch emits `\n` at the viewport bottom
+    /// when the new frame is taller than the old cursor's offset
+    /// from viewport top — each `\n` permanently scrolls one row
+    /// of host content into terminal-owned scrollback. On thread
+    /// switch / new-thread / checkpoint restore, prefer
+    /// `commit_scrollback_overflow()` instead: it drops the stale
+    /// overflow from `prev_cells` (zero wire bytes) so the normal
+    /// diff path can re-emit the full viewport correctly against
+    /// the swapped-in model.
+    ///
+    /// Choosing between Cmd::force_redraw and
+    /// Cmd::commit_scrollback_overflow:
+    ///
+    ///   | Situation                                | Right Cmd          |
+    ///   |------------------------------------------|--------------------|
+    ///   | Ghost cells inside the viewport          | force_redraw       |
+    ///   | Ctrl-L style user redraw                 | force_redraw       |
+    ///   | Wholesale model swap (thread / restore)  | commit_..._overflow|
+    ///   | Bounded-frozen trim (drop oldest N rows) | commit_..._overflow|
+    ///   | Terminal genuinely corrupted             | (resize only)      |
     struct ForceRedraw {};
 
     using Variant = std::variant<None, Quit, Batch, After, SetTitle,
@@ -200,8 +223,9 @@ public:
         return {CommitScrollbackOverflow{}};
     }
 
-    /// Schedule a full repaint on the next render — mirrors handle_resize's
-    /// coherence-collapse. See `ForceRedraw` doc above.
+    /// Schedule a soft viewport repaint on the next render. See
+    /// `ForceRedraw` doc above for the exact mechanics and the
+    /// chooser table vs `commit_scrollback_overflow`.
     [[nodiscard]] static auto force_redraw() -> Cmd {
         return {ForceRedraw{}};
     }

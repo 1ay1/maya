@@ -321,6 +321,115 @@ input state and a code path that handles it correctly.
    to Divergent (e.g. for fullscreen mode) is the explicit signal
    that the aggressive scrollback-wiping clear should happen.
 
+## Choosing a recovery primitive
+
+Three host-callable primitives interact with the inline render
+state. They are NOT interchangeable; using the wrong one is the
+class of bug that produces "corruption after thread switch" or
+"scrollback wiped on Ctrl-L."
+
+### `Cmd::commit_scrollback_overflow` — bookkeeping only
+
+**What it does.** Calls `Runtime::commit_inline_overflow()`,
+which advances `prev_cells` by `max(0, prev_rows - term_h)`
+rows and recomputes the shadow hash. **Zero bytes written to the
+wire.**
+
+**After.** `prev_rows ≤ term_h`, `updatable_start == 0`. The
+next compose's diff scans every visible row.
+
+**Safety.** The rows dropped from `prev_cells` were emitted to
+the wire by earlier streaming `\r\n`s and the terminal already
+committed them to native scrollback. We're just acknowledging
+that fact — there is nothing on the wire to repair.
+
+**Use when.**
+  - Wholesale model swap (thread switch, new thread, checkpoint
+    restore). After the swap the new canvas content at rows
+    `[0, updatable_start)` differs from `prev_cells`, but the
+    diff would skip those rows thinking they're scrollback. The
+    commit drops the stale prefix so the diff sees the full
+    visible range as the diff window.
+  - Bounded-frozen trim (the `agent_session` pattern of dropping
+    the oldest N entries from `m.frozen` when it grows past a
+    soft cap). The same shadow / wire mismatch arises.
+
+### `Cmd::force_redraw` — soft viewport repaint
+
+**What it does.** Demotes `InlineFrame<Synced>` → `Stale`. The
+next compose enters case (B): cursor walks up by
+`wire_cursor_rows`, every visible row is re-emitted in place,
+then `\x1b[J` erases below.
+
+**Hazard.** Case (B)'s `scroll_n > 0` branch (new frame taller
+than the old cursor's offset from viewport top) emits `\n` at
+the viewport bottom to make room — each `\n` permanently
+scrolls one row of host content into terminal-owned scrollback.
+For wholesale model swap this destroys host shell history
+above the agentty region. Use
+`commit_scrollback_overflow` instead in that case.
+
+**Use when.**
+  - Ghost cells visible **inside** the live viewport: composer
+    outline survivors of a stream-finish shrink, stale status /
+    footer rows below the new content_rows, SGR residue from a
+    half-written frame.
+  - User-facing "redraw screen" hotkey (Ctrl-L).
+
+### Hard reset (resize-internal) — not host-callable
+
+**What it does.** `Runtime::handle_resize` demotes the inline
+state to `HardReset`, whose render emits
+`\x1b[2J\x1b[3J\x1b[H` — wipes the viewport AND the terminal's
+native scrollback, then repaints fresh via case (A).
+
+**Why not host-callable.** Wiping native scrollback destroys
+pre-agentty shell history. SIGWINCH gets away with it because
+the terminal emulator is already repainting that region itself,
+and the layout invalidation makes the previous frame's
+positioning meaningless anyway. No other situation justifies
+the destruction.
+
+### Chooser table
+
+| Situation                                       | Right primitive                |
+|-------------------------------------------------|--------------------------------|
+| Ghost cells inside the live viewport            | `Cmd::force_redraw`            |
+| Ctrl-L style user redraw hotkey                 | `Cmd::force_redraw`            |
+| Wholesale model swap (thread switch / restore) | `Cmd::commit_scrollback_overflow` |
+| Bounded-frozen trim (drop oldest N rows)        | `Cmd::commit_scrollback_overflow` |
+| Terminal genuinely corrupted (external write)   | (none — resize only)           |
+
+### Common mistake: `force_redraw` on model swap
+
+The instinct on a wholesale model swap is "my prev_cells
+shadow no longer matches what the user should see, force a
+full repaint." That instinct is correct; the choice of
+primitive is not.
+
+`force_redraw`'s case (B) was designed for **in-viewport
+ghosts**, where the new frame is the same height or shorter
+than the prior painted region. The `scroll_n > 0` branch
+(handling the new-frame-taller case) emits bottom-edge `\n`s
+that scroll viewport content into native scrollback. Under
+streaming, this is correct: the rows scrolling off are the
+frozen / committed prefix of the current conversation. Under a
+model swap, the rows scrolling off are unrelated host content
+(or the previous thread's tail), and the scroll permanently
+destroys them.
+
+`commit_scrollback_overflow` is the right primitive: it tells
+maya "the overflow rows in prev_cells are gone" without emitting
+any bytes, then the normal diff path repaints the full viewport
+against the new canvas correctly. Mid-viewport seams (where the
+diff was skipping rows it thought were committed scrollback) go
+away; host scrollback above is preserved.
+
+See `agentty/src/runtime/app/update/picker.cpp` —
+`ThreadListSelect` / `NewThread` handlers — for the canonical
+application of this rule, with the commit-revert-recommit history
+in the block comment.
+
 ## File map
 
 - `maya/include/maya/render/serialize.hpp` — `InlineFrameState`

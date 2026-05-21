@@ -437,6 +437,80 @@ issue. Worth flagging in a comment near `reset()`.
 
 ---
 
+## #9 — Wholesale model swap with `prev_rows > term_h` leaves a mid-viewport seam of stale wire bytes  ·  **CORRUPTION · P1** · **RESOLVED**
+
+**Status.** Resolved by routing wholesale model swap through
+`Cmd::commit_scrollback_overflow` instead of `Cmd::force_redraw`.
+See agentty commit `0a04f33` ("picker: commit_scrollback_overflow
+on thread swap") and the block comment above `ThreadListSelect` in
+`src/runtime/app/update/picker.cpp` for the canonical pattern.
+
+**Symptom.** After loading a saved thread from the picker (or
+creating a new thread mid-session) when the previous thread's
+frame had overflowed (`prev_rows > term_h`), the new thread's
+viewport rendered with a visible seam mid-screen — the upper
+portion still showing fragments of the previous thread's text
+fused row-by-row against the new thread's content. Resize
+(SIGWINCH) recovered, because handle_resize emits the hard
+`\x1b[2J\x1b[3J\x1b[H` wipe.
+
+**Code:** `src/render/serialize.cpp:489` (`updatable_start =
+prev_rows - prev_on_screen`) and the diff-scan loop immediately
+below.
+
+**Reason.** The diff path treats rows `[0, updatable_start)` as
+committed scrollback — immutable to the application — and
+skips them in both the first-changed scan and the per-row emit.
+That invariant is correct under streaming, where those rows
+were genuinely scrolled into native scrollback by prior
+frames' bottom-edge `\r\n`s.
+
+Under a wholesale model swap, the rows at those Y positions in
+the NEW canvas hold entirely different content (the new thread's
+top). But `prev_cells` still mirrors the old thread's painted
+bytes, the shadow_hash matches itself (nothing touched
+prev_cells between the swap and the next compose), the witness
+verifies, and the diff scans only `[updatable_start, common)`.
+Rows `[0, updatable_start)` are never emitted; the wire keeps
+showing the old-thread bytes at those Y positions.
+
+The seam is exactly where `updatable_start` falls in the
+viewport.
+
+**Why force_redraw doesn't fix it.** The instinctive response
+— issue `Cmd::force_redraw` so the next render routes through
+case (B) and re-emits every visible row — introduces a worse
+problem. Case (B)'s `scroll_n > 0` branch (new frame taller
+than the old cursor's offset from viewport top) emits `\n` at
+the viewport bottom to make room; each `\n` permanently scrolls
+one row of host content into terminal-owned scrollback. On
+thread switch with a fresh new thread loading in front of a
+recently-streamed old thread, this destroys both host shell
+history above the agentty region AND the old thread's tail
+that the user was looking at moments before. agentty commit
+`8becb88` did exactly this and reverted in `0b24148`.
+
+**Fix.** Dispatch `Cmd::commit_scrollback_overflow` instead.
+It calls `Runtime::commit_inline_overflow`, which advances
+`prev_cells` by `max(0, prev_rows - term_h)` rows (zero wire
+bytes — the operation is pure bookkeeping). After the commit
+`prev_rows ≤ term_h` and `updatable_start == 0`. The next
+compose's diff scans the full common range; every visible row
+gets correctly emitted against the new thread's canvas.
+
+The rows dropped from `prev_cells` were emitted to the wire by
+earlier streaming and the terminal has already captured them
+into its native scrollback. We are not corrupting them — we
+are admitting they are no longer addressable, which they
+weren't anyway.
+
+**Doc.** See `docs/internals/inline-redraw-paths.md` § "Choosing
+a recovery primitive" for the full chooser table and the
+rationale comparing `commit_scrollback_overflow`,
+`force_redraw`, and hard reset.
+
+---
+
 ## Priority summary
 
 | # | severity      | priority | status   | fix shipped in                                                                |
@@ -449,6 +523,7 @@ issue. Worth flagging in a comment near `reset()`.
 | 6 | LATENT        | P3       | resolved | `1609106` (debug assert at compose entry)                                     |
 | 7 | informational | —        | wontfix  | acceptable redundancy (5 bytes/session)                                       |
 | 8 | informational | —        | wontfix  | comment near `state.reset()` re cursor visibility                             |
+| 9 | CORRUPTION    | **P1**   | resolved | agentty `0a04f33` (dispatch `commit_scrollback_overflow` on thread swap)      |
 
 All structural scrollback-corruption findings from this audit are
 shipped. Defenses, in order of where bytes have to come from:

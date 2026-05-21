@@ -789,9 +789,6 @@ struct RAlign  { Align a; };
 struct RJust   { Justify j; };
 struct ROvf    { Overflow o; };
 
-// Bottom-anchor pipe — see BoxElement::anchor_bottom.
-struct RAnchor { bool on; };
-
 // Scroll pipe — bundles overflow:Hidden + scroll_x/y + writeback pointer +
 // optional explicit viewport size. w/h of 0 mean "don't set" (the inner
 // box keeps whatever sizing it had / inherits from grow/parent).
@@ -820,7 +817,6 @@ struct RScroll {
 [[nodiscard]] inline RAlign  align(Align a)                     { return {a}; }
 [[nodiscard]] inline RJust   justify(Justify j)                 { return {j}; }
 [[nodiscard]] inline ROvf    overflow(Overflow o)               { return {o}; }
-[[nodiscard]] inline RAnchor anchor_bottom()                    { return {true}; }
 
 // Scroll factories. Vertical is the common case; horizontal is opt-in via
 // scrollx() or the 2-arg form. Passing 0 for a viewport size means "let
@@ -852,7 +848,7 @@ struct WrappedNode {
     static constexpr uint16_t PAD=1,GAP=2,BRD=4,BCOL=8,BTXT=16,
                               GRW=32,WD=64,HT=128,STY=256,
                               MGN=512,ALN=1024,JST=2048,OVF=4096,
-                              SCRL=8192,ANC=16384;
+                              SCRL=8192;
 
     Inner inner;
     int pt_=0, pr_=0, pb_=0, pl_=0, gap_=0;
@@ -870,7 +866,6 @@ struct WrappedNode {
     Overflow ovf_{};
     ScrollState* scrl_state_ = nullptr;
     int scrl_vw_ = 0, scrl_vh_ = 0;
-    bool anchor_bottom_ = false;
     uint16_t f_=0;
 
     operator Element() const { return build(); }
@@ -916,7 +911,6 @@ struct WrappedNode {
                 if (scrl_vw_ > 0) box->layout.width  = Dimension::fixed(scrl_vw_);
                 if (scrl_vh_ > 0) box->layout.height = Dimension::fixed(scrl_vh_);
             }
-            if (f_&ANC) box->anchor_bottom = anchor_bottom_;
             return inner_elem;
         }
         auto b = maya::detail::box();
@@ -948,9 +942,6 @@ struct WrappedNode {
                 if (scrl_vw_ > 0) bx->layout.width  = Dimension::fixed(scrl_vw_);
                 if (scrl_vh_ > 0) bx->layout.height = Dimension::fixed(scrl_vh_);
             }
-        }
-        if (f_&ANC) {
-            if (auto* bx = maya::as_box(built)) bx->anchor_bottom = anchor_bottom_;
         }
         return built;
     }
@@ -1032,12 +1023,6 @@ template <Node N> [[nodiscard]] auto operator|(N n, RScroll t) {
     w.scrl_vw_    = t.viewport_w;
     w.scrl_vh_    = t.viewport_h;
     w.f_ |= decltype(w)::SCRL;
-    return w;
-}
-template <Node N> [[nodiscard]] auto operator|(N n, RAnchor t) {
-    auto w = as_wrapped(std::move(n));
-    w.anchor_bottom_ = t.on;
-    w.f_ |= decltype(w)::ANC;
     return w;
 }
 

@@ -154,20 +154,6 @@ struct BoxElement {
     Overflow               overflow = Overflow::Visible;
     bool                   is_stack = false;
 
-    /// When true, this box is treated as a "bottom anchor" by the
-    /// inline renderer: the rows it paints are pinned to the bottom
-    /// of the terminal viewport via a DECSTBM scroll region, so
-    /// growth in sibling regions above scrolls only the upper area
-    /// (rows above the anchor stay at their viewport positions; the
-    /// anchored rows never reflow). Use on subtrees whose viewport
-    /// position must stay stable across streaming-driven height
-    /// changes — typically the composer + status bar.
-    ///
-    /// Multiple anchored boxes in one tree are treated as a union:
-    /// the topmost anchor wins, covering itself and everything below
-    /// it on the canvas.
-    bool                   anchor_bottom = false;
-
     /// Non-owning back-pointer to caller-owned ScrollState. When set, the
     /// renderer writes max_x/max_y back after layout so the user can clamp
     /// future scrolls. Lifetime: must outlive the current render pass.

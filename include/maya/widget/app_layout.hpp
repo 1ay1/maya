@@ -96,20 +96,11 @@ public:
             .grow(0).shrink(0)
             (StatusBar{cfg_.status_bar}.build())).build();
 
-        // Bottom-anchored cluster: ChangesStrip + Composer + StatusBar
-        // form a unit pinned to the viewport bottom by the inline
-        // renderer (DECSTBM scroll region above). Streaming-driven
-        // growth in `thread_box` scrolls only the upper region;
-        // these rows never reflow.
-        auto anchor_group = (v(
+        auto base = (v(
+            std::move(thread_box),
             std::move(strip_box),
             std::move(composer_box),
             std::move(status_box)
-        ) | anchor_bottom() | grow(0)).build();
-
-        auto base = (v(
-            std::move(thread_box),
-            std::move(anchor_group)
         ) | pad<1> | grow(1.0f)).build();
 
         Overlay::Config oc;

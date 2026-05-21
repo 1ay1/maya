@@ -203,14 +203,15 @@ public:
             // — only the SGR color attribute changes — so word-wrap
             // never reflows.
             constexpr std::string_view kBlock = "\xe2\x96\x88";
-            Style cursor_visible = Style{}.with_fg(cfg_.text_color);
+            const Style text_style    = Style{}.with_fg(cfg_.text_color);
+            const Style cursor_visible = Style{}.with_fg(cfg_.text_color);
             // "Invisible" cursor: dim foreground in the box color so
             // the cell stays the same width but reads as empty. Using
             // box bg directly would require knowing the parent's
             // resolved bg, which the widget doesn't have access to;
             // dimming to the box border color hides the glyph against
             // the box chrome reliably across themes.
-            Style cursor_hidden = Style{}.with_fg(box_color).with_dim();
+            const Style cursor_hidden = Style{}.with_fg(box_color).with_dim();
             auto lines = split_lines(with_cursor);
             for (std::size_t i = 0; i < lines.size(); ++i) {
                 Element prefix = (i == 0) ? prompt_chip
@@ -218,26 +219,40 @@ public:
                 std::string_view line = lines[i];
                 // Find the cursor placeholder in this line (at most
                 // one per line, since we inserted exactly one). If
-                // present, emit pre / cursor / post as three runs.
+                // present, emit the line as ONE TextElement with three
+                // StyledRuns (pre / cursor / post) instead of three
+                // sibling TextElements in a row. Sibling text elements
+                // are independent flex items — when `pre` word-wraps
+                // internally and overflows to a second visual row, the
+                // cursor element stays glued to the end of row 1 at the
+                // wrap boundary, so the visible cursor doesn't follow
+                // the user's text onto row 2. A single TextElement with
+                // runs lets the wrap engine position the cursor cell at
+                // whatever visual column its byte offset lands on.
                 auto cur_pos = line.find(kBlock);
                 if (cur_pos == std::string_view::npos) {
                     body_rows.push_back(h(
                         prefix,
-                        text(std::string{line},
-                             Style{}.with_fg(cfg_.text_color))
+                        text(std::string{line}, text_style)
                     ).build());
                 } else {
-                    std::string_view pre  = line.substr(0, cur_pos);
-                    std::string_view post = line.substr(cur_pos + kBlock.size());
-                    body_rows.push_back(h(
-                        prefix,
-                        text(std::string{pre},
-                             Style{}.with_fg(cfg_.text_color)),
-                        text(std::string{kBlock},
-                             blink_off ? cursor_hidden : cursor_visible),
-                        text(std::string{post},
-                             Style{}.with_fg(cfg_.text_color))
-                    ).build());
+                    TextElement te;
+                    te.content = std::string{line};
+                    te.style   = text_style;
+                    te.wrap    = TextWrap::Wrap;
+                    te.runs.push_back(StyledRun{
+                        .byte_offset = 0,
+                        .byte_length = cur_pos,
+                        .style       = text_style});
+                    te.runs.push_back(StyledRun{
+                        .byte_offset = cur_pos,
+                        .byte_length = kBlock.size(),
+                        .style       = blink_off ? cursor_hidden : cursor_visible});
+                    te.runs.push_back(StyledRun{
+                        .byte_offset = cur_pos + kBlock.size(),
+                        .byte_length = line.size() - cur_pos - kBlock.size(),
+                        .style       = text_style});
+                    body_rows.push_back(h(prefix, Element{std::move(te)}).build());
                 }
             }
         }

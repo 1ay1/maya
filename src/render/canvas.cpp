@@ -518,6 +518,7 @@ void Canvas::clear() {
     }
     damage_ = full_rect();
     max_y_ = -1;
+    anchor_top_y_ = -1;
     stage_ = CanvasStage::Drained;
 }
 
@@ -566,6 +567,7 @@ void Canvas::clear_rows(int n) {
         }
     }
     max_y_ = new_max_y;
+    anchor_top_y_ = -1;
     stage_ = CanvasStage::Drained;
 }
 
@@ -600,6 +602,7 @@ void Canvas::resize(int w, int h) {
     width_ = w;
     height_ = h;
     max_y_ = -1;
+    anchor_top_y_ = -1;
     cells_.assign(static_cast<std::size_t>(w * h), default_cell());
     last_col_.assign(static_cast<std::size_t>(h), -1);
     damage_ = full_rect();

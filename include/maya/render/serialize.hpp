@@ -326,6 +326,8 @@ public:
         s.shadow_hash_       = static_cast<uint64_t>(-1);
         s.ghost_rows_above_  = 0;
         s.wire_cursor_rows_  = 0;
+        s.anchor_rows_       = 0;
+        s.anchor_term_h_     = 0;
         return s;
     }
 
@@ -368,6 +370,8 @@ public:
         s.cursor_hidden_    = false;
         s.decawm_off_       = false;
         s.shadow_hash_      = static_cast<uint64_t>(-1);
+        s.anchor_rows_      = 0;
+        s.anchor_term_h_    = 0;
         return s;
     }
 
@@ -406,6 +410,27 @@ private:
     int           ghost_rows_above_ = 0;
     int           wire_cursor_rows_ = 0;
     uint64_t      shadow_hash_      = static_cast<uint64_t>(-1);
+
+    // ── Bottom-anchor (DECSTBM) state ────────────────────────────
+    // anchor_rows_ = K, the number of canvas rows at the bottom of
+    // the canvas that the inline renderer pins to the bottom of the
+    // viewport via a DECSTBM scroll region. 0 = no anchor active.
+    //
+    // When non-zero, the wire is in this shape:
+    //   - viewport rows [term_h - K + 1 .. term_h] (1-based) show
+    //     the K anchored canvas rows, painted by the last compose
+    //     that activated or refreshed the anchor.
+    //   - DECSTBM is set to [1 .. term_h - K] so \r\n scrolls only
+    //     the upper region, leaving anchored rows in place.
+    //   - the cursor lives somewhere in [1 .. term_h - K] (upper
+    //     region) at end of each compose so the next compose's
+    //     \r\n walk lands inside the scroll region.
+    //
+    // anchor_term_h_ caches the term_h that anchor was set up for;
+    // a resize invalidates the anchor (terminals reset DECSTBM on
+    // resize anyway).
+    int           anchor_rows_      = 0;
+    int           anchor_term_h_    = 0;
 };
 
 /// Return value of `InlineFrameState::finalize() &&`. Carries the

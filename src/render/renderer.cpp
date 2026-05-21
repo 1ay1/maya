@@ -608,6 +608,15 @@ void paint_element(
 
     visit_element(elem, overload{
         [&](const BoxElement& node) {
+            // Record bottom-anchor hint before painting children. The
+            // box's absolute Y is the top of the anchored region on
+            // the canvas; the inline renderer reads canvas.anchor_top_y()
+            // to set up a DECSTBM scroll region that pins these rows
+            // to the viewport bottom across frames.
+            if (node.anchor_bottom) {
+                canvas.set_anchor_top(ay);
+            }
+
             // 1. Fill background if the box has a bg color.
             if (node.style.bg.has_value()) {
                 uint16_t bg_style_id = pool.intern(

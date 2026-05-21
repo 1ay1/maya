@@ -679,6 +679,24 @@ public:
     /// Returns -1 if nothing was written. O(1) — avoids scanning the canvas.
     [[nodiscard]] int max_content_row() const noexcept { return max_y_; }
 
+    /// Bottom-anchor support — see BoxElement::anchor_bottom.
+    ///
+    /// `anchor_top_y` is the canvas-Y of the topmost row of the
+    /// anchored region; rows in [anchor_top_y, content_rows) are
+    /// pinned to the bottom of the viewport by the inline renderer
+    /// via a DECSTBM scroll region. -1 means "no anchor set" — the
+    /// renderer uses the legacy monotonic-canvas model.
+    ///
+    /// Multiple paint sites may call set_anchor_top; the smallest
+    /// non-negative value wins (the topmost anchor covers the most
+    /// rows). Reset to -1 by clear() / clear_rows(0) / resize() so
+    /// each frame starts with a clean slate.
+    void set_anchor_top(int y) noexcept {
+        if (y < 0) return;
+        if (anchor_top_y_ < 0 || y < anchor_top_y_) anchor_top_y_ = y;
+    }
+    [[nodiscard]] int anchor_top_y() const noexcept { return anchor_top_y_; }
+
     /// The highest column index in row `y` with non-blank+default content
     /// since the last clear. Returns -1 if the row is entirely blank.
     /// O(1) — maintained incrementally by set()/write_text(). Used by
@@ -797,6 +815,7 @@ private:
     int width_  = 0;
     int height_ = 0;
     int max_y_  = -1;  // highest row with non-space content (O(1) content_height)
+    int anchor_top_y_ = -1;  // bottom-anchor top row, -1 = no anchor
     // Per-row last-content column. `-1` = row is blank-default. Updated
     // by set()/fill()/write_text(); reset by clear()/clear_rows()/resize().
     // Size always equals height_. Reads via last_content_col() are O(1).

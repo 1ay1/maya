@@ -55,11 +55,19 @@ std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexce
 
 FinalizeResult InlineFrameState::finalize() && noexcept {
     std::string out;
+    // Restore DECSTBM to the full viewport BEFORE cursor/DECAWM
+    // restores so subsequent shell output isn't trapped inside the
+    // upper-region scroll. \x1b[r with no arguments resets the
+    // scroll region to the entire viewport. No-op cost on terminals
+    // that don't honor DECSTBM.
+    if (anchor_rows_ > 0) out.append("\x1b[r");
     if (cursor_hidden_) out.append("\x1b[?25h");
     if (decawm_off_)    out.append("\x1b[?7h");
     InlineFrameState s{std::move(*this)};
     s.cursor_hidden_ = false;
     s.decawm_off_    = false;
+    s.anchor_rows_   = 0;
+    s.anchor_term_h_ = 0;
     return FinalizeResult{std::move(out), std::move(s)};
 }
 
@@ -485,6 +493,406 @@ compose_inline_frame_impl(const Canvas& canvas,
     // 2-3 reallocations on the hot path.
     out.reserve(out.size() + 256 + static_cast<std::size_t>(content_rows) * 24);
 
+    // ── Bottom-anchor (DECSTBM) decision ───────────────────────
+    //
+    // Canvas declares the topmost row of the anchored region via
+    // set_anchor_top() during paint (the BoxElement | anchor_bottom
+    // pipe drives it). K = content_rows - anchor_top is the number
+    // of rows at the bottom of the canvas that should be pinned to
+    // the bottom of the viewport.
+    //
+    // We activate anchoring (DECSTBM scroll region [1 .. term_h-K])
+    // only when the frame fills the viewport (content_rows >= term_h)
+    // — below that the anchor has no visible effect (the frame's
+    // bottom isn't at viewport bottom anyway) and would require
+    // emitting blank rows to push the cursor down, which would scroll
+    // host scrollback unnecessarily.
+    const int anchor_top  = canvas.anchor_top_y();
+    const int K_cur       = (anchor_top >= 0 && anchor_top < content_rows)
+                          ? (content_rows - anchor_top) : 0;
+    const bool want_anchor = K_cur > 0 && K_cur < term_h && content_rows >= term_h;
+
+    // Tear down a previously-active anchor when conditions change:
+    // K shifted, term_h changed (resize), or anchor disappeared this
+    // frame. Reset DECSTBM, drop prev_rows so the legacy path below
+    // does a fresh repaint into the now-full viewport. The DECSTBM
+    // reset moves cursor to (1,1); subsequent legacy emit treats
+    // ghost_rows_above_ = term_h as "viewport is fully claimed,
+    // repaint case (B) starting from row 0".
+    const bool anchor_active   = state.anchor_rows_ > 0;
+    const bool anchor_compatible =
+        anchor_active &&
+        state.anchor_rows_   == K_cur &&
+        state.anchor_term_h_ == term_h;
+
+    if (anchor_active && !anchor_compatible) {
+        // Reset scroll region + wipe viewport so the legacy emit
+        // can repaint from a known-clean state. The full wipe is
+        // costly (destroys the part of host scrollback visible in
+        // viewport) but this branch only fires on rare composer-
+        // height changes or anchor disappearance — the streaming-
+        // path stays inside the anchored-steady fast path.
+        out += "\x1b[r";           // DECSTBM reset, cursor → (1,1)
+        out += "\x1b[2J\x1b[H";   // wipe viewport, home cursor
+        // Force fresh case (A) repaint in the legacy path.
+        state = std::move(state).reset_state();
+    }
+
+    // Anchor activation hook. Called from each legacy-path return
+    // site when want_anchor && state.anchor_rows_ == 0 (i.e. legacy
+    // just painted a full frame and we now want to enter anchored
+    // mode for the next compose). Assumes cursor is at viewport row
+    // term_h - 1 (= bottom), which holds for all legacy paths when
+    // content_rows >= term_h (the only case where want_anchor=true).
+    //
+    // Emits: DECSTBM region [1 .. term_h-K]; this moves cursor to
+    // (1,1) as a side effect. We then position the cursor at the
+    // bottom of the upper region (viewport row term_h - K, 1-based)
+    // so the next compose's anchored-steady path can \r\n inside
+    // the region without scrolling away the anchored rows.
+    //
+    // Stamps state.anchor_rows_, state.anchor_term_h_, and resets
+    // wire_cursor_rows_ to the upper region's row count so the next
+    // compose's invariant checks line up.
+    auto activate_anchor = [&](std::string& obuf, InlineFrameState& st) {
+        if (!want_anchor || st.anchor_rows_ != 0) return;
+        const int K = K_cur;
+        const int upper_h = term_h - K;
+        // DECSTBM region [1 .. upper_h] (1-based, inclusive). On
+        // most terminals this also moves the cursor to (1,1) per
+        // VT510 spec; we re-position immediately below.
+        obuf += "\x1b[1;";
+        ansi::detail::append_int(obuf, upper_h);
+        obuf += "r";
+        // Move cursor to viewport row upper_h, col 1 (= bottom of
+        // upper region). Using absolute positioning bypasses DECSTBM
+        // (cursor positioning is allowed anywhere on screen).
+        obuf += "\x1b[";
+        ansi::detail::append_int(obuf, upper_h);
+        obuf += ";1H";
+        st.anchor_rows_   = K;
+        st.anchor_term_h_ = term_h;
+        // wire_cursor_rows_ in anchored mode means "upper-region
+        // canvas rows on screen" — the anchored-steady path uses it
+        // to compute its own cursor-row math, independent of K.
+        st.wire_cursor_rows_ = std::min(content_rows - K, upper_h);
+    };
+
+    // ── Anchored steady-state diff ────────────────────────────
+    //
+    // Active when the canvas declares an anchor matching the wire's
+    // current anchored region (same K, same term_h). DECSTBM is
+    // already set to [1 .. term_h-K] on the wire, and the cursor is
+    // at viewport row term_h-K (bottom of upper region) from the
+    // previous compose's activation or steady-state tail.
+    //
+    // Diff is split into two regions:
+    //   - Upper [canvas rows 0 .. A_cur): position-tracked against
+    //     prev_cells[0 .. A_prev). Emits via \r\n walks that scroll
+    //     ONLY within the DECSTBM region. The anchored rows below
+    //     are untouched by these scrolls.
+    //   - Anchored [canvas rows A_cur .. content_rows): content-
+    //     tracked bottom-relatively against prev_cells[A_prev ..
+    //     prev_rows). For each changed bottom-relative index, save
+    //     cursor, absolute-position to viewport row term_h-K+i+1,
+    //     emit row, then restore cursor.
+    //
+    // End state: cursor at viewport row term_h-K, col 0 (= bottom
+    // of upper region). prev_cells_ updated to match current canvas.
+    if (anchor_compatible && state.prev_width_ == W) {
+        const int K       = K_cur;
+        const int A_cur   = content_rows - K;
+        const int A_prev  = state.prev_rows_ - K;
+        const int upper_h = term_h - K;
+
+        if (A_cur <= 0 || A_prev <= 0) {
+            // Degenerate: upper region collapsed. Fall back to
+            // tear-down + legacy. Reset DECSTBM, wipe viewport.
+            out += "\x1b[r";
+            out += "\x1b[2J\x1b[H";
+            state = std::move(state).reset_state();
+            // Fall through to legacy code below.
+        } else {
+            // Ensure prev_cells_ buffer is large enough for the
+            // full new frame (will be needed when we update at end).
+            const std::size_t need = safe_cells(content_rows, W);
+            if (need == (std::size_t)(-1)) {
+                state = std::move(state).reset_state();
+                return {std::move(out), std::move(state)};
+            }
+            if (state.prev_cells_.size() < need)
+                state.prev_cells_.resize(need);
+
+            const uint64_t* cells   = canvas.cells();
+            const uint64_t* prev_b  = state.prev_cells_.data();
+            uint64_t*       prev_w  = state.prev_cells_.data();
+
+            // ── Upper-region first-changed scan ────────────────
+            // Compares row-by-row within the upper region only.
+            // Skips rows that are in scrollback (above upper_h of
+            // the upper region's viewport).
+            const int upper_prev_on_screen = std::min(A_prev, upper_h);
+            const int upper_updatable_start = A_prev - upper_prev_on_screen;
+            const int upper_common = std::min(A_cur, A_prev);
+            int upper_first_changed = upper_common;
+            for (int y = upper_updatable_start; y < upper_common; ++y) {
+                if (!simd::bulk_eq(cells + y * W, prev_b + y * W,
+                                   static_cast<std::size_t>(W))) {
+                    upper_first_changed = y;
+                    break;
+                }
+            }
+            const bool upper_changed = (upper_first_changed < upper_common)
+                                       || (A_cur != A_prev);
+
+            // ── Anchored-region bottom-relative scan ────────────
+            // Compare cur[A_cur + i] vs prev[A_prev + i] for i in [0,K).
+            // Mark which anchored rows differ for the out-of-band
+            // repaint pass.
+            int first_anchored_diff = K;
+            int last_anchored_diff  = -1;
+            for (int i = 0; i < K; ++i) {
+                const uint64_t* cur_row  = cells  + (A_cur + i)  * W;
+                const uint64_t* prev_row = prev_b + (A_prev + i) * W;
+                if (!simd::bulk_eq(cur_row, prev_row,
+                                   static_cast<std::size_t>(W))) {
+                    if (i < first_anchored_diff) first_anchored_diff = i;
+                    last_anchored_diff = i;
+                }
+            }
+            const bool anchored_changed = (last_anchored_diff >= 0);
+
+            // Nothing changed in either region: cheap exit, no
+            // bytes emitted, prev_cells_ already matches (induction).
+            if (!upper_changed && !anchored_changed) {
+                return {std::move(out), std::move(state)};
+            }
+
+            // Frame open: sync wrapper + hide cursor + DECAWM off.
+            if (synchronized_output) out += ansi::sync_start;
+            if (!state.cursor_hidden_) {
+                out += ansi::hide_cursor;
+                state.cursor_hidden_ = true;
+            }
+            if (!state.decawm_off_) {
+                out += "\x1b[?7l";
+                state.decawm_off_ = true;
+            }
+            uint16_t current_style = UINT16_MAX;
+
+            // ── Emit upper-region diff ─────────────────────────
+            // Cursor invariant on entry: viewport row upper_h, col
+            // 0 (= bottom of upper region; left there by prior
+            // compose). In upper-region canvas coords that maps
+            // to row A_prev - 1.
+            if (upper_changed) {
+                const int cursor_row_start = A_prev - 1;
+                const int delta = upper_first_changed - cursor_row_start;
+                if (delta < 0) {
+                    const int up = std::min(-delta, upper_prev_on_screen - 1);
+                    if (up > 0) ansi::write_cursor_up(out, up);
+                    out += '\r';
+                } else if (delta == 0) {
+                    out += '\r';
+                } else {
+                    // Grow past previous bottom — \r\n scrolls ONLY
+                    // the DECSTBM region (anchored rows untouched).
+                    out += "\r\n";
+                    if (delta > 1) ansi::write_cursor_down(out, delta - 1);
+                }
+
+                const int upper_last_row = A_cur - 1;
+                for (int y = upper_first_changed; y <= upper_last_row; ++y) {
+                    if (y > upper_first_changed) out += "\r\n";
+
+                    const uint64_t* cur_row  = cells  + y * W;
+                    const uint64_t* prev_row = (y < A_prev)
+                                              ? prev_b + y * W
+                                              : nullptr;
+                    const bool is_new_row = (y >= A_prev);
+
+                    // Mirror the legacy will_scroll_off defence: any
+                    // row about to scroll off the top of the upper
+                    // region (into native scrollback) gets a full
+                    // re-emit so shadow drift can't ride into
+                    // permanent scrollback.
+                    const int new_visible_top  = std::max(0, A_cur  - upper_h);
+                    const int prev_visible_top = std::max(0, A_prev - upper_h);
+                    const bool will_scroll_off =
+                        (A_cur >= upper_h)
+                        && (y >= prev_visible_top)
+                        && (y <= new_visible_top);
+
+                    const int x_first_diff_raw = will_scroll_off
+                        ? 0 : first_diff_col(cur_row, prev_row, W);
+                    const int x_first_diff = will_scroll_off
+                        ? 0 : snap_first_diff_left(x_first_diff_raw,
+                                                   cur_row, prev_row, W);
+
+                    if (x_first_diff < W) {
+                        const int x_last_diff_raw = will_scroll_off
+                            ? W - 1 : last_diff_col(cur_row, prev_row, W);
+                        const int x_last_diff = will_scroll_off
+                            ? W - 1 : snap_last_diff_right(x_last_diff_raw,
+                                                           cur_row, prev_row, W);
+                        const int x_last_visible = canvas.last_content_col(y);
+                        const int x_end_emit = std::max(x_first_diff,
+                            std::min(x_last_diff + 1, x_last_visible + 1));
+                        const bool need_el   = is_new_row
+                                              || x_last_diff > x_last_visible;
+                        const bool need_emit = x_end_emit > x_first_diff;
+
+                        if (need_emit || need_el)
+                            write_cursor_forward(out, x_first_diff);
+                        if (need_emit) {
+                            emit_cell_run(canvas, pool, y,
+                                          x_first_diff, x_end_emit,
+                                          current_style, out);
+                        }
+                        if (need_el) {
+                            if (current_style != 0) {
+                                out.append(pool.sgr(0));
+                                current_style = 0;
+                            }
+                            const bool at_right =
+                                need_emit && (x_end_emit >= W);
+                            if (!at_right) out += "\x1b[K";
+                        }
+
+                        if (is_new_row) {
+                            std::memcpy(prev_w + (std::size_t)y * W,
+                                        cur_row,
+                                        (std::size_t)W * sizeof(uint64_t));
+                        } else {
+                            const std::size_t lo = (std::size_t)x_first_diff;
+                            const std::size_t hi = (std::size_t)x_last_diff + 1;
+                            std::memcpy(prev_w + (std::size_t)y * W + lo,
+                                        cur_row + lo,
+                                        (hi - lo) * sizeof(uint64_t));
+                        }
+                    } else if (is_new_row) {
+                        std::memcpy(prev_w + (std::size_t)y * W,
+                                    cur_row,
+                                    (std::size_t)W * sizeof(uint64_t));
+                    }
+                }
+
+                // Upper shrink: erase rows past the new upper bottom.
+                // \x1b[J from the current cursor erases to end of
+                // scroll region (DECSTBM-aware on most terminals)
+                // but to be safe we walk to the bottom of the upper
+                // region first and use EL per row.
+                if (A_cur < A_prev) {
+                    out += '\r';
+                    const int last_visible =
+                        canvas.last_content_col(upper_last_row);
+                    if (last_visible >= 0) {
+                        emit_cell_run(canvas, pool, upper_last_row,
+                                      0, last_visible + 1,
+                                      current_style, out);
+                    }
+                    if (current_style != 0) {
+                        out.append(pool.sgr(0));
+                        current_style = 0;
+                    }
+                    // Walk down within scroll region erasing rows.
+                    const int shrink_rows =
+                        std::min(A_prev - A_cur, upper_h - 1);
+                    for (int i = 0; i < shrink_rows; ++i) {
+                        out += "\r\n\x1b[K";
+                    }
+                    // Walk back up to bottom of upper region.
+                    if (shrink_rows > 0)
+                        ansi::write_cursor_up(out, shrink_rows);
+                }
+
+                if (current_style != 0) {
+                    out.append(pool.sgr(0));
+                    current_style = 0;
+                }
+                out += ansi::reset;
+            }
+
+            // ── Reposition cursor to bottom of upper region ────
+            // After upper emit, cursor sits at canvas row (A_cur-1)
+            // which is the bottom of the upper region's visible
+            // portion. Within DECSTBM that's already viewport row
+            // upper_h. If upper_changed was false, cursor is still
+            // at where prior compose left it (viewport row upper_h).
+
+            // ── Repaint changed anchored rows out-of-band ──────
+            // Absolute-position to each changed anchored row, emit,
+            // then explicitly reposition to (upper_h, 1) at the end
+            // so the next compose's cursor invariant holds. We
+            // avoid DECSC/DECRC because their SGR-save semantics
+            // would leak SGR state across the anchored emit.
+            if (anchored_changed) {
+                for (int i = first_anchored_diff;
+                     i <= last_anchored_diff; ++i) {
+                    const int y = A_cur + i;
+                    const uint64_t* cur_row  = cells  + y * W;
+                    const uint64_t* prev_row = prev_b + (A_prev + i) * W;
+                    if (simd::bulk_eq(cur_row, prev_row,
+                                      static_cast<std::size_t>(W)))
+                        continue;
+                    // Viewport row for anchored index i: upper_h + i + 1
+                    // (1-based). Absolute positioning bypasses DECSTBM.
+                    const int vrow = upper_h + i + 1;
+                    out += "\x1b[";
+                    ansi::detail::append_int(out, vrow);
+                    out += ";1H";
+                    // Emit the full row content + EL to clear stale tail.
+                    const int last_visible = canvas.last_content_col(y);
+                    if (last_visible >= 0) {
+                        emit_cell_run(canvas, pool, y, 0, last_visible + 1,
+                                      current_style, out);
+                    }
+                    if (current_style != 0) {
+                        out.append(pool.sgr(0));
+                        current_style = 0;
+                    }
+                    if (last_visible < W - 1) out += "\x1b[K";
+                    // Update shadow.
+                    std::memcpy(prev_w + (std::size_t)y * W,
+                                cur_row,
+                                (std::size_t)W * sizeof(uint64_t));
+                }
+                // Re-position cursor to (upper_h, 1) so the next
+                // compose's anchored-steady path finds it where it
+                // expects.
+                out += "\x1b[";
+                ansi::detail::append_int(out, upper_h);
+                out += ";1H";
+                out += ansi::reset;
+            }
+
+            if (synchronized_output) out += ansi::sync_end;
+
+            // Update state: prev_rows now reflects the full new
+            // frame (upper + anchor). wire_cursor_rows_ in anchored
+            // mode = upper-region rows on screen (used by the next
+            // compose's upper-diff cursor math).
+            state.prev_width_ = W;
+            state.prev_rows_  = content_rows;
+            state.wire_cursor_rows_ = std::min(A_cur, upper_h);
+
+            // Recompute shadow hash over the full prev_cells.
+            {
+                const uint64_t* shadow_base = state.prev_cells_.data();
+                uint64_t h = 14695981039346656037ULL;
+                const std::size_t n =
+                    static_cast<std::size_t>(content_rows) * W;
+                for (std::size_t i = 0; i < n; ++i) {
+                    h ^= shadow_base[i];
+                    h *= 1099511628211ULL;
+                }
+                state.shadow_hash_ = h;
+            }
+
+            return {std::move(out), std::move(state)};
+        }
+    }
+
     const uint64_t* cells = canvas.cells();
     const int prev_rows       = state.prev_rows_;
     const int prev_on_screen  = std::min(prev_rows, term_h);
@@ -516,6 +924,7 @@ compose_inline_frame_impl(const Canvas& canvas,
 
     // Nothing to do: common range matches and no rows added or removed.
     if (first_changed == common && content_rows == prev_rows) {
+        activate_anchor(out, state);
         return {std::move(out), std::move(state)};
     }
 
@@ -757,6 +1166,7 @@ compose_inline_frame_impl(const Canvas& canvas,
         state.prev_width_ = W;
         state.prev_rows_  = content_rows;
         state.wire_cursor_rows_ = std::min(content_rows, term_h);
+        activate_anchor(out, state);
         return {std::move(out), std::move(state)};
     }
 
@@ -1151,6 +1561,7 @@ compose_inline_frame_impl(const Canvas& canvas,
         }
     }
 #endif
+    activate_anchor(out, state);
     return {std::move(out), std::move(state)};
 }
 

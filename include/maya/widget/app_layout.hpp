@@ -35,6 +35,7 @@
 #include <optional>
 #include <utility>
 
+#include "../core/render_context.hpp"
 #include "../dsl.hpp"
 #include "../element/element.hpp"
 
@@ -96,12 +97,26 @@ public:
             .grow(0).shrink(0)
             (StatusBar{cfg_.status_bar}.build())).build();
 
-        auto base = (v(
-            std::move(thread_box),
-            std::move(strip_box),
-            std::move(composer_box),
-            std::move(status_box)
-        ) | pad<1> | grow(1.0f)).build();
+        // In inline mode the root is auto-height: a plain v(...)
+        // sizes to natural content, leaving a gap below the status
+        // bar when content is shorter than the viewport. Pin the
+        // outer vstack to at least viewport height so thread_box's
+        // grow(1) eats the slack and composer + status sit at the
+        // bottom edge. When content overflows viewport, min_height
+        // is non-binding and the layout grows past it normally
+        // (inline mode then scrolls upper content into native
+        // scrollback as expected).
+        const int term_h = available_height();
+        auto base = (vstack()
+            .grow(1.0f)
+            .min_height(Dimension::fixed(term_h))
+            .padding(1)
+            (
+                std::move(thread_box),
+                std::move(strip_box),
+                std::move(composer_box),
+                std::move(status_box)
+            )).build();
 
         Overlay::Config oc;
         oc.base = std::move(base);

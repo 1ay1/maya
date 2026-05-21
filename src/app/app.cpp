@@ -530,10 +530,20 @@ auto Runtime::render(const Element& root) -> Status {
 // ============================================================================
 // Runtime::set_title — set terminal title via OSC 0
 // ============================================================================
-
+//
+// Routed through write_or_buffer so the OSC queues behind any pending
+// render residue. write_raw bypassed the residue queue and called
+// write_all directly, which on a partial-write WouldBlock emits the
+// CAN/SUB/ST recovery sequence — landing mid-frame on the wire while
+// a streaming compose's bytes are still draining. The interleave
+// could split a CSI mid-sequence, corrupting the wire's contents
+// against our prev_cells shadow and freezing the visible frame until
+// a hard redraw (resize) rebuilt shadow from scratch. Same fix shape
+// as write_clipboard's earlier migration; the two OSC paths now have
+// identical residue semantics.
 void Runtime::set_title(std::string_view title) {
     auto seq = std::format("\x1b]0;{}\x07", title);
-    (void)writer_->write_raw(seq);
+    (void)writer_->write_or_buffer(seq);
 }
 
 // ============================================================================

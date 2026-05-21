@@ -731,6 +731,12 @@ compose_inline_frame_impl(const Canvas& canvas,
             state.ghost_rows_above_ = 0;
         } else {
             // Fresh state (A): inline-mode growth from cursor.
+            // Leading \r anchors the first row at col 0 — inherited shell
+            // cursor may be mid-line (e.g. host left output without a
+            // trailing newline, or a `read -p` prompt). serialize() only
+            // emits \r\n BETWEEN rows; the first row would otherwise
+            // start at whatever column the host left the cursor at.
+            out += '\r';
             serialize(canvas, pool, out, content_rows);
             state.ghost_rows_above_ = 0;
         }

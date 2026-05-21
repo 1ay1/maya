@@ -159,6 +159,13 @@ private:
 
     // Width-aware thin dim rule, indented 3 columns. The "next turn
     // starts here" handhold without the heaviness of a full-weight rule.
+    //
+    // Stable hash_id: every divider at a given terminal width renders
+    // to byte-identical cells, so all N dividers in a long frozen
+    // prefix can share one cached cells-blit. The renderer's hash
+    // cache stores (cells, width) per entry and rejects width
+    // mismatches automatically, so a single id is correct across
+    // resizes (resize misses, re-paints, re-caches).
     static Element divider_rule() {
         using namespace dsl;
         return component([](int w, int /*h*/) -> Element {
@@ -169,7 +176,10 @@ private:
             for (int i = kIndent; i < w; ++i) line += "\xe2\x94\x80"; // ─
             return text(std::move(line),
                         Style{}.with_fg(Color::bright_black()).with_dim()).build();
-        });
+        })
+        .hash_id(CacheIdBuilder{}
+            .add(std::string_view{"maya.conversation.divider"})
+            .build());
     }
 };
 

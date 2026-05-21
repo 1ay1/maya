@@ -323,9 +323,34 @@ auto Runtime::render(const Element& root) -> Status {
         // successful commit_to of a witness-verified compose.
         constexpr int kMinCanvasHeight = 500;
 
-        if (canvas_.width() != w || canvas_.height() < kMinCanvasHeight) {
+        // Reasons to (re)allocate the canvas:
+        //   - width changed (terminal resize),
+        //   - height below the minimum floor,
+        //   - height is now ridiculously oversized vs current content.
+        //
+        // The last condition is load-bearing for long-session perf.
+        // canvas_.clear() does streaming_fill over width * height
+        // cells every frame; once a tall transcript bumped the
+        // canvas to e.g. 6000 rows, clearing 6000 * 100 cells per
+        // frame stays expensive forever — even after trim shrunk
+        // the actual content back to a few hundred rows. Shrink
+        // when the canvas is more than 2x the content + minimum
+        // floor, so the steady-state per-frame cost tracks what's
+        // actually being drawn instead of the all-time peak.
+        const int prev_content_rows = content_height(canvas_);
+        const int shrink_target = std::max(kMinCanvasHeight,
+                                           prev_content_rows + 64);
+        const bool oversized = canvas_.height() > shrink_target * 2
+                            && canvas_.height() > kMinCanvasHeight * 2;
+
+        if (canvas_.width() != w
+            || canvas_.height() < kMinCanvasHeight
+            || oversized) {
             canvas_.set_style_pool(&pool_);
-            canvas_.resize(w, std::max(kMinCanvasHeight, canvas_.height()));
+            const int target_h = oversized
+                ? shrink_target
+                : std::max(kMinCanvasHeight, canvas_.height());
+            canvas_.resize(w, target_h);
         }
         // Recover from any unmatched push_clip in the previous frame's
         // paint pass (e.g. a paint callback that threw past pop_clip).

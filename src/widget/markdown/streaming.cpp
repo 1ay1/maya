@@ -2048,13 +2048,17 @@ const Element& StreamingMarkdown::build() const {
         }
         trail_done:;
 
-        // ── Caret row with trailing tracer ──
+        // ── Inline caret ──
         //
-        // Main caret: wide block, color pulses magenta→cyan via a
-        // triangular wave on ~650ms period.
-        // Trailing tracer: a dim half-block to the right of the
-        // caret that's only visible during the "forward stroke" of
-        // the pulse (gives the impression the caret just moved).
+        // Splice a pulsing block glyph as a trailing styled run inside
+        // the tail TextElement instead of emitting a separate caret
+        // row in a vstack. A separate row adds one row to the live
+        // tail's height; every wrapped-row change in the tail above
+        // would shift it; when streaming flips live_=false the row
+        // vanishes and the composer below jumps up by a row. The
+        // inline form is a single column on the last wrapped row —
+        // it never adds a row, never disappears between frames, never
+        // shifts the composer.
         constexpr std::int64_t kCaretPeriodMs = 650;
         const double caret_phase =
             static_cast<double>(ms_total % kCaretPeriodMs)
@@ -2062,61 +2066,64 @@ const Element& StreamingMarkdown::build() const {
         const double tri = (caret_phase < 0.5)
             ? (caret_phase * 2.0)
             : (2.0 - caret_phase * 2.0);
-        // Caret: lerp magenta (220, 80, 200) → cyan (100, 230, 255).
         const std::uint8_t cr = static_cast<std::uint8_t>(
             220.0 + (100.0 - 220.0) * tri);
         const std::uint8_t cg = static_cast<std::uint8_t>(
              80.0 + (230.0 -  80.0) * tri);
         const std::uint8_t cb = static_cast<std::uint8_t>(
             200.0 + (255.0 - 200.0) * tri);
-        // Tracer brightness follows the caret's forward stroke
-        // (first half of the cycle) and fades on the return.
-        const double tracer_intensity = (caret_phase < 0.5)
-            ? (1.0 - caret_phase * 2.0)   // 1 → 0 as phase 0 → 0.5
-            : 0.0;
-        const std::uint8_t tr = static_cast<std::uint8_t>(
-            60.0 + (140.0 - 60.0) * tracer_intensity);
-        const std::uint8_t tg = static_cast<std::uint8_t>(
-            60.0 + (160.0 - 60.0) * tracer_intensity);
-        const std::uint8_t tb = static_cast<std::uint8_t>(
-            80.0 + (200.0 - 80.0) * tracer_intensity);
-        Element caret_row = (
-            detail::hstack().padding(0, 0, 0, 2)(
-                Element{TextElement{
-                    .content = std::string{"\xe2\x96\x88"}, // █ full block
-                    .style   = Style{}
-                        .with_fg(Color::rgb(cr, cg, cb))
-                        .with_bold(),
-                }},
-                Element{TextElement{
-                    .content = std::string{"\xe2\x96\x8c"}, // ▌ half block
-                    .style   = Style{}
-                        .with_fg(Color::rgb(tr, tg, tb))
-                        .with_dim(),
-                }}
-            )
-        ).build();
+        if (TextElement* tail = find_last_text(animated_body)) {
+            constexpr std::string_view kCaretGlyph = "\xe2\x96\x8a"; // ▊ left 3/4 block
+            const std::size_t caret_off = tail->content.size();
+            tail->content.append(kCaretGlyph);
+            if (tail->runs.empty()) {
+                // Materialize the implicit base run so the append doesn't
+                // accidentally inherit the wrong style; then append the
+                // caret as its own run.
+                tail->runs.push_back(StyledRun{
+                    .byte_offset = 0,
+                    .byte_length = caret_off,
+                    .style       = tail->style,
+                });
+            }
+            tail->runs.push_back(StyledRun{
+                .byte_offset = caret_off,
+                .byte_length = kCaretGlyph.size(),
+                .style       = Style{}
+                    .with_fg(Color::rgb(cr, cg, cb))
+                    .with_bold(),
+            });
+            // The byte length changed; invalidate the wrap cache so the
+            // next paint re-measures with the caret in place. Without
+            // this the renderer can paint cells that don't account for
+            // the extra column on the last wrapped row.
+            tail->cached_width = -1;
+        }
 
         // Mirror cached_build_'s cross-axis sizing. Stretch is
         // load-bearing here: parent flex layouts use this widget's
         // reported width for space-between math; the BoxElement
         // default of Align::Start collapses the live wrapper to its
         // children's natural width, which then shrinks the message's
-        // allotted columns and explodes per-row wrap — the new row
-        // count overshoots the inline frame's reserved height and the
-        // tail rows paint over the composer below.
+        // allotted columns and explodes per-row wrap.
         //
-        // Padding/gap stay on the inner cached_build_ (already set in
-        // the full-rebuild path) so we don't double-apply them here.
-        cached_live_ = (
-            detail::vstack()
-                .align_self(Align::Stretch)(
-                    std::move(animated_body),
-                    std::move(caret_row)
-                )
-        ).build();
+        // No wrapping vstack now — the caret was inlined above so the
+        // animated body IS the whole live element.
+        cached_live_ = std::move(animated_body);
 
-        ::maya::request_animation_frame();
+        // Phase-bucket the wall clock at ~33 ms (≈30 fps). The scramble/
+        // caret/gradient only visually step at this rate; the prior
+        // unconditional RAF kept the host loop at 60 Hz, which on
+        // terminals without DEC 2026 paints the composer below the
+        // live tail progressively every wakeup. Skip RAF when the
+        // bucket hasn't advanced — the next stream byte (set_content)
+        // sets build_dirty_ and re-enters here anyway.
+        constexpr std::int64_t kAnimPhaseMs = 33;
+        const std::int64_t phase = ms_total / kAnimPhaseMs;
+        if (phase != last_anim_phase_) {
+            last_anim_phase_ = phase;
+            ::maya::request_animation_frame();
+        }
         return cached_live_;
     };
 

@@ -240,6 +240,23 @@ concept HasSubscribe = requires(const typename P::Model& m) {
 
 } // namespace detail
 
+namespace detail {
+// Optional Program::visual_hash detector. When a Program type defines
+// `static std::uint64_t visual_hash(const Model&)`, the run<P> loop
+// hashes the model just before calling view() and skips the view()
+// + render() pair when the hash is unchanged since the last render.
+// Cuts the wasted work for Tick-driven wakeups whose deltas don't
+// affect anything visible (smoothing pacer drained 0 bytes, spinner
+// frame unchanged because the bucket didn't roll over, status
+// toast already cleared).
+template <typename P, typename = void>
+struct HasVisualHash : std::false_type {};
+template <typename P>
+struct HasVisualHash<P, std::void_t<decltype(
+    P::visual_hash(std::declval<const typename P::Model&>()))>>
+    : std::true_type {};
+} // namespace detail
+
 template <typename P>
 concept Program = requires {
     typename P::Model;
@@ -1046,6 +1063,11 @@ void run(RunConfig cfg = {}) {
 
     bool needs_render = true;
 
+    // Visual-hash gate state. Populated only when Program defines
+    // visual_hash(Model); ignored otherwise.
+    std::uint64_t last_visual_hash       = 0;
+    bool          last_visual_hash_valid = false;
+
     // Animation-frame pump (push-based — Sub::AnimationFrame). Tracks
     // when we last delivered AnimationFrame msgs so we tick at the
     // kAnimationFrameInterval cadence regardless of how often the loop
@@ -1120,6 +1142,10 @@ void run(RunConfig cfg = {}) {
             // new size. Without this, with fps=0 the canvas dimensions
             // update but the next paint waits for an unrelated event.
             needs_render = true;
+            // Width changed — layout invariants the visual hash doesn't
+            // capture have moved. Force the next render to run even if
+            // the model hash matches.
+            last_visual_hash_valid = false;
         }
 
         // Read and dispatch terminal input
@@ -1262,9 +1288,36 @@ void run(RunConfig cfg = {}) {
                 }
             }
 
-            // Pure: view(model) → Element → render to terminal
-            auto status = rt.render(P::view(model));
-            if (!status) break;
+            // Optional visual-hash gate. When the Program provides
+            // visual_hash(Model), skip view()+render() if the hash
+            // matches the last rendered frame's. Eliminates the
+            // full layout+paint walk on Tick wakeups whose deltas
+            // didn't change anything the user can see.
+            //
+            // The hash should bucket time-driven animations (cursor
+            // blink phase, spinner frame, streaming caret pulse) so
+            // each visible step advances the hash. RAF without an
+            // accompanying hash advance means the widget's visual
+            // wants to step at a finer cadence than visual_hash
+            // captures — the framework can't tell whether to render,
+            // and conservatively the program should include a coarse
+            // time bucket in its hash for any RAF-driven visual.
+            bool skip_render = false;
+            if constexpr (detail::HasVisualHash<P>::value) {
+                const std::uint64_t h = P::visual_hash(model);
+                if (h == last_visual_hash && last_visual_hash_valid) {
+                    skip_render = true;
+                } else {
+                    last_visual_hash       = h;
+                    last_visual_hash_valid = true;
+                }
+            }
+
+            if (!skip_render) {
+                // Pure: view(model) → Element → render to terminal
+                auto status = rt.render(P::view(model));
+                if (!status) break;
+            }
             needs_render = false;
             // Same scroll-writeback re-render as the simple run() path:
             // if a ScrollState's max_* changed during this paint, the
@@ -1273,6 +1326,7 @@ void run(RunConfig cfg = {}) {
             if (detail::scroll_writeback_dirty) {
                 detail::scroll_writeback_dirty = false;
                 needs_render = true;
+                last_visual_hash_valid = false;   // force next render
             }
             // Deferred-write retry: if render() returned ok() but the
             // writer is still holding residue (the tty pipe rejected

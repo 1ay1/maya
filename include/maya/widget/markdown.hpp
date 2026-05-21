@@ -363,6 +363,13 @@ private:
     mutable std::size_t last_seen_size_ = 0;
     mutable std::int64_t last_grow_ms_   = 0;
 
+    // Animation throttle: bucket the wall clock into ~33 ms phases
+    // and only request the next animation frame when the phase
+    // actually advances. Without this RAF fires every 16 ms and the
+    // composer below the live tail repaints at 60 Hz even though the
+    // scramble/caret/gradient visibly steps at ~30 Hz at most.
+    mutable std::int64_t last_anim_phase_ = -1;
+
     // ── Resumable boundary scanner ──
     //
     // Earlier `find_block_boundary` rescanned [committed_, source_.size())

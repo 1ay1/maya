@@ -67,22 +67,29 @@ public:
         using namespace dsl;
 
         // Vertical layout discipline:
-        //   • Thread grows to fill the leftover height, shrinks freely
-        //     down to min_height=0 if the bottom siblings need their
-        //     full natural sizes.
+        //   • Thread grows when there's slack and NEVER shrinks. In
+        //     inline mode the renderer scrolls overflow into the
+        //     terminal's native scrollback row-by-row from the top;
+        //     the composer + status sit at the END of the vstack so
+        //     they stay in the viewport even as upper rows commit.
+        //     Shrinking the thread (or clipping it with
+        //     overflow:Hidden) would block that overflow path —
+        //     content would pile up inside the same viewport slot,
+        //     and stale cells from a previous taller layout leak
+        //     through the new shorter slot at the thread↔composer
+        //     seam (the agent_session example never sees ghosting
+        //     because it lets overflow happen naturally; this
+        //     widget's earlier overflow:Hidden + shrink(1.0f) was
+        //     the source of the live-streaming ghosting bug).
         //   • ChangesStrip, Composer, StatusBar are PINNED at their
-        //     natural heights via shrink(0). Without this, flex would
-        //     proportionally shrink every child when content exceeds
-        //     the available height — making the composer vanish during
-        //     streaming until a terminal resize forces a relayout.
-        //
-        // Mirrors the messenger example's discipline (build_messages_box
-        // grows; header_box / composer_box use fixed heights + shrink(0)).
+        //     natural heights via shrink(0). Without this, flex
+        //     would proportionally shrink every child when content
+        //     exceeds the available height — making the composer
+        //     vanish during streaming until a terminal resize
+        //     forces a relayout.
         auto thread_box = (vstack()
             .grow(1.0f)
-            .shrink(1.0f)
-            .min_height(Dimension::fixed(0))
-            .overflow(Overflow::Hidden)
+            .shrink(0)
             (Thread{cfg_.thread}.build())).build();
 
         auto strip_box = (vstack()

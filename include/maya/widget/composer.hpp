@@ -77,6 +77,17 @@ public:
 
         // Layout
         bool expanded = false;
+
+        // Minimum body-row count. The composer pads its inner column
+        // with blank rows up to this floor so transient height
+        // changes (empty→one char, last char→empty, 1-line→2-line
+        // wrap) don't reshape the box and reflow the diff against
+        // every row above. Default 1 = legacy behavior. Set to 2 (or
+        // higher) when the caller wants stable composer height to
+        // suppress streaming-time flicker. Caps at the natural body
+        // height — never SHRINKS a composer that already has more
+        // content than the floor.
+        int min_body_rows = 1;
     };
 
     explicit Composer(Config c) : cfg_(std::move(c)) {}
@@ -239,6 +250,15 @@ public:
         // to 1 row and overflowed visibly. The status bar pins the bottom
         // of the screen, so growing upward is the correct direction and
         // doesn't bob the user's eye.
+        // Pad body to the configured floor with blank rows. Stable
+        // composer height across short transient text changes
+        // (empty placeholder → first char → empty again) means the
+        // diff doesn't see a height delta on every keystroke, which
+        // would otherwise push every row above by one canvas-Y and
+        // force a full repaint via the per-row diff.
+        while (static_cast<int>(body_rows.size()) < cfg_.min_body_rows) {
+            body_rows.push_back(text(""));
+        }
         auto inner = (v(std::move(body_rows)) | padding(0, 1)).build();
 
         // ── Hint row: width-adaptive left, ambient right.

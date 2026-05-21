@@ -66,63 +66,42 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        // Vertical layout discipline:
-        //   • Thread grows when there's slack and NEVER shrinks. In
-        //     inline mode the renderer scrolls overflow into the
-        //     terminal's native scrollback row-by-row from the top;
-        //     the composer + status sit at the END of the vstack so
-        //     they stay in the viewport even as upper rows commit.
-        //     Shrinking the thread (or clipping it with
-        //     overflow:Hidden) would block that overflow path —
-        //     content would pile up inside the same viewport slot,
-        //     and stale cells from a previous taller layout leak
-        //     through the new shorter slot at the thread↔composer
-        //     seam (the agent_session example never sees ghosting
-        //     because it lets overflow happen naturally; this
-        //     widget's earlier overflow:Hidden + shrink(1.0f) was
-        //     the source of the live-streaming ghosting bug).
-        //   • ChangesStrip, Composer, StatusBar are PINNED at their
-        //     natural heights via shrink(0). Without this, flex
-        //     would proportionally shrink every child when content
-        //     exceeds the available height — making the composer
-        //     vanish during streaming until a terminal resize
-        //     forces a relayout.
-        auto thread_box = (vstack()
-            .grow(1.0f)
-            .shrink(0)
-            (Thread{cfg_.thread}.build())).build();
-
-        auto strip_box = (vstack()
-            .grow(0).shrink(0)
-            (ChangesStrip{cfg_.changes_strip}.build())).build();
-
-        auto composer_box = (vstack()
-            .grow(0).shrink(0)
-            (Composer{cfg_.composer}.build())).build();
-
-        auto status_box = (vstack()
-            .grow(0).shrink(0)
-            (StatusBar{cfg_.status_bar}.build())).build();
-
-        // In inline mode the root is auto-height: a plain v(...)
-        // sizes to natural content, leaving a gap below the status
-        // bar when content is shorter than the viewport. Pin the
-        // outer vstack to at least viewport height so thread_box's
-        // grow(1) eats the slack and composer + status sit at the
-        // bottom edge. When content overflows viewport, min_height
-        // is non-binding and the layout grows past it normally
-        // (inline mode then scrolls upper content into native
-        // scrollback as expected).
+        // Structural shape — mirrors maya/examples/agent_session.cpp,
+        // the reference inline-mode app. Children sit DIRECTLY in the
+        // outer vstack at their natural heights. No per-child wrapper
+        // boxes, no flex grow/shrink on children, no overflow setting
+        // anywhere in this widget.
+        //
+        // Why this is the only correct shape for inline mode:
+        //   The maya inline renderer commits overflow row-by-row into
+        //   the terminal's native scrollback (see serialize.cpp). For
+        //   that to work, the layout MUST be allowed to grow past the
+        //   viewport — any ancestor that clips (overflow:Hidden) or
+        //   compresses (shrink>0) the thread forces content to pile
+        //   up inside the same viewport slot, and stale cells from a
+        //   previously-taller frame leak through the new shorter slot
+        //   at the thread↔composer seam. That was the live-streaming
+        //   ghosting bug.
+        //
+        // Thread grows internally (Conversation::build() sets
+        // grow(1.0f) + trailing spacer), which eats slack on short
+        // content. Composer + StatusBar are natural-height by
+        // construction (their build()s don't set grow), so they sit
+        // at the end of the vstack and ride the viewport bottom.
+        //
+        // DO NOT wrap any child in a vstack/box here. DO NOT add
+        // overflow(). DO NOT set shrink on the outer or any child.
+        // The min_height + padding below are the only outer flex
+        // properties this widget owns.
         const int term_h = available_height();
         auto base = (vstack()
-            .grow(1.0f)
             .min_height(Dimension::fixed(term_h))
             .padding(1)
             (
-                std::move(thread_box),
-                std::move(strip_box),
-                std::move(composer_box),
-                std::move(status_box)
+                Thread{cfg_.thread}.build(),
+                ChangesStrip{cfg_.changes_strip}.build(),
+                Composer{cfg_.composer}.build(),
+                StatusBar{cfg_.status_bar}.build()
             )).build();
 
         Overlay::Config oc;

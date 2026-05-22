@@ -255,6 +255,26 @@ template <typename P>
 struct HasVisualHash<P, std::void_t<decltype(
     P::visual_hash(std::declval<const typename P::Model&>()))>>
     : std::true_type {};
+
+// Optional Program::needs_warmup detector. When a Program type defines
+// `static bool needs_warmup(const Model&)` AND it returns true for the
+// current model, the run<P> loop performs an off-wire warmup_render of
+// the same view BEFORE the user-visible render. The warmup populates
+// maya's hash-keyed component cache; the user-visible render then
+// takes the cell-blit fast path. Burns one extra render() worth of
+// CPU off-frame to convert a tens-to-hundreds-of-ms cold paint into a
+// sub-millisecond warm paint — the right trade after a model swap
+// that loads a large frozen scrollback (agentty thread resume).
+//
+// The Program is responsible for clearing the flag on the next reducer
+// step so warmup fires exactly once per swap; leaving it stuck on
+// would double every frame's render cost.
+template <typename P, typename = void>
+struct HasNeedsWarmup : std::false_type {};
+template <typename P>
+struct HasNeedsWarmup<P, std::void_t<decltype(
+    P::needs_warmup(std::declval<const typename P::Model&>()))>>
+    : std::true_type {};
 } // namespace detail
 
 template <typename P>
@@ -364,6 +384,33 @@ public:
     // Fullscreen: uses RenderPipeline (clear → paint → diff/serialize).
     // Inline: uses compose_inline_frame (row-diff, scrollback-preserving).
     auto render(const Element& root) -> Status;
+
+    // Pre-warm the cross-frame component cache by laying out + painting
+    // `root` into a scratch canvas, WITHOUT touching the wire.
+    //
+    // Use case: after a heavy model swap (e.g. agentty resuming a tool-
+    // heavy thread with hundreds of frozen rows), the very first
+    // render() call pays the full layout + paint cost — typically tens
+    // to hundreds of milliseconds for content the user has yet to see.
+    // Calling warmup_render() with the same Element tree the next
+    // render() will receive populates every ComponentElement with a
+    // hash_id (CacheId) in the renderer's content cache; the subsequent
+    // render() then takes the cell-blit fast path, dropping the visible
+    // first frame to its steady-state cost.
+    //
+    // Constraints:
+    //   — Same thread as render() (cache is thread_local).
+    //   — Same StylePool (we use pool_ internally so the captured
+    //     cells' style ids are valid when blit'd in render()).
+    //   — Only meaningful for hash_id-keyed entries; pointer-keyed
+    //     ComponentElements have ephemeral identity that won't
+    //     survive the scratch → real render handoff.
+    //   — Wire is NOT touched; the scratch canvas is discarded.
+    //
+    // Cost: roughly equal to render_tree() of `root` (layout + paint +
+    // cache capture), but pays its own canvas allocation each call so
+    // burn it sparingly — on the resume edge, not per-frame.
+    void warmup_render(const Element& root);
 
     // Set terminal title via OSC 0.
     void set_title(std::string_view title);
@@ -1068,6 +1115,13 @@ void run(RunConfig cfg = {}) {
     std::uint64_t last_visual_hash       = 0;
     bool          last_visual_hash_valid = false;
 
+    // Edge-detector for the optional Program::needs_warmup hook. When
+    // P::needs_warmup(model) rises from false to true we fire one
+    // warmup_render(); leaving the flag at true on subsequent frames
+    // does NOT re-warm (programs that don't actively clear the flag
+    // still only pay the warmup once per state change).
+    bool          last_warmup_done       = false;
+
     // Animation-frame pump (push-based — Sub::AnimationFrame). Tracks
     // when we last delivered AnimationFrame msgs so we tick at the
     // kAnimationFrameInterval cadence regardless of how often the loop
@@ -1315,7 +1369,28 @@ void run(RunConfig cfg = {}) {
 
             if (!skip_render) {
                 // Pure: view(model) → Element → render to terminal
-                auto status = rt.render(P::view(model));
+                Element view_root = P::view(model);
+                // Optional one-shot warmup: if the program flagged the
+                // current model as needing a cache pre-warm (e.g. a
+                // heavy thread just rehydrated), paint the same view
+                // into a scratch canvas first so the wire-bound render
+                // takes the cell-blit fast path. Single-render-equivalent
+                // CPU spent off-wire, in exchange for converting the
+                // user-visible first frame from O(content) to O(blit).
+                //
+                // De-duped via `last_warmup_done`: the same flag stays
+                // true across reducer steps until something clears it,
+                // but we only fire warmup_render on the rising edge so
+                // a program that never clears the flag still only pays
+                // one warmup per swap.
+                if constexpr (detail::HasNeedsWarmup<P>::value) {
+                    const bool want = P::needs_warmup(model);
+                    if (want && !last_warmup_done) {
+                        rt.warmup_render(view_root);
+                    }
+                    last_warmup_done = want;
+                }
+                auto status = rt.render(view_root);
                 if (!status) break;
             }
             needs_render = false;

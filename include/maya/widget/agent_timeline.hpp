@@ -257,32 +257,26 @@ private:
         if (is_terminal && !ev.hash_id.empty()) {
             ComponentElement comp;
             comp.hash_id = ev.hash_id;
-            // Capture the event by value so the lambda owns its
-            // inputs — the caller's Config can be moved/destroyed
-            // between cache populate and cache hit, but the
-            // captured copy stays alive inside the cache entry's
-            // result. AgentTimelineEvent is small (a few strings +
-            // a ToolBodyPreview::Config); copy cost runs once on the
-            // miss frame and is dwarfed by the layout work the cache
-            // is about to amortise.
-            //
-            // Tree glyph: the cached subtree must be position-stable
-            // across frames where the host's event order may shift
-            // (typical when streaming events arrive interleaved with
-            // earlier events completing). We pass the current
-            // (i, total) computed glyph by value into the lambda so
-            // the very first capture reflects the position at that
-            // moment; hosts that care about the glyph staying in
-            // sync with later reorderings should mix the position
-            // into hash_id (CacheIdBuilder{}.add(tool_id).add(i)
-            // .add(n).build()) so a reorder forces a fresh entry.
+            // Capture the event by shared_ptr<const> so the lambda owns
+            // a stable view of its inputs without per-frame deep-copy
+            // of body text. Prior by-value capture cost
+            // sizeof(AgentTimelineEvent) (strings + ToolBodyPreview body
+            // text) on every AgentTimeline::build() call — even when
+            // the cache fast-path won't invoke the lambda. For a
+            // settled write/edit body with hundreds of lines that's
+            // hundreds of KB of std::string copies per frame per event,
+            // which made the cached path measurably SLOWER than the
+            // uncached path on small bodies (see test_render_scaling
+            // test_agent_timeline_per_event_hash_id_bounds_cost).
+            // shared_ptr capture is one ref-bump per frame, fixed cost.
+            auto ev_sp = std::make_shared<const AgentTimelineEvent>(ev);
             std::string glyph{tree_glyph(i, cfg_.events.size())};
-            comp.render = [ev_copy = ev,
+            comp.render = [ev_sp = std::move(ev_sp),
                            glyph_copy = std::move(glyph)]
                           (int /*w*/, int /*h*/) -> Element {
                 std::vector<Element> sub;
                 sub.reserve(4);
-                build_event_body(sub, ev_copy, /*is_terminal=*/true,
+                build_event_body(sub, *ev_sp, /*is_terminal=*/true,
                                  /*frame=*/0, glyph_copy);
                 return v(std::move(sub)).build();
             };

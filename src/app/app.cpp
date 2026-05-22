@@ -324,24 +324,30 @@ auto Runtime::render(const Element& root) -> Status {
         constexpr int kMinCanvasHeight = 500;
 
         // Reasons to (re)allocate the canvas:
-        //   - width changed (terminal resize),
-        //   - height below the minimum floor,
-        //   - height is now ridiculously oversized vs current content.
+        //   — width changed (terminal resize),
+        //   — height below the minimum floor,
+        //   — height is now ridiculously oversized vs current content.
         //
         // The last condition is load-bearing for long-session perf.
         // canvas_.clear() does streaming_fill over width * height
         // cells every frame; once a tall transcript bumped the
         // canvas to e.g. 6000 rows, clearing 6000 * 100 cells per
         // frame stays expensive forever — even after trim shrunk
-        // the actual content back to a few hundred rows. Shrink
-        // when the canvas is more than 2x the content + minimum
-        // floor, so the steady-state per-frame cost tracks what's
-        // actually being drawn instead of the all-time peak.
+        // the actual content back to a few hundred rows.
+        //
+        // Shrink target: content + 64 (small headroom so a one-turn
+        // append doesn't immediately re-grow). Trigger at 1.5x the
+        // target instead of 2x so we reclaim memory more eagerly on
+        // tool-heavy sessions where the all-time-peak content (a
+        // 500-line write that has since trimmed) leaves the canvas
+        // sitting at ~1000 rows even though steady-state needs ~200.
+        // 1.5x still avoids resize thrash on normal grow/shrink
+        // cycles: a turn that adds ~30 rows on top of a steady 400
+        // rows lands at 430, well below the 600 trigger.
         const int prev_content_rows = content_height(canvas_);
         const int shrink_target = std::max(kMinCanvasHeight,
                                            prev_content_rows + 64);
-        const bool oversized = canvas_.height() > shrink_target * 2
-                            && canvas_.height() > kMinCanvasHeight * 2;
+        const bool oversized = canvas_.height() * 2 > shrink_target * 3;
 
         if (canvas_.width() != w
             || canvas_.height() < kMinCanvasHeight
@@ -550,6 +556,57 @@ auto Runtime::render(const Element& root) -> Status {
         },
     }, fs_coherence_);
     return write_status;
+}
+
+// ============================================================================
+// Runtime::warmup_render — pre-populate cross-frame component cache
+// ============================================================================
+//
+// Hot path on resume of a heavy thread: the FIRST render() pays full
+// layout + paint over the rehydrated frozen tree (tens to hundreds of
+// ms for tool-heavy threads). The cells are then captured into the
+// renderer's hash-keyed ComponentCache and every subsequent frame is
+// a memcpy-blit per cached entry (sub-millisecond).
+//
+// warmup_render() is the same render_tree() call, into a private
+// canvas, NOT touching writer_ / coherence state. The cache state it
+// leaves behind is what makes the next real render() take the fast
+// path.
+//
+// Width/height: matches the live canvas_'s width (cached cells are
+// width-keyed and a width mismatch invalidates the entry); height
+// gets `auto_height=true` and grows under content.
+void Runtime::warmup_render(const Element& root) {
+    const int w = canvas_.width();
+    if (w <= 0) return;   // pre-create state; render() will populate later.
+
+    // Scratch canvas — same pool as the live render so captured style
+    // ids stay valid when blit'd. Seed height at the current live
+    // canvas height so we usually avoid the grow-and-retry below.
+    const int seed_h = std::max(64, canvas_.height());
+    Canvas scratch(w, seed_h, &pool_);
+    scratch.clear();
+
+    std::vector<layout::LayoutNode> nodes;
+    nodes.reserve(layout_nodes_.size() + 64);
+    render_tree(root, scratch, pool_, theme_, nodes, /*auto_height=*/true);
+
+    // If content overflowed the seed height, grow once and re-render
+    // — mirrors the live render() path so the cache entries that get
+    // captured are at the same width/height as the next live frame.
+    int ch = content_height(scratch);
+    if (ch >= scratch.height() && !nodes.empty()) {
+        int needed = nodes[0].computed.size.height.raw();
+        if (needed > scratch.height()) {
+            scratch.resize(w, needed + 8);
+            scratch.clear();
+            render_tree(root, scratch, pool_, theme_, nodes,
+                        /*auto_height=*/true);
+        }
+    }
+    // scratch is dropped here; the side effect we wanted — the
+    // thread_local component_cache holding cells keyed by every
+    // hash_id under `root` — persists to the next render() call.
 }
 
 // ============================================================================

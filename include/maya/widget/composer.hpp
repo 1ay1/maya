@@ -283,25 +283,36 @@ public:
         auto lbl = [muted](const char* l) { return text(l, fg_dim_(muted)); };
         auto dot = [muted]() { return text("  \xc2\xb7  ", fg_dim_(muted)); };
 
-        // Hysteresised thresholds so a 1-column breathing parent
-        // doesn't toggle the hint row's shape on every frame. Once
-        // the wider shape is shown at width >= HI, it persists down
-        // to width < LO before collapsing. We don't have prior-frame
-        // state here, so we approximate the same effect with a wider
-        // dead zone: widen the show-threshold by 4 cols and the
-        // hide-threshold stays at the original value, so transient
-        // single-column wiggles can't cross the boundary in one
-        // step.
+        // ── Width-adaptive hint clusters.
+        //
+        // Both sides progressively shed segments as available width
+        // shrinks. The profile chip on the right is the only must-keep
+        // anchor — everything else (newline / expand on the left;
+        // queued / words / tokens on the right) sheds in priority
+        // order once the combined natural width can't fit.
+        //
+        // Per-segment widths are measured in display columns by
+        // tallying the printed glyphs (UTF-8 codepoints counted as
+        // 1 column each — the kbd glyphs we use are all narrow).
+        // The result is an upper bound the layout pass never
+        // exceeds, so the row never wraps or clips the chip.
+        //
+        // Hysteresis on absolute thresholds isn't enough here: a
+        // shrink during streaming (sparkline growing) would cause
+        // the right cluster to overflow the left when avail is
+        // narrow. Computing required-width vs avail every frame
+        // keeps the row coherent across resizes, profile swaps,
+        // and ticking word counters.
         auto hint_left_builder = [kbd, lbl, dot](int avail_width) {
             std::vector<Element> out;
             out.push_back(kbd("\xe2\x86\xb5"));           // ↵
             out.push_back(lbl(" send"));
-            if (avail_width >= 64) {                       // was 60
+            if (avail_width >= 64) {
                 out.push_back(dot());
                 out.push_back(kbd("\xe2\x87\xa7\xe2\x86\xb5 / \xe2\x8c\xa5\xe2\x86\xb5"));
                 out.push_back(lbl(" newline"));
             }
-            if (avail_width >= 94) {                       // was 90
+            if (avail_width >= 94) {
                 out.push_back(dot());
                 out.push_back(kbd("^E"));
                 out.push_back(lbl(" expand"));
@@ -309,41 +320,108 @@ public:
             return out;
         };
 
-        std::vector<Element> hint_right;
-        if (cfg_.queued > 0) {
-            hint_right.push_back(text("\xe2\x9d\x9a ",
-                                      Style{}.with_fg(cfg_.highlight_color)));   // ❚
-            hint_right.push_back(text(
-                tabular_int_(static_cast<int>(cfg_.queued), 2) + " queued",
-                Style{}.with_fg(cfg_.highlight_color).with_bold()));
-            hint_right.push_back(dot());
-        }
-        if (has_text) {
-            int words = word_count(cfg_.text);
-            int toks  = approx_tokens(cfg_.text);
-            // 5-wide pad covers up to 99,999 words / tokens — two
-            // more orders of magnitude than the prior 4-wide field,
-            // which would overflow and shift the right cluster by
-            // one column at 10k. Real composer text never lands here
-            // in practice, but the column stability matters.
-            hint_right.push_back(text(
-                tabular_int_(words, 5) + " words", fg_dim_(muted)));
-            hint_right.push_back(text("  \xc2\xb7  ", fg_dim_(muted)));
-            hint_right.push_back(text(
-                "~" + tabular_int_(toks, 5) + " tok", fg_dim_(muted)));
-            hint_right.push_back(dot());
-        }
-        hint_right.push_back(text("\xe2\x96\x8e",
-                                  Style{}.with_fg(cfg_.profile.color)));         // ▎
-        hint_right.push_back(text(" "));
-        hint_right.push_back(text(
-            small_caps_(cfg_.profile.label),
-            Style{}.with_fg(cfg_.profile.color).with_bold()));
+        // Right-cluster ingredients passed into the lambda by value so
+        // each frame's relayout can rebuild the cluster from a snapshot
+        // of the current counts. Width-driven sheds happen INSIDE the
+        // lambda where `w` is known.
+        struct RightInputs {
+            bool has_text;
+            int queued;
+            int words;
+            int toks;
+            Color highlight_color;
+            Color muted_color;
+            Color profile_color;
+            std::string profile_label;
+        };
+        RightInputs ri{
+            has_text,
+            static_cast<int>(cfg_.queued),
+            has_text ? word_count(cfg_.text) : 0,
+            has_text ? approx_tokens(cfg_.text) : 0,
+            cfg_.highlight_color,
+            muted,
+            cfg_.profile.color,
+            std::string{cfg_.profile.label},
+        };
+
+        // Approximate column width of a left cluster for a given
+        // avail_width (used to compute remaining space for the right
+        // cluster). Keep in sync with hint_left_builder: send=6,
+        // dot=5, newline glyphs+label=12, expand glyphs+label=9.
+        auto left_cols = [](int avail) {
+            int w = 1 /*↵*/ + 5 /* send*/;
+            if (avail >= 64) w += 5 /*dot*/ + 7 /*⇧↵ / ⌥↵ (7 narrow cells)*/ + 8 /* newline*/;
+            if (avail >= 94) w += 5 /*dot*/ + 2 /*^E*/ + 7 /* expand*/;
+            return w;
+        };
 
         Element hint_element = component(
-            [hint_left_builder, hint_right](int w, int /*h*/) -> Element {
+            [hint_left_builder, left_cols, ri, kbd, lbl, dot](int w, int /*h*/) -> Element {
                 using namespace dsl;
                 auto left = hint_left_builder(w);
+
+                // 2-col indent + trailing space + padding(0,1) on both
+                // sides eat 6 cols of chrome — subtract before deciding
+                // what the right cluster can afford.
+                constexpr int kChromeCols = 6;
+                const int budget = std::max(0, w - kChromeCols - left_cols(w));
+
+                // Profile chip widths: "▎ " (2) + small-caps label.
+                // small_caps_ inserts a space between each char, so a
+                // 5-char label renders as 9 cols ("W R I T E").
+                const int chip_cols = 2 + static_cast<int>(
+                    ri.profile_label.empty() ? 0
+                    : ri.profile_label.size() * 2 - 1);
+
+                // queued segment width: "❚ " (2) + 2-wide int + " queued" (7) + dot (5) = 16
+                constexpr int kQueuedCols = 16;
+                // words segment: 5-wide int + " words" (6) = 11
+                constexpr int kWordsCols = 11;
+                // separator dot between words and tok = 5
+                // tok segment: "~" (1) + 5-wide int + " tok" (4) = 10, + dot (5) = 15
+                constexpr int kTokCols = 5 + 10;
+                constexpr int kCountersCols = kWordsCols + kTokCols + 5 /*trailing dot*/;
+
+                std::vector<Element> hint_right;
+
+                // Always include the chip — it's the profile-identity
+                // anchor. If even the chip can't fit, the row falls
+                // back to chip-only with no left cluster (`left` shrinks
+                // to just "↵ send" at narrow widths via avail_width
+                // thresholds; if even that overflows, the spacer eats
+                // the slack and maya clips the row, but the chip stays
+                // visible because it's on the right edge).
+                const bool show_queued   = ri.queued > 0
+                    && budget >= chip_cols + kQueuedCols;
+                const bool show_counters = ri.has_text
+                    && budget >= chip_cols
+                        + (show_queued ? kQueuedCols : 0)
+                        + kCountersCols;
+
+                if (show_queued) {
+                    hint_right.push_back(text("\xe2\x9d\x9a ",
+                        Style{}.with_fg(ri.highlight_color)));
+                    hint_right.push_back(text(
+                        tabular_int_(ri.queued, 2) + " queued",
+                        Style{}.with_fg(ri.highlight_color).with_bold()));
+                    hint_right.push_back(dot());
+                }
+                if (show_counters) {
+                    hint_right.push_back(text(
+                        tabular_int_(ri.words, 5) + " words", fg_dim_(ri.muted_color)));
+                    hint_right.push_back(text("  \xc2\xb7  ", fg_dim_(ri.muted_color)));
+                    hint_right.push_back(text(
+                        "~" + tabular_int_(ri.toks, 5) + " tok", fg_dim_(ri.muted_color)));
+                    hint_right.push_back(dot());
+                }
+                hint_right.push_back(text("\xe2\x96\x8e",
+                    Style{}.with_fg(ri.profile_color)));
+                hint_right.push_back(text(" "));
+                hint_right.push_back(text(
+                    small_caps_(ri.profile_label),
+                    Style{}.with_fg(ri.profile_color).with_bold()));
+
                 // 2-col indent so the hint row lines up with body text:
                 // `inner` has padding(0,1) (→1 col left), and body row 0
                 // starts with the "❯ " prompt (→2 cols). Match that exactly

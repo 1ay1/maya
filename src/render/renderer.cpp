@@ -1320,26 +1320,26 @@ void render_tree(
             }
         }
 
-        // Hash-keyed entries: 2-second wallclock retention. The host
-        // opted into cross-frame identity by setting hash_id; the
-        // cells captured under that id are valid for as long as the
-        // content the id stands for hasn't changed (a fresh
-        // ComponentElement with the same id presents the same
-        // semantic content). Frame-count retention misbehaves under
-        // event-driven (fps=0) operation — 8 frames can be 30 seconds
-        // of idle, evicting nothing meaningful; under animation 8
-        // frames is 0.3 s and evicts entries the user is still
-        // interacting with. Wallclock tracks the user's notion of
-        // "how long ago" instead of the engine's frame counter.
-        using clock = std::chrono::steady_clock;
-        constexpr auto kContentCacheRetention = std::chrono::seconds(2);
-        const auto cutoff = clock::now() - kContentCacheRetention;
-        for (auto it = cache.entries_by_hash.begin(); it != cache.entries_by_hash.end(); ) {
-            if (it->second.last_touched_at < cutoff) {
-                it = cache.entries_by_hash.erase(it);
-            } else {
-                ++it;
-            }
+        // Hash-keyed entries: sized LRU. hash_id is a content-stable
+        // identity — the cached cells are valid until the id stops
+        // appearing in the tree, regardless of how long the host has
+        // been idle. A wallclock cutoff (the previous policy) misfires
+        // under event-driven (fps=0) hosts that paint only on input:
+        // every frozen scrollback entry got evicted after a few
+        // seconds of idle, and the next keystroke paid an O(N) full
+        // re-render to repopulate. Cap by entry count instead; the LRU
+        // bounds memory without timing out live content.
+        constexpr std::size_t kHashCacheMax = 4096;
+        if (cache.entries_by_hash.size() > kHashCacheMax) {
+            std::vector<std::pair<std::chrono::steady_clock::time_point, CacheId>> idx;
+            idx.reserve(cache.entries_by_hash.size());
+            for (const auto& [id, entry] : cache.entries_by_hash)
+                idx.emplace_back(entry.last_touched_at, id);
+            const std::size_t drop = cache.entries_by_hash.size() - kHashCacheMax;
+            std::nth_element(idx.begin(), idx.begin() + drop, idx.end(),
+                [](const auto& a, const auto& b) { return a.first < b.first; });
+            for (std::size_t i = 0; i < drop; ++i)
+                cache.entries_by_hash.erase(idx[i].second);
         }
         ++cache.current_frame;
     }

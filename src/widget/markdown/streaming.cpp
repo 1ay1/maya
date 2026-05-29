@@ -1670,6 +1670,15 @@ const Element& StreamingMarkdown::build() const {
     auto finalize = [this]() -> const Element& {
         if (!live_) return cached_build_;
 
+        // Animated streaming-reveal (gradient trail + scramble + pulsing
+        // caret) is opt-in. Off by default it returns the settled,
+        // fully-styled build with no per-frame color/glyph churn and no
+        // animation-frame request — text just appears as it streams,
+        // flicker-free on every terminal (the gradient sweep re-colored
+        // the trailing ~24 glyphs every frame, which reads as flicker
+        // even under atomic frame swaps). See StreamingMarkdown::reveal_fx_.
+        if (!reveal_fx_) return cached_build_;
+
         // ── Geeky-as-fuck live animation ──
         //
         // Three layered effects on the trailing edge of the live tail:

@@ -64,9 +64,24 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     rt.event_source_    = std::move(event_source);
     rt.writer_          = std::make_unique<Writer>(output_h);
     rt.theme_           = cfg.theme;
-    // Cache the terminal-capability heuristic once. Cheap getenv() walk;
-    // doing it lazily would just re-run it on every frame for no gain.
-    rt.sync_output_     = ansi::env_supports_synchronized_output();
+    // Emit DEC mode 2026 (synchronized output) brackets by DEFAULT, not
+    // only when the env-heuristic can fingerprint the terminal. On every
+    // terminal that supports the mode they make each frame swap atomically
+    // — the single most effective flicker cure, and it works even on
+    // terminals the heuristic misses (ssh/tmux passthrough, niche
+    // emulators, anything that supports 2026 without leaving an env
+    // marker). On terminals that DON'T support it the private-mode
+    // set/reset is silently ignored (ECMA-48: unknown DEC private modes
+    // are no-ops) — harmless-but-pointless, never corrupting. The only
+    // opt-out is an explicit MAYA_NO_SYNC, for the rare emulator that
+    // echoes unknown private modes as literal text.
+    {
+        const char* no_sync = std::getenv("MAYA_NO_SYNC");
+        const std::string_view ns = no_sync ? no_sync : "";
+        const bool disabled = !ns.empty()
+            && ns != "0" && ns != "false" && ns != "no";
+        rt.sync_output_ = !disabled;
+    }
 
     // Set terminal title if provided.
     if (!cfg.title.empty()) {

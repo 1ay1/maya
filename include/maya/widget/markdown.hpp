@@ -343,6 +343,23 @@ private:
     // by finish() (stream done) and by clear() (logical reset).
     bool live_ = false;
 
+    // Host-set: opt INTO the animated streaming-reveal effect (the
+    // hot→cool gradient trail, the matrix-style scramble→resolve on
+    // the newest glyphs, and the pulsing block caret). DEFAULT OFF.
+    //
+    // Why off by default: those effects re-color and re-glyph the
+    // trailing ~24 codepoints on EVERY animation frame. On terminals
+    // that honor synchronized output the swap is atomic but the colors
+    // still visibly sweep; on terminals that don't, it's outright
+    // flicker. Either way the eye reads "the text I just received is
+    // shimmering," which most hosts do not want. When off, build()
+    // returns the settled, fully-styled tail immediately — text simply
+    // appears as it streams (the host's own typewriter pacing still
+    // applies), with no per-frame churn and no animation-frame
+    // requests. Hosts that specifically want the effect call
+    // set_reveal_fx(true).
+    bool reveal_fx_ = false;
+
     // ── Per-build size tracking for age-based animation ──
     //
     // Each time build() runs and the source has grown since the
@@ -674,6 +691,13 @@ public:
     /// request_animation_frame() so the blink happens at ~30 fps
     /// regardless of byte arrival rate. Default: false (settled).
     void set_live(bool live) noexcept { live_ = live; }
+
+    /// Opt into the animated streaming-reveal effect (gradient trail +
+    /// scramble + pulsing caret). Off by default — see `reveal_fx_`.
+    /// When off, streamed text appears in its final style with no
+    /// per-frame color/glyph churn (calm, flicker-free on every
+    /// terminal).
+    void set_reveal_fx(bool on) noexcept { reveal_fx_ = on; }
     [[nodiscard]] bool is_live() const noexcept { return live_; }
 
     /// Build the element tree: cached blocks + monotonic tail.  Returns

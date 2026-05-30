@@ -28,6 +28,7 @@
 #include "maya/style/style.hpp"
 
 #include "maya/widget/markdown/internal.hpp"
+#include "maya/widget/markdown/spec_chars.hpp"
 
 namespace maya {
 
@@ -58,42 +59,10 @@ namespace { using RefDefsGuard = ::maya::md_detail::RefDefsScope; }
 namespace {
 
 // ── Compile-time lookup tables ──────────────────────────────────────────────
-
-// Helper: build a 256-byte boolean lookup table at compile time.
-struct CharTable {
-    bool v[256]{};
-    constexpr bool operator[](unsigned char c) const noexcept { return v[c]; }
-};
-
-template <unsigned char... Cs>
-consteval CharTable make_table() {
-    CharTable t{};
-    ((t.v[Cs] = true), ...);
-    return t;
-}
-
-// Escapable CommonMark characters.
-static constexpr auto kEscapable = make_table<
-    '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+',
-    '-', '.', '!', '|', '~', '<', '>', '"', '\'', '^'>();
-
-// Characters that break the inline plain-text batch scanner.
-// URL-sniffing, mentions, entities and emoji shortcodes are handled in a
-// separate post-pass over Text nodes (linkify_text_nodes), so their trigger
-// chars (h/w/@/#/&/:) do NOT appear here — adding them would cost a stop
-// per word in normal prose.
-static constexpr auto kInlineSpecial = make_table<
-    '`', '*', '_', '~', '[', '!', '\\', '<', '$',
-    '=', '^'>();
-
-// Punctuation characters in syntax highlighting.
-static constexpr auto kPunctChar = make_table<
-    '{', '}', '[', ']', '(', ')', '.', ',', ';', ':',
-    '<', '>', '?', '~', '%', '@', '\\'>();
-
-// Operator characters in syntax highlighting.
-static constexpr auto kOpChar = make_table<
-    '+', '-', '*', '/', '=', '!', '&', '|', '^'>();
+// Membership lives in one place — markdown/spec_chars.hpp — shared with
+// the syntax highlighter and proven via static_assert there.
+using md_detail::chars::kEscapable;
+using md_detail::chars::kInlineSpecial;
 
 inline std::string_view trim(std::string_view s) {
     while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.remove_prefix(1);

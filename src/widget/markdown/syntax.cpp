@@ -22,6 +22,7 @@
 #include "maya/style/style.hpp"
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
+#include "maya/widget/markdown/spec_chars.hpp"
 
 namespace maya {
 
@@ -31,27 +32,11 @@ using ::maya::md_detail::find_eol;
 
 namespace {
 
-// Compile-time char tables — duplicated from parser.cpp so the inner
-// loops can inline kFoo[c] without cross-TU indirection. Each table is
-// 256 B of rodata.
-struct CharTable {
-    bool v[256]{};
-    constexpr bool operator[](unsigned char c) const noexcept { return v[c]; }
-};
-
-template <unsigned char... Cs>
-consteval CharTable make_table() {
-    CharTable t{};
-    ((t.v[Cs] = true), ...);
-    return t;
-}
-
-static constexpr auto kPunctChar = make_table<
-    '{', '}', '[', ']', '(', ')', '.', ',', ';', ':',
-    '<', '>', '?', '~', '%', '@', '\\'>();
-
-static constexpr auto kOpChar = make_table<
-    '+', '-', '*', '/', '=', '!', '&', '|', '^'>();
+// Char-class tables shared with the parser — one source of truth in
+// markdown/spec_chars.hpp. Local aliases keep the highlighter body's
+// kPunctChar/kOpChar call sites unchanged.
+constexpr auto kPunctChar = md_detail::chars::kPunct;
+constexpr auto kOpChar    = md_detail::chars::kOp;
 
 } // anonymous
 

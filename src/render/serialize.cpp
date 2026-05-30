@@ -514,32 +514,44 @@ compose_inline_frame_impl(const Canvas& canvas,
         }
     }
 
-    // Nothing to do: common range matches and no rows added or removed.
+    // hide_cursor (DECTCEM ?25l) is RE-ASSERTED on every render call,
+    // BEFORE the no-op early-return below, not latched. Inline mode
+    // never positions the hardware cursor — the composer's caret is a
+    // painted cell — so the real cursor must stay invisible for the
+    // whole session, at ALL times including when the frame is idle.
+    //
+    // Anything OUTSIDE maya can re-show it between our frames: a
+    // sandboxed subprocess that thinks it owns a tty and writes ?25h
+    // to fd 1, an SSH reconnect, a terminal emulator that resets
+    // DECTCEM on its own scroll/SU, or — the case that motivated
+    // moving this above the early-return — a mobile terminal (Blink /
+    // iSH / Termius on iOS) that shows its own cursor when the soft
+    // keyboard or speech-to-text input field opens. If we only emit
+    // the hide on content-changing frames, an idle composer (the
+    // common state) hits the "nothing to do" return and never re-
+    // hides, so the externally-reshown cursor sits there until the
+    // next keystroke. Emitting the hide before the early-return
+    // guarantees every render tick re-asserts invisibility regardless
+    // of whether the canvas changed.
+    //
+    // ?25l is idempotent at the terminal (hiding an already-hidden
+    // cursor is a no-op, paints nothing, moves nothing) so re-emitting
+    // it on an otherwise-silent frame is safe: 6 bytes, no flicker. It
+    // sits inside the sync wrapper on content frames; on the no-op
+    // path it ships alone (no sync markers needed — there is no frame
+    // body to make atomic).
     if (first_changed == common && content_rows == prev_rows) {
+        out += ansi::hide_cursor;
+        state.cursor_hidden_ = true;
         return {std::move(out), std::move(state)};
     }
 
     // ── Frame open ─────────────────────────────────────────────────────
     // DECAWM-off is emitted once and persisted across frames
     // (state.decawm_off_); state.finalize() restores it on shutdown.
-    //
-    // hide_cursor (DECTCEM ?25l) is RE-ASSERTED every frame, not
-    // latched. Inline mode never positions the hardware cursor — the
-    // composer's caret is a painted inverse cell — so the real cursor
-    // must stay invisible for the whole session. Latching the hide to
-    // once-per-session breaks the moment anything OUTSIDE maya re-shows
-    // it: a sandboxed subprocess that thinks it owns a tty and writes
-    // ?25h to fd 1, an SSH reconnect, a terminal emulator that resets
-    // DECTCEM on its own scroll/SU, or a leaked `reset`/`tput cnorm`.
-    // After that, the latch still reads "hidden" so the hide is never
-    // re-emitted, and the hardware cursor reappears parked at the last
-    // row written (just below the status bar), idle and untracked —
-    // two visible cursors, and a stale cursor position the inline
-    // partial-rewrite math (which assumes cursor at prev_rows-1) does
-    // not account for. Re-emitting ?25l unconditionally is idempotent
-    // at the terminal (hiding an already-hidden cursor is a no-op) and
-    // costs 6 bytes/frame — cheap insurance against a desync that is
-    // invisible to us until the user reports a ghost cursor.
+    // hide_cursor is re-asserted here too (see the rationale at the
+    // early-return above), inside the sync wrapper so it applies
+    // atomically with the rest of the frame body.
     if (synchronized_output) out += ansi::sync_start;
     out += ansi::hide_cursor;
     state.cursor_hidden_ = true;

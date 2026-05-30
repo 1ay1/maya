@@ -257,12 +257,14 @@ if(MAYA_BUILD_TESTS)
         tests/test_scroll.cpp
         tests/test_wire_row.cpp
         tests/test_inline_frame.cpp
+        tests/test_commonmark_spec.cpp
     )
 
     foreach(src ${MAYA_TEST_SOURCES})
         get_filename_component(tgt ${src} NAME_WE)
         add_executable(${tgt} ${src})
         target_link_libraries(${tgt} PRIVATE maya)
+        target_compile_definitions(${tgt} PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         target_compile_options(${tgt} PRIVATE
             $<$<CXX_COMPILER_ID:GNU,Clang>:
                 -O2

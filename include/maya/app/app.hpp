@@ -359,12 +359,22 @@ public:
 
     // Does the host terminal honor DEC mode 2026 (synchronized update)?
     // Detected once at Runtime::create() via env-var heuristic; immutable
-    // afterwards. When true, every frame is wrapped in CSI ?2026h … l so
-    // the terminal swaps the back buffer atomically (no flicker even on
-    // multi-row updates). When false, the renderer skips emitting the
-    // wrapper and applications can lower their tick rate to compensate.
+    // afterwards.
+    //
+    // This is the HONEST answer (env_supports_synchronized_output()), NOT
+    // "did we emit the wrapper". We emit the CSI ?2026h … l wrapper on
+    // every terminal by default because unknown private modes are no-ops
+    // where unsupported (see emit_sync_wrapper_) — but on Apple Terminal,
+    // ish, and other emulators that genuinely lack mode 2026, the wrapper
+    // does nothing and multi-row repaints still tear. Applications gate
+    // their ANIMATION TICK RATE on this signal: when it's false, drop the
+    // caret/spinner/gradient cadence (e.g. 60 Hz → ~10 Hz) so the
+    // bottom-of-frame redraw that can't be made atomic happens far less
+    // often, which is the only effective flicker mitigation left on those
+    // terminals. When true, the wrapper makes frames atomic and apps can
+    // tick freely.
     [[nodiscard]] bool supports_synchronized_output() const noexcept {
-        return sync_output_;
+        return sync_supported_;
     }
 
     // Poll the event source for ready flags.
@@ -588,10 +598,19 @@ private:
     Size          size_{};
     RenderContext render_ctx_;
     uint32_t      resize_generation_  = 0;
-    // Cached at create() — avoids re-querying env on every frame, and
-    // gives subscribe()/view() callers a stable answer they can use for
-    // tick-rate gating. See ansi::env_supports_synchronized_output().
-    bool          sync_output_        = true;
+    // Whether to EMIT the DEC ?2026 wrapper around every frame. On by
+    // default (only MAYA_NO_SYNC disables it) because unknown DEC private
+    // modes are no-ops where unsupported — emitting costs ~12 bytes/frame
+    // and never corrupts. The render paths read this to decide whether to
+    // append sync_start/sync_end.
+    bool          emit_sync_wrapper_  = true;
+
+    // The HONEST env-heuristic answer to "does this terminal support mode
+    // 2026". Cached at create() so we don't re-query env every frame; this
+    // is what supports_synchronized_output() returns and what callers gate
+    // their animation tick rate on. False on Apple Terminal / ish / plain
+    // xterm / unconfigured tmux. See ansi::env_supports_synchronized_output().
+    bool          sync_supported_     = false;
 
     // -- Wake signaling (background task → UI thread) -------------------------
     // The fd/handle is owned by BackgroundQueue: it must live as long as any

@@ -32,6 +32,7 @@
 #include "maya/style/border.hpp"
 #include "maya/style/style.hpp"
 #include "maya/text/stream_sink.hpp"
+#include "maya/terminal/ansi.hpp"   // env_supports_synchronized_output()
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
 #include "maya/app/app.hpp"   // request_animation_frame()
@@ -2120,14 +2121,24 @@ const Element& StreamingMarkdown::build() const {
         // animated body IS the whole live element.
         cached_live_ = std::move(animated_body);
 
-        // Phase-bucket the wall clock at ~33 ms (≈30 fps). The scramble/
-        // caret/gradient only visually step at this rate; the prior
-        // unconditional RAF kept the host loop at 60 Hz, which on
-        // terminals without DEC 2026 paints the composer below the
-        // live tail progressively every wakeup. Skip RAF when the
-        // bucket hasn't advanced — the next stream byte (set_content)
-        // sets build_dirty_ and re-enters here anyway.
-        constexpr std::int64_t kAnimPhaseMs = 33;
+        // Phase-bucket the wall clock so the scramble/caret/gradient
+        // only visually step at a fixed rate; the prior unconditional
+        // RAF kept the host loop at 60 Hz, which on terminals without
+        // DEC 2026 paints the composer below the live tail progressively
+        // every wakeup. Skip RAF when the bucket hasn't advanced — the
+        // next stream byte (set_content) sets build_dirty_ and re-enters
+        // here anyway.
+        //
+        // The bucket width adapts to the terminal's DEC-2026 support,
+        // detected once via the env heuristic. When sync IS available
+        // every frame swaps atomically, so 33 ms (~30 fps) keeps the
+        // caret smooth at no flicker cost. When it ISN'T (Apple
+        // Terminal, ish, plain xterm, unconfigured tmux), each live-tail
+        // repaint tears — so widen the bucket to 100 ms (~10 fps),
+        // cutting the visible tear frequency 3× for a slightly choppier
+        // caret. Mirrors agentty's spinner-tick gate in subscribe.cpp.
+        static const std::int64_t kAnimPhaseMs =
+            ansi::env_supports_synchronized_output() ? 33 : 100;
         const std::int64_t phase = ms_total / kAnimPhaseMs;
         if (phase != last_anim_phase_) {
             last_anim_phase_ = phase;

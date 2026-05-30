@@ -14,6 +14,7 @@
 #include "maya/core/scope_exit.hpp"
 #include "maya/platform/select.hpp"
 #include "maya/platform/thread.hpp"
+#include "maya/terminal/ansi.hpp"
 
 namespace maya::detail {
 
@@ -80,7 +81,15 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
         const std::string_view ns = no_sync ? no_sync : "";
         const bool disabled = !ns.empty()
             && ns != "0" && ns != "false" && ns != "no";
-        rt.sync_output_ = !disabled;
+        // Emit the wrapper unless explicitly disabled — harmless no-op
+        // where unsupported, atomic frames where supported.
+        rt.emit_sync_wrapper_ = !disabled;
+        // The HONEST support answer, for tick-rate gating. MAYA_NO_SYNC
+        // forces it false; otherwise consult the env heuristic so apps
+        // on Apple Terminal / ish / unconfigured tmux slow their
+        // animation cadence instead of tearing every frame.
+        rt.sync_supported_ =
+            !disabled && ansi::env_supports_synchronized_output();
     }
 
     // Set terminal title if provided.
@@ -426,12 +435,12 @@ auto Runtime::render(const Element& root) -> Status {
                     auto fresh = std::move(arm).seed();
                     return lift(std::move(fresh).render(
                         canvas_, rows, term_h, pool_, *writer_,
-                        sync_output_));
+                        emit_sync_wrapper_));
                 }
                 else if constexpr (std::is_same_v<T, InlineFrame<Fresh>>) {
                     return lift(std::move(arm).render(
                         canvas_, rows, term_h, pool_, *writer_,
-                        sync_output_));
+                        emit_sync_wrapper_));
                 }
                 else if constexpr (std::is_same_v<T, InlineFrame<Synced>>) {
                     auto wit = arm.verify();
@@ -440,17 +449,17 @@ auto Runtime::render(const Element& root) -> Status {
                     }
                     return lift(std::move(arm).render(
                         canvas_, rows, term_h, pool_, *writer_,
-                        *std::move(wit), sync_output_));
+                        *std::move(wit), emit_sync_wrapper_));
                 }
                 else if constexpr (std::is_same_v<T, InlineFrame<Stale>>) {
                     return lift(std::move(arm).render(
                         canvas_, rows, term_h, pool_, *writer_,
-                        sync_output_));
+                        emit_sync_wrapper_));
                 }
                 else if constexpr (std::is_same_v<T, InlineFrame<HardReset>>) {
                     return lift(std::move(arm).render(
                         canvas_, rows, term_h, pool_, *writer_,
-                        sync_output_));
+                        emit_sync_wrapper_));
                 }
                 else {
                     static_assert(std::is_same_v<T, InlineFrame<Sealed>>);
@@ -520,8 +529,8 @@ auto Runtime::render(const Element& root) -> Status {
             auto opened = RenderPipeline<stage::Idle>::start(canvas_, pool_, theme_, out_)
                 .clear()
                 .paint(root, layout_nodes_)
-                .open_frame(sync_output_);
-            std::move(opened).write_diff(s.front).close_frame(sync_output_);
+                .open_frame(emit_sync_wrapper_);
+            std::move(opened).write_diff(s.front).close_frame(emit_sync_wrapper_);
             // write_or_buffer: ships what fits, stashes the rest in
             // residue. The residue is drained at the top of the next
             // render (above); until then `has_residue()` keeps the
@@ -549,13 +558,13 @@ auto Runtime::render(const Element& root) -> Status {
             auto opened = RenderPipeline<stage::Idle>::start(canvas_, pool_, theme_, out_)
                 .clear()
                 .paint(root, layout_nodes_)
-                .open_frame(sync_output_);
+                .open_frame(emit_sync_wrapper_);
             // Home + serialize every row (no \x1b[2J — flashes inside DEC
             // sync). serialize() appends \x1b[K per row to wipe stale
             // trailing content.
             out_ += "\x1b[H";
             serialize(canvas_, pool_, out_);
-            std::move(opened).close_frame(sync_output_);
+            std::move(opened).close_frame(emit_sync_wrapper_);
             if (auto wr = writer_->write_or_buffer(out_); !wr) {
                 writer_->discard_residue();
                 write_status = wr;

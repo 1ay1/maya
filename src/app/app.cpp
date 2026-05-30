@@ -167,27 +167,58 @@ void Runtime::handle_resize() {
     }
 
     if (new_size != size_) {
+        const int prev_w = size_.width.raw();
         size_ = new_size;
         ++resize_generation_;
         render_ctx_.width      = size_.width.raw();
         render_ctx_.height     = size_.height.raw();
         render_ctx_.generation = resize_generation_;
-        // A resize invalidates both the prev-frame cell grid (fullscreen
-        // diff) and the row-diff state (inline). Fullscreen collapses to
-        // Divergent (next render does a full repaint). Inline transitions
-        // to HardReset (next render emits \x1b[2J\x1b[3J\x1b[H and starts
-        // fresh) when there's a Synced/Stale state to drop; Empty/Fresh
-        // stay where they are because they haven't yet emitted anything.
+
+        // Width vs height-only resize have very different costs in
+        // inline mode:
+        //
+        //   • Width change   — the prev-frame cell grid is invalid
+        //     (every row's wrap points and column layout shift). The
+        //     row-diff can't reuse any of it, so we HardReset: next
+        //     render emits \x1b[2J\x1b[3J\x1b[H and repaints fresh.
+        //     Destructive to host scrollback, but unavoidable.
+        //
+        //   • Height-only change — same width means every cached row
+        //     is still byte-valid; only the viewport's vertical extent
+        //     moved. This is the common case on mobile: the soft
+        //     keyboard / dictation field opening or closing changes
+        //     the terminal HEIGHT, not its width. A HardReset here
+        //     would needlessly wipe the screen and force a full
+        //     top-to-bottom repaint (the symptom the user saw on
+        //     iPhone). Instead demote to Stale: the next render runs
+        //     compose's case-(B) soft redraw — walk the cursor up,
+        //     repaint the visible viewport in place, erase below.
+        //     No \x1b[2J\x1b[3J\x1b[H, no scrollback wipe, host
+        //     content above the viewport is preserved, and the
+        //     repaint is bounded to the rows that actually moved.
+        //
+        // Fullscreen always collapses to Divergent (a width-independent
+        // full repaint is cheap there because the alt-screen owns the
+        // whole grid and there's no host scrollback to preserve).
+        const bool width_changed = (prev_w != size_.width.raw());
         fs_coherence_ = coherent::Divergent{};
         in_coherence_ = std::visit(
-            [](auto&& arm) -> inline_frame::InlineCoherence {
+            [width_changed](auto&& arm) -> inline_frame::InlineCoherence {
                 using T = std::decay_t<decltype(arm)>;
                 if constexpr (std::is_same_v<T,
                         inline_frame::InlineFrame<inline_frame::Synced>>) {
-                    return std::move(arm).demote_to_hard_reset();
+                    return width_changed
+                        ? inline_frame::InlineCoherence{std::move(arm).demote_to_hard_reset()}
+                        : inline_frame::InlineCoherence{std::move(arm).demote_to_stale()};
                 } else if constexpr (std::is_same_v<T,
                         inline_frame::InlineFrame<inline_frame::Stale>>) {
-                    return std::move(arm).escalate_to_hard_reset();
+                    // Already Stale: a width change can no longer reuse
+                    // the (zeroed) prev grid, so escalate; a height-only
+                    // change stays Stale and rides the same case-(B)
+                    // soft redraw.
+                    return width_changed
+                        ? inline_frame::InlineCoherence{std::move(arm).escalate_to_hard_reset()}
+                        : inline_frame::InlineCoherence{std::move(arm)};
                 } else if constexpr (std::is_same_v<T,
                         inline_frame::InlineFrame<inline_frame::Fresh>>) {
                     // Resize before first render: the wire hasn't seen

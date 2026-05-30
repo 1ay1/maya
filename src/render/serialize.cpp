@@ -520,15 +520,29 @@ compose_inline_frame_impl(const Canvas& canvas,
     }
 
     // ── Frame open ─────────────────────────────────────────────────────
-    // hide_cursor and DECAWM-off are emitted once and persisted across
-    // frames (see InlineFrameState::{cursor_hidden, decawm_off}). Saves
-    // ~16 bytes per frame on slow ttys where every escape costs RTT or
-    // glyph-cache work. State.finalize() restores both on shutdown.
+    // DECAWM-off is emitted once and persisted across frames
+    // (state.decawm_off_); state.finalize() restores it on shutdown.
+    //
+    // hide_cursor (DECTCEM ?25l) is RE-ASSERTED every frame, not
+    // latched. Inline mode never positions the hardware cursor — the
+    // composer's caret is a painted inverse cell — so the real cursor
+    // must stay invisible for the whole session. Latching the hide to
+    // once-per-session breaks the moment anything OUTSIDE maya re-shows
+    // it: a sandboxed subprocess that thinks it owns a tty and writes
+    // ?25h to fd 1, an SSH reconnect, a terminal emulator that resets
+    // DECTCEM on its own scroll/SU, or a leaked `reset`/`tput cnorm`.
+    // After that, the latch still reads "hidden" so the hide is never
+    // re-emitted, and the hardware cursor reappears parked at the last
+    // row written (just below the status bar), idle and untracked —
+    // two visible cursors, and a stale cursor position the inline
+    // partial-rewrite math (which assumes cursor at prev_rows-1) does
+    // not account for. Re-emitting ?25l unconditionally is idempotent
+    // at the terminal (hiding an already-hidden cursor is a no-op) and
+    // costs 6 bytes/frame — cheap insurance against a desync that is
+    // invisible to us until the user reports a ghost cursor.
     if (synchronized_output) out += ansi::sync_start;
-    if (!state.cursor_hidden_) {
-        out += ansi::hide_cursor;
-        state.cursor_hidden_ = true;
-    }
+    out += ansi::hide_cursor;
+    state.cursor_hidden_ = true;
 
     // First-ever render (prev_rows == 0). Two distinct sub-cases,
     // differentiated by `state.prev_width`:

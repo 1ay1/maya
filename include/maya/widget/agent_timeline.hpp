@@ -432,6 +432,16 @@ private:
     }
 
     static std::string format_duration(float secs) {
+        // The elapsed glyphs render right-aligned (after a grow spacer),
+        // nowrap, clipped at the card border. While a tool is running
+        // this re-renders every spinner tick; an unpadded result lets
+        // the token's width change between ticks ("9.9s"->"10.0s",
+        // "999ms"->"1.0s"), which slides the whole right-aligned cell
+        // one column sideways per tick -- a visible horizontal jitter
+        // on terminals without synchronized output. Left-pad to a fixed
+        // width so the right edge stays pinned and the digits never
+        // shift; the pad is leading spaces in the gap before the value,
+        // so the rendered number/unit looks identical.
         char buf[24];
         if      (secs < 1.0f)
             std::snprintf(buf, sizeof(buf), "%.0fms", static_cast<double>(secs) * 1000.0);
@@ -443,7 +453,11 @@ private:
             std::snprintf(buf, sizeof(buf), "%dm%.0fs",
                           mins, static_cast<double>(rest));
         }
-        return buf;
+        std::string out{buf};
+        constexpr std::size_t kWidth = 6;   // "999ms", "59.9s", "1m05s"
+        if (out.size() < kWidth)
+            out.insert(out.begin(), kWidth - out.size(), ' ');
+        return out;
     }
 
     static Color duration_color(float secs) {

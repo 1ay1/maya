@@ -99,6 +99,7 @@
 #include <cassert>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -189,13 +190,20 @@ public:
     InlineFrame& operator=(InlineFrame&&) noexcept = default;
 
     /// Run the first-ever render.
+    ///
+    /// `reset_prefix` is normally empty. The HardReset path passes its
+    /// destructive wipe (\x1b[2J\x1b[3J\x1b[H) here so the wipe is
+    /// folded INSIDE the same synchronized-output frame as the repaint
+    /// — the terminal swaps wipe+repaint atomically instead of showing
+    /// a blank screen then a visible top-to-bottom paint on a slow link.
     [[nodiscard]] RenderOutcome render(
         const Canvas& canvas,
         ContentRows rows,
         TermRows term_h,
         const StylePool& pool,
         Writer& writer,
-        bool synchronized_output = true) &&;
+        bool synchronized_output = true,
+        std::string_view reset_prefix = {}) &&;
 
     /// Finalize without rendering.
     [[nodiscard]] InlineFrame<Sealed> finalize(std::string& out) && noexcept;

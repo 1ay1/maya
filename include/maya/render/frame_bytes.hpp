@@ -71,6 +71,7 @@
 // `out_` string is allocated once on the Runtime and reused via move.
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -170,7 +171,7 @@ private:
 
     friend FrameBytes compose_inline_frame(
         const Canvas&, ContentRows, TermRows, const StylePool&,
-        InlineFrameState&&, ShadowWitness&&, bool);
+        InlineFrameState&&, ShadowWitness&&, bool, std::string_view);
 
     std::string      bytes_;
     InlineFrameState successor_;
@@ -199,6 +200,15 @@ private:
 //                         immediately before this call (see
 //                         serialize.hpp).
 //   - bool synchronized_output — DEC mode 2026 wrapping.
+//   - std::string_view reset_prefix — bytes emitted INSIDE the sync
+//                         wrapper, before the frame body. Used by the
+//                         HardReset path to fold its destructive wipe
+//                         (\x1b[2J\x1b[3J\x1b[H) into the SAME atomic
+//                         synchronized frame as the repaint, so a slow
+//                         (mobile / high-latency SSH) terminal presents
+//                         wipe+repaint as one swap instead of showing a
+//                         blank screen followed by a visible top-to-
+//                         bottom paint. Empty on every non-reset frame.
 //
 // Returns FrameBytes carrying the byte stream and the successor state.
 // The caller invokes `.commit_to(writer)` on the result to ship the
@@ -211,6 +221,7 @@ private:
     const StylePool& pool,
     InlineFrameState&& state,
     ShadowWitness&& witness,
-    bool synchronized_output = true);
+    bool synchronized_output = true,
+    std::string_view reset_prefix = {});
 
 } // namespace maya

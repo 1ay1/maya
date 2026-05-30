@@ -26,7 +26,8 @@ compose_inline_frame_impl(const Canvas& canvas,
                           int term_h,
                           const StylePool& pool,
                           InlineFrameState&& state_in,
-                          bool synchronized_output);
+                          bool synchronized_output,
+                          std::string_view reset_prefix);
 
 // ─────────────────────────────────────────────────────────────────────────
 // compose_inline_frame
@@ -69,7 +70,8 @@ FrameBytes compose_inline_frame(
     const StylePool& pool,
     InlineFrameState&& state,
     ShadowWitness&& witness,
-    bool synchronized_output)
+    bool synchronized_output,
+    std::string_view reset_prefix)
 {
     // (1) Witness provenance: the witness must have been issued
     //     against THIS state value. We compare by address; the caller
@@ -132,7 +134,7 @@ FrameBytes compose_inline_frame(
     //     simply the result of a function call.
     auto [out, successor] = compose_inline_frame_impl(
         canvas, content_rows.value(), term_h.value(), pool,
-        std::move(state), synchronized_output);
+        std::move(state), synchronized_output, reset_prefix);
 
     // (5) Capsule. FrameBytes::commit_to consumes both arms.
     return FrameBytes{std::move(out), std::move(successor)};

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "canvas.hpp"
 #include "../platform/io.hpp"
@@ -380,7 +381,8 @@ private:
     friend std::pair<std::string, InlineFrameState>
     compose_inline_frame_impl(const Canvas&, int, int,
                               const StylePool&,
-                              InlineFrameState&&, bool);
+                              InlineFrameState&&, bool,
+                              std::string_view);
     friend std::optional<ShadowWitness> verify_shadow(const InlineFrameState&) noexcept;
     friend class FrameBytes;
     template <class Tag> friend class inline_frame::InlineFrame;
@@ -389,7 +391,7 @@ private:
     // the moved-in state's hashable cells.
     friend FrameBytes compose_inline_frame(
         const Canvas&, ContentRows, TermRows, const StylePool&,
-        InlineFrameState&&, ShadowWitness&&, bool);
+        InlineFrameState&&, ShadowWitness&&, bool, std::string_view);
 
     // ── Storage (private) ───────────────────────────────────────────
     // Logically immutable — written only by friends that took the

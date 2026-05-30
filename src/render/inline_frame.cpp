@@ -61,7 +61,8 @@ RenderOutcome InlineFrame<Fresh>::render(
     TermRows term_h,
     const StylePool& pool,
     Writer& writer,
-    bool synchronized_output) &&
+    bool synchronized_output,
+    std::string_view reset_prefix) &&
 {
     auto wit = verify_shadow(state_);
     assert(wit.has_value() && "verify_shadow must accept a Fresh state");
@@ -69,7 +70,7 @@ RenderOutcome InlineFrame<Fresh>::render(
     FrameBytes capsule = compose_inline_frame(
         canvas, rows, term_h, pool,
         std::move(state_), *std::move(wit),
-        synchronized_output);
+        synchronized_output, reset_prefix);
 
     return detail::lift_commit_outcome(std::move(capsule).commit_to(writer));
 }
@@ -181,20 +182,32 @@ RenderOutcome InlineFrame<HardReset>::render(
     Writer& writer,
     bool synchronized_output) &&
 {
-    // 1. Wipe sequence. If this write fails, we stay in HardReset and
-    //    the next render retries.
-    {
-        Status st = writer.write_or_buffer("\x1b[2J\x1b[3J\x1b[H");
-        if (!st) {
-            writer.discard_residue();
-            return InlineFrame<HardReset>{};
-        }
-    }
-
-    // 2. Fresh-state paint (case A). Build a Fresh and run its render.
+    // Fold the wipe and the fresh repaint into ONE atomic frame.
+    //
+    // Old behaviour: write \x1b[2J\x1b[3J\x1b[H as its own
+    // write_or_buffer, THEN let Fresh::render emit a separate
+    // synchronized-output frame for the body. On a fast/local tty both
+    // landed in the same terminal read and it looked instantaneous. On
+    // a slow mobile SSH link (the keyboard-resize-on-iPhone report) the
+    // wipe arrived first — the terminal painted a blank screen — and
+    // then the repaint trickled in row by row, so the user literally
+    // watched the whole frame paint top-to-bottom.
+    //
+    // New behaviour: hand the wipe to Fresh::render as a reset_prefix.
+    // compose emits it immediately after sync_start, before the body,
+    // and closes the sync block after the body — so the wipe and the
+    // repaint are a single DEC-2026 synchronized frame the terminal
+    // presents in one swap. No intermediate blank, no visible paint.
+    //
+    // If compose's write fails hard, lift_commit_outcome surfaces
+    // HardReset again and the next render retries the whole atomic
+    // wipe+repaint — same retry semantics as the old separate-write
+    // path, minus the orphaned-wipe window where a failed body left a
+    // blank screen on the wire.
     InlineFrame<Fresh> fresh{};
     return std::move(fresh).render(canvas, rows, term_h, pool, writer,
-                                   synchronized_output);
+                                   synchronized_output,
+                                   "\x1b[2J\x1b[3J\x1b[H");
 }
 
 InlineFrame<Sealed> InlineFrame<HardReset>::finalize(std::string&) && noexcept {

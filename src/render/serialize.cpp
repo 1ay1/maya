@@ -424,7 +424,8 @@ compose_inline_frame_impl(const Canvas& canvas,
                           int term_h,
                           const StylePool& pool,
                           InlineFrameState&& state_in,
-                          bool synchronized_output)
+                          bool synchronized_output,
+                          std::string_view reset_prefix)
 {
     // Take ownership of the moved-in state. From here on `state` is
     // a function-local value; mutating it is unobservable to any
@@ -541,7 +542,22 @@ compose_inline_frame_impl(const Canvas& canvas,
     // path it ships alone (no sync markers needed — there is no frame
     // body to make atomic).
     if (first_changed == common && content_rows == prev_rows) {
-        out += ansi::hide_cursor;
+        // A reset_prefix (HardReset wipe) must never be silently
+        // dropped: if the caller asked for a wipe, the wire is in an
+        // unknown state and we owe it the wipe even on a no-op diff.
+        // Wrap prefix + hide in the sync block so the terminal applies
+        // them atomically. (In practice HardReset drops its state, so
+        // prev_rows == 0 and this branch is unreachable for resets;
+        // the wrapping is defensive against a future caller that
+        // passes a prefix with carried state.)
+        if (!reset_prefix.empty()) {
+            if (synchronized_output) out += ansi::sync_start;
+            out += reset_prefix;
+            out += ansi::hide_cursor;
+            if (synchronized_output) out += ansi::sync_end;
+        } else {
+            out += ansi::hide_cursor;
+        }
         state.cursor_hidden_ = true;
         return {std::move(out), std::move(state)};
     }
@@ -553,6 +569,13 @@ compose_inline_frame_impl(const Canvas& canvas,
     // early-return above), inside the sync wrapper so it applies
     // atomically with the rest of the frame body.
     if (synchronized_output) out += ansi::sync_start;
+    // reset_prefix (e.g. HardReset's \x1b[2J\x1b[3J\x1b[H wipe) goes
+    // FIRST, inside the sync wrapper, so the destructive clear and the
+    // full repaint that follows are presented as a single atomic frame.
+    // Without this the wipe shipped as its own write and a slow mobile
+    // SSH terminal drew a blank screen, then visibly painted the
+    // repaint top-to-bottom as the bytes trickled in.
+    out += reset_prefix;
     out += ansi::hide_cursor;
     state.cursor_hidden_ = true;
 

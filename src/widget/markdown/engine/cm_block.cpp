@@ -935,6 +935,18 @@ private:
             if (last->type == BlockType::Paragraph) last->open = false;
             if (last->type == BlockType::Table) last->open = false;
         }
+        // A blank line ends an open block quote ONLY when the blank line
+        // did not itself carry the quote's `>` marker (i.e. the quote did
+        // not match this line). `container` is the deepest block that DID
+        // match; any open block quote deeper than it is unmatched, so a
+        // following `>` opens a fresh quote (spec §5.1). A `>`-marked blank
+        // line keeps its quote open (one quote, multiple paragraphs).
+        bool past_container = false;
+        for (CMBlock* b : open_) {
+            if (b == container) { past_container = true; continue; }
+            if (past_container && b->type == BlockType::BlockQuote)
+                b->open = false;
+        }
         // Mark blank for loose-list detection.
         mark_blank_path();
     }

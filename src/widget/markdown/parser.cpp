@@ -998,64 +998,12 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
 // Table helpers
 // ============================================================================
 
-bool is_table_row(std::string_view line) {
-    auto t = trim(line);
-    if (t.empty() || t[0] != '|') return false;
-    return t.find('|', 1) != std::string_view::npos;
-}
-
-bool is_table_separator(std::string_view line) {
-    auto t = trim(line);
-    if (t.empty() || t[0] != '|') return false;
-    for (char c : t) {
-        if (c != '|' && c != '-' && c != ':' && c != ' ') return false;
-    }
-    return t.find('-') != std::string_view::npos;
-}
-
-std::vector<std::string_view> split_table_cells(std::string_view line);  // fwd decl
-
-// Parse the GFM delimiter row (`|:--|:-:|--:|`) into a per-column
-// alignment list. Cells whose trimmed content starts with `:` are
-// left-anchored on the left side; cells whose trimmed content ends
-// with `:` are right-anchored. Both → Center. Neither → Left
-// (CommonMark default for tables). The caller has already verified
-// `is_table_separator(line)` is true.
-std::vector<md::TableAlign> parse_table_alignments(std::string_view line) {
-    std::vector<md::TableAlign> out;
-    auto cells = split_table_cells(line);
-    out.reserve(cells.size());
-    for (auto& c : cells) {
-        auto t = trim(c);
-        bool left  = !t.empty() && t.front() == ':';
-        bool right = !t.empty() && t.back()  == ':';
-        if (left && right)      out.push_back(md::TableAlign::Center);
-        else if (right)         out.push_back(md::TableAlign::Right);
-        else                    out.push_back(md::TableAlign::Left);
-    }
-    return out;
-}
-
-std::vector<std::string_view> split_table_cells(std::string_view line) {
-    auto t = trim(line);
-    if (!t.empty() && t.front() == '|') t.remove_prefix(1);
-    if (!t.empty() && t.back() == '|') t.remove_suffix(1);
-
-    std::vector<std::string_view> cells;
-    size_t pos = 0;
-    while (pos < t.size()) {
-        // Handle escaped pipes within cells
-        size_t pipe = pos;
-        while (pipe < t.size()) {
-            if (t[pipe] == '\\' && pipe + 1 < t.size()) { pipe += 2; continue; }
-            if (t[pipe] == '|') break;
-            ++pipe;
-        }
-        cells.push_back(trim(t.substr(pos, pipe - pos)));
-        pos = (pipe < t.size()) ? pipe + 1 : t.size();
-    }
-    return cells;
-}
+// GFM table line predicates + cell splitting live in tables.cpp; pull them
+// into this TU's lookup so the block parser below calls them unqualified.
+using ::maya::md_detail::is_table_row;
+using ::maya::md_detail::is_table_separator;
+using ::maya::md_detail::split_table_cells;
+using ::maya::md_detail::parse_table_alignments;
 
 // ============================================================================
 // List parsing helpers

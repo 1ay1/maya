@@ -128,6 +128,14 @@ namespace md_detail {
 // wrapper calls this once over the whole tree.
 void post_process_text_nodes(std::vector<md::Inline>& nodes);
 
+// ── tables.cpp ──────────────────────────────────────────────────────────────
+// GFM table line classification + cell splitting. The block parser calls
+// these when it sees a `| … |` row followed by a `|:--|--:|` delimiter row.
+[[nodiscard]] bool is_table_row(std::string_view line);
+[[nodiscard]] bool is_table_separator(std::string_view line);
+[[nodiscard]] std::vector<std::string_view> split_table_cells(std::string_view line);
+[[nodiscard]] std::vector<md::TableAlign> parse_table_alignments(std::string_view line);
+
 // ── parser.cpp ─────────────────────────────────────────────────────────────
 [[nodiscard]] std::vector<md::Inline> parse_inlines(std::string_view text);
 [[nodiscard]] md::Document             parse_markdown_impl(std::string_view source, int depth);

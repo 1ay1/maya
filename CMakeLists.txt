@@ -101,6 +101,7 @@ add_library(maya
     src/widget/markdown.cpp
     src/widget/markdown/parser.cpp
     src/widget/markdown/text_transform.cpp
+    src/widget/markdown/tables.cpp
     src/widget/markdown/syntax.cpp
     src/widget/markdown/render.cpp
     src/widget/markdown/streaming.cpp

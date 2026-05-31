@@ -41,12 +41,29 @@ struct Line {
         ++pos;
     }
 
-    // consume up to n columns of whitespace; returns columns consumed
+    // Consume up to n columns of whitespace; returns columns consumed. A tab
+    // counts as the columns to the next tab stop (width 4) but is consumed
+    // only partially when n falls inside it: the byte cursor stays on the tab
+    // and `col` advances, so a later indent()/consume_spaces() recomputes the
+    // residual columns from `col % 4` (CommonMark tab handling, §2.2). This is
+    // what lets `\t` act as indentation shared across nested list items.
     int consume_spaces(int n) {
         int start = col;
         while (pos < s.size() && (s[pos] == ' ' || s[pos] == '\t') &&
-               col - start < n)
-            advance();
+               col - start < n) {
+            if (s[pos] == '\t') {
+                int to_tab = 4 - (col % 4);
+                if (to_tab > n - (col - start)) {
+                    col += n - (col - start);  // partial tab: leave pos on it
+                    break;
+                }
+                col += to_tab;
+                ++pos;
+            } else {
+                ++col;
+                ++pos;
+            }
+        }
         return col - start;
     }
 
@@ -418,9 +435,12 @@ private:
     std::unique_ptr<CMBlock> doc_;
     RefMap refs_;
     std::vector<CMBlock*> open_;  // path of currently-open blocks (doc first)
+    int line_number_ = 0;         // 1-based current line
+    CMBlock* cur_container_ = nullptr;  // block this line's content lands in
 
     // ── line processing ──────────────────────────────────────────────────
     void process_line(std::string_view raw) {
+        ++line_number_;
         Line line{raw};
         rebuild_open_path();
 
@@ -428,7 +448,7 @@ private:
         // matching their continuation markers. Stop at the first that fails
         // or at the leaf. open_ holds [doc, ...containers..., maybe-leaf].
         std::size_t idx = 1;
-        CMBlock* container = doc_.get();
+        CMBlock* container = doc_.get();          // deepest matched container
         CMBlock* open_block_parent = doc_.get();  // parent to attach new blocks
         bool all_matched = true;
         for (; idx < open_.size(); ++idx) {
@@ -449,9 +469,19 @@ private:
             }
         }
 
+        // "Blank" is measured after consuming the matched container prefixes
+        // (a `>`-only line inside a quote is blank for tight/loose purposes).
+        bool blank = is_blank(line.rest());
+
         // The deepest open block (could be a leaf).
         CMBlock* leaf = open_.back();
         bool leaf_is_open_leaf = is_leaf(leaf->type) && leaf->open;
+
+        // cur_container_ mirrors cmark's `container`: the block this line's
+        // content lands in. It defaults to the deepest matched container and
+        // is advanced to any leaf/container opened below (open_child updates
+        // it). apply_last_line_blank() consults it once per line.
+        cur_container_ = container;
 
         // A still-matched open code/html leaf swallows the line verbatim.
         if (leaf_is_open_leaf && all_matched &&
@@ -459,6 +489,8 @@ private:
              leaf->type == BlockType::CodeIndented ||
              leaf->type == BlockType::HtmlBlock)) {
             append_to_leaf(leaf, line);
+            cur_container_ = leaf;
+            apply_last_line_blank(cur_container_, blank);
             return;
         }
 
@@ -468,15 +500,44 @@ private:
         // and does not itself start a new block.
         if (!all_matched && leaf_is_open_leaf &&
             leaf->type == BlockType::Paragraph &&
-            !is_blank(line.rest()) &&
+            !blank &&
             !line_starts_new_block(line.rest()) &&
             !continues_open_list(line.rest())) {
             leaf->text += std::string(strip(line.rest()));
             leaf->text += '\n';
+            apply_last_line_blank(cur_container_, blank);
             return;
         }
 
         try_open_new_blocks(open_block_parent, line);
+        apply_last_line_blank(cur_container_, blank);
+    }
+
+    // cmark add_text_to_container (§5.3 loose/tight bookkeeping): record where
+    // a blank line falls so list finalization can tell tight from loose.
+    //   * a blank line marks the deepest matched container's last child;
+    //   * the container itself is marked blank unless it is a type that does
+    //     not count blanks (block quote, heading, thematic break, fenced
+    //     code) or a just-opened empty list item;
+    //   * every ancestor is cleared — a blank only "belongs" to the deepest
+    //     block, so nested blanks never leak up to an outer list.
+    void apply_last_line_blank(CMBlock* container, bool blank) {
+        if (!container) return;
+        if (blank && !container->children.empty())
+            container->children.back()->last_line_blank = true;
+
+        bool llb = blank &&
+            container->type != BlockType::BlockQuote &&
+            container->type != BlockType::Heading &&
+            container->type != BlockType::ThematicBreak &&
+            container->type != BlockType::CodeFence &&
+            !(container->type == BlockType::Item &&
+              container->children.empty() &&
+              container->start_line == line_number_);
+        container->last_line_blank = llb;
+
+        for (CMBlock* a = container->parent; a; a = a->parent)
+            a->last_line_blank = false;
     }
 
     [[nodiscard]] static bool is_leaf(BlockType t) {
@@ -491,9 +552,13 @@ private:
         }
     }
 
-    // Does `content` start a list marker that continues an already-open
-    // list in the current open path (same kind)? Such a marker opens a new
-    // item rather than lazily continuing a paragraph — even when empty.
+    // Does `content` start a list marker while a list is already open in the
+    // current path? Such a marker relates to that list — it continues it (same
+    // kind) or terminates it and starts a new one (a change of bullet char or
+    // ordered delimiter, §5.3) — so it opens block structure rather than
+    // lazily continuing the deepest paragraph. Either way it is NOT paragraph
+    // continuation text. (A marker with no open list is governed by the
+    // paragraph-interruption rule in line_starts_new_block instead.)
     [[nodiscard]] bool continues_open_list(std::string_view content) {
         std::size_t bytes;
         int ind = leading_indent(content, bytes);
@@ -501,9 +566,7 @@ private:
         auto m = parse_list_marker(content.substr(bytes));
         if (!m.ok) return false;
         for (CMBlock* b : open_) {
-            if (b->type == BlockType::List && b->open &&
-                b->ordered == m.ordered && b->list_delim == m.delim)
-                return true;
+            if (b->type == BlockType::List && b->open) return true;
         }
         return false;
     }
@@ -570,7 +633,12 @@ private:
             }
             case BlockType::Item: {
                 if (line.eol() || is_blank(line.rest())) {
-                    // blank line: item continues (handled by paragraph logic)
+                    // A blank line continues the item only if the item already
+                    // has content. An empty item (marker followed by nothing)
+                    // is closed by a blank line — its content cannot begin
+                    // after the opening blank (§5.2, cmark parse_node_item_
+                    // prefix). `-\n\n  foo` ⇒ empty <li> then a separate <p>.
+                    if (blk->children.empty()) { blk->open = false; return false; }
                     return true;
                 }
                 int ind = line.indent();
@@ -747,13 +815,9 @@ private:
         std::string_view content = line.rest();
 
         if (is_blank(content)) {
-            // blank line: close paragraph if present, mark item blanks.
-            // EXCEPTION: a just-opened empty list item (`-` with nothing
-            // after the marker) is not a "blank line" for loose detection.
-            if (container->type == BlockType::Item && container->children.empty()) {
-                container->last_line_blank = false;
-                return;
-            }
+            // blank line: close paragraph/table and any unmatched quote.
+            // (last_line_blank bookkeeping is done once per line in
+            // apply_last_line_blank, using the deepest matched container.)
             handle_blank(container);
             return;
         }
@@ -989,16 +1053,6 @@ private:
             if (past_container && b->type == BlockType::BlockQuote)
                 b->open = false;
         }
-        // Mark blank for loose-list detection.
-        mark_blank_path();
-    }
-
-    void mark_blank_path() {
-        // A blank line marks every open block on the path; each list then
-        // derives its own looseness from its direct child items' blanks.
-        // (Per-item attribution of nested blanks is left as the remaining
-        // tightness corner cases — examples 319/320.)
-        for (CMBlock* b : open_) b->last_line_blank = true;
     }
 
     // ── helpers ──────────────────────────────────────────────────────────
@@ -1023,7 +1077,10 @@ private:
         }
         auto blk = std::make_unique<CMBlock>(t);
         CMBlock* raw = blk.get();
+        raw->parent = parent;
+        raw->start_line = line_number_;
         parent->children.push_back(std::move(blk));
+        cur_container_ = raw;  // this line's content now lands here
         return raw;
     }
 
@@ -1039,19 +1096,46 @@ private:
         if (blk->type == BlockType::List) compute_list_tightness(blk);
     }
 
+    // cmark S_ends_with_blank_line: descend the last-child chain through
+    // lists and items (memoized) and report the blank flag of the block we
+    // bottom out at. A blank that ends a nested last child propagates to its
+    // containing item, but a blank that ends a non-last child does not.
+    [[nodiscard]] static bool ends_with_blank_line(CMBlock* node) {
+        while (!node->last_line_checked) {
+            node->last_line_checked = true;
+            if (node->type != BlockType::List && node->type != BlockType::Item)
+                break;
+            if (node->children.empty()) break;
+            node = node->children.back().get();
+        }
+        return node->last_line_blank;
+    }
+
+    // cmark list-finalization tightness (§5.3): a list is loose iff some item
+    // is followed by a blank line, or some item directly contains two blocks
+    // separated by a blank line.
     void compute_list_tightness(CMBlock* list) {
-        bool loose = false;
+        list->tight = true;
         for (std::size_t i = 0; i < list->children.size(); ++i) {
             CMBlock* item = list->children[i].get();
-            // blank line between items → loose
-            if (item->last_line_blank && i + 1 < list->children.size())
-                loose = true;
-            // blank line within an item (between its block children) → loose
-            for (std::size_t j = 0; j + 1 < item->children.size(); ++j) {
-                if (item->children[j]->last_line_blank) loose = true;
+            bool has_next = i + 1 < list->children.size();
+            // non-final item ending with a blank line → loose
+            if (item->last_line_blank && has_next) {
+                list->tight = false;
+                break;
             }
+            // blank line between two of the item's own block children → loose
+            auto& kids = item->children;
+            for (std::size_t j = 0; j < kids.size(); ++j) {
+                bool sub_has_next = j + 1 < kids.size();
+                if ((has_next || sub_has_next) &&
+                    ends_with_blank_line(kids[j].get())) {
+                    list->tight = false;
+                    break;
+                }
+            }
+            if (!list->tight) break;
         }
-        list->tight = !loose;
     }
 
     void extract_ref_defs(CMBlock* para) {

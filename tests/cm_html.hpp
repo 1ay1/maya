@@ -199,7 +199,22 @@ inline void block_to_html(std::string& out, const md::Block& block) {
                     inlines_to_html(out, it.spans);
                 }
                 if (!it.children.empty()) {
-                    out += "\n"; blocks_to_html(out, it.children);
+                    out += "\n";
+                    if (n.loose) {
+                        blocks_to_html(out, it.children);
+                    } else {
+                        // Tight list: paragraph children render their inline
+                        // content bare (no <p>); other blocks render normally.
+                        for (const auto& cb : it.children) {
+                            if (std::holds_alternative<md::Paragraph>(cb.inner)) {
+                                inlines_to_html(
+                                    out, std::get<md::Paragraph>(cb.inner).spans);
+                                out += "\n";
+                            } else {
+                                block_to_html(out, cb);
+                            }
+                        }
+                    }
                 }
                 out += "</li>\n";
             }

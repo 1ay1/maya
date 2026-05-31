@@ -36,6 +36,7 @@ struct Node {
     bool can_close = false;
     bool active = true;      // for link openers
     bool is_image = false;   // for openers
+    std::size_t text_pos = 0; // for [ / ![ openers: byte offset of label content
     std::size_t orig_count = 0;
     int emph_depth = 0;       // emphasis nesting depth of this node
 
@@ -175,6 +176,7 @@ private:
                     Node n{md::Inline{md::Text{"["}}};
                     n.is_delim = true;
                     n.delim_char = '[';
+                    n.text_pos = i + 1;
                     nodes_.push_back(std::move(n));
                     ++i;
                     continue;
@@ -186,6 +188,7 @@ private:
                         n.is_delim = true;
                         n.delim_char = '!';
                         n.is_image = true;
+                        n.text_pos = i + 2;
                         nodes_.push_back(std::move(n));
                         i += 2;
                         continue;
@@ -336,9 +339,14 @@ private:
         std::size_t n = s.size();
         if (i >= n || s[i] != '<') return 0;
         std::size_t j = i + 1;
-        // comment <!-- ... -->
+        // comment (§6.6, 0.31.2): `<!-->`, `<!--->`, or `<!--` text `-->`
+        // where text does not contain `-->`. The two short forms are
+        // explicit empty comments.
         if (s.compare(j, 3, "!--") == 0) {
-            std::size_t e = s.find("-->", j + 3);
+            std::size_t b = j + 3;            // first char after `<!--`
+            if (b < n && s[b] == '>') return (b + 1) - i;          // <!-->
+            if (s.compare(b, 2, "->") == 0) return (b + 2) - i;     // <!--->
+            std::size_t e = s.find("-->", b);
             return e == std::string_view::npos ? 0 : (e + 3) - i;
         }
         // CDATA <![CDATA[ ... ]]>
@@ -408,13 +416,18 @@ private:
         while (i < text_.size() && text_[i] == c) ++i;
         int count = static_cast<int>(i - start);
 
-        char prev = start > 0 ? text_[start - 1] : ' ';
-        char next = i < text_.size() ? text_[i] : ' ';
+        // Flanking is defined over the adjacent Unicode code points (§6.2):
+        // a run is left-/right-flanking by the whitespace / punctuation class
+        // of the char before the run start and after the run end. Start/end
+        // of input count as whitespace.
+        std::size_t next_len;
+        char32_t prev = start > 0 ? decode_cp_before(text_, start) : ' ';
+        char32_t next = i < text_.size() ? decode_cp_at(text_, i, next_len) : ' ';
 
-        bool prev_ws = is_unicode_ws_byte(static_cast<unsigned char>(prev));
-        bool next_ws = is_unicode_ws_byte(static_cast<unsigned char>(next));
-        bool prev_punct = is_ascii_punct(prev);
-        bool next_punct = is_ascii_punct(next);
+        bool prev_ws = is_unicode_whitespace_cp(prev);
+        bool next_ws = is_unicode_whitespace_cp(next);
+        bool prev_punct = is_unicode_punct_cp(prev);
+        bool next_punct = is_unicode_punct_cp(next);
 
         bool left_flanking = !next_ws &&
             (!next_punct || prev_ws || prev_punct);
@@ -481,8 +494,13 @@ private:
             }
         }
 
-        // reference forms
+        // reference forms. Labels match on the RAW source text between the
+        // brackets (backslashes preserved), normalized per §6.3 — NOT the
+        // escape-resolved inline text. `[Foo*bar\]]` matches a def whose
+        // label is also `Foo*bar\]`; `[foo\!]` does NOT match a def `[foo!]`.
         if (!matched) {
+            std::string_view src_label =
+                text_.substr(opener.text_pos, i - opener.text_pos);
             // [text][label]
             std::size_t pos = after;
             std::string label;
@@ -492,8 +510,8 @@ private:
                 bool ok = read_label(lp, lab);
                 if (ok) {
                     if (strip(lab).empty()) {
-                        // collapsed [text][] → use text as label
-                        label = inline_text_between(opener_idx);
+                        // collapsed [text][] → use the (raw) text as label
+                        label = std::string(src_label);
                     } else {
                         label = lab;
                     }
@@ -504,7 +522,7 @@ private:
                 }
             } else {
                 // shortcut [text]
-                label = inline_text_between(opener_idx);
+                label = std::string(src_label);
                 if (auto* r = lookup(label)) {
                     url = r->url; title = r->title; matched = true;
                     after = i + 1;
@@ -637,21 +655,6 @@ private:
         auto key = normalize_label(label);
         auto it = refs_.find(key);
         return it == refs_.end() ? nullptr : &it->second;
-    }
-
-    // text content between opener and current end (for shortcut labels)
-    [[nodiscard]] std::string inline_text_between(int opener_idx) {
-        std::string out;
-        for (std::size_t k = static_cast<std::size_t>(opener_idx) + 1; k < nodes_.size(); ++k) {
-            Node& n = nodes_[k];
-            if (n.is_delim) {
-                if (n.delim_char == '*' || n.delim_char == '_')
-                    out += std::string(n.orig_count, n.delim_char);
-            } else {
-                out += inline_plain_text({n.span});
-            }
-        }
-        return out;
     }
 
     std::vector<md::Inline> collect_inner(int from) {

@@ -41,11 +41,14 @@ enum class BlockType : std::uint8_t {
 
 struct CMBlock {
     BlockType type;
+    CMBlock* parent = nullptr;
     std::vector<std::unique_ptr<CMBlock>> children;
 
     // open/closed bookkeeping (block phase)
     bool open = true;
     bool last_line_blank = false;
+    bool last_line_checked = false;  // memo for ends_with_blank_line()
+    int  start_line = 0;             // 1-based line where this block opened
 
     // raw text accumulator for leaf blocks (paragraph/heading/code/html)
     std::string text;

@@ -597,8 +597,13 @@ private:
     }
 
     void try_open_new_blocks(CMBlock* container, Line& line) {
-        // Loop opening container blocks (blockquotes, list items).
+        // Current nesting depth = open-container prefix already walked plus
+        // any containers we open in this loop. Bounding it keeps pathological
+        // deep nesting (`>>>>...` x1000) from blowing the renderer's
+        // recursive layout; CommonMark inputs never need more than a few.
+        int depth = container_depth(container);
         for (;;) {
+            if (depth >= kMaxNestDepth) break;
             int ind = line.indent();
 
             // indented code block (only if not in a paragraph continuation)
@@ -621,6 +626,7 @@ private:
                     if (probe.peek() == ' ' || probe.peek() == '\t') probe.advance();
                     line = probe;
                     container = open_child(container, BlockType::BlockQuote);
+                    ++depth;
                     continue;
                 }
             }
@@ -693,6 +699,7 @@ private:
                         }
                         line = probe;
                         container = item;
+                        ++depth;
                         (void)before;
                         continue;
                     }
@@ -707,6 +714,22 @@ private:
 
     [[nodiscard]] bool list_compatible(const CMBlock& list, const ListMarker& m) {
         return list.ordered == m.ordered && list.list_delim == m.delim;
+    }
+
+    // Cap container nesting depth. The terminal renderer's recursive block
+    // layout (md_block_to_element) is the binding constraint: it was tuned
+    // for the legacy parser's depth-8 cap, and far-deeper nesting (e.g.
+    // `>>>>...` x1000) makes its per-level layout pathological. Real
+    // content never approaches this; past the cap, surplus markers fall
+    // into the leaf as literal text.
+    static constexpr int kMaxNestDepth = 8;
+
+    // Depth of `blk` from the document root (number of ancestors), computed
+    // from the live open path rebuilt at the start of each line.
+    [[nodiscard]] int container_depth(CMBlock* blk) const {
+        int d = 0;
+        for (CMBlock* b : open_) { ++d; if (b == blk) break; }
+        return d;
     }
 
     // Whether `container` currently ends in an open paragraph that a list
@@ -971,6 +994,10 @@ private:
     }
 
     void mark_blank_path() {
+        // A blank line marks every open block on the path; each list then
+        // derives its own looseness from its direct child items' blanks.
+        // (Per-item attribution of nested blanks is left as the remaining
+        // tightness corner cases — examples 319/320.)
         for (CMBlock* b : open_) b->last_line_blank = true;
     }
 

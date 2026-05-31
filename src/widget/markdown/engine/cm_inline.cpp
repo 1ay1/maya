@@ -13,6 +13,7 @@
 #include "maya/widget/markdown/engine/cm_engine.hpp"
 #include "maya/widget/markdown/engine/cm_util.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <string>
 #include <string_view>
@@ -36,6 +37,7 @@ struct Node {
     bool active = true;      // for link openers
     bool is_image = false;   // for openers
     std::size_t orig_count = 0;
+    int emph_depth = 0;       // emphasis nesting depth of this node
 
     Node() : span(md::Inline{md::Text{}}) {}
     explicit Node(md::Inline s) : span(std::move(s)) {}
@@ -115,8 +117,13 @@ private:
                 case '`': {
                     std::size_t adv;
                     if (try_code_span(i, pending, adv)) { i = adv; continue; }
-                    pending += '`';
-                    ++i;
+                    // No matching closing run: the ENTIRE opening run is
+                    // literal (so ```foo`` doesn't spuriously match the
+                    // trailing `` as a shorter span).
+                    std::size_t run = 0;
+                    while (i + run < text_.size() && text_[i + run] == '`') ++run;
+                    pending.append(run, '`');
+                    i += run;
                     continue;
                 }
                 case '<': {
@@ -711,6 +718,17 @@ private:
             Node& op = nodes_[static_cast<std::size_t>(found)];
             int use = (op.delim_count >= 2 && closer.delim_count >= 2) ? 2 : 1;
 
+            // Bound emphasis nesting depth. Real content never nests beyond
+            // a few levels; pathological input (`**`×2000…) would build a
+            // thousand-deep AST that blows the renderer's recursive layout.
+            // Matches the block-nesting cap. Past the cap, delimiters stay
+            // literal.
+            constexpr int kMaxEmphasisDepth = 16;
+            int inner_depth = 0;
+            for (std::size_t k = static_cast<std::size_t>(found) + 1; k < i; ++k)
+                inner_depth = std::max(inner_depth, nodes_[k].emph_depth);
+            if (inner_depth >= kMaxEmphasisDepth) { ++i; continue; }
+
             // collect inner nodes between op and closer
             std::vector<md::Inline> inner;
             for (std::size_t k = static_cast<std::size_t>(found) + 1; k < i; ++k) {
@@ -738,6 +756,7 @@ private:
             // Erase inner nodes, insert node, fix index i.
             nodes_.erase(nodes_.begin() + found + 1, nodes_.begin() + i);
             Node en{std::move(node)};
+            en.emph_depth = inner_depth + 1;
             nodes_.insert(nodes_.begin() + found + 1, std::move(en));
             i = static_cast<std::size_t>(found) + 1;
             // adjust delim text representations

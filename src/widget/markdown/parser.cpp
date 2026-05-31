@@ -1754,22 +1754,46 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
             // we see the underline, so handle it below after paragraph check.
         }
 
-        // ATX Heading: # ... ######
-        if (line.size() >= 2 && line[0] == '#') {
-            flush_paragraph();
+        // ATX Heading: up to 3 leading spaces, 1–6 `#`, then a space/tab or
+        // end-of-line. CommonMark §4.2.
+        if (size_t hs = static_cast<size_t>(count_indent(line)); hs < 4) {
+            size_t j = hs;
             int level = 0;
-            size_t j = 0;
-            while (j < line.size() && line[j] == '#' && level < 6) {
-                ++level; ++j;
+            while (j < line.size() && line[j] == '#') { ++level; ++j; }
+            // 1–6 hashes, and the opening sequence must be followed by a
+            // space/tab or be the whole line (`##` alone is an empty h2).
+            const bool valid_open =
+                level >= 1 && level <= 6 &&
+                (j >= line.size() || line[j] == ' ' || line[j] == '\t');
+            if (valid_open) {
+                flush_paragraph();
+                // Trim leading spaces/tabs of the content.
+                while (j < line.size() && (line[j] == ' ' || line[j] == '\t')) ++j;
+                auto content = trim(line.substr(j));
+                // Strip an optional closing sequence: spaces, then a run of
+                // `#`, then trailing spaces — but only when the `#` run is
+                // preceded by a space (or is the whole content). `foo#` keeps
+                // its trailing hash.
+                {
+                    auto c = content;
+                    while (!c.empty() && (c.back() == ' ' || c.back() == '\t'))
+                        c.remove_suffix(1);
+                    size_t hashes = 0;
+                    while (hashes < c.size() && c[c.size() - 1 - hashes] == '#')
+                        ++hashes;
+                    if (hashes > 0) {
+                        size_t before = c.size() - hashes;
+                        if (before == 0 ||
+                            c[before - 1] == ' ' || c[before - 1] == '\t') {
+                            c.remove_suffix(hashes);
+                            content = trim(c);
+                        }
+                    }
+                }
+                doc.blocks.push_back(md::Heading{level, parse_inlines(content)});
+                ++i;
+                continue;
             }
-            if (j < line.size() && line[j] == ' ') ++j;
-            // Strip trailing #s (CommonMark)
-            auto content = line.substr(j);
-            while (content.size() >= 2 && content.back() == '#') content.remove_suffix(1);
-            content = trim(content);
-            doc.blocks.push_back(md::Heading{level, parse_inlines(content)});
-            ++i;
-            continue;
         }
 
         // Fenced code block: ```lang or ~~~lang

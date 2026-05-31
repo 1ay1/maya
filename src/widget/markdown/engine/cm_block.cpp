@@ -794,12 +794,27 @@ private:
             int sl = setext_level(content);
             if (sl) {
                 CMBlock* para = container->children.back().get();
+                // Leading reference definitions are NOT part of the setext
+                // heading text — peel them off first (spec §4.3 example 215).
+                extract_ref_defs(para);
                 if (!strip(para->text).empty()) {
                     para->type = BlockType::Heading;
                     para->level = sl;
                     para->open = false;
                     return;
                 }
+                // paragraph was entirely ref-defs: the underline is not a
+                // heading. A '-' line falls through to thematic break; a '='
+                // line becomes its own paragraph text.
+                para->open = false;
+                if (sl == 2 && is_thematic_break(content)) {
+                    open_child(container, BlockType::ThematicBreak);
+                    return;
+                }
+                CMBlock* p2 = open_child(container, BlockType::Paragraph);
+                p2->text = std::string(strip(content));
+                p2->text += '\n';
+                return;
             }
         }
 
@@ -1157,8 +1172,18 @@ private:
                 break;
             }
             case BlockType::CodeFence: {
-                // info string: first word is the language; entities decoded.
-                std::string lang = decode_entities(blk.info);
+                // info string: backslash-unescape, then entities; the first
+                // word is the language class.
+                std::string info_unesc;
+                for (std::size_t k = 0; k < blk.info.size(); ++k) {
+                    if (blk.info[k] == '\\' && k + 1 < blk.info.size() &&
+                        is_ascii_punct(blk.info[k + 1])) {
+                        info_unesc += blk.info[++k];
+                    } else {
+                        info_unesc += blk.info[k];
+                    }
+                }
+                std::string lang = decode_entities(info_unesc);
                 auto sp = lang.find_first_of(" \t");
                 if (sp != std::string::npos) lang = lang.substr(0, sp);
                 out.push_back(md::Block{md::CodeBlock{std::move(blk.text), std::move(lang)}});

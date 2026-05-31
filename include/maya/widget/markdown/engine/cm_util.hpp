@@ -176,7 +176,7 @@ inline void append_utf8(std::string& out, uint32_t cp) {
                 ++digits;
             }
         } else {
-            while (j < text.size() && digits < 8 && is_ascii_digit(text[j])) {
+            while (j < text.size() && digits < 7 && is_ascii_digit(text[j])) {
                 cp = cp * 10 + static_cast<uint32_t>(text[j] - '0');
                 ++j;
                 ++digits;
@@ -197,6 +197,23 @@ inline void append_utf8(std::string& out, uint32_t cp) {
     if (utf8.empty()) return 0;
     out += utf8;
     return (k + 1) - i;
+}
+
+// Decode all entity / numeric character references in a run of text,
+// leaving everything else verbatim. Used for link destinations, titles,
+// and code-fence info strings (§6.2 applies there too).
+[[nodiscard]] inline std::string decode_entities(std::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size();) {
+        if (s[i] == '&') {
+            std::string dec;
+            std::size_t used = decode_entity(s, i, dec);
+            if (used) { out += dec; i += used; continue; }
+        }
+        out += s[i++];
+    }
+    return out;
 }
 
 } // namespace maya::md_detail::engine

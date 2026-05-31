@@ -657,11 +657,14 @@ private:
                     }
 
                     if (!reject) {
+                        // Content column = where the item body starts,
+                        // measured in absolute columns from the line start
+                        // (matches_continuation compares line.indent()).
                         int content_indent;
                         if (blank_item || spaces == 0 || spaces > 4) {
-                            content_indent = (after_marker_col - marker_col) + 1;
+                            content_indent = after_marker_col + 1;
                         } else {
-                            content_indent = (after_marker_col - marker_col) + spaces;
+                            content_indent = after_marker_col + spaces;
                         }
 
                         CMBlock* list = nullptr;
@@ -1111,7 +1114,7 @@ private:
         std::string key = normalize_label(label);
         if (key.empty()) return 0;
         if (refs_.find(key) == refs_.end())
-            refs_[key] = md::LinkRef{std::move(dest), std::move(title)};
+            refs_[key] = md::LinkRef{decode_entities(dest), decode_entities(title)};
         return i;
     }
 
@@ -1142,11 +1145,10 @@ private:
                 break;
             }
             case BlockType::CodeFence: {
-                // info string: first word is the language
-                std::string lang = blk.info;
+                // info string: first word is the language; entities decoded.
+                std::string lang = decode_entities(blk.info);
                 auto sp = lang.find_first_of(" \t");
                 if (sp != std::string::npos) lang = lang.substr(0, sp);
-                // decode entities in info? spec keeps raw; leave as-is
                 out.push_back(md::Block{md::CodeBlock{std::move(blk.text), std::move(lang)}});
                 break;
             }

@@ -82,7 +82,15 @@ struct ListItem {
     std::vector<struct Block> children;       // sub-blocks (nested lists, multi-para)
     std::optional<bool> checked;              // nullopt = normal, true/false = task
 };
-struct List        { std::vector<ListItem> items; bool ordered; int start_num = 1; };
+struct List        {
+    std::vector<ListItem> items;
+    bool ordered;
+    int  start_num = 1;
+    // CommonMark "loose" list: items are separated by blank lines, or an
+    // item holds multiple block-level children. Loose items render their
+    // first-line content wrapped in <p>; tight items render it bare.
+    bool loose = false;
+};
 
 struct HRule       {};
 struct TableCell   { std::vector<Inline> spans; };

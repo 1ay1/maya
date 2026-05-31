@@ -2065,6 +2065,7 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
                 char list_delim = line[static_cast<size_t>(marker_len) - 2];
 
                 std::vector<md::ListItem> items;
+                bool loose = false;  // CommonMark §5.3 loose-list detection
 
                 while (i < lines.size()) {
                     auto ll = lines[i];
@@ -2086,11 +2087,13 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
                             if (!items.empty()) {
                                 // Collect all continuation/nested lines
                                 std::string sub_text;
+                                bool had_blank = false;
                                 while (i < lines.size()) {
                                     auto sl = lines[i];
                                     if (!sl.empty() && sl.back() == '\r') sl.remove_suffix(1);
                                     int si = count_indent(sl);
                                     bool blank = trim(sl).empty();
+                                    if (blank) had_blank = true;
 
                                     // A non-indented non-blank line that's not a list
                                     // marker at higher indent = end of this item
@@ -2110,9 +2113,28 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
                                 }
                                 if (!sub_text.empty()) {
                                     auto sub_doc = parse_markdown_impl(sub_text, depth + 1);
+                                    bool added_block = false;
                                     for (auto& b : sub_doc.blocks) {
+                                        // A Paragraph child separated from the item's
+                                        // first line by a blank makes the list loose
+                                        // (item directly holds two block elements).
+                                        if (std::holds_alternative<md::Paragraph>(b.inner))
+                                            added_block = true;
                                         items.back().children.push_back(std::move(b));
                                     }
+                                    if (had_blank && added_block) loose = true;
+                                }
+                                // A blank line directly before the next sibling
+                                // marker makes the list loose (items separated by
+                                // a blank line). Trailing blanks before a non-item
+                                // line don't count.
+                                if (had_blank && i < lines.size()) {
+                                    auto nl = lines[i];
+                                    if (!nl.empty() && nl.back() == '\r') nl.remove_suffix(1);
+                                    int nml = ordered ? ol_marker_len(nl) : ul_marker_len(nl);
+                                    if (nml >= 2 && count_indent(nl) == base_indent &&
+                                        nl[static_cast<size_t>(nml) - 2] == list_delim)
+                                        loose = true;
                                 }
                                 continue;
                             }
@@ -2138,7 +2160,7 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
                     });
                     ++i;
                 }
-                doc.blocks.push_back(md::List{std::move(items), ordered, start_num});
+                doc.blocks.push_back(md::List{std::move(items), ordered, start_num, loose});
                 continue;
             }
         }

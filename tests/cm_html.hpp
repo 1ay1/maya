@@ -166,8 +166,16 @@ inline void block_to_html(std::string& out, const md::Block& block) {
                     if (*it.checked) out += "checked=\"\" ";
                     out += "disabled=\"\" type=\"checkbox\" /> ";
                 }
-                // Tight-list rendering: first-line spans inline, no <p>.
-                inlines_to_html(out, it.spans);
+                // Loose lists wrap the item's first-line content in <p>;
+                // tight lists render it bare. Child blocks emit their own
+                // wrapping either way.
+                if (n.loose) {
+                    if (!it.spans.empty()) {
+                        out += "<p>"; inlines_to_html(out, it.spans); out += "</p>\n";
+                    }
+                } else {
+                    inlines_to_html(out, it.spans);
+                }
                 if (!it.children.empty()) {
                     out += "\n"; blocks_to_html(out, it.children);
                 }

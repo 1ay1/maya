@@ -103,8 +103,6 @@ add_library(maya
     src/widget/markdown/parser/parser_inline.cpp
     src/widget/markdown/parser/parser_block.cpp
     src/widget/markdown/parser/text_transform.cpp
-    src/widget/markdown/parser/tables.cpp
-    src/widget/markdown/parser/html_tag.cpp
     # CommonMark engine — spec-faithful two-phase core
     src/widget/markdown/engine/cm_block.cpp
     src/widget/markdown/engine/cm_inline.cpp

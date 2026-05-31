@@ -85,15 +85,32 @@ struct CMBlock {
 // Reference-link definitions collected during block parsing (§4.7).
 using RefMap = std::unordered_map<std::string, md::LinkRef>;
 
+// ── extensions ─────────────────────────────────────────────────────────────
+// The engine core is pure CommonMark 0.31.2 (+ GFM tables). `extensions`
+// turns on the non-spec layer the public parse_markdown() ships: GFM
+// strikethrough/task-lists, ==highlight==, ~sub~/^sup^, [^footnote] refs,
+// :emoji:/@mention/bare-URL text transforms, GitHub alerts, definition
+// lists, footnote definitions, <details>. The conformance harness parses
+// with extensions OFF so the spec number stays exact.
+struct Options {
+    bool extensions = false;
+};
+
 // ── public engine entry ──────────────────────────────────────────────────
 // Parse `source` and lower to the public AST. This is what the new
 // parse_markdown() delegates to.
-[[nodiscard]] md::Document parse(std::string_view source);
+[[nodiscard]] md::Document parse(std::string_view source, Options opts = {});
 
 // ── phase-2 inline parser (cm_inline.cpp) ────────────────────────────────
 // Parse a raw text run into inline spans, resolving references via `refs`.
 [[nodiscard]] std::vector<md::Inline> parse_inlines(std::string_view text,
-                                                    const RefMap& refs);
+                                                    const RefMap& refs,
+                                                    Options opts = {});
+
+// AST-level extension post-pass (cm_inline.cpp / text_transform): rewrites
+// Text nodes into :emoji:, @mentions, bare-URL links, and decodes the maya
+// entity set. Runs over the engine's inline output when extensions are on.
+void apply_text_extensions(std::vector<md::Inline>& spans);
 
 // Flatten inline spans to their plain-text form (used to fill Link.text /
 // Image.alt and to render heading anchors). Mirrors the spec's notion of

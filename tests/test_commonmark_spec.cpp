@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "maya/widget/markdown.hpp"
+#include "maya/widget/markdown/engine/cm_engine.hpp"  // pure-core parse (no ext)
 #include "cm_html.hpp"
 #include "check.hpp"
 
@@ -193,7 +194,8 @@ int main() {
     std::vector<int> first_fails;
 
     for (const auto& ex : examples) {
-        maya::md::Document doc = maya::parse_markdown(ex.markdown);
+        // Pure CommonMark core — extensions OFF — so the score is exact.
+        maya::md::Document doc = maya::md_detail::engine::parse(ex.markdown);
         std::string got = normalize(cm::to_html(doc));
         std::string want = normalize(ex.html);
         bool ok = (got == want);

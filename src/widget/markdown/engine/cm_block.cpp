@@ -397,7 +397,8 @@ std::vector<md::TableAlign> parse_aligns(std::string_view delim) {
 // ════════════════════════════════════════════════════════════════════════
 class BlockParser {
 public:
-    md::Document run(std::string_view source) {
+    md::Document run(std::string_view source, bool ext) {
+        ext_ = ext;
         doc_ = std::make_unique<CMBlock>(BlockType::Document);
 
         // Normalize: split into lines. Strip a single trailing newline; keep
@@ -437,6 +438,7 @@ private:
     std::vector<CMBlock*> open_;  // path of currently-open blocks (doc first)
     int line_number_ = 0;         // 1-based current line
     CMBlock* cur_container_ = nullptr;  // block this line's content lands in
+    bool ext_ = false;            // GFM/maya extensions enabled
 
     // ── line processing ──────────────────────────────────────────────────
     void process_line(std::string_view raw) {
@@ -1264,12 +1266,92 @@ private:
     void parse_inlines_tree(CMBlock* blk) {
         if (blk->type == BlockType::Paragraph || blk->type == BlockType::Heading) {
             auto t = strip(std::string_view(blk->text));
-            blk->inlines = engine::parse_inlines(t, refs_);
+            blk->inlines = engine::parse_inlines(t, refs_, {ext_});
         }
         for (auto& ch : blk->children) parse_inlines_tree(ch.get());
     }
 
     // ── lowering to public AST ───────────────────────────────────────────
+    // ── extension lowering helpers (gated on ext_) ──────────────────────
+    // GFM task list: strip a leading "[ ] " / "[x] " / "[X] " from an item's
+    // first-line spans and return its checked state (nullopt = not a task).
+    [[nodiscard]] static std::optional<bool>
+    take_task_marker(std::vector<md::Inline>& spans) {
+        if (spans.empty()) return std::nullopt;
+        auto* t = std::get_if<md::Text>(&spans.front().inner);
+        if (!t || t->content.size() < 3) return std::nullopt;
+        const std::string& c = t->content;
+        if (c[0] != '[' || c[2] != ']') return std::nullopt;
+        bool checked;
+        if (c[1] == ' ') checked = false;
+        else if (c[1] == 'x' || c[1] == 'X') checked = true;
+        else return std::nullopt;
+        std::size_t strip = 3;
+        if (c.size() > 3) {
+            if (c[3] != ' ') return std::nullopt;  // must be "[ ] " etc.
+            strip = 4;
+        }
+        t->content.erase(0, strip);
+        if (t->content.empty()) spans.erase(spans.begin());
+        return checked;
+    }
+
+    // GitHub alert: if a blockquote's first line is exactly [!NOTE] (or TIP/
+    // IMPORTANT/WARNING/CAUTION), strip it and return an Alert wrapping the
+    // rest. `children` is consumed on success.
+    [[nodiscard]] static std::optional<md::Alert>
+    try_alert(std::vector<md::Block>& children) {
+        if (children.empty()) return std::nullopt;
+        auto* p = std::get_if<md::Paragraph>(&children.front().inner);
+        if (!p || p->spans.empty()) return std::nullopt;
+        auto* t = std::get_if<md::Text>(&p->spans.front().inner);
+        if (!t) return std::nullopt;
+        std::string s = t->content;
+        if (s.size() < 4 || s.front() != '[' || s[1] != '!' || s.back() != ']')
+            return std::nullopt;
+        std::string type = ascii_lower(s.substr(2, s.size() - 3));
+        md::Alert::Kind kind;
+        if (type == "note") kind = md::Alert::Kind::Note;
+        else if (type == "tip") kind = md::Alert::Kind::Tip;
+        else if (type == "important") kind = md::Alert::Kind::Important;
+        else if (type == "warning") kind = md::Alert::Kind::Warning;
+        else if (type == "caution") kind = md::Alert::Kind::Caution;
+        else return std::nullopt;
+        // drop the [!TYPE] span and a following soft break, then the
+        // paragraph itself if nothing else remains on that line.
+        p->spans.erase(p->spans.begin());
+        if (!p->spans.empty() &&
+            std::holds_alternative<md::SoftBreak>(p->spans.front().inner))
+            p->spans.erase(p->spans.begin());
+        if (p->spans.empty()) children.erase(children.begin());
+        md::Alert a;
+        a.kind = kind;
+        a.children = std::move(children);
+        return a;
+    }
+
+    // Footnote definition: spans beginning with FootnoteRef + Text(":…").
+    // Single-paragraph form (the common case); consumes `spans` on success.
+    [[nodiscard]] static std::optional<md::FootnoteDef>
+    try_footnote_def(std::vector<md::Inline>& spans) {
+        if (spans.size() < 2) return std::nullopt;
+        auto* fr = std::get_if<md::FootnoteRef>(&spans[0].inner);
+        auto* tx = std::get_if<md::Text>(&spans[1].inner);
+        if (!fr || !tx || tx->content.empty() || tx->content[0] != ':')
+            return std::nullopt;
+        md::FootnoteDef fd;
+        fd.label = fr->label;
+        std::vector<md::Inline> rest(std::make_move_iterator(spans.begin() + 1),
+                                     std::make_move_iterator(spans.end()));
+        auto& t0 = std::get<md::Text>(rest[0].inner);
+        std::size_t strip = (t0.content.size() > 1 && t0.content[1] == ' ') ? 2 : 1;
+        t0.content.erase(0, strip);
+        if (t0.content.empty()) rest.erase(rest.begin());
+        if (!rest.empty())
+            fd.children.push_back(md::Block{md::Paragraph{std::move(rest)}});
+        return fd;
+    }
+
     void lower_children(CMBlock& blk, std::vector<md::Block>& out) {
         for (auto& ch : blk.children) lower_block(*ch, out);
     }
@@ -1279,6 +1361,14 @@ private:
             case BlockType::Paragraph: {
                 if (blk.inlines.empty() && strip(std::string_view(blk.text)).empty())
                     return;  // ref-def-only paragraph
+                // ext: footnote definition — a paragraph that begins with a
+                // footnote ref followed by ":" (i.e. "[^label]: content").
+                if (ext_) {
+                    if (auto fd = try_footnote_def(blk.inlines)) {
+                        out.push_back(md::Block{std::move(*fd)});
+                        break;
+                    }
+                }
                 out.push_back(md::Block{md::Paragraph{std::move(blk.inlines)}});
                 break;
             }
@@ -1325,6 +1415,13 @@ private:
             case BlockType::BlockQuote: {
                 md::Blockquote bq;
                 lower_children(blk, bq.children);
+                // ext: GitHub alert — a blockquote whose first line is
+                // [!NOTE]/[!TIP]/[!IMPORTANT]/[!WARNING]/[!CAUTION].
+                if (ext_)
+                    if (auto a = try_alert(bq.children)) {
+                        out.push_back(md::Block{std::move(*a)});
+                        break;
+                    }
                 out.push_back(md::Block{std::move(bq)});
                 break;
             }
@@ -1336,7 +1433,6 @@ private:
                 for (auto& itptr : blk.children) {
                     CMBlock& it = *itptr;
                     md::ListItem item;
-                    if (it.has_task) item.checked = it.task_checked;
                     // gather child blocks
                     std::vector<md::Block> kids;
                     lower_children(it, kids);
@@ -1349,6 +1445,9 @@ private:
                             std::get<md::Paragraph>(kids.front().inner).spans);
                         kids.erase(kids.begin());
                     }
+                    // ext: GFM task-list marker "[ ] " / "[x] " at item start.
+                    if (ext_)
+                        if (auto chk = take_task_marker(item.spans)) item.checked = chk;
                     item.children = std::move(kids);
                     list.items.push_back(std::move(item));
                 }
@@ -1366,7 +1465,7 @@ private:
                 // header from info, rows from text
                 for (auto cell : split_pipe_cells(blk.info)) {
                     md::TableCell c;
-                    c.spans = engine::parse_inlines(cell, refs_);
+                    c.spans = engine::parse_inlines(cell, refs_, {ext_});
                     tbl.header.cells.push_back(std::move(c));
                 }
                 std::string_view body = blk.text;
@@ -1381,7 +1480,7 @@ private:
                     for (std::size_t ci = 0; ci < tbl.header.cells.size(); ++ci) {
                         md::TableCell c;
                         if (ci < cells.size())
-                            c.spans = engine::parse_inlines(cells[ci], refs_);
+                            c.spans = engine::parse_inlines(cells[ci], refs_, {ext_});
                         r.cells.push_back(std::move(c));
                     }
                     tbl.rows.push_back(std::move(r));
@@ -1398,9 +1497,9 @@ private:
 
 } // namespace
 
-md::Document parse(std::string_view source) {
+md::Document parse(std::string_view source, Options opts) {
     BlockParser p;
-    return p.run(source);
+    return p.run(source, opts.extensions);
 }
 
 } // namespace maya::md_detail::engine

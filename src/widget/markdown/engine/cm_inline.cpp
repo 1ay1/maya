@@ -20,6 +20,12 @@
 #include <variant>
 #include <vector>
 
+namespace maya::md_detail {
+// AST-level text-transform pass (text_transform.cpp): :emoji:, @mentions,
+// bare-URL links, maya entity set. Reused by the engine's extension layer.
+void post_process_text_nodes(std::vector<md::Inline>& nodes);
+}
+
 namespace maya::md_detail::engine {
 namespace {
 
@@ -46,7 +52,8 @@ struct Node {
 
 class InlineParser {
 public:
-    explicit InlineParser(const RefMap& refs) : refs_(refs) {}
+    explicit InlineParser(const RefMap& refs, bool ext = false)
+        : refs_(refs), ext_(ext) {}
 
     std::vector<md::Inline> parse(std::string_view text) {
         text_ = text;
@@ -74,6 +81,7 @@ public:
 private:
     std::string_view text_;
     const RefMap& refs_;
+    bool ext_ = false;     // GFM/maya extensions enabled
     std::vector<Node> nodes_;
 
     void push_text(std::string s) {
@@ -172,12 +180,26 @@ private:
                     continue;
                 }
                 case '[': {
+                    // ext: [^label] footnote reference (not [^label](...) link)
+                    if (ext_ && i + 1 < text_.size() && text_[i + 1] == '^') {
+                        std::size_t adv;
+                        if (try_footnote_ref(i, pending, adv)) { i = adv; continue; }
+                    }
                     flush();
                     Node n{md::Inline{md::Text{"["}}};
                     n.is_delim = true;
                     n.delim_char = '[';
                     n.text_pos = i + 1;
                     nodes_.push_back(std::move(n));
+                    ++i;
+                    continue;
+                }
+                case '~':
+                case '=':
+                case '^': {
+                    std::size_t adv;
+                    if (ext_ && try_ext_span(i, c, pending, adv)) { i = adv; continue; }
+                    pending += c;
                     ++i;
                     continue;
                 }
@@ -220,6 +242,88 @@ private:
                 t->content.pop_back();
             if (t->content.empty()) nodes_.pop_back();
         }
+    }
+
+    // ── extensions (gated on ext_) ───────────────────────────────────────
+    void flush_pending(std::string& pending) {
+        if (!pending.empty()) { push_text(std::move(pending)); pending.clear(); }
+    }
+
+    // A paired-delimiter span: open == close (e.g. "~~", "=="). Inner content
+    // is recursively inline-parsed so it can hold emphasis/links/etc.
+    template <typename Make>
+    bool try_paired(std::size_t i, std::string_view delim, std::string& pending,
+                    std::size_t& adv, Make make) {
+        std::size_t open_end = i + delim.size();
+        std::size_t j = text_.find(delim, open_end);
+        if (j == std::string_view::npos || j - open_end > 2000) return false;
+        if (j == open_end) return false;  // empty
+        InlineParser sub(refs_, ext_);
+        auto kids = sub.parse(text_.substr(open_end, j - open_end));
+        flush_pending(pending);
+        push_node(make(std::move(kids)));
+        adv = j + delim.size();
+        return true;
+    }
+
+    // A single-delimiter span with no internal whitespace, bounded length
+    // (~sub~, ^sup^). Spaces or newlines abort the match.
+    template <typename Make>
+    bool try_bounded(std::size_t i, char c, std::string& pending,
+                     std::size_t& adv, Make make) {
+        std::size_t open = i + 1;
+        if (open >= text_.size()) return false;
+        char first = text_[open];
+        if (first == c || first == ' ' || first == '\t' || first == '\n')
+            return false;
+        std::size_t limit = std::min(text_.size(), open + 200);
+        std::size_t j = open;
+        while (j < limit && text_[j] != c) {
+            char ch = text_[j];
+            if (ch == ' ' || ch == '\t' || ch == '\n') return false;
+            ++j;
+        }
+        if (j >= limit || text_[j] != c) return false;
+        InlineParser sub(refs_, ext_);
+        auto kids = sub.parse(text_.substr(open, j - open));
+        flush_pending(pending);
+        push_node(make(std::move(kids)));
+        adv = j + 1;
+        return true;
+    }
+
+    // ~~strike~~ / ==highlight== / ~sub~ / ^sup^
+    bool try_ext_span(std::size_t i, char c, std::string& pending,
+                      std::size_t& adv) {
+        bool dbl = (i + 1 < text_.size() && text_[i + 1] == c);
+        if (c == '~' && dbl)
+            return try_paired(i, "~~", pending, adv, [](std::vector<md::Inline> k) {
+                return md::Inline{md::Strike{std::move(k)}}; });
+        if (c == '=' && dbl)
+            return try_paired(i, "==", pending, adv, [](std::vector<md::Inline> k) {
+                return md::Inline{md::Highlight{std::move(k)}}; });
+        if (c == '~')
+            return try_bounded(i, '~', pending, adv, [](std::vector<md::Inline> k) {
+                return md::Inline{md::Sub{std::move(k)}}; });
+        if (c == '^')
+            return try_bounded(i, '^', pending, adv, [](std::vector<md::Inline> k) {
+                return md::Inline{md::Sup{std::move(k)}}; });
+        return false;  // single '=' is literal
+    }
+
+    // [^label] footnote reference (not the inline-link form [^label](...)).
+    bool try_footnote_ref(std::size_t i, std::string& pending, std::size_t& adv) {
+        std::size_t s = i + 2;  // past "[^"
+        std::size_t limit = std::min(text_.size(), s + 200);
+        std::size_t j = s;
+        while (j < limit && text_[j] != ']' && text_[j] != '[' && text_[j] != '\n')
+            ++j;
+        if (j >= limit || text_[j] != ']' || j == s) return false;
+        if (j + 1 < text_.size() && text_[j + 1] == '(') return false;
+        flush_pending(pending);
+        push_node(md::FootnoteRef{std::string(text_.substr(s, j - s))});
+        adv = j + 1;
+        return true;
     }
 
     // ── code spans (§6.1) ────────────────────────────────────────────────
@@ -794,9 +898,18 @@ private:
 
 } // namespace
 
-std::vector<md::Inline> parse_inlines(std::string_view text, const RefMap& refs) {
-    InlineParser p(refs);
-    return p.parse(text);
+std::vector<md::Inline> parse_inlines(std::string_view text, const RefMap& refs,
+                                      Options opts) {
+    InlineParser p(refs, opts.extensions);
+    auto spans = p.parse(text);
+    if (opts.extensions) apply_text_extensions(spans);
+    return spans;
+}
+
+void apply_text_extensions(std::vector<md::Inline>& spans) {
+    // AST-level text transforms (:emoji:, @mentions, bare URLs, entity set).
+    // Implemented in text_transform.cpp; recurses into children itself.
+    ::maya::md_detail::post_process_text_nodes(spans);
 }
 
 std::string inline_plain_text(const std::vector<md::Inline>& spans) {

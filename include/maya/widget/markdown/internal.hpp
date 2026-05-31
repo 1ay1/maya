@@ -246,6 +246,13 @@ void                  flatten_inline(const md::Inline& span,
                                      const Style& inherited,
                                      std::string& out,
                                      std::vector<StyledRun>& runs);
+// Flatten a span run, interpreting interleaved inline raw-HTML tags as a
+// style stack (delegates HTML semantics to maya::html). Prefer this over the
+// single-span flatten_inline when rendering a whole inline sequence.
+void                  flatten_inlines(const std::vector<md::Inline>& spans,
+                                      const Style& base,
+                                      std::string& out,
+                                      std::vector<StyledRun>& runs);
 [[nodiscard]] Element build_inline_row(const std::vector<md::Inline>& spans);
 [[nodiscard]] int     measure_inline_width(const std::vector<md::Inline>& spans);
 [[nodiscard]] Element render_list(const md::List& l, int depth);

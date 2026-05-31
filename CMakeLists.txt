@@ -121,6 +121,11 @@ add_library(maya
     src/widget/markdown/streaming/reveal_fx.cpp
     src/widget/markdown/streaming/folding.cpp
     src/widget/markdown/streaming/async.cpp
+
+    src/widget/html/tags.cpp
+    src/widget/html/tokenizer.cpp
+    src/widget/html/parser.cpp
+    src/widget/html/render.cpp
 )
 target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -276,6 +281,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_wire_row.cpp
         tests/test_inline_frame.cpp
         tests/test_commonmark_spec.cpp
+        tests/test_html.cpp
     )
 
     foreach(src ${MAYA_TEST_SOURCES})

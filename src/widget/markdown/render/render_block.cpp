@@ -21,13 +21,15 @@
 #include "maya/element/builder.hpp"
 #include "maya/style/border.hpp"
 #include "maya/style/style.hpp"
+#include "maya/style/theme.hpp"
+#include "maya/widget/html.hpp"
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
 
 namespace maya {
 
 using ::maya::md_detail::highlight_code;
-using ::maya::md_detail::flatten_inline;
+using ::maya::md_detail::flatten_inlines;
 using ::maya::md_detail::build_inline_row;
 using ::maya::md_detail::render_list;
 
@@ -89,9 +91,7 @@ Element md_block_to_element(const md::Block& block) {
                                 Style{}.with_fg(colors::list_bullet).with_bold()});
                 content.append(marker);
             }
-            for (auto& s : h.spans) {
-                flatten_inline(s, sty, content, runs);
-            }
+            flatten_inlines(h.spans, sty, content, runs);
             Element heading_text = Element{TextElement{
                 .content = std::move(content),
                 .style = sty,
@@ -234,8 +234,8 @@ Element md_block_to_element(const md::Block& block) {
             auto header_base = Style{}.with_bold().with_fg(colors::table_header);
             for (int c = 0; c < ncols; ++c) {
                 FlatCell f;
-                for (auto& s : tbl.header.cells[static_cast<size_t>(c)].spans)
-                    flatten_inline(s, header_base, f.content, f.runs);
+                flatten_inlines(tbl.header.cells[static_cast<size_t>(c)].spans,
+                                header_base, f.content, f.runs);
                 header_flat.push_back(std::move(f));
             }
 
@@ -248,8 +248,8 @@ Element md_block_to_element(const md::Block& block) {
                 for (int c = 0; c < ncols; ++c) {
                     FlatCell f;
                     if (static_cast<size_t>(c) < row.cells.size()) {
-                        for (auto& s : row.cells[static_cast<size_t>(c)].spans)
-                            flatten_inline(s, cell_base, f.content, f.runs);
+                        flatten_inlines(row.cells[static_cast<size_t>(c)].spans,
+                                        cell_base, f.content, f.runs);
                     }
                     rf.push_back(std::move(f));
                 }
@@ -901,7 +901,7 @@ Element md_block_to_element(const md::Block& block) {
                 std::string term_text;
                 std::vector<StyledRun> runs;
                 Style base = Style{}.with_bold().with_fg(colors::bold_fg);
-                for (auto& s : item.term) flatten_inline(s, base, term_text, runs);
+                flatten_inlines(item.term, base, term_text, runs);
                 items.push_back(Element{TextElement{
                     .content = std::move(term_text),
                     .style = base,
@@ -943,7 +943,7 @@ Element md_block_to_element(const md::Block& block) {
             runs.push_back({0, kPrefix.size(),
                             Style{}.with_fg(colors::list_bullet)});
             summary_text.append(kPrefix);
-            for (auto& s : d.summary) flatten_inline(s, base, summary_text, runs);
+            flatten_inlines(d.summary, base, summary_text, runs);
             Element header{TextElement{
                 .content = std::move(summary_text),
                 .style = base,
@@ -973,11 +973,25 @@ Element md_block_to_element(const md::Block& block) {
             return detail::vstack()(std::move(out_rows));
         },
         [](const md::HtmlBlock& h) -> Element {
-            // Raw-HTML passthrough: render as subtle preformatted text.
-            return Element{TextElement{
-                .content = h.content,
-                .style = Style{}.with_fg(colors::footnote_fg),
-            }};
+            // Delegate raw HTML blocks to the maya::html widget, which parses
+            // and renders them as styled terminal Elements. The HTML widget is
+            // themed, so map the markdown palette onto a Theme once so embedded
+            // HTML matches the surrounding markdown's look.
+            static const Theme md_theme = [] {
+                Theme t = theme::dark;
+                t.text         = colors::text;
+                t.primary      = colors::heading1;
+                t.accent       = colors::heading2;
+                t.info         = colors::heading3;
+                t.muted        = colors::footnote_fg;
+                t.link         = colors::link_fg;
+                t.surface      = colors::code_bg;
+                t.border       = colors::table_border;
+                t.highlight    = colors::highlight_bg;
+                t.inverse_text = colors::highlight_fg;
+                return t;
+            }();
+            return html::render(h.content, md_theme);
         },
     }, block.inner);
 }

@@ -19,6 +19,7 @@
 #include "maya/element/builder.hpp"
 #include "maya/style/border.hpp"
 #include "maya/style/style.hpp"
+#include "maya/widget/html.hpp"
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
 
@@ -207,6 +208,75 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
     }, span.inner);
 }
 
+// Map an HTML phrasing role onto the markdown palette so inline raw HTML
+// (`<b>`, `<code>`, `<kbd>`, …) looks identical to the equivalent markdown
+// construct. Mirrors the per-variant styling in flatten_inline above.
+[[nodiscard]] static Style html_role_style(html::Role r, Style cur) {
+    using R = html::Role;
+    switch (r) {
+        case R::Bold:      return cur.with_bold().with_fg(colors::bold_fg);
+        case R::Italic:    return cur.with_italic().with_fg(colors::italic_fg);
+        case R::Underline: return cur.with_underline();
+        case R::Strike:    return cur.with_strikethrough().with_fg(colors::strike_fg);
+        case R::Code:      return cur.with_fg(colors::code_fg).with_bg(colors::code_bg);
+        case R::KeyCap:    return cur.with_bold().with_fg(colors::kbd_fg);
+        case R::Mark:      return cur.with_bg(colors::highlight_bg)
+                                     .with_fg(colors::highlight_fg);
+        case R::Small:     return cur.with_dim();
+        case R::Sub:
+        case R::Sup:       return cur.with_fg(colors::strike_fg);
+        case R::Link:      return cur.with_fg(colors::link_fg).with_underline();
+        case R::None:
+        case R::Break:     break;
+    }
+    return cur;
+}
+
+// Flatten a run of inline spans, interpreting interleaved raw-HTML tags
+// (md::RawInline) as a style stack: `<b>`…`</b>` toggles bold across the
+// sibling spans between them, `<br>` is a hard break, unknown tags fall back
+// to the dimmed-literal passthrough. This is the markdown widget delegating
+// HTML *semantics* to maya::html while keeping ownership of the span walk.
+static void flatten_inlines(const std::vector<md::Inline>& spans,
+                            const Style& base, std::string& out,
+                            std::vector<StyledRun>& runs) {
+    struct Open { std::string name; Style prev; };
+    std::vector<Open> stack;
+    Style cur = base;
+    for (const auto& span : spans) {
+        const auto* raw = std::get_if<md::RawInline>(&span.inner);
+        if (!raw) { flatten_inline(span, cur, out, runs); continue; }
+
+        auto tag = html::parse_tag(raw->content);
+        if (tag) {
+            html::Role role = html::inline_role(tag->name);
+            if (role == html::Role::Break) {
+                runs.push_back({out.size(), 1, cur});
+                out += '\n';
+                continue;
+            }
+            if (tag->name == "wbr") continue;  // zero-width break opportunity
+            if (role != html::Role::None) {
+                if (tag->is_close) {
+                    for (int k = static_cast<int>(stack.size()) - 1; k >= 0; --k)
+                        if (stack[static_cast<std::size_t>(k)].name == tag->name) {
+                            cur = stack[static_cast<std::size_t>(k)].prev;
+                            stack.erase(stack.begin() + k, stack.end());
+                            break;
+                        }
+                } else if (!tag->self_closing) {
+                    stack.push_back({tag->name, cur});
+                    cur = html_role_style(role, cur);
+                }
+                continue;  // styling tags emit no literal text
+            }
+        }
+        // not a recognized tag → dimmed-literal passthrough (flatten_inline's
+        // RawInline branch), using the current effective style.
+        flatten_inline(span, cur, out, runs);
+    }
+}
+
 } // anonymous
 
 Element md_inline_to_element(const md::Inline& span) {
@@ -228,9 +298,7 @@ static int measure_inline_width(const std::vector<md::Inline>& spans) {
     std::string content;
     std::vector<StyledRun> runs;
     Style base = Style{}.with_fg(colors::text);
-    for (auto& s : spans) {
-        flatten_inline(s, base, content, runs);
-    }
+    flatten_inlines(spans, base, content, runs);
     return string_width(content);
 }
 
@@ -242,9 +310,7 @@ static Element build_inline_row(const std::vector<md::Inline>& spans) {
     std::vector<StyledRun> runs;
     Style base = Style{}.with_fg(colors::text);
 
-    for (auto& s : spans) {
-        flatten_inline(s, base, content, runs);
-    }
+    flatten_inlines(spans, base, content, runs);
 
     // Optimize: single run → use simple TextElement
     if (runs.size() == 1) {
@@ -312,9 +378,7 @@ static Element render_list(const md::List& l, int depth) {
         std::string body;
         std::vector<StyledRun> body_runs;
         Style base = Style{}.with_fg(colors::text);
-        for (auto& s : item.spans) {
-            flatten_inline(s, base, body, body_runs);
-        }
+        flatten_inlines(item.spans, base, body, body_runs);
         Element body_elem = (body_runs.size() == 1)
             ? Element{TextElement{
                 .content = std::move(body),
@@ -359,6 +423,12 @@ void flatten_inline(const md::Inline& span,
                     std::string& out,
                     std::vector<StyledRun>& runs) {
     ::maya::flatten_inline(span, inherited, out, runs);
+}
+void flatten_inlines(const std::vector<md::Inline>& spans,
+                     const Style& base,
+                     std::string& out,
+                     std::vector<StyledRun>& runs) {
+    ::maya::flatten_inlines(spans, base, out, runs);
 }
 Element build_inline_row(const std::vector<md::Inline>& spans) {
     return ::maya::build_inline_row(spans);

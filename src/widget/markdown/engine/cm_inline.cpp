@@ -329,9 +329,14 @@ private:
         std::size_t n = s.size();
         if (i >= n || s[i] != '<') return 0;
         std::size_t j = i + 1;
-        // comment
+        // comment <!-- ... -->
         if (s.compare(j, 3, "!--") == 0) {
             std::size_t e = s.find("-->", j + 3);
+            return e == std::string_view::npos ? 0 : (e + 3) - i;
+        }
+        // CDATA <![CDATA[ ... ]]>
+        if (s.compare(j, 8, "![CDATA[") == 0) {
+            std::size_t e = s.find("]]>", j + 8);
             return e == std::string_view::npos ? 0 : (e + 3) - i;
         }
         // processing instruction

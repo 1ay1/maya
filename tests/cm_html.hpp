@@ -53,15 +53,29 @@ inline void esc_url(std::string& out, std::string_view s) {
     auto hex = [](unsigned v) -> char {
         return static_cast<char>(v < 10 ? '0' + v : 'A' + (v - 10));
     };
+    auto pct = [&](unsigned char c) {
+        out += '%'; out += hex(c >> 4); out += hex(c & 0xF);
+    };
     for (unsigned char c : s) {
         if (c == '&') { out += "&amp;"; continue; }
-        if (c == '"') { out += "%22";   continue; }
-        if (c == '\\'){ out += "%5C";   continue; }
-        if (c == ' ') { out += "%20";   continue; }
-        if (c < 0x20 || c >= 0x7F) {
-            out += '%'; out += hex(c >> 4); out += hex(c & 0xF);
-            continue;
+        // CommonMark percent-encodes these unsafe ASCII chars in hrefs,
+        // leaves the rest (incl. most reserved chars) intact.
+        switch (c) {
+            case '"': pct('"'); continue;
+            case ' ': pct(' '); continue;
+            case '`': pct('`'); continue;
+            case '<': pct('<'); continue;
+            case '>': pct('>'); continue;
+            case '[': pct('['); continue;
+            case ']': pct(']'); continue;
+            case '\\': pct('\\'); continue;
+            case '^': pct('^'); continue;
+            case '{': pct('{'); continue;
+            case '|': pct('|'); continue;
+            case '}': pct('}'); continue;
+            default: break;
         }
+        if (c < 0x20 || c >= 0x7F) { pct(c); continue; }
         out += static_cast<char>(c);
     }
 }

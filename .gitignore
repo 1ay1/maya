@@ -18,3 +18,5 @@ Testing/Temporary/CTestCostData.txt
 build_debug
 build-test/
 build-verify/
+build-md/
+build-gcc/

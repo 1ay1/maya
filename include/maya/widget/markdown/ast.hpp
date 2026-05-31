@@ -27,8 +27,15 @@ struct Bold        { std::vector<struct Inline> children; };
 struct Italic      { std::vector<struct Inline> children; };
 struct BoldItalic  { std::vector<struct Inline> children; };
 struct Code        { std::string content; };
-struct Link        { std::string text; std::string url; std::string title; };
-struct Image       { std::string alt;  std::string url; std::string title; };
+// Link/Image carry BOTH a flattened string (text/alt — consumed by the
+// terminal renderer and the streaming widget, which want a plain label)
+// AND the structured inline children (kids — consumed by the CommonMark
+// HTML scorer and any future rich renderer). The engine populates both;
+// `text`/`alt` is the children flattened to plain text.
+struct Link        { std::string text; std::string url; std::string title;
+                     std::vector<struct Inline> kids; };
+struct Image       { std::string alt;  std::string url; std::string title;
+                     std::vector<struct Inline> kids; };
 struct Strike      { std::vector<struct Inline> children; };
 struct Highlight   { std::vector<struct Inline> children; };    // ==text== or <mark>
 struct Sub         { std::vector<struct Inline> children; };    // ~x~ or <sub>
@@ -43,11 +50,14 @@ struct Mention     {
 };
 struct FootnoteRef { std::string label; };
 struct HardBreak   {};
+struct SoftBreak   {};                       // raw newline inside a paragraph
+struct RawInline   { std::string content; }; // verbatim inline HTML / entity passthrough
 
 struct Inline {
     using Variant = std::variant<Text, Bold, Italic, BoldItalic, Code,
                                  Link, Image, Strike, Highlight, Sub, Sup,
-                                 Kbd, Abbr, Mention, FootnoteRef, HardBreak>;
+                                 Kbd, Abbr, Mention, FootnoteRef, HardBreak,
+                                 SoftBreak, RawInline>;
     Variant inner;
 
     Inline(Text t)        : inner(std::move(t)) {}
@@ -66,6 +76,8 @@ struct Inline {
     Inline(Mention m)     : inner(std::move(m)) {}
     Inline(FootnoteRef f) : inner(std::move(f)) {}
     Inline(HardBreak)     : inner(HardBreak{}) {}
+    Inline(SoftBreak)     : inner(SoftBreak{}) {}
+    Inline(RawInline r)   : inner(std::move(r)) {}
 };
 
 // ============================================================================

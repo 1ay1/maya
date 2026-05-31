@@ -90,7 +90,10 @@ inline void inline_to_html(std::string& out, const md::Inline& span) {
         } else if constexpr (std::is_same_v<T, md::Link>) {
             out += "<a href=\""; esc_url(out, n.url); out += "\"";
             if (!n.title.empty()) { out += " title=\""; esc_attr(out, n.title); out += "\""; }
-            out += ">"; esc_text(out, n.text); out += "</a>";
+            out += ">";
+            if (!n.kids.empty()) inlines_to_html(out, n.kids);
+            else esc_text(out, n.text);
+            out += "</a>";
         } else if constexpr (std::is_same_v<T, md::Image>) {
             out += "<img src=\""; esc_url(out, n.url); out += "\" alt=\"";
             esc_attr(out, n.alt); out += "\"";
@@ -115,6 +118,10 @@ inline void inline_to_html(std::string& out, const md::Inline& span) {
             out += "[^"; esc_text(out, n.label); out += "]";
         } else if constexpr (std::is_same_v<T, md::HardBreak>) {
             out += "<br />\n";
+        } else if constexpr (std::is_same_v<T, md::SoftBreak>) {
+            out += "\n";
+        } else if constexpr (std::is_same_v<T, md::RawInline>) {
+            out += n.content;  // verbatim — raw HTML / passthrough
         }
     }, span.inner);
 }

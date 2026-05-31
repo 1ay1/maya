@@ -100,13 +100,27 @@ add_library(maya
     src/render/canvas_witness.cpp
     src/widget/markdown.cpp
     # markdown widget — three modules: parser / render / streaming
-    src/widget/markdown/parser/parser.cpp
+    src/widget/markdown/parser/parser_inline.cpp
+    src/widget/markdown/parser/parser_block.cpp
     src/widget/markdown/parser/text_transform.cpp
     src/widget/markdown/parser/tables.cpp
     src/widget/markdown/parser/html_tag.cpp
-    src/widget/markdown/render/render.cpp
-    src/widget/markdown/render/syntax.cpp
-    src/widget/markdown/streaming/streaming.cpp
+    # CommonMark engine — spec-faithful two-phase core
+    src/widget/markdown/engine/cm_block.cpp
+    src/widget/markdown/engine/cm_inline.cpp
+    src/widget/markdown/render/render_inline.cpp
+    src/widget/markdown/render/render_block.cpp
+    src/widget/markdown/render/syntax_lang.cpp
+    src/widget/markdown/render/syntax_highlight.cpp
+    # streaming module — one concern per TU
+    src/widget/markdown/streaming/markdown_memo.cpp
+    src/widget/markdown/streaming/boundary.cpp
+    src/widget/markdown/streaming/commit.cpp
+    src/widget/markdown/streaming/render_tail.cpp
+    src/widget/markdown/streaming/build.cpp
+    src/widget/markdown/streaming/reveal_fx.cpp
+    src/widget/markdown/streaming/folding.cpp
+    src/widget/markdown/streaming/async.cpp
 )
 target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

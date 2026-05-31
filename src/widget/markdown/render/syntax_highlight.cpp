@@ -1,0 +1,653 @@
+// syntax_highlight.cpp — the code-block tokeniser + memoised entry point.
+//
+// highlight_diff (per-line +/-/@@ coloring), highlight_code_impl (the
+// language-aware byte scanner emitting StyledRuns + a line-number gutter for
+// blocks ≥ 5 lines), and highlight_code (a thread-local FNV-keyed cache over
+// (lang_tag, code)). Pulls its language tables from syntax_lang.cpp via
+// syntax_internal.hpp; calls find_eol from the parser module.
+
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "maya/element/builder.hpp"
+#include "maya/style/style.hpp"
+#include "maya/widget/markdown.hpp"
+#include "maya/widget/markdown/internal.hpp"
+#include "maya/widget/markdown/spec_chars.hpp"
+#include "maya/widget/markdown/syntax_internal.hpp"
+
+namespace maya {
+
+// find_eol lives in the parser module; the scanner body below calls it
+// unqualified.
+using ::maya::md_detail::find_eol;
+
+// Language tables (syntax_lang.cpp) — bring into scope so highlight_code_impl
+// calls them unqualified.
+using ::maya::syntax_detail::LangId;
+using ::maya::syntax_detail::detect_lang;
+using ::maya::syntax_detail::classify_word;
+using ::maya::syntax_detail::comment_style_for;
+using ::maya::syntax_detail::features_for;
+
+namespace {
+
+// Char-class tables shared with the parser — one source of truth in
+// markdown/spec_chars.hpp.
+constexpr auto kPunctChar = md_detail::chars::kPunct;
+constexpr auto kOpChar    = md_detail::chars::kOp;
+
+} // anonymous
+
+static Element highlight_diff(const std::string& code) {
+    std::string out;
+    out.reserve(code.size());
+    std::vector<StyledRun> runs;
+
+    size_t i = 0;
+    size_t n = code.size();
+
+    while (i < n) {
+        size_t line_start = i;
+        // Find end of line (memchr is SIMD-accelerated in glibc)
+        size_t eol = find_eol(code.data(), i, n);
+        bool has_nl = (eol < n);
+        size_t line_end = has_nl ? eol + 1 : eol;
+
+        std::string_view line{code.data() + line_start, eol - line_start};
+        size_t out_start = out.size();
+        out.append(code, line_start, line_end - line_start);
+
+        Style sty = syntax::plain();
+        if (!line.empty()) {
+            if (line[0] == '+')                                    sty = syntax::diff_add();
+            else if (line[0] == '-')                               sty = syntax::diff_del();
+            else if (line.starts_with("@@"))                       sty = syntax::diff_hunk();
+            else if (line.starts_with("diff ") ||
+                     line.starts_with("index ") ||
+                     line.starts_with("--- ") ||
+                     line.starts_with("+++ "))                     sty = syntax::diff_meta();
+        }
+        runs.push_back({out_start, line_end - line_start, sty});
+        i = line_end;
+    }
+
+    return Element{TextElement{
+        .content = std::move(out),
+        .style = syntax::plain(),
+        // Same rationale as highlight_code_impl’s return: diff
+        // lines are atomic and must not soft-wrap into the gutter.
+        .wrap = TextWrap::NoWrap,
+        .runs = std::move(runs),
+    }};
+}
+
+static inline bool is_punct_char(char c) {
+    return kPunctChar[static_cast<unsigned char>(c)];
+}
+
+static inline bool is_op_char(char c) {
+    return kOpChar[static_cast<unsigned char>(c)];
+}
+
+static Element highlight_code_impl(const std::string& code, const std::string& lang_tag) {
+    LangId lang = detect_lang(lang_tag);
+
+    // Special case: diff gets its own highlighter
+    if (lang == LangId::Diff) return highlight_diff(code);
+
+    auto cs = comment_style_for(lang);
+    auto feat = features_for(lang);
+
+    std::string out;
+    out.reserve(code.size());
+    std::vector<StyledRun> runs;
+
+    size_t i = 0;
+    size_t n = code.size();
+
+    auto emit = [&](size_t start, size_t byte_len, Style sty) {
+        if (byte_len == 0) return;
+        runs.push_back({start, byte_len, sty});
+    };
+
+    while (i < n) {
+        char ch = code[i];
+
+        // ── Newline ──────────────────────────────────────────────────
+        if (ch == '\n') {
+            size_t s = out.size();
+            out += '\n';
+            emit(s, 1, syntax::plain());
+            ++i;
+            continue;
+        }
+
+        // ── Whitespace ───────────────────────────────────────────────
+        if (ch == ' ' || ch == '\t') {
+            size_t s = out.size();
+            size_t j = i;
+            while (j < n && (code[j] == ' ' || code[j] == '\t')) ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::plain());
+            i = j;
+            continue;
+        }
+
+        // ── Preprocessor: #include, #define, etc. ────────────────────
+        if (feat.preprocessor && ch == '#') {
+            // Check if at start of line (or start of code)
+            bool at_line_start = (i == 0 || code[i - 1] == '\n');
+            if (at_line_start) {
+                size_t s = out.size();
+                size_t j = find_eol(code.data(), i, n);
+                out.append(code, i, j - i);
+                emit(s, j - i, syntax::preproc());
+                i = j;
+                continue;
+            }
+        }
+
+        // ── Line comment: // or # or -- ──────────────────────────────
+        if (cs.line && !std::string_view(cs.line).empty()) {
+            std::string_view lc{cs.line};
+            if (code.compare(i, lc.size(), lc) == 0) {
+                size_t s = out.size();
+                size_t j = find_eol(code.data(), i, n);
+                out.append(code, i, j - i);
+                emit(s, j - i, syntax::comment());
+                i = j;
+                continue;
+            }
+        }
+        if (cs.hash_comment && ch == '#') {
+            size_t s = out.size();
+            size_t j = find_eol(code.data(), i, n);
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::comment());
+            i = j;
+            continue;
+        }
+
+        // ── Block comment: /* ... */, <!-- ... -->, {- ... -} ────────
+        if (cs.block_open) {
+            std::string_view bo{cs.block_open};
+            std::string_view bc{cs.block_close};
+            if (code.compare(i, bo.size(), bo) == 0) {
+                size_t s = out.size();
+                size_t j = i + bo.size();
+                while (j + bc.size() <= n &&
+                       code.compare(j, bc.size(), bc) != 0)
+                    ++j;
+                if (j + bc.size() <= n) j += bc.size();
+                out.append(code, i, j - i);
+                emit(s, j - i, syntax::comment());
+                i = j;
+                continue;
+            }
+        }
+
+        // ── Decorators/attributes: @decorator, #[attr] ──────────────
+        if (feat.decorators && ch == '@') {
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
+                              code[j] == '_' || code[j] == '.'))
+                ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::attr());
+            i = j;
+            continue;
+        }
+
+        // ── Rust lifetime: 'a, 'static ──────────────────────────────
+        if (feat.lifetime && ch == '\'' &&
+            i + 1 < n && std::isalpha(static_cast<unsigned char>(code[i + 1]))) {
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
+                              code[j] == '_'))
+                ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::type());
+            i = j;
+            continue;
+        }
+
+        // ── Shell variables: $VAR, ${VAR}, $(...) ────────────────────
+        if (feat.shell_vars && ch == '$' && i + 1 < n) {
+            size_t s = out.size();
+            size_t j = i + 1;
+            if (code[j] == '{') {
+                // ${VAR}
+                ++j;
+                while (j < n && code[j] != '}') ++j;
+                if (j < n) ++j;
+            } else if (code[j] == '(') {
+                // $(...) — just highlight the $( and )
+                out.append(code, i, 2);
+                emit(s, 2, syntax::shellvar());
+                i += 2;
+                continue;
+            } else if (std::isalpha(static_cast<unsigned char>(code[j])) ||
+                       code[j] == '_') {
+                while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
+                                  code[j] == '_'))
+                    ++j;
+            } else {
+                // $? $# $@ etc.
+                ++j;
+            }
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::shellvar());
+            i = j;
+            continue;
+        }
+
+        // ── Triple-quoted strings: """...""" / '''...''' ─────────────
+        if (feat.triple_quote_strings &&
+            (ch == '"' || ch == '\'') &&
+            i + 2 < n && code[i + 1] == ch && code[i + 2] == ch) {
+            char q = ch;
+            size_t s = out.size();
+            size_t j = i + 3;
+            while (j + 2 < n) {
+                if (code[j] == '\\') { j += 2; continue; }
+                if (code[j] == q && code[j + 1] == q && code[j + 2] == q) {
+                    j += 3;
+                    break;
+                }
+                ++j;
+            }
+            if (j + 2 >= n && !(j >= 3 && code[j-1] == q && code[j-2] == q && code[j-3] == q))
+                j = n;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::str());
+            i = j;
+            continue;
+        }
+
+        // ── Backtick template literals: `...${...}...` ──────────────
+        if (feat.backtick_strings && ch == '`') {
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && code[j] != '`') {
+                if (code[j] == '\\' && j + 1 < n) { j += 2; continue; }
+                ++j;
+            }
+            if (j < n) ++j; // consume closing `
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::str());
+            i = j;
+            continue;
+        }
+
+        // ── String literals: "..." ───────────────────────────────────
+        if (ch == '"') {
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && code[j] != '\n') {
+                if (code[j] == '\\' && j + 1 < n) { j += 2; continue; }
+                if (code[j] == '"') { ++j; break; }
+                ++j;
+            }
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::str());
+            i = j;
+            continue;
+        }
+
+        // ── Char literal or string: '...' ────────────────────────────
+        if (ch == '\'') {
+            if (feat.char_literals) {
+                // C-style char: 'x' or '\n' — short
+                size_t s = out.size();
+                size_t j = i + 1;
+                if (j < n && code[j] == '\\') j += 2;
+                else if (j < n) ++j;
+                if (j < n && code[j] == '\'') ++j;
+                out.append(code, i, j - i);
+                emit(s, j - i, syntax::str());
+                i = j;
+                continue;
+            }
+            // Treat as string in Ruby, Python (single-quoted), etc.
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && code[j] != '\n') {
+                if (code[j] == '\\' && j + 1 < n) { j += 2; continue; }
+                if (code[j] == '\'') { ++j; break; }
+                ++j;
+            }
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::str());
+            i = j;
+            continue;
+        }
+
+        // ── Ruby/Elixir atom: :symbol ────────────────────────────────
+        if (feat.colon_atom && ch == ':' &&
+            i + 1 < n && std::isalpha(static_cast<unsigned char>(code[i + 1]))) {
+            size_t s = out.size();
+            size_t j = i + 1;
+            while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
+                              code[j] == '_' || code[j] == '?' || code[j] == '!'))
+                ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::constant());
+            i = j;
+            continue;
+        }
+
+        // ── Number: 0x..., 0b..., 0o..., digits[.digits][e...] ──────
+        if (std::isdigit(static_cast<unsigned char>(ch)) ||
+            (ch == '.' && i + 1 < n &&
+             std::isdigit(static_cast<unsigned char>(code[i + 1])))) {
+            size_t s = out.size();
+            size_t j = i;
+            if (ch == '0' && j + 1 < n) {
+                char next = code[j + 1];
+                if (next == 'x' || next == 'X') {
+                    j += 2;
+                    while (j < n && (std::isxdigit(static_cast<unsigned char>(code[j])) ||
+                                      code[j] == '_'))
+                        ++j;
+                } else if (next == 'b' || next == 'B') {
+                    j += 2;
+                    while (j < n && (code[j] == '0' || code[j] == '1' || code[j] == '_'))
+                        ++j;
+                } else if (next == 'o' || next == 'O') {
+                    j += 2;
+                    while (j < n && ((code[j] >= '0' && code[j] <= '7') || code[j] == '_'))
+                        ++j;
+                } else goto decimal;
+            } else {
+            decimal:
+                while (j < n && (std::isdigit(static_cast<unsigned char>(code[j])) ||
+                                  code[j] == '_'))
+                    ++j;
+                if (j < n && code[j] == '.' && j + 1 < n &&
+                    std::isdigit(static_cast<unsigned char>(code[j + 1]))) {
+                    ++j;
+                    while (j < n && (std::isdigit(static_cast<unsigned char>(code[j])) ||
+                                      code[j] == '_'))
+                        ++j;
+                }
+                // Exponent
+                if (j < n && (code[j] == 'e' || code[j] == 'E')) {
+                    ++j;
+                    if (j < n && (code[j] == '+' || code[j] == '-')) ++j;
+                    while (j < n && std::isdigit(static_cast<unsigned char>(code[j]))) ++j;
+                }
+            }
+            // Number suffix: f, u, l, i32, etc.
+            while (j < n && (std::isalpha(static_cast<unsigned char>(code[j])) ||
+                              code[j] == '_'))
+                ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::num());
+            i = j;
+            continue;
+        }
+
+        // ── Identifier / keyword / type / function ───────────────────
+        if (std::isalpha(static_cast<unsigned char>(ch)) || ch == '_') {
+            size_t j = i;
+            while (j < n && (std::isalnum(static_cast<unsigned char>(code[j])) ||
+                              code[j] == '_'))
+                ++j;
+            // Rust macros: name!
+            if (lang == LangId::Rust && j < n && code[j] == '!')
+                ++j;
+
+            std::string_view word{code.data() + i, j - i};
+            bool is_fn_call = (j < n && code[j] == '(');
+
+            size_t s = out.size();
+            out.append(code, i, j - i);
+
+            auto wc = classify_word(word, lang);
+            if (wc.constant)      emit(s, j - i, syntax::constant());
+            else if (wc.keyword)  emit(s, j - i, syntax::kw());
+            else if (wc.type)     emit(s, j - i, syntax::type());
+            else if (is_fn_call)  emit(s, j - i, syntax::fn());
+            else if (!word.empty() &&
+                     std::isupper(static_cast<unsigned char>(word[0])) &&
+                     word.size() > 1)
+                                  emit(s, j - i, syntax::type());
+            else                  emit(s, j - i, syntax::plain());
+
+            i = j;
+            continue;
+        }
+
+        // ── Multi-char operators: =>, ->, ::, |>, <-, ==, != etc. ───
+        if (is_op_char(ch)) {
+            size_t s = out.size();
+            size_t j = i;
+            // Consume runs of operator chars (max 3 for things like >>=)
+            while (j < n && is_op_char(code[j]) && (j - i) < 3) ++j;
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::op());
+            i = j;
+            continue;
+        }
+
+        // ── Punctuation ──────────────────────────────────────────────
+        if (is_punct_char(ch)) {
+            size_t s = out.size();
+            out += ch;
+            emit(s, 1, syntax::punct());
+            ++i;
+            continue;
+        }
+
+        // ── Anything else — plain ────────────────────────────────────
+        {
+            size_t s = out.size();
+            // Consume UTF-8 continuation bytes together
+            size_t j = i + 1;
+            if (static_cast<unsigned char>(ch) >= 0x80) {
+                while (j < n && (static_cast<unsigned char>(code[j]) & 0xC0) == 0x80) ++j;
+            }
+            out.append(code, i, j - i);
+            emit(s, j - i, syntax::plain());
+            i = j;
+        }
+    }
+
+    // ── Gutter pass: prepend a right-aligned line-number column to each
+    //    line. Height of the rendered block is unchanged — exactly one
+    //    line out per line in, so monotonicity is preserved (a code
+    //    fence that committed at K rows still commits at K rows).
+    //
+    //    Skip on small blocks (< 5 lines): the gutter is visual noise
+    //    on a 2-line snippet, where the line numbers are obvious from
+    //    position alone. The threshold matches what users intuitively
+    //    expect — a "code listing" rather than a "snippet".
+    {
+        auto count_lines = [](std::string_view s) -> int {
+            int n = 0;
+            for (char c : s) if (c == '\n') ++n;
+            if (!s.empty() && s.back() != '\n') ++n;
+            return n;
+        };
+        const int line_count = count_lines(out);
+        constexpr int kGutterMinLines = 5;
+        if (line_count >= kGutterMinLines) {
+            // Width of the line-number column. log10-style.
+            int w_digits = 1;
+            for (int v = line_count; v >= 10; v /= 10) ++w_digits;
+            constexpr std::string_view kSep =
+                " \xe2\x94\x82 ";  // " │ " (U+2502 = ~3 cells wide visually with pad)
+            const std::size_t kSepBytes = kSep.size();
+            const Style& gstyle = syntax::gutter();
+
+            // Pre-split runs at newline boundaries so no run spans
+            // a line break — block comments in C-style languages emit
+            // a single run for the whole comment, including embedded
+            // \n. Splitting up-front lets the line-shift remap below
+            // be a simple per-line offset add rather than a byte-by-
+            // byte run split-walk.
+            std::vector<StyledRun> runs_split;
+            runs_split.reserve(runs.size() * 2);
+            for (const auto& r : runs) {
+                std::size_t cur = r.byte_offset;
+                const std::size_t end = cur + r.byte_length;
+                while (cur < end) {
+                    std::size_t nl = out.find('\n', cur);
+                    std::size_t seg_end = (nl == std::string::npos || nl >= end)
+                                        ? end : nl;
+                    if (seg_end > cur) {
+                        runs_split.push_back({cur, seg_end - cur, r.style});
+                    }
+                    if (nl != std::string::npos && nl < end) {
+                        runs_split.push_back({nl, 1, r.style});
+                        cur = nl + 1;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Build line-start offset table for the original `out`.
+            std::vector<std::size_t> line_starts;
+            line_starts.reserve(static_cast<std::size_t>(line_count) + 1);
+            line_starts.push_back(0);
+            for (std::size_t k = 0; k < out.size(); ++k) {
+                if (out[k] == '\n') line_starts.push_back(k + 1);
+            }
+            // Sentinel for the binary-search remap below: any run
+            // offset is < out.size() < line_starts.back() + ε.
+
+            // Emit out2 with per-line gutter prefixes.
+            std::string out2;
+            out2.reserve(out.size() + line_starts.size()
+                         * (static_cast<std::size_t>(w_digits) + kSepBytes));
+            std::vector<StyledRun> runs2;
+            runs2.reserve(runs_split.size() + line_starts.size() * 2);
+
+            for (std::size_t i = 0; i < line_starts.size(); ++i) {
+                // Gutter for line i+1.
+                char buf[24];
+                int n = std::snprintf(buf, sizeof(buf), "%*zu",
+                                      w_digits, i + 1);
+                runs2.push_back({out2.size(), static_cast<std::size_t>(n), gstyle});
+                out2.append(buf, static_cast<std::size_t>(n));
+                runs2.push_back({out2.size(), kSepBytes, gstyle});
+                out2.append(kSep);
+
+                // Line content.
+                std::size_t s = line_starts[i];
+                std::size_t e = (i + 1 < line_starts.size())
+                              ? line_starts[i + 1]
+                              : out.size();
+                out2.append(out.data() + s, e - s);
+            }
+
+            // Remap each split run.
+            const std::size_t per_line_shift =
+                static_cast<std::size_t>(w_digits) + kSepBytes;
+            for (const auto& r : runs_split) {
+                // Find which line this run sits on. line_starts is
+                // sorted; r.byte_offset is in [line_starts[i],
+                // line_starts[i+1]) for the line index i.
+                auto it = std::upper_bound(
+                    line_starts.begin(), line_starts.end(), r.byte_offset);
+                std::size_t line_idx = static_cast<std::size_t>(
+                    (it - line_starts.begin())) - 1;
+                std::size_t shift = (line_idx + 1) * per_line_shift;
+                runs2.push_back({r.byte_offset + shift,
+                                 r.byte_length, r.style});
+            }
+
+            // Sort by offset for traversal-friendly downstream use.
+            std::sort(runs2.begin(), runs2.end(),
+                [](const StyledRun& a, const StyledRun& b) {
+                    return a.byte_offset < b.byte_offset;
+                });
+
+            out = std::move(out2);
+            runs = std::move(runs2);
+        }
+    }
+
+    return Element{TextElement{
+        .content = std::move(out),
+        .style = syntax::plain(),
+        // Code blocks must not soft-wrap: a long identifier or
+        // command line is one logical unit, and breaking it at a
+        // column boundary spills continuation bytes back to column
+        // 0 — directly under (or through) the line-number gutter.
+        // Visible symptom: the next line’s gutter digit lands
+        // *inside* the wrapped tail of the previous line. Hand the
+        // overflow to the parent box’s clip rect instead; the
+        // CodeBlock builder in render.cpp opts into
+        // Overflow::Hidden so the tail simply truncates at the
+        // right border.
+        .wrap = TextWrap::NoWrap,
+        .runs = std::move(runs),
+    }};
+}
+
+// ============================================================================
+// highlight_code — memoising wrapper
+// ============================================================================
+// The highlighter is pure: same `(lang_tag, code)` produces the same
+// Element every call. For long agent transcripts the same code block is
+// re-rendered tens or hundreds of times — once per inline frame — so a
+// content-keyed cache turns the recurring cost into a hash lookup.
+//
+// Cache is thread_local (renderer is single-threaded per app instance
+// in practice; this avoids contention if the host ever spawns a side
+// renderer). FIFO-evicts in halves when capacity is exceeded so we
+// never grow unbounded across long sessions. Keying combines a 64-bit
+// FNV-1a hash of `code` with a hash of `lang_tag`; the cached Element
+// is returned by copy, which for the typical TextElement case is a
+// string + runs vector — cheap relative to running the highlighter.
+static Element highlight_code(const std::string& code, const std::string& lang_tag) {
+    struct CacheEntry {
+        uint64_t key;
+        Element  elem;
+    };
+    static constexpr std::size_t kMaxEntries = 256;
+    thread_local std::vector<CacheEntry> cache;
+
+    auto fnv1a = [](std::string_view sv, uint64_t seed) noexcept -> uint64_t {
+        uint64_t h = seed;
+        for (unsigned char c : sv) {
+            h ^= c;
+            h *= 1099511628211ULL;
+        }
+        return h;
+    };
+    const uint64_t key = fnv1a(code, fnv1a(lang_tag, 14695981039346656037ULL));
+
+    for (auto& e : cache) {
+        if (e.key == key) return e.elem;
+    }
+
+    Element elem = highlight_code_impl(code, lang_tag);
+
+    if (cache.size() >= kMaxEntries) {
+        cache.erase(cache.begin(), cache.begin() + kMaxEntries / 2);
+    }
+    cache.push_back({key, elem});
+    return elem;
+}
+
+// ── Cross-TU bridge ──────────────────────────────────────────────────
+namespace md_detail {
+Element highlight_code(const std::string& code, const std::string& lang_tag) {
+    return ::maya::highlight_code(code, lang_tag);
+}
+} // namespace md_detail
+
+} // namespace maya

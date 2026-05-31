@@ -502,6 +502,12 @@ private:
     // (or as plain text inside an open code fence).  See class header.
     [[nodiscard]] Element render_tail(std::string_view tail) const;
 
+    // Live-mode finalize: returns cached_build_ when not live or reveal_fx
+    // is off; otherwise builds cached_live_ (the animated scramble/gradient/
+    // caret overlay over cached_build_'s tail) and requests an animation
+    // frame. Defined in reveal_fx.cpp. build() calls this at every return.
+    [[nodiscard]] const Element& render_live_overlay_() const;
+
     // Internal append — assumes bytes are already codepoint-clean.  Public
     // entry points (feed / append / set_content) route through StreamSink.
     void append_safe(std::string_view safe_bytes);

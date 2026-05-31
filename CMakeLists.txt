@@ -99,13 +99,14 @@ add_library(maya
     src/render/inline_frame.cpp
     src/render/canvas_witness.cpp
     src/widget/markdown.cpp
-    src/widget/markdown/parser.cpp
-    src/widget/markdown/text_transform.cpp
-    src/widget/markdown/tables.cpp
-    src/widget/markdown/html_tag.cpp
-    src/widget/markdown/syntax.cpp
-    src/widget/markdown/render.cpp
-    src/widget/markdown/streaming.cpp
+    # markdown widget — three modules: parser / render / streaming
+    src/widget/markdown/parser/parser.cpp
+    src/widget/markdown/parser/text_transform.cpp
+    src/widget/markdown/parser/tables.cpp
+    src/widget/markdown/parser/html_tag.cpp
+    src/widget/markdown/render/render.cpp
+    src/widget/markdown/render/syntax.cpp
+    src/widget/markdown/streaming/streaming.cpp
 )
 target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

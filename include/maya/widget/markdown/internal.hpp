@@ -136,6 +136,27 @@ void post_process_text_nodes(std::vector<md::Inline>& nodes);
 [[nodiscard]] std::vector<std::string_view> split_table_cells(std::string_view line);
 [[nodiscard]] std::vector<md::TableAlign> parse_table_alignments(std::string_view line);
 
+// ── html_tag.cpp ────────────────────────────────────────────────────────────
+// One-tag HTML scanner shared by the inline parser (allow-listed inline tags)
+// and the block parser (<details>, §4.6 HTML blocks). try_parse_html_tag
+// recognizes a single <name …> / </name> / <name/> at `start`, lowercasing
+// the name and capturing title/id/href; an unmatched result means "not a
+// tag" so callers fall back to literal text. find_html_closer locates the
+// matching </name> for a paired tag.
+struct HtmlTagInfo {
+    bool        matched      = false;
+    bool        is_closer    = false;
+    bool        self_closing = false;
+    std::string name;                   // lowercased, no <, /, >, or attrs
+    std::string attr_title;             // for <abbr title="...">
+    std::string attr_id;                // for <a id="...">
+    std::string attr_href;              // for <a href="...">
+    std::size_t end          = 0;       // one past the closing '>'
+};
+[[nodiscard]] HtmlTagInfo try_parse_html_tag(std::string_view text, std::size_t start);
+[[nodiscard]] std::size_t find_html_closer(std::string_view text, std::size_t start,
+                                           std::string_view tag, std::size_t max_dist = 4000);
+
 // ── parser.cpp ─────────────────────────────────────────────────────────────
 [[nodiscard]] std::vector<md::Inline> parse_inlines(std::string_view text);
 [[nodiscard]] md::Document             parse_markdown_impl(std::string_view source, int depth);

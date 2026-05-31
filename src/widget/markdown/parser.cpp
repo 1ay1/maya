@@ -264,105 +264,12 @@ static const md::LinkRef* parse_link_ref(std::string_view text, size_t& pos,
     return ref;
 }
 
-// ── HTML tag parser helpers ───────────────────────────────────────────────
-// We recognise a small, explicitly allow-listed subset of HTML tags and pass
-// everything else through as literal text.  Two forms:
-//   - void tags: <br> / <br/>  — no closer, emit a HardBreak
-//   - paired tags: <kbd>..</kbd>, <mark>, <sub>, <sup>, <strong>, <em>,
-//                  <span>, <abbr title="…">, <a id="…">
-// Parser matches case-insensitively and allows attributes only for <abbr>
-// and <a> (title and id respectively).  Unknown tags fall through so the raw
-// text remains visible to the user.
-
-struct HtmlTagInfo {
-    bool        matched      = false;
-    bool        is_closer    = false;
-    bool        self_closing = false;
-    std::string name;                   // lowercased, no <, /, >, or attrs
-    std::string attr_title;             // for <abbr title="...">
-    std::string attr_id;                // for <a id="...">
-    std::string attr_href;              // for <a href="...">
-    size_t      end          = 0;       // one past the closing '>'
-};
-
-static HtmlTagInfo try_parse_html_tag(std::string_view text, size_t start) {
-    HtmlTagInfo info;
-    if (start >= text.size() || text[start] != '<') return info;
-    size_t i = start + 1;
-    bool closer = false;
-    if (i < text.size() && text[i] == '/') { closer = true; ++i; }
-    if (i >= text.size()) return info;
-    char first = text[i];
-    if (!(std::isalpha(static_cast<unsigned char>(first)))) return info;
-
-    size_t name_start = i;
-    while (i < text.size() &&
-           (std::isalnum(static_cast<unsigned char>(text[i])) || text[i] == '-')) {
-        ++i;
-    }
-    auto tag_name = ascii_lower(text.substr(name_start, i - name_start));
-
-    // Parse attributes: `name="value"` pairs, cheap whitespace-delimited.
-    while (i < text.size() && text[i] != '>' && text[i] != '/') {
-        while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
-        if (i < text.size() && (text[i] == '>' || text[i] == '/')) break;
-        if (i >= text.size()) return info;
-        size_t an_start = i;
-        while (i < text.size() && (std::isalnum(static_cast<unsigned char>(text[i])) ||
-                                   text[i] == '-' || text[i] == '_')) ++i;
-        if (i == an_start) return info;                      // malformed
-        auto attr_name = ascii_lower(text.substr(an_start, i - an_start));
-        std::string attr_val;
-        if (i < text.size() && text[i] == '=') {
-            ++i;
-            if (i < text.size() && (text[i] == '"' || text[i] == '\'')) {
-                char q = text[i++];
-                size_t limit = std::min(text.size(), i + 500);
-                while (i < limit && text[i] != q) {
-                    if (text[i] == '\\' && i + 1 < text.size()) {
-                        attr_val += text[i + 1]; i += 2; continue;
-                    }
-                    attr_val += text[i++];
-                }
-                if (i < text.size() && text[i] == q) ++i;
-            } else {
-                while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i])) &&
-                       text[i] != '>' && text[i] != '/') {
-                    attr_val += text[i++];
-                }
-            }
-        }
-        if (attr_name == "title") info.attr_title = std::move(attr_val);
-        else if (attr_name == "id") info.attr_id = std::move(attr_val);
-        else if (attr_name == "href") info.attr_href = std::move(attr_val);
-    }
-    bool self_closing = false;
-    if (i < text.size() && text[i] == '/') { self_closing = true; ++i; }
-    while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
-    if (i >= text.size() || text[i] != '>') return info;
-
-    info.matched      = true;
-    info.is_closer    = closer;
-    info.self_closing = self_closing;
-    info.name         = std::move(tag_name);
-    info.end          = i + 1;
-    return info;
-}
-
-// Find the matching closer `</tag>` for a paired HTML tag.  Bounded scan.
-static size_t find_html_closer(std::string_view text, size_t start,
-                               std::string_view tag, size_t max_dist = 4000) {
-    size_t limit = std::min(text.size(), start + max_dist);
-    size_t i = start;
-    while (i < limit) {
-        if (text[i] == '<' && i + 1 < text.size() && text[i + 1] == '/') {
-            auto info = try_parse_html_tag(text, i);
-            if (info.matched && info.is_closer && info.name == tag) return i;
-        }
-        ++i;
-    }
-    return std::string_view::npos;
-}
+// ── HTML tag scanner (shared inline + block) ──────────────────────────────
+// HtmlTagInfo / try_parse_html_tag / find_html_closer live in html_tag.cpp
+// (declared in internal.hpp). Pull them into this TU's lookup.
+using ::maya::md_detail::HtmlTagInfo;
+using ::maya::md_detail::try_parse_html_tag;
+using ::maya::md_detail::find_html_closer;
 
 // ── Text-node post-pass (entities/emoji/URLs/mentions) ────────────────────
 // Extracted to text_transform.cpp; declared in internal.hpp as

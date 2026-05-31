@@ -996,4 +996,44 @@ Element md_block_to_element(const md::Block& block) {
     }, block.inner);
 }
 
+// ── themable palette ────────────────────────────────────────────────────────
+MarkdownPalette default_markdown_palette() {
+    return MarkdownPalette{
+        colors::text, colors::heading1, colors::heading2, colors::heading3,
+        colors::heading_dim, colors::heading_rule,
+        colors::bold_fg, colors::italic_fg, colors::code_fg, colors::code_bg,
+        colors::link_fg, colors::image_fg, colors::strike_fg,
+        colors::quote_bar, colors::quote_text, colors::list_bullet,
+        colors::list_num, colors::checkbox_fg, colors::checkbox_off,
+        colors::code_border, colors::code_lang, colors::hrule_fg,
+        colors::footnote_fg, colors::table_border, colors::table_header,
+        colors::highlight_bg, colors::highlight_fg, colors::mention_fg,
+        colors::kbd_fg, colors::kbd_border,
+        colors::alert_note, colors::alert_tip, colors::alert_important,
+        colors::alert_warning, colors::alert_caution,
+    };
+}
+
+void set_markdown_palette(const MarkdownPalette& p) {
+    colors::text = p.text;                 colors::heading1 = p.heading1;
+    colors::heading2 = p.heading2;         colors::heading3 = p.heading3;
+    colors::heading_dim = p.heading_dim;   colors::heading_rule = p.heading_rule;
+    colors::bold_fg = p.bold_fg;           colors::italic_fg = p.italic_fg;
+    colors::code_fg = p.code_fg;           colors::code_bg = p.code_bg;
+    colors::link_fg = p.link_fg;           colors::image_fg = p.image_fg;
+    colors::strike_fg = p.strike_fg;       colors::quote_bar = p.quote_bar;
+    colors::quote_text = p.quote_text;     colors::list_bullet = p.list_bullet;
+    colors::list_num = p.list_num;         colors::checkbox_fg = p.checkbox_fg;
+    colors::checkbox_off = p.checkbox_off; colors::code_border = p.code_border;
+    colors::code_lang = p.code_lang;       colors::hrule_fg = p.hrule_fg;
+    colors::footnote_fg = p.footnote_fg;   colors::table_border = p.table_border;
+    colors::table_header = p.table_header; colors::highlight_bg = p.highlight_bg;
+    colors::highlight_fg = p.highlight_fg; colors::mention_fg = p.mention_fg;
+    colors::kbd_fg = p.kbd_fg;             colors::kbd_border = p.kbd_border;
+    colors::alert_note = p.alert_note;     colors::alert_tip = p.alert_tip;
+    colors::alert_important = p.alert_important;
+    colors::alert_warning = p.alert_warning;
+    colors::alert_caution = p.alert_caution;
+}
+
 } // namespace maya

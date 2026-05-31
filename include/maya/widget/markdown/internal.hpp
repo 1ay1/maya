@@ -78,45 +78,48 @@ namespace colors {
     //      so **bold** and `code` actually POP. Previously body was
     //      ANSI 7 and bold was ANSI 15 — on many themes these render
     //      indistinguishably and emphasis silently disappeared.
-    inline constexpr auto text         = Color::default_color();
-    inline constexpr auto heading1     = Color::bright_cyan();
-    inline constexpr auto heading2     = Color::cyan();
-    inline constexpr auto heading3     = Color::bright_blue();
-    inline constexpr auto heading_dim  = Color::blue();
-    inline constexpr auto heading_rule = Color::bright_black();
-    inline constexpr auto bold_fg      = Color::bright_white();
+    // Mutable so the markdown renderer is themable: set_markdown_palette()
+    // (markdown.hpp) overwrites these once at startup; the render path reads
+    // them live. Defaults below preserve the original look.
+    inline Color text         = Color::default_color();
+    inline Color heading1     = Color::bright_cyan();
+    inline Color heading2     = Color::cyan();
+    inline Color heading3     = Color::bright_blue();
+    inline Color heading_dim  = Color::blue();
+    inline Color heading_rule = Color::bright_black();
+    inline Color bold_fg      = Color::bright_white();
     // Italics shift to the muted gray slot so they read as soft
     // commentary against the default-fg body, instead of looking
     // identical to plain prose with a (terminal-dependent, often
     // invisible) italic flag.
-    inline constexpr auto italic_fg    = Color::bright_black();
-    inline constexpr auto code_fg      = Color::bright_cyan();
-    inline constexpr auto code_bg      = Color::black();
-    inline constexpr auto link_fg      = Color::bright_blue();
-    inline constexpr auto image_fg     = Color::bright_magenta();
-    inline constexpr auto strike_fg    = Color::bright_black();
-    inline constexpr auto quote_bar    = Color::bright_yellow();
-    inline constexpr auto quote_text   = Color::default_color();
-    inline constexpr auto list_bullet  = Color::bright_blue();
-    inline constexpr auto list_num     = Color::bright_blue();
-    inline constexpr auto checkbox_fg  = Color::bright_green();
-    inline constexpr auto checkbox_off = Color::bright_black();
-    inline constexpr auto code_border  = Color::bright_black();
-    inline constexpr auto code_lang    = Color::bright_black();
-    inline constexpr auto hrule_fg     = Color::bright_black();
-    inline constexpr auto footnote_fg  = Color::bright_black();
-    inline constexpr auto table_border = Color::bright_black();
-    inline constexpr auto table_header = Color::bright_cyan();
-    inline constexpr auto highlight_bg = Color::yellow();
-    inline constexpr auto highlight_fg = Color::black();
-    inline constexpr auto mention_fg   = Color::bright_cyan();
-    inline constexpr auto kbd_fg       = Color::bright_white();
-    inline constexpr auto kbd_border   = Color::bright_black();
-    inline constexpr auto alert_note      = Color::bright_blue();
-    inline constexpr auto alert_tip       = Color::bright_green();
-    inline constexpr auto alert_important = Color::bright_magenta();
-    inline constexpr auto alert_warning   = Color::bright_yellow();
-    inline constexpr auto alert_caution   = Color::bright_red();
+    inline Color italic_fg    = Color::bright_black();
+    inline Color code_fg      = Color::bright_cyan();
+    inline Color code_bg      = Color::black();
+    inline Color link_fg      = Color::bright_blue();
+    inline Color image_fg     = Color::bright_magenta();
+    inline Color strike_fg    = Color::bright_black();
+    inline Color quote_bar    = Color::bright_yellow();
+    inline Color quote_text   = Color::default_color();
+    inline Color list_bullet  = Color::bright_blue();
+    inline Color list_num     = Color::bright_blue();
+    inline Color checkbox_fg  = Color::bright_green();
+    inline Color checkbox_off = Color::bright_black();
+    inline Color code_border  = Color::bright_black();
+    inline Color code_lang    = Color::bright_black();
+    inline Color hrule_fg     = Color::bright_black();
+    inline Color footnote_fg  = Color::bright_black();
+    inline Color table_border = Color::bright_black();
+    inline Color table_header = Color::bright_cyan();
+    inline Color highlight_bg = Color::yellow();
+    inline Color highlight_fg = Color::black();
+    inline Color mention_fg   = Color::bright_cyan();
+    inline Color kbd_fg       = Color::bright_white();
+    inline Color kbd_border   = Color::bright_black();
+    inline Color alert_note      = Color::bright_blue();
+    inline Color alert_tip       = Color::bright_green();
+    inline Color alert_important = Color::bright_magenta();
+    inline Color alert_warning   = Color::bright_yellow();
+    inline Color alert_caution   = Color::bright_red();
 }
 
 namespace md_detail {

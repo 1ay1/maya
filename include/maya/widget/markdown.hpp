@@ -54,6 +54,30 @@ namespace maya {
 /// Parse markdown and return an Element tree.
 [[nodiscard]] Element markdown(std::string_view source);
 
+// ── Themable palette ────────────────────────────────────────────────────────
+// Every colour slot the markdown renderer uses. Defaults match the built-in
+// look; set once at startup to make markdown cohere with your app's theme:
+//
+//   auto p = maya::default_markdown_palette();
+//   p.code_fg = my_code_color;  p.link_fg = my_link_color;
+//   maya::set_markdown_palette(p);
+//
+// Single-threaded: call before the UI loop starts. The renderer reads the
+// active palette live (no per-call argument threading).
+struct MarkdownPalette {
+    Color text, heading1, heading2, heading3, heading_dim, heading_rule;
+    Color bold_fg, italic_fg, code_fg, code_bg, link_fg, image_fg, strike_fg;
+    Color quote_bar, quote_text, list_bullet, list_num, checkbox_fg, checkbox_off;
+    Color code_border, code_lang, hrule_fg, footnote_fg, table_border, table_header;
+    Color highlight_bg, highlight_fg, mention_fg, kbd_fg, kbd_border;
+    Color alert_note, alert_tip, alert_important, alert_warning, alert_caution;
+};
+
+/// The renderer's current palette (defaults at startup).
+[[nodiscard]] MarkdownPalette default_markdown_palette();
+/// Overwrite the active markdown palette.
+void set_markdown_palette(const MarkdownPalette& p);
+
 // ============================================================================
 // StreamingMarkdown — Progressive monotonic rendering for streaming text
 // ============================================================================

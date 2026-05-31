@@ -100,6 +100,7 @@ add_library(maya
     src/render/canvas_witness.cpp
     src/widget/markdown.cpp
     src/widget/markdown/parser.cpp
+    src/widget/markdown/text_transform.cpp
     src/widget/markdown/syntax.cpp
     src/widget/markdown/render.cpp
     src/widget/markdown/streaming.cpp

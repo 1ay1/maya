@@ -121,6 +121,13 @@ namespace colors {
 
 namespace md_detail {
 
+// ── text_transform.cpp ─────────────────────────────────────────────────────
+// Text-node post-pass: decode HTML entities, expand :emoji:, linkify bare
+// URLs, and recognize @user / #N / org/repo#N mentions. Mutates `nodes` in
+// place, recursing into emphasis children. parser.cpp's parse_inlines()
+// wrapper calls this once over the whole tree.
+void post_process_text_nodes(std::vector<md::Inline>& nodes);
+
 // ── parser.cpp ─────────────────────────────────────────────────────────────
 [[nodiscard]] std::vector<md::Inline> parse_inlines(std::string_view text);
 [[nodiscard]] md::Document             parse_markdown_impl(std::string_view source, int depth);

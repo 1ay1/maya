@@ -636,6 +636,7 @@ private:
                     break;
                 }
                 Line probe = line;
+                int entry_col = line.col;  // cursor col after parent prefixes
                 int marker_col = probe.col + probe.indent();
                 probe.consume_spaces(3);
                 std::size_t before = probe.pos;
@@ -657,14 +658,17 @@ private:
                     }
 
                     if (!reject) {
-                        // Content column = where the item body starts,
-                        // measured in absolute columns from the line start
-                        // (matches_continuation compares line.indent()).
+                        // Content indent is RELATIVE to the cursor at entry
+                        // (parent container prefixes already consumed), so
+                        // matches_continuation — which measures line.indent()
+                        // from the same cursor after re-consuming parent
+                        // prefixes — lines up for nested items.
+                        int marker_width = after_marker_col - entry_col;
                         int content_indent;
                         if (blank_item || spaces == 0 || spaces > 4) {
-                            content_indent = after_marker_col + 1;
+                            content_indent = marker_width + 1;
                         } else {
-                            content_indent = after_marker_col + spaces;
+                            content_indent = marker_width + spaces;
                         }
 
                         CMBlock* list = nullptr;

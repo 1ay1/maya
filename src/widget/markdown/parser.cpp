@@ -15,6 +15,7 @@
 #include <array>
 #include <cctype>
 #include <cstring>
+#include <list>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -61,6 +62,7 @@ namespace {
 // ── Compile-time lookup tables ──────────────────────────────────────────────
 // Membership lives in one place — markdown/spec_chars.hpp — shared with
 // the syntax highlighter and proven via static_assert there.
+namespace chars = md_detail::chars;
 using md_detail::chars::kEscapable;
 using md_detail::chars::kInlineSpecial;
 
@@ -734,15 +736,28 @@ static std::vector<md::Inline> split_text_transform(std::string_view text) {
     return out;
 }
 
-// Apply split_text_transform to every Text node in `nodes`.  Non-Text nodes
-// pass through unchanged (their children have already been transformed by
-// parse_inlines recursion).  Adjacent Text runs are coalesced.
+// Apply split_text_transform to every Text node in `nodes`, recursing into
+// the children of container inlines (Bold/Italic/…). The delimiter-stack
+// inline parser builds emphasis children directly into the node list rather
+// than via a recursive parse_inlines call, so the entity / emoji / bare-URL /
+// mention post-pass must descend into them here. Adjacent Text runs coalesce.
 static void post_process_text_nodes(std::vector<md::Inline>& nodes) {
+    // Recurse into the child vector of any container inline. Leaf inlines
+    // (Code/Link/Image/Mention/FootnoteRef/HardBreak) carry no markdown-
+    // transformable Text children, so they pass through untouched.
+    auto recurse_children = [](md::Inline& span) {
+        std::visit([](auto& n) {
+            if constexpr (requires { n.children; }) {
+                post_process_text_nodes(n.children);
+            }
+        }, span.inner);
+    };
+
     std::vector<md::Inline> out;
     out.reserve(nodes.size());
     for (auto& span : nodes) {
         auto* t = std::get_if<md::Text>(&span.inner);
-        if (!t) { out.push_back(std::move(span)); continue; }
+        if (!t) { recurse_children(span); out.push_back(std::move(span)); continue; }
         if (t->content.empty()) continue;
         // Skip expensive transform if no trigger chars present.
         bool has_trigger = false;
@@ -768,58 +783,165 @@ static void post_process_text_nodes(std::vector<md::Inline>& nodes) {
     nodes = std::move(out);
 }
 
-// ── Underscore intraword-flanking gates (CommonMark) ──────────────────────
-// `_` delimiters cannot open or close emphasis inside a word: `foo_bar_baz`
-// must NOT emphasize. `*` has no such restriction. These helpers are called
-// from the hot per-byte inner loop in `parse_inlines` (also from streaming
-// render_tail every frame against the live line), so they live as free
-// inline functions — stamping them as lambdas inside the loop body cost a
-// measurable hit on long replies. Pure functions of (text, position); no
-// state, no allocation.
-[[nodiscard]] static inline bool is_word_byte(char c) noexcept {
+// ============================================================================
+// Emphasis: CommonMark delimiter-stack algorithm
+// ============================================================================
+// The inline scanner emits a flat token stream; runs of `*` / `_` are
+// recorded as delimiter runs with left/right-flanking flags. A second pass
+// (emph::process) pairs openers with closers honoring the rule-of-three,
+// wrapping the spanned tokens into Bold / Italic. This is the reference cmark
+// algorithm, replacing the old greedy find_closing heuristic.
+namespace emph {
+
+// Byte-level character class for flanking. At byte granularity: ASCII
+// whitespace → Ws, ASCII punctuation → Punct, everything else (ASCII alnum
+// + all UTF-8 bytes) → Other (letter-like).
+enum class CClass : std::uint8_t { Ws, Punct, Other };
+
+[[nodiscard]] inline CClass classify(char c) noexcept {
+    if (chars::is_ascii_ws(c)) return CClass::Ws;
     unsigned char uc = static_cast<unsigned char>(c);
-    return std::isalnum(uc) || uc == '_';
-}
-[[nodiscard]] static inline bool underscore_open_ok(std::string_view text,
-                                                    size_t open_at) noexcept {
-    // `*` always allowed; `_` only at a word boundary on the left.
-    if (text[open_at] != '_') return true;
-    if (open_at == 0) return true;
-    return !is_word_byte(text[open_at - 1]);
-}
-[[nodiscard]] static inline bool underscore_close_ok(std::string_view text,
-                                                     char delim_ch,
-                                                     size_t after_close) noexcept {
-    // For a `_` run the byte just past the closing delimiter must not be
-    // word-class. `*` always allowed.
-    if (delim_ch != '_') return true;
-    if (after_close >= text.size()) return true;
-    return !is_word_byte(text[after_close]);
+    if (uc < 0x80 && chars::is_ascii_punct(c)) return CClass::Punct;
+    return CClass::Other;
 }
 
-std::vector<md::Inline> parse_inlines(std::string_view text) {
-    std::vector<md::Inline> result;
+struct Flank { bool left; bool right; };
+
+// Flanking + intraword `_` rules, CommonMark §6.2.
+[[nodiscard]] inline Flank flanking(char delim, CClass before, CClass after) noexcept {
+    const bool left_flank =
+        after != CClass::Ws &&
+        (after != CClass::Punct || before == CClass::Ws || before == CClass::Punct);
+    const bool right_flank =
+        before != CClass::Ws &&
+        (before != CClass::Punct || after == CClass::Ws || after == CClass::Punct);
+    Flank f{};
+    if (delim == '_') {
+        f.left  = left_flank  && (!right_flank || before == CClass::Punct);
+        f.right = right_flank && (!left_flank  || after  == CClass::Punct);
+    } else {
+        f.left  = left_flank;
+        f.right = right_flank;
+    }
+    return f;
+}
+
+// A token in the inline stream: a finished node, or an unresolved `*`/`_`
+// delimiter run.
+struct Tok {
+    md::Inline node{md::Text{std::string{}}};
+    bool  is_delim  = false;
+    char  ch        = 0;
+    int   count     = 0;   // remaining (unconsumed) delimiters
+    int   orig      = 0;   // original run length — rule-of-3 reads this
+    bool  can_open  = false;
+    bool  can_close = false;
+};
+
+// Pair openers with closers, wrapping spanned tokens. Doubly-linked list so
+// insert/erase keep neighbor iterators valid.
+inline void process(std::list<Tok>& toks) {
+    using It = std::list<Tok>::iterator;
+    for (It closer = toks.begin(); closer != toks.end(); ++closer) {
+        if (!closer->is_delim || !closer->can_close || closer->count == 0)
+            continue;
+
+        It opener = toks.end();
+        if (closer != toks.begin()) {
+            It j = closer;
+            while (j != toks.begin()) {
+                --j;
+                if (!j->is_delim || j->ch != closer->ch) continue;
+                if (!j->can_open || j->count == 0) continue;
+                // Rule of three: forbid a pair whose summed ORIGINAL lengths
+                // is a multiple of 3 when either run is both-sided, unless
+                // both lengths are themselves multiples of 3.
+                const bool either_both = closer->can_open || j->can_close;
+                if (either_both &&
+                    (j->orig + closer->orig) % 3 == 0 &&
+                    !(j->orig % 3 == 0 && closer->orig % 3 == 0)) {
+                    continue;
+                }
+                opener = j;
+                break;
+            }
+        }
+        if (opener == toks.end()) continue;
+
+        const int use = (opener->count >= 2 && closer->count >= 2) ? 2 : 1;
+
+        std::vector<md::Inline> children;
+        for (It k = std::next(opener); k != closer; ) {
+            if (k->is_delim) {
+                if (k->count > 0)
+                    children.push_back(md::Text{
+                        std::string(static_cast<size_t>(k->count), k->ch)});
+                k = toks.erase(k);
+            } else {
+                children.push_back(std::move(k->node));
+                k = toks.erase(k);
+            }
+        }
+
+        Tok wrapped;
+        wrapped.node = (use == 2)
+            ? md::Inline{md::Bold{std::move(children)}}
+            : md::Inline{md::Italic{std::move(children)}};
+        toks.insert(closer, std::move(wrapped));
+
+        opener->count -= use;
+        closer->count -= use;
+
+        // Closer may still carry delimiters (e.g. `***a** b*`): revisit it.
+        if (closer->count > 0) --closer;
+    }
+}
+
+} // namespace emph
+
+// Core inline parser. Emits a token stream (finished nodes + unresolved
+// emphasis delimiter runs), resolves emphasis via the CommonMark
+// delimiter-stack algorithm, then flattens to a node vector. Does NOT run
+// the Text post-pass — the public parse_inlines wrapper does that once,
+// recursing into emphasis children.
+static std::vector<md::Inline> parse_inlines_impl(std::string_view text) {
+    std::list<emph::Tok> toks;
     size_t i = 0;
+
+    // Token-pushing helpers — coalesce adjacent literal text into the last
+    // non-delimiter token, mirroring the old push_text/push_char behavior.
+    auto push_node = [&](md::Inline n) {
+        toks.push_back(emph::Tok{std::move(n)});
+    };
+    auto push_text = [&](std::string_view sv) {
+        if (sv.empty()) return;
+        if (!toks.empty() && !toks.back().is_delim) {
+            if (auto* t = std::get_if<md::Text>(&toks.back().node.inner)) {
+                t->content.append(sv);
+                return;
+            }
+        }
+        push_node(md::Text{std::string{sv}});
+    };
+    auto push_char = [&](char c) { push_text(std::string_view{&c, 1}); };
 
     while (i < text.size()) {
         // Backslash escape
         if (text[i] == '\\') {
             if (i + 1 < text.size() && is_escapable(text[i + 1])) {
-                push_char(result, text[i + 1]);
+                push_char(text[i + 1]);
                 i += 2;
                 continue;
             }
             // Hard line break: backslash before newline
             if (i + 1 < text.size() && text[i + 1] == '\n') {
-                result.push_back(md::HardBreak{});
+                push_node(md::HardBreak{});
                 i += 2;
                 continue;
             }
             // Trailing or unrecognized backslash — emit as a literal so we
-            // always advance.  Without this, `\` appears in kInlineSpecial
-            // but never gets consumed, causing the outer loop to spin
-            // forever (e.g. input ending in "\\" or "\\<space>").
-            push_text(result, text.substr(i, 1));
+            // always advance.
+            push_text(text.substr(i, 1));
             ++i;
             continue;
         }
@@ -830,7 +952,7 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             size_t j = i;
             while (j < text.size() && text[j] == ' ') { ++spaces; ++j; }
             if (spaces >= 2 && j < text.size() && text[j] == '\n') {
-                result.push_back(md::HardBreak{});
+                push_node(md::HardBreak{});
                 i = j + 1;
                 continue;
             }
@@ -838,158 +960,99 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
 
         // Inline code: `code` or ``code``
         if (text[i] == '`') {
-            // Count opening backticks
             size_t ticks = 0;
             size_t j = i;
             while (j < text.size() && text[j] == '`') { ++ticks; ++j; }
-            // Find matching closing backticks
             auto closing = std::string(ticks, '`');
             size_t end = text.find(std::string_view{closing}, j);
             if (end != std::string_view::npos) {
                 auto code = text.substr(j, end - j);
-                // Strip one leading/trailing space if both present (CommonMark)
                 if (code.size() >= 2 && code.front() == ' ' && code.back() == ' ') {
                     code.remove_prefix(1);
                     code.remove_suffix(1);
                 }
-                result.push_back(md::Code{std::string{code}});
+                push_node(md::Code{std::string{code}});
                 i = end + ticks;
                 continue;
             }
-            // No closing — emit as text
-            push_text(result, text.substr(i, ticks));
+            push_text(text.substr(i, ticks));
             i = j;
             continue;
         }
 
-        // Math: $$...$$ (display) or $...$ (inline) — render as code to
-        // prevent delimiters inside math from being parsed as emphasis.
+        // Math: $$...$$ (display) or $...$ (inline) — render as code.
         if (text[i] == '$') {
-            // Display math $$...$$
             if (i + 1 < text.size() && text[i + 1] == '$') {
                 size_t end = text.find("$$", i + 2);
                 if (end != std::string_view::npos) {
                     auto content = text.substr(i + 2, end - i - 2);
-                    result.push_back(md::Code{std::string{content}});
+                    push_node(md::Code{std::string{content}});
                     i = end + 2;
                     continue;
                 }
             }
-            // Inline math $...$  — require non-space flanking to avoid
-            // matching currency like "$5 and $10".
             if (i + 1 < text.size() && text[i + 1] != ' ' && text[i + 1] != '$') {
                 size_t end = text.find('$', i + 1);
                 if (end != std::string_view::npos && end > i + 1 &&
                     text[end - 1] != ' ') {
                     auto content = text.substr(i + 1, end - i - 1);
-                    result.push_back(md::Code{std::string{content}});
+                    push_node(md::Code{std::string{content}});
                     i = end + 1;
                     continue;
                 }
             }
-            push_text(result, "$");
+            push_text("$");
             ++i;
             continue;
         }
 
-        // Bold+italic: ***text*** or ___text___
-        // CommonMark: '_' delimiters do not open/close inside a word —
-        // `foo_bar_baz` must NOT emphasize. `*` has no such restriction.
-        // The underscore-flanking gates live as free functions just
-        // above this function (see `underscore_open_ok` /
-        // `underscore_close_ok`) so the lambda-construction cost
-        // doesn't land on every iteration of this hot loop — the
-        // render_tail path re-parses the live line on every frame
-        // and lambda churn was visible as a measurable per-keystroke
-        // slowdown on long streaming replies.
-
-        if (i + 2 < text.size() &&
-            ((text[i] == '*' && text[i+1] == '*' && text[i+2] == '*') ||
-             (text[i] == '_' && text[i+1] == '_' && text[i+2] == '_'))) {
-            auto delim = text.substr(i, 3);
-            char dc = text[i];
-            if (underscore_open_ok(text, i)) {
-                size_t end = find_closing(text, delim, i + 3);
-                if (end != std::string_view::npos &&
-                    underscore_close_ok(text, dc, end + 3)) {
-                    auto inner = text.substr(i + 3, end - i - 3);
-                    result.push_back(md::BoldItalic{parse_inlines(inner)});
-                    i = end + 3;
-                    continue;
-                }
-            }
-        }
-
-        // Bold: **text** or __text__
-        if (i + 1 < text.size() &&
-            ((text[i] == '*' && text[i + 1] == '*') ||
-             (text[i] == '_' && text[i + 1] == '_'))) {
-            auto delim = text.substr(i, 2);
-            char dc = text[i];
-            if (underscore_open_ok(text, i)) {
-                size_t end = find_closing(text, delim, i + 2);
-                if (end != std::string_view::npos &&
-                    underscore_close_ok(text, dc, end + 2)) {
-                    auto inner = text.substr(i + 2, end - i - 2);
-                    result.push_back(md::Bold{parse_inlines(inner)});
-                    i = end + 2;
-                    continue;
-                }
-            }
-        }
-
-        // Strikethrough: ~~text~~
+        // Strikethrough: ~~text~~  (GFM extension — greedy match)
         if (i + 1 < text.size() && text[i] == '~' && text[i + 1] == '~') {
             size_t end = find_closing(text, "~~", i + 2);
             if (end != std::string_view::npos) {
                 auto inner = text.substr(i + 2, end - i - 2);
-                result.push_back(md::Strike{parse_inlines(inner)});
+                push_node(md::Strike{parse_inlines_impl(inner)});
                 i = end + 2;
                 continue;
             }
-            push_text(result, "~~");
+            push_text("~~");
             i += 2;
             continue;
         }
 
-        // Subscript: ~text~ (single ~) — must come after strike (~~) check.
-        // Bounded scan; require non-space flanking to avoid matching prose
-        // like "before~after" in URLs (already handled earlier in autolinks).
+        // Subscript: ~text~ (single ~) — after strike (~~) check.
         if (text[i] == '~') {
             if (i + 1 < text.size() && text[i + 1] != '~' && text[i + 1] != ' ') {
                 size_t scan_limit = std::min(text.size(), i + 1 + 200);
                 size_t end = std::string_view::npos;
                 for (size_t s = i + 1; s < scan_limit; ++s) {
                     if (text[s] == '~') { end = s; break; }
-                    // Subscripts don't span spaces or newlines.
                     if (text[s] == ' ' || text[s] == '\n') break;
                 }
                 if (end != std::string_view::npos && text[end - 1] != ' ') {
                     auto inner = text.substr(i + 1, end - i - 1);
-                    result.push_back(md::Sub{parse_inlines(inner)});
+                    push_node(md::Sub{parse_inlines_impl(inner)});
                     i = end + 1;
                     continue;
                 }
             }
-            // No match — fall through to "unmatched ~" handler below.
         }
 
-        // Highlight: ==text== (CommonMark extension / PHP Markdown Extra).
+        // Highlight: ==text== (maya extension / PHP Markdown Extra).
         if (i + 1 < text.size() && text[i] == '=' && text[i + 1] == '=') {
             size_t end = find_closing(text, "==", i + 2);
             if (end != std::string_view::npos) {
                 auto inner = text.substr(i + 2, end - i - 2);
-                result.push_back(md::Highlight{parse_inlines(inner)});
+                push_node(md::Highlight{parse_inlines_impl(inner)});
                 i = end + 2;
                 continue;
             }
-            // Fall through — literal '=' may just be prose.
-            push_text(result, text.substr(i, 1));
+            push_text(text.substr(i, 1));
             ++i;
             continue;
         }
         if (text[i] == '=') {
-            push_text(result, text.substr(i, 1));
+            push_text(text.substr(i, 1));
             ++i;
             continue;
         }
@@ -1005,39 +1068,50 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                 }
                 if (end != std::string_view::npos && text[end - 1] != ' ') {
                     auto inner = text.substr(i + 1, end - i - 1);
-                    result.push_back(md::Sup{parse_inlines(inner)});
+                    push_node(md::Sup{parse_inlines_impl(inner)});
                     i = end + 1;
                     continue;
                 }
             }
-            push_text(result, text.substr(i, 1));
+            push_text(text.substr(i, 1));
             ++i;
             continue;
         }
 
-        // Italic: *text* or _text_ (single delimiter)
+        // Emphasis: record a `*` / `_` delimiter run; emph::process pairs
+        // them in a second pass per CommonMark §6.2.
         if (text[i] == '*' || text[i] == '_') {
-            char delim_ch = text[i];
-            if (i + 1 < text.size() && text[i + 1] != delim_ch && text[i + 1] != ' '
-                && underscore_open_ok(text, i)) {
-                // Bounded scan to avoid O(n²) on many unmatched delimiters
-                size_t scan_limit = std::min(text.size(), i + 1 + 2000);
-                size_t end = std::string_view::npos;
-                for (size_t s = i + 1; s < scan_limit; ++s) {
-                    if (text[s] == delim_ch) { end = s; break; }
-                }
-                if (end != std::string_view::npos && text[end - 1] != ' '
-                    && underscore_close_ok(text, delim_ch, end + 1)) {
-                    auto inner = text.substr(i + 1, end - i - 1);
-                    result.push_back(md::Italic{parse_inlines(inner)});
-                    i = end + 1;
-                    continue;
-                }
-            }
-            // Unmatched delimiter — consume as plain text
+            char d = text[i];
             size_t run = 1;
-            while (i + run < text.size() && text[i + run] == delim_ch) ++run;
-            push_text(result, text.substr(i, run));
+            while (i + run < text.size() && text[i + run] == d) ++run;
+            // Delimiter-run cap. A run of dozens of identical `*`/`_` is
+            // never real emphasis — and a single huge opener paired with a
+            // single huge closer would generate ~run/2-deep nesting, which
+            // the per-frame streaming re-parse renders super-linearly
+            // (depth 500 ≈ 5 s, depth 1000 hangs). Cap the run used for
+            // emphasis at kMaxEmphRun; emit any excess as literal text.
+            // Real markdown / every CommonMark spec example uses runs of
+            // 1–6, so this is invisible to correct input and bounds the
+            // pathological case to O(kMaxEmphRun) nesting.
+            constexpr size_t kMaxEmphRun = 64;
+            if (run > kMaxEmphRun) {
+                push_text(text.substr(i, run - kMaxEmphRun));
+                i += run - kMaxEmphRun;
+                run = kMaxEmphRun;
+            }
+            emph::CClass before = (i == 0)
+                ? emph::CClass::Ws : emph::classify(text[i - 1]);
+            emph::CClass after = (i + run >= text.size())
+                ? emph::CClass::Ws : emph::classify(text[i + run]);
+            emph::Flank fl = emph::flanking(d, before, after);
+            emph::Tok t;
+            t.is_delim  = true;
+            t.ch        = d;
+            t.count     = static_cast<int>(run);
+            t.orig      = static_cast<int>(run);
+            t.can_open  = fl.left;
+            t.can_close = fl.right;
+            toks.push_back(std::move(t));
             i += run;
             continue;
         }
@@ -1057,7 +1131,7 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                     std::string url, title;
                     size_t pos = after;
                     if (parse_link_dest_paren(text, pos, url, title)) {
-                        result.push_back(md::Image{
+                        push_node(md::Image{
                             std::string{alt}, std::move(url), std::move(title)});
                         i = pos;
                         continue;
@@ -1066,7 +1140,7 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                     size_t pos = after;
                     auto* ref = parse_link_ref(text, pos, alt);
                     if (ref) {
-                        result.push_back(md::Image{
+                        push_node(md::Image{
                             std::string{alt}, ref->url, ref->title});
                         i = pos;
                         continue;
@@ -1074,14 +1148,14 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                 } else {
                     // Shortcut ![alt] — look up `alt` directly.
                     if (auto* ref = lookup_ref(alt)) {
-                        result.push_back(md::Image{
+                        push_node(md::Image{
                             std::string{alt}, ref->url, ref->title});
                         i = close_bracket + 1;
                         continue;
                     }
                 }
             }
-            push_text(result, "!");
+            push_text("!");
             ++i;
             continue;
         }
@@ -1098,7 +1172,7 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                 if (close != std::string_view::npos) {
                     auto label = text.substr(i + 2, close - i - 2);
                     if (close + 1 >= text.size() || text[close + 1] != '(') {
-                        result.push_back(md::FootnoteRef{std::string{label}});
+                        push_node(md::FootnoteRef{std::string{label}});
                         i = close + 1;
                         continue;
                     }
@@ -1126,7 +1200,7 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                     std::string url, title;
                     size_t pos = after;
                     if (parse_link_dest_paren(text, pos, url, title)) {
-                        result.push_back(md::Link{
+                        push_node(md::Link{
                             std::string{link_text}, std::move(url), std::move(title)});
                         i = pos;
                         continue;
@@ -1134,21 +1208,21 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                 } else if (after < text.size() && text[after] == '[') {
                     size_t pos = after;
                     if (auto* ref = parse_link_ref(text, pos, link_text)) {
-                        result.push_back(md::Link{
+                        push_node(md::Link{
                             std::string{link_text}, ref->url, ref->title});
                         i = pos;
                         continue;
                     }
                 } else {
                     if (auto* ref = lookup_ref(link_text)) {
-                        result.push_back(md::Link{
+                        push_node(md::Link{
                             std::string{link_text}, ref->url, ref->title});
                         i = close_bracket + 1;
                         continue;
                     }
                 }
             }
-            push_text(result, "[");
+            push_text("[");
             ++i;
             continue;
         }
@@ -1177,7 +1251,7 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             if (tag.matched) {
                 // <br> / <br/>  → HardBreak
                 if (tag.name == "br") {
-                    result.push_back(md::HardBreak{});
+                    push_node(md::HardBreak{});
                     i = tag.end;
                     continue;
                 }
@@ -1192,15 +1266,15 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                     auto body = (closer == std::string_view::npos)
                         ? text.substr(tag.end)
                         : text.substr(tag.end, closer - tag.end);
-                    auto inner = parse_inlines(body);
+                    auto inner = parse_inlines_impl(body);
                     if (!tag.attr_href.empty()) {
                         std::string tx;
                         for (auto& sp : inner)
                             if (auto* t = std::get_if<md::Text>(&sp.inner)) tx += t->content;
-                        result.push_back(md::Link{
+                        push_node(md::Link{
                             std::move(tx), std::move(tag.attr_href), ""});
                     } else {
-                        for (auto& sp : inner) result.push_back(std::move(sp));
+                        for (auto& sp : inner) push_node(std::move(sp));
                     }
                     i = (closer == std::string_view::npos)
                         ? text.size() : closer + 4; // len("</a>")
@@ -1215,7 +1289,7 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                     auto body = (closer == std::string_view::npos)
                         ? text.substr(tag.end)
                         : text.substr(tag.end, closer - tag.end);
-                    auto inner = parse_inlines(body);
+                    auto inner = parse_inlines_impl(body);
                     wrap(std::move(inner), tag);
                     i = (closer == std::string_view::npos)
                         ? text.size()
@@ -1223,28 +1297,28 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                     return true;
                 };
                 if (render_paired("strong", [&](auto inner, auto&) {
-                    result.push_back(md::Bold{std::move(inner)});
+                    push_node(md::Bold{std::move(inner)});
                 })) continue;
                 if (render_paired("em", [&](auto inner, auto&) {
-                    result.push_back(md::Italic{std::move(inner)});
+                    push_node(md::Italic{std::move(inner)});
                 })) continue;
                 if (render_paired("mark", [&](auto inner, auto&) {
-                    result.push_back(md::Highlight{std::move(inner)});
+                    push_node(md::Highlight{std::move(inner)});
                 })) continue;
                 if (render_paired("sub", [&](auto inner, auto&) {
-                    result.push_back(md::Sub{std::move(inner)});
+                    push_node(md::Sub{std::move(inner)});
                 })) continue;
                 if (render_paired("sup", [&](auto inner, auto&) {
-                    result.push_back(md::Sup{std::move(inner)});
+                    push_node(md::Sup{std::move(inner)});
                 })) continue;
                 if (render_paired("kbd", [&](auto inner, auto&) {
-                    result.push_back(md::Kbd{std::move(inner)});
+                    push_node(md::Kbd{std::move(inner)});
                 })) continue;
                 if (render_paired("span", [&](auto inner, auto&) {
-                    for (auto& sp : inner) result.push_back(std::move(sp));
+                    for (auto& sp : inner) push_node(std::move(sp));
                 })) continue;
                 if (render_paired("abbr", [&](auto inner, auto& t) {
-                    result.push_back(md::Abbr{std::move(t.attr_title), std::move(inner)});
+                    push_node(md::Abbr{std::move(t.attr_title), std::move(inner)});
                 })) continue;
                 // Unrecognized tag — fall through and treat as text.
             }
@@ -1262,20 +1336,20 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
                     std::string url_str{content};
                     if (is_email && !starts_with(content, "mailto:"))
                         url_str = "mailto:" + url_str;
-                    result.push_back(md::Link{
+                    push_node(md::Link{
                         std::string{content}, std::move(url_str), ""});
                     i = close + 1;
                     continue;
                 }
             }
-            push_text(result, "<");
+            push_text("<");
             ++i;
             continue;
         }
 
         // Unmatched special characters (! without [, lone ~)
         if (text[i] == '~' || text[i] == '!') {
-            push_text(result, text.substr(i, 1));
+            push_text(text.substr(i, 1));
             ++i;
             continue;
         }
@@ -1296,12 +1370,42 @@ std::vector<md::Inline> parse_inlines(std::string_view text) {
             ++i;
         }
         if (i > start) {
-            push_text(result, text.substr(start, i - start));
+            push_text(text.substr(start, i - start));
         }
     }
 
-    post_process_text_nodes(result);
+    // Resolve emphasis delimiter runs (CommonMark §6.2), then flatten the
+    // token list to a node vector. Leftover delimiters degrade to literal
+    // text. The Text post-pass runs once in the public wrapper.
+    emph::process(toks);
+    std::vector<md::Inline> result;
+    result.reserve(toks.size());
+    for (auto& tk : toks) {
+        if (tk.is_delim) {
+            if (tk.count > 0) {
+                std::string lit(static_cast<size_t>(tk.count), tk.ch);
+                if (!result.empty()) {
+                    if (auto* t = std::get_if<md::Text>(&result.back().inner)) {
+                        t->content += lit;
+                        continue;
+                    }
+                }
+                result.push_back(md::Text{std::move(lit)});
+            }
+        } else {
+            result.push_back(std::move(tk.node));
+        }
+    }
     return result;
+}
+
+// Public inline entry: resolve inline structure, then run the Text post-pass
+// (entities / emoji / bare-URL / mentions) once over the whole tree,
+// recursing into emphasis children.
+std::vector<md::Inline> parse_inlines(std::string_view text) {
+    auto nodes = parse_inlines_impl(text);
+    post_process_text_nodes(nodes);
+    return nodes;
 }
 
 // ============================================================================

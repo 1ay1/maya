@@ -2039,12 +2039,30 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
         {
             int ul_len = ul_marker_len(line);
             int ol_len = ol_marker_len(line);
-            if (ul_len > 0 || ol_len > 0) {
+            bool ordered = ol_len > 0;
+            int marker_len = ordered ? ol_len : ul_len;
+            bool is_list = (ul_len > 0 || ol_len > 0);
+            // Paragraph interruption (CommonMark §5.2/§5.3): a list may
+            // interrupt a paragraph only when it is a bullet list or an
+            // ordered list starting at 1, AND the marker is followed by
+            // non-blank content. Otherwise the line is lazy paragraph text
+            // (e.g. "...is\n14. ..." stays one paragraph).
+            if (is_list && !paragraph_buf.empty()) {
+                bool content_blank =
+                    trim(line.substr(static_cast<size_t>(marker_len))).empty();
+                int sn = ordered ? ol_start_num(line) : 1;
+                if (content_blank || (ordered && sn != 1)) is_list = false;
+            }
+            if (is_list) {
                 flush_paragraph();
-                bool ordered = ol_len > 0;
-                int marker_len = ordered ? ol_len : ul_len;
                 int start_num = ordered ? ol_start_num(line) : 1;
                 int base_indent = count_indent(line);
+                // Marker delimiter byte: -,*,+ (bullet) or . ) (ordered).
+                // For both forms it sits at marker_len-2 (= leading-ws +
+                // optional digits). A sibling item must share this delimiter;
+                // a different one ends the list and starts a new one (so
+                // "- a\n+ b" and "1. a\n2) b" each split into two lists).
+                char list_delim = line[static_cast<size_t>(marker_len) - 2];
 
                 std::vector<md::ListItem> items;
 
@@ -2054,7 +2072,10 @@ static md::Document parse_markdown_impl(std::string_view source, int depth) {
 
                     int cur_ul = ul_marker_len(ll);
                     int cur_ol = ol_marker_len(ll);
-                    bool is_item = ordered ? (cur_ol > 0) : (cur_ul > 0);
+                    int cur_marker_len = ordered ? cur_ol : cur_ul;
+                    bool is_item = (ordered ? (cur_ol > 0) : (cur_ul > 0)) &&
+                        cur_marker_len >= 2 &&
+                        ll[static_cast<size_t>(cur_marker_len) - 2] == list_delim;
                     int cur_indent = count_indent(ll);
 
                     // Only match items at the same indentation level

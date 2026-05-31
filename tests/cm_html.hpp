@@ -28,6 +28,7 @@ inline void esc_text(std::string& out, std::string_view s) {
             case '&': out += "&amp;";  break;
             case '<': out += "&lt;";   break;
             case '>': out += "&gt;";   break;
+            case '"': out += "&quot;"; break;
             default:  out += c;        break;
         }
     }

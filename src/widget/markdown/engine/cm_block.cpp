@@ -469,7 +469,8 @@ private:
         if (!all_matched && leaf_is_open_leaf &&
             leaf->type == BlockType::Paragraph &&
             !is_blank(line.rest()) &&
-            !line_starts_new_block(line.rest())) {
+            !line_starts_new_block(line.rest()) &&
+            !continues_open_list(line.rest())) {
             leaf->text += std::string(strip(line.rest()));
             leaf->text += '\n';
             return;
@@ -488,6 +489,23 @@ private:
             default:
                 return true;
         }
+    }
+
+    // Does `content` start a list marker that continues an already-open
+    // list in the current open path (same kind)? Such a marker opens a new
+    // item rather than lazily continuing a paragraph — even when empty.
+    [[nodiscard]] bool continues_open_list(std::string_view content) {
+        std::size_t bytes;
+        int ind = leading_indent(content, bytes);
+        if (ind > 3) return false;
+        auto m = parse_list_marker(content.substr(bytes));
+        if (!m.ok) return false;
+        for (CMBlock* b : open_) {
+            if (b->type == BlockType::List && b->open &&
+                b->ordered == m.ordered && b->list_delim == m.delim)
+                return true;
+        }
+        return false;
     }
 
     // Would `content` begin a new block (so it can't lazily continue a
@@ -699,7 +717,13 @@ private:
         std::string_view content = line.rest();
 
         if (is_blank(content)) {
-            // blank line: close paragraph if present, mark item blanks
+            // blank line: close paragraph if present, mark item blanks.
+            // EXCEPTION: a just-opened empty list item (`-` with nothing
+            // after the marker) is not a "blank line" for loose detection.
+            if (container->type == BlockType::Item && container->children.empty()) {
+                container->last_line_blank = false;
+                return;
+            }
             handle_blank(container);
             return;
         }
@@ -825,11 +849,14 @@ private:
     }
 
     void append_to_leaf(CMBlock* leaf, Line& line) {
+        // Work relative to the line cursor (container prefixes such as list
+        // indent / blockquote markers have already been consumed).
+        std::string_view rest = line.rest();
         if (leaf->type == BlockType::CodeFence) {
             // closing fence?
             std::size_t bytes;
-            int ind = leading_indent(line.s, bytes);
-            auto t = std::string_view(line.s).substr(bytes);
+            int ind = leading_indent(rest, bytes);
+            auto t = rest.substr(bytes);
             if (ind <= 3 && !t.empty() && t[0] == leaf->fence_char) {
                 std::size_t n = 0;
                 while (n < t.size() && t[n] == leaf->fence_char) ++n;
@@ -840,58 +867,62 @@ private:
                 }
             }
             // content line: strip up to fence_indent leading spaces
-            std::string_view raw = line.s;
             int strip_n = leaf->fence_indent;
             std::size_t k = 0;
             int removed = 0;
-            while (k < raw.size() && removed < strip_n &&
-                   (raw[k] == ' ' || raw[k] == '\t')) {
-                removed += (raw[k] == '\t') ? 4 : 1;
+            while (k < rest.size() && removed < strip_n &&
+                   (rest[k] == ' ' || rest[k] == '\t')) {
+                removed += (rest[k] == '\t') ? 4 : 1;
                 ++k;
             }
-            leaf->text += std::string(raw.substr(k));
+            leaf->text += std::string(rest.substr(k));
             leaf->text += '\n';
             return;
         }
         if (leaf->type == BlockType::CodeIndented) {
-            if (is_blank(line.s)) {
+            if (is_blank(rest)) {
                 leaf->text += '\n';
                 return;
             }
             std::size_t bytes;
-            int ind = leading_indent(line.s, bytes);
-            if (ind < 4) { leaf->open = false; /* reprocess */ process_after_close(line); return; }
+            int ind = leading_indent(rest, bytes);
+            if (ind < 4) {
+                // dedented non-blank line: close the code block and
+                // reprocess this line from the enclosing container.
+                leaf->open = false;
+                process_after_close(line);
+                return;
+            }
             // remove 4 cols
-            Line l{line.s};
+            Line l = line;
             l.consume_spaces(4);
             leaf->text += std::string(l.rest());
             leaf->text += '\n';
             return;
         }
         if (leaf->type == BlockType::HtmlBlock) {
-            leaf->text += std::string(line.s);
+            leaf->text += std::string(rest);
             leaf->text += '\n';
-            if (html_block_ends(leaf->html_block_kind, line.s))
+            if (html_block_ends(leaf->html_block_kind, rest))
                 leaf->open = false;
             return;
         }
     }
 
     // When an indented code block ends because indentation dropped, the line
-    // needs to be reprocessed from the enclosing container.
+    // needs to be reprocessed from the enclosing container. `line` still
+    // carries its consumed container prefix in the cursor.
     void process_after_close(Line& line) {
+        // Re-open the new-block machinery starting at the current cursor;
+        // open_block_parent here is the deepest open container (the item /
+        // blockquote / doc) whose prefix we already consumed.
         rebuild_open_path();
-        CMBlock* container = doc_.get();
+        CMBlock* parent = doc_.get();
         for (std::size_t idx = 1; idx < open_.size(); ++idx) {
-            if (open_[idx]->type == BlockType::CodeIndented) break;
-            container = open_[idx];
+            if (is_leaf(open_[idx]->type)) break;
+            if (open_[idx]->type != BlockType::List) parent = open_[idx];
         }
-        Line l{line.s};
-        // re-skip container prefixes
-        for (std::size_t k = 1; k < open_.size(); ++k) {
-            if (!matches_continuation(open_[k], l)) break;
-        }
-        try_open_new_blocks(container, l);
+        try_open_new_blocks(parent, line);
     }
 
     void handle_blank(CMBlock* container) {
@@ -1009,21 +1040,26 @@ private:
         if (i < s.size() && s[i] == '<') {
             ++i;
             while (i < s.size() && s[i] != '>' && s[i] != '\n') {
-                if (s[i] == '\\' && i + 1 < s.size()) { dest += s[i + 1]; i += 2; continue; }
+                if (s[i] == '\\' && i + 1 < s.size() && is_ascii_punct(s[i + 1])) {
+                    dest += s[i + 1]; i += 2; continue;
+                }
                 dest += s[i++];
             }
             if (i >= s.size() || s[i] != '>') return 0;
             ++i;
         } else {
             int depth = 0;
-            std::size_t ds = i;
+            std::string acc;
             while (i < s.size() && !is_unicode_ws_byte(s[i])) {
-                if (s[i] == '\\' && i + 1 < s.size()) { i += 2; continue; }
+                if (s[i] == '\\' && i + 1 < s.size() && is_ascii_punct(s[i + 1])) {
+                    acc += s[i + 1]; i += 2; continue;
+                }
                 if (s[i] == '(') ++depth;
                 else if (s[i] == ')') { if (depth == 0) break; --depth; }
+                acc += s[i];
                 ++i;
             }
-            dest = std::string(s.substr(ds, i - ds));
+            dest = std::move(acc);
             if (dest.empty()) return 0;
         }
         // optional title, preceded by ws (maybe newline)
@@ -1046,7 +1082,9 @@ private:
             std::string t;
             bool ok = false;
             while (k < s.size()) {
-                if (s[k] == '\\' && k + 1 < s.size()) { t += s[k + 1]; k += 2; continue; }
+                if (s[k] == '\\' && k + 1 < s.size() && is_ascii_punct(s[k + 1])) {
+                    t += s[k + 1]; k += 2; continue;
+                }
                 if (s[k] == close) { ok = true; ++k; break; }
                 t += s[k++];
             }

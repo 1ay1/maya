@@ -1517,6 +1517,15 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         // the poll).
         auto poll_timeout = needs_render
             ? std::chrono::milliseconds(0) : base_timeout;
+        // Deferred-write retry (mirrors the Program<P> loop, app.hpp ~1172):
+        // the output fd is non-blocking, so a large frame can leave part of
+        // its bytes in the writer's residue. Bound the poll to a few ms so
+        // the residue drains on its own instead of waiting for the next
+        // input event — without this a backpressured first frame paints only
+        // partially and fills in one chunk per keypress.
+        if (rt.has_pending_writes()) {
+            poll_timeout = std::min(poll_timeout, std::chrono::milliseconds(8));
+        }
         auto poll_result = rt.poll(poll_timeout);
         if (!poll_result) break;
 
@@ -1560,6 +1569,12 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
                 detail::scroll_writeback_dirty = false;
                 needs_render = true;
             }
+            // If render() returned ok() but the writer still holds residue
+            // (the tty rejected part of a large emit with WouldBlock), keep
+            // needs_render set so the next iteration drives the drain. Paired
+            // with the poll-timeout cap above, the frame finishes within a
+            // few ms instead of stalling until the next keypress.
+            if (rt.has_pending_writes()) needs_render = true;
         }
     }
 

@@ -538,6 +538,24 @@ public:
         return writer_ != nullptr && writer_->has_residue();
     }
 
+    // True iff the input parser is holding a partial escape sequence —
+    // e.g. a lone ESC byte that is either a bare Escape keypress or the
+    // head of an arrow / Home / End / function-key CSI whose tail hasn't
+    // arrived yet. The parser can only RESOLVE the ambiguity via
+    // flush_timeout() once escape_timeout_ (50ms) elapses, and the main
+    // loop calls flush_timeouts() once per iteration AFTER poll() returns.
+    //
+    // Without surfacing this, an idle (fps=0) loop with no timers/spinner
+    // sleeps the full 100ms idle poll while the parser sits on the ESC,
+    // so a bare Escape (close picker) or a split arrow sequence (slow
+    // pty / SSH / tmux delivering ESC and `[A` in separate reads) appears
+    // to hang for up to 100ms before resolving. The loop consults this to
+    // clamp its poll timeout to the escape deadline, mirroring the
+    // has_pending_writes() → short-retry pattern above.
+    [[nodiscard]] bool has_pending_input() const noexcept {
+        return parser_.has_pending();
+    }
+
     // Final cleanup (show cursor, reset, newline).
     auto cleanup() -> Status;
 
@@ -1173,6 +1191,19 @@ void run(RunConfig cfg = {}) {
             poll_timeout = std::min(poll_timeout,
                                     std::chrono::milliseconds(8));
         }
+        // Pending-escape retry: the parser is holding a partial escape
+        // sequence (lone ESC, or the head of an arrow/Home/End CSI). Only
+        // flush_timeout() can resolve it, and only after the 50ms escape
+        // deadline. Clamp the poll so the loop wakes to call
+        // flush_timeouts() shortly after the deadline instead of sleeping
+        // the full 100ms idle timeout — otherwise a bare Escape or a
+        // split arrow key (slow pty / SSH / tmux) stalls for up to 100ms
+        // before the keystroke registers. Most visible in the pickers,
+        // which idle with no spinner tick to keep the loop spinning.
+        if (rt.has_pending_input()) {
+            poll_timeout = std::min(poll_timeout,
+                                    std::chrono::milliseconds(16));
+        }
         if (!timers.empty()) {
             auto now = std::chrono::steady_clock::now();
             for (auto& t : timers) {
@@ -1525,6 +1556,14 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         // partially and fills in one chunk per keypress.
         if (rt.has_pending_writes()) {
             poll_timeout = std::min(poll_timeout, std::chrono::milliseconds(8));
+        }
+        // Pending-escape retry (mirrors the Program<P> loop): the parser
+        // holds a partial escape sequence that only flush_timeout() can
+        // resolve, and only after the 50ms escape deadline. Clamp the poll
+        // so the loop wakes to flush it promptly instead of sleeping the
+        // full idle timeout.
+        if (rt.has_pending_input()) {
+            poll_timeout = std::min(poll_timeout, std::chrono::milliseconds(16));
         }
         auto poll_result = rt.poll(poll_timeout);
         if (!poll_result) break;

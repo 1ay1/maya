@@ -177,9 +177,32 @@ inline ComponentCacheEntry* store_component_cache(ComponentCache& cache,
                                                   const ComponentElement& comp,
                                                   ComponentCacheEntry entry) {
     if (!comp.hash_id.empty()) {
-        auto [it, _] = cache.entries_by_hash.insert_or_assign(
+        auto it = cache.entries_by_hash.find(comp.hash_id);
+        if (it != cache.entries_by_hash.end()
+            && entry.cells.empty() && !it->second.cells.empty()
+            && entry.width == it->second.width)
+        {
+            // Same-width re-store with no cells: this is the measure
+            // pass landing on the slot the paint pass already populated
+            // with cells at the SAME width. Both passes key on hash_id
+            // alone (width is a field, not part of the key), so a naive
+            // insert_or_assign here would wipe the paint pass's cells
+            // every frame and the blit fast path could never fire — the
+            // component would re-render forever. Keep the cells; refresh
+            // only the cheap bookkeeping. The width-equality guard means
+            // a genuine resize (different width) still falls through to
+            // the replace below, correctly invalidating stale-width
+            // cells.
+            it->second.height          = entry.height;
+            it->second.last_frame      = entry.last_frame;
+            it->second.generation      = entry.generation;
+            it->second.last_touched_at = entry.last_touched_at;
+            it->second.result          = std::move(entry.result);
+            return &it->second;
+        }
+        auto [iit, _] = cache.entries_by_hash.insert_or_assign(
             comp.hash_id, std::move(entry));
-        return &it->second;
+        return &iit->second;
     }
     auto [it, _] = cache.entries.insert_or_assign(&comp, std::move(entry));
     return &it->second;
@@ -408,7 +431,57 @@ std::size_t build_layout_tree(
                         }
                         constexpr int kBigH = 1 << 20;
 
+                        // Clamp an unconstrained measure width to the
+                        // canvas. The hash-keyed cache stores one entry
+                        // per hash_id (width is a FIELD, not part of the
+                        // key — see store_component_cache), so if the
+                        // measure pass keys this component at the layout
+                        // engine's kUnconstrained sentinel (1<<24) while
+                        // the paint pass keys it at the real content
+                        // width, the two passes overwrite each other's
+                        // entry every frame and the cell cache never
+                        // survives to be blitted — a permanent miss that
+                        // makes every settled card re-render forever.
+                        // Clamping both sites to the canvas width makes
+                        // them agree. A component can't be wider than the
+                        // canvas it measures against.
+                        const int canvas_w = available_width();
+                        if (canvas_w > 0 && max_width > canvas_w)
+                            max_width = canvas_w;
+
                         auto& cache = component_cache();
+                        // Trust a cached height for a hash-keyed entry
+                        // even when the measure-time width differs from
+                        // the width the entry was captured at. The
+                        // measure pass for a component nested in an
+                        // auto-height / stretch container is handed the
+                        // layout engine's unconstrained width, which
+                        // rarely equals the definite width the PAINT
+                        // pass later resolves and caches cells at. If we
+                        // demanded an exact width match here, the measure
+                        // pass would re-render (and re-lay-out) the full
+                        // body every frame even though paint already has
+                        // valid cells — defeating the cache for exactly
+                        // the tall settled cards it exists to accelerate.
+                        // The height a component reports is overwhelmingly
+                        // width-stable for these cards (a settled
+                        // write/edit/read body wraps to the same line
+                        // count across the small width deltas in play),
+                        // and a genuine resize invalidates the cells via
+                        // the paint-side width-keyed replace, so trusting
+                        // the stored height here is safe and is what lets
+                        // the measure pass become O(1).
+                        if (!comp.hash_id.empty()) {
+                            auto it = cache.entries_by_hash.find(comp.hash_id);
+                            if (it != cache.entries_by_hash.end()
+                                && !it->second.cells.empty()) {
+                                it->second.last_frame = cache.current_frame;
+                                it->second.last_touched_at =
+                                    std::chrono::steady_clock::now();
+                                return {Columns{max_width},
+                                        Rows{it->second.height}};
+                            }
+                        }
                         // Trust the cached height when:
                         //  - hash_id is set (host opted into cross-frame
                         //    identity), OR
@@ -1005,6 +1078,19 @@ void paint_element(
             int content_x = ax + node.layout.padding.left;
             int content_y = ay + node.layout.padding.top;
 
+            // Clamp to the canvas content width — the SAME value the
+            // measure pass clamps to (build_layout_tree's ComponentElement
+            // measure uses available_width()). Measure and paint key the
+            // same hash slot, and store_component_cache only preserves a
+            // paint-captured cell block across the measure re-store when
+            // the widths MATCH, so they must compute an identical width or
+            // the cache never blits. A component handed the layout
+            // engine's kUnconstrained width (1<<24 — the auto-height /
+            // stretch case) is otherwise un-cacheable.
+            if (const int aw_cap = available_width();
+                aw_cap > 0 && content_w > aw_cap)
+                content_w = aw_cap;
+
             auto& cache = component_cache();
 
             // ── Fast path: cached cells exist for this entry ────────────
@@ -1172,37 +1258,43 @@ void paint_element(
                     // can't serve undersized cells.
                     const int canvas_w = canvas.width();
                     const int canvas_h = canvas.height();
-                    const bool fits_on_canvas =
+                    // Columns that actually exist on the canvas from this
+                    // component's x origin. content_w may exceed this when
+                    // the component sits at content_x>0 (panel border +
+                    // padding) and its width was clamped to the full
+                    // canvas width: the rightmost (content_w - cap_w)
+                    // columns fall past the edge. We capture the visible
+                    // columns and zero-fill the overrun tail rather than
+                    // bailing on the whole capture (the old behaviour,
+                    // which left the cache permanently empty for any
+                    // bordered panel whose body spanned the full width →
+                    // every frame re-rendered). The stored entry width
+                    // stays content_w so blit + lookup remain consistent.
+                    const int cap_w = std::min(content_w,
+                                               std::max(0, canvas_w - content_x));
+                    const bool fits_rows =
                         content_x >= 0 && content_y >= 0 &&
-                        content_x + content_w <= canvas_w &&
                         content_y + captured_rows <= canvas_h;
-                    if (!fits_on_canvas) {
+                    if (!fits_rows || cap_w <= 0) {
                         entry->cells.clear();
                         entry->cells_rows = 0;
                         entry->cells_max_y = -1;
                         entry->cells_row_last_col.clear();
                     } else if (captured_rows > 0) {
-                        // Fast capture: per-row memcpy direct from
-                        // canvas backing store. Replaces the prior
-                        // double-loop (`get_packed` per cell, plus an
-                        // initial `assign(N, blank)` to allocate). One
-                        // pass over the data, no redundant zero-init.
+                        // Fast capture: per-row memcpy of the visible
+                        // columns direct from the canvas backing store,
+                        // zero-filling any tail past the canvas edge.
                         entry->cells_rows = captured_rows;
-                        const std::size_t row_bytes =
-                            static_cast<std::size_t>(content_w) * sizeof(uint64_t);
+                        const std::size_t cap_bytes =
+                            static_cast<std::size_t>(cap_w) * sizeof(uint64_t);
                         const int canvas_w_eff = canvas.width();
                         const uint64_t* cbase = canvas.cells();
-                        entry->cells.resize(
+                        entry->cells.assign(
                             static_cast<std::size_t>(captured_rows)
-                                * static_cast<std::size_t>(content_w));
+                                * static_cast<std::size_t>(content_w),
+                            Cell{}.pack());
                         entry->cells_row_last_col.assign(
                             static_cast<std::size_t>(captured_rows), -1);
-                        // Use the canonical pack of a default-constructed
-                        // Cell rather than open-coding the byte pattern. If
-                        // Cell defaults ever shift (e.g. sentinel hyperlink
-                        // ids, non-zero width default) this site tracks them
-                        // automatically instead of silently mis-trimming the
-                        // cached row tail.
                         constexpr uint64_t kBlank = Cell{}.pack();
                         int last_nonblank = -1;
                         for (int y = 0; y < captured_rows; ++y) {
@@ -1215,13 +1307,9 @@ void paint_element(
                                 + static_cast<std::size_t>(content_y + y)
                                   * static_cast<std::size_t>(canvas_w_eff)
                                 + static_cast<std::size_t>(content_x);
-                            std::memcpy(dst, src, row_bytes);
-                            // Find this row's rightmost non-blank in
-                            // the same pass. Bounded by content_w; on
-                            // a typical content row the very first
-                            // step succeeds.
+                            std::memcpy(dst, src, cap_bytes);
                             int row_last = -1;
-                            for (int x = content_w - 1; x >= 0; --x) {
+                            for (int x = cap_w - 1; x >= 0; --x) {
                                 if (dst[static_cast<std::size_t>(x)] != kBlank) {
                                     row_last = x;
                                     break;

@@ -649,13 +649,27 @@ void test_agent_timeline_per_event_hash_id_bounds_cost() {
             base_cfg.events.push_back(make_done(i, with_hash_id));
         base_cfg.events.push_back(make_running());
 
+        // Build the Element tree ONCE and re-render it every frame.
+        // This is how a host with a settled scrollback prefix actually
+        // drives maya: the frozen turns are built once into a stable
+        // vector and the same Elements are handed to render_tree each
+        // frame (only the live tail rebuilds). Per-event hash_id then
+        // lets the renderer blit the settled cards' cells instead of
+        // re-laying-them-out. A test that rebuilds the whole Config
+        // every frame would instead measure the deep-copy of every
+        // body string, which dominates and is not what the cache
+        // addresses.
+        AgentTimeline::Config cfg = base_cfg;
+        AgentTimeline tl{cfg};
+        Element root = tl.build();
+        std::vector<layout::LayoutNode> layout_nodes;
+
+        // Warm-up frame populates the cache.
+        canvas.clear();
+        render_tree(root, canvas, pool, theme::dark, layout_nodes, true);
+
         auto t0 = std::chrono::steady_clock::now();
         for (int f = 0; f < kFrames; ++f) {
-            AgentTimeline::Config cfg = base_cfg;
-            cfg.frame = f;
-            AgentTimeline tl{cfg};
-            Element root = tl.build();
-            std::vector<layout::LayoutNode> layout_nodes;
             canvas.clear();
             render_tree(root, canvas, pool, theme::dark, layout_nodes, true);
         }

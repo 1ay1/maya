@@ -11,6 +11,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -22,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 using namespace maya;
 using namespace std::chrono_literals;
@@ -1085,6 +1087,72 @@ static void st_eager_hrule() {
     }
 }
 
+// A code fence whose closing ``` is the LAST thing in the buffer with no
+// trailing newline (the common Claude "here's the code" ending) must
+// render the SAME CELLS live (still in the tail) as finished (committed).
+// Before the eager-closing-fence commit in boundary.cpp the live tail
+// rendered the block via render_tail while finish() re-rendered it via
+// the canonical block path; the two produced different cells (same
+// height, different bytes), so at settle the whole block re-emitted over
+// the wire — the "full repaint when the last block renders" symptom over
+// SSH. Comparing height alone misses it (height was already stable); we
+// compare the packed cell grid so any cell-level divergence is caught.
+static void st_eager_closing_fence() {
+    const char* bodies[] = {
+        "Intro.\n\n```cpp\nint x = 1;\nint y = 2;\n```",      // no trailing \n
+        "```\nplain code\n```",                                // fence-only msg
+        "Text.\n\n~~~\ntilde fence\n~~~",                       // tilde fence
+        "A.\n\n````\nnested ``` inside\n````",                  // 4-backtick fence
+    };
+    auto render_cells = [](const StreamingMarkdown& md, int& out_h) {
+        Element el = md.build();
+        StylePool pool;
+        Canvas canvas(80, /*h=*/4000, &pool);
+        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        out_h = content_height(canvas);
+        std::vector<std::uint64_t> cells;
+        const std::uint64_t* c = canvas.cells();
+        const std::size_t n =
+            static_cast<std::size_t>(canvas.width()) * out_h;
+        cells.assign(c, c + n);
+        return cells;
+    };
+    for (const char* body : bodies) {
+        StreamingMarkdown live;
+        live.set_live(true);
+        live.feed(body);                  // closing fence sits at EOF, no \n
+        // Match the app: a live widget whose reveal is complete still
+        // shows no blinking cursor difference vs the finished build for
+        // the committed cells. Drop live so the cursor cell can't skew
+        // the comparison — we're testing the BLOCK render path, not the
+        // cursor glyph.
+        live.set_live(false);
+        int live_h = 0;
+        auto live_cells = render_cells(live, live_h);
+
+        StreamingMarkdown done;
+        done.set_content(body);
+        done.finish();
+        int done_h = 0;
+        auto done_cells = render_cells(done, done_h);
+
+        if (live_h != done_h)
+            throw std::runtime_error(
+                std::string("closing-fence height snap for \"") + body
+                + "\": live=" + std::to_string(live_h)
+                + " committed=" + std::to_string(done_h));
+        if (live_cells != done_cells) {
+            std::size_t first = 0;
+            while (first < live_cells.size()
+                   && live_cells[first] == done_cells[first]) ++first;
+            throw std::runtime_error(
+                std::string("closing-fence CELL divergence for \"") + body
+                + "\": first differing cell index " + std::to_string(first)
+                + " of " + std::to_string(live_cells.size()));
+        }
+    }
+}
+
 // Big committed blocks must blit, not re-render, every frame. Build a
 // transcript with several large code blocks + a wide table (the
 // expensive-to-lay-out kinds), finish so they're all committed, then
@@ -1522,6 +1590,7 @@ int main() {
     run("block meta + fold",            2000ms, st_block_meta_and_fold);
     run("set_content_async roundtrip",  8000ms, st_set_content_async_roundtrip);
     run("eager hrule (no snap)",        2000ms, st_eager_hrule);
+    run("eager closing fence (no snap)", 2000ms, st_eager_closing_fence);
     run("big blocks blit ×300",         2000ms, st_big_blocks_blit);
     run("commit storm ×80",            3000ms, st_commit_storm);
     run("streaming table ×200",        3000ms, st_streaming_table);

@@ -273,7 +273,43 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                 // final styling, even if no blank line separates them.
                 if (!in_fence) last_boundary = i;
                 size_t eol = source_.find('\n', i);
-                if (eol == std::string::npos) break;
+                if (eol == std::string::npos) {
+                    // The fence line isn't newline-terminated. A CLOSING
+                    // fence (in_fence) at end-of-buffer is still provably
+                    // complete when the line is fence-marker-only (no
+                    // info string is permitted on a closing fence): the
+                    // block can't grow further within these bytes, so
+                    // commit past it. This is the common Claude ending
+                    // "…```" with no trailing newline. Without this, the
+                    // closed block sat in the tail (render_tail) until
+                    // finish() re-rendered it via the canonical block
+                    // path — a cell-level divergence that repainted the
+                    // whole block at settle. An OPENING fence (!in_fence)
+                    // with no terminator stays in the tail: its language
+                    // / first line are still arriving.
+                    if (in_fence) {
+                        // Skip the full fence-marker run (``` may be
+                        // ```` etc.; ~~~ likewise) before checking the
+                        // rest of the line is whitespace-only.
+                        char fence_ch = source_[i];
+                        std::size_t q = i;
+                        while (q < source_.size() && source_[q] == fence_ch) ++q;
+                        bool marker_only = true;
+                        for (; q < source_.size(); ++q) {
+                            char cc = source_[q];
+                            if (cc != ' ' && cc != '\t' && cc != '\r') {
+                                marker_only = false; break;
+                            }
+                        }
+                        if (marker_only) {
+                            in_fence = false;
+                            i = source_.size();
+                            last_boundary = i;
+                            continue;
+                        }
+                    }
+                    break;
+                }
                 in_fence = !in_fence;
                 i = eol + 1;
                 if (!in_fence) last_boundary = i;

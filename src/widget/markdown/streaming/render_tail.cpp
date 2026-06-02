@@ -158,6 +158,55 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
         );
     }
 
+    // ── Thematic break (---, ***, ___) at tail start: render the
+    //    committed HRule the instant the line terminates. The line must
+    //    be `\n`-terminated (a complete rule) so height is fixed at one
+    //    row and can't snap. At tail start there's no open paragraph in
+    //    this slice, so a `-` line is unambiguously an HR, not a setext
+    //    underline. Any content after the rule's newline falls through
+    //    to the inline parse below.
+    {
+        auto eol = body.find('\n');
+        if (eol != std::string_view::npos) {
+            std::string_view rule_line = body.substr(0, eol);
+            auto strip_ws = [](std::string_view s) {
+                while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+                    s.remove_prefix(1);
+                while (!s.empty() && (s.back() == ' ' || s.back() == '\t'
+                                      || s.back() == '\r'))
+                    s.remove_suffix(1);
+                return s;
+            };
+            std::string_view t = strip_ws(rule_line);
+            bool is_hr = !t.empty();
+            if (is_hr) {
+                char c = t[0];
+                if (c != '-' && c != '_' && c != '*') is_hr = false;
+                else {
+                    int count = 0;
+                    for (char ch : t) {
+                        if (ch == c) ++count;
+                        else if (ch == ' ' || ch == '\t') continue;
+                        else { is_hr = false; break; }
+                    }
+                    if (count < 3) is_hr = false;
+                }
+            }
+            if (is_hr) {
+                Element rule = md_block_to_element(md::Block{md::HRule{}});
+                std::string_view rest = body.substr(eol + 1);
+                while (!rest.empty() && rest.front() == '\n')
+                    rest.remove_prefix(1);
+                if (rest.empty()) return rule;
+                auto spans = parse_inlines(rest);
+                return detail::vstack().gap(1)(
+                    std::move(rule),
+                    build_inline_row(spans)
+                );
+            }
+        }
+    }
+
     // Inline-only parse for the rest — block markers (|, -, *, >) stay
     // literal until a real boundary advances past them.  This is the
     // monotonicity floor: a paragraph can only GROW row count as bytes

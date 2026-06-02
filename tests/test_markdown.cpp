@@ -1052,6 +1052,39 @@ static void st_set_content_async_roundtrip() {
         throw std::runtime_error("async parse landed empty");
 }
 
+// Eager horizontal-rule render: when an HR line terminates but hasn't
+// committed yet (no trailing blank line), the live build must already
+// render the styled rule, and at the SAME content height the finished
+// (committed) build produces — i.e. no height snap when commit fires.
+static int stream_height(const StreamingMarkdown& md) {
+    Element el = md.build();
+    StylePool pool;
+    Canvas canvas(80, /*h=*/4000, &pool);
+    render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+    return content_height(canvas);
+}
+static void st_eager_hrule() {
+    for (const char* rule : {"---", "***", "___", "- - -"}) {
+        StreamingMarkdown live;
+        live.set_live(true);
+        // Feed a paragraph, blank line, then the rule line WITH its
+        // newline but no following blank — the rule sits in the tail.
+        live.feed(std::string("Intro.\n\n") + rule + "\n");
+        int live_h = stream_height(live);
+
+        StreamingMarkdown done;
+        done.set_content(std::string("Intro.\n\n") + rule + "\n");
+        done.finish();
+        int done_h = stream_height(done);
+
+        if (live_h != done_h)
+            throw std::runtime_error(
+                std::string("eager HR height snap for '") + rule + "': live="
+                + std::to_string(live_h) + " committed="
+                + std::to_string(done_h));
+    }
+}
+
 // ───────────────────────────── main ─────────────────────────────────────────
 
 int main() {
@@ -1407,6 +1440,7 @@ int main() {
     run("clear + restream ×10",        5000ms, st_clear_restream);
     run("block meta + fold",            2000ms, st_block_meta_and_fold);
     run("set_content_async roundtrip",  8000ms, st_set_content_async_roundtrip);
+    run("eager hrule (no snap)",        2000ms, st_eager_hrule);
 
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",

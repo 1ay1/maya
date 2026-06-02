@@ -435,6 +435,29 @@ private:
     // accidentally identical.
     mutable std::uint64_t           tail_inline_cache_version_     = 0;
 
+    // ── Eager-block render cache ───────────────────────────────────────
+    // The eager list / blockquote / table branches of render_tail parse
+    // the proven-complete slice with parse_markdown_impl and rebuild the
+    // block Element (md_block_to_element) EVERY frame. For a streaming
+    // table or long list that accumulates rows, the per-frame cost is
+    // O(rows) parse + O(rows) layout-element build, so the whole stream
+    // is O(rows²) — the dominant cost for big in-flight tables/lists.
+    //
+    // The committed slice only changes when a new row terminates (a new
+    // `\n` lands and extends last_committed_end). Between those events the
+    // rendered block Element is byte-identical, so cache it keyed on
+    // (source_version_, committed-slice length, committed-slice hash).
+    // The live partial row below the block is cheap (one inline parse)
+    // and is rebuilt each frame, so it stays outside this cache.
+    //
+    // Stores the rendered block kids as a shared list so the cached
+    // Element can be re-emitted by shared_ptr copy without re-running
+    // md_block_to_element. A version+hash miss re-parses once.
+    mutable std::uint64_t           eager_cache_version_   = 0;
+    mutable std::uint64_t           eager_cache_slice_hash_ = 0;
+    mutable std::size_t             eager_cache_slice_len_ = 0;
+    mutable std::vector<std::shared_ptr<const Element>> eager_cache_blocks_;
+
     // ── Per-block fold state ───────────────────────────────────────────
     // Keyed by BlockMeta::source_offset so fold state survives the rare
     // "set_content with diverging prefix" path (where commit_range is
@@ -525,6 +548,14 @@ private:
     // Render the uncommitted tail as a monotonic in-progress paragraph
     // (or as plain text inside an open code fence).  See class header.
     [[nodiscard]] Element render_tail(std::string_view tail) const;
+
+    // Render an eager-block slice (proven-complete list/quote/table rows)
+    // via parse_markdown_impl + md_block_to_element, memoizing the
+    // resulting block Elements keyed on the slice bytes so an unchanged
+    // slice re-emits by shared_ptr copy instead of re-parsing. Appends
+    // the rendered blocks to `kids`.
+    void render_eager_slice(std::string_view slice,
+                            std::vector<Element>& kids) const;
 
     // Live-mode finalize: returns cached_build_ when not live or reveal_fx
     // is off; otherwise builds cached_live_ (the animated scramble/gradient/

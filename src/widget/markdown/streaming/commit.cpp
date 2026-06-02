@@ -332,6 +332,10 @@ void StreamingMarkdown::clear() {
     tail_inline_cache_content_.clear();
     tail_inline_cache_runs_.clear();
     tail_inline_cache_version_     = 0;
+    eager_cache_version_   = 0;
+    eager_cache_slice_hash_ = 0;
+    eager_cache_slice_len_ = 0;
+    eager_cache_blocks_.clear();
     // Reset the build-cache shape flags so the next build() falls into
     // the full-rebuild path rather than trying to mutate a stale
     // structural template.

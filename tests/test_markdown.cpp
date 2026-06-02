@@ -1140,6 +1140,32 @@ static void st_commit_storm() {
     render_stream(md);
 }
 
+// Streaming table: a big table arriving row-by-row, rendered between
+// rows while still in the uncommitted tail (no trailing blank line yet).
+// The eager-table branch of render_tail re-parses + rebuilds the whole
+// table every frame; without the eager-slice cache this is O(rows²)
+// over the stream. With it, an unchanged committed slice re-emits the
+// cached block Elements, so per-frame cost is O(live row).
+static void st_streaming_table() {
+    StreamingMarkdown md;
+    md.set_live(true);
+    std::string acc = "| name | id | status | notes |\n"
+                      "|------|----|--------|-------|\n";
+    md.set_content(acc);
+    render_stream(md);
+    for (int r = 0; r < 200; ++r) {
+        acc += "| item_" + std::to_string(r) + " | " + std::to_string(r)
+             +  " | active | some notes about row " + std::to_string(r) + " |\n";
+        md.set_content(acc);     // table still uncommitted (no blank line)
+        // The view layer renders many frames per row arrival (30 fps
+        // cursor blink, keystrokes, ticks). Those repeat-frames at the
+        // same slice must blit, not re-lay-out the table.
+        for (int f = 0; f < 8; ++f) render_stream(md);
+    }
+    md.finish();
+    render_stream(md);
+}
+
 // ───────────────────────────── main ─────────────────────────────────────────
 
 int main() {
@@ -1498,7 +1524,7 @@ int main() {
     run("eager hrule (no snap)",        2000ms, st_eager_hrule);
     run("big blocks blit ×300",         2000ms, st_big_blocks_blit);
     run("commit storm ×80",            3000ms, st_commit_storm);
-
+    run("streaming table ×200",        3000ms, st_streaming_table);
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",
                  g_passed - g_slow, g_slow, g_failed, g_skipped);

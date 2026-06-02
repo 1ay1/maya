@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "maya/element/builder.hpp"
+#include "maya/render/cache_id.hpp"
 #include "maya/style/border.hpp"
 #include "maya/style/style.hpp"
 #include "maya/widget/markdown.hpp"
@@ -32,6 +33,65 @@ using ::maya::md_detail::ul_marker_len;
 using ::maya::md_detail::ol_marker_len;
 using ::maya::md_detail::count_indent;
 using ::maya::md_detail::streaming::fnv1a64;
+
+void StreamingMarkdown::render_eager_slice(std::string_view slice,
+                                           std::vector<Element>& kids) const {
+    // Memoize on (source_version_, slice length, slice hash). The slice
+    // is the proven-complete prefix of the eager block; it only grows
+    // when a new row terminates, so between row-commits this is a hit
+    // and we re-emit the cached block Elements by shared_ptr copy —
+    // skipping parse_markdown_impl + md_block_to_element entirely.
+    //
+    // Each cached block is also wrapped in a hash-keyed ComponentElement
+    // (key = slice hash + block index) so the RENDERER's cell cache
+    // blits it (memcpy/row) instead of re-laying-out the whole table or
+    // list every frame. Without this the parse is cached but render_tree
+    // still re-runs layout::compute over the full block each frame — the
+    // dominant cost for a big streaming table. The key changes only when
+    // a new row lands (slice hash moves), so a growing block re-lays-out
+    // once per committed row, not once per frame.
+    std::uint64_t slice_hash = eager_cache_slice_hash_;
+    bool hit = false;
+    if (eager_cache_version_ == source_version_
+        && eager_cache_slice_len_ == slice.size()
+        && !eager_cache_blocks_.empty()) {
+        hit = true;
+    } else {
+        const std::uint64_t h = fnv1a64(slice);
+        slice_hash = h;
+        if (eager_cache_slice_len_ == slice.size()
+            && eager_cache_slice_hash_ == h
+            && !eager_cache_blocks_.empty()) {
+            hit = true;
+        } else {
+            ::maya::md_detail::RefDefsScope guard(
+                const_cast<std::unordered_map<std::string, md::LinkRef>*>(&ref_defs_));
+            auto parsed = parse_markdown_impl(std::string{slice}, 0);
+            eager_cache_blocks_.clear();
+            eager_cache_blocks_.reserve(parsed.blocks.size());
+            for (auto& block : parsed.blocks) {
+                eager_cache_blocks_.push_back(
+                    std::make_shared<const Element>(md_block_to_element(block)));
+            }
+            eager_cache_slice_hash_ = h;
+            eager_cache_slice_len_  = slice.size();
+            eager_cache_version_    = source_version_;
+        }
+    }
+    (void)hit;
+    for (std::size_t i = 0; i < eager_cache_blocks_.size(); ++i) {
+        auto blk = eager_cache_blocks_[i];
+        ComponentElement comp;
+        comp.hash_id = ::maya::CacheIdBuilder{}
+            .add(std::string_view{"strmd-eager"})
+            .add(static_cast<std::uint64_t>(instance_id_))
+            .add(slice_hash)
+            .add(static_cast<std::uint64_t>(i))
+            .build();
+        comp.render = [blk](int, int) -> Element { return *blk; };
+        kids.push_back(Element{std::move(comp)});
+    }
+}
 
 Element StreamingMarkdown::render_tail(std::string_view tail) const {
     // Skip leading newlines (whitespace from a prior commit boundary).
@@ -315,20 +375,12 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
 
         if (last_committed_end > 0) {
             // Parse the proven-complete rows as a real markdown
-            // document. parse_markdown_impl on a slice ending in `\n`
-            // produces a single List or Blockquote block (plus possibly
-            // a trailing empty paragraph for the loose blank, which
-            // assemble_markdown's vstack handles).
+            // document (cached on the slice bytes — re-emits the block
+            // Elements without re-parsing when the slice is unchanged).
             std::string_view rendered_slice = body.substr(0, last_committed_end);
-            ::maya::md_detail::RefDefsScope guard(
-                const_cast<std::unordered_map<std::string, md::LinkRef>*>(&ref_defs_));
-            auto parsed = parse_markdown_impl(std::string{rendered_slice}, 0);
-
             std::vector<Element> kids;
-            kids.reserve(parsed.blocks.size() + 1);
-            for (auto& block : parsed.blocks) {
-                kids.push_back(md_block_to_element(block));
-            }
+            kids.reserve(2);
+            render_eager_slice(rendered_slice, kids);
 
             // Live row (post-last-`\n` partial) renders as inline text,
             // same monotonicity rules as the paragraph fallback below.
@@ -460,19 +512,13 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                     // Parse the proven-complete slice as a real markdown
                     // document — yields exactly one md::Table block
                     // matching what commit_range would eventually emit.
+                    // Cached on the slice bytes so an unchanged table
+                    // re-emits without re-parsing every frame.
                     std::string_view table_slice =
                         body.substr(0, last_row_end);
-                    ::maya::md_detail::RefDefsScope guard(
-                        const_cast<std::unordered_map<
-                            std::string, md::LinkRef>*>(&ref_defs_));
-                    auto parsed = parse_markdown_impl(
-                        std::string{table_slice}, 0);
-
                     std::vector<Element> kids;
-                    kids.reserve(parsed.blocks.size() + 1);
-                    for (auto& block : parsed.blocks) {
-                        kids.push_back(md_block_to_element(block));
-                    }
+                    kids.reserve(2);
+                    render_eager_slice(table_slice, kids);
 
                     // Live trailing row (partial, no `\n`). Render as
                     // inline literal text so further bytes extend it

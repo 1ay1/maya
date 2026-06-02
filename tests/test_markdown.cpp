@@ -1085,6 +1085,61 @@ static void st_eager_hrule() {
     }
 }
 
+// Big committed blocks must blit, not re-render, every frame. Build a
+// transcript with several large code blocks + a wide table (the
+// expensive-to-lay-out kinds), finish so they're all committed, then
+// render 300 times. With per-block hash-keyed caching each block paints
+// once and blits after; without it every frame re-lays-out every block
+// and this blows the budget on a long transcript.
+static void st_big_blocks_blit() {
+    StreamingMarkdown md;
+    std::string body;
+    for (int b = 0; b < 12; ++b) {
+        body += "## Section " + std::to_string(b) + "\n\n";
+        body += "```cpp\n";
+        for (int l = 0; l < 60; ++l)
+            body += "int v_" + std::to_string(b) + "_" + std::to_string(l)
+                 +  " = compute(" + std::to_string(l) + ");\n";
+        body += "```\n\n";
+    }
+    body += "| col a | col b | col c |\n|---|---|---|\n";
+    for (int r = 0; r < 40; ++r)
+        body += "| cell " + std::to_string(r) + " | data "
+             +  std::to_string(r) + " | more " + std::to_string(r) + " |\n";
+    body += "\n";
+    md.set_content(body);
+    md.finish();
+    render_stream(md);                 // prime: first paint captures cells
+    for (int k = 0; k < 300; ++k)
+        render_stream(md);             // every frame must blit
+}
+
+// Commit storm: the actual long-session symptom. Feed a transcript that
+// commits a new block on (almost) every render, with each committed
+// block being a non-trivial code block. After block N commits, blocks
+// 0..N-1 are unchanged — per-block hash caching must let them blit so
+// each commit costs O(new block), not O(N). Without it this is O(N²)
+// over the run and balloons on a long reply.
+static void st_commit_storm() {
+    StreamingMarkdown md;
+    md.set_live(true);
+    std::string acc;
+    for (int b = 0; b < 80; ++b) {
+        acc += "```cpp\n";
+        for (int l = 0; l < 20; ++l)
+            acc += "auto x_" + std::to_string(b) + "_" + std::to_string(l)
+                +  " = f(" + std::to_string(l) + ");\n";
+        acc += "```\n\n";
+        // set_content the growing buffer + a blank line so the prior
+        // block commits, then render — mirrors the view layer feeding
+        // the revealed prefix every frame.
+        md.set_content(acc);
+        render_stream(md);
+    }
+    md.finish();
+    render_stream(md);
+}
+
 // ───────────────────────────── main ─────────────────────────────────────────
 
 int main() {
@@ -1441,6 +1496,8 @@ int main() {
     run("block meta + fold",            2000ms, st_block_meta_and_fold);
     run("set_content_async roundtrip",  8000ms, st_set_content_async_roundtrip);
     run("eager hrule (no snap)",        2000ms, st_eager_hrule);
+    run("big blocks blit ×300",         2000ms, st_big_blocks_blit);
+    run("commit storm ×80",            3000ms, st_commit_storm);
 
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",

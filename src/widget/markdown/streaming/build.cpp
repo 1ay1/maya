@@ -104,7 +104,8 @@ const Element& StreamingMarkdown::build() const {
             .add(static_cast<std::uint64_t>(p->generation))
             .add(static_cast<std::uint64_t>(fold_generation_))
             .build();
-        comp.render = [p, folds = std::move(fold_snapshot)](int /*w*/, int /*h*/) -> Element {
+        comp.render = [p, inst = instance_id_,
+                       folds = std::move(fold_snapshot)](int /*w*/, int /*h*/) -> Element {
             std::vector<Element> kids;
             kids.reserve(p->blocks.size());
             for (std::size_t i = 0; i < p->blocks.size(); ++i) {
@@ -112,6 +113,37 @@ const Element& StreamingMarkdown::build() const {
                     ? p->metas[i] : BlockMeta{};
                 auto fit = folds.find(meta.source_offset);
                 const bool folded = fit != folds.end() && fit->second;
+
+                // Each committed block is wrapped in its OWN hash-keyed
+                // ComponentElement. The key is stable CONTENT identity
+                // (instance + source byte range + fold state), never a
+                // pointer — committed blocks are immutable, so a block's
+                // key is fixed the moment it commits. The renderer's
+                // hash-keyed cell cache therefore paints each block once
+                // and blits it (memcpy/row) on every later frame. When a
+                // commit appends block N+1, blocks 0..N keep their keys
+                // and blit; only the new block renders. Per-commit cost
+                // is O(new block), not O(transcript). A fold toggle
+                // flips `folded`, changing that one block's key so it
+                // re-renders into its stub on the next frame.
+                //
+                // Why this is safe where the earlier per-block attempt
+                // wasn't: that one used the Element{shared_ptr} ctor
+                // keyed on pointer identity (id_for_shared), which hit
+                // the pointer-keyed cache's stale-height path and left
+                // blank rows when content overflowed into native
+                // scrollback. Hash-keyed entries go through the
+                // content-stable cell cache whose capture path already
+                // guards OOB reads and width changes.
+                ComponentElement block_comp;
+                block_comp.hash_id = CacheIdBuilder{}
+                    .add(std::string_view{"strmd-block"})
+                    .add(static_cast<std::uint64_t>(inst))
+                    .add(static_cast<std::uint64_t>(meta.source_offset))
+                    .add(static_cast<std::uint64_t>(meta.source_end))
+                    .add(static_cast<std::uint64_t>(folded ? 1u : 0u))
+                    .build();
+
                 if (folded) {
                     // Render a single-line stub. Use a styled
                     // dim summary derived from BlockMeta so a
@@ -143,13 +175,21 @@ const Element& StreamingMarkdown::build() const {
                             meta.line_count == 1 ? "" : "s",
                             kind_label);
                     }
-                    kids.push_back(Element{TextElement{
-                        .content = std::string{buf},
-                        .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
-                    }});
+                    std::string stub{buf};
+                    block_comp.render =
+                        [stub = std::move(stub)](int, int) -> Element {
+                            return Element{TextElement{
+                                .content = stub,
+                                .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+                            }};
+                        };
                 } else {
-                    kids.push_back(*p->blocks[i]);
+                    auto blk = p->blocks[i];   // shared_ptr<const Element>
+                    block_comp.render = [blk](int, int) -> Element {
+                        return *blk;
+                    };
                 }
+                kids.push_back(Element{std::move(block_comp)});
             }
             return detail::vstack().gap(1)(std::move(kids)).build();
         };

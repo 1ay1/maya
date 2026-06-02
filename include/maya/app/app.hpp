@@ -1416,6 +1416,18 @@ void run(RunConfig cfg = {}) {
                     last_visual_hash_valid = true;
                 }
             }
+            // Backpressure overrides the gate. In inline mode the ONLY
+            // residue drainer is rt.render() (its first act is
+            // try_drain_residue; on a congested tty it defers the frame
+            // entirely). If the writer is still holding bytes the wire
+            // rejected last frame, skipping render() because the visual
+            // hash matched would strand that residue until some unrelated
+            // axis (the next Tick bucket, ~33ms out) flips the hash — the
+            // frame appears "stuck" while the deferred bytes sit
+            // undrained, then snaps in late. Force the render so each
+            // loop iteration makes drain progress; the poll-timeout clamp
+            // above bounds the retry cadence so this can't busy-spin.
+            if (rt.has_pending_writes()) skip_render = false;
 
             if (!skip_render) {
                 // Pure: view(model) → Element → render to terminal

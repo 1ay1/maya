@@ -319,6 +319,29 @@ auto Runtime::render(const Element& root) -> Status {
             std::chrono::steady_clock::now() - t0).count() / 1000.0;
     };
 
+    const int prev_known_w = size_.width.raw();
+    if (prev_known_w <= 0) return ok();
+
+    // Per-frame width reconciliation. `term_h` is re-queried every frame
+    // (below) so a missed/coalesced SIGWINCH can't desync the viewport
+    // height — but WIDTH only updated in handle_resize(). If a resize
+    // event is dropped (kitty/tmux coalescing, a fast drag, a size that
+    // differed at launch), the renderer keeps composing at the stale
+    // width while the terminal is a different size: every row mis-wraps
+    // and the diff's \r / cursor-up math lands on the wrong physical
+    // rows — the intermittent flicker / corruption symptom. Treat a
+    // per-frame width delta exactly like a resize: update size_, bump
+    // the generation, and route the next compose through the
+    // width-changed reset path (HardReset inline / Divergent fullscreen)
+    // so it repaints clean at the true width. Single TIOCGWINSZ, same
+    // ioctl that already backs query_term_rows.
+    {
+        const auto live = platform::query_terminal_size(output_handle_);
+        const int live_w = live.width.raw();
+        if (live_w > 0 && live_w != prev_known_w) {
+            handle_resize();
+        }
+    }
     const int w = size_.width.raw();
     if (w <= 0) return ok();
 
@@ -451,6 +474,13 @@ auto Runtime::render(const Element& root) -> Status {
         const auto rows   = content_rows(canvas_);   // typed witness
         auto t_cf0 = std::chrono::steady_clock::now();
 
+        // Coherence state index before the visit, so the prof log can
+        // flag any frame that DIDN'T stay Synced→Synced — those are the
+        // full-viewport repaints (Stale soft-redraw, HardReset wipe,
+        // verify-poison demote) that show as intermittent flicker.
+        const std::size_t coh_before = in_coherence_.index();
+        bool verify_demoted = false;
+
         in_coherence_ = std::visit(
             [&](auto&& arm) -> inline_frame::InlineCoherence {
                 using T = std::decay_t<decltype(arm)>;
@@ -476,6 +506,7 @@ auto Runtime::render(const Element& root) -> Status {
                 else if constexpr (std::is_same_v<T, InlineFrame<Synced>>) {
                     auto wit = arm.verify();
                     if (!wit) {
+                        verify_demoted = true;
                         return std::move(arm).demote_to_stale();
                     }
                     return lift(std::move(arm).render(
@@ -500,10 +531,17 @@ auto Runtime::render(const Element& root) -> Status {
 
         double cf_ms = since(t_cf0);
         if (prof) {
+            // coh: which inline coherence arm RAN this frame (the
+            // before-index). 2 == Synced (the steady, no-flicker path);
+            // anything else is a full-viewport repaint. `demote` flags
+            // the verify-poison Synced→Stale transition specifically.
             std::fprintf(prof_out,
-                "maya-frame: rt=%.2f cf=%.2f total=%.2f nodes=%zu rows=%d w=%d\n",
+                "maya-frame: rt=%.2f cf=%.2f total=%.2f nodes=%zu rows=%d w=%d "
+                "coh=%zu->%zu%s\n",
                 rt_ms, cf_ms, since(t_frame_start),
-                layout_nodes_.size(), ch, w);
+                layout_nodes_.size(), ch, w,
+                coh_before, in_coherence_.index(),
+                verify_demoted ? " VERIFY-DEMOTE" : "");
             std::fflush(prof_out);
         }
         return ok();

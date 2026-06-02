@@ -507,6 +507,47 @@ auto Runtime::render(const Element& root) -> Status {
                     auto wit = arm.verify();
                     if (!wit) {
                         verify_demoted = true;
+                        // The shadow is poisoned: prev_cells no longer
+                        // matches the wire. How we recover depends on
+                        // whether the live frame has overflowed the
+                        // viewport into native scrollback.
+                        //
+                        //   • Fits within the viewport
+                        //     (prev_rows <= term_h): no row has scrolled
+                        //     off, so every diverged row is still on
+                        //     screen and rewritable. Demote to Stale —
+                        //     case (B) repaints the viewport in place,
+                        //     no scrollback wipe, host content above
+                        //     preserved. This is the cheap, common path.
+                        //
+                        //   • Overflowed the viewport
+                        //     (prev_rows > term_h): part of the frame is
+                        //     already committed to native scrollback,
+                        //     which is immutable to us. case (B) is
+                        //     VIEWPORT-ONLY — it cannot rewrite those
+                        //     scrolled-off rows. Demoting to Stale would
+                        //     repaint the corrected viewport while the
+                        //     stale (diverged) copy stays stranded one
+                        //     screen up — the "turn repeats out of
+                        //     nowhere in scrollback" symptom. The only
+                        //     coherent recovery is HardReset: wipe
+                        //     viewport + saved-lines and repaint clean.
+                        //     Losing pre-launch scrollback is the right
+                        //     trade against a permanently duplicated
+                        //     transcript, and it only fires on the rare
+                        //     poisoned-shadow-while-overflowed frame.
+                        //
+                        // agent_session never hits the overflow branch:
+                        // its live tail collapses to empty at MessageStop
+                        // (frozen and live are mutually exclusive), so
+                        // its frames stay viewport-sized. agentty's
+                        // two-tier render keeps a tall live tail during
+                        // streaming, which is exactly when a mid-scroll
+                        // shadow poison can strand a duplicate.
+                        const int prev_rows = arm.rows();
+                        if (prev_rows > term_h.value()) {
+                            return std::move(arm).demote_to_hard_reset();
+                        }
                         return std::move(arm).demote_to_stale();
                     }
                     return lift(std::move(arm).render(

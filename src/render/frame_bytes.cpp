@@ -88,27 +88,23 @@ FrameBytes compose_inline_frame(
     assert(witness.valid() && "ShadowWitness was already consumed");
 
     {
-        // Re-hash the now-moved state's prev_cells; compare with the
-        // value the witness recorded. A mismatch implies the cell
-        // buffer changed between the moments verify_shadow returned
-        // and compose entered — a fundamental violation that is
-        // unrecoverable.
-        std::uint64_t h = 14695981039346656037ULL;
+        // Re-derive the shadow combine from the now-moved state's
+        // per-row hashes; compare with the value the witness recorded.
+        // A mismatch implies the cell buffer / row-hash array changed
+        // between the moments verify_shadow returned and compose
+        // entered — a fundamental violation that is unrecoverable.
+        // Uses the O(prev_rows) XOR combine (same value verify_shadow
+        // produced), not an O(prev_rows x width) cell re-fold.
         if (state.prev_width_ > 0 && state.prev_rows_ > 0 &&
-            state.shadow_hash_ != static_cast<std::uint64_t>(-1)) {
-            const std::size_t W = static_cast<std::size_t>(state.prev_width_);
-            const std::size_t n = static_cast<std::size_t>(state.prev_rows_) * W;
-            if (n <= state.prev_cells_.size()) {
-                const std::uint64_t* p = state.prev_cells_.data();
-                for (std::size_t i = 0; i < n; ++i) {
-                    h ^= p[i];
-                    h *= 1099511628211ULL;
-                }
-                if (h != witness.hash_at_issue()) {
-                    // Shadow corruption between verify and consume.
-                    // Cannot emit bytes safely; abort the process.
-                    std::abort();
-                }
+            state.shadow_hash_ != static_cast<std::uint64_t>(-1) &&
+            state.row_hashes_.size()
+                == static_cast<std::size_t>(state.prev_rows_)) {
+            std::uint64_t h = 0;
+            for (std::uint64_t r : state.row_hashes_) h ^= r;
+            if (h != witness.hash_at_issue()) {
+                // Shadow corruption between verify and consume.
+                // Cannot emit bytes safely; abort the process.
+                std::abort();
             }
         }
     }

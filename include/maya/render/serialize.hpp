@@ -17,6 +17,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "canvas.hpp"
 #include "../platform/io.hpp"
@@ -327,6 +328,7 @@ public:
         s.shadow_hash_       = static_cast<uint64_t>(-1);
         s.ghost_rows_above_  = 0;
         s.wire_cursor_rows_  = 0;
+        s.row_hashes_.clear();
         return s;
     }
 
@@ -369,6 +371,7 @@ public:
         s.cursor_hidden_    = false;
         s.decawm_off_       = false;
         s.shadow_hash_      = static_cast<uint64_t>(-1);
+        s.row_hashes_.clear();
         return s;
     }
 
@@ -408,6 +411,14 @@ private:
     int           ghost_rows_above_ = 0;
     int           wire_cursor_rows_ = 0;
     uint64_t      shadow_hash_      = static_cast<uint64_t>(-1);
+    // Per-row shadow hashes (one FNV-1a fold per row of prev_cells,
+    // each mixed with its row index so row reordering is detected).
+    // shadow_hash_ is their position-independent XOR combine. Compose
+    // updates only the rows it changed → post-frame rehash is O(changed
+    // rows), and verify_shadow re-folds this u64-per-row array (O(rows)
+    // of cheap XORs) instead of re-reading every cell (O(rows x width)).
+    // Kept in lockstep with prev_rows_; committed()/reset clear it.
+    std::vector<uint64_t> row_hashes_;
 };
 
 /// Return value of `InlineFrameState::finalize() &&`. Carries the

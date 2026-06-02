@@ -20,17 +20,42 @@ TermRows query_term_rows(platform::NativeHandle handle) noexcept {
     return TermRows{h > 0 ? h : 24};
 }
 
-// ShadowWitness producer. Folds prev_cells with FNV-1a and compares
-// to the value compose stored at the end of the prior frame,
-// returning either a populated optional carrying the witness (the
-// hash matched, or the state was fresh) or nullopt (hash mismatch —
-// the shadow is poisoned).
+namespace {
+// FNV-1a fold of one row's cells, mixed with the row index so two
+// identical rows at different positions hash differently (the combine
+// below is a position-independent XOR, so per-row position must be
+// baked in here to keep row-reordering detectable).
+inline uint64_t hash_row(const uint64_t* row, std::size_t W, int y) noexcept {
+    uint64_t h = 14695981039346656037ULL;
+    h ^= static_cast<uint64_t>(y) + 0x9E3779B97F4A7C15ULL;
+    h *= 1099511628211ULL;
+    for (std::size_t x = 0; x < W; ++x) {
+        h ^= row[x];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+// Combine per-row hashes into the single shadow hash. XOR is
+// associative/commutative so a single changed row can be updated in
+// O(1) by XORing out the old row hash and XORing in the new one.
+inline uint64_t combine_rows(const std::vector<uint64_t>& rows) noexcept {
+    uint64_t h = 0;
+    for (uint64_t r : rows) h ^= r;
+    return h;
+}
+} // namespace
+
+// ShadowWitness producer. The shadow hash is maintained incrementally
+// (per-row hashes in state.row_hashes_, XOR-combined into
+// shadow_hash_). verify re-folds the row-hash array — O(prev_rows) of
+// u64 XORs, not O(prev_rows x width) cell reads — and checks it against
+// the cached combine. A mismatch means prev_cells (or row_hashes_) was
+// mutated outside the compose path: the shadow is poisoned, return
+// nullopt and let the runtime demote to Divergent.
 //
-// Note we hash even on the "fresh" path so the witness carries a
-// concrete value, not the UINT64_MAX sentinel. That way the
-// re-verification done by compose_inline_frame on consumption is
-// always comparing against a real folded hash, never against the
-// sentinel.
+// Note we still return a populated witness on the "fresh" path so the
+// witness carries a concrete value, never the UINT64_MAX sentinel.
 std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexcept {
     // Fresh state: no prior shadow exists, so trivially "matches".
     // Witness carries the current empty-state hash.
@@ -39,16 +64,12 @@ std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexce
         return ShadowWitness{&state, 0ULL};
     }
 
-    const std::size_t W = static_cast<std::size_t>(state.prev_width_);
-    const std::size_t n = static_cast<std::size_t>(state.prev_rows_) * W;
-    if (n > state.prev_cells_.size()) return std::nullopt;
+    // Row-hash array must be in lockstep with prev_rows_; if it isn't,
+    // something cleared it out-of-band — treat as poisoned.
+    if (state.row_hashes_.size() != static_cast<std::size_t>(state.prev_rows_))
+        return std::nullopt;
 
-    uint64_t h = 14695981039346656037ULL;
-    const uint64_t* p = state.prev_cells_.data();
-    for (std::size_t i = 0; i < n; ++i) {
-        h ^= p[i];
-        h *= 1099511628211ULL;
-    }
+    const uint64_t h = combine_rows(state.row_hashes_);
     if (h != state.shadow_hash_) return std::nullopt;
     return ShadowWitness{&state, h};
 }
@@ -90,18 +111,29 @@ InlineFrameState InlineFrameState::committed(ScrollbackMarker marker) && noexcep
     }
     s.prev_rows_ -= rows;
 
-    // Re-hash the now-shifted prev_cells so the next render's
-    // shadow-verify compares against the post-shift state instead
-    // of false-positive on the legitimate scrollback advance.
-    if (s.shadow_hash_ != static_cast<uint64_t>(-1)) {
-        uint64_t h = 14695981039346656037ULL;
-        const std::size_t n =
-            static_cast<std::size_t>(s.prev_rows_) * W;
-        for (std::size_t i = 0; i < n; ++i) {
-            h ^= s.prev_cells_.data()[i];
-            h *= 1099511628211ULL;
-        }
-        s.shadow_hash_ = h;
+    // Shift the per-row hash array to match the cell memmove. Rows
+    // [rows, old_prev_rows) move to [0, new_prev_rows). Their cell
+    // CONTENT is unchanged by the shift, but each row's hash mixes in
+    // its index (hash_row), so a row that moved from y+rows to y must
+    // be re-hashed at its new position. Re-derive from the shifted
+    // cells; this is O(new_prev_rows) which is bounded post-trim.
+    if (s.shadow_hash_ != static_cast<uint64_t>(-1)
+        && s.row_hashes_.size() == static_cast<std::size_t>(s.prev_rows_ + rows)) {
+        s.row_hashes_.resize(static_cast<std::size_t>(s.prev_rows_));
+        const uint64_t* cbase = s.prev_cells_.data();
+        for (int y = 0; y < s.prev_rows_; ++y)
+            s.row_hashes_[static_cast<std::size_t>(y)] =
+                hash_row(cbase + static_cast<std::size_t>(y) * W, W, y);
+        s.shadow_hash_ = combine_rows(s.row_hashes_);
+    } else if (s.shadow_hash_ != static_cast<uint64_t>(-1)) {
+        // Row-hash array out of lockstep (external reset) — fall back
+        // to a full recompute so the next verify stays consistent.
+        s.row_hashes_.assign(static_cast<std::size_t>(s.prev_rows_), 0);
+        const uint64_t* cbase = s.prev_cells_.data();
+        for (int y = 0; y < s.prev_rows_; ++y)
+            s.row_hashes_[static_cast<std::size_t>(y)] =
+                hash_row(cbase + static_cast<std::size_t>(y) * W, W, y);
+        s.shadow_hash_ = combine_rows(s.row_hashes_);
     }
 
     // Cursor invariant: the next compose_inline_frame call assumes
@@ -806,6 +838,16 @@ compose_inline_frame_impl(const Canvas& canvas,
         state.prev_width_ = W;
         state.prev_rows_  = content_rows;
         state.wire_cursor_rows_ = std::min(content_rows, term_h);
+        // Seed per-row hashes for the whole fresh frame and the combine.
+        {
+            const uint64_t* cbase = state.prev_cells_.data();
+            state.row_hashes_.assign(static_cast<std::size_t>(content_rows), 0);
+            for (int y = 0; y < content_rows; ++y)
+                state.row_hashes_[static_cast<std::size_t>(y)] =
+                    hash_row(cbase + static_cast<std::size_t>(y) * W,
+                             static_cast<std::size_t>(W), y);
+            state.shadow_hash_ = combine_rows(state.row_hashes_);
+        }
         return {std::move(out), std::move(state)};
     }
 
@@ -1126,29 +1168,44 @@ compose_inline_frame_impl(const Canvas& canvas,
     state.prev_rows_  = content_rows;
     state.wire_cursor_rows_ = std::min(content_rows, term_h);
 
-    // ── Production shadow-of-wire hash ─────────────────────────────────
+    // ── Production shadow-of-wire hash (incremental) ───────────────────
     //
-    // Hash the entire prev_cells[0, content_rows*W) range with a fast
-    // FNV-1a-style fold. verify_shadow() recomputes from the
-    // same range before the next compose; mismatch ⇒ someone mutated
-    // prev_cells (or the underlying allocation) outside the compose
-    // path and the diff would silently emit wrong bytes. The runtime
-    // demotes to Divergent on mismatch.
+    // Per-row hashes are maintained across frames in state.row_hashes_;
+    // shadow_hash_ is their XOR combine. This frame only changed rows
+    // [first_changed, content_rows) (the per-row loop wrote those into
+    // prev_cells), so only those rows need re-hashing. Rows below
+    // first_changed are byte-identical at the same y, so their cached
+    // hashes are still valid. verify_shadow re-folds this array before
+    // the next compose (O(rows) XORs) and demotes to Divergent on
+    // mismatch — the same corruption guard, ~8x cheaper than re-reading
+    // every cell, and the UPDATE here is O(changed rows x width) instead
+    // of O(content_rows x width).
     //
-    // Range is the full prev frame [0, content_rows) rather than just
-    // the visible viewport: simpler invariant (one hash covers every
-    // byte the diff might consult next frame), and commit_prefix
-    // handles scrollback shifts by re-hashing after the memmove.
+    // If the row-hash array is out of lockstep with the prior frame
+    // (first compose after a path that didn't maintain it), fall back to
+    // a full rebuild so the invariant re-establishes cleanly.
     {
         const uint64_t* shadow_base = state.prev_cells_.data();
-        uint64_t h = 14695981039346656037ULL;
-        const std::size_t n =
-            static_cast<std::size_t>(content_rows) * W;
-        for (std::size_t i = 0; i < n; ++i) {
-            h ^= shadow_base[i];
-            h *= 1099511628211ULL;
+        const bool in_lockstep =
+            state.row_hashes_.size() == static_cast<std::size_t>(prev_rows);
+        if (in_lockstep) {
+            // Resize the array to the new row count (shrink drops tail
+            // hashes; grow leaves new slots to be filled by the loop).
+            state.row_hashes_.resize(static_cast<std::size_t>(content_rows));
+            const int begin = std::min(first_changed, content_rows);
+            for (int y = begin; y < content_rows; ++y)
+                state.row_hashes_[static_cast<std::size_t>(y)] =
+                    hash_row(shadow_base + static_cast<std::size_t>(y) * W,
+                             static_cast<std::size_t>(W), y);
+            state.shadow_hash_ = combine_rows(state.row_hashes_);
+        } else {
+            state.row_hashes_.assign(static_cast<std::size_t>(content_rows), 0);
+            for (int y = 0; y < content_rows; ++y)
+                state.row_hashes_[static_cast<std::size_t>(y)] =
+                    hash_row(shadow_base + static_cast<std::size_t>(y) * W,
+                             static_cast<std::size_t>(W), y);
+            state.shadow_hash_ = combine_rows(state.row_hashes_);
         }
-        state.shadow_hash_ = h;
     }
 
     // ── Shadow-of-wire invariant check (debug builds only) ─────────────

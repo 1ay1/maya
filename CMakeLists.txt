@@ -280,6 +280,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_inline_frame.cpp
         tests/test_commonmark_spec.cpp
         tests/test_html.cpp
+        tests/bench_thread_scaling.cpp
     )
 
     foreach(src ${MAYA_TEST_SOURCES})

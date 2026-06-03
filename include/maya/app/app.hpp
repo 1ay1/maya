@@ -1359,23 +1359,21 @@ void run(RunConfig cfg = {}) {
             needs_render = true;
         }
 
-        if (needs_render) {
-            // Rebuild subscriptions from current model
-            current_sub = get_sub();
-
-            // Re-seed timer subscriptions. Each Sub::Every entry needs
-            // exactly one timer scheduled at all times. Match by `interval`
-            // (the timer's tag) so two distinct Sub::Every subscriptions
-            // with different periods don't collide — a previous heuristic
-            // that checked "any timer within interval" would skip
-            // re-arming Sub::Every(100ms) whenever a Sub::Every(50ms)
-            // had a fire within 100ms.
-            //
-            // Two Sub::Every subs that share an interval will coalesce
-            // into a single timer (both msgs would be sent). That's an
-            // acceptable degenerate case — apps rarely want two
-            // identical periods, and if they do, they can pick distinct
-            // intervals like 100ms vs 101ms to disambiguate.
+        // Reconcile Sub::Every timers EVERY iteration — not gated on
+        // needs_render. Invariant: each Sub::Every interval present in
+        // the current subscription must have exactly one armed timer at
+        // all times. Gating this behind the render block created a
+        // freeze-until-keypress hole: if the model became active (e.g. a
+        // background-queue message kicked a new turn) on an iteration
+        // that did NOT also set needs_render, the Tick timer was never
+        // armed, the loop fell back to the 100 ms idle poll, and — since
+        // nothing re-armed it — the spinner/stream sat frozen until an
+        // unrelated event (a keypress) forced a render that finally
+        // reconciled. Rebuilding the sub here keeps the timer set
+        // honest against the live model on every pass. Cheap: a Sub
+        // rebuild + small vector scan, no allocation when steady.
+        current_sub = get_sub();
+        {
             auto now = std::chrono::steady_clock::now();
             std::vector<std::pair<std::chrono::milliseconds, Msg>> timer_specs;
             detail::collect_timers(current_sub, timer_specs);
@@ -1393,6 +1391,16 @@ void run(RunConfig cfg = {}) {
                     });
                 }
             }
+        }
+
+        if (needs_render) {
+            // Rebuild subscriptions from current model
+            current_sub = get_sub();
+
+            // (Timer reconciliation moved above the gate — see the
+            // unconditional reconcile block. Each Sub::Every entry needs
+            // exactly one timer scheduled at all times, independent of
+            // whether this iteration renders.)
 
             // Optional visual-hash gate. When the Program provides
             // visual_hash(Model), skip view()+render() if the hash

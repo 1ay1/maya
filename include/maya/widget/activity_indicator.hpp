@@ -394,7 +394,13 @@ public:
                 parts.push_back(text("  \xc2\xb7  ") | fgc(muted) | Italic);
                 parts.push_back(text(detail) | fgc(muted) | Italic);
             }
-            return v(blank(), h(std::move(parts))).build();
+            // Exactly one row — no internal leading blank. Hosts that
+            // need separation from the element above supply it (the
+            // in-Turn placeholder gets it from Turn's under-header
+            // blank). Staying single-row makes the placeholder height
+            // match the first streamed content slot, so the
+            // indicator→content flip is height-seamless.
+            return h(std::move(parts)).build();
         });
     }
 

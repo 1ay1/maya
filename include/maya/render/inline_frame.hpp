@@ -268,6 +268,15 @@ public:
         return state_.scrollback_marker(rows);
     }
 
+    /// Whether the first `rows` rows of `canvas` are byte-identical to
+    /// this frame's prev_cells prefix. Lets the runtime distinguish a
+    /// turn-finish freeze (prefix unchanged) from a scrollback-content
+    /// shift (prefix differs) when deciding the overflow-shrink recovery.
+    [[nodiscard]] bool scrollback_prefix_matches(
+        const Canvas& canvas, int rows) const noexcept {
+        return state_.scrollback_prefix_matches(canvas, rows);
+    }
+
     [[nodiscard]] int rows()  const noexcept { return state_.prev_rows(); }
     [[nodiscard]] int width() const noexcept { return state_.prev_width(); }
     [[nodiscard]] int wire_cursor_rows() const noexcept {

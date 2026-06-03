@@ -349,6 +349,16 @@ public:
         return ScrollbackMarker{std::min(rows, prev_rows_)};
     }
 
+    /// True iff the first `rows` rows of `canvas` are byte-identical to
+    /// the first `rows` rows of this state's prev_cells (same width).
+    /// Used to tell a turn-finish freeze (the scrolled-off prefix stays
+    /// unchanged → diff path is scrollback-safe) apart from a genuine
+    /// scrollback-content shift (prefix differs → a stranded duplicate
+    /// would result, recovery needed). Defined in serialize.cpp where
+    /// the cell layout is known.
+    [[nodiscard]] bool scrollback_prefix_matches(
+        const Canvas& canvas, int rows) const noexcept;
+
     /// Consume the marker and return the successor state with
     /// `marker.rows()` rows shifted off the top of prev_cells. A
     /// marker that targets all rows (or more) returns a reset

@@ -148,6 +148,24 @@ InlineFrameState InlineFrameState::committed(ScrollbackMarker marker) && noexcep
     return s;
 }
 
+bool InlineFrameState::scrollback_prefix_matches(
+    const Canvas& canvas, int rows) const noexcept
+{
+    if (rows <= 0) return true;
+    // Width must match or the row stride differs and a cell compare is
+    // meaningless — treat as "does not match" so the caller recovers.
+    const int W = prev_width_;
+    if (W <= 0 || canvas.width() != W) return false;
+    // Can't compare more rows than either buffer holds.
+    if (rows > prev_rows_) return false;
+    const std::size_t need = static_cast<std::size_t>(rows) * W;
+    if (prev_cells_.size() < need) return false;
+    if (canvas.cell_count() < need) return false;
+    const uint64_t* a = prev_cells_.data();
+    const uint64_t* b = canvas.cells();
+    return std::memcmp(a, b, need * sizeof(uint64_t)) == 0;
+}
+
 int content_height(const Canvas& canvas) noexcept {
     // O(1): canvas tracks max_y_ during painting. -1 ⇒ nothing was
     // ever written this frame ⇒ zero rows of content.

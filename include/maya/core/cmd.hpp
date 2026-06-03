@@ -170,7 +170,7 @@ public:
     ///   |------------------------------------------|--------------------|
     ///   | Ghost cells inside the viewport          | force_redraw       |
     ///   | Ctrl-L style user redraw                 | force_redraw       |
-    ///   | Wholesale model swap (thread / restore)  | reset_inline       |
+    ///   | Wholesale model swap (thread / restore)  | commit_..._overflow + force_redraw |
     ///   | Bounded-frozen trim (drop oldest N rows) | commit_..._overflow|
     ///   | Terminal genuinely corrupted             | (resize only)      |
     struct ForceRedraw {};

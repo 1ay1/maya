@@ -170,15 +170,41 @@ public:
     ///   |------------------------------------------|--------------------|
     ///   | Ghost cells inside the viewport          | force_redraw       |
     ///   | Ctrl-L style user redraw                 | force_redraw       |
-    ///   | Wholesale model swap (thread / restore)  | commit_..._overflow|
+    ///   | Wholesale model swap (thread / restore)  | reset_inline       |
     ///   | Bounded-frozen trim (drop oldest N rows) | commit_..._overflow|
     ///   | Terminal genuinely corrupted             | (resize only)      |
     struct ForceRedraw {};
 
+    /// HARD inline reset: the next render wipes the viewport AND the
+    /// terminal's saved-lines (`\x1b[2J\x1b[3J\x1b[H`) and repaints
+    /// the new content from a clean home position.
+    ///
+    /// The ONLY host-callable Cmd that can erase rows the application
+    /// already scrolled into native scrollback. Use it for a
+    /// WHOLESALE, DESTRUCTIVE content swap into potentially shorter
+    /// content — thread switch, new thread, checkpoint restore —
+    /// where the old transcript may have overflowed the viewport and
+    /// left dozens of its rows committed above the live frame.
+    ///
+    /// Why neither alternative works on that transition:
+    ///   - `commit_scrollback_overflow` only drops the overflow from
+    ///     `prev_cells` (so the diff scans the full viewport); it does
+    ///     NOT emit any bytes, so the old thread's physical rows above
+    ///     the viewport stay on the wire — a stranded duplicate when
+    ///     the new content is shorter.
+    ///   - `force_redraw` (case-B) is viewport-only and its
+    ///     scroll-to-fit branch scrolls host history away.
+    ///
+    /// Cost: `\x1b[3J` is destructive to pre-agentty shell scrollback.
+    /// Acceptable for an explicit user-initiated swap; NEVER wire to a
+    /// routine per-frame / per-turn path. For resize, the runtime's
+    /// SIGWINCH handler already does its own hard reset.
+    struct ResetInline {};
+
     using Variant = std::variant<None, Quit, Batch, After, SetTitle,
                                  WriteClipboard, Task, IsolatedTask,
                                  CommitScrollback, CommitScrollbackOverflow,
-                                 ForceRedraw>;
+                                 ForceRedraw, ResetInline>;
     Variant inner;
 
     // -- Smart constructors ---------------------------------------------------
@@ -228,6 +254,13 @@ public:
     /// chooser table vs `commit_scrollback_overflow`.
     [[nodiscard]] static auto force_redraw() -> Cmd {
         return {ForceRedraw{}};
+    }
+
+    /// Schedule a HARD inline reset on the next render. See
+    /// `ResetInline` doc above — destructive scrollback wipe, for
+    /// wholesale model swaps only.
+    [[nodiscard]] static auto reset_inline() -> Cmd {
+        return {ResetInline{}};
     }
 
     /// Combine multiple Cmds. Flattens nested batches and strips Nones.
@@ -308,6 +341,9 @@ public:
             },
             [](const ForceRedraw&) -> Cmd<B> {
                 return Cmd<B>::force_redraw();
+            },
+            [](const ResetInline&) -> Cmd<B> {
+                return Cmd<B>::reset_inline();
             },
         }, inner);
     }

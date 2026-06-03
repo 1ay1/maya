@@ -396,11 +396,11 @@ the destruction.
 |-------------------------------------------------|--------------------------------|
 | Ghost cells inside the live viewport            | `Cmd::force_redraw`            |
 | Ctrl-L style user redraw hotkey                 | `Cmd::force_redraw`            |
-| Wholesale model swap (thread switch / restore) | `Cmd::commit_scrollback_overflow` |
+| Wholesale model swap (thread switch / restore) | `Cmd::reset_inline`           |
 | Bounded-frozen trim (drop oldest N rows)        | `Cmd::commit_scrollback_overflow` |
 | Terminal genuinely corrupted (external write)   | (none — resize only)           |
 
-### Common mistake: `force_redraw` on model swap
+### Common mistake: `force_redraw` or `commit_scrollback_overflow` on model swap
 
 The instinct on a wholesale model swap is "my prev_cells
 shadow no longer matches what the user should see, force a
@@ -418,17 +418,32 @@ model swap, the rows scrolling off are unrelated host content
 (or the previous thread's tail), and the scroll permanently
 destroys them.
 
-`commit_scrollback_overflow` is the right primitive: it tells
-maya "the overflow rows in prev_cells are gone" without emitting
-any bytes, then the normal diff path repaints the full viewport
-against the new canvas correctly. Mid-viewport seams (where the
-diff was skipping rows it thought were committed scrollback) go
-away; host scrollback above is preserved.
+`commit_scrollback_overflow` was the *previous* recommendation
+and it fixes the **mid-viewport seam** (the diff skipping rows
+it thought were committed scrollback). But it is INCOMPLETE: it
+advances `prev_rows` down to `term_h` and emits zero bytes, so
+any rows the OLD thread scrolled into native scrollback stay
+physically on the wire. If the new thread is SHORTER than the
+old, the next frame shrinks within the viewport and the old
+thread's scrollback rows are left stranded above the new frame
+— the intermittent "rows corruption after thread switch"
+symptom. The shrink-while-overflowed guard in `app.cpp` does
+NOT catch it: after the commit, `prev_rows == term_h`, so
+`prev_rows > term_h` is false.
+
+`reset_inline` is the correct primitive: it demotes the inline
+coherence to `HardReset`, whose next render emits
+`\x1b[2J\x1b[3J\x1b[H` (wipe viewport + saved-lines) and
+repaints the new thread from a clean home. It is the only
+host-callable Cmd that can reach off-viewport scrollback rows.
+The `\x1b[3J` is destructive to pre-agentty shell history, but
+that is the correct trade for an explicit user-initiated thread
+swap — you are abandoning the old transcript's on-screen
+presence anyway.
 
 See `agentty/src/runtime/app/update/picker.cpp` —
-`ThreadListSelect` / `NewThread` handlers — for the canonical
-application of this rule, with the commit-revert-recommit history
-in the block comment.
+`NewThread` / `ThreadLoaded` handlers — for the canonical
+application of this rule.
 
 ## File map
 

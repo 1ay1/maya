@@ -518,6 +518,45 @@ public:
         // the next render. Empty/Sealed are non-render states; ignore.
     }
 
+    // Force the next inline render to be a HARD reset:
+    // `\x1b[2J\x1b[3J\x1b[H` (clear viewport + clear saved-lines +
+    // home) followed by a clean repaint from canvas row 0.
+    //
+    // This is the ONLY host-callable path that can reach rows the
+    // application already scrolled into native scrollback. It is
+    // therefore the correct recovery for a WHOLESALE CONTENT SWAP
+    // into shorter content (thread switch / new thread): the old
+    // thread may have overflowed the viewport, committing dozens of
+    // its rows to native scrollback. Neither force_redraw (viewport-
+    // only, case-B) nor commit_scrollback_overflow (advances
+    // prev_rows down to term_h but leaves the physical off-viewport
+    // rows on the wire) can erase those rows — they strand a copy of
+    // the old transcript above the new one. demote_to_hard_reset is
+    // the only coherent fix.
+    //
+    // Cost / caveat: \x1b[3J wipes the terminal's saved-lines
+    // (native scrollback), so any pre-agentty shell history above
+    // the frame is lost. That is acceptable ONLY for an explicit,
+    // destructive, user-initiated content swap — never for a routine
+    // frame transition (that's what force_redraw / commit-overflow
+    // are for). Do NOT wire this to a per-frame or per-turn path.
+    //
+    // Inline only. Fullscreen already owns the whole screen via the
+    // alt buffer; route it through Divergent for parity (full
+    // serialize from home next frame).
+    void reset_inline() noexcept {
+        fs_coherence_ = coherent::Divergent{};
+        if (auto* s = std::get_if<inline_frame::InlineFrame<inline_frame::Synced>>(
+                &in_coherence_)) {
+            in_coherence_ = std::move(*s).demote_to_hard_reset();
+        } else if (auto* st = std::get_if<inline_frame::InlineFrame<inline_frame::Stale>>(
+                &in_coherence_)) {
+            in_coherence_ = std::move(*st).escalate_to_hard_reset();
+        }
+        // Empty/Fresh/HardReset/Sealed: nothing to demote — Empty/Fresh
+        // already repaint cleanly, HardReset is already armed.
+    }
+
     // True iff the underlying writer is holding undelivered bytes from a
     // prior non-blocking write — i.e. the last render() either fully or
     // partially deferred its output because the tty pipe couldn't accept
@@ -946,6 +985,9 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
         },
         [&](const typename Cmd<Msg>::ForceRedraw&) {
             ctx.rt.force_redraw();
+        },
+        [&](const typename Cmd<Msg>::ResetInline&) {
+            ctx.rt.reset_inline();
         },
     }, cmd.inner);
 }

@@ -504,10 +504,66 @@ into its native scrollback. We are not corrupting them — we
 are admitting they are no longer addressable, which they
 weren't anyway.
 
-**Doc.** See `docs/internals/inline-redraw-paths.md` § "Choosing
+**Doc.** See `docs/internals/inline-redraw-paths.md` § "Choosing
 a recovery primitive" for the full chooser table and the
 rationale comparing `commit_scrollback_overflow`,
 `force_redraw`, and hard reset.
+
+> **Superseded in part — see #10.** `commit_scrollback_overflow`
+> fixes the mid-viewport SEAM but NOT the case where the new
+> thread is shorter than the old: the old thread's already-
+> overflowed rows stay physically in native scrollback above the
+> new (short) frame. The complete fix is `Cmd::reset_inline`
+> (HardReset). See #10.
+
+---
+
+## #10 — Model swap into SHORTER content strands the old thread's overflow rows in native scrollback  ·  **CORRUPTION · P1** · **RESOLVED**
+
+**Status.** Resolved by adding a host-callable `Cmd::reset_inline`
+(demotes inline coherence to `HardReset`) and routing the
+wholesale model-swap paths (`NewThread`, `ThreadLoaded`) through
+it instead of `commit_scrollback_overflow`. The maya side adds
+`Runtime::reset_inline()` and the `Cmd::ResetInline` variant.
+
+**Symptom.** Intermittent. After switching to a saved thread (or
+starting a new thread) when (a) the *previous* thread had
+overflowed the viewport and (b) the *new* thread is shorter than
+the previous one's painted height, a copy of the old thread's
+top rows stays stranded in native scrollback above the new
+frame. Resize (SIGWINCH hard reset) recovers.
+
+**Reason.** #9's fix (`commit_scrollback_overflow`) advances
+`prev_rows` down to `term_h` and emits ZERO bytes. That fixes
+the seam (diff now scans the full viewport) but the old thread's
+overflow rows — already committed to native scrollback by prior
+frames' bottom-edge `\r\n`s — remain physically on the wire.
+When the new thread's `content_rows < term_h`, the next compose
+takes the shrink-erase path (`content_rows < prev_rows`), which
+is VIEWPORT-ONLY: it erases rows below the new content inside
+the viewport but cannot touch the off-viewport scrollback rows.
+
+The shrink-while-overflowed guard in `app.cpp` (finding from the
+earlier `112ecd8` work) does not fire here: it tests
+`prev_rows > term_h`, but `commit_scrollback_overflow` has
+already clamped `prev_rows` to exactly `term_h`, so the guard is
+dormant.
+
+**Fix.** `Cmd::reset_inline` → `Runtime::reset_inline()` →
+`demote_to_hard_reset()`. The next render emits
+`\x1b[2J\x1b[3J\x1b[H` (wipe viewport + saved-lines + home) and
+repaints the new thread via a clean case-(A) paint. `\x1b[3J`
+reaches the off-viewport scrollback rows that no other
+host-callable primitive can. The destruction of pre-agentty
+shell history is the correct trade for an explicit, user-
+initiated thread swap — the user is abandoning the old
+transcript's on-screen presence regardless.
+
+**Code:** `maya/include/maya/core/cmd.hpp` (`ResetInline` +
+`reset_inline()` factory), `maya/include/maya/app/app.hpp`
+(`Runtime::reset_inline()` + execute_cmd arm),
+`agentty/src/runtime/app/update/picker.cpp` (`NewThread`,
+`ThreadLoaded`).
 
 ---
 
@@ -523,7 +579,8 @@ rationale comparing `commit_scrollback_overflow`,
 | 6 | LATENT        | P3       | resolved | `1609106` (debug assert at compose entry)                                     |
 | 7 | informational | —        | wontfix  | acceptable redundancy (5 bytes/session)                                       |
 | 8 | informational | —        | wontfix  | comment near `state.reset()` re cursor visibility                             |
-| 9 | CORRUPTION    | **P1**   | resolved | agentty `0a04f33` (dispatch `commit_scrollback_overflow` on thread swap)      |
+| 9 | CORRUPTION    | **P1**   | resolved | agentty `0a04f33` (dispatch `commit_scrollback_overflow` on thread swap) — partial; see #10 |
+| 10| CORRUPTION    | **P1**   | resolved | `Cmd::reset_inline` (HardReset) on model swap into shorter content                          |
 
 All structural scrollback-corruption findings from this audit are
 shipped. Defenses, in order of where bytes have to come from:

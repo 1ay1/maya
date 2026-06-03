@@ -1439,10 +1439,14 @@ void run(RunConfig cfg = {}) {
             // above bounds the retry cadence so this can't busy-spin.
             if (rt.has_pending_writes()) skip_render = false;
 
-            // Clear the per-render frame-request flag before view().
-            // Widgets set it from build() if they want a follow-up
-            // frame; we read it after render() to schedule the next one.
-            detail::animation_requested_ = false;
+            // Clear the per-render frame-request flag ONLY when we are
+            // about to actually run view() — build() is what re-sets it.
+            // A skipped render (visual hash matched) does NOT clear it,
+            // because a skip means "nothing visible changed at this
+            // instant," not "the animation ended": the widget never got
+            // a chance to re-request. Clearing on skip is exactly what
+            // froze RAF animations until a keypress.
+            if (!skip_render) detail::animation_requested_ = false;
 
             if (!skip_render) {
                 // Pure: view(model) → Element → render to terminal
@@ -1472,19 +1476,34 @@ void run(RunConfig cfg = {}) {
             }
             needs_render = false;
 
-            // Schedule the next frame iff a widget requested one during
-            // this render's build(). One clock: a frame is just
-            // "render again in kAnimationFrameInterval". If nothing
-            // requested, clear the schedule — loop returns to idle wait,
-            // zero bytes per idle frame. Note: a skipped render (visual
-            // hash matched) leaves animation_requested_ at its
-            // pre-render false, so a settled animation correctly stops
-            // scheduling.
-            if (detail::animation_requested_) {
+            // Schedule the next frame. One clock: a frame is just
+            // "wake again in kAnimationFrameInterval." The schedule is
+            // kept alive as long as a widget is requesting frames.
+            //
+            //   - render ran + widget re-requested  → schedule next.
+            //   - render ran + NO request            → animation settled,
+            //                                          clear the schedule.
+            //   - render SKIPPED (hash matched)      → KEEP the existing
+            //     schedule. A skip can't observe a request (build()
+            //     didn't run), so treating it as "no request" would
+            //     cancel a live animation; instead we let the schedule
+            //     ride so the loop wakes next interval, the visual-hash
+            //     time bucket advances, the render runs, and build()
+            //     re-arms. This is what keeps spinner / caret / sigil
+            //     animating without a keypress.
+            if (!skip_render) {
+                if (detail::animation_requested_) {
+                    next_frame_at = std::chrono::steady_clock::now()
+                                  + detail::kAnimationFrameInterval;
+                } else {
+                    next_frame_at = std::chrono::steady_clock::time_point{};
+                }
+            } else if (next_frame_at != std::chrono::steady_clock::time_point{}) {
+                // Keep riding: advance to the next interval from now so
+                // the loop doesn't busy-spin re-detecting an already-due
+                // frame it just chose to skip.
                 next_frame_at = std::chrono::steady_clock::now()
                               + detail::kAnimationFrameInterval;
-            } else {
-                next_frame_at = std::chrono::steady_clock::time_point{};
             }
             // Same scroll-writeback re-render as the simple run() path:
             // if a ScrollState's max_* changed during this paint, the

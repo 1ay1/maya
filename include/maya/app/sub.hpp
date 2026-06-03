@@ -80,20 +80,8 @@ public:
         Msg                       msg;
     };
 
-    /// Subscribe to animation-frame ticks at ~60 fps (16 ms cadence).
-    /// Push-based replacement for `request_animation_frame()`: the
-    /// application declares "I want a tick every frame while this is in
-    /// my subscription" and stops including it when the animation
-    /// settles. The runtime delivers `msg` to update() at each tick;
-    /// what the model does with it (advance a cursor, refresh a clock,
-    /// etc.) is the model's business. Idle frames — where no
-    /// AnimationFrame sub is present — render zero bytes.
-    struct AnimationFrame {
-        Msg msg;
-    };
-
     using Variant = std::variant<None, Batch, OnKey, OnMouse,
-                                 OnResize, OnPaste, Every, AnimationFrame>;
+                                 OnResize, OnPaste, Every>;
     Variant inner;
 
     // -- Smart constructors ---------------------------------------------------
@@ -133,12 +121,12 @@ public:
         return {Every{interval, std::move(msg)}};
     }
 
-    /// Subscribe to animation-frame ticks (~60 fps). The runtime
-    /// delivers `msg` at the kAnimationFrameInterval cadence for as
-    /// long as the returned subscription is present in the active sub
-    /// tree. Stops automatically when the model's subscribe() drops it.
+    /// Subscribe to animation-frame ticks (~60 fps). Sugar for
+    /// every(16ms, msg) — there is a single timer engine; "animation
+    /// frame" is just a 16ms interval. Stops automatically when the
+    /// model's subscribe() drops it.
     [[nodiscard]] static auto on_animation_frame(Msg msg) -> Sub {
-        return {AnimationFrame{std::move(msg)}};
+        return every(std::chrono::milliseconds{16}, std::move(msg));
     }
 
     /// Combine multiple subscriptions.
@@ -213,9 +201,6 @@ public:
             },
             [&](const Every& s) -> Sub<B> {
                 return Sub<B>::every(s.interval, f(s.msg));
-            },
-            [&](const AnimationFrame& s) -> Sub<B> {
-                return Sub<B>::on_animation_frame(f(s.msg));
             },
             [&](const Batch& b) -> Sub<B> {
                 std::vector<Sub<B>> mapped;

@@ -39,9 +39,12 @@ working doc: items move out as they ship.
   ABOVE compose (the caller decides not to render this tick) rather
   than inside it, where compose has no way to tell user input from
   animation.
-- **B9**: `Sub::AnimationFrame{Msg}` — push-based animation
-  subscription. Idle frames render zero bytes. The pull-based
-  `request_animation_frame()` remains for backward compat.
+- **B9**: Animation unified onto a single clock — the `Sub::Every`
+  timer path. `request_animation_frame()` records a per-render frame
+  request (thread-local, like `live_scroll_states`) that the run loop
+  folds into the same wake schedule as timers; `on_animation_frame()`
+  is sugar for `every(16ms)`. No separate deadline global, no parallel
+  pump. Idle frames render zero bytes.
 - **B10**: `Canvas::clear` bounded by previous `max_y_+1` — ~10× less
   memory traffic per inline frame on a 500-row canvas with ~50 rows
   of content. The invariant ("cells beyond `max_y_` are blank") holds

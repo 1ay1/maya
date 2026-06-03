@@ -110,37 +110,40 @@ struct RunConfig {
 // ============================================================================
 // request_animation_frame — widget-side "I'm animating, please redraw soon"
 // ============================================================================
-// Pull-based animation signal for event-driven mode (fps = 0). A widget
-// that wants a smooth animation calls request_animation_frame() from its
-// build() function on every frame the animation should continue. The
-// runtime tops up an animation deadline; if `now < deadline`, the main
-// loop wakes within ~16 ms and renders again. When the widget stops
-// calling (animation finished), the deadline passes and the loop returns
-// to its normal idle wait. No global fps bump, no per-app subscriptions,
-// no Model state.
+// Widgets that want a smooth animation call request_animation_frame()
+// from their build() each frame the animation should continue. This is
+// the ONE animation engine: it does not maintain its own clock or poll
+// schedule. It records, in a per-render registry, that *something on
+// screen wants to step at ~frame cadence*. The run loop collects these
+// requests right alongside Sub::Every timers and folds them into the
+// single "when should I next wake and render" computation — no separate
+// deadline global, no parallel pump, no second poll clamp.
 //
-// Single-threaded UI; storage is a process-wide inline variable. Safe
-// to call multiple times per frame (idempotent — the deadline is taken
-// as max-of-existing-and-new).
+// The distinction from Sub::Every is intent, not mechanism: Every
+// delivers a Msg (drives update → model), a frame request only asks for
+// a repaint (pure visual layer — cursor blink, scramble caret, sigil
+// fade — that reads wall-clock in build() and mutates nothing). Both
+// resolve to the same wake schedule.
+//
+// Single-threaded UI; the registry is a thread-local cleared at the
+// start of each render (mirrors live_scroll_states). A widget that
+// stops calling drops out of the next collection → loop returns to
+// idle wait → zero bytes per idle frame. Idempotent within a frame.
 
 namespace detail {
-// "Animation is live until this time." The widget keeps it alive by
-// calling request_animation_frame() every paint, which slides this
-// forward by ~kAnimationLeeway. When the widget stops calling, the
-// deadline lapses and the loop returns to its normal idle wait.
-inline std::chrono::steady_clock::time_point animation_deadline_{};
+// ~60 fps cap — the cadence at which a frame request asks the loop to
+// re-render. Single source of truth for animation frame timing.
+inline constexpr auto kAnimationFrameInterval = std::chrono::milliseconds{16};
 
-// Leeway must exceed kAnimationFrameInterval (below) so that after a
-// poll wakeup-and-render cycle the deadline is still in the future —
-// otherwise the very first cycle ends the animation. 50 ms covers ~3
-// frame intervals at 60 fps, giving comfortable margin under jitter.
-inline constexpr auto kAnimationLeeway        = std::chrono::milliseconds{50};
-inline constexpr auto kAnimationFrameInterval = std::chrono::milliseconds{16};   // ~60 fps cap
+// Per-render frame-request flag. A widget's build() sets this; the run
+// loop reads it after view()/render() to decide whether to schedule a
+// follow-up frame, then clears it for the next render. Thread-local,
+// single-threaded UI — same ownership model as live_scroll_states.
+inline thread_local bool animation_requested_ = false;
 }  // namespace detail
 
 inline void request_animation_frame() noexcept {
-    detail::animation_deadline_ =
-        std::chrono::steady_clock::now() + detail::kAnimationLeeway;
+    detail::animation_requested_ = true;
 }
 
 // ============================================================================
@@ -1030,10 +1033,6 @@ void dispatch_through_sub(const Sub<Msg>& sub, const Event& ev,
         [&](const typename Sub<Msg>::Every&) {
             // Timer subscriptions are handled by the timer loop, not event dispatch.
         },
-        [&](const typename Sub<Msg>::AnimationFrame&) {
-            // Animation-frame subscriptions tick at kAnimationFrameInterval
-            // — handled by the main loop's animation pump, not event dispatch.
-        },
     }, sub.inner);
 }
 
@@ -1048,24 +1047,6 @@ void collect_timers(const Sub<Msg>& sub,
         },
         [&](const typename Sub<Msg>::Every& e) {
             out.push_back({e.interval, e.msg});
-        },
-        [](const auto&) {},
-    }, sub.inner);
-}
-
-/// Collect every AnimationFrame msg currently in the sub tree. The main
-/// loop pumps these at the kAnimationFrameInterval cadence; when the
-/// returned vector is empty, no animation is active and the loop idles
-/// normally.
-template <typename Msg>
-void collect_animation_frames(const Sub<Msg>& sub, std::vector<Msg>& out) {
-    std::visit(overload{
-        [](const typename Sub<Msg>::None&)  {},
-        [&](const typename Sub<Msg>::Batch& b) {
-            for (auto& s : b.subs) collect_animation_frames(s, out);
-        },
-        [&](const typename Sub<Msg>::AnimationFrame& a) {
-            out.push_back(a.msg);
         },
         [](const auto&) {},
     }, sub.inner);
@@ -1201,13 +1182,15 @@ void run(RunConfig cfg = {}) {
     // still only pay the warmup once per state change).
     bool          last_warmup_done       = false;
 
-    // Animation-frame pump (push-based — Sub::AnimationFrame). Tracks
-    // when we last delivered AnimationFrame msgs so we tick at the
-    // kAnimationFrameInterval cadence regardless of how often the loop
-    // wakes. Distinct from the pull-based detail::animation_deadline_
-    // path (request_animation_frame()) which we still honour for
-    // backward compat.
-    auto last_anim_tick = std::chrono::steady_clock::time_point{};
+    // Frame-request scheduler. A widget that called
+    // request_animation_frame() during the last render sets
+    // detail::animation_requested_; we then schedule the next repaint
+    // for last-render + kAnimationFrameInterval. This is the SINGLE
+    // animation clock — no separate deadline global, no parallel
+    // AnimationFrame pump. When no widget requests a frame, this stays
+    // in the past and the loop idles. `unset` sentinel = no pending
+    // frame.
+    auto next_frame_at = std::chrono::steady_clock::time_point{};
 
     // ── Main event loop ──────────────────────────────────────────────────
     while (rt.is_running()) {
@@ -1255,16 +1238,19 @@ void run(RunConfig cfg = {}) {
                     std::max(std::chrono::milliseconds(0), until));
             }
         }
-        // Animation-frame request: a widget called request_animation_frame()
-        // during its last build(). While the deadline is in the future,
-        // cap our poll timeout to one animation frame interval (~16 ms,
-        // ~60 fps) so we wake up frequently enough to advance the
-        // animation. Deadline leeway (>frame interval) guarantees the
-        // post-poll check `now < deadline` survives one cycle.
+        // Frame request: a widget called request_animation_frame()
+        // during its last build(), so a repaint is scheduled at
+        // next_frame_at. Cap the poll so the loop wakes in time to
+        // service it. Same path the Sub::Every timers use — one wake
+        // computation, one clock.
         if (!needs_render
-            && std::chrono::steady_clock::now() < detail::animation_deadline_)
+            && next_frame_at != std::chrono::steady_clock::time_point{})
         {
-            poll_timeout = std::min(poll_timeout, detail::kAnimationFrameInterval);
+            auto now = std::chrono::steady_clock::now();
+            auto until = std::chrono::duration_cast<std::chrono::milliseconds>(
+                next_frame_at - now);
+            poll_timeout = std::min(poll_timeout,
+                std::max(std::chrono::milliseconds(0), until));
         }
 
         // Wait for events
@@ -1362,41 +1348,15 @@ void run(RunConfig cfg = {}) {
         // fps-driven continuous rendering
         if (cfg.fps > 0) needs_render = true;
 
-        // Animation-frame request: a widget asked for another paint by
-        // calling request_animation_frame() during the last build(). If
-        // we're still inside the deadline, repaint — the widget's next
-        // build() can extend the deadline (animation continues) or skip
-        // the call entirely (deadline lapses, loop returns to idle wait).
-        if (std::chrono::steady_clock::now() < detail::animation_deadline_)
-            needs_render = true;
-
-        // Sub::AnimationFrame pump — push-based animation msgs at
-        // ~kAnimationFrameInterval cadence. If any AnimationFrame subs
-        // are present in the current_sub tree, every kAnimationFrameInterval
-        // we push their msgs into pending_msgs (then drain into update()),
-        // and top up the animation_deadline_ so the loop keeps waking. When
-        // the model's subscribe() drops the AnimationFrame entry, the next
-        // collect call returns empty, the deadline lapses, and the loop
-        // returns to idle wait — zero bytes per idle frame.
+        // Frame request: a widget asked for another paint by calling
+        // request_animation_frame() during the last render. If its
+        // scheduled frame time has arrived, repaint — the widget's next
+        // build() either re-requests (animation continues) or doesn't
+        // (next_frame_at is cleared below → loop returns to idle).
+        if (next_frame_at != std::chrono::steady_clock::time_point{}
+            && std::chrono::steady_clock::now() >= next_frame_at)
         {
-            std::vector<Msg> anim_msgs;
-            detail::collect_animation_frames(current_sub, anim_msgs);
-            if (!anim_msgs.empty()) {
-                auto now = std::chrono::steady_clock::now();
-                if (now - last_anim_tick >= detail::kAnimationFrameInterval) {
-                    last_anim_tick = now;
-                    for (auto& am : anim_msgs)
-                        pending_msgs.push_back(std::move(am));
-                    drain_pending();
-                    needs_render = true;
-                }
-                // Keep the loop ticking at frame cadence so the next
-                // iteration wakes on time.
-                detail::animation_deadline_ =
-                    std::max(detail::animation_deadline_,
-                             std::chrono::steady_clock::now()
-                             + detail::kAnimationLeeway);
-            }
+            needs_render = true;
         }
 
         if (needs_render) {
@@ -1471,6 +1431,11 @@ void run(RunConfig cfg = {}) {
             // above bounds the retry cadence so this can't busy-spin.
             if (rt.has_pending_writes()) skip_render = false;
 
+            // Clear the per-render frame-request flag before view().
+            // Widgets set it from build() if they want a follow-up
+            // frame; we read it after render() to schedule the next one.
+            detail::animation_requested_ = false;
+
             if (!skip_render) {
                 // Pure: view(model) → Element → render to terminal
                 Element view_root = P::view(model);
@@ -1498,6 +1463,21 @@ void run(RunConfig cfg = {}) {
                 if (!status) break;
             }
             needs_render = false;
+
+            // Schedule the next frame iff a widget requested one during
+            // this render's build(). One clock: a frame is just
+            // "render again in kAnimationFrameInterval". If nothing
+            // requested, clear the schedule — loop returns to idle wait,
+            // zero bytes per idle frame. Note: a skipped render (visual
+            // hash matched) leaves animation_requested_ at its
+            // pre-render false, so a settled animation correctly stops
+            // scheduling.
+            if (detail::animation_requested_) {
+                next_frame_at = std::chrono::steady_clock::now()
+                              + detail::kAnimationFrameInterval;
+            } else {
+                next_frame_at = std::chrono::steady_clock::time_point{};
+            }
             // Same scroll-writeback re-render as the simple run() path:
             // if a ScrollState's max_* changed during this paint, the
             // current view used stale zeros. Re-render so the next view

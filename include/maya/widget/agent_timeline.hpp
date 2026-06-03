@@ -323,29 +323,21 @@ private:
             text("  "),
             text(ev.name, name_style(ev.status, ev.category_color, is_active)),
             text("  "),
-            text(ev.detail, detail_style(ev.category_color, is_active)) | clip,
-            spacer(),
-            when(is_terminal,
-                 // Leading 2-col pad lives INSIDE the elapsed text so the
-                 // trailing segment is unconditionally wider than just the
-                 // duration glyphs. When the row is at its width limit,
-                 // this forces `detail | clip` to shrink (yoga's flex
-                 // arithmetic: hypothetical > available → truncate the
-                 // shrink-eligible cell) instead of letting detail butt
-                 // up against the elapsed with zero spacer. Result: the
-                 // elapsed stays right-aligned and always has ≥2 cols of
-                 // breathing room before it.
-                 //
-                 // `| nowrap`: text nodes default to TextWrap::Wrap, so
-                 // if yoga decides to shrink THIS cell (it's shrinkable
-                 // by default) below its natural width, the elapsed
-                 // glyphs would break to a second visual row and render
-                 // on top of the connector below. NoWrap keeps the row
-                 // a single line; the card's Overflow::Hidden clips any
-                 // horizontal bleed at the border instead of wrapping.
-                 text("  " + format_duration(ev.elapsed_seconds),
-                      Style{}.with_fg(duration_color(ev.elapsed_seconds)))
-                 | nowrap)
+            text(ev.detail, detail_style(ev.category_color, is_active)) | clip
+            // NOTE: no per-event elapsed cell here. The duration of a
+            // tool lives in the card's title-end (running tool / total)
+            // and the DONE footer. A per-row right-aligned elapsed used
+            // to render here `when(is_terminal)`, but it only appeared on
+            // the LIVE (uncached) render: the FROZEN render wraps each
+            // event in a hash-cached ComponentElement laid out in an
+            // isolated sub-tree, where the grow-spacer + right-aligned
+            // nowrap cell resolves differently and the elapsed dropped
+            // out. That made the same settled tool row render WITH the
+            // elapsed live and WITHOUT it once frozen — a committed-row
+            // rewrite at the freeze instant, i.e. the scrollback
+            // duplication seam. Removing the per-row cell makes live and
+            // frozen byte-identical (and matches agent_session, which
+            // carries duration only in the footer).
         ) | grow(1.0f)).build());
 
         // Build the body via ToolBodyPreview, then stripe each child row

@@ -512,26 +512,64 @@ auto Runtime::render(const Element& root) -> Status {
                     // never need to change), but when the prior frame
                     // overflowed the viewport (prev_rows > term_h) and
                     // THIS frame is shorter (new_rows < prev_rows), the
-                    // old frame's top rows are stranded in scrollback
-                    // while the new shorter frame paints in the viewport
-                    // below them — a duplicate of the just-shrunk content
-                    // ("a card in scrollback shrinks; the taller copy is
-                    // left stranded above"). The diff has no way to erase
-                    // those off-viewport rows, and verify() won't catch it
-                    // (the shadow is internally consistent — it's the WIRE
-                    // that has extra committed rows). The only coherent
-                    // recovery is the same one the verify-poison-while-
-                    // overflowed path takes: HardReset (wipe viewport +
-                    // saved-lines, repaint clean). Same trade — losing
-                    // pre-launch scrollback beats a permanent duplicate —
-                    // and it only fires on the rare overflow→shrink frame.
+                    // old frame's top rows have already scrolled into
+                    // native scrollback and the new shorter frame paints
+                    // in the viewport below them.
+                    //
+                    // Recovery WITHOUT wiping scrollback: commit the
+                    // overflowed rows (max(0, prev_rows - term_h)) to
+                    // scrollback so prev_cells/prev_rows drop to the
+                    // visible viewport, then demote to Stale. case (B)
+                    // soft-repaints the shorter frame in place and
+                    // \x1b[J erases the rows below it. The previously
+                    // overflowed rows stay in native scrollback as
+                    // history — exactly what every overflowing turn
+                    // already leaves there — instead of being destroyed
+                    // by \x1b[2J\x1b[3J\x1b[H. Earlier this path
+                    // escalated to HardReset, which wiped the user's
+                    // entire terminal scrollback on the first turn that
+                    // overflowed-then-shrank (stream finish collapsing
+                    // the tall live tail into a shorter settled frame).
                     {
                         const int prev_rows = arm.rows();
                         const int new_rows  = rows.value();
+                        // Fire ONLY when the shrink drops the frame from
+                        // overflowing the viewport (prev_rows > term_h) to
+                        // fitting inside it (new_rows <= term_h). In that
+                        // crossing the rows that scrolled off the top are
+                        // committed to native scrollback while the new
+                        // frame now fits entirely on-screen — the per-row
+                        // diff's relative cursor math (which assumes the
+                        // cursor sits at prev_rows-1 and walks up within
+                        // the still-visible region) can no longer reach
+                        // those committed rows, so commit+case-(B) is the
+                        // right recovery.
+                        //
+                        // A shrink that STAYS overflowed (new_rows still
+                        // > term_h) must NOT take this path. The normal
+                        // diff's own shrink branch (content_rows <
+                        // prev_rows: re-emit bottom row + \x1b[J) handles
+                        // it correctly and append-only: the retained top
+                        // rows are byte-identical (a freeze keeps the
+                        // scrolled-off prefix unchanged), so nothing in
+                        // scrollback needs rewriting. Routing it through
+                        // commit+case-(B) instead re-emitted the viewport
+                        // starting at content_rows-term_h, which overlaps
+                        // the rows the PRIOR frame already committed at
+                        // prev_rows-term_h — stranding (prev_rows -
+                        // content_rows) duplicate rows one screen up. That
+                        // is the "the turn doubles in scrollback when it
+                        // finishes" bug: a turn-end live→frozen handoff
+                        // shrinks the tall live tail by a few rows while
+                        // the frame is still taller than the viewport.
                         if (prev_rows > term_h.value()
-                            && new_rows < prev_rows) {
+                            && new_rows < prev_rows
+                            && new_rows <= term_h.value()) {
                             verify_demoted = true;
-                            return std::move(arm).demote_to_hard_reset();
+                            const int overflow = prev_rows - term_h.value();
+                            auto marker = arm.scrollback_marker(overflow);
+                            auto committed = std::move(arm).commit(marker);
+                            return std::move(committed).demote_to_stale();
                         }
                     }
                     auto wit = arm.verify();
@@ -576,7 +614,16 @@ auto Runtime::render(const Element& root) -> Status {
                         // shadow poison can strand a duplicate.
                         const int prev_rows = arm.rows();
                         if (prev_rows > term_h.value()) {
-                            return std::move(arm).demote_to_hard_reset();
+                            // Overflowed + shadow poisoned: commit the
+                            // off-viewport rows to native scrollback,
+                            // then soft-repaint the viewport. Preserves
+                            // host scrollback (no \x1b[3J wipe); the
+                            // corrected viewport repaints in place via
+                            // case (B).
+                            const int overflow = prev_rows - term_h.value();
+                            auto marker = arm.scrollback_marker(overflow);
+                            auto committed = std::move(arm).commit(marker);
+                            return std::move(committed).demote_to_stale();
                         }
                         return std::move(arm).demote_to_stale();
                     }

@@ -504,6 +504,36 @@ auto Runtime::render(const Element& root) -> Status {
                         emit_sync_wrapper_));
                 }
                 else if constexpr (std::is_same_v<T, InlineFrame<Synced>>) {
+                    // Shrink-while-overflowed guard. The incremental
+                    // per-row diff is VIEWPORT-ONLY: it can rewrite the
+                    // last `term_h` rows but never the rows that already
+                    // scrolled into native scrollback. That's fine while
+                    // a frame grows (committed rows are append-only and
+                    // never need to change), but when the prior frame
+                    // overflowed the viewport (prev_rows > term_h) and
+                    // THIS frame is shorter (new_rows < prev_rows), the
+                    // old frame's top rows are stranded in scrollback
+                    // while the new shorter frame paints in the viewport
+                    // below them — a duplicate of the just-shrunk content
+                    // ("a card in scrollback shrinks; the taller copy is
+                    // left stranded above"). The diff has no way to erase
+                    // those off-viewport rows, and verify() won't catch it
+                    // (the shadow is internally consistent — it's the WIRE
+                    // that has extra committed rows). The only coherent
+                    // recovery is the same one the verify-poison-while-
+                    // overflowed path takes: HardReset (wipe viewport +
+                    // saved-lines, repaint clean). Same trade — losing
+                    // pre-launch scrollback beats a permanent duplicate —
+                    // and it only fires on the rare overflow→shrink frame.
+                    {
+                        const int prev_rows = arm.rows();
+                        const int new_rows  = rows.value();
+                        if (prev_rows > term_h.value()
+                            && new_rows < prev_rows) {
+                            verify_demoted = true;
+                            return std::move(arm).demote_to_hard_reset();
+                        }
+                    }
                     auto wit = arm.verify();
                     if (!wit) {
                         verify_demoted = true;

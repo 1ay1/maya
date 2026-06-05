@@ -584,17 +584,27 @@ auto Runtime::render(const Element& root) -> Status {
                         //     already committed to native scrollback,
                         //     which is immutable to us. case (B) is
                         //     VIEWPORT-ONLY — it cannot rewrite those
-                        //     scrolled-off rows. Demoting to Stale would
-                        //     repaint the corrected viewport while the
-                        //     stale (diverged) copy stays stranded one
-                        //     screen up — the "turn repeats out of
-                        //     nowhere in scrollback" symptom. The only
-                        //     coherent recovery is HardReset: wipe
-                        //     viewport + saved-lines and repaint clean.
-                        //     Losing pre-launch scrollback is the right
-                        //     trade against a permanently duplicated
-                        //     transcript, and it only fires on the rare
-                        //     poisoned-shadow-while-overflowed frame.
+                        //     scrolled-off rows. A naive demote-to-Stale
+                        //     would repaint the corrected viewport while
+                        //     the stale (diverged) copy stays stranded
+                        //     one screen up — the "turn repeats out of
+                        //     nowhere in scrollback" symptom.
+                        //
+                        //     Recovery (NON-destructive): COMMIT the
+                        //     already-overflowed rows to native
+                        //     scrollback (advancing prev_rows down to
+                        //     term_h via a scrollback_marker), THEN
+                        //     demote to Stale so case (B) soft-repaints
+                        //     the remaining viewport in place. The
+                        //     committed rows are byte-identical to what's
+                        //     physically on the wire (they overflowed
+                        //     before the poison), so committing them
+                        //     strands nothing; only the in-viewport rows
+                        //     get rewritten. NO \x1b[3J wipe — host
+                        //     scrollback is preserved. (An earlier
+                        //     version hard-reset here, wiping pre-launch
+                        //     scrollback; the commit+soft-repaint below
+                        //     supersedes it and is strictly safer.)
                         //
                         // agent_session never hits the overflow branch:
                         // its live tail collapses to empty at MessageStop

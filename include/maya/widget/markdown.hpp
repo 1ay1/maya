@@ -521,7 +521,26 @@ private:
         std::atomic<bool>                           ready{false};
     };
     mutable std::shared_ptr<AsyncResult>     async_slot_;
-    mutable std::mutex                       async_mu_;
+    // Wrapper around the slot mutex so StreamingMarkdown stays
+    // movable. A raw std::mutex is neither copyable nor movable, which
+    // would delete the implicit move ops of the whole class — but the
+    // class IS moved (per-turn reset `m.md = StreamingMarkdown{}`, the
+    // Model move in update()). Moving a StreamingMarkdown is only ever
+    // done on a quiescent instance (no worker mid-parse), so the lock
+    // carries no live state worth transferring: move/copy simply leave
+    // a freshly-constructed mutex in place. The other async members
+    // (slot shared_ptr, latest_source optional) move normally and stay
+    // consistent.
+    struct MovableMutex {
+        std::mutex m;
+        MovableMutex() = default;
+        MovableMutex(const MovableMutex&) noexcept {}
+        MovableMutex(MovableMutex&&) noexcept {}
+        MovableMutex& operator=(const MovableMutex&) noexcept { return *this; }
+        MovableMutex& operator=(MovableMutex&&) noexcept { return *this; }
+    };
+    mutable MovableMutex                     async_mu_holder_;
+    std::mutex& async_mu_() const noexcept { return async_mu_holder_.m; }
     // The most recent source set_content_async was called with.
     // Compared against async_slot_->source when a result lands to
     // decide whether to apply it directly (current) or queue another

@@ -75,7 +75,7 @@ void StreamingMarkdown::set_content_async(std::string_view content) {
     // doesn't blank.
     std::string requested{content};
     {
-        std::lock_guard<std::mutex> lk(async_mu_);
+        std::lock_guard<std::mutex> lk(async_mu_());
         async_latest_source_ = requested;
         // If a worker is already in flight, just update the latest
         // request — maybe_apply_async_ will spawn a follow-up on
@@ -90,7 +90,7 @@ void StreamingMarkdown::spawn_async_worker_(std::string source) const {
     auto slot = std::make_shared<AsyncResult>();
     slot->source = source;
     {
-        std::lock_guard<std::mutex> lk(async_mu_);
+        std::lock_guard<std::mutex> lk(async_mu_());
         async_slot_ = slot;
     }
 
@@ -214,7 +214,7 @@ void StreamingMarkdown::maybe_apply_async_() const {
     std::shared_ptr<AsyncResult> slot;
     std::optional<std::string>   latest_after;
     {
-        std::lock_guard<std::mutex> lk(async_mu_);
+        std::lock_guard<std::mutex> lk(async_mu_());
         if (!async_slot_) return;
         if (!async_slot_->ready.load(std::memory_order_acquire)) return;
         slot = std::move(async_slot_);  // detach from member
@@ -262,7 +262,7 @@ void StreamingMarkdown::maybe_apply_async_() const {
         }
         for (auto k : drop) self->folds_.erase(k);
         {
-            std::lock_guard<std::mutex> lk(self->async_mu_);
+            std::lock_guard<std::mutex> lk(self->async_mu_());
             self->async_latest_source_.reset();
         }
     } else if (latest_after) {

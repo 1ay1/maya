@@ -364,7 +364,7 @@ void StreamingMarkdown::clear() {
     // Clearing the latest-source sentinel ensures we don't spawn a
     // follow-up worker for the discarded result.
     {
-        std::lock_guard<std::mutex> lk(async_mu_);
+        std::lock_guard<std::mutex> lk(async_mu_());
         async_slot_.reset();
         async_latest_source_.reset();
     }

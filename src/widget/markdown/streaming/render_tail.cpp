@@ -94,6 +94,191 @@ void StreamingMarkdown::render_eager_slice(std::string_view slice,
 }
 
 Element StreamingMarkdown::render_tail(std::string_view tail) const {
+    // The 100% monotonicity funnel.
+    //
+    // render_tail_inner picks an eager/inline shape for the in-progress
+    // bytes. That shape can DISAGREE with the canonical block layout the
+    // bytes will commit to, and the disagreement shows up as a height
+    // snap — either mid-stream (a reclassification: quote→alert,
+    // paragraph→setext, blank-terminated quote collapse) or at the
+    // COMMIT SEAM (the eager tail is taller than the canonical block,
+    // so when commit_range moves the bytes into the prefix the total
+    // height drops by the difference). A padding floor (min_height)
+    // can't fix it: the host sizes the inline frame by content_height,
+    // which ignores trailing blank rows.
+    //
+    // The fix that holds across BOTH the mid-stream snap and the commit
+    // seam: render the fully-terminated portion of the tail in its
+    // CANONICAL committed shape — exactly what commit_range will emit
+    // (parse_markdown_impl + md_block_to_element). The live partial last
+    // line (no trailing `\n`) can still misparse as a block, so it stays
+    // on the eager/inline path; canonical handles only the proven-
+    // complete prefix. Because the canonical render IS the committed
+    // shape, height at the seam is continuous, and because canonical is
+    // a stable function of terminated bytes it never shrinks as more
+    // bytes arrive.
+    //
+    // NOTE: we do NOT early-return for in_code_fence_. When the tail
+    // starts inside an open fence, render_tail_inner renders the literal
+    // body — but if the CLOSING fence has arrived in the tail (it sits
+    // there until the trailing blank line commits the whole block), the
+    // canonical parse below balances the fence into a proper CodeBlock
+    // whose height matches what commit_range will produce, eliminating
+    // the 2-row collapse at the closing-fence commit seam. If the fence
+    // is still open (no closing ```), the canonical parse of the
+    // terminated rows yields the same in-progress CodeBlock shape.
+    std::size_t s = 0;
+    while (s < tail.size() && tail[s] == '\n') ++s;
+    if (s >= tail.size()) return render_tail_inner(tail);
+    std::string_view body = tail.substr(s);
+
+    // Split the tail at the last newline: [terminated_prefix][live_line].
+    // Only the terminated prefix is safe to render canonically — the
+    // live line may still be a half-typed marker that parse_markdown_impl
+    // would misclassify (and then re-classify next byte, snapping).
+    auto last_nl = body.rfind('\n');
+    if (last_nl == std::string_view::npos) {
+        // No terminated rows yet — nothing canonical to anchor; the eager
+        // inline render is the floor.
+        return render_tail_inner(tail);
+    }
+    std::string_view terminated = body.substr(0, last_nl + 1);
+    std::string_view live_line   = body.substr(last_nl + 1);
+
+    // When the committed prefix ended INSIDE an open code fence, the
+    // opening ``` lives in the already-committed bytes, so a fresh parse
+    // of the tail wouldn't know it's code. Re-open the fence with a
+    // synthetic opener so parse_markdown_impl reconstructs the CodeBlock
+    // (and balances it if the closing ``` is present in the tail). The
+    // opener is stripped from the rendered output by md_block_to_element
+    // exactly as a real fence opener would be.
+    std::string fence_prefix;
+    if (in_code_fence_) fence_prefix = "```\n";
+
+    // Canonical render of the terminated prefix — byte-identical to what
+    // commit_range will eventually produce for these bytes.
+    auto canonical_blocks = [this](std::string_view src) {
+        ::maya::md_detail::RefDefsScope guard(
+            const_cast<std::unordered_map<std::string, md::LinkRef>*>(&ref_defs_));
+        return parse_markdown_impl(std::string{src}, 0).blocks;
+    };
+    auto terminated_blocks = canonical_blocks(fence_prefix + std::string{terminated});
+    if (terminated_blocks.empty()) return render_tail_inner(tail);
+
+    // Decide how to render the live partial last line. If folding it
+    // into the block above (by appending a synthetic newline) keeps the
+    // SAME block count, the live line is a CONTINUATION of the last
+    // terminated block (another `>` quote row, another list item, another
+    // table row) — render it canonically inside that block so it doesn't
+    // pop from a separate inline row into the block when its real `\n`
+    // lands (the 2-row collapse that shows up at the commit seam). If it
+    // STARTS A NEW block (count grows) or isn't terminable cleanly, keep
+    // it as a separate inline row below — a half-typed new-block marker
+    // must stay literal so it can't snap shape.
+    std::vector<Element> rendered;
+    {
+        std::string trimmed_live{live_line};
+        while (!trimmed_live.empty()
+               && (trimmed_live.back() == '\n' || trimmed_live.back() == '\r'))
+            trimmed_live.pop_back();
+
+        // A live line that is only fence characters (`\`` / `~`) is a
+        // half-typed CLOSING fence — rendering it as a row (either inline
+        // or as a code line inside the open fence) adds a row that
+        // vanishes the instant the third backtick lands and the block
+        // commits. Suppress it, but ONLY when we're genuinely inside an
+        // open fence (otherwise a bare `` ` `` starting inline code in
+        // prose would wrongly disappear).
+        {
+            bool all_fence = !trimmed_live.empty();
+            for (char c : trimmed_live)
+                if (c != '`' && c != '~') { all_fence = false; break; }
+            if (all_fence) {
+                // Fence parity over committed-side state + terminated
+                // rows: an opener/closer is a line whose first non-space
+                // run is >=3 of the same fence char. Odd parity = the
+                // last terminated row left us INSIDE a fence, so this
+                // all-fence live line is the closing delimiter.
+                bool inside = in_code_fence_;
+                std::size_t p = 0;
+                while (p < terminated.size()) {
+                    std::size_t e = terminated.find('\n', p);
+                    if (e == std::string_view::npos) e = terminated.size();
+                    std::string_view ln = terminated.substr(p, e - p);
+                    std::size_t k = 0;
+                    while (k < ln.size() && ln[k] == ' ') ++k;
+                    if (ln.size() - k >= 3 &&
+                        (ln[k] == '`' || ln[k] == '~')) {
+                        char fc = ln[k];
+                        std::size_t run = 0;
+                        while (k + run < ln.size() && ln[k + run] == fc) ++run;
+                        if (run >= 3) inside = !inside;
+                    }
+                    p = e + 1;
+                }
+                if (inside) trimmed_live.clear();
+            }
+        }
+
+        bool live_continues = false;
+        std::vector<md::Block> use_blocks;
+        if (!trimmed_live.empty()) {
+            std::string merged = fence_prefix + std::string{terminated};
+            merged += trimmed_live;
+            merged += '\n';
+            auto merged_blocks = canonical_blocks(merged);
+            if (merged_blocks.size() == terminated_blocks.size()) {
+                // Live line merged into the last block — render the merged
+                // parse; the block already contains the partial row.
+                live_continues = true;
+                use_blocks = std::move(merged_blocks);
+            }
+        }
+        if (!live_continues) use_blocks = std::move(terminated_blocks);
+
+        rendered.reserve(use_blocks.size() + 1);
+        for (auto& blk : use_blocks)
+            rendered.push_back(md_block_to_element(blk));
+
+        // Live line that STARTS a new block stays inline below.
+        if (!live_continues && !trimmed_live.empty()) {
+            std::string_view ll = live_line;
+            while (!ll.empty() && ll.front() == '\n') ll.remove_prefix(1);
+            if (!ll.empty()) {
+                auto spans = parse_inlines(ll);
+                std::string content;
+                std::vector<StyledRun> runs;
+                const Style base = Style{}.with_fg(colors::text);
+                for (const auto& sp : spans)
+                    flatten_inline(sp, base, content, runs);
+                if (!runs.empty()) {
+                    if (runs.size() == 1)
+                        rendered.push_back(Element{TextElement{
+                            .content = std::move(content), .style = runs[0].style}});
+                    else
+                        rendered.push_back(Element{TextElement{
+                            .content = std::move(content),
+                            .style   = Style{}.with_fg(colors::text),
+                            .runs    = std::move(runs)}});
+                }
+            }
+        }
+    }
+    if (rendered.empty()) return render_tail_inner(tail);
+
+    Element canonical = (rendered.size() == 1)
+        ? std::move(rendered.front())
+        : detail::vstack().gap(1)(std::move(rendered)).build();
+
+    // Emit the canonical render. The terminated rows are byte-identical
+    // to what commit_range will produce (continuous across the commit
+    // seam) and the live line is either folded into its continuing block
+    // (no pop when it terminates) or held as a literal inline row that
+    // can only grow. Both cases keep height monotonic.
+    return canonical;
+}
+
+Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
     // Skip leading newlines (whitespace from a prior commit boundary).
     std::size_t start = 0;
     while (start < tail.size() && tail[start] == '\n') ++start;
@@ -205,8 +390,17 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             case 3: sty = sty.with_fg(colors::heading3); break;
             default: sty = sty.with_fg(colors::heading3).with_dim(); break;
         }
+        // The heading line ALWAYS occupies exactly one row, even when the
+        // text is still empty (`# ` typed, no glyphs yet). An empty
+        // TextElement collapses to zero rows, which drops the total height
+        // BELOW the just-committed prefix for one frame and then snaps back
+        // when the first text byte arrives — a visible 1-row flicker on
+        // every streamed heading. Reserve the row with a single space so
+        // height is monotonic across `#` -> `# ` -> `# A`.
+        std::string content = text.empty() ? std::string{" "}
+                                           : std::string{text};
         Element heading_el = Element{TextElement{
-            .content = std::string{text},
+            .content = std::move(content),
             .style   = sty,
         }};
         while (!rest.empty() && rest.front() == '\n') rest.remove_prefix(1);

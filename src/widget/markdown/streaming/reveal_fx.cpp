@@ -33,9 +33,9 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // caret) is opt-in. Off by default it returns the settled,
         // fully-styled build with no per-frame color/glyph churn and no
         // animation-frame request — text just appears as it streams,
-        // flicker-free on every terminal (the gradient sweep re-colored
-        // the trailing ~24 glyphs every frame, which reads as flicker
-        // even under atomic frame swaps). See StreamingMarkdown::reveal_fx_.
+        // flicker-free on every terminal. The height-monotonicity
+        // guarantee lives in render_tail (canonical committed-shape
+        // floor), not here. See StreamingMarkdown::reveal_fx_.
         if (!reveal_fx_) return cached_build_;
 
         // ── Geeky-as-fuck live animation ──

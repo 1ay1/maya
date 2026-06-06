@@ -566,7 +566,15 @@ private:
 
     // Render the uncommitted tail as a monotonic in-progress paragraph
     // (or as plain text inside an open code fence).  See class header.
+    // render_tail is the monotonicity funnel: it compares render_tail_inner's
+    // eager/inline shape against the canonical committed-parse render and
+    // emits whichever keeps the height from dropping at the commit seam.
     [[nodiscard]] Element render_tail(std::string_view tail) const;
+
+    // The eager/inline tail builder — picks the in-progress shape
+    // (open fence, ATX heading, eager list/table/quote, inline
+    // fallback). render_tail wraps it. See its body.
+    [[nodiscard]] Element render_tail_inner(std::string_view tail) const;
 
     // Render an eager-block slice (proven-complete list/quote/table rows)
     // via parse_markdown_impl + md_block_to_element, memoizing the

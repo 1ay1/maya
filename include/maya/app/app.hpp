@@ -1439,6 +1439,31 @@ void run(RunConfig cfg = {}) {
             // above bounds the retry cadence so this can't busy-spin.
             if (rt.has_pending_writes()) skip_render = false;
 
+            // RAF override — the structural guarantee that an animation
+            // can NEVER be stranded by a visual-hash coverage gap.
+            //
+            // A widget that called request_animation_frame() during the
+            // last build() is explicitly asking for another paint. If we
+            // skip because the program's visual_hash didn't advance (its
+            // time bucket didn't cover this widget's finer cadence), the
+            // widget never gets to run build() again, so it can't advance
+            // its own wall-clock state OR re-request — the hash stays
+            // frozen and we skip FOREVER. That's the "md reveal / spinner
+            // gets stuck until a keypress" class of bug, and it recurs
+            // every time a new RAF-driven visual is added without a
+            // matching hash term.
+            //
+            // Honour the pending RAF directly instead of trusting every
+            // program to bucket time perfectly: if a frame was requested,
+            // render. `animation_requested_` still holds the LAST render's
+            // request here (it's cleared just below, only when we don't
+            // skip), so this reads "did the previous frame ask for
+            // another?" Cost when steady-animating is one render per RAF
+            // interval (16 ms) — exactly what the animation wanted — and
+            // the flag clears the instant a build() stops re-requesting,
+            // so a settled UI still idles at zero renders.
+            if (detail::animation_requested_) skip_render = false;
+
             // Clear the per-render frame-request flag ONLY when we are
             // about to actually run view() — build() is what re-sets it.
             // A skipped render (visual hash matched) does NOT clear it,

@@ -1408,22 +1408,32 @@ void render_tree(
             }
         }
 
-        // Hash-keyed entries: sized LRU. hash_id is a content-stable
-        // identity — the cached cells are valid until the id stops
-        // appearing in the tree, regardless of how long the host has
-        // been idle. A wallclock cutoff (the previous policy) misfires
-        // under event-driven (fps=0) hosts that paint only on input:
-        // every frozen scrollback entry got evicted after a few
-        // seconds of idle, and the next keystroke paid an O(N) full
-        // re-render to repopulate. Cap by entry count instead; the LRU
-        // bounds memory without timing out live content.
+        // Hash-keyed entries: sized LRU with a high/low-water mark.
+        // hash_id is a content-stable identity — the cached cells are
+        // valid until the id stops appearing in the tree, regardless of
+        // how long the host has been idle. A wallclock cutoff (the
+        // previous policy) misfires under event-driven (fps=0) hosts
+        // that paint only on input: every frozen scrollback entry got
+        // evicted after a few seconds of idle, and the next keystroke
+        // paid an O(N) full re-render to repopulate. Cap by entry count
+        // instead; the LRU bounds memory without timing out live content.
+        //
+        // Trim to a LOW-WATER mark (not exactly kHashCacheMax) so the
+        // O(N) build-index + nth_element fires once every ~(max-low)
+        // insertions instead of on every frame that hovers at the cap.
+        // Without the gap, a steady-state working set sitting right at
+        // kHashCacheMax would re-run the full scan-and-drop every single
+        // frame — an O(N) spike per frame exactly when the cache is
+        // busiest.
         constexpr std::size_t kHashCacheMax = 4096;
+        constexpr std::size_t kHashCacheLow = 3072;   // 75% — batch target
         if (cache.entries_by_hash.size() > kHashCacheMax) {
             std::vector<std::pair<std::chrono::steady_clock::time_point, CacheId>> idx;
             idx.reserve(cache.entries_by_hash.size());
             for (const auto& [id, entry] : cache.entries_by_hash)
                 idx.emplace_back(entry.last_touched_at, id);
-            const std::size_t drop = cache.entries_by_hash.size() - kHashCacheMax;
+            const std::size_t drop =
+                cache.entries_by_hash.size() - kHashCacheLow;
             std::nth_element(idx.begin(), idx.begin() + drop, idx.end(),
                 [](const auto& a, const auto& b) { return a.first < b.first; });
             for (std::size_t i = 0; i < drop; ++i)

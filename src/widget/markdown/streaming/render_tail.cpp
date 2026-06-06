@@ -94,6 +94,21 @@ void StreamingMarkdown::render_eager_slice(std::string_view slice,
 }
 
 Element StreamingMarkdown::render_tail(std::string_view tail) const {
+    // ── Canonical-render memo (the anti-"stuck" guard) ─────────────────
+    // The body below full-parses the tail every call; build() calls this
+    // every animation frame. Memoize on (source_version_, len, hash,
+    // in_code_fence_) so a tail that hasn't changed since the last frame
+    // is returned by shared_ptr copy with zero parsing. See header.
+    const std::uint64_t tail_hash = fnv1a64(tail);
+    if (tail_canon_cache_el_
+        && tail_canon_cache_version_  == source_version_
+        && tail_canon_cache_len_      == tail.size()
+        && tail_canon_cache_hash_     == tail_hash
+        && tail_canon_cache_in_fence_ == in_code_fence_) {
+        return *tail_canon_cache_el_;
+    }
+
+    Element result = [&]() -> Element {
     // The 100% monotonicity funnel.
     //
     // render_tail_inner picks an eager/inline shape for the in-progress
@@ -276,6 +291,16 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
     // (no pop when it terminates) or held as a literal inline row that
     // can only grow. Both cases keep height monotonic.
     return canonical;
+    }();
+
+    // Store the memo so an unchanged tail next frame returns by
+    // shared_ptr copy with zero parsing.
+    tail_canon_cache_el_       = std::make_shared<const Element>(result);
+    tail_canon_cache_version_  = source_version_;
+    tail_canon_cache_len_      = tail.size();
+    tail_canon_cache_hash_     = tail_hash;
+    tail_canon_cache_in_fence_ = in_code_fence_;
+    return result;
 }
 
 Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {

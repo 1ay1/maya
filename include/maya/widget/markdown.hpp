@@ -458,6 +458,23 @@ private:
     mutable std::size_t             eager_cache_slice_len_ = 0;
     mutable std::vector<std::shared_ptr<const Element>> eager_cache_blocks_;
 
+    // ── Canonical render_tail memo ──────────────────────────
+    // render_tail runs a FULL parse_markdown_impl over the whole
+    // terminated tail (and a second parse for the live-line merge test)
+    // on every build(). build() fires every animation frame while
+    // streaming, so a long block that hasn't hit a commit boundary yet
+    // (e.g. a code fence with no internal blank line) gets re-parsed +
+    // re-highlighted from scratch each frame — O(tail) per frame, O(tail²)
+    // over the block's stream = the visible "stuck". The canonical render
+    // is a pure function of (tail bytes, in_code_fence_, source_version_),
+    // so memoize it on (version, len, hash, fence). On a hit we return the
+    // cached Element by shared_ptr copy; on a miss we parse once.
+    mutable std::uint64_t           tail_canon_cache_version_  = 0;
+    mutable std::uint64_t           tail_canon_cache_hash_     = 0;
+    mutable std::size_t             tail_canon_cache_len_      = 0;
+    mutable bool                    tail_canon_cache_in_fence_ = false;
+    mutable std::shared_ptr<const Element> tail_canon_cache_el_;
+
     // ── Per-block fold state ───────────────────────────────────────────
     // Keyed by BlockMeta::source_offset so fold state survives the rare
     // "set_content with diverging prefix" path (where commit_range is

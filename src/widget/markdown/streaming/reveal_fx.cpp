@@ -506,28 +506,56 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // animated body IS the whole live element.
         cached_live_ = std::move(animated_body);
 
-        // Phase-bucket the wall clock so the scramble/caret/gradient
-        // only visually step at a fixed rate; the prior unconditional
-        // RAF kept the host loop at 60 Hz, which on terminals without
-        // DEC 2026 paints the composer below the live tail progressively
-        // every wakeup. Skip RAF when the bucket hasn't advanced — the
-        // next stream byte (set_content) sets build_dirty_ and re-enters
-        // here anyway.
+        // ── Frame-request cadence ──
         //
-        // The bucket width adapts to the terminal's DEC-2026 support,
-        // detected once via the env heuristic. When sync IS available
-        // every frame swaps atomically, so 33 ms (~30 fps) keeps the
-        // caret smooth at no flicker cost. When it ISN'T (Apple
-        // Terminal, ish, plain xterm, unconfigured tmux), each live-tail
-        // repaint tears — so widen the bucket to 100 ms (~10 fps),
-        // cutting the visible tear frequency 3× for a slightly choppier
-        // caret. Mirrors agentty's spinner-tick gate in subscribe.cpp.
+        // Two distinct clocks meet here, and conflating them is what made
+        // the reveal stutter:
+        //
+        //   • The COLOR/FX phase (scramble glyphs, gradient hue, caret
+        //     pulse) only needs to step a few times a second. Bucketing it
+        //     avoids tearing the chrome BELOW the live tail on terminals
+        //     without DEC 2026 (Apple Terminal, plain xterm, bare tmux),
+        //     where each multi-row repaint paints progressively.
+        //
+        //   • The TEXT REVEAL cursor (the host advances revealed_size at a
+        //     fixed char/sec and re-feeds set_content every frame) needs
+        //     ~60 fps wakes to look smooth. The host can only advance the
+        //     cursor on a frame where the loop actually WAKES, and the loop
+        //     only wakes for animation when SOMETHING re-armed a frame
+        //     request. RAF is that something.
+        //
+        // The old code gated RAF on the COLOR phase bucket (33/100 ms), so
+        // on a non-sync terminal the loop woke only every 100 ms and the
+        // reveal advanced in ~40-char lurches — "stuck, then a burst."
+        //
+        // Fix: while the trailing edge is ACTIVELY MOVING (the source grew
+        // within the last kRevealActiveMs, i.e. the model is still feeding
+        // and/or the host's reveal cursor is still catching up), re-arm at
+        // the animation-frame interval (≈16 ms) so the reveal plays out
+        // smoothly. Once the edge goes quiet (no growth for a beat) fall
+        // back to the color-phase bucket so the residual caret pulse / FX
+        // settle doesn't keep a non-sync terminal tearing at 60 Hz.
         static const std::int64_t kAnimPhaseMs =
             ansi::env_supports_synchronized_output() ? 33 : 100;
-        const std::int64_t phase = ms_total / kAnimPhaseMs;
-        if (phase != last_anim_phase_) {
-            last_anim_phase_ = phase;
+        // Grace window after the last observed growth during which we treat
+        // the reveal as "in motion" and want fine-grained wakes. Comfortably
+        // longer than one host reveal step so a steady 400 c/s feed (a byte
+        // every few ms) never lapses out of the active regime between frames.
+        constexpr std::int64_t kRevealActiveMs = 250;
+        const bool reveal_in_motion = age_at_tail_ms <= kRevealActiveMs;
+
+        if (reveal_in_motion) {
+            // Smooth reveal: one wake per animation frame. Keep the color
+            // phase counter current so the first quiescent frame doesn't
+            // see a stale bucket and fire a redundant RAF.
+            last_anim_phase_ = ms_total / kAnimPhaseMs;
             ::maya::request_animation_frame();
+        } else {
+            const std::int64_t phase = ms_total / kAnimPhaseMs;
+            if (phase != last_anim_phase_) {
+                last_anim_phase_ = phase;
+                ::maya::request_animation_frame();
+            }
         }
         return cached_live_;
 }

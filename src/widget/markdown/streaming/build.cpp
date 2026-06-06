@@ -45,8 +45,23 @@ const Element& StreamingMarkdown::build() const {
     std::string_view tail = (committed_ < source_.size())
         ? std::string_view{source_}.substr(committed_)
         : std::string_view{};
-    const bool has_tail   = !tail.empty();
+    // Keep the tail slot PRESENT while streaming with a committed
+    // prefix, even when the tail is momentarily empty. As the reveal
+    // crosses a `\n\n` block boundary, commit_range advances committed_
+    // to the boundary while the next block's first byte hasn't been
+    // revealed yet — so for a frame or two `tail` is empty. If has_tail
+    // tracked emptiness directly, the outer vstack would collapse from
+    // [prefix, gap, tail] to [prefix] and DROP the trailing .gap(1) row,
+    // then re-add it the instant the next byte reveals: a 1-row down/up
+    // bounce at EVERY block boundary that ripples the composer/status
+    // bar below (the "chrome flickers while md renders" symptom). While
+    // live, reserve the tail slot so the inter-block gap stays put; the
+    // empty tail renders as a 0-row element, and the gap matches the
+    // steady state the next revealed byte lands in. finish()/settle
+    // clears live_, so a genuinely-finished message with no tail does
+    // NOT carry a dangling gap.
     const bool has_prefix = !prefix_->blocks.empty();
+    const bool has_tail   = !tail.empty() || (live_ && has_prefix);
 
     // ── Empty special case ──
     if (!has_prefix && !has_tail) {

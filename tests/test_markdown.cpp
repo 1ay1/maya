@@ -1234,7 +1234,54 @@ static void st_streaming_table() {
     render_stream(md);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
+// Per-FRAME canonical-tail cost: a large multi-line code block streamed
+// byte-by-byte with a render after EVERY byte (not every Nth). This is the
+// realistic worst case the terminated-prefix memo targets: an uncommitted
+// code fence whose terminated rows accumulate while every frame re-enters
+// render_tail's canonical path. Without the memo each frame re-parses +
+// re-renders the whole terminated prefix (O(tail) per frame, O(tail²)
+// total) — the "md rendering stops animating past a certain length"
+// symptom. With it, the terminated rows render once per committed line and
+// blit thereafter, so per-frame cost is bounded by the live line.
+static void st_canonical_tail_per_frame_fence() {
+    StreamingMarkdown md;
+    md.set_live(true);
+    std::string body = "```cpp\n";
+    for (int l = 0; l < 120; ++l)
+        body += "int variable_" + std::to_string(l)
+             +  " = some_function(" + std::to_string(l) + ");\n";
+    // No closing fence: the whole body sits uncommitted in the tail the
+    // entire time, forcing the canonical path every frame.
+    std::string acc;
+    for (char c : body) {
+        acc.push_back(c);
+        md.set_content(acc);   // bytes change every frame
+        render_stream(md);     // render after EVERY byte
+    }
+    md.finish();
+    render_stream(md);
+}
+
+// Per-FRAME prose stream: a long multi-paragraph reply streamed
+// byte-by-byte with a render after every byte. Most frames extend the
+// live last line without adding a `\n`, so the terminated prefix is
+// unchanged and the terminated memo must hit — keeping per-frame cost
+// O(live line) instead of O(everything streamed so far).
+static void st_canonical_tail_per_frame_prose() {
+    auto body = build_llm_body(6'000);
+    StreamingMarkdown md;
+    md.set_live(true);
+    std::string acc;
+    for (char c : body) {
+        acc.push_back(c);
+        md.set_content(acc);
+        render_stream(md);
+    }
+    md.finish();
+    render_stream(md);
+}
+
+// ──────────────────────────────────────────────────────────
 // Height monotonicity across format transitions — the core anti-FLICKER
 // contract. markdown.hpp guarantees: "the element-tree height is a monotonic
 // function of the stream's byte position — appending bytes can only extend
@@ -1873,6 +1920,8 @@ int main() {
     run("big blocks blit ×300",         2000ms, st_big_blocks_blit);
     run("commit storm ×80",            3000ms, st_commit_storm);
     run("streaming table ×200",        3000ms, st_streaming_table);
+    run("canonical tail/frame fence",  4000ms, st_canonical_tail_per_frame_fence);
+    run("canonical tail/frame prose",  6000ms, st_canonical_tail_per_frame_prose);
 
     std::println("\n-- F. height monotonicity / no-flicker --");
     run("height monotonic (transitions)", 5000ms, st_height_monotonic_transitions);

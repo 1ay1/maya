@@ -170,15 +170,76 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
     std::string fence_prefix;
     if (in_code_fence_) fence_prefix = "```\n";
 
-    // Canonical render of the terminated prefix — byte-identical to what
-    // commit_range will eventually produce for these bytes.
+    // Canonical parse of a slice — byte-identical to what commit_range
+    // will eventually produce for these bytes.
     auto canonical_blocks = [this](std::string_view src) {
         ::maya::md_detail::RefDefsScope guard(
             const_cast<std::unordered_map<std::string, md::LinkRef>*>(&ref_defs_));
         return parse_markdown_impl(std::string{src}, 0).blocks;
     };
-    auto terminated_blocks = canonical_blocks(fence_prefix + std::string{terminated});
-    if (terminated_blocks.empty()) return render_tail_inner(tail);
+
+    // Memoized RENDER of the terminated prefix to shared block Elements,
+    // each wrapped in a hash-keyed ComponentElement so the RENDERER's
+    // cell cache blits it (memcpy/row) instead of re-laying-out +
+    // re-highlighting the whole block every frame. Two layers of caching
+    // are needed: this memo skips the PARSE + md_block_to_element when the
+    // terminated prefix is unchanged, and the ComponentElement key (stable
+    // per terminated-hash + block index) makes render_tree blit the cells
+    // rather than recompute layout::compute over the block. Without the
+    // wrapper the parse is cached but the per-frame render_tree still
+    // re-highlights a growing code fence — O(tail) per frame, the actual
+    // "animation stops past N bytes" stall (the parse was never the
+    // dominant cost; the layout/highlight re-run was). The key moves only
+    // when a new row terminates, so a growing block re-lays-out once per
+    // committed row, not once per frame. Mirrors render_eager_slice.
+    std::size_t term_block_count = 0;
+    std::uint64_t term_slice_hash = 0;
+    auto terminated_rendered = [&]() -> std::vector<std::shared_ptr<const Element>> {
+        const std::uint64_t term_hash =
+            (tail_term_cache_version_ == source_version_)
+                ? tail_term_cache_hash_ : fnv1a64(terminated);
+        if (!tail_term_cache_blocks_.empty()
+            && tail_term_cache_len_      == terminated.size()
+            && tail_term_cache_in_fence_ == in_code_fence_
+            && (tail_term_cache_version_ == source_version_
+                || tail_term_cache_hash_ == term_hash)) {
+            term_block_count = tail_term_cache_blocks_.size();
+            term_slice_hash  = tail_term_cache_hash_;
+            tail_term_cache_version_ = source_version_;
+            return tail_term_cache_blocks_;
+        }
+        auto blocks = canonical_blocks(fence_prefix + std::string{terminated});
+        std::vector<std::shared_ptr<const Element>> els;
+        els.reserve(blocks.size());
+        for (auto& blk : blocks)
+            els.push_back(std::make_shared<const Element>(md_block_to_element(blk)));
+        term_block_count           = blocks.size();
+        term_slice_hash            = fnv1a64(terminated);
+        tail_term_cache_blocks_    = els;
+        tail_term_cache_len_       = terminated.size();
+        tail_term_cache_hash_      = term_slice_hash;
+        tail_term_cache_in_fence_  = in_code_fence_;
+        tail_term_cache_version_   = source_version_;
+        return els;
+    }();
+    if (terminated_rendered.empty()) return render_tail_inner(tail);
+
+    // Wrap a cached terminated block in a hash-keyed ComponentElement so
+    // the renderer blits its cells. Key = (tag, instance, terminated
+    // slice hash, block index): stable while the terminated prefix is
+    // unchanged, moves when a new row lands.
+    auto wrap_term_block = [&](const std::shared_ptr<const Element>& blk,
+                               std::size_t idx) -> Element {
+        ComponentElement comp;
+        comp.hash_id = ::maya::CacheIdBuilder{}
+            .add(std::string_view{"strmd-term"})
+            .add(static_cast<std::uint64_t>(instance_id_))
+            .add(term_slice_hash)
+            .add(static_cast<std::uint64_t>(idx))
+            .build();
+        comp.render = [blk](int, int) -> Element { return *blk; };
+        return Element{std::move(comp)};
+    };
 
     // Decide how to render the live partial last line. If folding it
     // into the block above (by appending a synthetic newline) keeps the
@@ -236,24 +297,30 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
         }
 
         bool live_continues = false;
-        std::vector<md::Block> use_blocks;
         if (!trimmed_live.empty()) {
             std::string merged = fence_prefix + std::string{terminated};
             merged += trimmed_live;
             merged += '\n';
             auto merged_blocks = canonical_blocks(merged);
-            if (merged_blocks.size() == terminated_blocks.size()) {
-                // Live line merged into the last block — render the merged
-                // parse; the block already contains the partial row.
+            if (merged_blocks.size() == term_block_count) {
+                // Live line merged into the last block — the live row is a
+                // continuation, so blocks [0, N-1) are byte-identical to
+                // the terminated render (reuse the cached Elements) and
+                // only the LAST block grew. Re-render just that one.
                 live_continues = true;
-                use_blocks = std::move(merged_blocks);
+                rendered.reserve(merged_blocks.size() + 1);
+                for (std::size_t i = 0; i + 1 < merged_blocks.size(); ++i)
+                    rendered.push_back(wrap_term_block(terminated_rendered[i], i));
+                if (!merged_blocks.empty())
+                    rendered.push_back(
+                        md_block_to_element(merged_blocks.back()));
             }
         }
-        if (!live_continues) use_blocks = std::move(terminated_blocks);
-
-        rendered.reserve(use_blocks.size() + 1);
-        for (auto& blk : use_blocks)
-            rendered.push_back(md_block_to_element(blk));
+        if (!live_continues) {
+            rendered.reserve(terminated_rendered.size() + 1);
+            for (std::size_t i = 0; i < terminated_rendered.size(); ++i)
+                rendered.push_back(wrap_term_block(terminated_rendered[i], i));
+        }
 
         // Live line that STARTS a new block stays inline below.
         if (!live_continues && !trimmed_live.empty()) {

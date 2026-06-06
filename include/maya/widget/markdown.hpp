@@ -475,6 +475,30 @@ private:
     mutable bool                    tail_canon_cache_in_fence_ = false;
     mutable std::shared_ptr<const Element> tail_canon_cache_el_;
 
+    // ── Terminated-prefix block-render memo ─────────────────────────
+    // Inside render_tail's canonical path, the terminated prefix (the
+    // tail up to its last `\n`) is fully parsed AND rendered to block
+    // Elements every frame the whole-tail memo above misses — i.e. on
+    // EVERY frame a fast byte stream extends the live last line, because
+    // appending to the live line moves tail_canon_cache_hash_ while the
+    // terminated prefix is byte-identical. That whole-tail miss still
+    // costs an O(terminated) parse + md_block_to_element rebuild per
+    // frame = O(tail²) over a long uncommitted block (a code fence with
+    // no internal blank line, the worst case): the residual "stuck" /
+    // "animation freezes past N bytes" the whole-tail memo can't catch.
+    //
+    // The terminated prefix only changes when a new `\n` lands. Memoize
+    // its rendered block Elements keyed on (version-check → len+hash,
+    // in_code_fence_). On a hit we copy the cached shared_ptr Elements
+    // (O(blocks) shared_ptr bumps); on a miss we parse + render once per
+    // committed row, not once per frame. Stored as shared Elements so the
+    // copy is cheap regardless of block size.
+    mutable std::uint64_t           tail_term_cache_version_  = 0;
+    mutable std::uint64_t           tail_term_cache_hash_     = 0;
+    mutable std::size_t             tail_term_cache_len_      = 0;
+    mutable bool                    tail_term_cache_in_fence_ = false;
+    mutable std::vector<std::shared_ptr<const Element>> tail_term_cache_blocks_;
+
     // ── Per-block fold state ───────────────────────────────────────────
     // Keyed by BlockMeta::source_offset so fold state survives the rare
     // "set_content with diverging prefix" path (where commit_range is

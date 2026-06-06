@@ -336,6 +336,16 @@ void StreamingMarkdown::clear() {
     eager_cache_slice_hash_ = 0;
     eager_cache_slice_len_ = 0;
     eager_cache_blocks_.clear();
+    tail_canon_cache_version_  = 0;
+    tail_canon_cache_hash_     = 0;
+    tail_canon_cache_len_      = 0;
+    tail_canon_cache_in_fence_ = false;
+    tail_canon_cache_el_.reset();
+    tail_term_cache_version_   = 0;
+    tail_term_cache_hash_      = 0;
+    tail_term_cache_len_       = 0;
+    tail_term_cache_in_fence_  = false;
+    tail_term_cache_blocks_.clear();
     // Reset the build-cache shape flags so the next build() falls into
     // the full-rebuild path rather than trying to mutate a stale
     // structural template.

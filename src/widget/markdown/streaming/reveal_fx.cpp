@@ -418,15 +418,21 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
 
         // ── Inline caret ──
         //
-        // Splice a pulsing block glyph as a trailing styled run inside
-        // the tail TextElement instead of emitting a separate caret
-        // row in a vstack. A separate row adds one row to the live
-        // tail's height; every wrapped-row change in the tail above
-        // would shift it; when streaming flips live_=false the row
-        // vanishes and the composer below jumps up by a row. The
-        // inline form is a single column on the last wrapped row —
-        // it never adds a row, never disappears between frames, never
-        // shifts the composer.
+        // PULSE the last codepoint of the tail in place — recolor it
+        // with a cycling magenta→cyan fg + a faint block background so
+        // the streaming edge reads as a live caret — instead of
+        // APPENDING a block glyph after it. Appending added one display
+        // column to the last wrapped row; whenever that row was already
+        // at the wrap width the extra column spilled to a NEW wrapped
+        // row. That row existed only while live_ was true, so the
+        // instant the turn settled (live_=false → cached_build_, no
+        // caret) the row vanished and everything below — the composer
+        // and status bar — jumped up by one row. Intermittent because
+        // it only triggered when the final line happened to land at the
+        // column boundary (the "sometimes the chrome shifts up at turn
+        // end" symptom). Recoloring in place is byte-width-identical to
+        // cached_build_'s last row, so the live↔settled height is always
+        // equal and the seam can never shift.
         constexpr std::int64_t kCaretPeriodMs = 650;
         const double caret_phase =
             static_cast<double>(ms_total % kCaretPeriodMs)
@@ -441,31 +447,52 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         const std::uint8_t cb = static_cast<std::uint8_t>(
             200.0 + (255.0 - 200.0) * tri);
         if (TextElement* tail = find_last_text(animated_body)) {
-            constexpr std::string_view kCaretGlyph = "\xe2\x96\x8a"; // ▊ left 3/4 block
-            const std::size_t caret_off = tail->content.size();
-            tail->content.append(kCaretGlyph);
-            if (tail->runs.empty()) {
-                // Materialize the implicit base run so the append doesn't
-                // accidentally inherit the wrong style; then append the
-                // caret as its own run.
+            const Style caret_style = Style{}
+                .with_fg(Color::rgb(cr, cg, cb))
+                .with_bg(Color::rgb(cr / 4, cg / 4, cb / 4))
+                .with_bold();
+            // Byte offset of the LAST codepoint in the tail (UTF-8 step
+            // back one). The pulse run covers just that glyph.
+            const std::size_t caret_off =
+                utf8_step_back(tail->content, 1);
+            if (caret_off < tail->content.size()) {
+                // Recolor the final glyph in place — no bytes added, so
+                // the wrap result is unchanged and no extra row can
+                // appear. Materialize the implicit base run for the
+                // [0, caret_off) prefix if runs are empty, then push the
+                // pulse run over the last codepoint.
+                if (tail->runs.empty()) {
+                    tail->runs.push_back(StyledRun{
+                        .byte_offset = 0,
+                        .byte_length = caret_off,
+                        .style       = tail->style,
+                    });
+                }
+                tail->runs.push_back(StyledRun{
+                    .byte_offset = caret_off,
+                    .byte_length = tail->content.size() - caret_off,
+                    .style       = caret_style,
+                });
+                // Same byte length and same display width as before, so
+                // the source render's wrap cache is still valid — do NOT
+                // invalidate it (re-wrapping every animation frame is
+                // wasted O(content) work and was only needed when the
+                // appended glyph changed the width).
+            } else {
+                // Empty tail (no glyph to pulse) — emit a single block
+                // caret. The row is empty so a one-column glyph cannot
+                // spill to a new wrapped row; the live↔settled seam
+                // stays stable.
+                constexpr std::string_view kCaretGlyph =
+                    "\xe2\x96\x8a"; // ▊ left 3/4 block
+                tail->content.append(kCaretGlyph);
                 tail->runs.push_back(StyledRun{
                     .byte_offset = 0,
-                    .byte_length = caret_off,
-                    .style       = tail->style,
+                    .byte_length = kCaretGlyph.size(),
+                    .style       = caret_style,
                 });
+                tail->cached_width = -1;
             }
-            tail->runs.push_back(StyledRun{
-                .byte_offset = caret_off,
-                .byte_length = kCaretGlyph.size(),
-                .style       = Style{}
-                    .with_fg(Color::rgb(cr, cg, cb))
-                    .with_bold(),
-            });
-            // The byte length changed; invalidate the wrap cache so the
-            // next paint re-measures with the caret in place. Without
-            // this the renderer can paint cells that don't account for
-            // the extra column on the last wrapped row.
-            tail->cached_width = -1;
         }
 
         // Mirror cached_build_'s cross-axis sizing. Stretch is

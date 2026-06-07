@@ -221,11 +221,26 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // reveal cursor is already at the live edge, so the overlay
         // and the settled build are equivalent for the trailing chars.
         // Clear the deadline so a future stream can request a new ramp.
+        //
+        // Critical: request one more animation frame here so the host's
+        // finish() (gated on !is_finalizing()) runs on the very next
+        // build(). Without this RAF kick, ramp completion clears
+        // is_finalizing AND drops live_ in the same instant, the host's
+        // RAF gate (which armed on is_finalizing) goes idle, and the
+        // visual hash stops advancing — so the host never re-enters
+        // view() to call finish(). The currently-rendered cached_build_
+        // was assembled mid-stream with the trailing block possibly
+        // uncommitted (open fence, in-progress paragraph), and that
+        // intermediate render would stay frozen on screen indefinitely.
+        // One forced frame closes the gap: next render calls finish(),
+        // commits the tail, rebuilds cached_build_, returns the settled
+        // tree, RAF lapses naturally because nothing is animating.
         if (finalize_deadline_ms_ != 0
             && reveal_cp_ >= static_cast<double>(total_cp))
         {
             finalize_deadline_ms_ = 0;
             live_ = false;
+            request_animation_frame();
             return cached_build_;
         }
         const std::size_t revealed_cp =

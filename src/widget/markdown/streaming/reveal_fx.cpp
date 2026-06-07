@@ -264,20 +264,68 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 : 0;
 
         // Walk a copy of cached_build_ down its rightmost spine to
-        // the last leaf TextElement.
-        auto find_last_text = [](Element& root) -> TextElement* {
+        // the last leaf TextElement. Descends through ComponentElement
+        // by materializing it (calling its render()) and REPLACING it in
+        // the parent with the materialized Element — so subsequent
+        // mutations land in the copy, not in the cached lambda's capture.
+        //
+        // `eager_render` is set true when the descent reveals that the
+        // tail is a structured block (table / list / blockquote / code).
+        // Heuristic: the inline-fallback path produces a flat shape
+        // (outer vstack → prefix? → tail TextElement) where the tail-slot
+        // child is DIRECTLY a TextElement. Any descent that goes deeper
+        // than that on the tail side — through a ComponentElement OR
+        // through a nested BoxElement — means the tail is an eager
+        // render whose rightmost leaf is just one cell / item / token,
+        // NOT the full live byte slice. Source-level cursor-cut on that
+        // leaf would erase it while the rest of the structure stays
+        // visible (garbled rows / empty last cell), so the caller skips
+        // the cut for eager renders and only applies the visual edge
+        // effects (scramble, gradient, caret).
+        bool eager_render = false;
+        auto find_last_text = [&eager_render](Element& root) -> TextElement* {
+            // Reset descent state on every call — the lambda is invoked
+            // twice per frame (trail + caret) and we want the eager_render
+            // signal computed fresh each time, not accumulated.
+            eager_render = false;
+            int  tail_depth        = 0;
+            bool entered_tail_slot = false;
             Element* cur = &root;
-            for (;;) {
+            for (int step = 0; step < 64; ++step) {
                 if (auto* t = std::get_if<TextElement>(&cur->inner)) {
                     return t->content.empty() ? nullptr : t;
                 }
                 if (auto* b = std::get_if<BoxElement>(&cur->inner)) {
                     if (b->children.empty()) return nullptr;
                     cur = &b->children.back();
+                    if (entered_tail_slot) {
+                        // We're already past the tail slot — any deeper
+                        // Box is a structural shape (list-items Box,
+                        // table-rows Box, blockquote Box).
+                        if (++tail_depth > 0) eager_render = true;
+                    } else {
+                        // Stepping out of the outer vstack INTO its
+                        // tail slot. From the next step onward, depth
+                        // counts.
+                        entered_tail_slot = true;
+                    }
+                    continue;
+                }
+                if (auto* c = std::get_if<ComponentElement>(&cur->inner)) {
+                    if (!c->render) return nullptr;
+                    // Materialize the cached render and REPLACE the
+                    // ComponentElement in-place so the mutations below
+                    // don't touch the cache lambda's captured Element
+                    // (shared across frames; mutating it would corrupt
+                    // every later cached render).
+                    Element materialized = c->render(0, 0);
+                    *cur = std::move(materialized);
+                    eager_render = true;
                     continue;
                 }
                 return nullptr;
             }
+            return nullptr;
         };
 
         // Step back N UTF-8 codepoints from end of `s`.
@@ -434,7 +482,19 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // as the cursor advances. Bounded: we only ever hide what's
             // beyond the cursor, and the cursor monotonically approaches
             // total_cp, so nothing is lost.
-            if (revealed_cp < total_cp) {
+            //
+            // EAGER RENDERS (table, list, blockquote, code-block) skip
+            // this step: their rightmost leaf is only the last visible
+            // token (a single table cell, a list item's text), not the
+            // full live edge — cutting `total_cp - revealed_cp` codepoints
+            // off it would erase that leaf entirely while the rest of
+            // the eager structure (other cells, earlier list items) stays
+            // visible, garbling the rendered block. For eager renders we
+            // still apply scramble + gradient + caret to the rightmost
+            // leaf so the streaming edge reads as alive, but the cursor
+            // pacing manifests at the structural level (rows / items
+            // appearing as they commit), not at the byte level.
+            if (revealed_cp < total_cp && !eager_render) {
                 const std::size_t hidden_cp = total_cp - revealed_cp;
                 // Hide at most the tail's own codepoints (never cut into
                 // the committed prefix — it's not in this TextElement).

@@ -464,6 +464,94 @@ static void screenshot_repro_no_ghost_box() {
     }
 }
 
+// T9. The reveal-fx animation (scramble/gradient/caret) must reach the
+// rightmost text leaf even when the live tail is rendered as an eager
+// block — table, list, blockquote, code block. Earlier the find_last_text
+// helper bailed at the first ComponentElement on the rightmost spine,
+// which is exactly what render_tail emits for those shapes; result: a
+// streaming table got NO animated edge at all ("animation doesn't show
+// when things like tables are streaming"). Now find_last_text
+// materializes the ComponentElement and continues descending.
+//
+// The test pins the contract: for each eager shape, after the widget
+// has emitted some live content, there exists a non-empty TextElement on
+// the rightmost spine of the built tree (after materializing any
+// ComponentElements along the way). If not, reveal_fx has nothing to
+// paint and the user sees a frozen tail.
+static void rightmost_leaf_reachable_in_eager_renders() {
+    // Walk rightmost spine; descend through Box children and materialize
+    // ComponentElements by calling their render(). To avoid moving out of
+    // a BoxElement's children vector (its destructor still owns them),
+    // we hold an `Element` value across the descent: when we hit a Box,
+    // copy the rightmost child into the local. When we hit a Component,
+    // call its render() and assign the result. Costs an O(rightmost
+    // chain) Element copy — fine for a test, and bounded by tree depth.
+    auto find_rightmost_text = [](const Element& root) -> bool {
+        Element cur = root;
+        for (int depth = 0; depth < 64; ++depth) {
+            if (auto* t = std::get_if<TextElement>(&cur.inner))
+                return !t->content.empty();
+            if (auto* b = std::get_if<BoxElement>(&cur.inner)) {
+                if (b->children.empty()) return false;
+                cur = b->children.back();   // copy
+                continue;
+            }
+            if (auto* c = std::get_if<ComponentElement>(&cur.inner)) {
+                if (!c->render) return false;
+                cur = c->render(0, 0);      // fresh Element
+                continue;
+            }
+            return false;
+        }
+        return false;  // depth exceeded
+    };
+
+    struct Case { const char* name; const char* src; };
+    Case cases[] = {
+        {"table",
+         "Stats:\n\n"
+         "| Col A | Col B | Col C |\n"
+         "|-------|-------|-------|\n"
+         "| row1a | row1b | row1c |\n"
+         "| row2a | row2b | row2"},   // mid-cell
+        {"list",
+         "Items:\n\n"
+         "- alpha\n"
+         "- beta\n"
+         "- gamma\n"
+         "- delt"},                    // mid-item
+        {"blockquote",
+         "> first quoted line\n"
+         "> second quoted line\n"
+         "> third quoted lin"},        // mid-line
+        {"code block",
+         "```c\n"
+         "int main() {\n"
+         "    return 0"},              // open fence
+        {"paragraph",
+         "This is some prose that streams in over multiple lines and is"
+         " the inline-fallback shape \u2014 reveal_fx already worked here"
+         " before the eager fix."},
+    };
+
+    for (auto& c : cases) {
+        StreamingMarkdown md;
+        md.set_live(true);
+        // Do NOT enable reveal_fx here — we want to inspect the
+        // underlying cached_build_ tree (the input the overlay walks),
+        // not the overlay's per-frame mutated output. With reveal_fx
+        // off, build() returns cached_build_ unmodified.
+        md.set_content(c.src);
+        Element snapshot = md.build();
+        if (!find_rightmost_text(snapshot)) {
+            throw std::runtime_error(
+                std::string("no rightmost TextElement reachable for shape '")
+                + c.name + "' — reveal_fx has nothing to animate. Source: "
+                + c.src);
+        }
+    }
+}
+
 // ── main ───────────────────────────────────────────────────────────────────
 
 int main() {
@@ -477,6 +565,7 @@ int main() {
     run("idle build stable",                       idle_build_stable);
     run("finalize ramp completion matches finish", finalize_ramp_completion_matches_finish);
     run("screenshot repro no ghost box",           screenshot_repro_no_ghost_box);
+    run("reveal-fx leaf reachable in eager renders", rightmost_leaf_reachable_in_eager_renders);
 
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   failed: {}", g_passed, g_failed);

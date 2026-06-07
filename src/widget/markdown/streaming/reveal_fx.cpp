@@ -149,10 +149,22 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 //     backlog / kDrainSecs caps the worst-case reveal time at
                 //     kDrainSecs no matter how big the burst, so backlog can
                 //     never accumulate beyond one window's worth: a 2000-char
-                //     dump glides out in ~1.5 s, a 250-char drip stays on the
-                //     200 floor. No arbitrary cps ceiling to out-pace.
+                //     dump glides out in ~2 s, a 250-char drip stays on the
+                //     200 floor (~1 s). No arbitrary cps ceiling to out-pace.
+                //
+                //     kDrainSecs is the load-bearing tunable. It must be SMALL
+                //     enough that the cursor is caught up (or nearly) by the
+                //     time the turn SETTLES — at settle the host drops live_
+                //     and the overlay returns the full text at once, so any
+                //     backlog still unrevealed at that instant dumps in one
+                //     frame (the real "suddenly renders a lot" the user sees,
+                //     distinct from byte arrival). 0.5 s keeps the worst-case
+                //     backlog reveal under ~2 s so a turn that ends shortly
+                //     after its last burst finds little or nothing to dump,
+                //     while staying slow enough to read as a typewriter, not
+                //     a teleport.
                 constexpr double kFloorCps  = 200.0;  // steady typewriter cadence
-                constexpr double kDrainSecs = 1.5;    // worst-case backlog reveal time
+                constexpr double kDrainSecs = 0.5;    // worst-case backlog reveal time
                 double cps = backlog / kDrainSecs;
                 if (cps < kFloorCps) cps = kFloorCps;
                 reveal_cp_ += cps * elapsed_s;

@@ -274,6 +274,23 @@ private:
     mutable std::size_t last_seen_size_ = 0;
     mutable std::int64_t last_grow_ms_   = 0;
 
+    // ── Continuous reveal cursor (maya-owned typewriter) ──
+    //
+    // The host feeds the FULL set of arrived bytes every frame and does
+    // no pacing. To make the live edge advance smoothly regardless of how
+    // the wire batches bytes (Anthropic ships 50-100 chars per delta with
+    // 90-200 ms gaps), the widget runs its own reveal cursor: a fractional
+    // codepoint count that eases toward the total at a constant-velocity
+    // catch-up integrated over real elapsed time. Because the cursor moves
+    // on its OWN clock — not on byte arrival — its velocity never snaps,
+    // so the scramble/gradient/caret it drives stay continuous across
+    // bursts and pauses alike. `reveal_cp_` is codepoints revealed;
+    // `reveal_ms_` is the wall-clock of the last advance. The trailing-edge
+    // age is then measured from the cursor, giving each char an age that
+    // increases monotonically as the cursor passes it.
+    mutable double       reveal_cp_  = 0.0;
+    mutable std::int64_t reveal_ms_  = 0;
+
     // Animation throttle: bucket the wall clock into ~33 ms phases
     // and only request the next animation frame when the phase
     // actually advances. Without this RAF fires every 16 ms and the
@@ -698,6 +715,18 @@ public:
     /// terminal).
     void set_reveal_fx(bool on) noexcept { reveal_fx_ = on; }
     [[nodiscard]] bool is_live() const noexcept { return live_; }
+
+    /// True while the internal reveal cursor is still catching up to the
+    /// available source (the typewriter hasn't reached the live edge).
+    /// Hosts use this to keep the 16 ms animation frame armed across a
+    /// wire pause so the reveal keeps gliding instead of stalling between
+    /// bursts. reveal_cp_ is fractional; compare against the source
+    /// codepoint count is approximated by byte size (cursor < bytes is a
+    /// safe superset — worst case one extra armed frame at settle).
+    [[nodiscard]] bool reveal_in_progress() const noexcept {
+        return live_ && reveal_fx_
+            && reveal_cp_ < static_cast<double>(source_.size());
+    }
 
     /// Build the element tree: cached blocks + monotonic tail.  Returns
     /// a reference into the per-frame cache; valid until the next

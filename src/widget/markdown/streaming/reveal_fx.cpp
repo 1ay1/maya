@@ -83,8 +83,71 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // Source shrank (clear / set_content rollback) — reset.
             last_seen_size_ = source_.size();
             last_grow_ms_   = ms_total;
+            reveal_cp_      = 0.0;
+            reveal_ms_      = ms_total;
         }
-        const std::int64_t age_at_tail_ms = ms_total - last_grow_ms_;
+
+        // ── Advance the continuous reveal cursor ──
+        //
+        // Total codepoints currently available (whole source). The cursor
+        // eases toward this at floor + proportional catch-up, integrated
+        // over real elapsed time so its velocity is smooth no matter how
+        // bytes were batched onto the wire. This is the typewriter, owned
+        // entirely by the widget.
+        const std::size_t total_cp = [&] {
+            std::size_t n = 0;
+            for (std::size_t i = 0; i < source_.size(); ++i)
+                if ((static_cast<unsigned char>(source_[i]) & 0xC0) != 0x80) ++n;
+            return n;
+        }();
+        if (reveal_ms_ == 0) { reveal_ms_ = ms_total; reveal_cp_ = 0.0; }
+        {
+            double elapsed_s = (ms_total - reveal_ms_) / 1000.0;
+            if (elapsed_s < 0.0)   elapsed_s = 0.0;
+            // Bound the per-frame advance: a frame served late (a Tick wake
+            // landed instead of the 16 ms RAF, or render cost spiked) would
+            // otherwise integrate the whole gap and jump the cursor several
+            // codepoints at once — a visible burst. Clamping elapsed to ~33
+            // ms caps any single step to ~2 frames' worth; the cost is a
+            // touch of catch-up lag after a long gap, which the floor rate
+            // quietly absorbs. This is the difference between a glide and a
+            // hitch.
+            if (elapsed_s > 0.033) elapsed_s = 0.033;
+            reveal_ms_ = ms_total;
+            const double backlog = static_cast<double>(total_cp) - reveal_cp_;
+            if (backlog <= 0.0) {
+                reveal_cp_ = static_cast<double>(total_cp);
+            } else {
+                // Near-constant rate: a fixed typewriter cadence with only
+                // a tiny lean-in so a very large backlog (the model raced
+                // far ahead, or a big paste landed) doesn't leave text
+                // typing out for many seconds after the wire is done. For
+                // ordinary streaming the floor dominates, so the reveal is
+                // a steady, even typewriter — not a backlog-driven sweep.
+                // At settle the host drops live_ and the full text shows at
+                // once, so any residual lag never leaves text "stuck typing."
+                constexpr double kFloorCps = 200.0;  // steady typewriter cadence
+                constexpr double kCatchUp  = 0.6;    // tiny lean-in, large backlog only
+                constexpr double kMaxCps   = 700.0;  // ceiling
+                double cps = kFloorCps + backlog * kCatchUp;
+                if (cps > kMaxCps) cps = kMaxCps;
+                reveal_cp_ += cps * elapsed_s;
+                if (reveal_cp_ > static_cast<double>(total_cp))
+                    reveal_cp_ = static_cast<double>(total_cp);
+            }
+        }
+        const std::size_t revealed_cp =
+            static_cast<std::size_t>(reveal_cp_);
+
+        // age_at_tail_ms is now the time since the CURSOR last moved past
+        // a fresh codepoint, not since bytes arrived — so it never snaps
+        // to 0 on a burst. When the cursor is at the edge (caught up) it
+        // grows like last_grow; while catching up it stays ~0 (actively
+        // revealing).
+        const std::int64_t age_at_tail_ms =
+            (reveal_cp_ >= static_cast<double>(total_cp))
+                ? (ms_total - last_grow_ms_)
+                : 0;
 
         // Walk a copy of cached_build_ down its rightmost spine to
         // the last leaf TextElement.
@@ -247,6 +310,41 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // codepoints in place rather than rebuilding the whole string.
         Element animated_body = cached_build_;
         if (TextElement* tail = find_last_text(animated_body)) {
+            // ── Apply the reveal cursor: hide the unrevealed tail ──
+            // The committed prefix (everything but this last TextElement)
+            // is already settled and always shown. Only the live tail's
+            // trailing edge is paced: chop off the codepoints the cursor
+            // hasn't reached yet so text unfolds at the cursor's smooth
+            // velocity instead of popping in with each wire burst. The
+            // unrevealed bytes stay in source_ — they reappear next frame
+            // as the cursor advances. Bounded: we only ever hide what's
+            // beyond the cursor, and the cursor monotonically approaches
+            // total_cp, so nothing is lost.
+            if (revealed_cp < total_cp) {
+                const std::size_t hidden_cp = total_cp - revealed_cp;
+                // Hide at most the tail's own codepoints (never cut into
+                // the committed prefix — it's not in this TextElement).
+                const std::size_t cut_start =
+                    utf8_step_back(tail->content, hidden_cp);
+                if (cut_start < tail->content.size()) {
+                    tail->content.resize(cut_start);
+                    // Drop runs past the cut; clip the straddling one.
+                    std::vector<StyledRun> kept;
+                    kept.reserve(tail->runs.size());
+                    for (const auto& r : tail->runs) {
+                        if (r.byte_offset >= cut_start) continue;
+                        const std::size_t end = r.byte_offset + r.byte_length;
+                        kept.push_back(StyledRun{
+                            .byte_offset = r.byte_offset,
+                            .byte_length = std::min(end, cut_start) - r.byte_offset,
+                            .style       = r.style,
+                        });
+                    }
+                    tail->runs = std::move(kept);
+                    tail->cached_width = -1;   // content shrank — re-wrap
+                }
+            }
+
             const std::string_view orig = tail->content;
 
             // Find the trail window WITHOUT scanning the entire
@@ -517,24 +615,17 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         //     without DEC 2026 (Apple Terminal, plain xterm, bare tmux),
         //     where each multi-row repaint paints progressively.
         //
-        //   • The TEXT REVEAL cursor (the host advances revealed_size at a
-        //     fixed char/sec and re-feeds set_content every frame) needs
-        //     ~60 fps wakes to look smooth. The host can only advance the
-        //     cursor on a frame where the loop actually WAKES, and the loop
-        //     only wakes for animation when SOMETHING re-armed a frame
-        //     request. RAF is that something.
+        //   • The REVEAL CURSOR (this widget's own typewriter, advanced
+        //     above from wall-clock) needs ~60 fps wakes to unfold text
+        //     smoothly. The loop only wakes for animation when something
+        //     re-armed a frame request; RAF is that something.
         //
-        // The old code gated RAF on the COLOR phase bucket (33/100 ms), so
-        // on a non-sync terminal the loop woke only every 100 ms and the
-        // reveal advanced in ~40-char lurches — "stuck, then a burst."
-        //
-        // Fix: while the trailing edge is ACTIVELY MOVING (the source grew
-        // within the last kRevealActiveMs, i.e. the model is still feeding
-        // and/or the host's reveal cursor is still catching up), re-arm at
+        // Fix: while the reveal cursor is still catching up to the live
+        // edge OR the edge moved within the last kRevealActiveMs, re-arm at
         // the animation-frame interval (≈16 ms) so the reveal plays out
-        // smoothly. Once the edge goes quiet (no growth for a beat) fall
-        // back to the color-phase bucket so the residual caret pulse / FX
-        // settle doesn't keep a non-sync terminal tearing at 60 Hz.
+        // smoothly. Once the cursor reaches the edge and the wire goes
+        // quiet, fall back to the color-phase bucket so the residual caret
+        // pulse doesn't keep a non-sync terminal tearing at 60 Hz.
         static const std::int64_t kAnimPhaseMs =
             ansi::env_supports_synchronized_output() ? 33 : 100;
         // Grace window after the last observed growth during which we treat
@@ -542,7 +633,10 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // longer than one host reveal step so a steady 400 c/s feed (a byte
         // every few ms) never lapses out of the active regime between frames.
         constexpr std::int64_t kRevealActiveMs = 250;
-        const bool reveal_in_motion = age_at_tail_ms <= kRevealActiveMs;
+        const bool cursor_catching_up =
+            reveal_cp_ < static_cast<double>(total_cp);
+        const bool reveal_in_motion =
+            cursor_catching_up || age_at_tail_ms <= kRevealActiveMs;
 
         if (reveal_in_motion) {
             // Smooth reveal: one wake per animation frame. Keep the color

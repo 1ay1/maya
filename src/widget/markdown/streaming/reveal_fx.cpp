@@ -240,6 +240,14 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         {
             finalize_deadline_ms_ = 0;
             live_ = false;
+            // has_tail in build.cpp depends on live_; dropping it changes
+            // the cached tree's shape (the reserved empty trailing slot
+            // goes away). Without bumping build_dirty_ the next build()
+            // takes the !build_dirty_ early-out and returns the stale
+            // cached tree with the empty Text[0] still present — which
+            // renders as a stray empty bordered box at the end of the
+            // turn (the very symptom the ramp was supposed to prevent).
+            build_dirty_ = true;
             request_animation_frame();
             return cached_build_;
         }

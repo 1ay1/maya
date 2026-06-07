@@ -730,6 +730,15 @@ public:
         // reset path) we drop any pending finalize ramp too — there's
         // nothing left to glide toward.
         if (!live) finalize_deadline_ms_ = 0;
+        // has_tail (and therefore cached_build_'s child count) depends on
+        // live_ — build.cpp reserves an empty trailing slot while live so
+        // the inter-block gap doesn't bounce as commit_range walks past
+        // a block boundary. When live_ transitions, that reserved slot's
+        // existence changes, so the cached tree shape is stale; bump
+        // build_dirty_ to force a rebuild. Without this, dropping live_
+        // leaves the empty trailing TextElement in cached_build_, which
+        // renders as a stray empty bordered box at the end of the turn.
+        if (live_ != live) build_dirty_ = true;
         live_ = live;
     }
 

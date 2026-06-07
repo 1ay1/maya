@@ -1642,6 +1642,73 @@ static void st_narrow_table_no_char_chop() {
     }
 }
 
+// Symmetric companion to st_narrow_table_no_char_chop: at SENSIBLE
+// widths (the common case — a normal terminal, no tiny split) tables
+// must render as a BORDERED GRID, not the stacked-list fallback. The
+// fallback exists only for the char-chop case; firing it in a wide
+// terminal regresses readability (every cell becomes a stacked
+// `Header: value` line, the table loses its grid alignment).
+//
+// Pins the trigger: a 5- and 9-column table at widths 60/80/120 MUST
+// produce at least one row with the canonical bordered-row signature
+// (a leading │ followed by space-padded content). Caught regressions:
+// an `any-column-below-N` trigger firing on a many-column table whose
+// natural distribution puts one column at N-1 cells — even though the
+// grid is perfectly readable.
+static void st_wide_table_keeps_bordered_grid() {
+    struct Case { int ncols; std::string body; };
+    Case cases[] = {
+        // 5-col realistic table (the screenshot regression).
+        {5,
+         "| City | Country | Population (M) | Elevation (m) | Founded |\n"
+         "|------|---------|----------------|---------------|---------|\n"
+         "| La Paz | Bolivia | 0.82 | 3640 | 1548 |\n"
+         "| Kyoto | Japan | 1.46 | 56 | 794 |\n"
+         "| Marrakech | Morocco | 0.93 | 466 | 1062 |\n"},
+        // 9-col table — chrome eats more, distributor squeezes columns
+        // harder; an `any < 6` trigger fires on this even at width 80.
+        {9,
+         "| A | B | C | D | E | F | G | H | I |\n"
+         "|---|---|---|---|---|---|---|---|---|\n"
+         "| alpha | beta | gamma | delta | eps | zeta | eta | theta | iota |\n"
+         "| one | two | three | four | five | six | seven | eight | nine |\n"},
+    };
+    for (const auto& cs : cases) {
+        Element el = markdown(cs.body);
+        for (int w : {60, 80, 120}) {
+            StylePool pool;
+            Canvas canvas(w, /*h=*/200, &pool);
+            render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+            int h = content_height(canvas);
+            const std::uint64_t* cp = canvas.cells();
+            // A bordered table row starts with │ (after any
+            // outer-container left margin), has multiple │ glyphs,
+            // and contains many non-space content glyphs BETWEEN the
+            // bars. Count rows whose FIRST non-space cell is │ —
+            // that's the canonical bordered-row signature.
+            int leading_bar_rows = 0;
+            for (int r = 0; r < h; ++r) {
+                for (int c = 0; c < w; ++c) {
+                    Cell cell = Cell::unpack(cp[
+                        static_cast<std::size_t>(r) * static_cast<std::size_t>(w)
+                        + static_cast<std::size_t>(c)]);
+                    if (cell.character == U' ') continue;
+                    if (cell.character == U'\u2502') ++leading_bar_rows;
+                    break;
+                }
+            }
+            if (leading_bar_rows == 0) {
+                throw std::runtime_error(
+                    "bordered-grid regression: " + std::to_string(cs.ncols)
+                    + "-col table at width " + std::to_string(w)
+                    + " produced NO rows with a leading │ (the stacked-"
+                    "list fallback fired in a viewport that easily fits "
+                    "a bordered grid). Tighten the fallback trigger.");
+            }
+        }
+    }
+}
+
 // ───────────────────────────── main ─────────────────────────────────────────
 
 int main() {
@@ -2010,6 +2077,7 @@ int main() {
     run("committed cells stable",         5000ms, st_committed_cells_stable);
     run("eager block no-snap (all kinds)", 3000ms, st_eager_block_no_snap);
     run("narrow table no char-chop",      2000ms, st_narrow_table_no_char_chop);
+    run("wide table keeps bordered grid", 2000ms, st_wide_table_keeps_bordered_grid);
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",
                  g_passed - g_slow, g_slow, g_failed, g_skipped);

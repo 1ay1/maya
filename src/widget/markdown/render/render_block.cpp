@@ -504,22 +504,22 @@ Element md_block_to_element(const md::Block& block) {
                     constexpr int pad = 1;
                     auto col_w = distribute_cols(avail_w, ncols, data->ideal);
 
-                    // ── Degenerate-width fallback. When the viewport
-                    // can't give every column at least kMinColPref
-                    // (6) cells, the bordered grid degrades to char-
-                    // per-row chopping (cells render as `F/a/s/t` one
-                    // glyph per visual line). At that point a stacked
-                    // "header: value" list per row is dramatically
-                    // more readable. Threshold: ANY col under the
-                    // preference floor — even one tight column ruins
-                    // the grid because every visual row of every
-                    // logical row gets stretched to that column's
-                    // wrap height.
-                    constexpr int kStackedFallbackBelow = 6;
-                    bool any_too_narrow = false;
-                    for (int v : col_w)
-                        if (v < kStackedFallbackBelow) { any_too_narrow = true; break; }
-                    if (any_too_narrow) {
+                    // ── Degenerate-width fallback. ONLY fires when the
+                    // bordered grid would chop cells one glyph per row
+                    // (the screenshot symptom: a narrow split where
+                    // every column collapses to ≤2 cells of content).
+                    // Triggered ONLY when the smallest column is at
+                    // the absolute floor — i.e. distribute_cols hit
+                    // its kMinCol*ncols > avail_cells branch AND that
+                    // shrunken floor is ≤2. At width 3+ words wrap at
+                    // syllable scale which is ugly but still readable;
+                    // the bordered grid is the correct rendering. At
+                    // width 1-2 every cell becomes a vertical stack
+                    // of letters and the grid is unusable.
+                    constexpr int kChopThreshold = 2;
+                    int min_col = col_w.empty() ? 0 : col_w[0];
+                    for (int v : col_w) min_col = std::min(min_col, v);
+                    if (min_col > 0 && min_col <= kChopThreshold) {
                         Element built = [&] {
                             int body_w = std::max(1, avail_w - 2);
                             auto sep_style =

@@ -235,7 +235,11 @@ private:
     // its output in a ComponentElement that re-renders on every
     // animation frame so the trailing cursor caret blinks. Cleared
     // by finish() (stream done) and by clear() (logical reset).
-    bool live_ = false;
+    // Mutable: render_live_overlay_() (called from the const build()
+    // path) auto-flips this to false when a finalize ramp completes,
+    // so the next frame returns the settled cached_build_ — the
+    // widget owns the final live→settled transition end-to-end.
+    mutable bool live_ = false;
 
     // Host-set: opt INTO the animated streaming-reveal effect (the
     // hot→cool gradient trail, the matrix-style scramble→resolve on
@@ -290,6 +294,21 @@ private:
     // increases monotonically as the cursor passes it.
     mutable double       reveal_cp_  = 0.0;
     mutable std::int64_t reveal_ms_  = 0;
+
+    // ── Finalize ramp ──
+    //
+    // request_finalize(ramp_ms) records a deadline by which the reveal
+    // cursor MUST reach the live edge, then the widget flips live_=false
+    // itself. While the ramp is active the cursor advance picks the FASTER
+    // of the normal drain rate and the ramp rate (remaining_cp / time_left)
+    // — never slower than the steady reveal, so a small backlog still
+    // types out at typewriter cadence, but a large backlog is guaranteed
+    // to finish within ramp_ms instead of glitching at settle. The host
+    // calls this once when its turn settles; if the cursor is already at
+    // the edge the widget flips live_=false on the very next build().
+    //
+    // finalize_deadline_ms_ == 0 means no ramp in flight.
+    mutable std::int64_t finalize_deadline_ms_ = 0;
 
     // Animation throttle: bucket the wall clock into ~33 ms phases
     // and only request the next animation frame when the phase
@@ -706,7 +725,39 @@ public:
     /// stream is alive even mid-token. Re-renders are driven by
     /// request_animation_frame() so the blink happens at ~30 fps
     /// regardless of byte arrival rate. Default: false (settled).
-    void set_live(bool live) noexcept { live_ = live; }
+    void set_live(bool live) noexcept {
+        // If the host explicitly forces live_=false (cancel / clear / hard
+        // reset path) we drop any pending finalize ramp too — there's
+        // nothing left to glide toward.
+        if (!live) finalize_deadline_ms_ = 0;
+        live_ = live;
+    }
+
+    /// Begin a finalize ramp: the host has decided the stream is ending
+    /// (last delta seen / message_stop on the wire). The widget stays in
+    /// live mode but the reveal cursor is guaranteed to reach the live
+    /// edge within `ramp_ms` milliseconds, after which build() will flip
+    /// live_ to false itself and return the settled cached_build_ — so
+    /// settle never finds a backlog to dump in a single frame (the
+    /// "sudden render" the user sees as the streaming indicator vanishes).
+    ///
+    /// Idempotent: calling it again while a ramp is already in flight is
+    /// a no-op (the original deadline stands). Cleared automatically when
+    /// the ramp completes, on clear(), or on set_live(false). If called
+    /// while !live_ or while the cursor is already at the edge, completes
+    /// immediately on the next build() with no visible animation.
+    ///
+    /// `ramp_ms` is a hard upper bound on the reveal time of any
+    /// outstanding backlog; the normal drain rate still applies and a
+    /// small backlog will finish sooner.
+    void request_finalize(int ramp_ms) noexcept;
+
+    /// True while a finalize ramp is in flight. Hosts use it to keep the
+    /// 16 ms animation frame armed through the ramp so the cursor keeps
+    /// gliding to the edge.
+    [[nodiscard]] bool is_finalizing() const noexcept {
+        return finalize_deadline_ms_ != 0;
+    }
 
     /// Opt into the animated streaming-reveal effect (gradient trail +
     /// scramble + pulsing caret). Off by default — see `reveal_fx_`.

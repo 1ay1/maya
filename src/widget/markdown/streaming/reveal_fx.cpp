@@ -26,6 +26,27 @@
 
 namespace maya {
 
+void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
+    // Nothing to ramp if we're not live: the next build() would short-
+    // circuit at the !live_ guard and the ramp would just sit unrunnable,
+    // wedging finish() behind is_finalizing() forever. The host calls
+    // this every frame while settled, so a no-op here on the trailing
+    // frames (post-completion) is the natural idempotency.
+    if (!live_) return;
+    // Idempotent: a ramp already in flight keeps its deadline. Picking
+    // the EARLIER deadline if the host calls us again with a shorter
+    // window would be defensible, but in practice the host calls us once
+    // per frame at settle — the idempotency that matters is "called
+    // every frame while settled" (turn.cpp passes through here every
+    // render) not recomputing the deadline forward.
+    if (finalize_deadline_ms_ != 0) return;
+    if (ramp_ms < 0) ramp_ms = 0;
+    const auto now_ms = std::chrono::duration_cast<
+        std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    finalize_deadline_ms_ = now_ms + ramp_ms;
+}
+
 const Element& StreamingMarkdown::render_live_overlay_() const {
         if (!live_) return cached_build_;
 
@@ -167,10 +188,45 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 constexpr double kDrainSecs = 0.5;    // worst-case backlog reveal time
                 double cps = backlog / kDrainSecs;
                 if (cps < kFloorCps) cps = kFloorCps;
+                // Finalize ramp: when a deadline is pending, force a
+                // rate that REACHES the live edge by the deadline. We
+                // take the max with the normal drain so a small backlog
+                // already gliding faster than the ramp keeps its calm
+                // typewriter cadence — the ramp only KICKS IN to prevent
+                // the cursor finishing late. The deadline + start_ms
+                // pair makes this immune to dropped frames: ramp_cps is
+                // computed from time STILL REMAINING, so however many
+                // frames the loop misses, the cursor still lands on the
+                // edge at the deadline.
+                if (finalize_deadline_ms_ != 0) {
+                    const std::int64_t remaining_ms =
+                        finalize_deadline_ms_ - ms_total;
+                    if (remaining_ms <= 0) {
+                        // Past deadline — snap to edge this frame.
+                        cps = backlog / std::max(elapsed_s, 0.001);
+                    } else {
+                        const double ramp_cps =
+                            backlog / (remaining_ms / 1000.0);
+                        if (ramp_cps > cps) cps = ramp_cps;
+                    }
+                }
                 reveal_cp_ += cps * elapsed_s;
                 if (reveal_cp_ > static_cast<double>(total_cp))
                     reveal_cp_ = static_cast<double>(total_cp);
             }
+        }
+        // Ramp completion: cursor reached the edge. Flip live_ off so
+        // the next frame short-circuits at the !live_ guard above and
+        // returns the settled cached_build_ with no visible pop — the
+        // reveal cursor is already at the live edge, so the overlay
+        // and the settled build are equivalent for the trailing chars.
+        // Clear the deadline so a future stream can request a new ramp.
+        if (finalize_deadline_ms_ != 0
+            && reveal_cp_ >= static_cast<double>(total_cp))
+        {
+            finalize_deadline_ms_ = 0;
+            live_ = false;
+            return cached_build_;
         }
         const std::size_t revealed_cp =
             static_cast<std::size_t>(reveal_cp_);

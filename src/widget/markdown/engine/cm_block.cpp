@@ -1391,7 +1391,15 @@ private:
                 std::string lang = decode_entities(info_unesc);
                 auto sp = lang.find_first_of(" \t");
                 if (sp != std::string::npos) lang = lang.substr(0, sp);
-                out.push_back(md::Block{md::CodeBlock{std::move(blk.text), std::move(lang)}});
+                // append_to_leaf adds a '\n' after every content line, so a
+                // closed fence always ends with one. Highlighter renders
+                // that trailing newline as a blank visual row inside the
+                // bordered box — visible as an empty line between the
+                // last line of code and the bottom border. CodeIndented
+                // and HtmlBlock already strip; do the same here.
+                std::string& text = blk.text;
+                if (!text.empty() && text.back() == '\n') text.pop_back();
+                out.push_back(md::Block{md::CodeBlock{std::move(text), std::move(lang)}});
                 break;
             }
             case BlockType::CodeIndented: {

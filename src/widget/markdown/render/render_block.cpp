@@ -138,6 +138,28 @@ Element md_block_to_element(const md::Block& block) {
             return heading_text;
         },
         [](const md::CodeBlock& c) -> Element {
+            // Empty fence: render a minimal one-row dim placeholder instead
+            // of a multi-row bordered box. A bordered empty rectangle
+            // reads as a parsing artifact (stray pair of fences with
+            // nothing between); a single dim row reads as "intentionally
+            // minimal" while still keeping the rendered tree honest about
+            // the AST (the empty CodeBlock IS present — spec requires
+            // <pre><code></code></pre> for HTML conformance).
+            //
+            // Height is constant 1 row (with or without the language
+            // tag), matching render_tail_inner's open-fence empty-body
+            // path — so the live tail and the eventual committed render
+            // agree on height (no shrink at the commit seam).
+            if (c.content.empty()) {
+                std::string label = c.lang.empty()
+                    ? std::string{"\xe2\x97\x8b empty code block"}     // ○
+                    : std::string{"\xe2\x97\x8b "} + c.lang + " (empty)";
+                return Element{TextElement{
+                    .content = std::move(label),
+                    .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+                }};
+            }
+
             // Zed style: round border, subtle bg, language label top-left.
             // align_self(Stretch) anchors the right border at the parent's
             // available width instead of the code's natural width.

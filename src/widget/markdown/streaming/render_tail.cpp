@@ -424,12 +424,35 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
                 lsv.remove_prefix(1);
             lang = std::string{lsv};
             code = std::string{body.substr(eol + 1)};
+            // Mirror the strip md_block_to_element applies post-commit: drop
+            // one trailing '\n' on the live body so the live tail and the
+            // committed render produce the SAME row count. Without this,
+            // the closing fence commits and the renderer drops one row
+            // (the trailing-newline phantom row) — a 1-row shrink at the
+            // commit seam that the height-monotonicity test catches.
+            if (!code.empty() && code.back() == '\n') code.pop_back();
         }
         // Match md_block_to_element's CodeBlock styling exactly — same
         // builder shape, same align_self(Stretch) so the in-flight tail
         // render and the committed block render produce identical
         // borders. Without the stretch the streaming-tail border tracks
         // the longest emitted line, drifting frame-to-frame.
+        //
+        // Empty body (opener landed but no content yet, OR opener+closer
+        // with nothing between): render a 1-row dim placeholder that
+        // mirrors md_block_to_element's empty-CodeBlock rendering.
+        // Constant 1 row keeps live tail and committed render in
+        // agreement (no shrink at commit seam) AND avoids reading as a
+        // stray empty bordered box.
+        if (code.empty()) {
+            std::string label = lang.empty()
+                ? std::string{"\xe2\x97\x8b empty code block"}
+                : std::string{"\xe2\x97\x8b "} + lang + " (empty)";
+            return Element{TextElement{
+                .content = std::move(label),
+                .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+            }};
+        }
         auto builder = detail::vstack()
             .align_self(Align::Stretch)
             .border(BorderStyle::Round)

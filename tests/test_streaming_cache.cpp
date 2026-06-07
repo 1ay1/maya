@@ -75,6 +75,65 @@ static bool has_empty_trailing_text(const Element& root) {
     return t && t->content.empty();
 }
 
+// Recursive: does `e`'s subtree contain ANY visible bytes? "Visible" =
+// at least one TextElement with non-empty content somewhere below. Used
+// to detect empty bordered boxes — a Box with a border but no visible
+// descendant renders as a stray empty rectangle (the screenshot bug
+// class: trailing-slot AND empty-fence both manifest this way).
+static bool has_visible_content(const Element& e) {
+    if (auto* t = std::get_if<TextElement>(&e.inner)) {
+        return !t->content.empty();
+    }
+    if (auto* b = std::get_if<BoxElement>(&e.inner)) {
+        for (auto& c : b->children) if (has_visible_content(c)) return true;
+        return false;
+    }
+    if (auto* c = std::get_if<ComponentElement>(&e.inner)) {
+        if (!c->render) return false;
+        Element m = c->render(80, 80);
+        return has_visible_content(m);
+    }
+    if (auto* l = std::get_if<ElementList>(&e.inner)) {
+        for (auto& it : l->items) if (has_visible_content(it)) return true;
+        return false;
+    }
+    return false;
+}
+
+// Render-equivalent of an empty bordered box: a Box with a non-None
+// border style whose ENTIRE subtree contains zero visible characters.
+// Walks the whole tree (descending through Components too) and returns
+// a short description of the first offender, or empty string if clean.
+static std::string find_empty_bordered_box(const Element& e, std::string path = "") {
+    if (auto* b = std::get_if<BoxElement>(&e.inner)) {
+        const bool bordered = (b->border.style != BorderStyle::None);
+        if (bordered && !has_visible_content(e)) {
+            return path + "Box(border)";
+        }
+        for (std::size_t i = 0; i < b->children.size(); ++i) {
+            auto r = find_empty_bordered_box(
+                b->children[i],
+                path + "Box[" + std::to_string(i) + "]/");
+            if (!r.empty()) return r;
+        }
+        return {};
+    }
+    if (auto* c = std::get_if<ComponentElement>(&e.inner)) {
+        if (!c->render) return {};
+        Element m = c->render(80, 80);
+        return find_empty_bordered_box(m, path + "Component/");
+    }
+    if (auto* l = std::get_if<ElementList>(&e.inner)) {
+        for (std::size_t i = 0; i < l->items.size(); ++i) {
+            auto r = find_empty_bordered_box(
+                l->items[i],
+                path + "List[" + std::to_string(i) + "]/");
+            if (!r.empty()) return r;
+        }
+    }
+    return {};
+}
+
 // ── harness ────────────────────────────────────────────────────────────────
 
 static int g_passed = 0;
@@ -552,7 +611,108 @@ static void rightmost_leaf_reachable_in_eager_renders() {
     }
 }
 
-// ── main ───────────────────────────────────────────────────────────────────
+// T10. Structural invariant across the WHOLE rendered tree: no bordered
+// Box may have a subtree containing zero visible characters. This is the
+// general form of the screenshot bug class — a bordered Box with no
+// visible descendant renders as an empty rectangle. Previous tests only
+// checked the top-level last-child; this scanner descends through every
+// Box, ComponentElement (by calling render()), and ElementList. Catches:
+//   • the trailing-slot bug (build.cpp's reserved empty Text after settle)
+//   • the empty-fence bug (```\n``` rendering a bordered empty box)
+//   • any future cache/parse path that emits a bordered empty Box.
+static void no_empty_bordered_boxes_anywhere() {
+    struct Case { const char* name; const char* src; };
+    Case cases[] = {
+        // The empty-fence cases (the new screenshot bug).
+        {"empty fence",            "```\n```"},
+        {"empty tagged fence",     "```sh\n```"},
+        {"empty fence with blank", "```\n\n```"},
+        // Sandwich shapes: prose, empty fence, more prose. Matches the
+        // exact pattern the user's screenshot circled — stray empty
+        // boxes between paragraphs.
+        {"prose / empty fence / prose",
+         "before paragraph\n\n```\n```\n\nafter paragraph"},
+        {"two empty fences",
+         "alpha\n\n```\n```\n\n```\n```\n\nomega"},
+        // Regular non-empty fences must NOT trip the scanner (no false
+        // positives — they have visible content inside the border).
+        {"normal fence",           "```\nint main() { return 0; }\n```"},
+        {"normal tagged fence",    "```cpp\nint main() { return 0; }\n```"},
+        // Mixed: empty fence between two real ones.
+        {"real / empty / real",
+         "```\nfirst\n```\n\n```\n```\n\n```\nthird\n```"},
+        // Streaming-shaped cases that the existing tests cover.
+        {"streaming code",
+         "or stream live:\n\n```\ngh run watch 27098608184\n```\n"},
+    };
+
+    for (auto& c : cases) {
+        // Static parse path (settled message rendering).
+        Element settled = markdown(c.src);
+        if (auto where = find_empty_bordered_box(settled); !where.empty()) {
+            throw std::runtime_error(
+                std::string("empty bordered box in STATIC parse for '")
+                + c.name + "' at " + where + "; source: " + c.src);
+        }
+        // Streaming + finish path (assistant turn render).
+        StreamingMarkdown md;
+        md.set_content(c.src);
+        md.finish();
+        Element streamed = md.build();
+        if (auto where = find_empty_bordered_box(streamed); !where.empty()) {
+            throw std::runtime_error(
+                std::string("empty bordered box in STREAMING parse for '")
+                + c.name + "' at " + where + "; source: " + c.src);
+        }
+    }
+}
+
+// Walk the tree (descending through Components and Boxes) and concatenate
+// every TextElement's content. Used to assert which text DOES appear.
+static std::string concat_text(const Element& e) {
+    if (auto* t = std::get_if<TextElement>(&e.inner)) return t->content;
+    if (auto* b = std::get_if<BoxElement>(&e.inner)) {
+        std::string out;
+        for (auto& c : b->children) out += concat_text(c);
+        return out;
+    }
+    if (auto* c = std::get_if<ComponentElement>(&e.inner)) {
+        if (!c->render) return {};
+        return concat_text(c->render(80, 80));
+    }
+    if (auto* l = std::get_if<ElementList>(&e.inner)) {
+        std::string out;
+        for (auto& it : l->items) out += concat_text(it);
+        return out;
+    }
+    return {};
+}
+
+// T11. Empty fences must render the dim one-row placeholder, not nothing
+// and not a bordered box. Pins the EXACT rendering choice so a future
+// "collapse to 0 rows" refactor (which would re-trip the streaming
+// height-monotonicity test) doesn't accidentally land. Also pins that
+// the lang label, when present, is included in the placeholder text.
+static void empty_fence_renders_dim_placeholder() {
+    struct Case { const char* name; const char* src; const char* must_contain; };
+    Case cases[] = {
+        {"plain empty fence",     "```\n```",     "empty code block"},
+        {"tagged empty fence",    "```sh\n```",   "sh"},
+        {"tagged empty (cpp)",    "```cpp\n```",  "cpp"},
+    };
+    for (auto& c : cases) {
+        Element el = markdown(c.src);
+        std::string text = concat_text(el);
+        if (text.find(c.must_contain) == std::string::npos) {
+            throw std::runtime_error(
+                std::string("empty fence '") + c.name +
+                "' did not render the placeholder; expected to find '" +
+                c.must_contain + "' in rendered text. Got: '" + text + "'");
+        }
+    }
+}
+
+// ── main ────────────────────────────────────────────────────────────────────────
 
 int main() {
     std::println("=== test_streaming_cache ===");
@@ -566,8 +726,10 @@ int main() {
     run("finalize ramp completion matches finish", finalize_ramp_completion_matches_finish);
     run("screenshot repro no ghost box",           screenshot_repro_no_ghost_box);
     run("reveal-fx leaf reachable in eager renders", rightmost_leaf_reachable_in_eager_renders);
+    run("no empty bordered boxes anywhere",        no_empty_bordered_boxes_anywhere);
+    run("empty fence renders dim placeholder",     empty_fence_renders_dim_placeholder);
 
-    std::println("\n── summary ──────────────────────────────────────────────");
+    std::println("\n── summary ────────────────────────────────────────────────────────");
     std::println("  passed: {}   failed: {}", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

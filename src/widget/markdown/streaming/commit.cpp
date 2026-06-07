@@ -287,8 +287,8 @@ void StreamingMarkdown::finish() {
 
     // Stream is over: drop the blinking cursor so the settled
     // message doesn't keep requesting animation frames forever.
+    // The Tracked<> wrapper on live_ auto-bumps build_dirty_.
     live_ = false;
-    build_dirty_ = true;
 }
 
 void StreamingMarkdown::clear() {

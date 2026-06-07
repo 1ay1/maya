@@ -28,6 +28,7 @@
 #include <variant>
 #include <vector>
 
+#include "../core/tracked.hpp"
 #include "../element/builder.hpp"
 #include "../text/stream_sink.hpp"
 #include "markdown/ast.hpp"
@@ -239,7 +240,20 @@ private:
     // path) auto-flips this to false when a finalize ramp completes,
     // so the next frame returns the settled cached_build_ — the
     // widget owns the final live→settled transition end-to-end.
-    mutable bool live_ = false;
+    //
+    // Tracked<>: every write auto-bumps build_dirty_ via InvalidateBuild.
+    // The has_tail shape in build.cpp depends on live_ (a reserved empty
+    // trailing slot exists only while live_), so any live→settled flip
+    // requires a cache rebuild. Wrapping live_ in Tracked makes the
+    // coupling structural — you cannot assign to live_ without bumping
+    // build_dirty_, by construction. The prior naked `bool live_` + manual
+    // `build_dirty_ = true` pairing was the empty-trailing-box bug source.
+    struct InvalidateBuild {
+        void operator()(StreamingMarkdown& o) const noexcept {
+            o.build_dirty_ = true;
+        }
+    };
+    mutable Tracked<bool, StreamingMarkdown, InvalidateBuild> live_{*this, false};
 
     // Host-set: opt INTO the animated streaming-reveal effect (the
     // hot→cool gradient trail, the matrix-style scramble→resolve on
@@ -730,15 +744,11 @@ public:
         // reset path) we drop any pending finalize ramp too — there's
         // nothing left to glide toward.
         if (!live) finalize_deadline_ms_ = 0;
-        // has_tail (and therefore cached_build_'s child count) depends on
-        // live_ — build.cpp reserves an empty trailing slot while live so
-        // the inter-block gap doesn't bounce as commit_range walks past
-        // a block boundary. When live_ transitions, that reserved slot's
-        // existence changes, so the cached tree shape is stale; bump
-        // build_dirty_ to force a rebuild. Without this, dropping live_
-        // leaves the empty trailing TextElement in cached_build_, which
-        // renders as a stray empty bordered box at the end of the turn.
-        if (live_ != live) build_dirty_ = true;
+        // The Tracked<> wrapper around live_ auto-bumps build_dirty_ on
+        // every assignment — the has_tail / cache-shape coupling is
+        // structural now, not a manual pairing. No need to check the
+        // old value either: a same-value assign is harmless (one wasted
+        // rebuild at most) and not on a hot path.
         live_ = live;
     }
 

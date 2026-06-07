@@ -239,15 +239,14 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             && reveal_cp_ >= static_cast<double>(total_cp))
         {
             finalize_deadline_ms_ = 0;
+            // Tracked<> wrapper on live_ auto-bumps build_dirty_, so the
+            // next build() takes the rebuild path and reshapes the cache
+            // to drop the reserved empty trailing slot (build.cpp's
+            // has_tail = !tail.empty() || (live_ && has_prefix)). Without
+            // the rebuild the stale empty-Text leaf would render as a
+            // stray empty bordered box at the end of the turn — exactly
+            // the symptom the ramp exists to prevent.
             live_ = false;
-            // has_tail in build.cpp depends on live_; dropping it changes
-            // the cached tree's shape (the reserved empty trailing slot
-            // goes away). Without bumping build_dirty_ the next build()
-            // takes the !build_dirty_ early-out and returns the stale
-            // cached tree with the empty Text[0] still present — which
-            // renders as a stray empty bordered box at the end of the
-            // turn (the very symptom the ramp was supposed to prevent).
-            build_dirty_ = true;
             request_animation_frame();
             return cached_build_;
         }

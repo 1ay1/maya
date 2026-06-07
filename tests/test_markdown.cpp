@@ -1560,6 +1560,88 @@ static void st_eager_block_no_snap() {
 // promoted into st_eager_block_no_snap above; setext rides the
 // transition sweep in st_height_monotonic_transitions.)
 
+// Tables in very narrow viewports must NOT render the bordered grid with
+// 1-cell columns — at that scale each cell wraps char-by-char and the
+// table appears as two vertical columns of single letters stacked rows
+// high (the screenshot bug). render_block's degenerate-width fallback
+// switches to a stacked "header: value" list when any column would land
+// below the legibility floor. This test pins the contract from the
+// observable side: at narrow widths, no rendered row contains the
+// bordered-cell signature (│ followed by ≤1 visible glyph followed by
+// │), and no row drops below the value-glyph floor.
+static void st_narrow_table_no_char_chop() {
+    // 4-col table with realistic cell content. At width 12 the bordered
+    // path would produce col_w = [1,1,1,1] (chrome eats 9 cells), the
+    // screenshot symptom.
+    const char* body =
+        "| Trait | Animal | Speed | Note |\n"
+        "|-------|--------|-------|------|\n"
+        "| Tallest | Giraffe | slow | ~5.5m |\n"
+        "| Fastest | Cheetah | 120km/h | sprint |\n";
+    Element el = markdown(body);
+
+    // Render at progressively narrow widths. At each, decode cells and
+    // verify no row matches the degenerate bordered-row signature.
+    for (int w : {8, 12, 16, 20}) {
+        StylePool pool;
+        Canvas canvas(w, /*h=*/200, &pool);
+        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        int h = content_height(canvas);
+        const std::uint64_t* cp = canvas.cells();
+
+        // Decode each row to a UTF-8 string for substring checks.
+        // The border glyph │ is U+2502; we check whether each row has
+        // the pattern "│X│" (X = any single non-space glyph) which is
+        // what the chopped-char render produces. A healthy stacked
+        // fallback NEVER emits a leading │.
+        int chopped_rows = 0;
+        for (int r = 0; r < h; ++r) {
+            // Count │ glyphs on this row and whether non-space content
+            // sits between them.
+            int bars = 0;
+            int non_space_glyphs = 0;
+            for (int c = 0; c < w; ++c) {
+                Cell cell = Cell::unpack(cp[static_cast<std::size_t>(r) * static_cast<std::size_t>(w) + static_cast<std::size_t>(c)]);
+                if (cell.character == U'\u2502') ++bars;
+                else if (cell.character != U' ') ++non_space_glyphs;
+            }
+            // The chopped grid produces rows like "│F│C│" — multiple
+            // bars AND fewer non-space glyphs than bars-1 (each
+            // between-bars cell holds at most 1 glyph). A healthy
+            // bordered row with ≥6-wide cells would have many more
+            // non-space glyphs than bars.
+            if (bars >= 2 && non_space_glyphs > 0
+                && non_space_glyphs <= bars - 1) {
+                ++chopped_rows;
+            }
+        }
+        if (chopped_rows > 0) {
+            throw std::runtime_error(
+                "narrow table char-chop at width " + std::to_string(w)
+                + ": " + std::to_string(chopped_rows)
+                + " rendered rows match the degenerate │X│ signature "
+                "(bordered grid with ~1-glyph columns). The narrow-"
+                "viewport fallback should have engaged and produced a "
+                "stacked list instead.");
+        }
+
+        // Sanity: the table data didn't vanish. Some glyphs from the
+        // header words ("Trait", "Animal", …) must be present.
+        bool found_trait_t = false;
+        for (int r = 0; r < h && !found_trait_t; ++r) {
+            for (int c = 0; c < w; ++c) {
+                Cell cell = Cell::unpack(cp[static_cast<std::size_t>(r) * static_cast<std::size_t>(w) + static_cast<std::size_t>(c)]);
+                if (cell.character == U'T' || cell.character == U'G'
+                    || cell.character == U'C') { found_trait_t = true; break; }
+            }
+        }
+        if (!found_trait_t)
+            throw std::runtime_error(
+                "narrow table content vanished at width " + std::to_string(w)
+                + " — fallback rendered nothing legible.");
+    }
+}
+
 // ───────────────────────────── main ─────────────────────────────────────────
 
 int main() {
@@ -1927,6 +2009,7 @@ int main() {
     run("height monotonic (transitions)", 5000ms, st_height_monotonic_transitions);
     run("committed cells stable",         5000ms, st_committed_cells_stable);
     run("eager block no-snap (all kinds)", 3000ms, st_eager_block_no_snap);
+    run("narrow table no char-chop",      2000ms, st_narrow_table_no_char_chop);
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",
                  g_passed - g_slow, g_slow, g_failed, g_skipped);

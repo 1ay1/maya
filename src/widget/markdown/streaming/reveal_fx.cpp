@@ -104,15 +104,24 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         {
             double elapsed_s = (ms_total - reveal_ms_) / 1000.0;
             if (elapsed_s < 0.0)   elapsed_s = 0.0;
-            // Bound the per-frame advance: a frame served late (a Tick wake
-            // landed instead of the 16 ms RAF, or render cost spiked) would
-            // otherwise integrate the whole gap and jump the cursor several
-            // codepoints at once — a visible burst. Clamping elapsed to ~33
-            // ms caps any single step to ~2 frames' worth; the cost is a
-            // touch of catch-up lag after a long gap, which the floor rate
-            // quietly absorbs. This is the difference between a glide and a
-            // hitch.
-            if (elapsed_s > 0.033) elapsed_s = 0.033;
+            // Bound the per-frame advance so a frame served VERY late (the
+            // terminal was backgrounded for seconds, a giant relayout spiked
+            // render cost) can't integrate the whole gap and teleport the
+            // cursor to the live edge in one jump — a visible burst. But the
+            // clamp must be GENEROUS enough to absorb the ordinary slow-frame
+            // case: on a non-sync terminal the loop wakes on the 100 ms Tick
+            // between RAF beats, and any single render frame on a long thread
+            // can land 80-120 ms after the previous one. A 33 ms clamp turned
+            // every such frame into a permanent deficit — the cursor advanced
+            // 33 ms of progress for 100 ms of wall-clock, fell progressively
+            // behind the wire, and the unrevealed backlog only flushed at
+            // settle (the "stuck then burst" the reveal exists to prevent).
+            // Clamp at 120 ms instead: it covers one Tick period plus margin,
+            // so a normally-late frame catches the cursor up cleanly, while a
+            // pathological multi-second gap still steps at most ~120 ms worth
+            // (a fraction of a viewport at the ceiling cps below) — a small
+            // catch-up glide, never a teleport.
+            if (elapsed_s > 0.120) elapsed_s = 0.120;
             reveal_ms_ = ms_total;
             const double backlog = static_cast<double>(total_cp) - reveal_cp_;
             if (backlog <= 0.0) {
@@ -128,7 +137,17 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 // once, so any residual lag never leaves text "stuck typing."
                 constexpr double kFloorCps = 200.0;  // steady typewriter cadence
                 constexpr double kCatchUp  = 0.6;    // tiny lean-in, large backlog only
-                constexpr double kMaxCps   = 700.0;  // ceiling
+                // Ceiling on the catch-up rate. The proportional term must be
+                // able to DRAIN a growing backlog before settle, otherwise a
+                // model that streams faster than the floor (a dense ~500+ cps
+                // reply arriving in ~250-char bursts) accumulates an ever-
+                // larger unrevealed tail that snaps to full only when live_
+                // clears — the burst symptom. 700 cps was below the arrival
+                // rate of a fast reply, so the backlog never shrank; 1200 cps
+                // sits comfortably above it so the cursor closes the gap and
+                // the reveal settles into a steady glide a beat behind the
+                // wire instead of lagging unboundedly.
+                constexpr double kMaxCps   = 1200.0; // ceiling
                 double cps = kFloorCps + backlog * kCatchUp;
                 if (cps > kMaxCps) cps = kMaxCps;
                 reveal_cp_ += cps * elapsed_s;

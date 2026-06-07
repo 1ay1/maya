@@ -273,6 +273,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_widgets.cpp
         tests/test_promoted.cpp
         tests/test_markdown.cpp
+        tests/test_streaming_cache.cpp
         tests/test_unicode_width.cpp
         tests/test_stream_sink.cpp
         tests/test_scroll.cpp

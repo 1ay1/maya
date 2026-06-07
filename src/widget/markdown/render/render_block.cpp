@@ -808,7 +808,24 @@ Element md_block_to_element(const md::Block& block) {
                 // removes the previous hand-rolled measure that had to
                 // mirror render() exactly (and caused clipped rows
                 // when the two formulas drifted).
-                .layout = {},
+                .layout = [] {
+                    // Force the table to claim the full cross-axis
+                    // width the parent offers, even when wrapped in a
+                    // shrink-to-fit container (the streaming-tail
+                    // eager-table vstack has no Stretch). Without
+                    // this, the parent shrinks the column to the
+                    // narrowest sibling — e.g. a short live partial
+                    // row "| Matt" or the live-line inline TextElement
+                    // — and the table renders inside a ~6-cell box,
+                    // chopping every cell char-by-char (the streaming
+                    // screenshot bug). grow + align_self::Stretch
+                    // makes the inner table take the same width its
+                    // canonical post-commit version would take.
+                    FlexStyle ls;
+                    ls.grow       = 1.0f;
+                    ls.align_self = Align::Stretch;
+                    return ls;
+                }(),
             }};
         },
         [](const md::FootnoteDef& fn) -> Element {

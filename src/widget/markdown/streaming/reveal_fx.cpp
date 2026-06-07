@@ -127,29 +127,34 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             if (backlog <= 0.0) {
                 reveal_cp_ = static_cast<double>(total_cp);
             } else {
-                // Near-constant rate: a fixed typewriter cadence with only
-                // a tiny lean-in so a very large backlog (the model raced
-                // far ahead, or a big paste landed) doesn't leave text
-                // typing out for many seconds after the wire is done. For
-                // ordinary streaming the floor dominates, so the reveal is
-                // a steady, even typewriter — not a backlog-driven sweep.
-                // At settle the host drops live_ and the full text shows at
-                // once, so any residual lag never leaves text "stuck typing."
-                constexpr double kFloorCps = 200.0;  // steady typewriter cadence
-                constexpr double kCatchUp  = 0.6;    // tiny lean-in, large backlog only
-                // Ceiling on the catch-up rate. The proportional term must be
-                // able to DRAIN a growing backlog before settle, otherwise a
-                // model that streams faster than the floor (a dense ~500+ cps
-                // reply arriving in ~250-char bursts) accumulates an ever-
-                // larger unrevealed tail that snaps to full only when live_
-                // clears — the burst symptom. 700 cps was below the arrival
-                // rate of a fast reply, so the backlog never shrank; 1200 cps
-                // sits comfortably above it so the cursor closes the gap and
-                // the reveal settles into a steady glide a beat behind the
-                // wire instead of lagging unboundedly.
-                constexpr double kMaxCps   = 1200.0; // ceiling
-                double cps = kFloorCps + backlog * kCatchUp;
-                if (cps > kMaxCps) cps = kMaxCps;
+                // Time-bounded typewriter. Two terms, take the larger:
+                //
+                //   • FLOOR (200 cps) — the steady cadence for ordinary
+                //     drip streaming, so a small backlog reveals at a calm,
+                //     even pace and reads like a typewriter, not a sweep.
+                //
+                //   • DRAIN — reveal whatever backlog exists within a fixed
+                //     wall-clock window (kDrainSecs), so the reveal time is
+                //     bounded by TIME, not by a fixed char/sec ceiling. This
+                //     is the load-bearing term against the real wire: the
+                //     model stalls for multiple seconds, then the edge
+                //     delivers a whole paragraph in a single burst (measured:
+                //     up to ~2000 chars landing in one millisecond after a
+                //     10 s+ stall, with more bursts following every ~13 s). A
+                //     fixed cps ceiling let that backlog COMPOUND across
+                //     successive bursts — each one revealed slower than the
+                //     next arrived — so the cursor fell ever further behind
+                //     and the unrevealed tail dumped at settle (the
+                //     stuck-then-burst the user sees). Sizing the rate as
+                //     backlog / kDrainSecs caps the worst-case reveal time at
+                //     kDrainSecs no matter how big the burst, so backlog can
+                //     never accumulate beyond one window's worth: a 2000-char
+                //     dump glides out in ~1.5 s, a 250-char drip stays on the
+                //     200 floor. No arbitrary cps ceiling to out-pace.
+                constexpr double kFloorCps  = 200.0;  // steady typewriter cadence
+                constexpr double kDrainSecs = 1.5;    // worst-case backlog reveal time
+                double cps = backlog / kDrainSecs;
+                if (cps < kFloorCps) cps = kFloorCps;
                 reveal_cp_ += cps * elapsed_s;
                 if (reveal_cp_ > static_cast<double>(total_cp))
                     reveal_cp_ = static_cast<double>(total_cp);

@@ -504,6 +504,82 @@ Element md_block_to_element(const md::Block& block) {
                     constexpr int pad = 1;
                     auto col_w = distribute_cols(avail_w, ncols, data->ideal);
 
+                    // ── Char-chop guard. When every column collapses to
+                    // ≤2 cells of content, the bordered grid renders as
+                    // a vertical stack of single letters per cell —
+                    // unreadable. Render each logical row as wrapped
+                    // `header: value | header: value` text instead.
+                    // The output is plain TextElements that wrap at
+                    // avail_w; height stays bounded and content stays
+                    // legible at the cost of losing the grid.
+                    constexpr int kChopFloor = 2;
+                    bool all_chopped = !col_w.empty();
+                    for (int v : col_w)
+                        if (v > kChopFloor) { all_chopped = false; break; }
+                    if (all_chopped) {
+                        Element built = [&] {
+                            std::vector<Element> rows;
+                            rows.reserve(rows_flat.size() + 1);
+                            // Header line: "Col1 │ Col2 │ Col3" wrapped.
+                            {
+                                std::string content;
+                                std::vector<StyledRun> runs;
+                                for (int c = 0; c < ncols; ++c) {
+                                    if (c > 0) {
+                                        std::size_t s = content.size();
+                                        content += " \xe2\x80\xa2 "; // " • "
+                                        runs.push_back(StyledRun{
+                                            s, 5,
+                                            Style{}.with_fg(colors::table_border).with_dim()});
+                                    }
+                                    std::size_t s = content.size();
+                                    content += header_flat[
+                                        static_cast<std::size_t>(c)].content;
+                                    runs.push_back(StyledRun{
+                                        s, header_flat[
+                                            static_cast<std::size_t>(c)].content.size(),
+                                        header_base});
+                                }
+                                rows.push_back(Element{TextElement{
+                                    .content = std::move(content),
+                                    .style = header_base,
+                                    .wrap = TextWrap::Wrap,
+                                    .runs = std::move(runs),
+                                }});
+                            }
+                            // Each data row: same shape, dim separator.
+                            for (auto& row : rows_flat) {
+                                std::string content;
+                                std::vector<StyledRun> runs;
+                                for (int c = 0; c < ncols; ++c) {
+                                    if (c > 0) {
+                                        std::size_t s = content.size();
+                                        content += " \xe2\x80\xa2 "; // " • "
+                                        runs.push_back(StyledRun{
+                                            s, 5,
+                                            Style{}.with_fg(colors::table_border).with_dim()});
+                                    }
+                                    std::size_t s = content.size();
+                                    content += row[
+                                        static_cast<std::size_t>(c)].content;
+                                    for (auto& r : row[static_cast<std::size_t>(c)].runs)
+                                        runs.push_back(StyledRun{
+                                            s + r.byte_offset, r.byte_length, r.style});
+                                }
+                                rows.push_back(Element{TextElement{
+                                    .content = std::move(content),
+                                    .style = cell_base,
+                                    .wrap = TextWrap::Wrap,
+                                    .runs = std::move(runs),
+                                }});
+                            }
+                            return detail::vstack().gap(0)(std::move(rows)).build();
+                        }();
+                        data->cached_w      = avail_w;
+                        data->cached_render = built;
+                        return built;
+                    }
+
                     // ── Wrap a (content, runs) cell to a target width.
                     // Returns one entry per visual line; each carries its
                     // own sliced run list so per-character styling
@@ -808,24 +884,7 @@ Element md_block_to_element(const md::Block& block) {
                 // removes the previous hand-rolled measure that had to
                 // mirror render() exactly (and caused clipped rows
                 // when the two formulas drifted).
-                .layout = [] {
-                    // Force the table to claim the full cross-axis
-                    // width the parent offers, even when wrapped in a
-                    // shrink-to-fit container (the streaming-tail
-                    // eager-table vstack has no Stretch). Without
-                    // this, the parent shrinks the column to the
-                    // narrowest sibling — e.g. a short live partial
-                    // row "| Matt" or the live-line inline TextElement
-                    // — and the table renders inside a ~6-cell box,
-                    // chopping every cell char-by-char (the streaming
-                    // screenshot bug). grow + align_self::Stretch
-                    // makes the inner table take the same width its
-                    // canonical post-commit version would take.
-                    FlexStyle ls;
-                    ls.grow       = 1.0f;
-                    ls.align_self = Align::Stretch;
-                    return ls;
-                }(),
+                .layout = {},
             }};
         },
         [](const md::FootnoteDef& fn) -> Element {

@@ -502,21 +502,30 @@ Element md_block_to_element(const md::Block& block) {
                     const auto& header_base = data->header_base;
                     const auto& cell_base   = data->cell_base;
                     constexpr int pad = 1;
-                    auto col_w = distribute_cols(avail_w, ncols, data->ideal);
 
-                    // ── Char-chop guard. When every column collapses to
-                    // ≤2 cells of content, the bordered grid renders as
-                    // a vertical stack of single letters per cell —
-                    // unreadable. Render each logical row as wrapped
-                    // `header: value | header: value` text instead.
-                    // The output is plain TextElements that wrap at
-                    // avail_w; height stays bounded and content stays
-                    // legible at the cost of losing the grid.
+                    // ── Char-chop guard. Decide bordered-grid vs
+                    // bulleted-text purely from (ncols, avail_w) —
+                    // never from row content. Streaming tables grow
+                    // row-by-row through the eager-table path; if the
+                    // guard's decision depended on the per-row ideal
+                    // widths it could flip from bordered → bulleted
+                    // mid-stream when a wider cell lands, which is a
+                    // shape switch at the seam that violates render_tail's
+                    // monotonic-height contract (visible reflow + ghost
+                    // rows + ComponentElement cache miss across the
+                    // whole block).
+                    //
+                    // Stable predicate: distribute_cols enforces a floor
+                    // of max(1, avail_cells/ncols) cells per column. If
+                    // that floor is ≤ kChopFloor, every column WILL be
+                    // chopped regardless of what rows arrive later, so
+                    // fall back to bulleted text once and stay there for
+                    // the entire stream.
                     constexpr int kChopFloor = 2;
-                    bool all_chopped = !col_w.empty();
-                    for (int v : col_w)
-                        if (v > kChopFloor) { all_chopped = false; break; }
-                    if (all_chopped) {
+                    int chrome_pred = 1 + ncols + 2 * ncols * pad;
+                    int avail_cells_pred = std::max(ncols, avail_w - chrome_pred);
+                    int worst_floor = std::max(1, avail_cells_pred / ncols);
+                    if (worst_floor <= kChopFloor) {
                         Element built = [&] {
                             std::vector<Element> rows;
                             rows.reserve(rows_flat.size() + 1);
@@ -579,6 +588,8 @@ Element md_block_to_element(const md::Block& block) {
                         data->cached_render = built;
                         return built;
                     }
+
+                    auto col_w = distribute_cols(avail_w, ncols, data->ideal);
 
                     // ── Wrap a (content, runs) cell to a target width.
                     // Returns one entry per visual line; each carries its

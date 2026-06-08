@@ -47,11 +47,6 @@ void StreamingMarkdown::set_content_async(std::string_view content) {
     if (content.size() == source_.size() &&
         (content.empty() || std::memcmp(content.data(), source_.data(),
                                         content.size()) == 0)) {
-        // Eager-commit catch-up (see set_content). The host calls this
-        // every frame; on no-change frames the reveal cursor still
-        // advances, so commit anything it has swept past to keep finish()
-        // a structural no-op.
-        commit_behind_cursor_();
         return;
     }
     // Pure-append growth → cheap incremental sync path is strictly

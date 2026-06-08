@@ -727,13 +727,6 @@ private:
     // Non-const because it advances the resumable scanner state above.
     [[nodiscard]] size_t find_block_boundary() noexcept;
 
-    // Eager-commit catch-up. Commits every block boundary the reveal
-    // cursor has already swept past. No-op unless reveal_eager_commit_ +
-    // reveal_fx_ + live_. Called each frame from set_content's no-change
-    // fast-path so commits keep pace with the wall-clock cursor even when
-    // no new bytes arrive — keeps finish() a structural no-op.
-    void commit_behind_cursor_();
-
     // Parse [committed_, boundary) — stash its ref defs, render its blocks.
     void commit_range(size_t boundary);
 

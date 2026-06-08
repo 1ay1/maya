@@ -238,17 +238,26 @@ private:
         // Two DSL branches build distinct compile-time tree types, so we
         // can't ternary directly — fold each to Element separately.
         // Blank row under the header separates it from the body.
+        // grow(1.0f) on the inner vstack: the rail is a Row container
+        // with `inner` as its sole child. Without grow, Yoga shrink-to-
+        // fits the column to its widest body row — fine for prose, but
+        // tables and other ComponentElements that query avail_w at
+        // render time then receive the column's NATURAL width, not the
+        // rail's. On a streaming table that natural width can collapse
+        // to ~one ideal column, char-chopping every cell. grow(1)
+        // claims the rail's full main-axis budget so child components
+        // see the actual canvas width.
         Element inner = cfg.continuation
-            ? v(
+            ? (v(
                 body_rows,
                 error_block()
-              ).build()
-            : v(
+              ) | grow(1.0f)).build()
+            : (v(
                 header,
                 blank(),
                 body_rows,
                 error_block()
-              ).build();
+              ) | grow(1.0f)).build();
 
         Element rail = maya::detail::box()
             .direction(FlexDirection::Row)

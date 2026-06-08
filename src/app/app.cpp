@@ -508,20 +508,48 @@ auto Runtime::render(const Element& root) -> Status {
         //     space. This is a brief bridge across a transient dip, never
         //     a permanent floor.
         {
+            // The hold bridges a SMALL transient seam dip only (the
+            // indicator→first-text handoff is 1-2 rows). A larger dip is
+            // never a seam artefact — it is real content movement (a
+            // markdown block committing/expanding, a fold toggle, the
+            // reveal clip crossing a block) and MUST show immediately,
+            // not be padded then snapped. So the pad is capped: any dip
+            // beyond kMaxHoldPad is shown as-is (peak follows content
+            // down at once). Without this cap the hold built up 30-40
+            // blank rows on a long reveal, then released them in one
+            // frame — the "goes up and redraws everything suddenly" jump.
+            constexpr int kMaxHoldPad = 2;
             const int prev_pad = render_ctx_.inline_min_content;
             const int unpadded = ch - prev_pad;          // real content this frame
+            // Fool-proof scrollback invariant: the pad must be ZERO at
+            // the moment content crosses the viewport boundary into
+            // native scrollback, so a height change from the pad can
+            // never perturb the overflow→scrollback seam. We therefore
+            // only ever engage the hold while content sits with at least
+            // kMaxHoldPad rows of headroom BELOW the viewport bottom
+            // (the `band` ceiling). Within that last band — content
+            // about to overflow — the pad is forced to zero, so the
+            // crossing always happens at pad=0. Combined with the
+            // per-dip cap (pad <= kMaxHoldPad), the pad is structurally
+            // incapable of being present when rows cross term_h.
+            const int band = size_.height.raw() - kMaxHoldPad;
             int new_pad = 0;
-            if (unpadded <= size_.height.raw()) {
+            if (unpadded <= band) {
                 if (unpadded >= hold_peak_) {
                     // Content caught up to / passed the peak: track it,
                     // reset the decay counter, no pad needed.
                     hold_peak_       = unpadded;
                     hold_decay_      = 0;
+                } else if (hold_peak_ - unpadded > kMaxHoldPad) {
+                    // Dip too large to be a seam transient — it's real
+                    // content movement. Drop the peak to it instantly so
+                    // the height shows the true content; no pad, no snap.
+                    hold_peak_  = unpadded;
+                    hold_decay_ = 0;
                 } else {
-                    // Below the peak — a dip. Bridge it. Only count down
-                    // toward releasing the hold when content has STOPPED
-                    // climbing back (this frame <= last frame); a reveal
-                    // still rising resets the counter so we keep bridging.
+                    // Small dip (<= kMaxHoldPad) — the seam transient the
+                    // hold exists for. Bridge it. Only count down toward
+                    // releasing when content has STOPPED climbing back.
                     if (unpadded <= hold_last_unpadded_) {
                         if (++hold_decay_ >= kHoldDecayFrames) {
                             hold_peak_  = unpadded;
@@ -537,8 +565,10 @@ auto Runtime::render(const Element& root) -> Status {
                     }
                 }
             } else {
-                // Overflowed the viewport — disengage and reset so the
-                // next time content fits we start a fresh peak.
+                // At/above the headroom band (content near or past the
+                // viewport bottom) — disengage and reset so the pad is
+                // zero across the overflow seam and a fresh peak starts
+                // the next time content settles back into the band.
                 hold_peak_  = 0;
                 hold_decay_ = 0;
             }

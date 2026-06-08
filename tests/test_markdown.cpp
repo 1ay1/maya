@@ -1887,8 +1887,12 @@ static void st_reveal_fx_eager_commit_no_defer() {
         " that the reveal cursor needs a few frames to walk across it all.");
 
     // Drive the reveal to completion (cursor walks to the live edge).
+    // Mirror the host: it calls set_content(source) every frame, which
+    // runs commit_behind_cursor_ so commits keep pace with the cursor.
     bool saw_overlay_runs = false;
+    const std::string full_source = md.source();
     for (int i = 0; i < 400; ++i) {
+        md.set_content(full_source);   // host per-frame call → catch-up commit
         const Element& el = md.build();
         // Probe the last text leaf for overlay styled runs (proof the
         // animation is still landing on the committed tail).

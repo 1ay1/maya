@@ -264,18 +264,49 @@ void StreamingMarkdown::append_safe(std::string_view safe_bytes) {
         // unchanged.
         const bool pristine_reveal_start =
             reveal_fx_ && !live_ && committed_ == 0;
-        // Eager-commit mode never defers: commits land at block
-        // boundaries during the stream and the overlay renders
-        // unrevealed cp invisibly on the committed tail instead. Keeps
-        // finish() a structural no-op for a seamless freeze handoff.
+        // Eager-commit mode: commit progressively DURING the stream
+        // (so finish() is a structural no-op and the freeze handoff
+        // doesn't re-emit the turn), BUT gate the commit on the reveal
+        // cursor. A block is committed only once the typewriter has
+        // swept past its end — until then it stays in the live tail
+        // where the overlay animates it (scramble/gradient/caret on the
+        // newly-arrived text). Committing the instant a block closes
+        // would yank it into the static prefix before the cursor reveals
+        // it, collapsing the visible typewriter to just the final
+        // in-flight block (the "animation barely visible" regression).
+        // Skip (not partial-commit) when the cursor lags: the resumable
+        // scanner keeps scan_last_boundary_, so re-finding this same
+        // boundary on a later frame once the cursor catches up is cheap.
+        bool eager_skip = false;
+        if (reveal_eager_commit_ && reveal_fx_ && live_) {
+            // Cursor byte position (rounded to a cp boundary). reveal_cp_
+            // is advanced each frame in advance_reveal_cursor_().
+            const std::size_t cursor_byte =
+                byte_offset_for_cp(static_cast<std::size_t>(reveal_cp_));
+            if (cursor_byte < boundary) eager_skip = true;
+        }
         const bool defer =
             !reveal_eager_commit_
             && (pristine_reveal_start
                 || (reveal_fx_ && live_
                     && reveal_byte_clip_ != static_cast<std::size_t>(-1)));
-        if (!defer) {
+        if (!defer && !eager_skip) {
             commit_range(boundary);
         }
+    }
+}
+
+// Eager-commit catch-up: commit every block whose end the reveal cursor
+// has already swept past. Idempotent and cheap when nothing is newly
+// eligible (the resumable scanner short-circuits). Only meaningful in
+// reveal_eager_commit_ + reveal_fx_ + live_ mode; a no-op otherwise.
+void StreamingMarkdown::commit_behind_cursor_() {
+    if (!reveal_eager_commit_ || !reveal_fx_ || !live_) return;
+    const std::size_t cursor_byte =
+        byte_offset_for_cp(static_cast<std::size_t>(reveal_cp_));
+    size_t boundary = find_block_boundary();
+    if (boundary > committed_ && cursor_byte >= boundary) {
+        commit_range(boundary);
     }
 }
 
@@ -321,6 +352,16 @@ void StreamingMarkdown::set_content(std::string_view content) {
     if (content.size() == source_.size() &&
         (content.empty() || std::memcmp(content.data(), source_.data(),
                                         content.size()) == 0)) {
+        // Eager-commit catch-up. The reveal cursor advances on its own
+        // wall clock inside build() even when no new bytes arrive (the
+        // finalize ramp, or just the typewriter pacing through a buffered
+        // backlog). append_safe — the only place commits fire — doesn't
+        // run on this no-change frame, so a region the cursor has now
+        // swept past would sit uncommitted until finish() bulk-committed
+        // it, reintroducing the settle redraw. Commit everything behind
+        // the cursor here each frame so by the time finish() runs the
+        // tail is already committed and finish() is a structural no-op.
+        commit_behind_cursor_();
         return;
     }
 

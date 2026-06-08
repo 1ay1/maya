@@ -319,10 +319,17 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         };
 
         // Tunables.
-        constexpr std::size_t kTrailLen    = 24;   // codepoints in gradient
-        constexpr std::size_t kScrambleLen = 4;    // codepoints scrambled
-        constexpr std::int64_t kScrambleMs = 180;  // scramble → resolve
-        constexpr std::int64_t kCharStepMs = 28;   // per-char age delta
+        //
+        // kTrailLen covers the gradient band. kScrambleLen is the
+        // churn window at the very tip. kGhostExtra is how far PAST
+        // the gradient the ghost (faded-fg) overlay extends when the
+        // reveal cursor still has bytes to walk — gives the typewriter
+        // its visible "materialising" body without changing height.
+        constexpr std::size_t  kTrailLen    = 36;
+        constexpr std::size_t  kScrambleLen = 6;
+        constexpr std::int64_t kScrambleMs  = 220;
+        constexpr std::int64_t kCharStepMs  = 26;
+        constexpr std::size_t  kGhostExtra  = 96;
 
         // Effective age for codepoint at position `i_from_tail`
         // (0 = newest, increasing leftward). Newest char's age is
@@ -466,8 +473,27 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // start is any byte whose top 2 bits are not 10). Then
             // index codepoints only within [trail_byte_start, end).
             // O(kTrailLen) per frame, independent of tail length.
+            // Unrevealed-cp count: the right-edge slice that the
+            // typewriter cursor hasn't reached yet. We map this to a
+            // byte offset in the tail by stepping back that many cp
+            // from the end. These bytes still render (height-stable)
+            // but get a ghosted style (dim fg fade toward bg) so the
+            // user sees the text "materialise" left-to-right as the
+            // cursor walks. Clamped to total_cp so a fresh widget with
+            // revealed_cp < committed_cp doesn't underflow (shouldn't
+            // happen given the snap above, defensive).
+            const std::size_t unrevealed_cp =
+                (total_cp > revealed_cp) ? (total_cp - revealed_cp) : 0u;
+
+            // Trail window is whichever is bigger: the fixed gradient
+            // band, or the unrevealed slice PLUS a ghost extension —
+            // so the gradient melts smoothly into the revealed body
+            // instead of cutting at a hard edge.
+            const std::size_t trail_cp_target = std::max(
+                kTrailLen, unrevealed_cp + kGhostExtra);
+
             const std::size_t trail_byte_start =
-                utf8_step_back(orig, kTrailLen);
+                utf8_step_back(orig, trail_cp_target);
             const std::string_view trail_slice =
                 orig.substr(trail_byte_start);
 
@@ -580,6 +606,13 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                     (trail_byte_start + new_trail.size()) - out_byte_off;
 
                 // Pick the style.
+                //
+                // Priority (highest first):
+                //   scramble      — churning rainbow at the very tip
+                //   unrevealed    — ghost (dim, fade-to-bg) for cp the
+                //                   typewriter cursor hasn't walked yet
+                //   gradient      — hot→cool age band
+                //   base          — settled text
                 Style s;
                 if (scrambling) {
                     const bool flick =
@@ -589,6 +622,25 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                             ? Color::rgb(255,  80, 180)
                             : Color::rgb(255, 160,  60))
                         .with_bold();
+                } else if (i_from_tail < unrevealed_cp) {
+                    // Ghost band: cp the cursor hasn't reached yet.
+                    // Lerp from near-bg dark gray (just-arrived edge)
+                    // toward the gradient/base style (cursor-front).
+                    // Fraction of the way from cursor (0.0) to fresh
+                    // edge (1.0) — fresher = darker = less revealed.
+                    const double t = unrevealed_cp <= 1
+                        ? 0.0
+                        : static_cast<double>(i_from_tail) /
+                          static_cast<double>(unrevealed_cp - 1);
+                    // r,g,b lerp 90,90,110 (ghost) → 200,210,230 (almost there)
+                    const auto lerp8 = [](double a, double b, double tt) {
+                        return static_cast<std::uint8_t>(a + (b - a) * tt);
+                    };
+                    s = Style{}.with_fg(Color::rgb(
+                        lerp8( 90, 200, 1.0 - t),
+                        lerp8( 90, 210, 1.0 - t),
+                        lerp8(110, 230, 1.0 - t)))
+                        .with_dim();
                 } else if (auto ts = trail_style(age)) {
                     s = *ts;
                 } else {
@@ -607,17 +659,14 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             tail->content.resize(trail_byte_start);
             tail->content.append(new_trail);
             tail->runs = std::move(new_runs);
-            // Force re-wrap on the copy ONLY when scramble is active.
-            // Scramble may substitute a 1-byte ASCII for a 3-byte box
-            // glyph, changing content byte length and invalidating the
-            // wrap cache's content_size key. When no scramble is
-            // active (age_at_tail >= kScrambleMs across the entire
-            // window) the trail bytes are byte-identical to the
-            // original tail — the wrap cache from the source render is
-            // still valid and re-wrapping would be wasted O(content)
-            // work on every animation frame. On a multi-KB code-block
-            // tail this avoidance is the difference between smooth
-            // and chokes-the-renderer.
+            // Force re-wrap on the copy ONLY when content bytes might
+            // have changed (scramble substituted a 1-byte ASCII for a
+            // 3-byte box glyph, or vice versa). When only styles moved
+            // (gradient/ghost recolor without scramble) trail bytes are
+            // byte-identical to the source render's wrap cache — leave
+            // cached_width alone, skip the O(content) re-wrap. On a
+            // multi-KB code-block tail this avoidance is the difference
+            // between smooth and chokes-the-renderer.
             const bool scramble_active =
                 age_at_tail_ms < kScrambleMs +
                 static_cast<std::int64_t>(scramble_n) * kCharStepMs;

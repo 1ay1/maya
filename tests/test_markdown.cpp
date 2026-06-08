@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <future>
 #include <optional>
 #include <print>
@@ -1736,6 +1737,75 @@ static void st_reveal_fx_stable_height_during_animation() {
     }
 }
 
+// Pin that the reveal animation is VISIBLY rendering — the trailing
+// TextElement carries multiple StyledRun entries when reveal_fx is on and
+// the cursor is still walking the tail. With the old build-clip removed,
+// the tail bytes always render at full height, but they MUST also carry
+// the ghost/gradient/scramble styling overlay; otherwise the user just
+// sees plain text materialise in one shot (the "can't see animation"
+// regression).
+static void st_reveal_fx_overlay_styled_runs_visible() {
+    StreamingMarkdown md;
+    md.set_live(true);
+    md.set_reveal_fx(true);
+
+    // Big burst so unrevealed_cp is far > 0 immediately after append.
+    md.append("This is a long enough paragraph of streaming prose that the"
+              " reveal cursor will take a meaningful number of frames to"
+              " walk across all of its bytes from left to right.");
+
+    // Walk down to the rightmost TextElement and count its runs.
+    std::function<const TextElement*(const Element&)> find_last_text =
+        [&](const Element& root) -> const TextElement* {
+            const Element* cur = &root;
+            for (int i = 0; i < 32; ++i) {
+                if (auto* t = std::get_if<TextElement>(&cur->inner))
+                    return t->content.empty() ? nullptr : t;
+                if (auto* b = std::get_if<BoxElement>(&cur->inner)) {
+                    if (b->children.empty()) return nullptr;
+                    cur = &b->children.back();
+                    continue;
+                }
+                if (auto* c = std::get_if<ComponentElement>(&cur->inner)) {
+                    // Materialize at a realistic width so the live
+                    // overlay's tail leaf is reachable.
+                    static Element materialized;
+                    materialized = c->render(80, 0);
+                    cur = &materialized;
+                    continue;
+                }
+                return nullptr;
+            }
+            return nullptr;
+        };
+
+    // First few frames after the burst: cursor is behind the edge, so
+    // unrevealed_cp > 0 and the trail should carry many styled runs
+    // (one per cp in the ghost/gradient/scramble window).
+    bool saw_many_runs = false;
+    std::size_t max_runs = 0;
+    for (int i = 0; i < 5; ++i) {
+        const Element& el = md.build();
+        if (auto* t = find_last_text(el)) {
+            max_runs = std::max(max_runs, t->runs.size());
+            if (t->runs.size() >= 16) {
+                saw_many_runs = true;
+                break;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
+
+    if (!saw_many_runs) {
+        throw std::runtime_error(
+            "reveal-fx OVERLAY MISSING: tail TextElement carried at most "
+            + std::to_string(max_runs) + " styled runs across 5 frames"
+            " while cursor was catching up. Expected >= 16 (ghost +"
+            " gradient + scramble window). The user sees plain text"
+            " with no animation \u2014 the overlay is not landing.");
+    }
+}
+
 // Reveal-fx must not snap when bytes arrive DURING the reveal. Feeds the
 // doc in small chunks with a sleep between each, calling build() in a
 // tight inner loop so the reveal cursor advances through the chunk's
@@ -2172,6 +2242,7 @@ int main() {
     run("reveal-fx monotonic (streaming)", 12000ms, st_reveal_fx_height_monotonic_streaming);
     run("reveal-fx commit snap (no chrome flicker)", 3000ms, st_reveal_fx_commit_snap_no_chrome_flicker);
     run("reveal-fx stable height during animation", 3000ms, st_reveal_fx_stable_height_during_animation);
+    run("reveal-fx overlay styled runs visible", 3000ms, st_reveal_fx_overlay_styled_runs_visible);
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",
                  g_passed - g_slow, g_slow, g_failed, g_skipped);

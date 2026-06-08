@@ -272,6 +272,18 @@ private:
     // set_reveal_fx(true).
     bool reveal_fx_ = false;
 
+    // Reveal cursor pacing. The typewriter advances at
+    //   cps = max(floor_cps, backlog / drain_secs)
+    // so a quiet stream still types at floor_cps, while a large
+    // burst is drained within ~drain_secs. Defaults: 120 cps floor,
+    // 0.8 s drain — fast enough to keep up with realistic model
+    // output, slow enough that the scramble / sweep cursor stay
+    // visible. Tunable so dev tools / tests can crank it WAY down
+    // (e.g. 20 cps) to make the animation unmissable when validating
+    // visually against recorded streams.
+    double reveal_floor_cps_  = 120.0;
+    double reveal_drain_secs_ = 0.8;
+
     // ── Per-build size tracking for age-based animation ──
     //
     // Each time build() runs and the source has grown since the
@@ -816,6 +828,16 @@ public:
     /// per-frame color/glyph churn (calm, flicker-free on every
     /// terminal).
     void set_reveal_fx(bool on) noexcept { reveal_fx_ = on; }
+
+    /// Override the reveal cursor pacing. `floor_cps` is the
+    /// minimum codepoints-per-second the typewriter walks at (also
+    /// the steady-state when the wire is keeping up); `drain_secs`
+    /// is the target window to clear a backlog after a burst. Both
+    /// must be > 0. Persists across set_reveal_fx() toggles.
+    void set_reveal_pacing(double floor_cps, double drain_secs) noexcept {
+        if (floor_cps  > 0.0) reveal_floor_cps_  = floor_cps;
+        if (drain_secs > 0.0) reveal_drain_secs_ = drain_secs;
+    }
     [[nodiscard]] bool is_live() const noexcept { return live_; }
 
     /// True while the internal reveal cursor is still catching up to the

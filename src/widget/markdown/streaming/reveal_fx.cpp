@@ -144,8 +144,8 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         if (backlog <= 0.0) {
             reveal_cp_ = static_cast<double>(total_cp);
         } else {
-            constexpr double kFloorCps  = 120.0;
-            constexpr double kDrainSecs = 0.8;
+            const double kFloorCps  = reveal_floor_cps_;
+            const double kDrainSecs = reveal_drain_secs_;
             double cps = backlog / kDrainSecs;
             if (cps < kFloorCps) cps = kFloorCps;
             if (finalize_deadline_ms_ != 0) {

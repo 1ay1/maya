@@ -309,6 +309,18 @@ private:
     mutable double       reveal_cp_  = 0.0;
     mutable std::int64_t reveal_ms_  = 0;
 
+    // Byte offset within `tail` (source_[committed_..]) that the
+    // reveal cursor has reached, recomputed each frame from reveal_cp_.
+    // build() clips the tail at this offset so newly-arrived terminated
+    // rows reveal one-by-one as the cursor advances instead of bursting
+    // in whenever the wire delivers them — the live edge feels typed,
+    // not pasted. SIZE_MAX = no clip (reveal_fx off, or cursor caught
+    // up). When this value changes between frames, render_live_overlay_
+    // bumps build_dirty_ so the next build() rebuilds the tail at the
+    // new clip; the canonical tail memo stays effective between
+    // frames the cursor doesn't move enough to cross a `\n`.
+    mutable std::size_t  revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
+
     // ── Finalize ramp ──
     //
     // request_finalize(ramp_ms) records a deadline by which the reveal

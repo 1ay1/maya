@@ -48,7 +48,16 @@ void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
 }
 
 const Element& StreamingMarkdown::render_live_overlay_() const {
-        if (!live_) return cached_build_;
+        if (!live_) {
+            // Settled — nothing to pace, drop any leftover clip so a
+            // future stream starts fresh and the final build shows the
+            // full settled tail.
+            if (revealed_tail_byte_clip_ != static_cast<std::size_t>(-1)) {
+                revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
+                build_dirty_ = true;
+            }
+            return cached_build_;
+        }
 
         // Animated streaming-reveal (gradient trail + scramble + pulsing
         // caret) is opt-in. Off by default it returns the settled,
@@ -57,7 +66,13 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // flicker-free on every terminal. The height-monotonicity
         // guarantee lives in render_tail (canonical committed-shape
         // floor), not here. See StreamingMarkdown::reveal_fx_.
-        if (!reveal_fx_) return cached_build_;
+        if (!reveal_fx_) {
+            if (revealed_tail_byte_clip_ != static_cast<std::size_t>(-1)) {
+                revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
+                build_dirty_ = true;
+            }
+            return cached_build_;
+        }
 
         // ── Geeky-as-fuck live animation ──
         //
@@ -247,11 +262,53 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // stray empty bordered box at the end of the turn — exactly
             // the symptom the ramp exists to prevent.
             live_ = false;
+            // Clear the clip so future build()s (now on the !live_ path)
+            // don't truncate the tail — the message is settled, show
+            // everything. live_ already bumped build_dirty_ via Tracked<>,
+            // but reset the field explicitly so the next build sees an
+            // unclipped tail.
+            revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
             request_animation_frame();
             return cached_build_;
         }
         const std::size_t revealed_cp =
             static_cast<std::size_t>(reveal_cp_);
+
+        // ── Publish reveal byte-clip to build() ──
+        // Map the cursor (codepoints in source_) to a byte offset within
+        // tail (source_[committed_..]). build() clips render_tail's input
+        // here so terminated rows past the cursor stay invisible until
+        // the cursor reaches them — per-row pacing for structured tails
+        // (tables, lists). When the cursor is at/past the live edge or
+        // reveal_fx is off, publish SIZE_MAX ("no clip"). When the
+        // clip endpoint moves to a new byte we bump build_dirty_ so the
+        // next build() picks up the new tail; render_tail's memo on tail
+        // bytes keeps frames between movements cheap.
+        std::size_t new_clip = static_cast<std::size_t>(-1);
+        if (reveal_cp_ < static_cast<double>(total_cp)) {
+            // Walk source_ counting codepoints up to revealed_cp;
+            // O(source_) worst case but loop body is one byte test per
+            // iteration and the source is bounded by the current message.
+            std::size_t cp = 0;
+            std::size_t byte_off = 0;
+            for (std::size_t i = 0; i < source_.size() && cp < revealed_cp; ++i) {
+                if ((static_cast<unsigned char>(source_[i]) & 0xC0) != 0x80) {
+                    ++cp;
+                }
+                byte_off = i + 1;
+            }
+            new_clip = (byte_off > committed_) ? (byte_off - committed_) : 0u;
+        }
+        if (new_clip != revealed_tail_byte_clip_) {
+            revealed_tail_byte_clip_ = new_clip;
+            // Force build() to re-extract+clip the tail on the next frame.
+            // build_dirty_ is set directly (no mutator chain); the cost is
+            // bounded — most frames the clip endpoint sits on the same
+            // byte (typewriter velocity ≪ frame rate at the floor cps),
+            // and even when it moves the canonical tail memo hits unless
+            // the clip crossed a `\n`.
+            build_dirty_ = true;
+        }
 
         // age_at_tail_ms is now the time since the CURSOR last moved past
         // a fresh codepoint, not since bytes arrived — so it never snaps
@@ -505,7 +562,18 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // pacing manifests at the structural level (rows / items
             // appearing as they commit), not at the byte level.
             if (revealed_cp < total_cp && !eager_render) {
-                const std::size_t hidden_cp = total_cp - revealed_cp;
+                // build() may already have clipped the tail bytes for us
+                // (revealed_tail_byte_clip_ active). In that case the
+                // TextElement we're holding is already at the cursor —
+                // recomputing hidden_cp from total_cp would over-cut into
+                // the visible content. Skip the cut when the clip is in
+                // effect (build-level clipping is authoritative for the
+                // text path).
+                const bool already_clipped =
+                    revealed_tail_byte_clip_ != static_cast<std::size_t>(-1);
+                const std::size_t hidden_cp = already_clipped
+                    ? 0u
+                    : (total_cp - revealed_cp);
                 // Hide at most the tail's own codepoints (never cut into
                 // the committed prefix — it's not in this TextElement).
                 const std::size_t cut_start =

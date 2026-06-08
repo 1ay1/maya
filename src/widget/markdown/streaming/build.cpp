@@ -45,6 +45,21 @@ const Element& StreamingMarkdown::build() const {
     std::string_view tail = (committed_ < source_.size())
         ? std::string_view{source_}.substr(committed_)
         : std::string_view{};
+
+    // Per-row reveal pacing: when reveal_fx is on and live, the
+    // overlay layer maintains revealed_tail_byte_clip_ — the byte
+    // offset within `tail` the typewriter cursor has reached. Clip
+    // here so render_tail only sees the revealed slice, and newly-
+    // arrived `\n`-terminated rows reveal in cadence with the cursor
+    // (one at a time) instead of bursting in en masse when the wire
+    // delivers them. SIZE_MAX = no clip (off or caught up). The
+    // canonical tail memo's key includes tail bytes, so clipping
+    // invalidates correctly when the clip endpoint moves.
+    if (revealed_tail_byte_clip_ != static_cast<std::size_t>(-1)
+        && revealed_tail_byte_clip_ < tail.size())
+    {
+        tail = tail.substr(0, revealed_tail_byte_clip_);
+    }
     // Keep the tail slot PRESENT while streaming with a committed
     // prefix, even when the tail is momentarily empty. As the reveal
     // crosses a `\n\n` block boundary, commit_range advances committed_

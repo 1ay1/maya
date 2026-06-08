@@ -38,6 +38,22 @@ const Element& StreamingMarkdown::build() const {
     // flip build_dirty_, so it must run BEFORE the early-out.
     maybe_apply_async_();
 
+    // Advance the reveal cursor and republish the tail clip BEFORE
+    // the cache short-circuit. Three things this fixes:
+    //   1. The clip is current for THIS frame, not the next — no
+    //      one-frame flash where a newly-arrived eager-table burst
+    //      lands unrevealed then collapses.
+    //   2. If reveal_cp_ advances without source changing, we bump
+    //      build_dirty_ here so the cached path falls through to
+    //      rebuild with the new clip — keeps the typewriter running
+    //      through wire stalls.
+    //   3. Finalize-ramp completion (which flips live_ off) is
+    //      observed before the cache check, so the next frame doesn't
+    //      serve a stale live-mode build.
+    if (advance_reveal_cursor_()) {
+        build_dirty_ = true;
+    }
+
     // Untouched-since-last-build: return cached. Dominant case when the
     // widget is idle (no streaming).
     if (!build_dirty_) return render_live_overlay_();
@@ -85,7 +101,8 @@ const Element& StreamingMarkdown::build() const {
         cached_prefix_gen_ = prefix_->generation;
         cached_has_tail_   = false;
         cached_has_prefix_ = false;
-        cached_tail_version_ = source_version_;
+        cached_tail_version_     = source_version_;
+        cached_tail_reveal_clip_ = revealed_tail_byte_clip_;
         build_dirty_       = false;
         return render_live_overlay_();
     }
@@ -238,19 +255,26 @@ const Element& StreamingMarkdown::build() const {
         if (box.children.size() == expected) {
             if (has_tail) {
                 // Fast path: source_version_ matches what produced the
-                // current cached tail — the tail bytes are provably
-                // byte-identical to last frame (every mutator that
-                // touches source_/committed_ also bumps the version).
-                // O(1) compare, no hash walk.
+                // current cached tail AND the reveal clip is unchanged —
+                // tail bytes provably byte-identical to last frame. The
+                // clip endpoint is part of the tail's identity because
+                // build() truncates `tail` by it before render_tail sees
+                // it; if the clip moved with version unchanged (typewriter
+                // cursor advanced without new bytes), the tail bytes
+                // DIFFER from what's in cached_build_, and skipping the
+                // re-render would leave the stale longer tail visible —
+                // the reveal effectively wouldn't run.
                 //
-                // Slow path: version moved, fall back to the (fence,
-                // length, FNV-1a) digest. This catches the rare case
-                // where commit_range fired but the tail happened to
-                // land at the same bytes — lets us still skip
-                // render_tail when the body round-tripped.
+                // Slow path: version moved OR clip moved, fall back to
+                // the (fence, length, FNV-1a) digest. This catches the
+                // rare case where commit_range fired but the tail
+                // happened to land at the same bytes — lets us still
+                // skip render_tail when the body round-tripped.
                 bool tail_unchanged;
                 std::uint64_t tail_hash = 0;
-                if (cached_tail_version_ == source_version_) {
+                if (cached_tail_version_ == source_version_
+                    && cached_tail_reveal_clip_ == revealed_tail_byte_clip_)
+                {
                     tail_unchanged = true;
                 } else {
                     tail_hash = fnv1a64(tail);
@@ -270,7 +294,8 @@ const Element& StreamingMarkdown::build() const {
                     cached_tail_len_      = tail.size();
                     cached_tail_in_fence_ = in_code_fence_;
                 }
-                cached_tail_version_ = source_version_;
+                cached_tail_version_     = source_version_;
+                cached_tail_reveal_clip_ = revealed_tail_byte_clip_;
             }
             cached_tail_size_ = tail.size();
             build_dirty_      = false;
@@ -307,7 +332,9 @@ const Element& StreamingMarkdown::build() const {
             if (has_tail) {
                 bool tail_unchanged;
                 std::uint64_t tail_hash = 0;
-                if (cached_tail_version_ == source_version_) {
+                if (cached_tail_version_ == source_version_
+                    && cached_tail_reveal_clip_ == revealed_tail_byte_clip_)
+                {
                     tail_unchanged = true;
                 } else {
                     tail_hash = fnv1a64(tail);
@@ -322,7 +349,8 @@ const Element& StreamingMarkdown::build() const {
                     cached_tail_len_      = tail.size();
                     cached_tail_in_fence_ = in_code_fence_;
                 }
-                cached_tail_version_ = source_version_;
+                cached_tail_version_     = source_version_;
+                cached_tail_reveal_clip_ = revealed_tail_byte_clip_;
             }
             cached_prefix_gen_ = prefix_->generation;
             cached_fold_gen_   = fold_generation_;
@@ -416,6 +444,7 @@ const Element& StreamingMarkdown::build() const {
         cached_tail_len_  = 0;
     }
     cached_tail_version_ = source_version_;
+    cached_tail_reveal_clip_ = revealed_tail_byte_clip_;
     build_dirty_          = false;
     return render_live_overlay_();
 }

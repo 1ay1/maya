@@ -321,6 +321,16 @@ private:
     // frames the cursor doesn't move enough to cross a `\n`.
     mutable std::size_t  revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
 
+    // Cursor advance scratch — written by advance_reveal_cursor_()
+    // (called from build() top), consumed by render_live_overlay_()
+    // for visual decoration. Avoids re-walking source_ for total_cp
+    // and re-reading the clock in overlay. SIZE_MAX as a sentinel for
+    // "advance hasn't run this frame" — overlay then derives them on
+    // the fly (defensive, shouldn't happen in practice).
+    mutable std::int64_t cursor_advance_ms_total_   = 0;
+    mutable std::size_t  cursor_advance_total_cp_   = 0;
+    mutable std::int64_t cursor_advance_age_tail_ms_ = 0;
+
     // ── Finalize ramp ──
     //
     // request_finalize(ramp_ms) records a deadline by which the reveal
@@ -450,6 +460,17 @@ private:
     // shape — keeps the invariant intact under any future mutator
     // ordering changes.
     mutable std::uint64_t cached_tail_version_  = 0;
+
+    // Reveal clip endpoint reflected in cached_build_'s tail child.
+    // The clip is part of the tail's identity (build() truncates tail
+    // by it before render_tail sees it), so when the reveal cursor
+    // advances without source_ changing, version stays equal but the
+    // tail bytes differ — the version-only fast-path would skip the
+    // re-render and leave a stale longer tail visible. Storing the
+    // clip here lets the fast-path key include it: same source_version_
+    // AND same clip → tail provably identical → cache hit.
+    // SIZE_MAX = unclipped.
+    mutable std::size_t   cached_tail_reveal_clip_ = static_cast<std::size_t>(-1);
 
     // ── render_tail inline-parse cache ─────────────────────────────────
     // The plain-inline path of render_tail (the bottom branch — no open
@@ -692,6 +713,16 @@ private:
     // caret overlay over cached_build_'s tail) and requests an animation
     // frame. Defined in reveal_fx.cpp. build() calls this at every return.
     [[nodiscard]] const Element& render_live_overlay_() const;
+
+    // Advance reveal_cp_ for this frame and republish
+    // revealed_tail_byte_clip_ (→ build()) accordingly. Called from
+    // build() BEFORE the cache short-circuit so a moved clip dirties
+    // the build on the SAME frame the cursor moves, instead of the
+    // next — prevents a one-frame flash where an unrevealed eager-
+    // table burst lands then collapses. Defined in reveal_fx.cpp.
+    // Returns true if the frame should bypass cache and rebuild (clip
+    // moved or ramp completed).
+    bool advance_reveal_cursor_() const;
 
     // Internal append — assumes bytes are already codepoint-clean.  Public
     // entry points (feed / append / set_content) route through StreamSink.

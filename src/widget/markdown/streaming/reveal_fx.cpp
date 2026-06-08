@@ -47,32 +47,139 @@ void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     finalize_deadline_ms_ = now_ms + ramp_ms;
 }
 
-const Element& StreamingMarkdown::render_live_overlay_() const {
-        if (!live_) {
-            // Settled — nothing to pace, drop any leftover clip so a
-            // future stream starts fresh and the final build shows the
-            // full settled tail.
-            if (revealed_tail_byte_clip_ != static_cast<std::size_t>(-1)) {
-                revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
-                build_dirty_ = true;
-            }
-            return cached_build_;
+// Advance reveal_cp_ for this frame and republish revealed_tail_byte_clip_.
+// Called from build() top so the clip is current BEFORE the cache check —
+// fixes a one-frame flash where bytes landed, build's stale-clip path
+// rendered the full tail (every row of a newly-arrived table), then the
+// overlay advanced the cursor and the next frame collapsed it. Also fixes
+// the case where source bytes are stable but the cursor moves: the
+// build's version-only fast-path used to skip re-render entirely, leaving
+// the typewriter visually frozen even though reveal_cp_ was advancing.
+// (The build cache key now includes revealed_tail_byte_clip_ so the
+// fast-path correctly misses when the clip moves.)
+//
+// Returns true when the frame's cached_build_ is stale and a rebuild is
+// needed (clip moved, finalize-ramp completed, etc.); caller uses this
+// to bump build_dirty_ before the cache check.
+bool StreamingMarkdown::advance_reveal_cursor_() const {
+    if (!live_) {
+        if (revealed_tail_byte_clip_ != static_cast<std::size_t>(-1)) {
+            revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
+            return true;
         }
+        return false;
+    }
+    if (!reveal_fx_) {
+        if (revealed_tail_byte_clip_ != static_cast<std::size_t>(-1)) {
+            revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
+            return true;
+        }
+        return false;
+    }
 
-        // Animated streaming-reveal (gradient trail + scramble + pulsing
-        // caret) is opt-in. Off by default it returns the settled,
-        // fully-styled build with no per-frame color/glyph churn and no
-        // animation-frame request — text just appears as it streams,
-        // flicker-free on every terminal. The height-monotonicity
-        // guarantee lives in render_tail (canonical committed-shape
-        // floor), not here. See StreamingMarkdown::reveal_fx_.
-        if (!reveal_fx_) {
-            if (revealed_tail_byte_clip_ != static_cast<std::size_t>(-1)) {
-                revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
-                build_dirty_ = true;
+    const auto now = std::chrono::steady_clock::now();
+    const std::int64_t ms_total = std::chrono::duration_cast<
+        std::chrono::milliseconds>(now.time_since_epoch()).count();
+    cursor_advance_ms_total_ = ms_total;
+
+    // Grow-time stamp.
+    if (source_.size() > last_seen_size_) {
+        last_grow_ms_   = ms_total;
+        last_seen_size_ = source_.size();
+    } else if (source_.size() < last_seen_size_) {
+        last_seen_size_ = source_.size();
+        last_grow_ms_   = ms_total;
+        reveal_cp_      = 0.0;
+        reveal_ms_      = ms_total;
+    }
+
+    // Total codepoints in source_.
+    const std::size_t total_cp = [&] {
+        std::size_t n = 0;
+        for (std::size_t i = 0; i < source_.size(); ++i)
+            if ((static_cast<unsigned char>(source_[i]) & 0xC0) != 0x80) ++n;
+        return n;
+    }();
+    cursor_advance_total_cp_ = total_cp;
+
+    if (reveal_ms_ == 0) { reveal_ms_ = ms_total; reveal_cp_ = 0.0; }
+    {
+        double elapsed_s = (ms_total - reveal_ms_) / 1000.0;
+        if (elapsed_s < 0.0)   elapsed_s = 0.0;
+        if (elapsed_s > 0.120) elapsed_s = 0.120;
+        reveal_ms_ = ms_total;
+        const double backlog = static_cast<double>(total_cp) - reveal_cp_;
+        if (backlog <= 0.0) {
+            reveal_cp_ = static_cast<double>(total_cp);
+        } else {
+            constexpr double kFloorCps  = 200.0;
+            constexpr double kDrainSecs = 0.5;
+            double cps = backlog / kDrainSecs;
+            if (cps < kFloorCps) cps = kFloorCps;
+            if (finalize_deadline_ms_ != 0) {
+                const std::int64_t remaining_ms =
+                    finalize_deadline_ms_ - ms_total;
+                if (remaining_ms <= 0) {
+                    cps = backlog / std::max(elapsed_s, 0.001);
+                } else {
+                    const double ramp_cps =
+                        backlog / (remaining_ms / 1000.0);
+                    if (ramp_cps > cps) cps = ramp_cps;
+                }
             }
-            return cached_build_;
+            reveal_cp_ += cps * elapsed_s;
+            if (reveal_cp_ > static_cast<double>(total_cp))
+                reveal_cp_ = static_cast<double>(total_cp);
         }
+    }
+
+    bool dirty = false;
+
+    // Ramp completion — flip live_ off and clear clip. live_'s Tracked<>
+    // bumps build_dirty_ for us, but return dirty=true so the caller
+    // doesn't double-check.
+    if (finalize_deadline_ms_ != 0
+        && reveal_cp_ >= static_cast<double>(total_cp))
+    {
+        finalize_deadline_ms_ = 0;
+        live_ = false;
+        revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
+        request_animation_frame();
+        return true;
+    }
+
+    const std::size_t revealed_cp =
+        static_cast<std::size_t>(reveal_cp_);
+
+    // Map cursor (cp in source_) to byte offset within tail.
+    std::size_t new_clip = static_cast<std::size_t>(-1);
+    if (reveal_cp_ < static_cast<double>(total_cp)) {
+        std::size_t cp = 0;
+        std::size_t byte_off = 0;
+        for (std::size_t i = 0; i < source_.size() && cp < revealed_cp; ++i) {
+            if ((static_cast<unsigned char>(source_[i]) & 0xC0) != 0x80) {
+                ++cp;
+            }
+            byte_off = i + 1;
+        }
+        new_clip = (byte_off > committed_) ? (byte_off - committed_) : 0u;
+    }
+    if (new_clip != revealed_tail_byte_clip_) {
+        revealed_tail_byte_clip_ = new_clip;
+        dirty = true;
+    }
+
+    cursor_advance_age_tail_ms_ =
+        (reveal_cp_ >= static_cast<double>(total_cp))
+            ? (ms_total - last_grow_ms_)
+            : 0;
+
+    return dirty;
+}
+
+const Element& StreamingMarkdown::render_live_overlay_() const {
+        if (!live_) return cached_build_;
+        if (!reveal_fx_) return cached_build_;
 
         // ── Geeky-as-fuck live animation ──
         //
@@ -103,222 +210,16 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // continue ticking at ~60 fps. Pure visual layer: cached_build_
         // is not touched; every frame builds cached_live_ fresh from
         // a shallow copy + mutated tail-leaf TextElement.
-
-        const auto now = std::chrono::steady_clock::now();
-        const std::int64_t ms_total = std::chrono::duration_cast<
-            std::chrono::milliseconds>(now.time_since_epoch()).count();
-
-        // Update grow-time stamp: if source has grown since last
-        // build(), record this frame's wall time as the moment the
-        // trailing edge moved. last_seen_size_ tracks the size we
-        // observed last frame.
-        if (source_.size() > last_seen_size_) {
-            last_grow_ms_   = ms_total;
-            last_seen_size_ = source_.size();
-        } else if (source_.size() < last_seen_size_) {
-            // Source shrank (clear / set_content rollback) — reset.
-            last_seen_size_ = source_.size();
-            last_grow_ms_   = ms_total;
-            reveal_cp_      = 0.0;
-            reveal_ms_      = ms_total;
-        }
-
-        // ── Advance the continuous reveal cursor ──
         //
-        // Total codepoints currently available (whole source). The cursor
-        // eases toward this at floor + proportional catch-up, integrated
-        // over real elapsed time so its velocity is smooth no matter how
-        // bytes were batched onto the wire. This is the typewriter, owned
-        // entirely by the widget.
-        const std::size_t total_cp = [&] {
-            std::size_t n = 0;
-            for (std::size_t i = 0; i < source_.size(); ++i)
-                if ((static_cast<unsigned char>(source_[i]) & 0xC0) != 0x80) ++n;
-            return n;
-        }();
-        if (reveal_ms_ == 0) { reveal_ms_ = ms_total; reveal_cp_ = 0.0; }
-        {
-            double elapsed_s = (ms_total - reveal_ms_) / 1000.0;
-            if (elapsed_s < 0.0)   elapsed_s = 0.0;
-            // Bound the per-frame advance so a frame served VERY late (the
-            // terminal was backgrounded for seconds, a giant relayout spiked
-            // render cost) can't integrate the whole gap and teleport the
-            // cursor to the live edge in one jump — a visible burst. But the
-            // clamp must be GENEROUS enough to absorb the ordinary slow-frame
-            // case: on a non-sync terminal the loop wakes on the 100 ms Tick
-            // between RAF beats, and any single render frame on a long thread
-            // can land 80-120 ms after the previous one. A 33 ms clamp turned
-            // every such frame into a permanent deficit — the cursor advanced
-            // 33 ms of progress for 100 ms of wall-clock, fell progressively
-            // behind the wire, and the unrevealed backlog only flushed at
-            // settle (the "stuck then burst" the reveal exists to prevent).
-            // Clamp at 120 ms instead: it covers one Tick period plus margin,
-            // so a normally-late frame catches the cursor up cleanly, while a
-            // pathological multi-second gap still steps at most ~120 ms worth
-            // (a fraction of a viewport at the ceiling cps below) — a small
-            // catch-up glide, never a teleport.
-            if (elapsed_s > 0.120) elapsed_s = 0.120;
-            reveal_ms_ = ms_total;
-            const double backlog = static_cast<double>(total_cp) - reveal_cp_;
-            if (backlog <= 0.0) {
-                reveal_cp_ = static_cast<double>(total_cp);
-            } else {
-                // Time-bounded typewriter. Two terms, take the larger:
-                //
-                //   • FLOOR (200 cps) — the steady cadence for ordinary
-                //     drip streaming, so a small backlog reveals at a calm,
-                //     even pace and reads like a typewriter, not a sweep.
-                //
-                //   • DRAIN — reveal whatever backlog exists within a fixed
-                //     wall-clock window (kDrainSecs), so the reveal time is
-                //     bounded by TIME, not by a fixed char/sec ceiling. This
-                //     is the load-bearing term against the real wire: the
-                //     model stalls for multiple seconds, then the edge
-                //     delivers a whole paragraph in a single burst (measured:
-                //     up to ~2000 chars landing in one millisecond after a
-                //     10 s+ stall, with more bursts following every ~13 s). A
-                //     fixed cps ceiling let that backlog COMPOUND across
-                //     successive bursts — each one revealed slower than the
-                //     next arrived — so the cursor fell ever further behind
-                //     and the unrevealed tail dumped at settle (the
-                //     stuck-then-burst the user sees). Sizing the rate as
-                //     backlog / kDrainSecs caps the worst-case reveal time at
-                //     kDrainSecs no matter how big the burst, so backlog can
-                //     never accumulate beyond one window's worth: a 2000-char
-                //     dump glides out in ~2 s, a 250-char drip stays on the
-                //     200 floor (~1 s). No arbitrary cps ceiling to out-pace.
-                //
-                //     kDrainSecs is the load-bearing tunable. It must be SMALL
-                //     enough that the cursor is caught up (or nearly) by the
-                //     time the turn SETTLES — at settle the host drops live_
-                //     and the overlay returns the full text at once, so any
-                //     backlog still unrevealed at that instant dumps in one
-                //     frame (the real "suddenly renders a lot" the user sees,
-                //     distinct from byte arrival). 0.5 s keeps the worst-case
-                //     backlog reveal under ~2 s so a turn that ends shortly
-                //     after its last burst finds little or nothing to dump,
-                //     while staying slow enough to read as a typewriter, not
-                //     a teleport.
-                constexpr double kFloorCps  = 200.0;  // steady typewriter cadence
-                constexpr double kDrainSecs = 0.5;    // worst-case backlog reveal time
-                double cps = backlog / kDrainSecs;
-                if (cps < kFloorCps) cps = kFloorCps;
-                // Finalize ramp: when a deadline is pending, force a
-                // rate that REACHES the live edge by the deadline. We
-                // take the max with the normal drain so a small backlog
-                // already gliding faster than the ramp keeps its calm
-                // typewriter cadence — the ramp only KICKS IN to prevent
-                // the cursor finishing late. The deadline + start_ms
-                // pair makes this immune to dropped frames: ramp_cps is
-                // computed from time STILL REMAINING, so however many
-                // frames the loop misses, the cursor still lands on the
-                // edge at the deadline.
-                if (finalize_deadline_ms_ != 0) {
-                    const std::int64_t remaining_ms =
-                        finalize_deadline_ms_ - ms_total;
-                    if (remaining_ms <= 0) {
-                        // Past deadline — snap to edge this frame.
-                        cps = backlog / std::max(elapsed_s, 0.001);
-                    } else {
-                        const double ramp_cps =
-                            backlog / (remaining_ms / 1000.0);
-                        if (ramp_cps > cps) cps = ramp_cps;
-                    }
-                }
-                reveal_cp_ += cps * elapsed_s;
-                if (reveal_cp_ > static_cast<double>(total_cp))
-                    reveal_cp_ = static_cast<double>(total_cp);
-            }
-        }
-        // Ramp completion: cursor reached the edge. Flip live_ off so
-        // the next frame short-circuits at the !live_ guard above and
-        // returns the settled cached_build_ with no visible pop — the
-        // reveal cursor is already at the live edge, so the overlay
-        // and the settled build are equivalent for the trailing chars.
-        // Clear the deadline so a future stream can request a new ramp.
-        //
-        // Critical: request one more animation frame here so the host's
-        // finish() (gated on !is_finalizing()) runs on the very next
-        // build(). Without this RAF kick, ramp completion clears
-        // is_finalizing AND drops live_ in the same instant, the host's
-        // RAF gate (which armed on is_finalizing) goes idle, and the
-        // visual hash stops advancing — so the host never re-enters
-        // view() to call finish(). The currently-rendered cached_build_
-        // was assembled mid-stream with the trailing block possibly
-        // uncommitted (open fence, in-progress paragraph), and that
-        // intermediate render would stay frozen on screen indefinitely.
-        // One forced frame closes the gap: next render calls finish(),
-        // commits the tail, rebuilds cached_build_, returns the settled
-        // tree, RAF lapses naturally because nothing is animating.
-        if (finalize_deadline_ms_ != 0
-            && reveal_cp_ >= static_cast<double>(total_cp))
-        {
-            finalize_deadline_ms_ = 0;
-            // Tracked<> wrapper on live_ auto-bumps build_dirty_, so the
-            // next build() takes the rebuild path and reshapes the cache
-            // to drop the reserved empty trailing slot (build.cpp's
-            // has_tail = !tail.empty() || (live_ && has_prefix)). Without
-            // the rebuild the stale empty-Text leaf would render as a
-            // stray empty bordered box at the end of the turn — exactly
-            // the symptom the ramp exists to prevent.
-            live_ = false;
-            // Clear the clip so future build()s (now on the !live_ path)
-            // don't truncate the tail — the message is settled, show
-            // everything. live_ already bumped build_dirty_ via Tracked<>,
-            // but reset the field explicitly so the next build sees an
-            // unclipped tail.
-            revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
-            request_animation_frame();
-            return cached_build_;
-        }
-        const std::size_t revealed_cp =
-            static_cast<std::size_t>(reveal_cp_);
-
-        // ── Publish reveal byte-clip to build() ──
-        // Map the cursor (codepoints in source_) to a byte offset within
-        // tail (source_[committed_..]). build() clips render_tail's input
-        // here so terminated rows past the cursor stay invisible until
-        // the cursor reaches them — per-row pacing for structured tails
-        // (tables, lists). When the cursor is at/past the live edge or
-        // reveal_fx is off, publish SIZE_MAX ("no clip"). When the
-        // clip endpoint moves to a new byte we bump build_dirty_ so the
-        // next build() picks up the new tail; render_tail's memo on tail
-        // bytes keeps frames between movements cheap.
-        std::size_t new_clip = static_cast<std::size_t>(-1);
-        if (reveal_cp_ < static_cast<double>(total_cp)) {
-            // Walk source_ counting codepoints up to revealed_cp;
-            // O(source_) worst case but loop body is one byte test per
-            // iteration and the source is bounded by the current message.
-            std::size_t cp = 0;
-            std::size_t byte_off = 0;
-            for (std::size_t i = 0; i < source_.size() && cp < revealed_cp; ++i) {
-                if ((static_cast<unsigned char>(source_[i]) & 0xC0) != 0x80) {
-                    ++cp;
-                }
-                byte_off = i + 1;
-            }
-            new_clip = (byte_off > committed_) ? (byte_off - committed_) : 0u;
-        }
-        if (new_clip != revealed_tail_byte_clip_) {
-            revealed_tail_byte_clip_ = new_clip;
-            // Force build() to re-extract+clip the tail on the next frame.
-            // build_dirty_ is set directly (no mutator chain); the cost is
-            // bounded — most frames the clip endpoint sits on the same
-            // byte (typewriter velocity ≪ frame rate at the floor cps),
-            // and even when it moves the canonical tail memo hits unless
-            // the clip crossed a `\n`.
-            build_dirty_ = true;
-        }
-
-        // age_at_tail_ms is now the time since the CURSOR last moved past
-        // a fresh codepoint, not since bytes arrived — so it never snaps
-        // to 0 on a burst. When the cursor is at the edge (caught up) it
-        // grows like last_grow; while catching up it stays ~0 (actively
-        // revealing).
-        const std::int64_t age_at_tail_ms =
-            (reveal_cp_ >= static_cast<double>(total_cp))
-                ? (ms_total - last_grow_ms_)
-                : 0;
+        // The reveal cursor (reveal_cp_, revealed_tail_byte_clip_)
+        // was already advanced this frame by advance_reveal_cursor_(),
+        // called from build() top BEFORE its cache short-circuit — so
+        // build()'s clipped tail and our visual decoration are in sync
+        // on the very frame bytes land. We just read the scratch.
+        const std::int64_t ms_total    = cursor_advance_ms_total_;
+        const std::size_t  total_cp    = cursor_advance_total_cp_;
+        const std::size_t  revealed_cp = static_cast<std::size_t>(reveal_cp_);
+        const std::int64_t age_at_tail_ms = cursor_advance_age_tail_ms_;
 
         // Walk a copy of cached_build_ down its rightmost spine to
         // the last leaf TextElement. Descends through ComponentElement

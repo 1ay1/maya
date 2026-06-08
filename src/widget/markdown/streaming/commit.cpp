@@ -356,6 +356,8 @@ void StreamingMarkdown::clear() {
     cached_tail_in_fence_ = false;
     cached_tail_hash_     = 0;
     cached_tail_len_      = 0;
+    cached_tail_reveal_clip_ = static_cast<std::size_t>(-1);
+    revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
     cached_build_         = Element{TextElement{""}};
     cached_live_          = Element{TextElement{""}};
     live_                 = false;

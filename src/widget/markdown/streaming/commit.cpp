@@ -264,15 +264,10 @@ void StreamingMarkdown::append_safe(std::string_view safe_bytes) {
         // unchanged.
         const bool pristine_reveal_start =
             reveal_fx_ && !live_ && committed_ == 0;
-        // Eager-commit mode never defers: commits land at block
-        // boundaries during the stream and the overlay renders
-        // unrevealed cp invisibly on the committed tail instead. Keeps
-        // finish() a structural no-op for a seamless freeze handoff.
         const bool defer =
-            !reveal_eager_commit_
-            && (pristine_reveal_start
-                || (reveal_fx_ && live_
-                    && reveal_byte_clip_ != static_cast<std::size_t>(-1)));
+            pristine_reveal_start
+            || (reveal_fx_ && live_
+                && reveal_byte_clip_ != static_cast<std::size_t>(-1));
         if (!defer) {
             commit_range(boundary);
         }

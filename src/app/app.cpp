@@ -493,12 +493,20 @@ auto Runtime::render(const Element& root) -> Status {
         //   • Track a running-max `hold_peak_`. When unpadded content dips
         //     below the peak, pad up to the peak so the rendered height
         //     stays put. The peak rises instantly with content.
-        //   • DECAY: a downward step is only ever a transient. If the
-        //     content has genuinely shrunk (settle, fold) it STAYS low —
-        //     so after a few stable frames at the lower height we let the
-        //     peak fall to it and the pad drops to 0. This is what keeps
-        //     idle / post-settle from carrying dead space: the hold is a
-        //     brief bridge across a 1-frame dip, not a permanent floor.
+        //   • DECAY: a dip is only ever transient IF content is on its
+        //     way back up. A streaming markdown reveal sits BELOW peak for
+        //     many frames while it slowly re-grows (the typewriter reveals
+        //     row by row, the StreamingMarkdown widget's height is
+        //     non-monotone across block boundaries) — that must stay
+        //     bridged the whole time or the composer bounces mid-reveal.
+        //     So decay only advances on frames where content is NOT
+        //     climbing (this frame <= last frame): a genuine settle/fold
+        //     STAYS flat or shrinks, whereas a reveal keeps rising and
+        //     resets the counter. Once the lower height has been stable
+        //     (non-rising) for kHoldDecayFrames, the shrink is real and we
+        //     let the peak fall to it (pad → 0) so idle carries no dead
+        //     space. This is a brief bridge across a transient dip, never
+        //     a permanent floor.
         {
             const int prev_pad = render_ctx_.inline_min_content;
             const int unpadded = ch - prev_pad;          // real content this frame
@@ -510,14 +518,22 @@ auto Runtime::render(const Element& root) -> Status {
                     hold_peak_       = unpadded;
                     hold_decay_      = 0;
                 } else {
-                    // Below the peak — a dip. Bridge it, but start
-                    // decaying: if it persists for kHoldDecayFrames the
-                    // shrink is real and we let the peak fall to it.
-                    if (++hold_decay_ >= kHoldDecayFrames) {
-                        hold_peak_  = unpadded;
-                        hold_decay_ = 0;
+                    // Below the peak — a dip. Bridge it. Only count down
+                    // toward releasing the hold when content has STOPPED
+                    // climbing back (this frame <= last frame); a reveal
+                    // still rising resets the counter so we keep bridging.
+                    if (unpadded <= hold_last_unpadded_) {
+                        if (++hold_decay_ >= kHoldDecayFrames) {
+                            hold_peak_  = unpadded;
+                            hold_decay_ = 0;
+                        } else {
+                            new_pad = hold_peak_ - unpadded;
+                        }
                     } else {
-                        new_pad = hold_peak_ - unpadded;
+                        // Still climbing back toward the peak — keep the
+                        // bridge and reset decay.
+                        hold_decay_ = 0;
+                        new_pad     = hold_peak_ - unpadded;
                     }
                 }
             } else {
@@ -526,6 +542,7 @@ auto Runtime::render(const Element& root) -> Status {
                 hold_peak_  = 0;
                 hold_decay_ = 0;
             }
+            hold_last_unpadded_ = unpadded;
             // If the pad changed, the tree we just laid out is stale by
             // `new_pad - prev_pad` rows. Re-run layout+paint ONCE so the
             // committed frame already carries the corrected pad — no

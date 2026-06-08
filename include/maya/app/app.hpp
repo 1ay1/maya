@@ -693,6 +693,7 @@ private:
     // block in Runtime::render.
     int           hold_peak_          = 0;
     int           hold_decay_         = 0;
+    int           hold_last_unpadded_ = 0;
     static constexpr int kHoldDecayFrames = 3;
     // Whether to EMIT the DEC ?2026 wrapper around every frame. On by
     // default (only MAYA_NO_SYNC disables it) because unknown DEC private

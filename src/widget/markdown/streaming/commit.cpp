@@ -247,9 +247,27 @@ void StreamingMarkdown::append_safe(std::string_view safe_bytes) {
         // shape (with full chrome) appears at end-of-stream when the
         // host expects a layout snap anyway. Off-path for hosts that
         // didn't opt into reveal_fx.
+        //
+        // PRISTINE-FIRST-FRAME extension: the host turns the widget
+        // live AFTER the first set_content (turn.cpp feeds bytes, then
+        // calls set_live(true)), and the reveal clip only initialises
+        // on the first build()/advance_reveal pass. So on the very
+        // first stream frame live_ is still false and clip is -1 — the
+        // strict gate below let that first delta's complete blocks
+        // commit un-paced, dumping the opening block (70+ rows) in one
+        // frame: the stream-start burst. Also defer while the widget is
+        // PRISTINE (nothing committed yet) and reveal_fx is on, so the
+        // opening block stays in the paced tail until the host marks it
+        // live and the cursor takes over. Once live_ is true the gate
+        // is identical to before — commits resume at block boundaries,
+        // so steady-state reveal shape (and its height monotonicity) is
+        // unchanged.
+        const bool pristine_reveal_start =
+            reveal_fx_ && !live_ && committed_ == 0;
         const bool defer =
-            reveal_fx_ && live_
-            && reveal_byte_clip_ != static_cast<std::size_t>(-1);
+            pristine_reveal_start
+            || (reveal_fx_ && live_
+                && reveal_byte_clip_ != static_cast<std::size_t>(-1));
         if (!defer) {
             commit_range(boundary);
         }

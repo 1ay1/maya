@@ -458,6 +458,19 @@ public:
         return 0;
     }
 
+    // Legacy no-op. The inline composer anti-bounce is now FULLY
+    // AUTONOMOUS inside Runtime::render (see the transient-hold block):
+    // maya detects a 1-frame content dip and bridges it itself, with no
+    // host policy bit. An earlier design drove the hold from this setter
+    // via a Cmd, but the Cmd reliably arrived AFTER the dip window had
+    // passed (and after content overflowed the viewport), so it never
+    // engaged. Kept as a no-op so the Cmd::SetHeightHold plumbing and any
+    // host call site remain valid. No effect.
+    void set_height_hold(bool /*on*/) noexcept {}
+    [[nodiscard]] int inline_min_content() const noexcept {
+        return render_ctx_.inline_min_content;
+    }
+
     // Mark prev-frame rows as committed to scrollback.
     //
     // SAFETY: the `rows` argument is ADVISORY. The actual rows
@@ -658,6 +671,29 @@ private:
     Size          size_{};
     RenderContext render_ctx_;
     uint32_t      resize_generation_  = 0;
+    // Per-frame width-backstop debounce. The backstop (Runtime::render)
+    // re-queries TIOCGWINSZ every frame to catch a missed SIGWINCH; but
+    // some terminals (observed: kitty under certain DPI / decoration
+    // states) momentarily report a width 1-2 cols off on alternating
+    // queries, which without hysteresis triggers a resize storm — every
+    // frame flips width, invalidates caches, and repaints (visible chrome
+    // bounce). A genuine resize PERSISTS across frames, a query glitch does
+    // not: only act on a width that's been observed on two consecutive
+    // frames. `width_candidate_` is the last differing reading; it must
+    // repeat to be accepted.
+    int           width_candidate_    = 0;
+    // Transient monotonic-height hold (composer anti-bounce). Maya
+    // absorbs a 1-frame downward step in inline content height so the
+    // composer doesn't bounce. `hold_peak_` is the running-max unpadded
+    // content height while it fits the viewport; `hold_decay_` counts
+    // consecutive frames the content has stayed below the peak. After
+    // kHoldDecayFrames the shrink is treated as real and the peak falls
+    // to it (pad → 0) so idle/post-settle never carries dead space.
+    // Fully autonomous — no host policy bit, no Cmd race. See the hold
+    // block in Runtime::render.
+    int           hold_peak_          = 0;
+    int           hold_decay_         = 0;
+    static constexpr int kHoldDecayFrames = 3;
     // Whether to EMIT the DEC ?2026 wrapper around every frame. On by
     // default (only MAYA_NO_SYNC disables it) because unknown DEC private
     // modes are no-ops where unsupported — emitting costs ~12 bytes/frame
@@ -991,6 +1027,9 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
         },
         [&](const typename Cmd<Msg>::ResetInline&) {
             ctx.rt.reset_inline();
+        },
+        [&](const typename Cmd<Msg>::SetHeightHold& s) {
+            ctx.rt.set_height_hold(s.on);
         },
     }, cmd.inner);
 }

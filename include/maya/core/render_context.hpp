@@ -31,6 +31,19 @@ struct RenderContext {
     int      height      = 24;   // available height in rows
     uint32_t generation  = 0;    // incremented on every resize
     bool     auto_height = false; // true in inline mode (root height unconstrained)
+    // Inline monotonic-height pad (composer anti-bounce). The inline
+    // composer rides content_height; a transient 1-row dip in the live
+    // transcript (indicator→first-content handoff, welcome→conversation
+    // subtree swap, typewriter crossing a block boundary, a tool card
+    // collapsing) would bounce the composer up then back down. maya sets
+    // this AUTONOMOUSLY in Runtime::render: it tracks the running-max
+    // content height while it fits the viewport and pads up to it across
+    // a dip, then DECAYS the peak once the lower height persists (the
+    // shrink is real) so idle / post-settle carries no dead space. The
+    // pad is consumed by a lazy component in AppLayout::build (read at
+    // paint time). 0 = no pad. NOT host-driven — set_height_hold is a
+    // no-op kept only for Cmd plumbing compatibility.
+    int      inline_min_content = 0;
 };
 
 // ============================================================================
@@ -51,6 +64,12 @@ inline thread_local const RenderContext* render_ctx_ = nullptr;
 /// Returns 24 if called outside a render pass (safe default).
 [[nodiscard]] inline int available_height() noexcept {
     return detail::render_ctx_ ? detail::render_ctx_->height : 24;
+}
+
+/// Host-driven inline monotonic-height floor (see RenderContext::
+/// inline_min_content). Returns 0 outside a render pass / when unset.
+[[nodiscard]] inline int available_inline_min_content() noexcept {
+    return detail::render_ctx_ ? detail::render_ctx_->inline_min_content : 0;
 }
 
 /// Query the current render generation (incremented on resize).

@@ -101,7 +101,31 @@ public:
                 Thread{cfg_.thread}.build(),
                 ChangesStrip{cfg_.changes_strip}.build(),
                 Composer{cfg_.composer}.build(),
-                StatusBar{cfg_.status_bar}.build()
+                StatusBar{cfg_.status_bar}.build(),
+                // Composer anti-bounce pad. The composer rides the
+                // tree's content_height; a transient 1-row dip in the
+                // content above (welcome→conversation subtree swap, the
+                // thinking-indicator handoff, a tool card collapsing)
+                // would otherwise bounce the whole chrome up then back
+                // down. maya autonomously sets inline_min_content to the
+                // bridge height (Runtime::render) and decays it once the
+                // shrink proves real, so this carries NO dead space at
+                // idle. Emitted via a LAZY component so the in-render
+                // re-layout picks up the freshly-computed pad. Dim space
+                // interns a non-default style so the canvas counts the
+                // row (plain blank() is invisible to content_height).
+                // LAST child so the pad lands at the very bottom and
+                // directly raises content_height — anywhere higher gets
+                // absorbed by the Thread's internal grow/spacer.
+                component([](int /*w*/, int /*h*/) -> Element {
+                    const int pad = available_inline_min_content();
+                    if (pad <= 0) return blank().build();
+                    std::vector<Element> prows;
+                    prows.reserve(pad);
+                    for (int p = 0; p < pad; ++p)
+                        prows.push_back((text(" ") | Dim).build());
+                    return v(prows).build();
+                })
             )).build();
 
         Overlay::Config oc;

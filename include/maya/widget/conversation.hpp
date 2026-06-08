@@ -122,7 +122,10 @@ public:
                 rows.push_back(ActivityIndicator{*cfg_.in_flight}.build());
             // Trailing flex spacer absorbs the leftover vertical space
             // so the last Turn doesn't stretch its rail downward into
-            // the gap above the composer.
+            // the gap above the composer. (The composer anti-bounce pad
+            // lives in AppLayout::build as the vstack's LAST child — a
+            // pad here would be absorbed by this spacer's grow and never
+            // reach content_height.)
             rows.push_back(spacer().build());
             return (v(rows) | padding(0, 1) | grow(1.0f)).build();
         }

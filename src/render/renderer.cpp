@@ -1360,6 +1360,13 @@ void render_tree(
 {
     // Set the render context if not already set by the parent overload or App.
     RenderContext ctx{canvas.width(), canvas.height(), render_generation(), auto_height};
+    // Inherit host-set fields that the dimension-only ctor doesn't carry.
+    // inline_min_content is set on the App's persistent render_ctx_ AFTER
+    // it computes the composer anti-bounce pad, then App re-invokes
+    // render_tree on the SAME tree; without this inheritance the fresh
+    // ctx here would zero it and the lazy pad component would read 0.
+    if (detail::render_ctx_)
+        ctx.inline_min_content = detail::render_ctx_->inline_min_content;
     RenderContextGuard guard(ctx);
 
     // Cross-frame ComponentElement render cache management.

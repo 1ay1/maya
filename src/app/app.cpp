@@ -339,7 +339,18 @@ auto Runtime::render(const Element& root) -> Status {
         const auto live = platform::query_terminal_size(output_handle_);
         const int live_w = live.width.raw();
         if (live_w > 0 && live_w != prev_known_w) {
-            handle_resize();
+            // Hysteresis: a genuine resize persists; a transient TIOCGWINSZ
+            // glitch (kitty's alternating 1-2 col flap) does not. Require the
+            // same off-width on two consecutive frames before acting, so a
+            // single-frame flap never triggers a resize/repaint storm.
+            if (live_w == width_candidate_) {
+                handle_resize();
+                width_candidate_ = 0;
+            } else {
+                width_candidate_ = live_w;   // first sighting — wait for confirm
+            }
+        } else {
+            width_candidate_ = 0;            // width matches; clear any candidate
         }
     }
     const int w = size_.width.raw();
@@ -461,6 +472,78 @@ auto Runtime::render(const Element& root) -> Status {
         if (ch <= 0) {
             // Empty frame — leave coherence as-is; the wire is unchanged.
             return ok();
+        }
+
+        // ── Transient monotonic-height hold (composer anti-bounce) ──
+        // The inline composer rides content_height, so a 1-row dip in the
+        // live transcript bounces it up then back down. The dips are
+        // artefacts of the live tree mutating (activity indicator handing
+        // off to the first revealed char — a different subtree; the
+        // typewriter crossing a block boundary; a tool card collapsing).
+        // None are a height change the user should perceive.
+        //
+        // maya absorbs them AUTONOMOUSLY — no host policy bit, so there is
+        // no Cmd-delivery race against the render that shows the dip
+        // (an earlier host-driven design lost that race: the bit arrived
+        // long after the dip window had passed). The rule is purely local
+        // and conservative:
+        //   • Only while content FITS the viewport (unpadded <= term_h):
+        //     once it overflows, the composer is pinned at the viewport
+        //     bottom and a dip can't move it, so the hold disengages.
+        //   • Track a running-max `hold_peak_`. When unpadded content dips
+        //     below the peak, pad up to the peak so the rendered height
+        //     stays put. The peak rises instantly with content.
+        //   • DECAY: a downward step is only ever a transient. If the
+        //     content has genuinely shrunk (settle, fold) it STAYS low —
+        //     so after a few stable frames at the lower height we let the
+        //     peak fall to it and the pad drops to 0. This is what keeps
+        //     idle / post-settle from carrying dead space: the hold is a
+        //     brief bridge across a 1-frame dip, not a permanent floor.
+        {
+            const int prev_pad = render_ctx_.inline_min_content;
+            const int unpadded = ch - prev_pad;          // real content this frame
+            int new_pad = 0;
+            if (unpadded <= size_.height.raw()) {
+                if (unpadded >= hold_peak_) {
+                    // Content caught up to / passed the peak: track it,
+                    // reset the decay counter, no pad needed.
+                    hold_peak_       = unpadded;
+                    hold_decay_      = 0;
+                } else {
+                    // Below the peak — a dip. Bridge it, but start
+                    // decaying: if it persists for kHoldDecayFrames the
+                    // shrink is real and we let the peak fall to it.
+                    if (++hold_decay_ >= kHoldDecayFrames) {
+                        hold_peak_  = unpadded;
+                        hold_decay_ = 0;
+                    } else {
+                        new_pad = hold_peak_ - unpadded;
+                    }
+                }
+            } else {
+                // Overflowed the viewport — disengage and reset so the
+                // next time content fits we start a fresh peak.
+                hold_peak_  = 0;
+                hold_decay_ = 0;
+            }
+            // If the pad changed, the tree we just laid out is stale by
+            // `new_pad - prev_pad` rows. Re-run layout+paint ONCE so the
+            // committed frame already carries the corrected pad — no
+            // one-frame flash of the unpadded height ever reaches the
+            // wire. The pad rows are emitted by a LAZY component in
+            // AppLayout::build (reads inline_min_content at paint time, as
+            // the vstack's last child), so this re-render picks up the new
+            // value. Cheap: live tail ~1 viewport, frozen prefix
+            // cache-blitted; fires only on a dip/decay frame, never in
+            // steady streaming.
+            if (new_pad != prev_pad) {
+                render_ctx_.inline_min_content = new_pad;
+                canvas_.reset_clips();
+                canvas_.clear();
+                render_tree(root, canvas_, pool_, theme_, layout_nodes_,
+                            /*auto_height=*/true);
+                ch = content_height(canvas_);
+            }
         }
 
         // Typed terminal-rows witness. Re-queried via
@@ -656,10 +739,12 @@ auto Runtime::render(const Element& root) -> Status {
             // the verify-poison Synced→Stale transition specifically.
             std::fprintf(prof_out,
                 "maya-frame: rt=%.2f cf=%.2f total=%.2f nodes=%zu rows=%d w=%d "
-                "coh=%zu->%zu%s\n",
+                "term_h=%d coh=%zu->%zu peak=%d pad=%d decay=%d%s%s\n",
                 rt_ms, cf_ms, since(t_frame_start),
-                layout_nodes_.size(), ch, w,
+                layout_nodes_.size(), ch, w, term_h.value(),
                 coh_before, in_coherence_.index(),
+                hold_peak_, render_ctx_.inline_min_content, hold_decay_,
+                coh_before != 2 ? " FLICKER" : "",
                 verify_demoted ? " VERIFY-DEMOTE" : "");
             std::fflush(prof_out);
         }

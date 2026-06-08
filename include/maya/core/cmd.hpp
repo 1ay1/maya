@@ -201,10 +201,17 @@ public:
     /// SIGWINCH handler already does its own hard reset.
     struct ResetInline {};
 
+    /// Legacy toggle for the inline composer anti-bounce. NO-OP: the
+    /// anti-bounce is now fully autonomous inside Runtime::render (maya
+    /// detects a transient content-height dip and bridges it itself).
+    /// Kept so existing host call sites and the Cmd variant stay valid;
+    /// `Runtime::set_height_hold` ignores the bit. See that method.
+    struct SetHeightHold { bool on = false; };
+
     using Variant = std::variant<None, Quit, Batch, After, SetTitle,
                                  WriteClipboard, Task, IsolatedTask,
                                  CommitScrollback, CommitScrollbackOverflow,
-                                 ForceRedraw, ResetInline>;
+                                 ForceRedraw, ResetInline, SetHeightHold>;
     Variant inner;
 
     // -- Smart constructors ---------------------------------------------------
@@ -261,6 +268,11 @@ public:
     /// wholesale model swaps only.
     [[nodiscard]] static auto reset_inline() -> Cmd {
         return {ResetInline{}};
+    }
+
+    /// Toggle the inline monotonic-height hold. See `SetHeightHold`.
+    [[nodiscard]] static auto set_height_hold(bool on) -> Cmd {
+        return {SetHeightHold{on}};
     }
 
     /// Combine multiple Cmds. Flattens nested batches and strips Nones.
@@ -344,6 +356,9 @@ public:
             },
             [](const ResetInline&) -> Cmd<B> {
                 return Cmd<B>::reset_inline();
+            },
+            [](const SetHeightHold& s) -> Cmd<B> {
+                return Cmd<B>::set_height_hold(s.on);
             },
         }, inner);
     }

@@ -686,15 +686,23 @@ private:
     // absorbs a 1-frame downward step in inline content height so the
     // composer doesn't bounce. `hold_peak_` is the running-max unpadded
     // content height while it fits the viewport; `hold_decay_` counts
-    // consecutive frames the content has stayed below the peak. After
-    // kHoldDecayFrames the shrink is treated as real and the peak falls
-    // to it (pad → 0) so idle/post-settle never carries dead space.
-    // Fully autonomous — no host policy bit, no Cmd race. See the hold
-    // block in Runtime::render.
+    // consecutive NON-RISING frames the content has stayed below the
+    // peak. After kHoldDecayFrames the shrink is treated as real and the
+    // peak falls to it (pad → 0) so idle/post-settle never carries dead
+    // space. Fully autonomous — no host policy bit, no Cmd race. See the
+    // hold block in Runtime::render.
+    //
+    // kHoldDecayFrames must exceed the indicator→content handoff window:
+    // the 1-row activity indicator hands off to a transient intermediate
+    // height (first markdown slice not yet fully measured) that can sit
+    // flat for a few frames BEFORE the real content lands and overflows.
+    // Measured that gap at ~5 frames; 6 bridges it with margin. The only
+    // cost of a larger value is a genuine idle shrink holding its blank
+    // pad rows a few extra frames before collapsing — imperceptible.
     int           hold_peak_          = 0;
     int           hold_decay_         = 0;
     int           hold_last_unpadded_ = 0;
-    static constexpr int kHoldDecayFrames = 3;
+    static constexpr int kHoldDecayFrames = 6;
     // Whether to EMIT the DEC ?2026 wrapper around every frame. On by
     // default (only MAYA_NO_SYNC disables it) because unknown DEC private
     // modes are no-ops where unsupported — emitting costs ~12 bytes/frame

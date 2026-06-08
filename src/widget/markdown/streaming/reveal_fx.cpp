@@ -144,8 +144,8 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         if (backlog <= 0.0) {
             reveal_cp_ = static_cast<double>(total_cp);
         } else {
-            constexpr double kFloorCps  = 200.0;
-            constexpr double kDrainSecs = 0.5;
+            constexpr double kFloorCps  = 160.0;
+            constexpr double kDrainSecs = 0.8;
             double cps = backlog / kDrainSecs;
             if (cps < kFloorCps) cps = kFloorCps;
             if (finalize_deadline_ms_ != 0) {
@@ -623,23 +623,35 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                             : Color::rgb(255, 160,  60))
                         .with_bold();
                 } else if (i_from_tail < unrevealed_cp) {
-                    // Ghost band: cp the cursor hasn't reached yet.
-                    // Lerp from near-bg dark gray (just-arrived edge)
-                    // toward the gradient/base style (cursor-front).
-                    // Fraction of the way from cursor (0.0) to fresh
-                    // edge (1.0) — fresher = darker = less revealed.
-                    const double t = unrevealed_cp <= 1
+                    // Ghost band: cp the typewriter cursor hasn't reached
+                    // yet. The strongest "text appearing" cue is to render
+                    // these as NEAR-BG so the bytes look blank/invisible,
+                    // then fade rapidly to a visible color in the last
+                    // ~10 cp before the cursor. The user reads this as
+                    // text being typed character-by-character.
+                    //
+                    // t = 0.0 at the cursor-front (about to be revealed),
+                    // t = 1.0 at the freshest edge (just arrived, deepest
+                    // invisible). The lerp range is biased so most of the
+                    // band reads as bg, with only the last few cp
+                    // brightening toward the gradient handoff.
+                    const double raw = unrevealed_cp <= 1
                         ? 0.0
                         : static_cast<double>(i_from_tail) /
                           static_cast<double>(unrevealed_cp - 1);
-                    // r,g,b lerp 90,90,110 (ghost) → 200,210,230 (almost there)
+                    // Squash so the bright "about-to-appear" zone is
+                    // wider — t^2 keeps the bulk dark.
+                    const double t = raw * raw;
                     const auto lerp8 = [](double a, double b, double tt) {
-                        return static_cast<std::uint8_t>(a + (b - a) * tt);
+                        return static_cast<std::uint8_t>(
+                            a + (b - a) * tt);
                     };
+                    // Fresh edge (t=1): 35,35,45 — nearly the dark-mode bg.
+                    // Cursor front (t=0): 200,200,220 — bright handoff to gradient.
                     s = Style{}.with_fg(Color::rgb(
-                        lerp8( 90, 200, 1.0 - t),
-                        lerp8( 90, 210, 1.0 - t),
-                        lerp8(110, 230, 1.0 - t)))
+                        lerp8(200, 35, t),
+                        lerp8(200, 35, t),
+                        lerp8(220, 45, t)))
                         .with_dim();
                 } else if (auto ts = trail_style(age)) {
                     s = *ts;

@@ -272,6 +272,17 @@ private:
     // set_reveal_fx(true).
     bool reveal_fx_ = false;
 
+    // Eager-commit reveal mode. When set AND reveal_fx_ is on, the
+    // append_safe defer is bypassed (commits land at block boundaries
+    // during the stream, exactly as with reveal_fx off) and the visible
+    // byte-clip is pinned to source_.size() (no bytes withheld). The
+    // reveal overlay then drives the typewriter purely by rendering
+    // unrevealed codepoints INVISIBLE on the committed tail (height-
+    // stable: cells reserve layout space, draw no ink). This keeps the
+    // scramble/gradient/caret animation while making finish() a
+    // structural no-op so the freeze handoff doesn't re-emit the turn.
+    bool reveal_eager_commit_ = false;
+
     // Reveal cursor pacing. The typewriter advances at
     //   cps = max(floor_cps, backlog / drain_secs)
     // so a quiet stream still types at floor_cps, while a large
@@ -855,6 +866,16 @@ public:
     /// per-frame color/glyph churn (calm, flicker-free on every
     /// terminal).
     void set_reveal_fx(bool on) noexcept { reveal_fx_ = on; }
+
+    /// Eager-commit reveal mode (see `reveal_eager_commit_`). When on
+    /// AND reveal_fx is on, commits are NOT deferred and no bytes are
+    /// clipped — the typewriter is driven by rendering unrevealed
+    /// codepoints invisibly on the committed tail. Makes finish() a
+    /// structural no-op so a host that freezes the settled tree gets a
+    /// frame-identical handoff (no re-emit of the whole message).
+    void set_reveal_eager_commit(bool on) noexcept {
+        reveal_eager_commit_ = on;
+    }
 
     /// Override the reveal cursor pacing. `floor_cps` is the
     /// minimum codepoints-per-second the typewriter walks at (also

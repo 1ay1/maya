@@ -201,7 +201,7 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
     // source_.size() (no-op). Commit gating in append_safe defers ALL
     // commits while live; finish() flushes them in one snap at
     // end-of-stream when the host expects a layout settle anyway.
-    if (reveal_fx_ && live_) {
+    if (reveal_fx_ && live_ && !reveal_eager_commit_) {
         const std::size_t cursor_cp =
             static_cast<std::size_t>(reveal_cp_);
         const std::size_t new_clip = byte_offset_for_cp(cursor_cp);
@@ -210,7 +210,15 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
             build_dirty_ = true;  // tail visible window moved — re-render
         }
     } else {
-        reveal_byte_clip_ = source_.size();
+        // Eager-commit (or not live / fx off): no byte withholding. The
+        // full committed tail is in the build; the overlay paints the
+        // unrevealed run invisibly to drive the typewriter. We still
+        // re-render each frame the cursor moves so the invisible band
+        // shrinks left-to-right.
+        if (reveal_byte_clip_ != source_.size()) {
+            reveal_byte_clip_ = source_.size();
+            if (reveal_eager_commit_) build_dirty_ = true;
+        }
     }
 
     return false;

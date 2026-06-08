@@ -1863,6 +1863,83 @@ static void st_reveal_fx_height_monotonic_streaming() {
             " exceeds the widget's transient budget (host owns the floor).");
 }
 
+// Eager-commit reveal mode: the whole point is that commits land at
+// block boundaries DURING the stream (not deferred to finish()), so the
+// host's freeze handoff captures a tree identical to the last live frame
+// — no post-settle re-emit of the turn. Pins two invariants:
+//   1. After streaming a multi-block doc, block_count() > 0 BEFORE
+//      finish() — i.e. commits were NOT deferred.
+//   2. finish() does NOT change the build height — the cursor has caught
+//      up, the body is already committed, finish() is a structural no-op.
+//   3. The overlay still animates (styled runs on the tail) while the
+//      cursor walks — the animation is preserved.
+static void st_reveal_fx_eager_commit_no_defer() {
+    StreamingMarkdown md;
+    md.set_reveal_fx(true);
+    md.set_reveal_eager_commit(true);
+    md.set_live(true);
+
+    md.append(
+        "First paragraph that is complete and should commit as a block.\n\n"
+        "Second paragraph, also complete and committed during the stream.\n\n"
+        "# A heading that commits too\n\n"
+        "Third paragraph still flowing in the live tail with enough prose"
+        " that the reveal cursor needs a few frames to walk across it all.");
+
+    // Drive the reveal to completion (cursor walks to the live edge).
+    bool saw_overlay_runs = false;
+    for (int i = 0; i < 400; ++i) {
+        const Element& el = md.build();
+        // Probe the last text leaf for overlay styled runs (proof the
+        // animation is still landing on the committed tail).
+        const Element* cur = &el;
+        for (int step = 0; step < 32; ++step) {
+            if (auto* t = std::get_if<TextElement>(&cur->inner)) {
+                if (t->runs.size() >= 3) saw_overlay_runs = true;
+                break;
+            }
+            if (auto* b = std::get_if<BoxElement>(&cur->inner)) {
+                if (b->children.empty()) break;
+                cur = &b->children.back();
+                continue;
+            }
+            break;  // ComponentElement / leaf — stop probing this frame
+        }
+        if (!md.reveal_in_progress()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+    }
+
+    // Invariant 1: commits landed DURING the stream — not deferred.
+    if (md.block_count() == 0) {
+        throw std::runtime_error(
+            "eager-commit: block_count()==0 before finish() — commits were"
+            " DEFERRED. The whole point of eager-commit mode is that blocks"
+            " commit during the stream so finish() is a structural no-op.");
+    }
+
+    // Invariant 2: finish() is a height no-op (the body is already
+    // committed; the cursor has caught up). This is what makes the
+    // host's freeze handoff seamless — the frozen tree equals the last
+    // live frame, so the turn does not re-emit from the top at settle.
+    int live_h = stream_height(md);
+    md.finish();
+    int done_h = stream_height(md);
+    if (live_h != done_h) {
+        throw std::runtime_error(
+            "eager-commit: finish() changed build height " +
+            std::to_string(live_h) + " -> " + std::to_string(done_h) +
+            " — settle is NOT a no-op, the host will re-emit the turn.");
+    }
+
+    // Invariant 3: the overlay animated while the cursor walked.
+    if (!saw_overlay_runs) {
+        throw std::runtime_error(
+            "eager-commit: never observed overlay styled runs on the tail —"
+            " the reveal animation was lost. Eager-commit must KEEP the"
+            " typewriter while removing the defer.");
+    }
+}
+
 // ───────────────────────────── main ─────────────────────────────────────────
 
 int main() {
@@ -2235,6 +2312,7 @@ int main() {
     run("reveal-fx commit snap (no chrome flicker)", 3000ms, st_reveal_fx_commit_snap_no_chrome_flicker);
     run("reveal-fx stable height during animation", 3000ms, st_reveal_fx_stable_height_during_animation);
     run("reveal-fx overlay styled runs visible", 3000ms, st_reveal_fx_overlay_styled_runs_visible);
+    run("reveal-fx eager-commit (no defer)", 6000ms, st_reveal_fx_eager_commit_no_defer);
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",
                  g_passed - g_slow, g_slow, g_failed, g_skipped);

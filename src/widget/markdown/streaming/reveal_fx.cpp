@@ -144,7 +144,7 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         if (backlog <= 0.0) {
             reveal_cp_ = static_cast<double>(total_cp);
         } else {
-            constexpr double kFloorCps  = 160.0;
+            constexpr double kFloorCps  = 120.0;
             constexpr double kDrainSecs = 0.8;
             double cps = backlog / kDrainSecs;
             if (cps < kFloorCps) cps = kFloorCps;
@@ -623,36 +623,51 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                             : Color::rgb(255, 160,  60))
                         .with_bold();
                 } else if (i_from_tail < unrevealed_cp) {
-                    // Ghost band: cp the typewriter cursor hasn't reached
-                    // yet. The strongest "text appearing" cue is to render
-                    // these as NEAR-BG so the bytes look blank/invisible,
-                    // then fade rapidly to a visible color in the last
-                    // ~10 cp before the cursor. The user reads this as
-                    // text being typed character-by-character.
+                    // Unrevealed cp: render INVISIBLE (fg matches the
+                    // terminal background) so the cell occupies space
+                    // for the wrap engine but draws no ink. This is the
+                    // real typewriter — layout sees the full text, the
+                    // user sees text appear left-to-right as the cursor
+                    // walks. Cells stay occupied so height is stable.
                     //
-                    // t = 0.0 at the cursor-front (about to be revealed),
-                    // t = 1.0 at the freshest edge (just arrived, deepest
-                    // invisible). The lerp range is biased so most of the
-                    // band reads as bg, with only the last few cp
-                    // brightening toward the gradient handoff.
-                    const double raw = unrevealed_cp <= 1
-                        ? 0.0
-                        : static_cast<double>(i_from_tail) /
-                          static_cast<double>(unrevealed_cp - 1);
-                    // Squash so the bright "about-to-appear" zone is
-                    // wider — t^2 keeps the bulk dark.
-                    const double t = raw * raw;
-                    const auto lerp8 = [](double a, double b, double tt) {
-                        return static_cast<std::uint8_t>(
-                            a + (b - a) * tt);
-                    };
-                    // Fresh edge (t=1): 35,35,45 — nearly the dark-mode bg.
-                    // Cursor front (t=0): 200,200,220 — bright handoff to gradient.
-                    s = Style{}.with_fg(Color::rgb(
-                        lerp8(200, 35, t),
-                        lerp8(200, 35, t),
-                        lerp8(220, 45, t)))
-                        .with_dim();
+                    // Color::default_color() targets the terminal's own
+                    // bg slot, which renders nothing visible regardless
+                    // of light/dark theme. with_dim() further suppresses
+                    // any residual contrast on terminals that ignore
+                    // default-fg color.
+                    s = Style{}.with_fg(Color::default_color()).with_dim();
+
+                    // The very next codepoint about to be revealed (the
+                    // "cursor head") gets a bright pulsing highlight so
+                    // the user's eye tracks the typewriter sweeping
+                    // right. i_from_tail == unrevealed_cp - 1 is the
+                    // freshest unrevealed cp — leftmost in the unrevealed
+                    // band, immediately right of the last revealed cp.
+                    if (i_from_tail == unrevealed_cp - 1) {
+                        // Triangle-wave pulse on a fast period for a
+                        // crisp "now typing" cue.
+                        constexpr std::int64_t kSweepMs = 280;
+                        const double phase = static_cast<double>(
+                            ms_total % kSweepMs) /
+                            static_cast<double>(kSweepMs);
+                        const double tri = (phase < 0.5)
+                            ? (phase * 2.0)
+                            : (2.0 - phase * 2.0);
+                        const auto lerp8c = [](double a, double b, double tt) {
+                            return static_cast<std::uint8_t>(
+                                a + (b - a) * tt);
+                        };
+                        s = Style{}
+                            .with_fg(Color::rgb(
+                                lerp8c(255, 180, tri),
+                                lerp8c(220, 255, tri),
+                                lerp8c(140, 220, tri)))
+                            .with_bg(Color::rgb(
+                                lerp8c(60, 90, tri),
+                                lerp8c(50, 80, tri),
+                                lerp8c(20, 40, tri)))
+                            .with_bold();
+                    }
                 } else if (auto ts = trail_style(age)) {
                     s = *ts;
                 } else {
@@ -688,23 +703,17 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         }
         trail_done:;
 
-        // ── Inline caret ──
+        // ── Inline end-caret ──
         //
-        // PULSE the last codepoint of the tail in place — recolor it
-        // with a cycling magenta→cyan fg + a faint block background so
-        // the streaming edge reads as a live caret — instead of
-        // APPENDING a block glyph after it. Appending added one display
-        // column to the last wrapped row; whenever that row was already
-        // at the wrap width the extra column spilled to a NEW wrapped
-        // row. That row existed only while live_ was true, so the
-        // instant the turn settled (live_=false → cached_build_, no
-        // caret) the row vanished and everything below — the composer
-        // and status bar — jumped up by one row. Intermittent because
-        // it only triggered when the final line happened to land at the
-        // column boundary (the "sometimes the chrome shifts up at turn
-        // end" symptom). Recoloring in place is byte-width-identical to
-        // cached_build_'s last row, so the live↔settled height is always
-        // equal and the seam can never shift.
+        // When the typewriter cursor is still walking (unrevealed_cp > 0)
+        // we already painted a bright sweep-cursor at the reveal-front
+        // above — a second pulse at the tail end would compete with it
+        // and confuse the eye. Skip the end-caret in that case. When the
+        // cursor HAS caught up, paint the end-caret as the "awaiting next
+        // byte" cue.
+        const bool cursor_walking =
+            cursor_advance_total_cp_ > static_cast<std::size_t>(reveal_cp_);
+        if (!cursor_walking) {
         constexpr std::int64_t kCaretPeriodMs = 650;
         const double caret_phase =
             static_cast<double>(ms_total % kCaretPeriodMs)
@@ -766,6 +775,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 tail->cached_width = -1;
             }
         }
+        } // !cursor_walking
 
         // Mirror cached_build_'s cross-axis sizing. Stretch is
         // load-bearing here: parent flex layouts use this widget's

@@ -94,22 +94,6 @@ void StreamingMarkdown::render_eager_slice(std::string_view slice,
 }
 
 Element StreamingMarkdown::render_tail(std::string_view tail) const {
-    // While reveal_fx_ && live_, skip the canonical-parse path entirely.
-    // The canonical render produces full block chrome (H2 underline,
-    // code-fence border, table rules, bullet markers) for any terminated
-    // line in the tail — it's what gives "monotonicity at the commit
-    // seam" by matching commit_range's output. But for the typewriter
-    // animation the chrome appearing the moment a line terminates IS
-    // the burst the user is complaining about. The inline-only fallback
-    // (render_tail_inner) keeps line bytes flowing as plain styled text
-    // (heading bold+color but no underline, list markers as `-` not
-    // `▸`, code as monospace but no border). Once finish() flushes the
-    // commit, the full chrome appears in the prefix as a layout settle
-    // the host expects at end-of-stream.
-    if (reveal_fx_ && live_) {
-        return render_tail_inner(tail);
-    }
-
     // ── Canonical-render memo (the anti-"stuck" guard) ─────────────────
     // The body below full-parses the tail every call; build() calls this
     // every animation frame. Memoize on (source_version_, len, hash,

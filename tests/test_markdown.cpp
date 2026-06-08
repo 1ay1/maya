@@ -1600,19 +1600,18 @@ static void st_reveal_fx_height_monotonic() {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 
-    // Strict non-decreasing height across the entire reveal.
-    // Allow a small budget for transient render_tail_inner shape
-    // changes (eager-list vs inline-fallback flips as content grows),
-    // mirroring the byte-append monotonicity test's baseline.
-    constexpr int kWorstDropBudget = 3;
-    constexpr int kShrinkEventsBudget = 4;
-    if (worst_drop > kWorstDropBudget || shrink_events > kShrinkEventsBudget) {
+    // Strict non-decreasing height across the entire reveal. render_tail
+    // is canonical, so every revealed extent renders in its committed
+    // shape — no inline-fallback flips that could shrink the reported
+    // height. (Post-feed the whole doc is present, so block boundaries
+    // never re-flow; the per-extent height is monotone.)
+    if (worst_drop > 0) {
         throw std::runtime_error(
             "REVEAL-FX height shrank " + std::to_string(worst_drop)
             + " rows in one frame (" + std::to_string(shrink_events)
             + " shrink events) over " + std::to_string(frames)
-            + " frames — exceeds budget (" + std::to_string(kWorstDropBudget)
-            + " rows / " + std::to_string(kShrinkEventsBudget) + " events).");
+            + " frames — canonical render_tail must keep each extent"
+            " height-stable.");
     }
 
     // After finish() the canonical commit fires; height may grow by the
@@ -1846,21 +1845,22 @@ static void st_reveal_fx_height_monotonic_streaming() {
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 
-    // True-typewriter semantics: height is non-decreasing across the
-    // reveal animation, with a small budget for transient eager-path
-    // shape changes (eager-list vs inline-fallback flips as content
-    // grows). The streaming variant feeds in chunks so we see more
-    // transitions — budget bumped to 12 events.
-    constexpr int kWorstDropBudget = 3;
-    constexpr int kShrinkEventsBudget = 12;
-
+    // Widget contract: render_tail is canonical, so each revealed extent
+    // is height-stable and the height grows as the cursor walks. A block
+    // boundary (heading underline, fence border) can produce a transient
+    // 1-row dip on the single frame the chrome row materialises — that's
+    // a legitimate per-extent shape, not a flicker bug. The strict
+    // monotonic floor that hides these from the composer is the HOST's
+    // job (agentty pins a running-max content height above the composer);
+    // maya only guarantees the dips stay small and rare.
+    constexpr int kWorstDropBudget   = 2;   // max rows lost in one frame
+    constexpr int kShrinkEventsBudget = 8;   // one per risky block boundary in kTransitionDoc
     if (worst_drop > kWorstDropBudget || shrink_events > kShrinkEventsBudget)
         throw std::runtime_error(
             "REVEAL-FX (streaming) height shrank " + std::to_string(worst_drop)
             + " rows in one frame over " + std::to_string(frames)
-            + " frames (" + std::to_string(shrink_events) + " events)"
-            " exceeds budget (" + std::to_string(kWorstDropBudget)
-            + " rows / " + std::to_string(kShrinkEventsBudget) + " events).");
+            + " frames (" + std::to_string(shrink_events) + " events) —"
+            " exceeds the widget's transient budget (host owns the floor).");
 }
 
 // ───────────────────────────── main ─────────────────────────────────────────

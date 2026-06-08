@@ -1560,6 +1560,146 @@ static void st_eager_block_no_snap() {
 // promoted into st_eager_block_no_snap above; setext rides the
 // transition sweep in st_height_monotonic_transitions.)
 
+// Reveal-fx height monotonicity. The typewriter advances the clip
+// byte-by-byte, so EVERY intermediate clip state is rendered — a much
+// stricter test than `append+build` (which only renders the states between
+// chunks). Feeds kTransitionDoc, then polls build() with steady_clock
+// sleeps so reveal_cp_ catches up, watching for height shrinks.
+static void st_reveal_fx_height_monotonic() {
+    StreamingMarkdown md;
+    md.set_live(true);
+    md.set_reveal_fx(true);
+    md.append(std::string{kTransitionDoc});
+
+    int prev_h = 0;
+    int shrink_events = 0;
+    int total_shrink_rows = 0;
+    int worst_drop = 0;
+    int frames = 0;
+
+    // Poll until the cursor catches up. Hard cap of 4000 frames @ 2ms
+    // sleep ≈ 8s ceiling — well under the suite's per-test budget. Exit
+    // earlier the moment reveal_in_progress() returns false.
+    for (int frame = 0; frame < 4000; ++frame) {
+        int h = stream_height(md);
+        ++frames;
+        if (h < prev_h) {
+            int drop = prev_h - h;
+            ++shrink_events;
+            total_shrink_rows += drop;
+            if (drop > worst_drop) worst_drop = drop;
+        }
+        prev_h = h;
+        if (!md.reveal_in_progress()) break;
+        // Match the reveal pacer's drain math (200 cps floor over 500ms
+        // means each ms advances ~0.2 cp). 2ms is the minimum scheduler
+        // resolution on Linux; sleeping less just no-ops.
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+
+    // Same baseline as the byte-append monotonicity test. The reveal-fx
+    // path renders the SAME canonical tail funnel as the byte-append
+    // path — just at a finer granularity — so the shrink budget should
+    // be the SAME (3 inline-span open events, 1 row each). If it isn't,
+    // the reveal-clip path is producing a tail shape the byte-append
+    // path didn't, and the fix belongs in render_tail's funnel (eager
+    // path / fold-in seam), not in a clamp here.
+    constexpr int kBaselineShrinkEvents = 3;
+    constexpr int kBaselineWorstDrop    = 1;
+
+    if (worst_drop > kBaselineWorstDrop) {
+        throw std::runtime_error(
+            "REVEAL-FX multi-row shrink: " + std::to_string(worst_drop)
+            + " rows over " + std::to_string(frames)
+            + " frames — the typewriter clip path produced a tail height"
+            " smaller than the previous frame's. Visible jump.");
+    }
+    if (shrink_events > kBaselineShrinkEvents) {
+        throw std::runtime_error(
+            "REVEAL-FX shrink REGRESSION: " + std::to_string(shrink_events)
+            + " shrink events (total " + std::to_string(total_shrink_rows)
+            + " rows) over " + std::to_string(frames)
+            + " frames exceeds baseline "
+            + std::to_string(kBaselineShrinkEvents) + ". The reveal-clip path"
+            " regressed: a clip-byte transition is producing a smaller"
+            " element than the previous one.");
+    }
+
+    // Final settle: live tail height must equal committed height.
+    int live_final = stream_height(md);
+    md.finish();
+    int done_final = stream_height(md);
+    if (live_final != done_final)
+        throw std::runtime_error(
+            "reveal-fx settle snap: live=" + std::to_string(live_final)
+            + " committed=" + std::to_string(done_final));
+}
+
+// Reveal-fx must not snap when bytes arrive DURING the reveal. Feeds the
+// doc in small chunks with a sleep between each, calling build() in a
+// tight inner loop so the reveal cursor advances through the chunk's
+// bytes before the next chunk lands. This is the actual on-the-wire
+// pattern (model streams a token, cursor reveals it, next token arrives).
+static void st_reveal_fx_height_monotonic_streaming() {
+    StreamingMarkdown md;
+    md.set_live(true);
+    md.set_reveal_fx(true);
+
+    std::string_view doc{kTransitionDoc};
+    int prev_h = 0;
+    int shrink_events = 0;
+    int worst_drop = 0;
+    int frames = 0;
+
+    // Chunk size = 16 bytes (one realistic SSE token). Inner poll until
+    // either the chunk's bytes have been revealed OR we've burned a
+    // generous budget so a single chunk can't stall the test.
+    constexpr std::size_t kChunk = 16;
+    for (std::size_t i = 0; i < doc.size(); i += kChunk) {
+        std::size_t n = std::min(kChunk, doc.size() - i);
+        md.append(doc.substr(i, n));
+        for (int inner = 0; inner < 200; ++inner) {
+            int h = stream_height(md);
+            ++frames;
+            if (h < prev_h) {
+                int drop = prev_h - h;
+                ++shrink_events;
+                if (drop > worst_drop) worst_drop = drop;
+            }
+            prev_h = h;
+            if (!md.reveal_in_progress()) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+
+    // Drain any remaining cursor lag.
+    for (int frame = 0; frame < 2000 && md.reveal_in_progress(); ++frame) {
+        int h = stream_height(md);
+        ++frames;
+        if (h < prev_h) {
+            int drop = prev_h - h;
+            ++shrink_events;
+            if (drop > worst_drop) worst_drop = drop;
+        }
+        prev_h = h;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+
+    constexpr int kBaselineShrinkEvents = 3;
+    constexpr int kBaselineWorstDrop    = 1;
+
+    if (worst_drop > kBaselineWorstDrop)
+        throw std::runtime_error(
+            "REVEAL-FX (streaming) multi-row shrink: " + std::to_string(worst_drop)
+            + " rows over " + std::to_string(frames) + " frames.");
+    if (shrink_events > kBaselineShrinkEvents)
+        throw std::runtime_error(
+            "REVEAL-FX (streaming) shrink REGRESSION: "
+            + std::to_string(shrink_events) + " events (baseline "
+            + std::to_string(kBaselineShrinkEvents) + ") over "
+            + std::to_string(frames) + " frames.");
+}
+
 // ───────────────────────────── main ─────────────────────────────────────────
 
 int main() {
@@ -1927,6 +2067,8 @@ int main() {
     run("height monotonic (transitions)", 5000ms, st_height_monotonic_transitions);
     run("committed cells stable",         5000ms, st_committed_cells_stable);
     run("eager block no-snap (all kinds)", 3000ms, st_eager_block_no_snap);
+    run("reveal-fx monotonic (post-feed)", 12000ms, st_reveal_fx_height_monotonic);
+    run("reveal-fx monotonic (streaming)", 12000ms, st_reveal_fx_height_monotonic_streaming);
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",
                  g_passed - g_slow, g_slow, g_failed, g_skipped);

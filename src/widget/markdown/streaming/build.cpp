@@ -61,34 +61,18 @@ const Element& StreamingMarkdown::build() const {
     std::string_view tail = (committed_ < source_.size())
         ? std::string_view{source_}.substr(committed_)
         : std::string_view{};
-
-    // Per-row reveal pacing: when reveal_fx is on and live, the
-    // overlay layer maintains revealed_tail_byte_clip_ — the byte
-    // offset within `tail` the typewriter cursor has reached. Clip
-    // here so render_tail only sees the revealed slice, and newly-
-    // arrived `\n`-terminated rows reveal in cadence with the cursor
-    // (one at a time) instead of bursting in en masse when the wire
-    // delivers them. SIZE_MAX = no clip (off or caught up). The
-    // canonical tail memo's key includes tail bytes, so clipping
-    // invalidates correctly when the clip endpoint moves.
-    if (revealed_tail_byte_clip_ != static_cast<std::size_t>(-1)
-        && revealed_tail_byte_clip_ < tail.size())
-    {
-        tail = tail.substr(0, revealed_tail_byte_clip_);
-    }
     // Keep the tail slot PRESENT while streaming with a committed
-    // prefix, even when the tail is momentarily empty. As the reveal
-    // crosses a `\n\n` block boundary, commit_range advances committed_
-    // to the boundary while the next block's first byte hasn't been
-    // revealed yet — so for a frame or two `tail` is empty. If has_tail
+    // prefix, even when the tail is momentarily empty. Between two
+    // appends that both end on `\n\n`, commit_range may consume all of
+    // source_ — for that one frame `tail` is empty. If has_tail
     // tracked emptiness directly, the outer vstack would collapse from
     // [prefix, gap, tail] to [prefix] and DROP the trailing .gap(1) row,
-    // then re-add it the instant the next byte reveals: a 1-row down/up
+    // then re-add it the instant the next byte arrives: a 1-row down/up
     // bounce at EVERY block boundary that ripples the composer/status
     // bar below (the "chrome flickers while md renders" symptom). While
     // live, reserve the tail slot so the inter-block gap stays put; the
     // empty tail renders as a 0-row element, and the gap matches the
-    // steady state the next revealed byte lands in. finish()/settle
+    // steady state the next arriving byte lands in. finish()/settle
     // clears live_, so a genuinely-finished message with no tail does
     // NOT carry a dangling gap.
     const bool has_prefix = !prefix_->blocks.empty();
@@ -102,7 +86,6 @@ const Element& StreamingMarkdown::build() const {
         cached_has_tail_   = false;
         cached_has_prefix_ = false;
         cached_tail_version_     = source_version_;
-        cached_tail_reveal_clip_ = revealed_tail_byte_clip_;
         build_dirty_       = false;
         return render_live_overlay_();
     }
@@ -272,8 +255,7 @@ const Element& StreamingMarkdown::build() const {
                 // skip render_tail when the body round-tripped.
                 bool tail_unchanged;
                 std::uint64_t tail_hash = 0;
-                if (cached_tail_version_ == source_version_
-                    && cached_tail_reveal_clip_ == revealed_tail_byte_clip_)
+                if (cached_tail_version_ == source_version_)
                 {
                     tail_unchanged = true;
                 } else {
@@ -295,7 +277,6 @@ const Element& StreamingMarkdown::build() const {
                     cached_tail_in_fence_ = in_code_fence_;
                 }
                 cached_tail_version_     = source_version_;
-                cached_tail_reveal_clip_ = revealed_tail_byte_clip_;
             }
             cached_tail_size_ = tail.size();
             build_dirty_      = false;
@@ -332,8 +313,7 @@ const Element& StreamingMarkdown::build() const {
             if (has_tail) {
                 bool tail_unchanged;
                 std::uint64_t tail_hash = 0;
-                if (cached_tail_version_ == source_version_
-                    && cached_tail_reveal_clip_ == revealed_tail_byte_clip_)
+                if (cached_tail_version_ == source_version_)
                 {
                     tail_unchanged = true;
                 } else {
@@ -350,7 +330,6 @@ const Element& StreamingMarkdown::build() const {
                     cached_tail_in_fence_ = in_code_fence_;
                 }
                 cached_tail_version_     = source_version_;
-                cached_tail_reveal_clip_ = revealed_tail_byte_clip_;
             }
             cached_prefix_gen_ = prefix_->generation;
             cached_fold_gen_   = fold_generation_;
@@ -444,7 +423,6 @@ const Element& StreamingMarkdown::build() const {
         cached_tail_len_  = 0;
     }
     cached_tail_version_ = source_version_;
-    cached_tail_reveal_clip_ = revealed_tail_byte_clip_;
     build_dirty_          = false;
     return render_live_overlay_();
 }

@@ -1635,6 +1635,107 @@ static void st_reveal_fx_height_monotonic() {
             + " committed=" + std::to_string(done_final));
 }
 
+// Chrome-flicker root cause regression test. When a burst of bytes lands
+// that fires commit_range (e.g. the model emits a complete paragraph in
+// one SSE delta), the reveal cursor used to lag at cp 0 while committed_
+// jumped to N. The `(byte_off > committed_) ? byte_off - committed_ : 0u`
+// arithmetic in advance_reveal_cursor_() then clipped the LIVE TAIL to 0
+// chars until the cursor crawled forward at 200 cps — hundreds of ms of
+// the tail being invisible. Meanwhile the prefix renders at full height,
+// so the host's chrome (composer / status bar) sees the widget's reported
+// height TEAR: prefix lands instantly, tail emerges slowly. Visible as a
+// flicker on every chunk boundary.
+//
+// Fix: snap reveal_cp_ forward to at least committed_cp at the top of
+// advance_reveal_cursor_(). Pins that the chrome stays settled in a
+// burst-then-pause stream.
+static void st_reveal_fx_commit_snap_no_chrome_flicker() {
+    StreamingMarkdown md;
+    md.set_live(true);
+    md.set_reveal_fx(true);
+
+    // First burst: complete paragraph (fires commit_range to byte ~50).
+    // Without the snap, reveal_cp_ stays at 0 and the live tail (starting
+    // at offset 50) is clipped to 0 chars for the next several frames.
+    md.append("This is a complete paragraph that ends with a blank line.\n\n");
+    // Second burst: the start of a new paragraph that lives in the tail.
+    md.append("Live tail bytes that should appear immediately");
+
+    // Sample one frame right after the burst. The cursor must have
+    // already snapped past the committed prefix, so the tail clip is
+    // either off (SIZE_MAX = caught up) or covers the full live tail.
+    int first_h = stream_height(md);
+
+    // Now sleep enough for the typewriter to fully drain the tail at
+    // 200 cps (~46 bytes ≈ 230 ms; budget 400 ms for slop).
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    int after_drain_h = stream_height(md);
+
+    // The committed paragraph PLUS the tail's text must both be visible
+    // on the FIRST frame after the burst. If the cursor lagged, the
+    // first frame would show only the committed prefix (tail clipped to
+    // 0) and the after-drain frame would be taller by the tail rows.
+    // After the fix, both heights agree — the tail bytes render at full
+    // size immediately because build() no longer applies a reveal clip.
+    if (after_drain_h != first_h) {
+        throw std::runtime_error(
+            "chrome flicker REGRESSION: widget height changed during"
+            " reveal. first_h=" + std::to_string(first_h)
+            + " after_drain_h=" + std::to_string(after_drain_h)
+            + " — build() should report the FINAL height of the tail on"
+            " the very first frame after bytes land, so the host's"
+            " chrome (composer / status bar) sees no layout shift while"
+            " the typewriter animates.");
+    }
+}
+
+// Hard pin: across an entire reveal animation, build()'s reported height
+// must be MONOTONIC NON-DECREASING and NEVER CHANGE just because the
+// reveal cursor advances (only because bytes arrive). Feeds a long doc in
+// one shot, then polls build() in a tight loop with 16 ms sleeps for the
+// full duration of the reveal animation. Every height sample must equal
+// the first one.
+static void st_reveal_fx_stable_height_during_animation() {
+    StreamingMarkdown md;
+    md.set_live(true);
+    md.set_reveal_fx(true);
+
+    // Multi-block doc that exercises commit_range firing AND a sizeable
+    // tail backlog — the case where the old build-clip would have made
+    // height grow over ~1 second of reveal.
+    md.append(
+        "Intro paragraph.\n\n"
+        "Another paragraph.\n\n"
+        "# A heading\n\n"
+        "Final paragraph that lives in the live tail with quite a bit of"
+        " prose so the cursor takes a meaningful amount of time to walk"
+        " across it.");
+
+    int first_h = stream_height(md);
+    int max_h = first_h;
+    int min_h = first_h;
+    int frames = 0;
+
+    // Sample for up to 1.5s or until reveal finishes (whichever first).
+    for (int i = 0; i < 100; ++i) {
+        int h = stream_height(md);
+        if (h > max_h) max_h = h;
+        if (h < min_h) min_h = h;
+        ++frames;
+        if (!md.reveal_in_progress()) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+    }
+
+    if (max_h != min_h || first_h != max_h) {
+        throw std::runtime_error(
+            "height drift during reveal: first_h=" + std::to_string(first_h)
+            + " min=" + std::to_string(min_h) + " max=" + std::to_string(max_h)
+            + " over " + std::to_string(frames) + " frames — the host"
+            " sees the widget's height change as the cursor walks the"
+            " tail, reflowing chrome below.");
+    }
+}
+
 // Reveal-fx must not snap when bytes arrive DURING the reveal. Feeds the
 // doc in small chunks with a sleep between each, calling build() in a
 // tight inner loop so the reveal cursor advances through the chunk's
@@ -2069,6 +2170,8 @@ int main() {
     run("eager block no-snap (all kinds)", 3000ms, st_eager_block_no_snap);
     run("reveal-fx monotonic (post-feed)", 12000ms, st_reveal_fx_height_monotonic);
     run("reveal-fx monotonic (streaming)", 12000ms, st_reveal_fx_height_monotonic_streaming);
+    run("reveal-fx commit snap (no chrome flicker)", 3000ms, st_reveal_fx_commit_snap_no_chrome_flicker);
+    run("reveal-fx stable height during animation", 3000ms, st_reveal_fx_stable_height_during_animation);
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",
                  g_passed - g_slow, g_slow, g_failed, g_skipped);

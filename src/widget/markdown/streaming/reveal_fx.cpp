@@ -47,35 +47,29 @@ void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     finalize_deadline_ms_ = now_ms + ramp_ms;
 }
 
-// Advance reveal_cp_ for this frame and republish revealed_tail_byte_clip_.
-// Called from build() top so the clip is current BEFORE the cache check —
-// fixes a one-frame flash where bytes landed, build's stale-clip path
-// rendered the full tail (every row of a newly-arrived table), then the
-// overlay advanced the cursor and the next frame collapsed it. Also fixes
-// the case where source bytes are stable but the cursor moves: the
-// build's version-only fast-path used to skip re-render entirely, leaving
-// the typewriter visually frozen even though reveal_cp_ was advancing.
-// (The build cache key now includes revealed_tail_byte_clip_ so the
-// fast-path correctly misses when the clip moves.)
+// Advance reveal_cp_ for this frame. Called from build() top so the
+// cursor's effect on the live overlay (scramble/gradient/caret aging) is
+// current BEFORE the cache short-circuit. Three things this fixes:
+//   1. Finalize-ramp completion (which flips live_ off) is observed
+//      before the cache check, so the next frame doesn't serve a stale
+//      live-mode build.
+//   2. The committed-snap below: if commit_range fired during this
+//      frame, snap reveal_cp_ forward to committed_cp so the cursor
+//      never lags behind visibly-rendered committed content. Without
+//      this, on a burst delta that fires commit_range, age_at_tail_ms
+//      would stay 0 for hundreds of ms while the cursor crawls past
+//      committed bytes the user already sees — the scramble window
+//      would never start aging, so the trailing edge stayed in noise
+//      mode long after the bytes settled.
+//   3. Scratch values (ms_total, total_cp, age_at_tail_ms) are stamped
+//      for render_live_overlay_() to consume without re-walking source_
+//      or re-reading the clock.
 //
 // Returns true when the frame's cached_build_ is stale and a rebuild is
-// needed (clip moved, finalize-ramp completed, etc.); caller uses this
-// to bump build_dirty_ before the cache check.
+// needed (finalize-ramp completed); caller uses this to bump
+// build_dirty_ before the cache check.
 bool StreamingMarkdown::advance_reveal_cursor_() const {
-    if (!live_) {
-        if (revealed_tail_byte_clip_ != static_cast<std::size_t>(-1)) {
-            revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
-            return true;
-        }
-        return false;
-    }
-    if (!reveal_fx_) {
-        if (revealed_tail_byte_clip_ != static_cast<std::size_t>(-1)) {
-            revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
-            return true;
-        }
-        return false;
-    }
+    if (!live_ || !reveal_fx_) return false;
 
     const auto now = std::chrono::steady_clock::now();
     const std::int64_t ms_total = std::chrono::duration_cast<
@@ -93,16 +87,54 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         reveal_ms_      = ms_total;
     }
 
-    // Total codepoints in source_.
-    const std::size_t total_cp = [&] {
-        std::size_t n = 0;
-        for (std::size_t i = 0; i < source_.size(); ++i)
-            if ((static_cast<unsigned char>(source_[i]) & 0xC0) != 0x80) ++n;
-        return n;
-    }();
+    // Total codepoints in source_. Incremental update: cached value
+    // covers source_[0 .. cached_total_cp_at_); count just the new bytes.
+    // On a size shrink (clear()/set_content rollback) the cache is
+    // invalidated and recounted from 0.
+    if (cached_total_cp_at_ > source_.size()) {
+        cached_total_cp_ = 0;
+        cached_total_cp_at_ = 0;
+    }
+    for (std::size_t i = cached_total_cp_at_; i < source_.size(); ++i)
+        if ((static_cast<unsigned char>(source_[i]) & 0xC0) != 0x80)
+            ++cached_total_cp_;
+    cached_total_cp_at_ = source_.size();
+    const std::size_t total_cp = cached_total_cp_;
     cursor_advance_total_cp_ = total_cp;
 
+    // First-call init: stamp the wall-clock baseline and start the
+    // cursor at 0. Must run BEFORE the committed-snap below so the
+    // snap survives — otherwise the init clobbers the snapped value
+    // back to 0 on the first build() after construction.
     if (reveal_ms_ == 0) { reveal_ms_ = ms_total; reveal_cp_ = 0.0; }
+
+    // Codepoint count of the COMMITTED prefix. The cursor must never
+    // lag behind committed_ because committed bytes are already rendered
+    // as full styled blocks in the prefix — they're visible no matter
+    // what the reveal cursor says. Letting reveal_cp_ stay below
+    // committed_cp wastes the typewriter budget catching up to bytes
+    // the user already sees, and starves the scramble/gradient age
+    // counter on the tail (age_at_tail_ms only starts ticking once the
+    // cursor reaches the live edge). On a burst delta that fires
+    // commit_range, the scramble window would never start aging — the
+    // trailing edge stayed in noise mode long after the bytes settled.
+    //
+    // Snap forward to committed_cp here. Reveals nothing the user
+    // hasn't already seen, frees the typewriter to animate ONLY the
+    // live tail (the part where reveal makes visual sense).
+    if (cached_committed_cp_at_ > committed_) {
+        cached_committed_cp_ = 0;
+        cached_committed_cp_at_ = 0;
+    }
+    for (std::size_t i = cached_committed_cp_at_;
+         i < committed_ && i < source_.size(); ++i)
+        if ((static_cast<unsigned char>(source_[i]) & 0xC0) != 0x80)
+            ++cached_committed_cp_;
+    cached_committed_cp_at_ = committed_;
+    const std::size_t committed_cp = cached_committed_cp_;
+    if (reveal_cp_ < static_cast<double>(committed_cp))
+        reveal_cp_ = static_cast<double>(committed_cp);
+
     {
         double elapsed_s = (ms_total - reveal_ms_) / 1000.0;
         if (elapsed_s < 0.0)   elapsed_s = 0.0;
@@ -133,40 +165,16 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         }
     }
 
-    bool dirty = false;
-
-    // Ramp completion — flip live_ off and clear clip. live_'s Tracked<>
-    // bumps build_dirty_ for us, but return dirty=true so the caller
-    // doesn't double-check.
+    // Ramp completion — flip live_ off. live_'s Tracked<> bumps
+    // build_dirty_ for us, but return dirty=true so the caller doesn't
+    // double-check.
     if (finalize_deadline_ms_ != 0
         && reveal_cp_ >= static_cast<double>(total_cp))
     {
         finalize_deadline_ms_ = 0;
         live_ = false;
-        revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
         request_animation_frame();
         return true;
-    }
-
-    const std::size_t revealed_cp =
-        static_cast<std::size_t>(reveal_cp_);
-
-    // Map cursor (cp in source_) to byte offset within tail.
-    std::size_t new_clip = static_cast<std::size_t>(-1);
-    if (reveal_cp_ < static_cast<double>(total_cp)) {
-        std::size_t cp = 0;
-        std::size_t byte_off = 0;
-        for (std::size_t i = 0; i < source_.size() && cp < revealed_cp; ++i) {
-            if ((static_cast<unsigned char>(source_[i]) & 0xC0) != 0x80) {
-                ++cp;
-            }
-            byte_off = i + 1;
-        }
-        new_clip = (byte_off > committed_) ? (byte_off - committed_) : 0u;
-    }
-    if (new_clip != revealed_tail_byte_clip_) {
-        revealed_tail_byte_clip_ = new_clip;
-        dirty = true;
     }
 
     cursor_advance_age_tail_ms_ =
@@ -174,7 +182,7 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
             ? (ms_total - last_grow_ms_)
             : 0;
 
-    return dirty;
+    return false;
 }
 
 const Element& StreamingMarkdown::render_live_overlay_() const {
@@ -211,11 +219,10 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // is not touched; every frame builds cached_live_ fresh from
         // a shallow copy + mutated tail-leaf TextElement.
         //
-        // The reveal cursor (reveal_cp_, revealed_tail_byte_clip_)
-        // was already advanced this frame by advance_reveal_cursor_(),
-        // called from build() top BEFORE its cache short-circuit — so
-        // build()'s clipped tail and our visual decoration are in sync
-        // on the very frame bytes land. We just read the scratch.
+        // The reveal cursor (reveal_cp_) was already advanced this
+        // frame by advance_reveal_cursor_(), called from build() top
+        // BEFORE its cache short-circuit — so the cursor and the
+        // visual decoration are in sync. We just read the scratch.
         const std::int64_t ms_total    = cursor_advance_ms_total_;
         const std::size_t  total_cp    = cursor_advance_total_cp_;
         const std::size_t  revealed_cp = static_cast<std::size_t>(reveal_cp_);
@@ -440,63 +447,16 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // codepoints in place rather than rebuilding the whole string.
         Element animated_body = cached_build_;
         if (TextElement* tail = find_last_text(animated_body)) {
-            // ── Apply the reveal cursor: hide the unrevealed tail ──
-            // The committed prefix (everything but this last TextElement)
-            // is already settled and always shown. Only the live tail's
-            // trailing edge is paced: chop off the codepoints the cursor
-            // hasn't reached yet so text unfolds at the cursor's smooth
-            // velocity instead of popping in with each wire burst. The
-            // unrevealed bytes stay in source_ — they reappear next frame
-            // as the cursor advances. Bounded: we only ever hide what's
-            // beyond the cursor, and the cursor monotonically approaches
-            // total_cp, so nothing is lost.
-            //
-            // EAGER RENDERS (table, list, blockquote, code-block) skip
-            // this step: their rightmost leaf is only the last visible
-            // token (a single table cell, a list item's text), not the
-            // full live edge — cutting `total_cp - revealed_cp` codepoints
-            // off it would erase that leaf entirely while the rest of
-            // the eager structure (other cells, earlier list items) stays
-            // visible, garbling the rendered block. For eager renders we
-            // still apply scramble + gradient + caret to the rightmost
-            // leaf so the streaming edge reads as alive, but the cursor
-            // pacing manifests at the structural level (rows / items
-            // appearing as they commit), not at the byte level.
-            if (revealed_cp < total_cp && !eager_render) {
-                // build() may already have clipped the tail bytes for us
-                // (revealed_tail_byte_clip_ active). In that case the
-                // TextElement we're holding is already at the cursor —
-                // recomputing hidden_cp from total_cp would over-cut into
-                // the visible content. Skip the cut when the clip is in
-                // effect (build-level clipping is authoritative for the
-                // text path).
-                const bool already_clipped =
-                    revealed_tail_byte_clip_ != static_cast<std::size_t>(-1);
-                const std::size_t hidden_cp = already_clipped
-                    ? 0u
-                    : (total_cp - revealed_cp);
-                // Hide at most the tail's own codepoints (never cut into
-                // the committed prefix — it's not in this TextElement).
-                const std::size_t cut_start =
-                    utf8_step_back(tail->content, hidden_cp);
-                if (cut_start < tail->content.size()) {
-                    tail->content.resize(cut_start);
-                    // Drop runs past the cut; clip the straddling one.
-                    std::vector<StyledRun> kept;
-                    kept.reserve(tail->runs.size());
-                    for (const auto& r : tail->runs) {
-                        if (r.byte_offset >= cut_start) continue;
-                        const std::size_t end = r.byte_offset + r.byte_length;
-                        kept.push_back(StyledRun{
-                            .byte_offset = r.byte_offset,
-                            .byte_length = std::min(end, cut_start) - r.byte_offset,
-                            .style       = r.style,
-                        });
-                    }
-                    tail->runs = std::move(kept);
-                    tail->cached_width = -1;   // content shrank — re-wrap
-                }
-            }
+            // No content-cut here. build() renders the full tail; the
+            // reveal effect is purely visual (scramble + gradient on the
+            // trailing edge, pulsing caret on the last glyph). Cutting
+            // bytes would shrink the tail TextElement's rendered height
+            // — the host's chrome (composer / status bar) sees that as
+            // a height delta and reflows. The trailing-edge animation
+            // delivers the "text materialising" feel without changing
+            // layout.
+            (void)revealed_cp;
+            (void)total_cp;
 
             const std::string_view orig = tail->content;
 

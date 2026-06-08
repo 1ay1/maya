@@ -309,18 +309,6 @@ private:
     mutable double       reveal_cp_  = 0.0;
     mutable std::int64_t reveal_ms_  = 0;
 
-    // Byte offset within `tail` (source_[committed_..]) that the
-    // reveal cursor has reached, recomputed each frame from reveal_cp_.
-    // build() clips the tail at this offset so newly-arrived terminated
-    // rows reveal one-by-one as the cursor advances instead of bursting
-    // in whenever the wire delivers them — the live edge feels typed,
-    // not pasted. SIZE_MAX = no clip (reveal_fx off, or cursor caught
-    // up). When this value changes between frames, render_live_overlay_
-    // bumps build_dirty_ so the next build() rebuilds the tail at the
-    // new clip; the canonical tail memo stays effective between
-    // frames the cursor doesn't move enough to cross a `\n`.
-    mutable std::size_t  revealed_tail_byte_clip_ = static_cast<std::size_t>(-1);
-
     // Cursor advance scratch — written by advance_reveal_cursor_()
     // (called from build() top), consumed by render_live_overlay_()
     // for visual decoration. Avoids re-walking source_ for total_cp
@@ -330,6 +318,21 @@ private:
     mutable std::int64_t cursor_advance_ms_total_   = 0;
     mutable std::size_t  cursor_advance_total_cp_   = 0;
     mutable std::int64_t cursor_advance_age_tail_ms_ = 0;
+
+    // Cached codepoint counts: total_cp counts cp in source_[0..N],
+    // committed_cp counts cp in source_[0..committed_]. Both are
+    // monotone-extend over source_ (committed_ only advances; source_
+    // only grows, except on clear() which resets both caches via
+    // size-shrink detection). Cached so advance_reveal_cursor_()
+    // doesn't walk the entire source byte-by-byte every frame at 60 fps
+    // for large messages — the walk was O(source_size) per frame, i.e.
+    // 50 KB × 60 fps = 3 MB/s of pure UTF-8 lead-byte scanning per
+    // streaming message. Cache is updated incrementally by counting only
+    // new bytes since the last cached offset.
+    mutable std::size_t cached_total_cp_       = 0;
+    mutable std::size_t cached_total_cp_at_    = 0;  // source_.size() when cached
+    mutable std::size_t cached_committed_cp_   = 0;
+    mutable std::size_t cached_committed_cp_at_ = 0; // committed_ when cached
 
     // ── Finalize ramp ──
     //
@@ -460,17 +463,6 @@ private:
     // shape — keeps the invariant intact under any future mutator
     // ordering changes.
     mutable std::uint64_t cached_tail_version_  = 0;
-
-    // Reveal clip endpoint reflected in cached_build_'s tail child.
-    // The clip is part of the tail's identity (build() truncates tail
-    // by it before render_tail sees it), so when the reveal cursor
-    // advances without source_ changing, version stays equal but the
-    // tail bytes differ — the version-only fast-path would skip the
-    // re-render and leave a stale longer tail visible. Storing the
-    // clip here lets the fast-path key include it: same source_version_
-    // AND same clip → tail provably identical → cache hit.
-    // SIZE_MAX = unclipped.
-    mutable std::size_t   cached_tail_reveal_clip_ = static_cast<std::size_t>(-1);
 
     // ── render_tail inline-parse cache ─────────────────────────────────
     // The plain-inline path of render_tail (the bottom branch — no open
@@ -714,14 +706,11 @@ private:
     // frame. Defined in reveal_fx.cpp. build() calls this at every return.
     [[nodiscard]] const Element& render_live_overlay_() const;
 
-    // Advance reveal_cp_ for this frame and republish
-    // revealed_tail_byte_clip_ (→ build()) accordingly. Called from
-    // build() BEFORE the cache short-circuit so a moved clip dirties
-    // the build on the SAME frame the cursor moves, instead of the
-    // next — prevents a one-frame flash where an unrevealed eager-
-    // table burst lands then collapses. Defined in reveal_fx.cpp.
-    // Returns true if the frame should bypass cache and rebuild (clip
-    // moved or ramp completed).
+    // Advance reveal_cp_ for this frame. Called from build() BEFORE the
+    // cache short-circuit so a finalize-ramp completion flips live_ off
+    // on the same frame instead of the next. Returns true when the
+    // build cache should be invalidated (currently only for ramp
+    // completion). Defined in reveal_fx.cpp.
     bool advance_reveal_cursor_() const;
 
     // Internal append — assumes bytes are already codepoint-clean.  Public

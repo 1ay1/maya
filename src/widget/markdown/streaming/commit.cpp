@@ -228,7 +228,68 @@ void StreamingMarkdown::append_safe(std::string_view safe_bytes) {
     ++source_version_;
 
     size_t boundary = find_block_boundary();
-    if (boundary > committed_) commit_range(boundary);
+    if (boundary > committed_) {
+        // Gate eager block commit on the reveal cursor when reveal_fx_
+        // is on and live_. commit_range fires the parser which produces
+        // styled prefix Elements (H2 underline, code-fence chrome,
+        // table rules) painted at full chrome the moment they land.
+        // The reveal overlay only animates the live tail; committed
+        // prefix bytes BYPASS the typewriter — once a block commits,
+        // its chrome appears in one frame and the user sees a burst.
+        //
+        // While reveal_fx_ && live_, DEFER ALL commits. The whole
+        // stream stays in the tail; render_tail's eager-heading /
+        // eager-list / eager-table paths still render styled inline
+        // text WITHOUT the block-level underline/border chrome that
+        // commit produces, and the overlay's ghost band materialises
+        // each codepoint as the cursor walks. finish() flushes any
+        // remaining tail through commit_range, so the final settled
+        // shape (with full chrome) appears at end-of-stream when the
+        // host expects a layout snap anyway. Off-path for hosts that
+        // didn't opt into reveal_fx.
+        const bool defer =
+            reveal_fx_ && live_
+            && reveal_byte_clip_ != static_cast<std::size_t>(-1);
+        if (!defer) {
+            commit_range(boundary);
+        }
+    }
+}
+
+std::size_t StreamingMarkdown::byte_offset_for_cp(
+    std::size_t n_cp) const noexcept
+{
+    // Cached: the last (n_cp, byte) pair walked. Cursor advance + the
+    // append_safe gate in the same frame ask for the SAME n_cp twice
+    // — a single source_.size() check + equal-cp short-circuit avoids
+    // the second walk.
+    if (cp_to_byte_cache_at_ == source_.size()
+        && cp_to_byte_cache_cp_ == n_cp) {
+        return cp_to_byte_cache_byte_;
+    }
+    // Walk from 0. Counting UTF-8 lead bytes (high bits != 10).
+    // Steady-state cursor walks codepoints monotonically; the cache
+    // amortises but a full walk is still O(source_size) on a cold
+    // call. Acceptable: called at most twice per frame, and the
+    // typewriter rate (~120 cps) means the cursor crosses ~2 cp per
+    // frame at 60 fps — source_ rarely exceeds tens of KB during a
+    // live stream.
+    std::size_t bytes_seen = 0;
+    std::size_t cps_seen   = 0;
+    while (bytes_seen < source_.size() && cps_seen < n_cp) {
+        ++bytes_seen;
+        while (bytes_seen < source_.size()
+               && (static_cast<unsigned char>(source_[bytes_seen]) & 0xC0)
+                      == 0x80)
+        {
+            ++bytes_seen;
+        }
+        ++cps_seen;
+    }
+    cp_to_byte_cache_cp_   = n_cp;
+    cp_to_byte_cache_byte_ = bytes_seen;
+    cp_to_byte_cache_at_   = source_.size();
+    return bytes_seen;
 }
 
 void StreamingMarkdown::set_content(std::string_view content) {
@@ -356,10 +417,15 @@ void StreamingMarkdown::clear() {
     cached_tail_in_fence_ = false;
     cached_tail_hash_     = 0;
     cached_tail_len_      = 0;
+    cached_tail_clip_     = 0;
     cached_total_cp_         = 0;
     cached_total_cp_at_      = 0;
     cached_committed_cp_     = 0;
     cached_committed_cp_at_  = 0;
+    reveal_byte_clip_        = static_cast<std::size_t>(-1);
+    cp_to_byte_cache_cp_     = 0;
+    cp_to_byte_cache_byte_   = 0;
+    cp_to_byte_cache_at_     = 0;
     cached_build_         = Element{TextElement{""}};
     cached_live_          = Element{TextElement{""}};
     live_                 = false;

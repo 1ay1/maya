@@ -346,6 +346,27 @@ private:
     mutable std::size_t cached_committed_cp_   = 0;
     mutable std::size_t cached_committed_cp_at_ = 0; // committed_ when cached
 
+    // Byte offset corresponding to reveal_cp_ (rounded down to a UTF-8
+    // codepoint boundary), refreshed each frame by
+    // advance_reveal_cursor_(). When reveal_fx_ && live_, this is the
+    // "visible bytes" clip — find_block_boundary / commit_range / the
+    // tail extraction in build() all clamp to it so eager-styled blocks
+    // (H2 underline, code-fence chrome, table rules) don't paint ahead
+    // of the typewriter cursor. When reveal_fx_ is off OR not live, the
+    // clip is set to source_.size() (no-op gating). SIZE_MAX before the
+    // first advance_reveal_cursor_ call this stream.
+    mutable std::size_t reveal_byte_clip_ = static_cast<std::size_t>(-1);
+
+    // Translate a codepoint count into a byte offset within source_,
+    // walking UTF-8 lead bytes from 0. Clamps to source_.size() if
+    // n_cp >= total codepoints. Caches its last result so successive
+    // monotone calls (cursor advance, then append_safe in the same
+    // frame) avoid the second walk.
+    [[nodiscard]] std::size_t byte_offset_for_cp(std::size_t n_cp) const noexcept;
+    mutable std::size_t cp_to_byte_cache_cp_   = 0;
+    mutable std::size_t cp_to_byte_cache_byte_ = 0;
+    mutable std::size_t cp_to_byte_cache_at_   = 0; // source_.size() at cache time
+
     // ── Finalize ramp ──
     //
     // request_finalize(ramp_ms) records a deadline by which the reveal
@@ -475,6 +496,13 @@ private:
     // shape — keeps the invariant intact under any future mutator
     // ordering changes.
     mutable std::uint64_t cached_tail_version_  = 0;
+    // Reveal-clip endpoint (visible_end) reflected in the tail child.
+    // When reveal_byte_clip_ moves without source_version_ moving (the
+    // typewriter cursor advanced without new bytes), the cached tail
+    // bytes DIFFER from the new visible-end slice and the cache MUST
+    // refresh. Track separately from version so the version-equal fast
+    // path doesn't return a stale tail.
+    mutable std::size_t   cached_tail_clip_     = 0;
 
     // ── render_tail inline-parse cache ─────────────────────────────────
     // The plain-inline path of render_tail (the bottom branch — no open
@@ -521,7 +549,6 @@ private:
     // shifted bytes in a way that left the stable-prefix slice
     // accidentally identical.
     mutable std::uint64_t           tail_inline_cache_version_     = 0;
-
     // ── Eager-block render cache ───────────────────────────────────────
     // The eager list / blockquote / table branches of render_tail parse
     // the proven-complete slice with parse_markdown_impl and rebuild the

@@ -58,8 +58,18 @@ const Element& StreamingMarkdown::build() const {
     // widget is idle (no streaming).
     if (!build_dirty_) return render_live_overlay_();
 
-    std::string_view tail = (committed_ < source_.size())
-        ? std::string_view{source_}.substr(committed_)
+    // Visible end-of-source for THIS frame. When reveal_fx_ && live_
+    // and advance_reveal_cursor_ has run at least once, clamp to the
+    // cursor's byte clip so render_tail can't eager-style bytes the
+    // typewriter hasn't reached yet (the heading underline / code-fence
+    // chrome / table rules burst). Otherwise it's source_.size().
+    const std::size_t visible_end =
+        (reveal_fx_ && live_
+         && reveal_byte_clip_ != static_cast<std::size_t>(-1))
+            ? std::min(source_.size(), reveal_byte_clip_)
+            : source_.size();
+    std::string_view tail = (committed_ < visible_end)
+        ? std::string_view{source_}.substr(committed_, visible_end - committed_)
         : std::string_view{};
     // Keep the tail slot PRESENT while streaming with a committed
     // prefix, even when the tail is momentarily empty. Between two
@@ -86,6 +96,7 @@ const Element& StreamingMarkdown::build() const {
         cached_has_tail_   = false;
         cached_has_prefix_ = false;
         cached_tail_version_     = source_version_;
+        cached_tail_clip_        = visible_end;
         build_dirty_       = false;
         return render_live_overlay_();
     }
@@ -255,7 +266,8 @@ const Element& StreamingMarkdown::build() const {
                 // skip render_tail when the body round-tripped.
                 bool tail_unchanged;
                 std::uint64_t tail_hash = 0;
-                if (cached_tail_version_ == source_version_)
+                if (cached_tail_version_ == source_version_
+                    && cached_tail_clip_ == visible_end)
                 {
                     tail_unchanged = true;
                 } else {
@@ -277,6 +289,7 @@ const Element& StreamingMarkdown::build() const {
                     cached_tail_in_fence_ = in_code_fence_;
                 }
                 cached_tail_version_     = source_version_;
+                cached_tail_clip_        = visible_end;
             }
             cached_tail_size_ = tail.size();
             build_dirty_      = false;
@@ -313,7 +326,8 @@ const Element& StreamingMarkdown::build() const {
             if (has_tail) {
                 bool tail_unchanged;
                 std::uint64_t tail_hash = 0;
-                if (cached_tail_version_ == source_version_)
+                if (cached_tail_version_ == source_version_
+                    && cached_tail_clip_ == visible_end)
                 {
                     tail_unchanged = true;
                 } else {
@@ -330,6 +344,7 @@ const Element& StreamingMarkdown::build() const {
                     cached_tail_in_fence_ = in_code_fence_;
                 }
                 cached_tail_version_     = source_version_;
+                cached_tail_clip_        = visible_end;
             }
             cached_prefix_gen_ = prefix_->generation;
             cached_fold_gen_   = fold_generation_;
@@ -423,6 +438,7 @@ const Element& StreamingMarkdown::build() const {
         cached_tail_len_  = 0;
     }
     cached_tail_version_ = source_version_;
+    cached_tail_clip_    = visible_end;
     build_dirty_          = false;
     return render_live_overlay_();
 }

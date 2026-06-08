@@ -144,10 +144,21 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         if (backlog <= 0.0) {
             reveal_cp_ = static_cast<double>(total_cp);
         } else {
+            // Typewriter pacing. reveal_floor_cps_ is a CEILING: the
+            // cursor never walks faster than floor_cps under normal
+            // streaming, so each codepoint takes its turn even on a
+            // slow byte-by-byte feed (otherwise total_cp grows at the
+            // feed rate and a backlog-driven cps catches up instantly,
+            // making the reveal invisible). The only exceptions:
+            //   • a large backlog (> drain_secs worth at floor_cps)
+            //     accelerates to backlog/drain_secs so a burst clears
+            //     within its target window;
+            //   • the finalize ramp can exceed both, guaranteeing the
+            //     cursor reaches the edge by its deadline.
             const double kFloorCps  = reveal_floor_cps_;
             const double kDrainSecs = reveal_drain_secs_;
-            double cps = backlog / kDrainSecs;
-            if (cps < kFloorCps) cps = kFloorCps;
+            const double burst_cps  = backlog / kDrainSecs;
+            double cps = (burst_cps > kFloorCps) ? burst_cps : kFloorCps;
             if (finalize_deadline_ms_ != 0) {
                 const std::int64_t remaining_ms =
                     finalize_deadline_ms_ - ms_total;
@@ -181,6 +192,26 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         (reveal_cp_ >= static_cast<double>(total_cp))
             ? (ms_total - last_grow_ms_)
             : 0;
+
+    // Refresh the visible-byte clip for this frame. With reveal_fx_ on
+    // and live_, build()'s tail extraction clamps to this value so
+    // render_tail's eager-styled blocks (heading bold, code-fence
+    // border, table rules, bullet markers) don't paint ahead of the
+    // typewriter cursor. With reveal_fx_ off OR not live, the clip is
+    // source_.size() (no-op). Commit gating in append_safe defers ALL
+    // commits while live; finish() flushes them in one snap at
+    // end-of-stream when the host expects a layout settle anyway.
+    if (reveal_fx_ && live_) {
+        const std::size_t cursor_cp =
+            static_cast<std::size_t>(reveal_cp_);
+        const std::size_t new_clip = byte_offset_for_cp(cursor_cp);
+        if (new_clip != reveal_byte_clip_) {
+            reveal_byte_clip_ = new_clip;
+            build_dirty_ = true;  // tail visible window moved — re-render
+        }
+    } else {
+        reveal_byte_clip_ = source_.size();
+    }
 
     return false;
 }
@@ -482,8 +513,25 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // cursor walks. Clamped to total_cp so a fresh widget with
             // revealed_cp < committed_cp doesn't underflow (shouldn't
             // happen given the snap above, defensive).
-            const std::size_t unrevealed_cp =
-                (total_cp > revealed_cp) ? (total_cp - revealed_cp) : 0u;
+            //
+            // When build()'s visible-byte clip is active (reveal_fx_ +
+            // live_), cached_build_ already contains EXACTLY the
+            // revealed cp — source was truncated to reveal_byte_clip_
+            // before render_tail saw it. No need for the ghost band;
+            // the scramble window alone covers the trailing edge.
+            // Without this zero-out, the overlay would mark the entire
+            // rightmost TextElement as invisible (its content was the
+            // revealed slice but unrevealed_cp = total - revealed is
+            // computed against UNCLIPPED total, so it covers the whole
+            // visible tail).
+            const bool clip_active =
+                reveal_fx_
+                && reveal_byte_clip_ != static_cast<std::size_t>(-1)
+                && reveal_byte_clip_ < source_.size();
+            const std::size_t unrevealed_cp = clip_active
+                ? 0u
+                : ((total_cp > revealed_cp) ? (total_cp - revealed_cp)
+                                            : 0u);
 
             // Trail window is whichever is bigger: the fixed gradient
             // band, or the unrevealed slice PLUS a ghost extension —

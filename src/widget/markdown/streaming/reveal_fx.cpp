@@ -312,16 +312,26 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                     continue;
                 }
                 if (auto* c = std::get_if<ComponentElement>(&cur->inner)) {
-                    if (!c->render) return nullptr;
-                    // Materialize the cached render and REPLACE the
-                    // ComponentElement in-place so the mutations below
-                    // don't touch the cache lambda's captured Element
-                    // (shared across frames; mutating it would corrupt
-                    // every later cached render).
-                    Element materialized = c->render(0, 0);
-                    *cur = std::move(materialized);
+                    // Descent hit a ComponentElement. We cannot
+                    // materialize it here — the render lambda needs the
+                    // actual avail_w handed down by the layout engine,
+                    // and calling c->render(0, 0) at descent time
+                    // produces a width-0 layout: tables collapse to
+                    // one-cell columns, code blocks rewrap to one
+                    // glyph per line, and that corrupted Element
+                    // would REPLACE the live ComponentElement in the
+                    // animated tree, becoming what the paint pass
+                    // renders. (Bug seen as char-chopped tables
+                    // mid-stream.) Eager-rendered tails (table /
+                    // list / blockquote / codeblock) don't need a
+                    // TextElement leaf to splice the cursor into
+                    // anyway — the caller skips source-cut and the
+                    // visual edge effects do not apply when the
+                    // rightmost leaf is structural rather than a
+                    // flat text run. Mark eager_render and bail.
+                    (void)c;
                     eager_render = true;
-                    continue;
+                    return nullptr;
                 }
                 return nullptr;
             }

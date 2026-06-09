@@ -55,7 +55,19 @@ inline thread_local int paint_generation = 0;
 // the writeback; consumed by the run() loops to auto-dispatch events.
 // Cleared at the start of each render so dropped states stop receiving
 // events automatically.
-inline thread_local std::vector<ScrollState*> live_scroll_states;
+//
+// Exposed via a function-local thread_local rather than an
+// `inline thread_local` object: GCC on PE/COFF (MinGW) emits the TLS
+// init wrapper for a dynamically-initialized inline thread_local
+// without COMDAT linkage, so every TU that includes this header
+// defines `TLS init function for ...live_scroll_states`, and the
+// linker rejects the duplicates (surfaces under LTO). A function-local
+// thread_local keeps the init wrapper local to this inline function,
+// which is properly deduplicated.
+inline std::vector<ScrollState*>& live_scroll_states() {
+    static thread_local std::vector<ScrollState*> states;
+    return states;
+}
 }  // namespace detail
 
 // Cell-space rectangle (canvas coordinates, 0-based). Written by the

@@ -1336,7 +1336,7 @@ void run(RunConfig cfg = {}) {
                 // Auto-dispatch to scroll states painted in the
                 // previous frame (default behavior — opt out per
                 // state with auto_dispatch = false).
-                for (auto* s : detail::live_scroll_states) {
+                for (auto* s : detail::live_scroll_states()) {
                     if (s && s->auto_dispatch) (void)s->handle_event(ev);
                 }
                 detail::dispatch_through_sub(current_sub, ev, pending_msgs);
@@ -1365,7 +1365,7 @@ void run(RunConfig cfg = {}) {
 
         // Flush parser timeouts (e.g., bare Escape)
         for (auto& ev : rt.flush_timeouts()) {
-            for (auto* s : detail::live_scroll_states) {
+            for (auto* s : detail::live_scroll_states()) {
                 if (s && s->auto_dispatch) (void)s->handle_event(ev);
             }
             detail::dispatch_through_sub(current_sub, ev, pending_msgs);
@@ -1658,7 +1658,7 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         // and viewport content "just work" without per-app boilerplate.
         // The framework consumes the result; we still pass the event
         // through to the user so they can layer their own behavior.
-        for (auto* s : detail::live_scroll_states) {
+        for (auto* s : detail::live_scroll_states()) {
             if (s && s->auto_dispatch) (void)s->handle_event(ev);
         }
         if constexpr (std::is_void_v<std::invoke_result_t<EventFn, const Event&>>) {

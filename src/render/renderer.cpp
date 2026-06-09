@@ -745,7 +745,7 @@ void paint_element(
                     s->bars_v.clear();
                     s->bar_h_bounds = {};
                     s->bar_v_bounds = {};
-                    detail::live_scroll_states.push_back(s);
+                    detail::live_scroll_states().push_back(s);
                 }
 
                 if (node.scroll_role == ScrollRole::Viewport) {
@@ -1391,7 +1391,7 @@ void render_tree(
         // writeback below; any state whose tree was removed since the
         // last paint stops receiving auto-dispatched events.
         ++detail::paint_generation;
-        detail::live_scroll_states.clear();
+        detail::live_scroll_states().clear();
 
         auto& cache = render_detail::component_cache();
         // Evict before bumping current_frame so entries from the

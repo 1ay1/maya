@@ -72,6 +72,13 @@ public:
         std::string content;
     };
 
+    // Ask the terminal to report its system clipboard back over the
+    // input stream (OSC 52 read). The reply arrives as a PasteEvent
+    // carrying the decoded clipboard bytes — see ansi::request_clipboard
+    // and InputParser::parse_osc. The portable, remote-tool-free way to
+    // read the clipboard across an SSH pty.
+    struct QueryClipboard {};
+
     /// Escape hatch: arbitrary async work. The function receives a dispatch
     /// callback and calls it with a Msg when the result is ready. Runs on
     /// the runtime's shared, elastic-but-bounded BG worker pool — cheap,
@@ -209,7 +216,7 @@ public:
     struct SetHeightHold { bool on = false; };
 
     using Variant = std::variant<None, Quit, Batch, After, SetTitle,
-                                 WriteClipboard, Task, IsolatedTask,
+                                 WriteClipboard, QueryClipboard, Task, IsolatedTask,
                                  CommitScrollback, CommitScrollbackOverflow,
                                  ForceRedraw, ResetInline, SetHeightHold>;
     Variant inner;
@@ -229,6 +236,12 @@ public:
 
     [[nodiscard]] static auto write_clipboard(std::string s) -> Cmd {
         return {WriteClipboard{std::move(s)}};
+    }
+
+    /// Ask the terminal to send its clipboard back as a PasteEvent
+    /// (OSC 52 read). Works across SSH with no remote clipboard tool.
+    [[nodiscard]] static auto query_clipboard() -> Cmd {
+        return {QueryClipboard{}};
     }
 
     template <std::invocable<std::function<void(Msg)>> F>
@@ -320,6 +333,7 @@ public:
             [&](const After& a)       -> Cmd<B> { return Cmd<B>::after(a.delay, f(a.msg)); },
             [](const SetTitle& s)     -> Cmd<B> { return Cmd<B>::set_title(s.title); },
             [](const WriteClipboard& w) -> Cmd<B> { return Cmd<B>::write_clipboard(w.content); },
+            [](const QueryClipboard&) -> Cmd<B> { return Cmd<B>::query_clipboard(); },
             [&](const Batch& b)       -> Cmd<B> {
                 std::vector<Cmd<B>> mapped;
                 mapped.reserve(b.cmds.size());

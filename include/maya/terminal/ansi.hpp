@@ -229,6 +229,16 @@ private:
 [[nodiscard]] std::string hyperlink_end();
 [[nodiscard]] std::string set_clipboard(std::string_view base64_data);
 
+// OSC 52 clipboard READ query. Asks the terminal emulator to report its
+// own system clipboard back over the input stream as
+// `OSC 52 ; c ; <base64> ST`. The terminal runs on the user's local
+// machine even across SSH, so this is how clipboard paste (text or
+// image) crosses an SSH pty with no remote tool. The reply is decoded
+// by InputParser::parse_osc into a PasteEvent. Requires a terminal that
+// honours OSC 52 reads (kitty, iTerm2, WezTerm, foot, Ghostty, recent
+// xterm with allowWindowOps; tmux/screen need clipboard passthrough).
+[[nodiscard]] std::string request_clipboard();
+
 // ============================================================================
 // Terminal capability hints
 // ============================================================================

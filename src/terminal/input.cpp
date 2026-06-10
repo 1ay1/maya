@@ -63,6 +63,17 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
             break;
 
         case State::Osc:
+            // Bound the OSC buffer. A well-behaved terminal terminates an
+            // OSC promptly; an unterminated / runaway one (or a hostile
+            // peer streaming megabytes with no ST) must not grow buf_
+            // without limit. On overflow, abandon the sequence and
+            // return to Ground — the partial OSC is dropped, never
+            // emitted as a (truncated, corrupt) clipboard event.
+            if (buf_.size() >= kMaxOscLen) {
+                state_ = State::Ground;
+                buf_.clear();
+                break;
+            }
             buf_ += static_cast<char>(ch);
             // OSC is terminated by BEL (0x07) or ST (ESC \)
             if (ch == 0x07) {
@@ -535,8 +546,82 @@ void InputParser::parse_ss3(uint8_t ch, std::vector<Event>& events) {
 }
 
 void InputParser::parse_osc([[maybe_unused]] std::vector<Event>& events) {
-    // OSC sequences from the terminal (e.g., clipboard responses)
-    // are not yet handled. Silently discard.
+    // buf_ holds the whole sequence including the leading "\x1b]" and the
+    // trailing terminator (BEL, or ESC \). Strip both ends to the OSC
+    // body "<Ps>;<Pt>".
+    std::string_view body{buf_};
+    if (body.size() >= 2 && body[0] == '\x1b' && body[1] == ']')
+        body.remove_prefix(2);
+    if (!body.empty() && body.back() == '\x07') {
+        body.remove_suffix(1);                      // BEL
+    } else if (body.size() >= 2
+               && body[body.size() - 2] == '\x1b'
+               && body.back() == '\\') {
+        body.remove_suffix(2);                      // ST (ESC \)
+    }
+
+    // OSC 52 — clipboard. A READ response looks like
+    //   52 ; <selection> ; <base64-of-clipboard-bytes>
+    // The terminal emulator (running on the user's local machine, even
+    // when the app is on the far end of an SSH pty) reads its OWN system
+    // clipboard and ships the bytes back inline. This is the ONLY
+    // clipboard path that crosses an SSH link with no remote tool and no
+    // env var — the whole point of decoding it here. We surface the
+    // decoded bytes as a PasteEvent so hosts handle a clipboard reply
+    // through the exact same path as a bracketed paste (text OR, after
+    // a magic-byte sniff at the host, an image).
+    //
+    // All other OSC replies (title query, color report, cursor shape,
+    // …) remain unhandled — silently dropped as before.
+    if (body.size() < 3 || body[0] != '5' || body[1] != '2' || body[2] != ';')
+        return;
+    body.remove_prefix(3);                          // past "52;"
+
+    // Skip the selection field (c / p / s / q / …) up to the next ';'.
+    auto semi = body.find(';');
+    if (semi == std::string_view::npos) return;
+    std::string_view b64 = body.substr(semi + 1);
+
+    // A terminal with no clipboard data (or that refuses the read)
+    // answers with an empty or "?" payload. Nothing to deliver.
+    if (b64.empty() || b64 == "?") return;
+
+    if (auto decoded = decode_base64(b64))
+        events.emplace_back(PasteEvent{std::move(*decoded)});
+    // Malformed base64 — drop silently; a corrupt half-paste is worse
+    // than no paste.
+}
+
+std::optional<std::string> InputParser::decode_base64(std::string_view in) {
+    // Standard RFC 4648 alphabet. Returns nullopt on any illegal byte
+    // (other than ASCII whitespace, which terminals sometimes insert to
+    // wrap long replies and which we skip). Output is raw bytes — may
+    // be binary (a PNG), so we build a std::string of bytes, not text.
+    auto val = [](unsigned char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    std::string out;
+    out.reserve(in.size() / 4 * 3 + 3);
+    int acc = 0, bits = 0;
+    for (char ch : in) {
+        auto c = static_cast<unsigned char>(ch);
+        if (c == '=') break;                        // padding — end of data
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+        int v = val(c);
+        if (v < 0) return std::nullopt;             // illegal symbol
+        acc = (acc << 6) | v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<char>((acc >> bits) & 0xFF));
+        }
+    }
+    return out;
 }
 
 auto InputParser::parse_params(std::string_view s) -> std::vector<int> {

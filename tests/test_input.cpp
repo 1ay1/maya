@@ -282,6 +282,87 @@ void test_input_bracketed_paste() {
     std::println("PASS\n");
 }
 
+void test_input_osc52_clipboard_text_st() {
+    std::println("--- test_input_osc52_clipboard_text_st ---");
+    InputParser p;
+    // OSC 52 ; c ; base64("hi") ST  -> "hi" = aGk=
+    auto events = p.feed("\x1b]52;c;aGk=\x1b\\");
+    assert(events.size() == 1);
+    const auto* pe = std::get_if<PasteEvent>(&events[0]);
+    assert(pe != nullptr);
+    assert(pe->content == "hi");
+    std::println("PASS\n");
+}
+
+void test_input_osc52_clipboard_text_bel() {
+    std::println("--- test_input_osc52_clipboard_text_bel ---");
+    InputParser p;
+    // BEL-terminated form. base64("maya") = bWF5YQ==
+    auto events = p.feed("\x1b]52;c;bWF5YQ==\x07");
+    assert(events.size() == 1);
+    const auto* pe = std::get_if<PasteEvent>(&events[0]);
+    assert(pe != nullptr);
+    assert(pe->content == "maya");
+    std::println("PASS\n");
+}
+
+void test_input_osc52_clipboard_binary() {
+    std::println("--- test_input_osc52_clipboard_binary ---");
+    InputParser p;
+    // The PNG magic prefix 89 50 4E 47 0D 0A 1A 0A base64s to
+    // iVBORw0KGgo= — the exact bytes agentty's image sniff needs.
+    auto events = p.feed("\x1b]52;c;iVBORw0KGgo=\x1b\\");
+    assert(events.size() == 1);
+    const auto* pe = std::get_if<PasteEvent>(&events[0]);
+    assert(pe != nullptr);
+    const std::string& b = pe->content;
+    assert(b.size() == 8);
+    assert(static_cast<unsigned char>(b[0]) == 0x89);
+    assert(static_cast<unsigned char>(b[1]) == 0x50);
+    assert(static_cast<unsigned char>(b[2]) == 0x4E);
+    assert(static_cast<unsigned char>(b[3]) == 0x47);
+    std::println("PASS\n");
+}
+
+void test_input_osc52_empty_payload_ignored() {
+    std::println("--- test_input_osc52_empty_payload_ignored ---");
+    InputParser p;
+    // Empty payload (clipboard empty) and the "?" refusal both yield
+    // NO event — never an empty paste that could loop the host.
+    auto e1 = p.feed("\x1b]52;c;\x1b\\");
+    assert(e1.empty());
+    auto e2 = p.feed("\x1b]52;c;?\x1b\\");
+    assert(e2.empty());
+    std::println("PASS\n");
+}
+
+void test_input_osc_non52_discarded() {
+    std::println("--- test_input_osc_non52_discarded ---");
+    InputParser p;
+    // OSC 0 (set title) and OSC 11 (bg color report) must stay
+    // unhandled — no spurious paste.
+    auto e1 = p.feed("\x1b]0;my title\x07");
+    assert(e1.empty());
+    auto e2 = p.feed("\x1b]11;rgb:0000/0000/0000\x1b\\");
+    assert(e2.empty());
+    std::println("PASS\n");
+}
+
+void test_input_osc52_split_feed() {
+    std::println("--- test_input_osc52_split_feed ---");
+    InputParser p;
+    // The reply can arrive across multiple read() chunks (SSH / slow
+    // pty). The FSM must accumulate across feed() calls. base64("ok")
+    // = b2s=.
+    auto e0 = p.feed("\x1b]52;c;b2");
+    assert(e0.empty());
+    auto e1 = p.feed("s=\x1b\\");
+    assert(e1.size() == 1);
+    const auto* pe = std::get_if<PasteEvent>(&e1[0]);
+    assert(pe != nullptr && pe->content == "ok");
+    std::println("PASS\n");
+}
+
 void test_input_page_up() {
     std::println("--- test_input_page_up ---");
     InputParser p;
@@ -379,6 +460,12 @@ int main() {
     test_input_focus_gained();
     test_input_focus_lost();
     test_input_bracketed_paste();
+    test_input_osc52_clipboard_text_st();
+    test_input_osc52_clipboard_text_bel();
+    test_input_osc52_clipboard_binary();
+    test_input_osc52_empty_payload_ignored();
+    test_input_osc_non52_discarded();
+    test_input_osc52_split_feed();
     test_input_page_up();
     test_input_page_down();
     test_input_delete_key();
@@ -386,5 +473,5 @@ int main() {
     test_input_mixed_sequence();
     test_input_has_pending_false_after_complete();
     test_input_reset_clears_state();
-    std::println("=== ALL 31 TESTS PASSED ===");
+    std::println("=== ALL 37 TESTS PASSED ===");
 }

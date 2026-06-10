@@ -1051,6 +1051,14 @@ void Runtime::write_clipboard(std::string_view text) {
     (void)writer_->write_or_buffer(seq);
 }
 
+void Runtime::query_clipboard() {
+    // OSC 52 read query. The reply (the terminal's clipboard, base64'd)
+    // arrives on the input stream and is decoded by InputParser into a
+    // PasteEvent. write_or_buffer so a congested tty doesn't drop it;
+    // it's a control sequence the diff path never re-emits.
+    (void)writer_->write_or_buffer(ansi::request_clipboard());
+}
+
 // ============================================================================
 // Runtime::cleanup — final terminal cleanup
 // ============================================================================

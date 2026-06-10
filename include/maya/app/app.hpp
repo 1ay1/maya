@@ -442,6 +442,13 @@ public:
     // xclip / wl-copy / pbcopy / clip.exe at a higher level.
     void write_clipboard(std::string_view text);
 
+    // Emit an OSC 52 clipboard READ query. The terminal replies inline
+    // (OSC 52 ; c ; <base64> ST), which InputParser decodes into a
+    // PasteEvent. The portable, remote-tool-free clipboard read used by
+    // the SSH image-paste path. No-op effect on terminals that don't
+    // honour OSC 52 reads (no reply ever arrives — host falls back).
+    void query_clipboard();
+
     // Row count of the last composed inline frame (0 in fullscreen mode
     // or before the first render). Callers can use this as a cheap proxy
     // for tree height when deciding to virtualize. Returns 0 in any
@@ -975,6 +982,9 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
         },
         [&](const typename Cmd<Msg>::WriteClipboard& w) {
             ctx.rt.write_clipboard(w.content);
+        },
+        [&](const typename Cmd<Msg>::QueryClipboard&) {
+            ctx.rt.query_clipboard();
         },
         [&](const typename Cmd<Msg>::Task& t) {
             if (ctx.bg_queue) {

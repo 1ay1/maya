@@ -281,6 +281,14 @@ void StyleApplier::append_param(std::string& params, std::string_view p) {
     return std::format("\x1b]52;c;{}\x07", base64_data);
 }
 
+[[nodiscard]] std::string request_clipboard() {
+    // `?` payload = read request. `c` selects the CLIPBOARD selection
+    // (vs `p` primary). ST terminator (ESC \) is the spec-correct close
+    // for an OSC 52 query; terminals that only accept BEL still parse
+    // this since they scan for either.
+    return "\x1b]52;c;?\x1b\\";
+}
+
 // ============================================================================
 // env_supports_synchronized_output — env-var heuristic for DEC mode 2026
 // ============================================================================

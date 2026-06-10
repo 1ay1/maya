@@ -154,6 +154,16 @@ private:
     using clock = std::chrono::steady_clock;
     static constexpr auto escape_timeout_ = std::chrono::milliseconds(50);
 
+    // Upper bound on a single OSC string's accumulated length. OSC 52
+    // clipboard responses can carry a base64 image (the terminal reads
+    // its OWN clipboard on the user's machine and ships the bytes back
+    // over the pty — the SSH image-paste path), so the cap is generous:
+    // 16 MiB of base64 decodes to ~12 MiB of image, comfortably above
+    // Anthropic's 5 MB per-image limit. A reply longer than this is
+    // abandoned (FSM resets to Ground) rather than growing buf_
+    // unbounded on hostile / runaway input.
+    static constexpr std::size_t kMaxOscLen = 16u * 1024u * 1024u;
+
     enum class State : uint8_t {
         Ground,
         Escape,         // saw ESC, waiting for second byte
@@ -195,8 +205,18 @@ private:
     // SS3 function keys (ESC O P/Q/R/S)
     void parse_ss3(uint8_t ch, std::vector<Event>& events);
 
-    // OSC parser (currently a no-op; can be extended for clipboard, etc.)
+    // OSC parser. Recognises the OSC 52 clipboard READ response
+    // (52;<sel>;<base64>) and emits its decoded bytes as a PasteEvent so
+    // image/text paste works over SSH with no remote clipboard tool;
+    // all other OSC replies are silently discarded.
     void parse_osc(std::vector<Event>& events);
+
+    // Decode an RFC 4648 base64 payload to raw bytes (whitespace
+    // tolerated, '=' padding ends the data). nullopt on an illegal
+    // symbol. Used by parse_osc for the OSC 52 clipboard reply, which
+    // may carry binary image bytes.
+    [[nodiscard]] static std::optional<std::string>
+        decode_base64(std::string_view in);
 
     // Parameter parsing utility
     [[nodiscard]] static auto parse_params(std::string_view s) -> std::vector<int>;

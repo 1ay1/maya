@@ -98,6 +98,21 @@ public:
         // Sigil intro: total draw-in time in ms. Set to 0 to render the
         // completed spiral statically from frame 1 (skip the intro).
         int                      sigil_draw_ms = 1800;
+
+        // Hard row budget for the whole widget (0 = unlimited). When
+        // > 0, build() drops decorative rows in tiers (blank separators
+        // first, then the pixel sigil collapses to a one-row wordmark)
+        // until the welcome fits. Hosts running inline mode should set
+        // this to terminal_rows minus their surrounding chrome: a
+        // welcome that overflows the viewport is a scrollback hazard —
+        // the overflow rows commit to native scrollback at startup, and
+        // the first welcome→conversation swap (a shrink with a changed
+        // prefix) strands them there permanently. The widget reads this
+        // instead of available_height() because hosts build the view
+        // tree BEFORE the framework's render pass installs the sized
+        // RenderContext — at build() time available_height() is the
+        // 24-row default, not the real terminal.
+        int                      max_rows = 0;
     };
 
     explicit WelcomeScreen(Config c) : cfg_(std::move(c)) {}
@@ -147,6 +162,58 @@ public:
 
         const bool show_starters = !cfg_.starters.empty();
 
+        // ── Viewport clamp ──
+        // Row budget for THIS widget: terminal rows minus the host
+        // chrome below us. The full layout is 4 content rows (sigil,
+        // tagline, chips, hint) + kSigilCh-1 extra sigil rows + 6 blank
+        // separators (+ starters card when present). When the budget is
+        // tighter we drop blanks in reverse-priority order, then
+        // collapse the pixel sigil to a one-row text wordmark. The
+        // essential rows (sigil/wordmark, tagline, chips, hint) always
+        // render — on an absurdly short terminal the frame may still
+        // overflow by a row or two, but that floor is 4 rows.
+        constexpr int kSigilCh = (kFontH + 1 + 2 + 1) / 2;  // = render_sigil_'s CH
+        const int budget = cfg_.max_rows > 0 ? cfg_.max_rows : 1 << 20;
+
+        // Essential content rows: tagline + chips + hint. The hint is
+        // width-responsive (greedy line fill), so count its REAL line
+        // count at the current width — under-counting it by one is
+        // exactly the off-by-one that pushes the frame into scrollback.
+        const int hint_rows = hint_line_count_(
+            cfg_, std::max(0, available_width() - 2));
+        const int kEssential = 2 + std::max(1, hint_rows);
+        const bool pixel_sigil = budget >= kEssential + kSigilCh;
+        const int sigil_h = pixel_sigil ? kSigilCh : 1;
+        int spare = budget - (kEssential + sigil_h);
+        if (spare < 0) spare = 0;
+        if (spare > 6) spare = 6;   // 6 separators = the full layout
+
+        Element sigil_el = pixel_sigil
+            ? centered(render_sigil_(age_ms))
+            // One-row wordmark fallback — keeps the brand presence on
+            // short terminals without the 5-row pixel canvas.
+            : centered_text("\xc2\xbb A G E N T T Y",
+                            Style{}.with_fg(cfg_.sigil_color).with_bold());
+
+        // Blank separators by priority: the ones that carry the most
+        // visual structure go first, so a shrinking budget degrades
+        // gracefully (sigil↔tagline gap survives longest).
+        //   b0 sigil→tagline   b1 tagline→chips   b2 chips→hint
+        //   b3 top pad         b4 2nd tagline→chips  b5 2nd chips→hint
+        const bool b0 = spare > 0, b1 = spare > 1, b2 = spare > 2,
+                   b3 = spare > 3, b4 = spare > 4, b5 = spare > 5;
+
+        std::vector<Element> rows;
+        if (b3) rows.push_back(blank());
+        rows.push_back(std::move(sigil_el));
+        if (b0) rows.push_back(blank());
+        rows.push_back(tagline);
+        if (b1) rows.push_back(blank());
+        if (b4) rows.push_back(blank());
+        rows.push_back(chips_row);
+        if (b2) rows.push_back(blank());
+        if (b5) rows.push_back(blank());
+
         // Bottom hint row — responsive. At wide widths the chips lay
         // out on a single centered line with `intro · key label · key
         // label · …`; as the terminal narrows the row wraps into
@@ -163,17 +230,9 @@ public:
             },
         }};
 
-        std::vector<Element> rows;
-        rows.push_back(blank());
-        rows.push_back(sigil);
-        rows.push_back(blank());
-        rows.push_back(tagline);
-        rows.push_back(blank());
-        rows.push_back(blank());
-        rows.push_back(chips_row);
-        rows.push_back(blank());
-        rows.push_back(blank());
-        if (show_starters) {
+        // Starters card only at full budget — it's the most decorative
+        // tier and the first to go under the clamp.
+        if (show_starters && spare >= 6) {
             std::vector<Element> starter_rows;
             starter_rows.push_back(text(" " + small_caps_(cfg_.starters_title) + " ",
                                         Style{}.with_fg(muted).with_bold()));
@@ -235,6 +294,42 @@ private:
     // the keys themselves greedily wrap. Width 0 means "layout has
     // not allocated yet" — we fall back to the single-line form so
     // the first frame's render is sensible.
+    // Pure row-count mirror of render_hints_'s greedy line fill — the
+    // clamp in build() needs the hint's height BEFORE the component's
+    // deferred render runs. Must stay in lockstep with render_hints_
+    // (same chip widths, same separator width, same wrap rule).
+    [[nodiscard]] static int hint_line_count_(const Config& cfg, int avail) {
+        constexpr int kKeysOnlyFloor = 40;
+        const int sep_w = string_width("  \xc2\xb7  ");
+        const bool drop_labels = avail > 0 && avail < kKeysOnlyFloor;
+
+        std::vector<int> widths;
+        widths.reserve(cfg.hints.size() + 1);
+        if (!cfg.hint_intro.empty())
+            widths.push_back(string_width(cfg.hint_intro));
+        for (const auto& h_ : cfg.hints)
+            widths.push_back(drop_labels
+                ? string_width(h_.key)
+                : string_width(h_.key) + string_width(h_.label));
+
+        const int max_line = (avail > 0) ? avail : (1 << 30);
+        // NOTE: mirrors render_hints_ exactly, including its quirk of
+        // adding the pre-wrap `add` (with sep_w) to the fresh line.
+        int lines = 1, line_w = 0;
+        bool line_empty = true;
+        for (int w : widths) {
+            const int add = w + (line_empty ? 0 : sep_w);
+            if (!line_empty && line_w + add > max_line) {
+                ++lines;
+                line_w = 0;
+                line_empty = true;
+            }
+            line_w += add;
+            line_empty = false;
+        }
+        return lines;
+    }
+
     [[nodiscard]] static Element render_hints_(
         const Config& cfg, Color muted, int avail)
     {

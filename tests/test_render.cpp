@@ -1,9 +1,12 @@
 // Headless render test - verifies layout + paint produce correct canvas output
 #include <maya/maya.hpp>
+#include <maya/app/inline.hpp>
 #include <maya/render/frame.hpp>
+#include "check.hpp"
 #include <cassert>
 #include <print>
 #include <string>
+#include <vector>
 
 using namespace maya;
 using namespace maya::detail;
@@ -332,6 +335,31 @@ void test_writer() {
     std::println("PASS\n");
 }
 
+// ============================================================================
+// Test 15: canvas regrow keys on layout height, not painted rows
+// ============================================================================
+// 480 painted rows + 30 blank rows + 5 painted "chrome" rows. Layout
+// needs 515 > 500 (the seed canvas height), but the max PAINTED row
+// inside the 500-row canvas is 479 — a `content_height >= height`
+// regrow precondition never trips and the tail rows (the app chrome:
+// composer, status bar) are silently clipped. The gate must key on the
+// layout's computed height instead.
+void test_regrow_blank_boundary() {
+    std::println("--- test_regrow_blank_boundary ---");
+    std::vector<Element> rows;
+    for (int i = 0; i < 480; ++i)
+        rows.push_back(text("body row " + std::to_string(i)).build());
+    for (int i = 0; i < 30; ++i)
+        rows.push_back(blank().build());
+    for (int i = 0; i < 5; ++i)
+        rows.push_back(text("CHROME " + std::to_string(i)).build());
+    std::string out = render_to_string(v(rows).build(), 80);
+    MAYA_TEST_CHECK(out.find("CHROME 4") != std::string::npos,
+                    "frame tail clipped: regrow gate missed because the "
+                    "canvas-boundary rows are blank");
+    std::println("PASS\n");
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     test_bare_text();
@@ -348,6 +376,7 @@ int main() {
     test_style_sgr();
     test_style_transition();
     test_writer();
+    test_regrow_blank_boundary();
 
-    std::println("=== ALL {} TESTS PASSED ===", 14);
+    std::println("=== ALL {} TESTS PASSED ===", 15);
 }

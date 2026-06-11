@@ -65,7 +65,11 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
 
     int ch = content_height(st.canvas_);
 
-    if (ch >= st.canvas_.height() && !st.layout_nodes_.empty()) {
+    // Regrow on the LAYOUT's computed height, not the painted-row count:
+    // blank rows at the canvas boundary keep content_height below
+    // canvas.height() while the layout needs more rows, silently clipping
+    // the frame's tail (see Runtime::render's "hidden chrome" rationale).
+    if (!st.layout_nodes_.empty()) {
         int needed = st.layout_nodes_[0].computed.size.height.raw();
         if (needed > st.canvas_.height()) {
             st.canvas_.resize(width, needed + 8);
@@ -169,8 +173,10 @@ std::string render_to_string(const Element& root, int width) {
 
     int rows = content_height(canvas);
 
-    // Grow canvas if content was clipped.
-    if (rows >= canvas.height() && !layout_nodes.empty()) {
+    // Grow canvas if the layout needs more rows than the seed height.
+    // Keyed on layout height, not painted rows — blank boundary rows
+    // otherwise mask the overflow and clip the tail.
+    if (!layout_nodes.empty()) {
         int needed = layout_nodes[0].computed.size.height.raw();
         if (needed > canvas.height()) {
             canvas.resize(width, needed + 8);

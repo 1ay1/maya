@@ -474,7 +474,16 @@ auto Runtime::render(const Element& root) -> Status {
         double rt_ms = since(t_rt0);
 
         int ch = content_height(canvas_);
-        if (ch >= canvas_.height() && !layout_nodes_.empty()) {
+        // Regrow gate keys on the LAYOUT's computed height, NOT on
+        // content_height (max painted row). The two diverge exactly when
+        // the rows at the canvas boundary are blank (markdown paragraph
+        // separators, turn gaps, card padding): the painted-row proxy
+        // stays below canvas.height() while the layout needs more rows,
+        // so a `ch >= height` precondition never trips and everything
+        // past the canvas bottom — composer + status bar, the LAST
+        // children of the frame — is silently clipped until a painted
+        // row happens to land on the boundary (the "hidden chrome" bug).
+        if (!layout_nodes_.empty()) {
             int needed = layout_nodes_[0].computed.size.height.raw();
             if (needed > canvas_.height()) {
                 canvas_.resize(w, needed + 8);
@@ -954,8 +963,10 @@ void Runtime::warmup_render(const Element& root) {
     // If content overflowed the seed height, grow once and re-render
     // — mirrors the live render() path so the cache entries that get
     // captured are at the same width/height as the next live frame.
-    int ch = content_height(scratch);
-    if (ch >= scratch.height() && !nodes.empty()) {
+    // Same layout-height regrow gate as the live render() path (see the
+    // "hidden chrome" rationale there): content_height under-reports when
+    // the boundary rows are blank, so key on the layout's needed height.
+    if (!nodes.empty()) {
         int needed = nodes[0].computed.size.height.raw();
         if (needed > scratch.height()) {
             scratch.resize(w, needed + 8);

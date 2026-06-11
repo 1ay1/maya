@@ -98,15 +98,19 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
         (void)platform::io_write_all(output_h, seq);
     }
 
-    // Enable mouse reporting if requested. SGR-encoded (1006) any-event
-    // tracking (1003) so press/release/move/drag and wheel all arrive as
-    // MouseEvents. Cached on the Runtime so cleanup() emits the matching
-    // disable on every exit path (the InlineMode/AltScreen destructors
-    // restore raw mode + screen but do NOT know about mouse tracking).
+    // Enable mouse reporting if requested. Use maya's canonical sequence:
+    // 1000 (button press/release) + 1002 (button-drag motion) + 1006 (SGR
+    // extended coordinates) + 1007 (alt-scroll). This matches what
+    // enter_alt_screen() emits and what kitty / xterm / wezterm expect —
+    // 1003 (ANY-motion) floods move events and some terminals (kitty)
+    // handle it inconsistently. Cached on the Runtime so cleanup()/dtor
+    // emit the matching disable on every exit path (the InlineMode /
+    // AltScreen destructors restore raw mode + screen but the simple-run
+    // inline path does NOT enable mouse on its own).
     rt.mouse_enabled_ = cfg.mouse;
     if (cfg.mouse) {
         static constexpr std::string_view kMouseOn =
-            "\x1b[?1003h\x1b[?1006h";
+            "\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h";
         (void)platform::io_write_all(output_h, kMouseOn);
     }
 
@@ -1084,7 +1088,7 @@ auto Runtime::cleanup() -> Status {
     // (cleanup runs before ~Runtime / the terminal destructors). Idempotent.
     if (mouse_enabled_) {
         static constexpr std::string_view kMouseOff =
-            "\x1b[?1006l\x1b[?1003l";
+            "\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l";
         (void)platform::io_write_all(output_handle_, kMouseOff);
         mouse_enabled_ = false;
     }
@@ -1110,7 +1114,7 @@ Runtime::~Runtime() {
     // order), so output_handle_ is still valid and raw mode is still on.
     if (mouse_enabled_ && output_handle_ != platform::invalid_handle) {
         static constexpr std::string_view kMouseOff =
-            "\x1b[?1006l\x1b[?1003l";
+            "\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l";
         (void)platform::io_write_all(output_handle_, kMouseOff);
         mouse_enabled_ = false;
     }

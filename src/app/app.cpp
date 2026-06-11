@@ -98,6 +98,18 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
         (void)platform::io_write_all(output_h, seq);
     }
 
+    // Enable mouse reporting if requested. SGR-encoded (1006) any-event
+    // tracking (1003) so press/release/move/drag and wheel all arrive as
+    // MouseEvents. Cached on the Runtime so cleanup() emits the matching
+    // disable on every exit path (the InlineMode/AltScreen destructors
+    // restore raw mode + screen but do NOT know about mouse tracking).
+    rt.mouse_enabled_ = cfg.mouse;
+    if (cfg.mouse) {
+        static constexpr std::string_view kMouseOn =
+            "\x1b[?1003h\x1b[?1006h";
+        (void)platform::io_write_all(output_h, kMouseOn);
+    }
+
     // Query initial terminal size.
     if (rt.alt_terminal_) {
         rt.size_ = rt.alt_terminal_->size();
@@ -1064,12 +1076,24 @@ void Runtime::query_clipboard() {
 // ============================================================================
 
 auto Runtime::cleanup() -> Status {
-    // No-op by design.  Both terminal states (Terminal<AltScreen>,
-    // Terminal<Inline>) reverse their own opt-ins in their destructors,
-    // so cleanup is structurally guaranteed by the type system — there
-    // is no path where ~Runtime runs without the terminal being
-    // restored.  This method is kept for ABI/API stability with
-    // pre-type-state callers that still invoke (void)rt.cleanup().
+    // Disable mouse reporting if create() turned it on. The InlineMode /
+    // AltScreen terminal destructors restore raw mode + screen state but
+    // know nothing about mouse tracking, so without this the terminal is
+    // left echoing SGR mouse reports (\x1b[<…M) as literal text into the
+    // user's shell after the app exits. output_handle_ is still valid here
+    // (cleanup runs before ~Runtime / the terminal destructors). Idempotent.
+    if (mouse_enabled_) {
+        static constexpr std::string_view kMouseOff =
+            "\x1b[?1006l\x1b[?1003l";
+        (void)platform::io_write_all(output_handle_, kMouseOff);
+        mouse_enabled_ = false;
+    }
+    // Both terminal states (Terminal<AltScreen>, Terminal<Inline>) reverse
+    // their own opt-ins in their destructors, so the rest of cleanup is
+    // structurally guaranteed by the type system — there is no path where
+    // ~Runtime runs without the terminal being restored. This method is
+    // kept for ABI/API stability with pre-type-state callers that still
+    // invoke (void)rt.cleanup().
     return ok();
 }
 
@@ -1077,7 +1101,20 @@ auto Runtime::cleanup() -> Status {
 // Runtime move constructor
 // ============================================================================
 
-Runtime::~Runtime() = default;
+Runtime::~Runtime() {
+    // Guaranteed mouse-off on EVERY exit path, including stack unwinding
+    // from an exception thrown inside a render/event callback (the simple
+    // run() loops call cleanup() only on the normal path; a throwing
+    // callback would skip it). Idempotent with cleanup() via the flag.
+    // Runs BEFORE the terminal-state members' destructors (reverse member
+    // order), so output_handle_ is still valid and raw mode is still on.
+    if (mouse_enabled_ && output_handle_ != platform::invalid_handle) {
+        static constexpr std::string_view kMouseOff =
+            "\x1b[?1006l\x1b[?1003l";
+        (void)platform::io_write_all(output_handle_, kMouseOff);
+        mouse_enabled_ = false;
+    }
+}
 
 Runtime::Runtime(Runtime&& o) noexcept
     : alt_terminal_(std::move(o.alt_terminal_))
@@ -1099,7 +1136,9 @@ Runtime::Runtime(Runtime&& o) noexcept
     , resize_generation_(o.resize_generation_)
     , parser_(std::move(o.parser_))
     , running_(o.running_)
-{}
+{
+    mouse_enabled_ = std::exchange(o.mouse_enabled_, false);
+}
 
 Runtime& Runtime::operator=(Runtime&& o) noexcept {
     if (this != &o) {
@@ -1122,6 +1161,7 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         resize_generation_ = o.resize_generation_;
         parser_            = std::move(o.parser_);
         running_           = o.running_;
+        mouse_enabled_     = std::exchange(o.mouse_enabled_, false);
     }
     return *this;
 }

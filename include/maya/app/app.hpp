@@ -724,6 +724,11 @@ private:
     // xterm / unconfigured tmux. See ansi::env_supports_synchronized_output().
     bool          sync_supported_     = false;
 
+    // Mouse tracking was requested via RunConfig::mouse. Emit the SGR
+    // mouse-reporting enable sequence in create() and the matching disable
+    // in cleanup(); cached here so cleanup() doesn't need the RunConfig.
+    bool          mouse_enabled_      = false;
+
     // -- Wake signaling (background task → UI thread) -------------------------
     // The fd/handle is owned by BackgroundQueue: it must live as long as any
     // detached IsolatedTask thread that may try to signal it, even past the

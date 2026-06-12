@@ -196,6 +196,12 @@ struct FlexItem {
     int         cross;          // Final cross size
     int         main_offset;    // Offset along main axis (set during positioning)
     int         cross_offset;   // Offset along cross axis
+    // Whether section 3a fully recursed this child (its `computed` is valid)
+    // and the available width/height it was laid out under. The 3d pass can
+    // skip re-running an identical layout when these match what it would pass.
+    bool        laid_out = false;
+    int         avail_w = 0;
+    int         avail_h = 0;
 };
 
 struct FlexLine {

@@ -81,6 +81,13 @@ namespace detail {
     WidthMode mode = WidthMode::Modern) noexcept
 {
     if (cp < 0x20) return 0;                     // C0 control codes
+    // Everything below U+1100 — the first entry in kWideRanges — is a single
+    // column. This covers ASCII, Latin-1, the box-drawing (U+2500..) and
+    // block-element (U+2580..) glyphs that fill every bordered TUI, plus
+    // Greek/Cyrillic/etc. Short-circuit so the per-cell text-shaping hot
+    // path skips BOTH O(log n) binary searches for the overwhelmingly
+    // common case. (Keep this bound in sync with kWideRanges[0].first.)
+    if (cp < 0x1100) return 1;
     if (detail::in_ranges(cp, detail::kWideRanges)) return 2;
     if (mode == WidthMode::Modern &&
         detail::in_ranges(cp, detail::kEmojiPresentationRanges)) return 2;

@@ -320,7 +320,20 @@ Size TextElement::measure(int max_width) const {
         return cached_size;
     }
 
-    // Miss: populate the cache via format(), which stores both lines and size.
+    // Secondary hit: the measure ring remembers the Size for the last few
+    // distinct widths this leaf was measured at (3a / 3d / nested levels).
+    // Answering from here skips the O(content) re-wrap that the single
+    // cached_width slot would force on every alternating width.
+    const std::size_t csz = content.size();
+    for (int i = 0; i < kMeasureRing; ++i) {
+        if (ms_width[i] == max_width && ms_wrap[i] == wrap
+            && ms_csize[i] == csz && ms_size[i].height.value > 0) {
+            return ms_size[i];
+        }
+    }
+
+    // Miss: populate the cache via format(), which stores both lines and
+    // size. format() also records the result in the measure ring.
     (void)format(max_width);
     return cached_size;
 }
@@ -333,7 +346,6 @@ const std::vector<WrappedLine>& TextElement::format(int max_width) const {
         && (!cached_lines.empty() || content.empty())) {
         return cached_lines;
     }
-
     cached_lines.clear();
 
     if (content.empty()) {
@@ -419,6 +431,15 @@ const std::vector<WrappedLine>& TextElement::format(int max_width) const {
     cached_width = max_width;
     cached_wrap = wrap;
     cached_content_size = content.size();
+
+    // Record in the measure ring so subsequent measure() calls at this
+    // width (3d / paint, or next frame) skip the re-wrap.
+    ms_width[ms_next] = max_width;
+    ms_size[ms_next]  = cached_size;
+    ms_csize[ms_next] = content.size();
+    ms_wrap[ms_next]  = wrap;
+    ms_next = (ms_next + 1) % kMeasureRing;
+
     return cached_lines;
 }
 

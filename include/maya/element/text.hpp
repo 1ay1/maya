@@ -162,6 +162,23 @@ struct TextElement {
     mutable Size                     cached_size{Columns{0}, Rows{1}};
     mutable std::vector<WrappedLine> cached_lines;
 
+    // -- Measure-size ring ---------------------------------------------------
+    // One layout pass measures the SAME leaf at several distinct widths:
+    // section 3a (hypothetical), section 3d (resolved), and paint all call
+    // measure()/format() with potentially different max_width values, and
+    // each nested-container level adds another. The single (cached_width)
+    // slot above therefore thrashes — every call past the first re-runs the
+    // O(content) word-wrap. This small ring caches just the resulting Size
+    // (not the line vector) per width, so measure() answers from any of the
+    // last few widths without re-wrapping AND without disturbing
+    // cached_lines (whose reference format() hands out must stay valid).
+    static constexpr int kMeasureRing = 4;
+    mutable int          ms_width[kMeasureRing]   = {-1, -1, -1, -1};
+    mutable Size         ms_size[kMeasureRing]    = {};
+    mutable std::size_t  ms_csize[kMeasureRing]   = {0, 0, 0, 0};
+    mutable TextWrap     ms_wrap[kMeasureRing]     = {};
+    mutable int          ms_next = 0;
+
     // -- Measurement ---------------------------------------------------------
 
     /// Compute the Size this text would occupy given a maximum width constraint.

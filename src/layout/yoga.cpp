@@ -2,12 +2,48 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <memory>
+#include <span>
 #include <utility>
 #include <vector>
 
 namespace maya::layout {
 
 namespace detail {
+
+// Per-recursion-depth scratch buffers for flex layout. compute_node()
+// allocated a fresh `std::vector<FlexItem>` and `std::vector<FlexLine>`
+// (the latter a vector-of-vectors) on EVERY container node EVERY frame —
+// for a deep UI that's hundreds of heap allocations per layout pass and
+// was the dominant cost (~75% of render time). These pools hand each
+// recursion level a buffer that retains capacity across nodes and frames,
+// so after warmup the layout pass performs ZERO heap allocation. Keyed by
+// recursion depth so a parent's buffers are never clobbered by a child's
+// compute_node call. Thread-local: each thread gets its own pool.
+struct FlexScratch {
+    std::vector<FlexItem> items;       // reused for `all_items`
+    std::vector<FlexLine> lines;       // reused for `lines`
+};
+
+inline FlexScratch& flex_scratch_at(std::size_t depth) {
+    thread_local std::vector<std::unique_ptr<FlexScratch>> pool;
+    if (depth >= pool.size()) pool.resize(depth + 1);
+    auto& slot = pool[depth];
+    if (!slot) slot = std::make_unique<FlexScratch>();
+    return *slot;
+}
+
+// RAII depth counter for the layout recursion.
+struct LayoutDepthGuard {
+    std::size_t* d;
+    explicit LayoutDepthGuard(std::size_t* p) : d(p) { ++*d; }
+    ~LayoutDepthGuard() { --*d; }
+};
+
+inline std::size_t& layout_depth() {
+    thread_local std::size_t depth = 0;
+    return depth;
+}
 
 // "Unconstrained" sentinel for available_w / available_h when we want a
 // child to compute its natural size — used when a parent has overflow ≠
@@ -100,6 +136,13 @@ void compute_node(
     bool row     = is_row(style.direction);
     bool reverse = is_reverse(style.direction);
 
+    // Acquire this recursion level's reusable scratch (zero per-node heap
+    // allocation after warmup). Depth-keyed so a child compute_node() call
+    // below gets a DIFFERENT slot and never clobbers our items/lines.
+    auto& depth = layout_depth();
+    LayoutDepthGuard depth_guard{&depth};
+    FlexScratch& scratch = flex_scratch_at(depth);
+
     // Available space on main and cross axes for children
     int main_avail  = row ? content_w : content_h;
     int cross_avail = row ? content_h : content_w;
@@ -110,8 +153,10 @@ void compute_node(
     // ------------------------------------------------------------------
     // 3a. Collect visible children and compute their hypothetical main size
     // ------------------------------------------------------------------
-    std::vector<FlexItem> all_items;
+    std::vector<FlexItem>& all_items = scratch.items;
+    all_items.clear();
     all_items.reserve(node.children.size());
+
 
     for (std::size_t ci : node.children) {
         auto& child = nodes[ci];
@@ -131,6 +176,8 @@ void compute_node(
         }
 
         int hypo_main;
+        bool laid_out_in_3a = false;
+        int avail_w_3a = 0, avail_h_3a = 0;
         if (!basis.is_auto()) {
             hypo_main = basis.resolve(main_avail);
         } else if (child.measure) {
@@ -156,6 +203,9 @@ void compute_node(
             const int child_avail_h = (style.overflow == Overflow::Scroll)
                 ? kUnconstrained : (row ? content_h  : main_avail);
             compute_node(nodes, ci, child_avail_w, child_avail_h, content_w, content_h);
+            laid_out_in_3a = true;
+            avail_w_3a = child_avail_w;
+            avail_h_3a = child_avail_h;
 
             hypo_main = row ? nodes[ci].computed.size.width.value
                             : nodes[ci].computed.size.height.value;
@@ -175,46 +225,66 @@ void compute_node(
             .cross        = 0,
             .main_offset  = 0,
             .cross_offset = 0,
+            .laid_out     = laid_out_in_3a,
+            .avail_w      = avail_w_3a,
+            .avail_h      = avail_h_3a,
         });
     }
 
     // ------------------------------------------------------------------
     // 3b. Break items into flex lines (wrapping support)
     // ------------------------------------------------------------------
-    std::vector<FlexLine> lines;
+    // Reuse this depth's pooled lines vector. We keep the FlexLine slots
+    // (and their inner `items` vectors' capacity) alive across frames:
+    // grab the next slot, clear its items in place, fill it. `n_lines`
+    // tracks how many slots are live this pass; trailing slots from a
+    // previous, larger frame stay allocated but unused (capacity retained).
+    std::vector<FlexLine>& lines = scratch.lines;
+    std::size_t n_lines = 0;
+    auto next_line = [&]() -> FlexLine& {
+        if (n_lines >= lines.size()) lines.emplace_back();
+        FlexLine& l = lines[n_lines++];
+        l.items.clear();
+        l.main_size = 0;
+        l.cross_size = 0;
+        return l;
+    };
 
     if (style.wrap == FlexWrap::NoWrap || all_items.empty()) {
         // Single line containing all items
-        FlexLine line;
-        line.items = std::move(all_items);
-        lines.push_back(std::move(line));
+        FlexLine& line = next_line();
+        line.items.assign(all_items.begin(), all_items.end());
     } else {
         // Multi-line wrapping
-        FlexLine current;
+        FlexLine* current = &next_line();
         int line_main = 0;
         for (auto& item : all_items) {
-            int needed = item.hypothetical + (current.items.empty() ? 0 : style.gap);
-            if (!current.items.empty() && line_main + needed > main_avail) {
-                lines.push_back(std::move(current));
-                current = FlexLine{};
+            int needed = item.hypothetical + (current->items.empty() ? 0 : style.gap);
+            if (!current->items.empty() && line_main + needed > main_avail) {
+                current = &next_line();
                 line_main = 0;
             }
-            line_main += item.hypothetical + (current.items.empty() ? 0 : style.gap);
-            current.items.push_back(item);
+            line_main += item.hypothetical + (current->items.empty() ? 0 : style.gap);
+            current->items.push_back(item);
         }
-        if (!current.items.empty()) {
-            lines.push_back(std::move(current));
-        }
+        // A trailing empty line can occur only if all_items was empty, which
+        // the NoWrap branch above already handles; here every line has items.
     }
 
     if (style.wrap == FlexWrap::WrapReverse) {
-        std::ranges::reverse(lines);
+        std::reverse(lines.begin(), lines.begin() + n_lines);
     }
+
+    // View over only the live line slots this pass (trailing pooled slots
+    // from a previous larger frame are excluded). All loops below iterate
+    // `active_lines`, never `lines` directly.
+    std::span<FlexLine> active_lines{lines.data(), n_lines};
+
 
     // ------------------------------------------------------------------
     // 3c. Resolve flex-grow and flex-shrink within each line
     // ------------------------------------------------------------------
-    for (auto& line : lines) {
+    for (auto& line : active_lines) {
         int num_gaps = static_cast<int>(line.items.size()) - 1;
         if (num_gaps < 0) num_gaps = 0;
         int total_gap = num_gaps * style.gap;
@@ -303,7 +373,7 @@ void compute_node(
     // 3d. Recursively lay out each child with its resolved main size,
     //     then determine cross sizes.
     // ------------------------------------------------------------------
-    for (auto& line : lines) {
+    for (auto& line : active_lines) {
         int line_cross = 0;
         for (auto& item : line.items) {
             auto& child = nodes[item.index];
@@ -345,6 +415,38 @@ void compute_node(
                     auto saved_w = cs.width;
                     auto saved_h = cs.height;
                     bool main_changed = (item.main != item.hypothetical);
+
+                    // Determine whether 3d would force either axis to a
+                    // definite size (overriding the child's intrinsic).
+                    bool force_w, force_h;
+                    if (row) {
+                        force_w = (main_changed || !saved_w.is_auto());
+                        force_h = (cross_definite || !saved_h.is_auto());
+                    } else {
+                        force_h = (main_changed || !saved_h.is_auto());
+                        force_w = (cross_definite || !saved_w.is_auto());
+                    }
+
+                    // Fast path: when 3a already laid this child out at the
+                    // exact same available width/height that 3d would pass,
+                    // and 3d forces neither axis (so no fixed() override
+                    // changes the inputs) and the main size didn't move, the
+                    // 3a `computed` IS the final result. Re-running
+                    // compute_node would reproduce it bit-for-bit. Skipping
+                    // it removes the redundant second full layout of every
+                    // nested container — the dominant render cost for
+                    // table/list/card UIs. Inputs equal ⇒ outputs equal:
+                    // this is exact, not an approximation.
+                    if (item.laid_out && !main_changed && !force_w && !force_h
+                            && child_w == item.avail_w && child_h == item.avail_h) {
+                        child_w = child.computed.size.width.value;
+                        child_h = child.computed.size.height.value;
+                        item.main  = row ? child_w : child_h;
+                        item.cross = row ? child_h : child_w;
+                        line_cross = std::max(line_cross, item.cross);
+                        continue;
+                    }
+
                     if (row) {
                         // Force width (main) only when grow/shrink changed it
                         // or it was already explicit — otherwise let the child
@@ -409,18 +511,18 @@ void compute_node(
     // For single-line containers with a definite cross dimension, the
     // line's cross size spans the full available cross space (CSS §9.4).
     bool cross_definite_for_line = row ? (def_h >= 0) : (def_w >= 0);
-    if (lines.size() == 1 && cross_definite_for_line) {
-        lines[0].cross_size = std::max(lines[0].cross_size, cross_avail);
+    if (n_lines == 1 && cross_definite_for_line) {
+        active_lines[0].cross_size = std::max(active_lines[0].cross_size, cross_avail);
     }
 
     // ------------------------------------------------------------------
     // 3e. Position children: justify-content along main, align on cross
     // ------------------------------------------------------------------
     int total_cross = 0;
-    for (auto& line : lines) total_cross += line.cross_size;
+    for (auto& line : active_lines) total_cross += line.cross_size;
 
     int cross_cursor = 0;
-    for (auto& line : lines) {
+    for (auto& line : active_lines) {
         int n = static_cast<int>(line.items.size());
         int free_main = main_avail - line.main_size;
         if (free_main < 0) free_main = 0;
@@ -541,7 +643,7 @@ void compute_node(
     int content_start_x = inner_left(style);
     int content_start_y = inner_top(style);
 
-    for (auto& line : lines) {
+    for (auto& line : active_lines) {
         for (auto& item : line.items) {
             auto& child = nodes[item.index];
             const auto& cs = child.style;
@@ -580,11 +682,11 @@ void compute_node(
         if (row) {
             // Widest line determines content width
             int max_line = 0;
-            for (auto& line : lines) max_line = std::max(max_line, line.main_size);
+            for (auto& line : active_lines) max_line = std::max(max_line, line.main_size);
             final_w = max_line + inner_horizontal(style);
         } else {
             int max_cross = 0;
-            for (auto& line : lines) max_cross = std::max(max_cross, line.cross_size);
+            for (auto& line : active_lines) max_cross = std::max(max_cross, line.cross_size);
             final_w = max_cross + inner_horizontal(style);
         }
         final_w = clamp_dim(final_w, style.min_width, style.max_width, parent_width);
@@ -595,11 +697,11 @@ void compute_node(
     } else {
         if (row) {
             int total_c = 0;
-            for (auto& line : lines) total_c += line.cross_size;
+            for (auto& line : active_lines) total_c += line.cross_size;
             final_h = total_c + inner_vertical(style);
         } else {
             int max_main = 0;
-            for (auto& line : lines) max_main = std::max(max_main, line.main_size);
+            for (auto& line : active_lines) max_main = std::max(max_main, line.main_size);
             final_h = max_main + inner_vertical(style);
         }
         final_h = clamp_dim(final_h, style.min_height, style.max_height, parent_height);

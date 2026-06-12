@@ -1666,6 +1666,20 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
 
     bool needs_render = true;
 
+    // Frame pacing for continuous (fps>0) apps. Without this the loop renders
+    // flat-out: cfg.fps only sized base_timeout, but needs_render was forced
+    // true every iteration so poll_timeout collapsed to 0 and we spun far
+    // faster than fps — burning CPU and FLOODING the terminal with frames
+    // (which then keep draining after the user quits, making quit feel slow).
+    // We now gate the per-frame needs_render flip on the frame deadline and
+    // sleep the poll until then, so an fps=N app renders at ~N fps and the
+    // output backlog stays small.
+    using PaceClock = std::chrono::steady_clock;
+    const auto frame_interval = cfg.fps > 0
+        ? std::chrono::nanoseconds(1'000'000'000LL / std::max(1, cfg.fps))
+        : std::chrono::nanoseconds(0);
+    auto next_frame = PaceClock::now();
+
     auto dispatch = [&](const Event& ev) {
         // Auto-dispatch to scroll states that were painted in the
         // previous frame. Any state with auto_dispatch = true (default)
@@ -1697,6 +1711,16 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         // the poll).
         auto poll_timeout = needs_render
             ? std::chrono::milliseconds(0) : base_timeout;
+        // Frame-pacing clamp: for a continuous app that has nothing else
+        // pending, sleep the poll until the next frame deadline instead of
+        // spinning. Input still wakes the poll immediately (the OS wait
+        // returns on readable fd), so responsiveness is unaffected.
+        if (cfg.fps > 0 && !needs_render) {
+            auto until = std::chrono::duration_cast<std::chrono::milliseconds>(
+                next_frame - PaceClock::now());
+            if (until.count() < 0) until = std::chrono::milliseconds(0);
+            poll_timeout = until;
+        }
         // Deferred-write retry (mirrors the Program<P> loop, app.hpp ~1172):
         // the output fd is non-blocking, so a large frame can leave part of
         // its bytes in the writer's residue. Bound the poll to a few ms so
@@ -1735,7 +1759,19 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
 
         for (auto& ev : rt.flush_timeouts()) dispatch(ev);
 
-        if (cfg.fps > 0) needs_render = true;
+        // Continuous-render apps repaint each frame — but only once the
+        // frame deadline has arrived, so we pace at cfg.fps instead of
+        // spinning. Input-driven repaints (dispatch sets needs_render) are
+        // unaffected and still paint immediately.
+        if (cfg.fps > 0 && PaceClock::now() >= next_frame) {
+            needs_render = true;
+            next_frame += frame_interval;
+            // If we fell far behind (terminal was slow / app was paused),
+            // don't try to "catch up" by rendering a burst — reset the
+            // deadline to now so we resume clean single-frame cadence.
+            if (next_frame < PaceClock::now())
+                next_frame = PaceClock::now() + frame_interval;
+        }
 
         if (needs_render) {
             Element root = [&]() -> Element {

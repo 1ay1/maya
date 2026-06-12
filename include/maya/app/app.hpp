@@ -1680,6 +1680,14 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         : std::chrono::nanoseconds(0);
     auto next_frame = PaceClock::now();
 
+    // The last view() result, kept so a residue-drain re-render can re-enter
+    // rt.render() WITHOUT recomputing the user's view. maya's compose path
+    // ignores the passed element while residue is pending (it drains and
+    // returns early), so this only needs to be a valid Element to satisfy
+    // the signature.
+    Element last_root;   // default = empty TextElement; only used to satisfy
+    bool    have_root = false;   // rt.render()'s signature during a residue drain
+
     auto dispatch = [&](const Event& ev) {
         // Auto-dispatch to scroll states that were painted in the
         // previous frame. Any state with auto_dispatch = true (default)
@@ -1784,6 +1792,8 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
             }();
             auto status = rt.render(root);
             if (!status) break;
+            last_root = root;
+            have_root = true;
             needs_render = false;
             // If a ScrollState's max_* changed during this paint, the
             // view function we just ran read stale zeros for them.
@@ -1793,12 +1803,22 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
                 detail::scroll_writeback_dirty = false;
                 needs_render = true;
             }
-            // If render() returned ok() but the writer still holds residue
-            // (the tty rejected part of a large emit with WouldBlock), keep
-            // needs_render set so the next iteration drives the drain. Paired
-            // with the poll-timeout cap above, the frame finishes within a
-            // few ms instead of stalling until the next keypress.
-            if (rt.has_pending_writes()) needs_render = true;
+        }
+
+        // Residue drain — SEPARATE from a full re-render. If the tty rejected
+        // part of a large emit (WouldBlock), the unwritten tail sits in the
+        // writer's residue. We must finish shipping it, but we must NOT
+        // re-run render_fn() (the user's view) to do so: that recomputes the
+        // whole frame every loop iteration for a heavy app, pinning the CPU
+        // and rendering far above cfg.fps (a flood that the terminal then
+        // can't composite, causing visible tearing). Instead, re-enter
+        // rt.render() with the SAME last frame — maya's compose path detects
+        // pending residue and just drains it (it does not recompose), so this
+        // is cheap and the per-frame view cost is paid once per real frame.
+        if (rt.has_pending_writes() && have_root) {
+            (void)rt.render(last_root);
+            // Keep the poll short (clamped above to 8ms) so the drain
+            // finishes promptly without spinning the view.
         }
     }
 

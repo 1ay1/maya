@@ -2,9 +2,46 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <new>
+#include <string_view>
+
+#include "maya/app/environment.hpp"
 
 namespace maya {
+
+namespace {
+
+// Terminal color capability used to downgrade RGB / 256-color values to what
+// the terminal can actually show (3 = truecolor, 2 = 256, 1 = 16). Detected
+// once from the environment — see maya::env::color_level() (COLORTERM / TERM /
+// NO_COLOR) — and overridable with MAYA_COLOR=truecolor|256|16|auto for
+// terminals we can't sniff (e.g. truecolor passthrough inside tmux) or for
+// deterministic tests. A terminal whose capability is unknown (non-TTY pipe)
+// keeps truecolor so piped/captured output is unchanged.
+int detect_color_level() noexcept {
+    if (const char* forced = std::getenv("MAYA_COLOR")) {
+        std::string_view s{forced};
+        if (s == "truecolor" || s == "24bit" || s == "3") return 3;
+        if (s == "256" || s == "2")                        return 2;
+        if (s == "16" || s == "basic" || s == "1")         return 1;
+        // "auto" or anything unrecognized falls through to detection.
+    }
+    switch (env::color_level()) {
+        case env::ColorLevel::TrueColor: return 3;
+        case env::ColorLevel::Ansi256:   return 2;
+        case env::ColorLevel::Basic:     return 1;
+        case env::ColorLevel::None:      return 3;  // unknown/non-TTY: don't degrade
+    }
+    return 3;
+}
+
+int active_color_level() noexcept {
+    static const int level = detect_color_level();
+    return level;
+}
+
+} // namespace
 
 // ============================================================================
 // AlignedBuffer
@@ -121,7 +158,10 @@ char* StylePool::write_uint_sgr(char* p, unsigned n) noexcept {
     return p;
 }
 
-char* StylePool::append_color_sgr(char* p, const Color& c, bool is_fg) noexcept {
+char* StylePool::append_color_sgr(char* p, const Color& in, bool is_fg) noexcept {
+    // Downgrade RGB / 256-color to what the terminal can render before
+    // emitting (macOS Terminal.app is 256-only and drops 38;2 truecolor).
+    const Color c = in.degrade(active_color_level());
     switch (c.kind()) {
         case Color::Kind::Named: {
             int base = is_fg ? 30 : 40;

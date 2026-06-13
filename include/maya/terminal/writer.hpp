@@ -124,7 +124,13 @@ class Writer : MoveOnly {
     static constexpr std::size_t kOpsReserveHint = 128;
 
 public:
-    explicit Writer(platform::NativeHandle h) noexcept;
+    // `nonblocking` puts the fd in O_NONBLOCK so a full kernel buffer surfaces
+    // as EAGAIN instead of stalling the event loop (the default, for live/run).
+    // Pass false for one-shot renders (maya::print): there is no loop and no
+    // next compose to drain a residue, so a partial non-blocking write would
+    // truncate a wide frame. A blocking writer writes the whole frame in one
+    // pass — no residue, no truncation.
+    explicit Writer(platform::NativeHandle h, bool nonblocking = true) noexcept;
     Writer() noexcept : handle_(platform::invalid_handle) {
         ops_.reserve(kOpsReserveHint);
     }

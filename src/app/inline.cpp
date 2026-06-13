@@ -23,7 +23,7 @@ int detect_terminal_height() noexcept {
 
 
 LiveState render_live(const Element& root, int width, StylePool& pool,
-                      LiveState st) {
+                      LiveState st, bool blocking) {
     constexpr int kMinHeight = 500;
 
     if (st.canvas_width_ != width) {
@@ -53,7 +53,7 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
     // residue buffer across render_live invocations — critical
     // for slow ttys where a single frame may not drain in one call.
     if (!st.writer_.has_value()) {
-        st.writer_.emplace(platform::stdout_handle());
+        st.writer_.emplace(platform::stdout_handle(), /*nonblocking=*/!blocking);
     }
 
     // Full canvas clear every frame so every cell starts blank and any
@@ -85,6 +85,10 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
     const TermRows term_h = query_term_rows(platform::stdout_handle());
     const auto     rows   = content_rows(st.canvas_);
 
+    // DEC-2026 synchronized output. Disable with MAYA_NO_SYNC=1 for terminals
+    // that mishandle it (the box renders torn/ragged). Read once per process.
+    static const bool sync = (std::getenv("MAYA_NO_SYNC") == nullptr);
+
     // Witness Chain dispatch — same pattern as Runtime::render.
     st.frame_ = std::visit(
         [&](auto&& arm) -> inline_frame::InlineCoherence {
@@ -100,11 +104,11 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
             if constexpr (std::is_same_v<T, InlineFrame<Empty>>) {
                 auto fresh = std::move(arm).seed();
                 return lift(std::move(fresh).render(
-                    st.canvas_, rows, term_h, pool, *st.writer_, true));
+                    st.canvas_, rows, term_h, pool, *st.writer_, sync));
             }
             else if constexpr (std::is_same_v<T, InlineFrame<Fresh>>) {
                 return lift(std::move(arm).render(
-                    st.canvas_, rows, term_h, pool, *st.writer_, true));
+                    st.canvas_, rows, term_h, pool, *st.writer_, sync));
             }
             else if constexpr (std::is_same_v<T, InlineFrame<Synced>>) {
                 auto wit = arm.verify();
@@ -113,15 +117,15 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
                 }
                 return lift(std::move(arm).render(
                     st.canvas_, rows, term_h, pool, *st.writer_,
-                    *std::move(wit), true));
+                    *std::move(wit), sync));
             }
             else if constexpr (std::is_same_v<T, InlineFrame<Stale>>) {
                 return lift(std::move(arm).render(
-                    st.canvas_, rows, term_h, pool, *st.writer_, true));
+                    st.canvas_, rows, term_h, pool, *st.writer_, sync));
             }
             else if constexpr (std::is_same_v<T, InlineFrame<HardReset>>) {
                 return lift(std::move(arm).render(
-                    st.canvas_, rows, term_h, pool, *st.writer_, true));
+                    st.canvas_, rows, term_h, pool, *st.writer_, sync));
             }
             else {
                 static_assert(std::is_same_v<T, InlineFrame<Sealed>>);
@@ -140,13 +144,20 @@ void print(const Element& root) {
     StylePool pool;
     std::string buf;
     detail::LiveState st;
-    st = detail::render_live(root, width, pool, std::move(st));
+    st = detail::render_live(root, width, pool, std::move(st), /*blocking=*/true);
     // Restore DECAWM/cursor visibility owned by InlineFrameState.
     // compose_inline_frame leaves DECAWM off across frames to save
     // bytes on slow ttys; finalize emits the restore and consumes
     // the witness chain.
     buf.clear();
     std::move(st).finalize(buf);
+    // Never leave the terminal in DEC-2026 synchronized-update mode. The
+    // single-frame path can emit ?2026h (sync_start) without a guaranteed
+    // matching ?2026l reaching the wire; on terminals that honor ?2026
+    // (iTerm2, Kitty, WezTerm, Ghostty, VS Code) an unclosed block FREEZES
+    // the display until a timeout, so the printed frame looks truncated /
+    // "not built well". A redundant ?2026l is a harmless no-op everywhere.
+    buf += ansi::sync_end;
     if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);
@@ -157,9 +168,10 @@ void print(const Element& root, int width) {
     StylePool pool;
     std::string buf;
     detail::LiveState st;
-    st = detail::render_live(root, width, pool, std::move(st));
+    st = detail::render_live(root, width, pool, std::move(st), /*blocking=*/true);
     buf.clear();
     std::move(st).finalize(buf);
+    buf += ansi::sync_end;   // never leave the terminal in ?2026 sync mode
     if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);

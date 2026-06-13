@@ -962,23 +962,37 @@ compose_inline_frame_impl(const Canvas& canvas,
             && (y >= prev_visible_top)
             && (y <= new_visible_top);
 
+        // Compatibility repaint: redraw each changed row IN FULL from column
+        // 0, rather than positioning the cursor to the changed sub-span. The
+        // sub-span update needs mid-row cursor moves (cursor-forward / CHA)
+        // that some terminals — notably Zed's — mis-track, landing the update
+        // at the wrong column and tearing the frame. A full-row redraw uses
+        // only \r + content, exactly like the (working) static print path.
+        // Auto-enabled on Zed; force anywhere with MAYA_COMPAT_REPAINT=1.
+        static const bool full_row = [] {
+            if (std::getenv("MAYA_COMPAT_REPAINT")) return true;
+            const char* tp = std::getenv("TERM_PROGRAM");
+            return tp && std::string_view{tp} == "zed";
+        }();
+
         // Find the changed sub-span. For new rows (no prev), this is
         // [first_non_blank, last_non_blank+1). For the will-scroll-off
         // row, force a full-row consideration so any wire-vs-canvas
         // skew is corrected before the row leaves our control.
-        const int x_first_diff_raw = will_scroll_off
+        const bool whole_row = will_scroll_off || full_row;
+        const int x_first_diff_raw = whole_row
                                  ? 0
                                  : first_diff_col(cur_row, prev_row, W);
-        const int x_first_diff = will_scroll_off
+        const int x_first_diff = whole_row
                                  ? 0
                                  : snap_first_diff_left(x_first_diff_raw,
                                                         cur_row, prev_row, W);
 
         if (x_first_diff < W) {
-            const int x_last_diff_raw = will_scroll_off
+            const int x_last_diff_raw = whole_row
                                        ? W - 1
                                        : last_diff_col(cur_row, prev_row, W);
-            const int x_last_diff    = will_scroll_off
+            const int x_last_diff    = whole_row
                                        ? W - 1
                                        : snap_last_diff_right(x_last_diff_raw,
                                                               cur_row, prev_row, W);

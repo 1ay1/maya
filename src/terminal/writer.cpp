@@ -120,10 +120,10 @@ namespace detail {
 // so the user's shell — which shares the open file description with us —
 // doesn't inherit O_NONBLOCK on stdout after agentty exits.
 
-Writer::Writer(platform::NativeHandle h) noexcept : handle_(h) {
+Writer::Writer(platform::NativeHandle h, bool nonblocking) noexcept : handle_(h) {
     ops_.reserve(kOpsReserveHint);
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
-    if (h >= 0) {
+    if (nonblocking && h >= 0) {
         int prev = ::fcntl(h, F_GETFL);
         if (prev >= 0 && (prev & O_NONBLOCK) == 0) {
             if (::fcntl(h, F_SETFL, prev | O_NONBLOCK) == 0) {

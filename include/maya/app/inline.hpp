@@ -94,15 +94,19 @@ private:
     // render_live is the sole authorised mutator of these fields; the
     // live<> template loop chains LiveState values by move only.
     friend LiveState render_live(const Element& root, int width,
-                                 StylePool& pool, LiveState state);
+                                 StylePool& pool, LiveState state,
+                                 bool blocking);
 };
 
 // Render element → serialize → write to stdout, preserving stable rows
 // in scrollback. Consumes the state by value and returns the next one;
 // callers must chain by move (`state = render_live(..., std::move(state));`).
 [[nodiscard("render_live returns the next LiveState — dropping it loses the witness chain, the writer residue, and the cached canvas; the next frame will corrupt scrollback")]]
+// `blocking` = true uses a blocking writer (one-shot maya::print): the whole
+// frame is written in a single pass so a wide frame can't be truncated by a
+// non-blocking partial write that no later compose would drain.
 LiveState render_live(const Element& root, int width, StylePool& pool,
-                      LiveState state);
+                      LiveState state, bool blocking = false);
 
 } // namespace detail
 

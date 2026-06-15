@@ -696,6 +696,7 @@ auto Runtime::render(const Element& root) -> Status {
         // mouse, DSR answered).
         if (inline_top_row_ > 0) {
             const int h = rows.value();
+            inline_frame_rows_ = h;   // for out-of-frame mouse suppression
             if (inline_top_row_ + h - 1 > term_h.value())
                 inline_top_row_ = std::max(1, term_h.value() - h + 1);
         }
@@ -1223,6 +1224,7 @@ Runtime::Runtime(Runtime&& o) noexcept
     , parser_(std::move(o.parser_))
     , running_(o.running_)
     , inline_top_row_(o.inline_top_row_)
+    , inline_frame_rows_(o.inline_frame_rows_)
     , startup_events_(std::move(o.startup_events_))
 {
     mouse_enabled_ = std::exchange(o.mouse_enabled_, false);
@@ -1250,6 +1252,7 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         parser_            = std::move(o.parser_);
         running_           = o.running_;
         inline_top_row_    = o.inline_top_row_;
+        inline_frame_rows_ = o.inline_frame_rows_;
         startup_events_    = std::move(o.startup_events_);
         mouse_enabled_     = std::exchange(o.mouse_enabled_, false);
     }

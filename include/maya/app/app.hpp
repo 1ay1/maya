@@ -372,6 +372,10 @@ public:
     [[nodiscard]] int inline_mouse_dy() const noexcept {
         return (is_inline() && inline_top_row_ > 0) ? inline_top_row_ - 1 : 0;
     }
+    // Content height (rows) of the last inline frame; used to drop mouse
+    // events that fall outside the frame so the app doesn't react to clicks
+    // in the surrounding scrollback. 0 = unknown (don't suppress).
+    [[nodiscard]] int inline_frame_rows() const noexcept { return inline_frame_rows_; }
 
     // Does the host terminal honor DEC mode 2026 (synchronized update)?
     // Detected once at Runtime::create() via env-var heuristic; immutable
@@ -762,6 +766,7 @@ private:
     // learned via a cursor-position query (DSR) at create() when mouse is
     // enabled. 0 = fullscreen or unknown (query unanswered) => no offset.
     int inline_top_row_ = 0;
+    int inline_frame_rows_ = 0;
     // Events that arrived interleaved with the DSR reply during create()'s
     // cursor-position query; delivered ahead of fresh input on the next
     // read_events() so a keypress in that window isn't dropped.
@@ -1370,9 +1375,14 @@ void run(RunConfig cfg = {}) {
             auto events = rt.read_events();
             if (!events) break;
             for (auto& ev : *events) {
-                if (const int dy = rt.inline_mouse_dy(); dy > 0)
-                    if (auto* me = std::get_if<MouseEvent>(&ev))
-                        me->y = Rows{me->y.value - dy};  // <=0 when above the frame -> stays out of bounds
+                if (const int dy = rt.inline_mouse_dy(); dy > 0) {
+                    if (auto* me = std::get_if<MouseEvent>(&ev)) {
+                        const int fr = me->y.value - dy;
+                        const int fh = rt.inline_frame_rows();
+                        if (fh > 0 && (fr < 1 || fr > fh)) continue;
+                        me->y = Rows{fr};
+                    }
+                }
                 // Auto-dispatch to scroll states painted in the
                 // previous frame (default behavior — opt out per
                 // state with auto_dispatch = false).
@@ -1405,9 +1415,14 @@ void run(RunConfig cfg = {}) {
 
         // Flush parser timeouts (e.g., bare Escape)
         for (auto& ev : rt.flush_timeouts()) {
-            if (const int dy = rt.inline_mouse_dy(); dy > 0)
-                if (auto* me = std::get_if<MouseEvent>(&ev))
-                    me->y = Rows{me->y.value - dy};  // <=0 when above the frame -> stays out of bounds
+            if (const int dy = rt.inline_mouse_dy(); dy > 0) {
+                if (auto* me = std::get_if<MouseEvent>(&ev)) {
+                    const int fr = me->y.value - dy;
+                    const int fh = rt.inline_frame_rows();
+                    if (fh > 0 && (fr < 1 || fr > fh)) continue;
+                    me->y = Rows{fr};
+                }
+            }
             for (auto* s : detail::live_scroll_states()) {
                 if (s && s->auto_dispatch) (void)s->handle_event(ev);
             }
@@ -1722,8 +1737,12 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         // mouse_pos() all line up with the rendered UI. No-op when fullscreen.
         Event ev = ev_in;
         if (const int dy = rt.inline_mouse_dy(); dy > 0) {
-            if (auto* me = std::get_if<MouseEvent>(&ev))
-                me->y = Rows{me->y.value - dy};  // <=0 when above the frame -> stays out of bounds
+            if (auto* me = std::get_if<MouseEvent>(&ev)) {
+                const int fr = me->y.value - dy;          // frame-relative row
+                const int fh = rt.inline_frame_rows();
+                if (fh > 0 && (fr < 1 || fr > fh)) return; // outside the frame: ignore
+                me->y = Rows{fr};
+            }
         }
         // Auto-dispatch to scroll states that were painted in the
         // previous frame. Any state with auto_dispatch = true (default)

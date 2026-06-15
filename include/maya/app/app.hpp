@@ -377,6 +377,19 @@ public:
     // in the surrounding scrollback. 0 = unknown (don't suppress).
     [[nodiscard]] int inline_frame_rows() const noexcept { return inline_frame_rows_; }
 
+    // Enable/disable terminal mouse reporting at runtime. Drives the public
+    // maya::set_mouse(bool); keeps mouse_enabled_ in sync so cleanup() emits
+    // the matching disable on exit.
+    void apply_mouse(bool on) noexcept {
+        if (output_handle_ == platform::invalid_handle) return;
+        static constexpr std::string_view kOn  =
+            "\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h";
+        static constexpr std::string_view kOff =
+            "\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+        (void)platform::io_write_all(output_handle_, on ? kOn : kOff);
+        mouse_enabled_ = on;
+    }
+
     // Does the host terminal honor DEC mode 2026 (synchronized update)?
     // Detected once at Runtime::create() via env-var heuristic; immutable
     // afterwards.
@@ -1284,6 +1297,10 @@ void run(RunConfig cfg = {}) {
 
     // ── Main event loop ──────────────────────────────────────────────────
     while (rt.is_running()) {
+        if (detail::mouse_request >= 0) {
+            rt.apply_mouse(detail::mouse_request != 0);
+            detail::mouse_request = -1;
+        }
         // Compute poll timeout: min of 100ms, fps frame time, nearest timer.
         // Zero on first frame so the UI appears immediately (Windows CMD
         // has no initial event to wake the poll — without this the first
@@ -1702,6 +1719,7 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
     }
     auto rt = std::move(*result);
     detail::quit_requested = false;
+    detail::mouse_request = -1;
 
     const auto base_timeout = cfg.fps > 0
         ? std::chrono::milliseconds(1000 / std::max(1, cfg.fps))
@@ -1769,6 +1787,11 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
     };
 
     while (rt.is_running()) {
+        // Apply a pending runtime mouse toggle (maya::set_mouse).
+        if (detail::mouse_request >= 0) {
+            rt.apply_mouse(detail::mouse_request != 0);
+            detail::mouse_request = -1;
+        }
         // Zero timeout when a render is pending so the first frame appears
         // immediately (critical on Windows CMD where no initial event wakes
         // the poll).

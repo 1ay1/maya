@@ -2,6 +2,7 @@
 
 #include <cstdio>
 
+#include "maya/core/expected.hpp"  // for ErrorKind::WouldBlock (residue drain)
 #include "maya/platform/io.hpp"
 #include "maya/render/diff.hpp"    // for detail::encode_utf8
 #include "maya/render/renderer.hpp" // for render_tree
@@ -26,6 +27,50 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
                       LiveState st, bool blocking) {
     constexpr int kMinHeight = 500;
 
+    // Lazy-init the LiveState's Writer on stdout. Owning it here (rather
+    // than constructing per-call) preserves the writer's residue buffer
+    // across render_live invocations — critical for slow ttys where a
+    // single frame may not drain in one call.
+    if (!st.writer_.has_value()) {
+        st.writer_.emplace(platform::stdout_handle(), /*nonblocking=*/!blocking);
+    }
+
+    // ── Backpressure via the non-blocking writer ────
+    // The output fd is O_NONBLOCK. On a congested tty the previous frame
+    // may have parked bytes in the writer's residue. Drain those first; if
+    // the wire still won't take them, DEFER this frame — do not compose.
+    // compose_inline_frame would otherwise update prev_cells to reflect a
+    // frame the wire never received (breaking the diff), and — fatally for
+    // a free-running animation — the residue would grow without bound:
+    // a slow terminal turns a full-screen animation into a memory leak.
+    // (App::render_frame's inline path already guards this way; the live()
+    // loop did not, which is the leak.) A deferred frame costs one loop
+    // tick of delay, not an inflated next-frame cost: prev_cells never
+    // lies, so the next compose produces the same bounded diff.
+    if (st.writer_->has_residue()) {
+        auto d = st.writer_->try_drain_residue();
+        if (!d) {
+            if (d.error().kind == ErrorKind::WouldBlock) {
+                return st;   // wire still backed up — skip composing this frame
+            }
+            // Hard I/O error: drop the now-meaningless residue and force a
+            // full reset on the next successful compose.
+            st.writer_->discard_residue();
+            st.frame_ = std::visit(
+                [](auto&& arm) -> inline_frame::InlineCoherence {
+                    using T = std::decay_t<decltype(arm)>;
+                    if constexpr (std::is_same_v<T,
+                            inline_frame::InlineFrame<inline_frame::Synced>>)
+                        return std::move(arm).demote_to_hard_reset();
+                    else if constexpr (std::is_same_v<T,
+                            inline_frame::InlineFrame<inline_frame::Stale>>)
+                        return std::move(arm).escalate_to_hard_reset();
+                    else
+                        return std::move(arm);
+                }, std::move(st.frame_));
+        }
+    }
+
     if (st.canvas_width_ != width) {
         int h = std::max(kMinHeight, st.canvas_.height());
         st.canvas_ = Canvas{width, h, &pool};
@@ -46,14 +91,6 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
             }, std::move(st.frame_));
     } else {
         st.canvas_.set_style_pool(&pool);
-    }
-
-    // Lazy-init the LiveState's Writer on stdout. Owning it here
-    // (rather than constructing per-call) preserves the writer's
-    // residue buffer across render_live invocations — critical
-    // for slow ttys where a single frame may not drain in one call.
-    if (!st.writer_.has_value()) {
-        st.writer_.emplace(platform::stdout_handle(), /*nonblocking=*/!blocking);
     }
 
     // Full canvas clear every frame so every cell starts blank and any

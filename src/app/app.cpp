@@ -1222,6 +1222,8 @@ Runtime::Runtime(Runtime&& o) noexcept
     , resize_generation_(o.resize_generation_)
     , parser_(std::move(o.parser_))
     , running_(o.running_)
+    , inline_top_row_(o.inline_top_row_)
+    , startup_events_(std::move(o.startup_events_))
 {
     mouse_enabled_ = std::exchange(o.mouse_enabled_, false);
 }
@@ -1247,6 +1249,8 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         resize_generation_ = o.resize_generation_;
         parser_            = std::move(o.parser_);
         running_           = o.running_;
+        inline_top_row_    = o.inline_top_row_;
+        startup_events_    = std::move(o.startup_events_);
         mouse_enabled_     = std::exchange(o.mouse_enabled_, false);
     }
     return *this;

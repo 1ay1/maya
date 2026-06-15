@@ -1372,7 +1372,7 @@ void run(RunConfig cfg = {}) {
             for (auto& ev : *events) {
                 if (const int dy = rt.inline_mouse_dy(); dy > 0)
                     if (auto* me = std::get_if<MouseEvent>(&ev))
-                        me->y = Rows{me->y.value - dy > 0 ? me->y.value - dy : 1};
+                        me->y = Rows{me->y.value - dy};  // <=0 when above the frame -> stays out of bounds
                 // Auto-dispatch to scroll states painted in the
                 // previous frame (default behavior — opt out per
                 // state with auto_dispatch = false).
@@ -1407,7 +1407,7 @@ void run(RunConfig cfg = {}) {
         for (auto& ev : rt.flush_timeouts()) {
             if (const int dy = rt.inline_mouse_dy(); dy > 0)
                 if (auto* me = std::get_if<MouseEvent>(&ev))
-                    me->y = Rows{me->y.value - dy > 0 ? me->y.value - dy : 1};
+                    me->y = Rows{me->y.value - dy};  // <=0 when above the frame -> stays out of bounds
             for (auto* s : detail::live_scroll_states()) {
                 if (s && s->auto_dispatch) (void)s->handle_event(ev);
             }
@@ -1723,7 +1723,7 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         Event ev = ev_in;
         if (const int dy = rt.inline_mouse_dy(); dy > 0) {
             if (auto* me = std::get_if<MouseEvent>(&ev))
-                me->y = Rows{me->y.value - dy > 0 ? me->y.value - dy : 1};
+                me->y = Rows{me->y.value - dy};  // <=0 when above the frame -> stays out of bounds
         }
         // Auto-dispatch to scroll states that were painted in the
         // previous frame. Any state with auto_dispatch = true (default)

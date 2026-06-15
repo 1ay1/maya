@@ -159,6 +159,14 @@ if (auto pos = mouse_pos(ev)) {
 }
 ```
 
+Coordinates are **frame-relative**, not absolute. In inline mode (`Mode::Inline`)
+your UI is drawn partway down the terminal, but the runtime translates the raw
+SGR position into your frame's coordinate space (it learns the frame's top row
+via a one-time cursor-position query when mouse is enabled). So a click on the
+top-left cell reports `(1, 1)` whether the app is at the top of the screen or 20
+rows down — identical to fullscreen mode. Mouse events that land **outside** the
+frame (in the surrounding scrollback) are dropped before reaching your handler.
+
 ### Raw Mouse Access
 
 ```cpp
@@ -193,6 +201,35 @@ canvas_run(
 ```
 
 For Program apps, mouse events are handled via `Sub<Msg>::on_mouse()` in `subscribe()`.
+
+### Mouse capture vs. native terminal scroll — `set_mouse()`
+
+While mouse reporting is on, the terminal delivers the scroll **wheel** to your
+app (as mouse buttons), so the terminal's own scrollback stops scrolling until
+the app exits. This is the terminal mouse protocol, not maya — no app can have
+in-app clicks *and* native scrollback at the same time. Capture is always
+released on exit.
+
+When you need to switch between the two at runtime, call `maya::set_mouse()`
+(declared in `maya/app/quit.hpp`, alongside `maya::quit()`):
+
+```cpp
+#include "maya/app/quit.hpp"
+
+run({.mouse = true}, [&](const Event& ev) {
+    if (key(ev, 'm')) maya::set_mouse(false);  // release wheel → terminal scrolls
+    if (key(ev, 'M')) maya::set_mouse(true);   // recapture clicks/drag/wheel
+    if (key(ev, 'q')) maya::quit();
+    return true;
+}, render);
+```
+
+`set_mouse(bool)` sets a pending request that the `run()` / `Program` loop
+applies on its next iteration (mirroring `quit()`), emitting the enable/disable
+sequence and keeping the runtime's mouse state in sync so the terminal is
+correctly restored on exit. It also works from a `Program`'s `update()` /
+`subscribe()`. If an app doesn't need the mouse, simply leave `mouse = false`
+(the default) and native terminal scroll works untouched.
 
 ## Resize Events
 

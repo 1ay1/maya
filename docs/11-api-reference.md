@@ -144,6 +144,23 @@ Event function: `(const Event&) -> bool` (returning `false` quits) or
 
 Render function: `() -> Element` or `(const Ctx&) -> Element`.
 
+### Global control — `quit()` / `set_mouse()`
+
+```cpp
+// maya/app/quit.hpp
+void quit() noexcept;            // request a clean exit from run() / live()
+void set_mouse(bool on) noexcept; // toggle mouse capture at runtime
+```
+
+`set_mouse()` flips terminal mouse reporting on/off while the app runs — off
+hands the scroll wheel back to the terminal (native scrollback), on recaptures
+clicks/drag/wheel. The request is applied on the next loop iteration and keeps
+the runtime's mouse state in sync for a clean terminal restore on exit. Works
+from `run()` event functions and from a `Program`'s `update()`/`subscribe()`.
+For Program apps `Cmd<Msg>::quit()` is preferred over `quit()`; there is no
+`Cmd` form of `set_mouse()` yet, so call the free function. See
+[Events → Mouse capture vs. native terminal scroll](06-events.md).
+
 ### Ctx
 
 ```cpp

@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <format>
+#include <thread>   // DSR cursor-position query: brief sleep between polls
 
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     #include <unistd.h>   // isatty, getpid, fileno
@@ -154,6 +155,61 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     (void)rt;   // is_inline()-conditional init no longer needed; the default
                 // `InlineFrame<Empty>{}` field initializer covers it.
 
+    // ── Inline mouse anchor (cursor-position query / DSR) ────────────────
+    // In inline mode the frame is drawn partway down the terminal, but SGR
+    // mouse reports are ABSOLUTE. Ask the terminal where the cursor is right
+    // now (= where the first frame's top row will land) so the run loop can
+    // translate mouse coordinates into frame-relative space. Done here, once,
+    // synchronously: during this exchange we KNOW a Cursor-Position Report is
+    // coming, so parsing `CSI <row>;<col> R` is unambiguous (in the normal
+    // input stream that form collides with modified-F3, which is why we do
+    // NOT route it through the parser). Bounded + best-effort: if the
+    // terminal never answers, inline_top_row_ stays 0 → no offset → behavior
+    // is identical to before. Only runs for inline + mouse.
+    if (cfg.mouse && rt.inline_terminal_) {
+        (void)platform::io_write_all(output_h, "\x1b[6n");
+        std::string resp;
+        // Extract a complete `ESC [ rows ; cols R` from `buf`, returning rows
+        // and erasing the matched bytes; 0 if none complete yet.
+        auto take_cpr = [](std::string& buf) -> int {
+            for (std::size_t i = 0; i + 1 < buf.size(); ++i) {
+                if (buf[i] != '\x1b' || buf[i + 1] != '[') continue;
+                std::size_t j = i + 2; long row = 0; bool digits = false;
+                for (; j < buf.size() && buf[j] >= '0' && buf[j] <= '9'; ++j) {
+                    row = row * 10 + (buf[j] - '0'); digits = true;
+                }
+                if (!digits) continue;                 // not a numeric CSI
+                if (j >= buf.size()) return 0;          // incomplete → wait
+                if (buf[j] != ';') continue;            // some other CSI
+                for (++j; j < buf.size() && buf[j] >= '0' && buf[j] <= '9'; ++j) {}
+                if (j >= buf.size()) return 0;          // incomplete → wait
+                if (buf[j] != 'R') continue;            // not a CPR
+                buf.erase(i, j - i + 1);                // splice the CPR out
+                return static_cast<int>(row);
+            }
+            return 0;
+        };
+        const auto deadline = std::chrono::steady_clock::now()
+                            + std::chrono::milliseconds(150);
+        int row = 0;
+        while (std::chrono::steady_clock::now() < deadline) {
+            auto data = rt.inline_terminal_->read_raw();
+            if (data && !data->empty()) {
+                resp += *data;
+                if ((row = take_cpr(resp)) > 0) break;
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        }
+        if (row > 0) rt.inline_top_row_ = row;
+        // Any bytes that weren't the CPR (e.g. a keypress during the query)
+        // go through the parser now and are replayed on the first
+        // read_events() so no input is dropped.
+        if (!resp.empty())
+            for (auto& e : rt.parser_.feed(resp))
+                rt.startup_events_.push_back(std::move(e));
+    }
+
     return ok(std::move(rt));
 }
 
@@ -263,6 +319,10 @@ void Runtime::handle_resize() {
 
 auto Runtime::read_events() -> Result<std::vector<Event>> {
     std::vector<Event> result;
+
+    // Replay events that arrived during create()'s cursor-position query
+    // (a keypress interleaved with the DSR reply) ahead of fresh input.
+    if (!startup_events_.empty()) result.swap(startup_events_);
 
     if (alt_terminal_) {
         MAYA_TRY_DECL(auto data, alt_terminal_->read_raw());
@@ -628,6 +688,17 @@ auto Runtime::render(const Element& root) -> Status {
         const TermRows term_h = query_term_rows(output_handle_);
         const auto rows   = content_rows(canvas_);   // typed witness
         auto t_cf0 = std::chrono::steady_clock::now();
+
+        // Maintain the inline mouse anchor: if the frame no longer fits below
+        // its recorded top row, the terminal scrolled it up to make room, so
+        // move the anchor up by the overflow. Keeps mouse-row translation
+        // correct as content grows. No-op unless we have an anchor (inline +
+        // mouse, DSR answered).
+        if (inline_top_row_ > 0) {
+            const int h = rows.value();
+            if (inline_top_row_ + h - 1 > term_h.value())
+                inline_top_row_ = std::max(1, term_h.value() - h + 1);
+        }
 
         // Coherence state index before the visit, so the prof log can
         // flag any frame that DIDN'T stay Synced→Synced — those are the

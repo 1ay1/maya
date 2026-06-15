@@ -360,6 +360,19 @@ public:
     [[nodiscard]] const Theme& theme() const noexcept { return theme_; }
     [[nodiscard]] bool is_inline() const noexcept { return inline_terminal_.has_value(); }
 
+    // Row offset for translating absolute SGR mouse coordinates into
+    // frame-relative coordinates in inline mode. In inline mode the frame is
+    // drawn partway down the terminal (at inline_top_row_, learned via a
+    // cursor-position query at create()), but the terminal reports mouse
+    // events in absolute rows. Callers subtract this from a mouse event's row
+    // so hit-testing (scroll states, on_click, mouse_pos) lines up with the
+    // rendered UI, exactly as it already does in fullscreen mode. Returns 0
+    // when fullscreen, or when the anchor is unknown (query unanswered), in
+    // which case behavior is unchanged.
+    [[nodiscard]] int inline_mouse_dy() const noexcept {
+        return (is_inline() && inline_top_row_ > 0) ? inline_top_row_ - 1 : 0;
+    }
+
     // Does the host terminal honor DEC mode 2026 (synchronized update)?
     // Detected once at Runtime::create() via env-var heuristic; immutable
     // afterwards.
@@ -744,6 +757,15 @@ private:
     // -- State ----------------------------------------------------------------
     InputParser parser_;
     bool        running_ = true;
+
+    // Inline-mode mouse anchor: 1-based terminal row of the frame's top,
+    // learned via a cursor-position query (DSR) at create() when mouse is
+    // enabled. 0 = fullscreen or unknown (query unanswered) => no offset.
+    int inline_top_row_ = 0;
+    // Events that arrived interleaved with the DSR reply during create()'s
+    // cursor-position query; delivered ahead of fresh input on the next
+    // read_events() so a keypress in that window isn't dropped.
+    std::vector<Event> startup_events_;
 };
 
 } // namespace detail
@@ -1348,6 +1370,9 @@ void run(RunConfig cfg = {}) {
             auto events = rt.read_events();
             if (!events) break;
             for (auto& ev : *events) {
+                if (const int dy = rt.inline_mouse_dy(); dy > 0)
+                    if (auto* me = std::get_if<MouseEvent>(&ev))
+                        me->y = Rows{me->y.value - dy > 0 ? me->y.value - dy : 1};
                 // Auto-dispatch to scroll states painted in the
                 // previous frame (default behavior — opt out per
                 // state with auto_dispatch = false).
@@ -1380,6 +1405,9 @@ void run(RunConfig cfg = {}) {
 
         // Flush parser timeouts (e.g., bare Escape)
         for (auto& ev : rt.flush_timeouts()) {
+            if (const int dy = rt.inline_mouse_dy(); dy > 0)
+                if (auto* me = std::get_if<MouseEvent>(&ev))
+                    me->y = Rows{me->y.value - dy > 0 ? me->y.value - dy : 1};
             for (auto* s : detail::live_scroll_states()) {
                 if (s && s->auto_dispatch) (void)s->handle_event(ev);
             }
@@ -1688,7 +1716,15 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
     Element last_root;   // default = empty TextElement; only used to satisfy
     bool    have_root = false;   // rt.render()'s signature during a residue drain
 
-    auto dispatch = [&](const Event& ev) {
+    auto dispatch = [&](const Event& ev_in) {
+        // Inline mode: translate absolute SGR mouse row into a frame-relative
+        // row before hit-testing, so scroll states, the user's event_fn, and
+        // mouse_pos() all line up with the rendered UI. No-op when fullscreen.
+        Event ev = ev_in;
+        if (const int dy = rt.inline_mouse_dy(); dy > 0) {
+            if (auto* me = std::get_if<MouseEvent>(&ev))
+                me->y = Rows{me->y.value - dy > 0 ? me->y.value - dy : 1};
+        }
         // Auto-dispatch to scroll states that were painted in the
         // previous frame. Any state with auto_dispatch = true (default)
         // gets the event before the user's event_fn — so scrollbars

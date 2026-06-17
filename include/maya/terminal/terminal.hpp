@@ -25,6 +25,8 @@
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     #include <cerrno>       // errno, EINTR (for emergency_emit's retry loop)
     #include <unistd.h>     // ::write, STDOUT_FILENO
+    #include <csignal>      // sigaction, raise — restore tty on fatal signals
+    #include <termios.h>    // tcsetattr — restore cooked mode in emergency
 #endif
 
 #include "../core/expected.hpp"
@@ -65,6 +67,16 @@ struct EmergencyState {
     std::array<char, 128>       seq{};
     std::size_t                 seq_len{0};
     std::terminate_handler      prior_terminate{nullptr};
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    // Cooked termios to restore, so a crash/kill doesn't leave the tty in raw
+    // mode (no echo/line-editing). Set when raw mode is enabled.
+    bool                        have_termios{false};
+    int                         termios_fd{-1};
+    struct termios              cooked{};
+    // Prior dispositions for the fatal signals we hook, so we can chain to a
+    // host's handler (or the default) after restoring the terminal.
+    std::array<struct sigaction, 16> prior_signal{};
+#endif
 };
 
 inline EmergencyState& emergency_state() {
@@ -76,18 +88,26 @@ inline void emergency_emit() noexcept {
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     auto& s = emergency_state();
     if (!s.active.load(std::memory_order_acquire)) return;
-    if (s.fd < 0 || s.seq_len == 0) return;
-    // ::write is async-signal-safe. Short writes / EINTR are tolerable —
-    // anything is better than leaving the user's terminal raw.
-    std::size_t off = 0;
-    while (off < s.seq_len) {
-        auto n = ::write(s.fd, s.seq.data() + off, s.seq_len - off);
-        if (n < 0) {
-            if (errno == EINTR) continue;
-            break;
+    // Write the escape restore (alt-screen leave, mouse/paste/focus off, show
+    // cursor). ::write is async-signal-safe; short writes / EINTR are tolerable
+    // — anything beats leaving the user's terminal in alt-screen + raw.
+    if (s.fd >= 0 && s.seq_len > 0) {
+        std::size_t off = 0;
+        while (off < s.seq_len) {
+            auto n = ::write(s.fd, s.seq.data() + off, s.seq_len - off);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            if (n == 0) break;
+            off += static_cast<std::size_t>(n);
         }
-        if (n == 0) break;
-        off += static_cast<std::size_t>(n);
+    }
+    // Restore cooked termios so the shell isn't left without echo/line-editing.
+    // tcsetattr isn't on the strict async-signal-safe list, but in practice it
+    // works from a handler and a usable terminal is worth the pragmatism.
+    if (s.have_termios && s.termios_fd >= 0) {
+        while (::tcsetattr(s.termios_fd, TCSANOW, &s.cooked) < 0 && errno == EINTR) {}
     }
 #endif
 }
@@ -105,6 +125,41 @@ inline void emergency_atexit() noexcept {
     emergency_emit();
 }
 
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+// Fatal signals whose default action terminates the process WITHOUT running
+// atexit handlers or C++ destructors — so without this, a `kill`, a closed
+// terminal (SIGHUP), or a crash would strand the tty in alt-screen + raw +
+// mouse-reporting. We deliberately do NOT hook SIGINT: in raw mode ^C is
+// delivered as a byte (ISIG is off), and a Python/host runtime owns SIGINT for
+// graceful KeyboardInterrupt — hooking it here would break that.
+inline constexpr int kEmergencySignals[] = {
+    SIGHUP, SIGTERM, SIGQUIT, SIGSEGV, SIGABRT, SIGBUS, SIGFPE,
+};
+
+inline void emergency_signal_handler(int sig) noexcept {
+    emergency_emit();                       // restore tty (async-signal-safe-ish)
+    auto& s = emergency_state();
+    // Restore the prior disposition and re-raise, so a host's handler (crash
+    // reporter) or the default action (correct exit status / core dump) runs.
+    if (sig >= 0 && sig < static_cast<int>(std::size(s.prior_signal)))
+        (void)::sigaction(sig, &s.prior_signal[sig], nullptr);
+    else
+        (void)std::signal(sig, SIG_DFL);
+    (void)::raise(sig);
+}
+#endif
+
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+// Register the cooked termios to restore on an emergency exit. Called when raw
+// mode is enabled (POSIX only — Windows console restore rides the escape seq).
+inline void install_emergency_termios(int fd, const struct termios& cooked) noexcept {
+    auto& s = emergency_state();
+    s.cooked       = cooked;
+    s.termios_fd   = fd;
+    s.have_termios = true;
+}
+#endif
+
 inline void install_emergency_restore(std::string_view seq) noexcept {
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     auto& s = emergency_state();
@@ -112,13 +167,22 @@ inline void install_emergency_restore(std::string_view seq) noexcept {
     if (n > 0) std::memcpy(s.seq.data(), seq.data(), n);
     s.seq_len = n;
     s.fd      = STDOUT_FILENO;
-    // Hook terminate + atexit exactly once per process. set_terminate
-    // returns the prior handler; we chain to it after our restore so
-    // any host-installed crash reporter still fires.
+    // Hook terminate + atexit + fatal signals exactly once per process. We
+    // chain to prior handlers (set_terminate returns the old one; sigaction
+    // saves the old action) so a host crash reporter / signal handler still
+    // fires after we've restored the terminal.
     static std::once_flag installed;
     std::call_once(installed, [&]{
         s.prior_terminate = std::set_terminate(&emergency_terminate_handler);
         (void)std::atexit(&emergency_atexit);
+        struct sigaction sa{};
+        sa.sa_handler = &emergency_signal_handler;
+        ::sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_NODEFER;   // allow re-raise to reach the prior handler
+        for (int sig : kEmergencySignals) {
+            if (sig >= 0 && sig < static_cast<int>(std::size(s.prior_signal)))
+                (void)::sigaction(sig, &sa, &s.prior_signal[sig]);
+        }
     });
     s.active.store(true, std::memory_order_release);
 #else
@@ -269,15 +333,27 @@ public:
         // Mirrors the destructor's reverse sequence below.
         {
             std::string restore;
-            restore.reserve(64);
+            restore.reserve(96);
             restore += ansi::modify_other_keys_off;
             restore += ansi::kkp_pop;
             restore += ansi::disable_bracketed_paste;
+            // Mouse reporting is turned on by the Runtime (not here) when an
+            // app sets mouse=true, so the inline Terminal's RAII never sees it.
+            // Disable it in the emergency restore too — otherwise a crash/kill
+            // leaves the tty spewing mouse escapes. Harmless no-op if mouse was
+            // never enabled.
+            restore += ansi::disable_alt_scroll;
+            restore += ansi::disable_mouse;
             restore += "\x1b[?7h";    // DECAWM on
             restore += ansi::show_cursor;
             restore += ansi::reset;
             restore += "\r\n";
             detail::install_emergency_restore(restore);
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+            if constexpr (requires { self.backend_.cooked_termios(); })
+                detail::install_emergency_termios(self.backend_.input_handle(),
+                                                  self.backend_.cooked_termios());
+#endif
         }
         Terminal<InlineMode, Backend> result{PrivateTag{}, std::move(self.backend_)};
         self.moved_from_ = true;
@@ -322,6 +398,11 @@ public:
             restore += ansi::show_cursor;
             restore += ansi::alt_screen_leave;
             detail::install_emergency_restore(restore);
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+            if constexpr (requires { self.backend_.cooked_termios(); })
+                detail::install_emergency_termios(self.backend_.input_handle(),
+                                                  self.backend_.cooked_termios());
+#endif
         }
 
         Terminal<AltScreen, Backend> result{PrivateTag{}, std::move(self.backend_)};

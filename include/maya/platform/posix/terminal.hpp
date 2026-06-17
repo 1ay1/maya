@@ -102,6 +102,10 @@ public:
     [[nodiscard]] NativeHandle input_handle() const noexcept { return in_fd_; }
     [[nodiscard]] NativeHandle output_handle() const noexcept { return out_fd_; }
 
+    // The original cooked termios captured at open(), for the emergency
+    // restore path (so a crash/kill can put the tty back to cooked mode).
+    [[nodiscard]] const struct termios& cooked_termios() const noexcept { return original_; }
+
     // -- Move-only ------------------------------------------------------------
 
     PosixTerminal(PosixTerminal&& o) noexcept

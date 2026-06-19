@@ -186,7 +186,12 @@ inline void install_emergency_restore(std::string_view seq) noexcept {
         (void)std::atexit(&emergency_atexit);
         struct sigaction sa{};
         sa.sa_handler = &emergency_signal_handler;
-        ::sigemptyset(&sa.sa_mask);
+        // NB: unqualified, not ::sigemptyset — on macOS the sig*set() functions
+        // are macros (see <sys/signal.h>), and a global-scope `::` qualifier
+        // suppresses macro expansion, leaving `::(...)` which fails to compile
+        // ("expected id-expression before '('"). Unqualified, the macro expands
+        // on Darwin and still resolves to the global libc function on glibc.
+        sigemptyset(&sa.sa_mask);
         sa.sa_flags = SA_NODEFER;   // allow re-raise to reach the prior handler
         for (int sig : kEmergencySignals) {
             if (sig >= 0 && sig < static_cast<int>(std::size(s.prior_signal)))

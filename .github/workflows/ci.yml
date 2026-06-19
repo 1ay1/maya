@@ -1,0 +1,148 @@
+name: ci
+
+# Build maya and RUN ITS TEST SUITE on every push / PR across the three
+# supported toolchains. This is the correctness gate the project was missing.
+#
+# Jobs:
+#   build-test   — gcc-14 / clang-18 / MSVC, build all tests + ctest.
+#   sanitizers   — ASan+UBSan and TSan (gcc), the parser/writer/render path is
+#                  the most exposed to adversarial bytes.
+#   fuzz-smoke   — build the libFuzzer harnesses and run each for a few
+#                  seconds (a real fuzzing run is a scheduled job, see fuzz.yml).
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build+test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-gcc14
+            os: ubuntu-latest
+            cc: gcc-14
+            cxx: g++-14
+          - name: linux-clang18
+            os: ubuntu-latest
+            cc: clang-18
+            cxx: clang++-18
+          - name: macos-gcc
+            os: macos-14
+            cc: gcc-14
+            cxx: g++-14
+          - name: windows-msvc
+            os: windows-2022
+            cc: ""
+            cxx: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.cc }}" = "clang-18" ]; then
+            sudo apt-get install -y clang-18 cmake ninja-build
+          else
+            sudo apt-get install -y g++-14 cmake ninja-build
+          fi
+
+      - name: Install toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install gcc@14 cmake ninja || true
+
+      - name: Install Ninja (Windows)
+        if: runner.os == 'Windows'
+        uses: seanmiddleditch/gha-setup-ninja@v6
+
+      - name: Setup MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure
+        shell: bash
+        run: |
+          export CC="${{ matrix.cc }}" CXX="${{ matrix.cxx }}"
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMAYA_BUILD_TESTS=ON \
+            -DMAYA_BUILD_EXAMPLES=OFF \
+            -DMAYA_NATIVE_TUNING=OFF
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 120
+
+  sanitizers:
+    name: sanitizers (${{ matrix.san }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        san: ["address,undefined", "thread"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-14 cmake ninja-build
+      - name: Configure with sanitizer
+        env:
+          CC: gcc-14
+          CXX: g++-14
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMAYA_BUILD_TESTS=ON \
+            -DMAYA_BUILD_EXAMPLES=OFF \
+            -DMAYA_NATIVE_TUNING=OFF \
+            -DCMAKE_CXX_FLAGS="-fsanitize=${{ matrix.san }} -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=${{ matrix.san }}"
+      - name: Build
+        run: cmake --build build -j
+      - name: Test under sanitizer
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: ctest --test-dir build --output-on-failure --timeout 240
+
+  fuzz-smoke:
+    name: fuzz harness smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 cmake ninja-build
+      - name: Build fuzzers
+        env:
+          CC: clang-18
+          CXX: clang++-18
+        run: |
+          cmake -B fuzzbuild -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMAYA_BUILD_FUZZERS=ON \
+            -DMAYA_NATIVE_TUNING=OFF
+          cmake --build fuzzbuild -j
+      - name: Run each fuzzer briefly
+        run: |
+          for f in fuzzbuild/fuzz/fuzz_*; do
+            [ -x "$f" ] || continue
+            echo "::group::$(basename "$f")"
+            "$f" -max_total_time=20 -timeout=5 -rss_limit_mb=2048
+            echo "::endgroup::"
+          done

@@ -301,6 +301,24 @@ if(MAYA_BUILD_TESTS)
     endforeach()
 endif()
 
+# ── Fuzzers (libFuzzer; Clang only) ────────────────────────────────────────
+# Harnesses for the byte-parsing surfaces most exposed to adversarial input:
+# the terminal input parser, the writer's safe-break splitter, the OSC-52
+# base64 path, and the markdown engine. Build with Clang and a fuzzer
+# sanitizer; run via CI (.github/workflows/ci.yml fuzz-smoke job) or a
+# scheduled long run.
+#
+#   CC=clang CXX=clang++ cmake -B fuzzbuild -DMAYA_BUILD_FUZZERS=ON
+#   cmake --build fuzzbuild -j
+#   ./fuzzbuild/fuzz/fuzz_input -max_total_time=60
+option(MAYA_BUILD_FUZZERS "Build libFuzzer harnesses (Clang only)" OFF)
+if(MAYA_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "MAYA_BUILD_FUZZERS requires Clang (libFuzzer).")
+    endif()
+    add_subdirectory(fuzz)
+endif()
+
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 

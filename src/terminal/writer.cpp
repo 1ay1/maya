@@ -40,16 +40,17 @@ namespace detail {
                 // CSI … final-byte 0x40–0x7E. Parameter bytes 0x30–0x3F,
                 // intermediate 0x20–0x2F, final 0x40–0x7E.
                 std::size_t k = pos + 2;
+                bool found_final = false;
                 while (k < n) {
                     const auto cb = static_cast<unsigned char>(data[k]);
-                    if (cb >= 0x40 && cb <= 0x7E) { ++k; break; }
+                    if (cb >= 0x40 && cb <= 0x7E) { ++k; found_final = true; break; }
                     ++k;
                 }
-                if (k > n || (k <= n && k > 0
-                              && (static_cast<unsigned char>(data[k - 1]) < 0x40
-                                  || static_cast<unsigned char>(data[k - 1]) > 0x7E)))
-                {
-                    // Reached end without a final byte — incomplete.
+                if (!found_final) {
+                    // Reached end of buffer (or the bare "\x1b[" prefix with
+                    // no bytes after it) without a CSI final byte — the
+                    // sequence is incomplete. Stop here so the writer never
+                    // ships a CSI split across the wire.
                     break;
                 }
                 pos = k;

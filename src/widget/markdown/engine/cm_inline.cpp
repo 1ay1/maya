@@ -42,6 +42,7 @@ struct Node {
     bool can_close = false;
     bool active = true;      // for link openers
     bool is_image = false;   // for openers
+    bool removed = false;     // tombstone: consumed by emphasis, skip everywhere
     std::size_t text_pos = 0; // for [ / ![ openers: byte offset of label content
     std::size_t orig_count = 0;
     int emph_depth = 0;       // emphasis nesting depth of this node
@@ -62,6 +63,7 @@ public:
         // collect output, skipping fully-consumed delimiters
         std::vector<md::Inline> out;
         for (auto& n : nodes_) {
+            if (n.removed) continue;
             if (n.is_delim && n.delim_count > 0) {
                 // leftover delimiter run → literal text
                 std::string lit(static_cast<std::size_t>(n.delim_count), n.delim_char);
@@ -765,6 +767,7 @@ private:
         std::vector<md::Inline> out;
         for (std::size_t k = static_cast<std::size_t>(from); k < nodes_.size(); ++k) {
             Node& n = nodes_[k];
+            if (n.removed) continue;
             if (n.is_delim && n.delim_count > 0) {
                 out.push_back(md::Text{std::string(static_cast<std::size_t>(n.delim_count), n.delim_char)});
             } else if (n.is_delim && (n.delim_char == '[' || n.delim_char == '!')) {
@@ -793,7 +796,21 @@ private:
     void process_emphasis(std::size_t stack_bottom) {
         // walk delimiters from stack_bottom forward looking for closers
         std::size_t i = stack_bottom;
-        // openers_bottom per delim-char/length-mod
+        // openers_bottom (CommonMark §6.2): for each (delim_char, can_open,
+        // length%3) class, remember the position below which no opener was
+        // found for a previous closer of the same class. A failed closer
+        // search never re-scans that exhausted prefix again, turning the
+        // pathological O(n²) walk on inputs like `*a*a*a…` into O(n).
+        // Index: char (* / _) × can_open(0/1) × len%3 (0/1/2) = 12 slots.
+        std::size_t openers_bottom[2][2][3];
+        for (auto& a : openers_bottom)
+            for (auto& b : a)
+                for (auto& v : b) v = stack_bottom;
+        auto ob_slot = [&](const Node& n) -> std::size_t& {
+            std::size_t ci = (n.delim_char == '_') ? 1 : 0;
+            std::size_t co = n.can_open ? 1 : 0;
+            return openers_bottom[ci][co][n.orig_count % 3];
+        };
         while (i < nodes_.size()) {
             Node& closer = nodes_[i];
             if (!closer.is_delim || !closer.can_close ||
@@ -802,13 +819,16 @@ private:
                 ++i;
                 continue;
             }
-            // find matching opener walking back
+            // find matching opener walking back, but not below the recorded
+            // bottom for this closer's class.
+            std::size_t floor = ob_slot(closer);
+            if (floor < stack_bottom) floor = stack_bottom;
             int j = static_cast<int>(i) - 1;
             int found = -1;
-            while (j >= static_cast<int>(stack_bottom)) {
+            while (j >= static_cast<int>(floor)) {
                 Node& op = nodes_[static_cast<std::size_t>(j)];
-                if (op.is_delim && op.can_open && op.delim_char == closer.delim_char &&
-                    op.delim_count > 0) {
+                if (!op.removed && op.is_delim && op.can_open &&
+                    op.delim_char == closer.delim_char && op.delim_count > 0) {
                     // rule of 3
                     bool ok = true;
                     if ((closer.can_open || op.can_close)) {
@@ -820,7 +840,15 @@ private:
                 }
                 --j;
             }
-            if (found < 0) { ++i; continue; }
+            if (found < 0) {
+                // No opener for this closer's class above the floor: record the
+                // floor so future closers of this class skip the dead prefix.
+                // A closer that cannot also open can never become an opener,
+                // so nothing below it will ever match — advance the bottom to i.
+                ob_slot(closer) = i;
+                ++i;
+                continue;
+            }
 
             Node& op = nodes_[static_cast<std::size_t>(found)];
             int use = (op.delim_count >= 2 && closer.delim_count >= 2) ? 2 : 1;
@@ -833,13 +861,16 @@ private:
             constexpr int kMaxEmphasisDepth = 16;
             int inner_depth = 0;
             for (std::size_t k = static_cast<std::size_t>(found) + 1; k < i; ++k)
-                inner_depth = std::max(inner_depth, nodes_[k].emph_depth);
+                if (!nodes_[k].removed)
+                    inner_depth = std::max(inner_depth, nodes_[k].emph_depth);
             if (inner_depth >= kMaxEmphasisDepth) { ++i; continue; }
 
-            // collect inner nodes between op and closer
+            // collect inner nodes between op and closer (skipping tombstones),
+            // tombstoning each as we go.
             std::vector<md::Inline> inner;
             for (std::size_t k = static_cast<std::size_t>(found) + 1; k < i; ++k) {
                 Node& n = nodes_[k];
+                if (n.removed) continue;
                 if (n.is_delim && n.delim_count > 0) {
                     inner.push_back(md::Text{std::string(static_cast<std::size_t>(n.delim_count), n.delim_char)});
                 } else if (n.is_delim) {
@@ -848,6 +879,7 @@ private:
                 } else {
                     inner.push_back(std::move(n.span));
                 }
+                n.removed = true;
             }
             inner = merge_text(std::move(inner));
 
@@ -858,23 +890,25 @@ private:
             // consume delimiters
             op.delim_count -= use;
             closer.delim_count -= use;
+            int closer_left = closer.delim_count;  // capture before any insert
+                                                   // invalidates the reference
 
-            // replace the inner range [found+1, i) with the emphasis node.
-            // Erase inner nodes, insert node, fix index i.
-            nodes_.erase(nodes_.begin() + found + 1, nodes_.begin() + i);
+            // Replace the inner range with the emphasis node WITHOUT shifting
+            // the vector tail (which made the whole pass O(n²)). We reuse the
+            // first inner slot (found+1) for the emphasis node when one exists;
+            // it was just tombstoned above. If the inner range is empty
+            // (adjacent delimiters, e.g. `****`), fall back to a single insert.
             Node en{std::move(node)};
             en.emph_depth = inner_depth + 1;
-            nodes_.insert(nodes_.begin() + found + 1, std::move(en));
-            i = static_cast<std::size_t>(found) + 1;
-            // adjust delim text representations
-            // re-evaluate closer at new index
-            // (closer moved to found+2 if it still has count)
-            // simplest: restart from found
-            if (op.delim_count == 0) {
-                // opener exhausted; leave as zero-count (skipped in output)
+            if (i > static_cast<std::size_t>(found) + 1) {
+                nodes_[static_cast<std::size_t>(found) + 1] = std::move(en);
+            } else {
+                nodes_.insert(nodes_.begin() + found + 1, std::move(en));
+                ++i;  // everything from the closer onward shifted up by one
             }
-            // continue scanning from the emphasis node forward
-            ++i;
+            // Re-process the closer in place (it may still have delimiters to
+            // pair with an earlier opener). Do NOT advance past it.
+            if (closer_left == 0) ++i;
         }
     }
 

@@ -299,6 +299,23 @@ if(MAYA_BUILD_TESTS)
         add_test(NAME ${tgt} COMMAND ${tgt})
         set_tests_properties(${tgt} PROPERTIES TIMEOUT 120)
     endforeach()
+
+    # PTY-driven terminal-restore test (POSIX only). Verifies maya puts the
+    # tty back (cooked termios + restore escapes) on every exit route,
+    # including SIGINT — guards the chained emergency handler.
+    if(UNIX)
+        add_executable(test_terminal_restore tests/test_terminal_restore.cpp)
+        target_link_libraries(test_terminal_restore PRIVATE maya)
+        target_compile_definitions(test_terminal_restore PRIVATE
+            MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_options(test_terminal_restore PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-O2>)
+        if(NOT APPLE)
+            target_link_libraries(test_terminal_restore PRIVATE util)
+        endif()
+        add_test(NAME test_terminal_restore COMMAND test_terminal_restore)
+        set_tests_properties(test_terminal_restore PROPERTIES TIMEOUT 120)
+    endif()
 endif()
 
 # ── Fuzzers (libFuzzer; Clang only) ────────────────────────────────────────

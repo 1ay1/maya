@@ -129,11 +129,20 @@ inline void emergency_atexit() noexcept {
 // Fatal signals whose default action terminates the process WITHOUT running
 // atexit handlers or C++ destructors — so without this, a `kill`, a closed
 // terminal (SIGHUP), or a crash would strand the tty in alt-screen + raw +
-// mouse-reporting. We deliberately do NOT hook SIGINT: in raw mode ^C is
-// delivered as a byte (ISIG is off), and a Python/host runtime owns SIGINT for
-// graceful KeyboardInterrupt — hooking it here would break that.
+// mouse-reporting.
+//
+// SIGINT is included but handled SAFELY by chaining: emergency_signal_handler
+// restores the PRIOR disposition and re-raises, so a Python/host runtime that
+// installed its own SIGINT handler (for KeyboardInterrupt) still receives it —
+// we only interpose long enough to put the tty back first. In raw mode ^C is
+// normally delivered as a byte (ISIG off) and never reaches here; this hook
+// only fires when SIGINT arrives by another route (e.g. `kill -INT`, or before
+// raw mode is fully established) and nothing else would have restored the tty.
+// Without it, such a SIGINT to a maya app with no host handler strands the
+// terminal in raw + alt-screen — the exact failure this machinery exists to
+// prevent.
 inline constexpr int kEmergencySignals[] = {
-    SIGHUP, SIGTERM, SIGQUIT, SIGSEGV, SIGABRT, SIGBUS, SIGFPE,
+    SIGINT, SIGHUP, SIGTERM, SIGQUIT, SIGSEGV, SIGABRT, SIGBUS, SIGFPE,
 };
 
 inline void emergency_signal_handler(int sig) noexcept {

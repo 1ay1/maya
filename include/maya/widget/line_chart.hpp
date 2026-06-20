@@ -91,7 +91,17 @@ private:
 
         // Chart area: 2 columns for each braille cell
         int y_axis_width = label_width + 2;  // label + " │"
-        int chart_cols = total_width - y_axis_width;
+        // Cap total_width against the layout engine's "unconstrained"
+        // measure sentinel (~1<<24). A chart asked to size itself for an
+        // auto-height / auto-width measure pass receives that sentinel as
+        // its width; without this cap chart_cols becomes astronomical, the
+        // data is spread across a multi-million-column grid, and only the
+        // leftmost sliver lands in the visible region — the rest of the
+        // panel reads as empty. 4096 columns is far past any real terminal
+        // yet keeps the grid finite so the visible width fills normally.
+        constexpr int kMaxChartWidth = 4096;
+        int effective_width = std::min(total_width, kMaxChartWidth);
+        int chart_cols = effective_width - y_axis_width;
         if (chart_cols < 4) chart_cols = 4;
 
         // Grid dimensions: each braille cell is 2 dots wide, 4 dots tall

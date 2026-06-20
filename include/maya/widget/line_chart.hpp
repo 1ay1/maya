@@ -47,8 +47,8 @@ public:
 
     [[nodiscard]] Element build() const {
         return Element{ComponentElement{
-            .render = [self = *this](int w, int /*h*/) -> Element {
-                return self.build_chart(w);
+            .render = [self = *this](int w, int h) -> Element {
+                return self.build_chart(w, h);
             },
             .layout = {},
         }};
@@ -68,10 +68,24 @@ private:
         {0x40, 0x80},
     };
 
-    [[nodiscard]] Element build_chart(int total_width) const {
+    [[nodiscard]] Element build_chart(int total_width, int total_height = -1) const {
         if (data_.empty()) {
             return Element{TextElement{.content = ""}};
         }
+
+        // Responsive height: fill the vertical space the container allocates
+        // when it is a sane, definite value. The layout engine hands a
+        // component the "unconstrained" sentinel (~1<<24) during auto-height
+        // measure passes — in that case (or when no height was supplied)
+        // fall back to the configured height_. A 1-row floor keeps the grid
+        // valid. This is what lets a chart in a grow=1 / stretched row expand
+        // and shrink with the terminal instead of being pinned to height_.
+        constexpr int kMaxChartHeight = 256;
+        int chart_rows = height_;
+        if (total_height > 0 && total_height <= kMaxChartHeight) {
+            chart_rows = total_height;
+        }
+        if (chart_rows < 1) chart_rows = 1;
 
         // Find data range
         float min_val = *std::min_element(data_.begin(), data_.end());
@@ -106,7 +120,7 @@ private:
 
         // Grid dimensions: each braille cell is 2 dots wide, 4 dots tall
         int grid_w = chart_cols * 2;
-        int grid_h = height_ * 4;
+        int grid_h = chart_rows * 4;
 
         // Map data points to grid x-coordinates, compute y for each grid x
         // by linear interpolation of the data
@@ -121,10 +135,10 @@ private:
                  + data_[static_cast<size_t>(hi)] * frac;
         };
 
-        // Build braille grid: height_ rows x chart_cols columns
+        // Build braille grid: chart_rows rows x chart_cols columns
         // Each cell is a uint8_t bitmask for the 8 braille dots
         std::vector<std::vector<uint8_t>> grid(
-            static_cast<size_t>(height_),
+            static_cast<size_t>(chart_rows),
             std::vector<uint8_t>(static_cast<size_t>(chart_cols), 0)
         );
 
@@ -149,9 +163,9 @@ private:
 
         // Render rows
         std::vector<Element> rows;
-        rows.reserve(static_cast<size_t>(height_));
+        rows.reserve(static_cast<size_t>(chart_rows));
 
-        for (int row = 0; row < height_; ++row) {
+        for (int row = 0; row < chart_rows; ++row) {
             std::string content;
             std::vector<StyledRun> runs;
 
@@ -159,7 +173,7 @@ private:
             std::string y_label;
             if (row == 0) {
                 y_label = max_label;
-            } else if (row == height_ - 1) {
+            } else if (row == chart_rows - 1) {
                 y_label = min_label;
             }
 

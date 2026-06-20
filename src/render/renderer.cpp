@@ -698,12 +698,32 @@ void paint_element(
                 paint_border(canvas, node.border, abs_rect, border_style_id);
             }
 
-            // 3. Push clip for overflow:hidden/scroll. RAII guard ensures
-            //    the pop happens even if a child's paint throws — without
-            //    this, a thrown paint callback would leave a stale clip
-            //    on the stack and silently mangle subsequent rendering.
+            // 3. Push clip when children must not paint outside this box.
+            //    RAII guard ensures the pop happens even if a child's paint
+            //    throws — without it, a thrown paint callback would leave a
+            //    stale clip on the stack and silently mangle later rendering.
+            //
+            //    Two cases force a clip:
+            //      (a) overflow:hidden / scroll — the explicit opt-in.
+            //      (b) the box has a DEFINITE (non-auto) main/cross size.
+            //          A box the user sized explicitly (e.g. card(height=N))
+            //          is a bounded region; when its content overflows that
+            //          size the flex layout can position the overflow rows
+            //          at clamped/overlapping coordinates, and with the
+            //          default overflow:visible those rows used to paint ON
+            //          TOP of the surviving rows — a longer row's tail then
+            //          smeared through a shorter one (e.g. a fixed-height
+            //          event-log card showing "…replenishedt 2 pods"). An
+            //          auto-sized box shrink-wraps to its content and cannot
+            //          overflow, so it is intentionally left unclipped to
+            //          preserve any deliberate overflow:visible behaviour.
+            bool definite_size = node.layout.width.is_fixed() ||
+                                 node.layout.width.is_percent() ||
+                                 node.layout.height.is_fixed() ||
+                                 node.layout.height.is_percent();
             bool clipping = (node.overflow == Overflow::Hidden ||
-                             node.overflow == Overflow::Scroll);
+                             node.overflow == Overflow::Scroll ||
+                             definite_size);
 
             bool has_b = node.has_border();
             int content_x = ax + (has_b && node.border.sides.left ? 1 : 0) + node.layout.padding.left;

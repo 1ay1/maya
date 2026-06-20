@@ -338,6 +338,27 @@ void compute_node(
                     nodes[it.index].style.flex_shrink * static_cast<float>(it.hypothetical);
             }
             if (total_shrink_weighted > 0.0f) {
+                // CSS flex items have an automatic minimum size
+                // (min-{width,height}:auto resolves to the item's min-content
+                // size) and must NOT shrink below it. We don't run a separate
+                // min-content pass, but every visible item needs at least ONE
+                // cell on the main axis. Flooring at 1 is the load-bearing
+                // fix for the overflow smear: without it, default
+                // flex_shrink=1 collapsed overflowing column rows to height 0,
+                // so `main_cursor += item.main` never advanced and every row
+                // piled onto the SAME y — a longer row's tail then painted
+                // through the shorter row stacked on top of it
+                // ("…replenishedt 2 pods"). With a 1-cell floor the rows keep
+                // distinct offsets and the genuine overflow past the content
+                // box is removed by the definite-size clip in the renderer.
+                // An explicit min-{width,height} overrides the auto floor.
+                auto floor_of = [&](const FlexItem& it) -> int {
+                    const auto& cs = nodes[it.index].style;
+                    const Dimension& mn = row ? cs.min_width : cs.min_height;
+                    if (!mn.is_auto())
+                        return mn.resolve(row ? parent_width : parent_height);
+                    return it.hypothetical > 0 ? 1 : 0;
+                };
                 int overflow = -free_space;
                 int remaining = overflow;
                 for (auto& it : line.items) {
@@ -345,18 +366,22 @@ void compute_node(
                     float weight = shrink * static_cast<float>(it.hypothetical);
                     int reduction = static_cast<int>(
                         static_cast<float>(overflow) * weight / total_shrink_weighted);
-                    reduction = std::min(reduction, it.main); // don't go negative
+                    int max_reduction = std::max(0, it.main - floor_of(it));
+                    reduction = std::min(reduction, max_reduction);
                     it.main -= reduction;
                     remaining -= reduction;
                 }
-                // Distribute leftover shrink to the largest items first
-                // to avoid destroying small items (e.g., a 1-row header).
+                // Distribute leftover shrink to the largest items first to
+                // avoid destroying small items (e.g., a 1-row header). Same
+                // floor: an item with content stops shrinking at its min so
+                // it can never collapse onto its neighbour's row.
                 while (remaining > 0) {
                     int best = -1;
                     int best_main = 0;
                     for (int i = 0; i < static_cast<int>(line.items.size()); ++i) {
                         auto& it = line.items[static_cast<std::size_t>(i)];
-                        if (nodes[it.index].style.flex_shrink > 0.0f && it.main > best_main) {
+                        if (nodes[it.index].style.flex_shrink > 0.0f &&
+                            it.main > floor_of(it) && it.main > best_main) {
                             best = i;
                             best_main = it.main;
                         }

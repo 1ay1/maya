@@ -726,14 +726,29 @@ void paint_element(
             //    An auto-sized, border-less box shrink-wraps to its content
             //    and can't overflow, so it stays unclipped to preserve any
             //    deliberate overflow:visible behaviour.
+            //
+            //    NB: clipping is suppressed during an auto-height render
+            //    (inline mode / the fullscreen grow-and-retry measure pass).
+            //    There the canvas starts smaller than the content and the
+            //    host grows it based on how far content painted; a clip to
+            //    the undersized box would stop content from extending, the
+            //    measured height would never grow, and the screen would stay
+            //    blank. Real overflow clipping only matters once the size is
+            //    settled, which is the non-auto-height paint.
             bool definite_size = node.layout.width.is_fixed() ||
                                  node.layout.width.is_percent() ||
                                  node.layout.height.is_fixed() ||
                                  node.layout.height.is_percent();
-            bool clipping = (node.overflow == Overflow::Hidden ||
+            bool clipping = !is_auto_height() &&
+                            (node.overflow == Overflow::Hidden ||
                              node.overflow == Overflow::Scroll ||
                              definite_size ||
                              node.has_border());
+            // overflow:hidden / scroll are explicit and must clip even in an
+            // auto-height pass (a scroll viewport defines its own bounded box).
+            if (node.overflow == Overflow::Hidden ||
+                node.overflow == Overflow::Scroll)
+                clipping = true;
 
             bool has_b = node.has_border();
             int content_x = ax + (has_b && node.border.sides.left ? 1 : 0) + node.layout.padding.left;

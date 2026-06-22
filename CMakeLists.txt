@@ -301,12 +301,19 @@ if(MAYA_BUILD_TESTS)
 
     # POSIX-only tests. These mock a real fd (a pipe / pty), so they need
     # unistd/termios and can't build under MSVC.
-    #   • test_inline_frame  — routes the Witness Chain through a pipe Writer.
+    #   • test_inline_frame — routes the Witness Chain through a pipe Writer;
+    #     builds on Linux + macOS.
     #   • test_terminal_restore — PTY-driven; verifies maya puts the tty back
     #     (cooked termios + restore escapes) on every exit route, including
-    #     SIGINT — guards the chained emergency handler.
+    #     SIGINT. Linux-only: it drives POSIX signal/pty surface the macOS
+    #     toolchain doesn't expose cleanly from this TU, and the restore
+    #     behaviour it guards is platform-identical.
     if(UNIX)
-        foreach(tgt test_inline_frame test_terminal_restore)
+        set(_maya_posix_tests test_inline_frame)
+        if(NOT APPLE)
+            list(APPEND _maya_posix_tests test_terminal_restore)
+        endif()
+        foreach(tgt ${_maya_posix_tests})
             add_executable(${tgt} tests/${tgt}.cpp)
             target_link_libraries(${tgt} PRIVATE maya)
             target_compile_definitions(${tgt} PRIVATE
@@ -316,7 +323,7 @@ if(MAYA_BUILD_TESTS)
             add_test(NAME ${tgt} COMMAND ${tgt})
             set_tests_properties(${tgt} PROPERTIES TIMEOUT 120)
         endforeach()
-        # forkpty() needs -lutil on Linux/glibc (it's in libc on macOS).
+        # forkpty() needs -lutil on Linux/glibc.
         if(NOT APPLE)
             target_link_libraries(test_terminal_restore PRIVATE util)
         endif()

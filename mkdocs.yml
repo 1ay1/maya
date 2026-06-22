@@ -42,6 +42,9 @@ theme:
 extra_css:
   - stylesheets/extra.css
 
+extra_javascript:
+  - javascripts/mermaid.mjs
+
 markdown_extensions:
   - admonition
   - attr_list

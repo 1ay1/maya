@@ -55,6 +55,9 @@ using namespace maya::dsl;
 // would fail for reasons unrelated to a real regression. Detect a
 // sanitizer build and skip ONLY the absolute-time asserts; the ratio-based
 // ones stay (they're slowdown-invariant — both sides pay the same tax).
+// Nested #if (not `defined(__has_feature) && __has_feature(...)` in one
+// expression): MSVC has no __has_feature and its preprocessor errors on the
+// call syntax even when the defined() guard is false.
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
 #  define MAYA_UNDER_SANITIZER 1
 #elif defined(__has_feature)

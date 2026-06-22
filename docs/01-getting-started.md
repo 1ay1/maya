@@ -24,9 +24,11 @@ This builds `libmaya.a` and all example programs.
 |--------|---------|-------------|
 | `MAYA_BUILD_EXAMPLES` | `ON` | Build the example programs |
 | `MAYA_BUILD_TESTS` | `OFF` | Build and register the test suite |
+| `MAYA_FAST_TESTS` | `ON` | When tests are on, link them against a non-LTO `-O1` `maya_test` library (and compile test TUs at `-O0`) for fast edit–build–run iteration. The production `maya` library is unaffected. Set `OFF` to test against the full `-O3 + LTO` library. |
+| `MAYA_NATIVE_TUNING` | `ON` | Bake the host CPU into the binary (`-march=native`). **Turn OFF for portable / release builds** — a `native` binary will `SIGILL` on a chip lacking the build host's instructions. |
 
 ```bash
-# Build with tests
+# Build with tests (fast-iteration lib, default)
 cmake -B build -DMAYA_BUILD_TESTS=ON
 cmake --build build -j$(nproc)
 ctest --test-dir build

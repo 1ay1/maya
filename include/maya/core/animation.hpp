@@ -43,6 +43,38 @@
 namespace maya::anim {
 
 // ============================================================================
+// constexpr math — std::sqrt / std::abs(double) are NOT standard-constexpr.
+// ============================================================================
+// libstdc++/GCC offer them as a non-conforming extension, but libc++ (clang)
+// and MSVC correctly reject them in a constant-expression context. The spring
+// presets need a sqrt at consteval time, so we ship our own constexpr ones.
+// (At run time the compiler folds these to the same code as the intrinsics.)
+namespace cmath {
+
+[[nodiscard]] constexpr double c_abs(double x) noexcept {
+    return x < 0.0 ? -x : x;
+}
+
+// Newton–Raphson sqrt. Converges quadratically; ~30 iters is overkill but
+// keeps it exact across the whole positive double range at compile time.
+[[nodiscard]] constexpr double c_sqrt(double x) noexcept {
+    if (x < 0.0) return 0.0;          // domain guard (no NaN at constexpr)
+    if (x == 0.0 || x == 1.0) return x;
+    double guess = x < 1.0 ? x : x / 2.0;
+    for (int i = 0; i < 40; ++i) {
+        const double next = 0.5 * (guess + x / guess);
+        if (c_abs(next - guess) < 1e-15 * (next < 1.0 ? 1.0 : next)) {
+            guess = next;
+            break;
+        }
+        guess = next;
+    }
+    return guess;
+}
+
+} // namespace cmath
+
+// ============================================================================
 // Easing — constexpr curve functions on a normalised parameter t ∈ [0,1]
 // ============================================================================
 // Each returns a shaped progress in [0,1]. They are pure and constexpr, so
@@ -210,7 +242,7 @@ struct SpringParams {
 
     // Damping ratio ζ = c / (2·√(k·m)). ζ<1 underdamped, =1 critical, >1 over.
     [[nodiscard]] constexpr double zeta() const noexcept {
-        const double denom = 2.0 * std::sqrt(stiffness * mass);
+        const double denom = 2.0 * cmath::c_sqrt(stiffness * mass);
         return denom > 0.0 ? damping / denom : 0.0;
     }
 };
@@ -227,7 +259,7 @@ namespace spring_presets {
     if (!(zeta > 0.0))      throw "spring: damping ratio must be > 0";
     if (zeta > 4.0)         throw "spring: damping ratio absurdly high (>4)";
     if (!(rest_eps > 0.0))  throw "spring: rest_eps must be > 0";
-    const double c = zeta * 2.0 * std::sqrt(stiffness * mass);
+    const double c = zeta * 2.0 * cmath::c_sqrt(stiffness * mass);
     return SpringParams{stiffness, c, mass, rest_eps};
 }
 
@@ -285,7 +317,7 @@ public:
     }
 
     [[nodiscard]] constexpr bool done() const noexcept {
-        return std::abs(x_ - 1.0) < p_.rest_eps && std::abs(v_) < p_.rest_eps;
+        return cmath::c_abs(x_ - 1.0) < p_.rest_eps && cmath::c_abs(v_) < p_.rest_eps;
     }
 
     // Retarget mid-flight WITHOUT killing momentum. The current value becomes
@@ -319,7 +351,7 @@ private:
     // reprojection. Arithmetic: |b-a|. Colour: max channel delta.
     [[nodiscard]] static constexpr double scalar_span(T a, T b) noexcept {
         if constexpr (std::is_arithmetic_v<T>) {
-            return std::abs(static_cast<double>(b) - static_cast<double>(a));
+            return cmath::c_abs(static_cast<double>(b) - static_cast<double>(a));
         } else {
             return 1.0; // non-arithmetic springs use a unit param space
         }

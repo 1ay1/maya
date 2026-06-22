@@ -204,6 +204,11 @@ cmake --build build
 ctest --test-dir build
 ```
 
+Tests link a non-LTO `-O1` `maya_test` library by default (`MAYA_FAST_TESTS=ON`)
+so a header edit recompiles + relinks in seconds instead of waiting on the
+production `-O3 + LTO` build. Pass `-DMAYA_FAST_TESTS=OFF` to test against the
+full optimized library.
+
 ## Using maya in your project
 
 ```bash

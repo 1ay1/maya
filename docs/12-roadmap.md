@@ -3,6 +3,12 @@
 Gap analysis comparing maya to Ink (React for CLI), which powers Claude Code's terminal UI.
 All designs below use C++26 idioms that match maya's existing patterns: compile-time DSL with structural NTTPs, type-state safety via `requires`, signal-based reactivity, and zero-cost abstractions.
 
+> **Status:** every feature in the original gap analysis is now implemented —
+> see Tiers 1–4 below. The **[Tier 4 API](#tier-4-api)** section documents the
+> shipped headers for the last four items (animation, overlays, partial updates,
+> syntax highlighting). Remaining work is tracked in the
+> [render roadmap](internals/render-roadmap.md) (renderer internals), not here.
+
 ## What's been built
 
 The following features from the original roadmap have been fully implemented:
@@ -32,6 +38,39 @@ The following features from the original roadmap have been fully implemented:
 
 - **Markdown Rendering** — `src/widget/markdown.cpp`: full renderer supporting headers, code blocks (fenced), ordered/unordered lists, links (OSC 8 hyperlinks), bold/italic emphasis, and tables
 
+### Tier 4 — Motion, Layering, Partial Updates & Highlighting ✅
+
+The four features that were the last remaining roadmap items are now shipped.
+They are header-first, allocation-light, and fully tested
+(`tests/test_animation.cpp`, `test_overlay_layer.cpp`, `test_static_split.cpp`,
+`test_highlight.cpp`).
+
+- **Animation system** — `core/animation.hpp`: `constexpr` easing curves
+  (`ease::linear` → `smootherstep`), `Tween<T>` (fixed-duration eased
+  interpolation with continuity-preserving `retarget`), `Spring<T>`
+  (semi-implicit Euler integrator, momentum-preserving `set_target`,
+  sub-stepped + clamped against dropped frames, `consteval`-validated
+  `SpringParams` + presets), and the `Animated<T>` wrapper that holds either.
+  Works on arithmetic `T` and `maya::Color`. Time is advanced explicitly via
+  `tick(dt)` — no hidden clock, no thread, no per-frame allocation.
+- **Absolute positioning / z-index** — `app/overlay_layer.hpp`: `OverlayCfg`
+  structural NTTP (anchor + z + offset + clamp), the `elem | overlay_<Cfg>`
+  pipe and runtime `overlay_at()`, and `OverlayStack` which composites floats
+  *after* the flow tree (z-sorted, stable) via `render_tree_at` so a float
+  never perturbs the layout beneath it.
+- **Static component / partial updates** — `app/static_region.hpp` +
+  DECSTBM helpers in `terminal/ansi.hpp`: `StaticSplit` partitions the screen
+  into a frozen write-once band and an active redrawn band, enforced by the
+  terminal's scrolling region (`\e[top;bottom r`) so the terminal *physically*
+  cannot scroll the frozen rows.
+- **Themeable syntax highlighting** — `widget/markdown/highlight.hpp` +
+  `render/highlight.cpp`: a tree-sitter-compatible `Capture` enum, a
+  `constexpr HighlightTheme` (`Capture → Style`) with `terminal` / `monokai` /
+  `github_dark` presets and a `constexpr .with()` builder, and a pluggable
+  tokenizer — a fast O(n) dependency-free built-in lexer by default, with a
+  tree-sitter backend opt-in behind `MAYA_TREE_SITTER` emitting the same
+  `Span` stream. See **[Tier 4 API](#tier-4-api)** below for usage.
+
 ---
 
 ## What maya has today
@@ -54,218 +93,151 @@ The following features from the original roadmap have been fully implemented:
 
 ---
 
-## Remaining Roadmap
+## Tier 4 API {#tier-4-api}
 
-The following features are not yet implemented.
+The shipped APIs for the Tier 4 features. These are the real headers — the
+speculative sketches that used to live here have been replaced by what was
+actually built.
 
-### Syntax Highlighting
+### Themeable syntax highlighting
 
-**Tree-sitter integration with constexpr theme mapping:**
+`#include <maya/widget/markdown/highlight.hpp>` — namespace `maya::syntax`.
+
+Tokenizing returns a flat, sorted, non-overlapping span stream over the source
+(gaps are implicitly `Capture::None`). A `HighlightTheme` maps each `Capture`
+to a `Style`; swap themes by passing a different one.
 
 ```cpp
-// Highlight theme — maps token types to compile-time styles
-struct HighlightTheme {
-    CTStyle keyword;
-    CTStyle string;
-    CTStyle comment;
-    CTStyle function;
-    CTStyle type;
-    CTStyle number;
-    CTStyle operator_;
-    CTStyle punctuation;
-};
+using namespace maya::syntax;
 
-constexpr HighlightTheme monokai = {
-    .keyword     = {.has_fg=true, .fg_r=249, .fg_g=38,  .fg_b=114},
-    .string      = {.has_fg=true, .fg_r=230, .fg_g=219, .fg_b=116},
-    .comment     = {.has_fg=true, .fg_r=117, .fg_g=113, .fg_b=94, .italic_=true},
-    .function    = {.has_fg=true, .fg_r=166, .fg_g=226, .fg_b=46},
-    .type        = {.has_fg=true, .fg_r=102, .fg_g=217, .fg_b=239},
-    .number      = {.has_fg=true, .fg_r=174, .fg_g=129, .fg_b=255},
-    .operator_   = {.has_fg=true, .fg_r=249, .fg_g=38,  .fg_b=114},
-    .punctuation = {.has_fg=true, .fg_r=248, .fg_g=248, .fg_b=242},
-};
+Lang lang = lang_from_tag("cpp");          // "py", "rust", "go", "ts", …
+std::vector<Span> spans = highlight(source, lang);
 
-// Highlight function — returns vector of styled text spans
-Element highlight(std::string_view code, std::string_view lang,
-                  const HighlightTheme& theme = monokai) {
-    auto tokens = tree_sitter_tokenize(code, lang);
-    std::vector<Element> spans;
-    for (auto& [text, type] : tokens) {
-        Style s = theme_style_for(theme, type).runtime();
-        spans.push_back(Element{TextElement{std::string{text}, s}});
-    }
-    return Element{ElementList{std::move(spans)}};
+for (const Span& s : spans) {
+    Style style = themes::monokai.style_for(s.cap);
+    paint(source.substr(s.start, s.len), style);
 }
 ```
 
-### Animation System
+The `Capture` enum follows tree-sitter capture names (`Keyword`, `KeywordCtrl`,
+`Type`, `Function`, `String`, `Number`, `Comment`, `Constant`, `Operator`,
+`Punctuation`, `Preproc`, `Attribute`, `Variable`, `Property`, plus `None`).
 
-**`Animated<T>` — a signal that interpolates over time:**
-
-```cpp
-// Easing functions — all constexpr
-namespace ease {
-    constexpr float linear(float t)     { return t; }
-    constexpr float ease_in(float t)    { return t * t; }
-    constexpr float ease_out(float t)   { return t * (2 - t); }
-    constexpr float ease_in_out(float t){
-        return t < 0.5f ? 2*t*t : -1 + (4 - 2*t)*t;
-    }
-
-    // Spring physics — consteval parameter validation
-    struct Spring {
-        float stiffness = 100.0f;
-        float damping   = 10.0f;
-        float mass      = 1.0f;
-
-        consteval Spring validate() const {
-            if (stiffness <= 0) throw "stiffness must be positive";
-            if (damping < 0)    throw "damping must be non-negative";
-            if (mass <= 0)      throw "mass must be positive";
-            return *this;
-        }
-    };
-
-    constexpr float spring(float t, Spring s = Spring{}.validate()) {
-        float omega = std::sqrt(s.stiffness / s.mass);
-        float zeta  = s.damping / (2 * std::sqrt(s.stiffness * s.mass));
-        // Underdamped spring approximation
-        return 1.0f - std::exp(-zeta * omega * t) *
-               std::cos(omega * std::sqrt(1 - zeta*zeta) * t);
-    }
-}
-
-// Animated<T> — wraps Signal<T>, interpolates between old and new values
-template <typename T, auto EasingFn = ease::ease_out>
-class Animated {
-    Signal<T> target_;
-    T current_;
-    T previous_;
-    float progress_ = 1.0f;
-    float duration_;
-
-public:
-    explicit Animated(T initial, float duration_s = 0.3f)
-        : target_(initial), current_(initial), previous_(initial),
-          duration_(duration_s) {}
-
-    void set(T value) {
-        previous_ = current_;
-        target_.set(std::move(value));
-        progress_ = 0.0f;
-    }
-
-    // Called each frame with dt
-    void tick(float dt) {
-        if (progress_ >= 1.0f) return;
-        progress_ = std::min(1.0f, progress_ + dt / duration_);
-        float t = EasingFn(progress_);
-        current_ = lerp(previous_, target_(), t);
-    }
-
-    [[nodiscard]] const T& get() const { return current_; }
-};
-
-// Usage:
-Animated<float> sidebar_width(30.0f, 0.2f);
-sidebar_width.set(50.0f);  // smoothly animates over 200ms
-```
-
-### Absolute Positioning / Z-Index
-
-**Overlay layer — rendered after main tree, composited onto canvas:**
+`HighlightTheme` is `constexpr` — the palette is baked into the binary. Derive a
+variant at compile time:
 
 ```cpp
-// OverlayCfg as structural NTTP
-struct OverlayCfg {
-    int z_index = 1;
-    enum class Anchor { TopLeft, Center, BottomRight } anchor = Anchor::Center;
-};
-
-template <OverlayCfg Cfg = OverlayCfg{}>
-struct OverlayTag {};
-
-template <OverlayCfg Cfg = OverlayCfg{}>
-inline constexpr OverlayTag<Cfg> overlay_{};
-
-// Overlays are collected during build, sorted by z_index, rendered last
-struct OverlayEntry {
-    Element content;
-    int z_index;
-    OverlayCfg::Anchor anchor;
-};
-
-// Render pipeline extended: after paint(), composite overlays
-template<>
-class RenderPipeline<stage::Painted> {
-    [[nodiscard]] RenderPipeline<stage::Composited>
-    composite(std::span<OverlayEntry> overlays) && {
-        // Sort by z_index, render each onto back buffer
-        std::ranges::sort(overlays, {}, &OverlayEntry::z_index);
-        for (auto& ov : overlays) {
-            auto rect = compute_anchor_rect(ov.anchor, back_.width(), back_.height());
-            render_element(ov.content, back_, rect);
-        }
-        return {back_, pool_, theme_, out_};
-    }
-};
+constexpr HighlightTheme my_theme =
+    themes::github_dark.with(Capture::Comment, Style{}.with_fg(Color::hex(0x6A737D)));
 ```
 
-### Static Component (Partial Terminal Updates)
+Presets: `themes::terminal` (16-colour), `themes::monokai`, `themes::github_dark`.
 
-**Split terminal into frozen (scrollback) + active (live) regions:**
+**Pluggable backend.** The default tokenizer is a fast, dependency-free O(n)
+lexer covering C/C++/Python/Rust/Go/JS/TS/Shell/JSON. To use a real tree-sitter
+parser, compile with `-DMAYA_TREE_SITTER` and define:
 
 ```cpp
-// Static items are written once above the active render area.
-// Uses terminal scrolling regions (DECSTBM) to partition the screen.
-//
-// Architecture:
-//   +-----------------------+
-//   | Static region         | <- completed messages, written with raw write()
-//   | (grows upward)        |    never re-rendered by diff engine
-//   +-----------------------+
-//   | Active region         | <- current response, rendered by pipeline
-//   | (fixed height)        |    double-buffered + SIMD diff as usual
-//   +-----------------------+
-
-class StaticRegion {
-    std::string frozen_output_;     // accumulated static content
-    int frozen_rows_ = 0;
-
-public:
-    // Freeze an element — render it once, append to scrollback
-    void freeze(const Element& elem, int width) {
-        Canvas tmp(width, /*height=*/measure(elem, width));
-        render_to(elem, tmp);
-
-        // Serialize canvas to ANSI string (no diff — full render)
-        std::string ansi = serialize_full(tmp);
-
-        // Write to terminal above active area
-        frozen_output_ += ansi;
-        frozen_rows_ += tmp.height();
-
-        // Adjust scroll region: DECSTBM sets active area
-        // \e[{frozen_rows_+1};{screen_height}r
-    }
-};
-
-// DSL: static_() wraps completed content
-template <Node... Children>
-struct StaticNode {
-    std::tuple<Children...> children;
-    StaticRegion& region;
-
-    [[nodiscard]] Element build() const {
-        // On first build: render children, freeze, return empty
-        // On subsequent builds: return empty (already in scrollback)
-        auto elem = v(/* children... */).build();
-        region.freeze(elem, /*width from layout*/);
-        return Element{TextElement{""}};  // placeholder — occupies no space
-    }
-};
+bool maya::syntax::ts_highlight(std::string_view src, Lang lang,
+                                std::vector<Span>& out);
 ```
+
+Return `true` after filling `out` (same `Span` contract) to use the grammar,
+or `false` to fall through to the built-in lexer. The theme/render half is
+identical — only the tokenizer swaps.
+
+### Animation system
+
+`#include <maya/core/animation.hpp>` — namespace `maya::anim`.
+
+```cpp
+using namespace maya::anim;
+
+// Tween: eased A→B over a fixed duration.
+auto width = Animated<double>::tween(30.0, 50.0, 0.2, ease::out_cubic);
+
+// Spring: physically-modelled motion; retarget mid-flight keeps momentum.
+auto x = Animated<double>::spring(0.0, spring_presets::snappy);
+x.set_target(1.0);
+
+// Drive from the host frame loop — there is no hidden clock.
+double v = x.tick(dt);          // advance by dt seconds, returns current value
+if (!x.done()) request_animation_frame();
+```
+
+Easing curves (all `constexpr`): `linear`, `in/out/in_out_quad`,
+`in/out/in_out_cubic`, `in_out_quint`, `smoothstep`, `smootherstep`.
+
+`SpringParams` are validated with a `consteval` factory — a degenerate config is
+a compile error:
+
+```cpp
+constexpr SpringParams p = spring_presets::make(/*stiffness=*/200, /*zeta=*/0.6);
+```
+
+Presets: `gentle`, `snappy`, `wobbly`, `stiff`, `molasses`. `Animated<T>`,
+`Tween<T>` and `Spring<T>` work on any arithmetic `T` and on `maya::Color`
+(componentwise lerp). All are trivially-copyable value types — no heap.
+
+> `std::sqrt` / `std::abs(double)` are not standard-`constexpr` (libstdc++ allows
+> them as an extension; libc++ and MSVC do not), so the spring presets use
+> maya's own `constexpr` `cmath::c_sqrt` / `c_abs` for the compile-time path.
+
+### Absolute positioning / z-index overlays
+
+`#include <maya/app/overlay_layer.hpp>` — namespace `maya`.
+
+`OverlayStack` paints floating layers on top of an already-rendered flow canvas,
+z-sorted (stable for equal z), each anchored + nudged + clamped on-screen. It
+uses `render_tree_at` (clip + offset, no clear) so floats never disturb flow
+layout.
+
+```cpp
+OverlayStack stack;
+
+// Compile-time config via the pipe — anchor + z + offset baked at the call site.
+stack += (tooltip | overlay_<overlay_cfg(Anchor::TopRight, /*z=*/10)>);
+
+// Runtime position (e.g. at a mouse cursor / hit-test result).
+stack += overlay_at(menu, /*x=*/cursor_x, /*y=*/cursor_y, /*z=*/20);
+
+// After painting the flow tree into `canvas`:
+stack.composite(canvas, pool, theme::dark);
+```
+
+`OverlayCfg` is a structural NTTP (`anchor`, `z`, `dx`, `dy`, `max_w`, `clamp`)
+built by the `consteval overlay_cfg(…)` validator. Anchors: the nine
+edge/corner positions (`TopLeft` … `BottomRight`, `Center`).
+
+### Static component (partial terminal updates)
+
+`#include <maya/app/static_region.hpp>` — namespace `maya`.
+
+`StaticSplit` partitions the terminal into a **frozen** write-once band and an
+**active** redrawn band, enforced by DECSTBM (the terminal's vertical scrolling
+region). Because the scroll region excludes the frozen rows, the terminal
+physically cannot move them — a render bug below the margin cannot corrupt the
+completed content above it.
+
+```cpp
+StaticSplit split;
+std::string out;
+
+split.begin(screen_h, out);                 // arm DECSTBM for the whole screen
+split.freeze(completed_msg, width, pool, out);  // promote rows into the frozen band
+split.draw_active(live_response, width, pool, out);  // repaint only the active band
+// … each frame: split.draw_active(…) …
+split.end(out);                             // restore the full-screen region
+```
+
+Invariant: at least one active row always survives (`frozen_rows()` never
+reaches `screen_h`). The underlying ANSI helpers — `ansi::write_scroll_region`
+(DECSTBM), `write_scroll_region_reset`, `write_scroll_up`/`down` (SU/SD) — live
+in `terminal/ansi.hpp` for hosts that want to drive the partition directly.
+
+The simpler `StaticRegion` (freeze an element's ANSI once, flush above the
+active area) remains for the append-to-scrollback case that doesn't need a
+scroll-region partition.
 
 ---
 

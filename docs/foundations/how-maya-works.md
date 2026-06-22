@@ -23,7 +23,7 @@ box here has a dedicated chapter — follow the links when you want the detail.
 
 ```mermaid
 flowchart TD
-    DSL["<b>Your code</b><br/>the DSL: v(...), t&lt;\"...\"&gt;, pad&lt;1&gt;, | border"]
+    DSL["<b>Your code</b><br/>the DSL: v(...), t‹...›, pad‹1›, | border"]
     ET["<b>Element tree</b><br/>boxes · text · widgets · style"]
     CV["<b>Canvas</b><br/>width × height grid of packed cells<br/>(glyph + style id)"]
     DF{"<b>Diff</b> vs previous Canvas<br/>(SIMD — many cells / instruction)"}

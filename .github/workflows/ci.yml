@@ -4,10 +4,12 @@ name: ci
 # supported toolchains. This is the correctness gate the project was missing.
 #
 # Jobs:
-#   build-test   — gcc-14 / clang-19 / MSVC, build all tests + ctest.
-#                  (clang-18 — the distro default — can't compile maya's C++26:
-#                  its libstdc++ <expected> support is incomplete, so we pull
-#                  clang-19 from apt.llvm.org.)
+#   build-test   — gcc-14 / clang-19 build all tests + ctest; MSVC builds the
+#                  library only (the test harness mocks terminal fds with POSIX
+#                  open()/pipe()/forkpty(), which MSVC lacks — the suite runs on
+#                  the POSIX legs). clang-18 — the distro default — can't compile
+#                  maya's C++26 (incomplete libstdc++ <expected>), so we pull
+#                  clang-19 from apt.llvm.org.
 #   sanitizers   — ASan+UBSan and TSan (clang), the parser/writer/render path
 #                  is the most exposed to adversarial bytes. Clang's sanitizer
 #                  runtimes are the reference implementation; gcc-14 also ICEs
@@ -85,9 +87,14 @@ jobs:
         shell: bash
         run: |
           export CC="${{ matrix.cc }}" CXX="${{ matrix.cxx }}"
+          # The test harness mocks a real terminal fd with POSIX
+          # open()/pipe()/forkpty(), so the test executables only build on
+          # Linux/macOS. On Windows we verify the C++26 LIBRARY itself compiles
+          # under MSVC; the full suite runs on the POSIX legs (gcc + clang).
+          if [ "$RUNNER_OS" = "Windows" ]; then TESTS=OFF; else TESTS=ON; fi
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DMAYA_BUILD_TESTS=ON \
+            -DMAYA_BUILD_TESTS=$TESTS \
             -DMAYA_BUILD_EXAMPLES=OFF \
             -DMAYA_NATIVE_TUNING=OFF
 
@@ -95,6 +102,7 @@ jobs:
         run: cmake --build build -j
 
       - name: Test
+        if: runner.os != 'Windows'
         run: ctest --test-dir build --output-on-failure --timeout 120
 
   sanitizers:

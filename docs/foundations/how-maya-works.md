@@ -28,7 +28,7 @@ flowchart TD
     CV["<b>Canvas</b><br/>width × height grid of packed cells<br/>(glyph + style id)"]
     DF{"<b>Diff</b> vs previous Canvas<br/>(SIMD — many cells / instruction)"}
     SR["<b>Serializer</b><br/>minimal escape sequences for changed cells,<br/>wrapped in synchronized output"]
-    TERM[["🖥️ Terminal grid"]]
+    TERM[["Terminal grid"]]
 
     DSL -- build --> ET
     ET -- "layout (Yoga flexbox)" --> CV
@@ -37,11 +37,6 @@ flowchart TD
     SR -- bytes --> TERM
     TERM -- "stdin bytes" --> IP["<b>Input parser</b>"]
     IP -- "Event: Key / Mouse / Paste / Resize" --> DSL
-
-    classDef you fill:#6c4cd6,stroke:#a07cff,color:#fff;
-    classDef maya fill:#2a2440,stroke:#8a6cf0,color:#eee;
-    class DSL you;
-    class ET,CV,DF,SR,IP maya;
 ```
 
 Read it as a loop: **input comes back in at the bottom**, your code reacts, the
@@ -215,37 +210,10 @@ they compose with the DSL like anything else.
 
 You now have the whole mental model. Pick a path:
 
-<div class="grid cards" markdown>
-
--   :material-rocket-launch: __Build something now__
-
-    ---
-
-    [Getting Started](../01-getting-started.md) — install, compile, and run your
-    first interactive app.
-
--   :material-code-tags: __Learn the DSL properly__
-
-    ---
-
-    [The Compile-Time DSL](../02-dsl.md) — elements, the type-state builder, and
-    composition.
-
--   :material-application: __See it in real programs__
-
-    ---
-
-    [Examples Walkthrough](../10-examples.md) — dashboards, games, editors,
-    explained line by line.
-
--   :material-cog-outline: __Go under the hood__
-
-    ---
-
-    The [Internals](../internals/render-roadmap.md) chapters — the diff, inline
-    redraw paths, and the Witness Chain.
-
-</div>
+- **Build something now** — [Getting Started](../01-getting-started.md): install, compile, and run your first interactive app.
+- **Learn the DSL properly** — [The Compile-Time DSL](../02-dsl.md): elements, the type-state builder, and composition.
+- **See it in real programs** — [Examples Walkthrough](../10-examples.md): dashboards, games, and editors, explained.
+- **Go under the hood** — the [Internals](../internals/render-roadmap.md) chapters: the diff, inline redraw paths, and the Witness Chain.
 
 Welcome to maya. You came in not knowing what a terminal cell was; you leave
 knowing exactly how a modern TUI is drawn — and you're ready to build one.

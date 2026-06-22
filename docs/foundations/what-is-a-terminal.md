@@ -19,7 +19,7 @@ We start from absolute zero. No prior TUI knowledge assumed.
 !!! note "Who this is for"
     A capable programmer who has never had to think hard about terminals. If you
     can write a `for` loop but you've never wondered what `\033[2J` does, you're in
-    exactly the right place. :material-school:
+    exactly the right place. 
 
 ---
 
@@ -235,7 +235,7 @@ Modern emulators have even moved the drawing onto the **GPU**, rendering thousan
 of cells per frame so that scrolling and animation are buttery smooth — something a
 1978 CRT could never dream of, accomplished while still speaking the 1978 protocol.
 
-=== ":material-linux: Linux / :material-apple: macOS"
+=== "Linux / macOS"
 
     Common emulators you'll meet:
 
@@ -247,7 +247,7 @@ of cells per frame so that scrolling and animation are buttery smooth — someth
     The PTY machinery (next section) is native here — these all give your program a
     real `/dev/pts/N` slave device.
 
-=== ":material-microsoft-windows: Windows"
+=== "Windows"
 
     Windows took a different road for decades. The classic `cmd.exe` console wasn't a
     VT100 emulator at all — programs called a special Console API instead of writing

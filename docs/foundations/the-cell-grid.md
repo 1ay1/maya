@@ -1,7 +1,7 @@
 # The Cell Grid
 
 !!! abstract "TL;DR"
-    A terminal is a fixed **grid of cells**, like graph paper — every square holds one user-perceived character plus its color and style. The hard part is a deceptively simple question: **how many cells does a piece of text occupy?** The answer is *not* its byte count, *not* its code-point count, and *not even* its grapheme count — it's a **fourth** measurement that depends on Unicode width rules and on terminal behavior that was never fully standardized. :material-alert: ASCII is 1 cell, CJK is 2 cells, combining marks are 0 cells, emoji are usually 2 cells (until ZWJ sequences and "ambiguous-width" glyphs make terminals openly disagree). Get this right and your tables align, your borders close, and your layout engine is trustworthy. Get it wrong and everything looks *almost* aligned — which is somehow worse than obviously broken. **The fix:** measure in cells, use one consistent width table for both measuring and rendering.
+    A terminal is a fixed **grid of cells**, like graph paper — every square holds one user-perceived character plus its color and style. The hard part is a deceptively simple question: **how many cells does a piece of text occupy?** The answer is *not* its byte count, *not* its code-point count, and *not even* its grapheme count — it's a **fourth** measurement that depends on Unicode width rules and on terminal behavior that was never fully standardized. ASCII is 1 cell, CJK is 2 cells, combining marks are 0 cells, emoji are usually 2 cells (until ZWJ sequences and "ambiguous-width" glyphs make terminals openly disagree). Get this right and your tables align, your borders close, and your layout engine is trustworthy. Get it wrong and everything looks *almost* aligned — which is somehow worse than obviously broken. **The fix:** measure in cells, use one consistent width table for both measuring and rendering.
 
 In the previous page we established the foundational truth of terminal
 programming: **a terminal is a grid of cells**. Not a canvas of pixels, not a
@@ -157,8 +157,8 @@ single cell stores:
 | Field | Example | Notes |
 |-------|---------|-------|
 | **Glyph** | `A`, `你`, `🦀` | The visible character — one *grapheme* (more on that word soon) |
-| :material-palette: **Foreground color** | bright green | Color of the text itself |
-| :material-palette-outline: **Background color** | dark grey | Color behind the text |
+| **Foreground color** | bright green | Color of the text itself |
+| **Background color** | dark grey | Color behind the text |
 | **Attributes** | bold, italic, underline, reverse, blink, strikethrough… | Style flags, often bit-packed |
 
 So the letter in a single cell might really be "a bold, underlined, bright-green
@@ -321,14 +321,14 @@ This is the heart of the page. The question "how wide is this text?" has no
 single easy answer, because different characters claim different numbers of
 cells. Let's build it up case by case.
 
-### Case 1: ASCII — one cell :material-numeric-1-box:
+### Case 1: ASCII — one cell 
 
 The easy case. Every printable ASCII character (`A`–`Z`, `a`–`z`, `0`–`9`,
 punctuation, space) is exactly **one cell wide**. For decades this was the whole
 story, and a lot of old code still assumes "one byte = one character = one
 cell." That assumption is wrong the moment you leave ASCII.
 
-### Case 2: East-Asian wide characters — two cells :material-numeric-2-box:
+### Case 2: East-Asian wide characters — two cells 
 
 Chinese, Japanese, and Korean (collectively **CJK**) characters are visually
 *square* — about as tall as they are wide. To keep them readable, terminals
@@ -360,7 +360,7 @@ one.
 
 That `Ambiguous` row is a foreshadowing of pain. Hold that thought.
 
-### Case 3: Combining marks — zero cells :material-numeric-0-box:
+### Case 3: Combining marks — zero cells 
 
 Some code points don't occupy any cell of their own — they *modify* the
 preceding character. The classic example is the accented `é`. There are two ways
@@ -386,7 +386,7 @@ width calculation overcounts every one of them. (And a malicious one can stack
 *dozens* of combining marks on a single base character — the so-called "Zalgo"
 text — which is still, by the rules, occupying just one cell.)
 
-### Case 4: Emoji — two cells, and then it gets weird :material-emoticon:
+### Case 4: Emoji — two cells, and then it gets weird 
 
 Emoji are typically rendered **two cells wide**, like CJK characters (they're
 square and pictorial). `🦀` takes two cells. Fine. But emoji are where Unicode's
@@ -513,10 +513,10 @@ combining acute), and the family emoji.
 
 Read that bottom row again. The **same string** is simultaneously:
 
-- :material-package-variant: **32 bytes** long,
-- :material-numeric: **11 code points** long,
-- :material-account: **4 graphemes** long,
-- :material-ruler: and occupies **6 cells** on screen.
+- **32 bytes** long,
+- **11 code points** long,
+- **4 graphemes** long,
+- and occupies **6 cells** on screen.
 
 Four numbers, all correct, all different. If you ask `strlen()` you get bytes.
 If you ask most languages' `.length` you get code points (or worse, UTF-16
@@ -699,14 +699,14 @@ wrong amount and the right border jumps out of alignment. If it measures it as 4
 
 Everything alignment-related rides on this:
 
-- :material-table: **Tables** — column widths, padding, truncation.
-- :material-border-all: **Borders and boxes** — the corners only meet if every
+- **Tables** — column widths, padding, truncation.
+- **Borders and boxes** — the corners only meet if every
   row is exactly the same cell width.
-- :material-format-align-center: **Centering and right-alignment** — "center in
+- **Centering and right-alignment** — "center in
   40 cells" needs the text's true cell width.
-- :material-dots-horizontal: **Truncation with `…`** — cutting a string to fit
+- **Truncation with `…`** — cutting a string to fit
   *N* cells must not slice a wide character in half or strand a combining mark.
-- :material-wrap: **Word wrapping** — deciding where a line breaks depends on
+- **Word wrapping** — deciding where a line breaks depends on
   accumulated cell width, not character count.
 
 ---

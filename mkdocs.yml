@@ -5,56 +5,43 @@ repo_url: https://github.com/1ay1/maya
 repo_name: 1ay1/maya
 edit_uri: edit/master/docs/
 docs_dir: docs
-copyright: Copyright &copy; maya — a C++26 TUI framework
 
 theme:
   name: material
   language: en
   icon:
-    logo: material/console
     repo: fontawesome/brands/github
-    edit: material/pencil
-    view: material/eye
   palette:
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
-      primary: deep purple
-      accent: purple
-      toggle:
-        icon: material/weather-night
-        name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: deep purple
-      accent: purple
+      primary: indigo
+      accent: indigo
       toggle:
         icon: material/weather-sunny
         name: Switch to dark mode
-  font:
-    text: Inter
-    code: JetBrains Mono
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
   features:
-    - navigation.instant
-    - navigation.instant.progress
     - navigation.tabs
-    - navigation.tabs.sticky
     - navigation.sections
     - navigation.top
     - navigation.tracking
-    - navigation.footer
     - toc.follow
     - content.code.copy
     - content.code.annotate
     - content.tabs.link
     - search.suggest
     - search.highlight
-    - search.share
 
 extra_css:
   - stylesheets/extra.css
 
 markdown_extensions:
-  - abbr
   - admonition
   - attr_list
   - def_list
@@ -63,19 +50,10 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
-      title: On this page
   - pymdownx.highlight:
       anchor_linenums: true
-      line_spans: __span
-      pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.keys
-  - pymdownx.snippets
-  - pymdownx.smartsymbols
-  - pymdownx.caret
-  - pymdownx.mark
-  - pymdownx.tilde
-  - pymdownx.critic
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -86,18 +64,6 @@ markdown_extensions:
       alternate_style: true
   - pymdownx.tasklist:
       custom_checkbox: true
-  - pymdownx.emoji:
-      emoji_index: !!python/name:material.extensions.emoji.twemoji
-      emoji_generator: !!python/name:material.extensions.emoji.to_svg
-
-extra:
-  social:
-    - icon: fontawesome/brands/github
-      link: https://github.com/1ay1/maya
-      name: maya on GitHub
-    - icon: material/language-python
-      link: https://github.com/1ay1/maya-py
-      name: maya-py (Python bindings)
 
 nav:
   - Home: index.md

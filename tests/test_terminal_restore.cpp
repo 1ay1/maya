@@ -36,7 +36,11 @@
 #include <vector>
 
 #include <fcntl.h>
-#include <pty.h>
+#if defined(__APPLE__)
+#  include <util.h>   // forkpty() lives in <util.h> on macOS/BSD
+#else
+#  include <pty.h>    // forkpty() lives in <pty.h> on Linux (glibc)
+#endif
 #include <sys/select.h>
 #include <sys/wait.h>
 #include <termios.h>

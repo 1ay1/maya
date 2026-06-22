@@ -279,7 +279,6 @@ if(MAYA_BUILD_TESTS)
         tests/test_stream_sink.cpp
         tests/test_scroll.cpp
         tests/test_wire_row.cpp
-        tests/test_inline_frame.cpp
         tests/test_commonmark_spec.cpp
         tests/test_html.cpp
         tests/bench_thread_scaling.cpp
@@ -300,21 +299,27 @@ if(MAYA_BUILD_TESTS)
         set_tests_properties(${tgt} PROPERTIES TIMEOUT 120)
     endforeach()
 
-    # PTY-driven terminal-restore test (POSIX only). Verifies maya puts the
-    # tty back (cooked termios + restore escapes) on every exit route,
-    # including SIGINT — guards the chained emergency handler.
+    # POSIX-only tests. These mock a real fd (a pipe / pty), so they need
+    # unistd/termios and can't build under MSVC.
+    #   • test_inline_frame  — routes the Witness Chain through a pipe Writer.
+    #   • test_terminal_restore — PTY-driven; verifies maya puts the tty back
+    #     (cooked termios + restore escapes) on every exit route, including
+    #     SIGINT — guards the chained emergency handler.
     if(UNIX)
-        add_executable(test_terminal_restore tests/test_terminal_restore.cpp)
-        target_link_libraries(test_terminal_restore PRIVATE maya)
-        target_compile_definitions(test_terminal_restore PRIVATE
-            MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-        target_compile_options(test_terminal_restore PRIVATE
-            $<$<CXX_COMPILER_ID:GNU,Clang>:-O2>)
+        foreach(tgt test_inline_frame test_terminal_restore)
+            add_executable(${tgt} tests/${tgt}.cpp)
+            target_link_libraries(${tgt} PRIVATE maya)
+            target_compile_definitions(${tgt} PRIVATE
+                MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+            target_compile_options(${tgt} PRIVATE
+                $<$<CXX_COMPILER_ID:GNU,Clang>:-O2>)
+            add_test(NAME ${tgt} COMMAND ${tgt})
+            set_tests_properties(${tgt} PROPERTIES TIMEOUT 120)
+        endforeach()
+        # forkpty() needs -lutil on Linux/glibc (it's in libc on macOS).
         if(NOT APPLE)
             target_link_libraries(test_terminal_restore PRIVATE util)
         endif()
-        add_test(NAME test_terminal_restore COMMAND test_terminal_restore)
-        set_tests_properties(test_terminal_restore PROPERTIES TIMEOUT 120)
     endif()
 endif()
 

@@ -46,7 +46,7 @@ jobs:
             cc: gcc-14
             cxx: g++-14
           - name: windows-msvc
-            os: windows-2022
+            os: windows-2025
             cc: ""
             cxx: ""
     steps:

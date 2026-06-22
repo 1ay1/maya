@@ -1,7 +1,16 @@
 # Examples Walkthrough
 
-maya ships with 23 examples that progressively demonstrate its features. This
-guide walks through the major ones, explaining the patterns and techniques used.
+maya ships with **34 examples** that progressively demonstrate its features.
+This guide walks through the major ones, explaining the patterns and
+techniques used.
+
+> **The authoritative list is the [`examples/`](../examples/) directory** —
+> run `ls examples/*.cpp` (or look at the build targets `maya_<name>`). A few
+> sections below were written against earlier example filenames that have
+> since been renamed or merged; where that happened the heading points at the
+> current file. The *code patterns* shown still reflect the live API (every
+> snippet in this guide is checked against the headers), only the filename may
+> differ.
 
 ## 1. counter.cpp — The Simplest App
 
@@ -47,7 +56,10 @@ int main() { run<Counter>({.title = "counter"}); }
 
 This is the canonical Program-style maya app.
 
-## 2. demo.cpp — Feature Showcase
+## 2. markup.cpp / widgets.cpp — Feature Showcase
+
+> *(was `demo.cpp` — the feature-tour content now lives in `markup.cpp` and
+> `widgets.cpp`.)*
 
 **Mode**: Fullscreen (`run<P>()`)
 **Demonstrates**: RunConfig, Program architecture, theme colors, nested layouts, conditional styling
@@ -68,7 +80,10 @@ static Element view(const Model& m) {
 }
 ```
 
-## 3. dsl_demo.cpp — Compile-Time DSL
+## 3. Compile-Time DSL (see any `print()` usage)
+
+> *(was `dsl_demo.cpp` — the one-shot `print()` + constexpr-tree demo is folded
+> into the `print()` section of [Rendering Modes](07-rendering-modes.md).)*
 
 **Mode**: One-shot (`print()`)
 **Demonstrates**: Fully constexpr UI, type-state safety, bcol after border
@@ -93,7 +108,9 @@ comes first — type-state enforcement.
 
 Also demonstrates mixing constexpr and runtime with `dyn()`.
 
-## 4. inline.cpp — Inline Mode
+## 4. inline_progress.cpp — Inline Mode
+
+> *(was `inline.cpp`.)*
 
 **Mode**: `run()` with `Mode::Inline`
 **Demonstrates**: Inline rendering, live bar animation, theme cycling
@@ -111,7 +128,9 @@ for (int i = 0; i < 20; ++i)
 
 Shows that `text()` works with runtime strings for dynamic visualizations.
 
-## 5. progress.cpp — Inline Progress Display
+## 5. inline_progress.cpp — Inline Progress Display
+
+> *(was `progress.cpp`.)*
 
 **Mode**: Inline (`live()`)
 **Demonstrates**: Delta time, parallel progress bars, spinners, auto-quit
@@ -338,7 +357,10 @@ if (auto pos = mouse_pos(ev)) hover_col = pos->col - 1;
 if (mouse_clicked(ev)) rain->shockwave(pos->col, pos->row);
 ```
 
-## 17. viz.cpp — Signal Charts + Heatmap
+## 17. spectrum.cpp / dashboard.cpp — Signal Charts + Heatmap
+
+> *(was `viz.cpp` — the sub-cell chart / heatmap techniques now ship in
+> `spectrum.cpp` and `dashboard.cpp`.)*
 
 **Mode**: Canvas (`canvas_run()`)
 **Demonstrates**: Braille sub-cell graphics, 2D heatmap, fast math, split panels
@@ -373,7 +395,10 @@ inline float fast_sin(float x) noexcept { /* polynomial approx */ }
 inline float fast_sqrt(float x) noexcept { /* Quake III rsqrt */ }
 ```
 
-## 18. fireworks.cpp — Particle Physics
+## 18. particles.cpp — Particle Physics
+
+> *(was `fireworks.cpp` — the fireworks burst is one of `particles.cpp`'s five
+> modes.)*
 
 **Mode**: Canvas (`canvas_run()`)
 **Demonstrates**: Physics simulation, particle lifecycle, auto-launch, mouse click-to-launch

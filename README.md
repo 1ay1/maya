@@ -89,7 +89,7 @@ int main() { run<Counter>({.title = "counter"}); }
 
 ## Examples
 
-26 examples ship with the framework:
+34 examples ship with the framework:
 
 <table>
 <tr>
@@ -145,7 +145,7 @@ Plus FPS raycaster, raymarcher, fluid sim, mandelbrot zoom, matrix rain, particl
 | Header | Contains | Stability |
 |--------|----------|-----------|
 | `maya.hpp` | DSL, Program, Cmd, Sub, events, signals, styles, elements, themes | Stable |
-| `widget/*.hpp` | 69 widgets | Stable |
+| `widget/*.hpp` | 90+ widgets | Stable |
 | `internal.hpp` | Canvas, diff, renderer, SIMD, terminal I/O, layout | Internal |
 
 ## Building

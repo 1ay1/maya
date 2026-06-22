@@ -478,6 +478,19 @@ bg<0x1A1A2E>   // hex background
 These are compile-time pipe tags just like `Fg` / `Bg`, but take a single
 24-bit hex value instead of three separate `uint8_t` parameters.
 
+> **Gotcha — `fg<>` / `bg<>` are ambiguous under `using namespace maya;`.**
+> The root `maya` namespace also defines free functions `maya::fg(Color)` /
+> `maya::bg(Color)` (the `Style` builders). If you pull in **both**
+> `using namespace maya;` **and** `using namespace maya::dsl;` (the common
+> setup), an unqualified `fg<0xFFFFFF>` fails to compile with *“reference
+> to ‘fg’ is ambiguous”*. Fixes, any one of:
+> ```cpp
+> Bold | dsl::fg<0xFFFFFF>     // qualify the tag
+> Bold | Fg<0xFF, 0xFF, 0xFF>  // use the capital RGB tag (never ambiguous)
+> ```
+> The capital `Fg<R,G,B>` / `Bg<R,G,B>` tags have no free-function twin, so
+> they are always unambiguous. This only affects the lowercase hex tags.
+
 ## Style Presets
 
 Compose style tags into reusable presets with `constexpr`:

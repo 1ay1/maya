@@ -16,10 +16,11 @@ A `Canvas` is a 2D grid of `Cell` values. Each cell holds:
 
 ```cpp
 struct Cell {
-    char32_t character;      // Unicode codepoint
-    uint16_t style_id;       // Index into StylePool
-    uint16_t hyperlink_id;   // (reserved)
-    uint8_t  width;          // Display width (1 or 2 for wide chars)
+    char32_t character    = U' ';   // Unicode codepoint
+    uint16_t style_id     = 0;      // Index into StylePool
+    uint16_t hyperlink_id = 0;      // (reserved)
+    uint8_t  width        = 0;      // 0 = normal, 1 = wide first half,
+                                    //             2 = wide second half
 };
 ```
 
@@ -294,7 +295,7 @@ maya's frame diff engine compares the current and previous canvas buffers using
 SIMD instructions. Because cells are 64-bit packed values, the diff can compare
 8 cells at once with AVX-512, 4 with AVX2, or 2 with SSE2/NEON.
 
-Functions available in `maya::core::simd`:
+Functions available in `maya::simd`:
 
 | Function | Description |
 |----------|-------------|

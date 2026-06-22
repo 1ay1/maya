@@ -95,8 +95,34 @@
   font-weight: 700;
 }
 
-/* ---- Mermaid diagrams: center & pad --------------------------------- */
+/* ---- Mermaid diagrams: center, frame & keep labels legible ---------- */
 .md-typeset .mermaid {
   margin: 1.2rem auto;
   text-align: center;
+  background: var(--md-code-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 12px;
+  padding: 1rem 0.5rem;
+}
+/* Edge labels can render low-contrast on the dark theme — pin them to the
+   page foreground with a matching backdrop so they're always readable.
+   (Node labels are left alone: they set their own color via each diagram's
+   dark `style fill:… color:…`, which is correct in both light and dark.) */
+.md-typeset .mermaid .edgeLabel,
+.md-typeset .mermaid .edgeLabel p,
+.md-typeset .mermaid span.edgeLabel {
+  color: var(--md-default-fg-color) !important;
+  background-color: var(--md-default-bg-color) !important;
+  fill: var(--md-default-fg-color) !important;
+}
+.md-typeset .mermaid .edgeLabel rect,
+.md-typeset .mermaid .labelBkg {
+  fill: var(--md-default-bg-color) !important;
+  opacity: 0.85;
+}
+/* Subgraph / cluster titles legible too. */
+.md-typeset .mermaid .cluster-label,
+.md-typeset .mermaid .cluster-label p {
+  color: var(--md-default-fg-color) !important;
+  fill: var(--md-default-fg-color) !important;
 }

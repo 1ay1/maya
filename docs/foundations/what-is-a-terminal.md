@@ -97,22 +97,21 @@ pile of conventions that seem to come from nowhere. They make a lot more sense o
 you know they're emulating hardware from the 1960s and 70s. The abstractions you use
 today exist because they had to talk to *physical machines*.
 
-Here is the whole sweep of it, sixty-plus years on one timeline:
+Here is the whole sweep of it — sixty-plus years from hammering paper to
+GPU-accelerated glass:
 
-```mermaid
-timeline
-    title From hammering paper to GPU-accelerated glass
-    1869 : Typewriter mechanics (carriage return, line feed)
-    1963 : ASCII standardized — the byte values for letters & control chars
-    1963 : Teletype Model 33 (ASR-33) — the iconic paper terminal
-    1970s : Serial lines & baud rates connect terminals to mainframes
-    1975 : DEC VT52 — early video terminal, cursor addressing
-    1978 : DEC VT100 — escape sequences become the de-facto standard
-    1983 : DEC VT220 — function keys, national character sets
-    1984 : xterm — the X11 terminal emulator that everyone copied
-    2010s : tmux/screen, 256-color & truecolor everywhere
-    Today : GPU-accelerated emulators (Alacritty, kitty, WezTerm, Ghostty)
-```
+| Era | When | Milestone | Why it still matters |
+|-----|------|-----------|----------------------|
+| **Act 1 · Paper** | 1869 | Typewriter mechanics | `\r` (carriage return) and `\n` (line feed) are *physical* motions we still send today |
+| | 1963 | **ASCII** standardized | Fixed the byte values for letters **and control characters** (Tab, Esc, Bell…) |
+| | 1963 | Teletype Model 33 (**ASR-33**) | The iconic paper terminal — "TTY" is named after it |
+| | 1970s | Serial lines & **baud rates** | Terminals talked to mainframes over a slow wire — why "bytes-on-wire" is the eternal cost |
+| **Act 2 · Glass** | 1975 | DEC **VT52** | Early video terminal; cursor addressing arrives |
+| | 1978 | DEC **VT100** | **Escape sequences** become the de-facto standard we *still* use |
+| | 1983 | DEC **VT220** | Function keys, national character sets |
+| **Act 3 · Emulators** | 1984 | **xterm** | The X11 terminal emulator everyone else copied |
+| | 2010s | tmux/screen, 256-color & truecolor | Multiplexing and rich color go mainstream |
+| | Today | **GPU-accelerated** emulators | Alacritty, kitty, WezTerm, Ghostty — still speaking VT100's language |
 
 ### Act 1: Teletypes (the literal typewriters)
 

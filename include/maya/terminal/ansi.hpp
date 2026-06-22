@@ -75,6 +75,45 @@ MAYA_FORCEINLINE void write_move_to(std::string& out, int col, int row) {
     out += 'H';
 }
 
+/// DECSTBM — set the vertical scrolling region to rows [top, bottom]
+/// (1-based, inclusive). Text scrolling (LF at the bottom margin, RI at the
+/// top, IND/scroll-up/down) is confined to this band; rows outside it are
+/// frozen — the terminal will not move them. After DECSTBM the cursor homes
+/// to (top,1). This is the substrate for partial terminal updates: freeze
+/// completed content above the margin, animate only the active band below.
+MAYA_FORCEINLINE void write_scroll_region(std::string& out, int top, int bottom) {
+    out += "\x1b[";
+    detail::append_int(out, top);
+    out += ';';
+    detail::append_int(out, bottom);
+    out += 'r';
+}
+
+/// DECSTBM reset — restore the full screen as the scrolling region.
+/// (CSI r with no params.) Always pair this with write_scroll_region on
+/// teardown so the next program inherits a clean terminal.
+MAYA_FORCEINLINE void write_scroll_region_reset(std::string& out) {
+    out += "\x1b[r";
+}
+
+/// SU — scroll the active region up by n lines (text moves up, blank lines
+/// enter at the bottom margin). Confined to the current DECSTBM band.
+MAYA_FORCEINLINE void write_scroll_up(std::string& out, int n) {
+    if (n <= 0) return;
+    out += "\x1b[";
+    detail::append_int(out, n);
+    out += 'S';
+}
+
+/// SD — scroll the active region down by n lines (text moves down, blank
+/// lines enter at the top margin). Confined to the current DECSTBM band.
+MAYA_FORCEINLINE void write_scroll_down(std::string& out, int n) {
+    if (n <= 0) return;
+    out += "\x1b[";
+    detail::append_int(out, n);
+    out += 'T';
+}
+
 // ============================================================================
 // Constants - CSI / OSC / ST prefixes
 // ============================================================================

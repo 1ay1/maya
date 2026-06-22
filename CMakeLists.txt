@@ -110,6 +110,7 @@ add_library(maya
     src/widget/markdown/render/render_block.cpp
     src/widget/markdown/render/syntax_lang.cpp
     src/widget/markdown/render/syntax_highlight.cpp
+    src/widget/markdown/render/highlight.cpp
     # streaming module — one concern per TU
     src/widget/markdown/streaming/markdown_memo.cpp
     src/widget/markdown/streaming/boundary.cpp
@@ -265,6 +266,10 @@ if(MAYA_BUILD_TESTS)
         tests/test_framebuffer.cpp
         tests/test_input.cpp
         tests/test_signal.cpp
+        tests/test_animation.cpp
+        tests/test_overlay_layer.cpp
+        tests/test_static_split.cpp
+        tests/test_highlight.cpp
         tests/test_layout.cpp
         tests/test_border.cpp
         tests/test_simd.cpp

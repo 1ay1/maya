@@ -182,6 +182,35 @@ public:
         out += body;
     }
 
+    /// Trim the TOP `n` rows of the frozen band into native scrollback.
+    ///
+    /// This is the DECSTBM analog of a host scrollback commit: when the
+    /// frozen prefix grows past a budget, the oldest rows must graduate into
+    /// the terminal's own scrollback. We do it by (1) releasing the scroll
+    /// region to the full screen, (2) homing to the top and scrolling the
+    /// WHOLE screen up by `n` — which feeds exactly those `n` physical top
+    /// rows into native scrollback — then (3) re-pinning the now-`n`-shorter
+    /// frozen band. Because the rows leave via a real scroll (not a repaint),
+    /// no committed row is ever rewritten: the duplicate-strand failure mode
+    /// of a from-the-top re-emit cannot occur here.
+    ///
+    /// Returns the number of rows actually trimmed (clamped so at least one
+    /// frozen row of context can remain; pass a value <= frozen_rows()).
+    int commit_top(int n, std::string& out) {
+        if (!armed_ || n <= 0) return 0;
+        if (n > frozen_) n = frozen_;
+        if (n <= 0) return 0;
+
+        ansi::write_scroll_region_reset(out);
+        ansi::write_move_to(out, 1, 1);
+        ansi::write_scroll_up(out, n);          // SU: top n rows → scrollback
+        frozen_ -= n;
+        // Re-pin the active region below the now-shorter frozen band.
+        ansi::write_scroll_region(out, frozen_ + 1, screen_h_);
+        ansi::write_move_to(out, 1, frozen_ + 1);
+        return n;
+    }
+
     /// Tear down: restore the full-screen scroll region and drop below the
     /// content. Always call before handing the terminal to another program.
     void end(std::string& out) {

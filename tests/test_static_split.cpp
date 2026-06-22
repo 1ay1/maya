@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cctype>
+#include <cstdio>
 #include <print>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@ using namespace maya::dsl;
 struct TermEmu {
     int w, h;
     std::vector<std::string> rows;   // each row is `w` chars
+    std::vector<std::string> scroll_off;  // rows that scrolled past the top
     int cx = 0, cy = 0;              // 0-based cursor
     int margin_top = 0, margin_bot;  // 0-based inclusive scroll region
 
@@ -33,6 +35,11 @@ struct TermEmu {
 
     void scroll_up(int n) {  // text moves up within [margin_top, margin_bot]
         for (int k = 0; k < n; ++k) {
+            // The row leaving the TOP of the scroll region enters scrollback
+            // only when the region starts at the physical top (margin_top==0);
+            // a row pushed out of a sub-region is simply discarded by the
+            // terminal (DECSTBM regions don't feed scrollback).
+            if (margin_top == 0) scroll_off.push_back(rows[margin_top]);
             for (int y = margin_top; y < margin_bot; ++y) rows[y] = rows[y + 1];
             rows[margin_bot].assign(w, ' ');
         }
@@ -222,12 +229,84 @@ void test_end_restores_region() {
     std::println("PASS\n");
 }
 
+// ── Agentty-shaped scenario: growing frozen prefix + trim, no duplication ───
+// This is the DECSTBM proof-of-concept for agentty's two-tier render path.
+// Several "turns" complete and get frozen (the prefix grows); periodically the
+// active band repaints a live tail; then the prefix is trimmed from the top
+// (commit_top) when it exceeds a budget. The invariant that matters — and that
+// agentty's production commit_scrollback path tunes so carefully against — is:
+// NO unique line ever appears twice across the cumulative transcript
+// (scrollback ++ on-screen rows). Under DECSTBM that holds structurally: frozen
+// rows leave only via a real scroll, never a from-the-top re-emit, so the
+// duplicate-strand failure mode cannot occur.
+void test_agentty_freeze_trim_no_dup() {
+    std::println("--- test_agentty_freeze_trim_no_dup ---");
+    StylePool pool;
+    const int H = 12, W = 40;
+    TermEmu term(W, H);
+    std::string out;
+
+    StaticSplit split;
+    split.begin(H, out);
+    term.feed(out); out.clear();
+
+    int turn = 0;
+    const int budget = 6;   // keep at most ~6 frozen rows before trimming
+
+    // 20 turns: each freezes a unique 1-row "message", repaints the active
+    // band, and trims the frozen prefix back under budget.
+    for (int t = 0; t < 20; ++t) {
+        char msg[32];
+        std::snprintf(msg, sizeof(msg), "turn-%02d-done", turn++);
+        split.freeze(text(msg), W, pool, out);
+
+        char live[32];
+        std::snprintf(live, sizeof(live), "...working-%02d", t);
+        split.draw_active(text(live), W, pool, out);
+
+        // Trim the frozen prefix down to the budget.
+        if (split.frozen_rows() > budget)
+            split.commit_top(split.frozen_rows() - budget, out);
+
+        term.feed(out); out.clear();
+    }
+    split.end(out);
+    term.feed(out);
+
+    // Collect the cumulative transcript: scrollback rows + current screen.
+    std::vector<std::string> transcript = term.scroll_off;
+    for (int y = 0; y < H; ++y) transcript.push_back(term.trimmed(y));
+
+    // No unique "turn-NN-done" line may appear twice (the strand symptom).
+    for (int n = 0; n < turn; ++n) {
+        char needle[32];
+        std::snprintf(needle, sizeof(needle), "turn-%02d-done", n);
+        int count = 0;
+        for (const auto& row : transcript)
+            if (row.find(needle) != std::string::npos) ++count;
+        assert(count <= 1);   // strand-free: never duplicated
+    }
+
+    // And every completed turn must appear AT LEAST once somewhere in the
+    // transcript — nothing was silently lost by the trim.
+    for (int n = 0; n < turn; ++n) {
+        char needle[32];
+        std::snprintf(needle, sizeof(needle), "turn-%02d-done", n);
+        bool seen = false;
+        for (const auto& row : transcript)
+            if (row.find(needle) != std::string::npos) { seen = true; break; }
+        assert(seen);
+    }
+    std::println("PASS\n");
+}
+
 int main() {
     test_ansi_scroll_region_bytes();
     test_split_geometry();
     test_split_keeps_active_row();
     test_frozen_survives_scroll();
     test_end_restores_region();
+    test_agentty_freeze_trim_no_dup();
     std::println("All static-split tests passed.");
     return 0;
 }

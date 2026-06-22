@@ -63,11 +63,38 @@ const Element& StreamingMarkdown::build() const {
     // cursor's byte clip so render_tail can't eager-style bytes the
     // typewriter hasn't reached yet (the heading underline / code-fence
     // chrome / table rules burst). Otherwise it's source_.size().
-    const std::size_t visible_end =
-        (reveal_fx_ && live_
-         && reveal_byte_clip_ != static_cast<std::size_t>(-1))
-            ? std::min(source_.size(), reveal_byte_clip_)
-            : source_.size();
+    //
+    // LINE-GRANULAR CLIP (scrollback-safety invariant). The raw cursor
+    // clip can fall in the MIDDLE of a physical source line. If that
+    // half-line then overflows the viewport and scrolls off into the
+    // terminal's native (immutable) scrollback, the committed row is
+    // the truncated text — and the reveal cursor catching up later
+    // cannot rewrite scrollback. Result: a permanently half-revealed
+    // code line frozen in history (the reveal_scrollback_test failure).
+    //
+    // Fix: round the clip UP to the end of the line it lands in (the
+    // next '\n', or source end). Every COMPLETED line is therefore
+    // always rendered in full — its wrapped height equals the settled
+    // height, so whatever scrolls off matches the final transcript
+    // byte-for-byte. Only the single actively-typed last line reveals
+    // char-by-char, and that line is the bottom-most live edge which
+    // never scrolls off while it's still being typed. The overlay's
+    // ghost band (invisible cells for unrevealed cp) animates the
+    // within-line typewriter; the line-granular clip just guarantees
+    // the bytes are PRESENT so height stays stable. Eager block chrome
+    // (heading underline / fence border) is still gated per-line by
+    // commit deferral, so revealing a completed line in full doesn't
+    // dump ahead-of-cursor structural decoration.
+    std::size_t visible_end = source_.size();
+    if (reveal_fx_ && live_
+        && reveal_byte_clip_ != static_cast<std::size_t>(-1)) {
+        std::size_t clip = std::min(source_.size(), reveal_byte_clip_);
+        if (clip < source_.size()) {
+            const std::size_t nl = source_.find('\n', clip);
+            clip = (nl == std::string::npos) ? source_.size() : (nl + 1);
+        }
+        visible_end = clip;
+    }
     std::string_view tail = (committed_ < visible_end)
         ? std::string_view{source_}.substr(committed_, visible_end - committed_)
         : std::string_view{};

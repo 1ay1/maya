@@ -524,14 +524,48 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // revealed slice but unrevealed_cp = total - revealed is
             // computed against UNCLIPPED total, so it covers the whole
             // visible tail).
+            // When build()'s visible-byte clip is active (reveal_fx_ +
+            // live_), cached_build_ contains the source truncated to the
+            // END OF THE CURRENT LINE (line-granular clip in build()) —
+            // so completed lines are full (scrollback-safe) but the
+            // actively-typed last line carries bytes the cursor hasn't
+            // reached yet. Those trailing within-line bytes must be
+            // GHOSTED (invisible) so the typewriter still reads as
+            // left-to-right reveal; without it the rest of the current
+            // line would flash in fully the moment the line's first byte
+            // arrives. unrevealed_cp here is the codepoint span between
+            // the raw cursor clip and the line-end clip — i.e. exactly
+            // the part of the current line past the cursor.
+            //
+            // When the clip is NOT active (reveal off / settled) we ghost
+            // total_cp - revealed_cp as before.
             const bool clip_active =
                 reveal_fx_
                 && reveal_byte_clip_ != static_cast<std::size_t>(-1)
                 && reveal_byte_clip_ < source_.size();
-            const std::size_t unrevealed_cp = clip_active
-                ? 0u
-                : ((total_cp > revealed_cp) ? (total_cp - revealed_cp)
-                                            : 0u);
+            std::size_t unrevealed_cp;
+            if (clip_active) {
+                // Count cp in [reveal_byte_clip_, end-of-tail-leaf). The
+                // tail leaf ends at the line-granular visible_end; the
+                // bytes past reveal_byte_clip_ are the unrevealed slice of
+                // the current line. Count directly off source_ (cheap:
+                // bounded by one line's length).
+                const std::size_t clip_b =
+                    std::min(reveal_byte_clip_, source_.size());
+                std::size_t line_end = clip_b;
+                while (line_end < source_.size()
+                       && source_[line_end] != '\n')
+                    ++line_end;
+                std::size_t cnt = 0;
+                for (std::size_t i = clip_b; i < line_end; ++i)
+                    if ((static_cast<unsigned char>(source_[i]) & 0xC0)
+                            != 0x80)
+                        ++cnt;
+                unrevealed_cp = cnt;
+            } else {
+                unrevealed_cp = (total_cp > revealed_cp)
+                    ? (total_cp - revealed_cp) : 0u;
+            }
 
             // Trail window is whichever is bigger: the fixed gradient
             // band, or the unrevealed slice PLUS a ghost extension —

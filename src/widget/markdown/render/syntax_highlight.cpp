@@ -480,11 +480,46 @@ static Element highlight_code_impl(const std::string& code, const std::string& l
             return n;
         };
         const int line_count = count_lines(out);
-        constexpr int kGutterMinLines = 5;
+        // Gutter presence MUST be stable across a code block's streamed
+        // lifetime. A min-lines threshold (e.g. "only gutter blocks of
+        // >=5 lines") flips the gutter ON the moment a streaming block
+        // crosses the threshold, re-indenting every line including rows
+        // that already scrolled into native scrollback (an immutable
+        // committed-row rewrite — same corruption class as the gutter
+        // WIDTH growth handled below). Emit the gutter unconditionally so
+        // a block that starts at 1 line and streams to N never gains or
+        // loses its line-number column mid-stream. (reveal_scrollback_test
+        // cb-fold scenario caught the threshold flip at the 4→5 boundary.)
+        constexpr int kGutterMinLines = 1;
         if (line_count >= kGutterMinLines) {
             // Width of the line-number column. log10-style.
-            int w_digits = 1;
-            for (int v = line_count; v >= 10; v /= 10) ++w_digits;
+            //
+            // STABILITY CONTRACT: a code block streamed incrementally
+            // grows line-by-line. If w_digits were a tight fit of the
+            // CURRENT line_count, crossing a power-of-ten boundary
+            // (9→10, 99→100) would widen the gutter by one column and
+            // re-indent EVERY line of the block — including rows that
+            // have already scrolled into the terminal's native
+            // scrollback, which the inline renderer can no longer
+            // rewrite. The result is a committed-row rewrite: maya's
+            // diff tries to shift a scrolled-off row right by one and
+            // strands a corrupted / duplicated copy (reproduced by
+            // agentty's reveal_scrollback_test cb-fold scenario at the
+            // 9→10 boundary). Reserve a fixed FLOOR (3 digits ⇒ stable
+            // up to 999 lines) so the gutter width is constant across
+            // the entire streamed lifetime of any realistic block;
+            // blocks longer than that are auto-folded to one row by the
+            // host before they could cross the next boundary. Height
+            // monotonicity is unaffected (still one line out per line
+            // in); this only fixes the HORIZONTAL stability the
+            // committed-row contract requires.
+            constexpr int kGutterMinDigits = 3;
+            int w_digits = kGutterMinDigits;
+            {
+                int need = 1;
+                for (int v = line_count; v >= 10; v /= 10) ++need;
+                if (need > w_digits) w_digits = need;
+            }
             constexpr std::string_view kSep =
                 " \xe2\x94\x82 ";  // " │ " (U+2502 = ~3 cells wide visually with pad)
             const std::size_t kSepBytes = kSep.size();

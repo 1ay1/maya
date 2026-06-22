@@ -167,7 +167,7 @@ public:
 
     /// Intern a style, returning its unique ID.
     /// Hot path: called once per cell during painting.
-    MAYA_ALWAYS_INLINE [[nodiscard]] uint16_t intern(const Style& s) {
+    [[nodiscard]] MAYA_ALWAYS_INLINE uint16_t intern(const Style& s) {
         std::size_t h = hash_style(s);
         std::size_t idx = h & mask_;
 
@@ -214,14 +214,14 @@ public:
     }
 
     /// Look up a style by its ID. The caller must ensure the ID is valid.
-    MAYA_ALWAYS_INLINE [[nodiscard]] const Style& get(uint16_t id) const noexcept {
+    [[nodiscard]] MAYA_ALWAYS_INLINE const Style& get(uint16_t id) const noexcept {
         return styles_[id];
     }
 
     /// Pre-built SGR escape sequence for a style ID.
     /// Each string is a complete "\x1b[0;...m" that resets then applies — the diff
     /// loop calls this once per style change instead of computing transitions.
-    MAYA_ALWAYS_INLINE [[nodiscard]] std::string_view sgr(uint16_t id) const noexcept {
+    [[nodiscard]] MAYA_ALWAYS_INLINE std::string_view sgr(uint16_t id) const noexcept {
         return sgr_cache_[id];
     }
 
@@ -455,7 +455,7 @@ public:
     [[nodiscard]] Cell get(int x, int y) const noexcept;
 
     /// Direct access to the packed cell value at (x, y) for fast diff.
-    MAYA_ALWAYS_INLINE [[nodiscard]] uint64_t get_packed(int x, int y) const noexcept {
+    [[nodiscard]] MAYA_ALWAYS_INLINE uint64_t get_packed(int x, int y) const noexcept {
         return cells_[static_cast<std::size_t>(y * width_ + x)];
     }
 
@@ -763,12 +763,12 @@ public:
     [[nodiscard]] std::size_t cell_count() const noexcept { return cells_.size(); }
 
 private:
-    MAYA_ALWAYS_INLINE [[nodiscard]] bool in_bounds(int x, int y) const noexcept {
+    [[nodiscard]] MAYA_ALWAYS_INLINE bool in_bounds(int x, int y) const noexcept {
         return static_cast<unsigned>(x) < static_cast<unsigned>(width_)
             && static_cast<unsigned>(y) < static_cast<unsigned>(height_);
     }
 
-    MAYA_ALWAYS_INLINE [[nodiscard]] std::size_t cell_index(int x, int y) const noexcept {
+    [[nodiscard]] MAYA_ALWAYS_INLINE std::size_t cell_index(int x, int y) const noexcept {
         return static_cast<std::size_t>(y * width_ + x);
     }
 

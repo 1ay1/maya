@@ -29,6 +29,20 @@ endif()
 # chip of the relevant arch supports.
 option(MAYA_NATIVE_TUNING "Bake the host CPU into the binary (-march=native -mtune=native). OFF for portable / standalone releases." ON)
 
+# ── Fast test iteration ───────────────────────────────────────────────────
+# The production `maya` library compiles every TU at -O3 with LTO + loop
+# unrolling + Graphite polyhedral passes (see MAYA_LINUX_CXX_FLAGS). Great for
+# the shipped binary, terrible for the test edit-build-run loop: any header
+# edit recompiles the whole library at -O3, and every test then LTO-links
+# (whole-program optimization) against it.
+#
+# With MAYA_FAST_TESTS=ON the tests link a SEPARATE `maya_test` library built
+# at -O0 with NO LTO and NO heavy flags, and test TUs compile at -O0 too. A
+# header edit recompiles only the touched object at -O0 and links instantly.
+# The production `maya` target and its flags are completely untouched, so the
+# portable-release path is unaffected. Default ON whenever tests are enabled.
+option(MAYA_FAST_TESTS "Build tests against a non-LTO, -O0 maya library for fast iteration." ON)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # LTO across all translation units — lets GCC inline across .cpp boundaries,
     # devirtualize, and eliminate dead code globally. Respect a caller-supplied
@@ -81,7 +95,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     )
 endif()
 
-add_library(maya
+set(MAYA_LIB_SOURCES
     src/app/app.cpp
     src/app/events.cpp
     src/app/inline.cpp
@@ -126,6 +140,8 @@ add_library(maya
     src/widget/html/parser.cpp
     src/widget/html/render.cpp
 )
+
+add_library(maya ${MAYA_LIB_SOURCES})
 target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -255,6 +271,40 @@ option(MAYA_BUILD_TESTS "Build tests" OFF)
 if(MAYA_BUILD_TESTS)
     enable_testing()
 
+    # ── Which library do tests link against? ──────────────────────────────
+    # MAYA_FAST_TESTS builds a parallel `maya_test` library from the SAME
+    # sources but with LTO disabled and -O0 — so a header edit recompiles
+    # only the touched .o at -O0 and the test links in milliseconds instead
+    # of waiting on whole-program LTO. Production `maya` is left alone.
+    if(MAYA_FAST_TESTS AND NOT MSVC)
+        add_library(maya_test STATIC EXCLUDE_FROM_ALL ${MAYA_LIB_SOURCES})
+        target_include_directories(maya_test PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+        target_compile_features(maya_test PUBLIC cxx_std_26)
+        # No LTO, no -O3, no unroll/Graphite. Just enough to be correct + fast
+        # to compile. -g0 keeps objects small; debugging a failing test is
+        # better done by rebuilding the one TU with -Og if needed.
+        set_target_properties(maya_test PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
+        # -O1 (NOT -O0): a handful of tests assert per-frame render latency
+        # (test_markdown's streaming cases HUNG at -O0). -O1 has no LTO, no
+        # loop unrolling, no Graphite polyhedral passes — so it compiles in a
+        # fraction of the production -O3+LTO time — yet runs fast enough for
+        # those gates. Native tuning is intentionally omitted (portability +
+        # compile speed). Test TUs themselves stay at -O0 (see MAYA_TEST_OPT).
+        target_compile_options(maya_test PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-O1 -g0 -fno-lto>)
+        target_link_options(maya_test PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:-fno-lto>)
+        set(MAYA_TEST_LIB maya_test)
+        set(MAYA_TEST_OPT -O0 -g0 -fno-lto)
+    else()
+        set(MAYA_TEST_LIB maya)
+        set(MAYA_TEST_OPT -O2)
+        if(MAYA_NATIVE_TUNING)
+            list(APPEND MAYA_TEST_OPT -march=native)
+        endif()
+    endif()
+
     set(MAYA_TEST_SOURCES
         tests/test_render.cpp
         tests/test_render_scaling.cpp
@@ -292,14 +342,10 @@ if(MAYA_BUILD_TESTS)
     foreach(src ${MAYA_TEST_SOURCES})
         get_filename_component(tgt ${src} NAME_WE)
         add_executable(${tgt} ${src})
-        target_link_libraries(${tgt} PRIVATE maya)
+        target_link_libraries(${tgt} PRIVATE ${MAYA_TEST_LIB})
         target_compile_definitions(${tgt} PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         target_compile_options(${tgt} PRIVATE
-            $<$<CXX_COMPILER_ID:GNU,Clang>:
-                -O2
-                $<$<BOOL:${MAYA_NATIVE_TUNING}>:-march=native>
-            >
-        )
+            $<$<CXX_COMPILER_ID:GNU,Clang>:${MAYA_TEST_OPT}>)
         add_test(NAME ${tgt} COMMAND ${tgt})
         set_tests_properties(${tgt} PROPERTIES TIMEOUT 120)
     endforeach()
@@ -320,11 +366,11 @@ if(MAYA_BUILD_TESTS)
         endif()
         foreach(tgt ${_maya_posix_tests})
             add_executable(${tgt} tests/${tgt}.cpp)
-            target_link_libraries(${tgt} PRIVATE maya)
+            target_link_libraries(${tgt} PRIVATE ${MAYA_TEST_LIB})
             target_compile_definitions(${tgt} PRIVATE
                 MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
             target_compile_options(${tgt} PRIVATE
-                $<$<CXX_COMPILER_ID:GNU,Clang>:-O2>)
+                $<$<CXX_COMPILER_ID:GNU,Clang>:${MAYA_TEST_OPT}>)
             add_test(NAME ${tgt} COMMAND ${tgt})
             set_tests_properties(${tgt} PROPERTIES TIMEOUT 120)
         endforeach()

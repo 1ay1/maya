@@ -979,13 +979,27 @@ compose_inline_frame_impl(const Canvas& canvas,
         // [first_non_blank, last_non_blank+1). For the will-scroll-off
         // row, force a full-row consideration so any wire-vs-canvas
         // skew is corrected before the row leaves our control.
-        const bool whole_row = will_scroll_off || full_row;
-        const int x_first_diff_raw = whole_row
-                                 ? 0
-                                 : first_diff_col(cur_row, prev_row, W);
+        const int row_first_diff = first_diff_col(cur_row, prev_row, W);
+
+        // Widen the emit to the whole row (col 0 .. W-1, written with only
+        // \r + content — no mid-row cursor moves) when EITHER:
+        //   • the row is about to scroll off — re-emit in full to correct
+        //     any wire-vs-canvas skew before it commits to native
+        //     scrollback (unconditional, even if the diff says unchanged); OR
+        //   • compat-repaint is on AND the row actually changed this frame.
+        //
+        // It is the `&& row_first_diff < W` that matters: a full_row repaint
+        // must NOT force-emit rows the diff calls identical. Skipping an
+        // unchanged row is already Zed-safe — the per-row `\r\n` advance
+        // above steps the cursor whether or not we emit content, so vertical
+        // tracking is unaffected and only mid-row HORIZONTAL moves (the ones
+        // Zed mis-tracks) are avoided. Without this guard, full_row repainted
+        // every visited row every frame, turning a one-cell change into a
+        // whole-frame re-emit (bench_live on Zed: 3137 B/frame vs 96 B/frame).
+        const bool whole_row = will_scroll_off || (full_row && row_first_diff < W);
         const int x_first_diff = whole_row
                                  ? 0
-                                 : snap_first_diff_left(x_first_diff_raw,
+                                 : snap_first_diff_left(row_first_diff,
                                                         cur_row, prev_row, W);
 
         if (x_first_diff < W) {

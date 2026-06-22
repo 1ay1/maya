@@ -1,0 +1,85 @@
+site_name: maya
+site_description: A C++26 TUI framework — compile-time type-safe DSL, Yoga flexbox layout, reactive signals, an Elm-style runtime, and a SIMD cell-diff renderer.
+site_url: https://1ay1.github.io/maya/
+repo_url: https://github.com/1ay1/maya
+repo_name: 1ay1/maya
+edit_uri: edit/master/docs/
+docs_dir: docs
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: cyan
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.top
+    - navigation.tracking
+    - navigation.sections
+    - content.code.copy
+    - search.suggest
+    - search.highlight
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - tables
+  - attr_list
+  - def_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Foundations:
+      - What Is a Terminal?: foundations/what-is-a-terminal.md
+      - The Cell Grid: foundations/the-cell-grid.md
+      - ANSI Escape Codes: foundations/ansi-escape-codes.md
+      - Keyboard & Mouse Input: foundations/keyboard-and-mouse.md
+      - The Rendering Problem: foundations/the-rendering-problem.md
+      - How maya Works: foundations/how-maya-works.md
+  - Guide:
+      - Introduction: 00-introduction.md
+      - Getting Started: 01-getting-started.md
+      - The Compile-Time DSL: 02-dsl.md
+      - Styling: 03-styling.md
+      - Layout: 04-layout.md
+      - Runtime Content: 05-runtime-content.md
+      - Event Handling: 06-events.md
+      - Signals & Reactivity: 09-signals.md
+      - Rendering Modes: 07-rendering-modes.md
+      - Canvas API: 08-canvas-api.md
+      - Widget Reference: 13-widgets.md
+      - Examples Walkthrough: 10-examples.md
+  - Reference:
+      - API Reference: 11-api-reference.md
+      - Glossary: glossary.md
+  - Internals:
+      - Render-path roadmap: internals/render-roadmap.md
+      - Inline redraw paths: internals/inline-redraw-paths.md
+      - Inline autogrow & ghosting: internals/inline-autogrow.md
+      - The Witness Chain: internals/witness-chain.md
+      - Scrollback corruption audit: internals/scrollback-corruption-audit.md
+  - Roadmap: 12-roadmap.md
+
+not_in_nav: |
+  rendering-modes.md

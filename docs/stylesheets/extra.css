@@ -1,0 +1,102 @@
+/* maya docs — visual polish on top of Material for MkDocs */
+
+:root {
+  --md-primary-fg-color:        #6c4cd6;
+  --md-primary-fg-color--light: #8a6cf0;
+  --md-primary-fg-color--dark:  #4f33a8;
+  --md-accent-fg-color:         #a07cff;
+}
+
+/* Slightly wider, more comfortable content column */
+.md-grid {
+  max-width: 1240px;
+}
+
+/* ---- Hero (home page) ------------------------------------------------ */
+.maya-hero {
+  text-align: center;
+  padding: 2.2rem 1rem 1.2rem;
+  border-radius: 16px;
+  margin: 0 0 1.5rem;
+  background:
+    radial-gradient(1200px 300px at 50% -10%, rgba(138,108,240,0.28), transparent 70%),
+    linear-gradient(180deg, rgba(108,76,214,0.14), rgba(108,76,214,0.02));
+  border: 1px solid rgba(138,108,240,0.25);
+}
+.maya-hero h1 {
+  font-weight: 800;
+  font-size: 2.6rem;
+  letter-spacing: -0.02em;
+  margin: 0.2rem 0 0.4rem;
+  background: linear-gradient(90deg, #a07cff, #6c4cd6 60%, #00d3c7);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.maya-hero .maya-tagline {
+  font-size: 1.05rem;
+  opacity: 0.85;
+  max-width: 46rem;
+  margin: 0 auto 1rem;
+}
+.maya-badges img { margin: 0.15rem; }
+
+/* ---- Grid cards: gentle lift + accent on hover ----------------------- */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 12px;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.md-typeset .grid.cards > ul > li:hover {
+  transform: translateY(-3px);
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 8px 26px rgba(0,0,0,0.18);
+}
+.md-typeset .grid.cards > ul > li > hr {
+  margin: 0.6rem 0;
+}
+
+/* ---- Tables: rounded, readable -------------------------------------- */
+.md-typeset table:not([class]) {
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 0 var(--md-default-fg-color--lightest);
+  font-size: 0.78rem;
+}
+.md-typeset table:not([class]) th {
+  background: var(--md-primary-fg-color);
+  color: #fff;
+  font-weight: 700;
+}
+
+/* ---- Code: a touch more breathing room ------------------------------ */
+.md-typeset pre > code {
+  border-radius: 10px;
+}
+.md-typeset code {
+  border-radius: 5px;
+}
+
+/* ---- Admonition titles: a hair bolder ------------------------------- */
+.md-typeset .admonition-title,
+.md-typeset summary {
+  font-weight: 700;
+}
+
+/* ---- Keyboard keys (pymdownx.keys): subtle 3D ----------------------- */
+.md-typeset .keys kbd {
+  box-shadow: 0 2px 0 rgba(0,0,0,0.25);
+  border-radius: 5px;
+}
+
+/* ---- Section tabs in the header: bolder active ---------------------- */
+.md-tabs__link--active {
+  font-weight: 700;
+}
+
+/* ---- Mermaid diagrams: center & pad --------------------------------- */
+.md-typeset .mermaid {
+  margin: 1.2rem auto;
+  text-align: center;
+}

@@ -21,34 +21,32 @@ box here has a dedicated chapter — follow the links when you want the detail.
 
 ## The pipeline
 
-```text
-   YOUR CODE                         maya                              TERMINAL
- ┌───────────┐   build    ┌────────────────────────────────┐
- │  the DSL  │ ─────────► │  Element tree                  │
- │ v(...) |  │            │   (boxes, text, widgets, style)│
- │ pad<1>    │            └───────────────┬────────────────┘
- └───────────┘                            │ layout (Yoga flexbox)
-                                          ▼
-                          ┌────────────────────────────────┐
-                          │  Canvas  — a width×height grid  │
-                          │  of packed cells (glyph+style)  │
-                          └───────────────┬────────────────┘
-                                          │ diff vs previous Canvas (SIMD)
-                                          ▼
-                          ┌────────────────────────────────┐   bytes
-                          │  Serializer — minimal escape    │ ─────────►  ███ grid
-                          │  sequences for changed cells,   │             updates
-                          │  wrapped in synchronized output │
-                          └────────────────────────────────┘
-        ▲                                                                    │
-        │  Event (KeyEvent / MouseEvent / Paste / Resize)                    │
-        └────────────────────────────────────────────────────────────────  │ stdin bytes
-                                   input parser  ◄─────────────────────────  ┘
+```mermaid
+flowchart TD
+    DSL["<b>Your code</b><br/>the DSL: v(...), t&lt;\"...\"&gt;, pad&lt;1&gt;, | border"]
+    ET["<b>Element tree</b><br/>boxes · text · widgets · style"]
+    CV["<b>Canvas</b><br/>width × height grid of packed cells<br/>(glyph + style id)"]
+    DF{"<b>Diff</b> vs previous Canvas<br/>(SIMD — many cells / instruction)"}
+    SR["<b>Serializer</b><br/>minimal escape sequences for changed cells,<br/>wrapped in synchronized output"]
+    TERM[["🖥️ Terminal grid"]]
+
+    DSL -- build --> ET
+    ET -- "layout (Yoga flexbox)" --> CV
+    CV --> DF
+    DF -- "only changed runs" --> SR
+    SR -- bytes --> TERM
+    TERM -- "stdin bytes" --> IP["<b>Input parser</b>"]
+    IP -- "Event: Key / Mouse / Paste / Resize" --> DSL
+
+    classDef you fill:#6c4cd6,stroke:#a07cff,color:#fff;
+    classDef maya fill:#2a2440,stroke:#8a6cf0,color:#eee;
+    class DSL you;
+    class ET,CV,DF,SR,IP maya;
 ```
 
-Read it as a loop: **input comes up the bottom**, your code reacts, the view is
-rebuilt, and the **new frame goes out the top** — but only the *changed* cells
-actually hit the wire.
+Read it as a loop: **input comes back in at the bottom**, your code reacts, the
+view is rebuilt, and the **new frame goes out the top** — but only the *changed*
+cells actually hit the wire.
 
 ### 1. You describe the UI — the DSL
 
@@ -217,11 +215,37 @@ they compose with the DSL like anything else.
 
 You now have the whole mental model. Pick a path:
 
-- **Build something now** → [Getting Started](../01-getting-started.md)
-- **Learn the DSL properly** → [The Compile-Time DSL](../02-dsl.md)
-- **See it in real programs** → [Examples Walkthrough](../10-examples.md)
-- **Look up a symbol** → [API Reference](../11-api-reference.md)
-- **Understand the renderer internals** → the **Internals** section
+<div class="grid cards" markdown>
+
+-   :material-rocket-launch: __Build something now__
+
+    ---
+
+    [Getting Started](../01-getting-started.md) — install, compile, and run your
+    first interactive app.
+
+-   :material-code-tags: __Learn the DSL properly__
+
+    ---
+
+    [The Compile-Time DSL](../02-dsl.md) — elements, the type-state builder, and
+    composition.
+
+-   :material-application: __See it in real programs__
+
+    ---
+
+    [Examples Walkthrough](../10-examples.md) — dashboards, games, editors,
+    explained line by line.
+
+-   :material-cog-outline: __Go under the hood__
+
+    ---
+
+    The [Internals](../internals/render-roadmap.md) chapters — the diff, inline
+    redraw paths, and the Witness Chain.
+
+</div>
 
 Welcome to maya. You came in not knowing what a terminal cell was; you leave
 knowing exactly how a modern TUI is drawn — and you're ready to build one.

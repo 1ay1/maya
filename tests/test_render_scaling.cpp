@@ -50,6 +50,23 @@ using namespace maya::dsl;
         }                                                                   \
     } while (0)
 
+// Perf-budget CHECKs below measure ABSOLUTE wall-time. Sanitizer
+// instrumentation (ASan/TSan/UBSan) inflates that 3–15x, so the budget
+// would fail for reasons unrelated to a real regression. Detect a
+// sanitizer build and skip ONLY the absolute-time asserts; the ratio-based
+// ones stay (they're slowdown-invariant — both sides pay the same tax).
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#  define MAYA_UNDER_SANITIZER 1
+#elif defined(__has_feature)
+#  if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
+      __has_feature(memory_sanitizer)
+#    define MAYA_UNDER_SANITIZER 1
+#  endif
+#endif
+#ifndef MAYA_UNDER_SANITIZER
+#  define MAYA_UNDER_SANITIZER 0
+#endif
+
 namespace {
 
 // ── Shared helpers ───────────────────────────────────────────────────────────
@@ -452,10 +469,14 @@ void test_live_tail_dominates_settled_prefix() {
     double per_turn_marginal_us = (t_50_settled - t_0_settled) / 50.0;
     std::printf("                marginal per-turn cost: %.2f us\n",
                 per_turn_marginal_us);
+#if MAYA_UNDER_SANITIZER
+    std::printf("                [sanitizer build: per-turn timing budget skipped]\n");
+#else
     CHECK(per_turn_marginal_us < 1.5,
           "  per-turn cached cost regressed to %.2f us (budget 1.5 us); "
           "the canvas-region cache likely fell back to recursive paint.\n",
           per_turn_marginal_us);
+#endif
 }
 
 // ── Test 6: ephemeral components don't leak the cache ───────────────────────
@@ -505,8 +526,12 @@ void test_ephemeral_components_do_not_leak() {
     // Wall-clock loose floor: 200 frames × N=40 should complete in
     // well under 30 seconds even on slow QEMU. Catches a regression
     // where cache lookup becomes superlinear.
+#if MAYA_UNDER_SANITIZER
+    std::printf("                [sanitizer build: ephemeral-loop wall budget skipped]\n");
+#else
     CHECK(wall_ms < 30000,
           "  ephemeral-loop wall-time blew the 30s budget: %.0f ms\n", wall_ms);
+#endif
 }
 
 // ── id_for_shared churn ────────────────────────────────────────────────────

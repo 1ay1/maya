@@ -31,6 +31,21 @@ using namespace std::chrono_literals;
 
 // ───────────────────────────── harness ──────────────────────────────────────
 
+// The HUNG ceilings below are wall-time perf budgets. Sanitizer
+// instrumentation (TSan/ASan) inflates wall-time ~5–15x, so a budget that's
+// generous natively trips a false HUNG under sanitizers. Scale the ceiling up
+// for sanitizer builds — a test that completes fast is unaffected (wait_for
+// returns on completion), only the false-HUNG ceiling rises; ctest's per-test
+// TIMEOUT remains the real backstop against a genuine hang.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+constexpr int kSanTimeScale = 20;
+#elif defined(__has_feature) && (__has_feature(address_sanitizer) || \
+      __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer))
+constexpr int kSanTimeScale = 20;
+#else
+constexpr int kSanTimeScale = 1;
+#endif
+
 static int g_passed  = 0;
 static int g_failed  = 0;
 static int g_slow    = 0;
@@ -99,8 +114,8 @@ static void run(std::string_view name, std::chrono::milliseconds timeout, F&& fn
     auto start = std::chrono::steady_clock::now();
     auto fut = std::async(std::launch::async, std::forward<F>(fn));
 
-    if (fut.wait_for(timeout) == std::future_status::timeout) {
-        std::println(" HUNG  (>{} ms)", timeout.count());
+    if (fut.wait_for(timeout * kSanTimeScale) == std::future_status::timeout) {
+        std::println(" HUNG  (>{} ms)", (timeout * kSanTimeScale).count());
         std::fflush(stdout);
         // Abandon fut; OS cleans up the stuck thread when we die.
         std::_Exit(2);

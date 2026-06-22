@@ -5,8 +5,10 @@ name: ci
 #
 # Jobs:
 #   build-test   — gcc-14 / clang-18 / MSVC, build all tests + ctest.
-#   sanitizers   — ASan+UBSan and TSan (gcc), the parser/writer/render path is
-#                  the most exposed to adversarial bytes.
+#   sanitizers   — ASan+UBSan and TSan (clang), the parser/writer/render path
+#                  is the most exposed to adversarial bytes. Clang's sanitizer
+#                  runtimes are the reference implementation; gcc-14 also ICEs
+#                  building reveal_fx.cpp under -fsanitize=address.
 #   fuzz-smoke   — build the libFuzzer harnesses and run each for a few
 #                  seconds (a real fuzzing run is a scheduled job, see fuzz.yml).
 
@@ -97,11 +99,11 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++-14 cmake ninja-build
+          sudo apt-get install -y clang-18 cmake ninja-build
       - name: Configure with sanitizer
         env:
-          CC: gcc-14
-          CXX: g++-14
+          CC: clang-18
+          CXX: clang++-18
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \

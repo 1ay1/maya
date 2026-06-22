@@ -4,7 +4,10 @@ name: ci
 # supported toolchains. This is the correctness gate the project was missing.
 #
 # Jobs:
-#   build-test   — gcc-14 / clang-18 / MSVC, build all tests + ctest.
+#   build-test   — gcc-14 / clang-19 / MSVC, build all tests + ctest.
+#                  (clang-18 — the distro default — can't compile maya's C++26:
+#                  its libstdc++ <expected> support is incomplete, so we pull
+#                  clang-19 from apt.llvm.org.)
 #   sanitizers   — ASan+UBSan and TSan (clang), the parser/writer/render path
 #                  is the most exposed to adversarial bytes. Clang's sanitizer
 #                  runtimes are the reference implementation; gcc-14 also ICEs
@@ -34,10 +37,10 @@ jobs:
             os: ubuntu-latest
             cc: gcc-14
             cxx: g++-14
-          - name: linux-clang18
+          - name: linux-clang19
             os: ubuntu-latest
-            cc: clang-18
-            cxx: clang++-18
+            cc: clang-19
+            cxx: clang++-19
           - name: macos-gcc
             os: macos-14
             cc: gcc-14
@@ -53,8 +56,15 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          if [ "${{ matrix.cc }}" = "clang-18" ]; then
-            sudo apt-get install -y clang-18 cmake ninja-build
+          if [ "${{ matrix.cc }}" = "clang-19" ]; then
+            # clang-19 from apt.llvm.org (distro default clang-18 can't build
+            # maya's C++26). Keep the runner's preinstalled cmake — apt's 3.28
+            # doesn't recognise cxx_std_26 for clang. libstdc++-14 supplies a
+            # complete <expected>; clang-tools-19 supplies clang-scan-deps-19.
+            wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+            chmod +x /tmp/llvm.sh
+            sudo /tmp/llvm.sh 19
+            sudo apt-get install -y clang-tools-19 libstdc++-14-dev ninja-build
           else
             sudo apt-get install -y g++-14 cmake ninja-build
           fi
@@ -99,11 +109,14 @@ jobs:
       - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 cmake ninja-build
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 19
+          sudo apt-get install -y clang-tools-19 libstdc++-14-dev ninja-build
       - name: Configure with sanitizer
         env:
-          CC: clang-18
-          CXX: clang++-18
+          CC: clang-19
+          CXX: clang++-19
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -129,11 +142,14 @@ jobs:
       - name: Install clang
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 cmake ninja-build
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 19
+          sudo apt-get install -y clang-tools-19 libstdc++-14-dev ninja-build
       - name: Build fuzzers
         env:
-          CC: clang-18
-          CXX: clang++-18
+          CC: clang-19
+          CXX: clang++-19
         run: |
           cmake -B fuzzbuild -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \

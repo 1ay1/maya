@@ -27,8 +27,9 @@ theme:
         icon: material/weather-night
         name: Switch to light mode
   features:
-    - navigation.tabs
     - navigation.sections
+    - navigation.expand
+    - navigation.indexes
     - navigation.top
     - navigation.tracking
     - toc.follow

@@ -423,17 +423,19 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
     leaf.content.append(new_trail);
     leaf.runs = std::move(new_runs);
 
-    // Re-wrap when bytes changed shape. Scramble swaps glyphs (possibly
-    // different byte width), and ghost_blank replaces real (possibly
-    // multi-byte) glyphs with spaces — both change the content bytes even
-    // though DISPLAY width is preserved, so the wrap cache (which can memo on
-    // content) must be invalidated for the frames they're active.
+    // Re-wrap ONLY when the DISPLAY WIDTH of the content could have changed.
+    // Scramble can swap a glyph for one of a different column width, so it may
+    // force a re-wrap while active. ghost_blank, by contrast, replaces each
+    // unrevealed glyph with width-MATCHED spaces — the column layout is
+    // byte-for-byte identical, so wrapping is provably unchanged and we must
+    // NOT invalidate the wrap cache (doing so re-wraps the whole tail every
+    // frame for the entire reveal — a 60fps CPU sink). Recolor/byte-swap that
+    // preserves width is the cheap path: leave cached_width intact.
     const bool scramble_active =
+        scramble_n > 0 &&
         edge_age < p.scramble_ms +
                    static_cast<std::int64_t>(scramble_n) * p.char_step_ms;
-    const bool blanking_active =
-        p.enable_ghost && p.ghost_blank && unrevealed_cp > 0;
-    if (scramble_active || blanking_active) {
+    if (scramble_active) {
         leaf.cached_width = -1;
         return true;
     }

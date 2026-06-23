@@ -528,15 +528,26 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // pulse doesn't keep a non-sync terminal tearing at 60 Hz.
         static const std::int64_t kAnimPhaseMs =
             ansi::env_supports_synchronized_output() ? 33 : 100;
-        // Grace window after the last observed growth during which we treat
-        // the reveal as "in motion" and want fine-grained wakes. Comfortably
-        // longer than one host reveal step so a steady 400 c/s feed (a byte
-        // every few ms) never lapses out of the active regime between frames.
-        constexpr std::int64_t kRevealActiveMs = 250;
+        // The reveal needs ~60fps wakes ONLY while it actually has something
+        // new to show each frame: either the cursor is still walking toward
+        // the live edge (cursor_catching_up), or the freshest cp are still
+        // inside the scramble/gradient "hot" window and visibly changing
+        // colour. Once the cursor reaches the edge AND the tip has cooled, the
+        // overlay is BYTE- and STYLE-identical frame to frame — re-arming
+        // 60fps then is pure wasted CPU (a full UI repaint + terminal write
+        // that paints the same pixels). The old code held 60fps for a flat
+        // 250 ms after every byte; during steady streaming that is ALWAYS
+        // true, pinning the whole turn at 60fps. Gate on real visible change
+        // instead: the calm color-phase bucket (33/100 ms) covers the
+        // residual caret pulse once the reveal settles.
         const bool cursor_catching_up =
             reveal_cp_ < static_cast<double>(total_cp);
-        const bool reveal_in_motion =
-            cursor_catching_up || age_at_tail_ms <= kRevealActiveMs;
+        // "Hot" = the trailing edge is young enough that scramble or the
+        // hot end of the gradient is still animating it. Past this the trail
+        // is settled and only the (slow) caret pulse remains.
+        constexpr std::int64_t kHotTailMs = 360;
+        const bool tail_still_hot = age_at_tail_ms <= kHotTailMs;
+        const bool reveal_in_motion = cursor_catching_up || tail_still_hot;
 
         if (reveal_in_motion) {
             // Smooth reveal: one wake per animation frame. Keep the color

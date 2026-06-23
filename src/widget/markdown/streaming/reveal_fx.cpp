@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -23,8 +24,40 @@
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
 #include "maya/app/app.hpp"         // request_animation_frame()
+#include "maya/core/animation.hpp"   // anim::ease::*, anim::lerp(Color)
 
 namespace maya {
+
+// Decorative-easing helpers for the live reveal overlay. These are pure,
+// stateless functions of wall-clock ms (the overlay rebuilds every frame,
+// so there is no per-frame Spring/Tween state to carry). We route them
+// through the central maya::anim primitives so the curves + colour mixing
+// match the rest of the UI and live in ONE place:
+//
+//   • anim::ease::* gives the smooth in/out curve (replacing the raw
+//     triangle waves, which had a hard velocity discontinuity at the
+//     fold point — the eased version pulses more organically).
+//   • anim::lerp(Color) does the channel mix (replacing the hand-rolled
+//     per-channel uint8 lerps).
+namespace reveal_detail {
+
+// A 0..1 "ping-pong" phase folded from a linear ramp, then eased. period_ms
+// is one full there-and-back cycle. Used by the sweep-cursor and end-caret
+// pulses. The fold (|2x-1| complement) makes 0 and 1 the rest points and
+// the midpoint the peak; in_out_quad eases the approach so the pulse
+// breathes instead of bouncing linearly.
+[[nodiscard]] inline double pulse01(std::int64_t ms_total,
+                                    std::int64_t period_ms) noexcept {
+    if (period_ms <= 0) return 0.0;
+    const double phase =
+        static_cast<double>(ms_total % period_ms)
+        / static_cast<double>(period_ms);
+    // Triangle fold 0->1->0, then ease for a softer breath.
+    const double tri = 1.0 - std::abs(2.0 * phase - 1.0);
+    return anim::ease::in_out_quad(tri);
+}
+
+} // namespace reveal_detail
 
 void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     // Nothing to ramp if we're not live: the next build() would short-
@@ -384,39 +417,38 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             -> std::optional<Style>
         {
             if (age_ms >= 700) return std::nullopt;
-            // Lerp helpers.
-            auto lerp = [](double a, double b, double t) {
-                return a + (b - a) * t;
-            };
-            double r, g, b;
+            // Age-banded colour fade through a 4-stop palette, mixed via
+            // the central anim::lerp(Color) so the channel math matches
+            // the rest of the UI. anim::ease::smoothstep softens each
+            // band's progression (no hard velocity edge at the stops).
+            //   age 0       → hot magenta (255, 90,200) + bold
+            //   age 120ms   → bright cyan (120,230,255) + bold
+            //   age 320ms   → ice blue    (140,180,220) dim
+            //   age 700ms+  → base fg (handled by the early-out above)
+            Color col;
             bool bold = false;
             bool dim  = false;
             if (age_ms < 120) {
-                const double t = age_ms / 120.0;
-                r = lerp(255, 120, t);
-                g = lerp( 90, 230, t);
-                b = lerp(200, 255, t);
+                const double t = anim::ease::smoothstep(age_ms / 120.0);
+                col  = anim::lerp(Color::rgb(255, 90, 200),
+                                  Color::rgb(120, 230, 255), t);
                 bold = true;
             } else if (age_ms < 320) {
-                const double t = (age_ms - 120) / 200.0;
-                r = lerp(120, 140, t);
-                g = lerp(230, 180, t);
-                b = lerp(255, 220, t);
+                const double t =
+                    anim::ease::smoothstep((age_ms - 120) / 200.0);
+                col  = anim::lerp(Color::rgb(120, 230, 255),
+                                  Color::rgb(140, 180, 220), t);
                 bold = t < 0.5;
             } else {
-                // 320 → 700: fade from ice blue to invisible-on-base
-                // by reducing saturation. We approximate by lerping
-                // toward a neutral light gray.
-                const double t = (age_ms - 320) / 380.0;
-                r = lerp(140, 200, t);
-                g = lerp(180, 200, t);
-                b = lerp(220, 200, t);
-                dim = true;
+                // 320 → 700: fade ice blue toward a neutral light gray
+                // (desaturate to "invisible-on-base").
+                const double t =
+                    anim::ease::smoothstep((age_ms - 320) / 380.0);
+                col  = anim::lerp(Color::rgb(140, 180, 220),
+                                  Color::rgb(200, 200, 200), t);
+                dim  = true;
             }
-            Style s = Style{}.with_fg(Color::rgb(
-                static_cast<std::uint8_t>(r),
-                static_cast<std::uint8_t>(g),
-                static_cast<std::uint8_t>(b)));
+            Style s = Style{}.with_fg(col);
             if (bold) s = s.with_bold();
             if (dim)  s = s.with_dim();
             return s;
@@ -726,28 +758,20 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                     // freshest unrevealed cp — leftmost in the unrevealed
                     // band, immediately right of the last revealed cp.
                     if (i_from_tail == unrevealed_cp - 1) {
-                        // Triangle-wave pulse on a fast period for a
-                        // crisp "now typing" cue.
+                        // Eased ping-pong pulse on a fast period for a
+                        // crisp "now typing" cue — routed through the
+                        // central anim primitives (reveal_detail::pulse01
+                        // + anim::lerp(Color)).
                         constexpr std::int64_t kSweepMs = 280;
-                        const double phase = static_cast<double>(
-                            ms_total % kSweepMs) /
-                            static_cast<double>(kSweepMs);
-                        const double tri = (phase < 0.5)
-                            ? (phase * 2.0)
-                            : (2.0 - phase * 2.0);
-                        const auto lerp8c = [](double a, double b, double tt) {
-                            return static_cast<std::uint8_t>(
-                                a + (b - a) * tt);
-                        };
+                        const double p =
+                            reveal_detail::pulse01(ms_total, kSweepMs);
                         s = Style{}
-                            .with_fg(Color::rgb(
-                                lerp8c(255, 180, tri),
-                                lerp8c(220, 255, tri),
-                                lerp8c(140, 220, tri)))
-                            .with_bg(Color::rgb(
-                                lerp8c(60, 90, tri),
-                                lerp8c(50, 80, tri),
-                                lerp8c(20, 40, tri)))
+                            .with_fg(anim::lerp(
+                                Color::rgb(255, 220, 140),
+                                Color::rgb(180, 255, 220), p))
+                            .with_bg(anim::lerp(
+                                Color::rgb(60, 50, 20),
+                                Color::rgb(90, 80, 40), p))
                             .with_bold();
                     }
                 } else if (auto ts = trail_style(age)) {
@@ -797,18 +821,16 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             cursor_advance_total_cp_ > static_cast<std::size_t>(reveal_cp_);
         if (!cursor_walking) {
         constexpr std::int64_t kCaretPeriodMs = 650;
-        const double caret_phase =
-            static_cast<double>(ms_total % kCaretPeriodMs)
-            / static_cast<double>(kCaretPeriodMs);
-        const double tri = (caret_phase < 0.5)
-            ? (caret_phase * 2.0)
-            : (2.0 - caret_phase * 2.0);
-        const std::uint8_t cr = static_cast<std::uint8_t>(
-            220.0 + (100.0 - 220.0) * tri);
-        const std::uint8_t cg = static_cast<std::uint8_t>(
-             80.0 + (230.0 -  80.0) * tri);
-        const std::uint8_t cb = static_cast<std::uint8_t>(
-            200.0 + (255.0 - 200.0) * tri);
+        // Eased ping-pong pulse via the central anim primitives. At p=0
+        // the caret rests on its magenta base; at p=1 it peaks toward
+        // cyan. anim::lerp(Color) does the channel mix.
+        const double caret_p =
+            reveal_detail::pulse01(ms_total, kCaretPeriodMs);
+        const Color caret_fg = anim::lerp(
+            Color::rgb(220, 80, 200), Color::rgb(100, 230, 255), caret_p);
+        const std::uint8_t cr = caret_fg.r();
+        const std::uint8_t cg = caret_fg.g();
+        const std::uint8_t cb = caret_fg.b();
         if (TextElement* tail = find_last_text(animated_body)) {
             const Style caret_style = Style{}
                 .with_fg(Color::rgb(cr, cg, cb))

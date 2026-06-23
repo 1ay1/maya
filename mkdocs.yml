@@ -103,5 +103,3 @@ nav:
       - Scrollback corruption audit: internals/scrollback-corruption-audit.md
   - Roadmap: 12-roadmap.md
 
-not_in_nav: |
-  rendering-modes.md

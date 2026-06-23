@@ -131,15 +131,14 @@ public:
             return centered(text(std::move(s), st));
         };
 
-        const int age_ms = tick_animation_clock_();
+        const int age_ms = static_cast<int>(animation_age_ms_());
         // The sigil has two phases — a one-shot draw-in then a perpetual
-        // concentric ripple — both rely on per-frame redraws. The widget
-        // is only built while the welcome screen is on-screen (Thread
-        // dispatches to Conversation as soon as the thread has a
-        // message), so calling unconditionally is the right scope: when
-        // the screen disappears, build() stops being called, no more
-        // frame requests, deadline lapses, runtime returns to idle.
-        request_animation_frame();
+        // concentric ripple — both rely on per-frame redraws. The frame
+        // request is owned by anim::Mount::elapsed_ms() (called inside
+        // animation_age_ms_) — it keeps the loop awake while the welcome is
+        // on screen and lapses to idle the moment build() stops being
+        // called (screen dismissed). No hand-rolled request_animation_frame
+        // here anymore.
 
         auto sigil = centered(render_sigil_(age_ms));
 
@@ -259,28 +258,17 @@ private:
     Config cfg_;
 
     // ─────────────────────────────────────────────────────────────────────
-    // Animation clock — owned by the widget, not the host.
+    // Animation clock — owned by the maya animation framework.
     // ─────────────────────────────────────────────────────────────────────
-    // Returns elapsed ms since the most recent "mount". Function-local
-    // statics persist across frames; the gap heuristic detects remount
-    // (long gap since previous build = was off-screen → restart).
-    static int tick_animation_clock_() noexcept {
-        using clock = std::chrono::steady_clock;
-        constexpr auto kRemountGapMs = std::chrono::milliseconds{500};
-
-        static clock::time_point first_build_at{};
-        static clock::time_point last_build_at{};
-        static bool              initialized = false;
-
-        const auto now = clock::now();
-        if (!initialized || (now - last_build_at) > kRemountGapMs) {
-            first_build_at = now;
-            initialized    = true;
-        }
-        last_build_at = now;
-        return static_cast<int>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                now - first_build_at).count());
+    // Elapsed ms since the welcome screen mounted. anim::Mount owns the
+    // remount detection (a >500 ms gap between builds = was off-screen →
+    // restart from 0) AND the per-frame request, so this is now a one-liner
+    // instead of the hand-rolled steady_clock + statics + gap heuristic.
+    // Static Mount because the welcome screen is a process singleton and its
+    // intro should restart whenever it reappears, not per-instance.
+    static std::int64_t animation_age_ms_() noexcept {
+        static anim::Mount mount;
+        return mount.elapsed_ms();   // 0 ⇒ perpetual frame requests while shown
     }
 
     // ──────────────────────────────────────────────────────────────────

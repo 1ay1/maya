@@ -190,6 +190,74 @@ private:
 }
 
 // ============================================================================
+// Mount — "ms since this widget appeared" (one-shot intro timelines)
+// ============================================================================
+// Many widgets animate relative to when they MOUNTED — a splash that fades
+// in, a sigil that draws on first appearance, a list that cascades. They
+// don't have a retarget; they replay a fixed schedule from t=0 each time
+// they come on screen. The pattern they all hand-rolled (welcome_screen,
+// activity_indicator, …):
+//
+//     static time_point first, last; static bool init;
+//     auto now = steady_clock::now();
+//     if (!init || now - last > gap) first = now;     // remount detect
+//     last = now; return ms(now - first);
+//
+// Mount captures exactly that. elapsed_ms() returns ms since the widget
+// first built (or since it last came back after being off-screen for longer
+// than the remount gap), and requests a frame while still animating up to an
+// optional total duration. Hold one as a (mutable) member; call elapsed_ms()
+// in build().
+//
+//   struct Splash {
+//       mutable anim::Mount mount;
+//       Element build() const {
+//           int age = mount.elapsed_ms(1200);   // animate for 1.2s
+//           double p = anim::ease::out_cubic(std::min(1.0, age/1200.0));
+//           ...
+//       }
+//   };
+class Mount {
+public:
+    using clock_t = std::chrono::steady_clock;
+    static constexpr double kRemountGapMs = 500.0;
+
+    // Milliseconds since mount. If `animate_for_ms > 0`, requests a frame
+    // while age < animate_for_ms (so a one-shot intro plays then idles); if
+    // 0, requests a frame every call (perpetual — caller decides when to
+    // stop reading). A gap longer than kRemountGapMs since the previous call
+    // is treated as a remount and restarts the clock from 0.
+    [[nodiscard]] std::int64_t elapsed_ms(double animate_for_ms = 0.0) const {
+        const auto now = clock_t::now();
+        if (!started_ ||
+            std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+                now - last_)
+                    .count() > kRemountGapMs) {
+            first_   = now;
+            started_ = true;
+        }
+        last_ = now;
+        const std::int64_t age =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - first_)
+                .count();
+        if (animate_for_ms <= 0.0 ||
+            static_cast<double>(age) < animate_for_ms) {
+            detail::request_frame();
+        }
+        return age;
+    }
+
+    // Force the next elapsed_ms() to restart from 0.
+    void remount() noexcept { started_ = false; }
+    [[nodiscard]] bool mounted() const noexcept { return started_; }
+
+private:
+    mutable clock_t::time_point first_{};
+    mutable clock_t::time_point last_{};
+    mutable bool                started_ = false;
+};
+
+// ============================================================================
 // Motion<T> — a self-driving animated value
 // ============================================================================
 // The type you reach for 95% of the time. Hold one as a (mutable) widget

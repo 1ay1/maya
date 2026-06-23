@@ -461,40 +461,52 @@ public:
 // moving target ("codepoints available") at a controlled RATE rather than a
 // fixed duration. This is the shape a typewriter reveal needs and that
 // neither Tween (duration-based) nor Spring (asymptotic, overshoots) can
-// express:
+// express.
 //
-//   * floor_rate is a CEILING under normal flow — the cursor never walks
-//     faster than this, so each unit takes its turn even when the target
-//     grows one-unit-at-a-time (a slow byte feed). Without the ceiling a
-//     backlog-proportional rate would snap to the edge instantly and the
-//     reveal would be invisible.
-//   * when the backlog exceeds drain_secs worth at floor_rate, the rate
-//     accelerates to backlog/drain_secs so a burst clears within its
-//     target window.
-//   * an optional finalize ramp (set_deadline) guarantees the cursor
-//     reaches the edge by a wall-clock deadline regardless of the above
-//     (end-of-stream settle).
+// ── DESIGN: constant-glide, buffer-absorbed (the ChatGPT / Vercel model) ──
+//
+// The lesson every polished streaming UI converges on (Vercel AI SDK's
+// smoothStream, the Upstash production hook, ChatGPT, Claude.ai): DECOUPLE
+// the visual speed from the network rhythm. Bytes arrive from the wire in
+// spiky bursts; if the cursor speed tracks the backlog (even a smoothed
+// track) it inherits that spikiness and reads as "bursts, not a glide". The
+// fix is to drain the buffer at a near-CONSTANT speed and let the buffer
+// itself absorb the jitter:
+//
+//   * base_rate_ is the STEADY glide speed (units/sec) — the speed the
+//     cursor actually moves at almost all the time, like Vercel's fixed
+//     delayInMs or Upstash's constant 200 cps. NOT a floor, not a ceiling:
+//     the cruising speed.
+//   * The base auto-tunes SLOWLY toward whatever speed would clear the
+//     current backlog over a comfortable window (target_lead_secs), so a
+//     consistently-fast model speeds the glide up and a slow one eases it
+//     down — but the base changes over base_tau_ seconds, far slower than a
+//     frame, so the change is imperceptible (no per-chunk speed steps).
+//   * Instantaneous catch-up is BOUNDED: the actual per-frame rate is the
+//     base plus a gentle proportional term, hard-capped at max_burst_mult_
+//     × base. A huge backlog can never make the cursor sprint — it just
+//     pins at the cap until the buffer drains, staying a glide.
+//   * an optional finalize ramp (set_deadline) still guarantees the cursor
+//     reaches the edge by a wall-clock deadline (end-of-stream settle),
+//     bypassing the glide caps because that's a hard correctness guarantee.
 //
 // Pure value type, no clock: the host passes elapsed seconds to tick().
-// Mirrors the reveal_cp_ integrator in reveal_fx.cpp exactly so that math
-// lives in one tested place.
 class RateCursor {
     double pos_        = 0.0;   // current cursor position (units)
-    double floor_rate_ = 30.0;  // units/sec ceiling under normal flow
-    double drain_secs_ = 0.25;  // burst target: clear backlog within this
+    double floor_rate_ = 30.0;  // configured base glide speed (units/sec)
+    double drain_secs_ = 0.25;  // target lead window: clear backlog over this
     double ramp_left_  = -1.0;  // seconds until finalize deadline; <0 = none
-    double smooth_rate_ = -1.0; // low-passed rate (units/sec); <0 = unset
-    // Velocity smoothing time-constant (seconds). The instantaneous rate
-    // (max(backlog/drain, floor)) is proportional to backlog, and backlog
-    // sawtooths because bytes arrive in spiky chunks — so the raw rate jumps
-    // frame to frame, which the eye reads as the cursor SPRINTING then
-    // IDLING ("bursts, not smooth"). Exponentially smoothing the rate toward
-    // its target with this time-constant turns those steps into a continuous
-    // glide: speed RAMPS into a burst and coasts back down instead of
-    // teleporting. Small enough that catch-up is still prompt (the cursor
-    // reaches the live edge within a few frames of a burst), large enough
-    // that per-chunk spikes are averaged out.
-    double smooth_tau_ = 0.18;
+    double base_rate_  = -1.0;  // live auto-tuned glide speed; <0 = unset
+    // How fast the auto-tuned base may itself change (seconds). Large => the
+    // cruising speed drifts very slowly, so the user never perceives a speed
+    // STEP at a chunk boundary — the whole point of the constant-glide model.
+    double base_tau_   = 0.6;
+    // Hard ceiling on the instantaneous rate as a multiple of the base. The
+    // catch-up term can lift the rate toward this on a backlog spike, but
+    // never past it, so the cursor accelerates GENTLY and predictably
+    // instead of teleporting. ~1.8× keeps even a big burst feeling like a
+    // glide that briefly leans forward.
+    double max_burst_mult_ = 1.8;
 
 public:
     constexpr RateCursor() = default;
@@ -507,10 +519,14 @@ public:
         if (drain_secs > 0.0) drain_secs_ = drain_secs;
     }
 
-    // Tune the velocity-smoothing time-constant (seconds). 0 disables
-    // smoothing (raw backlog-proportional rate — the old bursty behaviour).
-    constexpr void set_smoothing(double tau_secs) noexcept {
-        smooth_tau_ = tau_secs > 0.0 ? tau_secs : 0.0;
+    // Tune the glide shaping. base_tau: how slowly the cruising speed drifts
+    // (bigger = steadier). max_burst_mult: instantaneous-rate ceiling as a
+    // multiple of the base (bigger = catches up harder on a spike). Pass a
+    // non-positive value to leave either unchanged.
+    constexpr void set_smoothing(double base_tau,
+                                 double max_burst_mult = -1.0) noexcept {
+        if (base_tau >= 0.0)        base_tau_       = base_tau;
+        if (max_burst_mult > 0.0)   max_burst_mult_ = max_burst_mult;
     }
 
     // Hard-set the cursor (e.g. snap forward past already-committed units,
@@ -552,35 +568,40 @@ public:
             return pos_;
         }
 
-        const double burst = backlog / drain_secs_;
-        double rate = burst > floor_rate_ ? burst : floor_rate_;
-
-        // ── Velocity smoothing ──
-        // Low-pass the rate toward its backlog-driven target so a chunky
-        // arrival pattern produces a continuous glide rather than a
-        // sprint/idle sawtooth. Applied BEFORE the ramp override so a
-        // finalize deadline still snaps exactly (the ramp must hit its
-        // target regardless of the smoothed velocity). The smoothed rate is
-        // also floored at floor_rate_ so smoothing never drags the steady
-        // typing speed below the floor.
-        if (smooth_tau_ > 0.0) {
-            if (smooth_rate_ < 0.0) {
-                smooth_rate_ = rate;          // first frame: seed, no lag
-            } else {
-                // Exponential approach: alpha = 1 - e^(-dt/tau), but the
-                // cheap/stable first-order form (dt/(dt+tau)) is plenty for
-                // UI and stays constexpr-friendly without <cmath>.
-                const double alpha = dt / (dt + smooth_tau_);
-                smooth_rate_ += (rate - smooth_rate_) * alpha;
-            }
-            rate = smooth_rate_ < floor_rate_ ? floor_rate_ : smooth_rate_;
+        // ── Auto-tune the cruising speed (slowly) ──
+        // The "ideal" steady speed is the one that would hold the backlog at
+        // the target lead window: clear `backlog` over `drain_secs_`. Blend
+        // the configured base (floor_rate_) with that so a fast model speeds
+        // the glide up and a slow one eases it down, but never below the
+        // configured base — that's the readable minimum. Then drift the LIVE
+        // base toward this target over base_tau_ seconds so the cruising
+        // speed never STEPS at a chunk boundary (the key to the glide feel).
+        const double want = backlog / drain_secs_;
+        double base_target = want > floor_rate_ ? want : floor_rate_;
+        if (base_rate_ < 0.0) {
+            base_rate_ = base_target;            // first frame: seed, no lag
+        } else if (base_tau_ > 0.0) {
+            const double a = dt / (dt + base_tau_);
+            base_rate_ += (base_target - base_rate_) * a;
+        } else {
+            base_rate_ = base_target;
         }
+        if (base_rate_ < floor_rate_) base_rate_ = floor_rate_;
+
+        // ── Instantaneous rate: base + gentle, BOUNDED catch-up ──
+        // A small proportional nudge leans the cursor forward when it's
+        // behind, but the whole thing is hard-capped at max_burst_mult_ ×
+        // base so a backlog spike can never make it sprint — it just pins at
+        // the cap and glides until the buffer drains.
+        double rate = base_rate_;
+        const double lead = backlog - base_rate_ * drain_secs_;  // excess units
+        if (lead > 0.0) rate += lead / drain_secs_;              // proportional
+        const double cap = base_rate_ * max_burst_mult_;
+        if (rate > cap) rate = cap;
 
         if (ramp_left_ >= 0.0) {
-            // Finalize ramp: if at/past the deadline, snap (cover the whole
-            // backlog this frame); else ensure the rate is at least enough
-            // to cover the backlog in the time left. Bypasses smoothing —
-            // the deadline is a hard guarantee.
+            // Finalize ramp: a HARD wall-clock guarantee that the cursor
+            // reaches the edge by the deadline — bypasses the glide caps.
             if (ramp_left_ <= 0.0) {
                 rate = backlog / (dt > 0.001 ? dt : 0.001);
             } else {
@@ -588,11 +609,10 @@ public:
                 if (ramp > rate) rate = ramp;
             }
             ramp_left_ -= dt;
-            smooth_rate_ = rate;   // re-seed so post-ramp doesn't lurch
+            base_rate_ = rate;     // re-seed so post-ramp doesn't lurch
         }
 
-        // Never overshoot the live edge: a smoothed/ramped rate could carry
-        // the cursor past `target` on a frame where backlog is tiny.
+        // Never overshoot the live edge on a tiny-backlog frame.
         const double max_rate = backlog / (dt > 1e-9 ? dt : 1e-9);
         if (rate > max_rate) rate = max_rate;
 
@@ -602,7 +622,7 @@ public:
     }
 
     constexpr void reset() noexcept {
-        pos_ = 0.0; ramp_left_ = -1.0; smooth_rate_ = -1.0;
+        pos_ = 0.0; ramp_left_ = -1.0; base_rate_ = -1.0;
     }
 };
 

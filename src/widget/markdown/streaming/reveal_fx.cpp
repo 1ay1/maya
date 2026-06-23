@@ -29,36 +29,14 @@
 
 namespace maya {
 
-// Decorative-easing helpers for the live reveal overlay. These are pure,
-// stateless functions of wall-clock ms (the overlay rebuilds every frame,
-// so there is no per-frame Spring/Tween state to carry). We route them
-// through the central maya::anim primitives so the curves + colour mixing
-// match the rest of the UI and live in ONE place:
-//
-//   • anim::ease::* gives the smooth in/out curve (replacing the raw
-//     triangle waves, which had a hard velocity discontinuity at the
-//     fold point — the eased version pulses more organically).
-//   • anim::lerp(Color) does the channel mix (replacing the hand-rolled
-//     per-channel uint8 lerps).
-namespace reveal_detail {
-
-// A 0..1 "ping-pong" phase folded from a linear ramp, then eased. period_ms
-// is one full there-and-back cycle. Used by the sweep-cursor and end-caret
-// pulses. The fold (|2x-1| complement) makes 0 and 1 the rest points and
-// the midpoint the peak; in_out_quad eases the approach so the pulse
-// breathes instead of bouncing linearly.
-[[nodiscard]] inline double pulse01(std::int64_t ms_total,
-                                    std::int64_t period_ms) noexcept {
-    if (period_ms <= 0) return 0.0;
-    const double phase =
-        static_cast<double>(ms_total % period_ms)
-        / static_cast<double>(period_ms);
-    // Triangle fold 0->1->0, then ease for a softer breath.
-    const double tri = 1.0 - std::abs(2.0 * phase - 1.0);
-    return anim::ease::in_out_quad(tri);
-}
-
-} // namespace reveal_detail
+// The trailing-edge reveal decoration (scramble / hot→cool gradient / ghost
+// materialise / sweep cursor / pulsing end-caret) is now ENTIRELY owned by the
+// framework primitive in maya/anim/text_reveal.hpp. This translation unit keeps
+// only the StreamingMarkdown-specific glue: advancing the reveal cursor off the
+// wire bytes and walking the live tree to the trailing text leaf. All easing /
+// pulse / colour math lives in maya::anim so it stays in ONE place and any
+// other widget can reuse it. (The former local reveal_detail::pulse01 was dead
+// after the Phase-3 lift and has been removed.)
 
 void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     // Nothing to ramp if we're not live: the next build() would short-

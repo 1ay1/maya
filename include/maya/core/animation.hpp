@@ -483,6 +483,18 @@ class RateCursor {
     double floor_rate_ = 30.0;  // units/sec ceiling under normal flow
     double drain_secs_ = 0.25;  // burst target: clear backlog within this
     double ramp_left_  = -1.0;  // seconds until finalize deadline; <0 = none
+    double smooth_rate_ = -1.0; // low-passed rate (units/sec); <0 = unset
+    // Velocity smoothing time-constant (seconds). The instantaneous rate
+    // (max(backlog/drain, floor)) is proportional to backlog, and backlog
+    // sawtooths because bytes arrive in spiky chunks — so the raw rate jumps
+    // frame to frame, which the eye reads as the cursor SPRINTING then
+    // IDLING ("bursts, not smooth"). Exponentially smoothing the rate toward
+    // its target with this time-constant turns those steps into a continuous
+    // glide: speed RAMPS into a burst and coasts back down instead of
+    // teleporting. Small enough that catch-up is still prompt (the cursor
+    // reaches the live edge within a few frames of a burst), large enough
+    // that per-chunk spikes are averaged out.
+    double smooth_tau_ = 0.18;
 
 public:
     constexpr RateCursor() = default;
@@ -493,6 +505,12 @@ public:
     constexpr void set_pacing(double floor_rate, double drain_secs) noexcept {
         if (floor_rate > 0.0) floor_rate_ = floor_rate;
         if (drain_secs > 0.0) drain_secs_ = drain_secs;
+    }
+
+    // Tune the velocity-smoothing time-constant (seconds). 0 disables
+    // smoothing (raw backlog-proportional rate — the old bursty behaviour).
+    constexpr void set_smoothing(double tau_secs) noexcept {
+        smooth_tau_ = tau_secs > 0.0 ? tau_secs : 0.0;
     }
 
     // Hard-set the cursor (e.g. snap forward past already-committed units,
@@ -537,10 +555,32 @@ public:
         const double burst = backlog / drain_secs_;
         double rate = burst > floor_rate_ ? burst : floor_rate_;
 
+        // ── Velocity smoothing ──
+        // Low-pass the rate toward its backlog-driven target so a chunky
+        // arrival pattern produces a continuous glide rather than a
+        // sprint/idle sawtooth. Applied BEFORE the ramp override so a
+        // finalize deadline still snaps exactly (the ramp must hit its
+        // target regardless of the smoothed velocity). The smoothed rate is
+        // also floored at floor_rate_ so smoothing never drags the steady
+        // typing speed below the floor.
+        if (smooth_tau_ > 0.0) {
+            if (smooth_rate_ < 0.0) {
+                smooth_rate_ = rate;          // first frame: seed, no lag
+            } else {
+                // Exponential approach: alpha = 1 - e^(-dt/tau), but the
+                // cheap/stable first-order form (dt/(dt+tau)) is plenty for
+                // UI and stays constexpr-friendly without <cmath>.
+                const double alpha = dt / (dt + smooth_tau_);
+                smooth_rate_ += (rate - smooth_rate_) * alpha;
+            }
+            rate = smooth_rate_ < floor_rate_ ? floor_rate_ : smooth_rate_;
+        }
+
         if (ramp_left_ >= 0.0) {
             // Finalize ramp: if at/past the deadline, snap (cover the whole
             // backlog this frame); else ensure the rate is at least enough
-            // to cover the backlog in the time left.
+            // to cover the backlog in the time left. Bypasses smoothing —
+            // the deadline is a hard guarantee.
             if (ramp_left_ <= 0.0) {
                 rate = backlog / (dt > 0.001 ? dt : 0.001);
             } else {
@@ -548,14 +588,22 @@ public:
                 if (ramp > rate) rate = ramp;
             }
             ramp_left_ -= dt;
+            smooth_rate_ = rate;   // re-seed so post-ramp doesn't lurch
         }
+
+        // Never overshoot the live edge: a smoothed/ramped rate could carry
+        // the cursor past `target` on a frame where backlog is tiny.
+        const double max_rate = backlog / (dt > 1e-9 ? dt : 1e-9);
+        if (rate > max_rate) rate = max_rate;
 
         pos_ += rate * dt;
         if (pos_ > target) pos_ = target;
         return pos_;
     }
 
-    constexpr void reset() noexcept { pos_ = 0.0; ramp_left_ = -1.0; }
+    constexpr void reset() noexcept {
+        pos_ = 0.0; ramp_left_ = -1.0; smooth_rate_ = -1.0;
+    }
 };
 
 } // namespace maya::anim

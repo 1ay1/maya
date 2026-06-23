@@ -245,8 +245,10 @@ void test_rate_cursor_deadline_ramp() {
 void test_rate_cursor_matches_reveal_fx() {
     std::println("--- test_rate_cursor_matches_reveal_fx ---");
     const double kFloor = 120.0, kDrain = 0.8;
+    const double kTau = 0.18;   // must match RateCursor's default smooth_tau_
 
     double ref_cp = 0.0;
+    double ref_smooth = -1.0;   // mirrors RateCursor::smooth_rate_
     auto ref_step = [&](double total_cp, double committed_cp,
                         double elapsed_s, double ramp_left) {
         if (elapsed_s < 0.0)   elapsed_s = 0.0;
@@ -256,6 +258,15 @@ void test_rate_cursor_matches_reveal_fx() {
         if (backlog <= 0.0) { ref_cp = total_cp; return; }
         const double burst = backlog / kDrain;
         double cps = burst > kFloor ? burst : kFloor;
+        // Velocity smoothing (mirror RateCursor::tick).
+        if (kTau > 0.0) {
+            if (ref_smooth < 0.0) ref_smooth = cps;
+            else {
+                const double alpha = elapsed_s / (elapsed_s + kTau);
+                ref_smooth += (cps - ref_smooth) * alpha;
+            }
+            cps = ref_smooth < kFloor ? kFloor : ref_smooth;
+        }
         if (ramp_left >= 0.0) {
             if (ramp_left <= 0.0)
                 cps = backlog / (elapsed_s > 0.001 ? elapsed_s : 0.001);
@@ -263,7 +274,10 @@ void test_rate_cursor_matches_reveal_fx() {
                 const double ramp = backlog / ramp_left;
                 if (ramp > cps) cps = ramp;
             }
+            ref_smooth = cps;   // re-seed (mirror)
         }
+        const double max_cps = backlog / (elapsed_s > 1e-9 ? elapsed_s : 1e-9);
+        if (cps > max_cps) cps = max_cps;
         ref_cp += cps * elapsed_s;
         if (ref_cp > total_cp) ref_cp = total_cp;
     };
@@ -300,6 +314,7 @@ void test_rate_cursor_matches_reveal_fx() {
     // pass's huge backlog never exercised). Drip 1 cp/frame with a 0.1s
     // deadline armed from the start.
     ref_cp = 0.0;
+    ref_smooth = -1.0;
     c.reset();
     c.set_pacing(kFloor, kDrain);
     total = 0.0; committed = 0.0;

@@ -517,6 +517,13 @@ public:
         return Track{this, tracks_.size() - 1};
     }
 
+    // Re-obtain a handle to an existing track by index (does NOT create a new
+    // track — use this in view() to read a track you built during setup).
+    [[nodiscard]] Track track_at(std::size_t idx) { return Track{this, idx}; }
+
+    // Number of tracks created so far.
+    [[nodiscard]] std::size_t track_count() const { return tracks_.size(); }
+
     // Start / restart the playhead from t=0.
     void play() { playing_ = true; playhead_s_ = 0.0; }
     void stop() { playing_ = false; }

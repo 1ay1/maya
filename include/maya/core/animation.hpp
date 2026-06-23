@@ -135,6 +135,24 @@ namespace ease {
     return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
 }
 
+// Back — anticipation / overshoot. in_back dips below 0 at the start
+// ("wind-up"); out_back overshoots past 1 near the end then settles
+// ("snap into place"). The classic UI "pop" curve. s = 1.70158 gives the
+// standard ~10% overshoot. NOTE: range escapes [0,1] by design — callers
+// lerping positions get the overshoot; callers lerping a CLAMPED quantity
+// (alpha, a colour mix) should prefer out_cubic.
+[[nodiscard]] constexpr double in_back(double t) noexcept {
+    t = clamp01(t);
+    constexpr double s = 1.70158;
+    return t * t * ((s + 1.0) * t - s);
+}
+[[nodiscard]] constexpr double out_back(double t) noexcept {
+    t = clamp01(t);
+    constexpr double s = 1.70158;
+    const double f = t - 1.0;
+    return f * f * ((s + 1.0) * f + s) + 1.0;
+}
+
 // Easing function pointer type — lets widgets accept a curve as a parameter.
 using Fn = double (*)(double) noexcept;
 

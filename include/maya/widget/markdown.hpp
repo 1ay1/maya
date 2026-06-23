@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "../core/tracked.hpp"
+#include "../core/animation.hpp"   // anim::RateCursor (reveal typewriter)
 #include "../element/builder.hpp"
 #include "../text/stream_sink.hpp"
 #include "markdown/ast.hpp"
@@ -320,6 +321,21 @@ private:
     // increases monotonically as the cursor passes it.
     mutable double       reveal_cp_  = 0.0;
     mutable std::int64_t reveal_ms_  = 0;
+
+    // Central typewriter integrator. reveal_cp_ above is the public face
+    // of the reveal cursor (read by reveal_in_progress(), the byte clip,
+    // the overlay); reveal_rate_cursor_ is the maya::anim::RateCursor that
+    // actually integrates it when MAYA_REVEAL_CENTRAL_CURSOR is enabled
+    // (the default). The cursor is kept in lock-step with reveal_cp_ each
+    // frame so the rest of the widget reads a single source of truth. The
+    // RateCursor reproduces the prior inline math bit-for-bit (proven by
+    // test_rate_cursor_matches_reveal_fx) so stream_liveness_test
+    // behaviour is unchanged; the win is that the typewriter pacing now
+    // lives in ONE tested primitive shared with the rest of maya::anim.
+#ifndef MAYA_REVEAL_CENTRAL_CURSOR
+#define MAYA_REVEAL_CENTRAL_CURSOR 1
+#endif
+    mutable ::maya::anim::RateCursor reveal_rate_cursor_{120.0, 0.8};
 
     // Cursor advance scratch — written by advance_reveal_cursor_()
     // (called from build() top), consumed by render_live_overlay_()

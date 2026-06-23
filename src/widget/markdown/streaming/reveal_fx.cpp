@@ -173,6 +173,24 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         if (elapsed_s < 0.0)   elapsed_s = 0.0;
         if (elapsed_s > 0.120) elapsed_s = 0.120;
         reveal_ms_ = ms_total;
+#if MAYA_REVEAL_CENTRAL_CURSOR
+        // Central integrator path. The RateCursor reproduces the inline
+        // arithmetic below bit-for-bit (test_rate_cursor_matches_reveal_fx)
+        // — floor-cps ceiling, burst drain, and the finalize-deadline ramp.
+        // Keep it in lock-step with reveal_cp_ (the public cursor) every
+        // frame: push the committed-snap + pacing in, integrate, read back.
+        reveal_rate_cursor_.set_pacing(reveal_floor_cps_, reveal_drain_secs_);
+        reveal_rate_cursor_.set_pos(reveal_cp_);          // honour the snap above
+        if (finalize_deadline_ms_ != 0) {
+            const double remaining_s =
+                (finalize_deadline_ms_ - ms_total) / 1000.0;
+            reveal_rate_cursor_.set_deadline(remaining_s);
+        } else {
+            reveal_rate_cursor_.clear_deadline();
+        }
+        reveal_cp_ = reveal_rate_cursor_.tick(
+            static_cast<double>(total_cp), elapsed_s);
+#else
         const double backlog = static_cast<double>(total_cp) - reveal_cp_;
         if (backlog <= 0.0) {
             reveal_cp_ = static_cast<double>(total_cp);
@@ -207,6 +225,7 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
             if (reveal_cp_ > static_cast<double>(total_cp))
                 reveal_cp_ = static_cast<double>(total_cp);
         }
+#endif
     }
 
     // Ramp completion — flip live_ off. live_'s Tracked<> bumps

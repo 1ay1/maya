@@ -194,6 +194,129 @@ void test_color_spring() {
     std::println("PASS\n");
 }
 
+// ── RateCursor: monotone, floor-rate ceiling, burst drain, deadline ─────────
+void test_rate_cursor_basic() {
+    std::println("--- test_rate_cursor_basic ---");
+    RateCursor c(30.0, 0.25);
+    assert(approx(c.pos(), 0.0));
+    c.tick(3.0, 0.016);
+    assert(c.pos() > 0.0 && c.pos() < 1.0);
+    double prev = c.pos();
+    for (int i = 0; i < 200; ++i) {
+        c.tick(3.0, 0.016);
+        assert(c.pos() >= prev - 1e-12);
+        assert(c.pos() <= 3.0 + 1e-9);
+        prev = c.pos();
+    }
+    assert(approx(c.pos(), 3.0));
+    std::println("PASS\n");
+}
+
+void test_rate_cursor_burst_drain() {
+    std::println("--- test_rate_cursor_burst_drain ---");
+    RateCursor c(30.0, 0.25);
+    double t = 0.0;
+    while (c.pos() < 1000.0 - 1e-6 && t < 2.0) {
+        c.tick(1000.0, 0.016);
+        t += 0.016;
+    }
+    assert(t < 0.6);   // burst-paced, not 33s floor-paced
+    std::println("PASS\n");
+}
+
+void test_rate_cursor_deadline_ramp() {
+    std::println("--- test_rate_cursor_deadline_ramp ---");
+    RateCursor c(30.0, 5.0);
+    c.set_deadline(0.2);
+    double t = 0.0;
+    while (c.pos() < 100.0 - 1e-6 && t < 1.0) {
+        c.tick(100.0, 0.016);
+        t += 0.016;
+    }
+    assert(t <= 0.25);
+    std::println("PASS\n");
+}
+
+// ── Equivalence: RateCursor reproduces the reveal_fx reveal_cp_ integrator
+//    bit-for-bit across a randomized feed. The A/B proof the central
+//    primitive can replace the inline reveal_fx.cpp math without changing
+//    the typewriter trajectory (hence stream_liveness_test behaviour). The
+//    reference is the exact algorithm from advance_reveal_cursor_().
+void test_rate_cursor_matches_reveal_fx() {
+    std::println("--- test_rate_cursor_matches_reveal_fx ---");
+    const double kFloor = 120.0, kDrain = 0.8;
+
+    double ref_cp = 0.0;
+    auto ref_step = [&](double total_cp, double committed_cp,
+                        double elapsed_s, double ramp_left) {
+        if (elapsed_s < 0.0)   elapsed_s = 0.0;
+        if (elapsed_s > 0.120) elapsed_s = 0.120;
+        if (ref_cp < committed_cp) ref_cp = committed_cp;
+        const double backlog = total_cp - ref_cp;
+        if (backlog <= 0.0) { ref_cp = total_cp; return; }
+        const double burst = backlog / kDrain;
+        double cps = burst > kFloor ? burst : kFloor;
+        if (ramp_left >= 0.0) {
+            if (ramp_left <= 0.0)
+                cps = backlog / (elapsed_s > 0.001 ? elapsed_s : 0.001);
+            else {
+                const double ramp = backlog / ramp_left;
+                if (ramp > cps) cps = ramp;
+            }
+        }
+        ref_cp += cps * elapsed_s;
+        if (ref_cp > total_cp) ref_cp = total_cp;
+    };
+
+    RateCursor c(kFloor, kDrain);
+
+    std::uint64_t rng = 0x1234567;
+    auto next = [&]() { rng = rng * 6364136223846793005ull + 1; return rng; };
+
+    double total = 0.0, committed = 0.0;
+    double ramp_left = -1.0;
+    for (int frame = 0; frame < 4000; ++frame) {
+        const std::uint64_t r = next();
+        if ((r & 7) != 0) total += static_cast<double>((r >> 8) % 41);
+        if ((r & 31) == 0) committed = std::min(total, committed + 50.0);
+        if (frame == 3000) ramp_left = 0.3;
+
+        const double elapsed_s = 0.016;
+
+        ref_step(total, committed, elapsed_s,
+                 ramp_left >= 0.0 ? ramp_left : -1.0);
+
+        c.advance_floor(committed);
+        if (ramp_left >= 0.0) c.set_deadline(ramp_left);
+        const double dt = elapsed_s > 0.120 ? 0.120 : elapsed_s;
+        c.tick(total, dt);
+        if (ramp_left >= 0.0) ramp_left -= elapsed_s;
+
+        assert(std::abs(c.pos() - ref_cp) < 1e-6);
+    }
+
+    // Second pass: a SMALL backlog under a TIGHT deadline, so the ramp
+    // rate genuinely dominates both floor and burst (the branch the first
+    // pass's huge backlog never exercised). Drip 1 cp/frame with a 0.1s
+    // deadline armed from the start.
+    ref_cp = 0.0;
+    c.reset();
+    c.set_pacing(kFloor, kDrain);
+    total = 0.0; committed = 0.0;
+    double rl = 0.1;
+    for (int frame = 0; frame < 30; ++frame) {
+        total += 1.0;                       // slow drip: backlog stays small
+        const double elapsed_s = 0.016;
+        ref_step(total, committed, elapsed_s, rl);
+        c.advance_floor(committed);
+        c.set_deadline(rl);
+        c.tick(total, elapsed_s);
+        rl -= elapsed_s;
+        assert(std::abs(c.pos() - ref_cp) < 1e-6);
+    }
+    std::println("PASS (RateCursor == reveal_fx reveal_cp_ over 4000 frames)\n");
+}
+
 int main() {
     test_easing_constexpr();
     test_tween_basic();
@@ -208,6 +331,10 @@ int main() {
     test_animated_spring_mode();
     test_color_lerp();
     test_color_spring();
+    test_rate_cursor_basic();
+    test_rate_cursor_burst_drain();
+    test_rate_cursor_deadline_ramp();
+    test_rate_cursor_matches_reveal_fx();
     std::println("All animation tests passed.");
     return 0;
 }

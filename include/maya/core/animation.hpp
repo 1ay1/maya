@@ -436,4 +436,108 @@ public:
     }
 };
 
+// ============================================================================
+// RateCursor — constant-rate typewriter integrator with burst-drain + ramp
+// ============================================================================
+// A monotone cursor (think "codepoints revealed so far") that chases a
+// moving target ("codepoints available") at a controlled RATE rather than a
+// fixed duration. This is the shape a typewriter reveal needs and that
+// neither Tween (duration-based) nor Spring (asymptotic, overshoots) can
+// express:
+//
+//   * floor_rate is a CEILING under normal flow — the cursor never walks
+//     faster than this, so each unit takes its turn even when the target
+//     grows one-unit-at-a-time (a slow byte feed). Without the ceiling a
+//     backlog-proportional rate would snap to the edge instantly and the
+//     reveal would be invisible.
+//   * when the backlog exceeds drain_secs worth at floor_rate, the rate
+//     accelerates to backlog/drain_secs so a burst clears within its
+//     target window.
+//   * an optional finalize ramp (set_deadline) guarantees the cursor
+//     reaches the edge by a wall-clock deadline regardless of the above
+//     (end-of-stream settle).
+//
+// Pure value type, no clock: the host passes elapsed seconds to tick().
+// Mirrors the reveal_cp_ integrator in reveal_fx.cpp exactly so that math
+// lives in one tested place.
+class RateCursor {
+    double pos_        = 0.0;   // current cursor position (units)
+    double floor_rate_ = 30.0;  // units/sec ceiling under normal flow
+    double drain_secs_ = 0.25;  // burst target: clear backlog within this
+    double ramp_left_  = -1.0;  // seconds until finalize deadline; <0 = none
+
+public:
+    constexpr RateCursor() = default;
+    constexpr RateCursor(double floor_rate, double drain_secs) noexcept
+        : floor_rate_(floor_rate > 0.0 ? floor_rate : 1.0),
+          drain_secs_(drain_secs > 0.0 ? drain_secs : 0.001) {}
+
+    constexpr void set_pacing(double floor_rate, double drain_secs) noexcept {
+        if (floor_rate > 0.0) floor_rate_ = floor_rate;
+        if (drain_secs > 0.0) drain_secs_ = drain_secs;
+    }
+
+    // Hard-set the cursor (e.g. snap forward past already-committed units,
+    // or reset on a content rollback). Never moves the cursor backward via
+    // tick(); this is the explicit override.
+    constexpr void set_pos(double p) noexcept { pos_ = p < 0.0 ? 0.0 : p; }
+    [[nodiscard]] constexpr double pos() const noexcept { return pos_; }
+
+    // Ensure the cursor is at least `floor` (snap-to-committed). Monotone.
+    constexpr void advance_floor(double floor) noexcept {
+        if (pos_ < floor) pos_ = floor;
+    }
+
+    // Arm a finalize ramp: reach `target` within `secs` no matter what.
+    constexpr void set_deadline(double secs) noexcept { ramp_left_ = secs; }
+    constexpr void clear_deadline() noexcept { ramp_left_ = -1.0; }
+    [[nodiscard]] constexpr bool ramping() const noexcept {
+        return ramp_left_ >= 0.0;
+    }
+
+    // Advance toward `target` by `dt` seconds. Returns the new position.
+    // `dt` should be pre-clamped by the host to a sane frame budget
+    // (reveal_fx clamps to 0.120 s) so a long stall doesn't teleport the
+    // cursor on the first frame back.
+    //
+    // Ramp semantics mirror reveal_fx exactly: the deadline test uses the
+    // time remaining AS OF THIS FRAME's start (ramp_left_ before dt is
+    // consumed). The host re-arms the deadline each frame via
+    // set_deadline(remaining), so ramp_left_ already reflects the current
+    // frame's remaining budget; we read it, decide the rate, THEN consume
+    // dt for the next frame's accounting.
+    constexpr double tick(double target, double dt) noexcept {
+        if (dt < 0.0) dt = 0.0;
+
+        const double backlog = target - pos_;
+        if (backlog <= 0.0) {
+            pos_ = target;
+            if (ramp_left_ >= 0.0) ramp_left_ -= dt;
+            return pos_;
+        }
+
+        const double burst = backlog / drain_secs_;
+        double rate = burst > floor_rate_ ? burst : floor_rate_;
+
+        if (ramp_left_ >= 0.0) {
+            // Finalize ramp: if at/past the deadline, snap (cover the whole
+            // backlog this frame); else ensure the rate is at least enough
+            // to cover the backlog in the time left.
+            if (ramp_left_ <= 0.0) {
+                rate = backlog / (dt > 0.001 ? dt : 0.001);
+            } else {
+                const double ramp = backlog / ramp_left_;
+                if (ramp > rate) rate = ramp;
+            }
+            ramp_left_ -= dt;
+        }
+
+        pos_ += rate * dt;
+        if (pos_ > target) pos_ = target;
+        return pos_;
+    }
+
+    constexpr void reset() noexcept { pos_ = 0.0; ramp_left_ = -1.0; }
+};
+
 } // namespace maya::anim

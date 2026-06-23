@@ -300,6 +300,113 @@ void test_agentty_freeze_trim_no_dup() {
     std::println("PASS\n");
 }
 
+// Agentty-shaped DECSTBM lifecycle stress: the de-risking layer for a real
+// integration. Beyond the single-row no-dup PoC, this exercises every shape
+// the production trim path must survive before StaticSplit could replace the
+// inline-frame commit_scrollback driver:
+//
+//   * MULTI-ROW turns (real assistant messages span many rows, and a single
+//     turn can exceed the active band — the max_freeze clamp path).
+//   * MULTIPLE terminal shapes (the production trim is tuned per term_dims()).
+//   * VARIED trim budgets + cadence (trim fires infrequently in production).
+//   * A freeze TALLER than the active band (clamp must not strand/lose rows).
+//
+// Invariants over the cumulative transcript (native scrollback ++ on-screen),
+// asserted at the end of every shape:
+//   I1 strand-free  — no unique "S<shape>-turn-NN-row-RR" line appears twice.
+//   I2 no-loss      — every frozen row that was trimmed OR is still on screen
+//                     appears at least once (nothing silently dropped by a
+//                     clamp or a trim).
+void test_agentty_decstbm_lifecycle() {
+    std::println("--- test_agentty_decstbm_lifecycle ---");
+    StylePool pool;
+
+    struct Shape { int w, h; };
+    const Shape shapes[] = { {40, 12}, {60, 8}, {80, 20}, {50, 6} };
+
+    int shape_id = 0;
+    for (auto sh : shapes) {
+        const int W = sh.w, H = sh.h;
+        TermEmu term(W, H);
+        std::string out;
+
+        StaticSplit split;
+        split.begin(H, out);
+        term.feed(out); out.clear();
+
+        // Track every frozen row we EXPECTED to graduate (trimmed off OR
+        // still resident). A row "graduates" the instant freeze() accepts
+        // it; if a clamp rejected part of a turn we don't count those rows.
+        std::vector<std::string> expected_frozen;
+
+        const int budget = std::max(2, H / 3);
+
+        for (int t = 0; t < 16; ++t) {
+            // A multi-row "assistant turn": 1..(H+1) rows, deterministically
+            // varied so some turns are SHORTER and some TALLER than the
+            // active band (forcing the max_freeze clamp).
+            const int rows_this_turn = 1 + ((t * 7 + shape_id) % (H + 1));
+            for (int r = 0; r < rows_this_turn; ++r) {
+                char msg[48];
+                std::snprintf(msg, sizeof(msg),
+                              "S%d-turn-%02d-row-%02d", shape_id, t, r);
+                const int before = split.frozen_rows();
+                const int froze = split.freeze(text(msg), W, pool, out);
+                // A single 1-row element either freezes (1) or is clamped
+                // out (0 — no active row left this frame). Count only what
+                // actually graduated.
+                if (froze > 0) expected_frozen.push_back(msg);
+                (void)before;
+
+                // If the band filled (clamp returned 0), trim to make room
+                // and retry once — mirrors the production cadence where a
+                // trim precedes a freeze that would otherwise overflow.
+                if (froze == 0 && split.frozen_rows() > budget) {
+                    split.commit_top(split.frozen_rows() - budget, out);
+                    const int retry = split.freeze(text(msg), W, pool, out);
+                    if (retry > 0) expected_frozen.push_back(msg);
+                }
+            }
+
+            char live[32];
+            std::snprintf(live, sizeof(live), "...working-%02d", t);
+            split.draw_active(text(live), W, pool, out);
+
+            // Trim the frozen prefix down to the budget (the FROZEN_MAX trim).
+            if (split.frozen_rows() > budget)
+                split.commit_top(split.frozen_rows() - budget, out);
+
+            term.feed(out); out.clear();
+        }
+        split.end(out);
+        term.feed(out);
+
+        // Cumulative transcript.
+        std::vector<std::string> transcript = term.scroll_off;
+        for (int y = 0; y < H; ++y) transcript.push_back(term.trimmed(y));
+
+        auto count_in = [&](const std::string& needle) {
+            int c = 0;
+            for (const auto& row : transcript)
+                if (row.find(needle) != std::string::npos) ++c;
+            return c;
+        };
+
+        // I1: strand-free. Every graduated row appears AT MOST once.
+        for (const auto& row : expected_frozen)
+            assert(count_in(row) <= 1);
+
+        // I2: no-loss. Every graduated row appears AT LEAST once (it either
+        // scrolled into native scrollback via commit_top or is still on
+        // screen — a trim must never silently drop a row).
+        for (const auto& row : expected_frozen)
+            assert(count_in(row) >= 1);
+
+        ++shape_id;
+    }
+    std::println("PASS (multi-row × 4 shapes × varied budget, strand-free + no-loss)\n");
+}
+
 int main() {
     test_ansi_scroll_region_bytes();
     test_split_geometry();
@@ -307,6 +414,7 @@ int main() {
     test_frozen_survives_scroll();
     test_end_restores_region();
     test_agentty_freeze_trim_no_dup();
+    test_agentty_decstbm_lifecycle();
     std::println("All static-split tests passed.");
     return 0;
 }

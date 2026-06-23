@@ -36,6 +36,7 @@
 #include <maya/core/concepts.hpp>
 #include <maya/core/signal.hpp>
 #include <maya/core/animation.hpp>
+#include <maya/core/motion.hpp>
 #include <maya/core/overload.hpp>
 #include <maya/core/scope_exit.hpp>
 #include <maya/core/focus.hpp>

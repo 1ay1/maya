@@ -52,6 +52,7 @@
 #include "../core/cmd.hpp"
 #include "../core/concepts.hpp"
 #include "../core/expected.hpp"
+#include "../core/motion.hpp"
 #include "../core/overload.hpp"
 #include "../core/render_context.hpp"
 #include "../core/scroll_state.hpp"
@@ -145,6 +146,16 @@ inline thread_local bool animation_requested_ = false;
 inline void request_animation_frame() noexcept {
     detail::animation_requested_ = true;
 }
+
+// Wire the decoupled motion-framework frame-request hook to the real run
+// loop. anim::Motion / Timeline / pulse (core/motion.hpp) wake the loop
+// WITHOUT depending on this 90 KB header by routing through
+// anim::detail::raf_hook, installed here at static-init so any TU that links
+// the app gets self-driving animations for free.
+namespace detail {
+inline void raf_thunk_() noexcept { ::maya::request_animation_frame(); }
+inline const ::maya::anim::detail::RafInstaller raf_installer_{&raf_thunk_};
+} // namespace detail
 
 // ============================================================================
 // Key event predicates — pure functions for use inside subscribe() filters

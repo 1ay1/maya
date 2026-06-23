@@ -135,13 +135,17 @@ public:
         // AND a cursor will be painted (always true; placeholder path
         // also paints one). Calling RAF unconditionally would pin the
         // app to 2 Hz repaints even when nothing on screen changes.
-        constexpr int kBlinkPeriodMs = 530;
-        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now().time_since_epoch())
-                                .count();
-        const bool blink_off = !active
-            && ((now_ms / (kBlinkPeriodMs / 2)) % 2 != 0);
-        if (!active) request_animation_frame();
+        // Cursor blink driven by the maya animation framework. A 530 ms
+        // square wave: visible for the first half of each period, hidden for
+        // the second. anim::loop_phase owns the wall-clock read AND the
+        // frame request, so the composer no longer hand-rolls steady_clock /
+        // bucket math / request_animation_frame — it just asks "where in the
+        // blink cycle am I?" The phase is only consulted (and frames only
+        // requested) while idle; a streaming/executing composer holds a
+        // steady cursor.
+        constexpr double kBlinkPeriodMs = 530.0;
+        const bool blink_off =
+            !active && anim::loop_phase(kBlinkPeriodMs) >= 0.5;
 
         std::string with_cursor = cfg_.text;
         int cur = std::min<int>(cfg_.cursor, static_cast<int>(cfg_.text.size()));

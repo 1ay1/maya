@@ -317,6 +317,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_input.cpp
         tests/test_signal.cpp
         tests/test_animation.cpp
+        tests/test_motion.cpp
         tests/test_overlay_layer.cpp
         tests/test_static_split.cpp
         tests/test_highlight.cpp

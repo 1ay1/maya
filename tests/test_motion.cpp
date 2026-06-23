@@ -8,6 +8,7 @@
 // settled one stops — the property that keeps a maya app idle when nothing
 // is animating.
 #include <maya/maya.hpp>
+#include <maya/anim/text_reveal.hpp>
 #include <cassert>
 #include <cmath>
 #include <print>
@@ -222,6 +223,76 @@ void test_rate_cursor_reachable() {
     std::println("PASS");
 }
 
+// ── text_reveal: height-stable trailing-edge decoration ─────────────────────
+// The decorator's load-bearing invariant: it must NEVER change the leaf's
+// DISPLAY WIDTH (it may swap a glyph for an equal-width scramble glyph, but
+// the column count of the content is preserved) — that's what keeps streaming
+// text from reflowing committed rows into scrollback.
+static int display_width_of(const TextElement& t) {
+    return string_width(t.content);
+}
+
+void test_text_reveal_height_stable() {
+    std::println("--- test_text_reveal_height_stable ---");
+    const std::string body =
+        "The quick brown fox jumps over the lazy dog and keeps on running "
+        "down the road past the end of the visible viewport edge.";
+
+    // Decorate at several cursor positions + ages; width must stay constant.
+    const int base_w = string_width(body);
+    for (std::size_t rev = 0; rev <= 40; rev += 8) {
+        for (std::int64_t age : {std::int64_t{0}, std::int64_t{120},
+                                 std::int64_t{500}, std::int64_t{900}}) {
+            TextElement leaf;
+            leaf.content = body;
+            anim::TextRevealParams p;
+            p.ms_total    = age * 3 + 17;
+            p.edge_age_ms = age;
+            p.revealed_cp = rev;
+            // total_cp 0 ⇒ derived from content.
+            (void)anim::decorate_text_reveal(leaf, p);
+            assert(display_width_of(leaf) == base_w &&
+                   "reveal decoration must preserve display width");
+            // Runs must cover the whole content with no gaps/overlap.
+            std::size_t cover = 0;
+            for (const auto& r : leaf.runs) {
+                assert(r.byte_offset == cover && "runs contiguous");
+                cover += r.byte_length;
+            }
+            assert(cover == leaf.content.size() && "runs cover all bytes");
+        }
+    }
+    std::println("PASS");
+}
+
+// ── text_reveal: empty leaf is a no-op ──────────────────────────────────────
+void test_text_reveal_empty() {
+    std::println("--- test_text_reveal_empty ---");
+    TextElement leaf;  // empty
+    anim::TextRevealParams p;
+    bool changed = anim::decorate_text_reveal(leaf, p);
+    assert(!changed && leaf.content.empty());
+    std::println("PASS");
+}
+
+// ── decorate_end_caret: recolors last glyph, width-stable; empty gets ▊ ─────
+void test_end_caret() {
+    std::println("--- test_end_caret ---");
+    TextElement leaf;
+    leaf.content = "hello";
+    const int w0 = string_width(leaf.content);
+    anim::decorate_end_caret(leaf, 100, 650);
+    assert(string_width(leaf.content) == w0 && "caret recolor is width-stable");
+    assert(!leaf.runs.empty() && "caret adds a styled run");
+
+    // Empty leaf gets a single block caret.
+    TextElement empty;
+    anim::decorate_end_caret(empty, 100, 650);
+    assert(!empty.content.empty() && "empty leaf gets a caret glyph");
+    assert(string_width(empty.content) == 1 && "block caret is one column");
+    std::println("PASS");
+}
+
 int main() {
     test_clock_dt_semantics();
     test_motion_basic();
@@ -232,6 +303,9 @@ int main() {
     test_timeline_play_done();
     test_stagger();
     test_rate_cursor_reachable();
+    test_text_reveal_height_stable();
+    test_text_reveal_empty();
+    test_end_caret();
     std::println("\nAll motion tests passed.");
     return 0;
 }

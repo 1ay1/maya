@@ -25,6 +25,7 @@
 #include "maya/widget/markdown/internal.hpp"
 #include "maya/app/app.hpp"         // request_animation_frame()
 #include "maya/core/animation.hpp"   // anim::ease::*, anim::lerp(Color)
+#include "maya/anim/text_reveal.hpp"  // anim::decorate_text_reveal / end_caret
 
 namespace maya {
 
@@ -386,20 +387,10 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             return nullptr;
         };
 
-        // Step back N UTF-8 codepoints from end of `s`.
-        auto utf8_step_back = [](std::string_view s,
-                                 std::size_t n) -> std::size_t {
-            std::size_t i = s.size();
-            while (n > 0 && i > 0) {
-                --i;
-                while (i > 0 &&
-                       (static_cast<unsigned char>(s[i]) & 0xC0) == 0x80) {
-                    --i;
-                }
-                --n;
-            }
-            return i;
-        };
+        // Step-back / age / colour / scramble helpers now live in the
+        // framework primitive (maya::anim, anim/text_reveal.hpp). The overlay
+        // here only walks to the tail leaf (find_last_text above) and hands
+        // the tunables below to anim::decorate_text_reveal.
 
         // Tunables.
         //
@@ -413,107 +404,6 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         constexpr std::int64_t kScrambleMs  = 220;
         constexpr std::int64_t kCharStepMs  = 26;
         constexpr std::size_t  kGhostExtra  = 96;
-
-        // Effective age for codepoint at position `i_from_tail`
-        // (0 = newest, increasing leftward). Newest char's age is
-        // the actual wall-clock since source grew; each earlier char
-        // is kCharStepMs older. Clamped so even the oldest in the
-        // trail has a non-trivial age — prevents the whole trail
-        // from snapping color when bytes arrive in a burst.
-        auto age_for = [&](std::size_t i_from_tail) -> std::int64_t {
-            return age_at_tail_ms +
-                static_cast<std::int64_t>(i_from_tail) * kCharStepMs;
-        };
-
-        // Trail color: lerp through a 4-stop palette by age.
-        //   age 0       → hot magenta (255, 90, 200) + bold
-        //   age 120ms   → bright cyan (120, 230, 255) + bold
-        //   age 320ms   → ice blue    (140, 180, 220) dim
-        //   age 700ms+  → base fg (no override)
-        // Returns nullopt for ages past the trail — caller leaves
-        // those chars' original style alone.
-        auto trail_style = [&](std::int64_t age_ms)
-            -> std::optional<Style>
-        {
-            if (age_ms >= 700) return std::nullopt;
-            // Age-banded colour fade through a 4-stop palette, mixed via
-            // the central anim::lerp(Color) so the channel math matches
-            // the rest of the UI. anim::ease::smoothstep softens each
-            // band's progression (no hard velocity edge at the stops).
-            //   age 0       → hot magenta (255, 90,200) + bold
-            //   age 120ms   → bright cyan (120,230,255) + bold
-            //   age 320ms   → ice blue    (140,180,220) dim
-            //   age 700ms+  → base fg (handled by the early-out above)
-            Color col;
-            bool bold = false;
-            bool dim  = false;
-            if (age_ms < 120) {
-                const double t = anim::ease::smoothstep(age_ms / 120.0);
-                col  = anim::lerp(Color::rgb(255, 90, 200),
-                                  Color::rgb(120, 230, 255), t);
-                bold = true;
-            } else if (age_ms < 320) {
-                const double t =
-                    anim::ease::smoothstep((age_ms - 120) / 200.0);
-                col  = anim::lerp(Color::rgb(120, 230, 255),
-                                  Color::rgb(140, 180, 220), t);
-                bold = t < 0.5;
-            } else {
-                // 320 → 700: fade ice blue toward a neutral light gray
-                // (desaturate to "invisible-on-base").
-                const double t =
-                    anim::ease::smoothstep((age_ms - 320) / 380.0);
-                col  = anim::lerp(Color::rgb(140, 180, 220),
-                                  Color::rgb(200, 200, 200), t);
-                dim  = true;
-            }
-            Style s = Style{}.with_fg(col);
-            if (bold) s = s.with_bold();
-            if (dim)  s = s.with_dim();
-            return s;
-        };
-
-        // Scramble glyphs: a curated set of ASCII / box-drawing /
-        // dingbat chars that read as "digital noise". We pick one
-        // deterministically from (i_from_tail, ms_total) so a given
-        // char's scramble glyph CHANGES across frames — the
-        // characteristic Matrix "churning" effect.
-        static constexpr const char* kScrambleGlyphs[] = {
-            "#", "$", "%", "&", "*", "+", "=", "?", "@",
-            "!", "~", "^", "<", ">", "|", "/", "\\",
-            "\xe2\x96\x91",  // ░
-            "\xe2\x96\x92",  // ▒
-            "\xe2\x96\x93",  // ▓
-            "\xe2\x96\xa0",  // ■
-            "\xe2\x96\xa1",  // □
-            "\xe2\x97\x86",  // ◆
-            "\xe2\x97\x87",  // ◇
-            "\xe2\x97\x8f",  // ●
-            "\xe2\x97\x8b",  // ○
-            "\xe2\x9c\xa6",  // ✦
-            "\xe2\x9c\xa8",  // ✨ (sparkle — occasional accent)
-            "\xce\xb1", "\xce\xb2", "\xce\xb3", "\xce\xb4",  // αβγδ
-            "\xce\xbb", "\xcf\x80", "\xcf\x83", "\xcf\x86",  // λπσφ
-            "0", "1", "7", "8", "X", "Z",
-        };
-        constexpr std::size_t kScrambleN =
-            sizeof(kScrambleGlyphs) / sizeof(kScrambleGlyphs[0]);
-
-        // Cheap deterministic hash for picking a scramble glyph.
-        auto scramble_pick = [&](std::size_t cp_idx,
-                                 std::int64_t age_ms) -> std::string_view {
-            // Quantise time so we don't change glyph EVERY frame —
-            // we churn at ~45ms intervals so individual frames don't
-            // look like static. (Faster = noisier, slower = sleepier.)
-            const std::uint64_t time_bucket =
-                static_cast<std::uint64_t>(ms_total / 45);
-            std::uint64_t h = 0x9e3779b97f4a7c15ull;
-            h ^= cp_idx + 0x9e3779b9 + (h << 6) + (h >> 2);
-            h ^= time_bucket + 0x9e3779b9 + (h << 6) + (h >> 2);
-            h ^= static_cast<std::uint64_t>(age_ms) + 0x9e3779b9
-                 + (h << 6) + (h >> 2);
-            return std::string_view{kScrambleGlyphs[h % kScrambleN]};
-        };
 
         // Shallow copy of cached_build_; we'll splice a freshly-built
         // tail TextElement onto its rightmost leaf.
@@ -547,49 +437,6 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             (void)revealed_cp;
             (void)total_cp;
 
-            const std::string_view orig = tail->content;
-
-            // Find the trail window WITHOUT scanning the entire
-            // content. Walk backward from the end byte-by-byte until
-            // we've passed kTrailLen codepoints (a UTF-8 codepoint
-            // start is any byte whose top 2 bits are not 10). Then
-            // index codepoints only within [trail_byte_start, end).
-            // O(kTrailLen) per frame, independent of tail length.
-            // Unrevealed-cp count: the right-edge slice that the
-            // typewriter cursor hasn't reached yet. We map this to a
-            // byte offset in the tail by stepping back that many cp
-            // from the end. These bytes still render (height-stable)
-            // but get a ghosted style (dim fg fade toward bg) so the
-            // user sees the text "materialise" left-to-right as the
-            // cursor walks. Clamped to total_cp so a fresh widget with
-            // revealed_cp < committed_cp doesn't underflow (shouldn't
-            // happen given the snap above, defensive).
-            //
-            // When build()'s visible-byte clip is active (reveal_fx_ +
-            // live_), cached_build_ already contains EXACTLY the
-            // revealed cp — source was truncated to reveal_byte_clip_
-            // before render_tail saw it. No need for the ghost band;
-            // the scramble window alone covers the trailing edge.
-            // Without this zero-out, the overlay would mark the entire
-            // rightmost TextElement as invisible (its content was the
-            // revealed slice but unrevealed_cp = total - revealed is
-            // computed against UNCLIPPED total, so it covers the whole
-            // visible tail).
-            // When build()'s visible-byte clip is active (reveal_fx_ +
-            // live_), cached_build_ contains the source truncated to the
-            // END OF THE CURRENT LINE (line-granular clip in build()) —
-            // so completed lines are full (scrollback-safe) but the
-            // actively-typed last line carries bytes the cursor hasn't
-            // reached yet. Those trailing within-line bytes must be
-            // GHOSTED (invisible) so the typewriter still reads as
-            // left-to-right reveal; without it the rest of the current
-            // line would flash in fully the moment the line's first byte
-            // arrives. unrevealed_cp here is the codepoint span between
-            // the raw cursor clip and the line-end clip — i.e. exactly
-            // the part of the current line past the cursor.
-            //
-            // When the clip is NOT active (reveal off / settled) we ghost
-            // total_cp - revealed_cp as before.
             const bool clip_active =
                 reveal_fx_
                 && reveal_byte_clip_ != static_cast<std::size_t>(-1)
@@ -618,215 +465,34 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                     ? (total_cp - revealed_cp) : 0u;
             }
 
-            // Trail window is whichever is bigger: the fixed gradient
-            // band, or the unrevealed slice PLUS a ghost extension —
-            // so the gradient melts smoothly into the revealed body
-            // instead of cutting at a hard edge.
-            const std::size_t trail_cp_target = std::max(
-                kTrailLen, unrevealed_cp + kGhostExtra);
-
-            const std::size_t trail_byte_start =
-                utf8_step_back(orig, trail_cp_target);
-            const std::string_view trail_slice =
-                orig.substr(trail_byte_start);
-
-            // Codepoint boundaries WITHIN the trail slice only.
-            std::vector<std::size_t> trail_cp_offs;
-            trail_cp_offs.reserve(kTrailLen + 1);
-            for (std::size_t i = 0; i < trail_slice.size();) {
-                trail_cp_offs.push_back(i);
-                ++i;
-                while (i < trail_slice.size() &&
-                       (static_cast<unsigned char>(trail_slice[i]) & 0xC0) == 0x80)
-                    ++i;
-            }
-            trail_cp_offs.push_back(trail_slice.size());
-            const std::size_t trail_n =
-                trail_cp_offs.empty() ? 0 : (trail_cp_offs.size() - 1);
-
-            if (trail_n == 0) {
-                // Empty trail (shouldn't happen given we checked
-                // tail non-empty above, but defensive). Skip
-                // mutation; caret row below still paints.
-                goto trail_done;
-            }
-
-            // Scramble window is the rightmost min(kScrambleLen,
-            // trail_n) codepoints.
-            const std::size_t scramble_n =
-                std::min(trail_n, kScrambleLen);
-            const std::size_t scramble_cp_start_local =
-                trail_n - scramble_n;
-
-            // Build the new content in-place: prefix bytes are
-            // unchanged (we just reference them via the existing
-            // string), then we splice trail bytes that may have a
-            // scramble glyph substituted for the real cp.
+            // ── Delegate the trailing-edge decoration to the framework ──
             //
-            // Strategy: reserve a tail-sized buffer (small — bounded
-            // by trail_slice.size() + ~kScrambleLen * worst-case-utf8
-            // width). Append-build the trail. Then assign:
-            //   tail->content = prefix_bytes + new_trail_bytes
-            //
-            // To avoid a full-content copy we use std::string's
-            // resize+memcpy idiom: keep the original prefix by
-            // truncating to trail_byte_start, then append the new
-            // trail.
-            std::string new_trail;
-            new_trail.reserve(trail_slice.size() + scramble_n * 3);
-
-            // Carry-forward original runs that fall before the trail.
-            std::vector<StyledRun> new_runs;
-            new_runs.reserve(
-                (tail->runs.empty() ? 1 : tail->runs.size())
-                + trail_n + 2);
-
-            if (trail_byte_start > 0) {
-                if (tail->runs.empty()) {
-                    new_runs.push_back(StyledRun{
-                        .byte_offset = 0,
-                        .byte_length = trail_byte_start,
-                        .style       = tail->style,
-                    });
-                } else {
-                    for (const auto& r : tail->runs) {
-                        if (r.byte_offset >= trail_byte_start) break;
-                        const std::size_t end =
-                            r.byte_offset + r.byte_length;
-                        const std::size_t clipped =
-                            std::min(end, trail_byte_start);
-                        new_runs.push_back(StyledRun{
-                            .byte_offset = r.byte_offset,
-                            .byte_length = clipped - r.byte_offset,
-                            .style       = r.style,
-                        });
-                        if (end > trail_byte_start) break;
-                    }
-                }
-            }
-
-            // Walk the trail codepoint-by-codepoint, emitting either
-            // the real char (with a trail color overlay) or a scramble
-            // glyph.
-            for (std::size_t k = 0; k < trail_n; ++k) {
-                const std::size_t i_from_tail = trail_n - 1 - k;
-                const std::int64_t age = age_for(i_from_tail);
-
-                std::string_view real_cp{
-                    trail_slice.data() + trail_cp_offs[k],
-                    trail_cp_offs[k + 1] - trail_cp_offs[k]};
-
-                const bool in_scramble_window =
-                    k >= scramble_cp_start_local;
-                const bool scrambling =
-                    in_scramble_window && age < kScrambleMs;
-
-                std::string_view emitted;
-                std::string scramble_owned;
-                if (scrambling) {
-                    scramble_owned = std::string{
-                        scramble_pick(trail_byte_start + trail_cp_offs[k],
-                                      age)};
-                    emitted = scramble_owned;
-                } else {
-                    emitted = real_cp;
-                }
-
-                const std::size_t out_byte_off =
-                    trail_byte_start + new_trail.size();
-                new_trail.append(emitted.data(), emitted.size());
-                const std::size_t out_byte_len =
-                    (trail_byte_start + new_trail.size()) - out_byte_off;
-
-                // Pick the style.
-                //
-                // Priority (highest first):
-                //   scramble      — churning rainbow at the very tip
-                //   unrevealed    — ghost (dim, fade-to-bg) for cp the
-                //                   typewriter cursor hasn't walked yet
-                //   gradient      — hot→cool age band
-                //   base          — settled text
-                Style s;
-                if (scrambling) {
-                    const bool flick =
-                        ((ms_total / 60 + k) & 1) == 0;
-                    s = Style{}
-                        .with_fg(flick
-                            ? Color::rgb(255,  80, 180)
-                            : Color::rgb(255, 160,  60))
-                        .with_bold();
-                } else if (i_from_tail < unrevealed_cp) {
-                    // Unrevealed cp: render INVISIBLE (fg matches the
-                    // terminal background) so the cell occupies space
-                    // for the wrap engine but draws no ink. This is the
-                    // real typewriter — layout sees the full text, the
-                    // user sees text appear left-to-right as the cursor
-                    // walks. Cells stay occupied so height is stable.
-                    //
-                    // Color::default_color() targets the terminal's own
-                    // bg slot, which renders nothing visible regardless
-                    // of light/dark theme. with_dim() further suppresses
-                    // any residual contrast on terminals that ignore
-                    // default-fg color.
-                    s = Style{}.with_fg(Color::default_color()).with_dim();
-
-                    // The very next codepoint about to be revealed (the
-                    // "cursor head") gets a bright pulsing highlight so
-                    // the user's eye tracks the typewriter sweeping
-                    // right. i_from_tail == unrevealed_cp - 1 is the
-                    // freshest unrevealed cp — leftmost in the unrevealed
-                    // band, immediately right of the last revealed cp.
-                    if (i_from_tail == unrevealed_cp - 1) {
-                        // Eased ping-pong pulse on a fast period for a
-                        // crisp "now typing" cue — routed through the
-                        // central anim primitives (reveal_detail::pulse01
-                        // + anim::lerp(Color)).
-                        constexpr std::int64_t kSweepMs = 280;
-                        const double p =
-                            reveal_detail::pulse01(ms_total, kSweepMs);
-                        s = Style{}
-                            .with_fg(anim::lerp(
-                                Color::rgb(255, 220, 140),
-                                Color::rgb(180, 255, 220), p))
-                            .with_bg(anim::lerp(
-                                Color::rgb(60, 50, 20),
-                                Color::rgb(90, 80, 40), p))
-                            .with_bold();
-                    }
-                } else if (auto ts = trail_style(age)) {
-                    s = *ts;
-                } else {
-                    s = tail->style;
-                }
-                new_runs.push_back(StyledRun{
-                    .byte_offset = out_byte_off,
-                    .byte_length = out_byte_len,
-                    .style       = s,
-                });
-            }
-
-            // Truncate to the prefix and append the rebuilt trail.
-            // resize(trail_byte_start) does NOT reallocate; the
-            // existing capacity is preserved.
-            tail->content.resize(trail_byte_start);
-            tail->content.append(new_trail);
-            tail->runs = std::move(new_runs);
-            // Force re-wrap on the copy ONLY when content bytes might
-            // have changed (scramble substituted a 1-byte ASCII for a
-            // 3-byte box glyph, or vice versa). When only styles moved
-            // (gradient/ghost recolor without scramble) trail bytes are
-            // byte-identical to the source render's wrap cache — leave
-            // cached_width alone, skip the O(content) re-wrap. On a
-            // multi-KB code-block tail this avoidance is the difference
-            // between smooth and chokes-the-renderer.
-            const bool scramble_active =
-                age_at_tail_ms < kScrambleMs +
-                static_cast<std::int64_t>(scramble_n) * kCharStepMs;
-            if (scramble_active) {
-                tail->cached_width = -1;
-            }
+            // The scramble / hot→cool gradient / ghost-materialise / sweep
+            // cursor algorithm now lives in maya::anim::decorate_text_reveal
+            // (anim/text_reveal.hpp) — a reusable primitive any widget can
+            // call on any text leaf. The markdown widget keeps only the
+            // tree-specific glue: walking to the live tail leaf (above) and
+            // computing the clip-aware unrevealed-cp span (above). The
+            // visual algorithm itself is shared. The decorator is
+            // height-stable (no cp added except equal-width scramble
+            // substitutions) so the scrollback-safety invariants are
+            // preserved exactly. Tunables below mirror the historical
+            // constants (kTrailLen / kScrambleLen / kScrambleMs / kCharStepMs
+            // / kGhostExtra) so behaviour is unchanged byte-for-byte.
+            anim::TextRevealParams rp;
+            rp.ms_total              = ms_total;
+            rp.edge_age_ms           = age_at_tail_ms;
+            rp.revealed_cp           = revealed_cp;
+            rp.total_cp              = total_cp;
+            rp.clip_active           = clip_active;
+            rp.clipped_unrevealed_cp = unrevealed_cp;
+            rp.trail_len             = kTrailLen;
+            rp.scramble_len          = kScrambleLen;
+            rp.scramble_ms           = kScrambleMs;
+            rp.char_step_ms          = kCharStepMs;
+            rp.ghost_extra           = kGhostExtra;
+            (void)anim::decorate_text_reveal(*tail, rp);
         }
-        trail_done:;
 
         // ── Inline end-caret ──
         //
@@ -839,65 +505,14 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         const bool cursor_walking =
             cursor_advance_total_cp_ > static_cast<std::size_t>(reveal_cp_);
         if (!cursor_walking) {
-        constexpr std::int64_t kCaretPeriodMs = 650;
-        // Eased ping-pong pulse via the central anim primitives. At p=0
-        // the caret rests on its magenta base; at p=1 it peaks toward
-        // cyan. anim::lerp(Color) does the channel mix.
-        const double caret_p =
-            reveal_detail::pulse01(ms_total, kCaretPeriodMs);
-        const Color caret_fg = anim::lerp(
-            Color::rgb(220, 80, 200), Color::rgb(100, 230, 255), caret_p);
-        const std::uint8_t cr = caret_fg.r();
-        const std::uint8_t cg = caret_fg.g();
-        const std::uint8_t cb = caret_fg.b();
-        if (TextElement* tail = find_last_text(animated_body)) {
-            const Style caret_style = Style{}
-                .with_fg(Color::rgb(cr, cg, cb))
-                .with_bg(Color::rgb(cr / 4, cg / 4, cb / 4))
-                .with_bold();
-            // Byte offset of the LAST codepoint in the tail (UTF-8 step
-            // back one). The pulse run covers just that glyph.
-            const std::size_t caret_off =
-                utf8_step_back(tail->content, 1);
-            if (caret_off < tail->content.size()) {
-                // Recolor the final glyph in place — no bytes added, so
-                // the wrap result is unchanged and no extra row can
-                // appear. Materialize the implicit base run for the
-                // [0, caret_off) prefix if runs are empty, then push the
-                // pulse run over the last codepoint.
-                if (tail->runs.empty()) {
-                    tail->runs.push_back(StyledRun{
-                        .byte_offset = 0,
-                        .byte_length = caret_off,
-                        .style       = tail->style,
-                    });
-                }
-                tail->runs.push_back(StyledRun{
-                    .byte_offset = caret_off,
-                    .byte_length = tail->content.size() - caret_off,
-                    .style       = caret_style,
-                });
-                // Same byte length and same display width as before, so
-                // the source render's wrap cache is still valid — do NOT
-                // invalidate it (re-wrapping every animation frame is
-                // wasted O(content) work and was only needed when the
-                // appended glyph changed the width).
-            } else {
-                // Empty tail (no glyph to pulse) — emit a single block
-                // caret. The row is empty so a one-column glyph cannot
-                // spill to a new wrapped row; the live↔settled seam
-                // stays stable.
-                constexpr std::string_view kCaretGlyph =
-                    "\xe2\x96\x8a"; // ▊ left 3/4 block
-                tail->content.append(kCaretGlyph);
-                tail->runs.push_back(StyledRun{
-                    .byte_offset = 0,
-                    .byte_length = kCaretGlyph.size(),
-                    .style       = caret_style,
-                });
-                tail->cached_width = -1;
+            // Pulsing "awaiting next byte" caret on the last glyph —
+            // delegated to the framework primitive (anim::decorate_end_caret
+            // in anim/text_reveal.hpp). magenta↔cyan over a 650 ms period,
+            // recoloured in place (height/width-stable) so no extra row can
+            // appear at the live↔settled seam.
+            if (TextElement* tail = find_last_text(animated_body)) {
+                anim::decorate_end_caret(*tail, ms_total, 650);
             }
-        }
         } // !cursor_walking
 
         // Mirror cached_build_'s cross-axis sizing. Stretch is

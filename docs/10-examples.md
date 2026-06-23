@@ -1,16 +1,14 @@
 # Examples Walkthrough
 
-maya ships with **34 examples** that progressively demonstrate its features.
+maya ships **35 examples** that progressively demonstrate its features.
 This guide walks through the major ones, explaining the patterns and
 techniques used.
 
 > **The authoritative list is the [`examples/`](../examples/) directory** —
-> run `ls examples/*.cpp` (or look at the build targets `maya_<name>`). A few
-> sections below were written against earlier example filenames that have
-> since been renamed or merged; where that happened the heading points at the
-> current file. The *code patterns* shown still reflect the live API (every
-> snippet in this guide is checked against the headers), only the filename may
-> differ.
+> every `examples/*.cpp` is built as a `maya_<name>` target (the CMake build
+> globs the directory). Run `ls examples/*.cpp` for the current set. This
+> walkthrough covers the major examples by category; every code snippet is
+> checked against the live headers.
 
 ## 1. counter.cpp — The Simplest App
 
@@ -58,9 +56,6 @@ This is the canonical Program-style maya app.
 
 ## 2. markup.cpp / widgets.cpp — Feature Showcase
 
-> *(was `demo.cpp` — the feature-tour content now lives in `markup.cpp` and
-> `widgets.cpp`.)*
-
 **Mode**: Fullscreen (`run<P>()`)
 **Demonstrates**: RunConfig, Program architecture, theme colors, nested layouts, conditional styling
 
@@ -81,9 +76,6 @@ static Element view(const Model& m) {
 ```
 
 ## 3. Compile-Time DSL (see any `print()` usage)
-
-> *(was `dsl_demo.cpp` — the one-shot `print()` + constexpr-tree demo is folded
-> into the `print()` section of [Rendering Modes](07-rendering-modes.md).)*
 
 **Mode**: One-shot (`print()`)
 **Demonstrates**: Fully constexpr UI, type-state safety, bcol after border
@@ -110,8 +102,6 @@ Also demonstrates mixing constexpr and runtime with `dyn()`.
 
 ## 4. inline_progress.cpp — Inline Mode
 
-> *(was `inline.cpp`.)*
-
 **Mode**: `run()` with `Mode::Inline`
 **Demonstrates**: Inline rendering, live bar animation, theme cycling
 
@@ -129,8 +119,6 @@ for (int i = 0; i < 20; ++i)
 Shows that `text()` works with runtime strings for dynamic visualizations.
 
 ## 5. inline_progress.cpp — Inline Progress Display
-
-> *(was `progress.cpp`.)*
 
 **Mode**: Inline (`live()`)
 **Demonstrates**: Delta time, parallel progress bars, spinners, auto-quit
@@ -359,9 +347,6 @@ if (mouse_clicked(ev)) rain->shockwave(pos->col, pos->row);
 
 ## 17. spectrum.cpp / dashboard.cpp — Signal Charts + Heatmap
 
-> *(was `viz.cpp` — the sub-cell chart / heatmap techniques now ship in
-> `spectrum.cpp` and `dashboard.cpp`.)*
-
 **Mode**: Canvas (`canvas_run()`)
 **Demonstrates**: Braille sub-cell graphics, 2D heatmap, fast math, split panels
 
@@ -396,9 +381,6 @@ inline float fast_sqrt(float x) noexcept { /* Quake III rsqrt */ }
 ```
 
 ## 18. particles.cpp — Particle Physics
-
-> *(was `fireworks.cpp` — the fireworks burst is one of `particles.cpp`'s five
-> modes.)*
 
 **Mode**: Canvas (`canvas_run()`)
 **Demonstrates**: Physics simulation, particle lifecycle, auto-launch, mouse click-to-launch
@@ -499,37 +481,44 @@ The remaining examples are all `canvas_run()` physics and visual demos:
 - **spectrum.cpp** — Simulated audio spectrum analyzer with 4 visualization
   modes and beat detection
 
-## Example Classification
+## The full example set
 
-| Example | Mode | Interactive | Uses DSL | Uses Canvas | Animation |
-|---------|------|------------|----------|-------------|-----------|
-| counter | run\<P\>() | Yes | Yes | No | No |
-| demo | run\<P\>() | Yes | Yes | No | No |
-| dsl_demo | print() | No | Yes | No | No |
-| inline | run() inline | Yes | Yes | No | Yes |
-| progress | live() | No | Partial | No | Yes |
-| agent | live() | No | Partial | No | Yes |
-| dashboard | run() | Yes | Partial | No | Yes |
-| chat | run() inline | Yes | Partial | No | Yes |
-| deploy | run() | Yes | Partial | No | Yes |
-| hacker | run() | Yes | Partial | No | Yes |
-| ide | run() | Yes | Partial | No | No |
-| music | run() | Yes | Partial | No | Yes |
-| space | run() | Yes | Partial | No | Yes |
-| stocks | run() inline | Yes | Partial | No | Yes |
-| sysmon | run() inline | Yes | Partial | No | Yes |
-| matrix | canvas_run() | Yes | No | Yes | Yes |
-| viz | canvas_run() | Yes | No | Yes | Yes |
-| fireworks | canvas_run() | Yes | No | Yes | Yes |
-| stopwatch | run\<P\>() | Yes | Yes | No | Yes |
-| breakout | canvas_run() | Yes | No | Yes | Yes |
-| snake | canvas_run() | Yes | No | Yes | Yes |
-| doom_fire | canvas_run() | Yes | No | Yes | Yes |
-| fluid | canvas_run() | Yes | No | Yes | Yes |
-| fps | canvas_run() | Yes | No | Yes | Yes |
-| life | canvas_run() | Yes | No | Yes | Yes |
-| mandelbrot | canvas_run() | Yes | No | Yes | Yes |
-| particles | canvas_run() | Yes | No | Yes | Yes |
-| raymarch | canvas_run() | Yes | No | Yes | Yes |
-| sorts | canvas_run() | Yes | No | Yes | Yes |
-| spectrum | canvas_run() | Yes | No | Yes | Yes |
+All 35 examples, grouped by what they teach. Build target is `maya_<name>`;
+source is `examples/<name>.cpp`. (Modes drift as examples evolve — the source
+is authoritative; `grep -l canvas_run examples/*.cpp` etc. gives the current
+truth.)
+
+**Architecture & DSL** — the patterns to learn first:
+
+- `counter` — the canonical Program app (Model/Msg/update/view/subscribe).
+- `stopwatch` — Program + `Sub::every` ticks, `Cmd::after`, conditional subs.
+- `widgets`, `markup` — feature tours of the widget library and markup.
+- `inline_progress` — inline-mode / `live()` rendering with animation.
+
+**Agent / chat UIs** — streaming text, tool cards, markdown:
+
+- `agent`, `agent_session` — simulated AI coding-agent sessions (the
+  `agent_session` is the large reference app with zero scrollback corruption).
+- `chat`, `messenger` — chat interfaces with streaming markdown and tool widgets.
+
+**Dashboards & rich layout** — multi-panel flexbox, sparklines, gauges:
+
+- `dashboard` — the most complex element-tree example (adaptive grid).
+- `deploy`, `hacker`, `ide`, `music`, `space`, `stocks`, `sysmon` — themed
+  full-screen / inline dashboards.
+
+**Scrolling** — the `ScrollableView` widget in fullscreen:
+
+- `scroll_2d`, `scroll_clip`, `scroll_slice`, `scroll_styles`.
+
+**Animation framework:**
+
+- `motion_showcase` — a one-screen tour of `Motion`, springs, timelines,
+  staggers, and the streaming typewriter (see [Animation](14-animation.md)).
+
+**Canvas demos** — direct cell painting via `canvas_run()` (games, physics,
+fractals, visualisations):
+
+- `breakout`, `snake`, `life`, `sorts` — games & algorithm viz.
+- `matrix`, `doom_fire`, `fluid`, `particles`, `spectrum` — effects & sims.
+- `mandelbrot`, `fps`, `raymarch`, `space3d` — fractals & 3D rendering.

@@ -418,7 +418,7 @@ void test_clip_to_cursor() {
     // Multi-byte: cut mid-UTF-8 sequence never splits a codepoint.
     {
         TextElement leaf;
-        leaf.content = "a\xce\xbb\xce\xbcb";  // a λ μ b  (4 cp)
+        leaf.content = "a\xce\xbb\xce\xbc" "b";  // a λ μ b  (4 cp)
         const std::size_t kept = anim::clip_text_to_cursor(leaf, 2);  // aλ
         assert(leaf.content == "a\xce\xbb" && "cuts on a cp boundary");
         assert(kept == 3 && "byte length 1+2");

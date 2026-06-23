@@ -222,6 +222,11 @@ public:
     /// Each string is a complete "\x1b[0;...m" that resets then applies — the diff
     /// loop calls this once per style change instead of computing transitions.
     [[nodiscard]] MAYA_ALWAYS_INLINE std::string_view sgr(uint16_t id) const noexcept {
+        // Clamp a stale/out-of-range id (e.g. one carried over from a frame
+        // before clear() shrank the pool) to the always-present default
+        // style rather than reading past sgr_cache_ into uninitialized
+        // capacity. See write_transition_sgr for the full rationale.
+        if (id >= sgr_cache_.size()) id = 0;
         return sgr_cache_[id];
     }
 

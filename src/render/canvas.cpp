@@ -186,6 +186,23 @@ void StylePool::write_transition_sgr(uint16_t prev_id, uint16_t new_id,
                                      std::string& out) const {
     if (prev_id == new_id) return;
 
+    // Clamp out-of-range ids to the default style (id 0). A packed cell
+    // carries its style id in bits 32-47; that id can outlive the pool
+    // entry it referenced — e.g. clear() shrinks styles_ back to size 1
+    // while a prev_cells buffer (inline diff) or a stale canvas cell still
+    // holds a higher id from the previous frame. Indexing styles_[id] /
+    // sgr_cache_[id] for such an id reads the vector's uninitialized
+    // CAPACITY (reserve(64) leaves default-constructed-but-never-assigned
+    // Style slots with garbage bool bytes → UBSan: "load of value 190,
+    // which is not a valid value for type 'bool'"), or runs past the end
+    // entirely. id 0 is always present (the default style) and is the
+    // correct visual fallback for a dropped style. UINT16_MAX is the
+    // "no SGR emitted yet" sentinel and is handled below, so exclude it
+    // from the prev clamp.
+    const auto n = static_cast<uint16_t>(styles_.size());
+    if (new_id >= n) new_id = 0;
+    if (prev_id != UINT16_MAX && prev_id >= n) prev_id = 0;
+
     // Unknown terminal state (no SGR emitted yet this frame). Fall back
     // to the full reset-and-set form so the terminal lands at a known
     // configuration regardless of any residual SGR from before maya

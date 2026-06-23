@@ -120,14 +120,18 @@ namespace reveal_detail {
     return i;
 }
 
-// Curated "digital noise" glyph set for the scramble tip.
+// Curated "digital noise" glyph set for the scramble tip. STRICTLY width-1
+// (single terminal column) — a scramble glyph swap MUST preserve the leaf's
+// display width or it reflows the line (and in a streaming context can push
+// committed rows into scrollback). Do NOT add wide (CJK / emoji) glyphs here;
+// the sparkle (✨, width 2) was removed for exactly this reason.
 inline constexpr const char* kScrambleGlyphs[] = {
     "#", "$", "%", "&", "*", "+", "=", "?", "@",
     "!", "~", "^", "<", ">", "|", "/", "\\",
     "\xe2\x96\x91", "\xe2\x96\x92", "\xe2\x96\x93",        // ░▒▓
     "\xe2\x96\xa0", "\xe2\x96\xa1",                        // ■□
     "\xe2\x97\x86", "\xe2\x97\x87", "\xe2\x97\x8f", "\xe2\x97\x8b",  // ◆◇●○
-    "\xe2\x9c\xa6", "\xe2\x9c\xa8",                        // ✦✨
+    "\xe2\x9c\xa6",                                        // ✦ (width-1 star)
     "\xce\xb1", "\xce\xb2", "\xce\xb3", "\xce\xb4",        // αβγδ
     "\xce\xbb", "\xcf\x80", "\xcf\x83", "\xcf\x86",        // λπσφ
     "0", "1", "7", "8", "X", "Z",
@@ -174,6 +178,57 @@ inline constexpr std::size_t kScrambleN =
 } // namespace reveal_detail
 
 // ============================================================================
+// clip_text_to_cursor — the TRUE typewriter: cut content at the reveal front
+// ============================================================================
+// The ghost band in decorate_text_reveal renders not-yet-typed codepoints in
+// Color::default_color()+dim. That is genuinely INVISIBLE only when the leaf
+// sits on the terminal default background (the markdown streaming path clips
+// its content in build(), so unrevealed text is never in the leaf at all). A
+// GENERIC caller handing the decorator a FULL-content leaf instead sees the
+// not-yet-typed body rendered dimly-but-readable — the text "is already
+// there" and the effect runs on top of it.
+//
+// For a true left-to-right typewriter on a full-content leaf, call this FIRST
+// to physically truncate the content to the first `revealed_cp` codepoints,
+// then decorate the (now shorter) leaf with revealed_cp == total_cp (i.e. no
+// ghost band — there is nothing past the cursor to ghost). The leaf grows a
+// codepoint at a time exactly as a real stream would.
+//
+// HEIGHT NOTE: unlike decorate_text_reveal this CHANGES the leaf height as
+// the cursor advances (by design — that is what "typing" looks like). It is
+// therefore for INTERACTIVE / one-shot UI (a generic widget), NOT for the
+// scrollback-committed streaming markdown path, which must stay height-stable
+// and does its own clipping upstream. Returns the surviving byte length.
+inline std::size_t clip_text_to_cursor(TextElement& leaf,
+                                       std::size_t revealed_cp) {
+    if (leaf.content.empty()) return 0;
+    // Walk forward revealed_cp codepoints from the start.
+    std::size_t i = 0, seen = 0;
+    while (i < leaf.content.size() && seen < revealed_cp) {
+        ++i;
+        while (i < leaf.content.size() &&
+               (static_cast<unsigned char>(leaf.content[i]) & 0xC0) == 0x80)
+            ++i;
+        ++seen;
+    }
+    if (i >= leaf.content.size()) return leaf.content.size();  // fully typed
+    leaf.content.resize(i);
+    // Drop any runs that fell past the cut; clip the straddling one.
+    if (!leaf.runs.empty()) {
+        std::vector<StyledRun> kept;
+        kept.reserve(leaf.runs.size());
+        for (const auto& r : leaf.runs) {
+            if (r.byte_offset >= i) break;
+            const std::size_t end = std::min(r.byte_offset + r.byte_length, i);
+            kept.push_back(StyledRun{r.byte_offset, end - r.byte_offset, r.style});
+        }
+        leaf.runs = std::move(kept);
+    }
+    leaf.cached_width = -1;
+    return i;
+}
+
+// ============================================================================
 // decorate_text_reveal — apply the typewriter trailing-edge effect in place
 // ============================================================================
 // Rewrites the StyledRuns over the trailing window of `leaf` to produce the
@@ -207,7 +262,17 @@ inline constexpr std::size_t kScrambleN =
     const std::string_view orig = leaf.content;
 
     auto age_for = [&](std::size_t i_from_tail) -> std::int64_t {
-        return edge_age + static_cast<std::int64_t>(i_from_tail) * p.char_step_ms;
+        // Age is measured from the REVEAL FRONT (the cursor), not the content
+        // end: the cp at the cursor is "just typed" (age == edge_age), and
+        // each cp further left is char_step_ms older. cp to the RIGHT of the
+        // cursor (not yet typed) are ghosted, so their age is irrelevant. In
+        // i_from_tail terms the cursor front is at i_from_tail == unrevealed_cp
+        // (or the content end when the cursor has caught up, unrevealed_cp==0).
+        // dist = how many revealed cp left of the front this cp sits.
+        const std::size_t front = unrevealed_cp;  // first revealed cp
+        const std::int64_t dist =
+            static_cast<std::int64_t>(i_from_tail) - static_cast<std::int64_t>(front);
+        return edge_age + (dist > 0 ? dist : 0) * p.char_step_ms;
     };
 
     // Trail window: max(gradient band, unrevealed + ghost extension).
@@ -234,7 +299,6 @@ inline constexpr std::size_t kScrambleN =
 
     const std::size_t scramble_n =
         p.enable_scramble ? std::min(trail_n, p.scramble_len) : 0;
-    const std::size_t scramble_start = trail_n - scramble_n;
 
     std::string new_trail;
     new_trail.reserve(trail_slice.size() + scramble_n * 3);
@@ -265,7 +329,20 @@ inline constexpr std::size_t kScrambleN =
 
         std::string_view real_cp{trail_slice.data() + cp_offs[k],
                                  cp_offs[k + 1] - cp_offs[k]};
-        const bool in_scramble = k >= scramble_start;
+        // Scramble the few cp JUST BEHIND the reveal front — the chars that
+        // were most recently "typed". In i_from_tail terms the reveal front
+        // sits at i_from_tail == unrevealed_cp (the first REVEALED cp); the
+        // scramble window is the scramble_n revealed cp immediately left of
+        // it: [unrevealed_cp, unrevealed_cp + scramble_n). When the cursor
+        // has caught up (unrevealed_cp == 0) this falls on the trailing edge
+        // — the freshest arrivals — matching the original clipped behaviour.
+        // Anchoring to the cursor (not content END) is what makes a
+        // full-content leaf type left-to-right instead of churning glyphs at
+        // the far end past the cursor.
+        const bool in_scramble =
+            scramble_n > 0 &&
+            i_from_tail >= unrevealed_cp &&
+            i_from_tail <  unrevealed_cp + scramble_n;
         const bool scrambling  = in_scramble && age < p.scramble_ms;
 
         std::string scramble_owned;

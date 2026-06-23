@@ -148,12 +148,16 @@ struct Showcase {
             auto slide = m.intro.track(20.0);
             slide.at(0.10).to(0.0, 0.50, anim::ease::out_back);  // overshoot pop
             m.intro_built = true;
+            m.intro.play();                                // run once on mount
         }
         m.intro.sample();                                  // advance + auto-RAF
-        const double tl_op = m.intro.track_at(0).value();  // read, don't create
+        const double tl_op    = m.intro.track_at(0).value();  // fade 0→1
+        const double tl_slide = m.intro.track_at(1).value();  // x-offset 20→0
+        const int    indent   = static_cast<int>(tl_slide + 0.5);
         auto intro_row = h(
             text("timeline", Style{}.with_dim()),
-            text("  the quick brown fox",
+            text(std::string(2 + (indent > 0 ? indent : 0), ' ')),
+            text("the quick brown fox",
                  tl_op > 0.5 ? Style{}.with_fg(palette(2)).with_bold()
                              : Style{}.with_fg(palette(2)).with_dim()),
             text("  [1] replay", Style{}.with_dim())
@@ -186,18 +190,37 @@ struct Showcase {
         TextElement leaf;
         leaf.content = reveal_body;
         if (m.reveal_playing) {
+            constexpr double kCpPerMs = 0.06;             // ~60 cp/sec
             const std::int64_t age = m.reveal_mount.elapsed_ms(4000);
-            // ~80 cp/sec typewriter via a RateCursor-free fixed mapping.
             const std::size_t total_cp = string_width(reveal_body);
             const std::size_t revealed =
                 std::min<std::size_t>(total_cp,
-                    static_cast<std::size_t>(age * 0.06));
+                    static_cast<std::size_t>(age * kCpPerMs));
+            // TRUE typewriter: physically cut content at the cursor so the
+            // not-yet-typed body is genuinely absent (not ghosted-readable),
+            // then decorate the now-shorter leaf with the scramble/gradient
+            // tip (revealed == total ⇒ no ghost band to fight with).
+            anim::clip_text_to_cursor(leaf, revealed);
             anim::TextRevealParams rp;
-            rp.ms_total    = m.reveal_mount.elapsed_ms(4000);
-            rp.edge_age_ms = 0;            // freshest at the cursor
-            rp.revealed_cp = revealed;
-            rp.total_cp    = total_cp;
+            rp.ms_total    = age;
+            // edge_age = how long ago the NEWEST revealed cp arrived. While
+            // typing this is ~0 (hot tip); once the cursor catches the end it
+            // grows, so the scramble + gradient COOL and the text settles to
+            // clean static glyphs — no churn after streaming completes.
+            const std::int64_t arrived_ms =
+                static_cast<std::int64_t>(revealed / kCpPerMs);
+            rp.edge_age_ms = age - arrived_ms;
+            rp.revealed_cp = 0;           // 0 ⇒ revealed == total (no ghost)
+            rp.total_cp    = 0;           // derive from clipped content
+            rp.enable_ghost = false;
             anim::decorate_text_reveal(leaf, rp);
+            // Pulsing caret only while "awaiting more bytes": from the moment
+            // the cursor catches up until the tip has cooled. After that the
+            // stream is DONE — render clean static text, no caret.
+            const bool caught_up = revealed >= total_cp;
+            const bool cooled    = rp.edge_age_ms > 700;
+            if (caught_up && !cooled)
+                anim::decorate_end_caret(leaf, rp.ms_total, 650);
         }
         auto reveal_block = v(
             h(text("reveal  ", Style{}.with_dim()),

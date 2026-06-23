@@ -13,6 +13,14 @@
 #include <cmath>
 #include <print>
 
+#include "check.hpp"
+// CMake builds tests in Release (-DNDEBUG), which strips bare assert(). Route
+// every assert in this file through the hard check so the invariants ACTUALLY
+// run — otherwise a broken animation "passes" silently (which is exactly how
+// the typewriter-reveal regression slipped through).
+#undef assert
+#define assert(x) MAYA_TEST_CHECK((x), #x)
+
 using namespace maya;
 using namespace maya::anim;
 
@@ -213,6 +221,103 @@ void test_stagger() {
     std::println("PASS");
 }
 
+// ── text_reveal: TYPEWRITER semantics ─────────────────────────────────
+// The reveal must read as left-to-right typing: codepoints BEFORE the reveal
+// cursor render as their REAL glyph (revealed), codepoints AT/AFTER the cursor
+// render GHOSTED (invisible — fg == default_color / dim). The bug this guards:
+// the not-yet-typed tail was rendering scramble glyphs across the whole
+// unrevealed span instead of ghosting, so nothing looked like typing.
+//
+// We decode each codepoint's effective style by mapping its byte offset to
+// the StyledRun covering it.
+static const StyledRun* run_at(const TextElement& t, std::size_t byte_off) {
+    for (const auto& r : t.runs)
+        if (byte_off >= r.byte_offset && byte_off < r.byte_offset + r.byte_length)
+            return &r;
+    return nullptr;
+}
+
+// Is this style "ghosted" (the invisible not-yet-typed marker)?
+static bool is_ghost_style(const Style& s) {
+    return s.fg.has_value() && s.fg->kind() == Color::Kind::Default && s.dim;
+}
+
+void test_text_reveal_typewriter() {
+    std::println("--- test_text_reveal_typewriter ---");
+    // Pure-ASCII body so 1 cp == 1 byte (offset math is trivial).
+    const std::string body =
+        "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop";  // 51 cp
+    const std::size_t total = body.size();
+
+    // Cursor at 20 of 51. Disable scramble so we test the pure reveal/ghost
+    // boundary deterministically (scramble glyphs are nondeterministic).
+    const std::size_t cursor = 20;
+    TextElement leaf;
+    leaf.content = body;
+    anim::TextRevealParams p;
+    p.ms_total        = 1000;
+    p.edge_age_ms     = 0;
+    p.revealed_cp     = cursor;
+    p.total_cp        = total;
+    p.enable_scramble = false;   // isolate the reveal/ghost split
+    anim::decorate_text_reveal(leaf, p);
+
+    // Content bytes for revealed cp must be UNCHANGED (real glyphs), and their
+    // style must NOT be ghost. Codepoints at/after the cursor must be ghost
+    // EXCEPT the single sweep-cursor head (the freshest unrevealed cp, which
+    // gets the bright "now typing" highlight — that's correct, not a bug).
+    int revealed_real = 0, ghosted = 0, sweep = 0, bad = 0;
+    for (std::size_t i = 0; i < total; ++i) {
+        const char c = leaf.content[i];   // 1 byte per cp here
+        const StyledRun* r = run_at(leaf, i);
+        assert(r && "every byte covered by a run");
+        const bool ghost = is_ghost_style(r->style);
+        if (i < cursor) {
+            // Revealed: real glyph, not ghosted.
+            if (c != body[i]) ++bad;
+            else if (ghost)   ++bad;
+            else              ++revealed_real;
+        } else if (i == cursor) {
+            // The sweep-cursor head: bright highlight (not ghost), real glyph.
+            if (!ghost) ++sweep; else ++ghosted;
+        } else {
+            // Not yet typed: MUST be ghosted (the failing-bug region).
+            if (ghost) ++ghosted;
+            else       ++bad;
+        }
+    }
+    std::println("  revealed={} sweep={} ghosted={} bad={} (cursor={}/{})",
+                 revealed_real, sweep, ghosted, bad, cursor, total);
+    assert(revealed_real == static_cast<int>(cursor) &&
+           "all pre-cursor cp render as real revealed glyphs");
+    assert(sweep == 1 && "the reveal-front cp is the bright sweep cursor");
+    assert(ghosted == static_cast<int>(total - cursor - 1) &&
+           "all past-cursor cp render ghosted (typewriter, not scramble)");
+    assert(bad == 0);
+    std::println("PASS");
+}
+
+// ── text_reveal: full reveal (cursor at end) ghosts NOTHING ───────────────
+void test_text_reveal_complete_no_ghost() {
+    std::println("--- test_text_reveal_complete_no_ghost ---");
+    const std::string body = "the quick brown fox jumps over the lazy dog";
+    TextElement leaf;
+    leaf.content = body;
+    anim::TextRevealParams p;
+    p.ms_total        = 2000;
+    p.edge_age_ms     = 2000;     // old → no scramble, settled colours
+    p.revealed_cp     = string_width(body);
+    p.total_cp        = string_width(body);
+    p.enable_scramble = false;
+    anim::decorate_text_reveal(leaf, p);
+    for (std::size_t i = 0; i < leaf.content.size(); ++i) {
+        const StyledRun* r = run_at(leaf, i);
+        assert(r && !is_ghost_style(r->style) &&
+               "fully-revealed text has no ghosted cp");
+    }
+    std::println("PASS");
+}
+
 // ── RateCursor is still reachable through the motion umbrella ───────────────
 void test_rate_cursor_reachable() {
     std::println("--- test_rate_cursor_reachable ---");
@@ -239,27 +344,30 @@ void test_text_reveal_height_stable() {
         "down the road past the end of the visible viewport edge.";
 
     // Decorate at several cursor positions + ages; width must stay constant.
+    // Scramble is ON (default) at edge_age 0 so the scramble-glyph swap path
+    // is exercised — a width-2 scramble glyph (e.g. an emoji) would break this
+    // and was the real reveal-jitter / scrollback-reflow bug.
     const int base_w = string_width(body);
     for (std::size_t rev = 0; rev <= 40; rev += 8) {
         for (std::int64_t age : {std::int64_t{0}, std::int64_t{120},
                                  std::int64_t{500}, std::int64_t{900}}) {
-            TextElement leaf;
-            leaf.content = body;
-            anim::TextRevealParams p;
-            p.ms_total    = age * 3 + 17;
-            p.edge_age_ms = age;
-            p.revealed_cp = rev;
-            // total_cp 0 ⇒ derived from content.
-            (void)anim::decorate_text_reveal(leaf, p);
-            assert(display_width_of(leaf) == base_w &&
-                   "reveal decoration must preserve display width");
-            // Runs must cover the whole content with no gaps/overlap.
-            std::size_t cover = 0;
-            for (const auto& r : leaf.runs) {
-                assert(r.byte_offset == cover && "runs contiguous");
-                cover += r.byte_length;
+            for (std::int64_t t = 0; t < 8; ++t) {  // vary ms_total → scramble glyph
+                TextElement leaf;
+                leaf.content = body;
+                anim::TextRevealParams p;
+                p.ms_total    = t * 47 + 17;
+                p.edge_age_ms = age;
+                p.revealed_cp = rev;
+                (void)anim::decorate_text_reveal(leaf, p);
+                assert(display_width_of(leaf) == base_w &&
+                       "reveal decoration must preserve display width");
+                std::size_t cover = 0;
+                for (const auto& r : leaf.runs) {
+                    assert(r.byte_offset == cover && "runs contiguous");
+                    cover += r.byte_length;
+                }
+                assert(cover == leaf.content.size() && "runs cover all bytes");
             }
-            assert(cover == leaf.content.size() && "runs cover all bytes");
         }
     }
     std::println("PASS");
@@ -293,6 +401,49 @@ void test_end_caret() {
     std::println("PASS");
 }
 
+// ── clip_text_to_cursor: TRUE typewriter — content physically cut at cursor ─
+void test_clip_to_cursor() {
+    std::println("--- test_clip_to_cursor ---");
+    const std::string body = "the quick brown fox";  // 19 cp, all 1-byte
+    // Cut at 9 cp: content must be EXACTLY the first 9 bytes, nothing past it.
+    {
+        TextElement leaf;
+        leaf.content = body;
+        const std::size_t kept = anim::clip_text_to_cursor(leaf, 9);
+        assert(kept == 9 && "returns surviving byte length");
+        assert(leaf.content == "the quick" &&
+               "content physically truncated at the cursor (true invisibility)");
+        assert(string_width(leaf.content) == 9);
+    }
+    // Multi-byte: cut mid-UTF-8 sequence never splits a codepoint.
+    {
+        TextElement leaf;
+        leaf.content = "a\xce\xbb\xce\xbcb";  // a λ μ b  (4 cp)
+        const std::size_t kept = anim::clip_text_to_cursor(leaf, 2);  // aλ
+        assert(leaf.content == "a\xce\xbb" && "cuts on a cp boundary");
+        assert(kept == 3 && "byte length 1+2");
+    }
+    // Cursor at/over the end keeps the whole body.
+    {
+        TextElement leaf;
+        leaf.content = body;
+        const std::size_t kept = anim::clip_text_to_cursor(leaf, 999);
+        assert(kept == body.size() && leaf.content == body);
+    }
+    // Runs straddling the cut get clipped, runs past it dropped.
+    {
+        TextElement leaf;
+        leaf.content = body;
+        leaf.runs = {StyledRun{0, 5, Style{}}, StyledRun{5, 14, Style{}.with_bold()}};
+        anim::clip_text_to_cursor(leaf, 7);  // 7 bytes
+        assert(leaf.content.size() == 7);
+        std::size_t covered = 0;
+        for (const auto& r : leaf.runs) covered = std::max(covered, r.byte_offset + r.byte_length);
+        assert(covered <= 7 && "no run extends past the cut");
+    }
+    std::println("PASS");
+}
+
 int main() {
     test_clock_dt_semantics();
     test_motion_basic();
@@ -305,6 +456,9 @@ int main() {
     test_rate_cursor_reachable();
     test_text_reveal_height_stable();
     test_text_reveal_empty();
+    test_text_reveal_typewriter();
+    test_text_reveal_complete_no_ghost();
+    test_clip_to_cursor();
     test_end_caret();
     std::println("\nAll motion tests passed.");
     return 0;

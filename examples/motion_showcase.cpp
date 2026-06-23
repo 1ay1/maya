@@ -196,11 +196,10 @@ struct Showcase {
             const std::size_t revealed =
                 std::min<std::size_t>(total_cp,
                     static_cast<std::size_t>(age * kCpPerMs));
-            // TRUE typewriter: physically cut content at the cursor so the
-            // not-yet-typed body is genuinely absent (not ghosted-readable),
-            // then decorate the now-shorter leaf with the scramble/gradient
-            // tip (revealed == total ⇒ no ghost band to fight with).
-            anim::clip_text_to_cursor(leaf, revealed);
+            // TRUE typewriter, height-stable: the framework's ghost_blank
+            // mode (default ON) renders not-yet-typed cp as width-matched
+            // spaces — genuinely invisible, no reflow — so text materialises
+            // out of empty space left-to-right. No content cut needed.
             anim::TextRevealParams rp;
             rp.ms_total    = age;
             // edge_age = how long ago the NEWEST revealed cp arrived. While
@@ -210,9 +209,8 @@ struct Showcase {
             const std::int64_t arrived_ms =
                 static_cast<std::int64_t>(revealed / kCpPerMs);
             rp.edge_age_ms = age - arrived_ms;
-            rp.revealed_cp = 0;           // 0 ⇒ revealed == total (no ghost)
-            rp.total_cp    = 0;           // derive from clipped content
-            rp.enable_ghost = false;
+            rp.revealed_cp = revealed;
+            rp.total_cp    = total_cp;
             anim::decorate_text_reveal(leaf, rp);
             // Pulsing caret only while "awaiting more bytes": from the moment
             // the cursor catches up until the tip has cooled. After that the

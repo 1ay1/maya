@@ -88,6 +88,20 @@ struct TextRevealParams {
     bool enable_sweep    = true;   // bright cursor at the reveal front
     bool enable_caret    = true;   // pulsing end-caret when caught up
 
+    // How the not-yet-typed (ghost) cp render. The leaf must stay
+    // HEIGHT/WIDTH-stable (the markdown streaming path commits rows to native
+    // scrollback), so unrevealed cp can't simply be deleted. Two modes:
+    //   • ghost_blank = true  (default): each unrevealed cp is replaced by
+    //     display-width-matched SPACES — genuinely INVISIBLE (a space paints
+    //     nothing) while preserving the exact column count. This is the true
+    //     left-to-right typewriter every caller wants: text materialises out
+    //     of empty space instead of fading up from a dim-but-readable body.
+    //   • ghost_blank = false: keep the real glyph but style it
+    //     default-fg + dim. Only invisible when the leaf sits on the terminal
+    //     default background; otherwise the body reads as "already there."
+    //     Retained for callers that deliberately want a fade-in look.
+    bool ghost_blank = true;
+
     // Result flag: set true by the decorator when the trailing bytes were
     // rewritten (scramble substituted glyphs of different byte width), so the
     // caller knows to invalidate the leaf's wrap cache. Pure recolor frames
@@ -346,11 +360,26 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
         const bool scrambling  = in_scramble && age < p.scramble_ms;
 
         std::string scramble_owned;
+        std::string blank_owned;
         std::string_view emitted;
+        const bool is_ghost = p.enable_ghost && i_from_tail < unrevealed_cp;
+        const bool is_sweep_head =
+            is_ghost && p.enable_sweep && i_from_tail == unrevealed_cp - 1;
         if (scrambling) {
             scramble_owned = std::string{reveal_detail::scramble_pick(
                 trail_byte_start + cp_offs[k], age, ms_total)};
             emitted = scramble_owned;
+        } else if (is_ghost && p.ghost_blank && !is_sweep_head) {
+            // TRUE invisibility, width-exact: replace the not-yet-typed glyph
+            // with as many spaces as its display width (1 for ASCII/most, 2
+            // for CJK/wide). A space paints nothing, so the cp is genuinely
+            // absent — the text appears to type out of empty space — yet the
+            // column count is identical, so committed rows never reflow. The
+            // sweep-cursor head keeps its real glyph (it's the bright "now
+            // typing" cell) and is excluded here.
+            const int w = string_width(real_cp);
+            blank_owned.assign(static_cast<std::size_t>(w > 0 ? w : 1), ' ');
+            emitted = blank_owned;
         } else {
             emitted = real_cp;
         }
@@ -367,6 +396,10 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
                                       : Color::rgb(255, 160, 60))
                        .with_bold();
         } else if (p.enable_ghost && i_from_tail < unrevealed_cp) {
+            // Ghost cell. When ghost_blank is on the glyph is already a space
+            // (emitted above), so the style barely matters — but keep it dim
+            // default so the rare non-blank ghost (sweep head fallthrough)
+            // stays subdued. The sweep head overrides with the bright cursor.
             s = Style{}.with_fg(Color::default_color()).with_dim();
             if (p.enable_sweep && i_from_tail == unrevealed_cp - 1) {
                 const double pp = reveal_detail::pulse01(ms_total, kSweepMs);
@@ -390,11 +423,17 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
     leaf.content.append(new_trail);
     leaf.runs = std::move(new_runs);
 
-    // Re-wrap only when scramble may have changed byte widths.
+    // Re-wrap when bytes changed shape. Scramble swaps glyphs (possibly
+    // different byte width), and ghost_blank replaces real (possibly
+    // multi-byte) glyphs with spaces — both change the content bytes even
+    // though DISPLAY width is preserved, so the wrap cache (which can memo on
+    // content) must be invalidated for the frames they're active.
     const bool scramble_active =
         edge_age < p.scramble_ms +
                    static_cast<std::int64_t>(scramble_n) * p.char_step_ms;
-    if (scramble_active) {
+    const bool blanking_active =
+        p.enable_ghost && p.ghost_blank && unrevealed_cp > 0;
+    if (scramble_active || blanking_active) {
         leaf.cached_width = -1;
         return true;
     }

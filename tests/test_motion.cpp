@@ -444,6 +444,44 @@ void test_clip_to_cursor() {
     std::println("PASS");
 }
 
+// ── text_reveal: ghost_blank (default) renders unrevealed cp as SPACES ────
+void test_text_reveal_ghost_blank() {
+    std::println("--- test_text_reveal_ghost_blank ---");
+    const std::string body = "the quick brown fox jumps over the lazy dog";
+    const std::size_t total = string_width(body);
+    const std::size_t cursor = 12;
+    TextElement leaf;
+    leaf.content = body;
+    anim::TextRevealParams p;
+    p.ms_total        = 1000;
+    p.edge_age_ms     = 0;
+    p.revealed_cp     = cursor;
+    p.total_cp        = total;
+    p.enable_scramble = false;   // isolate the ghost band
+    // ghost_blank defaults true.
+    anim::decorate_text_reveal(leaf, p);
+
+    // DISPLAY WIDTH preserved (load-bearing: no reflow).
+    assert(string_width(leaf.content) == static_cast<int>(total) &&
+           "ghost_blank is width-stable");
+    // The not-yet-typed body (past the sweep head) must be SPACES — truly
+    // invisible, not dim-readable glyphs. The sweep head (cursor-1) keeps its
+    // real glyph, so check strictly past the front.
+    int blanks = 0, reals = 0;
+    for (std::size_t i = 0; i < leaf.content.size(); ++i) {
+        if (i < cursor) { ++reals; continue; }            // revealed: real
+        if (i == cursor) continue;                        // sweep head: real
+        if (leaf.content[i] == ' ') ++blanks;
+        else { /* an unrevealed cp that isn't a space = visible ghost = bug */
+            assert(false && "unrevealed cp must blank to a space");
+        }
+    }
+    std::println("  reals={} blanks={} (cursor={}/{})", reals, blanks,
+                 cursor, total);
+    assert(blanks > 0 && "there ARE unrevealed cp, blanked to spaces");
+    std::println("PASS");
+}
+
 int main() {
     test_clock_dt_semantics();
     test_motion_basic();
@@ -458,6 +496,7 @@ int main() {
     test_text_reveal_empty();
     test_text_reveal_typewriter();
     test_text_reveal_complete_no_ghost();
+    test_text_reveal_ghost_blank();
     test_clip_to_cursor();
     test_end_caret();
     std::println("\nAll motion tests passed.");

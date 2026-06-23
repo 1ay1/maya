@@ -45,14 +45,30 @@ They are header-first, allocation-light, and fully tested
 (`tests/test_animation.cpp`, `test_overlay_layer.cpp`, `test_static_split.cpp`,
 `test_highlight.cpp`).
 
-- **Animation system** — `core/animation.hpp`: `constexpr` easing curves
-  (`ease::linear` → `smootherstep`), `Tween<T>` (fixed-duration eased
-  interpolation with continuity-preserving `retarget`), `Spring<T>`
-  (semi-implicit Euler integrator, momentum-preserving `set_target`,
-  sub-stepped + clamped against dropped frames, `consteval`-validated
-  `SpringParams` + presets), and the `Animated<T>` wrapper that holds either.
-  Works on arithmetic `T` and `maya::Color`. Time is advanced explicitly via
-  `tick(dt)` — no hidden clock, no thread, no per-frame allocation.
+- **Animation system** — two layers, fully documented on the dedicated
+  **[Animation](14-animation.md)** page.
+    - *The math* (`core/animation.hpp`): `constexpr` easing curves
+      (`ease::linear` → `smootherstep`, plus `in/out_back`), `Tween<T>`
+      (fixed-duration eased interpolation with continuity-preserving
+      `retarget`), `Spring<T>` (semi-implicit Euler integrator,
+      momentum-preserving `set_target`, sub-stepped + clamped against dropped
+      frames, `consteval`-validated `SpringParams` + presets), the
+      `Animated<T>` wrapper, and `RateCursor` (the constant-glide
+      streaming-typewriter integrator — buffer-absorbed pacing à la the Vercel
+      AI SDK / ChatGPT, with a bounded catch-up and a finalize deadline ramp).
+      Works on arithmetic `T` and `maya::Color`.
+    - *The framework* (`core/motion.hpp`): `Clock` (one frame-time source,
+      cached `dt`, dropped-frame clamp, remount detection), `Motion<T>` (the
+      headline self-driving value — `to()` to aim, `get()` to read, no clock /
+      no `dt` / no RAF in widget code), `pulse()`/`loop_phase()` (perpetual
+      phase), `Timeline` (keyframe choreography), `Stagger` (index-phased
+      fan-out), and `Mount` (ms-since-appeared). The library owns time,
+      ticking, frame-request cadence, and lifecycle.
+    - *The reveal decorator* (`anim/text_reveal.hpp`): the streaming typewriter
+      (scramble tip, hot→cool gradient, ghosted body, sweep cursor, pulsing
+      caret) lifted into a height-stable decorator any widget can call on any
+      text leaf. Tested in `tests/test_animation.cpp` + `test_motion.cpp`.
+      See **[examples/motion_showcase.cpp](14-animation.md#putting-it-together)**.
 - **Absolute positioning / z-index** — `app/overlay_layer.hpp`: `OverlayCfg`
   structural NTTP (anchor + z + offset + clamp), the `elem | overlay_<Cfg>`
   pipe and runtime `overlay_at()`, and `OverlayStack` which composites floats
@@ -182,6 +198,34 @@ Presets: `gentle`, `snappy`, `wobbly`, `stiff`, `molasses`. `Animated<T>`,
 > `std::sqrt` / `std::abs(double)` are not standard-`constexpr` (libstdc++ allows
 > them as an extension; libc++ and MSVC do not), so the spring presets use
 > maya's own `constexpr` `cmath::c_sqrt` / `c_abs` for the compile-time path.
+
+The block above is the **math** layer (you tick it by hand). For widget code,
+reach for the **framework** layer (`#include <maya/core/motion.hpp>`) instead —
+it owns the clock, the `dt`, and the frame request so there is *no clock, no
+`dt`, and no `request_animation_frame()` in your widget*:
+
+```cpp
+using namespace maya::anim;
+
+struct Toggle {
+    Motion<double> x{0.0};                       // self-driving value
+    void set(bool on) { x.to(on ? 1.0 : 0.0, 0.18); }   // aim
+    maya::Element build() const {
+        int fill = int(x.get() * width);         // read — ticks + requests frames
+        return bar(fill);                        // settled get() == free
+    }
+};
+
+double breath = pulse(1400.0);                   // perpetual breathing phase
+```
+
+The framework adds `Clock`, `Motion<T>`, `pulse()`/`loop_phase()`, `Timeline`
+(keyframe choreography), `Stagger` (index-phased fan-out), `Mount`
+(ms-since-appeared), and `RateCursor` (the constant-glide streaming-typewriter
+integrator). The streaming reveal effect itself is a reusable height-stable
+decorator in `#include <maya/anim/text_reveal.hpp>`. **See the dedicated
+[Animation](14-animation.md) page for the full reference and
+`examples/motion_showcase.cpp` for a one-screen tour.**
 
 ### Absolute positioning / z-index overlays
 

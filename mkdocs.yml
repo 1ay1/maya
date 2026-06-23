@@ -87,6 +87,7 @@ nav:
       - Runtime Content: 05-runtime-content.md
       - Event Handling: 06-events.md
       - Signals & Reactivity: 09-signals.md
+      - Animation: 14-animation.md
       - Rendering Modes: 07-rendering-modes.md
       - Canvas API: 08-canvas-api.md
       - Widget Reference: 13-widgets.md

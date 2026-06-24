@@ -148,120 +148,90 @@ const Element& StreamingMarkdown::build() const {
     // to round-trip; any future code path that bumps build_dirty_
     // without changing the tail).
 
-    // Helper: build the prefix ComponentElement for the current
-    // generation. Used by both the full-rebuild path and the
-    // commit-fast-path below. Hoisted into a lambda so the hash_id
-    // construction and lambda-capture wiring don't drift between the
-    // two call sites (a previous bug where they did caused the prefix
-    // ComponentElement to skip its cache invalidation on commit and
-    // ghost the previous frame's prefix bitmap into the new prefix's
-    // layout slot).
-    auto make_prefix_component = [&]() -> Element {
+    // Helper: build ONE committed block's hash-keyed ComponentElement.
+    // Each committed block is a DIRECT child of the outer vstack (not
+    // wrapped in a single prefix ComponentElement). The key is stable
+    // CONTENT identity (instance + source byte range + fold state),
+    // never a pointer — committed blocks are immutable, so a block's key
+    // is fixed the moment it commits. The renderer's hash-keyed cell
+    // cache paints each block once and blits it (memcpy/row) every later
+    // frame. When a commit appends block N, blocks 0..N-1 keep their keys
+    // and blit; ONLY the new block renders AND captures cells. Per-commit
+    // cost is therefore O(new block), not O(transcript) — the previous
+    // single-wrapper design re-captured the WHOLE prefix's cells on every
+    // generation bump (an O(total rows) per-row memcpy at every paragraph
+    // boundary), which is the streaming lag on a tall live body.
+    //
+    // Safe where the EARLIER per-block attempt wasn't: that one used the
+    // Element{shared_ptr} ctor keyed on POINTER identity (id_for_shared),
+    // hitting the pointer-keyed cache's stale-height blit path that left
+    // blank rows on scrollback overflow. Hash-keyed entries go through
+    // the content-stable cell cache whose capture path guards OOB reads
+    // and width changes.
+    auto make_block_component = [&](std::size_t i) -> Element {
         auto p = prefix_;
-        // Snapshot the fold map so the render lambda's behaviour is
-        // stable per ComponentElement instance — unrelated edits
-        // (typing into the composer) that don't change the prefix
-        // won't reshape this component, but a fold toggle bumps
-        // fold_generation_ which changes hash_id and forces a
-        // re-render with the updated map.
-        std::map<std::size_t, bool> fold_snapshot = folds_;
-        ComponentElement comp;
-        comp.hash_id = CacheIdBuilder{}
-            .add(std::string_view{"strmd-prefix"})
+        const auto& meta = (i < p->metas.size()) ? p->metas[i] : BlockMeta{};
+        auto fit = folds_.find(meta.source_offset);
+        const bool folded = fit != folds_.end() && fit->second;
+
+        ComponentElement block_comp;
+        block_comp.hash_id = CacheIdBuilder{}
+            .add(std::string_view{"strmd-block"})
             .add(static_cast<std::uint64_t>(instance_id_))
-            .add(static_cast<std::uint64_t>(p->generation))
-            .add(static_cast<std::uint64_t>(fold_generation_))
+            .add(static_cast<std::uint64_t>(meta.source_offset))
+            .add(static_cast<std::uint64_t>(meta.source_end))
+            .add(static_cast<std::uint64_t>(folded ? 1u : 0u))
             .build();
-        comp.render = [p, inst = instance_id_,
-                       folds = std::move(fold_snapshot)](int /*w*/, int /*h*/) -> Element {
-            std::vector<Element> kids;
-            kids.reserve(p->blocks.size());
-            for (std::size_t i = 0; i < p->blocks.size(); ++i) {
-                const auto& meta = (i < p->metas.size())
-                    ? p->metas[i] : BlockMeta{};
-                auto fit = folds.find(meta.source_offset);
-                const bool folded = fit != folds.end() && fit->second;
 
-                // Each committed block is wrapped in its OWN hash-keyed
-                // ComponentElement. The key is stable CONTENT identity
-                // (instance + source byte range + fold state), never a
-                // pointer — committed blocks are immutable, so a block's
-                // key is fixed the moment it commits. The renderer's
-                // hash-keyed cell cache therefore paints each block once
-                // and blits it (memcpy/row) on every later frame. When a
-                // commit appends block N+1, blocks 0..N keep their keys
-                // and blit; only the new block renders. Per-commit cost
-                // is O(new block), not O(transcript). A fold toggle
-                // flips `folded`, changing that one block's key so it
-                // re-renders into its stub on the next frame.
-                //
-                // Why this is safe where the earlier per-block attempt
-                // wasn't: that one used the Element{shared_ptr} ctor
-                // keyed on pointer identity (id_for_shared), which hit
-                // the pointer-keyed cache's stale-height path and left
-                // blank rows when content overflowed into native
-                // scrollback. Hash-keyed entries go through the
-                // content-stable cell cache whose capture path already
-                // guards OOB reads and width changes.
-                ComponentElement block_comp;
-                block_comp.hash_id = CacheIdBuilder{}
-                    .add(std::string_view{"strmd-block"})
-                    .add(static_cast<std::uint64_t>(inst))
-                    .add(static_cast<std::uint64_t>(meta.source_offset))
-                    .add(static_cast<std::uint64_t>(meta.source_end))
-                    .add(static_cast<std::uint64_t>(folded ? 1u : 0u))
-                    .build();
-
-                if (folded) {
-                    // Render a single-line stub. Use a styled
-                    // dim summary derived from BlockMeta so a
-                    // long code block collapses to one row
-                    // labelled with its language and line
-                    // count.
-                    const char* kind_label = "block";
-                    switch (meta.kind) {
-                        case BlockKind::CodeBlock:  kind_label = "code";       break;
-                        case BlockKind::Table:      kind_label = "table";      break;
-                        case BlockKind::List:       kind_label = "list";       break;
-                        case BlockKind::Blockquote: kind_label = "blockquote"; break;
-                        case BlockKind::Paragraph:  kind_label = "paragraph";  break;
-                        case BlockKind::Heading:    kind_label = "heading";    break;
-                        case BlockKind::HtmlBlock:  kind_label = "html";       break;
-                        default: break;
-                    }
-                    char buf[160];
-                    if (!meta.lang.empty()) {
-                        std::snprintf(buf, sizeof(buf),
-                            "\xe2\x96\xb8 %u line%s of %s (%s) hidden \xe2\x80\x94 unfold",
-                            static_cast<unsigned>(meta.line_count),
-                            meta.line_count == 1 ? "" : "s",
-                            kind_label, meta.lang.c_str());
-                    } else {
-                        std::snprintf(buf, sizeof(buf),
-                            "\xe2\x96\xb8 %u line%s of %s hidden \xe2\x80\x94 unfold",
-                            static_cast<unsigned>(meta.line_count),
-                            meta.line_count == 1 ? "" : "s",
-                            kind_label);
-                    }
-                    std::string stub{buf};
-                    block_comp.render =
-                        [stub = std::move(stub)](int, int) -> Element {
-                            return Element{TextElement{
-                                .content = stub,
-                                .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
-                            }};
-                        };
-                } else {
-                    auto blk = p->blocks[i];   // shared_ptr<const Element>
-                    block_comp.render = [blk](int, int) -> Element {
-                        return *blk;
-                    };
-                }
-                kids.push_back(Element{std::move(block_comp)});
+        if (folded) {
+            // Single-line dim stub summarising the hidden block.
+            const char* kind_label = "block";
+            switch (meta.kind) {
+                case BlockKind::CodeBlock:  kind_label = "code";       break;
+                case BlockKind::Table:      kind_label = "table";      break;
+                case BlockKind::List:       kind_label = "list";       break;
+                case BlockKind::Blockquote: kind_label = "blockquote"; break;
+                case BlockKind::Paragraph:  kind_label = "paragraph";  break;
+                case BlockKind::Heading:    kind_label = "heading";    break;
+                case BlockKind::HtmlBlock:  kind_label = "html";       break;
+                default: break;
             }
-            return detail::vstack().gap(1)(std::move(kids)).build();
-        };
-        return Element{std::move(comp)};
+            char buf[160];
+            if (!meta.lang.empty()) {
+                std::snprintf(buf, sizeof(buf),
+                    "\xe2\x96\xb8 %u line%s of %s (%s) hidden \xe2\x80\x94 unfold",
+                    static_cast<unsigned>(meta.line_count),
+                    meta.line_count == 1 ? "" : "s",
+                    kind_label, meta.lang.c_str());
+            } else {
+                std::snprintf(buf, sizeof(buf),
+                    "\xe2\x96\xb8 %u line%s of %s hidden \xe2\x80\x94 unfold",
+                    static_cast<unsigned>(meta.line_count),
+                    meta.line_count == 1 ? "" : "s",
+                    kind_label);
+            }
+            std::string stub{buf};
+            block_comp.render =
+                [stub = std::move(stub)](int, int) -> Element {
+                    return Element{TextElement{
+                        .content = stub,
+                        .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+                    }};
+                };
+        } else {
+            auto blk = p->blocks[i];   // shared_ptr<const Element>
+            block_comp.render = [blk](int, int) -> Element {
+                return *blk;
+            };
+        }
+        return Element{std::move(block_comp)};
+    };
+
+    // Helper: append all committed-block components into `dst`.
+    auto append_block_components = [&](std::vector<Element>& dst) {
+        dst.reserve(dst.size() + prefix_->blocks.size());
+        for (std::size_t i = 0; i < prefix_->blocks.size(); ++i)
+            dst.push_back(make_block_component(i));
     };
 
     if (cached_prefix_gen_ == prefix_->generation
@@ -326,59 +296,41 @@ const Element& StreamingMarkdown::build() const {
 
     // ── Commit fast path ──
     //
-    // Generation moved (commit_range fired), but the outer vstack's
-    // shape (has_prefix / has_tail) is unchanged. We can mutate the
-    // existing BoxElement in place: swap children[0] (the prefix
-    // ComponentElement) for a fresh one carrying the new generation in
-    // its hash_id, and refresh the tail child if needed. The outer
-    // BoxElement's layout/border/padding config stays as-is — no
-    // builder pipeline, no ElementBuilder allocation, no .build()
-    // call, no walk over the unrelated metadata fields.
+    // Generation moved (commit_range fired / a fold toggled), but the
+    // has_prefix / has_tail shape is unchanged. Rebuild the outer
+    // vstack's children in place: re-emit the per-block components
+    // (blocks 0..N-1 carry UNCHANGED hash_ids — the renderer blits them
+    // from cache without re-rendering or re-capturing; only the newly
+    // committed block N misses and renders) plus refresh the tail. No
+    // builder pipeline, no .build() call.
     //
-    // Without this branch every commit (which happens at every
-    // paragraph boundary during a long streaming reply, ~10-100x per
-    // turn) fell through to the full-rebuild path, which recreates
-    // the outer vstack from scratch — a small cost individually but
-    // taken at exactly the rate the user is most sensitive to
-    // (visible UI tearing / pause when each new block lands).
+    // This is the hot path during a long streaming reply: a commit fires
+    // at every paragraph / fenced-block boundary (~10-100x per turn). The
+    // per-block direct-child layout means each commit costs O(new block),
+    // not O(transcript) — the fix for the tall-live-body streaming lag.
     if ((cached_prefix_gen_ != prefix_->generation
          || cached_fold_gen_  != fold_generation_)
         && cached_has_prefix_ == has_prefix && has_prefix
         && cached_has_tail_   == has_tail
         && std::holds_alternative<BoxElement>(cached_build_.inner)) {
         auto& box = std::get<BoxElement>(cached_build_.inner);
-        const std::size_t expected = 1u + (has_tail ? 1u : 0u);
-        if (box.children.size() == expected) {
-            box.children[0] = make_prefix_component();
-            if (has_tail) {
-                bool tail_unchanged;
-                std::uint64_t tail_hash = 0;
-                if (cached_tail_version_ == source_version_
-                    && cached_tail_clip_ == visible_end)
-                {
-                    tail_unchanged = true;
-                } else {
-                    tail_hash = fnv1a64(tail);
-                    tail_unchanged =
-                        cached_tail_in_fence_ == in_code_fence_
-                        && cached_tail_len_   == tail.size()
-                        && cached_tail_hash_  == tail_hash;
-                }
-                if (!tail_unchanged) {
-                    box.children.back() = render_tail(tail);
-                    cached_tail_hash_     = tail_hash;
-                    cached_tail_len_      = tail.size();
-                    cached_tail_in_fence_ = in_code_fence_;
-                }
-                cached_tail_version_     = source_version_;
-                cached_tail_clip_        = visible_end;
-            }
-            cached_prefix_gen_ = prefix_->generation;
-            cached_fold_gen_   = fold_generation_;
-            cached_tail_size_  = tail.size();
-            build_dirty_       = false;
-            return render_live_overlay_();
+        std::vector<Element> kids;
+        append_block_components(kids);
+        if (has_tail) {
+            std::uint64_t tail_hash = fnv1a64(tail);
+            kids.push_back(render_tail(tail));
+            cached_tail_hash_     = tail_hash;
+            cached_tail_len_      = tail.size();
+            cached_tail_in_fence_ = in_code_fence_;
+            cached_tail_version_  = source_version_;
+            cached_tail_clip_     = visible_end;
         }
+        box.children = std::move(kids);
+        cached_prefix_gen_ = prefix_->generation;
+        cached_fold_gen_   = fold_generation_;
+        cached_tail_size_  = tail.size();
+        build_dirty_       = false;
+        return render_live_overlay_();
     }
 
     // ── Full rebuild ──
@@ -418,18 +370,17 @@ const Element& StreamingMarkdown::build() const {
         (has_prefix ? prefix_->blocks.size() : 0u) + (has_tail ? 1u : 0u));
 
     if (has_prefix) {
-        // Wrap the committed blocks in a single ComponentElement with a
-        // generation-derived hash_id. The renderer's component_cache
-        // then stores the rendered cells against this key; between
-        // commits (generation stable) every render hits the cache and
-        // blits cells directly, skipping the deep-copy lambda below
-        // entirely. On commit the generation bumps, the hash_id
-        // changes, the next render misses and re-runs the lambda once,
-        // then caches again. Avoids the per-block `Element{sp}`
-        // wrapper (visible blank-row bug) while still skipping the
-        // per-frame copy work the previous inline-into-outer_children
-        // path was paying at 100% CPU on long streams.
-        outer_children.push_back(make_prefix_component());
+        // Each committed block is its OWN hash-keyed ComponentElement,
+        // pushed as a DIRECT child of the outer vstack. The renderer's
+        // component_cache stores rendered cells per block hash_id; a new
+        // commit changes ONLY the appended block's presence, so blocks
+        // 0..N-1 keep their keys and blit (memcpy/row) while only block N
+        // renders + captures. Per-commit cost is O(new block), not
+        // O(transcript) — the whole-prefix re-capture that made a tall
+        // live body lag at every paragraph boundary is gone. Hash-keyed
+        // (not pointer-keyed) entries avoid the stale-height blit that
+        // caused the earlier per-block attempt's scrollback ghost rows.
+        append_block_components(outer_children);
     }
     if (has_tail) {
         outer_children.push_back(render_tail(tail));

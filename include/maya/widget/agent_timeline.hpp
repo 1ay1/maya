@@ -114,6 +114,18 @@ public:
         std::vector<AgentTimelineStat>       stats;
         std::vector<AgentTimelineEvent>      events;
         std::optional<AgentTimelineFooter>   footer;
+
+        // Optional PANEL-level cache key. When set, the whole built panel
+        // (border box + stats + every event header/body + connectors +
+        // footer) is wrapped in a single hash-keyed ComponentElement, so
+        // the renderer blits the entire panel's cells across frames
+        // instead of re-laying-out its rows. The host sets this ONLY for
+        // an all-terminal batch whose bytes are immutable (no running
+        // spinner / live elapsed in the chrome) — a settled tool panel
+        // sitting in a still-streaming in-flight run, where it would
+        // otherwise be re-laid-out every frame for the whole turn. Leave
+        // empty for a live batch so the spinner/elapsed keep animating.
+        CacheId                              hash_id;
     };
 
     explicit AgentTimeline(Config c) : cfg_(std::move(c)) {}
@@ -187,7 +199,30 @@ public:
             box = std::move(box).border_text_end(
                 cfg_.title_end, BorderTextPos::Top, BorderTextAlign::End);
         }
-        return std::move(box)(rows);
+        Element built = std::move(box)(rows);
+
+        // Panel-level cache wrap. When the host marked this batch settled
+        // (all-terminal, immutable bytes) it set cfg_.hash_id. Wrap the
+        // whole panel in a hash-keyed ComponentElement so the renderer
+        // captures its cells once and BLITS them every later frame,
+        // instead of re-laying-out the border box + N event header rows +
+        // connectors + footer. This is what bounds a long in-flight
+        // autopilot turn (many settled panels in the live tail) to
+        // O(active panel) per frame instead of O(Σ settled panels).
+        //
+        // The render closure owns the built panel by shared_ptr<const>:
+        // capturing by value would deep-copy the whole sub-tree on every
+        // build() even on the cache-miss frame, and the inner per-event
+        // ComponentElements already carry their own hash_ids so the nested
+        // caches stay warm under this outer wrapper.
+        if (!cfg_.hash_id.empty()) {
+            ComponentElement comp;
+            comp.hash_id = cfg_.hash_id;
+            auto panel_sp = std::make_shared<const Element>(std::move(built));
+            comp.render = [panel_sp](int, int) -> Element { return *panel_sp; };
+            return Element{std::move(comp)};
+        }
+        return built;
     }
 
 private:

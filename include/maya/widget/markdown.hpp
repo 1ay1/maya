@@ -347,6 +347,28 @@ private:
     mutable std::size_t  cursor_advance_total_cp_   = 0;
     mutable std::int64_t cursor_advance_age_tail_ms_ = 0;
 
+    // Wall-clock stamp of the FIRST frame on which the reveal cursor
+    // reached the live edge (reveal_cp_ >= total_cp). Reset to 0 whenever
+    // the source grows or the cursor falls behind the edge again. This is
+    // the clock that the finalize ramp-completion gate keys its
+    // scramble-settle window off — NOT last_grow_ms_.
+    //
+    // Why a separate stamp: the scramble at the trailing edge is anchored
+    // to the CURSOR position (decorate_text_reveal scrambles the
+    // codepoints in [unrevealed_cp, unrevealed_cp + kScrambleLen)), so a
+    // codepoint is freshly "typed" — and scrambling — the moment the
+    // CURSOR sweeps over it, regardless of how long ago its bytes
+    // arrived. On a long message whose bytes all landed seconds ago, the
+    // finalize ramp drives the cursor across a large backlog FAST; when
+    // it lands on the edge the tail glyphs the sweep just exposed are
+    // still mid-scramble even though last_grow_ms_ is far in the past.
+    // Gating live_=false on (ms_total - last_grow_ms_) would pass
+    // immediately and freeze that scramble garbage onto the settled
+    // tail. Gating on (ms_total - reveal_edge_reached_ms_) instead
+    // guarantees the cursor-swept tail has the full scramble window to
+    // resolve to clean glyphs before the live→settled handoff.
+    mutable std::int64_t reveal_edge_reached_ms_ = 0;
+
     // Cached codepoint counts: total_cp counts cp in source_[0..N],
     // committed_cp counts cp in source_[0..committed_]. Both are
     // monotone-extend over source_ (committed_ only advances; source_

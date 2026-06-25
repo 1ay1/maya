@@ -92,11 +92,16 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
     if (source_.size() > last_seen_size_) {
         last_grow_ms_   = ms_total;
         last_seen_size_ = source_.size();
+        // New bytes arrived — the cursor will fall behind the (now
+        // larger) edge, so the "reached edge" clock is invalid. Restart
+        // it when the cursor next catches up to the new edge.
+        reveal_edge_reached_ms_ = 0;
     } else if (source_.size() < last_seen_size_) {
         last_seen_size_ = source_.size();
         last_grow_ms_   = ms_total;
         reveal_cp_      = 0.0;
         reveal_ms_      = ms_total;
+        reveal_edge_reached_ms_ = 0;
     }
 
     // Total codepoints in source_. Incremental update: cached value
@@ -207,22 +212,89 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
 #endif
     }
 
+    // ── Cursor-edge clock ──
+    // Maintain reveal_edge_reached_ms_: the wall-clock of the FIRST frame
+    // the cursor reached the edge in the current at-edge run. While the
+    // cursor is behind the edge, hold it at 0; stamp it the frame it
+    // lands. (Source-grow already reset it to 0 above, so a fresh burst
+    // restarts the clock the next time the cursor catches up.)
+    const bool cursor_at_edge = reveal_cp_ >= static_cast<double>(total_cp);
+    if (cursor_at_edge) {
+        if (reveal_edge_reached_ms_ == 0) reveal_edge_reached_ms_ = ms_total;
+    } else {
+        reveal_edge_reached_ms_ = 0;
+    }
+
     // Ramp completion — flip live_ off. live_'s Tracked<> bumps
     // build_dirty_ for us, but return dirty=true so the caller doesn't
     // double-check.
-    if (finalize_deadline_ms_ != 0
-        && reveal_cp_ >= static_cast<double>(total_cp))
-    {
-        finalize_deadline_ms_ = 0;
-        live_ = false;
+    //
+    // GATE on TWO conditions, not just the cursor position:
+    //   (1) the reveal cursor reached the live edge (reveal_cp_ >= total_cp),
+    //       AND
+    //   (2) the scramble→resolve animation at the trailing edge has FULLY
+    //       settled.
+    // Why (2): the scramble tip shows random glyphs for ~scramble_ms after a
+    // codepoint is REVEALED (the scramble is anchored to the cursor, not to
+    // byte arrival), and the gradient cools over a bit longer. The finalize
+    // ramp can drive the CURSOR to the edge FAST (200 ms, or instantly on a
+    // small backlog) while the freshest codepoints the sweep just exposed
+    // are still INSIDE that scramble window. If we flip live_ off the
+    // instant the cursor lands, the LAST live frame painted (and thus what
+    // maya's prev_cells / the host's freeze snapshot captured) still has
+    // scramble garbage on the final glyphs — and because the widget is no
+    // longer live there's no further animation frame to repaint them clean.
+    // The result is permanent scrambled junk frozen on the tail of a
+    // settled message (e.g. "…/agentty.\u03b2\u03b1\u2588=*\u25a1e"). Holding live_
+    // until the tail has visually resolved guarantees the final live frame
+    // IS clean text, so the freeze handoff captures clean cells. The settle
+    // threshold matches decorate_text_reveal's scramble_active window:
+    //   scramble_ms + scramble_len * char_step_ms
+    // = 220 + 6*26 = 376 ms.
+    //
+    // CRITICAL: the window is measured from reveal_edge_reached_ms_ (when
+    // the CURSOR reached the edge), NOT from last_grow_ms_ (when the last
+    // byte arrived). On a long message whose bytes all landed seconds ago,
+    // the ramp sweeps the cursor across a big backlog quickly; last_grow_ms_
+    // would already be > 376 ms in the past and the gate would pass
+    // immediately, freezing the still-scrambling cursor-swept tail. Keying
+    // off the cursor-edge clock gives the swept tail its full window.
+    constexpr std::int64_t kScrambleSettleMs = 220 + 6 * 26;  // 376 ms
+    const std::int64_t edge_age_ms =
+        cursor_at_edge ? (ms_total - reveal_edge_reached_ms_) : 0;
+    const bool tail_visually_settled = edge_age_ms >= kScrambleSettleMs;
+    if (finalize_deadline_ms_ != 0 && cursor_at_edge) {
+        if (tail_visually_settled) {
+            finalize_deadline_ms_ = 0;
+            live_ = false;
+            request_animation_frame();
+            return true;
+        }
+        // Cursor is at the edge but the scramble is still resolving. Keep
+        // the ramp armed and request another frame so the tail animates to
+        // its clean settled glyphs BEFORE we drop live_. is_finalizing()
+        // stays true, so the host keeps the 16 ms frame armed and re-checks
+        // this gate every frame until the tail cools.
         request_animation_frame();
-        return true;
     }
 
+    // Age of the trailing edge that the overlay's scramble/gradient
+    // decoration reads (p.edge_age_ms). This MUST agree with the
+    // ramp-completion gate above: both measure "how long since the cursor
+    // reached the edge", NOT "how long since the last byte arrived".
+    //
+    // The scramble is anchored to the CURSOR (decorate_text_reveal
+    // scrambles [unrevealed_cp, unrevealed_cp + scramble_n) with age =
+    // edge_age + dist*char_step), so a codepoint is "freshly typed" the
+    // moment the cursor sweeps it. If we fed last_grow_ms_ here, a long
+    // message whose bytes arrived long ago would render its cursor-swept
+    // tail as already-cool (no scramble) even though the cursor only just
+    // exposed it — desyncing the visible animation from the gate. Feeding
+    // the edge-reached clock makes the overlay scramble the tail for
+    // exactly the window the gate waits on, so the final live frame is
+    // provably clean text before live_ drops.
     cursor_advance_age_tail_ms_ =
-        (reveal_cp_ >= static_cast<double>(total_cp))
-            ? (ms_total - last_grow_ms_)
-            : 0;
+        cursor_at_edge ? (ms_total - reveal_edge_reached_ms_) : 0;
 
     // Refresh the visible-byte clip for this frame. With reveal_fx_ on
     // and live_, build()'s tail extraction clamps to this value so

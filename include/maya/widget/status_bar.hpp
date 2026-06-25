@@ -64,10 +64,15 @@ public:
         // Status row — takes over the activity_row slot when present.
         StatusBanner::Config         status_banner;
 
-        // Width thresholds for activity-row pieces.
+        // Width thresholds for activity-row pieces. Each piece drops
+        // (highest min_width first) as the terminal narrows, so the row
+        // is always meaningful AND always exactly one line — the phase
+        // chip (what's happening now) is the last survivor.
         int breadcrumb_min_width    = 130;
         int token_stream_min_width  = 110;
-        int ctx_bar_min_width       = 55;
+        int ctx_bar_min_width       = 55;   // < this: numbers only, no bar
+        int ctx_gauge_min_width     = 38;   // < this: drop the ctx gauge entirely
+        int model_badge_min_width   = 30;   // < this: drop the provider badge
         int phase_verb_min_width    = 50;     // < this drops phase verb
         int phase_elapsed_min_width = 80;     // < this drops phase elapsed
     };
@@ -141,21 +146,35 @@ private:
             lparts.push_back(PhaseChip{pc}.build());
             auto left = h(std::move(lparts));
 
-            // ── Right group: tok-stream + model + ctx.
+            // ── Right group: tok-stream + model + ctx. Each piece drops
+            //    as width shrinks so the group never overflows the row.
             std::vector<Element> rparts;
+            bool emitted_right = false;
             if (w >= cfg.token_stream_min_width) {
                 rparts.push_back(TokenStreamSparkline{cfg.token_stream}.build());
                 rparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));
+                emitted_right = true;
             }
-            rparts.push_back(cfg.model_badge);
-            if (cfg.context.max > 0) {
-                rparts.push_back(text(" \xc2\xb7 ", fg_dim_(muted)));
+            if (w >= cfg.model_badge_min_width) {
+                rparts.push_back(cfg.model_badge);
+                emitted_right = true;
+            }
+            if (cfg.context.max > 0 && w >= cfg.ctx_gauge_min_width) {
+                if (emitted_right)
+                    rparts.push_back(text(" \xc2\xb7 ", fg_dim_(muted)));
                 rparts.push_back(ContextGauge{ctx}.build());
+                emitted_right = true;
             }
             rparts.push_back(text(" "));
             auto right = h(std::move(rparts));
 
-            return h(left, spacer(), right).build();
+            // overflow:Hidden guarantees the activity row is ALWAYS
+            // exactly one line: if the (already width-pruned) left+right
+            // groups still can't both fit on an extremely narrow
+            // terminal, the content is clipped at the right edge rather
+            // than wrapping onto a phantom second row that would shove
+            // the Thread above it and trigger a full-viewport repaint.
+            return (h(left, spacer(), right) | overflow(Overflow::Hidden)).build();
         });
     }
 

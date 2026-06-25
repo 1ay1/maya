@@ -6,9 +6,11 @@
 #include <maya/widget/input.hpp>
 #include <maya/widget/markdown.hpp>
 #include <maya/widget/modal.hpp>
+#include <maya/widget/model_badge.hpp>
 #include <maya/widget/progress.hpp>
 #include <maya/widget/select.hpp>
 #include <maya/widget/spinner.hpp>
+#include <maya/widget/status_bar.hpp>
 #include <maya/widget/table.hpp>
 #include <maya/widget/toast.hpp>
 #include <cassert>
@@ -330,6 +332,61 @@ void test_markdown_streaming() {
     std::println("  PASS\n");
 }
 
+// ============================================================================
+// Status bar responsiveness tests
+// ============================================================================
+//
+// The activity row MUST be exactly 3 rows tall (top accent + 1 content
+// row + bottom accent) at EVERY terminal width. If any piece wraps onto
+// a phantom second line the whole status bar grows to 4 rows, shoving
+// the Thread above it and triggering a full-viewport repaint. We also
+// assert the most meaningful piece (the phase verb) survives down to a
+// usably-wide terminal, and that no glyphs ever bleed past the right
+// edge (every rendered row must fit within `width` columns).
+void test_status_bar_responsive() {
+    std::println("=== test_status_bar_responsive ===");
+
+    auto make = []() {
+        StatusBar::Config cfg;
+        cfg.phase_color        = Color::cyan();
+        cfg.breadcrumb.title   = "refactor the responsive status bar layout";
+        cfg.phase.glyph        = "\xe2\xa0\x8b";   // spinner
+        cfg.phase.verb         = "Streaming";
+        cfg.phase.color        = Color::bright_cyan();
+        cfg.phase.verb_width   = 10;
+        cfg.phase.elapsed_secs = 12.3f;
+        cfg.model_badge        = ModelBadge{"claude-sonnet-4-5"}.build();
+        cfg.context.used       = 84'000;
+        cfg.context.max        = 200'000;
+        cfg.context.cells      = 10;
+        return cfg;
+    };
+
+    // Sweep from absurdly narrow to very wide. The row count must be a
+    // constant 3 and nothing may overflow the width at ANY of them.
+    for (int w = 12; w <= 220; ++w) {
+        Element el = StatusBar{make()}.build();
+        auto r = render_at(el, w);
+        assert(r.content_h == 3 && "status bar must stay 3 rows at every width");
+        for (const auto& row : r.rows)
+            assert(static_cast<int>(row.size()) <= w
+                   && "status bar row must not overflow terminal width");
+    }
+
+    // The phase verb ("what's happening now") is the highest-value
+    // signal: it must still be present at a normal-narrow 60-col width.
+    {
+        auto r = render_at(StatusBar{make()}.build(), 60);
+        bool has_verb = false;
+        for (const auto& row : r.rows)
+            if (row.find("Streaming") != std::string::npos) has_verb = true;
+        assert(has_verb && "phase verb must survive at 60 cols");
+    }
+
+    std::println("  3 rows + no overflow across widths 12..220");
+    std::println("  PASS\n");
+}
+
 int main() {
     test_table();
     test_progress();
@@ -340,6 +397,7 @@ int main() {
     test_toast();
     test_spinner();
     test_input();
+    test_status_bar_responsive();
     test_markdown();
     test_markdown_streaming();
     std::println("All widget tests passed!");

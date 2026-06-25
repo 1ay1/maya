@@ -267,6 +267,20 @@ const Element& StreamingMarkdown::build() const {
                     && cached_tail_clip_ == visible_end)
                 {
                     tail_unchanged = true;
+                } else if (cached_tail_version_ == source_version_) {
+                    // Source bytes are unchanged (version matches) but the
+                    // reveal clip moved — the typewriter cursor advanced
+                    // without new bytes. The tail SLICE therefore changed
+                    // length, so it IS different and must re-render. Skip
+                    // the O(tail) fnv1a64 digest: it can only confirm
+                    // "different" (we already know that from the clip move),
+                    // and computing it every animation frame over the whole
+                    // uncommitted tail is the long-turn streaming lag. Leave
+                    // tail_hash = 0; render_tail's own (version,len)-gated
+                    // memo keeps the re-render cheap, and the stale
+                    // cached_tail_hash_ is harmless (the next real byte
+                    // delta bumps source_version_ and recomputes it).
+                    tail_unchanged = false;
                 } else {
                     tail_hash = fnv1a64(tail);
                     tail_unchanged =
@@ -314,6 +328,56 @@ const Element& StreamingMarkdown::build() const {
         && cached_has_tail_   == has_tail
         && std::holds_alternative<BoxElement>(cached_build_.inner)) {
         auto& box = std::get<BoxElement>(cached_build_.inner);
+
+        // Incremental-append sub-path: the common commit shape is a PURE
+        // GROWTH of the prefix — commit_range appended one or more new
+        // blocks while every already-committed block kept its identity
+        // (same source range, same fold state). When folds are unchanged
+        // (cached_fold_gen_ matches) and the cached children vector still
+        // holds exactly [block0..block_{M-1}, tail] for the OLD block count
+        // M, we can keep blocks 0..M-1 in place (their ComponentElements
+        // are immutable and value-equal to what append_block_components
+        // would re-emit — same hash_id, so the renderer blits them either
+        // way) and only build the NEW blocks M..N-1. That turns the
+        // per-commit cost from O(total blocks) back to O(new blocks),
+        // which is the whole point of the per-block direct-child layout —
+        // without it, a 250-block turn re-wraps all 250 block components at
+        // every paragraph boundary (the residual streaming-window cost).
+        const std::size_t new_n = prefix_->blocks.size();
+        const std::size_t old_total = box.children.size();
+        const std::size_t old_n =
+            (cached_has_tail_ && old_total > 0) ? old_total - 1 : old_total;
+        const bool pure_growth =
+            cached_fold_gen_ == fold_generation_
+            && new_n >= old_n
+            && old_total == old_n + (cached_has_tail_ ? 1u : 0u);
+
+        if (pure_growth) {
+            // Drop the old tail slot (if any); append the new block
+            // components M..N-1; then push the fresh tail.
+            if (cached_has_tail_ && !box.children.empty())
+                box.children.pop_back();
+            box.children.reserve(new_n + (has_tail ? 1u : 0u));
+            for (std::size_t i = old_n; i < new_n; ++i)
+                box.children.push_back(make_block_component(i));
+            if (has_tail) {
+                std::uint64_t tail_hash = fnv1a64(tail);
+                box.children.push_back(render_tail(tail));
+                cached_tail_hash_     = tail_hash;
+                cached_tail_len_      = tail.size();
+                cached_tail_in_fence_ = in_code_fence_;
+                cached_tail_version_  = source_version_;
+                cached_tail_clip_     = visible_end;
+            }
+            cached_prefix_gen_ = prefix_->generation;
+            cached_fold_gen_   = fold_generation_;
+            cached_tail_size_  = tail.size();
+            build_dirty_       = false;
+            return render_live_overlay_();
+        }
+
+        // Fold toggle / non-growth reshape: fall back to a full children
+        // re-emit (still O(blocks), but folds change rarely).
         std::vector<Element> kids;
         append_block_components(kids);
         if (has_tail) {

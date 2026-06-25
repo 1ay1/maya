@@ -53,6 +53,48 @@ void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     // render) not recomputing the deadline forward.
     if (finalize_deadline_ms_ != 0) return;
     if (ramp_ms < 0) ramp_ms = 0;
+
+    // Adaptive ramp floor: the host passes a SHORT fixed ramp (e.g. 200 ms)
+    // — fine when the reveal cursor is already near the live edge. But on a
+    // long, fast reply the cursor cruises at a bounded readable speed
+    // (RateCursor's clamped cruise) and can be a large backlog behind the
+    // edge when the wire closes. Snapping that whole backlog out in 200 ms
+    // is itself a BURST — the exact "it dumps the rest at once" symptom at
+    // settle. So stretch the ramp to whatever it takes for the remaining
+    // backlog to GLIDE out at no more than kFinishSpeedup× the cruise speed.
+    // The reveal then accelerates only modestly at the end and the tail
+    // types out smoothly instead of pasting. (The ramp still bypasses the
+    // per-frame cruise cap in RateCursor::tick so completion is guaranteed;
+    // this just sets a deadline far enough out that the guaranteed rate
+    // stays readable.)
+    {
+        const std::size_t cur_cp =
+            static_cast<std::size_t>(reveal_cp_ < 0.0 ? 0.0 : reveal_cp_);
+        const std::size_t total_cp =
+            (cached_total_cp_at_ == source_.size())
+                ? cached_total_cp_ : source_.size();   // cp count (or byte UB)
+        const double backlog =
+            (total_cp > cur_cp) ? static_cast<double>(total_cp - cur_cp) : 0.0;
+        if (backlog > 0.0 && reveal_floor_cps_ > 0.0) {
+            // Let the tail finish at up to ~2× cruise so it feels like the
+            // typewriter speeding up to land, not an instant paste.
+            constexpr double kFinishSpeedup = 2.0;
+            // ...but never make the user wait more than kMaxFinishMs for the
+            // reveal to drain after the wire closed. A pathological backlog
+            // (model dumped tens of KB the cursor never caught up to)
+            // finishes faster than 2× cruise rather than stalling the UI for
+            // tens of seconds — a brief end burst is the lesser evil vs. a
+            // multi-second "why is it still typing" wait. ~2.5 s is long
+            // enough to glide a few hundred cp out smoothly.
+            constexpr double kMaxFinishMs = 2500.0;
+            double glide_ms =
+                (backlog / (reveal_floor_cps_ * kFinishSpeedup)) * 1000.0;
+            if (glide_ms > kMaxFinishMs) glide_ms = kMaxFinishMs;
+            if (glide_ms > static_cast<double>(ramp_ms))
+                ramp_ms = static_cast<int>(glide_ms);
+        }
+    }
+
     const auto now_ms = std::chrono::duration_cast<
         std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -470,11 +512,49 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // warm across frames. So this copy is O(1) regardless of
         // transcript length — long sessions stay cheap.
         //
-        // The tail TextElement copy DOES copy its content std::string
-        // which is up to one paragraph / code block of bytes. We
-        // mitigate below by mutating only the trailing kTrailLen
-        // codepoints in place rather than rebuilding the whole string.
-        Element animated_body = cached_build_;
+        // Build the animated body WITHOUT re-copying the committed prefix
+        // every frame. cached_build_ is vstack[block0..blockN, tail]: each
+        // committed block is its OWN immutable hash-keyed ComponentElement
+        // (the renderer blits its cells from the component cache), and the
+        // overlay only ever decorates the LAST child (the live tail leaf).
+        // Copying the whole children vector each frame is O(committed block
+        // count) — the residual long-turn streaming cost after the commit
+        // fix. Instead:
+        //   • when the committed prefix is unchanged (prefix generation
+        //     stable) AND cached_live_ already mirrors cached_build_'s shape
+        //     (same outer BoxElement, same child count, non-empty), reuse
+        //     cached_live_'s committed children in place and refresh ONLY
+        //     its last child by value-copying cached_build_'s last child;
+        //   • otherwise (prefix grew / shape changed / first overlay frame)
+        //     rebuild cached_live_ from cached_build_ once.
+        // Either way the per-frame work is O(tail), not O(turn).
+        //
+        // Aliasing safety: cached_live_'s children are independent value
+        // copies of cached_build_'s immutable ComponentElements (made on the
+        // rebuild frame); they hold no reference into cached_build_. The
+        // per-frame refresh value-copies one child (children.back()), so
+        // there is no shared mutable state and no dangling reference between
+        // the two caches. We then decorate cached_live_ in place via
+        // find_last_text(cached_live_) and RETURN cached_live_ directly.
+        const bool reuse_prefix =
+            live_overlay_prefix_gen_ == prefix_->generation
+            && std::holds_alternative<BoxElement>(cached_live_.inner)
+            && std::holds_alternative<BoxElement>(cached_build_.inner)
+            && std::get<BoxElement>(cached_live_.inner).children.size()
+                   == std::get<BoxElement>(cached_build_.inner).children.size()
+            && !std::get<BoxElement>(cached_build_.inner).children.empty();
+
+        if (reuse_prefix) {
+            // Refresh only the tail child (last); committed children stay put.
+            auto& live_box  = std::get<BoxElement>(cached_live_.inner);
+            auto& build_box = std::get<BoxElement>(cached_build_.inner);
+            live_box.children.back() = build_box.children.back();  // fresh tail
+        } else {
+            cached_live_ = cached_build_;   // O(N) once per prefix generation
+            live_overlay_prefix_gen_ = prefix_->generation;
+        }
+        // We decorate cached_live_ in place from here on.
+        Element& animated_body = cached_live_;
         if (TextElement* tail = find_last_text(animated_body)) {
             // No content-cut here. build() renders the full tail; the
             // reveal effect is purely visual (scramble + gradient on the
@@ -572,9 +652,10 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         // children's natural width, which then shrinks the message's
         // allotted columns and explodes per-row wrap.
         //
-        // No wrapping vstack now — the caret was inlined above so the
-        // animated body IS the whole live element.
-        cached_live_ = std::move(animated_body);
+        // animated_body IS cached_live_ (we decorated it in place above),
+        // so there is nothing to move — the Stretch sizing came across with
+        // the children. Just fall through to the cadence + return.
+        (void)animated_body;
 
         // ── Frame-request cadence ──
         //

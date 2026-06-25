@@ -227,50 +227,42 @@ void StreamingMarkdown::append_safe(std::string_view safe_bytes) {
     build_dirty_ = true;
     ++source_version_;
 
+    // ── Commit every COMPLETED block; keep only the last block live ──────
+    //
+    // A markdown block is finished the instant the next block begins — i.e.
+    // once a blank-line (or fence-close) boundary exists after it. Only the
+    // trailing, still-growing block is "live"; everything above it is done
+    // and will never change. So commit the whole completed prefix and leave
+    // exactly the in-progress tail uncommitted. That keeps the live tail
+    // bounded to ONE block no matter how long the turn is, so render_tail
+    // and the live overlay are O(one block) per frame, never O(turn) — the
+    // root of the long-reply streaming lag.
+    //
+    // find_block_boundary() returns the end of the last completed block, so
+    // committing to it leaves precisely the in-progress block as the tail.
+    //
+    // Why this does NOT burst chrome ahead of the typewriter reveal: the
+    // reveal animation (scramble / gradient / caret) decorates only the
+    // LIVE TAIL. A block only becomes committable once the NEXT block has
+    // started — by then the cursor has long since swept past it (the
+    // typewriter reveals the tail as bytes arrive; a block that's now
+    // "prefix" was the tail many frames ago and was revealed then). So
+    // committing it changes nothing visible: it was already shown at full
+    // text; commit just moves its (immutable) Element into the frozen
+    // prefix the renderer blits from cache. The earlier reveal-cursor
+    // gating was solving a non-problem and cost O(turn) per frame.
+    //
+    // PRISTINE-FIRST-FRAME: the host feeds the first delta, THEN calls
+    // set_live(true). On that very first pre-live frame, hold the opening
+    // block in the tail so it reveals through the typewriter from the start
+    // instead of committing un-paced (the stream-start burst). Once live,
+    // the rule above takes over.
     size_t boundary = find_block_boundary();
     if (boundary > committed_) {
-        // Gate eager block commit on the reveal cursor when reveal_fx_
-        // is on and live_. commit_range fires the parser which produces
-        // styled prefix Elements (H2 underline, code-fence chrome,
-        // table rules) painted at full chrome the moment they land.
-        // The reveal overlay only animates the live tail; committed
-        // prefix bytes BYPASS the typewriter — once a block commits,
-        // its chrome appears in one frame and the user sees a burst.
-        //
-        // While reveal_fx_ && live_, DEFER ALL commits. The whole
-        // stream stays in the tail; render_tail's eager-heading /
-        // eager-list / eager-table paths still render styled inline
-        // text WITHOUT the block-level underline/border chrome that
-        // commit produces, and the overlay's ghost band materialises
-        // each codepoint as the cursor walks. finish() flushes any
-        // remaining tail through commit_range, so the final settled
-        // shape (with full chrome) appears at end-of-stream when the
-        // host expects a layout snap anyway. Off-path for hosts that
-        // didn't opt into reveal_fx.
-        //
-        // PRISTINE-FIRST-FRAME extension: the host turns the widget
-        // live AFTER the first set_content (turn.cpp feeds bytes, then
-        // calls set_live(true)), and the reveal clip only initialises
-        // on the first build()/advance_reveal pass. So on the very
-        // first stream frame live_ is still false and clip is -1 — the
-        // strict gate below let that first delta's complete blocks
-        // commit un-paced, dumping the opening block (70+ rows) in one
-        // frame: the stream-start burst. Also defer while the widget is
-        // PRISTINE (nothing committed yet) and reveal_fx is on, so the
-        // opening block stays in the paced tail until the host marks it
-        // live and the cursor takes over. Once live_ is true the gate
-        // is identical to before — commits resume at block boundaries,
-        // so steady-state reveal shape (and its height monotonicity) is
-        // unchanged.
         const bool pristine_reveal_start =
             reveal_fx_ && !live_ && committed_ == 0;
-        const bool defer =
-            pristine_reveal_start
-            || (reveal_fx_ && live_
-                && reveal_byte_clip_ != static_cast<std::size_t>(-1));
-        if (!defer) {
+        if (!pristine_reveal_start)
             commit_range(boundary);
-        }
     }
 }
 
@@ -446,6 +438,7 @@ void StreamingMarkdown::clear() {
     cp_to_byte_cache_at_     = 0;
     cached_build_         = Element{TextElement{""}};
     cached_live_          = Element{TextElement{""}};
+    live_overlay_prefix_gen_ = static_cast<std::uint64_t>(-1);
     live_                 = false;
 
     // Fold map keys at byte offsets in the prior source_; that source

@@ -186,6 +186,15 @@ set(MAYA_LIB_SOURCES
 )
 
 add_library(maya ${MAYA_LIB_SOURCES})
+# maya uses no C++20/23 modules (no `export module` / `import` anywhere). With
+# CMAKE_CXX_STANDARD 26 and CMake's ninja generator, module dependency scanning
+# is enabled by default — which here is pure overhead AND incorrect: the html/*
+# TUs' .ddi scan kept them perpetually dirty and reordered their compile to
+# AFTER the libmaya.a archive link, so a parallel build could archive stale
+# objects or read the archive mid-write (corrupt member -> link failures /
+# random std::system_error at runtime). Turning scanning off makes the build
+# deterministic and order-correct.
+set_target_properties(maya PROPERTIES CXX_SCAN_FOR_MODULES OFF)
 target_include_directories(maya PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -325,6 +334,7 @@ if(MAYA_BUILD_TESTS)
     # of waiting on whole-program LTO. Production `maya` is left alone.
     if(MAYA_FAST_TESTS AND NOT MSVC)
         add_library(maya_test STATIC EXCLUDE_FROM_ALL ${MAYA_LIB_SOURCES})
+        set_target_properties(maya_test PROPERTIES CXX_SCAN_FOR_MODULES OFF)
         target_include_directories(maya_test PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
         target_compile_features(maya_test PUBLIC cxx_std_26)

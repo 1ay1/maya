@@ -99,12 +99,34 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
     // every animation frame. Memoize on (source_version_, len, hash,
     // in_code_fence_) so a tail that hasn't changed since the last frame
     // is returned by shared_ptr copy with zero parsing. See header.
+    //
+    // CRITICAL — skip the hash when source_version_ matches. fnv1a64(tail)
+    // is O(tail) and used to run EVERY frame just to TEST the memo, so a
+    // long live tail (e.g. reveal_fx defers commits, leaving the whole
+    // turn in the tail) paid O(N) per animation frame even on a frame
+    // where nothing changed — the long-turn streaming stutter. Every
+    // mutator of source_/committed_ bumps source_version_, so an unchanged
+    // version PROVES the tail bytes are identical: short-circuit on
+    // (version, len, in_fence) alone and never touch the bytes. The inner
+    // term/eager caches below already use this same version gate; the
+    // outer memo was the one O(N) hold-out. The hash is still computed (and
+    // cached) on the cold path so a version-bumped-but-identical-bytes case
+    // (rare: a mutation that round-trips the tail) still hits by hash.
+    const bool version_match =
+        tail_canon_cache_el_
+        && tail_canon_cache_version_  == source_version_
+        && tail_canon_cache_len_      == tail.size()
+        && tail_canon_cache_in_fence_ == in_code_fence_;
+    if (version_match) return *tail_canon_cache_el_;
+
     const std::uint64_t tail_hash = fnv1a64(tail);
     if (tail_canon_cache_el_
-        && tail_canon_cache_version_  == source_version_
         && tail_canon_cache_len_      == tail.size()
         && tail_canon_cache_hash_     == tail_hash
         && tail_canon_cache_in_fence_ == in_code_fence_) {
+        // Bytes are identical despite a version bump — refresh the version
+        // stamp so subsequent frames take the cheap version_match path.
+        tail_canon_cache_version_ = source_version_;
         return *tail_canon_cache_el_;
     }
 

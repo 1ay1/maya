@@ -481,9 +481,19 @@ private:
     // Live-mode wrapper. When live_ is true, build() returns this
     // instead of cached_build_; it’s a vstack of [cached_build_,
     // cursor_row] rebuilt every frame and requests an animation
-    // frame so the cursor blinks. Cheap to rebuild (two Element
-    // copies into a vstack) so we don’t cache it across frames.
+    // frame so the cursor blinks. The committed-block children are reused
+    // in place across frames (only the trailing tail child is refreshed +
+    // decorated) when live_overlay_prefix_gen_ still matches
+    // prefix_->generation, so the per-frame overlay cost is O(tail), not
+    // O(committed block count). cached_build_ is a vstack of one direct
+    // ComponentElement per committed block plus the tail leaf; copying that
+    // whole children vector every animation frame was the residual
+    // long-turn streaming cost after the commit fix.
     mutable Element cached_live_;
+    // prefix_->generation that cached_live_'s committed children mirror.
+    // (uint64_t)-1 forces a full rebuild on the first overlay frame.
+    mutable std::uint64_t live_overlay_prefix_gen_ =
+        static_cast<std::uint64_t>(-1);
     mutable bool    build_dirty_  = true;
     mutable size_t  cached_tail_size_ = 0;   // tail length when cache was built
     // Generation reflected in cached_build_'s prefix component slot —

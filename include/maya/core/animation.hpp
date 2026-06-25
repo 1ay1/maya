@@ -507,6 +507,24 @@ class RateCursor {
     // instead of teleporting. ~1.8× keeps even a big burst feeling like a
     // glide that briefly leans forward.
     double max_burst_mult_ = 1.8;
+    // Hard ceiling on the AUTO-TUNED CRUISE speed, as a multiple of
+    // floor_rate_. This is the load-bearing knob for the constant-glide
+    // model. Without it, the auto-tune target (backlog / drain_secs_) runs
+    // away whenever the model streams faster than floor_rate_: on a long,
+    // fast reply the backlog grows, base_rate_ chases it up to thousands of
+    // cp/s, and the "typewriter" turns into an instant paste — the
+    // "bursting in long turns" symptom. Polished chat UIs (ChatGPT, Claude,
+    // Vercel smoothStream) hold a CONSTANT visual rate and let the buffer
+    // absorb the wire's burstiness; they may glide a touch faster on a long
+    // reply but never sprint to an unreadable speed. Clamping the cruise
+    // target to floor_rate_ * this multiple reproduces that: the cursor
+    // cruises at floor_rate_ normally and tops out at
+    // floor_rate_ * cruise_ceiling_mult_ on a sustained fast stream, staying
+    // readable. A genuinely huge backlog (model dumped the whole reply at
+    // once) is NOT chased here — the finalize ramp clears the remainder at
+    // end-of-stream; mid-stream the cursor just stays at the ceiling and
+    // glides. ~2.5× floor (e.g. 90 → 225 cp/s) is a brisk-but-readable cap.
+    double cruise_ceiling_mult_ = 2.5;
 
 public:
     constexpr RateCursor() = default;
@@ -521,12 +539,17 @@ public:
 
     // Tune the glide shaping. base_tau: how slowly the cruising speed drifts
     // (bigger = steadier). max_burst_mult: instantaneous-rate ceiling as a
-    // multiple of the base (bigger = catches up harder on a spike). Pass a
-    // non-positive value to leave either unchanged.
+    // multiple of the base (bigger = catches up harder on a spike).
+    // cruise_ceiling_mult: hard cap on the auto-tuned cruise speed as a
+    // multiple of floor_rate_ (bigger = lets a long fast reply glide quicker;
+    // keep it modest — this is what stops the long-turn burst). Pass a
+    // non-positive value to leave any of them unchanged.
     constexpr void set_smoothing(double base_tau,
-                                 double max_burst_mult = -1.0) noexcept {
-        if (base_tau >= 0.0)        base_tau_       = base_tau;
-        if (max_burst_mult > 0.0)   max_burst_mult_ = max_burst_mult;
+                                 double max_burst_mult = -1.0,
+                                 double cruise_ceiling_mult = -1.0) noexcept {
+        if (base_tau >= 0.0)            base_tau_            = base_tau;
+        if (max_burst_mult > 0.0)       max_burst_mult_      = max_burst_mult;
+        if (cruise_ceiling_mult > 0.0)  cruise_ceiling_mult_ = cruise_ceiling_mult;
     }
 
     // Hard-set the cursor (e.g. snap forward past already-committed units,
@@ -568,16 +591,23 @@ public:
             return pos_;
         }
 
-        // ── Auto-tune the cruising speed (slowly) ──
-        // The "ideal" steady speed is the one that would hold the backlog at
-        // the target lead window: clear `backlog` over `drain_secs_`. Blend
-        // the configured base (floor_rate_) with that so a fast model speeds
-        // the glide up and a slow one eases it down, but never below the
-        // configured base — that's the readable minimum. Then drift the LIVE
-        // base toward this target over base_tau_ seconds so the cruising
-        // speed never STEPS at a chunk boundary (the key to the glide feel).
+        // ── Auto-tune the cruising speed (slowly, BOUNDED) ──
+        // The "ideal" steady speed to hold the backlog at the target lead
+        // window is backlog / drain_secs_. Blend the configured base
+        // (floor_rate_) with that so a fast model glides a touch quicker and
+        // a slow one eases down, but CLAMP the target to a readable ceiling
+        // (floor_rate_ * cruise_ceiling_mult_). The clamp is the whole game:
+        // an unclamped target chases the backlog to thousands of cp/s on a
+        // long fast reply, turning the glide into an instant paste (the
+        // "bursting in long turns" bug). With the clamp the cruise tops out
+        // at a brisk-but-readable speed and the buffer absorbs the rest — the
+        // constant-glide model every polished chat UI uses. Then drift the
+        // LIVE base toward the (clamped) target over base_tau_ so the speed
+        // never STEPS at a chunk boundary.
+        const double cruise_ceiling = floor_rate_ * cruise_ceiling_mult_;
         const double want = backlog / drain_secs_;
         double base_target = want > floor_rate_ ? want : floor_rate_;
+        if (base_target > cruise_ceiling) base_target = cruise_ceiling;
         if (base_rate_ < 0.0) {
             base_rate_ = base_target;            // first frame: seed, no lag
         } else if (base_tau_ > 0.0) {
@@ -586,7 +616,8 @@ public:
         } else {
             base_rate_ = base_target;
         }
-        if (base_rate_ < floor_rate_) base_rate_ = floor_rate_;
+        if (base_rate_ < floor_rate_)    base_rate_ = floor_rate_;
+        if (base_rate_ > cruise_ceiling) base_rate_ = cruise_ceiling;
 
         // ── Instantaneous rate: base + gentle, BOUNDED catch-up ──
         // A small proportional nudge leans the cursor forward when it's

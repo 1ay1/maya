@@ -93,6 +93,50 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         -Wl,-z,now                   # resolve all symbols at load time (RELRO)
         -Wl,-z,relro                 # read-only relocations
     )
+elseif(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # macOS + GCC (Homebrew g++). Same intent as the Linux block — wring
+    # the rendering hot paths — but Mach-O, not ELF, so the flag set is the
+    # subset that's meaningful here. NO LTO (Apple ld can't consume GCC LTO
+    # IR; agentty's top-level CMake already forces IPO off for this combo).
+    #
+    # No -march/-mtune=native: Homebrew GCC on Apple Silicon resolves
+    # `native` to `apple-m1`, which its aarch64 backend doesn't accept as an
+    # -march value ("unknown value 'apple-m1'"), so it hard-errors the
+    # compile. We fall back to GCC's armv8-a baseline — which still has NEON,
+    # so -ftree-vectorize keeps emitting SIMD; we just forgo CPU-specific
+    # instruction scheduling. (This is a GCC/Apple-Silicon gap, not a choice.)
+
+    # Excluded vs the Linux set, on purpose:
+    #   -fno-plt / -fno-semantic-interposition — ELF symbol-interposition
+    #     concepts with no Mach-O meaning (GCC warns or silently ignores).
+    #   -fgraphite-identity / -floop-nest-optimize — polyhedral passes are
+    #     the least-exercised on macOS GCC; the marginal gain isn't worth
+    #     the correctness risk on a TUI's render loop. Kept Linux-only.
+    set(MAYA_MACOS_CXX_FLAGS
+        -O3
+        -funroll-loops
+        -ftree-vectorize             # auto-vectorize (NEON on arm64)
+        -fprefetch-loop-arrays
+        -fomit-frame-pointer
+        -fvisibility=hidden          # proven safe on the Linux static-link path
+        -fvisibility-inlines-hidden
+        -ffunction-sections          # pairs with -dead_strip below
+        -fdata-sections
+        -fmerge-all-constants
+        -fdevirtualize-speculatively
+        -fipa-pta                    # interprocedural pointer analysis
+        -ftree-loop-distribution
+        -fno-math-errno
+        -fno-trapping-math
+        -fno-stack-protector         # TUI app, not a network daemon
+    )
+
+    # Apple's ld doesn't speak GNU-ld flags (--gc-sections / --as-needed /
+    # -z now / --hash-style all error out). The one equivalent that matters
+    # for the -ffunction-sections/-fdata-sections pairing is -dead_strip.
+    set(MAYA_MACOS_LINK_FLAGS
+        -Wl,-dead_strip              # discard unreferenced sections (≈ --gc-sections)
+    )
 endif()
 
 set(MAYA_LIB_SOURCES
@@ -183,6 +227,9 @@ endif()
 if(DEFINED MAYA_LINUX_CXX_FLAGS)
     target_compile_options(maya PRIVATE ${MAYA_LINUX_CXX_FLAGS})
     target_link_options(maya PRIVATE ${MAYA_LINUX_LINK_FLAGS})
+elseif(DEFINED MAYA_MACOS_CXX_FLAGS)
+    target_compile_options(maya PRIVATE ${MAYA_MACOS_CXX_FLAGS})
+    target_link_options(maya PRIVATE ${MAYA_MACOS_LINK_FLAGS})
 else()
     target_compile_options(maya PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:

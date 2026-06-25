@@ -380,10 +380,13 @@ private:
 // momentum reprojection on Color stays continuous.
 template <>
 inline constexpr double Spring<Color>::scalar_span(Color a, Color b) noexcept {
-    const int dr = std::abs(int(a.r()) - int(b.r()));
-    const int dg = std::abs(int(a.g()) - int(b.g()));
-    const int db = std::abs(int(a.b()) - int(b.b()));
-    return static_cast<double>(std::max({dr, dg, db})) / 255.0;
+    // Use the constexpr-safe cmath::c_abs (std::abs(int) is not guaranteed
+    // constexpr, and MSVC rejects the whole function as never-constant).
+    const double dr = cmath::c_abs(double(int(a.r()) - int(b.r())));
+    const double dg = cmath::c_abs(double(int(a.g()) - int(b.g())));
+    const double db = cmath::c_abs(double(int(a.b()) - int(b.b())));
+    const double m = (dr > dg ? dr : dg);
+    return (db > m ? db : m) / 255.0;
 }
 
 // ============================================================================

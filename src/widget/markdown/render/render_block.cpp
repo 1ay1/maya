@@ -293,6 +293,21 @@ Element md_block_to_element(const md::Block& block) {
                 }
             }
 
+            // ── Streaming width floor ────────────────────────────────────
+            // The live StreamingMarkdown fills tbl.min_col_widths from the
+            // columns' widths over EVERY already-arrived row (even ones the
+            // reveal cursor hasn't exposed). Folding it in here keeps the
+            // visible table at its final column widths from the first
+            // revealed row, so it no longer reflows horizontally as wider
+            // cells stream in. Empty for static / committed tables (the
+            // arrived set == the rendered set, so the natural ideal already
+            // equals the floor): a pure no-op there, layout unchanged.
+            for (int c = 0; c < ncols
+                     && static_cast<size_t>(c) < tbl.min_col_widths.size(); ++c)
+                ideal[static_cast<size_t>(c)] = std::max(
+                    ideal[static_cast<size_t>(c)],
+                    tbl.min_col_widths[static_cast<size_t>(c)]);
+
             // ── Shared helpers for layout + render ───────────────────────
             // Both `measure` (called during build_layout_tree) and
             // `render` (called during paint) need to know how the table

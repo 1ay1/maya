@@ -16,6 +16,7 @@
 
 #include "maya/widget/markdown.hpp"
 #include "maya/element/element.hpp"
+#include "maya/element/text.hpp"   // string_width
 #include "check.hpp"
 
 #include <chrono>
@@ -712,6 +713,68 @@ static void empty_fence_renders_dim_placeholder() {
     }
 }
 
+// T12. Streaming table column-width FLOOR (md::Table::min_col_widths). The
+// live StreamingMarkdown reserves each column's final width from EVERY
+// already-arrived row so a streaming table doesn't reflow horizontally as
+// wider rows reveal. Here we pin the RENDERER half of that contract: a table
+// carrying min_col_widths renders its columns at least that wide. (The
+// streaming integration — burst-arrival then reveal stays one width — is
+// proven by scratch/diag_table_floor; this keeps the renderer fold honest.)
+//
+// Materialize the table ComponentElement at a fixed width and take the widest
+// TextElement on the tree (the box-border rows). With the floor set, that
+// width must jump well past the natural (1-char-cell) render.
+static int max_text_width(const Element& e) {
+    if (auto* t = std::get_if<TextElement>(&e.inner))
+        return string_width(t->content);
+    if (auto* b = std::get_if<BoxElement>(&e.inner)) {
+        int m = 0;
+        for (auto& c : b->children) m = std::max(m, max_text_width(c));
+        return m;
+    }
+    if (auto* c = std::get_if<ComponentElement>(&e.inner))
+        return c->render ? max_text_width(c->render(80, 80)) : 0;
+    if (auto* l = std::get_if<ElementList>(&e.inner)) {
+        int m = 0;
+        for (auto& it : l->items) m = std::max(m, max_text_width(it));
+        return m;
+    }
+    return 0;
+}
+
+static void table_floor_widens_columns() {
+    auto cell = [](const char* s) {
+        return md::TableCell{
+            std::vector<md::Inline>{ md::Inline{md::Text{std::string(s)}} } };
+    };
+    md::Table tbl;
+    tbl.header.cells = { cell("a"), cell("b") };
+    tbl.rows.push_back(
+        md::TableRow{ std::vector<md::TableCell>{ cell("x"), cell("y") } });
+    tbl.aligns = { md::TableAlign::Left, md::TableAlign::Left };
+
+    const int nat_w = max_text_width(md_block_to_element(md::Block{tbl}));
+
+    md::Table wide = tbl;
+    wide.min_col_widths = { 18, 18 };   // reserve wide columns
+    const int flo_w = max_text_width(md_block_to_element(md::Block{wide}));
+
+    if (!(nat_w > 0)) throw std::runtime_error("natural table did not render");
+    if (!(flo_w > nat_w)) throw std::runtime_error(
+        "min_col_widths did not widen the table (flo_w="
+        + std::to_string(flo_w) + " nat_w=" + std::to_string(nat_w) + ")");
+    if (!(flo_w >= 2 * 18)) throw std::runtime_error(
+        "floored table narrower than the reserved column widths (flo_w="
+        + std::to_string(flo_w) + ")");
+
+    // An EMPTY floor must be a no-op (static / committed tables): identical
+    // render to the natural table.
+    md::Table same = tbl;
+    same.min_col_widths = {};
+    if (max_text_width(md_block_to_element(md::Block{same})) != nat_w)
+        throw std::runtime_error("empty min_col_widths changed the render");
+}
+
 // ── main ────────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -728,6 +791,7 @@ int main() {
     run("reveal-fx leaf reachable in eager renders", rightmost_leaf_reachable_in_eager_renders);
     run("no empty bordered boxes anywhere",        no_empty_bordered_boxes_anywhere);
     run("empty fence renders dim placeholder",     empty_fence_renders_dim_placeholder);
+    run("streaming table column-width floor",      table_floor_widens_columns);
 
     std::println("\n── summary ────────────────────────────────────────────────────────");
     std::println("  passed: {}   failed: {}", g_passed, g_failed);

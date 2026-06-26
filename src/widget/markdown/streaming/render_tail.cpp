@@ -8,12 +8,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include "maya/element/builder.hpp"
+#include "maya/element/text.hpp"        // string_width
 #include "maya/render/cache_id.hpp"
 #include "maya/style/border.hpp"
 #include "maya/style/style.hpp"
@@ -70,6 +72,9 @@ void StreamingMarkdown::render_eager_slice(std::string_view slice,
             eager_cache_blocks_.clear();
             eager_cache_blocks_.reserve(parsed.blocks.size());
             for (auto& block : parsed.blocks) {
+                // Reserve final column widths for a live table so it does
+                // not reflow as later rows reveal (no-op for non-tables).
+                apply_live_table_floor_(block);
                 eager_cache_blocks_.push_back(
                     std::make_shared<const Element>(md_block_to_element(block)));
             }
@@ -93,7 +98,131 @@ void StreamingMarkdown::render_eager_slice(std::string_view slice,
     }
 }
 
+// ── Live-table column-width floor ───────────────────────────────────────────
+//
+// See markdown.hpp (live_table_floor_). When the uncommitted tail begins with
+// a GFM table, scan source_ over EVERY already-arrived, fully-terminated row
+// of that table and record each column's final width. The eager / canonical
+// table renders fold it in (md::Table::min_col_widths) so the visible table
+// sits at its FINAL widths from the first revealed row instead of reflowing
+// horizontally as wider rows/cells stream in. Cached on (source_version_,
+// committed_): recomputed only when bytes arrive or the commit base moves.
+void StreamingMarkdown::refresh_live_table_floor_() const {
+    if (live_table_floor_version_ == source_version_
+        && live_table_floor_base_ == committed_)
+        return;
+    live_table_floor_version_ = source_version_;
+    live_table_floor_base_    = committed_;
+    live_table_floor_.clear();
+
+    // The floor only matters when the reveal cursor can hide arrived rows
+    // (reveal_fx live). Otherwise the displayed tail already holds every
+    // arrived row, so its natural ideal == the floor — computing it would be
+    // a pure-overhead parse. Skip.
+    if (!(reveal_fx_ && live_)) return;
+
+    // Escape hatch for A/B measurement / emergencies: AGENTTY_NO_TABLE_FLOOR
+    // disables the reservation (table reverts to per-revealed-row widths).
+    static const bool disabled =
+        [] { const char* e = std::getenv("AGENTTY_NO_TABLE_FLOOR");
+             return e && e[0] && e[0] != '0'; }();
+    if (disabled) return;
+
+    // Start of the live tail's first non-blank line.
+    std::size_t base = committed_;
+    while (base < source_.size()
+           && (source_[base] == '\n' || source_[base] == '\r'))
+        ++base;
+    if (base >= source_.size()) return;
+
+    // line [ls, le): does it start with '|' after ≤3 leading spaces (GFM)?
+    auto first_pipe = [&](std::size_t ls, std::size_t le) -> bool {
+        std::size_t k = ls, lim = std::min(ls + 4, le);
+        while (k < lim && source_[k] == ' ') ++k;
+        return k < le && source_[k] == '|';
+    };
+
+    // Header line must be terminated and pipe-led.
+    std::size_t he = source_.find('\n', base);
+    if (he == std::string::npos || !first_pipe(base, he)) return;
+    // Delimiter line must be terminated, pipe-led, and well-formed.
+    std::size_t ds = he + 1;
+    std::size_t de = source_.find('\n', ds);
+    if (de == std::string::npos || !first_pipe(ds, de)) return;
+    {
+        bool has_dash = false, ok = true;
+        std::size_t k = ds, lim = std::min(ds + 4, de);
+        while (k < lim && source_[k] == ' ') ++k;
+        for (; k < de; ++k) {
+            char c = source_[k];
+            if (c == '-') { has_dash = true; continue; }
+            if (c == '|' || c == ':' || c == ' ' || c == '\t' || c == '\r')
+                continue;
+            ok = false; break;
+        }
+        if (!ok || !has_dash) return;
+    }
+
+    // Walk arrived data rows: each fully-terminated '|'-led line after the
+    // delimiter is in the table. Stop at the first non-pipe line OR the
+    // first UNTERMINATED (live) line — the half-typed live row must NOT
+    // drive the floor (its growing cell would re-introduce the very jitter
+    // we remove; it reflows by at most itself when it finally terminates).
+    std::size_t end = de + 1;
+    for (std::size_t p = de + 1; p < source_.size();) {
+        std::size_t e = source_.find('\n', p);
+        if (e == std::string::npos || !first_pipe(p, e)) break;
+        p = e + 1;
+        end = p;
+    }
+
+    // Parse [base, end) — header + delimiter + all terminated rows — and
+    // take each column's max flattened width, EXACTLY as the renderer
+    // computes ideal (same flatten_inline + string_width), so the floor
+    // equals the committed table's natural width: continuous at the seam.
+    std::string_view arrived =
+        std::string_view{source_}.substr(base, end - base);
+    ::maya::md_detail::RefDefsScope guard(
+        const_cast<std::unordered_map<std::string, md::LinkRef>*>(&ref_defs_));
+    auto blocks = parse_markdown_impl(std::string{arrived}, 0).blocks;
+    if (blocks.empty()) return;
+    auto* t = std::get_if<md::Table>(&blocks.front().inner);
+    if (!t) return;
+    const int ncols = static_cast<int>(t->header.cells.size());
+    if (ncols == 0) return;
+    auto cell_w = [](const std::vector<md::Inline>& spans) -> int {
+        std::string content;
+        std::vector<StyledRun> runs;
+        const Style base_st{};
+        for (const auto& sp : spans)
+            flatten_inline(sp, base_st, content, runs);
+        return string_width(content);
+    };
+    std::vector<int> w(static_cast<std::size_t>(ncols), 0);
+    for (int c = 0; c < ncols; ++c)
+        w[static_cast<std::size_t>(c)] =
+            std::max(1, cell_w(t->header.cells[static_cast<std::size_t>(c)].spans));
+    for (auto& row : t->rows)
+        for (int c = 0; c < ncols
+                 && static_cast<std::size_t>(c) < row.cells.size(); ++c)
+            w[static_cast<std::size_t>(c)] = std::max(
+                w[static_cast<std::size_t>(c)],
+                cell_w(row.cells[static_cast<std::size_t>(c)].spans));
+    live_table_floor_ = std::move(w);
+}
+
+void StreamingMarkdown::apply_live_table_floor_(md::Block& block) const {
+    if (live_table_floor_.empty()) return;
+    if (auto* t = std::get_if<md::Table>(&block.inner))
+        if (t->min_col_widths.empty())
+            t->min_col_widths = live_table_floor_;
+}
+
 Element StreamingMarkdown::render_tail(std::string_view tail) const {
+    // Keep the live-table column-width floor current for THIS frame before
+    // any table render below reads it (cheap: cached on version+committed).
+    refresh_live_table_floor_();
+
     // ── Canonical-render memo (the anti-"stuck" guard) ─────────────────
     // The body below full-parses the tail every call; build() calls this
     // every animation frame. Memoize on (source_version_, len, hash,
@@ -233,8 +362,10 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
         auto blocks = canonical_blocks(fence_prefix + std::string{terminated});
         std::vector<std::shared_ptr<const Element>> els;
         els.reserve(blocks.size());
-        for (auto& blk : blocks)
+        for (auto& blk : blocks) {
+            apply_live_table_floor_(blk);   // live-table width floor (no-op otherwise)
             els.push_back(std::make_shared<const Element>(md_block_to_element(blk)));
+        }
         term_block_count           = blocks.size();
         term_slice_hash            = fnv1a64(terminated);
         tail_term_cache_blocks_    = els;
@@ -333,9 +464,11 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                 rendered.reserve(merged_blocks.size() + 1);
                 for (std::size_t i = 0; i + 1 < merged_blocks.size(); ++i)
                     rendered.push_back(wrap_term_block(terminated_rendered[i], i));
-                if (!merged_blocks.empty())
+                if (!merged_blocks.empty()) {
+                    apply_live_table_floor_(merged_blocks.back());
                     rendered.push_back(
                         md_block_to_element(merged_blocks.back()));
+                }
             }
         }
         if (!live_continues) {

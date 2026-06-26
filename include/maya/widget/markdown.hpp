@@ -622,6 +622,26 @@ private:
     mutable std::size_t             eager_cache_slice_len_ = 0;
     mutable std::vector<std::shared_ptr<const Element>> eager_cache_blocks_;
 
+    // ── Live-table column-width floor ──────────────────────────────────
+    // While a table is the live tail, the reveal cursor exposes its rows
+    // one at a time, but the WHOLE table has usually already arrived in
+    // source_ (the model emits it in one burst the typewriter then walks).
+    // Re-deriving column widths from only the revealed rows makes the
+    // table reflow horizontally every time a wider row/cell is exposed.
+    // refresh_live_table_floor_() scans source_ over EVERY arrived,
+    // fully-terminated row of the live table and records each column's
+    // final width here; the eager/canonical table renders fold it in as a
+    // floor (md::Table::min_col_widths) so the visible table sits at its
+    // final widths from the first revealed row. Cached on
+    // (source_version_, committed_) — recomputed only when bytes arrive or
+    // the commit base moves, not every frame. Empty when the live tail is
+    // not a table.
+    mutable std::vector<int>        live_table_floor_;
+    mutable std::uint64_t           live_table_floor_version_ =
+        static_cast<std::uint64_t>(-1);
+    mutable std::size_t             live_table_floor_base_ =
+        static_cast<std::size_t>(-1);
+
     // ── Canonical render_tail memo ──────────────────────────
     // render_tail runs a FULL parse_markdown_impl over the whole
     // terminated tail (and a second parse for the live-line merge test)
@@ -788,6 +808,20 @@ private:
     // the rendered blocks to `kids`.
     void render_eager_slice(std::string_view slice,
                             std::vector<Element>& kids) const;
+
+    // Refresh live_table_floor_ for THIS frame. When the uncommitted tail
+    // begins (after blank lines) with a GFM table, scans source_ over all
+    // already-arrived fully-terminated rows of that table and records each
+    // column's width; otherwise clears the floor. Cached on
+    // (source_version_, committed_). Cheap + idempotent. Defined in
+    // render_tail.cpp.
+    void refresh_live_table_floor_() const;
+
+    // If `block` is a md::Table and a live floor is set, stamp the floor
+    // onto it (min_col_widths) so md_block_to_element reserves the final
+    // column widths. No-op for non-tables / empty floor / a table that
+    // already carries a floor. Defined in render_tail.cpp.
+    void apply_live_table_floor_(md::Block& block) const;
 
     // Live-mode finalize: returns cached_build_ when not live or reveal_fx
     // is off; otherwise builds cached_live_ (the animated scramble/gradient/

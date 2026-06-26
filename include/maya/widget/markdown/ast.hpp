@@ -115,6 +115,16 @@ struct Table       {
     TableRow header;
     std::vector<TableRow> rows;
     std::vector<TableAlign> aligns;
+    // Streaming-only per-column width FLOOR. When non-empty the renderer
+    // takes each entry as a minimum for that column's ideal width (folded
+    // via std::max, never shrinks a column). The live StreamingMarkdown
+    // sets this from EVERY already-arrived table row — including rows the
+    // reveal cursor hasn't exposed yet — so the visible table renders at
+    // its final column widths from the first row onward instead of
+    // reflowing horizontally as later / wider cells stream in. Empty for
+    // static and committed tables, so their layout is byte-for-byte
+    // unchanged (the fold is a no-op on an empty vector).
+    std::vector<int> min_col_widths;
 };
 struct FootnoteDef { std::string label; std::vector<struct Block> children; };
 

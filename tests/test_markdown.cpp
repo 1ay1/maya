@@ -2008,6 +2008,34 @@ static void st_reveal_fx_height_monotonic_streaming() {
     StreamingMarkdown md;
     md.set_live(true);
     md.set_reveal_fx(true);
+    // The reveal cursor is a WALL-CLOCK typewriter: it advances at
+    // reveal_floor_cps_ codepoints/sec of REAL time. Because the chunked
+    // feed below keeps the backlog tiny (<=kChunk cp), the 120 cps DEFAULT
+    // FLOOR — not the burst-drain rate — governs the whole walk, so
+    // revealing kTransitionDoc end-to-end took doc_cp/120 ~= 9 s and the
+    // test ran SLOW against its 12 s budget for zero added coverage. The
+    // contract under test (per-frame height stays within the transient dip
+    // budget as the cursor crosses every block boundary) is identical at any
+    // cursor speed, so crank the floor far above the wire rate: the cursor
+    // catches each chunk up within a frame, so the SAME byte-for-byte walk
+    // finishes in a fraction of the time. Every block boundary is still
+    // crossed and sampled.
+    md.set_reveal_pacing(/*floor_cps=*/12000.0, /*drain_secs=*/0.8);
+
+    // Per-frame height sampler on a LIGHT canvas. The shared stream_height()
+    // renders into an 80x4000 grid (2.5 MB zeroed on every call); since this
+    // test samples the height hundreds of times across the reveal, that
+    // allocation dominated the wall clock. kTransitionDoc settles well under
+    // 200 rows, so a 256-row canvas returns an IDENTICAL content_height at a
+    // fraction of the cost (256 >> the doc's height, so nothing ever clips).
+    // Same lever the 'table animates' test uses to stay under its watchdog.
+    auto sample_h = [&]() -> int {
+        Element el = md.build();
+        StylePool pool;
+        Canvas canvas(80, /*h=*/256, &pool);
+        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        return content_height(canvas);
+    };
 
     std::string_view doc{kTransitionDoc};
     int prev_h = 0;
@@ -2015,15 +2043,15 @@ static void st_reveal_fx_height_monotonic_streaming() {
     int worst_drop = 0;
     int frames = 0;
 
-    // Chunk size = 16 bytes (one realistic SSE token). Inner poll until
+    // Chunk size = 32 bytes (a realistic SSE token). Inner poll until
     // either the chunk's bytes have been revealed OR we've burned a
     // generous budget so a single chunk can't stall the test.
-    constexpr std::size_t kChunk = 16;
+    constexpr std::size_t kChunk = 32;
     for (std::size_t i = 0; i < doc.size(); i += kChunk) {
         std::size_t n = std::min(kChunk, doc.size() - i);
         md.append(doc.substr(i, n));
         for (int inner = 0; inner < 200; ++inner) {
-            int h = stream_height(md);
+            int h = sample_h();
             ++frames;
             if (h < prev_h) {
                 int drop = prev_h - h;
@@ -2032,13 +2060,13 @@ static void st_reveal_fx_height_monotonic_streaming() {
             }
             prev_h = h;
             if (!md.reveal_in_progress()) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     }
 
     // Drain any remaining cursor lag.
     for (int frame = 0; frame < 2000 && md.reveal_in_progress(); ++frame) {
-        int h = stream_height(md);
+        int h = sample_h();
         ++frames;
         if (h < prev_h) {
             int drop = prev_h - h;
@@ -2046,7 +2074,7 @@ static void st_reveal_fx_height_monotonic_streaming() {
             if (drop > worst_drop) worst_drop = drop;
         }
         prev_h = h;
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     // Widget contract: render_tail is canonical, so each revealed extent

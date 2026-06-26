@@ -733,7 +733,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             rp.ghost_extra           = kGhostExtra;
             (void)anim::decorate_text_reveal(*tail, rp);
         } else if (eager_render
-                   && (age_at_tail_ms <= 360
+                   && (age_at_tail_ms <= 720
                        || cursor_advance_total_cp_ > revealed_cp)) {
             // ── Eager (table) tail decoration ──
             //
@@ -745,9 +745,10 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // width handed down by layout, decorate the newest CONTENT row of
             // the materialised output (skipping the box-drawing border rows).
             //
-            // Gate: only while the edge is still HOT (a row landed within
-            // ~360 ms, or the reveal cursor is still catching up). While hot,
-            // re-key the component's hash so the renderer re-renders it (and
+            // Gate: only while the edge is still warm (a row landed within
+            // ~720 ms — the trail_style gradient's full hot→cool lifetime — or
+            // the reveal cursor is still catching up). While warm, re-key the
+            // component's hash so the renderer re-renders it (and
             // re-runs the decoration) instead of blitting frozen cached cells;
             // once the table settles the gate goes false, the clean cached
             // component (with its stable per-row hash) returns and the cell
@@ -762,16 +763,19 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 rp.revealed_cp  = 0;      // whole row revealed
                 rp.total_cp     = 0;      // derive from the row content
                 rp.clip_active  = false;
-                // A table row APPEARS WHOLE (one row-commit), so it fades
-                // UNIFORMLY: char_step_ms=0 gives every trailing cp the SAME
-                // age (edge_age) so the whole row shares one heat and cools
-                // together, and a wide trail_len makes that band span the full
-                // row so it fades as a unit — the same trail_style gradient the
-                // prose typewriter uses, just without the positional sweep.
-                rp.trail_len    = 256;    // cover the whole row width
+                // Animate the newest row with the SAME positional comet the
+                // prose typewriter uses, not a flat uniform flash. char_step_ms
+                // ages each cp leftward from the trailing edge, so the row gets
+                // the hot→cool trail_style gradient (bright tip at the live
+                // edge, cooling back into the row) exactly like a streaming
+                // paragraph's last line. trail_len matches the prose comet
+                // length; cp older than the gradient's ~700 ms lifetime fall
+                // back to the row's settled style, so the band self-limits to
+                // the live edge instead of repainting the whole row as a unit.
+                rp.trail_len    = kTrailLen;   // same comet length as prose
                 rp.scramble_len = 0;
                 rp.scramble_ms  = kScrambleMs;
-                rp.char_step_ms = 0;      // uniform heat across the row
+                rp.char_step_ms = kCharStepMs;  // positional gradient like prose
                 rp.ghost_extra  = 0;
                 rp.enable_ghost = false;  // rows render whole — no ghost band
                 rp.enable_sweep = false;  // no within-row typewriter cursor
@@ -780,7 +784,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 // are STRUCTURAL (cell padding + the closing │ border), not
                 // freshly-typed content, so the scramble window would garble
                 // the row's right edge. Recolour-only keeps the border
-                // byte-identical — just the trail_style fade other md uses.
+                // byte-identical — just the trail_style gradient other md uses.
                 rp.enable_scramble = false;
                 auto orig = comp->render;
                 comp->render = [orig, rp](int w, int h) -> Element {

@@ -901,12 +901,13 @@ private:
         // coherent when a Write sits next to an Edit or a git_diff.
         const Color add_bg    = Color::rgb(20, 50, 28);
         const Color add_fg_br = Color::rgb(150, 230, 160);
+        const Color num_fg    = Color::rgb(104, 156, 116);   // muted green gutter
 
-        // Line-number gutter rides the same bg so the gutter doesn't
-        // cut a dim stripe through the green band; pipe inside make_row
-        // still uses cfg_.chrome_color.
-        const Style marker_st = Style{}.with_fg(add_fg_br).with_bg(add_bg);
-        const Style code_st   = Style{}.with_fg(add_fg_br).with_bg(add_bg);
+        // Line-number gutter rides the same green band as the code so the
+        // whole row is one solid rectangle (no dim stripe cutting through);
+        // the number reads in a muted green, the code in bright green.
+        const Style num_st  = Style{}.with_fg(num_fg).with_bg(add_bg);
+        const Style code_st = Style{}.with_fg(add_fg_br).with_bg(add_bg);
 
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 2);
@@ -919,8 +920,9 @@ private:
         int line_num = (p.elided > 0) ? (p.elided + 1) : 1;
         for (std::size_t i = 0; i < p.lines.size(); ++i) {
             char numbuf[8];
-            std::snprintf(numbuf, sizeof(numbuf), "%3d", line_num++);
-            rows.push_back(make_row(numbuf, marker_st, p.lines[i], code_st));
+            std::snprintf(numbuf, sizeof(numbuf), "%3d ", line_num++);
+            rows.push_back(band_row(numbuf, num_st,
+                                    std::string{p.lines[i]}, code_st, add_bg));
         }
 
         if (cfg_.show_footer_stats) {
@@ -947,6 +949,56 @@ private:
             .style   = st,
             .wrap    = TextWrap::TruncateEnd,
         }};
+    }
+
+    // ── Full-width diff band ──────────────────────────────────────────────
+    // Render `gutter + body` as ONE solid colored rectangle that fills the
+    // row to the card's right edge. A width-aware component pads the line
+    // with bg-colored spaces to the width the layout hands it, so the band
+    // has no ragged tail and no gap where the old ` │ ` separator used to
+    // punch a hole through the tint.
+    //
+    // Why a component (vs a plain padded TextElement): the renderer paints a
+    // TextElement's per-run styles and IGNORES the base style when runs are
+    // present, and a static row can't know the terminal width to pad to. The
+    // component receives its allocated width at paint time; we then tile the
+    // whole line with CONTIGUOUS bg-carrying runs (gutter → body → pad) so
+    // every cell — glyph, gap, and trailing fill — shares the band bg. grow
+    // makes AgentTimeline's `h(connector, row)` stretch the band across the
+    // remaining width after the tree connector.
+    [[nodiscard]] Element band_row(std::string gutter, Style gutter_st,
+                                   std::string body, Style body_st,
+                                   Color bg) const {
+        using namespace dsl;
+        return component(
+            [gutter = std::move(gutter), gutter_st,
+             body = std::move(body), body_st, bg](int w, int) -> Element {
+                std::string out = gutter + body;
+                const int used  = string_width(out);
+                // Clamp pathological widths (the layout's kUnconstrained
+                // sentinel) back to content width so we never allocate a
+                // multi-thousand-space pad.
+                const int width = (w > 0 && w < 2000) ? w : used;
+                if (used < width)
+                    out.append(static_cast<std::size_t>(width - used), ' ');
+
+                const std::size_t gl = gutter.size();
+                const std::size_t bl = body.size();
+                std::vector<StyledRun> runs;
+                runs.reserve(3);
+                if (gl) runs.push_back({0, gl, gutter_st});
+                if (bl) runs.push_back({gl, bl, body_st});
+                if (out.size() > gl + bl)
+                    runs.push_back({gl + bl, out.size() - gl - bl,
+                                    Style{}.with_bg(bg)});
+
+                return Element{TextElement{
+                    .content = std::move(out),
+                    .style   = Style{}.with_bg(bg),
+                    .wrap    = TextWrap::TruncateEnd,
+                    .runs    = std::move(runs),
+                }};
+            }).grow(1.0f);
     }
 
     // ── EditDiff: per-hunk header + −/+ lines with head+tail per side ─────
@@ -985,10 +1037,13 @@ private:
             // it its own subtle slate band so the diff region reads as a
             // continuous tri-color stack (slate header → red removes →
             // green adds) instead of a jagged "tint, blank, tint" strip.
+            // Full-width band so the header rule spans the same rectangle
+            // as the −/+ sides below it.
             const Color hdr_bg = Color::rgb(28, 34, 50);
-            const Color hdr_fg = Color::rgb(170, 180, 210);
-            rows.push_back(text(std::move(header),
-                Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold()).build());
+            const Color hdr_fg = Color::rgb(176, 188, 222);
+            rows.push_back(band_row("   ", Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
+                std::move(header),
+                Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
 
             push_diff_side(rows, h.old_text, '-', danger());
             push_diff_side(rows, h.new_text, '+', success());
@@ -1005,12 +1060,12 @@ private:
         return v(rows).build();
     }
 
-    // Emit a diff-side (removed or added) through the uniform row
-    // contract: marker is " - " / " + " (right-aligned 3-col) bold in
-    // the diff hue; content reads in the matching bright fg with a
-    // subtle whole-line bg tint so the side reads as a colored band
-    // (matching git_diff's coloring discipline). The bg is intentionally
-    // low-saturation so the card chrome stays legible.
+    // Emit a diff-side (removed or added) as full-width solid bands: a
+    // leading sign gutter (` - ` / ` + `, bold in the diff hue) followed by
+    // the line content, the whole row painted as one colored rectangle that
+    // reaches the card's right edge. Matches git_diff's palette so a
+    // multi-hunk Edit and a unified git_diff read in the same visual
+    // language.
     void push_diff_side(std::vector<Element>& rows, std::string_view body,
                         char marker, Color c) const {
         using namespace dsl;
@@ -1018,8 +1073,6 @@ private:
         const auto p = elide(body, cfg_.edit_head_per_side,
                                    cfg_.edit_tail_per_side);
 
-        // Match git_diff's palette so a multi-hunk Edit and a unified
-        // git_diff render side-by-side without color drift.
         const bool is_add = (marker == '+');
         const Color bg     = is_add ? Color::rgb(20, 50, 28)
                                     : Color::rgb(60, 22, 26);
@@ -1027,17 +1080,19 @@ private:
                                     : Color::rgb(240, 150, 155);
         (void)c;   // c was the legacy fg; kept in signature for callers
 
-        const Style marker_st  = Style{}.with_fg(fg_br).with_bg(bg).with_bold();
-        const Style content_st = Style{}.with_fg(fg_br).with_bg(bg);
+        const Style sign_st = Style{}.with_fg(fg_br).with_bg(bg).with_bold();
+        const Style body_st = Style{}.with_fg(fg_br).with_bg(bg);
 
-        std::string mk = "  ";
-        mk += marker;   // 3-col right-aligned: "  -" / "  +"
+        std::string gutter = " ";
+        gutter += marker;
+        gutter += " ";          // " + " / " - " — 3-col sign gutter
 
         for (int i = 0; i < static_cast<int>(p.lines.size()); ++i) {
             if (i == p.elision_at && p.elided > 0)
                 rows.push_back(elision_marker(p.elided));
-            rows.push_back(make_row(mk, marker_st,
-                                    p.lines[std::size_t(i)], content_st));
+            rows.push_back(band_row(gutter, sign_st,
+                                    std::string{p.lines[std::size_t(i)]},
+                                    body_st, bg));
         }
     }
 
@@ -1071,16 +1126,20 @@ private:
         const Color hunk_bg    = Color::rgb(28, 34, 50);   // ≈ #1c2232 — blue-grey for @@
         const Color add_fg_br  = Color::rgb(150, 230, 160);
         const Color rem_fg_br  = Color::rgb(240, 150, 155);
-        const Color hunk_fg    = Color::rgb(140, 170, 220);
+        const Color hunk_fg    = Color::rgb(176, 188, 222);
 
-        const Style chrome_st  = Style{}.with_fg(cfg_.chrome_color);
-        const Style content_st = Style{}.with_fg(cfg_.text_color);
-        const Style add_marker_st  = Style{}.with_fg(add_fg_br).with_bg(add_bg).with_bold();
-        const Style add_body_st    = Style{}.with_fg(add_fg_br).with_bg(add_bg);
-        const Style rem_marker_st  = Style{}.with_fg(rem_fg_br).with_bg(rem_bg).with_bold();
-        const Style rem_body_st    = Style{}.with_fg(rem_fg_br).with_bg(rem_bg);
-        const Style hunk_marker_st = Style{}.with_fg(hunk_fg).with_bg(hunk_bg).with_bold();
-        const Style hunk_body_st   = Style{}.with_fg(hunk_fg).with_bg(hunk_bg);
+        // Bands (full-width solid rectangles) for the lines that carry the
+        // diff signal: + adds, - removes, @@ hunk headers. Context and file
+        // metadata (diff --git / +++ / ---) render as plain dim text on the
+        // default bg so the colored bands read as changes floating over
+        // unchanged code — the classic GitHub/delta hierarchy.
+        const Style add_sign_st = Style{}.with_fg(add_fg_br).with_bg(add_bg).with_bold();
+        const Style add_body_st = Style{}.with_fg(add_fg_br).with_bg(add_bg);
+        const Style rem_sign_st = Style{}.with_fg(rem_fg_br).with_bg(rem_bg).with_bold();
+        const Style rem_body_st = Style{}.with_fg(rem_fg_br).with_bg(rem_bg);
+        const Style hunk_st     = Style{}.with_fg(hunk_fg).with_bg(hunk_bg).with_bold();
+        const Style meta_st     = Style{}.with_fg(cfg_.chrome_color).with_dim();
+        const Style ctx_st      = Style{}.with_fg(cfg_.text_color);
 
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 1);
@@ -1088,34 +1147,28 @@ private:
             if (i == p.elision_at && p.elided > 0)
                 rows.push_back(elision_marker(p.elided));
             std::string_view ln = p.lines[std::size_t(i)];
-            std::string_view body = ln;
-            std::string_view marker;
-            Style marker_st;
-            Style row_body_st = content_st;
             if (ln.starts_with("+++") || ln.starts_with("---")
              || ln.starts_with("diff ")) {
-                marker      = "  ~";
-                marker_st   = chrome_st;
+                // File metadata — dim, recedes; no band.
+                rows.push_back(text_row("  " + std::string{ln}, meta_st));
             } else if (ln.starts_with("@@")) {
-                marker      = "  ~";
-                marker_st   = hunk_marker_st;
-                row_body_st = hunk_body_st;
+                rows.push_back(band_row("   ", hunk_st, std::string{ln},
+                                        hunk_st, hunk_bg));
             } else if (!ln.empty() && ln[0] == '+') {
-                marker      = "  +";
-                marker_st   = add_marker_st;
-                row_body_st = add_body_st;
-                body        = ln.substr(1);
+                rows.push_back(band_row(" + ", add_sign_st,
+                                        std::string{ln.substr(1)},
+                                        add_body_st, add_bg));
             } else if (!ln.empty() && ln[0] == '-') {
-                marker      = "  -";
-                marker_st   = rem_marker_st;
-                row_body_st = rem_body_st;
-                body        = ln.substr(1);
+                rows.push_back(band_row(" - ", rem_sign_st,
+                                        std::string{ln.substr(1)},
+                                        rem_body_st, rem_bg));
             } else {
-                marker      = "   ";
-                marker_st   = chrome_st;
+                // Context line — unchanged code, plain dim, aligned with
+                // the band content column (3-col gutter).
+                std::string_view body = ln;
                 if (!ln.empty() && ln[0] == ' ') body = ln.substr(1);
+                rows.push_back(text_row("   " + std::string{body}, ctx_st));
             }
-            rows.push_back(make_row(marker, marker_st, body, row_body_st));
         }
         return v(rows).build();
     }

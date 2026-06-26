@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <format>
@@ -18,6 +19,25 @@
 #include "maya/terminal/ansi.hpp"
 
 namespace maya::detail {
+
+namespace {
+// Opt-in event-loop diagnostics. Set MAYA_IO_LOG=<path> to trace the
+// poll/wait/read/render boundary to a file; no-op (one getenv) otherwise.
+// Diagnostic scaffolding for the WezTerm-on-Windows "frozen animation"
+// investigation — safe to leave compiled in.
+inline void io_log(const char* fmt, ...) {
+    static const char* path = std::getenv("MAYA_IO_LOG");
+    if (!path) return;
+    static std::FILE* f = std::fopen(path, "w");
+    if (!f) return;
+    const auto t = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::fprintf(f, "[%9lld] ", static_cast<long long>(t));
+    va_list ap; va_start(ap, fmt); std::vfprintf(f, fmt, ap); va_end(ap);
+    std::fputc('\n', f);
+    std::fflush(f);
+}
+} // namespace
 
 // ============================================================================
 // Runtime::create — initialize terminal, event source, canvases
@@ -218,7 +238,14 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
 // ============================================================================
 
 auto Runtime::poll(std::chrono::milliseconds timeout) -> Result<PollResult> {
+    const auto t0 = std::chrono::steady_clock::now();
     MAYA_TRY_DECL(auto ready, event_source_->wait(timeout));
+    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    io_log("poll  timeout=%4lld waited=%4lld  input=%d resize=%d wake=%d",
+           static_cast<long long>(timeout.count()),
+           static_cast<long long>(waited),
+           ready.input ? 1 : 0, ready.resize ? 1 : 0, ready.wake ? 1 : 0);
     return ok(PollResult{.resize = ready.resize, .input = ready.input, .wake = ready.wake});
 }
 
@@ -331,12 +358,15 @@ auto Runtime::read_events() -> Result<std::vector<Event>> {
                 result.push_back(std::move(event));
         }
     } else if (inline_terminal_) {
+        io_log("read_raw begin");
         MAYA_TRY_DECL(auto data, inline_terminal_->read_raw());
+        io_log("read_raw end bytes=%zu", data.size());
         if (!data.empty()) {
             for (auto& event : parser_.feed(data))
                 result.push_back(std::move(event));
         }
     }
+    io_log("read_events -> %zu events", result.size());
     return ok(std::move(result));
 }
 
@@ -358,6 +388,7 @@ auto Runtime::flush_timeouts() -> std::vector<Event> {
 // Inline: compose_inline_frame (row-diff, scrollback-preserving)
 
 auto Runtime::render(const Element& root) -> Status {
+    io_log("render");
     // MAYA_FRAME_PROF=1 enables per-frame timing output. Writing to a
     // tty-attached stderr while inline mode owns stdout would interleave
     // prof lines with cell bytes — visible garbage in the inline area

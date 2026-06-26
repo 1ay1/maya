@@ -117,19 +117,30 @@ private:
         DWORD n;
         while (::PeekConsoleInputW(stdin_, &rec, 1, &n) && n > 0) {
             switch (rec.EventType) {
+            case KEY_EVENT:
+                if (rec.Event.KeyEvent.bKeyDown) {
+                    // A real key-down: ReadFile can translate it to bytes.
+                    // Leave it in the queue for the read path to consume.
+                    flags.input = true;
+                    return;
+                }
+                // Key-UP: produces no VT byte. Leaving it queued falsely
+                // flags input readiness AND stalls the subsequent blocking
+                // ReadFile until a real keypress. WezTerm-on-Windows leaves
+                // the submit-Enter's key-up in the queue, which froze every
+                // animation (spinner / streaming reveal). Drain it.
+                ::ReadConsoleInputW(stdin_, &rec, 1, &n);
+                break;
             case WINDOW_BUFFER_SIZE_EVENT:
                 flags.resize = true;
                 ::ReadConsoleInputW(stdin_, &rec, 1, &n);
                 break;
-            case FOCUS_EVENT:
-            case MENU_EVENT:
-                // Spurious events — always discard.
+            default:
+                // FOCUS / MENU / MOUSE / any other record is also opaque to
+                // ReadFile in VT-input mode — drain so it can neither flag
+                // input nor stall the read path.
                 ::ReadConsoleInputW(stdin_, &rec, 1, &n);
                 break;
-            default:
-                // KEY_EVENT, MOUSE_EVENT, or unknown — real input.
-                flags.input = true;
-                return;
             }
         }
     }

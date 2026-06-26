@@ -36,6 +36,7 @@
 #include <concepts>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <format>
 #include <functional>
@@ -141,6 +142,22 @@ inline constexpr auto kAnimationFrameInterval = std::chrono::milliseconds{16};
 // follow-up frame, then clears it for the next render. Thread-local,
 // single-threaded UI — same ownership model as live_scroll_states.
 inline thread_local bool animation_requested_ = false;
+
+// Opt-in loop-state probe (MAYA_IO_LOG=<path>). Appends to the same file the
+// app.cpp poll/render trace uses; entries are timestamp-ordered so the two
+// streams interleave correctly when sorted. Throttled per call site. No-op
+// (one getenv) unless the env var is set. Diagnostic scaffolding.
+inline void loop_dbg(std::string_view s) {
+    static const char* path = std::getenv("MAYA_IO_LOG");
+    if (!path) return;
+    static std::FILE* f = std::fopen(path, "a");
+    if (!f) return;
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::fprintf(f, "[%9lld] %.*s\n", static_cast<long long>(now),
+                 static_cast<int>(s.size()), s.data());
+    std::fflush(f);
+}
 }  // namespace detail
 
 inline void request_animation_frame() noexcept {
@@ -1369,6 +1386,32 @@ void run(RunConfig cfg = {}) {
                 next_frame_at - now);
             poll_timeout = std::min(poll_timeout,
                 std::max(std::chrono::milliseconds(0), until));
+        }
+
+        // Loop-state probe (throttled). Captures WHY poll_timeout is what it
+        // is when the loop is hot-spinning (timeout==0). MAYA_IO_LOG only.
+        {
+            static std::chrono::steady_clock::time_point last_dbg{};
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_dbg >= std::chrono::milliseconds(25)) {
+                last_dbg = now;
+                long long nfa = -1;
+                if (next_frame_at != std::chrono::steady_clock::time_point{})
+                    nfa = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              next_frame_at - now).count();
+                long long ntimer = -1;
+                for (auto& t : timers) {
+                    auto d = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 t.fire_at - now).count();
+                    if (ntimer < 0 || d < ntimer) ntimer = d;
+                }
+                detail::loop_dbg(std::format(
+                    "LOOP pt={} nr={} nfa={} ntimer={} timers={} pend={} animreq={} hpw={}",
+                    poll_timeout.count(), needs_render ? 1 : 0, nfa, ntimer,
+                    timers.size(), pending_msgs.size(),
+                    detail::animation_requested_ ? 1 : 0,
+                    rt.has_pending_writes() ? 1 : 0));
+            }
         }
 
         // Wait for events

@@ -153,13 +153,20 @@ public:
         INPUT_RECORD rec;
         DWORD cnt;
         while (::PeekConsoleInputW(stdin_, &rec, 1, &cnt) && cnt > 0) {
-            if (rec.EventType == WINDOW_BUFFER_SIZE_EVENT ||
-                rec.EventType == FOCUS_EVENT ||
-                rec.EventType == MENU_EVENT) {
-                ::ReadConsoleInputW(stdin_, &rec, 1, &cnt);
-            } else {
-                break;  // Real input — let ReadFile handle it.
-            }
+            // ONLY a key-DOWN produces a byte for ReadFile in VT-input mode.
+            // Anything else at the front of the queue — key-UP, mouse, focus,
+            // menu, resize — yields no byte, so the *blocking* ReadFile below
+            // would consume it and then wait for the next translatable key,
+            // i.e. until the user presses something. That is the WezTerm-on-
+            // Windows freeze: after the Enter that submits a turn, conhost
+            // leaves Enter's key-UP record in the queue (Windows Terminal's
+            // ConPTY suppresses it); it flags "input ready," ReadFile eats it
+            // and blocks for seconds, freezing the spinner/stream until a
+            // keypress. Drain every non-key-down record so ReadFile is only
+            // entered when it will return immediately.
+            if (rec.EventType == KEY_EVENT && rec.Event.KeyEvent.bKeyDown)
+                break;
+            ::ReadConsoleInputW(stdin_, &rec, 1, &cnt);
         }
 
         // If only system events were in the queue, nothing left to read.

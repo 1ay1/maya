@@ -204,19 +204,33 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     build_dirty_ = true;
     ++source_version_;
 
-    // Keep scanner state coherent with the new committed_. The
-    // earlier conditional resync only fired when commit_range jumped
-    // past scan_cursor_ (the finish() path); for the normal
-    // append_safe path scan_in_fence_ was left untouched on the
-    // assumption it already equalled in_code_fence_. That invariant
-    // is fragile: any future eager-commit branch that advances
-    // last_boundary past lines without re-evaluating fence parity
-    // can let the two drift. Unconditional resync removes the
-    // dependency on that invariant — cheap (two stores) and makes
-    // the post-commit state a proven function of in_code_fence_.
+    // Keep scanner state coherent with the new committed_.
+    //
+    // Resyncing scan_in_fence_ to in_code_fence_ is valid ONLY when the
+    // commit caught up to (or passed) the resumable scanner —
+    // committed_ >= scan_cursor_. Then both describe the SAME byte
+    // position, so the committed-prefix fence parity (in_code_fence_) is
+    // also the parity at scan_cursor_. This covers finish() and every
+    // eager-commit branch (closing-fence / table / heading / hrule),
+    // which all set last_boundary == the scan position.
+    //
+    // When committed_ < scan_cursor_ the scanner has walked AHEAD into
+    // the still-uncommitted tail — e.g. past an opening ``` whose closing
+    // fence hasn't arrived yet (a chunk ended mid-code-block).
+    // find_block_boundary already advanced scan_in_fence_ to the fence
+    // parity AT scan_cursor_ as it walked there (true — inside the open
+    // fence). in_code_fence_ is only the parity at the EARLIER committed_
+    // (false — the opening fence is still in the tail), so overwriting
+    // scan_in_fence_ with it DROPS the open-fence state. On the next call
+    // the closing ``` is then read as an OPENING fence and every
+    // following paragraph/heading/list is buried in one code block: the
+    // chunk-boundary-dependent "prose rendered as code" streaming
+    // corruption. Leave the scanner's own state intact in that case.
     scan_last_boundary_ = committed_;
-    if (scan_cursor_ < committed_) scan_cursor_ = committed_;
-    scan_in_fence_ = in_code_fence_;
+    if (committed_ >= scan_cursor_) {
+        scan_cursor_   = committed_;
+        scan_in_fence_ = in_code_fence_;
+    }
 }
 
 // Internal: append codepoint-clean bytes that have already passed through
@@ -269,23 +283,43 @@ void StreamingMarkdown::append_safe(std::string_view safe_bytes) {
 std::size_t StreamingMarkdown::byte_offset_for_cp(
     std::size_t n_cp) const noexcept
 {
-    // Cached: the last (n_cp, byte) pair walked. Cursor advance + the
-    // append_safe gate in the same frame ask for the SAME n_cp twice
-    // — a single source_.size() check + equal-cp short-circuit avoids
-    // the second walk.
+    // Exact-match short-circuit: the same (n_cp, source size) asked twice
+    // (cursor advance, then the in-frame consumer) returns the cached byte
+    // with zero walking.
     if (cp_to_byte_cache_at_ == source_.size()
         && cp_to_byte_cache_cp_ == n_cp) {
         return cp_to_byte_cache_byte_;
     }
-    // Walk from 0. Counting UTF-8 lead bytes (high bits != 10).
-    // Steady-state cursor walks codepoints monotonically; the cache
-    // amortises but a full walk is still O(source_size) on a cold
-    // call. Acceptable: called at most twice per frame, and the
-    // typewriter rate (~120 cps) means the cursor crosses ~2 cp per
-    // frame at 60 fps — source_ rarely exceeds tens of KB during a
-    // live stream.
+
+    // Forward-resumable walk — flat per-frame cost regardless of turn
+    // length. The reveal cursor advances MONOTONICALLY (reveal_cp_ only
+    // grows, except on clear()/replace which reset the cache below), and
+    // during a live stream source_ is APPEND-ONLY — so bytes
+    // [0, cp_to_byte_cache_byte_) are provably unchanged and the cached
+    // (cp, byte) pair is still a valid waypoint. Resume the count from
+    // there instead of restarting at byte 0, so each frame walks only the
+    // ~2 codepoints the cursor advanced (O(Δcp)), not the whole buffer.
+    //
+    // Without this the clip recompute in advance_reveal_cursor_ ran a
+    // branchy UTF-8 scan from 0 to the cursor on EVERY animation frame
+    // (the exact-match cache misses every frame because both n_cp and
+    // source size move), so a long reply's per-frame animation cost grew
+    // O(source_size) with its length — streaming visibly slowed/lagged as
+    // the turn got longer. O(Δcp)/frame keeps it constant.
+    //
+    // The waypoint is trusted only when it can't have been invalidated:
+    // the cache was taken at a size <= the current size (source grew or
+    // held → the prefix is unchanged) and the request is at/ahead of the
+    // waypoint cp. Any backward request or apparent shrink falls back to a
+    // cold walk from 0 — correct, just not amortised.
     std::size_t bytes_seen = 0;
     std::size_t cps_seen   = 0;
+    if (n_cp >= cp_to_byte_cache_cp_
+        && cp_to_byte_cache_at_  <= source_.size()
+        && cp_to_byte_cache_byte_ <= source_.size()) {
+        bytes_seen = cp_to_byte_cache_byte_;
+        cps_seen   = cp_to_byte_cache_cp_;
+    }
     while (bytes_seen < source_.size() && cps_seen < n_cp) {
         ++bytes_seen;
         while (bytes_seen < source_.size()

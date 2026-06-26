@@ -17,6 +17,7 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <set>
 #include <future>
 #include <optional>
 #include <print>
@@ -1176,6 +1177,77 @@ static void st_eager_closing_fence() {
     }
 }
 
+// Regression: a chunk boundary that falls INSIDE a fenced code block (after
+// the opening ``` but before the closing ```'s newline) must NOT desync the
+// resumable boundary scanner. Before the commit.cpp fix, commit_range
+// unconditionally ran `scan_in_fence_ = in_code_fence_`, clobbering the
+// scanner's "inside an open fence" state whenever it had walked AHEAD of
+// committed_ into the uncommitted tail (past an opening ``` whose close hadn't
+// arrived). The next closing ``` was then read as an OPENING fence and every
+// following paragraph / heading / list was swallowed into one code block: the
+// chunk-boundary-dependent "prose rendered as code" streaming corruption.
+//
+// This feeds several fence-bearing docs (including the two-fence shape from
+// the bug report) at EVERY pause offset and asserts: no paragraph is ever
+// committed as a CodeBlock, and the set of code-block START offsets matches a
+// trusted one-shot parse. (Block END can legitimately differ by one byte at
+// the closing-fence-without-newline boundary, so we compare starts.)
+static void st_fence_chunk_boundary_no_desync() {
+    auto is_fence_start = [](const std::string& s, std::size_t off) {
+        std::size_t j = off;
+        while (j < s.size() && (s[j]=='\n'||s[j]=='\r'||s[j]==' '||s[j]=='\t')) ++j;
+        return j + 3 <= s.size() &&
+            ((s[j]=='`'&&s[j+1]=='`'&&s[j+2]=='`') ||
+             (s[j]=='~'&&s[j+1]=='~'&&s[j+2]=='~'));
+    };
+    auto code_offsets = [](const StreamingMarkdown& md) {
+        std::vector<std::size_t> v;
+        for (std::size_t i = 0; i < md.block_count(); ++i)
+            if (md.block_meta(i).kind == StreamingMarkdown::BlockKind::CodeBlock)
+                v.push_back(md.block_meta(i).source_offset);
+        return v;
+    };
+
+    const std::string docs[] = {
+        "intro\n\n```\nCODE A\nCODE B\n```\n\ntail prose must stay prose\n",
+        // The reported shape: two fences with prose + heading + list between.
+        "p\n\n```\nfirst\n```\n\nbetween **prose**\n\n## head\n\n- a\n- b\n\n"
+        "```\nsecond\n```\n\nafter\n",
+        "~~~\ntilde\n~~~\n\nprose after a tilde fence\n",
+    };
+    for (const std::string& doc : docs) {
+        StreamingMarkdown oracle;
+        oracle.set_content(doc);
+        oracle.finish();
+        const std::vector<std::size_t> want = code_offsets(oracle);
+
+        for (std::size_t k = 1; k < doc.size(); ++k) {
+            StreamingMarkdown md;
+            md.set_live(true);
+            md.set_reveal_fx(true);
+            md.set_content(std::string_view{doc}.substr(0, k));  // pause mid-stream
+            (void)md.build();
+            md.set_content(doc);                                  // rest arrives
+            (void)md.build();
+            md.finish();
+
+            for (std::size_t i = 0; i < md.block_count(); ++i) {
+                const auto m = md.block_meta(i);
+                if (m.kind == StreamingMarkdown::BlockKind::CodeBlock
+                    && !is_fence_start(md.source(), m.source_offset))
+                    throw std::runtime_error(
+                        "fence desync: prose committed as code at pause "
+                        + std::to_string(k) + " (block " + std::to_string(i)
+                        + " off " + std::to_string(m.source_offset) + ")");
+            }
+            if (code_offsets(md) != want)
+                throw std::runtime_error(
+                    "fence desync: code-block set diverged from one-shot at "
+                    "pause " + std::to_string(k));
+        }
+    }
+}
+
 // Big committed blocks must blit, not re-render, every frame. Build a
 // transcript with several large code blocks + a wide table (the
 // expensive-to-lay-out kinds), finish so they're all committed, then
@@ -1817,6 +1889,101 @@ static void st_reveal_fx_overlay_styled_runs_visible() {
     }
 }
 
+// Pin that a STREAMING TABLE animates. Before the eager-component reveal
+// wrapper, render_eager_slice wrapped the live table in a ComponentElement
+// that find_last_text bailed at, so the table appeared row-by-row with ZERO
+// per-frame styling change ("the animation doesn't happen when its rendering
+// things like table"). Now the overlay wraps the table's render and decorates
+// its newest DATA row, so the last data row's rendered cells CHANGE across
+// frames (scramble/gradient) and differ from the settled render. The table is
+// kept in the LIVE TAIL (no trailing blank line) so it never commits.
+static void st_reveal_fx_table_animates() {
+    auto is_border = [](char32_t c) {
+        switch (c) {
+            case 0x2500: case 0x2502: case 0x250C: case 0x2510:
+            case 0x2514: case 0x2518: case 0x251C: case 0x2524:
+            case 0x252C: case 0x2534: case 0x253C: case 0x2508: return true;
+            default: return false;
+        }
+    };
+    // Render md, find the LAST data row (│ separators AND content, skipping
+    // pure-border rows), return its cells as a token string. Empty until the
+    // table is visible.
+    auto last_row_tokens = [&](StreamingMarkdown& md, StylePool& pool) -> std::string {
+        Element el = md.build();
+        Canvas canvas(80, /*h=*/2000, &pool);
+        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        int h = content_height(canvas);
+        const std::uint64_t* c = canvas.cells();
+        int best = -1;
+        for (int y = 0; y < h; ++y) {
+            bool sep = false, content = false;
+            for (int x = 0; x < 80; ++x) {
+                char32_t ch = Cell::unpack(c[(std::size_t)y * 80 + x]).character;
+                if (ch == 0x2502) sep = true;
+                else if (ch != U' ' && !is_border(ch)) content = true;
+            }
+            if (sep && content) best = y;
+        }
+        if (best < 0) return {};
+        std::string tok;
+        for (int x = 0; x < 80; ++x)
+            tok += std::to_string(c[(std::size_t)best * 80 + x]) + ",";
+        return tok;
+    };
+
+    // Settled reference (one-shot parse + finish, reveal off).
+    std::string settled;
+    {
+        StylePool pool;
+        StreamingMarkdown done;
+        done.set_content(
+            "| name | old | new |\n|------|-----|-----|\n"
+            "| alpha | 0.69 | 0.041 |\n| beta | 6.66 | 0.044 |\n"
+            "| gamma | 65.3 | 0.041 |\n\ntrailing.\n");
+        done.finish();
+        settled = last_row_tokens(done, pool);
+    }
+
+    // Live stream + reveal, table kept uncommitted (no trailing blank line).
+    StreamingMarkdown md;
+    md.set_live(true);
+    md.set_reveal_fx(true);
+    const std::string table_part =
+        "| name | old | new |\n|------|-----|-----|\n"
+        "| alpha | 0.69 | 0.041 |\n| beta | 6.66 | 0.044 |\n"
+        "| gamma | 65.3 | 0.041 |\n";
+
+    StylePool pool;
+    std::set<std::string> distinct;
+    int differ_from_settled = 0;
+    std::size_t fed = 0;
+    for (int i = 0; i < 400; ++i) {
+        if (fed < table_part.size() && (i % 2) == 0) {
+            std::size_t n = std::min<std::size_t>(3, table_part.size() - fed);
+            md.append(std::string_view{table_part}.substr(fed, n));
+            fed += n;
+        }
+        std::string t = last_row_tokens(md, pool);
+        if (!t.empty()) {
+            distinct.insert(t);
+            if (t != settled) ++differ_from_settled;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(8));
+        if (fed >= table_part.size() && !md.reveal_in_progress() && i > 30)
+            break;
+    }
+
+    if (distinct.size() <= 1 || differ_from_settled == 0)
+        throw std::runtime_error(
+            "TABLE DID NOT ANIMATE: the streaming table's last data row was "
+            "static across frames (distinct renders="
+            + std::to_string(distinct.size()) + ", frames differing from "
+            "settled=" + std::to_string(differ_from_settled) + "). The eager "
+            "reveal wrapper is not landing the scramble/gradient on the table "
+            "rows.");
+}
+
 // Reveal-fx must not snap when bytes arrive DURING the reveal. Feeds the
 // doc in small chunks with a sleep between each, calling build() in a
 // tight inner loop so the reveal cursor advances through the chunk's
@@ -2242,6 +2409,7 @@ int main() {
     run("set_content_async roundtrip",  8000ms, st_set_content_async_roundtrip);
     run("eager hrule (no snap)",        2000ms, st_eager_hrule);
     run("eager closing fence (no snap)", 2000ms, st_eager_closing_fence);
+    run("fence chunk-boundary (no desync)", 4000ms, st_fence_chunk_boundary_no_desync);
     run("big blocks blit ×300",         2000ms, st_big_blocks_blit);
     run("commit storm ×80",            3000ms, st_commit_storm);
     run("streaming table ×200",        3000ms, st_streaming_table);
@@ -2257,6 +2425,7 @@ int main() {
     run("reveal-fx commit snap (no chrome flicker)", 3000ms, st_reveal_fx_commit_snap_no_chrome_flicker);
     run("reveal-fx stable height during animation", 3000ms, st_reveal_fx_stable_height_during_animation);
     run("reveal-fx overlay styled runs visible", 3000ms, st_reveal_fx_overlay_styled_runs_visible);
+    run("reveal-fx table animates", 4000ms, st_reveal_fx_table_animates);
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",
                  g_passed - g_slow, g_slow, g_failed, g_skipped);

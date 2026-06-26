@@ -38,6 +38,94 @@ namespace maya {
 // other widget can reuse it. (The former local reveal_detail::pulse01 was dead
 // after the Phase-3 lift and has been removed.)
 
+namespace {
+
+// ── Eager-block (table) reveal helpers ──────────────────────────────────────
+//
+// Lists / blockquotes / code blocks render their LIVE tail as a plain
+// BoxElement, so the overlay's find_last_text already walks to their last
+// content line and decorates it. A TABLE is the exception: render_eager_slice
+// wraps it in a hash-keyed ComponentElement whose render() returns ANOTHER
+// (width-aware) ComponentElement, so the materialised cell rows only exist at
+// paint time. find_last_text bails at the outer component and the table never
+// animates ("the animation doesn't happen when its rendering things like
+// table"). The helpers below let the overlay reach the materialised rows from
+// inside a render-closure wrapper (see the eager branch in
+// render_live_overlay_).
+
+// Box-drawing glyphs the table / border builders emit. A text row whose every
+// non-space codepoint is one of these is a STRUCTURAL border / separator row
+// (┌─┬─┐ / ├┈┼┈┤ / └─┴─┘), not a data row — skip it when choosing which row to
+// animate so the shimmer lands on the newest CONTENT row, not the frame.
+[[nodiscard]] inline bool is_table_border_glyph(char32_t c) noexcept {
+    switch (c) {
+        case U'\u2500': case U'\u2502': case U'\u250C': case U'\u2510':
+        case U'\u2514': case U'\u2518': case U'\u251C': case U'\u2524':
+        case U'\u252C': case U'\u2534': case U'\u253C': case U'\u2508':
+            return true;
+        default:
+            return false;
+    }
+}
+
+// True when `s` (a row's rendered content) carries any non-space, non-border
+// codepoint — i.e. it is a data/header row, not a pure border/separator line.
+[[nodiscard]] inline bool row_has_content(std::string_view s) noexcept {
+    std::size_t i = 0;
+    while (i < s.size()) {
+        const unsigned char b = static_cast<unsigned char>(s[i]);
+        char32_t cp; std::size_t len;
+        if (b < 0x80)            { cp = b;         len = 1; }
+        else if ((b >> 5) == 0x6){ cp = b & 0x1F; len = 2; }
+        else if ((b >> 4) == 0xE){ cp = b & 0x0F; len = 3; }
+        else if ((b >> 3) == 0x1E){ cp = b & 0x07; len = 4; }
+        else { ++i; continue; }   // stray continuation byte — skip
+        for (std::size_t k = 1; k < len && i + k < s.size(); ++k)
+            cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+        i += len;
+        if (cp == U' ' || cp == U'\t' || cp == U'\r') continue;
+        if (!is_table_border_glyph(cp)) return true;
+    }
+    return false;
+}
+
+// Walk a MATERIALISED element tree (BoxElement / ElementList of TextElements —
+// e.g. a rendered table) and return the rightmost-in-render-order TextElement
+// that is a content row. Falls back to the last non-empty text leaf when every
+// row is structural (degenerate all-empty-cell table). Returns nullptr if no
+// text leaf exists. ComponentElement children are NOT descended (they need a
+// width to materialise — the caller wraps those separately).
+inline void collect_last_content_leaf(Element& e, TextElement*& last_any,
+                                      TextElement*& last_content) noexcept {
+    if (auto* t = std::get_if<TextElement>(&e.inner)) {
+        if (!t->content.empty()) {
+            last_any = t;
+            if (row_has_content(t->content)) last_content = t;
+        }
+        return;
+    }
+    if (auto* b = std::get_if<BoxElement>(&e.inner)) {
+        for (auto& c : b->children)
+            collect_last_content_leaf(c, last_any, last_content);
+        return;
+    }
+    if (auto* l = std::get_if<ElementList>(&e.inner)) {
+        for (auto& it : l->items)
+            collect_last_content_leaf(it, last_any, last_content);
+        return;
+    }
+    // ComponentElement / ElementListRef: not descended here.
+}
+
+[[nodiscard]] inline TextElement* rightmost_content_text_leaf(Element& root) noexcept {
+    TextElement* last_any = nullptr;
+    TextElement* last_content = nullptr;
+    collect_last_content_leaf(root, last_any, last_content);
+    return last_content ? last_content : last_any;
+}
+
+} // namespace
+
 void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     // Nothing to ramp if we're not live: the next build() would short-
     // circuit at the !live_ guard and the ramp would just sit unrunnable,
@@ -479,6 +567,27 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             return nullptr;
         };
 
+        // Companion to find_last_text for the EAGER (component-wrapped) tail.
+        // When find_last_text bails (returns nullptr with eager_render = true)
+        // the live block is a TABLE whose rows live behind a ComponentElement;
+        // this walks the same rightmost spine and hands back that component so
+        // the caller can wrap its render() and animate the materialised rows.
+        auto find_last_eager_component =
+            [](Element& root) -> ComponentElement* {
+            Element* cur = &root;
+            for (int step = 0; step < 64; ++step) {
+                if (auto* c = std::get_if<ComponentElement>(&cur->inner))
+                    return c;
+                if (auto* b = std::get_if<BoxElement>(&cur->inner)) {
+                    if (b->children.empty()) return nullptr;
+                    cur = &b->children.back();
+                    continue;
+                }
+                return nullptr;   // TextElement / list — not the component case
+            }
+            return nullptr;
+        };
+
         // Step-back / age / colour / scramble helpers now live in the
         // framework primitive (maya::anim, anim/text_reveal.hpp). The overlay
         // here only walks to the tail leaf (find_last_text above) and hands
@@ -622,6 +731,91 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             rp.char_step_ms          = kCharStepMs;
             rp.ghost_extra           = kGhostExtra;
             (void)anim::decorate_text_reveal(*tail, rp);
+        } else if (eager_render
+                   && (age_at_tail_ms <= 360
+                       || cursor_advance_total_cp_ > revealed_cp)) {
+            // ── Eager (table) tail decoration ──
+            //
+            // find_last_text bailed: the live block is a TABLE whose rows are
+            // behind a ComponentElement (render_eager_slice wraps it in a
+            // hash-keyed component whose render() returns the table's own
+            // width-aware renderer). We can't materialise it here (width-0
+            // collapse), so WRAP its render() — at paint time, with the real
+            // width handed down by layout, decorate the newest CONTENT row of
+            // the materialised output (skipping the box-drawing border rows).
+            //
+            // Gate: only while the edge is still HOT (a row landed within
+            // ~360 ms, or the reveal cursor is still catching up). While hot,
+            // re-key the component's hash so the renderer re-renders it (and
+            // re-runs the decoration) instead of blitting frozen cached cells;
+            // once the table settles the gate goes false, the clean cached
+            // component (with its stable per-row hash) returns and the cell
+            // cache blits it again. Height-stable: decorate_text_reveal only
+            // rewrites the trailing runs, never adds codepoints, so committed
+            // rows can't reflow into scrollback.
+            if (ComponentElement* comp =
+                    find_last_eager_component(animated_body)) {
+                anim::TextRevealParams rp;
+                rp.ms_total     = ms_total;
+                rp.edge_age_ms  = age_at_tail_ms;
+                rp.revealed_cp  = 0;      // whole row revealed
+                rp.total_cp     = 0;      // derive from the row content
+                rp.clip_active  = false;
+                rp.trail_len    = kTrailLen;
+                rp.scramble_len = kScrambleLen;
+                rp.scramble_ms  = kScrambleMs;
+                rp.char_step_ms = kCharStepMs;
+                rp.ghost_extra  = 0;
+                rp.enable_ghost = false;  // rows render whole — no ghost band
+                rp.enable_sweep = false;  // no within-row typewriter cursor
+                rp.enable_caret = false;
+                auto orig = comp->render;
+                comp->render = [orig, rp](int w, int h) -> Element {
+                    Element out = orig ? orig(w, h) : Element{};
+                    // The eager wrapper's render hands back the block's OWN
+                    // lazy renderer (another ComponentElement — the table's
+                    // width-aware builder). Wrap THAT so we reach the
+                    // materialised rows; if it already produced a Box/Text
+                    // tree, decorate it directly.
+                    if (auto* inner =
+                            std::get_if<ComponentElement>(&out.inner)) {
+                        auto inner_render = inner->render;
+                        inner->render =
+                            [inner_render, rp](int w2, int h2) -> Element {
+                            Element mat = inner_render ? inner_render(w2, h2)
+                                                       : Element{};
+                            if (TextElement* leaf =
+                                    rightmost_content_text_leaf(mat))
+                                (void)anim::decorate_text_reveal(*leaf, rp);
+                            return mat;
+                        };
+                        inner->hash_id = {};
+                    } else if (TextElement* leaf =
+                                   rightmost_content_text_leaf(out)) {
+                        (void)anim::decorate_text_reveal(*leaf, rp);
+                    }
+                    return out;
+                };
+                // Re-key (don't clear) the hash so the cells cache re-captures
+                // the decorated rows at a BOUNDED rate. Mixing the component's
+                // ORIGINAL content hash (it already encodes the table's
+                // per-row slice identity, so it changes whenever a new row is
+                // revealed) with a coarse time bucket means the renderer
+                // re-lays-out the live table on a new row OR ~30 fps — not on
+                // every 60 fps frame. Between bucket ticks the decorated cells
+                // blit, so a large streaming table doesn't pay a full
+                // layout::compute every frame (the cost the per-row hash cache
+                // was built to avoid). Once the gate goes false the original
+                // stable hash is left intact and the table re-settles cached.
+                constexpr std::int64_t kEagerAnimBucketMs = 33;
+                const std::uint64_t content_key = comp->hash_id.hash();
+                comp->hash_id = CacheIdBuilder{}
+                    .add(std::string_view{"eager-reveal-anim"})
+                    .add(content_key)
+                    .add(static_cast<std::uint64_t>(
+                             ms_total / kEagerAnimBucketMs))
+                    .build();
+            }
         }
 
         // ── Inline end-caret ──

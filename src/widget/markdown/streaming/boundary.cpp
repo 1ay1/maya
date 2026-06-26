@@ -280,13 +280,32 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                     // info string is permitted on a closing fence): the
                     // block can't grow further within these bytes, so
                     // commit past it. This is the common Claude ending
-                    // "…```" with no trailing newline. Without this, the
-                    // closed block sat in the tail (render_tail) until
-                    // finish() re-rendered it via the canonical block
-                    // path — a cell-level divergence that repainted the
-                    // whole block at settle. An OPENING fence (!in_fence)
-                    // with no terminator stays in the tail: its language
-                    // / first line are still arriving.
+                    // "…```" with no trailing newline.
+                    //
+                    // Load-bearing (verified, do NOT "simplify" away):
+                    // without this eager commit the closed block sits in
+                    // the tail, where render_tail's canonical path parses
+                    // the still-OPEN fence (the closing ``` is the
+                    // suppressed live line) and emits a phantom trailing
+                    // body row — 6 rows where the committed closed block is
+                    // 5. That 1-row shrink at settle is a height-
+                    // monotonicity break (scratch/diag_fence: live_h=6 vs
+                    // committed_h=5). Committing here makes the live render
+                    // identical to the committed one.
+                    //
+                    // The cost is a benign, invisible metadata nit: the
+                    // committed block's source_end excludes the closing
+                    // fence's trailing '\n' when a chunk happens to split
+                    // exactly at "...```" (streamed source_end 627 vs the
+                    // one-shot 628). Proven to change ZERO rendered cells
+                    // across every chunking (scratch/repro_issueA), so the
+                    // trailing '\n' simply lands in the inter-block gap
+                    // instead of the code block's range — no fold / lookup /
+                    // render consequence.
+                    //
+                    // An OPENING fence (!in_fence) with no terminator stays
+                    // in the tail: its language / first line are still
+                    // arriving.
                     if (in_fence) {
                         // Skip the full fence-marker run (``` may be
                         // ```` etc.; ~~~ likewise) before checking the

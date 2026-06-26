@@ -761,14 +761,35 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 rp.revealed_cp  = 0;      // whole row revealed
                 rp.total_cp     = 0;      // derive from the row content
                 rp.clip_active  = false;
-                rp.trail_len    = kTrailLen;
-                rp.scramble_len = kScrambleLen;
+                // A table row APPEARS WHOLE (one row-commit), so it should
+                // fade UNIFORMLY — not with the positional hot→cool sweep the
+                // char typewriter uses (that ages each cp by its distance
+                // from the tail, which on a row puts the hottest cell on the
+                // rightmost │ border + trailing padding, reading as a glitchy
+                // one-sided glow on the frame). char_step_ms=0 gives every
+                // trailing cp the SAME age (edge_age), so the whole band
+                // shares one heat and cools together; a wide trail_len makes
+                // that band span the full row so it fades as a unit.
+                rp.trail_len    = 256;    // cover the whole row width
+                rp.scramble_len = 0;
                 rp.scramble_ms  = kScrambleMs;
-                rp.char_step_ms = kCharStepMs;
+                rp.char_step_ms = 0;      // uniform heat across the row
                 rp.ghost_extra  = 0;
                 rp.enable_ghost = false;  // rows render whole — no ghost band
                 rp.enable_sweep = false;  // no within-row typewriter cursor
                 rp.enable_caret = false;
+                // CRITICAL: no glyph scramble on a table row. A row is one
+                // flat text leaf — "│ a │ b │ c     │" — whose trailing
+                // codepoints are STRUCTURAL (cell padding + the closing │
+                // border), not freshly-typed content. The scramble window
+                // (kScrambleLen cp at the tail) would substitute noise
+                // glyphs over the border/padding, garbling the row's right
+                // edge for the whole hot window ("17x     │" → "17x0■○17@").
+                // The row appears WHOLE, so there is no "char being typed"
+                // to churn anyway. Keep only the gradient: it recolours the
+                // trailing band (borders glow, padding spaces stay
+                // invisible) for a clean fade-in with zero corruption.
+                rp.enable_scramble = false;
                 auto orig = comp->render;
                 comp->render = [orig, rp](int w, int h) -> Element {
                     Element out = orig ? orig(w, h) : Element{};

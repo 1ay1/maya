@@ -1999,6 +1999,105 @@ static void st_reveal_fx_table_animates() {
             "rows.");
 }
 
+// Regression: a STREAMING table row must never have its STRUCTURE corrupted by
+// the reveal effect. The newest row is one flat text leaf
+// ("│ a │ b │ c     │"); an earlier version ran the typewriter SCRAMBLE
+// over its trailing codepoints — which on a table row are the cell padding +
+// the closing │ border, NOT freshly-typed content — so the row's right edge
+// turned into noise glyphs ("17x     │" -> "17x0■○17@") for the whole hot
+// window. The fix makes the table reveal recolour-ONLY (uniform fade); the
+// glyphs stay byte-identical to the settled row. Invariant pinned here: on
+// EVERY frame of the reveal, every visible formatted data row (right-trimmed)
+// begins AND ends with the │ border (U+2502). The old scramble code violated
+// this the instant the newest row appeared.
+static void st_reveal_fx_table_no_border_corruption() {
+    auto is_border = [](char32_t c) {
+        switch (c) {
+            case 0x2500: case 0x2502: case 0x250C: case 0x2510:
+            case 0x2514: case 0x2518: case 0x251C: case 0x2524:
+            case 0x252C: case 0x2534: case 0x253C: case 0x2508: return true;
+            default: return false;
+        }
+    };
+    // Every formatted data row (has │ separators AND content, skipping pure
+    // border/separator rows), right-trimmed, as a u32 codepoint string.
+    auto data_rows = [&](StreamingMarkdown& md, StylePool& pool)
+        -> std::vector<std::u32string> {
+        Element el = md.build();
+        Canvas canvas(80, /*h=*/128, &pool);
+        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        int h = content_height(canvas);
+        const std::uint64_t* c = canvas.cells();
+        std::vector<std::u32string> out;
+        for (int y = 0; y < h; ++y) {
+            bool sep = false, content = false;
+            std::u32string row;
+            for (int x = 0; x < 80; ++x) {
+                char32_t ch = Cell::unpack(c[(std::size_t)y * 80 + x]).character;
+                if (ch == 0) ch = U' ';
+                if (ch == 0x2502) sep = true;
+                else if (ch != U' ' && !is_border(ch)) content = true;
+                row.push_back(ch);
+            }
+            while (!row.empty() && row.back() == U' ') row.pop_back();
+            // The markdown widget renders a small left margin (leading
+            // spaces) ahead of every block; strip it so the border check
+            // sees the row's own first/last glyph, not the margin.
+            std::size_t lead = 0;
+            while (lead < row.size() && row[lead] == U' ') ++lead;
+            row.erase(0, lead);
+            if (sep && content) out.push_back(std::move(row));
+        }
+        return out;
+    };
+
+    StreamingMarkdown md;
+    md.set_live(true);
+    md.set_reveal_fx(true);
+    // Corruption is pacing-INDEPENDENT (it's what the decorator does to a row,
+    // not when). Crank the cursor so it catches each fed chunk within a frame
+    // and the test finishes fast; each row still passes through the hot
+    // (age <= 360 ms) decoration window where the old scramble struck.
+    md.set_reveal_pacing(/*floor_cps=*/12000.0, /*drain_secs=*/0.8);
+    const std::string table_part =
+        "| name  | old  | new   | speedup |\n|-------|------|-------|---------|\n"
+        "| alpha | 0.69 | 0.041 | 17x     |\n| beta  | 6.66 | 0.044 | 150x    |\n"
+        "| gamma | 65.3 | 0.041 | 1575x   |\n| delta | 12.1 | 0.052 | 233x    |\n";
+
+    StylePool pool;
+    std::size_t fed = 0;
+    int frames_with_table = 0;
+    for (int i = 0; i < 200; ++i) {
+        if (fed < table_part.size()) {
+            std::size_t n = std::min<std::size_t>(6, table_part.size() - fed);
+            md.append(std::string_view{table_part}.substr(fed, n));
+            fed += n;
+        }
+        auto rows = data_rows(md, pool);
+        if (!rows.empty()) ++frames_with_table;
+        for (std::size_t r = 0; r < rows.size(); ++r) {
+            const auto& row = rows[r];
+            if (row.empty()) continue;
+            if (row.front() != 0x2502 || row.back() != 0x2502) {
+                char buf[128];
+                std::snprintf(buf, sizeof(buf),
+                    "TABLE BORDER CORRUPTED mid-reveal: data row %zu "
+                    "starts U+%04X ends U+%04X (expected U+2502 both). The "
+                    "reveal effect scrambled a row's structural border/padding.",
+                    r, (unsigned)row.front(), (unsigned)row.back());
+                throw std::runtime_error(buf);
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        if (fed >= table_part.size() && !md.reveal_in_progress() && i > 16)
+            break;
+    }
+    if (frames_with_table < 3)
+        throw std::runtime_error(
+            "table never rendered during the stream — test is vacuous ("
+            + std::to_string(frames_with_table) + " frames with a table).");
+}
+
 // Reveal-fx must not snap when bytes arrive DURING the reveal. Feeds the
 // doc in small chunks with a sleep between each, calling build() in a
 // tight inner loop so the reveal cursor advances through the chunk's
@@ -2469,6 +2568,7 @@ int main() {
     run("reveal-fx stable height during animation", 3000ms, st_reveal_fx_stable_height_during_animation);
     run("reveal-fx overlay styled runs visible", 3000ms, st_reveal_fx_overlay_styled_runs_visible);
     run("reveal-fx table animates", 4000ms, st_reveal_fx_table_animates);
+    run("reveal-fx table no border corruption", 4000ms, st_reveal_fx_table_no_border_corruption);
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   slow: {}   failed: {}   skipped: {}",
                  g_passed - g_slow, g_slow, g_failed, g_skipped);

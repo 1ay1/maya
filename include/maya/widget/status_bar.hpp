@@ -99,9 +99,20 @@ public:
         rows.reserve(3);
         rows.push_back(PhaseAccent{{.color = pcolor,
                                     .position = PhaseAccent::Position::Top}}.build());
-        rows.push_back(cfg_.status_banner.text.empty()
-                           ? activity_row()
-                           : toast_row());
+        // The middle row (activity strip or toast) is hard-locked to
+        // exactly one cell tall AND clipped. A squeezed sub-widget (the
+        // context gauge, phase chip, model badge, breadcrumb) can word-
+        // wrap its text to a second line when the terminal is narrow;
+        // that 2-line child would otherwise paint past the bottom accent
+        // and grow the whole status bar from 3 rows to 4. height(1)
+        // fixes the slot to one cell and overflow:Hidden clips anything
+        // the (already width-pruned) content can't fit — so the bar is a
+        // stable single line at every width, truncated at the edge
+        // rather than wrapped onto a phantom row.
+        rows.push_back((cfg_.status_banner.text.empty()
+                            ? activity_row()
+                            : toast_row())
+                       | height(1) | overflow(Overflow::Hidden));
         rows.push_back(PhaseAccent{{.color = pcolor,
                                     .position = PhaseAccent::Position::Bottom}}.build());
         return v(std::move(rows)).build();

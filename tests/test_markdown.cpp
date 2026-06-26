@@ -1911,7 +1911,10 @@ static void st_reveal_fx_table_animates() {
     // table is visible.
     auto last_row_tokens = [&](StreamingMarkdown& md, StylePool& pool) -> std::string {
         Element el = md.build();
-        Canvas canvas(80, /*h=*/2000, &pool);
+        // 128 rows is ample for this ~8-row table; a 2000-row canvas made
+        // each frame's render heavy enough that the 400-iteration sampling
+        // loop below blew the watchdog on slower hosts.
+        Canvas canvas(80, /*h=*/128, &pool);
         render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
         int h = content_height(canvas);
         const std::uint64_t* c = canvas.cells();
@@ -1958,7 +1961,15 @@ static void st_reveal_fx_table_animates() {
     std::set<std::string> distinct;
     int differ_from_settled = 0;
     std::size_t fed = 0;
-    for (int i = 0; i < 400; ++i) {
+    // The reveal cursor is a wall-clock typewriter (~120 cps), so driving it
+    // all the way to settle under a per-frame render is both unnecessary and
+    // machine-speed dependent — running the full 400-iteration loop blew the
+    // 4 s watchdog on slower hosts (HUNG). We only need to PROVE the table's
+    // last data row animates: that it varies frame-to-frame AND differs from
+    // the settled render. That evidence accrues WHILE the table is still
+    // streaming, so bail the instant it's in hand. The (lower) iteration cap
+    // keeps even the no-animation FAIL path bounded well under budget.
+    for (int i = 0; i < 120; ++i) {
         if (fed < table_part.size() && (i % 2) == 0) {
             std::size_t n = std::min<std::size_t>(3, table_part.size() - fed);
             md.append(std::string_view{table_part}.substr(fed, n));
@@ -1969,6 +1980,10 @@ static void st_reveal_fx_table_animates() {
             distinct.insert(t);
             if (t != settled) ++differ_from_settled;
         }
+        // Animation proven (row varies across frames AND is mid-reveal, i.e.
+        // differs from settled) — no need to feed/settle the rest.
+        if (distinct.size() >= 2 && differ_from_settled >= 3 && i > 30)
+            break;
         std::this_thread::sleep_for(std::chrono::milliseconds(8));
         if (fed >= table_part.size() && !md.reveal_in_progress() && i > 30)
             break;

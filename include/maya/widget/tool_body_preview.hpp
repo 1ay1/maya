@@ -898,11 +898,12 @@ private:
         // in the same visual language as a +-side hunk in git_diff /
         // edit_diff. The whole-file write is conceptually a single large
         // addition; matching palette keeps the timeline coherent when a Write
-        // sits next to an Edit or a git_diff. The band is clearly green (not a
-        // near-black tint) so it survives a phone / low-gamma SSH screen.
-        const Color add_bg    = Color::rgb(28, 72, 44);
-        const Color add_fg_br = Color::rgb(170, 244, 182);
-        const Color num_fg    = Color::rgb(126, 182, 140);   // muted green gutter
+        // sits next to an Edit or a git_diff. The band is a clear, LIGHT green
+        // (not a near-black tint) so it survives a phone / low-gamma SSH
+        // screen, with a near-white-green code fg for good contrast on top.
+        const Color add_bg    = Color::rgb(48, 116, 74);
+        const Color add_fg_br = Color::rgb(210, 255, 218);
+        const Color num_fg    = Color::rgb(156, 208, 170);   // muted green gutter
 
         // Line-number gutter rides the same green band as the code so the
         // whole row is one solid rectangle (no dim stripe cutting through);
@@ -1040,8 +1041,8 @@ private:
             // green adds) instead of a jagged "tint, blank, tint" strip.
             // Full-width band so the header rule spans the same rectangle
             // as the −/+ sides below it.
-            const Color hdr_bg = Color::rgb(38, 46, 70);
-            const Color hdr_fg = Color::rgb(190, 202, 236);
+            const Color hdr_bg = Color::rgb(52, 64, 96);
+            const Color hdr_fg = Color::rgb(208, 220, 248);
             rows.push_back(band_row("   ", Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
                 std::move(header),
                 Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
@@ -1075,16 +1076,17 @@ private:
                                    cfg_.edit_tail_per_side);
 
         const bool is_add = (marker == '+');
-        // Clear green / red bands (not near-black tints) so the diff reads on
+        // Light green / red bands (not near-black tints) so the diff reads on
         // a phone / low-gamma SSH screen, with a BRIGHTER sign rail on the
         // " + " / " - " gutter so the change marker pops like a GitHub /
-        // GitLab line indicator.
-        const Color bg      = is_add ? Color::rgb(28, 72, 44)
-                                     : Color::rgb(84, 30, 36);
-        const Color rail_bg = is_add ? Color::rgb(46, 104, 64)
-                                     : Color::rgb(116, 44, 50);
-        const Color fg_br   = is_add ? Color::rgb(170, 244, 182)
-                                     : Color::rgb(248, 162, 168);
+        // GitLab line indicator, and a near-white-tinted fg on top for good
+        // text contrast over the lighter band.
+        const Color bg      = is_add ? Color::rgb(48, 116, 74)
+                                     : Color::rgb(132, 56, 64);
+        const Color rail_bg = is_add ? Color::rgb(66, 146, 96)
+                                     : Color::rgb(168, 72, 80);
+        const Color fg_br   = is_add ? Color::rgb(210, 255, 218)
+                                     : Color::rgb(255, 212, 216);
         (void)c;   // c was the legacy fg; kept in signature for callers
 
         const Style sign_st = Style{}.with_fg(fg_br).with_bg(rail_bg).with_bold();
@@ -1109,12 +1111,13 @@ private:
     //    lines + `@@` hunk separators render through make_row with a `~`
     //    marker in muted so they read as section breaks.
     //
-    //    Diff coloring: bright fg (green/red) for the +/- glyph AND the
-    //    line body, plus a subtle whole-line background tint so the
-    //    diff regions read as colored bands instead of just-tinted
-    //    glyphs. RGB values are deliberately low-saturation (≈8% tint
-    //    on a black terminal) so the body chrome and the surrounding
-    //    card don't fight — the bg is a hint, the fg carries the signal.
+    //    Diff coloring: a clear green / red whole-line BACKGROUND band
+    //    carries the change signal so the diff reads at a glance even on a
+    //    phone / low-gamma SSH screen, with a near-white tinted fg on top for
+    //    good text contrast. The +/- gutter rail is a brighter shade of the
+    //    same hue so the change marker pops like a GitHub / GitLab indicator;
+    //    context + file metadata stay plain (no band) so the colored bands
+    //    read as changes floating over unchanged code.
     [[nodiscard]] Element git_diff() const {
         using namespace dsl;
         if (cfg_.text.empty()) {
@@ -1125,19 +1128,20 @@ private:
 
         const auto p = elide(cfg_.text, cfg_.code_head, cfg_.code_tail);
 
-        // Clear whole-line bands so the diff regions read on a phone /
+        // Light whole-line bands so the diff regions read on a phone /
         // low-gamma SSH screen. The +/- gutter gets a BRIGHTER rail than the
         // body band so the change marker pops like a GitHub / GitLab line
-        // indicator; the body band stays a touch calmer so the code is still
-        // legible over it. Context + file metadata get NO band (plain text).
-        const Color add_bg     = Color::rgb(28, 72, 44);   // clear green band
-        const Color rem_bg     = Color::rgb(84, 30, 36);   // clear red band
-        const Color hunk_bg    = Color::rgb(38, 46, 70);   // slate-blue for @@
-        const Color add_rail   = Color::rgb(46, 104, 64);  // brighter +-gutter rail
-        const Color rem_rail   = Color::rgb(116, 44, 50);  // brighter --gutter rail
-        const Color add_fg_br  = Color::rgb(170, 244, 182);
-        const Color rem_fg_br  = Color::rgb(248, 162, 168);
-        const Color hunk_fg    = Color::rgb(190, 202, 236);
+        // indicator; the body band stays a touch calmer so the near-white
+        // code fg keeps good contrast over it. Context + file metadata get NO
+        // band (plain text).
+        const Color add_bg     = Color::rgb(48, 116, 74);   // light green band
+        const Color rem_bg     = Color::rgb(132, 56, 64);   // light red band
+        const Color hunk_bg    = Color::rgb(52, 64, 96);    // slate-blue for @@
+        const Color add_rail   = Color::rgb(66, 146, 96);   // brighter +-gutter rail
+        const Color rem_rail   = Color::rgb(168, 72, 80);   // brighter --gutter rail
+        const Color add_fg_br  = Color::rgb(210, 255, 218);
+        const Color rem_fg_br  = Color::rgb(255, 212, 216);
+        const Color hunk_fg    = Color::rgb(208, 220, 248);
 
         // Bands (full-width solid rectangles) for the lines that carry the
         // diff signal: + adds, - removes, @@ hunk headers. Context and file

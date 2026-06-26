@@ -244,7 +244,20 @@ public:
         std::vector<Element> rows;
         rows.reserve(cfg_.header.size() + 1 + cfg_.footer.size());
 
-        for (const auto& h_row : cfg_.header) rows.push_back(h_row);
+        // Header/footer rows are caller-supplied Elements (query lines,
+        // separators, key-hint strips, position counters). They are
+        // single-line by contract, but a narrow picker squeezes their
+        // text — and the default TextWrap::Wrap would reflow an
+        // overflowing hint row onto a SECOND line, growing the modal and
+        // pushing its bottom border (or the row below) out of place. Lock
+        // each to exactly one cell tall with overflow clipped so the
+        // chrome stays put at every width; content that can't fit is
+        // truncated at the right edge instead of wrapping.
+        auto one_line = [](const Element& e) {
+            return Element(e) | height(1) | overflow(Overflow::Hidden);
+        };
+
+        for (const auto& h_row : cfg_.header) rows.push_back(one_line(h_row));
 
         // Build the scrollable list. The full item vector is handed
         // to maya inside a vstack; `dsl::scroll(state, vh)` clips it
@@ -271,7 +284,7 @@ public:
             rows.push_back(std::move(stack)(items_copy).build());
         }
 
-        for (const auto& f_row : cfg_.footer) rows.push_back(f_row);
+        for (const auto& f_row : cfg_.footer) rows.push_back(one_line(f_row));
 
         return vstack()
             .padding(1, 2)

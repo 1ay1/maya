@@ -431,9 +431,10 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
     // render_tail's eager-styled blocks (heading bold, code-fence
     // border, table rules, bullet markers) don't paint ahead of the
     // typewriter cursor. With reveal_fx_ off OR not live, the clip is
-    // source_.size() (no-op). Commit gating in append_safe defers ALL
-    // commits while live; finish() flushes them in one snap at
-    // end-of-stream when the host expects a layout settle anyway.
+    // source_.size() (no-op). Commit gating in append_safe commits
+    // completed blocks BEHIND the reveal cursor (find_block_boundary),
+    // keeping the live tail bounded to ~one block no matter how long the
+    // turn is; finish() flushes any remainder in one snap at end-of-stream.
     if (reveal_fx_ && live_) {
         const std::size_t cursor_cp =
             static_cast<std::size_t>(reveal_cp_);

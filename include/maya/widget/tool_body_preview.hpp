@@ -862,13 +862,13 @@ private:
         }};
     }
 
-    // ── FileWrite: subtle "+" prefix + lines/bytes footer ─────────────────
+    // ── FileWrite: green add-band + lines/bytes footer ────────────────────
     //
-    // For a Write tool the BYTE COUNT is the reason the user is looking at
-    // the body — the path is in the timeline header, the diff is rare to
-    // need (this is a brand-new file). We keep the dim "+ " marker as a
-    // diff-context hint, default-fg the actual content (no green wall),
-    // and always end with a `12 lines · 482 B` footer.
+    // For a Write tool the BYTE COUNT is a big part of why the user looks at
+    // the body — the path is in the timeline header, this is a brand-new
+    // file. The body renders as a clearly green "add" diff band (same visual
+    // language as a +-side hunk) so a Write reads as one big addition, and
+    // always ends with a `12 lines · 482 B` footer.
     [[nodiscard]] Element file_write() const {
         using namespace dsl;
         if (cfg_.text.empty()) {
@@ -894,14 +894,15 @@ private:
         // that want it (no elision, line numbers from 1).
         const auto p = elide(cfg_.text, /*head=*/0, cfg_.code_tail);
 
-        // Render the body as a green-tinted "add" diff band so a Write
-        // event reads in the same visual language as a +-side hunk in
-        // git_diff / edit_diff. The whole-file write is conceptually
-        // a single large addition; matching palette keeps the timeline
-        // coherent when a Write sits next to an Edit or a git_diff.
-        const Color add_bg    = Color::rgb(20, 50, 28);
-        const Color add_fg_br = Color::rgb(150, 230, 160);
-        const Color num_fg    = Color::rgb(104, 156, 116);   // muted green gutter
+        // Render the body as a green "add" diff band so a Write event reads
+        // in the same visual language as a +-side hunk in git_diff /
+        // edit_diff. The whole-file write is conceptually a single large
+        // addition; matching palette keeps the timeline coherent when a Write
+        // sits next to an Edit or a git_diff. The band is clearly green (not a
+        // near-black tint) so it survives a phone / low-gamma SSH screen.
+        const Color add_bg    = Color::rgb(28, 72, 44);
+        const Color add_fg_br = Color::rgb(170, 244, 182);
+        const Color num_fg    = Color::rgb(126, 182, 140);   // muted green gutter
 
         // Line-number gutter rides the same green band as the code so the
         // whole row is one solid rectangle (no dim stripe cutting through);
@@ -1039,8 +1040,8 @@ private:
             // green adds) instead of a jagged "tint, blank, tint" strip.
             // Full-width band so the header rule spans the same rectangle
             // as the −/+ sides below it.
-            const Color hdr_bg = Color::rgb(28, 34, 50);
-            const Color hdr_fg = Color::rgb(176, 188, 222);
+            const Color hdr_bg = Color::rgb(38, 46, 70);
+            const Color hdr_fg = Color::rgb(190, 202, 236);
             rows.push_back(band_row("   ", Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
                 std::move(header),
                 Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
@@ -1074,13 +1075,19 @@ private:
                                    cfg_.edit_tail_per_side);
 
         const bool is_add = (marker == '+');
-        const Color bg     = is_add ? Color::rgb(20, 50, 28)
-                                    : Color::rgb(60, 22, 26);
-        const Color fg_br  = is_add ? Color::rgb(150, 230, 160)
-                                    : Color::rgb(240, 150, 155);
+        // Clear green / red bands (not near-black tints) so the diff reads on
+        // a phone / low-gamma SSH screen, with a BRIGHTER sign rail on the
+        // " + " / " - " gutter so the change marker pops like a GitHub /
+        // GitLab line indicator.
+        const Color bg      = is_add ? Color::rgb(28, 72, 44)
+                                     : Color::rgb(84, 30, 36);
+        const Color rail_bg = is_add ? Color::rgb(46, 104, 64)
+                                     : Color::rgb(116, 44, 50);
+        const Color fg_br   = is_add ? Color::rgb(170, 244, 182)
+                                     : Color::rgb(248, 162, 168);
         (void)c;   // c was the legacy fg; kept in signature for callers
 
-        const Style sign_st = Style{}.with_fg(fg_br).with_bg(bg).with_bold();
+        const Style sign_st = Style{}.with_fg(fg_br).with_bg(rail_bg).with_bold();
         const Style body_st = Style{}.with_fg(fg_br).with_bg(bg);
 
         std::string gutter = " ";
@@ -1118,24 +1125,28 @@ private:
 
         const auto p = elide(cfg_.text, cfg_.code_head, cfg_.code_tail);
 
-        // Subtle whole-line tints. Low-saturation so the gutter pipe +
-        // muted prose around the card stay legible; the fg carries the
-        // diff signal, the bg just creates a band the eye can follow.
-        const Color add_bg     = Color::rgb(20, 50, 28);   // ≈ #14321c — green tint
-        const Color rem_bg     = Color::rgb(60, 22, 26);   // ≈ #3c161a — red tint
-        const Color hunk_bg    = Color::rgb(28, 34, 50);   // ≈ #1c2232 — blue-grey for @@
-        const Color add_fg_br  = Color::rgb(150, 230, 160);
-        const Color rem_fg_br  = Color::rgb(240, 150, 155);
-        const Color hunk_fg    = Color::rgb(176, 188, 222);
+        // Clear whole-line bands so the diff regions read on a phone /
+        // low-gamma SSH screen. The +/- gutter gets a BRIGHTER rail than the
+        // body band so the change marker pops like a GitHub / GitLab line
+        // indicator; the body band stays a touch calmer so the code is still
+        // legible over it. Context + file metadata get NO band (plain text).
+        const Color add_bg     = Color::rgb(28, 72, 44);   // clear green band
+        const Color rem_bg     = Color::rgb(84, 30, 36);   // clear red band
+        const Color hunk_bg    = Color::rgb(38, 46, 70);   // slate-blue for @@
+        const Color add_rail   = Color::rgb(46, 104, 64);  // brighter +-gutter rail
+        const Color rem_rail   = Color::rgb(116, 44, 50);  // brighter --gutter rail
+        const Color add_fg_br  = Color::rgb(170, 244, 182);
+        const Color rem_fg_br  = Color::rgb(248, 162, 168);
+        const Color hunk_fg    = Color::rgb(190, 202, 236);
 
         // Bands (full-width solid rectangles) for the lines that carry the
         // diff signal: + adds, - removes, @@ hunk headers. Context and file
         // metadata (diff --git / +++ / ---) render as plain dim text on the
         // default bg so the colored bands read as changes floating over
         // unchanged code — the classic GitHub/delta hierarchy.
-        const Style add_sign_st = Style{}.with_fg(add_fg_br).with_bg(add_bg).with_bold();
+        const Style add_sign_st = Style{}.with_fg(add_fg_br).with_bg(add_rail).with_bold();
         const Style add_body_st = Style{}.with_fg(add_fg_br).with_bg(add_bg);
-        const Style rem_sign_st = Style{}.with_fg(rem_fg_br).with_bg(rem_bg).with_bold();
+        const Style rem_sign_st = Style{}.with_fg(rem_fg_br).with_bg(rem_rail).with_bold();
         const Style rem_body_st = Style{}.with_fg(rem_fg_br).with_bg(rem_bg);
         const Style hunk_st     = Style{}.with_fg(hunk_fg).with_bg(hunk_bg).with_bold();
         const Style meta_st     = Style{}.with_fg(cfg_.chrome_color).with_dim();

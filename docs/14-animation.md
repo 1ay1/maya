@@ -437,28 +437,38 @@ The shape a **streaming reveal** needs, and that neither `Tween`
 **monotone** cursor (think "codepoints revealed so far") chasing a **moving**
 target ("codepoints available") at a controlled *rate*.
 
-### The constant-glide model
+### The rate-smoothed bounded-lag model
 
-The cursor's design is the lesson every polished streaming UI converges on
-(Vercel AI SDK's `smoothStream`, ChatGPT, Claude.ai): **decouple the visual
-speed from the network rhythm.** Bytes arrive from the wire in spiky bursts; if
-the cursor speed tracks the backlog it inherits that spikiness and reads as
-"bursts, not a glide." So the cursor drains the buffer at a near-**constant**
-speed and lets the buffer absorb the jitter:
+A streaming reveal must satisfy two things that pull against each other, and
+the pacing historically pendulum'd between failing each:
 
-- **`base_rate_`** is the steady **cruising speed** — the speed the cursor
-  moves at almost all the time. Not a floor, not a ceiling: the cruise.
-- The base **auto-tunes slowly** (over `base_tau`, ~0.6 s) toward whatever
-  would clear the current backlog over the target lead window, so a fast model
-  speeds the glide up and a slow one eases it down — but the base drifts far
-  slower than a frame, so the change is imperceptible (no per-chunk speed
-  steps).
-- Instantaneous catch-up is a gentle proportional term **hard-capped** at
-  `max_burst_mult × base` (~1.8×). A backlog spike can never make the cursor
-  sprint — it leans forward briefly and keeps gliding.
+- **Keep up** — track the model's speed so the reveal never falls seconds
+  behind and dumps the buffered remainder at end-of-stream. A cruise *speed*
+  cap can't: a model faster than the cap outruns the cursor all turn.
+- **Don't teleport** — never paste a fat chunk in one frame, so the typewriter
+  keeps animating even when the wire delivers in bursts (SSE / proxy batching,
+  slow links). A *lag* cap that SNAPS the cursor to the edge keeps up, but the
+  snap **is** the teleport.
+
+The resolution: the rate that holds the cursor a bounded **time** behind the
+live edge is just `backlog / drain_secs_` — a proportional controller. At
+steady state the backlog settles at `rate * drain_secs_`, so the cursor moves
+at **exactly the model's speed** (keeps up, any speed, fixed `~drain_secs_`
+lag). Applied raw it would teleport on a chunky wire, so the **rate itself is
+low-passed** over `rate_tau_`: a burst raises the target rate but the cursor
+accelerates toward it across a few frames, revealing the chunk as a fast
+*animated slide*. The model's speed sets the cruise; `drain_secs_` absorbs
+jitter; `rate_tau_` absorbs bursts.
+
+- **`drain_secs_`** is the target lag (seconds behind the edge) *and* the
+  buffer window: `rate = backlog / drain_secs_` tracks the wire at that delay.
+- **`rate_tau_`** is the anti-teleport low-pass — how fast the glide rate may
+  change. Small = snappier on a burst; large = smears it into a slower slide.
+- **`floor_rate_`** is a minimum reveal speed so a trickle still types out
+  promptly instead of inching in at the wire's dribble.
 - An optional **finalize ramp** (`set_deadline`) guarantees the cursor reaches
   the edge by a wall-clock deadline (end-of-stream settle), bypassing the
-  glide caps because that's a hard correctness guarantee.
+  smoothing because that's a hard correctness guarantee.
 
 ### API
 
@@ -476,8 +486,8 @@ c.set_deadline(remaining_s);
 | Method | Effect |
 |--------|--------|
 | `tick(target, dt)` | advance toward `target` by `dt`, returns the new position |
-| `set_pacing(cruise, lead)` | retune the cruising speed + lead window |
-| `set_smoothing(base_tau, max_burst_mult)` | tune the glide shaping |
+| `set_pacing(floor, lead)` | retune the floor speed + lag window |
+| `set_smoothing(rate_tau)` | tune how fast the glide rate adapts (anti-teleport) |
 | `set_pos(p)` / `advance_floor(p)` | hard-set / monotone snap-forward |
 | `set_deadline(secs)` / `clear_deadline()` / `ramping()` | finalize ramp |
 | `pos()` / `reset()` | read / reset |

@@ -458,7 +458,7 @@ public:
 };
 
 // ============================================================================
-// RateCursor — constant-rate typewriter integrator with burst-drain + ramp
+// RateCursor — rate-smoothed bounded-lag typewriter integrator + ramp
 // ============================================================================
 // A monotone cursor (think "codepoints revealed so far") that chases a
 // moving target ("codepoints available") at a controlled RATE rather than a
@@ -466,32 +466,44 @@ public:
 // neither Tween (duration-based) nor Spring (asymptotic, overshoots) can
 // express.
 //
-// ── DESIGN: constant-glide, buffer-absorbed (the ChatGPT / Vercel model) ──
+// ── DESIGN: rate-smoothed bounded-lag glide ──
 //
-// The lesson every polished streaming UI converges on (Vercel AI SDK's
-// smoothStream, the Upstash production hook, ChatGPT, Claude.ai): DECOUPLE
-// the visual speed from the network rhythm. Bytes arrive from the wire in
-// spiky bursts; if the cursor speed tracks the backlog (even a smoothed
-// track) it inherits that spikiness and reads as "bursts, not a glide". The
-// fix is to drain the buffer at a near-CONSTANT speed and let the buffer
-// itself absorb the jitter:
+// A streaming reveal has to satisfy two things that pull against each other,
+// and the pacing has historically pendulum'd between failing each:
 //
-//   * base_rate_ is the STEADY glide speed (units/sec) — the speed the
-//     cursor actually moves at almost all the time, like Vercel's fixed
-//     delayInMs or Upstash's constant 200 cps. NOT a floor, not a ceiling:
-//     the cruising speed.
-//   * The base auto-tunes SLOWLY toward whatever speed would clear the
-//     current backlog over a comfortable window (target_lead_secs), so a
-//     consistently-fast model speeds the glide up and a slow one eases it
-//     down — but the base changes over base_tau_ seconds, far slower than a
-//     frame, so the change is imperceptible (no per-chunk speed steps).
-//   * Instantaneous catch-up is BOUNDED: the actual per-frame rate is the
-//     base plus a gentle proportional term, hard-capped at max_burst_mult_
-//     × base. A huge backlog can never make the cursor sprint — it just
-//     pins at the cap until the buffer drains, staying a glide.
+//   • KEEP UP — track the model's speed so the reveal never falls seconds
+//     behind and then dumps the buffered remainder at end-of-stream (the
+//     "sticks then dumps on a long turn" complaint). A cruise SPEED cap can't
+//     do this: a model faster than the cap outruns the cursor for the whole
+//     turn.
+//   • DON'T TELEPORT — never paste a fat chunk in a single frame, so the
+//     typewriter keeps animating even when the wire delivers in bursts (SSE /
+//     proxy batching, slow links). A LAG cap that SNAPS the cursor to the
+//     edge does keep up, but the snap IS the teleport (the "streaming stops /
+//     text just appears" complaint).
+//
+// The resolution: the rate that holds the cursor a bounded TIME behind the
+// live edge is simply backlog / drain_secs_ — a proportional controller. At
+// steady state the backlog settles at rate * drain_secs_, so the cursor moves
+// at exactly the model's speed (KEEPS UP, any speed, with a fixed ~drain_secs_
+// lag). Applied raw it would teleport on a chunky wire (a fat delta spikes the
+// backlog → the rate spikes → the chunk dumps in one frame), so the RATE
+// itself is low-passed over rate_tau_: a burst raises the target rate but the
+// cursor accelerates toward it across a few frames, revealing the chunk as a
+// fast ANIMATED slide (DOESN'T TELEPORT). The model's speed sets the cruise;
+// the buffer (drain_secs_) absorbs jitter; the smoothing absorbs bursts.
+//
+//   * drain_secs_ is the target LAG (seconds behind the edge) and the buffer
+//     window all at once: rate = backlog / drain_secs_ tracks the wire at a
+//     ~drain_secs_ delay.
+//   * rate_tau_ is how fast the glide rate may change — the anti-teleport
+//     low-pass. Small = snappier (closer to instant on a burst), large =
+//     smears a burst into a slower slide.
+//   * floor_rate_ is a minimum reveal speed so a trickle still types out
+//     promptly instead of inching in at the wire's dribble.
 //   * an optional finalize ramp (set_deadline) still guarantees the cursor
 //     reaches the edge by a wall-clock deadline (end-of-stream settle),
-//     bypassing the glide caps because that's a hard correctness guarantee.
+//     bypassing the smoothing because that's a hard correctness guarantee.
 //
 // Pure value type, no clock: the host passes elapsed seconds to tick().
 class RateCursor {
@@ -499,53 +511,29 @@ class RateCursor {
     double floor_rate_ = 30.0;  // configured base glide speed (units/sec)
     double drain_secs_ = 0.25;  // target lead window: clear backlog over this
     double ramp_left_  = -1.0;  // seconds until finalize deadline; <0 = none
-    double base_rate_  = -1.0;  // live auto-tuned glide speed; <0 = unset
-    // How fast the auto-tuned base may itself change (seconds). Large => the
-    // cruising speed drifts very slowly, so the user never perceives a speed
-    // STEP at a chunk boundary — the whole point of the constant-glide model.
-    double base_tau_   = 0.6;
-    // Hard ceiling on the instantaneous rate as a multiple of the base. The
-    // catch-up term can lift the rate toward this on a backlog spike, but
-    // never past it, so the cursor accelerates GENTLY and predictably
-    // instead of teleporting. ~1.8× keeps even a big burst feeling like a
-    // glide that briefly leans forward.
+    double smoothed_rate_ = -1.0;  // live low-passed glide rate; <0 = unset
+    // How fast the glide RATE may change (seconds). The reveal rate that
+    // holds a bounded lag is backlog / drain_secs_ — but applied raw it
+    // TELEPORTS on a chunky wire (a fat SSE / proxy-batched delta spikes the
+    // backlog, so the whole chunk dumps in one frame: the "burst / it just
+    // appears, the typewriter stops" symptom). Low-passing the rate over
+    // rate_tau_ means a burst raises the target rate but the cursor
+    // accelerates toward it over a few frames, so the chunk reveals as a fast
+    // ANIMATED slide and then drains back to the lag window — never a
+    // single-frame paste. Small enough that the reveal still feels prompt
+    // (~a few frames), large enough to smear a chunk into motion.
+    double rate_tau_   = 0.15;
+    // Retained for the (currently unused) set_smoothing API; the rate-
+    // smoothed glide no longer applies a separate burst multiplier.
     double max_burst_mult_ = 1.8;
-    // Hard ceiling on the AUTO-TUNED CRUISE speed, as a multiple of
-    // floor_rate_. This is the load-bearing knob for the constant-glide
-    // model. Without it, the auto-tune target (backlog / drain_secs_) runs
-    // away whenever the model streams faster than floor_rate_: on a long,
-    // fast reply the backlog grows, base_rate_ chases it up to thousands of
-    // cp/s, and the "typewriter" turns into an instant paste — the
-    // "bursting in long turns" symptom. Polished chat UIs (ChatGPT, Claude,
-    // Vercel smoothStream) hold a CONSTANT visual rate and let the buffer
-    // absorb the wire's burstiness; they may glide a touch faster on a long
-    // reply but never sprint to an unreadable speed. Clamping the cruise
-    // target to floor_rate_ * this multiple reproduces that: the cursor
-    // cruises at floor_rate_ normally and tops out at
-    // floor_rate_ * cruise_ceiling_mult_ on a sustained fast stream, staying
-    // readable. A genuinely huge backlog (model dumped the whole reply at
-    // once) is NOT chased here — the finalize ramp clears the remainder at
-    // end-of-stream; mid-stream the cursor just stays at the ceiling and
-    // glides. ~2.5× floor (e.g. 90 → 225 cp/s) is a brisk-but-readable cap.
-    double cruise_ceiling_mult_ = 2.5;
-    // Hard ceiling on how far the cursor may fall BEHIND the live edge, in
-    // seconds of cruise-ceiling reveal. The cruise/burst caps above bound the
-    // cursor's SPEED — which means a model streaming faster than the ceiling
-    // makes the cursor fall progressively further behind: the unrevealed
-    // backlog grows without bound and the visible text lags the arrived text
-    // by (backlog / ceiling) seconds. On a long, fast reply that lag climbs
-    // to tens of seconds (a 10 KB turn took ~25 s to finish revealing) — the
-    // "streaming sticks / crawls, then dumps at the end on a long turn"
-    // symptom. Capping the SPEED without capping the LAG is the bug. So also
-    // bound the lag: the cursor never rides more than
-    // floor_rate_ * cruise_ceiling_mult_ * max_lag_secs_ codepoints behind
-    // the edge. Within that window it glides at the smooth cruise; once the
-    // wire outruns it past the window the cursor pins to the window boundary
-    // and thereafter tracks the wire rate (revealing a constant-width
-    // scramble trail), so the visible reveal stays within ~max_lag_secs_ of
-    // what actually arrived no matter how long or fast the turn is. Set <= 0
-    // to disable (unbounded lag, the old behaviour).
-    double max_lag_secs_ = 1.0;
+    // (Former cruise_ceiling_mult_ / max_lag_secs_ knobs removed. The old
+    // model capped the cruise SPEED (floor*2.5) and then the LAG (≈225 cp):
+    // capping speed made a fast model crawl seconds behind, and the lag cap
+    // "fixed" that by SNAPPING the cursor to the edge — an instant paste, the
+    // "streaming stops / bursts on a long turn" regression. The rate-smoothed
+    // glide replaces both: rate = backlog / drain_secs_ already tracks the
+    // model's speed with a bounded TIME lag (drain_secs_), and low-passing
+    // that rate keeps a chunky wire from teleporting.)
 
 public:
     constexpr RateCursor() = default;
@@ -558,19 +546,17 @@ public:
         if (drain_secs > 0.0) drain_secs_ = drain_secs;
     }
 
-    // Tune the glide shaping. base_tau: how slowly the cruising speed drifts
-    // (bigger = steadier). max_burst_mult: instantaneous-rate ceiling as a
-    // multiple of the base (bigger = catches up harder on a spike).
-    // cruise_ceiling_mult: hard cap on the auto-tuned cruise speed as a
-    // multiple of floor_rate_ (bigger = lets a long fast reply glide quicker;
-    // keep it modest — this is what stops the long-turn burst). Pass a
-    // non-positive value to leave any of them unchanged.
-    constexpr void set_smoothing(double base_tau,
+    // Tune the glide shaping. rate_tau (first arg): how quickly the glide
+    // RATE adapts (seconds) — smaller snaps to a burst harder, larger smears
+    // it into a slower slide. max_burst_mult is retained for API
+    // compatibility but no longer used. The third arg is ignored (the cruise
+    // ceiling no longer exists). Pass a non-positive value to leave a knob
+    // unchanged.
+    constexpr void set_smoothing(double rate_tau,
                                  double max_burst_mult = -1.0,
-                                 double cruise_ceiling_mult = -1.0) noexcept {
-        if (base_tau >= 0.0)            base_tau_            = base_tau;
-        if (max_burst_mult > 0.0)       max_burst_mult_      = max_burst_mult;
-        if (cruise_ceiling_mult > 0.0)  cruise_ceiling_mult_ = cruise_ceiling_mult;
+                                 double /*deprecated*/ = -1.0) noexcept {
+        if (rate_tau >= 0.0)      rate_tau_       = rate_tau;
+        if (max_burst_mult > 0.0) max_burst_mult_ = max_burst_mult;
     }
 
     // Hard-set the cursor (e.g. snap forward past already-committed units,
@@ -612,48 +598,36 @@ public:
             return pos_;
         }
 
-        // ── Auto-tune the cruising speed (slowly, BOUNDED) ──
-        // The "ideal" steady speed to hold the backlog at the target lead
-        // window is backlog / drain_secs_. Blend the configured base
-        // (floor_rate_) with that so a fast model glides a touch quicker and
-        // a slow one eases down, but CLAMP the target to a readable ceiling
-        // (floor_rate_ * cruise_ceiling_mult_). The clamp is the whole game:
-        // an unclamped target chases the backlog to thousands of cp/s on a
-        // long fast reply, turning the glide into an instant paste (the
-        // "bursting in long turns" bug). With the clamp the cruise tops out
-        // at a brisk-but-readable speed and the buffer absorbs the rest — the
-        // constant-glide model every polished chat UI uses. Then drift the
-        // LIVE base toward the (clamped) target over base_tau_ so the speed
-        // never STEPS at a chunk boundary.
-        const double cruise_ceiling = floor_rate_ * cruise_ceiling_mult_;
-        const double want = backlog / drain_secs_;
-        double base_target = want > floor_rate_ ? want : floor_rate_;
-        if (base_target > cruise_ceiling) base_target = cruise_ceiling;
-        if (base_rate_ < 0.0) {
-            base_rate_ = base_target;            // first frame: seed, no lag
-        } else if (base_tau_ > 0.0) {
-            const double a = dt / (dt + base_tau_);
-            base_rate_ += (base_target - base_rate_) * a;
+        // ── Rate-smoothed bounded-lag glide ──
+        // The rate that holds the cursor ~drain_secs_ behind the live edge is
+        // backlog / drain_secs_ — a proportional controller that TRACKS the
+        // wire (at steady state backlog settles at rate*drain_secs_, so
+        // rate == the model's speed) with a bounded TIME lag, however fast
+        // the model streams. Raw, that controller TELEPORTS on a chunky wire:
+        // a fat SSE / proxy-batched delta spikes the backlog, so the whole
+        // chunk dumps in one frame (the "burst / it just appears, the
+        // typewriter stops on a long turn" symptom). So low-pass the RATE
+        // over rate_tau_: the burst raises the target rate, but the cursor
+        // accelerates toward it across a few frames, revealing the chunk as a
+        // fast ANIMATED slide that then settles back to the lag window.
+        // Seeding from the floor (not the first frame's spike) keeps a cold
+        // whole-reply dump from teleporting on frame one.
+        double rate_target = backlog / drain_secs_;
+        if (rate_target < floor_rate_) rate_target = floor_rate_;
+        if (smoothed_rate_ < 0.0) {
+            smoothed_rate_ = floor_rate_;            // cold start at the floor
+        } else if (rate_tau_ > 0.0) {
+            const double a = dt / (dt + rate_tau_);
+            smoothed_rate_ += (rate_target - smoothed_rate_) * a;
         } else {
-            base_rate_ = base_target;
+            smoothed_rate_ = rate_target;
         }
-        if (base_rate_ < floor_rate_)    base_rate_ = floor_rate_;
-        if (base_rate_ > cruise_ceiling) base_rate_ = cruise_ceiling;
-
-        // ── Instantaneous rate: base + gentle, BOUNDED catch-up ──
-        // A small proportional nudge leans the cursor forward when it's
-        // behind, but the whole thing is hard-capped at max_burst_mult_ ×
-        // base so a backlog spike can never make it sprint — it just pins at
-        // the cap and glides until the buffer drains.
-        double rate = base_rate_;
-        const double lead = backlog - base_rate_ * drain_secs_;  // excess units
-        if (lead > 0.0) rate += lead / drain_secs_;              // proportional
-        const double cap = base_rate_ * max_burst_mult_;
-        if (rate > cap) rate = cap;
+        if (smoothed_rate_ < floor_rate_) smoothed_rate_ = floor_rate_;
+        double rate = smoothed_rate_;
 
         if (ramp_left_ >= 0.0) {
             // Finalize ramp: a HARD wall-clock guarantee that the cursor
-            // reaches the edge by the deadline — bypasses the glide caps.
+            // reaches the edge by the deadline — bypasses the glide smoothing.
             if (ramp_left_ <= 0.0) {
                 rate = backlog / (dt > 0.001 ? dt : 0.001);
             } else {
@@ -661,7 +635,7 @@ public:
                 if (ramp > rate) rate = ramp;
             }
             ramp_left_ -= dt;
-            base_rate_ = rate;     // re-seed so post-ramp doesn't lurch
+            smoothed_rate_ = rate;     // re-seed so post-ramp doesn't lurch
         }
 
         // Never overshoot the live edge on a tiny-backlog frame.
@@ -670,28 +644,11 @@ public:
 
         pos_ += rate * dt;
         if (pos_ > target) pos_ = target;
-
-        // ── Hard lag ceiling: bound how far behind the edge we may ride ──
-        // The speed caps above can leave the cursor permanently behind a
-        // faster-than-ceiling wire, so the backlog (and the visible lag)
-        // grows with the turn length. Clamp it: never trail the live edge by
-        // more than max_lag_secs_ worth of cruise-ceiling reveal. This is a
-        // forward-only move (monotone, never un-reveals), engages only once
-        // the cursor has fallen behind the window, and then rides the
-        // boundary frame-to-frame (revealing at the wire rate) instead of
-        // snapping — so a fast/long turn keeps up with a fixed scramble trail
-        // rather than crawling seconds behind. Short/slow replies never reach
-        // the window, so their gentle typewriter glide is unchanged.
-        if (max_lag_secs_ > 0.0) {
-            const double max_lag =
-                floor_rate_ * cruise_ceiling_mult_ * max_lag_secs_;
-            if (target - pos_ > max_lag) pos_ = target - max_lag;
-        }
         return pos_;
     }
 
     constexpr void reset() noexcept {
-        pos_ = 0.0; ramp_left_ = -1.0; base_rate_ = -1.0;
+        pos_ = 0.0; ramp_left_ = -1.0; smoothed_rate_ = -1.0;
     }
 };
 

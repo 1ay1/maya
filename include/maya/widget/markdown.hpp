@@ -328,10 +328,12 @@ private:
     // actually integrates it when MAYA_REVEAL_CENTRAL_CURSOR is enabled
     // (the default). The cursor is kept in lock-step with reveal_cp_ each
     // frame so the rest of the widget reads a single source of truth. The
-    // RateCursor reproduces the prior inline math bit-for-bit (proven by
-    // test_rate_cursor_matches_reveal_fx) so stream_liveness_test
-    // behaviour is unchanged; the win is that the typewriter pacing now
-    // lives in ONE tested primitive shared with the rest of maya::anim.
+    // RateCursor is a rate-smoothed bounded-lag glide (it reveals at
+    // backlog / drain_secs so it tracks the model's own speed, low-passed
+    // so a chunky wire slides in instead of teleporting) — see
+    // animation.hpp; tests in test_animation.cpp + reveal_pacing_test.cpp.
+    // The host overrides the seed pacing below via set_reveal_pacing each
+    // frame, so these constructor args are only the cold-start default.
 #ifndef MAYA_REVEAL_CENTRAL_CURSOR
 #define MAYA_REVEAL_CENTRAL_CURSOR 1
 #endif

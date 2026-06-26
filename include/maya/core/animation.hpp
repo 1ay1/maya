@@ -528,6 +528,24 @@ class RateCursor {
     // end-of-stream; mid-stream the cursor just stays at the ceiling and
     // glides. ~2.5× floor (e.g. 90 → 225 cp/s) is a brisk-but-readable cap.
     double cruise_ceiling_mult_ = 2.5;
+    // Hard ceiling on how far the cursor may fall BEHIND the live edge, in
+    // seconds of cruise-ceiling reveal. The cruise/burst caps above bound the
+    // cursor's SPEED — which means a model streaming faster than the ceiling
+    // makes the cursor fall progressively further behind: the unrevealed
+    // backlog grows without bound and the visible text lags the arrived text
+    // by (backlog / ceiling) seconds. On a long, fast reply that lag climbs
+    // to tens of seconds (a 10 KB turn took ~25 s to finish revealing) — the
+    // "streaming sticks / crawls, then dumps at the end on a long turn"
+    // symptom. Capping the SPEED without capping the LAG is the bug. So also
+    // bound the lag: the cursor never rides more than
+    // floor_rate_ * cruise_ceiling_mult_ * max_lag_secs_ codepoints behind
+    // the edge. Within that window it glides at the smooth cruise; once the
+    // wire outruns it past the window the cursor pins to the window boundary
+    // and thereafter tracks the wire rate (revealing a constant-width
+    // scramble trail), so the visible reveal stays within ~max_lag_secs_ of
+    // what actually arrived no matter how long or fast the turn is. Set <= 0
+    // to disable (unbounded lag, the old behaviour).
+    double max_lag_secs_ = 1.0;
 
 public:
     constexpr RateCursor() = default;
@@ -652,6 +670,23 @@ public:
 
         pos_ += rate * dt;
         if (pos_ > target) pos_ = target;
+
+        // ── Hard lag ceiling: bound how far behind the edge we may ride ──
+        // The speed caps above can leave the cursor permanently behind a
+        // faster-than-ceiling wire, so the backlog (and the visible lag)
+        // grows with the turn length. Clamp it: never trail the live edge by
+        // more than max_lag_secs_ worth of cruise-ceiling reveal. This is a
+        // forward-only move (monotone, never un-reveals), engages only once
+        // the cursor has fallen behind the window, and then rides the
+        // boundary frame-to-frame (revealing at the wire rate) instead of
+        // snapping — so a fast/long turn keeps up with a fixed scramble trail
+        // rather than crawling seconds behind. Short/slow replies never reach
+        // the window, so their gentle typewriter glide is unchanged.
+        if (max_lag_secs_ > 0.0) {
+            const double max_lag =
+                floor_rate_ * cruise_ceiling_mult_ * max_lag_secs_;
+            if (target - pos_ > max_lag) pos_ = target - max_lag;
+        }
         return pos_;
     }
 

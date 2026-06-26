@@ -124,6 +124,59 @@ inline void collect_last_content_leaf(Element& e, TextElement*& last_any,
     return last_content ? last_content : last_any;
 }
 
+// Collect ALL content (non-border) text leaves of a materialised tree in
+// render order. Used to animate the last few rows of a streaming table as a
+// graded heat band (newest row hottest) instead of only the single newest
+// row — so a table reads as actively materialising along its bottom edge,
+// matching the liveliness of the prose typewriter. ComponentElement children
+// are not descended (they need a width to materialise; the caller wraps those
+// separately).
+inline void collect_content_leaves(Element& e,
+                                   std::vector<TextElement*>& out) noexcept {
+    if (auto* t = std::get_if<TextElement>(&e.inner)) {
+        if (!t->content.empty() && row_has_content(t->content)) out.push_back(t);
+        return;
+    }
+    if (auto* b = std::get_if<BoxElement>(&e.inner)) {
+        for (auto& c : b->children) collect_content_leaves(c, out);
+        return;
+    }
+    if (auto* l = std::get_if<ElementList>(&e.inner)) {
+        for (auto& it : l->items) collect_content_leaves(it, out);
+        return;
+    }
+    // ComponentElement / ElementListRef: not descended here.
+}
+
+// Decorate the last `band` content rows of a materialised eager block with a
+// graded heat: the newest row gets `base_age` (hottest), each older row ages
+// by `cool_step_ms` so it sits progressively cooler in the gradient and
+// settles first. Recolour-only (the caller's params keep scramble off), so
+// glyphs — including every structural │ border / cell pad — stay
+// byte-identical and the height never moves. Falls back to the single newest
+// row when only one content row exists.
+inline void decorate_eager_band(Element& mat, anim::TextRevealParams rp,
+                                std::size_t band,
+                                std::int64_t cool_step_ms) noexcept {
+    std::vector<TextElement*> leaves;
+    collect_content_leaves(mat, leaves);
+    if (leaves.empty()) {
+        if (TextElement* leaf = rightmost_content_text_leaf(mat))
+            (void)anim::decorate_text_reveal(*leaf, rp);
+        return;
+    }
+    const std::size_t n = std::min(band, leaves.size());
+    const std::int64_t base_age = rp.edge_age_ms;
+    for (std::size_t k = 0; k < n; ++k) {
+        // k = 0 is the newest (rightmost-in-render-order) row — hottest.
+        TextElement* leaf = leaves[leaves.size() - 1 - k];
+        anim::TextRevealParams row_rp = rp;
+        row_rp.edge_age_ms =
+            base_age + static_cast<std::int64_t>(k) * cool_step_ms;
+        (void)anim::decorate_text_reveal(*leaf, row_rp);
+    }
+}
+
 } // namespace
 
 void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
@@ -794,6 +847,13 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 auto orig = comp->render;
                 comp->render = [orig, rp](int w, int h) -> Element {
                     Element out = orig ? orig(w, h) : Element{};
+                    // Animate the last few content rows as a graded heat
+                    // band (newest hottest) so a streaming table/eager block
+                    // visibly materialises along its bottom edge instead of
+                    // only its single newest row. Recolour-only, so borders
+                    // and height are untouched.
+                    constexpr std::size_t  kEagerBandRows  = 3;
+                    constexpr std::int64_t kEagerRowCoolMs = 110;
                     // The eager wrapper's render hands back the block's OWN
                     // lazy renderer (another ComponentElement — the table's
                     // width-aware builder). Wrap THAT so we reach the
@@ -806,15 +866,14 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                             [inner_render, rp](int w2, int h2) -> Element {
                             Element mat = inner_render ? inner_render(w2, h2)
                                                        : Element{};
-                            if (TextElement* leaf =
-                                    rightmost_content_text_leaf(mat))
-                                (void)anim::decorate_text_reveal(*leaf, rp);
+                            decorate_eager_band(mat, rp, kEagerBandRows,
+                                                kEagerRowCoolMs);
                             return mat;
                         };
                         inner->hash_id = {};
-                    } else if (TextElement* leaf =
-                                   rightmost_content_text_leaf(out)) {
-                        (void)anim::decorate_text_reveal(*leaf, rp);
+                    } else {
+                        decorate_eager_band(out, rp, kEagerBandRows,
+                                            kEagerRowCoolMs);
                     }
                     return out;
                 };

@@ -148,32 +148,71 @@ inline void collect_content_leaves(Element& e,
     // ComponentElement / ElementListRef: not descended here.
 }
 
-// Decorate the last `band` content rows of a materialised eager block with a
-// graded heat: the newest row gets `base_age` (hottest), each older row ages
-// by `cool_step_ms` so it sits progressively cooler in the gradient and
-// settles first. Recolour-only (the caller's params keep scramble off), so
-// glyphs — including every structural │ border / cell pad — stay
-// byte-identical and the height never moves. Falls back to the single newest
-// row when only one content row exists.
-inline void decorate_eager_band(Element& mat, anim::TextRevealParams rp,
-                                std::size_t band,
-                                std::int64_t cool_step_ms) noexcept {
+// Paint a solid background band across an ENTIRE materialised row leaf,
+// preserving each run's own fg / attributes. Width-, height- and BYTE-stable
+// (pure restyle — not one glyph is touched), so a table's │ borders and cell
+// padding stay byte-identical and the row never reflows. When the leaf has no
+// runs yet, its whole content becomes one run carrying the base style + bg so
+// the band tiles the full row (leading │ → trailing │) as one solid block.
+inline void overlay_row_bg(TextElement& leaf, Color bg, bool bold) noexcept {
+    if (leaf.content.empty()) return;
+    if (leaf.runs.empty()) {
+        Style s = leaf.style.with_bg(bg);
+        if (bold) s = s.with_bold();
+        leaf.runs.push_back(StyledRun{0, leaf.content.size(), s});
+        return;
+    }
+    for (auto& r : leaf.runs) {
+        r.style = r.style.with_bg(bg);
+        if (bold) r.style = r.style.with_bold();
+    }
+}
+
+// Animate the last `band` content rows of a streaming table / eager block as a
+// downward-sweeping BACKGROUND highlight: the newest row glows brightest (and
+// gently breathes so the live edge reads as alive), each older row sits a
+// shade dimmer, and rows past the band fall back to the plain settled style.
+// As each freshly-completed row lands it inherits the hot slot and the whole
+// band steps down one row — so the table visibly materialises ROW BY ROW.
+//
+// Why a bg band and not the prose fg gradient: a foreground recolour over
+// already-coloured table text is a few-pixel hue shift that is invisible the
+// moment SSH / a slow terminal coalesces the in-between frames — the table
+// then reads as "not animating". A solid background block is a whole-row
+// visual the eye catches even at 5–10 fps, so the row-wise reveal survives a
+// phone-over-SSH session. Recolour-only: byte- / width- / height-stable, so
+// borders never corrupt and the height never moves.
+inline void decorate_table_band(Element& mat, std::int64_t ms_total,
+                                std::size_t band) noexcept {
+    // Breathing pulse on the hottest row so the live bottom edge is alive even
+    // between row commits (and so a settled-but-still-live tail keeps moving).
+    const double pulse = anim::reveal_detail::pulse01(ms_total, 900);
+    const Color hot = anim::lerp(Color::rgb(38, 48, 96),
+                                 Color::rgb(60, 76, 138), pulse);
+
     std::vector<TextElement*> leaves;
     collect_content_leaves(mat, leaves);
     if (leaves.empty()) {
+        // Degenerate all-border table: pulse SOMETHING so it isn't dead.
         if (TextElement* leaf = rightmost_content_text_leaf(mat))
-            (void)anim::decorate_text_reveal(*leaf, rp);
+            overlay_row_bg(*leaf, hot, /*bold=*/true);
         return;
     }
     const std::size_t n = std::min(band, leaves.size());
-    const std::int64_t base_age = rp.edge_age_ms;
     for (std::size_t k = 0; k < n; ++k) {
-        // k = 0 is the newest (rightmost-in-render-order) row — hottest.
+        // k == 0 is the newest (last-in-render-order) content row — hottest.
         TextElement* leaf = leaves[leaves.size() - 1 - k];
-        anim::TextRevealParams row_rp = rp;
-        row_rp.edge_age_ms =
-            base_age + static_cast<std::int64_t>(k) * cool_step_ms;
-        (void)anim::decorate_text_reveal(*leaf, row_rp);
+        Color bg;
+        bool bold = false;
+        if (k == 0) {
+            bg = hot;
+            bold = true;
+        } else if (k == 1) {
+            bg = Color::rgb(28, 35, 66);
+        } else {
+            bg = Color::rgb(21, 26, 47);
+        }
+        overlay_row_bg(*leaf, bg, bold);
     }
 }
 
@@ -804,56 +843,22 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // re-runs the decoration) instead of blitting frozen cached cells;
             // once the table settles the gate goes false, the clean cached
             // component (with its stable per-row hash) returns and the cell
-            // cache blits it again. Height-stable: decorate_text_reveal only
-            // rewrites the trailing runs, never adds codepoints, so committed
-            // rows can't reflow into scrollback.
+            // cache blits it again. Height-stable: decorate_table_band only
+            // restyles the existing row runs (adds a bg, never a codepoint),
+            // so committed rows can't reflow into scrollback.
             if (ComponentElement* comp =
                     find_last_eager_component(animated_body)) {
-                anim::TextRevealParams rp;
-                rp.ms_total     = ms_total;
-                rp.edge_age_ms  = age_at_tail_ms;
-                rp.revealed_cp  = 0;      // whole row revealed
-                rp.total_cp     = 0;      // derive from the row content
-                rp.clip_active  = false;
-                // A table row APPEARS WHOLE (one row-commit), so it should
-                // fade UNIFORMLY — not with the positional hot→cool sweep the
-                // char typewriter uses (that ages each cp by its distance
-                // from the tail, which on a row puts the hottest cell on the
-                // rightmost │ border + trailing padding, reading as a glitchy
-                // one-sided glow on the frame). char_step_ms=0 gives every
-                // trailing cp the SAME age (edge_age), so the whole band
-                // shares one heat and cools together; a wide trail_len makes
-                // that band span the full row so it fades as a unit.
-                rp.trail_len    = 256;    // cover the whole row width
-                rp.scramble_len = 0;
-                rp.scramble_ms  = kScrambleMs;
-                rp.char_step_ms = 0;      // uniform heat across the row
-                rp.ghost_extra  = 0;
-                rp.enable_ghost = false;  // rows render whole — no ghost band
-                rp.enable_sweep = false;  // no within-row typewriter cursor
-                rp.enable_caret = false;
-                // CRITICAL: no glyph scramble on a table row. A row is one
-                // flat text leaf — "│ a │ b │ c     │" — whose trailing
-                // codepoints are STRUCTURAL (cell padding + the closing │
-                // border), not freshly-typed content. The scramble window
-                // (kScrambleLen cp at the tail) would substitute noise
-                // glyphs over the border/padding, garbling the row's right
-                // edge for the whole hot window ("17x     │" → "17x0■○17@").
-                // The row appears WHOLE, so there is no "char being typed"
-                // to churn anyway. Keep only the gradient: it recolours the
-                // trailing band (borders glow, padding spaces stay
-                // invisible) for a clean fade-in with zero corruption.
-                rp.enable_scramble = false;
+                // The newest few CONTENT rows of the live table are painted
+                // with a downward-sweeping background highlight (see
+                // decorate_table_band) so the table materialises ROW BY ROW
+                // and the reveal stays visible under SSH frame-coalescing.
+                // Recolour-only: decorate_table_band never adds/removes a
+                // codepoint, so committed rows can't reflow into scrollback
+                // and the │ borders / cell padding stay byte-identical.
+                constexpr std::size_t kEagerBandRows = 3;
                 auto orig = comp->render;
-                comp->render = [orig, rp](int w, int h) -> Element {
+                comp->render = [orig, ms_total](int w, int h) -> Element {
                     Element out = orig ? orig(w, h) : Element{};
-                    // Animate the last few content rows as a graded heat
-                    // band (newest hottest) so a streaming table/eager block
-                    // visibly materialises along its bottom edge instead of
-                    // only its single newest row. Recolour-only, so borders
-                    // and height are untouched.
-                    constexpr std::size_t  kEagerBandRows  = 3;
-                    constexpr std::int64_t kEagerRowCoolMs = 110;
                     // The eager wrapper's render hands back the block's OWN
                     // lazy renderer (another ComponentElement — the table's
                     // width-aware builder). Wrap THAT so we reach the
@@ -863,17 +868,15 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                             std::get_if<ComponentElement>(&out.inner)) {
                         auto inner_render = inner->render;
                         inner->render =
-                            [inner_render, rp](int w2, int h2) -> Element {
+                            [inner_render, ms_total](int w2, int h2) -> Element {
                             Element mat = inner_render ? inner_render(w2, h2)
                                                        : Element{};
-                            decorate_eager_band(mat, rp, kEagerBandRows,
-                                                kEagerRowCoolMs);
+                            decorate_table_band(mat, ms_total, kEagerBandRows);
                             return mat;
                         };
                         inner->hash_id = {};
                     } else {
-                        decorate_eager_band(out, rp, kEagerBandRows,
-                                            kEagerRowCoolMs);
+                        decorate_table_band(out, ms_total, kEagerBandRows);
                     }
                     return out;
                 };

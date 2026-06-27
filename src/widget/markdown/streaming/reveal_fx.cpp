@@ -568,26 +568,9 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             return nullptr;
         };
 
-        // Companion to find_last_text for the EAGER (component-wrapped) tail.
-        // When find_last_text bails (returns nullptr with eager_render = true)
-        // the live block is a TABLE whose rows live behind a ComponentElement;
-        // this walks the same rightmost spine and hands back that component so
-        // the caller can wrap its render() and animate the materialised rows.
-        auto find_last_eager_component =
-            [](Element& root) -> ComponentElement* {
-            Element* cur = &root;
-            for (int step = 0; step < 64; ++step) {
-                if (auto* c = std::get_if<ComponentElement>(&cur->inner))
-                    return c;
-                if (auto* b = std::get_if<BoxElement>(&cur->inner)) {
-                    if (b->children.empty()) return nullptr;
-                    cur = &b->children.back();
-                    continue;
-                }
-                return nullptr;   // TextElement / list — not the component case
-            }
-            return nullptr;
-        };
+        // (find_last_eager_component removed — the eager table/code-block
+        //  scramble reveal it fed is disabled below; see the eager_render
+        //  branch for the scrollback-corruption reason.)
 
         // Step-back / age / colour / scramble helpers now live in the
         // framework primitive (maya::anim, anim/text_reveal.hpp). The overlay
@@ -606,14 +589,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         constexpr std::int64_t kScrambleMs  = 220;
         constexpr std::int64_t kCharStepMs  = 26;
         constexpr std::size_t  kGhostExtra  = 96;
-        // Table-row reveal tunables. A streaming table row lands WHOLE (not
-        // typed char-by-char like prose), so we want most of the row to
-        // scramble together on arrival and then resolve as a body: a wide
-        // trail/scramble window (covers the row) + a TIGHT per-cp age step.
-        constexpr std::size_t  kTableTrailLen    = 160;
-        constexpr std::size_t  kTableScrambleLen = 160;
-        constexpr std::int64_t kTableScrambleMs  = 300;
-        constexpr std::int64_t kTableCharStepMs  = 5;
+        // (Table-row eager-reveal tunables removed — eager scramble disabled.)
 
         // Shallow copy of cached_build_; we'll splice a freshly-built
         // tail TextElement onto its rightmost leaf.
@@ -740,103 +716,33 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             rp.char_step_ms          = kCharStepMs;
             rp.ghost_extra           = kGhostExtra;
             (void)anim::decorate_text_reveal(*tail, rp);
-        } else if (eager_render
-                   && (age_at_tail_ms <= 720
-                       || cursor_advance_total_cp_ > revealed_cp)) {
-            // ── Eager (table) tail decoration ──
+        } else if (eager_render) {
+            // ── Eager (table / code-block) tail: reveal decoration DISABLED ──
             //
-            // find_last_text bailed: the live block is a TABLE whose rows are
-            // behind a ComponentElement (render_eager_slice wraps it in a
-            // hash-keyed component whose render() returns the table's own
-            // width-aware renderer). We can't materialise it here (width-0
-            // collapse), so WRAP its render() — at paint time, with the real
-            // width handed down by layout, decorate the newest CONTENT row of
-            // the materialised output (skipping the box-drawing border rows).
+            // find_last_text bailed: the live block is a TABLE or a fenced
+            // CODE block whose rows live behind a ComponentElement. The code
+            // that used to run here scrambled the newest CONTENT row (it set
+            // revealed_cp/total_cp = 0, so the WHOLE row churns) gated on the
+            // GLOBAL cursor-edge clock (age_at_tail_ms), which stays ~0 for
+            // the entire turn while bytes are still arriving.
             //
-            // Gate: only while the edge is still warm (a row landed within
-            // ~720 ms — the trail_style gradient's full hot→cool lifetime — or
-            // the reveal cursor is still catching up). While warm, re-key the
-            // component's hash so the renderer re-renders it (and
-            // re-runs the decoration) instead of blitting frozen cached cells;
-            // once the table settles the gate goes false, the clean cached
-            // component (with its stable per-row hash) returns and the cell
-            // cache blits it again. Height-stable: decorate_text_reveal only
-            // rewrites the trailing runs, never adds codepoints, so committed
-            // rows can't reflow into scrollback.
-            if (ComponentElement* comp =
-                    find_last_eager_component(animated_body)) {
-                anim::TextRevealParams rp;
-                rp.ms_total     = ms_total;
-                rp.edge_age_ms  = age_at_tail_ms;
-                rp.revealed_cp  = 0;      // whole row revealed
-                rp.total_cp     = 0;      // derive from the row content
-                rp.clip_active  = false;
-                // Animate the newest row like a streaming paragraph: a glyph
-                // SCRAMBLE that resolves into the real text — the highly
-                // visible motion prose uses, which survives a low-frame-rate /
-                // low-gamma screen where a pure colour gradient washes out —
-                // plus the hot→cool comet gradient. protect_structure keeps the
-                // │ cell borders, the column padding and any wide glyph byte-
-                // identical, so only the cell CONTENT churns; the table frame
-                // stays height- AND width-stable (no border corruption).
-                rp.trail_len         = kTableTrailLen;     // cover the row width
-                rp.scramble_len      = kTableScrambleLen;
-                rp.scramble_ms       = kTableScrambleMs;
-                rp.char_step_ms      = kTableCharStepMs;    // most of the row churns at once
-                rp.ghost_extra       = 0;
-                rp.enable_ghost      = false;  // rows render whole — no ghost band
-                rp.enable_sweep      = false;  // no within-row typewriter cursor
-                rp.enable_caret      = false;
-                rp.enable_scramble   = true;   // glyph churn = the visible motion
-                rp.protect_structure = true;   // …but never the │ borders / padding
-                auto orig = comp->render;
-                comp->render = [orig, rp](int w, int h) -> Element {
-                    Element out = orig ? orig(w, h) : Element{};
-                    // The eager wrapper's render hands back the block's OWN
-                    // lazy renderer (another ComponentElement — the table's
-                    // width-aware builder). Wrap THAT so we reach the
-                    // materialised rows; if it already produced a Box/Text
-                    // tree, decorate it directly. Decorate only the newest
-                    // CONTENT row — exactly like the prose tail.
-                    if (auto* inner =
-                            std::get_if<ComponentElement>(&out.inner)) {
-                        auto inner_render = inner->render;
-                        inner->render =
-                            [inner_render, rp](int w2, int h2) -> Element {
-                            Element mat = inner_render ? inner_render(w2, h2)
-                                                       : Element{};
-                            if (TextElement* leaf =
-                                    rightmost_content_text_leaf(mat))
-                                (void)anim::decorate_text_reveal(*leaf, rp);
-                            return mat;
-                        };
-                        inner->hash_id = {};
-                    } else if (TextElement* leaf =
-                                   rightmost_content_text_leaf(out)) {
-                        (void)anim::decorate_text_reveal(*leaf, rp);
-                    }
-                    return out;
-                };
-                // Re-key (don't clear) the hash so the cells cache re-captures
-                // the decorated rows at a BOUNDED rate. Mixing the component's
-                // ORIGINAL content hash (it already encodes the table's
-                // per-row slice identity, so it changes whenever a new row is
-                // revealed) with a coarse time bucket means the renderer
-                // re-lays-out the live table on a new row OR ~30 fps — not on
-                // every 60 fps frame. Between bucket ticks the decorated cells
-                // blit, so a large streaming table doesn't pay a full
-                // layout::compute every frame (the cost the per-row hash cache
-                // was built to avoid). Once the gate goes false the original
-                // stable hash is left intact and the table re-settles cached.
-                constexpr std::int64_t kEagerAnimBucketMs = 33;
-                const std::uint64_t content_key = comp->hash_id.hash();
-                comp->hash_id = CacheIdBuilder{}
-                    .add(std::string_view{"eager-reveal-anim"})
-                    .add(content_key)
-                    .add(static_cast<std::uint64_t>(
-                             ms_total / kEagerAnimBucketMs))
-                    .build();
-            }
+            // That corrupts native scrollback. A tall code block / table
+            // commits to scrollback row-by-row as it grows past the viewport,
+            // and a row can cross the commit boundary WHILE it is still the
+            // newest, scrambling row — freezing churn glyphs into a
+            // scrolled-off row permanently (caught by reveal_scrollback_test
+            // R1: a committed wire row rewritten with scramble glyphs).
+            //
+            // Prose reveal (the find_last_text branch above) is safe because
+            // its scramble is pinned to the reveal cursor at the LIVE edge and
+            // never reaches a committed row. The eager path has no per-row
+            // commit-boundary signal, so it cannot offer the same guarantee.
+            //
+            // So: do nothing. The component renders its clean cached cells —
+            // tables and code blocks appear fully-formed (no scramble
+            // animation) and every row that scrolls into scrollback is
+            // byte-stable. A commit-safe eager reveal would need the host's
+            // commit boundary plumbed in here; until then, correctness wins.
         }
 
         // ── Inline end-caret ──

@@ -606,6 +606,14 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         constexpr std::int64_t kScrambleMs  = 220;
         constexpr std::int64_t kCharStepMs  = 26;
         constexpr std::size_t  kGhostExtra  = 96;
+        // Table-row reveal tunables. A streaming table row lands WHOLE (not
+        // typed char-by-char like prose), so we want most of the row to
+        // scramble together on arrival and then resolve as a body: a wide
+        // trail/scramble window (covers the row) + a TIGHT per-cp age step.
+        constexpr std::size_t  kTableTrailLen    = 160;
+        constexpr std::size_t  kTableScrambleLen = 160;
+        constexpr std::int64_t kTableScrambleMs  = 300;
+        constexpr std::int64_t kTableCharStepMs  = 5;
 
         // Shallow copy of cached_build_; we'll splice a freshly-built
         // tail TextElement onto its rightmost leaf.
@@ -763,29 +771,24 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 rp.revealed_cp  = 0;      // whole row revealed
                 rp.total_cp     = 0;      // derive from the row content
                 rp.clip_active  = false;
-                // Animate the newest row with the SAME positional comet the
-                // prose typewriter uses, not a flat uniform flash. char_step_ms
-                // ages each cp leftward from the trailing edge, so the row gets
-                // the hot→cool trail_style gradient (bright tip at the live
-                // edge, cooling back into the row) exactly like a streaming
-                // paragraph's last line. trail_len matches the prose comet
-                // length; cp older than the gradient's ~700 ms lifetime fall
-                // back to the row's settled style, so the band self-limits to
-                // the live edge instead of repainting the whole row as a unit.
-                rp.trail_len    = kTrailLen;   // same comet length as prose
-                rp.scramble_len = 0;
-                rp.scramble_ms  = kScrambleMs;
-                rp.char_step_ms = kCharStepMs;  // positional gradient like prose
-                rp.ghost_extra  = 0;
-                rp.enable_ghost = false;  // rows render whole — no ghost band
-                rp.enable_sweep = false;  // no within-row typewriter cursor
-                rp.enable_caret = false;
-                // No glyph scramble on a table row: its trailing codepoints
-                // are STRUCTURAL (cell padding + the closing │ border), not
-                // freshly-typed content, so the scramble window would garble
-                // the row's right edge. Recolour-only keeps the border
-                // byte-identical — just the trail_style gradient other md uses.
-                rp.enable_scramble = false;
+                // Animate the newest row like a streaming paragraph: a glyph
+                // SCRAMBLE that resolves into the real text — the highly
+                // visible motion prose uses, which survives a low-frame-rate /
+                // low-gamma screen where a pure colour gradient washes out —
+                // plus the hot→cool comet gradient. protect_structure keeps the
+                // │ cell borders, the column padding and any wide glyph byte-
+                // identical, so only the cell CONTENT churns; the table frame
+                // stays height- AND width-stable (no border corruption).
+                rp.trail_len         = kTableTrailLen;     // cover the row width
+                rp.scramble_len      = kTableScrambleLen;
+                rp.scramble_ms       = kTableScrambleMs;
+                rp.char_step_ms      = kTableCharStepMs;    // most of the row churns at once
+                rp.ghost_extra       = 0;
+                rp.enable_ghost      = false;  // rows render whole — no ghost band
+                rp.enable_sweep      = false;  // no within-row typewriter cursor
+                rp.enable_caret      = false;
+                rp.enable_scramble   = true;   // glyph churn = the visible motion
+                rp.protect_structure = true;   // …but never the │ borders / padding
                 auto orig = comp->render;
                 comp->render = [orig, rp](int w, int h) -> Element {
                     Element out = orig ? orig(w, h) : Element{};

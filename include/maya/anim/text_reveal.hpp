@@ -88,6 +88,14 @@ struct TextRevealParams {
     bool enable_sweep    = true;   // bright cursor at the reveal front
     bool enable_caret    = true;   // pulsing end-caret when caught up
 
+    // When set, the scramble step preserves STRUCTURAL glyphs: spaces, the
+    // multi-byte │ / ─ box-drawing borders and any wide glyph are never
+    // swapped — only single-byte printable ASCII is churned. Lets a table row
+    // morph its cell CONTENT like prose while its │ separators and column
+    // padding stay byte-identical (no border corruption / column drift).
+    // Default off so prose decoration is byte-for-byte unchanged.
+    bool protect_structure = false;
+
     // How the not-yet-typed (ghost) cp render. The leaf must stay
     // HEIGHT/WIDTH-stable (the markdown streaming path commits rows to native
     // scrollback), so unrevealed cp can't simply be deleted. Two modes:
@@ -357,7 +365,22 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
             scramble_n > 0 &&
             i_from_tail >= unrevealed_cp &&
             i_from_tail <  unrevealed_cp + scramble_n;
-        const bool scrambling  = in_scramble && age < p.scramble_ms;
+        // Structure guard (protect_structure, e.g. table rows): only single-
+        // byte printable ASCII may be swapped for a scramble glyph. Spaces,
+        // the multi-byte │ / ─ box borders and any wide glyph are left byte-
+        // identical so column alignment and cell separators never shift — the
+        // churn morphs only the cell CONTENT, exactly like prose typing.
+        bool scrambleable = true;
+        if (p.protect_structure) {
+            if (real_cp.size() != 1) {
+                scrambleable = false;
+            } else {
+                const unsigned char ch = static_cast<unsigned char>(real_cp[0]);
+                scrambleable = (ch >= 0x21 && ch <= 0x7e);
+            }
+        }
+        const bool scrambling  =
+            in_scramble && scrambleable && age < p.scramble_ms;
 
         std::string scramble_owned;
         std::string blank_owned;

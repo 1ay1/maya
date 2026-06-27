@@ -2005,11 +2005,13 @@ static void st_reveal_fx_table_animates() {
 // over its trailing codepoints — which on a table row are the cell padding +
 // the closing │ border, NOT freshly-typed content — so the row's right edge
 // turned into noise glyphs ("17x     │" -> "17x0■○17@") for the whole hot
-// window. The fix makes the table reveal recolour-ONLY (uniform fade); the
-// glyphs stay byte-identical to the settled row. Invariant pinned here: on
+// window. The fix: the table reveal scrambles only the cell CONTENT (single-
+// byte printable ASCII) via TextRevealParams::protect_structure — the │
+// borders, the column padding and any wide glyph stay byte-identical, so the
+// row morphs like prose WITHOUT shifting its frame. Invariant pinned here: on
 // EVERY frame of the reveal, every visible formatted data row (right-trimmed)
-// begins AND ends with the │ border (U+2502). The old scramble code violated
-// this the instant the newest row appeared.
+// begins AND ends with the │ border (U+2502). The old unguarded scramble
+// violated this the instant the newest row appeared.
 static void st_reveal_fx_table_no_border_corruption() {
     auto is_border = [](char32_t c) {
         switch (c) {

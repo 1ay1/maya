@@ -57,6 +57,20 @@ public:
 
         // Overlay slot — nullopt collapses cleanly to just the base.
         std::optional<Element> overlay;
+
+        // Viewport-fill discipline (forwarded to the outer vstack's
+        // min_height). true (default) = the classic monolithic inline
+        // shape: min_height(term_h) so the app fills the viewport and
+        // the composer/status chrome rides the bottom on short content.
+        //
+        // false = HUG mode, for the depositional (strata) renderer. The
+        // settled prefix is a stack of sealed nodes ABOVE this one, so
+        // this node must hug its own content height: NO min_height floor
+        // (which would otherwise inflate the live node to a full viewport
+        // and strand a blank void between the settled turns and the
+        // composer). Pair with Conversation::Config::fill_viewport=false
+        // so the thread also drops its trailing grow-spacer.
+        bool fill_viewport = true;
     };
 
     explicit AppLayout(Config c) : cfg_(std::move(c)) {}
@@ -94,10 +108,14 @@ public:
         // The min_height + padding below are the only outer flex
         // properties this widget owns.
         const int term_h = available_height();
-        auto base = (vstack()
-            .min_height(Dimension::fixed(term_h))
-            .padding(1)
-            (
+        auto vs = vstack();
+        // Classic path floors the app to the viewport so the chrome rides
+        // the bottom; HUG mode (strata) omits the floor so the live node
+        // hugs its content (the band stacks settled nodes above it).
+        if (cfg_.fill_viewport)
+            vs.min_height(Dimension::fixed(term_h));
+        vs.padding(1);
+        auto base = std::move(vs)(
                 Thread{cfg_.thread}.build(),
                 ChangesStrip{cfg_.changes_strip}.build(),
                 Composer{cfg_.composer}.build(),
@@ -126,7 +144,7 @@ public:
                         prows.push_back((text(" ") | Dim).build());
                     return v(prows).build();
                 })
-            )).build();
+            );
 
         Overlay::Config oc;
         oc.base = std::move(base);

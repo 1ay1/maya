@@ -101,6 +101,20 @@ public:
         std::vector<Element>                     live_tail;
 
         std::optional<ActivityIndicator::Config> in_flight;
+
+        // Viewport-fill discipline. true (default) = the classic
+        // monolithic inline shape: a trailing flex spacer + grow(1.0f)
+        // so the panel fills its column and the chrome below (composer +
+        // status bar) rides the viewport bottom on short content.
+        //
+        // false = HUG mode, for the depositional (strata) renderer. The
+        // settled prefix is composed as separate sealed nodes ABOVE this
+        // one, so this node must hug its own live-tail content height —
+        // a trailing grow-spacer here would inflate the live node to the
+        // whole viewport and strand a blank void between the settled
+        // turns and the composer. No spacer, no grow: the composer sits
+        // directly under the live content.
+        bool                                     fill_viewport = true;
     };
 
     explicit Conversation(Config c) : cfg_(std::move(c)) {}
@@ -126,6 +140,11 @@ public:
             // lives in AppLayout::build as the vstack's LAST child — a
             // pad here would be absorbed by this spacer's grow and never
             // reach content_height.)
+            //
+            // HUG mode (fill_viewport=false, strata path): skip the
+            // spacer + grow so the node hugs the live-tail height.
+            if (!cfg_.fill_viewport)
+                return (v(rows) | padding(0, 1)).build();
             rows.push_back(spacer().build());
             return (v(rows) | padding(0, 1) | grow(1.0f)).build();
         }

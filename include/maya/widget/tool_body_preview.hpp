@@ -1158,17 +1158,28 @@ private:
         const Color hunk_fg    = Color::rgb(188, 202, 252);  // bright periwinkle text
 
         // Bands (full-width solid rectangles) for the lines that carry the
-        // diff signal: + adds, - removes, @@ hunk headers. Context and file
-        // metadata (diff --git / +++ / ---) render as plain dim text on the
-        // default bg so the colored bands read as changes floating over
-        // unchanged code — the classic GitHub/delta hierarchy.
+        // diff signal: + adds, - removes, @@ hunk headers. Git plumbing
+        // (diff --git / index / mode / rename chatter) is dropped, and the
+        // `--- a/X` + `+++ b/X` pair collapses into ONE clean accent-tinted
+        // filename header — so the colored bands read as changes floating
+        // over unchanged code, the classic GitHub/delta hierarchy, with no
+        // leaked `a//tmp/x` double-slash plumbing.
         const Style add_sign_st = Style{}.with_fg(add_fg_br).with_bg(add_rail).with_bold();
         const Style add_body_st = Style{}.with_fg(add_fg_br).with_bg(add_bg);
         const Style rem_sign_st = Style{}.with_fg(rem_fg_br).with_bg(rem_rail).with_bold();
         const Style rem_body_st = Style{}.with_fg(rem_fg_br).with_bg(rem_bg);
         const Style hunk_st     = Style{}.with_fg(hunk_fg).with_bg(hunk_bg).with_bold();
-        const Style meta_st     = Style{}.with_fg(cfg_.chrome_color).with_dim();
+        const Style file_st     = Style{}.with_fg(accent()).with_bold();
         const Style ctx_st      = Style{}.with_fg(cfg_.text_color);
+
+        // Strip the `a/` / `b/` diff sentinel so an ABSOLUTE path renders as
+        // `/tmp/x` instead of the ugly `a//tmp/x` the prefix + leading slash
+        // produce.
+        auto strip_ab = [](std::string_view s) -> std::string_view {
+            if (s.starts_with("a/") || s.starts_with("b/")) s.remove_prefix(2);
+            return s;
+        };
+        std::string pending_from;   // `--- a/<from>` awaiting its `+++ b/<to>`
 
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 1);
@@ -1176,11 +1187,53 @@ private:
             if (i == p.elision_at && p.elided > 0)
                 rows.push_back(elision_marker(p.elided));
             std::string_view ln = p.lines[std::size_t(i)];
-            if (ln.starts_with("+++") || ln.starts_with("---")
-             || ln.starts_with("diff ")) {
-                // File metadata — dim, recedes; no band.
-                rows.push_back(text_row("  " + std::string{ln}, meta_st));
-            } else if (ln.starts_with("@@")) {
+
+            // Git plumbing we never surface — pure machine metadata that just
+            // eats rows (precious on a phone). Every real diff CONTENT line
+            // carries a +/-/space prefix, so a column-0 keyword here is
+            // unambiguously plumbing, never code.
+            if (ln.starts_with("diff ")      || ln.starts_with("index ")
+             || ln.starts_with("new file")   || ln.starts_with("deleted file")
+             || ln.starts_with("old mode")   || ln.starts_with("new mode")
+             || ln.starts_with("similarity ")|| ln.starts_with("rename ")
+             || ln.starts_with("copy ")) {
+                continue;
+            }
+            // `--- a/X` — the "from" path. Remember it (to pair with the
+            // `+++ b/Y` below) and suppress the row. Only counts as a header
+            // when the path looks like a diff path; otherwise it's a removed
+            // content line (e.g. a `-- sql comment`) and falls through.
+            if (ln.starts_with("--- ")) {
+                std::string_view rest = ln.substr(4);
+                if (rest.starts_with("a/") || rest == "/dev/null") {
+                    pending_from = std::string{strip_ab(rest)};
+                    continue;
+                }
+            }
+            // `+++ b/Y` — render the ONE clean filename header: a thin left
+            // rule + the bare path in accent, an `old → new` form for renames,
+            // a `(deleted)` tag when the target is /dev/null.
+            if (ln.starts_with("+++ ")) {
+                std::string_view rest = ln.substr(4);
+                if (rest.starts_with("b/") || rest == "/dev/null") {
+                    std::string to{strip_ab(rest)};
+                    std::string label;
+                    if (to == "/dev/null")
+                        label = pending_from.empty()
+                              ? std::string{"(deleted)"}
+                              : pending_from + "  (deleted)";
+                    else if (!pending_from.empty() && pending_from != to
+                          && pending_from != "/dev/null")
+                        label = pending_from + "  \xe2\x86\x92  " + to;
+                    else
+                        label = to;
+                    pending_from.clear();
+                    rows.push_back(text_row("\xe2\x96\x8f " + label, file_st));
+                    continue;
+                }
+            }
+
+            if (ln.starts_with("@@")) {
                 rows.push_back(band_row("   ", hunk_st, std::string{ln},
                                         hunk_st, hunk_bg));
             } else if (!ln.empty() && ln[0] == '+') {

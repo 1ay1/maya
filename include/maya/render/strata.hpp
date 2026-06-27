@@ -136,6 +136,23 @@ public:
     // fresh. Does NOT wipe the terminal; the caller decides that.
     void reset();
 
+    // Like reset(), but ARM a hard reset so the NEXT frame wipes the
+    // terminal (viewport + native scrollback via \x1b[2J\x1b[3J\x1b[H)
+    // before repainting. The sanctioned recovery for a WHOLESALE CONTENT
+    // SWAP into different/shorter content (thread switch / new thread):
+    // the old transcript on screen AND the rows it committed to native
+    // scrollback are both erased, so nothing strands above the new
+    // surface. Destructive to host scrollback above the frame — only for
+    // an explicit, user-initiated swap.
+    void reset_hard();
+
+    // Force the next frame to soft-repaint the active layer in place
+    // (case-B: walk cursor up, repaint viewport, erase below; NO
+    // scrollback wipe). For a host-driven "redraw" (Ctrl-L) that must
+    // scrub ghost cells without touching native scrollback. No-op unless
+    // the current coherence is Synced.
+    void demote_soft();
+
     // How many leading host nodes have set into scrollback (monotonic
     // across a session, reset() returns it to 0).
     [[nodiscard]] std::size_t sealed_nodes() const noexcept { return sealed_count_; }

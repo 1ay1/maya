@@ -49,6 +49,42 @@ void Strata::reset() {
     coh_ = inline_frame::InlineFrame<inline_frame::Empty>{};
 }
 
+void Strata::reset_hard() {
+    // Drop the active layer + frontier like reset(), but DON'T reseed the
+    // coherence to Empty (which would append from the cursor with no
+    // wipe). Instead demote the live coherence to HardReset so the next
+    // frame emits \x1b[2J\x1b[3J\x1b[H and repaints from a cleared
+    // screen — erasing the old surface on screen and in native scrollback.
+    band_.clear();
+    sealed_count_      = 0;
+    sealed_rows_total_ = 0;
+    active_rows_       = 0;
+    prev_width_        = 0;
+    have_prev_         = false;
+    coh_ = std::visit(
+        [](auto&& arm) -> inline_frame::InlineCoherence {
+            using T = std::decay_t<decltype(arm)>;
+            using namespace inline_frame;
+            if constexpr (std::is_same_v<T, InlineFrame<Synced>>)
+                return std::move(arm).demote_to_hard_reset();
+            else if constexpr (std::is_same_v<T, InlineFrame<Stale>>)
+                return std::move(arm).escalate_to_hard_reset();
+            else
+                // Empty / Fresh / HardReset / Sealed: nothing prior on the
+                // wire we must wipe (or already armed). Empty→Fresh appends
+                // cleanly; a swap from a never-rendered surface needs no wipe.
+                return std::move(arm);
+        },
+        std::move(coh_));
+}
+
+void Strata::demote_soft() {
+    // Soft repaint in place (case B) — NO scrollback wipe. Only meaningful
+    // from Synced; other states already repaint cleanly next frame.
+    if (auto* s = std::get_if<inline_frame::InlineFrame<inline_frame::Synced>>(&coh_))
+        coh_ = std::move(*s).demote_to_stale();
+}
+
 FrameStats Strata::frame(std::span<const NodeRef> nodes,
                          const BuildFn& build,
                          int term_cols,

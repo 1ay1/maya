@@ -643,6 +643,9 @@ public:
                 &in_coherence_)) {
             in_coherence_ = std::move(*s).demote_to_stale();
         }
+        // Strata path (no-op for classic apps: strata_ is empty): soft
+        // repaint the active layer in place, no scrollback wipe.
+        strata_.demote_soft();
         // Fresh/Stale/HardReset already produce the right behavior on
         // the next render. Empty/Sealed are non-render states; ignore.
     }
@@ -682,6 +685,11 @@ public:
                 &in_coherence_)) {
             in_coherence_ = std::move(*st).escalate_to_hard_reset();
         }
+        // Strata path (no-op for classic apps: strata_ is empty): drop the
+        // active layer + arm a HardReset so the next Strata frame wipes
+        // (\x1b[2J\x1b[3J\x1b[H) and repaints the new surface fresh — the
+        // sanctioned wholesale-content-swap recovery.
+        strata_.reset_hard();
         // Empty/Fresh/HardReset/Sealed: nothing to demote — Empty/Fresh
         // already repaint cleanly, HardReset is already armed.
     }

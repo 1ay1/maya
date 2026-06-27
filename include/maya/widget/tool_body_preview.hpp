@@ -902,8 +902,12 @@ private:
         // green with BRIGHT same-hue green text on top (GitHub-dark-diff
         // style) — the wide luminance gap reads with strong contrast even on a
         // phone / low-gamma SSH screen, and the dark band keeps its green hue
-        // instead of washing out to grey the way the old pale bands did.
-        const Color add_bg    = Color::rgb(22, 62, 38);
+        // instead of washing out to grey the way the old pale bands did. The
+        // band is DARK but highly SATURATED (low red/blue) — on a low-gamma
+        // screen it's channel separation, not lightness, that carries hue, so
+        // a dark-but-greyish band reads grey while a dark-but-vivid one reads
+        // green.
+        const Color add_bg    = Color::rgb(12, 86, 40);
         const Color add_fg_br = Color::rgb(170, 244, 190);
         const Color num_fg    = Color::rgb(120, 196, 148);   // medium green gutter
 
@@ -1043,7 +1047,7 @@ private:
             // green adds) instead of a jagged "tint, blank, tint" strip.
             // Full-width band so the header rule spans the same rectangle
             // as the −/+ sides below it.
-            const Color hdr_bg = Color::rgb(38, 46, 88);
+            const Color hdr_bg = Color::rgb(44, 54, 122);
             const Color hdr_fg = Color::rgb(188, 202, 252);
             rows.push_back(band_row("   ", Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
                 std::move(header),
@@ -1078,16 +1082,19 @@ private:
                                    cfg_.edit_tail_per_side);
 
         const bool is_add = (marker == '+');
-        // Dark, saturated green / red bands with BRIGHT same-hue text on top
-        // (GitHub-dark-diff style) so the change reads with a wide luminance
-        // gap even on a phone / low-gamma SSH screen, while the dark band keeps
-        // its hue instead of washing out to grey. The " + " / " - " gutter
-        // rides a brighter, more saturated rail of the same hue so the change
-        // marker pops like a GitHub / GitLab line indicator.
-        const Color bg      = is_add ? Color::rgb(22, 62, 38)
-                                     : Color::rgb(74, 26, 32);
-        const Color rail_bg = is_add ? Color::rgb(36, 96, 58)
-                                     : Color::rgb(112, 40, 48);
+        // Dark, highly SATURATED green / red bands with BRIGHT same-hue text
+        // on top (GitHub-dark-diff style) so the change reads with a wide
+        // luminance gap even on a phone / low-gamma SSH screen. The band is
+        // dark but vivid (low off-channels) — on a low-gamma screen it's
+        // channel separation, not lightness, that carries hue, so a greyish
+        // dark band reads grey while a vivid dark one reads green/red. The
+        // " + " / " - " gutter rides a brighter, even more saturated rail of
+        // the same hue so the change marker pops like a GitHub / GitLab line
+        // indicator.
+        const Color bg      = is_add ? Color::rgb(12, 86, 40)
+                                     : Color::rgb(108, 20, 30);
+        const Color rail_bg = is_add ? Color::rgb(26, 128, 64)
+                                     : Color::rgb(158, 38, 52);
         const Color fg_br   = is_add ? Color::rgb(170, 244, 190)
                                      : Color::rgb(252, 180, 188);
         (void)c;   // c was the legacy fg; kept in signature for callers
@@ -1133,17 +1140,19 @@ private:
 
         const auto p = elide(cfg_.text, cfg_.code_head, cfg_.code_tail);
 
-        // Dark, saturated bands with BRIGHT same-hue text so the diff regions
-        // read with a wide luminance gap on a phone / low-gamma SSH screen
-        // while the dark band keeps its hue instead of washing to grey. The
-        // +/- gutter gets a brighter, more saturated rail than the body band so
-        // the change marker pops like a GitHub / GitLab line indicator. Context
-        // + file metadata get NO band (plain text).
-        const Color add_bg     = Color::rgb(22, 62, 38);     // dark green band
-        const Color rem_bg     = Color::rgb(74, 26, 32);     // dark coral band
-        const Color hunk_bg    = Color::rgb(38, 46, 88);     // dark indigo for @@
-        const Color add_rail   = Color::rgb(36, 96, 58);     // brighter +-gutter rail
-        const Color rem_rail   = Color::rgb(112, 40, 48);    // brighter --gutter rail
+        // Dark, highly SATURATED bands with BRIGHT same-hue text so the diff
+        // regions read with a wide luminance gap on a phone / low-gamma SSH
+        // screen. The bands are dark but vivid (low off-channels) — on a
+        // low-gamma screen it's channel separation, not lightness, that carries
+        // hue, so a greyish dark band reads grey while a vivid dark one reads
+        // green/red. The +/- gutter gets a brighter, even more saturated rail
+        // than the body band so the change marker pops. Context + file metadata
+        // get NO band (plain text).
+        const Color add_bg     = Color::rgb(12, 86, 40);     // dark vivid green band
+        const Color rem_bg     = Color::rgb(108, 20, 30);    // dark vivid coral band
+        const Color hunk_bg    = Color::rgb(44, 54, 122);    // dark vivid indigo for @@
+        const Color add_rail   = Color::rgb(26, 128, 64);    // brighter +-gutter rail
+        const Color rem_rail   = Color::rgb(158, 38, 52);    // brighter --gutter rail
         const Color add_fg_br  = Color::rgb(170, 244, 190);  // bright green text
         const Color rem_fg_br  = Color::rgb(252, 180, 188);  // bright coral text
         const Color hunk_fg    = Color::rgb(188, 202, 252);  // bright periwinkle text

@@ -31,10 +31,12 @@ namespace maya {
 class ContextGauge {
 public:
     struct Config {
-        int  used     = 0;
-        int  max      = 0;
-        int  cells    = 10;       // bar width in cells
-        bool show_bar = true;     // false → drop the bar + numeric ratio
+        int  used        = 0;
+        int  max         = 0;
+        int  cells       = 10;       // bar width in cells
+        bool show_bar    = true;     // false → drop the bar (percent only)
+        bool show_tokens = true;     // false → drop the raw "used/max" counts
+                                     //         (compact: bar graph + percent)
     };
 
     explicit ContextGauge(Config c) : cfg_(c) {}
@@ -57,16 +59,24 @@ public:
         parts.push_back(text("CTX ", Style{}.with_fg(muted).with_bold()));
 
         if (cfg_.show_bar) {
+            // The raw "used/max" token counts are the most verbose part of
+            // the gauge; show_tokens=false drops just those (keeping the bar
+            // + percent) for a compact "CTX \u2588\u2588\u2588\u2588\u258c\u2591\u2591\u2591\u2591\u2591 46%" that fits a
+            // narrow / phone-width status bar.
             if (has_tokens) {
-                std::string used_str = format_tokens(cfg_.used) + "/"
-                                     + format_tokens(cfg_.max) + " ";
-                parts.push_back(text(used_str, fg_dim_(muted)));
+                if (cfg_.show_tokens) {
+                    std::string used_str = format_tokens(cfg_.used) + "/"
+                                         + format_tokens(cfg_.max) + " ";
+                    parts.push_back(text(used_str, fg_dim_(muted)));
+                }
                 parts.push_back(bar(pct, cfg_.cells));
             } else {
                 // Placeholder numbers, same 13 cols as live: "  ——/  ——  "
-                parts.push_back(text(
-                    "  \xe2\x80\x94\xe2\x80\x94/  \xe2\x80\x94\xe2\x80\x94  ",
-                    fg_dim_(muted)));
+                if (cfg_.show_tokens) {
+                    parts.push_back(text(
+                        "  \xe2\x80\x94\xe2\x80\x94/  \xe2\x80\x94\xe2\x80\x94  ",
+                        fg_dim_(muted)));
+                }
                 parts.push_back(bar(0, cfg_.cells));   // dim track only
             }
         }

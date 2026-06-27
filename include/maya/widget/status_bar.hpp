@@ -71,6 +71,7 @@ public:
         int breadcrumb_min_width    = 130;
         int token_stream_min_width  = 110;
         int ctx_bar_min_width       = 55;   // < this: numbers only, no bar
+        int ctx_tokens_min_width    = 120;  // < this: drop raw token counts (compact)
         int ctx_gauge_min_width     = 38;   // < this: drop the ctx gauge entirely
         int model_badge_min_width   = 30;   // < this: drop the provider badge
         int phase_verb_min_width    = 50;     // < this drops phase verb
@@ -137,7 +138,8 @@ private:
             if (w < cfg.phase_elapsed_min_width) pc.elapsed_secs = -1.0f;
 
             ContextGauge::Config ctx = cfg.context;
-            ctx.show_bar = (w >= cfg.ctx_bar_min_width);
+            ctx.show_bar    = (w >= cfg.ctx_bar_min_width);
+            ctx.show_tokens = (w >= cfg.ctx_tokens_min_width);
 
             // ── Left group: breadcrumb (when wide enough) + ▌ rail + phase chip.
             std::vector<Element> lparts;

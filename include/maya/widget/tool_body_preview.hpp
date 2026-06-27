@@ -903,7 +903,7 @@ private:
         // style) — the wide luminance gap reads with strong contrast even on a
         // phone / low-gamma SSH screen, and the dark band keeps its green hue
         // instead of washing out to grey the way the old pale bands did.
-        const Color add_bg    = Color::rgb(30, 84, 52);
+        const Color add_bg    = Color::rgb(22, 62, 38);
         const Color add_fg_br = Color::rgb(170, 244, 190);
         const Color num_fg    = Color::rgb(120, 196, 148);   // medium green gutter
 
@@ -1043,7 +1043,7 @@ private:
             // green adds) instead of a jagged "tint, blank, tint" strip.
             // Full-width band so the header rule spans the same rectangle
             // as the −/+ sides below it.
-            const Color hdr_bg = Color::rgb(50, 60, 114);
+            const Color hdr_bg = Color::rgb(38, 46, 88);
             const Color hdr_fg = Color::rgb(188, 202, 252);
             rows.push_back(band_row("   ", Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
                 std::move(header),
@@ -1084,10 +1084,10 @@ private:
         // its hue instead of washing out to grey. The " + " / " - " gutter
         // rides a brighter, more saturated rail of the same hue so the change
         // marker pops like a GitHub / GitLab line indicator.
-        const Color bg      = is_add ? Color::rgb(30, 84, 52)
-                                     : Color::rgb(98, 34, 42);
-        const Color rail_bg = is_add ? Color::rgb(48, 122, 74)
-                                     : Color::rgb(146, 54, 64);
+        const Color bg      = is_add ? Color::rgb(22, 62, 38)
+                                     : Color::rgb(74, 26, 32);
+        const Color rail_bg = is_add ? Color::rgb(36, 96, 58)
+                                     : Color::rgb(112, 40, 48);
         const Color fg_br   = is_add ? Color::rgb(170, 244, 190)
                                      : Color::rgb(252, 180, 188);
         (void)c;   // c was the legacy fg; kept in signature for callers
@@ -1139,11 +1139,11 @@ private:
         // +/- gutter gets a brighter, more saturated rail than the body band so
         // the change marker pops like a GitHub / GitLab line indicator. Context
         // + file metadata get NO band (plain text).
-        const Color add_bg     = Color::rgb(30, 84, 52);     // dark green band
-        const Color rem_bg     = Color::rgb(98, 34, 42);     // dark coral band
-        const Color hunk_bg    = Color::rgb(50, 60, 114);    // dark indigo for @@
-        const Color add_rail   = Color::rgb(48, 122, 74);    // brighter +-gutter rail
-        const Color rem_rail   = Color::rgb(146, 54, 64);    // brighter --gutter rail
+        const Color add_bg     = Color::rgb(22, 62, 38);     // dark green band
+        const Color rem_bg     = Color::rgb(74, 26, 32);     // dark coral band
+        const Color hunk_bg    = Color::rgb(38, 46, 88);     // dark indigo for @@
+        const Color add_rail   = Color::rgb(36, 96, 58);     // brighter +-gutter rail
+        const Color rem_rail   = Color::rgb(112, 40, 48);    // brighter --gutter rail
         const Color add_fg_br  = Color::rgb(170, 244, 190);  // bright green text
         const Color rem_fg_br  = Color::rgb(252, 180, 188);  // bright coral text
         const Color hunk_fg    = Color::rgb(188, 202, 252);  // bright periwinkle text

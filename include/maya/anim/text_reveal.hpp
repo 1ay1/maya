@@ -96,6 +96,29 @@ struct TextRevealParams {
     // Default off so prose decoration is byte-for-byte unchanged.
     bool protect_structure = false;
 
+    // Fraction in [0,1] of the leaf's last visual line that is "typed". When
+    // >= 0 it OVERRIDES revealed_cp: the reveal front becomes
+    // reveal_frac * (last-line cp). For an eager whole-row block (a streaming
+    // table row, a code line) the RENDERED leaf is wider than its source (cell
+    // padding, │ borders, syntax runs), so a source-codepoint cursor doesn't
+    // map onto it — the host passes the cursor's 0..1 progress through the
+    // row's SOURCE span instead and the row reveals proportionally, gliding
+    // left-to-right at the live stream's own speed exactly like a prose tail.
+    // <0 (default) ⇒ off (revealed_cp / clip drive the front), so prose
+    // decoration is byte-for-byte unchanged.
+    double reveal_frac = -1.0;
+
+    // Confine ALL effects (ghost / scramble / gradient / sweep) to the leaf's
+    // LAST visual line: the reveal window never steps back past the final
+    // '\n', and a derived total_cp counts only that last line. For a multi-
+    // line leaf (a fenced code block rendered as one TextElement) this
+    // guarantees only the bottom — the live edge — is ever rewritten, so a
+    // line that has already scrolled into native scrollback can never be
+    // recoloured/ghosted from underneath (the streaming scrollback-corruption
+    // class of bug). No-op for single-line leaves (prose, one table row).
+    // Default off so prose decoration is byte-for-byte unchanged.
+    bool line_bounded = false;
+
     // How the not-yet-typed (ghost) cp render. The leaf must stay
     // HEIGHT/WIDTH-stable (the markdown streaming path commits rows to native
     // scrollback), so unrevealed cp can't simply be deleted. Two modes:
@@ -268,20 +291,42 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
     const std::int64_t ms_total = p.ms_total;
     const std::int64_t edge_age = p.edge_age_ms;
 
-    // Resolve total / revealed codepoint counts.
+    const std::string_view orig = leaf.content;
+
+    // line_bounded: restrict every effect to the LAST visual line so a multi-
+    // line leaf (a code block rendered as one TextElement) only ever animates
+    // its bottom — the live edge. line_start is the byte just past the final
+    // '\n' (or 0); a derived total_cp counts that last line only and the trail
+    // window below is clamped to start there.
+    std::size_t line_start = 0;
+    if (p.line_bounded) {
+        const std::size_t nl = orig.rfind('\n');
+        if (nl != std::string_view::npos) line_start = nl + 1;
+    }
+
+    // Resolve total / revealed codepoint counts over the bounded region.
     std::size_t total_cp = p.total_cp;
     if (total_cp == 0) {
-        for (std::size_t i = 0; i < leaf.content.size(); ++i)
-            if ((static_cast<unsigned char>(leaf.content[i]) & 0xC0) != 0x80)
+        for (std::size_t i = line_start; i < orig.size(); ++i)
+            if ((static_cast<unsigned char>(orig[i]) & 0xC0) != 0x80)
                 ++total_cp;
     }
-    const std::size_t revealed_cp = p.revealed_cp ? p.revealed_cp : total_cp;
+    std::size_t revealed_cp;
+    if (p.reveal_frac >= 0.0) {
+        // Fraction front: the host mapped the reveal cursor's progress through
+        // the row's SOURCE onto 0..1, so a leaf whose rendered width differs
+        // from its source (a padded/bordered table row) still reveals
+        // proportionally — gliding left-to-right at the stream's own speed.
+        const double f = p.reveal_frac > 1.0 ? 1.0 : p.reveal_frac;
+        revealed_cp =
+            static_cast<std::size_t>(f * static_cast<double>(total_cp) + 0.5);
+    } else {
+        revealed_cp = p.revealed_cp ? p.revealed_cp : total_cp;
+    }
 
     const std::size_t unrevealed_cp =
         p.clip_active ? p.clipped_unrevealed_cp
                       : (total_cp > revealed_cp ? total_cp - revealed_cp : 0u);
-
-    const std::string_view orig = leaf.content;
 
     auto age_for = [&](std::size_t i_from_tail) -> std::int64_t {
         // Age is measured from the REVEAL FRONT (the cursor), not the content
@@ -301,8 +346,10 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
     const std::size_t trail_cp_target =
         std::max(p.trail_len,
                  (p.enable_ghost ? unrevealed_cp + p.ghost_extra : 0u));
-    const std::size_t trail_byte_start =
+    std::size_t trail_byte_start =
         reveal_detail::utf8_step_back(orig, trail_cp_target);
+    if (p.line_bounded && trail_byte_start < line_start)
+        trail_byte_start = line_start;   // never animate past the last '\n'
     const std::string_view trail_slice = orig.substr(trail_byte_start);
 
     // Codepoint boundaries within the trail slice.
@@ -370,22 +417,34 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
         // the multi-byte │ / ─ box borders and any wide glyph are left byte-
         // identical so column alignment and cell separators never shift — the
         // churn morphs only the cell CONTENT, exactly like prose typing.
-        bool scrambleable = true;
+        // Structure guard for protect_structure (e.g. table rows): a
+        // structural glyph — a space, a multi-byte │ / ─ box border, or any
+        // wide glyph (the table FRAME + column padding) — is never scrambled
+        // AND never ghosted/blanked. The frame stays byte-identical (height-
+        // and width-stable) while only single-byte printable-ASCII cell
+        // CONTENT animates, so the row glides in cell-by-cell with its borders
+        // fully present the whole time.
+        bool structural = false;
         if (p.protect_structure) {
             if (real_cp.size() != 1) {
-                scrambleable = false;
+                structural = true;
             } else {
                 const unsigned char ch = static_cast<unsigned char>(real_cp[0]);
-                scrambleable = (ch >= 0x21 && ch <= 0x7e);
+                structural = !(ch >= 0x21 && ch <= 0x7e);
             }
         }
+        const bool scrambleable = !structural;
         const bool scrambling  =
             in_scramble && scrambleable && age < p.scramble_ms;
 
         std::string scramble_owned;
         std::string blank_owned;
         std::string_view emitted;
-        const bool is_ghost = p.enable_ghost && i_from_tail < unrevealed_cp;
+        // Structural glyphs are never ghosted: the table frame stays fully
+        // present so only cell content materialises out of (width-matched)
+        // blank space.
+        const bool is_ghost =
+            p.enable_ghost && i_from_tail < unrevealed_cp && !structural;
         const bool is_sweep_head =
             is_ghost && p.enable_sweep && i_from_tail == unrevealed_cp - 1;
         if (scrambling) {
@@ -418,7 +477,7 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
             s = Style{}.with_fg(flick ? Color::rgb(255, 80, 180)
                                       : Color::rgb(255, 160, 60))
                        .with_bold();
-        } else if (p.enable_ghost && i_from_tail < unrevealed_cp) {
+        } else if (is_ghost) {
             // Ghost cell. When ghost_blank is on the glyph is already a space
             // (emitted above), so the style barely matters — but keep it dim
             // default so the rare non-blank ghost (sweep head fallthrough)
@@ -433,6 +492,12 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
                                   Color::rgb(90, 80, 40), pp))
                     .with_bold();
             }
+        } else if (i_from_tail < unrevealed_cp) {
+            // Not-yet-revealed but kept VISIBLE — a protected structural glyph
+            // (│/─ table border, column padding) that ghosting skipped. Render
+            // in the leaf's settled base style so the frame reads as "already
+            // there" and the hot reveal front sweeps INTO it.
+            s = leaf.style;
         } else if (auto ts = p.enable_gradient ? reveal_detail::trail_style(age)
                                                : std::nullopt) {
             s = *ts;

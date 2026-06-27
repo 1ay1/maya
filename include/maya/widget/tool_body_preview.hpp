@@ -898,17 +898,18 @@ private:
         // in the same visual language as a +-side hunk in git_diff /
         // edit_diff. The whole-file write is conceptually a single large
         // addition; matching palette keeps the timeline coherent when a Write
-        // sits next to an Edit or a git_diff. The band is a soft, LIGHT green
-        // with DARK green text on top (GitHub-light-diff style) — the wide
-        // luminance gap reads with strong contrast even on a phone / low-gamma
-        // SSH screen, where the old mid-tone bands used to crush together.
-        const Color add_bg    = Color::rgb(152, 214, 162);
-        const Color add_fg_br = Color::rgb(12, 50, 27);
-        const Color num_fg    = Color::rgb(40, 96, 58);   // medium green gutter
+        // sits next to an Edit or a git_diff. The band is a DARK, saturated
+        // green with BRIGHT same-hue green text on top (GitHub-dark-diff
+        // style) — the wide luminance gap reads with strong contrast even on a
+        // phone / low-gamma SSH screen, and the dark band keeps its green hue
+        // instead of washing out to grey the way the old pale bands did.
+        const Color add_bg    = Color::rgb(30, 84, 52);
+        const Color add_fg_br = Color::rgb(170, 244, 190);
+        const Color num_fg    = Color::rgb(120, 196, 148);   // medium green gutter
 
         // Line-number gutter rides the same green band as the code so the
         // whole row is one solid rectangle (no dim stripe cutting through);
-        // the number reads in a medium green, the code in deep green.
+        // the number reads in a medium green, the code in bright green.
         const Style num_st  = Style{}.with_fg(num_fg).with_bg(add_bg);
         const Style code_st = Style{}.with_fg(add_fg_br).with_bg(add_bg);
 
@@ -1042,8 +1043,8 @@ private:
             // green adds) instead of a jagged "tint, blank, tint" strip.
             // Full-width band so the header rule spans the same rectangle
             // as the −/+ sides below it.
-            const Color hdr_bg = Color::rgb(186, 198, 236);
-            const Color hdr_fg = Color::rgb(34, 46, 90);
+            const Color hdr_bg = Color::rgb(50, 60, 114);
+            const Color hdr_fg = Color::rgb(188, 202, 252);
             rows.push_back(band_row("   ", Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
                 std::move(header),
                 Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
@@ -1077,17 +1078,18 @@ private:
                                    cfg_.edit_tail_per_side);
 
         const bool is_add = (marker == '+');
-        // Soft light green / red bands with DARK text on top (GitHub-light-
-        // diff style) so the change reads with a wide luminance gap even on a
-        // phone / low-gamma SSH screen. The " + " / " - " gutter rides a more
-        // saturated rail of the same hue so the change marker pops like a
-        // GitHub / GitLab line indicator.
-        const Color bg      = is_add ? Color::rgb(152, 214, 162)
-                                     : Color::rgb(240, 158, 164);
-        const Color rail_bg = is_add ? Color::rgb(102, 186, 120)
-                                     : Color::rgb(220, 114, 122);
-        const Color fg_br   = is_add ? Color::rgb(12, 50, 27)
-                                     : Color::rgb(72, 15, 23);
+        // Dark, saturated green / red bands with BRIGHT same-hue text on top
+        // (GitHub-dark-diff style) so the change reads with a wide luminance
+        // gap even on a phone / low-gamma SSH screen, while the dark band keeps
+        // its hue instead of washing out to grey. The " + " / " - " gutter
+        // rides a brighter, more saturated rail of the same hue so the change
+        // marker pops like a GitHub / GitLab line indicator.
+        const Color bg      = is_add ? Color::rgb(30, 84, 52)
+                                     : Color::rgb(98, 34, 42);
+        const Color rail_bg = is_add ? Color::rgb(48, 122, 74)
+                                     : Color::rgb(146, 54, 64);
+        const Color fg_br   = is_add ? Color::rgb(170, 244, 190)
+                                     : Color::rgb(252, 180, 188);
         (void)c;   // c was the legacy fg; kept in signature for callers
 
         const Style sign_st = Style{}.with_fg(fg_br).with_bg(rail_bg).with_bold();
@@ -1112,13 +1114,15 @@ private:
     //    lines + `@@` hunk separators render through make_row with a `~`
     //    marker in muted so they read as section breaks.
     //
-    //    Diff coloring: a soft light green / red whole-line BACKGROUND band
-    //    with DARK text on top (GitHub-light-diff style) carries the change
-    //    signal with a wide luminance gap, so it reads at a glance even on a
-    //    phone / low-gamma SSH screen. The +/- gutter rail is a more saturated
-    //    shade of the same hue so the change marker pops like a GitHub /
-    //    GitLab indicator; context + file metadata stay plain (no band) so the
-    //    colored bands read as changes floating over unchanged code.
+    //    Diff coloring: a dark, saturated green / red whole-line BACKGROUND
+    //    band with BRIGHT same-hue text on top (GitHub-dark-diff style) carries
+    //    the change signal with a wide luminance gap, so it reads at a glance
+    //    even on a phone / low-gamma SSH screen while the dark band keeps its
+    //    hue instead of washing to grey. The +/- gutter rail is a brighter,
+    //    more saturated shade of the same hue so the change marker pops like a
+    //    GitHub / GitLab indicator; context + file metadata stay plain (no
+    //    band) so the colored bands read as changes floating over unchanged
+    //    code.
     [[nodiscard]] Element git_diff() const {
         using namespace dsl;
         if (cfg_.text.empty()) {
@@ -1129,19 +1133,20 @@ private:
 
         const auto p = elide(cfg_.text, cfg_.code_head, cfg_.code_tail);
 
-        // Soft light bands with DARK text so the diff regions read with a
-        // wide luminance gap on a phone / low-gamma SSH screen. The +/- gutter
-        // gets a more saturated rail than the body band so the change marker
-        // pops like a GitHub / GitLab line indicator. Context + file metadata
-        // get NO band (plain text).
-        const Color add_bg     = Color::rgb(152, 214, 162);  // vivid green band
-        const Color rem_bg     = Color::rgb(240, 158, 164);  // vivid coral band
-        const Color hunk_bg    = Color::rgb(186, 198, 236);  // periwinkle for @@
-        const Color add_rail   = Color::rgb(102, 186, 120);  // deeper +-gutter rail
-        const Color rem_rail   = Color::rgb(220, 114, 122);  // deeper --gutter rail
-        const Color add_fg_br  = Color::rgb(12, 50, 27);     // deep forest text
-        const Color rem_fg_br  = Color::rgb(72, 15, 23);     // deep maroon text
-        const Color hunk_fg    = Color::rgb(34, 46, 90);     // deep indigo text
+        // Dark, saturated bands with BRIGHT same-hue text so the diff regions
+        // read with a wide luminance gap on a phone / low-gamma SSH screen
+        // while the dark band keeps its hue instead of washing to grey. The
+        // +/- gutter gets a brighter, more saturated rail than the body band so
+        // the change marker pops like a GitHub / GitLab line indicator. Context
+        // + file metadata get NO band (plain text).
+        const Color add_bg     = Color::rgb(30, 84, 52);     // dark green band
+        const Color rem_bg     = Color::rgb(98, 34, 42);     // dark coral band
+        const Color hunk_bg    = Color::rgb(50, 60, 114);    // dark indigo for @@
+        const Color add_rail   = Color::rgb(48, 122, 74);    // brighter +-gutter rail
+        const Color rem_rail   = Color::rgb(146, 54, 64);    // brighter --gutter rail
+        const Color add_fg_br  = Color::rgb(170, 244, 190);  // bright green text
+        const Color rem_fg_br  = Color::rgb(252, 180, 188);  // bright coral text
+        const Color hunk_fg    = Color::rgb(188, 202, 252);  // bright periwinkle text
 
         // Bands (full-width solid rectangles) for the lines that carry the
         // diff signal: + adds, - removes, @@ hunk headers. Context and file

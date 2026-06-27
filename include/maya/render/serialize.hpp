@@ -370,13 +370,30 @@ public:
     /// Recovery factory: return the state shape required after a
     /// soft failure (FrameBytes::abandon, Synced::demote_to_stale).
     /// `prev_rows` is zeroed, `shadow_hash` is sentinel'd, and
-    /// `ghost_rows_above` is set to the prior wire_cursor_rows so
+    /// `ghost_rows_above` is set to the prior FULL content height so
     /// the next compose's case-(B) emit walks the correct upward
     /// erase distance.
+    ///
+    /// Why prev_rows_ and NOT wire_cursor_rows_: case-(B) re-clamps
+    /// ghost_rows_above against the CURRENT term_h
+    /// (min(ghost_rows_above, term_h)). wire_cursor_rows_ was already
+    /// clamped to the term_h in force at the LAST compose; carrying
+    /// that pre-clamped value means a height change between the last
+    /// compose and this recovery is invisible. On a height GROW the
+    /// terminal anchors a tall frame to the viewport bottom and pulls
+    /// rows back from scrollback, so the cursor sits at term_h_new-1 —
+    /// but the stale clamp left ghost_rows_above at term_h_old, so
+    /// case-(B) thought the cursor was higher, emitted bottom-edge
+    /// newlines to "make room", and scrolled still-visible rows back
+    /// into native scrollback as a duplicate (the height-resize
+    /// duplication bug). Storing the UNCLAMPED full content height and
+    /// letting case-(B) clamp to the live term_h tracks the real
+    /// cursor at any height; when term_h is unchanged it reduces to
+    /// exactly the old min(content, term_h).
     [[nodiscard]] InlineFrameState abandoned_for_recovery() && noexcept {
         InlineFrameState s{std::move(*this)};
-        const int prior_wire_rows = s.wire_cursor_rows_;
-        s.ghost_rows_above_ = prior_wire_rows;
+        const int prior_content_rows = s.prev_rows_;
+        s.ghost_rows_above_ = prior_content_rows;
         s.prev_rows_        = 0;
         s.cursor_hidden_    = false;
         s.decawm_off_       = false;

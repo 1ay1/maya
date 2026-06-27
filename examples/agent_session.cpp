@@ -1698,22 +1698,26 @@ static Element welcome_view() {
 }
 
 // ============================================================================
-// view() — pure rendering of Model
+// live_tail_element() — the always-live bottom chrome (everything BELOW the
+// sealed scrollback): in-flight user + assistant turn, permission, callout,
+// composer, status bar. Under Strata this is ONE node (key kLiveKey,
+// non-terminal) that is rebuilt every frame and never seals; the settled
+// transcript above it lives as the m.frozen nodes.
 // ============================================================================
 
-static Element view(const Model& m) {
+static constexpr std::uint64_t kLiveKey = ~std::uint64_t{0};
+
+static Element live_tail_element(const Model& m) {
     bool empty = m.frozen.empty() && !m.user_committed && !m.thinking_active &&
                  m.tools.empty() && !m.md_active && m.composer_text.empty();
 
     return v(
-        // Welcome OR frozen scrollback
+        // Welcome — only while nothing has happened yet (no sealed nodes,
+        // no live activity). Replaces what the monolithic view() showed in
+        // its frozen slot.
         dyn([&]() -> Element {
             if (empty) return welcome_view();
-            // Zero-copy fragment via the DSL: the renderer reads the
-            // frozen vector through the pointer instead of deep-copying
-            // its contents every frame.  For 240-element frozen vectors
-            // this saves ~120KB of allocation per frame.
-            return list_ref(m.frozen);
+            return none();
         }),
 
         // In-flight user message — wrapped in a Role::User Turn to mirror
@@ -1725,9 +1729,7 @@ static Element view(const Model& m) {
 
         // Live assistant content — ONE Role::Assistant Turn whose body
         // interleaves thinking, actions, plan, todos, markdown in the
-        // order they accumulate during the turn. This is the agentty
-        // pattern: every assistant Message gets wrapped in a Turn with
-        // a header that can shrink to 0 rows when the body overflows.
+        // order they accumulate during the turn.
         dyn([&]() -> Element {
             Element e = assistant_turn_element(m);
             if (std::holds_alternative<ElementList>(e.inner)) {
@@ -1768,6 +1770,43 @@ static Element view(const Model& m) {
         dyn([&]{ return composer_view(m); }),
         dyn([&]{ return status_bar(m); })
     ).build();
+}
+
+// ============================================================================
+// Strata hooks — the host hands maya a flat node list + a lazy builder.
+//
+//   nodes = [ frozen[0], frozen[1], …, frozen[n-1], LIVE ]
+//
+// Every settled scrollback element (m.frozen) is one terminal node keyed by
+// its stable index; the live tail is one non-terminal node keyed kLiveKey
+// whose hash bumps every frame so Strata rebuilds it (it changes constantly
+// during a turn). Strata seals the scrolled-off terminal nodes into native
+// scrollback itself — no host commit_scrollback, no frozen-height
+// accounting.
+// ============================================================================
+
+static std::vector<maya::strata::NodeRef> strata_nodes(const Model& m) {
+    // Monotonic per-process generation — bumped every call so the live
+    // tail node's hash always differs from last frame and Strata rebuilds
+    // it. (The loop only calls this when something changed / a tick fired,
+    // so this never spins on a truly idle UI.)
+    static std::uint64_t live_gen = 0;
+    ++live_gen;
+
+    std::vector<maya::strata::NodeRef> ns;
+    ns.reserve(m.frozen.size() + 1);
+    for (std::size_t i = 0; i < m.frozen.size(); ++i)
+        ns.push_back({static_cast<std::uint64_t>(i),
+                      static_cast<std::uint64_t>(i),   // immutable once sealed
+                      /*terminal=*/true});
+    ns.push_back({kLiveKey, live_gen, /*terminal=*/false});
+    return ns;
+}
+
+static Element strata_build(const Model& m, std::uint64_t key) {
+    if (key == kLiveKey) return live_tail_element(m);
+    if (key < m.frozen.size()) return m.frozen[static_cast<std::size_t>(key)];
+    return nothing();   // defensive: never reached (Strata only builds live keys)
 }
 
 // ============================================================================
@@ -2152,48 +2191,20 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
                     }
                     m.phase = Phase::Done;
 
-                    // ── Bounded scrollback ─────────────────────────────
-                    // Each turn pushes ~10-15 elements to m.frozen, and
-                    // the inline renderer's prev_cells buffer mirrors
-                    // every row ever drawn so the row diff has something
-                    // to compare against.  Without bounding, a multi-hour
-                    // autopilot loop accumulates hundreds of MB resident,
-                    // which macOS jetsam will kill with SIGKILL.
-                    //
-                    // When frozen exceeds the soft cap, drop the oldest
-                    // chunk and tell the renderer those rows are now
-                    // committed to terminal scrollback (Cmd::commit_
-                    // scrollback → Runtime::commit_inline_prefix), so
-                    // its prev_cells buffer truncates to match.  The
-                    // dropped content is still visible in the user's
-                    // terminal scrollback — we're only shrinking the
-                    // *renderer's* mirror, not what the user can see.
-                    Cmd<Msg> trim_cmd = Cmd<Msg>::none();
-                    constexpr int FROZEN_MAX           = 240;
-                    constexpr int FROZEN_TRIM          = 80;
-                    constexpr int ROWS_PER_DROP_LOWER  = 3;
-                    if (int(m.frozen.size()) > FROZEN_MAX) {
-                        int n = std::min<int>(FROZEN_TRIM,
-                            int(m.frozen.size()) - FROZEN_MAX / 2);
-                        m.frozen.erase(m.frozen.begin(),
-                                       m.frozen.begin() + n);
-                        // Conservative under-estimate of dropped row
-                        // count — over-committing would tell the
-                        // renderer to forget rows that are still on
-                        // screen, causing a one-frame layout glitch.
-                        // Under-committing just leaves a few extra
-                        // rows in prev_cells, which is harmless.
-                        trim_cmd = Cmd<Msg>::commit_scrollback(
-                            n * ROWS_PER_DROP_LOWER);
-                    }
-
+                    // Scrollback is now MAYA's job. Strata seals scrolled-
+                    // off terminal nodes into native scrollback and drops
+                    // them from its bounded active layer, so the renderer's
+                    // prev_cells mirror stays O(viewport) for the whole
+                    // session — the unbounded-memory leak the old
+                    // FROZEN_MAX trim + commit_scrollback guarded against is
+                    // gone by construction, and so is the height accounting
+                    // that made resize duplicate scrollback. (The host still
+                    // retains every settled Element in m.frozen here; a
+                    // production host would store per-turn DATA and rebuild
+                    // lazily in strata_build so even host memory stays flat,
+                    // but the demo keeps the built Elements for simplicity.)
                     int next_idx = m.turn_number % int(starters().size());
-                    Cmd<Msg> cycle = Cmd<Msg>::after(700ms,
-                        Msg{AutoNext{next_idx}});
-                    followup = trim_cmd.is_none()
-                        ? std::move(cycle)
-                        : Cmd<Msg>::batch(std::move(trim_cmd),
-                                          std::move(cycle));
+                    followup = Cmd<Msg>::after(700ms, Msg{AutoNext{next_idx}});
                 },
             }, s.ev);
             return {std::move(m), std::move(followup)};
@@ -2255,7 +2266,12 @@ struct App {
     static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
         return ::update(std::move(m), std::move(msg));
     }
-    static Element view(const Model& m) { return ::view(m); }
+    static std::vector<maya::strata::NodeRef> strata_nodes(const Model& m) {
+        return ::strata_nodes(m);
+    }
+    static Element strata_build(const Model& m, std::uint64_t key) {
+        return ::strata_build(m, key);
+    }
     static auto subscribe(const Model& m) -> Sub<Msg> { return ::subscribe(m); }
 };
 

@@ -1043,6 +1043,100 @@ auto Runtime::render(const Element& root) -> Status {
 }
 
 // ============================================================================
+// Runtime::render_strata — depositional inline frame (maya::strata)
+// ============================================================================
+//
+// The Strata analogue of render(). Where render() lays out and diffs ONE
+// monolithic Element tree per frame (and leans on host-issued
+// commit_scrollback to keep prev_cells bounded), render_strata hands the
+// host's node list to a Strata instance that owns the whole scrollback
+// discipline: it reconciles a bounded active layer, seals scrolled-off
+// terminal nodes into native scrollback itself, and emits a viewport diff.
+//
+// This wrapper's only jobs are the runtime-owned concerns render() also
+// handles around its compose: the per-frame WIDTH backstop (catch a missed
+// SIGWINCH), non-blocking-writer BACKPRESSURE (drain residue first; defer
+// the frame rather than recompose against an unflushed wire), the
+// thread-local RenderContext guard (so painted components read the right
+// width / cache), and the inline mouse anchor. Everything else — measure,
+// seal, the InlineFrame state machine — lives in Strata::frame.
+auto Runtime::render_strata(std::span<const strata::NodeRef> nodes,
+                            const strata::BuildFn& build) -> Status {
+    // Strata is a scrollback discipline — inline only. A fullscreen
+    // program that wandered in here has nothing to render.
+    if (!is_inline()) return ok();
+
+    const int prev_known_w = size_.width.raw();
+    if (prev_known_w <= 0) return ok();
+
+    // Per-frame width backstop — identical hysteresis to render(): a
+    // genuine resize persists across two frames, a TIOCGWINSZ glitch does
+    // not. handle_resize() updates size_; Strata detects the new width on
+    // its own (it re-measures prev_width_ != term_cols) and routes the
+    // frame through its hard-reset path, so we don't touch in_coherence_.
+    {
+        const auto live = platform::query_terminal_size(output_handle_);
+        const int live_w = live.width.raw();
+        if (live_w > 0 && live_w != prev_known_w) {
+            if (live_w == width_candidate_) {
+                handle_resize();
+                width_candidate_ = 0;
+            } else {
+                width_candidate_ = live_w;
+            }
+        } else {
+            width_candidate_ = 0;
+        }
+    }
+    const int w = size_.width.raw();
+    if (w <= 0) return ok();
+
+    // ── Backpressure: drain residue first, defer rather than recompose ──
+    // The output fd is O_NONBLOCK. If the previous frame left bytes in the
+    // writer's residue, finish shipping them before composing — composing
+    // now would advance Strata's InlineFrame shadow past a frame the wire
+    // never received. If the wire still won't take it, defer this frame
+    // entirely (the loop re-fires us within a few ms via
+    // has_pending_writes()).
+    if (writer_->has_residue()) {
+        auto d = writer_->try_drain_residue();
+        if (!d) {
+            if (d.error().kind == ErrorKind::WouldBlock) return ok();
+            // Hard I/O error — toss the residue. The next successful frame
+            // re-seeds Strata cleanly (its Empty→Fresh path appends from
+            // the cursor without a scrollback wipe).
+            writer_->discard_residue();
+            strata_.reset();
+            return d;
+        }
+    }
+
+    // Make the painted components read this frame's width + the inline
+    // auto-height rule, exactly as render() does around render_tree.
+    render_ctx_.width       = w;
+    render_ctx_.height      = size_.height.raw();
+    render_ctx_.auto_height = true;
+    RenderContextGuard ctx_guard(render_ctx_);
+
+    // Re-queried every frame so a resize between events can't desync the
+    // viewport bound Strata seals against. Single TIOCGWINSZ on POSIX.
+    const TermRows term_h = query_term_rows(output_handle_);
+
+    const auto st = strata_.frame(nodes, build, w, term_h, pool_, *writer_);
+
+    // Inline mouse anchor maintenance (mirror render()): if the live band
+    // no longer fits below its recorded top row, the terminal scrolled it
+    // up to make room, so walk the anchor up by the overflow.
+    if (inline_top_row_ > 0) {
+        const int h = st.live_rows;
+        inline_frame_rows_ = h;
+        if (inline_top_row_ + h - 1 > term_h.value())
+            inline_top_row_ = std::max(1, term_h.value() - h + 1);
+    }
+    return ok();
+}
+
+// ============================================================================
 // Runtime::warmup_render — pre-populate cross-frame component cache
 // ============================================================================
 //
@@ -1258,6 +1352,7 @@ Runtime::Runtime(Runtime&& o) noexcept
     , canvas_(std::move(o.canvas_))
     , out_(std::move(o.out_))
     , layout_nodes_(std::move(o.layout_nodes_))
+    , strata_(std::move(o.strata_))
     , fs_coherence_(std::move(o.fs_coherence_))
     , in_coherence_(std::move(o.in_coherence_))
     , theme_(o.theme_)
@@ -1286,6 +1381,7 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         canvas_            = std::move(o.canvas_);
         out_               = std::move(o.out_);
         layout_nodes_      = std::move(o.layout_nodes_);
+        strata_            = std::move(o.strata_);
         fs_coherence_      = std::move(o.fs_coherence_);
         in_coherence_      = std::move(o.in_coherence_);
         theme_             = o.theme_;

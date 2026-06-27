@@ -67,6 +67,7 @@
 #include "../render/pipeline.hpp"
 #include "../render/renderer.hpp"
 #include "../render/serialize.hpp"
+#include "../render/strata.hpp"
 #include "../style/theme.hpp"
 #include "../terminal/input.hpp"
 #include "../terminal/terminal.hpp"
@@ -306,6 +307,30 @@ template <typename P>
 struct HasNeedsWarmup<P, std::void_t<decltype(
     P::needs_warmup(std::declval<const typename P::Model&>()))>>
     : std::true_type {};
+
+// Optional Program::strata_nodes / strata_build detector — opts the
+// Program into DEPOSITIONAL inline rendering (maya::strata). When a
+// Program defines
+//
+//   static std::vector<strata::NodeRef> strata_nodes(const Model&);
+//   static Element                      strata_build(const Model&, std::uint64_t key);
+//
+// the inline run<P> loop drives a Strata renderer with that node list +
+// lazy builder INSTEAD of the monolithic view()+render() pair. The host
+// stops accounting frozen-prefix heights and issuing commit_scrollback;
+// Strata seals scrolled-off terminal nodes into native scrollback itself,
+// so per-frame cost stays O(viewport) and a cache miss / resize can never
+// duplicate sealed rows. view() is no longer required on such a Program.
+// Inline mode only (Strata is a scrollback discipline); a Strata Program
+// run fullscreen falls back to nothing renderable — keep it inline.
+template <typename P, typename = void>
+struct HasStrataView : std::false_type {};
+template <typename P>
+struct HasStrataView<P, std::void_t<
+    decltype(P::strata_nodes(std::declval<const typename P::Model&>())),
+    decltype(P::strata_build(std::declval<const typename P::Model&>(),
+                             std::declval<std::uint64_t>()))>>
+    : std::true_type {};
 } // namespace detail
 
 template <typename P>
@@ -316,9 +341,9 @@ concept Program = requires {
   && requires(typename P::Model m, typename P::Msg msg) {
     { P::update(std::move(m), std::move(msg)) } -> std::convertible_to<
         std::pair<typename P::Model, Cmd<typename P::Msg>>>;
-} && requires(const typename P::Model& m) {
+} && (requires(const typename P::Model& m) {
     { P::view(m) } -> std::convertible_to<Element>;
-};
+} || detail::HasStrataView<P>::value);
 
 // ============================================================================
 // detail::Runtime — terminal resource owner (not public API)
@@ -455,6 +480,29 @@ public:
     // Fullscreen: uses RenderPipeline (clear → paint → diff/serialize).
     // Inline: uses compose_inline_frame (row-diff, scrollback-preserving).
     auto render(const Element& root) -> Status;
+
+    // Render one DEPOSITIONAL frame (maya::strata). Inline only.
+    //
+    //   nodes — the host's full ordered node list (append-only transcript).
+    //   build — lazy Element builder, invoked only on a reconcile miss.
+    //
+    // Drives an internal Strata instance with the runtime's own width /
+    // term-rows witness / style pool / writer. The host issues NO
+    // commit_scrollback and keeps NO heights: Strata reconciles a bounded
+    // active layer, seals whole terminal nodes that scrolled past the fold
+    // into native scrollback, and emits a minimal viewport diff. Mirrors
+    // render()'s width-backstop + backpressure discipline so a missed
+    // SIGWINCH or a congested tty behaves identically to the classic path.
+    auto render_strata(std::span<const strata::NodeRef> nodes,
+                       const strata::BuildFn& build) -> Status;
+
+    // Drop Strata's active layer + scrollback frontier (wholesale content
+    // swap, e.g. loading a different thread). Does NOT wipe the terminal;
+    // pair with reset_inline() when the old transcript must be cleared.
+    void reset_strata() noexcept { strata_.reset(); }
+    [[nodiscard]] std::size_t strata_sealed_nodes() const noexcept {
+        return strata_.sealed_nodes();
+    }
 
     // Pre-warm the cross-frame component cache by laying out + painting
     // `root` into a scratch canvas, WITHOUT touching the wire.
@@ -718,6 +766,12 @@ private:
     Canvas                          canvas_;
     std::string                     out_;
     std::vector<layout::LayoutNode> layout_nodes_;
+    // Depositional inline renderer. Engaged only via render_strata()
+    // (a Program that defines strata_nodes/strata_build); inert and
+    // empty for classic view()/render() programs. Owns its own active
+    // layer, canvas, scrollback frontier, and InlineCoherence — the
+    // runtime's in_coherence_/canvas_ are unused on the Strata path.
+    strata::Strata                  strata_;
     // Initial state matters: in inline mode, defaulting to anything
     // that emits a hard-reset (\x1b[2J\x1b[3J\x1b[H) would wipe the
     // user's shell scrollback on startup. The Witness Chain's
@@ -1651,30 +1705,44 @@ void run(RunConfig cfg = {}) {
             if (!skip_render) detail::animation_requested_ = false;
 
             if (!skip_render) {
-                // Pure: view(model) → Element → render to terminal
-                Element view_root = P::view(model);
-                // Optional one-shot warmup: if the program flagged the
-                // current model as needing a cache pre-warm (e.g. a
-                // heavy thread just rehydrated), paint the same view
-                // into a scratch canvas first so the wire-bound render
-                // takes the cell-blit fast path. Single-render-equivalent
-                // CPU spent off-wire, in exchange for converting the
-                // user-visible first frame from O(content) to O(blit).
-                //
-                // De-duped via `last_warmup_done`: the same flag stays
-                // true across reducer steps until something clears it,
-                // but we only fire warmup_render on the rising edge so
-                // a program that never clears the flag still only pays
-                // one warmup per swap.
-                if constexpr (detail::HasNeedsWarmup<P>::value) {
-                    const bool want = P::needs_warmup(model);
-                    if (want && !last_warmup_done) {
-                        rt.warmup_render(view_root);
+                if constexpr (detail::HasStrataView<P>::value) {
+                    // Depositional path: hand maya the node list + a lazy
+                    // builder and let Strata own the scrollback discipline.
+                    // No view(), no warmup (Strata's active layer is already
+                    // bounded), no host commit_scrollback.
+                    auto nodes = P::strata_nodes(model);
+                    auto status = rt.render_strata(
+                        nodes,
+                        [&model](std::uint64_t key) {
+                            return P::strata_build(model, key);
+                        });
+                    if (!status) break;
+                } else {
+                    // Pure: view(model) → Element → render to terminal
+                    Element view_root = P::view(model);
+                    // Optional one-shot warmup: if the program flagged the
+                    // current model as needing a cache pre-warm (e.g. a
+                    // heavy thread just rehydrated), paint the same view
+                    // into a scratch canvas first so the wire-bound render
+                    // takes the cell-blit fast path. Single-render-equivalent
+                    // CPU spent off-wire, in exchange for converting the
+                    // user-visible first frame from O(content) to O(blit).
+                    //
+                    // De-duped via `last_warmup_done`: the same flag stays
+                    // true across reducer steps until something clears it,
+                    // but we only fire warmup_render on the rising edge so
+                    // a program that never clears the flag still only pays
+                    // one warmup per swap.
+                    if constexpr (detail::HasNeedsWarmup<P>::value) {
+                        const bool want = P::needs_warmup(model);
+                        if (want && !last_warmup_done) {
+                            rt.warmup_render(view_root);
+                        }
+                        last_warmup_done = want;
                     }
-                    last_warmup_done = want;
+                    auto status = rt.render(view_root);
+                    if (!status) break;
                 }
-                auto status = rt.render(view_root);
-                if (!status) break;
             }
             needs_render = false;
 

@@ -577,7 +577,19 @@ auto Runtime::render(const Element& root) -> Status {
         if (!layout_nodes_.empty()) {
             int needed = layout_nodes_[0].computed.size.height.raw();
             if (needed > canvas_.height()) {
-                canvas_.resize(w, needed + 8);
+                // Grow with HEADROOM (~25%, min 64 rows) rather than a
+                // bare +8. A streaming turn's live tail gains rows every
+                // frame; with +8 the very next frame's content again
+                // exceeded canvas height, so this branch fired a SECOND
+                // full render_tree pass on EVERY growing frame (double the
+                // layout+paint cost for the whole stream once a thread has
+                // passed the kMinCanvasHeight floor). A generous slack lets
+                // many frames of growth land in one allocation, so the
+                // re-render fires once every ~N frames instead of always.
+                // Bounded under the oversized-shrink trigger (1.5x) above
+                // so it can never thrash against the shrink path.
+                const int headroom = std::max(64, needed / 4);
+                canvas_.resize(w, needed + headroom);
                 canvas_.clear();
                 render_tree(root, canvas_, pool_, theme_, layout_nodes_,
                             /*auto_height=*/true);

@@ -907,7 +907,7 @@ private:
         // screen it's channel separation, not lightness, that carries hue, so
         // a dark-but-greyish band reads grey while a dark-but-vivid one reads
         // green.
-        const Color add_bg    = Color::rgb(12, 86, 40);
+        const Color add_bg    = Color::rgb(12, 80, 38);
         const Color add_fg_br = Color::rgb(170, 244, 190);
         const Color num_fg    = Color::rgb(120, 196, 148);   // medium green gutter
 
@@ -1091,10 +1091,10 @@ private:
         // " + " / " - " gutter rides a brighter, even more saturated rail of
         // the same hue so the change marker pops like a GitHub / GitLab line
         // indicator.
-        const Color bg      = is_add ? Color::rgb(12, 86, 40)
-                                     : Color::rgb(108, 20, 30);
-        const Color rail_bg = is_add ? Color::rgb(26, 128, 64)
-                                     : Color::rgb(158, 38, 52);
+        const Color bg      = is_add ? Color::rgb(12, 80, 38)
+                                     : Color::rgb(92, 18, 26);
+        const Color rail_bg = is_add ? Color::rgb(26, 116, 44)
+                                     : Color::rgb(140, 36, 44);
         const Color fg_br   = is_add ? Color::rgb(170, 244, 190)
                                      : Color::rgb(252, 180, 188);
         (void)c;   // c was the legacy fg; kept in signature for callers
@@ -1148,11 +1148,11 @@ private:
         // green/red. The +/- gutter gets a brighter, even more saturated rail
         // than the body band so the change marker pops. Context + file metadata
         // get NO band (plain text).
-        const Color add_bg     = Color::rgb(12, 86, 40);     // dark vivid green band
-        const Color rem_bg     = Color::rgb(108, 20, 30);    // dark vivid coral band
+        const Color add_bg     = Color::rgb(12, 80, 38);      // dark vivid green band
+        const Color rem_bg     = Color::rgb(92, 18, 26);     // dark vivid coral band
         const Color hunk_bg    = Color::rgb(44, 54, 122);    // dark vivid indigo for @@
-        const Color add_rail   = Color::rgb(26, 128, 64);    // brighter +-gutter rail
-        const Color rem_rail   = Color::rgb(158, 38, 52);    // brighter --gutter rail
+        const Color add_rail   = Color::rgb(26, 116, 44);     // brighter +-gutter rail
+        const Color rem_rail   = Color::rgb(140, 36, 44);     // brighter --gutter rail
         const Color add_fg_br  = Color::rgb(170, 244, 190);  // bright green text
         const Color rem_fg_br  = Color::rgb(252, 180, 188);  // bright coral text
         const Color hunk_fg    = Color::rgb(188, 202, 252);  // bright periwinkle text

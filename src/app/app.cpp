@@ -5,6 +5,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <format>
 #include <thread>   // DSR cursor-position query: brief sleep between polls
 
@@ -1123,6 +1124,35 @@ auto Runtime::render_strata(std::span<const strata::NodeRef> nodes,
     const TermRows term_h = query_term_rows(output_handle_);
 
     const auto st = strata_.frame(nodes, build, w, term_h, pool_, *writer_);
+
+    // ── Strata trace (opt-in via MAYA_STRATA_TRACE) ─────────────────────
+    // One CSV-ish line per frame to a sink chosen once at startup:
+    //   MAYA_STRATA_TRACE=1     → stderr
+    //   MAYA_STRATA_TRACE=<path>→ append to that file
+    // Lets you profile the depositional pipeline on a real session
+    // (build count per frame = cache misses, sealed_now = rows deposited,
+    // live_rows = active-layer height, coherence = which InlineFrame arm
+    // ran). Zero cost when unset: the sink is resolved once and a null
+    // sink short-circuits before any formatting.
+    static std::FILE* const strata_trace = [] () -> std::FILE* {
+        const char* v = std::getenv("MAYA_STRATA_TRACE");
+        if (!v || !*v || std::strcmp(v, "0") == 0) return nullptr;
+        if (std::strcmp(v, "1") == 0 || std::strcmp(v, "-") == 0) return stderr;
+        std::FILE* f = std::fopen(v, "a");
+        if (f) std::fprintf(f,
+            "# maya strata trace: frame,cols,rows,total_nodes,live_nodes,"
+            "live_rows,sealed_now,builds,coherence,full_repaint\n");
+        return f ? f : stderr;
+    }();
+    if (strata_trace) {
+        static unsigned long strata_frame_no = 0;
+        std::fprintf(strata_trace, "%lu,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                     strata_frame_no++, w, term_h.value(),
+                     st.total_nodes, st.live_nodes, st.live_rows,
+                     st.sealed_now, st.builds, st.coherence,
+                     st.full_repaint ? 1 : 0);
+        std::fflush(strata_trace);
+    }
 
     // Inline mouse anchor maintenance (mirror render()): if the live band
     // no longer fits below its recorded top row, the terminal scrolled it

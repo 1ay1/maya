@@ -26,6 +26,10 @@
 #include <unordered_map>
 #include <utility>
 #include <variant>
+#if defined(MAYA_DEBUG_STRATA_TRIPWIRE)
+#include <cstdio>
+#include <cstdlib>
+#endif
 
 #include "maya/render/renderer.hpp"     // render_tree_at, render_detail::build_layout_tree
 #include "maya/style/theme.hpp"
@@ -163,10 +167,29 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
 
     // ── 1. Reconcile / seed the active layer ─────────────────────────────
     if (band_.empty() && sealed_count_ == 0 && !nodes.empty()) {
-        // Cold seed: keep ~budget rows from the END, pre-seal the rest
-        // WITHOUT building them. On a live-appended session those older
-        // nodes were emitted while live (so they are already in native
-        // scrollback); on a cold resume this is the bounded-resume window.
+        // COLD SEED (first frame, or first after reset()/reset_hard()).
+        //
+        // Build the bounded keep window from the END of the transcript
+        // (newest `budget` rows) and PRE-SEAL the older prefix [0, start)
+        // WITHOUT building or emitting it. The pre-seal is the deliberate,
+        // documented bounded-resume contract:
+        //
+        //   • Live-appended session (the common case): those older nodes
+        //     were emitted to the wire while they were live, so they are
+        //     ALREADY in the terminal's native scrollback. Pre-sealing
+        //     records that fact; re-emitting them would duplicate.
+        //   • Cold resume of a saved thread: nothing was emitted yet, so
+        //     the prefix is NOT on this terminal. Pre-sealing means Strata
+        //     renders only the bounded resume window (the newest `budget`
+        //     rows) inline; the older history is intentionally NOT
+        //     repainted (it would cost O(transcript) and stamp a second
+        //     copy of anything the user scrolls back to). This is the
+        //     O(viewport) resume guarantee, not content loss.
+        //
+        // Either way the prefix is treated as immutable scrollback the
+        // renderer never addresses. committed_rows_ stays 0: the seeded
+        // window is entirely live, and its own overflow (if budget >
+        // term_h) deposits normally via Sections 3/5 this very frame.
         std::vector<Stratum> seeded;
         int acc = 0;
         std::size_t start = nodes.size();
@@ -182,8 +205,9 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
             if (acc >= budget) break;
         }
         std::reverse(seeded.begin(), seeded.end());
-        band_         = std::move(seeded);
-        sealed_count_ = start;   // [0, start) are pre-sealed; never built/emitted.
+        band_           = std::move(seeded);
+        committed_rows_ = 0;     // the seeded window is wholly live
+        sealed_count_   = start; // [0, start) pre-sealed; never built/emitted.
         // Baseline the frontier fingerprint so a later wholesale swap is
         // detectable even against a cold-resumed prefix.
         if (start > 0) {
@@ -375,6 +399,49 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
             st.sealed_now += deposited;
         }
     }
+
+    // ── Deposition-invariant tripwire (debug builds only) ───────────────
+    //
+    // The single load-bearing guarantee of the depositional model: AFTER a
+    // frame, the renderer's diffable shadow holds at most one viewport of
+    // rows. If prev_rows > term_h, a row that already scrolled into native
+    // scrollback is STILL addressable by next frame's diff — the exact
+    // re-emit-a-deposited-row duplication the windowed compose exists to
+    // prevent (test_strata proves it can't happen; this catches a future
+    // regression at the source instead of as a ghost row in production).
+    //
+    // Also asserts committed_rows_ stays a sane prefix of the band: it must
+    // be in [0, band_height], or the window math (Section 3) would clip the
+    // wrong rows. Both checks are O(1).
+    //
+    // Compile-time gate: define MAYA_DEBUG_STRATA_TRIPWIRE (off by default;
+    // dev/CI builds). Never compiled into release.
+#ifdef MAYA_DEBUG_STRATA_TRIPWIRE
+    {
+        int dbg_band_h = 0;
+        for (const auto& s : band_) dbg_band_h += s.height;
+        if (const auto* sy = std::get_if<InlineFrame<Synced>>(&coh_)) {
+            if (sy->rows() > term_h) {
+                std::fprintf(stderr,
+                    "\n[maya] STRATA DEPOSITION INVARIANT VIOLATED: "
+                    "prev_rows=%d > term_h=%d after deposit "
+                    "(committed_rows=%d band_height=%d live_nodes=%zu) — a "
+                    "deposited row is still in the diffable window and will "
+                    "be re-emitted next frame.\n",
+                    sy->rows(), term_h, committed_rows_, dbg_band_h,
+                    band_.size());
+                std::abort();
+            }
+        }
+        if (committed_rows_ < 0 || committed_rows_ > dbg_band_h) {
+            std::fprintf(stderr,
+                "\n[maya] STRATA WATERMARK INVARIANT VIOLATED: "
+                "committed_rows=%d outside [0, band_height=%d].\n",
+                committed_rows_, dbg_band_h);
+            std::abort();
+        }
+    }
+#endif
 
     active_rows_ = 0;
     for (const auto& s : band_) active_rows_ += s.height;

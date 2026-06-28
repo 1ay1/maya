@@ -130,6 +130,24 @@ the last frames.
 ./build/test_strata 64 8000      # ALL PASS — deposition invariant held under fuzz
 ```
 
+### Belt-and-braces: in-engine tripwire + trace
+
+Two opt-in diagnostics back the external oracle:
+
+- **`MAYA_DEBUG_STRATA_TRIPWIRE`** (compile-time) arms an O(1) assertion at
+  the end of every `Strata::frame()`: after a frame the renderer's diffable
+  shadow must hold ≤ one viewport (`prev_rows ≤ term_h`) and `committed_rows_`
+  must stay a valid band prefix. A violation — a deposited row still
+  addressable by next frame's diff — aborts with a precise trace at the
+  source, instead of surfacing as a ghost row in production. The fuzz oracle
+  runs against a tripwire-armed build, so the two checks corroborate each
+  other.
+- **`MAYA_STRATA_TRACE`** (runtime env: `1`/`-` → stderr, or a file path)
+  dumps one CSV line per frame — `frame,cols,rows,total_nodes,live_nodes,
+  live_rows,sealed_now,builds,coherence,full_repaint` — for profiling the
+  pipeline on a real session (builds = cache misses, sealed_now = rows
+  deposited that frame, coherence = which `InlineFrame` arm ran).
+
 ## Status
 
 The renderer + the windowed-compose deposition fix + the fuzz proof are

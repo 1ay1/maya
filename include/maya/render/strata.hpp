@@ -184,6 +184,14 @@ private:
     std::vector<Stratum> band_;          ///< The active layer, in order.
     std::size_t   sealed_count_ = 0;     ///< Leading host nodes already set.
     std::uint64_t sealed_rows_total_ = 0;
+    // Fingerprint of the last node sealed past the fold (key folded with
+    // hash). The sealed prefix [0, sealed_count_) is append-only: a host
+    // that swaps its whole surface (thread switch / new thread) hands a
+    // node list whose frontier node no longer matches this fingerprint.
+    // frame() reads it to AUTO-DETECT the swap and arm a hard reset, so
+    // the host never issues an escape-level reset_inline itself. 0 = no
+    // node sealed yet (nothing to validate against).
+    std::uint64_t sealed_front_fp_ = 0;
     int           active_rows_ = 0;
     int           prev_width_  = 0;
     int           prev_height_ = 0;

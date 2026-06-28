@@ -43,6 +43,7 @@ void Strata::reset() {
     band_.clear();
     sealed_count_      = 0;
     sealed_rows_total_ = 0;
+    sealed_front_fp_   = 0;
     active_rows_       = 0;
     prev_width_        = 0;
     have_prev_         = false;
@@ -58,6 +59,7 @@ void Strata::reset_hard() {
     band_.clear();
     sealed_count_      = 0;
     sealed_rows_total_ = 0;
+    sealed_front_fp_   = 0;
     active_rows_       = 0;
     prev_width_        = 0;
     have_prev_         = false;
@@ -101,12 +103,33 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
     const bool height_changed = have_prev_ && (prev_height_ != term_h);
     const int  budget        = std::max(term_h * keep_viewports_, std::max(term_h, 1));
 
-    // A host that truncated its list below our frontier (thread swap done
-    // without reset(), transcript rewind) invalidates the seal frontier.
-    // Fall back to a fresh seed.
+    // A host that truncated its list below our frontier (thread swap into
+    // SHORTER content, transcript rewind) invalidates the seal frontier AND
+    // strands the old overflow rows in native scrollback. Arm a hard reset
+    // so the wipe clears them — the host issues no escape-level reset.
     if (nodes.size() < sealed_count_) {
-        band_.clear();
-        sealed_count_ = 0;
+        reset_hard();
+    }
+
+    // AUTONOMOUS WHOLESALE-SWAP DETECTION.
+    // The sealed prefix [0, sealed_count_) is append-only by contract: the
+    // host enumerates a growing transcript, so the node at the frontier
+    // (the last one we sealed) must keep the same key+hash forever. When
+    // the host swaps its entire surface — loading a different thread, ^N
+    // into a fresh one — it hands a node list where that frontier slot now
+    // holds DIFFERENT content. We detect that here by re-folding the
+    // frontier node's fingerprint and comparing to the one we stored when
+    // we sealed it; a mismatch means the old on-screen transcript AND the
+    // rows it pushed to native scrollback must be wiped before the new
+    // surface paints. Arm a hard reset ourselves so the host issues NO
+    // escape-level reset_inline — it just swaps its model and we notice.
+    if (sealed_count_ > 0 && sealed_count_ <= nodes.size()) {
+        const NodeRef& front = nodes[sealed_count_ - 1];
+        const std::uint64_t fp =
+            (front.key * 1099511628211ULL) ^ (front.hash + 0x9e3779b97f4a7c15ULL);
+        if (sealed_front_fp_ != 0 && fp != sealed_front_fp_) {
+            reset_hard();   // clears band_/frontier + arms the wipe
+        }
     }
 
     // ── 1. Reconcile / seed the active layer ─────────────────────────────
@@ -132,6 +155,13 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
         std::reverse(seeded.begin(), seeded.end());
         band_         = std::move(seeded);
         sealed_count_ = start;   // [0, start) are pre-sealed; never built/emitted.
+        // Baseline the frontier fingerprint so a later wholesale swap is
+        // detectable even against a cold-resumed prefix.
+        if (start > 0) {
+            const NodeRef& f = nodes[start - 1];
+            sealed_front_fp_ =
+                (f.key * 1099511628211ULL) ^ (f.hash + 0x9e3779b97f4a7c15ULL);
+        }
     } else if (!nodes.empty()) {
         // Steady reconcile of the live suffix nodes[sealed_count_ .. end].
         std::unordered_map<std::uint64_t, std::size_t> idx;
@@ -191,6 +221,14 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
         if (n == 0 || cum == 0) return;
         auto marker = s.scrollback_marker(cum);
         s = std::move(s).commit(marker);
+        // The newly-sealed frontier is band_[n-1] (the last one we commit).
+        // Fingerprint it so the next frame can detect a wholesale swap that
+        // replaces this slot's content.
+        {
+            const Stratum& f = band_[n - 1];
+            sealed_front_fp_ =
+                (f.key * 1099511628211ULL) ^ (f.hash + 0x9e3779b97f4a7c15ULL);
+        }
         band_.erase(band_.begin(), band_.begin() + static_cast<std::ptrdiff_t>(n));
         sealed_count_      += n;
         sealed_rows_total_ += static_cast<std::uint64_t>(cum);

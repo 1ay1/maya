@@ -44,6 +44,14 @@
 // Strata a flat list of {key, hash, terminal} node refs and a lazy
 // builder; Strata does everything else.
 //
+// Deposition is ROW-GRANULAR, not whole-turn. Strata keeps a few viewports
+// of content live for width re-measure, but composes a WINDOWED canvas that
+// excludes rows already deposited into native scrollback (tracked by an
+// internal committed-rows watermark). The renderer therefore never sees —
+// let alone re-emits — a row the terminal already owns, even when a single
+// turn is taller than the viewport. A whole turn is dropped from the active
+// layer only once all of its rows have deposited (pure bookkeeping).
+//
 // This is NOT a virtual DOM: there is no reconciliation of a whole
 // mutable tree against another. It is a one-way depositional pipeline —
 // content settles, hardens, and is forgotten by maya but preserved by the
@@ -182,6 +190,18 @@ private:
     int measure(const Element& e, int cols);
 
     std::vector<Stratum> band_;          ///< The active layer, in order.
+    // Rows at the TOP of band_ that have physically deposited into native
+    // scrollback already and must NOT be re-emitted. The band keeps these
+    // rows (for width-resize re-measure) but compose WINDOWS them out: the
+    // canvas handed to the renderer starts `committed_rows_` rows down from
+    // the band top. This is the row-granular analog of sealing a whole
+    // node — it lets a node that only PARTIALLY scrolled off contribute
+    // its still-visible tail to the canvas while its committed head is
+    // excluded, so the renderer's per-row diff never re-stamps a row the
+    // terminal already owns. Reset to 0 on any width change (hard reset
+    // wipes scrollback) or wholesale swap.
+    int           committed_rows_ = 0;
+    std::size_t   prev_total_nodes_ = 0;  ///< Host node count last frame (rewind detect).
     std::size_t   sealed_count_ = 0;     ///< Leading host nodes already set.
     std::uint64_t sealed_rows_total_ = 0;
     // Fingerprint of the last node sealed past the fold (key folded with

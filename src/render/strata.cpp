@@ -4,16 +4,21 @@
 //
 //   1. RECONCILE the active layer against the host's live node suffix
 //      (nodes after the sealed frontier), reusing cached Elements whose
-//      hash is unchanged and building only the misses.
-//   2. MEASURE every live node at term_cols — maya's own layout engine,
-//      the same path render_tree runs — and COMPOSE them into one canvas,
-//      each stratum stamped at its running y-offset.
-//   3. SEAL whole terminal strata that have scrolled past the fold, but
-//      never an in-viewport row: the seal count is read from THIS canvas
-//      at THIS width, so it equals what physically scrolled off, exactly.
-//   4. DRIVE the InlineFrame state machine to emit a minimal diff, then
-//      advance the scrollback frontier with a single commit() and DROP the
-//      sealed strata from the active layer.
+//      hash is unchanged and building only the misses. Auto-detect a
+//      wholesale swap / rewind (frontier fingerprint + band-anchor key) and
+//      self-arm a hard reset.
+//   2. DEPOSIT BOOKKEEPING: drop whole front nodes that have fully deposited
+//      into native scrollback (the committed_rows_ watermark covers them);
+//      mirror handle_resize for width/height changes and rewinds.
+//   3. COMPOSE a WINDOWED canvas — band rows [committed_rows_, band_height),
+//      each stratum at (its y) - committed_rows_, the straddling node clipped
+//      to its visible tail — so the renderer never sees an already-deposited
+//      row. MEASURE uses maya's own layout engine at term_cols.
+//   4. DRIVE the InlineFrame state machine to emit a minimal diff over the
+//      window.
+//   5. ADVANCE committed_rows_ by the rows this frame scrolled off the top
+//      edge (= win_h - term_h) and shrink the renderer's shadow to match
+//      with a single commit(), so a deposited row is never addressed again.
 
 #include "maya/render/strata.hpp"
 
@@ -41,6 +46,8 @@ int Strata::measure(const Element& e, int cols) {
 
 void Strata::reset() {
     band_.clear();
+    committed_rows_    = 0;
+    prev_total_nodes_  = 0;
     sealed_count_      = 0;
     sealed_rows_total_ = 0;
     sealed_front_fp_   = 0;
@@ -57,6 +64,8 @@ void Strata::reset_hard() {
     // frame emits \x1b[2J\x1b[3J\x1b[H and repaints from a cleared
     // screen — erasing the old surface on screen and in native scrollback.
     band_.clear();
+    committed_rows_    = 0;
+    prev_total_nodes_  = 0;
     sealed_count_      = 0;
     sealed_rows_total_ = 0;
     sealed_front_fp_   = 0;
@@ -101,6 +110,7 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
     const int  term_h        = term_rows.value();
     const bool width_changed  = have_prev_ && (prev_width_  != term_cols);
     const bool height_changed = have_prev_ && (prev_height_ != term_h);
+    const bool nodes_shrank   = have_prev_ && (nodes.size() < prev_total_nodes_);
     const int  budget        = std::max(term_h * keep_viewports_, std::max(term_h, 1));
 
     // A host that truncated its list below our frontier (thread swap into
@@ -130,6 +140,25 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
         if (sealed_front_fp_ != 0 && fp != sealed_front_fp_) {
             reset_hard();   // clears band_/frontier + arms the wipe
         }
+    }
+
+    // BAND-ANCHOR SWAP DETECTION (independent of sealing).
+    // Windowing keeps most content live in band_ rather than sealing it,
+    // so sealed_count_ can stay 0 for a long session and the frontier-
+    // fingerprint check above never engages. The band itself is the
+    // anchor: by the append-only contract, the FRONT live node's key must
+    // still appear in the host's node list every frame. When the host
+    // swaps its whole surface (thread switch / new thread) or rewinds
+    // below the band, that key vanishes from the incoming list — the old
+    // on-screen transcript AND its native-scrollback rows must be wiped
+    // before the new surface paints. Detect it here and arm a hard reset.
+    if (have_prev_ && !band_.empty()) {
+        const std::uint64_t anchor = band_.front().key;
+        bool present = false;
+        for (const NodeRef& nr : nodes) {
+            if (nr.key == anchor) { present = true; break; }
+        }
+        if (!present) reset_hard();
     }
 
     // ── 1. Reconcile / seed the active layer ─────────────────────────────
@@ -195,78 +224,88 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
         band_ = std::move(nb);
     }
 
-    // ── 2. Seal-first + resize recovery (the single commit point) ───────
-    // BEFORE composing, commit the PREVIOUS frame's overflow — the whole
-    // terminal strata that have scrolled past the CURRENT viewport — and
-    // drop them from the active layer. This is the analog of agent_session
-    // committing its frozen prefix: it keeps the rendered canvas ≈ one
-    // viewport, so a stale re-anchor (height resize) never walks up into
-    // committed scrollback and strands a duplicate of the oldest rows.
+    // ── 2. Deposit bookkeeping + resize recovery ───────────────────────
+    // Strata keeps `keep_viewports` of content live in band_ for resize
+    // re-measure, but it must never re-emit a row the terminal already
+    // OWNS (one that scrolled past the top edge). `committed_rows_` is the
+    // running count of band rows, from the top, that have physically
+    // deposited into native scrollback. Section 3 WINDOWS them out of the
+    // composed canvas, so the renderer's diff can only ever touch rows that
+    // are still on screen (or scrolling off for the FIRST time this frame).
     //
-    // The commit count is the summed height of whole TERMINAL strata (whose
-    // heights are stable once terminal), capped at prev_rows - term_h, so it
-    // equals exactly what physically scrolled off — measured by maya, at
-    // maya's width. Then mirror handle_resize: width change → hard reset
-    // (old-width scrollback is the terminal's; wipe + repaint fresh), height
-    // change → soft repaint in place (case B, no scrollback wipe).
-    auto seal_front = [&](inline_frame::InlineFrame<inline_frame::Synced>& s) {
-        const int off = std::max(0, s.rows() - term_h);
-        int cum = 0; std::size_t n = 0;
-        for (const auto& st0 : band_) {
-            if (!st0.terminal) break;            // never seal a growing node
-            if (n + 1 >= band_.size()) break;    // always keep ≥ one live node
-            if (cum + st0.height > off) break;   // never commit an in-viewport row
-            cum += st0.height; ++n;
-        }
-        if (n == 0 || cum == 0) return;
-        auto marker = s.scrollback_marker(cum);
-        s = std::move(s).commit(marker);
-        // The newly-sealed frontier is band_[n-1] (the last one we commit).
-        // Fingerprint it so the next frame can detect a wholesale swap that
-        // replaces this slot's content.
-        {
-            const Stratum& f = band_[n - 1];
+    // Here we (a) drop whole front nodes that have fully deposited (pure
+    // bookkeeping — they are in scrollback, not in the canvas), and
+    // (b) mirror handle_resize: a width change wipes + repaints fresh (the
+    // old-width scrollback is the terminal's), a height change soft-repaints
+    // the new viewport in place. Both reset the watermark: after a wipe the
+    // band reseeds; after a height change the window slides to the bottom
+    // term_h rows and is repainted, so any prior committed math is moot.
+    auto drop_committed_front_nodes = [&] {
+        while (band_.size() > 1
+               && committed_rows_ >= band_.front().height) {
+            const Stratum& f = band_.front();
             sealed_front_fp_ =
                 (f.key * 1099511628211ULL) ^ (f.hash + 0x9e3779b97f4a7c15ULL);
+            committed_rows_ -= f.height;
+            band_.erase(band_.begin());
+            ++sealed_count_;
         }
-        band_.erase(band_.begin(), band_.begin() + static_cast<std::ptrdiff_t>(n));
-        sealed_count_      += n;
-        sealed_rows_total_ += static_cast<std::uint64_t>(cum);
-        st.sealed_now       = cum;
     };
 
     if (have_prev_ && std::holds_alternative<InlineFrame<Synced>>(coh_)) {
         auto s = std::get<InlineFrame<Synced>>(std::move(coh_));
         if (width_changed) {
-            // arm.rows() is an old-width count; don't seal against it. The
-            // wipe repaints the (re-measured) active layer fresh.
+            // Old-width scrollback belongs to the terminal; wipe + repaint
+            // the re-measured active layer fresh.
+            committed_rows_ = 0;
             coh_ = std::move(s).demote_to_hard_reset();
             st.full_repaint = true;
+        } else if (height_changed || nodes_shrank) {
+            // Slide the window so win_h ≤ term_h and soft-repaint (case B
+            // repaints the bottom term_h rows in place, no scrollback wipe).
+            // Triggered by a height change OR a rewind (the live node count
+            // dropped, so the on-screen rows above the new, shorter band are
+            // stale and must be erased by the case-B repaint).
+            // committed_rows_ is MONOTONIC: a deposited row can never be
+            // un-scrolled, so on a height GROW we keep the old watermark
+            // (win_h just shrinks below term_h); on a height SHRINK we raise
+            // it so the newly-overflowing rows are excluded and the case-B
+            // emit covers the whole window with no stale rows left above.
+            int bh = 0;
+            for (const auto& s : band_) bh += s.height;
+            committed_rows_ = std::max(committed_rows_, bh - term_h);
+            if (committed_rows_ < 0) committed_rows_ = 0;
+            coh_ = std::move(s).demote_to_stale();
+            st.full_repaint = true;
         } else {
-            seal_front(s);
-            if (height_changed) {
-                coh_ = std::move(s).demote_to_stale();
-                st.full_repaint = true;
-            } else {
-                coh_ = std::move(s);
-            }
+            drop_committed_front_nodes();
+            coh_ = std::move(s);
         }
+    } else {
+        drop_committed_front_nodes();
     }
     st.coherence = static_cast<int>(coh_.index());
 
-    // ── 3. Compose the (reduced) active layer into one canvas ────────────
+    // ── 3. Compose the WINDOWED active layer into one canvas ─────────────
+    // The window is band rows [committed_rows_, band_height): rows already
+    // deposited into native scrollback are excluded so the renderer never
+    // re-stamps them. Each node paints at (its global y) - committed_rows_;
+    // a node entirely above the window is skipped, and the straddling node
+    // is clipped to its still-visible tail by painting it at a negative
+    // origin (render_tree_at clips above row 0).
     int band_height = 0;
     for (const auto& s : band_) band_height += s.height;
-    const int alloc_h = std::max(band_height, 1);
-    if (canvas_.width() != term_cols || canvas_.height() < alloc_h) {
+    if (committed_rows_ > band_height) committed_rows_ = band_height;
+    const int win_h = std::max(band_height - committed_rows_, 1);
+    if (canvas_.width() != term_cols || canvas_.height() < win_h) {
         canvas_.set_style_pool(&pool);
-        canvas_.resize(term_cols, alloc_h);
+        canvas_.resize(term_cols, win_h);
     }
     canvas_.clear();
     {
-        int y = 0;
+        int y = -committed_rows_;   // global band y, shifted into window space
         for (const auto& s : band_) {
-            if (s.height > 0)
+            if (s.height > 0 && y + s.height > 0)
                 render_tree_at(s.element, canvas_, pool, theme::dark,
                                0, y, term_cols, s.height);
             y += s.height;
@@ -290,31 +329,14 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
                 return lift(std::move(arm).render(
                     canvas_, content_rows(canvas_), term_rows, pool, writer, true));
             } else if constexpr (std::is_same_v<T, InlineFrame<Synced>>) {
-                // Safety net: a live stratum still in the band changed and
-                // shifted a committed prefix row. Seal-first keeps the canvas
-                // ≈ viewport so this rarely fires, but keep the proven
-                // commit-overflow + soft-repaint recovery (no scrollback wipe).
-                const int prev_rows = arm.rows();
-                const int new_rows  = content_height(canvas_);
-                if (prev_rows > term_h && new_rows < prev_rows) {
-                    const int overflow = prev_rows - term_h;
-                    if (!arm.scrollback_prefix_matches(canvas_, overflow)) {
-                        auto marker    = arm.scrollback_marker(overflow);
-                        auto committed = std::move(arm).commit(marker);
-                        st.full_repaint = true;
-                        return std::move(committed).demote_to_stale();
-                    }
-                }
+                // Windowing (Section 3) excludes already-deposited rows, so
+                // the canvas the diff sees is the still-mutable viewport plus
+                // at most this frame's fresh growth — never a row the terminal
+                // already owns. The only residual hazard is a shadow/wire
+                // desync (verify fails); recover with an in-place soft
+                // repaint (case B, no scrollback wipe).
                 auto wit = arm.verify();
                 if (!wit) {
-                    const int pr = arm.rows();
-                    if (pr > term_h) {
-                        const int overflow = pr - term_h;
-                        auto marker    = arm.scrollback_marker(overflow);
-                        auto committed = std::move(arm).commit(marker);
-                        st.full_repaint = true;
-                        return std::move(committed).demote_to_stale();
-                    }
                     st.full_repaint = true;
                     return std::move(arm).demote_to_stale();
                 }
@@ -334,12 +356,33 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
         },
         std::move(coh_));
 
+    // ── 5. Advance the deposit watermark ────────────────────────────
+    // The render just laid the windowed canvas (win_h rows) into the
+    // viewport, scrolling the top max(0, win_h - term_h) rows past the
+    // top edge and into native scrollback. Those rows are now immutable.
+    // Record them in committed_rows_ so NEXT frame's window excludes them,
+    // and shrink the renderer's shadow by the same amount via commit() so
+    // its prev_rows stays ≤ term_h — the renderer never holds, addresses,
+    // or re-diffs a deposited row again.
+    if (auto* sy = std::get_if<InlineFrame<Synced>>(&coh_)) {
+        const int now = sy->rows();
+        const int deposited = now - term_h;
+        if (deposited > 0) {
+            auto marker = sy->scrollback_marker(deposited);
+            coh_ = std::move(*sy).commit(marker);
+            committed_rows_ += deposited;
+            sealed_rows_total_ += static_cast<std::uint64_t>(deposited);
+            st.sealed_now += deposited;
+        }
+    }
+
     active_rows_ = 0;
     for (const auto& s : band_) active_rows_ += s.height;
     st.live_nodes = static_cast<int>(band_.size());
     st.live_rows  = active_rows_;
     prev_width_   = term_cols;
     prev_height_  = term_h;
+    prev_total_nodes_ = nodes.size();
     have_prev_    = true;
     return st;
 }

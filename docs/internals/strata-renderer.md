@@ -49,35 +49,48 @@ missed. Worst case a miss rebuilds one visible turn; it can never re-emit a
 sealed row. The catastrophe (miss → re-emit → duplicate) is gone because
 the sealed region is *physically absent from the diffable tree*.
 
-### Why the seal count is always exact
+### Why the deposit count is always exact
 
-The commit count is the summed height of whole **terminal** strata (whose
-heights are stable once terminal), measured by maya's own layout engine at
-maya's own width — the same render that just went to the wire — and capped
-at `prev_rows - term_h`. There is no host height, no second measurement, no
-width to drift against. Over-commit is impossible.
+Strata composes a **windowed** active layer: it keeps `keep_viewports` of
+content live (for width re-measure) but the canvas it hands the renderer
+excludes rows that have already deposited into native scrollback, tracked by a
+`committed_rows_` watermark. The deposit count each frame is therefore just
+`max(0, win_h - term_h)` — the rows the renderer physically scrolled off the
+top edge, measured by maya's own layout engine at maya's own width, the same
+render that just went to the wire. There is no host height, no second
+measurement, no width to drift against, and no whole-node boundary to round
+to: deposition is **row-granular**, so even a single turn taller than the
+viewport is handled. Over-commit is impossible — the renderer never sees a
+row the terminal already owns.
 
 ## The per-frame pipeline
 
 1. **Reconcile** the active layer against the host's live node suffix
    (the nodes after the sealed frontier), reusing cached Elements whose
    `hash` is unchanged and calling `build()` only on a miss.
-2. **Seal-first**: before composing, commit the *previous* frame's overflow
-   — whole terminal strata that have scrolled past the *current* viewport —
-   and drop them. This keeps the rendered canvas ≈ one viewport, so a stale
-   re-anchor (height resize) never walks up into committed scrollback. This
-   is the single commit point, and it is the direct analog of
-   `agent_session` committing its frozen prefix.
-3. **Resize recovery**, mirroring `Runtime::handle_resize` exactly:
+2. **Deposit bookkeeping**: drop whole front nodes that have fully deposited
+   (pure accounting — they are in scrollback, not in the canvas). The
+   `committed_rows_` watermark, advanced at the end of the *previous* frame,
+   is what keeps the composed window ≈ one viewport, so a stale re-anchor
+   (height resize) never walks up into committed scrollback.
+3. **Resize / rewind / swap recovery**, mirroring `Runtime::handle_resize`:
    - **width change** → `demote_to_hard_reset` (the old-width scrollback is
      the terminal's; wipe + repaint the re-measured active layer fresh).
-   - **height-only change** (the phone case) → `demote_to_stale`: case-(B)
-     soft-repaints the viewport in place, re-anchoring maya's cursor model
-     to the reflowed terminal **without a scrollback wipe**.
-4. **Compose** the (reduced) active layer into one canvas via
-   `render_tree_at`, one stratum per y-offset.
+   - **height change or rewind** → `demote_to_stale`: case-(B) soft-repaints
+     the viewport in place, re-anchoring maya's cursor model **without a
+     scrollback wipe**. `committed_rows_` rises monotonically (a deposited
+     row can never un-scroll).
+   - **wholesale swap** is auto-detected (frontier fingerprint **and** a
+     band-anchor key check) and self-arms a hard reset.
+4. **Compose the WINDOWED active layer** — band rows `[committed_rows_,
+   band_height)` — into one canvas via `render_tree_at`, each stratum at
+   `y_global - committed_rows_` (the straddling node is clipped to its
+   visible tail).
 5. **Render** through the `InlineFrame` type-state (Empty → Fresh → Synced
-   …), which emits the minimal per-row diff over the bounded active layer.
+   …), which emits the minimal per-row diff over the bounded window, then
+   **advance `committed_rows_`** by the rows just scrolled off and shrink the
+   renderer's shadow to match (`commit(marker)`), so a deposited row is never
+   addressed again.
 
 ## Host API
 
@@ -96,20 +109,31 @@ bool each), plus a lazy builder. It issues **no `commit_scrollback`, keeps
 
 ## Proof
 
-A throwaway VT harness (continuous-buffer terminal model fed the *real*
-bytes Strata emits) asserts the depositional invariant:
+An adversarial, reproducible VT-model fuzz oracle (`tests/test_strata.cpp`,
+registered with `ctest`) is the second independent party Strata's design
+removed from the renderer — re-introduced in the test only. A faithful
+terminal model (`vt::Term`) with a real scrollback/screen split consumes the
+**real bytes** Strata emits and, after every frame, asserts the depositional
+invariant directly: every unique content marker appears **exactly once**
+across (scrollback ∪ screen).
 
-- **Streaming append + height-resize fuzz** (400 turns, soft-keyboard
-  toggling): every emitted row appears **exactly once** across
-  (scrollback ∪ screen) — **0 duplication, 0 loss**.
-- **Width-change fuzz**: 0 duplication (HardReset scrollback-wipe on a width
-  change is correct).
-- **100k-node cold start**: 18 `build()` calls, 0 on resize, active layer
-  ≈ one viewport — **O(viewport), independent of transcript length**.
+A deterministic seeded fuzzer drives Strata through interleaved hostile
+operations — streaming append, turn sealing, new turns, wide/emoji content,
+height **growth and drastic shrink**, **a single turn taller than the
+viewport**, transcript rewinds, and wholesale thread swaps. The invariant
+holds across the full sweep (64 seeds × 8000 frames = ~512k frames, and the
+same at the widened op mix). On failure the harness prints the failing phase,
+the duplicated marker, both buffer locations, and the exact escape bytes of
+the last frames.
+
+```sh
+./build/test_strata 64 8000      # ALL PASS — deposition invariant held under fuzz
+```
 
 ## Status
 
-Phase 0 (the renderer + proof) is complete and lands beside the existing
-inline path without touching it. Phase 1 — porting `agent_session` and then
-agentty's conversation onto Strata, deleting the host-side frozen prefix and
-all `commit_scrollback` accounting — is the next step.
+The renderer + the windowed-compose deposition fix + the fuzz proof are
+complete and land beside the existing inline path without touching it. The
+next step — porting `agent_session` and then agentty's conversation onto
+Strata, deleting the host-side frozen prefix and all `commit_scrollback`
+accounting — is now unblocked.

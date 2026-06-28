@@ -437,6 +437,29 @@ if(MAYA_BUILD_TESTS)
         if(NOT APPLE)
             target_link_libraries(test_terminal_restore PRIVATE util)
         endif()
+
+        # test_strata — the adversarial deposition-invariant proof for
+        # maya::strata. A deterministic seeded fuzzer drives Strata through
+        # interleaved hostile operations (streaming growth, turn sealing,
+        # new turns, wide/emoji content, height growth AND drastic shrink,
+        # turns taller than the viewport, rewinds, wholesale thread swaps),
+        # an independent VT terminal model consumes the REAL bytes Strata
+        # emits, and after every frame asserts the deposition invariant
+        # ("every emitted row appears exactly once across native scrollback
+        # ∪ on-screen viewport") directly against the model. See
+        # docs/internals/strata-renderer.md for the design it proves.
+        #
+        # Registered with a bounded seed/frame count so ctest stays fast;
+        # run a deeper sweep by hand:
+        #     ./build/test_strata [seeds] [frames] [verbose]
+        add_executable(test_strata tests/test_strata.cpp)
+        target_link_libraries(test_strata PRIVATE ${MAYA_TEST_LIB})
+        target_compile_definitions(test_strata PRIVATE
+            MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_options(test_strata PRIVATE
+            $<$<CXX_COMPILER_ID:GNU,Clang>:${MAYA_TEST_OPT}>)
+        add_test(NAME test_strata COMMAND test_strata 12 2000)
+        set_tests_properties(test_strata PROPERTIES TIMEOUT 180)
     endif()
 endif()
 

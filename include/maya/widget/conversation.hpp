@@ -153,7 +153,7 @@ public:
         const bool use_built = !cfg_.built_turns.empty();
         const std::size_t n = use_built ? cfg_.built_turns.size()
                                         : cfg_.turns.size();
-        rows.reserve(n * 2 + 2);
+        rows.reserve(n * 2 + cfg_.live_tail.size() + 2);
         for (std::size_t i = 0; i < n; ++i) {
             // Skip the inter-turn rule before a continuation turn so the
             // rail flows uninterrupted through a same-speaker run.
@@ -164,8 +164,21 @@ public:
             rows.push_back(use_built ? cfg_.built_turns[i].element
                                      : Turn{cfg_.turns[i]}.build());
         }
+        // Live tail. In the strata path the host hands the settled prefix
+        // to maya as separate sealed NODES (frozen == nullptr here) and
+        // fills `live_tail` with the in-flight turn + chrome; this branch
+        // must render it or the live node paints empty (the streaming
+        // void: nothing shows mid-turn, the whole turn pops in at once
+        // when it settles into the sealed prefix). The host owns any
+        // leading divider/gap inside `live_tail`.
+        for (const auto& e : cfg_.live_tail) rows.push_back(e);
         if (cfg_.in_flight)
             rows.push_back(ActivityIndicator{*cfg_.in_flight}.build());
+        // HUG mode (fill_viewport=false, strata path): skip the spacer +
+        // grow so the live node hugs its content and the composer sits
+        // directly beneath it (no blank void above the chrome).
+        if (!cfg_.fill_viewport)
+            return (v(rows) | padding(0, 1)).build();
         rows.push_back(spacer().build());
         return (v(rows) | padding(0, 1) | grow(1.0f)).build();
     }

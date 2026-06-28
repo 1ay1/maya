@@ -110,6 +110,19 @@ public:
         // protocol requires.
         bool                  continuation = false;
 
+        // Only meaningful on a continuation turn. When the settled head
+        // of a same-speaker run has been split off into a SEPARATE
+        // (e.g. sealed) sibling rail and this turn renders the run's
+        // remaining slots as a continuation, the one-row seam blank that
+        // build_inner would have placed BETWEEN the two slots — had they
+        // shared one rail — now falls on the node boundary and belongs to
+        // neither body. Set lead_gap so this continuation emits that blank
+        // as its first rail row (symmetric to the header→body blank on a
+        // non-continuation turn), making [head rail | continuation rail]
+        // row-for-row identical to the single combined rail. Ignored when
+        // continuation is false (the header→body blank already separates).
+        bool                  lead_gap = false;
+
         // Content-stable cache key (Witness Chain). When non-empty,
         // Turn wraps its output in maya::component(...).hash_id(...),
         // so the renderer reuses the previously-painted cells on every
@@ -249,6 +262,8 @@ private:
         // see the actual canvas width.
         Element inner = cfg.continuation
             ? (v(
+                // Seam blank owning the node-boundary gap (see lead_gap).
+                cfg.lead_gap ? blank().build() : nothing(),
                 body_rows,
                 error_block()
               ) | grow(1.0f)).build()

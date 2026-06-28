@@ -212,6 +212,15 @@ private:
     // the host never issues an escape-level reset_inline itself. 0 = no
     // node sealed yet (nothing to validate against).
     std::uint64_t sealed_front_fp_ = 0;
+    // Identity + content hash of the band node that OWNS the last committed
+    // row (the row at committed_rows_ - 1) as of last frame. Used to detect
+    // a live (non-terminal) row that already deposited into native
+    // scrollback and then REFLOWED: if that node is still live and its hash
+    // changed, the deposited copy is now stale and a hard reset is the only
+    // duplicate-free recovery (Section 2 steady branch). 0 = nothing
+    // committed yet.
+    std::uint64_t committed_tail_key_  = 0;
+    std::uint64_t committed_tail_hash_ = 0;
     int           active_rows_ = 0;
     int           prev_width_  = 0;
     int           prev_height_ = 0;

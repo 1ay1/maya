@@ -66,6 +66,20 @@ are still on screen or scrolling off **for the first time** this frame.
   covers the whole window with no stale rows above.
 - **Rewind** (live node count dropped) → same soft repaint, so the on-screen
   rows above the new, shorter band are erased.
+- **Live-node REFLOW of an already-deposited row** → hard reset. The deposit
+  watermark is monotonic and row-granular, so a LIVE (non-terminal) node's
+  top rows can be committed into native scrollback the instant they scroll
+  past the fold. But a live node still reflows — a streaming paragraph
+  re-wraps, the reveal clip retracts — so if a *deposited* row's content
+  later changes, the scrollback copy is frozen STALE and every later windowed
+  canvas excludes it. The terminal owns that scrollback row: it can be
+  neither corrected in place nor re-emitted (a re-paint double-stamps it), so
+  the only duplicate-free recovery is the same wipe-and-repaint hard reset
+  the height-shrink path uses. Strata detects it precisely — it records the
+  `{key, hash}` of the node owning the last committed row each frame and arms
+  the reset ONLY when that node is still non-terminal **and** its hash changed
+  — so a giant live node that merely overflows every frame (its scrolled-off
+  head is already-emitted, byte-stable streamed content) does NOT trigger it.
 - **Wholesale swap** is caught by *two* detectors now: the original
   frontier-fingerprint check, plus a new **band-anchor** check — the front
   live node's key must reappear in the host's list every frame; when it
@@ -77,11 +91,12 @@ are still on screen or scrolling off **for the first time** this frame.
 
 `tests/test_strata.cpp` builds a faithful VT terminal model (`vt::Term`) with
 a real scrollback/screen split, drives `Strata::frame()` through a seeded,
-interleaved hostile op stream (stream-grow / seal / append / wide-burst /
-resize-width / resize-height / thread-swap / rewind, with turns allowed to
-grow taller than the viewport), feeds the **real emitted bytes** through the
-model, and after every frame asserts each unique content marker appears **at
-most once** across `(scrollback ∪ screen)`.
+interleaved hostile op stream (stream-grow / shrink / reflow / seal / append /
+wide-burst / resize-width / resize-height / thread-swap / rewind, with turns
+allowed to grow taller than the viewport), feeds the **real emitted bytes**
+through the model, and after every frame asserts each unique content marker
+appears **at most once** across `(scrollback ∪ screen)`, that every live-tail
+row is on screen, and that an on-screen live row shows its **current** text.
 
 Against pristine (pre-fix) Strata the invariant broke within a few hundred
 frames on most seeds. With the windowed compose it survives the full sweep:

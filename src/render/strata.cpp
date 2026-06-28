@@ -55,6 +55,8 @@ void Strata::reset() {
     sealed_count_      = 0;
     sealed_rows_total_ = 0;
     sealed_front_fp_   = 0;
+    committed_tail_key_  = 0;
+    committed_tail_hash_ = 0;
     active_rows_       = 0;
     prev_width_        = 0;
     have_prev_         = false;
@@ -73,6 +75,8 @@ void Strata::reset_hard() {
     sealed_count_      = 0;
     sealed_rows_total_ = 0;
     sealed_front_fp_   = 0;
+    committed_tail_key_  = 0;
+    committed_tail_hash_ = 0;
     active_rows_       = 0;
     prev_width_        = 0;
     have_prev_         = false;
@@ -321,8 +325,51 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
                 st.full_repaint = true;
             }
         } else {
-            drop_committed_front_nodes();
-            coh_ = std::move(s);
+            // STEADY frame (no width/height change, no node-count drop).
+            //
+            // The deposit watermark (Section 5) is monotonic and can cover
+            // rows of the LIVE (non-terminal) tail node once they scroll
+            // past the fold. A live node still reflows — its streaming last
+            // line re-wraps, the reveal clip retracts — so if a row that
+            // already deposited into native scrollback later changes, the
+            // deposited copy is frozen STALE (windowed out of every
+            // subsequent canvas: the reported "rows hidden / wrong while
+            // live, only fixed at turn end" bug). The terminal owns that
+            // scrollback row, so it can be neither corrected in place nor
+            // re-emitted (a re-paint double-stamps it). The only
+            // duplicate-free recovery is a hard reset — the same two-party-
+            // drift recovery the height-shrink path uses.
+            //
+            // Detect it precisely so we don't reset every frame a giant
+            // live node legitimately overflows: find the node that OWNS the
+            // last committed row and compare against last frame. A reset is
+            // needed ONLY when that node is still LIVE (non-terminal) and
+            // its content hash changed — i.e. a deposited live row reflowed.
+            // A terminal node is immutable (safe), and an unchanged hash
+            // means the deposited rows still match the wire.
+            bool committed_live_reflow = false;
+            if (committed_rows_ > 0 && committed_tail_key_ != 0) {
+                int acc = 0;
+                for (const auto& st_node : band_) {
+                    acc += st_node.height;
+                    if (acc >= committed_rows_) {
+                        // st_node spans the last committed row.
+                        if (!st_node.terminal
+                            && st_node.key == committed_tail_key_
+                            && st_node.hash != committed_tail_hash_)
+                            committed_live_reflow = true;
+                        break;
+                    }
+                }
+            }
+            if (committed_live_reflow) {
+                committed_rows_ = 0;
+                coh_ = std::move(s).demote_to_hard_reset();
+                st.full_repaint = true;
+            } else {
+                drop_committed_front_nodes();
+                coh_ = std::move(s);
+            }
         }
     } else {
         drop_committed_front_nodes();
@@ -466,6 +513,22 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
     for (const auto& s : band_) active_rows_ += s.height;
     st.live_nodes = static_cast<int>(band_.size());
     st.live_rows  = active_rows_;
+    // Record the node that owns the last committed row this frame so the
+    // NEXT frame can detect a deposited live row reflowing (Section 2
+    // steady branch). 0 when nothing is committed.
+    committed_tail_key_  = 0;
+    committed_tail_hash_ = 0;
+    if (committed_rows_ > 0) {
+        int acc = 0;
+        for (const auto& s : band_) {
+            acc += s.height;
+            if (acc >= committed_rows_) {
+                committed_tail_key_  = s.key;
+                committed_tail_hash_ = s.hash;
+                break;
+            }
+        }
+    }
     prev_width_   = term_cols;
     prev_height_  = term_h;
     prev_total_nodes_ = nodes.size();

@@ -133,16 +133,26 @@ directly:
   screen is never windowed out. I1 alone can't catch a *hidden* row (a
   vanished marker has count 0, which I1 permits); I2 is what guards the
   "rows get hidden while live, then snap back at the end" symptom.
+- **I2b (live-content)** — the on-screen row carrying a live marker must show
+  that row's **current** text, not a stale earlier copy. I2 (marker present)
+  can't catch a row whose marker persists but whose content went stale; I2b
+  re-reads the buffer row and byte-compares it to the host's current line.
+  It guards the deposited-live-row REFLOW symptom: a live node's row scrolls
+  past the fold (deposited into native scrollback), then the node re-wraps
+  and that row's content changes — the scrollback copy is frozen wrong and
+  every later windowed canvas excludes it, so the screen shows the old bytes
+  until the turn seals.
 
 A deterministic seeded fuzzer drives Strata through interleaved hostile
 operations — streaming append, **live node SHRINK (re-wrap / fold — a live
-node's measured height dropping between frames)**, turn sealing, new turns,
-wide/emoji content, height **growth and drastic shrink**, **a single turn
-taller than the viewport**, transcript rewinds, and wholesale thread swaps.
-Both invariants hold across the full sweep (64 seeds × 8000 frames = ~512k
-frames). On failure the harness prints the failing phase, the duplicated /
-hidden marker, both buffer locations, and the exact escape bytes of the last
-frames.
+node's measured height dropping between frames)**, **live node REFLOW (an
+in-flight row's text changing between frames while its line count holds)**,
+turn sealing, new turns, wide/emoji content, height **growth and drastic
+shrink**, **a single turn taller than the viewport**, transcript rewinds, and
+wholesale thread swaps. All invariants hold across the full sweep (64 seeds ×
+8000 frames = ~512k frames). On failure the harness prints the failing phase,
+the duplicated / hidden / stale marker, both buffer locations, and the exact
+escape bytes of the last frames.
 
 ```sh
 ./build/test_strata 64 8000      # ALL PASS — I1 + I2 held under fuzz

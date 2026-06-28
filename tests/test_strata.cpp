@@ -556,7 +556,16 @@ struct Invariant {
         // (Skipped for term_rows==0 callers and for swap/resize phases,
         // which intentionally repaint and may transiently differ.)
         if (term_rows > 0) {
-            std::vector<std::uint64_t> live_tail;  // newest-first
+            // Map marker id -> the buffer row text carrying it (last wins;
+            // a live marker is unique so there is at most one).
+            std::unordered_map<std::uint64_t, std::string> seen_text;
+            for (int y = 0; y < t.total_rows(); ++y) {
+                std::string row = t.row_text(y);
+                std::uint64_t id;
+                if (parse_marker(row, id)) seen_text[id] = row;
+            }
+            // newest-first list of (id, current host text) for the live tail.
+            std::vector<std::pair<std::uint64_t, std::string>> live_tail;
             for (auto it = host.nodes.rbegin();
                  it != host.nodes.rend() && static_cast<int>(live_tail.size())
                      < term_rows; ++it) {
@@ -565,17 +574,34 @@ struct Invariant {
                      lit != it->lines.rend()
                          && static_cast<int>(live_tail.size()) < term_rows; ++lit) {
                     std::uint64_t id;
-                    if (parse_marker(*lit, id)) live_tail.push_back(id);
+                    if (parse_marker(*lit, id)) live_tail.emplace_back(id, *lit);
                 }
             }
-            for (std::uint64_t id : live_tail) {
-                int c = seen.count(id) ? seen[id] : 0;
-                if (c < 1) {
+            for (const auto& [id, want] : live_tail) {
+                auto it = seen_text.find(id);
+                if (it == seen_text.end()) {
                     std::fprintf(stderr,
                         "\n  INVARIANT I2 (live-visible) FAILED in phase '%s': "
                         "live-tail marker %llu is HIDDEN (count=0) — a row "
                         "still on screen was windowed out.\n", phase,
                         (unsigned long long)id);
+                    dump(t, id);
+                    CHECK(false);
+                    continue;
+                }
+                // I2b: the on-screen row must carry the CURRENT text, not a
+                // stale pre-reflow copy. Our lines never wrap (< 40 cols,
+                // widths >= 40), so the trimmed buffer row equals the host
+                // line byte-for-byte. A mismatch means a reflowed live row
+                // scrolled past the top edge, was committed by the monotonic
+                // watermark, and Section 3 froze its stale content on screen.
+                if (it->second != want) {
+                    std::fprintf(stderr,
+                        "\n  INVARIANT I2b (live-content) FAILED in phase '%s': "
+                        "live-tail marker %llu shows STALE text.\n"
+                        "    want: %.60s\n    got : %.60s\n", phase,
+                        (unsigned long long)id, want.c_str(),
+                        it->second.c_str());
                     dump(t, id);
                     CHECK(false);
                 }
@@ -631,6 +657,7 @@ enum class Op : std::uint8_t {
     AppendNode,    // start a new streaming node
     GrowNode,      // add a line to the last (live) node
     ShrinkNode,    // DROP a line from the last (live) node — re-wrap/fold
+    ReflowNode,    // MUTATE an interior line's text in the live node (reflow)
     SealNode,      // mark the last node terminal
     ResizeWidth,   // change terminal width
     ResizeHeight,  // change terminal height
@@ -757,6 +784,38 @@ static void run_log(const std::vector<Action>& log, const FuzzConfig& cfg) {
             }
             break;
         }
+        case Op::ReflowNode: {
+            // Reflow: an INTERIOR line of the live node changes its text
+            // between frames while its line COUNT stays the same. This is
+            // what a streaming markdown paragraph does — earlier rows
+            // re-wrap/restyle as more bytes arrive. The marker (line
+            // identity) is preserved, so I2 still requires the row visible;
+            // only the trailing text mutates. Targets an EARLY line so, when
+            // the live node overflows the fold, the mutated row is one that
+            // has scrolled past the top edge — exactly the row a monotonic
+            // committed_rows_ watermark wrongly treats as immutable.
+            if (!host.nodes.empty() && !host.nodes.back().terminal
+                && node_rows(host.nodes.back()) > 1) {
+                auto& ln = host.nodes.back().lines;
+                // Mutate the LAST line only — the streaming cursor row. In a
+                // real transcript only the in-flight paragraph re-wraps;
+                // already-emitted rows above are byte-stable. (Targeting an
+                // upper row would model an impossible reflow-above-the-fold,
+                // which no inline renderer can repaint once it is in native
+                // scrollback.)
+                std::size_t idx = ln.size() - 1;
+                std::uint64_t id;
+                if (Invariant::parse_marker(ln[idx], id)) {
+                    // Keep the marker, swap the trailing prose so the
+                    // row's content (and possibly its wrap) changes.
+                    ln[idx] = Invariant::marker(id) +
+                        ((a.arg & 1) ? "lazy dog leaps over the moon now"
+                                     : "the quick brown fox jumps");
+                    host.nodes.back().hash = fold_hash(host.nodes.back());
+                }
+            }
+            break;
+        }
         case Op::SealNode: {
             seal_tail();
             break;
@@ -826,6 +885,7 @@ static void run_log(const std::vector<Action>& log, const FuzzConfig& cfg) {
         const bool steady =
             a.op == Op::AppendNode || a.op == Op::GrowNode
             || a.op == Op::ShrinkNode || a.op == Op::WideBurst
+            || a.op == Op::ReflowNode
             || a.op == Op::SealNode;
         Invariant::check(d, host, op_name(a.op), steady ? cur_rows : 0);
         ++frame_no;
@@ -837,6 +897,7 @@ static const char* op_name(Op o) {
     case Op::AppendNode:  return "AppendNode";
     case Op::GrowNode:    return "GrowNode";
     case Op::ShrinkNode:  return "ShrinkNode";
+    case Op::ReflowNode:  return "ReflowNode";
     case Op::SealNode:    return "SealNode";
     case Op::ResizeWidth: return "ResizeWidth";
     case Op::ResizeHeight:return "ResizeHeight";
@@ -874,10 +935,11 @@ static std::vector<Action> gen_log(std::uint64_t seed, const FuzzConfig& cfg) {
         // viewport: a real session seals each turn as the next begins, so
         // only the newest turn or two is ever live. This is the regime the
         // whole-node depositional seal is designed for.
-        if      (r < 22) a.op = Op::GrowNode;
-        else if (r < 32) { a.op = Op::WideBurst; a.arg = roll(1, 8); }  // multi-row burst
-        else if (r < 40) { a.op = Op::ShrinkNode; a.arg = roll(1, 6); } // live re-wrap/fold
-        else if (r < 60) { a.op = Op::SealNode; }     // seal often
+        if      (r < 20) a.op = Op::GrowNode;
+        else if (r < 28) { a.op = Op::WideBurst; a.arg = roll(1, 8); }  // multi-row burst
+        else if (r < 36) { a.op = Op::ShrinkNode; a.arg = roll(1, 6); } // live re-wrap/fold
+        else if (r < 46) { a.op = Op::ReflowNode; a.arg = roll(0, 5); } // interior reflow above the fold
+        else if (r < 62) { a.op = Op::SealNode; }     // seal often
         else if (r < 78) a.op = Op::AppendNode;        // append seals the prior tail
         else if (r < 90) { a.op = Op::ResizeHeight; a.arg = roll(6, 60); }   // incl. drastic shrink
         else if (r < 96) { a.op = Op::ResizeWidth;  a.arg = roll(40, 200); }

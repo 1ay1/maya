@@ -1444,10 +1444,28 @@ void run(RunConfig cfg = {}) {
             && next_frame_at != std::chrono::steady_clock::time_point{})
         {
             auto now = std::chrono::steady_clock::now();
-            auto until = std::chrono::duration_cast<std::chrono::milliseconds>(
-                next_frame_at - now);
-            poll_timeout = std::min(poll_timeout,
-                std::max(std::chrono::milliseconds(0), until));
+            if (next_frame_at > now) {
+                // The deadline is still in the future. The wait is
+                // duration_cast to milliseconds, which TRUNCATES toward
+                // zero — a sub-millisecond remaining wait (the common
+                // case the instant after scheduling a 16 ms frame, once
+                // the clock has ticked partway through) becomes 0 ms.
+                // poll(0) returns immediately and the loop busy-spins on
+                // poll until the millisecond rolls over — burning a full
+                // CPU for the fractional-ms tail of every animation frame
+                // (the welcome wordmark / spinner pinning a core at idle).
+                // Floor the still-future wait at 1 ms so the loop SLEEPS
+                // to the next millisecond instead of spinning; 1 ms is far
+                // below the 16 ms frame interval, so animation cadence is
+                // unchanged and a real input still wakes the poll instantly.
+                auto until = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    next_frame_at - now);
+                if (until < std::chrono::milliseconds(1))
+                    until = std::chrono::milliseconds(1);
+                poll_timeout = std::min(poll_timeout, until);
+            }
+            // else: deadline already passed — leave poll_timeout as is
+            // (the post-poll gate sets needs_render and renders this pass).
         }
 
         // Loop-state probe (throttled). Captures WHY poll_timeout is what it

@@ -285,22 +285,41 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
             coh_ = std::move(s).demote_to_hard_reset();
             st.full_repaint = true;
         } else if (height_changed || nodes_shrank) {
-            // Slide the window so win_h ≤ term_h and soft-repaint (case B
-            // repaints the bottom term_h rows in place, no scrollback wipe).
-            // Triggered by a height change OR a rewind (the live node count
-            // dropped, so the on-screen rows above the new, shorter band are
-            // stale and must be erased by the case-B repaint).
-            // committed_rows_ is MONOTONIC: a deposited row can never be
-            // un-scrolled, so on a height GROW we keep the old watermark
-            // (win_h just shrinks below term_h); on a height SHRINK we raise
-            // it so the newly-overflowing rows are excluded and the case-B
-            // emit covers the whole window with no stale rows left above.
             int bh = 0;
             for (const auto& s : band_) bh += s.height;
-            committed_rows_ = std::max(committed_rows_, bh - term_h);
-            if (committed_rows_ < 0) committed_rows_ = 0;
-            coh_ = std::move(s).demote_to_stale();
-            st.full_repaint = true;
+
+            const bool height_shrank = height_changed && term_h < prev_height_;
+            // A height SHRINK cannot be repainted in place without risking a
+            // duplicate. The terminal anchors its bottom row and may scroll
+            // the top of the live frame into native scrollback the instant
+            // the viewport shrinks; the exact count depends on where the
+            // terminal had the content (inline mode grows from the cursor,
+            // so the frame's physical top is not row 0), which Strata cannot
+            // observe — the two-party drift. Even when the re-measured band
+            // fits the new viewport, the soft repaint lands one or more rows
+            // off from where the terminal parked the content, double-stamping
+            // the straddling row across the fold. The only duplicate-free
+            // recovery is a hard reset: wipe screen + saved-lines, repaint
+            // the bounded window fresh. A height GROW, a rewind, or a
+            // node-count shrink keeps the scrollback-preserving soft repaint
+            // (case B) — a grow never scrolls anything off, so it can't dup.
+            if (height_shrank) {
+                committed_rows_ = 0;
+                coh_ = std::move(s).demote_to_hard_reset();
+                st.full_repaint = true;
+            } else {
+                // Slide the window so win_h ≤ term_h and soft-repaint (case B
+                // repaints the bottom term_h rows in place, no scrollback
+                // wipe). Triggered by a height GROW, a within-viewport
+                // shrink, or a rewind (live node count dropped, so on-screen
+                // rows above the new shorter band are stale and the case-B
+                // repaint erases them). committed_rows_ is MONOTONIC.
+                committed_rows_ = std::max(committed_rows_, bh - term_h);
+                if (committed_rows_ < 0) committed_rows_ = 0;
+                if (committed_rows_ > bh) committed_rows_ = bh;
+                coh_ = std::move(s).demote_to_stale();
+                st.full_repaint = true;
+            }
         } else {
             drop_committed_front_nodes();
             coh_ = std::move(s);

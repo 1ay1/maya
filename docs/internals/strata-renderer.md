@@ -76,10 +76,19 @@ row the terminal already owns.
 3. **Resize / rewind / swap recovery**, mirroring `Runtime::handle_resize`:
    - **width change** → `demote_to_hard_reset` (the old-width scrollback is
      the terminal's; wipe + repaint the re-measured active layer fresh).
-   - **height change or rewind** → `demote_to_stale`: case-(B) soft-repaints
+   - **height SHRINK** → `demote_to_hard_reset`: a viewport shrink cannot be
+     soft-repainted duplicate-free. The terminal anchors its bottom row and
+     autonomously pushes the top of the live frame into native scrollback the
+     instant the viewport shrinks; the count is unobservable to Strata
+     (inline mode grows from the cursor, so the frame's physical top is not
+     row 0 — the classic two-party drift), so any in-place repaint re-stamps
+     a row the terminal already parked, double-stamping it across the fold.
+     The wipe is the only duplicate-free recovery.
+   - **height GROW or rewind** → `demote_to_stale`: case-(B) soft-repaints
      the viewport in place, re-anchoring maya's cursor model **without a
-     scrollback wipe**. `committed_rows_` rises monotonically (a deposited
-     row can never un-scroll).
+     scrollback wipe** (a grow never scrolls anything off, so it can't dup).
+     `committed_rows_` rises monotonically (a deposited row can never
+     un-scroll).
    - **wholesale swap** is auto-detected (frontier fingerprint **and** a
      band-anchor key check) and self-arms a hard reset.
 4. **Compose the WINDOWED active layer** — band rows `[committed_rows_,
@@ -113,21 +122,30 @@ An adversarial, reproducible VT-model fuzz oracle (`tests/test_strata.cpp`,
 registered with `ctest`) is the second independent party Strata's design
 removed from the renderer — re-introduced in the test only. A faithful
 terminal model (`vt::Term`) with a real scrollback/screen split consumes the
-**real bytes** Strata emits and, after every frame, asserts the depositional
-invariant directly: every unique content marker appears **exactly once**
-across (scrollback ∪ screen).
+**real bytes** Strata emits and, after every frame, asserts TWO invariants
+directly:
+
+- **I1 (no-dup)** — every unique content marker appears **at most once**
+  across (scrollback ∪ screen): the catastrophe (re-emit a scrolled-off /
+  parked row) never happens.
+- **I2 (live-visible)** — every marker in the bottom `term_rows` of the LIVE
+  (un-sealed) band appears **at least once** in the buffer: a row still on
+  screen is never windowed out. I1 alone can't catch a *hidden* row (a
+  vanished marker has count 0, which I1 permits); I2 is what guards the
+  "rows get hidden while live, then snap back at the end" symptom.
 
 A deterministic seeded fuzzer drives Strata through interleaved hostile
-operations — streaming append, turn sealing, new turns, wide/emoji content,
-height **growth and drastic shrink**, **a single turn taller than the
-viewport**, transcript rewinds, and wholesale thread swaps. The invariant
-holds across the full sweep (64 seeds × 8000 frames = ~512k frames, and the
-same at the widened op mix). On failure the harness prints the failing phase,
-the duplicated marker, both buffer locations, and the exact escape bytes of
-the last frames.
+operations — streaming append, **live node SHRINK (re-wrap / fold — a live
+node's measured height dropping between frames)**, turn sealing, new turns,
+wide/emoji content, height **growth and drastic shrink**, **a single turn
+taller than the viewport**, transcript rewinds, and wholesale thread swaps.
+Both invariants hold across the full sweep (64 seeds × 8000 frames = ~512k
+frames). On failure the harness prints the failing phase, the duplicated /
+hidden marker, both buffer locations, and the exact escape bytes of the last
+frames.
 
 ```sh
-./build/test_strata 64 8000      # ALL PASS — deposition invariant held under fuzz
+./build/test_strata 64 8000      # ALL PASS — I1 + I2 held under fuzz
 ```
 
 ### Belt-and-braces: in-engine tripwire + trace

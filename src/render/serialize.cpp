@@ -1132,6 +1132,30 @@ compose_inline_frame_impl(const Canvas& canvas,
     // the full-row copy). Re-emitting writes the SAME bytes the diff
     // already wrote, so prev_cells is correct without further action.
     if (content_rows < prev_rows) {
+        // The shrink re-emit below assumes the cursor is sitting on the new
+        // bottom row (last_row_to_visit = content_rows - 1). The per-row
+        // loop leaves it there ONLY if it actually ran, i.e. if
+        // first_changed <= last_row_to_visit. When the entire common prefix
+        // was byte-identical and the sole change is the height drop,
+        // first_changed == common == content_rows > last_row_to_visit, so
+        // the loop body never executes and the cursor is still at the row
+        // the positioning block targeted — first_changed (== content_rows),
+        // which is ONE BELOW the new bottom (it is the first removed row).
+        // Re-emitting the bottom-row content from there paints it at the
+        // wrong physical row AND leaves the real bottom row's stale copy
+        // intact — the "§N appears twice, one row too low" duplication seen
+        // when a live node re-wraps/folds shorter without any visible-cell
+        // change above the fold. Re-anchor the cursor onto the new bottom
+        // row first. The loop's last visited row was first_changed (if it
+        // ran) else the positioning target first_changed; either way the
+        // cursor row is min(first_changed, last_row_to_visit) after a run,
+        // or first_changed with no run. Move up the gap to land on
+        // last_row_to_visit.
+        const int cursor_row_now =
+            (first_changed <= last_row_to_visit) ? last_row_to_visit
+                                                 : first_changed;
+        if (cursor_row_now > last_row_to_visit)
+            ansi::write_cursor_up(out, cursor_row_now - last_row_to_visit);
         out += '\r';
         const int last_visible = canvas.last_content_col(last_row_to_visit);
         if (last_visible >= 0) {

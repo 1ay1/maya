@@ -507,6 +507,10 @@ private:
 struct Invariant {
     // marker id -> occurrences in the continuous buffer
     static void check(Driver& d, const Host& host, const char* phase) {
+        check(d, host, phase, /*term_rows=*/0);
+    }
+    static void check(Driver& d, const Host& host, const char* phase,
+                      int term_rows) {
         vt::Term& t = d.term();
         std::unordered_map<std::uint64_t, int> seen;
         for (int y = 0; y < t.total_rows(); ++y) {
@@ -528,6 +532,50 @@ struct Invariant {
                         "\n  INVARIANT I1 (no-dup) FAILED in phase '%s': "
                         "marker %llu appears %dx\n", phase,
                         (unsigned long long)id, c);
+                    dump(t, id);
+                    CHECK(false);
+                }
+            }
+        }
+
+        // ── I2: LIVE TAIL VISIBILITY (no rows hidden while live) ─────────
+        // I1 (no-dup) cannot catch a row that is temporarily HIDDEN — a
+        // hidden marker has count 0, which I1 permits. But the whole point
+        // of the live tail is that it is ON SCREEN: the host's newest,
+        // not-yet-sealed content must be visible. The reported bug was
+        // exactly this — a live node that overflowed the fold and then
+        // re-wrapped shorter left committed_rows_ over-counted, so Section 3
+        // windowed out rows that were still on screen; they vanished until
+        // the turn sealed.
+        //
+        // Assert: the BOTTOM term_rows worth of band content (the live
+        // suffix's most recent rows — the part that is unambiguously on
+        // screen, never legitimately scrolled off) all appear in the
+        // buffer. We walk the live (non-terminal) nodes' lines from the
+        // newest backward and require the last `term_rows` of them present.
+        // (Skipped for term_rows==0 callers and for swap/resize phases,
+        // which intentionally repaint and may transiently differ.)
+        if (term_rows > 0) {
+            std::vector<std::uint64_t> live_tail;  // newest-first
+            for (auto it = host.nodes.rbegin();
+                 it != host.nodes.rend() && static_cast<int>(live_tail.size())
+                     < term_rows; ++it) {
+                if (it->terminal) break;   // sealed prefix is scrollback-owned
+                for (auto lit = it->lines.rbegin();
+                     lit != it->lines.rend()
+                         && static_cast<int>(live_tail.size()) < term_rows; ++lit) {
+                    std::uint64_t id;
+                    if (parse_marker(*lit, id)) live_tail.push_back(id);
+                }
+            }
+            for (std::uint64_t id : live_tail) {
+                int c = seen.count(id) ? seen[id] : 0;
+                if (c < 1) {
+                    std::fprintf(stderr,
+                        "\n  INVARIANT I2 (live-visible) FAILED in phase '%s': "
+                        "live-tail marker %llu is HIDDEN (count=0) — a row "
+                        "still on screen was windowed out.\n", phase,
+                        (unsigned long long)id);
                     dump(t, id);
                     CHECK(false);
                 }
@@ -582,6 +630,7 @@ struct Invariant {
 enum class Op : std::uint8_t {
     AppendNode,    // start a new streaming node
     GrowNode,      // add a line to the last (live) node
+    ShrinkNode,    // DROP a line from the last (live) node — re-wrap/fold
     SealNode,      // mark the last node terminal
     ResizeWidth,   // change terminal width
     ResizeHeight,  // change terminal height
@@ -686,6 +735,28 @@ static void run_log(const std::vector<Action>& log, const FuzzConfig& cfg) {
             }
             break;
         }
+        case Op::ShrinkNode: {
+            // Re-wrap / fold: the LIVE tail node's measured height drops
+            // between frames (a wrapped line collapses shorter, a fenced
+            // code block folds, the reveal clip retracts). Only a live
+            // (non-terminal) node can reflow; a sealed node is immutable.
+            // Keep at least one line. The dropped markers leave the host's
+            // emitted set, so they are no longer required to be present.
+            // This is the exact regression the live-shrink overflow
+            // recovery (committed_rows_ clamp + case-B repaint) fixes:
+            // before it, a node that overflowed the fold and then shrank
+            // left committed_rows_ over-counted and Section 3 windowed out
+            // rows still on screen.
+            if (!host.nodes.empty() && !host.nodes.back().terminal
+                && node_rows(host.nodes.back()) > 1) {
+                int drop = std::clamp(a.arg, 1,
+                    node_rows(host.nodes.back()) - 1);
+                auto& ln = host.nodes.back().lines;
+                ln.erase(ln.end() - drop, ln.end());
+                host.nodes.back().hash = fold_hash(host.nodes.back());
+            }
+            break;
+        }
         case Op::SealNode: {
             seal_tail();
             break;
@@ -748,7 +819,15 @@ static void run_log(const std::vector<Action>& log, const FuzzConfig& cfg) {
                              d.last_bytes().size(), esc.c_str());
             }
         }
-        Invariant::check(d, host, op_name(a.op));
+        // I2 (live-tail visibility) only applies in steady streaming
+        // phases. Resize/swap/rewind intentionally repaint and the model
+        // may transiently differ from the host's live set the same frame;
+        // pass term_rows=0 there to run I1 (no-dup) alone.
+        const bool steady =
+            a.op == Op::AppendNode || a.op == Op::GrowNode
+            || a.op == Op::ShrinkNode || a.op == Op::WideBurst
+            || a.op == Op::SealNode;
+        Invariant::check(d, host, op_name(a.op), steady ? cur_rows : 0);
         ++frame_no;
     }
 }
@@ -757,6 +836,7 @@ static const char* op_name(Op o) {
     switch (o) {
     case Op::AppendNode:  return "AppendNode";
     case Op::GrowNode:    return "GrowNode";
+    case Op::ShrinkNode:  return "ShrinkNode";
     case Op::SealNode:    return "SealNode";
     case Op::ResizeWidth: return "ResizeWidth";
     case Op::ResizeHeight:return "ResizeHeight";
@@ -794,8 +874,9 @@ static std::vector<Action> gen_log(std::uint64_t seed, const FuzzConfig& cfg) {
         // viewport: a real session seals each turn as the next begins, so
         // only the newest turn or two is ever live. This is the regime the
         // whole-node depositional seal is designed for.
-        if      (r < 26) a.op = Op::GrowNode;
-        else if (r < 36) { a.op = Op::WideBurst; a.arg = roll(1, 8); }  // multi-row burst
+        if      (r < 22) a.op = Op::GrowNode;
+        else if (r < 32) { a.op = Op::WideBurst; a.arg = roll(1, 8); }  // multi-row burst
+        else if (r < 40) { a.op = Op::ShrinkNode; a.arg = roll(1, 6); } // live re-wrap/fold
         else if (r < 60) { a.op = Op::SealNode; }     // seal often
         else if (r < 78) a.op = Op::AppendNode;        // append seals the prior tail
         else if (r < 90) { a.op = Op::ResizeHeight; a.arg = roll(6, 60); }   // incl. drastic shrink

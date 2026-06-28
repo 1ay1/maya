@@ -90,7 +90,9 @@ row the terminal already owns.
      `committed_rows_` rises monotonically (a deposited row can never
      un-scroll).
    - **wholesale swap** is auto-detected (frontier fingerprint **and** a
-     band-anchor key check) and self-arms a hard reset.
+     band-anchor position check — the front live node must reappear at the
+     sealed frontier, not merely be present, so a session-constant chrome
+     key can't mask a welcome→thread swap) and self-arms a hard reset.
 4. **Compose the WINDOWED active layer** — band rows `[committed_rows_,
    band_height)` — into one canvas via `render_tree_at`, each stratum at
    `y_global - committed_rows_` (the straddling node is clipped to its

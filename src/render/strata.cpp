@@ -154,19 +154,37 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
     // Windowing keeps most content live in band_ rather than sealing it,
     // so sealed_count_ can stay 0 for a long session and the frontier-
     // fingerprint check above never engages. The band itself is the
-    // anchor: by the append-only contract, the FRONT live node's key must
-    // still appear in the host's node list every frame. When the host
-    // swaps its whole surface (thread switch / new thread) or rewinds
-    // below the band, that key vanishes from the incoming list — the old
-    // on-screen transcript AND its native-scrollback rows must be wiped
-    // before the new surface paints. Detect it here and arm a hard reset.
+    // anchor: by the append-only contract, the FRONT live node is the
+    // first node AFTER the sealed prefix, so in the incoming list it must
+    // appear at index sealed_count_ (everything before it is the immutable
+    // sealed prefix). A wholesale surface swap (thread switch / new thread)
+    // breaks this two ways:
+    //   (a) the anchor key VANISHES from the incoming list, or
+    //   (b) the anchor key is still PRESENT but lands at an index >
+    //       sealed_count_ — i.e. brand-new nodes were inserted BEFORE the
+    //       live band, which the append-only contract forbids (new nodes
+    //       only ever appear at the tail). This is the case the plain
+    //       "key present?" test missed: the bottom chrome LIVE node uses a
+    //       SESSION-CONSTANT key, so it is present in EVERY surface's node
+    //       list. On welcome(1 node)→thread(N nodes) the LIVE key is found,
+    //       present==true, and the swap slipped through — the whole new
+    //       transcript was then steady-reconciled and deposited in one
+    //       frame (the "renders the whole thread on load" bug). Comparing
+    //       the anchor's POSITION catches it: the LIVE node moved from
+    //       index 0 to index N-1 with N-1 new nodes ahead of it → swap.
+    // Either way the old on-screen transcript AND its native-scrollback
+    // rows must be wiped before the new surface paints. Arm a hard reset.
     if (have_prev_ && !band_.empty()) {
         const std::uint64_t anchor = band_.front().key;
-        bool present = false;
-        for (const NodeRef& nr : nodes) {
-            if (nr.key == anchor) { present = true; break; }
+        std::size_t found = nodes.size();   // sentinel = not present
+        for (std::size_t j = 0; j < nodes.size(); ++j) {
+            if (nodes[j].key == anchor) { found = j; break; }
         }
-        if (!present) reset_hard();
+        const bool vanished = (found == nodes.size());
+        // Append-only: the live band front must sit exactly at the sealed
+        // frontier. A larger index means a prefix was inserted = a swap.
+        const bool prefix_inserted = !vanished && found > sealed_count_;
+        if (vanished || prefix_inserted) reset_hard();
     }
 
     // ── 1. Reconcile / seed the active layer ─────────────────────────────

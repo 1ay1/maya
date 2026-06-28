@@ -81,11 +81,21 @@ are still on screen or scrolling off **for the first time** this frame.
   — so a giant live node that merely overflows every frame (its scrolled-off
   head is already-emitted, byte-stable streamed content) does NOT trigger it.
 - **Wholesale swap** is caught by *two* detectors now: the original
-  frontier-fingerprint check, plus a new **band-anchor** check — the front
-  live node's key must reappear in the host's list every frame; when it
-  vanishes (thread switch / new thread / rewind below the band) Strata arms a
-  hard reset itself. The band-anchor check is what keeps swap detection
-  working now that windowing rarely advances `sealed_count_`.
+  frontier-fingerprint check, plus a **band-anchor** check — the front
+  live node must reappear in the host's list every frame **at the sealed
+  frontier** (index `sealed_count_`). A swap breaks this two ways and both
+  arm a hard reset: (a) the anchor key VANISHES (thread switch / rewind
+  below the band), or (b) the anchor key is still present but lands at an
+  index `> sealed_count_` — brand-new nodes were inserted BEFORE the live
+  band, which the append-only contract forbids. Case (b) is essential
+  because the host's bottom chrome node uses a **session-constant key**
+  (it is present in EVERY surface's node list), so a plain "key present?"
+  test let a welcome(1 node)→thread(N nodes) swap slip through and the
+  whole new transcript was steady-reconciled + deposited in one frame (the
+  "renders the whole thread on load" bug). Comparing the anchor's POSITION
+  catches it: the LIVE node jumped from index 0 to N-1 with N-1 new nodes
+  ahead of it. The band-anchor check is what keeps swap detection working
+  now that windowing rarely advances `sealed_count_`.
 
 ## How it was found
 

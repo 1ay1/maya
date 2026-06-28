@@ -142,9 +142,13 @@ public:
             // reach content_height.)
             //
             // HUG mode (fill_viewport=false, strata path): skip the
-            // spacer + grow so the node hugs the live-tail height.
+            // spacer + grow so the node hugs the live-tail height, and
+            // drop the horizontal padding so live turns sit flush-left
+            // at col 0 — byte-aligned with the sealed nodes above, which
+            // render bare at the full terminal width. A 1-col pad here
+            // would shift the live turn right of its own sealed copy.
             if (!cfg_.fill_viewport)
-                return (v(rows) | padding(0, 1)).build();
+                return v(rows).build();
             rows.push_back(spacer().build());
             return (v(rows) | padding(0, 1) | grow(1.0f)).build();
         }
@@ -176,9 +180,12 @@ public:
             rows.push_back(ActivityIndicator{*cfg_.in_flight}.build());
         // HUG mode (fill_viewport=false, strata path): skip the spacer +
         // grow so the live node hugs its content and the composer sits
-        // directly beneath it (no blank void above the chrome).
+        // directly beneath it (no blank void above the chrome), and drop
+        // the horizontal padding so live turns are flush-left at col 0,
+        // byte-aligned with the bare sealed nodes above (else the turn
+        // visibly shifts left + widens the instant it seals).
         if (!cfg_.fill_viewport)
-            return (v(rows) | padding(0, 1)).build();
+            return v(rows).build();
         rows.push_back(spacer().build());
         return (v(rows) | padding(0, 1) | grow(1.0f)).build();
     }

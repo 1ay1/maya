@@ -114,7 +114,23 @@ public:
         // hugs its content (the band stacks settled nodes above it).
         if (cfg_.fill_viewport)
             vs.min_height(Dimension::fixed(term_h));
-        vs.padding(1);
+        // Horizontal padding discipline. The classic monolithic path
+        // pads all four sides by 1: the WHOLE thread (frozen prefix +
+        // live tail) lives inside this one box, so a uniform 1-col gutter
+        // off the terminal edge is internally consistent.
+        //
+        // HUG mode (strata live node) must NOT add a horizontal gutter:
+        // the settled turns are sealed as SEPARATE nodes rendered bare at
+        // the full terminal width (col 0), so a live turn wrapped in a
+        // 1-col pad would sit one column to the RIGHT of the very same
+        // turn once it seals — the content visibly shifts left + widens
+        // at the freeze seam (the "width changes mid-stream" bug). Pad
+        // top/bottom only so the live node stays flush-left, byte-aligned
+        // with the sealed nodes above it.
+        if (cfg_.fill_viewport)
+            vs.padding(1);
+        else
+            vs.padding(1, 0);   // top/bottom only — flush left/right
         auto base = std::move(vs)(
                 Thread{cfg_.thread}.build(),
                 ChangesStrip{cfg_.changes_strip}.build(),

@@ -1616,6 +1616,35 @@ void run(RunConfig cfg = {}) {
             needs_render = true;
         }
 
+        // Idle-poll animation wake. The visual_hash gate (below, inside the
+        // needs_render block) buckets time-driven animation (caret blink,
+        // spinner, streaming caret) so each visible step advances the hash.
+        // But that gate only RUNS when needs_render is already set — by an
+        // event, a Tick, a RAF, or a resize. A purely time-driven idle
+        // animation with NO armed Tick and NO pending RAF (the composer
+        // caret on a settled thread; a spinner whose Tick momentarily
+        // lapsed) would therefore never re-render: the loop wakes on the
+        // idle poll timeout, but with needs_render=false it sleeps again
+        // without ever consulting the hash. The animation freezes until an
+        // unrelated event (a keypress) forces a render — the reported
+        // "animation only steps when I press a key" bug.
+        //
+        // Close the hole structurally: on any wake where nothing else has
+        // already requested a render, probe visual_hash. If it advanced
+        // since the last painted frame, a time bucket flipped (or the model
+        // changed under us) and we owe a repaint. This makes EVERY
+        // time-bucketed animation self-driving from the idle poll alone,
+        // independent of whether a Tick or RAF happens to be armed. Cost
+        // is one hash compute per idle wake (~100 ms apart when idle), and
+        // it sets needs_render ONLY when the hash truly moved, so a fully
+        // settled screen (no animating bucket) still does zero renders.
+        if constexpr (detail::HasVisualHash<P>::value) {
+            if (!needs_render && last_visual_hash_valid
+                && P::visual_hash(model) != last_visual_hash) {
+                needs_render = true;
+            }
+        }
+
         // Reconcile Sub::Every timers EVERY iteration — not gated on
         // needs_render. Invariant: each Sub::Every interval present in
         // the current subscription must have exactly one armed timer at

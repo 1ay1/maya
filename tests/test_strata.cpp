@@ -305,7 +305,20 @@ private:
         }
         case 'J': {
             int mode = param_at(p, 0, 0);
-            if (mode == 2) {
+            if (mode == 0) {
+                // Erase from cursor to end of screen: tail of the current
+                // row, then every row below. Scrollback untouched.
+                auto& r = screen_[cur_row_];
+                for (int x = cur_col_; x < cols_; ++x) r[x] = Cell{};
+                for (int y = cur_row_ + 1; y < rows_; ++y)
+                    std::fill(screen_[y].begin(), screen_[y].end(), Cell{});
+            } else if (mode == 1) {
+                // Erase from start of screen to cursor (inclusive).
+                for (int y = 0; y < cur_row_; ++y)
+                    std::fill(screen_[y].begin(), screen_[y].end(), Cell{});
+                auto& r = screen_[cur_row_];
+                for (int x = 0; x <= cur_col_ && x < cols_; ++x) r[x] = Cell{};
+            } else if (mode == 2) {
                 // Erase entire viewport (screen only; scrollback untouched).
                 for (auto& r : screen_) std::fill(r.begin(), r.end(), Cell{});
             } else if (mode == 3) {

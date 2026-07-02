@@ -1463,9 +1463,18 @@ void run(RunConfig cfg = {}) {
                 if (until < std::chrono::milliseconds(1))
                     until = std::chrono::milliseconds(1);
                 poll_timeout = std::min(poll_timeout, until);
+            } else {
+                // Deadline already passed — a frame overran its interval (the
+                // render-ASAP scheduler leaves next_frame_at at/just-before
+                // now on a near-miss). Do NOT sleep the idle timeout: wake
+                // immediately so the post-poll gate renders the overdue frame
+                // THIS pass. Leaving poll_timeout at the 100ms idle value
+                // here would strand the next animation frame for up to 100ms
+                // (until an unrelated event), reintroducing the jank the
+                // single-step pacing exists to remove. A real input still
+                // wakes the poll the same instant.
+                poll_timeout = std::chrono::milliseconds(0);
             }
-            // else: deadline already passed — leave poll_timeout as is
-            // (the post-poll gate sets needs_render and renders this pass).
         }
 
         // Loop-state probe (throttled). Captures WHY poll_timeout is what it
@@ -1703,10 +1712,13 @@ void run(RunConfig cfg = {}) {
             // and conservatively the program should include a coarse
             // time bucket in its hash for any RAF-driven visual.
             bool skip_render = false;
+            bool visual_changed = true;   // no visual_hash → treat every render
+                                          // as a genuine frame (advances grid)
             if constexpr (detail::HasVisualHash<P>::value) {
                 const std::uint64_t h = P::visual_hash(model);
                 if (h == last_visual_hash && last_visual_hash_valid) {
                     skip_render = true;
+                    visual_changed = false;   // identical content this instant
                 } else {
                     last_visual_hash       = h;
                     last_visual_hash_valid = true;
@@ -1816,19 +1828,76 @@ void run(RunConfig cfg = {}) {
             //     time bucket advances, the render runs, and build()
             //     re-arms. This is what keeps spinner / caret / sigil
             //     animating without a keypress.
+            //
+            // PHASE PACING (single-step, render-ASAP on overrun). The
+            // deadline sits on a 16ms grid; each REAL frame advances it by
+            // exactly one interval from the grid line it just serviced. It
+            // is deliberately NOT snapped past now(). Three regimes:
+            //
+            //  • Fast frame (render < interval): the advanced deadline lands
+            //    in the future → the poll sleeps to it → even 16ms cadence,
+            //    render cost absorbed into the sleep (no `now()+16` stacking
+            //    that turned a 6ms render into a 22ms cadence).
+            //
+            //  • Near-miss (interval ≤ render < 2·interval): the advanced
+            //    deadline lands at/just-before now → the overdue poll-clamp
+            //    (above) wakes the next frame IMMEDIATELY, so the gap equals
+            //    the render time (~17-20ms, >45fps). A snap-to-next-grid
+            //    scheduler would instead wait a whole extra beat → 32ms →
+            //    the vsync-miss doubling that pinned frames at the 30fps
+            //    floor. This is the change that lifts them clear of it.
+            //
+            //  • Backpressure drain-double: render() deferred residue and the
+            //    loop re-entered ~1ms later to drain it — NOT a new animation
+            //    step. Its grid line is still in the future, so we leave the
+            //    schedule untouched (the `<= raf_now` guard is false) and the
+            //    drain can't skip a beat.
+            //
+            // A genuinely heavy frame (render ≥ 2·intervals) re-anchors to now
+            // so the catch-up can't fire a burst of overdue frames once load
+            // drops.
+            const auto raf_now = std::chrono::steady_clock::now();
             if (!skip_render) {
                 if (detail::animation_requested_) {
-                    next_frame_at = std::chrono::steady_clock::now()
-                                  + detail::kAnimationFrameInterval;
+                    if (visual_changed) {
+                        // Genuine new animation frame — advance the grid one
+                        // step from the line it serviced (render-ASAP on
+                        // overrun, per the regimes above).
+                        if (next_frame_at == std::chrono::steady_clock::time_point{}) {
+                            next_frame_at = raf_now + detail::kAnimationFrameInterval;
+                        } else if (next_frame_at <= raf_now) {
+                            next_frame_at += detail::kAnimationFrameInterval;
+                            if (next_frame_at + detail::kAnimationFrameInterval
+                                    <= raf_now)
+                                next_frame_at = raf_now;   // heavy: cap lag at 1 beat
+                        }
+                        // else (future): an input-driven frame landed ahead of
+                        // the grid line — leave the line so the next beat still
+                        // fires on schedule.
+                    } else {
+                        // IDENTICAL content: a backpressure residue-drain or a
+                        // RAF-forced repaint, NOT a new frame. Do NOT advance
+                        // the grid — a drain that happens to land on (or just
+                        // after) a grid line must not consume the next real
+                        // frame's slot. That consumption was the residual
+                        // "every-other-grid-point" 30fps cap on tall frames
+                        // whose compute ≈ one interval. By the visual-hash
+                        // bucket invariant the next grid line is still in the
+                        // future here, so leaving it makes the loop sleep to
+                        // the next beat. The defensive nudge covers clock
+                        // jitter so an overdue line can't poll0-spin.
+                        if (!rt.has_pending_writes()
+                            && next_frame_at != std::chrono::steady_clock::time_point{}
+                            && next_frame_at <= raf_now)
+                            next_frame_at = raf_now + detail::kAnimationFrameInterval;
+                    }
                 } else {
                     next_frame_at = std::chrono::steady_clock::time_point{};
                 }
             } else if (next_frame_at != std::chrono::steady_clock::time_point{}) {
-                // Keep riding: advance to the next interval from now so
-                // the loop doesn't busy-spin re-detecting an already-due
-                // frame it just chose to skip.
-                next_frame_at = std::chrono::steady_clock::now()
-                              + detail::kAnimationFrameInterval;
+                // Skipped render (hash matched, no RAF/backpressure override):
+                // park one interval out so the loop sleeps, then re-checks.
+                next_frame_at = raf_now + detail::kAnimationFrameInterval;
             }
             // Same scroll-writeback re-render as the simple run() path:
             // if a ScrollState's max_* changed during this paint, the

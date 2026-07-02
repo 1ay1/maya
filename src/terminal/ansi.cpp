@@ -374,10 +374,18 @@ bool contains(const std::string& s, std::string_view needle) {
     if (contains(term, "foot"))     return true;
     if (contains(term, "rio"))      return true;
 
-    // tmux/screen sit between us and the host terminal. They support
-    // 2026 passthrough only when explicitly configured (terminal-features
-    // ',sync' on tmux 3.4+); we can't tell from env alone, so assume no.
+    // tmux/screen sit between us and the host terminal. EXPERIMENTAL: treat
+    // tmux as sync-capable so the streaming animation runs at 33 ms (~30 fps)
+    // instead of the 100 ms non-sync cadence. Whether this tears depends on
+    // the tmux build (PR #4744 app-side mode 2026 buffering) and the outer
+    // terminal; under empirical test. Revert to `return false` if it tears.
     if (contains(term, "tmux") || term == "screen" || contains(term, "screen-")) {
+        if (term_program == "tmux") {
+            int major = 0, minor = 0;
+            if (std::sscanf(env_str("TERM_PROGRAM_VERSION").c_str(),
+                            "%d.%d", &major, &minor) >= 1)
+                return (major > 3) || (major == 3 && minor >= 4);
+        }
         return false;
     }
 

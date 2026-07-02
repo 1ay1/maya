@@ -154,6 +154,18 @@ public:
     // an explicit, user-initiated swap.
     void reset_hard();
 
+    // Like reset_hard(), but for a wholesale surface swap where NOTHING
+    // was ever deposited into native scrollback (committed_rows_ == 0 and
+    // sealed_rows_total_ == 0) — e.g. the empty-thread WELCOME screen,
+    // which is clamped to fit the viewport and never scrolls a row off.
+    // The old surface lives entirely on screen, so it must be scrubbed,
+    // but a \x1b[3J would erase the user's PRE-EXISTING terminal history
+    // above the frame (shell output from before agentty launched, or a
+    // prior session) — content Strata never owned and must not touch.
+    // Drops the band + frontier like reset_hard() but arms an in-place
+    // case-B soft repaint (viewport scrub, NO scrollback wipe) instead.
+    void reset_swap_soft();
+
     // Force the next frame to soft-repaint the active layer in place
     // (case-B: walk cursor up, repaint viewport, erase below; NO
     // scrollback wipe). For a host-driven "redraw" (Ctrl-L) that must
@@ -188,6 +200,15 @@ private:
     // the renderer will paint. One-sided: returns 0 only on a degenerate
     // width/tree (caller floors to 1).
     int measure(const Element& e, int cols);
+
+    // Content hash of the top `head_rows` rendered rows of one node at
+    // `cols`. The steady-frame reflow guard compares this across frames to
+    // tell a TRUE reflow of a deposited row (content changed → hard reset)
+    // from a benign whole-node hash bump (animation cadence term, or an
+    // append below the fold — the parked rows are byte-identical → no
+    // reset). Renders into reflow_canvas_ and folds the packed cells.
+    std::uint64_t committed_head_content_hash(
+        const Stratum& s, int head_rows, int cols, StylePool& pool);
 
     std::vector<Stratum> band_;          ///< The active layer, in order.
     // Rows at the TOP of band_ that have physically deposited into native
@@ -230,6 +251,10 @@ private:
     inline_frame::InlineCoherence coh_{
         inline_frame::InlineFrame<inline_frame::Empty>{} };
     Canvas        canvas_;
+    // Scratch canvas for committed_head_content_hash — kept separate from
+    // canvas_ (the per-frame compose target) so hashing a node's deposited
+    // head never disturbs the live compose state.
+    Canvas        reflow_canvas_;
     std::vector<layout::LayoutNode> measure_nodes_;  ///< Reused scratch.
 };
 

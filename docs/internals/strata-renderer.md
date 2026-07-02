@@ -76,19 +76,17 @@ row the terminal already owns.
 3. **Resize / rewind / swap recovery**, mirroring `Runtime::handle_resize`:
    - **width change** → `demote_to_hard_reset` (the old-width scrollback is
      the terminal's; wipe + repaint the re-measured active layer fresh).
-   - **height SHRINK** → `demote_to_hard_reset`: a viewport shrink cannot be
-     soft-repainted duplicate-free. The terminal anchors its bottom row and
-     autonomously pushes the top of the live frame into native scrollback the
-     instant the viewport shrinks; the count is unobservable to Strata
-     (inline mode grows from the cursor, so the frame's physical top is not
-     row 0 — the classic two-party drift), so any in-place repaint re-stamps
-     a row the terminal already parked, double-stamping it across the fold.
-     The wipe is the only duplicate-free recovery.
-   - **height GROW or rewind** → `demote_to_stale`: case-(B) soft-repaints
-     the viewport in place, re-anchoring maya's cursor model **without a
-     scrollback wipe** (a grow never scrolls anything off, so it can't dup).
-     `committed_rows_` rises monotonically (a deposited row can never
-     un-scroll).
+   - **height change (grow OR shrink) or rewind** → `demote_to_stale`:
+     case-(B) soft-repaints the viewport in place, re-anchoring maya's
+     cursor model **without a scrollback wipe** — the same contract the
+     pre-strata inline renderer's `handle_resize` used. The terminal
+     scrolls overflow into saved-lines on a shrink and pulls it back on a
+     grow, and case-(B) anchors to the CURSOR (which the terminal moves
+     consistently with the content), so the repainted window lands where
+     the terminal parked it and no row is double-stamped. `\x1b[3J` on a
+     height-only resize would destroy the user's transcript history — the
+     "only the last turn is in scrollback" corruption. `committed_rows_`
+     rises monotonically (a deposited row can never un-scroll).
    - **wholesale swap** is auto-detected (frontier fingerprint **and** a
      band-anchor position check — the front live node must reappear at the
      sealed frontier, not merely be present, so a session-constant chrome

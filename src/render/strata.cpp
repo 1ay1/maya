@@ -48,6 +48,41 @@ int Strata::measure(const Element& e, int cols) {
     return h > 0 ? h : 0;
 }
 
+// Content hash of the TOP `head_rows` rendered rows of one node, at the
+// current width. This is what the steady-frame reflow guard compares
+// across frames to decide whether a row already DEPOSITED into native
+// scrollback actually changed (true reflow → hard reset) vs. the node
+// merely grew below the fold or had a pure animation-term hash bump
+// (no change to the parked rows → stay quiet). We render the node into a
+// dedicated scratch canvas and fold every packed cell of rows
+// [0, head_rows) — packed cells already encode glyph + style, so this is
+// the same byte-content the wire would carry. Cost is O(head_rows × cols),
+// bounded by one node's committed head, paid once per frame only while
+// something is actually deposited.
+std::uint64_t Strata::committed_head_content_hash(
+    const Stratum& s, int head_rows, int cols, StylePool& pool) {
+    if (head_rows <= 0 || cols < 1) return 0;
+    if (head_rows > s.height) head_rows = s.height;
+    if (reflow_canvas_.width() != cols || reflow_canvas_.height() < head_rows) {
+        reflow_canvas_.set_style_pool(&pool);
+        reflow_canvas_.resize(cols, head_rows);
+    }
+    reflow_canvas_.clear();
+    // Render the whole node at its full height; we only read the top
+    // head_rows rows. (The committed head is the node's first head_rows
+    // rows — a node straddles the fold with its head deposited and its
+    // tail still on screen.)
+    render_tree_at(s.element, reflow_canvas_, pool, theme::dark,
+                   0, 0, cols, s.height);
+    std::uint64_t h = 1469598103934665603ULL;
+    auto mix = [&](std::uint64_t v) { h = (h ^ v) * 1099511628211ULL; };
+    mix(static_cast<std::uint64_t>(head_rows));
+    for (int y = 0; y < head_rows; ++y)
+        for (int x = 0; x < cols; ++x)
+            mix(reflow_canvas_.get_packed(x, y));
+    return h;
+}
+
 void Strata::reset() {
     band_.clear();
     committed_rows_    = 0;
@@ -92,6 +127,38 @@ void Strata::reset_hard() {
                 // Empty / Fresh / HardReset / Sealed: nothing prior on the
                 // wire we must wipe (or already armed). Empty→Fresh appends
                 // cleanly; a swap from a never-rendered surface needs no wipe.
+                return std::move(arm);
+        },
+        std::move(coh_));
+}
+
+void Strata::reset_swap_soft() {
+    // Wholesale swap with NOTHING deposited to native scrollback: the old
+    // surface (a clamped welcome screen) is entirely on-viewport. Drop the
+    // band + frontier like reset_hard(), but arm an IN-PLACE soft repaint
+    // (case B) rather than a \x1b[3J wipe, so the terminal's pre-existing
+    // scrollback above the inline frame is left untouched.
+    band_.clear();
+    committed_rows_    = 0;
+    prev_total_nodes_  = 0;
+    sealed_count_      = 0;
+    sealed_rows_total_ = 0;
+    sealed_front_fp_   = 0;
+    committed_tail_key_  = 0;
+    committed_tail_hash_ = 0;
+    active_rows_       = 0;
+    prev_width_        = 0;
+    have_prev_         = false;
+    coh_ = std::visit(
+        [](auto&& arm) -> inline_frame::InlineCoherence {
+            using T = std::decay_t<decltype(arm)>;
+            using namespace inline_frame;
+            if constexpr (std::is_same_v<T, InlineFrame<Synced>>)
+                // In-place scrub of the on-screen surface; no scrollback wipe.
+                return std::move(arm).demote_to_stale();
+            else
+                // Empty / Fresh / Stale / HardReset / Sealed: nothing live on
+                // the wire to scrub, or already arming a repaint.
                 return std::move(arm);
         },
         std::move(coh_));
@@ -184,7 +251,71 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
         // Append-only: the live band front must sit exactly at the sealed
         // frontier. A larger index means a prefix was inserted = a swap.
         const bool prefix_inserted = !vanished && found > sealed_count_;
-        if (vanished || prefix_inserted) reset_hard();
+        if (vanished || prefix_inserted) {
+            // `prefix_inserted` (the anchor is still present but now sits
+            // at an index PAST the sealed frontier) has two causes, and
+            // only one is a swap:
+            //
+            //   • Genuine swap: a different surface loaded whose node list
+            //     still contains the SESSION-CONSTANT LIVE chrome key, so
+            //     the anchor is "found" but the whole prefix before it is
+            //     foreign (welcome→thread). Here sealed_count_ is 0 (the
+            //     welcome surface never sealed a row) OR the sealed
+            //     frontier node changed (the frontier-fp check above fired).
+            //
+            //   • Append-only reshuffle: a settled sub-turn of the CURRENT
+            //     streaming run split into its own terminal node, which the
+            //     host inserts just BEFORE the perpetual LIVE node (Case 1
+            //     of strata_nodes) — so the LIVE anchor steps forward past
+            //     maya's not-yet-advanced sealed_count_; OR a live
+            //     prefix-split node (key kStrataPrefixKey-i) is re-keyed to
+            //     its message index i when the run finalizes (Case 2), so
+            //     the band-front anchor VANISHES. Neither is a swap: the
+            //     sealed prefix [0, sealed_count_) is untouched and the very
+            //     next reconcile + drop_committed_front_nodes absorbs the
+            //     change cleanly. Hard-resetting here WIPES native scrollback
+            //     mid-turn, destroying the whole transcript so only the last
+            //     (re-seeded) turn survives — the reported "only the last
+            //     turn is in scrollback" corruption.
+            //
+            // Distinguish by the sealed prefix. Note the frontier-fp check
+            // ABOVE already owns real-swap detection whenever sealed_count_
+            // > 0: a genuine thread switch changes the node at the frontier
+            // slot, so that check fires reset_hard() (clearing band_) BEFORE
+            // we get here — meaning if this block runs with sealed_count_ >
+            // 0 the frontier is provably intact, i.e. the SAME thread. So an
+            // anchor anomaly with an intact frontier is append-only by
+            // construction; suppress the wipe and let the reconcile handle
+            // it. Only when sealed_count_ == 0 (a never-sealed session /
+            // welcome→thread, where the frontier check can't engage) does
+            // the band anchor itself carry swap detection — keep the wipe.
+            bool append_only = false;
+            if (sealed_count_ > 0 && sealed_count_ <= nodes.size()) {
+                const NodeRef& fr = nodes[sealed_count_ - 1];
+                const std::uint64_t fp =
+                    (fr.key * 1099511628211ULL)
+                    ^ (fr.hash + 0x9e3779b97f4a7c15ULL);
+                append_only =
+                    (sealed_front_fp_ != 0 && fp == sealed_front_fp_);
+            }
+            if (!append_only) {
+                // Choose the recovery by whether the OLD surface ever put a
+                // row into native scrollback. If it did (a real prior
+                // transcript: committed rows or sealed history), those
+                // scrollback rows MUST be wiped or they strand above the new
+                // surface — hard reset. If it did NOT (committed_rows_ == 0
+                // AND sealed_rows_total_ == 0 — the empty-thread welcome
+                // screen, clamped to fit and never scrolled off), the old
+                // surface is entirely on-viewport; a \x1b[3J would only erase
+                // the user's PRE-EXISTING terminal history above the inline
+                // frame, which Strata never owned. Scrub it in place instead
+                // (soft repaint, no scrollback wipe).
+                const bool nothing_deposited =
+                    committed_rows_ == 0 && sealed_rows_total_ == 0;
+                if (nothing_deposited) reset_swap_soft();
+                else                   reset_hard();
+            }
+        }
     }
 
     // ── 1. Reconcile / seed the active layer ─────────────────────────────
@@ -310,38 +441,24 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
             int bh = 0;
             for (const auto& s : band_) bh += s.height;
 
-            const bool height_shrank = height_changed && term_h < prev_height_;
-            // A height SHRINK cannot be repainted in place without risking a
-            // duplicate. The terminal anchors its bottom row and may scroll
-            // the top of the live frame into native scrollback the instant
-            // the viewport shrinks; the exact count depends on where the
-            // terminal had the content (inline mode grows from the cursor,
-            // so the frame's physical top is not row 0), which Strata cannot
-            // observe — the two-party drift. Even when the re-measured band
-            // fits the new viewport, the soft repaint lands one or more rows
-            // off from where the terminal parked the content, double-stamping
-            // the straddling row across the fold. The only duplicate-free
-            // recovery is a hard reset: wipe screen + saved-lines, repaint
-            // the bounded window fresh. A height GROW, a rewind, or a
-            // node-count shrink keeps the scrollback-preserving soft repaint
-            // (case B) — a grow never scrolls anything off, so it can't dup.
-            if (height_shrank) {
-                committed_rows_ = 0;
-                coh_ = std::move(s).demote_to_hard_reset();
-                st.full_repaint = true;
-            } else {
-                // Slide the window so win_h ≤ term_h and soft-repaint (case B
-                // repaints the bottom term_h rows in place, no scrollback
-                // wipe). Triggered by a height GROW, a within-viewport
-                // shrink, or a rewind (live node count dropped, so on-screen
-                // rows above the new shorter band are stale and the case-B
-                // repaint erases them). committed_rows_ is MONOTONIC.
-                committed_rows_ = std::max(committed_rows_, bh - term_h);
-                if (committed_rows_ < 0) committed_rows_ = 0;
-                if (committed_rows_ > bh) committed_rows_ = bh;
-                coh_ = std::move(s).demote_to_stale();
-                st.full_repaint = true;
-            }
+            // Slide the window so win_h ≤ term_h and soft-repaint (case B
+            // repaints the bottom term_h rows in place, no scrollback
+            // wipe). Triggered by ANY height change (grow OR shrink),
+            // a within-viewport shrink, or a rewind (live node count
+            // dropped, so on-screen rows above the new shorter band are
+            // stale and the case-B repaint erases them). This mirrors the
+            // pre-strata inline renderer's handle_resize contract: a
+            // height-only resize NEVER wipes native scrollback — the
+            // terminal itself scrolls overflow into saved-lines on a
+            // shrink and pulls it back on a grow, and the case-B repaint
+            // is anchored to the CURSOR (which the terminal moves
+            // consistently with the content), so the window lands where
+            // the terminal parked it. committed_rows_ is MONOTONIC.
+            committed_rows_ = std::max(committed_rows_, bh - term_h);
+            if (committed_rows_ < 0) committed_rows_ = 0;
+            if (committed_rows_ > bh) committed_rows_ = bh;
+            coh_ = std::move(s).demote_to_stale();
+            st.full_repaint = true;
         } else {
             // STEADY frame (no width/height change, no node-count drop).
             //
@@ -362,32 +479,68 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
             // live node legitimately overflows: find the node that OWNS the
             // last committed row and compare against last frame. A reset is
             // needed ONLY when that node is still LIVE (non-terminal) and
-            // its content hash changed — i.e. a deposited live row reflowed.
-            // A terminal node is immutable (safe), and an unchanged hash
-            // means the deposited rows still match the wire.
+            // the CONTENT of its deposited head rows changed — i.e. a row
+            // already parked in native scrollback actually reflowed. We
+            // compare a content hash of just those committed rows (not the
+            // host's whole-node hash): a live node may bump its whole-node
+            // hash every frame for animation cadence or an append below the
+            // fold without touching a parked row, and resetting on that is
+            // the tall-streaming-turn wipe loop. A terminal node is
+            // immutable (safe); unchanged committed-row content means the
+            // parked rows still match the wire.
             bool committed_live_reflow = false;
             if (committed_rows_ > 0 && committed_tail_key_ != 0) {
                 int acc = 0;
                 for (const auto& st_node : band_) {
+                    const int node_top = acc;
                     acc += st_node.height;
                     if (acc >= committed_rows_) {
                         // st_node spans the last committed row.
                         if (!st_node.terminal
-                            && st_node.key == committed_tail_key_
-                            && st_node.hash != committed_tail_hash_)
-                            committed_live_reflow = true;
+                            && st_node.key == committed_tail_key_) {
+                            const int head_rows = committed_rows_ - node_top;
+                            const std::uint64_t cur =
+                                committed_head_content_hash(
+                                    st_node, head_rows, term_cols, pool);
+                            if (cur != committed_tail_hash_)
+                                committed_live_reflow = true;
+                        }
                         break;
                     }
                 }
             }
-            if (committed_live_reflow) {
-                committed_rows_ = 0;
-                coh_ = std::move(s).demote_to_hard_reset();
-                st.full_repaint = true;
-            } else {
-                drop_committed_front_nodes();
-                coh_ = std::move(s);
-            }
+            // A row already PARKED in native scrollback reflowed — a long
+            // streaming table widening a column as later rows arrive; a
+            // block reinterpreted (paragraph → list / code fence) as it
+            // grows; or a host depositing a not-yet-settled row because many
+            // rows arrived between two renders (a sparse-cadence reveal
+            // jump). The terminal OWNS that scrollback line: it is
+            // physically immutable.
+            //
+            // The previous recovery here — committed_rows_ = 0 + hard reset
+            // — tried to "correct" the parked row by re-emitting the band.
+            // But re-emitting RE-DEPOSITS every already-parked row, stamping
+            // the entire tall turn into scrollback a SECOND time: the
+            // reported corruption / cut-off (hundreds of rows duplicated,
+            // 11k+ rows re-deposited across a session). You cannot fix an
+            // immutable line, so "correcting" it is impossible by
+            // construction; the re-emit only duplicates.
+            //
+            // Make the deposit channel strictly APPEND-ONLY instead: ACCEPT
+            // the parked row one reflow-generation stale and carry on.
+            // committed_rows_ is LEFT INTACT, so Section 3 still windows the
+            // parked rows out and Section 5 re-deposits NOTHING; the visible
+            // viewport is reconciled by the normal Synced cell diff (which
+            // also self-corrects any shadow/wire drift via verify() in
+            // Section 4). This is the structural guarantee the depositional
+            // model needs — a deposited row is written EXACTLY ONCE, so
+            // scrollback can never be duplicated or torn — at the cost of a
+            // rare, minor staleness in an off-screen row whose final reflow
+            // it missed (e.g. a table cell one column-width behind). That is
+            // strictly better than the only other option physics allows.
+            (void)committed_live_reflow;
+            drop_committed_front_nodes();
+            coh_ = std::move(s);
         }
     } else {
         drop_committed_front_nodes();
@@ -534,15 +687,37 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
     // Record the node that owns the last committed row this frame so the
     // NEXT frame can detect a deposited live row reflowing (Section 2
     // steady branch). 0 when nothing is committed.
+    //
+    // committed_tail_hash_ is a CONTENT hash of the committed (deposited)
+    // ROWS of the straddling node — NOT the node's host-supplied hash.
+    // The whole-node hash is wrong here: a host may legitimately bump a
+    // live node's hash every frame for a reason that does NOT touch the
+    // deposited rows — animation cadence (a typewriter reveal / caret /
+    // spinner time-bucket folded into the hash so Strata rebuilds and the
+    // animation re-arms), or an append below the fold. Comparing the whole
+    // node hash then fires the reflow guard on EVERY such frame and hard-
+    // resets a tall streaming turn into an unrenderable wipe loop (the
+    // "AI turn renders nothing, then all at once at turn end" bug). What
+    // the guard actually needs to know is narrower: did a row the terminal
+    // already PARKED in native scrollback change? That is answered by
+    // hashing only the committed-head rows' rendered cells. Append-only
+    // growth and a pure animation-term hash bump leave those rows
+    // byte-identical, so the guard stays quiet; a genuine reflow of a
+    // deposited row changes them and the guard fires precisely.
     committed_tail_key_  = 0;
     committed_tail_hash_ = 0;
     if (committed_rows_ > 0) {
         int acc = 0;
         for (const auto& s : band_) {
+            const int node_top = acc;
             acc += s.height;
             if (acc >= committed_rows_) {
                 committed_tail_key_  = s.key;
-                committed_tail_hash_ = s.hash;
+                // Rows of THIS node that lie within the committed band:
+                // [node_top, committed_rows_) intersected with the node.
+                const int head_rows = committed_rows_ - node_top;
+                committed_tail_hash_ =
+                    committed_head_content_hash(s, head_rows, term_cols, pool);
                 break;
             }
         }
@@ -551,6 +726,7 @@ FrameStats Strata::frame(std::span<const NodeRef> nodes,
     prev_height_  = term_h;
     prev_total_nodes_ = nodes.size();
     have_prev_    = true;
+
     return st;
 }
 

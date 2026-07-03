@@ -189,6 +189,45 @@ void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     finalize_deadline_ms_ = now_ms + ramp_ms;
 }
 
+void StreamingMarkdown::snap_reveal_to_edge() noexcept {
+    // Only meaningful while live_ with reveal_fx_: a settled build has no
+    // ghost/scramble to snap, and with reveal_fx_ off the tail already
+    // renders fully. Guard so a stray host call outside a live reveal is a
+    // pure no-op (no dirty, no rebuild).
+    if (!live_ || !reveal_fx_) return;
+
+    // Total codepoints in source_. Reuse the incremental cache when it
+    // still covers the whole buffer; otherwise fall back to a byte-size
+    // upper bound (reveal_cp_ is compared against source_.size() elsewhere,
+    // so overshooting to bytes is a safe "fully revealed" signal — the
+    // next advance_reveal_cursor_() reconciles the exact cp count).
+    const double total_cp =
+        (cached_total_cp_at_ == source_.size())
+            ? static_cast<double>(cached_total_cp_)
+            : static_cast<double>(source_.size());
+
+    // Already at (or past) the edge — nothing ghosted, nothing to do.
+    if (reveal_cp_ >= total_cp) return;
+
+    // Jump the public cursor and the central integrator to the edge so the
+    // next build() renders the tail fully-revealed (no ghost cells, no
+    // scramble). Keep live_ intact — the widget resumes normal typewriter
+    // pacing on the next grow. Stamp reveal_ms_ so the following frame's
+    // elapsed-time delta starts from now (no spurious catch-up burst).
+    reveal_cp_ = total_cp;
+#if MAYA_REVEAL_CENTRAL_CURSOR
+    reveal_rate_cursor_.set_pos(total_cp);
+#endif
+    const auto now_ms2 = std::chrono::duration_cast<
+        std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    reveal_ms_ = now_ms2;
+    reveal_edge_reached_ms_ = now_ms2;
+    // The tail shape depends on reveal_byte_clip_ (derived from reveal_cp_):
+    // force a rebuild so build() re-extracts the now-unclipped tail.
+    build_dirty_ = true;
+}
+
 // Advance reveal_cp_ for this frame. Called from build() top so the
 // cursor's effect on the live overlay (scramble/gradient/caret aging) is
 // current BEFORE the cache short-circuit. Three things this fixes:

@@ -933,6 +933,28 @@ public:
         return finalize_deadline_ms_ != 0;
     }
 
+    /// Force the reveal cursor to the live edge for the NEXT build(),
+    /// WITHOUT ending live mode. Unlike request_finalize (which ramps the
+    /// cursor over time and then flips live_=false), this is an instant,
+    /// single-frame snap: reveal_cp_ jumps to the total codepoint count so
+    /// the trailing tail renders FULLY revealed — no ghost-blanked cells,
+    /// no scramble — while the widget stays live_ and keeps animating on
+    /// subsequent frames as more bytes arrive.
+    ///
+    /// The scrollback-safety use case: a terminal HEIGHT SHRINK autonomously
+    /// pushes the top viewport rows into immutable native scrollback. If the
+    /// live-edge tail (which decorate_text_reveal ghost-blanks + scrambles
+    /// per-codepoint) sits among those rows, its unrevealed cells freeze in
+    /// scrollback as stale blanks/garbage — the row is lost. A resize is a
+    /// discrete user event, so momentarily rendering the tail fully-revealed
+    /// for that one frame is imperceptible and leaves no ghosted row for the
+    /// terminal to strand. The host calls this from its resize hook (when it
+    /// detects the viewport height dropped) before Strata composes.
+    ///
+    /// Cheap + idempotent: if the cursor is already at the edge it's a
+    /// no-op. Bumps build_dirty_ so the next build() re-renders the tail.
+    void snap_reveal_to_edge() noexcept;
+
     /// Opt into the animated streaming-reveal effect (gradient trail +
     /// scramble + pulsing caret). Off by default — see `reveal_fx_`.
     /// When off, streamed text appears in its final style with no

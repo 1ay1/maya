@@ -626,6 +626,44 @@ void Canvas::clear_rows(int n) {
     stage_ = CanvasStage::Drained;
 }
 
+void Canvas::clear_below(int keep_top) {
+    // Degenerate cases: keep nothing → full clear; keep everything →
+    // no-op on cells (but still ensure stage/state coherence).
+    if (keep_top <= 0) { clear(); return; }
+    if (keep_top >= height_) {
+        // Nothing to clear; preserved region already correct. Leave
+        // cells, last_col_, max_y_ untouched — the frame's paint will
+        // only ADD content below (there is none here) and the diff
+        // reads the surviving rows as-is.
+        return;
+    }
+    const uint64_t blank = default_cell();
+    uint64_t* base = cells_.data();
+    const std::size_t off = static_cast<std::size_t>(keep_top) * width_;
+    const std::size_t count =
+        static_cast<std::size_t>(height_ - keep_top) * width_;
+    // Regular fill for the cleared tail; the preserved head keeps its
+    // prior-frame bytes so blit_packed_row_cached can skip re-writing
+    // an unchanged frozen prefix.
+    std::fill(base + off, base + off + count, blank);
+    std::fill(last_col_.begin() + keep_top, last_col_.end(), -1);
+    // Re-derive max_y_ across the WHOLE canvas: the preserved head may
+    // hold the tallest content (a tall frozen prefix with an empty
+    // live tail) or the cleared tail may (steady streaming). Scan the
+    // preserved head from the bottom up via last_col_ (kept current by
+    // set/blit/fill); the cleared tail is all blank so it can't win.
+    int new_max_y = -1;
+    for (int y = keep_top - 1; y >= 0; --y) {
+        if (last_col_[static_cast<std::size_t>(y)] >= 0) { new_max_y = y; break; }
+    }
+    max_y_ = new_max_y;
+    // Damage must cover the region the diff may need to re-emit; the
+    // preserved head is unchanged so damage starts at keep_top.
+    damage_ = Rect{{Columns{0}, Rows{keep_top}},
+                   {Columns{width_}, Rows{height_ - keep_top}}};
+    stage_ = CanvasStage::Drained;
+}
+
 void Canvas::push_clip(Rect clip) {
     if (clip_stack_.empty()) {
         clip_stack_.push_back(clip);

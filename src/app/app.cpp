@@ -545,6 +545,7 @@ auto Runtime::render(const Element& root) -> Status {
                                            prev_content_rows + 64);
         const bool oversized = canvas_.height() * 2 > shrink_target * 3;
 
+        bool canvas_reallocated = false;
         if (canvas_.width() != w
             || canvas_.height() < kMinCanvasHeight
             || oversized) {
@@ -553,11 +554,68 @@ auto Runtime::render(const Element& root) -> Status {
                 ? shrink_target
                 : std::max(kMinCanvasHeight, canvas_.height());
             canvas_.resize(w, target_h);
+            canvas_reallocated = true;
         }
         // Recover from any unmatched push_clip in the previous frame's
         // paint pass (e.g. a paint callback that threw past pop_clip).
         canvas_.reset_clips();
-        canvas_.clear();
+
+        // ── Bounded clear: preserve the immutable frozen prefix ─────────
+        // The compose diff only ever reads/rewrites the last `term_h`
+        // rows of the canvas; rows above that overflowed into native
+        // scrollback and are immutable on the wire. During steady
+        // streaming the FROZEN prefix (settled tool cards, prior turns)
+        // is byte-stable frame-to-frame: its hash-keyed entries re-blit
+        // identical cells to identical rows. Re-clearing + re-blitting
+        // those hundreds/thousands of rows every frame is the dominant
+        // cost on a tall transcript (a 3000-row `write` result pins the
+        // per-frame render at ~11 ms). We therefore clear only the rows
+        // at/below a conservative floor and PRESERVE the prefix, letting
+        // render_tree's blit_packed_row_cached skip the memcpy for any
+        // frozen row whose canvas cells already match (bulk_eq probe;
+        // full blit on any mismatch, so correctness never depends on the
+        // preservation being valid).
+        //
+        // SAFETY GATE. The preservation is only sound when the canvas
+        // allocation is UNCHANGED since last frame — a resize
+        // (reallocation) fills fresh memory, so there is nothing valid
+        // to preserve and we must full-clear. Beyond that, the per-row
+        // `bulk_eq` guard inside blit_packed_row_cached is the actual
+        // correctness backstop: any frozen row whose canvas cells do
+        // NOT already match its cached cells (a layout shift moved the
+        // prefix, an inter-card gap changed) falls through to a full
+        // blit that overwrites the stale bytes. Rows that no entry
+        // repaints at all are only ever the all-blank gaps ABOVE the
+        // top frozen card, which never carry content the diff emits.
+        // The floor is `prev_content_rows - term_h - margin`: strictly
+        // above the viewport, so nothing the diff or the
+        // scrollback-prefix compare reads is ever preserved (those
+        // readers touch [content_rows - term_h, content_rows) and
+        // [0, overflow); the margin keeps the preserved region clear of
+        // both by construction).
+        const int term_h_now = query_term_rows(output_handle_).value();
+        int keep_top = 0;
+        // Only preserve when the prior frame ended in the steady Synced
+        // state (coherence index 2). Any structural event — a trim /
+        // freeze that dropped or reshuffled frozen entries, a
+        // scrollback commit, a verify-poison recovery — leaves
+        // coherence in a non-Synced arm; in those frames the frozen
+        // prefix may have shifted or an entry may have vanished
+        // (leaving stale preserved rows that would poison max_y_). A
+        // full clear on those frames re-establishes a clean canvas, and
+        // the preservation resumes on the next steady frame.
+        const bool prev_synced = (in_coherence_.index() == 2);
+        if (!canvas_reallocated
+            && prev_synced
+            && prev_content_rows > 0
+            && term_h_now > 0
+            && prev_content_rows > term_h_now) {
+            constexpr int kPreserveMargin = 8;
+            keep_top = prev_content_rows - term_h_now - kPreserveMargin;
+            if (keep_top < 0) keep_top = 0;
+        }
+        if (keep_top > 0) canvas_.clear_below(keep_top);
+        else              canvas_.clear();
 
         auto t_rt0 = std::chrono::steady_clock::now();
         render_tree(root, canvas_, pool_, theme_, layout_nodes_,

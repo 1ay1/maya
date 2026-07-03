@@ -517,6 +517,97 @@ public:
         blit_packed_row_impl(x, y, src, n, row_has_content, known_last_col);
     }
 
+    /// Cache-fast blit that SKIPS the memcpy when the destination row
+    /// already holds byte-identical cells to `src` over the clipped
+    /// span. Purpose-built for the renderer's frozen (immutable,
+    /// hash-keyed) component blit: a tall settled tool card is
+    /// re-blitted every frame to the SAME canvas rows with the SAME
+    /// cached cells, so once the canvas holds those bytes the copy is
+    /// pure waste. The equality probe (`simd::bulk_eq`, read-only,
+    /// short-circuits on first diff) is strictly cheaper than the
+    /// memcpy it elides, and the bookkeeping (max_y_ / last_col_)
+    /// is still applied so content_height() and the diff scan see the
+    /// identical result they would from a full blit.
+    ///
+    /// SAFETY: when the destination is NOT byte-identical (layout
+    /// shifted the entry, the region was cleared, a wide-glyph edge
+    /// differs) it falls through to a full blit_packed_row_impl. The
+    /// worst case is therefore a full blit plus one wasted compare —
+    /// never a stale row. Correctness does not depend on any
+    /// cross-frame assumption; only the WORK is saved, and only when
+    /// the bytes provably already match.
+    ///
+    /// Returns true if the fast skip fired (bytes already matched),
+    /// false if it fell through to a full blit.
+    MAYA_ALWAYS_INLINE bool blit_packed_row_cached(int x, int y,
+                                                   const uint64_t* src,
+                                                   int n,
+                                                   bool row_has_content,
+                                                   int known_last_col) {
+        if (y < 0 || y >= height_ || n <= 0) return false;
+        int x0 = std::max(0, x);
+        int x1 = std::min(width_, x + n);
+        if (has_clip_) {
+            if (y < clip_y0_ || y >= clip_y1_) return false;
+            x0 = std::max(x0, clip_x0_);
+            x1 = std::min(x1, clip_x1_);
+        }
+        if (x1 <= x0) return false;
+        const std::size_t dst_off = static_cast<std::size_t>(y * width_ + x0);
+        const int src_off = x0 - x;
+        const int count = x1 - x0;
+        // Read-only equality probe. If the destination already equals
+        // the source over the clipped span, the memcpy + wide-glyph
+        // repair would be a no-op — skip them. max_y_ / last_col_ still
+        // need updating (they were reset by the frame's clear), so we
+        // fall into the same bookkeeping the full path runs, minus the
+        // writes.
+        if (!simd::bulk_eq(&cells_[dst_off], src + src_off,
+                           static_cast<std::size_t>(count))) {
+            blit_packed_row_impl(x, y, src, n, row_has_content, known_last_col);
+            return false;
+        }
+        // Bytes already match. Apply the max_y_ / last_col_ bookkeeping
+        // exactly as blit_packed_row_impl would, so downstream readers
+        // (content_height, the diff scan) are unaffected by the skip.
+        if (row_has_content) {
+            const uint64_t blank = default_cell();
+            int actual_last = -1;
+            if (known_last_col != INT_MIN) {
+                if (known_last_col >= 0) {
+                    const int abs_col = x + known_last_col;
+                    if (abs_col >= x0 && abs_col < x1) {
+                        const std::size_t hint_off =
+                            dst_off + static_cast<std::size_t>(abs_col - x0);
+                        if (cells_[hint_off] != blank) actual_last = abs_col;
+                        else {
+                            for (int i = static_cast<int>(hint_off - dst_off) - 1;
+                                 i >= 0; --i)
+                                if (cells_[dst_off + static_cast<std::size_t>(i)]
+                                        != blank) { actual_last = x0 + i; break; }
+                        }
+                    } else if (abs_col >= x1) {
+                        for (int i = count - 1; i >= 0; --i)
+                            if (cells_[dst_off + static_cast<std::size_t>(i)]
+                                    != blank) { actual_last = x0 + i; break; }
+                    }
+                }
+            } else {
+                for (int i = count - 1; i >= 0; --i)
+                    if (cells_[dst_off + static_cast<std::size_t>(i)] != blank) {
+                        actual_last = x0 + i; break;
+                    }
+            }
+            if (actual_last >= 0) {
+                if (y > max_y_) max_y_ = y;
+                if (actual_last > last_col_[static_cast<std::size_t>(y)])
+                    last_col_[static_cast<std::size_t>(y)] = actual_last;
+            }
+        }
+        stage_ = CanvasStage::Painted;
+        return true;
+    }
+
 private:
     MAYA_ALWAYS_INLINE void blit_packed_row_impl(int x, int y,
                                                  const uint64_t* src,
@@ -662,6 +753,18 @@ public:
     /// Clear only rows [0, n). Much faster than clear() for inline mode
     /// where only a small portion of a tall canvas has content.
     void clear_rows(int n);
+
+    /// Clear only rows [keep_top, height), PRESERVING rows
+    /// [0, keep_top) intact from the previous frame. Used by the
+    /// inline render path to skip re-clearing (and, via
+    /// blit_packed_row_cached, re-painting) the immutable frozen
+    /// prefix that has already overflowed the viewport into native
+    /// scrollback. max_y_ and last_col_ for the preserved rows are
+    /// kept as-is; max_y_ is re-derived across the whole canvas so
+    /// content_height() stays exact whether the tallest content is
+    /// above or below keep_top. `keep_top <= 0` degenerates to a full
+    /// clear(); `keep_top >= height` clears nothing.
+    void clear_below(int keep_top);
 
     /// Drain a single row back to default_cell() and reset its
     /// per-row bookkeeping (last_col_[y] → -1, max_y_ rescanned if y

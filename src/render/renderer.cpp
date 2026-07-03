@@ -1160,17 +1160,34 @@ void paint_element(
                 const int max_y = entry->cells_max_y;
                 const bool have_per_row =
                     static_cast<int>(entry->cells_row_last_col.size()) == entry->cells_rows;
+                // Hash-keyed entries are immutable content re-blitted to
+                // the same rows every frame. Use the skip-if-identical
+                // fast blit so an unchanged frozen prefix that survived
+                // the frame's clear_below() (its rows were preserved,
+                // not re-cleared) costs a read-only compare instead of a
+                // full memcpy. Pointer-keyed entries (ephemeral, always
+                // freshly cleared) can't benefit — keep the plain blit.
+                const bool use_cached_blit = !node.hash_id.empty();
                 for (int y = 0; y < rows; ++y) {
                     const bool row_has_content = (y <= max_y);
                     const int hint = have_per_row
                         ? entry->cells_row_last_col[static_cast<std::size_t>(y)]
                         : INT_MIN;
-                    canvas.blit_packed_row(
-                        content_x, content_y + y,
-                        entry->cells.data() + static_cast<std::size_t>(y) * entry->width,
-                        entry->width,
-                        row_has_content,
-                        hint);
+                    if (use_cached_blit) {
+                        canvas.blit_packed_row_cached(
+                            content_x, content_y + y,
+                            entry->cells.data() + static_cast<std::size_t>(y) * entry->width,
+                            entry->width,
+                            row_has_content,
+                            hint);
+                    } else {
+                        canvas.blit_packed_row(
+                            content_x, content_y + y,
+                            entry->cells.data() + static_cast<std::size_t>(y) * entry->width,
+                            entry->width,
+                            row_has_content,
+                            hint);
+                    }
                 }
                 return;
             }

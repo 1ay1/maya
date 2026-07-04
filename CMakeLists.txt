@@ -418,7 +418,7 @@ if(MAYA_BUILD_TESTS)
     #     toolchain doesn't expose cleanly from this TU, and the restore
     #     behaviour it guards is platform-identical.
     if(UNIX)
-        set(_maya_posix_tests test_inline_frame)
+        set(_maya_posix_tests test_inline_frame test_fresh_oversized_scrollback)
         if(NOT APPLE)
             list(APPEND _maya_posix_tests test_terminal_restore)
         endif()

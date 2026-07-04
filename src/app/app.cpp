@@ -943,16 +943,54 @@ auto Runtime::render(const Element& root) -> Status {
                         // shadow poison can strand a duplicate.
                         const int prev_rows = arm.rows();
                         if (prev_rows > term_h.value()) {
-                            // Overflowed + shadow poisoned: commit the
-                            // off-viewport rows to native scrollback,
-                            // then soft-repaint the viewport. Preserves
-                            // host scrollback (no \x1b[3J wipe); the
-                            // corrected viewport repaints in place via
-                            // case (B).
+                            // Overflowed + shadow poisoned. Whether a
+                            // plain commit-then-soft-repaint is safe
+                            // depends on whether the rows we're about to
+                            // commit are byte-identical to what physically
+                            // overflowed into native scrollback.
+                            //
+                            //   • prefix MATCHES: the off-viewport rows in
+                            //     the new canvas equal what's already on
+                            //     the wire (the frame overflowed at this
+                            //     same shape before the poison). Commit
+                            //     them (advancing prev_rows down to term_h)
+                            //     and soft-repaint the viewport via case
+                            //     (B). Nothing is stranded; host scrollback
+                            //     is preserved (no \x1b[3J wipe).
+                            //
+                            //   • prefix DIFFERS: the frame was SHRINKING
+                            //     as the poison hit (streaming tail
+                            //     collapsing into the frozen prefix — the
+                            //     profiler shows rows going 422→339→256
+                            //     across three frames at fixed geometry).
+                            //     The rows that physically overflowed came
+                            //     from the TALLER earlier canvas; the new
+                            //     shorter canvas's overflow prefix no
+                            //     longer matches them. Committing the new
+                            //     prefix as if it were on the wire, then
+                            //     soft-repainting, leaves the stale taller
+                            //     copy stranded one screen up AND paints a
+                            //     second copy live — the "composer / turn
+                            //     duplicated in scrollback" symptom the
+                            //     user reported. case (B) is viewport-only
+                            //     and cannot rewrite those committed rows.
+                            //     The ONLY correct recovery is a HardReset:
+                            //     \x1b[2J\x1b[3J\x1b[H wipes the mismatched
+                            //     scrollback + viewport, then a fresh
+                            //     case-(A) paint. This is destructive to
+                            //     host scrollback above the app, but a
+                            //     stranded duplicate is the alternative and
+                            //     is strictly worse — and it only fires on
+                            //     the rare shrink-while-overflowed poison,
+                            //     not the common in-viewport poison below.
                             const int overflow = prev_rows - term_h.value();
-                            auto marker = arm.scrollback_marker(overflow);
-                            auto committed = std::move(arm).commit(marker);
-                            return std::move(committed).demote_to_stale();
+                            if (arm.scrollback_prefix_matches(canvas_,
+                                                              overflow)) {
+                                auto marker = arm.scrollback_marker(overflow);
+                                auto committed = std::move(arm).commit(marker);
+                                return std::move(committed).demote_to_stale();
+                            }
+                            return std::move(arm).demote_to_hard_reset();
                         }
                         return std::move(arm).demote_to_stale();
                     }

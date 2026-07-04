@@ -604,7 +604,20 @@ auto Runtime::render(const Element& root) -> Status {
         // (leaving stale preserved rows that would poison max_y_). A
         // full clear on those frames re-establishes a clean canvas, and
         // the preservation resumes on the next steady frame.
-        const bool prev_synced = (in_coherence_.index() == 2);
+        //
+        // EXCEPTION the index check can't see: commit_inline_prefix /
+        // commit_inline_overflow shift the shadow while REMAINING
+        // Synced. After a large front-trim commit the new tree is N
+        // rows shorter; preserving the pre-commit canvas would leave
+        // stale rows (including the old composer/status chrome)
+        // BELOW the new tree's bottom, inflating content_height() and
+        // serializing that chrome into native scrollback — the
+        // "whole chrome in the scrollback / rows cut off" corruption.
+        // Those paths set canvas_preserve_inhibit_; consume it here
+        // (one-shot) and full-clear.
+        const bool prev_synced = (in_coherence_.index() == 2)
+                              && !canvas_preserve_inhibit_;
+        canvas_preserve_inhibit_ = false;
         if (!canvas_reallocated
             && prev_synced
             && prev_content_rows > 0

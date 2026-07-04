@@ -562,6 +562,17 @@ public:
         // ScrollbackMarker is consumed by `commit()`; the typed token
         // guarantees `safe_rows <= prev_rows` at issue time.
         in_coherence_ = std::move(*s).commit(s->scrollback_marker(safe_rows));
+        // A commit is a STRUCTURAL event that stays Synced: the next
+        // frame's tree is `safe_rows` shorter (the host dropped that
+        // prefix), but the render loop's bounded-clear canvas
+        // preservation gates only on "prior coherence == Synced" and
+        // would preserve the PRE-commit canvas prefix. When the drop
+        // exceeds term_h + margin, stale rows survive BELOW the new
+        // (shorter) tree's bottom, inflate content_height(), and get
+        // serialized as live content — stranding the composer/status
+        // chrome in native scrollback with duplicated transcript rows
+        // below it. Force the next render to full-clear the canvas.
+        canvas_preserve_inhibit_ = true;
     }
 
     // Commit every prev-frame row that has provably already overflowed
@@ -575,6 +586,10 @@ public:
         const int overflow_rows = s->rows() - term_h;
         if (overflow_rows <= 0) return;
         in_coherence_ = std::move(*s).commit(s->scrollback_marker(overflow_rows));
+        // Same structural-event rule as commit_inline_prefix above:
+        // the shadow shifted while coherence stays Synced, so the next
+        // render must not preserve the pre-commit canvas prefix.
+        canvas_preserve_inhibit_ = true;
     }
 
     // Force the next render to be a full repaint.
@@ -768,6 +783,13 @@ private:
     int           hold_decay_         = 0;
     int           hold_last_unpadded_ = 0;
     static constexpr int kHoldDecayFrames = 6;
+    // One-shot inhibitor for the bounded-clear canvas preservation in
+    // Runtime::render. Set by commit_inline_prefix / commit_inline_overflow
+    // — the two structural events that shift the shadow while REMAINING
+    // Synced, which the gate's coherence-index check cannot see. Consumed
+    // (cleared) by the next render, which full-clears the canvas instead
+    // of preserving a prefix that no longer matches the shortened tree.
+    bool          canvas_preserve_inhibit_ = false;
     // Whether to EMIT the DEC ?2026 wrapper around every frame. On by
     // default (only MAYA_NO_SYNC disables it) because unknown DEC private
     // modes are no-ops where unsupported — emitting costs ~12 bytes/frame

@@ -34,6 +34,7 @@
 #include "../dsl.hpp"
 #include "../element/element.hpp"
 #include "../style/border.hpp"
+#include "spinner.hpp"   // shared Spinner<Dots> frame table (status_icon / footer)
 #include "../style/color.hpp"
 #include "../style/style.hpp"
 
@@ -425,17 +426,36 @@ private:
 
     static dsl::RuntimeTextNode<std::string_view>
     status_icon(AgentEventStatus s, int frame) {
-        static constexpr const char* spinner_frames[] = {
-            "\xe2\xa0\x8b", "\xe2\xa0\x99", "\xe2\xa0\xb9", "\xe2\xa0\xb8",
-            "\xe2\xa0\xbc", "\xe2\xa0\xb4", "\xe2\xa0\xa6", "\xe2\xa0\xa7",
-            "\xe2\xa0\x87", "\xe2\xa0\x8f",
+        // Same braille glyphs as Spinner<Dots> — index the shared frame
+        // table rather than a second hand-copied array, so every animated
+        // surface (Spinner, status-bar chips, this) stays in lockstep off
+        // the one clock the host advances.
+        constexpr auto sp = detail::get_spinner_frames<SpinnerStyle::Dots>();
+        const auto spin = [&](int f) {
+            return sp.frames[((f % sp.count) + sp.count) % sp.count];
         };
+        // frame < 0 = seam-frozen live panel: the host has determined the
+        // panel's TOP rows (title + first event headers) may already sit in
+        // native scrollback, where any byte change is a committed-row
+        // rewrite (gate → HardReset → stranded chrome). An animated braille
+        // glyph on such a row would tick every frame, so the host passes -1
+        // and we render a STATIC per-status glyph instead: ● for Running,
+        // ○ for Pending. Liveness is carried by the panel FOOTER (a bottom
+        // append, never above the seam while the panel is live), which the
+        // host animates. frame >= 0 keeps the classic spinner for callers
+        // whose panels never straddle the seam.
         switch (s) {
             case AgentEventStatus::Running:
-                return dsl::text(std::string_view{spinner_frames[frame % 10]},
+                if (frame < 0)
+                    return dsl::text(std::string_view{"\xe2\x97\x8f"},   // ●
+                                     Style{}.with_fg(Color::bright_cyan()).with_bold());
+                return dsl::text(std::string_view{spin(frame)},
                                  Style{}.with_fg(Color::bright_cyan()).with_bold());
             case AgentEventStatus::Pending:
-                return dsl::text(std::string_view{spinner_frames[frame % 10]},
+                if (frame < 0)
+                    return dsl::text(std::string_view{"\xe2\x97\x8b"},   // ○
+                                     Style{}.with_fg(Color::bright_yellow()).with_bold());
+                return dsl::text(std::string_view{spin(frame)},
                                  Style{}.with_fg(Color::bright_yellow()).with_bold());
             case AgentEventStatus::Done:
                 return dsl::text(std::string_view{"\xe2\x9c\x93"},

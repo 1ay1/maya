@@ -163,7 +163,50 @@ bool InlineFrameState::scrollback_prefix_matches(
     if (canvas.cell_count() < need) return false;
     const uint64_t* a = prev_cells_.data();
     const uint64_t* b = canvas.cells();
-    return std::memcmp(a, b, need * sizeof(uint64_t)) == 0;
+    const bool match = std::memcmp(a, b, need * sizeof(uint64_t)) == 0;
+    if (!match && std::getenv("MAYA_DEBUG_GATE")) {
+        // Diagnostic (env-gated): find the first mismatching row, then
+        // dump a ±8-row window from BOTH buffers so re-wraps / shifts
+        // are visible in context.
+        int first_bad = -1;
+        std::string idxs;
+        for (int y = 0; y < rows; ++y) {
+            if (std::memcmp(a + (std::size_t)y * W, b + (std::size_t)y * W,
+                            (std::size_t)W * sizeof(uint64_t)) != 0) {
+                if (first_bad < 0) first_bad = y;
+                idxs += std::to_string(y);
+                idxs += ' ';
+            }
+        }
+        auto dump_row = [&](const uint64_t* base, int y) {
+            std::string s;
+            for (int x = 0; x < W; ++x) {
+                Cell c = Cell::unpack(base[(std::size_t)y * W + x]);
+                char32_t ch = c.character;
+                s += (ch >= 32 && ch < 127) ? (char)ch : '?';
+            }
+            while (!s.empty() && s.back() == ' ') s.pop_back();
+            return s;
+        };
+        std::fprintf(stderr,
+            "[gate] prefix mismatch (prev_rows=%d rows=%d W=%d)\n"
+            "[gate] all mismatch rows: %s\n",
+            prev_rows_, rows, W, idxs.c_str());
+        if (first_bad >= 0) {
+            const int lo = first_bad > 8 ? first_bad - 8 : 0;
+            const int hi = std::min(rows, first_bad + 10);
+            for (int y = lo; y < hi; ++y) {
+                const bool bad = std::memcmp(
+                    a + (std::size_t)y * W, b + (std::size_t)y * W,
+                    (std::size_t)W * sizeof(uint64_t)) != 0;
+                std::fprintf(stderr, "  %c prev[%3d]: '%s'\n",
+                             bad ? '*' : ' ', y, dump_row(a, y).c_str());
+                std::fprintf(stderr, "  %c new [%3d]: '%s'\n",
+                             bad ? '*' : ' ', y, dump_row(b, y).c_str());
+            }
+        }
+    }
+    return match;
 }
 
 int content_height(const Canvas& canvas) noexcept {

@@ -890,6 +890,49 @@ auto Runtime::render(const Element& root) -> Status {
                             // prefix_unchanged: fall through to the diff
                             // path — append-only, scrollback-safe.
                         }
+                        // GROW-while-overflowed content shift. The frame
+                        // is NOT shrinking (new_rows >= prev_rows) yet the
+                        // committed overflow-prefix rows differ from what
+                        // physically overflowed. This happens when a card
+                        // GROWS mid-turn (a bash tool transitioning
+                        // Running→Failed swaps its short spinner body for a
+                        // multi-line error body, adding rows) so everything
+                        // above it shifts UP by the grow delta, pushing a
+                        // row whose CONTENT also changed (e.g. an ACTIONS
+                        // header "0/1 … Bash" → "1/1 … 114ms") off the top.
+                        // verify() can't catch this — the shadow is
+                        // internally consistent; it's the WIRE that now
+                        // holds stale committed rows. A naive diff would
+                        // re-emit the shifted prefix over immutable native
+                        // scrollback, stranding the old card's top rows one
+                        // screen up: the "card cut off / duplicated one
+                        // screen up" corruption. Same non-destructive
+                        // recovery as the shrink case is NOT enough here:
+                        // committing the prefix then soft-repainting the
+                        // LARGER viewport re-serializes the shifted rows,
+                        // which the terminal scrolls in as a SECOND copy
+                        // (case (B) is viewport-only and the grown content
+                        // overflows again on repaint). The committed native
+                        // scrollback already holds the STALE pre-shift rows,
+                        // so the only recovery that can correct it is a
+                        // HardReset: \x1b[2J\x1b[3J\x1b[H wipes the
+                        // mismatched scrollback + viewport, then a fresh
+                        // case-(A) paint lays the whole (grown) frame down
+                        // once. Destructive to host scrollback above the
+                        // app, but a stranded/duplicated card is strictly
+                        // worse, and this only fires on the rare
+                        // grow-while-overflowed prefix MISMATCH — the common
+                        // grow that only appends BELOW the viewport top
+                        // (prefix unchanged) still takes the cheap diff.
+                        else if (prev_rows > term_h.value()
+                                 && new_rows >= prev_rows) {
+                            const int overflow = prev_rows - term_h.value();
+                            if (!arm.scrollback_prefix_matches(canvas_,
+                                                               overflow)) {
+                                verify_demoted = true;
+                                return std::move(arm).demote_to_hard_reset();
+                            }
+                        }
                     }
                     auto wit = arm.verify();
                     if (!wit) {

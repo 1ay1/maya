@@ -832,208 +832,112 @@ auto Runtime::render(const Element& root) -> Status {
                         emit_sync_wrapper_));
                 }
                 else if constexpr (std::is_same_v<T, InlineFrame<Synced>>) {
-                    // Shrink-while-overflowed guard. The incremental
-                    // per-row diff is VIEWPORT-ONLY: it can rewrite the
-                    // last `term_h` rows but never the rows that already
-                    // scrolled into native scrollback. When the prior
-                    // frame overflowed (prev_rows > term_h) and THIS
-                    // frame is shorter, two outcomes are possible:
+                    // ── THE SCROLLBACK INVARIANT (one gate) ──────────
                     //
-                    //   1. TURN-FINISH FREEZE. The live streaming tail
-                    //      collapses into the frozen prefix; the shrink
-                    //      happens at the BOTTOM. The rows already in
-                    //      native scrollback (the frame's prefix) are
-                    //      byte-IDENTICAL to before. The per-row diff's
-                    //      own shrink branch handles this correctly and
-                    //      append-only (re-emit bottom row + \x1b[J): no
-                    //      committed row needs rewriting. Routing it
-                    //      through commit+case-(B) instead RE-PAINTS the
-                    //      viewport from content top, overlapping the
-                    //      rows the prior frame committed at
-                    //      prev_rows-term_h — stranding a duplicate copy
-                    //      of the just-finished turn one screen up. This
-                    //      is the "the turn doubles in scrollback when it
-                    //      finishes" bug.
+                    // A row that has scrolled into native terminal
+                    // scrollback is IMMUTABLE — we can never rewrite it.
+                    // The per-row diff assumes the committed overflow
+                    // prefix (rows [0, prev_rows-term_h) of the previous
+                    // frame) is still byte-identical in the new canvas.
+                    // agentty keeps a TALL live tail during streaming, so
+                    // that assumption breaks whenever the content above
+                    // the viewport top SHIFTS between frames:
                     //
-                    //   2. SCROLLBACK-CONTENT SHIFT. A card whose top is
-                    //      already in scrollback shrinks at or above the
-                    //      viewport top, so everything below shifts up
-                    //      and the committed prefix rows no longer match
-                    //      the new content. verify() can't catch this
-                    //      (the shadow is internally consistent — it's
-                    //      the WIRE that has stale committed rows). Here
-                    //      a recovery IS needed: commit the off-viewport
-                    //      rows and soft-repaint via case-(B). Preserves
-                    //      host scrollback (no \x1b[3J wipe).
+                    //   • a card SHRINKS at/above the viewport top (turn
+                    //     settle, code-block fold) → rows below shift UP;
+                    //   • a card GROWS mid-turn (a bash tool going
+                    //     Running→Failed swaps a 1-row spinner for a
+                    //     multi-line error body) → rows above shift UP and
+                    //     a content-changed row (e.g. an ACTIONS header
+                    //     "0/1 … Bash" → "1/1 … 114ms") crosses the top;
+                    //   • the shadow gets poisoned mid-scroll.
                     //
-                    // Discriminate by comparing the new canvas's
-                    // overflow-prefix rows against prev_cells: identical
-                    // ⇒ case (1), take the diff path; different ⇒ case
-                    // (2), recover. Row counts alone cannot tell them
-                    // apart — both shrink while overflowed.
+                    // verify() CANNOT catch any of these — the shadow is
+                    // internally consistent; it is the WIRE that now holds
+                    // stale committed rows. A naive diff re-emits the
+                    // shifted prefix over immutable scrollback, stranding
+                    // a duplicate one screen up (the reported "card cut
+                    // off / turn duplicated in scrollback" corruption).
+                    //
+                    // agent_session never trips this: its live tail
+                    // collapses to empty at MessageStop (frozen and live
+                    // are mutually exclusive) so its frames stay
+                    // viewport-sized and nothing above the top ever
+                    // shifts. agentty's two-tier render can't guarantee
+                    // that structurally, so we enforce the invariant HERE,
+                    // uniformly, with ONE gate that every overflowed frame
+                    // passes through BEFORE the diff is trusted:
+                    //
+                    //   overflowed AND committed-prefix MISMATCH ?
+                    //     → the diff is unsafe. Recover:
+                    //        • not growing (new_rows <= prev_rows): commit
+                    //          the off-viewport rows (byte-accurate to the
+                    //          new canvas) + soft-repaint the viewport via
+                    //          case (B). Non-destructive, host scrollback
+                    //          preserved (no \x1b[3J).
+                    //        • growing (new_rows > prev_rows): a commit +
+                    //          case-(B) repaint would overflow AGAIN and
+                    //          scroll the re-serialized rows in as a second
+                    //          copy, so the ONLY correct recovery is a
+                    //          HardReset (\x1b[2J\x1b[3J\x1b[H wipe + fresh
+                    //          case-(A) paint). Destructive to host
+                    //          scrollback, but a stranded duplicate is
+                    //          strictly worse.
+                    //   overflowed AND prefix MATCHES ? → the diff is safe
+                    //     (append-only for grow-below-the-top, shrink at
+                    //     the bottom). Fall through to verify()+render.
+                    //   not overflowed ? → nothing is committed; the diff
+                    //     can rewrite every on-screen row. Fall through.
+                    //
+                    // This single check SUBSUMES the former three separate
+                    // shrink / grow / verify-poison-overflow branches: any
+                    // overflowed-prefix shift, from ANY cause (present or
+                    // future), is caught by the one memcmp before the diff
+                    // ever runs. Corruption is prevented by construction,
+                    // not by enumerating the ways a card can move.
                     {
                         const int prev_rows = arm.rows();
                         const int new_rows  = rows.value();
-                        if (prev_rows > term_h.value()
-                            && new_rows < prev_rows) {
-                            const int overflow = prev_rows - term_h.value();
-                            const bool prefix_unchanged =
-                                arm.scrollback_prefix_matches(canvas_, overflow);
-                            if (!prefix_unchanged) {
-                                // Genuine scrollback shift — commit the
-                                // overflowed rows and soft-repaint.
-                                verify_demoted = true;
-                                auto marker = arm.scrollback_marker(overflow);
-                                auto committed = std::move(arm).commit(marker);
-                                return std::move(committed).demote_to_stale();
-                            }
-                            // prefix_unchanged: fall through to the diff
-                            // path — append-only, scrollback-safe.
-                        }
-                        // GROW-while-overflowed content shift. The frame
-                        // is NOT shrinking (new_rows >= prev_rows) yet the
-                        // committed overflow-prefix rows differ from what
-                        // physically overflowed. This happens when a card
-                        // GROWS mid-turn (a bash tool transitioning
-                        // Running→Failed swaps its short spinner body for a
-                        // multi-line error body, adding rows) so everything
-                        // above it shifts UP by the grow delta, pushing a
-                        // row whose CONTENT also changed (e.g. an ACTIONS
-                        // header "0/1 … Bash" → "1/1 … 114ms") off the top.
-                        // verify() can't catch this — the shadow is
-                        // internally consistent; it's the WIRE that now
-                        // holds stale committed rows. A naive diff would
-                        // re-emit the shifted prefix over immutable native
-                        // scrollback, stranding the old card's top rows one
-                        // screen up: the "card cut off / duplicated one
-                        // screen up" corruption. Same non-destructive
-                        // recovery as the shrink case is NOT enough here:
-                        // committing the prefix then soft-repainting the
-                        // LARGER viewport re-serializes the shifted rows,
-                        // which the terminal scrolls in as a SECOND copy
-                        // (case (B) is viewport-only and the grown content
-                        // overflows again on repaint). The committed native
-                        // scrollback already holds the STALE pre-shift rows,
-                        // so the only recovery that can correct it is a
-                        // HardReset: \x1b[2J\x1b[3J\x1b[H wipes the
-                        // mismatched scrollback + viewport, then a fresh
-                        // case-(A) paint lays the whole (grown) frame down
-                        // once. Destructive to host scrollback above the
-                        // app, but a stranded/duplicated card is strictly
-                        // worse, and this only fires on the rare
-                        // grow-while-overflowed prefix MISMATCH — the common
-                        // grow that only appends BELOW the viewport top
-                        // (prefix unchanged) still takes the cheap diff.
-                        else if (prev_rows > term_h.value()
-                                 && new_rows >= prev_rows) {
+                        if (prev_rows > term_h.value()) {
                             const int overflow = prev_rows - term_h.value();
                             if (!arm.scrollback_prefix_matches(canvas_,
                                                                overflow)) {
                                 verify_demoted = true;
-                                return std::move(arm).demote_to_hard_reset();
+                                if (new_rows > prev_rows) {
+                                    // Growing: case (B) would re-overflow.
+                                    return std::move(arm)
+                                        .demote_to_hard_reset();
+                                }
+                                // Not growing: commit + soft-repaint.
+                                auto marker = arm.scrollback_marker(overflow);
+                                auto committed = std::move(arm).commit(marker);
+                                return std::move(committed).demote_to_stale();
                             }
+                            // prefix MATCHES — the committed rows are
+                            // byte-identical to what physically overflowed;
+                            // the diff is scrollback-safe. Fall through.
                         }
                     }
                     auto wit = arm.verify();
                     if (!wit) {
                         verify_demoted = true;
-                        // The shadow is poisoned: prev_cells no longer
-                        // matches the wire. How we recover depends on
-                        // whether the live frame has overflowed the
-                        // viewport into native scrollback.
-                        //
-                        //   • Fits within the viewport
-                        //     (prev_rows <= term_h): no row has scrolled
-                        //     off, so every diverged row is still on
-                        //     screen and rewritable. Demote to Stale —
-                        //     case (B) repaints the viewport in place,
-                        //     no scrollback wipe, host content above
-                        //     preserved. This is the cheap, common path.
-                        //
-                        //   • Overflowed the viewport
-                        //     (prev_rows > term_h): part of the frame is
-                        //     already committed to native scrollback,
-                        //     which is immutable to us. case (B) is
-                        //     VIEWPORT-ONLY — it cannot rewrite those
-                        //     scrolled-off rows. A naive demote-to-Stale
-                        //     would repaint the corrected viewport while
-                        //     the stale (diverged) copy stays stranded
-                        //     one screen up — the "turn repeats out of
-                        //     nowhere in scrollback" symptom.
-                        //
-                        //     Recovery (NON-destructive): COMMIT the
-                        //     already-overflowed rows to native
-                        //     scrollback (advancing prev_rows down to
-                        //     term_h via a scrollback_marker), THEN
-                        //     demote to Stale so case (B) soft-repaints
-                        //     the remaining viewport in place. The
-                        //     committed rows are byte-identical to what's
-                        //     physically on the wire (they overflowed
-                        //     before the poison), so committing them
-                        //     strands nothing; only the in-viewport rows
-                        //     get rewritten. NO \x1b[3J wipe — host
-                        //     scrollback is preserved. (An earlier
-                        //     version hard-reset here, wiping pre-launch
-                        //     scrollback; the commit+soft-repaint below
-                        //     supersedes it and is strictly safer.)
-                        //
-                        // agent_session never hits the overflow branch:
-                        // its live tail collapses to empty at MessageStop
-                        // (frozen and live are mutually exclusive), so
-                        // its frames stay viewport-sized. agentty's
-                        // two-tier render keeps a tall live tail during
-                        // streaming, which is exactly when a mid-scroll
-                        // shadow poison can strand a duplicate.
+                        // Shadow poisoned: prev_cells no longer matches the
+                        // wire. If the frame is OVERFLOWED, the committed
+                        // prefix was already validated by the invariant
+                        // gate above (it matched, else we'd have recovered),
+                        // so a plain commit-off-viewport + soft-repaint is
+                        // guaranteed safe (the rows we commit equal what
+                        // physically overflowed). If it FITS the viewport,
+                        // no row scrolled off — every diverged row is still
+                        // on screen and rewritable, so a plain demote-to-
+                        // Stale (case B) repaints in place. Either way,
+                        // NON-destructive: no \x1b[3J wipe.
                         const int prev_rows = arm.rows();
                         if (prev_rows > term_h.value()) {
-                            // Overflowed + shadow poisoned. Whether a
-                            // plain commit-then-soft-repaint is safe
-                            // depends on whether the rows we're about to
-                            // commit are byte-identical to what physically
-                            // overflowed into native scrollback.
-                            //
-                            //   • prefix MATCHES: the off-viewport rows in
-                            //     the new canvas equal what's already on
-                            //     the wire (the frame overflowed at this
-                            //     same shape before the poison). Commit
-                            //     them (advancing prev_rows down to term_h)
-                            //     and soft-repaint the viewport via case
-                            //     (B). Nothing is stranded; host scrollback
-                            //     is preserved (no \x1b[3J wipe).
-                            //
-                            //   • prefix DIFFERS: the frame was SHRINKING
-                            //     as the poison hit (streaming tail
-                            //     collapsing into the frozen prefix — the
-                            //     profiler shows rows going 422→339→256
-                            //     across three frames at fixed geometry).
-                            //     The rows that physically overflowed came
-                            //     from the TALLER earlier canvas; the new
-                            //     shorter canvas's overflow prefix no
-                            //     longer matches them. Committing the new
-                            //     prefix as if it were on the wire, then
-                            //     soft-repainting, leaves the stale taller
-                            //     copy stranded one screen up AND paints a
-                            //     second copy live — the "composer / turn
-                            //     duplicated in scrollback" symptom the
-                            //     user reported. case (B) is viewport-only
-                            //     and cannot rewrite those committed rows.
-                            //     The ONLY correct recovery is a HardReset:
-                            //     \x1b[2J\x1b[3J\x1b[H wipes the mismatched
-                            //     scrollback + viewport, then a fresh
-                            //     case-(A) paint. This is destructive to
-                            //     host scrollback above the app, but a
-                            //     stranded duplicate is the alternative and
-                            //     is strictly worse — and it only fires on
-                            //     the rare shrink-while-overflowed poison,
-                            //     not the common in-viewport poison below.
                             const int overflow = prev_rows - term_h.value();
-                            if (arm.scrollback_prefix_matches(canvas_,
-                                                              overflow)) {
-                                auto marker = arm.scrollback_marker(overflow);
-                                auto committed = std::move(arm).commit(marker);
-                                return std::move(committed).demote_to_stale();
-                            }
-                            return std::move(arm).demote_to_hard_reset();
+                            auto marker = arm.scrollback_marker(overflow);
+                            auto committed = std::move(arm).commit(marker);
+                            return std::move(committed).demote_to_stale();
                         }
                         return std::move(arm).demote_to_stale();
                     }

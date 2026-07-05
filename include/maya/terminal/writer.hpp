@@ -241,6 +241,16 @@ public:
     /// diffs.
     [[nodiscard]] double ns_per_byte() const noexcept { return ns_per_byte_ema_; }
 
+    /// Temporarily restore the fd's ORIGINAL flags (drop O_NONBLOCK) for
+    /// the duration of a TUI suspend. The suspended child shares this
+    /// open file description; inheriting O_NONBLOCK breaks children that
+    /// don't expect EAGAIN from stdout (observed: pagers and anything
+    /// that writes large bursts). Pair with resume_nonblocking() after
+    /// the child exits. No-ops on Windows or when the ctor never
+    /// adjusted flags.
+    void suspend_nonblocking() noexcept;
+    void resume_nonblocking() noexcept;
+
 private:
     void optimize();
     static bool try_merge(RenderOp& existing, const RenderOp& incoming);

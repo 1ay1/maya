@@ -216,10 +216,30 @@ public:
     /// `Runtime::set_height_hold` ignores the bit. See that method.
     struct SetHeightHold { bool on = false; };
 
+    /// Suspend the TUI and hand the REAL terminal to `run` — the
+    /// interactive-child escape hatch (sudo password prompts, editors,
+    /// pagers). The runtime tears the TUI down to a cooked, clean tty,
+    /// calls `run()` SYNCHRONOUSLY on the UI thread (the user is
+    /// interacting with the child; there is nothing else to do), then
+    /// restores raw mode + the TUI escapes, re-anchors the renderer
+    /// (inline: fresh case-A serialize below the child's output;
+    /// fullscreen: Divergent full repaint), and dispatches the Msg
+    /// `run` returned so the reducer can fold the child's result back
+    /// into the model.
+    ///
+    /// `run` returning a Msg (rather than void) is what closes the
+    /// loop: the callable typically spawns the child with inherited
+    /// stdio, tees its output to a buffer, and returns a completion
+    /// Msg carrying exit code + captured bytes.
+    struct Suspend {
+        std::function<Msg()> run;
+    };
+
     using Variant = std::variant<None, Quit, Batch, After, SetTitle,
                                  WriteClipboard, QueryClipboard, Task, IsolatedTask,
                                  CommitScrollback, CommitScrollbackOverflow,
-                                 ForceRedraw, ResetInline, SetHeightHold>;
+                                 ForceRedraw, ResetInline, SetHeightHold,
+                                 Suspend>;
     Variant inner;
 
     // -- Smart constructors ---------------------------------------------------
@@ -313,6 +333,13 @@ public:
         return {SetHeightHold{on}};
     }
 
+    /// Suspend the TUI for an interactive child. See `Suspend`.
+    template <std::invocable F>
+        requires std::convertible_to<std::invoke_result_t<F>, Msg>
+    [[nodiscard]] static auto suspend(F&& f) -> Cmd {
+        return {Suspend{std::forward<F>(f)}};
+    }
+
     /// Combine multiple Cmds. Flattens nested batches and strips Nones.
     [[nodiscard]] static auto batch(std::vector<Cmd> cmds) -> Cmd {
         std::vector<Cmd> flat;
@@ -402,6 +429,12 @@ public:
             },
             [](const SetHeightHold& s) -> Cmd<B> {
                 return Cmd<B>::set_height_hold(s.on);
+            },
+            [&](const Suspend& s) -> Cmd<B> {
+                return Cmd<B>::suspend(
+                    [run = s.run, mapper = std::forward<F>(f)]() -> B {
+                        return mapper(run());
+                    });
             },
         }, inner);
     }

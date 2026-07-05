@@ -143,6 +143,26 @@ Writer::~Writer() {
 #endif
 }
 
+// Suspend/resume the O_NONBLOCK adjustment across a TUI suspend. The
+// child spawned during suspend shares this open file description; a
+// pager (less) or any bulk writer that doesn't handle EAGAIN on stdout
+// would malfunction with O_NONBLOCK inherited. prior_output_flags_ >= 0
+// doubles as "we own the flag change" — when the ctor never adjusted
+// (Windows, fcntl failure, nonblocking=false) both calls are no-ops.
+void Writer::suspend_nonblocking() noexcept {
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    if (prior_output_flags_ >= 0 && handle_ >= 0)
+        (void)::fcntl(handle_, F_SETFL, prior_output_flags_);
+#endif
+}
+
+void Writer::resume_nonblocking() noexcept {
+#if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
+    if (prior_output_flags_ >= 0 && handle_ >= 0)
+        (void)::fcntl(handle_, F_SETFL, prior_output_flags_ | O_NONBLOCK);
+#endif
+}
+
 Writer::Writer(Writer&& other) noexcept
     : handle_(other.handle_)
     , ops_(std::move(other.ops_))

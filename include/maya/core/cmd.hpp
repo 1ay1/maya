@@ -259,6 +259,17 @@ public:
         return {IsolatedTask{std::forward<F>(f)}};
     }
 
+    /// LEGACY raw-int commit. Deprecated: the count is host-guessed,
+    /// and every historical trim-corruption bug was drift between a
+    /// host guess and what maya painted (see docs/internals/
+    /// witness-chain.md, Trim Accounting). Hold your sealed prefix in
+    /// a maya::ScrollbackLedger, render it via ledger_ref /
+    /// Conversation::Config::ledger, and pass ledger.harvest() to the
+    /// typed overload below — the commit count then comes from maya's
+    /// own paint pass and structurally cannot drift.
+    [[deprecated("host-guessed row counts drift from the wire; use "
+                 "ScrollbackLedger::harvest() + "
+                 "commit_scrollback(ScrollbackDebt)")]]
     [[nodiscard]] static auto commit_scrollback(int rows) -> Cmd {
         return {CommitScrollback{rows}};
     }
@@ -374,7 +385,11 @@ public:
                     });
             },
             [](const CommitScrollback& c) -> Cmd<B> {
-                return Cmd<B>::commit_scrollback(c.rows);
+                // Direct variant construction, not the smart
+                // constructor: the int overload is deprecated for
+                // hosts (guessed counts), but map() merely TRANSPORTS
+                // an already-minted count across a Msg-type boundary.
+                return Cmd<B>{typename Cmd<B>::CommitScrollback{c.rows}};
             },
             [](const CommitScrollbackOverflow&) -> Cmd<B> {
                 return Cmd<B>::commit_scrollback_overflow();

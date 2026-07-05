@@ -281,8 +281,13 @@ struct TodoItem_ { std::string label; TodoItemStatus status; };
 // ============================================================================
 
 struct Model {
-    // Committed scrollback prefix.
-    std::vector<Element>    frozen;
+    // Committed scrollback prefix — a maya-measured ScrollbackLedger
+    // (Witness Chain, Trim Accounting). seal() appends a settled block
+    // with a POLICY row estimate; the paint pass records each block's
+    // real laid-out height back into the ledger every frame; trims mint
+    // their commit count as a typed ScrollbackDebt (harvest()) that this
+    // host cannot fabricate or adjust.
+    ScrollbackLedger        frozen;
 
     // Current turn live state. The "live" buffers (tools, plan, todos,
     // changes, ctx_warning, md) are *cleared* when their content is
@@ -1709,11 +1714,12 @@ static Element view(const Model& m) {
         // Welcome OR frozen scrollback
         dyn([&]() -> Element {
             if (empty) return welcome_view();
-            // Zero-copy fragment via the DSL: the renderer reads the
-            // frozen vector through the pointer instead of deep-copying
-            // its contents every frame.  For 240-element frozen vectors
-            // this saves ~120KB of allocation per frame.
-            return list_ref(m.frozen);
+            // Zero-copy fragment via the DSL, tagged with the ledger:
+            // the renderer reads the sealed blocks through the pointer
+            // instead of deep-copying them every frame, AND the paint
+            // pass records each block's laid-out height back into the
+            // ledger — the measurements harvest() mints trim debt from.
+            return ledger_ref(m.frozen);
         }),
 
         // In-flight user message — wrapped in a Role::User Turn to mirror
@@ -1965,8 +1971,9 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
                     // and get wrapped in a single Role::Assistant Turn
                     // at MessageStop.
                     if (!m.user_committed && !m.user_prompt.empty()) {
-                        m.frozen.push_back(gap());
-                        m.frozen.push_back(user_turn_element(m, m.user_prompt));
+                        m.frozen.seal(gap(), 1, /*separator=*/true);
+                        m.frozen.seal(user_turn_element(m, m.user_prompt),
+                                      /*est_rows=*/3);
                         m.user_committed = true;
                     }
                     m.assistant_body.clear();
@@ -2140,20 +2147,21 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
                     }
 
                     if (!m.assistant_body.empty()) {
-                        m.frozen.push_back(gap());
-                        m.frozen.push_back(settled_assistant_turn_element(m));
+                        m.frozen.seal(gap(), 1, /*separator=*/true);
+                        m.frozen.seal(settled_assistant_turn_element(m),
+                                      /*est_rows=*/12);
                         m.assistant_body.clear();
                     }
 
                     if (!m.changes.empty()) {
-                        m.frozen.push_back(gap());
-                        m.frozen.push_back(changes_card(m));
+                        m.frozen.seal(gap(), 1, /*separator=*/true);
+                        m.frozen.seal(changes_card(m), /*est_rows=*/4);
                         m.changes.clear();
                     }
                     m.phase = Phase::Done;
 
                     // ── Bounded scrollback ─────────────────────────────
-                    // Each turn pushes ~10-15 elements to m.frozen, and
+                    // Each turn seals ~2-6 blocks into m.frozen, and
                     // the inline renderer's prev_cells buffer mirrors
                     // every row ever drawn so the row diff has something
                     // to compare against.  Without bounding, a multi-hour
@@ -2162,29 +2170,23 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
                     //
                     // When frozen exceeds the soft cap, drop the oldest
                     // chunk and tell the renderer those rows are now
-                    // committed to terminal scrollback (Cmd::commit_
-                    // scrollback → Runtime::commit_inline_prefix), so
-                    // its prev_cells buffer truncates to match.  The
-                    // dropped content is still visible in the user's
+                    // committed to terminal scrollback.  The commit count
+                    // is NOT guessed: ledger.harvest() mints a typed
+                    // ScrollbackDebt from the heights maya's own paint
+                    // pass recorded for the dropped blocks — exact by
+                    // construction (Witness Chain, Trim Accounting).
+                    // The dropped content is still visible in the user's
                     // terminal scrollback — we're only shrinking the
                     // *renderer's* mirror, not what the user can see.
                     Cmd<Msg> trim_cmd = Cmd<Msg>::none();
-                    constexpr int FROZEN_MAX           = 240;
-                    constexpr int FROZEN_TRIM          = 80;
-                    constexpr int ROWS_PER_DROP_LOWER  = 3;
+                    constexpr int FROZEN_MAX  = 240;
+                    constexpr int FROZEN_TRIM = 80;
                     if (int(m.frozen.size()) > FROZEN_MAX) {
                         int n = std::min<int>(FROZEN_TRIM,
                             int(m.frozen.size()) - FROZEN_MAX / 2);
-                        m.frozen.erase(m.frozen.begin(),
-                                       m.frozen.begin() + n);
-                        // Conservative under-estimate of dropped row
-                        // count — over-committing would tell the
-                        // renderer to forget rows that are still on
-                        // screen, causing a one-frame layout glitch.
-                        // Under-committing just leaves a few extra
-                        // rows in prev_cells, which is harmless.
+                        m.frozen.drop_front(std::size_t(n));
                         trim_cmd = Cmd<Msg>::commit_scrollback(
-                            n * ROWS_PER_DROP_LOWER);
+                            m.frozen.harvest());
                     }
 
                     int next_idx = m.turn_number % int(starters().size());

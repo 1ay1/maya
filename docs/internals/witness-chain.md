@@ -20,10 +20,11 @@ implementation lives in:
 - `include/maya/render/canvas_witness.hpp` — Layer 0 (canvas caches)
 - `include/maya/render/frame_bytes.hpp`  — Layer 4
 - `include/maya/render/inline_frame.hpp` — Layer 5 (apex)
+- `include/maya/render/scrollback_ledger.hpp` — Layer 6 (trim accounting)
 
-## The theorem in four parts
+## The theorem in five parts
 
-The integrity claim decomposes into four sub-claims, each closed by a
+The integrity claim decomposes into five sub-claims, each closed by a
 distinct layer of the chain.
 
 **T0 (canvas-cache integrity).** For every `Canvas` value reaching
@@ -97,7 +98,36 @@ corresponding canvas coordinate.
 > targets a row index that has overflowed the viewport at any prior
 > emit. ∎
 
-Together, T0+T1+T2+T3 imply Scrollback Integrity:
+**T4 (trim accounting).** For any front-trim of a host's sealed inline
+prefix, the row count committed to the shadow
+(`commit_inline_prefix`) equals the number of physical rows the
+dropped blocks occupied on the wire in the previous frame.
+
+> *Proof.* A ledger host holds its sealed prefix in a
+> `ScrollbackLedger` and renders it through `ledger_ref` (or
+> `Conversation::Config::ledger`). The paint pass records every
+> block's laid-out height into the ledger each frame — the SAME
+> `layout::compute` pass, at the SAME width, in the SAME frame as the
+> bytes that reach the wire; there is no second measurement pipeline
+> to drift. `drop_front()` accrues the dropped blocks' paint-recorded
+> heights as debt, gated on provability: a block whose height has
+> never been recorded by a ledger-tagged paint (`recorded < 0`) stops
+> the drop walk — a block becomes droppable only after one paint has
+> recorded the height the commit will use, so an under-commit of an
+> unpainted-but-physical block is unrepresentable. `harvest()` mints
+> the accumulated debt as a `ScrollbackDebt`, whose constructor is
+> private to the ledger; `Cmd::commit_scrollback(ScrollbackDebt)` is
+> the only consumer. The host can only transport the token — it
+> cannot fabricate, scale, or "adjust" a count. (The raw-int overload
+> survives for non-ledger hosts, `[[deprecated]]`, and is clamped to
+> the provable overflow inside `commit_inline_prefix` regardless.)
+> Width-change race: if a trim lands between a width change and the
+> next paint, the minted debt reflects the old width — safe, because
+> a width change demotes inline coherence off `Synced` and
+> `commit_inline_prefix` is a no-op in any non-Synced state; the debt
+> evaporates against a frame that repaints from scratch. ∎
+
+Together, T0+T1+T2+T3+T4 imply Scrollback Integrity:
 
 - T0 ensures the cells `diff()` reads, and the trailing-blank cache
   the EL optimisation trusts, are coherent with one another — closing
@@ -108,6 +138,10 @@ Together, T0+T1+T2+T3 imply Scrollback Integrity:
   the canvas).
 - T3 ensures the cumulative effect of overflows commits exactly the
   truth that was on the viewport at the moment of overflow.
+- T4 ensures a host-initiated trim of the sealed prefix advances the
+  shadow by exactly the rows the dropped content physically occupied —
+  closing the stranded-duplicate / eaten-tail ghost classes that every
+  historical host-side trim bug belonged to.
 
 The bytes in emulator scrollback at any moment are the union of:
 truths-committed-so-far + truth-currently-on-screen. Both are
@@ -142,7 +176,7 @@ all four hold:
    re-hash inside compose catches mutation with probability `1 - 2⁻⁶⁴`.
    Hardware-detected memory errors are out of scope.
 
-## The five layers in detail
+## The layers in detail
 
 ### Layer 1 — `WireRow` + `Viewport`
 
@@ -240,6 +274,47 @@ rendering after `finalize` is a compile error.
 The underlying `InlineFrameState` is held by value as a private member.
 It is moved through every transition; the chain is linear.
 
+### Layer 6 — `ScrollbackLedger` + `ScrollbackDebt` (trim accounting)
+
+The layers above close what MAYA emits. Layer 6 closes the one number
+a HOST is still trusted to supply: how many rows a front-trim of its
+sealed prefix sheds. Historically the host computed that itself — a
+parallel measurement pipeline (element re-measure at a
+host-reconstructed width, resize healing, N bookkeeping vectors kept
+in lockstep by discipline) — and every historical trim-corruption bug
+was drift between that pipeline and what maya painted: a 2-column
+wrap-width mis-reconstruction under-counting on narrow terminals (the
+phone-over-SSH duplication ghost), a stale post-resize height stamp
+over-committing and re-scrolling the visible tail, a one-row estimate
+drift dropping an on-screen entry.
+
+Two moves close the class by construction:
+
+1. **Maya measures, not the host.** `ScrollbackLedger` owns the sealed
+   blocks (elements + per-block meta in one structure). Rendering goes
+   through `ledger_ref(ledger)` — an `ElementListRef` tagged with the
+   ledger — and the paint pass stamps each block's laid-out height
+   back into the ledger every frame: same layout pass, same width,
+   same frame as the wire bytes. Recorded heights self-heal across
+   resize within one paint. Seal-time estimates exist ONLY for trim
+   policy (`row_total()` / `block_rows()`); they never feed debt.
+
+2. **The commit count is a typed token.** `drop_front()` accrues the
+   dropped blocks' recorded heights as debt — gated so only
+   paint-recorded blocks may shed rows, and quantized so a separator
+   never leads the remaining prefix. `harvest()` mints a
+   `ScrollbackDebt` (private constructor, friended only to the
+   ledger); `Cmd::commit_scrollback(ScrollbackDebt)` is the sole
+   consumer. Fabricating or adjusting a commit count no longer
+   typechecks; the raw-int overload is `[[deprecated]]` and clamped
+   inside `commit_inline_prefix` regardless.
+
+Sole producers, sole consumers, move-only tokens — the same discipline
+as Layers 1–5, applied to the host boundary. The residual host freedom
+is policy only: WHEN to trim and HOW MUCH context to keep. A sloppy
+policy estimate can trim too much or too little *content*; it
+structurally cannot corrupt scrollback.
+
 ## What the test surface looks like
 
 Two test files witness the chain at the type level:
@@ -308,41 +383,27 @@ legacy `InlineFrameState` + `compose_inline_frame` direct path):
 - Over-committing scrollback to a state that has already
   advanced is a compile error (`ScrollbackMarker` is consumed by
   exactly one `commit` call, which yields a new state).
+- Fabricating a trim commit count is a compile error for ledger
+  hosts (`ScrollbackDebt` has one producer, `harvest()`, minted only
+  from paint-recorded heights).
 
 Each of these used to be a *runtime* failure detected by carefully-
 authored checks. Now they fail to typecheck. The compiler is the proof
 assistant.
 
-## Future work — migrating the runtime
+## Runtime migration — done
 
-The legacy `compose_inline_frame` and `InlineFrameState` remain
-available; this allows the existing 20+ scrollback tests to continue
-to exercise the path the production renderer currently uses, while the
-new chain bakes in.
+`Runtime::render` (src/app/app.cpp) dispatches inline frames through
+`std::visit` over `InlineCoherence` — the variant of
+`InlineFrame<Empty | Fresh | Synced | Stale | HardReset>` — so the
+production renderer consumes the chain end-to-end: the only path into
+`Synced` is a successful `commit_to` of a witness-verified compose.
+The legacy free-function `compose_inline_frame` survives only as the
+internal implementation detail the `InlineFrame<Tag>::render`
+transitions call (frame_bytes.cpp / inline_frame.cpp); host code has
+no direct route to it.
 
-The next step is to migrate `src/app/app.cpp`'s `Runtime::render` from
-the legacy path to `InlineFrame<Tag>`. The migration is mechanical:
-
-```cpp
-// before
-if (!verify_shadow_hash(s.state)) return Divergent{};
-compose_inline_frame(canvas, ch, term_h, pool, s.state, out, sync_);
-if (auto wr = writer_->write_or_buffer(out); !wr) return Divergent{};
-return InlineSynced{std::move(s.state)};
-
-// after
-auto wit = synced.verify();
-if (!wit) {
-    auto stale_state = std::move(synced).demote_to_stale();
-    auto outcome = std::move(stale_state).render(canvas, content_rows(canvas),
-                                                  term_h, pool, *writer_, sync_);
-    return std::visit(/*…*/, std::move(outcome));
-}
-auto outcome = std::move(synced).render(canvas, content_rows(canvas), term_h,
-                                         pool, *writer_, *std::move(wit), sync_);
-return std::visit(/*…*/, std::move(outcome));
-```
-
-After this migration, the legacy API can be marked `[[deprecated]]`
-and eventually removed. moha's host code consumes the chain through
-`Cmd<Msg>` and is unaffected by the migration.
+On the host side, agentty's sealed prefix is a `ScrollbackLedger`
+(rendered via `Conversation::Config::ledger`), and its trims mint
+commits exclusively through `harvest()` — the Layer 6 discharge. The
+`agent_session` example demonstrates the same pattern for new hosts.

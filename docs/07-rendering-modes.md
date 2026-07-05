@@ -491,6 +491,35 @@ User scrolls up in terminal:
   rows are cropped via `skip_rows`.  Rows that were visible and committed but
   get cropped remain in the terminal's scrollback from when they were written.
 
+### Cmd-Level Scrollback Control
+
+Most apps get correct scrollback for free from the row-hash mechanism above.
+Hosts that manage their own sealed history (agent sessions that trim old turns)
+drive it explicitly through `Cmd`s from `update()`:
+
+| Cmd | Use |
+|-----|-----|
+| `Cmd::commit_scrollback(ScrollbackDebt)` | Commit trimmed rows using a maya-measured token. Obtain the debt from `ScrollbackLedger::harvest()` — the row count comes from maya's own paint pass and structurally cannot drift from the wire. |
+| `Cmd::commit_scrollback_overflow()` | Commit every row of the last frame that has provably overflowed the viewport. A "trigger" — maya derives the safe row count itself. |
+| `Cmd::force_redraw()` | Schedule a soft viewport repaint next frame. |
+| `Cmd::reset_inline()` | Hard inline reset (destructive scrollback wipe) — wholesale model swaps only. |
+
+> Prefer the typed `ScrollbackLedger` path over the deprecated raw-int
+> `commit_scrollback(int)`: every historical trim-corruption bug was drift
+> between a host's guessed row count and what maya painted. Hold your sealed
+> prefix in a `ScrollbackLedger`, render it via `ledger_ref` /
+> `Conversation::Config::ledger`, and pass `ledger.harvest()` to the Cmd. See
+> [internals/witness-chain.md](internals/witness-chain.md).
+
+### Handing Off the Terminal: `Cmd::suspend()`
+
+When an inline app needs to run an interactive child that owns the real tty
+(a sudo prompt, `$EDITOR`, a pager), return `Cmd::suspend(run)`. Maya tears
+the TUI down to a clean cooked tty, runs the child synchronously, then
+restores raw mode, re-anchors below the child's output, and dispatches the
+`Msg` the callable returned so `update()` can fold the result back in. See
+[API Reference → Cmd::suspend()](11-api-reference.md#cmdsuspend--hand-the-real-terminal-to-an-interactive-child).
+
 ## Choosing the Right Mode
 
 ```

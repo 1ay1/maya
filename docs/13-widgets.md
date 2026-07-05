@@ -1463,3 +1463,73 @@ Permission perm("bash", "rm -rf node_modules && npm install");
 auto ui = perm.build();
 // renders: [y] allow  [n] deny  key hints
 ```
+
+---
+
+## Status Bar Widgets
+
+The streaming-status family renders the single-line status bar an agent shows
+while a turn is in flight: a leading breadcrumb / phase chip on the left, the
+live token-rate spark in the middle, and the model badge + context gauge on the
+right. `StatusBar` composes them; the pieces are also usable standalone.
+
+### StatusBar
+
+Three-row status bar: a top/bottom `PhaseAccent` rail sandwiching a
+hard-locked single-line activity row. Each activity-row piece drops (widest
+`*_min_width` first) as the terminal narrows, so the row is always exactly one
+line and the phase chip — *what's happening now* — is the last survivor. When
+`status_banner.text` is set the middle row becomes a full-width toast instead.
+
+**Header:** `widget/status_bar.hpp`
+
+```cpp
+StatusBar::Config cfg;
+cfg.phase_color = Color::cyan();
+cfg.breadcrumb  = { .title = "maya › docs" };
+cfg.phase       = { /* verb, elapsed, breathing */ };
+cfg.token_stream = { .rate = 23.4f, .history = hist, .live = true,
+                     .adaptive = true };
+cfg.model_badge = ModelBadge("claude-opus-4").build();
+cfg.context     = { .used = 42000, .max = 200000 };
+auto ui = StatusBar{cfg}.build();
+```
+
+### TokenStreamSparkline
+
+Compact `⚡ rate t/s ▁▂▃▄▅▆▇█ ` chip for the status bar: a fixed-width tok/s
+rate, a right-pinned block-glyph sparkline of the rate history, coloured by
+rate (red / yellow / green). Every segment is a fixed display width so ticking
+numbers never shove the neighbouring chips leftward. When `live` is false the
+rate + spark dim, signalling “frozen at last sample” during tool execution.
+
+**Header:** `widget/token_stream_sparkline.hpp`
+
+```cpp
+struct Config {
+    float              rate    = 0.0f;   // current tok/s
+    int                total   = 0;
+    std::vector<float> history;          // rate samples, newest last
+    Color              color   = Color::cyan();
+    bool               live    = false;  // false = dim (frozen)
+    bool               adaptive        = false;
+    int                max_spark_cells = 64;
+};
+```
+
+```cpp
+maya::TokenStreamSparkline{{
+    .rate    = 23.4f,
+    .history = rate_history,
+    .color   = Color::cyan(),
+    .live    = is_streaming,
+}}.build();
+```
+
+**Adaptive width.** With `.adaptive = true` the widget returns a `grow(1)`
+component that defers the spark-cell count to paint time and sizes the
+sparkline to *fill* its allocated slot — the status bar hands it the dead space
+between the phase chip and the model badge. The count is clamped to
+`[8, max_spark_cells]` and right-pinned so the newest sample stays glued to the
+chips on its right. With `.adaptive = false` (default) the layout is the legacy
+fixed 16-cell chip, byte-identical to before.

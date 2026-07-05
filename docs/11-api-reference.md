@@ -69,11 +69,22 @@ template <typename Msg>
 class Cmd {
     static Cmd none();
     static Cmd quit();
-    static Cmd batch(Cmd a, Cmd b);
+    static Cmd batch(std::vector<Cmd> cmds);      // also variadic
     static Cmd after(std::chrono::milliseconds delay, Msg msg);
-    static Cmd task(std::function<std::optional<Msg>()> fn);
+    static Cmd task(std::function<void(std::function<void(Msg)>)> fn);
+    static Cmd task_isolated(...);                // detached thread
     static Cmd set_title(std::string title);
     static Cmd write_clipboard(std::string text);
+    static Cmd query_clipboard();
+
+    // Interactive-child escape hatch (see below).
+    template <std::invocable F> static Cmd suspend(F&& run);
+
+    // Inline scrollback control (see docs/internals/witness-chain.md).
+    static Cmd commit_scrollback(ScrollbackDebt debt);
+    static Cmd commit_scrollback_overflow();
+    static Cmd force_redraw();
+    static Cmd reset_inline();
 };
 ```
 
@@ -82,18 +93,50 @@ effect. `Cmd::quit()` exits the app. `Cmd::batch()` combines multiple commands.
 `Cmd::after()` sends a delayed message. `Cmd::task()` runs an async function
 that may produce a message.
 
+#### `Cmd::suspend()` — hand the real terminal to an interactive child
+
+```cpp
+template <std::invocable F>
+    requires std::convertible_to<std::invoke_result_t<F>, Msg>
+static Cmd suspend(F&& run);
+```
+
+Suspends the TUI and hands the **real** terminal to `run` — the escape hatch
+for interactive children (sudo password prompts, `$EDITOR`, pagers). The
+runtime tears the TUI down to a clean, cooked (line-disciplined) tty, calls
+`run()` **synchronously** on the UI thread — the user is interacting with the
+child, so there is nothing else to do — then restores raw mode + the TUI
+escapes, re-anchors the renderer (inline: a fresh serialize below the child's
+output; fullscreen: a full repaint), and dispatches the `Msg` that `run`
+returned so `update()` can fold the child's result back into the model.
+
+`run` returning a `Msg` (rather than `void`) is what closes the loop: the
+callable typically spawns the child with inherited stdio, tees its output to a
+buffer, and returns a completion `Msg` carrying the exit code + captured bytes.
+
+```cpp
+return Cmd<Msg>::suspend([] {
+    int rc = std::system("sudo -v");           // child owns the tty here
+    return Msg{SudoDone{ .code = rc }};        // folded back after restore
+});
+```
+
+See the `Cmd::suspend` demo in `d726f07` and `App::suspend` in
+`maya/app/app.hpp`.
+
 ### Sub\<Msg\>
 
 ```cpp
 template <typename Msg>
 class Sub {
     static Sub none();
-    static Sub batch(Sub a, Sub b);
+    static Sub batch(std::vector<Sub> subs);   // also variadic: batch(a, b, c)
     static Sub on_key(std::function<std::optional<Msg>(const KeyEvent&)> fn);
     static Sub on_mouse(std::function<std::optional<Msg>(const MouseEvent&)> fn);
-    static Sub on_resize(std::function<std::optional<Msg>(int w, int h)> fn);
-    static Sub on_paste(std::function<std::optional<Msg>(const std::string&)> fn);
+    static Sub on_resize(std::function<Msg(Size)> fn);
+    static Sub on_paste(std::function<Msg(std::string)> fn);
     static Sub every(std::chrono::milliseconds interval, Msg msg);
+    static Sub on_animation_frame(Msg msg);    // sugar for every(16ms, msg)
 };
 ```
 
@@ -102,17 +145,51 @@ the optional `subscribe(const Model&)` method. Subscriptions are re-evaluated
 when the model changes, enabling conditional subscriptions (e.g. only tick
 while a timer is running).
 
-### key\_map\<Msg\>()
+`on_animation_frame()` is `every(16ms, msg)` under one shared timer engine —
+there is no separate animation pump. Drop the subscription from `subscribe()`
+and the ticks stop; the loop returns to idle wait with zero bytes per frame.
+
+### Animation-frame requests
+
+```cpp
+// maya/app/app.hpp
+void request_animation_frame() noexcept;
+```
+
+The redraw-only counterpart to `Sub::on_animation_frame`. A widget calls it
+from its `build()` each frame it wants to keep animating; the run loop folds
+these requests into the same wake schedule as `Sub::Every` timers. The
+distinction is **intent, not mechanism**: `Every` delivers a `Msg` (drives
+`update` → model), a frame request only asks for a **repaint** — pure visual
+layer (cursor blink, scramble caret, fade) that reads wall-clock in `build()`
+and mutates nothing. A widget that stops calling drops out of the next
+collection and the loop idles. Idempotent within a frame.
+
+### key\_map\<Msg\>() and key predicates
 
 ```cpp
 using KeySpec = std::variant<char, SpecialKey>;
 
 template <typename Msg>
 Sub<Msg> key_map(std::initializer_list<std::pair<KeySpec, Msg>> entries);
+
+// Pure predicates for use inside subscribe() / on_key filters:
+bool key_is(const KeyEvent& k, char c) noexcept;      // also char32_t / SpecialKey
+bool ctrl_is(const KeyEvent& k, char c) noexcept;     // Ctrl+c, not Ctrl+Alt+c
+bool alt_is(const KeyEvent& k, char c) noexcept;      // Alt+c, not Ctrl+Alt+c
 ```
 
-Convenience helper that builds a `Sub::on_key` mapping specific keys to
-messages. Used for declarative key binding tables.
+`key_map()` builds a `Sub::on_key` from a declarative key→message table:
+
+```cpp
+return key_map<Msg>({
+    {'q', Quit{}}, {'+', Increment{}},
+    {SpecialKey::Up, Increment{}},
+});
+```
+
+The `*_is` predicates are the building blocks for hand-written `on_key`
+filters where a table isn't expressive enough (modifiers, ranges).
 
 ### RunConfig
 
@@ -385,6 +462,12 @@ inline constexpr BColTag<R,G,B> bcol;    // Requires border first
 
 template <int G = 1>
 inline constexpr GrowTag<G> grow_;
+
+template <int W>
+inline constexpr WidthTag<W> w_;        // fixed width; also wraps text nodes
+
+template <int H>
+inline constexpr HeightTag<H> h_;       // fixed height
 ```
 
 ---
@@ -410,7 +493,7 @@ Runtime pipe tags for dynamic values. Same `|` syntax as compile-time pipes.
 |----------|----------|-------------|
 | `border(BorderStyle)` | `RBorder` | Border style |
 | `bcolor(Color)` | `RBCol` | Border color |
-| `btext(string, BorderTextPos, BorderTextAlign)` | `RBText` | Border text label |
+| `btext(string, pos = Top, align = Start)` | `RBText` | Border text label (pos/align default) |
 
 ### Style Pipes
 
@@ -426,6 +509,27 @@ Runtime pipe tags for dynamic values. Same `|` syntax as compile-time pipes.
 | `align(Align)` | `RAlign` | Cross-axis alignment |
 | `justify(Justify)` | `RJust` | Main-axis distribution |
 | `overflow(Overflow)` | `ROvf` | Overflow behavior |
+
+### Scroll Pipes
+
+Wrap content in a scroll viewport backed by a caller-owned `ScrollState`. The
+renderer applies the scroll offset and writes `max_x`/`max_y` back after layout
+so clamping is automatic.
+
+| Function | Description |
+|----------|-------------|
+| `scroll(ScrollState&)` | Scroll on both axes, viewport = allocated size |
+| `scroll(ScrollState&, int viewport_h)` | Vertical scroll, fixed viewport height |
+| `scroll(ScrollState&, int w, int h)` | Both axes, fixed viewport w×h |
+| `scrolly(ScrollState&, int h)` | Vertical-only scroll, fixed height |
+| `scrollx(ScrollState&, int w)` | Horizontal-only scroll, fixed width |
+
+### Text-Wrap Tags
+
+| Tag | Effect on a `text(...)` node |
+|-----|------------------------------|
+| `clip` | `TextWrap::TruncateEnd` — hard-truncate at the box edge |
+| `nowrap` | `TextWrap::NoWrap` — overflow past the edge, never wrap |
 
 ### WrappedNode
 
@@ -460,6 +564,20 @@ auto vstack() -> BoxBuilder;   // Column direction
 auto hstack() -> BoxBuilder;   // Row direction
 auto center() -> BoxBuilder;   // Centered, grow=1
 
+// Z-stack — layer children on top of one another
+Element zstack(std::vector<Element> layers);
+
+// Measure-aware component: receives the (width, height) it was allotted
+Element component(std::function<Element(int w, int h)> fn);
+
+// Empty element (renders nothing, satisfies Node)
+Element nothing();
+
+// Zero-copy references (no element copy): render an externally-owned
+// element vector / sealed ScrollbackLedger in place
+Element list_ref(const std::vector<Element>* items);
+Element ledger_ref(const ScrollbackLedger& ledger);
+
 // Runtime text
 template <typename S>
 auto text(S&& content, Style s = {}) -> RuntimeTextNode<decay_t<S>>;
@@ -474,6 +592,10 @@ auto dyn(F&& fn) -> DynNode<decay_t<F>>;
 // Map range
 template <std::ranges::range R, typename Proj>
 auto map(R&& range, Proj&& proj) -> MapNode<decay_t<R>, decay_t<Proj>>;
+
+// each() — alias for map(), for discoverability
+template <std::ranges::range R, typename Proj>
+auto each(R&& range, Proj&& proj);
 
 // Spacer/separator/blank (function forms)
 constexpr auto spacer()    -> SpacerNode;
@@ -1074,6 +1196,9 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | `Badge` | `widget/badge.hpp` | Inline status badge |
 | `Callout` | `widget/callout.hpp` | Info/success/warning/error callout box |
 | `Link` | `widget/link.hpp` | Hyperlink element |
+| `KeyHelp` | `widget/key_help.hpp` | Keyboard shortcut legend |
+| `ShortcutRow` | `widget/shortcut_row.hpp` | Width-adaptive keyboard hint row (Helix/k9s style) |
+| `ModelBadge` | `widget/model_badge.hpp` | Color-coded active-model indicator |
 
 ### Navigation
 
@@ -1084,6 +1209,9 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | `Menu` | `widget/menu.hpp` | Menu with selectable items |
 | `ActivityBar` | `widget/activity_bar.hpp` | Vertical icon sidebar |
 | `Scrollable` | `widget/scrollable.hpp` | Scrollable content region |
+| `Scrollbar` | `widget/scrollbar.hpp` | Visual indicator for a `ScrollState` |
+| `Picker` | `widget/picker.hpp` | Bordered modal picker with scrollable results |
+| `CommandPalette` | `widget/command_palette.hpp` | Fuzzy-search command launcher |
 
 ### Display
 
@@ -1097,6 +1225,8 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | `Image` | `widget/image.hpp` | Terminal image display |
 | `gradient()` | `widget/gradient.hpp` | Color gradient text builder |
 | `Disclosure` | `widget/disclosure.hpp` | Collapsible disclosure section |
+| `Html` | `widget/html.hpp` | Render a safe subset of HTML as styled Elements |
+| `Overlay` | `widget/overlay.hpp` | Base layer + one anchored floating element |
 
 ### Overlay
 
@@ -1116,20 +1246,67 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | `Heatmap` | `widget/heatmap.hpp` | Grid heatmap |
 | `Calendar` | `widget/calendar.hpp` | Calendar date display |
 | `PixelCanvas` | `widget/canvas.hpp` | Pixel-level drawing canvas |
+| `FlameChart` | `widget/flame_chart.hpp` | Flame graph for nested execution spans |
+| `Waterfall` | `widget/waterfall.hpp` | Timing waterfall chart (devtools style) |
+| `Timeline` | `widget/timeline.hpp` | Vertical CI/pipeline event timeline |
+| `GitGraph` | `widget/git_graph.hpp` | Commit graph with colored branch lines |
 
-### Specialized
+### Agent UI
+
+Composable pieces of a Claude-Code / Zed-style agent conversation. `Thread`
+is the top-level viewport; the rest are the parts it (or a host) assembles.
 
 | Widget | Header | Description |
 |--------|--------|-------------|
+| `Thread` | `widget/thread.hpp` | Top-level viewport: empty → `WelcomeScreen`, else `Conversation` |
+| `WelcomeScreen` | `widget/welcome_screen.hpp` | Empty-thread brand splash + starters/hints |
+| `Conversation` | `widget/conversation.hpp` | Vertical list of turns with dividers + in-flight indicator |
+| `Turn` | `widget/turn.hpp` | One speaker turn (rail, role, checkpoint) |
+| `TurnDivider` | `widget/turn_divider.hpp` | Styled rule between conversation turns |
+| `CheckpointDivider` | `widget/checkpoint_divider.hpp` | Full-width "↺ Restore checkpoint" rule above a turn |
+| `Composer` | `widget/composer.hpp` | State-driven bordered input box (idle/streaming/permission) |
+| `AgentTimeline` | `widget/agent_timeline.hpp` | Bordered Actions panel logging tool events for a turn |
+| `ToolBodyPreview` | `widget/tool_body_preview.hpp` | Per-`ToolKind` body detail under a timeline event |
+| `AppLayout` | `widget/app_layout.hpp` | Top-level chat-app frame (header/body/composer/overlay) |
 | `UserMessage` | `widget/message.hpp` | Chat user message bubble |
 | `AssistantMessage` | `widget/message.hpp` | Chat assistant message bubble |
 | `ThinkingBlock` | `widget/thinking.hpp` | Collapsible AI thinking block |
-| `DiffView` | `widget/diff_view.hpp` | Side-by-side or unified diff |
+| `StreamingCursor` | `widget/streaming_cursor.hpp` | Pulsing "assistant is streaming" indicator |
+| `SystemBanner` | `widget/system_banner.hpp` | Severity-coloured system alert (ctx warning, rate limit) |
+| `TodoList` | `widget/todo_list.hpp` | Session todo list card |
 | `PlanView` | `widget/plan_view.hpp` | Task plan with status tracking |
+| `Permission` | `widget/permission.hpp` | Permission approval prompt |
+
+### Session / Diagnostics
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `DiffView` | `widget/diff_view.hpp` | Side-by-side or unified diff |
+| `InlineDiff` | `widget/inline_diff.hpp` | Two-line word-level LCS diff |
+| `FileChanges` | `widget/file_changes.hpp` | Session file-change summary (created/modified/deleted + counts) |
+| `ChangesStrip` | `widget/changes_strip.hpp` | Bordered "session has pending changes" banner |
+| `FileRef` | `widget/file_ref.hpp` | File reference with icon |
 | `LogViewer` | `widget/log_viewer.hpp` | Filterable log viewer |
 | `SearchResult` | `widget/search_result.hpp` | Grouped search results display |
-| `FileRef` | `widget/file_ref.hpp` | File reference with icon |
-| `Permission` | `widget/permission.hpp` | Permission approval prompt |
+| `ErrorBlock` | `widget/error_block.hpp` | Structured error/exception card |
+| `GitStatus` | `widget/git_status.hpp` | Branch + working-tree status |
+| `ContextWindow` | `widget/context_window.hpp` | Segmented context-window usage meter |
+| `TokenStream` | `widget/token_stream.hpp` | Live token-rate sparkline + stats (compact/full) |
+| `CostTracker` | `widget/cost_tracker.hpp` | Per-turn + cumulative token/cost breakdown |
+| `ApiUsage` | `widget/api_usage.hpp` | API rate-limit / request-count / latency display |
+| `ActivityIndicator` | `widget/activity_indicator.hpp` | Single-row hex-dump activity tape |
+
+### Status Bar
+
+| Widget | Header | Description |
+|--------|--------|-------------|
+| `StatusBar` | `widget/status_bar.hpp` | Single-line streaming status bar (composes the pieces below) |
+| `TokenStreamSparkline` | `widget/token_stream_sparkline.hpp` | Live tok/s rate + sparkline chip (adaptive width) |
+| `PhaseChip` | `widget/phase_chip.hpp` | Current-phase verb + elapsed, breathing |
+| `TitleChip` | `widget/title_chip.hpp` | Breadcrumb / title chip |
+| `ContextGauge` | `widget/context_gauge.hpp` | Context-window usage gauge |
+| `PhaseAccent` | `widget/phase_accent.hpp` | Top/bottom accent rail strip |
+| `StatusBanner` | `widget/status_banner.hpp` | Full-width toast that takes over the activity row |
 
 ### Tool Widgets
 
@@ -1142,6 +1319,7 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | `WriteTool` | `widget/write_tool.hpp` | File write tool call |
 | `FetchTool` | `widget/fetch_tool.hpp` | HTTP fetch tool call |
 | `AgentTool` | `widget/agent_tool.hpp` | Sub-agent tool call |
+| `GitCommitTool` | `widget/git_commit_tool.hpp` | Git commit operation card |
 
 ---
 

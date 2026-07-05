@@ -138,7 +138,7 @@ in `v(rows)`. Each package gets a different row based on its state.
 
 ## 6. agent.cpp — AI Agent Simulation
 
-**Mode**: Inline (`live()`)
+**Mode**: Inline Program (`run<Agent>()`, `Mode::Inline`, `fps = 20`)
 **Demonstrates**: Streaming text, phase state machine, diff coloring, bordered output
 
 Simulates an AI coding agent with token-by-token text streaming. Each "block"
@@ -158,12 +158,11 @@ for runtime-styled bordered panels.
 
 ## 7. dashboard.cpp — System Monitoring Dashboard
 
-**Mode**: Fullscreen (`run()` with `fps = 30`, receives `Ctx`)
-**Demonstrates**: Adaptive layout, multi-panel grid, process table, sparklines
+**Mode**: Canvas (`canvas_run()`, `Mode::Fullscreen`, `fps = 60`, title "NEXUS")
+**Demonstrates**: Direct canvas painting, multi-panel grid, process table, sparklines
 
-Uses simple `run()` with a render function that takes `const Ctx&` for
-terminal-size-aware layout. The most complex element-tree example. Renders a
-full monitoring dashboard with:
+A full monitoring dashboard painted directly to the `Canvas` (no element tree)
+for 60 fps throughput. Renders:
 - Header bar (uptime, load, summary)
 - CPU panel with per-core sparklines
 - Memory panel with gauge bar
@@ -174,43 +173,32 @@ full monitoring dashboard with:
 
 **Key patterns**:
 
-**Adaptive layout based on terminal size**:
+**Interning styles once in `on_resize`** (not per-frame):
 ```cpp
-[&](const Ctx& ctx) {
-    int w = ctx.size.width.value;
-    int left_inner  = std::max(20, w * 3 / 5 - 4);
-    int right_inner = std::max(14, w * 2 / 5 - 4);
-    // ...
+[&](StylePool& pool, int w, int h) {
+    style_ids.accent = pool.intern(Style{}.with_fg(theme_accent()));
+    // ... rebuild the interned palette when size/theme changes
 }
 ```
 
-**Flex grow for column proportions**:
+**Braille sub-cell plotting** for smooth charts at 2×4 resolution per cell:
 ```cpp
-auto left_col  = vstack().grow(3)(cpu_panel, net_panel);
-auto right_col = vstack().grow(2)(mem_panel, disk_panel);
-auto grid = hstack()(left_col, right_col);
+braille_plot(canvas, ox, oy, bw, bh, samples, style_id);
+braille_line(canvas, ox, oy, bw, bh, series, style_id);
 ```
 
-**Bordered panels with titles**:
+**Direct canvas draw calls** in the paint pass (`draw_gauges`, `draw_radar`,
+`draw_hex`, `draw_spectrum`, `draw_waveform`, `draw_network`, `draw_status`):
 ```cpp
-vstack()
-    .border(BorderStyle::Round).border_color(theme_border())
-    .border_text(spin() + " CPU", BorderTextPos::Top)
-    .padding(0, 1, 0, 1)(rows)
+[&](Canvas& canvas, int w, int h) {
+    draw_gauges(canvas, x, y, gw, gh);
+    draw_radar(canvas, rx, ry, rw, rh);
+    apply_glitch(canvas, w, h);   // full-frame post-effect
+}
 ```
 
-**Alternating row backgrounds**:
-```cpp
-auto row_bg = (i % 2 == 1)
-    ? Style{}.with_bg(Color::rgb(18, 18, 26))
-    : Style{};
-hstack().style(row_bg)(columns...)
-```
-
-**Theme cycling**:
-```cpp
-on(ev, 't', [] { g_theme = (g_theme + 1) % kThemeCount; });
-```
+See also `sysmon.cpp` for the **element-tree** flavour of a system monitor
+(inline `run()` with widgets instead of raw canvas paint).
 
 ## 8. chat.cpp — AI Agent Session
 
@@ -345,9 +333,9 @@ if (auto pos = mouse_pos(ev)) hover_col = pos->col - 1;
 if (mouse_clicked(ev)) rain->shockwave(pos->col, pos->row);
 ```
 
-## 17. spectrum.cpp / dashboard.cpp — Signal Charts + Heatmap
+## 17. spectrum.cpp — Signal Charts + Heatmap
 
-**Mode**: Canvas (`canvas_run()`)
+**Mode**: Canvas (`canvas_run()`, `Mode::Fullscreen`, `fps = 60`)
 **Demonstrates**: Braille sub-cell graphics, 2D heatmap, fast math, split panels
 
 Two visualization techniques side by side:
@@ -459,7 +447,62 @@ A Snake game using canvas half-block rendering with a gradient-colored body,
 particle effects on food collection, and ghost trails. Arrow keys / WASD / hjkl
 to move, space to pause, W to toggle wrap mode.
 
-## 22–23. Additional Canvas Demos
+## 22. agent_session.cpp — AI Agent Reference App
+
+**Mode**: Inline Program (`run<App>()`, `Mode::Inline`, `fps = 30`)
+**Demonstrates**: `Cmd::task` background worker, SSE-shaped streaming, live tool
+cards, the full status-bar family, zero scrollback corruption
+
+The flagship auto-piloted agent app (~2300 lines). A background `Cmd::task`
+worker feeds Anthropic-shaped stream events (`ThinkingDelta`, `ToolBegin/
+Delta/End`, `PlanCreated`, `PermissionAsk`, `AssistantDelta`) into a pure
+`update()` loop; tool widgets mutate while I/O is still arriving. It cycles
+four scenarios unattended and auto-grants permissions — the canonical stress
+test that streaming inline output never duplicates or corrupts native
+scrollback. Uses `WelcomeScreen`, `Composer`, `SystemBanner`, `PhaseChip`,
+`ContextGauge`, `TokenStreamSparkline`, and `ModelBadge`. Type at any time to
+drive it manually.
+
+## 23. messenger.cpp — Multi-Channel Chat
+
+**Mode**: Fullscreen Program (`run<Messenger>()`, `.mouse = true`, `fps = 30`)
+**Demonstrates**: Pure Elm architecture at scale, `Sub::every`/`on_key`/
+`on_resize`, full editing composer, `Overlay` modals
+
+A multi-channel terminal chat (~2300 lines) with no `Signal`/globals — all
+state flows through `update()`/`view()`/`subscribe()`. Simulated peers post
+across four channels via `Sub::every`; a catch-all `Sub::on_key` drives a full
+UTF-8 composer (word-delete, line-kill, cursor motion), slash commands (`/me`,
+`/clear`, `/help`), channel navigation, and scrollback. Channel-jumper and
+help views use the `Overlay` widget. The canonical large Program-architecture
+reference.
+
+## 24. space3d.cpp — Raymarched Terrain Flight
+
+**Mode**: Canvas (`canvas_run()`, `Mode::Fullscreen`, `fps = 30`,
+`auto_clear = false`)
+**Demonstrates**: Per-pixel raymarched heightmap, multi-threaded rendering,
+atmospheric scattering
+
+A 3D flight demo over raymarched terrain with water reflections, ambient
+occlusion, soft shadows, procedural erosion texturing, and a golden-hour
+scattering sky. Rendering is split across `std::thread`s — the heaviest 3D
+canvas example. WASD/arrows steer, space ascends, `c` descends, `b` boosts.
+
+## 25. motion_showcase.cpp — Animation Framework Tour
+
+**Mode**: Inline Program (`run<Showcase>()`, `Mode::Inline`)
+**Demonstrates**: `Motion<T>` self-driving values, `pulse()`, `Timeline`
+keyframes, `Stagger`, `text_reveal` — all with NO manual clock/dt
+
+A one-screen tour of `core/motion.hpp` + `anim/text_reveal.hpp`. Spring-driven
+sliders (`wobbly` preset), breathing `pulse()`, keyframe `Timeline`
+choreography, index-phased `Stagger` fan-out, and a typewriter `text_reveal`
+decorator. Widget authors declare intent and read a value while the framework
+owns time and cadence. SPACE toggles the spring, `1`–`7` fire the demos, `c`
+cycles the pulsing colour. See [Animation](14-animation.md).
+
+## 26–27. Additional Canvas Demos
 
 The remaining examples are all `canvas_run()` physics and visual demos:
 
@@ -503,13 +546,17 @@ truth.)
 
 **Dashboards & rich layout** — multi-panel flexbox, sparklines, gauges:
 
-- `dashboard` — the most complex element-tree example (adaptive grid).
+- `dashboard` — the most elaborate canvas demo (oscilloscope, radar, hex
+  waterfall, spirograph painted directly to the `Canvas`).
 - `deploy`, `hacker`, `ide`, `music`, `space`, `stocks`, `sysmon` — themed
   full-screen / inline dashboards.
 
-**Scrolling** — the `ScrollableView` widget in fullscreen:
+**Scrolling** — clip- vs slice-based viewports + scrollbar styling:
 
-- `scroll_2d`, `scroll_clip`, `scroll_slice`, `scroll_styles`.
+- `scroll_2d` — two-axis scroll over one `ScrollState`.
+- `scroll_clip` — overdraw-and-clip (paint all rows, renderer drops off-screen).
+- `scroll_slice` — emit only visible rows (how log_viewer/list/textarea work).
+- `scroll_styles` — scrollbar styling variants.
 
 **Animation framework:**
 

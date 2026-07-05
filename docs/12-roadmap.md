@@ -92,9 +92,9 @@ They are header-first, allocation-light, and fully tested
 ## What maya has today
 
 - **Elm architecture**: Program concept with Model/Msg/init/update/view/subscribe
-- **Effects as data**: `Cmd<Msg>` (quit, batch, after, task, set_title) and `Sub<Msg>` (on_key, on_mouse, on_resize, every)
+- **Effects as data**: `Cmd<Msg>` (quit, batch, after, task, set_title, suspend, commit_scrollback) and `Sub<Msg>` (on_key, on_mouse, on_resize, on_paste, every, on_animation_frame)
 - **`run<P>(RunConfig)`**: Single entry point for all interactive apps (fullscreen and inline)
-- 50+ widgets across 9 categories (Input, Data Display, Navigation, Display, Overlay, Visualization, Specialized, Tool Widgets)
+- 90+ widgets across a dozen categories (Input, Data Display, Navigation, Display, Overlay, Visualization, Agent UI, Session/Diagnostics, Status Bar, Tool Widgets)
 - Compile-time DSL with both compile-time and runtime pipes
 - Runtime pipe system for dynamic values
 - Flexbox layout engine

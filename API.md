@@ -64,7 +64,7 @@ Each widget has its own header. Include only what you use:
 #include <maya/widget/tool_call.hpp>
 ```
 
-All 50+ widgets are in `include/maya/widget/`. They satisfy the `Node` concept and work directly in DSL expressions.
+All 90+ widgets are in `include/maya/widget/`. They satisfy the `Node` concept and work directly in DSL expressions.
 
 ### Internal — `<maya/internal.hpp>`
 

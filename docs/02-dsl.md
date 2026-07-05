@@ -206,6 +206,43 @@ v(t<"Title">, blank_, t<"Body">)   // Empty line between title and body
 
 `blank_` is an empty `TextElement` — a visual spacer that takes one line.
 
+### Scroll Pipes — Viewports
+
+Wrap any node in a scroll viewport backed by a caller-owned `ScrollState`
+(the host stores it, typically `mutable` on the Model). The renderer applies
+the offset and writes `max_x`/`max_y` back after layout, so scroll clamping is
+automatic — you never compute bounds yourself.
+
+```cpp
+ScrollState st;                          // owned by the host
+
+v(long_log) | scroll(st)                 // both axes, viewport = allotted size
+v(long_log) | scrolly(st, 20)            // vertical only, 20-row window
+h(wide_row) | scrollx(st, 60)            // horizontal only, 60-col window
+v(grid)     | scroll(st, 60, 20)         // both axes, fixed 60×20 window
+```
+
+| Pipe | Axes | Viewport |
+|------|------|----------|
+| `scroll(st)` | both | allocated size |
+| `scroll(st, h)` | vertical | fixed height `h` |
+| `scroll(st, w, h)` | both | fixed `w`×`h` |
+| `scrolly(st, h)` | vertical | fixed height `h` |
+| `scrollx(st, w)` | horizontal | fixed width `w` |
+
+See [Signals & Scroll](09-signals.md) for `ScrollState` and the `scrollbar`
+widget that visualises it.
+
+### Text-Wrap Tags — `clip` / `nowrap`
+
+By default `text()` word-wraps at the container width. Two tags override that
+per node:
+
+```cpp
+text(long_path) | clip      // TextWrap::TruncateEnd — hard-truncate at the edge
+text(banner)    | nowrap    // TextWrap::NoWrap — overflow past the edge, no wrap
+```
+
 ## Style Pipe Operators
 
 Styles compose left-to-right with `|`:

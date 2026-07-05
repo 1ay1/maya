@@ -45,6 +45,16 @@ public:
         std::vector<float> history;
         Color              color   = Color::cyan();
         bool               live    = false;     // false = dim (frozen)
+
+        // Adaptive width. When true, build() returns a grow-tagged
+        // component that sizes the sparkline to FILL its allocated
+        // slot (the status bar hands it the dead space between the
+        // phase chip and the model badge), clamped to
+        // [8, max_spark_cells] and right-pinned so the newest sample
+        // stays glued to the chips on its right. When false (default)
+        // the legacy fixed 16-cell layout is byte-identical to before.
+        bool               adaptive        = false;
+        int                max_spark_cells = 64;
     };
 
     explicit TokenStreamSparkline(Config c) : cfg_(std::move(c)) {}
@@ -53,15 +63,53 @@ public:
 
     [[nodiscard]] Element build() const {
         using namespace dsl;
+
+        if (cfg_.adaptive) {
+            // Adaptive: defer the spark-cell count to paint time, when
+            // the layout engine has allocated this component its real
+            // slot width. grow(1) is what makes the slot the free
+            // space: the status bar places this between the left
+            // group and the right chips instead of a blank spacer.
+            return Element{component([cfg = cfg_](int w, int /*h*/) -> Element {
+                using namespace dsl;
+                // Fixed overhead: "⚡ "(2) + rate(5) + " t/s "(5) = 12,
+                // plus 3 cols breathing room on the left so the chip
+                // never butts against the phase chip / breadcrumb.
+                constexpr int kOverhead = 12 + 3;
+                const int cells = std::clamp(
+                    w - kOverhead, 8, std::max(8, cfg.max_spark_cells));
+                // Right-pin: when the slot is wider than the capped
+                // chip, the leading spacer absorbs the slack so the
+                // spark stays adjacent to the chips on its right.
+                return h(spacer(),
+                         render_chip_(cfg, cells)).build();
+            // flex: 1 1 0 — basis 0 + grow 1 means this slot's size
+            // is EXACTLY the row's leftover space after the left group
+            // and right chips take their natural widths. Without the
+            // zero basis, the component's auto-measure would report
+            // its full constraint as natural width and force the
+            // neighbouring chips to shrink/clip.
+            }).grow(1.0f).basis(Dimension::fixed(0))};
+        }
+
+        return render_chip_(cfg_, 16);
+    }
+
+private:
+    Config cfg_;
+
+    [[nodiscard]] static Element render_chip_(const Config& cfg,
+                                              int spark_cells) {
+        using namespace dsl;
         const Color muted = Color::bright_black();
 
         static constexpr const char* kBlocks[8] = {
             "\xe2\x96\x81", "\xe2\x96\x82", "\xe2\x96\x83", "\xe2\x96\x84",
             "\xe2\x96\x85", "\xe2\x96\x86", "\xe2\x96\x87", "\xe2\x96\x88",
         };
-        constexpr int kSparkCells = 16;
+        const int kSparkCells = std::max(1, spark_cells);
 
-        float rate = std::max(0.0f, cfg_.rate);
+        float rate = std::max(0.0f, cfg.rate);
         Color rc = (rate > 50.0f)  ? Color::green()
                  : (rate >= 20.0f) ? Color::yellow()
                                    : Color::red();
@@ -87,7 +135,7 @@ public:
 
         // Sparkline — pad on LEFT with lowest block so right edge stays
         // pinned and new samples appear on the right.
-        std::span<const float> hist{cfg_.history.data(), cfg_.history.size()};
+        std::span<const float> hist{cfg.history.data(), cfg.history.size()};
         std::string spark;
         spark.reserve(kSparkCells * 3);
         float lo = 0.0f, hi = 1.0f;
@@ -108,10 +156,10 @@ public:
             spark += kBlocks[level];
         }
 
-        Style spark_style = cfg_.live ? Style{}.with_fg(cfg_.color)
-                                      : Style{}.with_fg(cfg_.color).with_dim();
-        Style rate_style  = cfg_.live ? Style{}.with_fg(rc).with_bold()
-                                      : Style{}.with_fg(rc).with_dim();
+        Style spark_style = cfg.live ? Style{}.with_fg(cfg.color)
+                                     : Style{}.with_fg(cfg.color).with_dim();
+        Style rate_style  = cfg.live ? Style{}.with_fg(rc).with_bold()
+                                     : Style{}.with_fg(rc).with_dim();
 
         return h(
             text("\xe2\x9a\xa1 ", Style{}.with_fg(rc)),                  // ⚡
@@ -120,9 +168,6 @@ public:
             text(std::move(spark), spark_style)
         ).build();
     }
-
-private:
-    Config cfg_;
 
     // 5-char tokens: "999.9" / "99.9k" / "9.9M". Space-padded on the left.
     // Retained for callers / future revisions; not used by the

@@ -159,11 +159,15 @@ private:
             lparts.push_back(PhaseChip{pc}.build());
             auto left = h(std::move(lparts));
 
-            // ── Right group: tok-stream + model + ctx. Each piece drops
-            //    as width shrinks so the group never overflows the row.
+            // ── Right group: model + ctx. Each piece drops as width
+            //    shrinks so the group never overflows the row. The
+            //    token-stream chip lives in the MIDDLE slot (below),
+            //    not here: adaptive mode grows it across the dead
+            //    space between the phase chip and these chips.
             std::vector<Element> rparts;
             bool emitted_right = false;
-            if (w >= cfg.token_stream_min_width) {
+            const bool show_stream = (w >= cfg.token_stream_min_width);
+            if (show_stream && !cfg.token_stream.adaptive) {
                 rparts.push_back(TokenStreamSparkline{cfg.token_stream}.build());
                 rparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));
                 emitted_right = true;
@@ -181,13 +185,26 @@ private:
             rparts.push_back(text(" "));
             auto right = h(std::move(rparts));
 
+            // Middle slot: the free space between the groups. When the
+            // adaptive token-stream chip is enabled it OWNS that space
+            // — the sparkline stretches across what used to be a blank
+            // spacer (right-pinned internally, clamped to
+            // max_spark_cells), so a wide terminal shows a long rate
+            // history instead of dead cells. Otherwise a plain spacer
+            // keeps the classic left/right split.
+            Element middle = (show_stream && cfg.token_stream.adaptive)
+                ? (h(TokenStreamSparkline{cfg.token_stream}.build(),
+                     text("   \xc2\xb7   ", fg_dim_(muted))) | grow(1.0f)).build()
+                : spacer().build();
+
             // overflow:Hidden guarantees the activity row is ALWAYS
             // exactly one line: if the (already width-pruned) left+right
             // groups still can't both fit on an extremely narrow
             // terminal, the content is clipped at the right edge rather
             // than wrapping onto a phantom second row that would shove
             // the Thread above it and trigger a full-viewport repaint.
-            return (h(left, spacer(), right) | overflow(Overflow::Hidden)).build();
+            return (h(left, std::move(middle), right)
+                    | overflow(Overflow::Hidden)).build();
         });
     }
 

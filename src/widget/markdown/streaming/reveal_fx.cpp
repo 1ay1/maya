@@ -697,8 +697,36 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             auto& live_box  = std::get<BoxElement>(cached_live_.inner);
             auto& build_box = std::get<BoxElement>(cached_build_.inner);
             live_box.children.back() = build_box.children.back();  // fresh tail
+        } else if (
+            // ── Incremental prefix-growth arm ──
+            // The generation moved (a commit landed) but the shape is pure
+            // growth: cached_build_ appended block children while every
+            // child cached_live_ already mirrors is an immutable
+            // ComponentElement value-equal to its cached_build_ twin (same
+            // hash_id — committed blocks never mutate). With the reveal-
+            // paced commit gate, commits fire steadily THROUGHOUT a long
+            // turn (one per block as the cursor sweeps it), so the full
+            // cached_live_ = cached_build_ copy here was O(committed
+            // blocks) per commit ≈ O(turn) per block boundary — the
+            // residual long-turn overlay cost. Copy only the NEW children
+            // (plus refresh the old tail slot, which the commit replaced
+            // with a block) — O(new blocks) per commit.
+            std::holds_alternative<BoxElement>(cached_live_.inner)
+            && std::holds_alternative<BoxElement>(cached_build_.inner)
+            && !std::get<BoxElement>(cached_live_.inner).children.empty()
+            && std::get<BoxElement>(cached_build_.inner).children.size()
+                   >= std::get<BoxElement>(cached_live_.inner).children.size())
+        {
+            auto& live_box  = std::get<BoxElement>(cached_live_.inner);
+            auto& build_box = std::get<BoxElement>(cached_build_.inner);
+            const std::size_t keep = live_box.children.size() - 1; // drop old tail
+            live_box.children.resize(keep);
+            live_box.children.reserve(build_box.children.size());
+            for (std::size_t i = keep; i < build_box.children.size(); ++i)
+                live_box.children.push_back(build_box.children[i]);
+            live_overlay_prefix_gen_ = prefix_->generation;
         } else {
-            cached_live_ = cached_build_;   // O(N) once per prefix generation
+            cached_live_ = cached_build_;   // O(N) — first frame / reshape only
             live_overlay_prefix_gen_ = prefix_->generation;
         }
         // We decorate cached_live_ in place from here on.

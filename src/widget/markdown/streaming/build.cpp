@@ -54,6 +54,18 @@ const Element& StreamingMarkdown::build() const {
         build_dirty_ = true;
     }
 
+    // Reveal-paced progressive commit: the cursor advances on its own
+    // wall clock even when no bytes arrive (draining a backlog, the
+    // finalize ramp), and append_safe — the only other commit site —
+    // doesn't run on those frames. Poll here so each pending boundary
+    // commits the moment the cursor sweeps past it, keeping the live
+    // tail bounded to ~one block + the cursor's lag window. No-op when
+    // not (reveal_fx_ && live_) or nothing is pending. Committing bumps
+    // build_dirty_ + source_version_ internally, so the cache tiers
+    // below see a coherent state.
+    if (reveal_fx_ && live_)
+        const_cast<StreamingMarkdown*>(this)->commit_revealed_();
+
     // Untouched-since-last-build: return cached. Dominant case when the
     // widget is idle (no streaming).
     if (!build_dirty_) return render_live_overlay_();

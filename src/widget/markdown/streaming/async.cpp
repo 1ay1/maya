@@ -251,6 +251,8 @@ void StreamingMarkdown::maybe_apply_async_() const {
         self->scan_cursor_ = self->committed_;
         self->scan_in_fence_ = self->in_code_fence_;
         self->scan_last_boundary_ = self->committed_;
+        // The whole buffer is committed — every pending boundary is consumed.
+        self->scan_boundaries_.clear();
         // Drop fold map entries that no longer correspond to any
         // block in the new prefix (offsets shifted under us).
         std::vector<std::size_t> drop;

@@ -232,6 +232,19 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
     bool   in_fence      = scan_in_fence_;
     size_t last_boundary = scan_last_boundary_;
 
+    // Ledger recorder: every boundary the scanner discovers is ALSO
+    // appended to scan_boundaries_ (strictly increasing, > committed_) so
+    // the reveal-paced commit gate (commit_revealed_) can later commit up
+    // to the largest boundary the typewriter cursor has swept — an
+    // INTERMEDIATE boundary on a multi-block tail, which the single
+    // last_boundary return value can't express.
+    auto record = [&](size_t b) {
+        last_boundary = b;
+        if (b > committed_
+            && (scan_boundaries_.empty() || scan_boundaries_.back() < b))
+            scan_boundaries_.push_back(b);
+    };
+
     while (i < source_.size()) {
         bool at_line_start = (i == 0 || source_[i - 1] == '\n');
 
@@ -271,7 +284,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                 // Opening fence commits any prose that preceded it: the
                 // paragraph above can be rendered immediately with its
                 // final styling, even if no blank line separates them.
-                if (!in_fence) last_boundary = i;
+                if (!in_fence) record(i);
                 size_t eol = source_.find('\n', i);
                 if (eol == std::string::npos) {
                     // The fence line isn't newline-terminated. A CLOSING
@@ -323,7 +336,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                         if (marker_only) {
                             in_fence = false;
                             i = source_.size();
-                            last_boundary = i;
+                            record(i);
                             continue;
                         }
                     }
@@ -331,7 +344,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                 }
                 in_fence = !in_fence;
                 i = eol + 1;
-                if (!in_fence) last_boundary = i;
+                if (!in_fence) record(i);
                 continue;
             }
 
@@ -360,7 +373,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                         // when more bytes are present.
                         break;
                     }
-                    last_boundary = i + 1;
+                    record(i + 1);
                     i = i + 1;
                     continue;
                 }
@@ -401,7 +414,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                         && (source_[i + hashes] == ' '
                             || source_[i + hashes] == '\t');
                     if (is_atx) {
-                        last_boundary = i;
+                        record(i);
                         // If the heading line has fully arrived,
                         // anchor the boundary past it so the next
                         // paragraph/heading/etc. starts a fresh
@@ -412,7 +425,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                         std::size_t heading_eol = source_.find('\n', i);
                         if (heading_eol != std::string::npos) {
                             i = heading_eol + 1;
-                            last_boundary = i;
+                            record(i);
                             continue;
                         }
                     }
@@ -425,9 +438,9 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                         // start (the table itself commits at r.pos
                         // — we set last_boundary there and fast-
                         // forward i past the proven table bytes).
-                        last_boundary = i;
+                        record(i);
                         i = r.pos;
-                        last_boundary = r.pos;
+                        record(r.pos);
                         continue;
                     }
                     if (r.kind == TableScan::Incomplete) {
@@ -549,9 +562,9 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                                     }
                                 }
                                 if (safe) {
-                                    last_boundary = i;
+                                    record(i);
                                     i = hr_eol + 1;
-                                    last_boundary = i;
+                                    record(i);
                                     continue;
                                 }
                             }

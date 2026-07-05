@@ -462,6 +462,19 @@ private:
     bool   scan_in_fence_       = false;
     size_t scan_last_boundary_  = 0;
 
+    // ── Pending-boundary ledger ──
+    // Every block boundary the scanner has discovered PAST committed_,
+    // in increasing order. find_block_boundary returns only the LATEST
+    // boundary, but the reveal-paced commit gate (append_safe /
+    // commit_revealed_) needs the largest boundary ≤ the reveal cursor —
+    // an INTERMEDIATE one on a multi-block tail. Without the ledger the
+    // gate degenerates to all-or-nothing: the latest boundary rides the
+    // live edge (always ahead of the cursor, which lags ~drain_secs by
+    // design), so nothing ever commits mid-stream and the tail grows
+    // O(turn) — re-introducing the long-turn render lag. Entries are
+    // pruned to > committed_ inside commit_range; cleared by clear().
+    std::vector<size_t> scan_boundaries_;
+
     // Codepoint / escape-sequence safety net.  Every byte the user feeds
     // passes through here before being appended to source_, so source_ is
     // always a valid UTF-8 string with no half-written ANSI sequences —
@@ -785,6 +798,17 @@ private:
     // Returns the byte offset up to which blocks are "complete".
     // Non-const because it advances the resumable scanner state above.
     [[nodiscard]] size_t find_block_boundary() noexcept;
+
+    // Reveal-paced progressive commit: commit every pending boundary the
+    // reveal cursor has swept past (largest ledger entry ≤ cursor byte).
+    // The visible cells are unchanged by construction — render_tail's
+    // canonical path already renders terminated bytes in their committed
+    // shape, and the cursor has already revealed them — so this is pure
+    // internal bookkeeping that keeps the live tail bounded to ~one
+    // block + the cursor's lag window. No-op unless reveal_fx_ && live_.
+    // Called from append_safe (on new bytes) and from build() via
+    // const_cast (cursor advances between deltas / during a wire pause).
+    void commit_revealed_();
 
     // Parse [committed_, boundary) — stash its ref defs, render its blocks.
     void commit_range(size_t boundary);

@@ -411,8 +411,22 @@ public:
             std::size_t nl = src.find('\n', i);
             std::string_view line;
             if (nl == std::string::npos) {
-                line = std::string_view(src).substr(i);
-                process_line(line);
+                // Final unterminated line. When the source ends with '\n',
+                // i == src.size() and the slice is EMPTY — that is NOT a
+                // line: a trailing newline TERMINATES the last line (cmark
+                // §2.1), it doesn't open an empty one. Processing it fed a
+                // phantom blank content line into any still-open leaf — an
+                // UNCLOSED code fence gained a trailing "\n\n" that the
+                // CodeFence emit (which pops exactly one '\n') couldn't
+                // fully strip, rendering a phantom blank row inside the
+                // border. During the streaming reveal (line-granular clip —
+                // every intermediate extent ends in '\n') that blank row
+                // appeared and vanished at every line step: the 1-row
+                // height oscillation st_reveal_fx_height_monotonic catches.
+                if (i < src.size()) {
+                    line = std::string_view(src).substr(i);
+                    process_line(line);
+                }
                 break;
             } else {
                 line = std::string_view(src).substr(i, nl - i);

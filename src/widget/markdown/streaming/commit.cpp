@@ -204,6 +204,20 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     build_dirty_ = true;
     ++source_version_;
 
+    // Prune consumed entries from the pending-boundary ledger — anything
+    // ≤ the new committed_ has been committed (this call may have jumped
+    // past several intermediate boundaries, e.g. finish()).
+    if (!scan_boundaries_.empty()) {
+        std::size_t keep = 0;
+        while (keep < scan_boundaries_.size()
+               && scan_boundaries_[keep] <= committed_)
+            ++keep;
+        if (keep > 0)
+            scan_boundaries_.erase(scan_boundaries_.begin(),
+                                   scan_boundaries_.begin()
+                                       + static_cast<std::ptrdiff_t>(keep));
+    }
+
     // Keep scanner state coherent with the new committed_.
     //
     // Resyncing scan_in_fence_ to in_code_fence_ is valid ONLY when the
@@ -275,9 +289,54 @@ void StreamingMarkdown::append_safe(std::string_view safe_bytes) {
     if (boundary > committed_) {
         const bool pristine_reveal_start =
             reveal_fx_ && !live_ && committed_ == 0;
-        if (!pristine_reveal_start)
-            commit_range(boundary);
+        if (pristine_reveal_start) return;
+        // ── Reveal-paced commit ──
+        //
+        // While the animated reveal is live, commit only up to the largest
+        // discovered boundary the typewriter cursor has already swept —
+        // never bytes it hasn't revealed. Committed blocks render in full
+        // immediately (the prefix is un-ghosted, un-clipped) and
+        // advance_reveal_cursor_ snaps the cursor forward past
+        // committed_cp, so an early commit TELEPORTS ~drain_secs worth of
+        // text (the cursor's design lag) onto the screen in one frame.
+        // That was the per-block-type burst the smoothness probe measured:
+        // prose glided at ~2 content-cells/frame while code fences (+196),
+        // tables (+103) and lists (+191) popped whole at their commit
+        // boundary — a structured block's boundary is discovered the
+        // instant it completes, when the cursor is still mid-block.
+        //
+        // Deferring is VISUALLY FREE: render_tail's canonical path renders
+        // terminated tail bytes in their committed shape (byte-identical
+        // cells — the monotonicity funnel's guarantee), with build()'s
+        // line-granular clip + the eager bottom-row glide pacing rows out
+        // exactly like prose. And it is BOUNDED: commit_revealed_ commits
+        // each pending ledger boundary as the cursor crosses it (also
+        // polled from build() between deltas), so the uncommitted tail
+        // stays ≈ one block + the cursor's lag window — never O(turn).
+        // finish() flushes everything at end-of-stream; the snap paths
+        // (snap_reveal_to_edge + finish) move the cursor to the edge
+        // first, so the gate opens by construction.
+        if (reveal_fx_ && live_) {
+            commit_revealed_();
+            return;
+        }
+        commit_range(boundary);
     }
+}
+
+void StreamingMarkdown::commit_revealed_() {
+    if (!(reveal_fx_ && live_)) return;
+    if (scan_boundaries_.empty()) return;
+    const std::size_t cursor_byte =
+        byte_offset_for_cp(static_cast<std::size_t>(
+            reveal_cp_ < 0.0 ? 0.0 : reveal_cp_));
+    // Largest pending boundary the cursor has fully swept.
+    std::size_t target = 0;
+    for (std::size_t b : scan_boundaries_) {
+        if (b <= cursor_byte && b > committed_) target = b;
+        if (b > cursor_byte) break;
+    }
+    if (target > committed_) commit_range(target);
 }
 
 std::size_t StreamingMarkdown::byte_offset_for_cp(
@@ -428,6 +487,7 @@ void StreamingMarkdown::clear() {
     scan_cursor_        = 0;
     scan_in_fence_      = false;
     scan_last_boundary_ = 0;
+    scan_boundaries_.clear();
     // Reset the inline-tail cache. Strictly speaking the prefix-match
     // check at render_tail entry is self-correcting (any new tail will
     // mismatch and re-parse), but clearing here avoids carrying KB of

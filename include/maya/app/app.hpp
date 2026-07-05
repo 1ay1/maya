@@ -507,6 +507,20 @@ public:
     // honour OSC 52 reads (no reply ever arrives — host falls back).
     void query_clipboard();
 
+    // Suspend the TUI, hand the real terminal to `fn` (an interactive
+    // child process that inherits stdin/stdout/stderr), then restore the
+    // TUI and force a full repaint. Blocks for the child's whole run —
+    // that's intentional: the user IS interacting with the child (typing
+    // a sudo password, watching output). While suspended the terminal is
+    // in cooked mode with the TUI escapes torn down, so the child sees a
+    // clean, line-disciplined tty. On return the next render repaints
+    // from scratch (force_redraw / reset_inline as appropriate) so the
+    // frame the child scrolled over is cleanly redrawn.
+    //
+    // No-op (fn still runs) if neither terminal is engaged — fn just runs
+    // against whatever the fds currently are.
+    void suspend(const std::function<void()>& fn);
+
     // Row count of the last composed inline frame (0 in fullscreen mode
     // or before the first render). Callers can use this as a cheap proxy
     // for tree height when deciding to virtualize. Returns 0 in any
@@ -1144,6 +1158,26 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
         },
         [&](const typename Cmd<Msg>::SetHeightHold& s) {
             ctx.rt.set_height_hold(s.on);
+        },
+        [&](const typename Cmd<Msg>::Suspend& s) {
+            // Synchronous by design — the user is interacting with the
+            // child (typing a sudo password, watching output); the UI
+            // thread has nothing else to do. The runtime handles the
+            // teardown/restore + re-anchor; we push the child's result
+            // Msg into pending so the very next drain folds it into the
+            // model before the post-suspend repaint.
+            if (!s.run) return;
+            Msg result = [&] {
+                std::optional<Msg> out;
+                ctx.rt.suspend([&] { out.emplace(s.run()); });
+                // s.run() throwing propagates out of rt.suspend after the
+                // tty is restored — out stays empty only if that happens,
+                // and the throw skips this lambda's return anyway. The
+                // fallback default-constructed Msg is unreachable in
+                // practice but keeps the expression total.
+                return out ? std::move(*out) : Msg{};
+            }();
+            ctx.pending.push_back(std::move(result));
         },
     }, cmd.inner);
 }

@@ -463,6 +463,98 @@ public:
         return backend_.read_raw();
     }
 
+    /// Temporarily hand the real terminal to a child process.
+    ///
+    /// Tears the TUI mode DOWN (emit the same restore escapes the
+    /// destructor would: pop KKP / modifyOtherKeys, restore DECAWM +
+    /// cursor, leave alt-screen if any), then drops to COOKED mode so a
+    /// child inheriting this process's stdin/stdout/stderr talks to a
+    /// normal line-disciplined tty. Runs `fn` synchronously — the child
+    /// (e.g. an interactive `sudo`) owns the terminal for its whole run:
+    /// password prompts echo-suppress natively, output streams live,
+    /// Ctrl+C is delivered as SIGINT by the tty. On return, re-enters raw
+    /// mode and re-emits the TUI setup escapes so the caller can force a
+    /// full repaint.
+    ///
+    /// The backend object is NOT destroyed/rebuilt — we toggle raw/cooked
+    /// on the SAME handle so fds stay stable (the child inherits them).
+    /// Available in InlineMode + AltScreen; the escape sets differ so each
+    /// gets its own teardown/setup pair.
+    template <std::invocable F>
+    auto suspend(F&& fn) -> Status
+        requires (std::same_as<State, InlineMode> || std::same_as<State, AltScreen>)
+    {
+        // ── Teardown: mirror the destructor's restore sequence ──
+        {
+            std::string seq;
+            seq.reserve(128);
+            if constexpr (std::same_as<State, AltScreen>) {
+                seq += ansi::kkp_pop;
+                seq += ansi::disable_bracketed_paste;
+                seq += ansi::disable_focus;
+                seq += ansi::disable_alt_scroll;
+                seq += ansi::disable_mouse;
+                seq += ansi::show_cursor;
+                seq += ansi::alt_screen_leave;
+            } else {  // InlineMode
+                seq += ansi::modify_other_keys_off;
+                seq += ansi::kkp_pop;
+                seq += ansi::disable_bracketed_paste;
+                seq += "\x1b[?7h";          // DECAWM on
+                seq += ansi::show_cursor;
+                seq += ansi::reset;
+                seq += "\r\n";              // shell prompt onto a fresh line
+            }
+            (void)backend_.write_all(seq);
+        }
+        // Cooked mode: the child needs line discipline (echo, canonical
+        // input) so its own prompt/readline behaves and a password field
+        // suppresses echo the normal way.
+        (void)backend_.disable_raw();
+
+        // ── Run the child. Exceptions must not strand us in cooked. ──
+        try {
+            std::forward<F>(fn)();
+        } catch (...) {
+            // fall through to restore, then rethrow after the tty is sane
+            (void)restore_tui_mode();
+            throw;
+        }
+
+        // ── Restore: raw + re-emit TUI setup escapes ──
+        return restore_tui_mode();
+    }
+
+private:
+    // Re-enter raw mode and re-emit the per-state TUI setup escapes.
+    // Factored out so suspend()'s exception path and normal path share it.
+    auto restore_tui_mode() -> Status
+        requires (std::same_as<State, InlineMode> || std::same_as<State, AltScreen>)
+    {
+        MAYA_TRY_VOID(backend_.enable_raw());
+        std::string seq;
+        seq.reserve(128);
+        if constexpr (std::same_as<State, AltScreen>) {
+            seq += ansi::alt_screen_enter;
+            seq += ansi::hide_cursor;
+            seq += ansi::enable_mouse;
+            seq += ansi::enable_alt_scroll;
+            seq += ansi::enable_focus;
+            seq += ansi::enable_bracketed_paste;
+            seq += ansi::kkp_push;
+            seq += ansi::clear_screen();
+            seq += ansi::home();
+        } else {  // InlineMode
+            seq += ansi::enable_bracketed_paste;
+            seq += ansi::kkp_push;
+            seq += ansi::modify_other_keys_on;
+            seq += ansi::hide_cursor;
+        }
+        return backend_.write_all(seq);
+    }
+
+public:
+
     // ========================================================================
     // Destructor - RAII cleanup in reverse order of state transitions
     // ========================================================================

@@ -156,6 +156,7 @@ set(MAYA_LIB_SOURCES
     src/render/frame_bytes.cpp
     src/render/inline_frame.cpp
     src/render/canvas_witness.cpp
+    src/render/scrollback_ledger.cpp
     src/widget/markdown.cpp
     # markdown widget — three modules: parser / render / streaming
     src/widget/markdown/parser/parser_inline.cpp

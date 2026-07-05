@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "overload.hpp"
+#include "../render/scrollback_ledger.hpp"
 
 namespace maya {
 
@@ -215,10 +216,30 @@ public:
     /// `Runtime::set_height_hold` ignores the bit. See that method.
     struct SetHeightHold { bool on = false; };
 
+    /// Suspend the TUI and hand the REAL terminal to `run` — the
+    /// interactive-child escape hatch (sudo password prompts, editors,
+    /// pagers). The runtime tears the TUI down to a cooked, clean tty,
+    /// calls `run()` SYNCHRONOUSLY on the UI thread (the user is
+    /// interacting with the child; there is nothing else to do), then
+    /// restores raw mode + the TUI escapes, re-anchors the renderer
+    /// (inline: fresh case-A serialize below the child's output;
+    /// fullscreen: Divergent full repaint), and dispatches the Msg
+    /// `run` returned so the reducer can fold the child's result back
+    /// into the model.
+    ///
+    /// `run` returning a Msg (rather than void) is what closes the
+    /// loop: the callable typically spawns the child with inherited
+    /// stdio, tees its output to a buffer, and returns a completion
+    /// Msg carrying exit code + captured bytes.
+    struct Suspend {
+        std::function<Msg()> run;
+    };
+
     using Variant = std::variant<None, Quit, Batch, After, SetTitle,
                                  WriteClipboard, QueryClipboard, Task, IsolatedTask,
                                  CommitScrollback, CommitScrollbackOverflow,
-                                 ForceRedraw, ResetInline, SetHeightHold>;
+                                 ForceRedraw, ResetInline, SetHeightHold,
+                                 Suspend>;
     Variant inner;
 
     // -- Smart constructors ---------------------------------------------------
@@ -258,8 +279,32 @@ public:
         return {IsolatedTask{std::forward<F>(f)}};
     }
 
+    /// LEGACY raw-int commit. Deprecated: the count is host-guessed,
+    /// and every historical trim-corruption bug was drift between a
+    /// host guess and what maya painted (see docs/internals/
+    /// witness-chain.md, Trim Accounting). Hold your sealed prefix in
+    /// a maya::ScrollbackLedger, render it via ledger_ref /
+    /// Conversation::Config::ledger, and pass ledger.harvest() to the
+    /// typed overload below — the commit count then comes from maya's
+    /// own paint pass and structurally cannot drift.
+    [[deprecated("host-guessed row counts drift from the wire; use "
+                 "ScrollbackLedger::harvest() + "
+                 "commit_scrollback(ScrollbackDebt)")]]
     [[nodiscard]] static auto commit_scrollback(int rows) -> Cmd {
         return {CommitScrollback{rows}};
+    }
+
+    /// Typed-token commit (Witness Chain — Trim Accounting). The ONLY
+    /// way to obtain a ScrollbackDebt is ScrollbackLedger::harvest(),
+    /// whose rows are paint-recorded by maya's own layout pass — so a
+    /// host that routes its trims through the ledger structurally
+    /// CANNOT commit a count that drifts from the wire. Prefer this
+    /// over the raw-int overload everywhere a ledger exists; the int
+    /// overload remains for non-ledger hosts and is clamped to the
+    /// provable overflow inside commit_inline_prefix anyway.
+    [[nodiscard]] static auto commit_scrollback(ScrollbackDebt debt) -> Cmd {
+        if (debt.empty()) return none();
+        return {CommitScrollback{debt.rows()}};
     }
 
     /// Commit every row of the last inline frame that has provably
@@ -286,6 +331,13 @@ public:
     /// Toggle the inline monotonic-height hold. See `SetHeightHold`.
     [[nodiscard]] static auto set_height_hold(bool on) -> Cmd {
         return {SetHeightHold{on}};
+    }
+
+    /// Suspend the TUI for an interactive child. See `Suspend`.
+    template <std::invocable F>
+        requires std::convertible_to<std::invoke_result_t<F>, Msg>
+    [[nodiscard]] static auto suspend(F&& f) -> Cmd {
+        return {Suspend{std::forward<F>(f)}};
     }
 
     /// Combine multiple Cmds. Flattens nested batches and strips Nones.
@@ -360,7 +412,11 @@ public:
                     });
             },
             [](const CommitScrollback& c) -> Cmd<B> {
-                return Cmd<B>::commit_scrollback(c.rows);
+                // Direct variant construction, not the smart
+                // constructor: the int overload is deprecated for
+                // hosts (guessed counts), but map() merely TRANSPORTS
+                // an already-minted count across a Msg-type boundary.
+                return Cmd<B>{typename Cmd<B>::CommitScrollback{c.rows}};
             },
             [](const CommitScrollbackOverflow&) -> Cmd<B> {
                 return Cmd<B>::commit_scrollback_overflow();
@@ -373,6 +429,12 @@ public:
             },
             [](const SetHeightHold& s) -> Cmd<B> {
                 return Cmd<B>::set_height_hold(s.on);
+            },
+            [&](const Suspend& s) -> Cmd<B> {
+                return Cmd<B>::suspend(
+                    [run = s.run, mapper = std::forward<F>(f)]() -> B {
+                        return mapper(run());
+                    });
             },
         }, inner);
     }

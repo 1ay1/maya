@@ -33,6 +33,7 @@ namespace maya {
 
 struct Element;
 struct ElementList;
+class ScrollbackLedger;
 
 } // namespace maya
 
@@ -297,6 +298,18 @@ struct ComponentElement {
 
 struct ElementListRef {
     const std::vector<Element>* items_ref = nullptr;
+
+    /// Optional paint write-back sink (Witness Chain — Trim Accounting).
+    /// When non-null, the renderer's paint pass records each item's
+    /// laid-out height into the ledger every frame: same layout pass,
+    /// same width, same frame as the bytes that reach the wire. This is
+    /// what lets ScrollbackLedger mint trim-commit counts from maya's
+    /// OWN measurements instead of a host-side re-measure pipeline (the
+    /// historical drift source for every trim-corruption bug). The
+    /// pointed-to ledger must own `*items_ref` (its elements() vector)
+    /// so indices line up; ScrollbackLedger guarantees that pairing
+    /// structurally when the host renders through it.
+    const ScrollbackLedger* ledger = nullptr;
 };
 
 // ============================================================================

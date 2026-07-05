@@ -1278,6 +1278,90 @@ void Runtime::query_clipboard() {
 }
 
 // ============================================================================
+// Runtime::suspend — hand the real terminal to an interactive child
+// ============================================================================
+//
+// Blocks on the UI thread for the child's whole run — deliberate: the
+// user is interacting WITH the child (sudo password, live output), so
+// there is nothing for the UI thread to do meanwhile. The heavy lifting
+// (mode teardown/restore escapes, cooked↔raw toggling on the same fd)
+// lives in Terminal<State>::suspend so the escape sets stay adjacent to
+// the destructor sequences they mirror.
+//
+// Post-suspend repaint policy:
+//   • Fullscreen → Divergent: alt-screen re-entry cleared the buffer,
+//     the next render must full-serialize from home. force_redraw()
+//     already encodes exactly that.
+//   • Inline → the child scrolled arbitrary content under our frame;
+//     the physical viewport no longer matches prev_cells anywhere. The
+//     inline coherence must drop to a state that repaints from the
+//     cursor's CURRENT position without trusting any prior row
+//     accounting. reset_to_fresh_after_suspend(): re-anchor like a
+//     first render (case A — serialize at cursor, grow downward,
+//     never touch the child's output above). The child's output thus
+//     stays in native scrollback ABOVE the re-rendered frame, exactly
+//     like shell history above a freshly-launched TUI.
+//
+// Mouse reporting is torn down/restored by the Terminal suspend only in
+// alt mode; inline mode enables mouse at the Runtime layer (create), so
+// mirror that here.
+void Runtime::suspend(const std::function<void()>& fn) {
+    if (!fn) return;
+    static constexpr std::string_view kMouseOn  = "\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h";
+    static constexpr std::string_view kMouseOff = "\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+
+    // Flush any residue the writer is still holding — those bytes belong
+    // to the pre-suspend frame and must not interleave with the child's
+    // output after the mode switch. Bounded best-effort drain (~200 ms):
+    // the fd is non-blocking, so spin try_drain_residue with tiny sleeps
+    // rather than blocking forever on a wedged tty.
+    if (writer_ && writer_->has_residue()) {
+        for (int i = 0; i < 100 && writer_->has_residue(); ++i) {
+            if (auto st = writer_->try_drain_residue(); !st) break;
+            if (writer_->has_residue())
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    }
+
+    if (mouse_enabled_ && output_handle_ != platform::invalid_handle)
+        (void)platform::io_write_all(output_handle_, kMouseOff);
+
+    // Drop O_NONBLOCK for the child — it shares the open file
+    // description and pagers / bulk writers don't expect EAGAIN.
+    if (writer_) writer_->suspend_nonblocking();
+
+    if (alt_terminal_) {
+        (void)alt_terminal_->suspend(fn);
+    } else if (inline_terminal_) {
+        (void)inline_terminal_->suspend(fn);
+    } else {
+        fn();
+    }
+
+    if (writer_) writer_->resume_nonblocking();
+
+    if (mouse_enabled_ && output_handle_ != platform::invalid_handle)
+        (void)platform::io_write_all(output_handle_, kMouseOn);
+
+    // ── Re-anchor rendering ──
+    fs_coherence_ = coherent::Divergent{};
+    if (inline_terminal_) {
+        // The child may have scrolled/printed anything; no prior inline
+        // state is trustworthy. Re-seed to Empty — the next render takes
+        // the first-frame path (case A): serialize at the cursor's
+        // current row, growing downward, leaving the child's output
+        // intact above. This is the same safe initial state create()
+        // uses, for the same reason.
+        in_coherence_ = inline_frame::InlineFrame<inline_frame::Empty>{};
+        // The frame anchor learned at create() is stale — the child
+        // moved the cursor arbitrarily. Zero it so mouse translation
+        // doesn't mis-map rows until the next DSR/anchor pass.
+        inline_top_row_    = 0;
+        inline_frame_rows_ = 0;
+    }
+}
+
+// ============================================================================
 // Runtime::cleanup — final terminal cleanup
 // ============================================================================
 

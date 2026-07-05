@@ -437,13 +437,19 @@ private:
         // frame < 0 = seam-frozen live panel: the host has determined the
         // panel's TOP rows (title + first event headers) may already sit in
         // native scrollback, where any byte change is a committed-row
-        // rewrite (gate → HardReset → stranded chrome). An animated braille
-        // glyph on such a row would tick every frame, so the host passes -1
-        // and we render a STATIC per-status glyph instead: ● for Running,
-        // ○ for Pending. Liveness is carried by the panel FOOTER (a bottom
-        // append, never above the seam while the panel is live), which the
-        // host animates. frame >= 0 keeps the classic spinner for callers
-        // whose panels never straddle the seam.
+        // rewrite (gate → HardReset/soft-repaint → stranded chrome). An
+        // animated braille glyph on such a row would tick every frame, so
+        // the host passes -1 and we render ONE static in-flight glyph —
+        // ● bright_cyan — for BOTH Pending and Running. Not just static
+        // per status: the Pending→Running transition itself must be a
+        // byte+style no-op, because a queued tool's header can commit
+        // while an earlier tool's output grows the panel, and the later
+        // kick to Running would rewrite that committed row (oracle
+        // write/edit turn, t*-e-run at 60x18). Liveness is carried by the
+        // panel FOOTER (a bottom append — never above the seam while the
+        // panel is live), which the host animates. frame >= 0 keeps the
+        // classic spinner + distinct pending hue for callers whose panels
+        // never straddle the seam.
         switch (s) {
             case AgentEventStatus::Running:
                 if (frame < 0)
@@ -453,8 +459,8 @@ private:
                                  Style{}.with_fg(Color::bright_cyan()).with_bold());
             case AgentEventStatus::Pending:
                 if (frame < 0)
-                    return dsl::text(std::string_view{"\xe2\x97\x8b"},   // ○
-                                     Style{}.with_fg(Color::bright_yellow()).with_bold());
+                    return dsl::text(std::string_view{"\xe2\x97\x8f"},   // ● (same as Running)
+                                     Style{}.with_fg(Color::bright_cyan()).with_bold());
                 return dsl::text(std::string_view{spin(frame)},
                                  Style{}.with_fg(Color::bright_yellow()).with_bold());
             case AgentEventStatus::Done:

@@ -188,6 +188,30 @@ bool InlineFrameState::scrollback_prefix_matches(
             while (!s.empty() && s.back() == ' ') s.pop_back();
             return s;
         };
+        // Style-only mismatches (identical glyphs, different style ids)
+        // are invisible in the char dump — print the per-cell style-id
+        // pairs for each mismatching column so lifecycle restyles
+        // (dim flips, color swaps) are attributable.
+        auto dump_styles = [&](int y) {
+            std::string s;
+            int shown = 0;
+            for (int x = 0; x < W && shown < 16; ++x) {
+                const uint64_t pa = a[(std::size_t)y * W + x];
+                const uint64_t pb = b[(std::size_t)y * W + x];
+                if (pa == pb) continue;
+                Cell ca = Cell::unpack(pa), cb = Cell::unpack(pb);
+                char ga = (ca.character >= 32 && ca.character < 127)
+                              ? (char)ca.character : '?';
+                char gb = (cb.character >= 32 && cb.character < 127)
+                              ? (char)cb.character : '?';
+                s += " x" + std::to_string(x) + ":'";
+                s += ga; s += "'s"; s += std::to_string(ca.style_id);
+                s += "->'"; s += gb; s += "'s";
+                s += std::to_string(cb.style_id);
+                ++shown;
+            }
+            return s;
+        };
         std::fprintf(stderr,
             "[gate] prefix mismatch (prev_rows=%d rows=%d W=%d)\n"
             "[gate] all mismatch rows: %s\n",
@@ -203,6 +227,9 @@ bool InlineFrameState::scrollback_prefix_matches(
                              bad ? '*' : ' ', y, dump_row(a, y).c_str());
                 std::fprintf(stderr, "  %c new [%3d]: '%s'\n",
                              bad ? '*' : ' ', y, dump_row(b, y).c_str());
+                if (bad)
+                    std::fprintf(stderr, "    cells[%3d]:%s\n",
+                                 y, dump_styles(y).c_str());
             }
         }
     }

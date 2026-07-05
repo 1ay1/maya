@@ -1035,7 +1035,19 @@ private:
             // are the days where you have to count rows to know the
             // net edit size.
             std::string header;
-            if (total_hunks > 1) {
+            if (total_hunks > 1 && !cfg_.is_streaming) {
+                // "edit i/N" only when SETTLED. While streaming, hunks
+                // arrive one by one, so N ticks 2→3→4 — but an earlier
+                // hunk's header row may already sit in native scrollback
+                // (immutable) as later hunks grew the card; rewriting its
+                // "/N" is a committed-row rewrite → the host renderer's
+                // scrollback gate → destructive HardReset. Streaming
+                // previews also slice to the newest hunk (host-side, the
+                // Write tail-window discipline), where a positional index
+                // would mislabel the hunk anyway — so live headers carry
+                // just the byte-stable stat chip (−N / +M); the full
+                // indexed form appears on the settled re-render, which
+                // paints below the seam.
                 header  = "edit " + std::to_string(i + 1) + "/"
                        + std::to_string(total_hunks) + "  \xc2\xb7  ";
             }

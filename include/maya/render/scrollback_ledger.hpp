@@ -148,6 +148,46 @@ public:
         est_total_ += est_rows;
     }
 
+    /// Seal with a MAYA-MEASURED estimate: lays the block out through
+    /// the real layout engine at the width the paint pass recorded for
+    /// this ledger's fragment (record_paint_width), and uses the
+    /// resulting height as the policy estimate. Falls back to
+    /// `fallback_est_rows` when no paint has recorded a width yet
+    /// (fresh surface before the first frame).
+    ///
+    /// TWO deliberate effects, NEITHER of them accounting:
+    ///
+    ///  1. CACHE WARMING (load-bearing for the freeze seam). A block
+    ///     sealed at the freeze instant carries the SAME hash_id the
+    ///     live tail stamped, and the renderer's hash-keyed measure
+    ///     trusts a cached entry's height blindly. The live-phase
+    ///     entry can hold a stale height; if the freeze frame lays the
+    ///     sealed block out at that stale height, the tree transiently
+    ///     shrinks vs prev_cells and the render gate fires an
+    ///     avoidable (non-destructive) recovery. Running the block
+    ///     through the real layout engine here refreshes the entry to
+    ///     its natural height at the recorded width — so the freeze
+    ///     frame is byte-stable. This subsumes the last measurement
+    ///     hosts used to do themselves: the width is maya's own
+    ///     paint-recorded constraint, not a host reconstruction of
+    ///     "terminal columns minus the chrome paddings" (the -2/-4
+    ///     drift class that caused the narrow-terminal duplication
+    ///     ghost).
+    ///
+    ///  2. POLICY estimate: the measured height seeds block_rows()
+    ///     until the first ledger paint records the real value.
+    ///
+    /// Accounting never touches this number — commits are minted
+    /// exclusively from paint-recorded heights (harvest()), so a
+    /// measurement drift here costs at most one avoidable soft
+    /// repaint, never scrollback corruption.
+    ///
+    /// Returns the rows sealed under (measured, or the fallback).
+    /// Defined in src/render/scrollback_ledger.cpp (needs the layout
+    /// engine; keeping the header dependency-light).
+    std::size_t seal_measured(Element e, std::size_t fallback_est_rows,
+                              bool separator = false);
+
     /// Replace block k in place (rehydrate-time collapse of an
     /// off-screen giant body). Resets the recorded height — the next
     /// paint re-records the replacement's real height.
@@ -246,7 +286,11 @@ public:
     /// Wholesale reset (thread swap, rebuild). Debt is discarded too:
     /// a wholesale content swap goes through reset_inline (HardReset),
     /// which rebuilds the shadow from scratch — stale debt against a
-    /// wiped frame would be meaningless.
+    /// wiped frame would be meaningless. paint_width_ deliberately
+    /// SURVIVES: the surface's width didn't change with the content,
+    /// and the very next seal_measured() calls (rehydrate) want to
+    /// warm the measure cache at the real width, not fall back to
+    /// unmeasured estimates for the whole rebuilt prefix.
     void clear() noexcept {
         elements_.clear();
         meta_.clear();
@@ -285,6 +329,12 @@ public:
         return k < meta_.size() && meta_[k].recorded >= 0;
     }
 
+    /// The width (in columns) the paint pass laid this ledger's
+    /// fragment out at on the most recent ledger-tagged frame; 0 until
+    /// the first paint. seal_measured() lays new blocks out at this
+    /// width so the seal-time warm matches the next frame's layout.
+    [[nodiscard]] int paint_width() const noexcept { return paint_width_; }
+
     /// The sealed elements, for rendering (Conversation::Config::ledger
     /// hands maya an ElementListRef over this vector, tagged with `this`
     /// so the paint pass can record heights back).
@@ -312,6 +362,14 @@ public:
         recorded_total_ += rows;
     }
 
+    /// Called by the paint pass with the WIDTH constraint the ledger's
+    /// fragment was laid out at this frame. seal_measured() lays new
+    /// blocks out at this width — maya's own constraint, not a host
+    /// reconstruction. Same const+mutable rationale as record_paint.
+    void record_paint_width(int cols) const noexcept {
+        if (cols > 0) paint_width_ = cols;
+    }
+
 private:
     struct Meta {
         std::int64_t recorded = -1;   // paint-recorded rows; -1 = never painted
@@ -324,6 +382,7 @@ private:
     mutable std::int64_t      recorded_total_ = 0;   // sum of recorded (>=0) rows
     std::int64_t              est_total_      = 0;   // sum of estimates (kept for cheap audits)
     std::int64_t              debt_rows_      = 0;   // accrued, un-harvested commit rows
+    mutable int               paint_width_    = 0;   // fragment layout width, last ledger paint
 };
 
 } // namespace maya

@@ -1972,8 +1972,9 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
                     // at MessageStop.
                     if (!m.user_committed && !m.user_prompt.empty()) {
                         m.frozen.seal(gap(), 1, /*separator=*/true);
-                        m.frozen.seal(user_turn_element(m, m.user_prompt),
-                                      /*est_rows=*/3);
+                        m.frozen.seal_measured(
+                            user_turn_element(m, m.user_prompt),
+                            /*fallback_est_rows=*/3);
                         m.user_committed = true;
                     }
                     m.assistant_body.clear();
@@ -2148,14 +2149,16 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
 
                     if (!m.assistant_body.empty()) {
                         m.frozen.seal(gap(), 1, /*separator=*/true);
-                        m.frozen.seal(settled_assistant_turn_element(m),
-                                      /*est_rows=*/12);
+                        m.frozen.seal_measured(
+                            settled_assistant_turn_element(m),
+                            /*fallback_est_rows=*/12);
                         m.assistant_body.clear();
                     }
 
                     if (!m.changes.empty()) {
                         m.frozen.seal(gap(), 1, /*separator=*/true);
-                        m.frozen.seal(changes_card(m), /*est_rows=*/4);
+                        m.frozen.seal_measured(changes_card(m),
+                                               /*fallback_est_rows=*/4);
                         m.changes.clear();
                     }
                     m.phase = Phase::Done;

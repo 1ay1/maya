@@ -1113,6 +1113,14 @@ void paint_element(
             const bool ledger_ok = node.ledger != nullptr
                 && node.items_ref == &node.ledger->elements()
                 && node.items_ref->size() == ln.children.size();
+            // Also stamp the width the blocks were laid out at. This is
+            // the constraint compute() handed the fragment's children —
+            // the SAME width a block sealed next update cycle will be
+            // laid out at in the freeze frame. seal_measured() warms
+            // the measure cache at this width, which is what retires
+            // the host's "reconstruct the content width by subtracting
+            // the chrome paddings" fossil (the -4 comment stack).
+            if (ledger_ok) node.ledger->record_paint_width(aw);
             std::size_t block_idx = 0;
             for (const auto& [child, child_layout_idx] :
                      std::views::zip(*node.items_ref, ln.children)) {

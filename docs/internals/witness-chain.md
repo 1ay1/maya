@@ -288,7 +288,8 @@ phone-over-SSH duplication ghost), a stale post-resize height stamp
 over-committing and re-scrolling the visible tail, a one-row estimate
 drift dropping an on-screen entry.
 
-Two moves close the class by construction:
+Two moves—plus a third that closes the seal instant—retire the class
+by construction:
 
 1. **Maya measures, not the host.** `ScrollbackLedger` owns the sealed
    blocks (elements + per-block meta in one structure). Rendering goes
@@ -308,6 +309,25 @@ Two moves close the class by construction:
    consumer. Fabricating or adjusting a commit count no longer
    typechecks; the raw-int overload is `[[deprecated]]` and clamped
    inside `commit_inline_prefix` regardless.
+
+3. **Maya measures the freeze instant too** (`seal_measured`). The
+   one measurement left on the host side after moves 1–2 was the
+   seal-time layout that warms the renderer's hash-keyed measure
+   cache so the freeze frame is byte-stable (a block sealed at the
+   freeze instant carries the hash_id the live tail stamped, and the
+   measure path trusts a cached height blindly — a stale live-phase
+   entry would transiently shrink the tree vs prev_cells and fire the
+   render gate). Hosts ran that layout at a width THEY reconstructed
+   ("terminal columns minus the chrome paddings I believe wrap my
+   fragment") — the same drift class as the accounting, at the seal
+   site. Now the paint pass records the ACTUAL width constraint
+   `layout::compute` handed the ledger's fragment
+   (`record_paint_width`), and `seal_measured()` lays the new block
+   out at exactly that width, inside a scoped `RenderContext` pinned
+   to it (so the component auto-measure clamp agrees with the paint
+   pass at any terminal size). The measured height doubles as the
+   policy estimate until the first ledger paint records the real
+   value. Accounting still never touches it.
 
 Sole producers, sole consumers, move-only tokens — the same discipline
 as Layers 1–5, applied to the host boundary. The residual host freedom

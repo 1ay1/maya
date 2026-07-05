@@ -882,20 +882,38 @@ auto Runtime::render(const Element& root) -> Status {
                     // passes through BEFORE the diff is trusted:
                     //
                     //   overflowed AND committed-prefix MISMATCH ?
-                    //     → the diff is unsafe. Recover:
-                    //        • not growing (new_rows <= prev_rows): commit
-                    //          the off-viewport rows (byte-accurate to the
-                    //          new canvas) + soft-repaint the viewport via
-                    //          case (B). Non-destructive, host scrollback
-                    //          preserved (no \x1b[3J).
-                    //        • growing (new_rows > prev_rows): a commit +
-                    //          case-(B) repaint would overflow AGAIN and
-                    //          scroll the re-serialized rows in as a second
-                    //          copy, so the ONLY correct recovery is a
-                    //          HardReset (\x1b[2J\x1b[3J\x1b[H wipe + fresh
-                    //          case-(A) paint). Destructive to host
-                    //          scrollback, but a stranded duplicate is
-                    //          strictly worse.
+                    //     → the diff is unsafe. Recover — GROW and SHRINK
+                    //       alike — by committing the off-viewport rows and
+                    //       soft-repainting the viewport via case (B).
+                    //       Non-destructive, host scrollback preserved (no
+                    //       \x1b[3J).
+                    //
+                    //       HISTORY: the growing arm used to demote to
+                    //       HardReset (\x1b[2J\x1b[3J\x1b[H wipe) because
+                    //       the case-(B) of that era serialized from canvas
+                    //       row 0 with bottom-edge scrolls — a grown frame
+                    //       re-overflowed on repaint and scrolled a SECOND
+                    //       copy into scrollback (maya f010530). Today's
+                    //       case-(B) is VIEWPORT-CAPPED (start_row =
+                    //       content_rows - term_h, cursor_up ≤ term_h - 1,
+                    //       exactly term_h rows with term_h - 1 inter-row
+                    //       \r\n — see serialize.cpp's EMIT SHAPE
+                    //       contract): zero bottom-edge scrolls at ANY
+                    //       content height, so the second-copy failure mode
+                    //       is structurally impossible and the wipe is pure
+                    //       loss. The wipe erased the user's ENTIRE
+                    //       transcript + pre-launch shell history whenever
+                    //       a rare untested-regime shift landed on a grow
+                    //       frame ("only the last few turns are visible").
+                    //
+                    //       Residual cost of the soft recovery: the rows
+                    //       already in native scrollback keep their
+                    //       PRE-shift bytes (immutable at the VT level —
+                    //       nothing could have fixed them short of the
+                    //       wipe), and the grow delta's rows never reach
+                    //       scrollback (a gap of new_rows - prev_rows rows
+                    //       at the seam). Bounded, cosmetic, and strictly
+                    //       better than losing the whole history.
                     //   overflowed AND prefix MATCHES ? → the diff is safe
                     //     (append-only for grow-below-the-top, shrink at
                     //     the bottom). Fall through to verify()+render.
@@ -916,12 +934,14 @@ auto Runtime::render(const Element& root) -> Status {
                             if (!arm.scrollback_prefix_matches(canvas_,
                                                                overflow)) {
                                 verify_demoted = true;
-                                if (new_rows > prev_rows) {
-                                    // Growing: case (B) would re-overflow.
-                                    return std::move(arm)
-                                        .demote_to_hard_reset();
-                                }
-                                // Not growing: commit + soft-repaint.
+                                // Commit + soft-repaint — for GROW and
+                                // SHRINK alike. Case (B) is viewport-
+                                // capped (no bottom-edge scroll at any
+                                // content height), so the grown frame
+                                // repaints in place without stranding a
+                                // second copy; see the recovery rationale
+                                // in the invariant comment above.
+                                (void)new_rows;
                                 auto marker = arm.scrollback_marker(overflow);
                                 auto committed = std::move(arm).commit(marker);
                                 return std::move(committed).demote_to_stale();

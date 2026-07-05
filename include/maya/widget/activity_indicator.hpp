@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "../app/app.hpp"        // request_animation_frame
+#include "../core/anim_clock.hpp" // anim_now_ms (skewable in tests)
 #include "../dsl.hpp"
 #include "../element/element.hpp"
 #include "../element/text.hpp"   // StyledRun, TextElement
@@ -74,9 +75,7 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now().time_since_epoch())
-                                .count();
+        const auto now_ms = anim_now_ms();
         request_animation_frame();
 
         const Color muted     = Color::bright_black();

@@ -18,6 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "maya/core/anim_clock.hpp"
+
 #include "maya/element/builder.hpp"
 #include "maya/style/style.hpp"
 #include "maya/terminal/ansi.hpp"   // env_supports_synchronized_output()
@@ -183,9 +185,7 @@ void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
         }
     }
 
-    const auto now_ms = std::chrono::duration_cast<
-        std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto now_ms = anim_now_ms();
     finalize_deadline_ms_ = now_ms + ramp_ms;
 }
 
@@ -218,9 +218,7 @@ void StreamingMarkdown::snap_reveal_to_edge() noexcept {
 #if MAYA_REVEAL_CENTRAL_CURSOR
     reveal_rate_cursor_.set_pos(total_cp);
 #endif
-    const auto now_ms2 = std::chrono::duration_cast<
-        std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto now_ms2 = anim_now_ms();
     reveal_ms_ = now_ms2;
     reveal_edge_reached_ms_ = now_ms2;
     // The tail shape depends on reveal_byte_clip_ (derived from reveal_cp_):
@@ -252,9 +250,7 @@ void StreamingMarkdown::snap_reveal_to_edge() noexcept {
 bool StreamingMarkdown::advance_reveal_cursor_() const {
     if (!live_ || !reveal_fx_) return false;
 
-    const auto now = std::chrono::steady_clock::now();
-    const std::int64_t ms_total = std::chrono::duration_cast<
-        std::chrono::milliseconds>(now.time_since_epoch()).count();
+    const std::int64_t ms_total = anim_now_ms();
     cursor_advance_ms_total_ = ms_total;
 
     // Grow-time stamp.

@@ -68,6 +68,7 @@
 #include <utility>
 #include <vector>
 
+#include "anim_clock.hpp"   // anim_now_ms — the ONE raw time source
 #include "animation.hpp"
 
 namespace maya::anim {
@@ -99,7 +100,9 @@ struct RafInstaller {
 // ============================================================================
 // Clock — the one frame-time source
 // ============================================================================
-// Wraps steady_clock and answers two questions a widget keeps asking:
+// Wraps the skewable animation time source (maya::anim_now_ms — steady_clock
+// plus a test-only skew, see core/anim_clock.hpp) and answers two questions a
+// widget keeps asking:
 //
 //   now_ms()  — monotonic wall time in ms since the clock's epoch. Use it
 //               for phase-driven effects (sin(now), blink buckets) that
@@ -113,6 +116,10 @@ struct RafInstaller {
 //                   e.g. a screen that was off-view) and returns 0 for that
 //                   frame so the resumed animation eases from rest, not from
 //                   a multi-second leap.
+//
+// Because it reads anim_now_ms(), a test that advances the skew moves EVERY
+// Motion / Mount / pulse in the process forward without sleeping — the same
+// contract the reveal overlay and activity indicator follow.
 //
 // A single process-wide clock (default_clock()) backs every Motion that
 // doesn't name its own — so all animations on a frame see the SAME dt and
@@ -131,30 +138,22 @@ public:
     static constexpr double kMaxStep      = 0.25;  // s — dropped-frame clamp
     static constexpr double kRemountGapMs = 500.0; // gap ⇒ treat as remount
 
-    Clock() noexcept : epoch_(clock_t::now()), last_(epoch_) {}
+    Clock() noexcept : epoch_ms_(maya::anim_now_ms()), last_ms_(epoch_ms_) {}
 
     // Monotonic ms since this clock's epoch. Cheap; no state mutation.
     [[nodiscard]] std::int64_t now_ms() const noexcept {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(
-                   clock_t::now() - epoch_)
-            .count();
+        return maya::anim_now_ms() - epoch_ms_;
     }
 
     // Seconds since the previous frame, clamped + remount-aware. Cached per
     // frame (keyed on the integer ms) so every Motion reading it within one
     // frame gets the same delta.
     [[nodiscard]] double dt() noexcept {
-        const auto now    = clock_t::now();
-        const std::int64_t now_ms_v =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - epoch_)
-                .count();
-        if (now_ms_v == cached_dt_at_ms_) return cached_dt_;  // same frame
+        const std::int64_t now_ms_v = maya::anim_now_ms();
+        if (now_ms_v - epoch_ms_ == cached_dt_at_ms_) return cached_dt_;
 
-        const double raw_ms =
-            std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
-                now - last_)
-                .count();
-        last_ = now;
+        const double raw_ms = static_cast<double>(now_ms_v - last_ms_);
+        last_ms_ = now_ms_v;
 
         double dt_s;
         if (raw_ms > kRemountGapMs) {
@@ -165,7 +164,7 @@ public:
             if (dt_s < 0.0)      dt_s = 0.0;
         }
         cached_dt_       = dt_s;
-        cached_dt_at_ms_ = now_ms_v;
+        cached_dt_at_ms_ = now_ms_v - epoch_ms_;
         return dt_s;
     }
 
@@ -175,10 +174,10 @@ public:
     void begin_frame() noexcept { cached_dt_at_ms_ = -1; }
 
 private:
-    clock_t::time_point epoch_;
-    clock_t::time_point last_;
-    double              cached_dt_       = 0.0;
-    std::int64_t        cached_dt_at_ms_ = -1;
+    std::int64_t epoch_ms_;
+    std::int64_t last_ms_;
+    double       cached_dt_       = 0.0;
+    std::int64_t cached_dt_at_ms_ = -1;
 };
 
 // The process-wide clock every unnamed Motion ticks against. Thread-local so
@@ -228,18 +227,14 @@ public:
     // stop reading). A gap longer than kRemountGapMs since the previous call
     // is treated as a remount and restarts the clock from 0.
     [[nodiscard]] std::int64_t elapsed_ms(double animate_for_ms = 0.0) const {
-        const auto now = clock_t::now();
-        if (!started_ ||
-            std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
-                now - last_)
-                    .count() > kRemountGapMs) {
-            first_   = now;
-            started_ = true;
+        const std::int64_t now_ms = maya::anim_now_ms();
+        if (!started_
+            || static_cast<double>(now_ms - last_ms_) > kRemountGapMs) {
+            first_ms_ = now_ms;
+            started_  = true;
         }
-        last_ = now;
-        const std::int64_t age =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now - first_)
-                .count();
+        last_ms_ = now_ms;
+        const std::int64_t age = now_ms - first_ms_;
         if (animate_for_ms <= 0.0 ||
             static_cast<double>(age) < animate_for_ms) {
             detail::request_frame();
@@ -252,9 +247,9 @@ public:
     [[nodiscard]] bool mounted() const noexcept { return started_; }
 
 private:
-    mutable clock_t::time_point first_{};
-    mutable clock_t::time_point last_{};
-    mutable bool                started_ = false;
+    mutable std::int64_t first_ms_ = 0;
+    mutable std::int64_t last_ms_  = 0;
+    mutable bool         started_  = false;
 };
 
 // ============================================================================

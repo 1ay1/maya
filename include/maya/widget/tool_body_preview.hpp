@@ -163,6 +163,20 @@ public:
         int max_edit_hunks_shown = 4;
         int max_todos_shown     = 8;
         int max_matches_shown   = 8;
+
+        // EditDiff, streaming only: ordinal of the hunk currently
+        // landing (1-based). Streaming previews window to the NEWEST
+        // hunk (the host slices earlier ones away — they'd balloon the
+        // live card and their headers would rewrite committed rows as
+        // totals tick), which loses the sense that earlier edits already
+        // applied. This tags the stat chip "edit N · −2 / +5" so the
+        // count of landed hunks stays visible at ZERO extra rows — the
+        // streaming body budget (host-side) is row-exact and an extra
+        // "⋯ applied" row would blow the 18-row proof. The ticking N is
+        // seam-safe: the chip row is part of the streaming body, which
+        // the budget keeps inside the viewport by construction. 0 = no
+        // tag (settled renders use the "edit i/N" indexed form instead).
+        int stream_hunk_no = 0;
     };
 
     explicit ToolBodyPreview(Config c) : cfg_(std::move(c)) {}
@@ -1045,11 +1059,18 @@ private:
                 // previews also slice to the newest hunk (host-side, the
                 // Write tail-window discipline), where a positional index
                 // would mislabel the hunk anyway — so live headers carry
-                // just the byte-stable stat chip (−N / +M); the full
-                // indexed form appears on the settled re-render, which
-                // paints below the seam.
+                // the stat chip tagged with stream_hunk_no (below); the
+                // full indexed form appears on the settled re-render,
+                // which paints below the seam.
                 header  = "edit " + std::to_string(i + 1) + "/"
                        + std::to_string(total_hunks) + "  \xc2\xb7  ";
+            } else if (cfg_.is_streaming && cfg_.stream_hunk_no > 0) {
+                // Streaming: "edit N · −2 / +5" — the ordinal of the hunk
+                // currently landing. Ticks in place as hunks arrive, which
+                // is safe because the streaming body budget keeps this row
+                // inside the viewport (see Config::stream_hunk_no).
+                header  = "edit " + std::to_string(cfg_.stream_hunk_no)
+                       + "  \xc2\xb7  ";
             }
             header += "\xe2\x88\x92" + std::to_string(minus)
                    + " / +" + std::to_string(plus);

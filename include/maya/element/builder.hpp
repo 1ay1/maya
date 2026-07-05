@@ -399,6 +399,20 @@ namespace detail {
     return Element{ElementListRef{&items}};
 }
 
+// ============================================================================
+// ledger_ref() - Borrow a ScrollbackLedger's sealed blocks (measured)
+// ============================================================================
+// Same zero-copy semantics as list_ref over ledger.elements(), PLUS the
+// paint pass records each block's laid-out height back into the ledger
+// every frame (Witness Chain — Trim Accounting). Hosts that front-trim
+// a sealed prefix MUST render it through this so ledger.harvest() mints
+// commit counts from maya's own measurements. Declared here; defined in
+// dsl.hpp region after ScrollbackLedger is complete via the include in
+// element.hpp consumers — the ledger header is standalone, so include
+// it directly.
+
+[[nodiscard]] Element ledger_ref(const ScrollbackLedger& ledger);
+
 } // namespace detail
 
 // ============================================================================

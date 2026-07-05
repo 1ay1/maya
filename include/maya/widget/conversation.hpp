@@ -24,6 +24,7 @@
 
 #include "../dsl.hpp"
 #include "../element/element.hpp"
+#include "../render/scrollback_ledger.hpp"
 #include "../style/color.hpp"
 #include "../style/style.hpp"
 
@@ -68,6 +69,18 @@ public:
         // cache produced by the original.
         std::vector<PreBuilt>                    built_turns;
 
+        // Fastest AND safest path (Witness Chain — Trim Accounting).
+        // When `ledger != nullptr`, takes precedence over everything
+        // below. Renders the ledger's sealed blocks through
+        // `ledger_ref` — zero-copy like `frozen`, plus the paint pass
+        // records every block's laid-out height back into the ledger,
+        // so the host's front-trims mint their scrollback commit
+        // counts from maya's OWN measurements (ScrollbackLedger::
+        // harvest → Cmd::commit_scrollback(ScrollbackDebt)). A host
+        // that trims a sealed prefix MUST use this path; the bare
+        // `frozen` pointer remains for hosts that never trim.
+        const ScrollbackLedger*                  ledger           = nullptr;
+
         // Fastest path (agent_session pattern). When `frozen != nullptr`,
         // takes precedence over both `built_turns` and `turns`.
         //
@@ -110,13 +123,16 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        // ── Fastest path: borrowed frozen prefix + live tail. ─────
-        // The host owns dividers inside *frozen and between frozen
-        // and live_tail; we just concatenate.
-        if (cfg_.frozen != nullptr) {
+        // ── Fastest path: borrowed sealed/frozen prefix + live tail. ─
+        // The host owns dividers inside the prefix and between prefix
+        // and live_tail; we just concatenate. `ledger` (measured,
+        // trim-safe) wins over the bare `frozen` pointer.
+        if (cfg_.ledger != nullptr || cfg_.frozen != nullptr) {
             std::vector<Element> rows;
             rows.reserve(cfg_.live_tail.size() + 3);
-            rows.push_back(list_ref(*cfg_.frozen));
+            rows.push_back(cfg_.ledger != nullptr
+                               ? ledger_ref(*cfg_.ledger)
+                               : list_ref(*cfg_.frozen));
             for (const auto& e : cfg_.live_tail) rows.push_back(e);
             if (cfg_.in_flight)
                 rows.push_back(ActivityIndicator{*cfg_.in_flight}.build());

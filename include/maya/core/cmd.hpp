@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "overload.hpp"
+#include "../render/scrollback_ledger.hpp"
 
 namespace maya {
 
@@ -260,6 +261,19 @@ public:
 
     [[nodiscard]] static auto commit_scrollback(int rows) -> Cmd {
         return {CommitScrollback{rows}};
+    }
+
+    /// Typed-token commit (Witness Chain — Trim Accounting). The ONLY
+    /// way to obtain a ScrollbackDebt is ScrollbackLedger::harvest(),
+    /// whose rows are paint-recorded by maya's own layout pass — so a
+    /// host that routes its trims through the ledger structurally
+    /// CANNOT commit a count that drifts from the wire. Prefer this
+    /// over the raw-int overload everywhere a ledger exists; the int
+    /// overload remains for non-ledger hosts and is clamped to the
+    /// provable overflow inside commit_inline_prefix anyway.
+    [[nodiscard]] static auto commit_scrollback(ScrollbackDebt debt) -> Cmd {
+        if (debt.empty()) return none();
+        return {CommitScrollback{debt.rows()}};
     }
 
     /// Commit every row of the last inline frame that has provably

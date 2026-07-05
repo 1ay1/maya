@@ -1027,6 +1027,7 @@ private:
     [[nodiscard]] Element edit_diff() const {
         using namespace dsl;
         if (cfg_.hunks.empty()) return blank();
+        if (cfg_.is_streaming) return edit_diff_streaming();
 
         const int total_hunks = static_cast<int>(cfg_.hunks.size());
         const int shown = cfg_.show_all
@@ -1049,28 +1050,18 @@ private:
             // are the days where you have to count rows to know the
             // net edit size.
             std::string header;
-            if (total_hunks > 1 && !cfg_.is_streaming) {
-                // "edit i/N" only when SETTLED. While streaming, hunks
+            if (total_hunks > 1) {
+                // "edit i/N" only when SETTLED (streaming routed to
+                // edit_diff_streaming above). While streaming, hunks
                 // arrive one by one, so N ticks 2→3→4 — but an earlier
                 // hunk's header row may already sit in native scrollback
                 // (immutable) as later hunks grew the card; rewriting its
                 // "/N" is a committed-row rewrite → the host renderer's
-                // scrollback gate → destructive HardReset. Streaming
-                // previews also slice to the newest hunk (host-side, the
-                // Write tail-window discipline), where a positional index
-                // would mislabel the hunk anyway — so live headers carry
-                // the stat chip tagged with stream_hunk_no (below); the
-                // full indexed form appears on the settled re-render,
+                // scrollback gate → destructive HardReset. The full
+                // indexed form appears only on the settled re-render,
                 // which paints below the seam.
                 header  = "edit " + std::to_string(i + 1) + "/"
                        + std::to_string(total_hunks) + "  \xc2\xb7  ";
-            } else if (cfg_.is_streaming && cfg_.stream_hunk_no > 0) {
-                // Streaming: "edit N · −2 / +5" — the ordinal of the hunk
-                // currently landing. Ticks in place as hunks arrive, which
-                // is safe because the streaming body budget keeps this row
-                // inside the viewport (see Config::stream_hunk_no).
-                header  = "edit " + std::to_string(cfg_.stream_hunk_no)
-                       + "  \xc2\xb7  ";
             }
             header += "\xe2\x88\x92" + std::to_string(minus)
                    + " / +" + std::to_string(plus);
@@ -1101,18 +1092,99 @@ private:
         return v(rows).build();
     }
 
+    // ── EditDiff, STREAMING: pinned chip + row-level live tail ───────────
+    //
+    // While the edit streams, hunks grow line-by-line and NEW hunks pop
+    // into the args array mid-token with (almost) no content. Windowing
+    // the preview to the newest hunk therefore made the card height jump:
+    // the instant a fresh hunk opened, the body collapsed to the chip row
+    // (zero diff rows — the card visibly shrank upwards) and then re-grew
+    // as its text arrived. Instead:
+    //
+    //   * ONE chip row pinned at the top — "edit N · −a / +b", the stats
+    //     of the hunk currently landing (stream_hunk_no ordinal).
+    //   * A LIVE TAIL of the last K diff rows across ALL hunks. The
+    //     window fills from whatever content exists anywhere in the edit,
+    //     so it stays full across hunk boundaries: height is
+    //     monotonically non-decreasing (grows to 1+K, then constant) and
+    //     the user always watches the newest K rows stream past — older
+    //     hunks' rows scroll out of the window as new ones land.
+    //
+    // K = 2×edit_tail_per_side, which the host derives from the terminal
+    // height so 1+K ≤ the streaming body budget — the event HEADER row
+    // stays inside the viewport while the card streams (the committed-
+    // row-rewrite invariant the scrollback oracle proves).
+    [[nodiscard]] Element edit_diff_streaming() const {
+        using namespace dsl;
+        const int K = std::max(2, cfg_.edit_tail_per_side * 2);
+
+        // Chip: ordinal + stats of the NEWEST hunk (the one landing).
+        const auto& last = cfg_.hunks.back();
+        std::string header;
+        if (cfg_.stream_hunk_no > 0)
+            header = "edit " + std::to_string(cfg_.stream_hunk_no)
+                   + "  \xc2\xb7  ";
+        header += "\xe2\x88\x92" + std::to_string(count_lines(last.old_text))
+               + " / +" + std::to_string(count_lines(last.new_text));
+        const Color hdr_bg = Color::rgb(44, 54, 122);
+        const Color hdr_fg = Color::rgb(188, 202, 252);
+
+        // Find the earliest hunk that can still contribute to the last-K
+        // window (each side contributes at most K rows after its per-side
+        // tail elide) so we only build O(K) elements, not O(total hunks).
+        std::size_t first = cfg_.hunks.size();
+        int have = 0;
+        while (first > 0 && have < K) {
+            const auto& h = cfg_.hunks[first - 1];
+            have += std::min(count_lines(h.old_text), K)
+                  + std::min(count_lines(h.new_text), K);
+            --first;
+        }
+
+        std::vector<Element> body;
+        body.reserve(static_cast<std::size_t>(K) * 2);
+        for (std::size_t i = first; i < cfg_.hunks.size(); ++i) {
+            const auto& h = cfg_.hunks[i];
+            push_diff_side(body, h.old_text, '-', danger(),  K);
+            push_diff_side(body, h.new_text, '+', success(), K);
+        }
+        if (static_cast<int>(body.size()) > K)
+            body.erase(body.begin(),
+                       body.end() - static_cast<std::ptrdiff_t>(K));
+
+        std::vector<Element> rows;
+        rows.reserve(body.size() + 1);
+        rows.push_back(band_row("   ",
+            Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
+            std::move(header),
+            Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
+        for (auto& e : body) rows.push_back(std::move(e));
+        return v(rows).build();
+    }
+
     // Emit a diff-side (removed or added) as full-width solid bands: a
     // leading sign gutter (` - ` / ` + `, bold in the diff hue) followed by
     // the line content, the whole row painted as one colored rectangle that
     // reaches the card's right edge. Matches git_diff's palette so a
     // multi-hunk Edit and a unified git_diff read in the same visual
     // language.
+    // `tail_override >= 0` bypasses the cfg elision profile and keeps just
+    // the last N lines of the side, marker-free — the streaming live-tail
+    // path slices at ROW level afterwards, so per-side elision only needs
+    // to cap the element count, never to annotate what it dropped.
     void push_diff_side(std::vector<Element>& rows, std::string_view body,
-                        char marker, Color c) const {
+                        char marker, Color c, int tail_override = -1) const {
         using namespace dsl;
         if (body.empty()) return;
-        const auto p = elide(body, cfg_.edit_head_per_side,
-                                   cfg_.edit_tail_per_side);
+        ElidedPreview p;
+        if (tail_override >= 0) {
+            p = head_tail(body, 0, tail_override);
+            p.elision_at = -1;   // suppress "⋯ N more" — row-tail follows
+            p.elided     = 0;
+        } else {
+            p = elide(body, cfg_.edit_head_per_side,
+                            cfg_.edit_tail_per_side);
+        }
 
         const bool is_add = (marker == '+');
         // Dark, highly SATURATED green / red bands with BRIGHT same-hue text

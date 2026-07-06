@@ -458,6 +458,15 @@ void StreamingMarkdown::finish() {
     // message doesn't keep requesting animation frames forever.
     // The Tracked<> wrapper on live_ auto-bumps build_dirty_.
     live_ = false;
+    // A hard finish means there is no finalize RAMP left to glide — the
+    // widget is at its terminal state NOW. finalize_deadline_ms_ is the
+    // sole backing of is_finalizing(); if a ramp was armed (request_finalize)
+    // but finish() lands before the line-430 reveal-tick gate clears it, the
+    // deadline stays non-zero and is_finalizing() reports true forever. Any
+    // host that re-arms a frame on is_finalizing() (agentty's turn.cpp does)
+    // then spins ~20 fps while idle. Clearing it here — alongside live_ —
+    // makes finish() the true terminal transition it advertises.
+    finalize_deadline_ms_ = 0;
 }
 
 void StreamingMarkdown::clear() {

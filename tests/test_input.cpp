@@ -363,6 +363,103 @@ void test_input_osc52_split_feed() {
     std::println("PASS\n");
 }
 
+// ── OSC 5522 (kitty clipboard protocol) read replies ──────────────────
+
+void test_input_osc5522_image_reassembly() {
+    std::println("--- test_input_osc5522_image_reassembly ---");
+    InputParser p;
+    // OK → two PNG chunks → trailing text/plain (must be skipped, the
+    // image outranks it) → DONE. mime b64: image/png = aW1hZ2UvcG5n,
+    // text/plain = dGV4dC9wbGFpbg==. PNG magic prefix iVBORw0KGgo=
+    // split as iVBORw0K (89 50 4E 47 0D 0A) + Ggo= (1A 0A).
+    std::string s;
+    s += "\x1b]5522;type=read:status=OK\x1b\\";
+    s += "\x1b]5522;type=read:status=DATA:mime=aW1hZ2UvcG5n;iVBORw0K\x1b\\";
+    s += "\x1b]5522;type=read:status=DATA:mime=aW1hZ2UvcG5n;Ggo=\x1b\\";
+    s += "\x1b]5522;type=read:status=DATA:mime=dGV4dC9wbGFpbg==;aGVsbG8=\x1b\\";
+    s += "\x1b]5522;type=read:status=DONE\x1b\\";
+    auto events = p.feed(s);
+    assert(events.size() == 1);
+    const auto* pe = std::get_if<PasteEvent>(&events[0]);
+    assert(pe != nullptr);
+    const std::string& b = pe->content;
+    assert(b.size() == 8);
+    assert(static_cast<unsigned char>(b[0]) == 0x89);
+    assert(static_cast<unsigned char>(b[1]) == 0x50);
+    assert(static_cast<unsigned char>(b[6]) == 0x1A);
+    assert(static_cast<unsigned char>(b[7]) == 0x0A);
+    std::println("PASS\n");
+}
+
+void test_input_osc5522_text_only() {
+    std::println("--- test_input_osc5522_text_only ---");
+    InputParser p;
+    std::string s;
+    s += "\x1b]5522;type=read:status=OK\x1b\\";
+    s += "\x1b]5522;type=read:status=DATA:mime=dGV4dC9wbGFpbg==;aGVsbG8=\x1b\\";
+    s += "\x1b]5522;type=read:status=DONE\x1b\\";
+    auto events = p.feed(s);
+    assert(events.size() == 1);
+    const auto* pe = std::get_if<PasteEvent>(&events[0]);
+    assert(pe != nullptr && pe->content == "hello");
+    std::println("PASS\n");
+}
+
+void test_input_osc5522_image_outranks_earlier_text() {
+    std::println("--- test_input_osc5522_image_outranks_earlier_text ---");
+    InputParser p;
+    // text arrives FIRST — a terminal that ignores our request order.
+    // The later image/png must replace the accumulated text.
+    std::string s;
+    s += "\x1b]5522;type=read:status=OK\x1b\\";
+    s += "\x1b]5522;type=read:status=DATA:mime=dGV4dC9wbGFpbg==;aGVsbG8=\x1b\\";
+    s += "\x1b]5522;type=read:status=DATA:mime=aW1hZ2UvcG5n;iVBORw0KGgo=\x1b\\";
+    s += "\x1b]5522;type=read:status=DONE\x1b\\";
+    auto events = p.feed(s);
+    assert(events.size() == 1);
+    const auto* pe = std::get_if<PasteEvent>(&events[0]);
+    assert(pe != nullptr && pe->content.size() == 8);
+    assert(static_cast<unsigned char>(pe->content[0]) == 0x89);
+    std::println("PASS\n");
+}
+
+void test_input_osc5522_error_aborts_then_recovers() {
+    std::println("--- test_input_osc5522_error_aborts_then_recovers ---");
+    InputParser p;
+    // EPERM mid-transfer → no event, and a following clean transfer
+    // must succeed (state fully reset).
+    std::string s;
+    s += "\x1b]5522;type=read:status=OK\x1b\\";
+    s += "\x1b]5522;type=read:status=DATA:mime=aW1hZ2UvcG5n;iVBORw0K\x1b\\";
+    s += "\x1b]5522;type=read:status=EPERM\x1b\\";
+    auto e1 = p.feed(s);
+    assert(e1.empty());
+    std::string s2;
+    s2 += "\x1b]5522;type=read:status=OK\x1b\\";
+    s2 += "\x1b]5522;type=read:status=DATA:mime=dGV4dC9wbGFpbg==;b2s=\x1b\\";
+    s2 += "\x1b]5522;type=read:status=DONE\x1b\\";
+    auto e2 = p.feed(s2);
+    assert(e2.size() == 1);
+    const auto* pe = std::get_if<PasteEvent>(&e2[0]);
+    assert(pe != nullptr && pe->content == "ok");
+    std::println("PASS\n");
+}
+
+void test_input_osc5522_stray_packets_dropped() {
+    std::println("--- test_input_osc5522_stray_packets_dropped ---");
+    InputParser p;
+    // DATA/DONE with no preceding OK (another client's leak through a
+    // multiplexer) must yield nothing.
+    auto e1 = p.feed("\x1b]5522;type=read:status=DATA:mime=dGV4dC9wbGFpbg==;b2s=\x1b\\");
+    assert(e1.empty());
+    auto e2 = p.feed("\x1b]5522;type=read:status=DONE\x1b\\");
+    assert(e2.empty());
+    // Write acks are not read replies — ignored even mid-ground.
+    auto e3 = p.feed("\x1b]5522;type=write:status=DONE\x1b\\");
+    assert(e3.empty());
+    std::println("PASS\n");
+}
+
 void test_input_page_up() {
     std::println("--- test_input_page_up ---");
     InputParser p;
@@ -466,6 +563,11 @@ int main() {
     test_input_osc52_empty_payload_ignored();
     test_input_osc_non52_discarded();
     test_input_osc52_split_feed();
+    test_input_osc5522_image_reassembly();
+    test_input_osc5522_text_only();
+    test_input_osc5522_image_outranks_earlier_text();
+    test_input_osc5522_error_aborts_then_recovers();
+    test_input_osc5522_stray_packets_dropped();
     test_input_page_up();
     test_input_page_down();
     test_input_delete_key();
@@ -473,5 +575,5 @@ int main() {
     test_input_mixed_sequence();
     test_input_has_pending_false_after_complete();
     test_input_reset_clears_state();
-    std::println("=== ALL 37 TESTS PASSED ===");
+    std::println("=== ALL 42 TESTS PASSED ===");
 }

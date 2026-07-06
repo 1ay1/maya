@@ -289,6 +289,33 @@ void StyleApplier::append_param(std::string& params, std::string_view p) {
     return "\x1b]52;c;?\x1b\\";
 }
 
+[[nodiscard]] std::string request_clipboard_image() {
+    // OSC 5522 read request (kitty clipboard protocol). The payload is
+    // the base64 of the space-separated MIME list we want, lossless
+    // image formats first, text/plain last as the fallback:
+    //   "image/png image/jpeg image/webp image/gif text/plain"
+    // kitty replies with status=OK, then status=DATA packets carrying
+    // base64 chunks for EACH type it has (in our preference order),
+    // then status=DONE — reassembled by InputParser::parse_osc5522.
+    return "\x1b]5522;type=read;"
+           "aW1hZ2UvcG5nIGltYWdlL2pwZWcgaW1hZ2Uvd2VicCBpbWFnZS9naWYgdGV4dC9wbGFpbg=="
+           "\x1b\\";
+}
+
+[[nodiscard]] bool env_supports_osc5522() {
+    // kitty is the only OSC 5522 implementation. Locally it sets
+    // KITTY_WINDOW_ID; across SSH only TERM survives (sshd forwards
+    // TERM and nothing else by default), and kitty's terminfo entry is
+    // "xterm-kitty". Substring match tolerates wrappers/tmux variants
+    // that keep "kitty" in the name.
+    if (const char* w = std::getenv("KITTY_WINDOW_ID"); w && *w) return true;
+    if (const char* t = std::getenv("TERM"); t && *t) {
+        if (std::string_view{t}.find("kitty") != std::string_view::npos)
+            return true;
+    }
+    return false;
+}
+
 // ============================================================================
 // env_supports_synchronized_output — env-var heuristic for DEC mode 2026
 // ============================================================================

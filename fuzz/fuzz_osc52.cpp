@@ -32,5 +32,23 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     frame2 += "\x07";   // BEL terminator
     (void)parser2.feed(frame2);
 
+    // OSC 5522 (kitty clipboard protocol) — the multi-packet read reply.
+    // Drive the metadata/payload splitter and the DATA accumulator with
+    // fuzz bytes in both positions, inside a live transfer (status=OK
+    // first) so the accumulation paths are reachable.
+    maya::InputParser parser3;
+    std::string s;
+    s = "\x1b]5522;type=read:status=OK\x1b\\";
+    s += "\x1b]5522;";
+    s.append(reinterpret_cast<const char*>(data), size);
+    s += "\x1b\\";
+    s += "\x1b]5522;type=read:status=DATA:mime=";
+    s.append(reinterpret_cast<const char*>(data), size);
+    s += ";";
+    s.append(reinterpret_cast<const char*>(data), size);
+    s += "\x1b\\";
+    s += "\x1b]5522;type=read:status=DONE\x1b\\";
+    (void)parser3.feed(s);
+
     return 0;
 }

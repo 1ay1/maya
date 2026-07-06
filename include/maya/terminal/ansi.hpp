@@ -276,7 +276,33 @@ private:
 // by InputParser::parse_osc into a PasteEvent. Requires a terminal that
 // honours OSC 52 reads (kitty, iTerm2, WezTerm, foot, Ghostty, recent
 // xterm with allowWindowOps; tmux/screen need clipboard passthrough).
+//
+// LIMITATION: OSC 52 read replies carry the TEXT clipboard only — no
+// terminal ships image bytes through it. For images across SSH see
+// request_clipboard_image() below (kitty's OSC 5522).
 [[nodiscard]] std::string request_clipboard();
+
+// OSC 5522 clipboard READ query — kitty's multi-format clipboard
+// protocol (https://sw.kovidgoyal.net/kitty/clipboard/). Unlike OSC 52,
+// the reply can carry ARBITRARY MIME data, including images: this is
+// the only escape-code path that gets a screenshot from the user's
+// local clipboard across an SSH pty. The request asks for
+// image/png, image/jpeg, image/webp, image/gif and text/plain; the
+// terminal answers with a packet sequence
+//   OSC 5522;type=read:status=OK ST
+//   OSC 5522;type=read:status=DATA:mime=<b64>;<b64-chunk> ST   (×N)
+//   OSC 5522;type=read:status=DONE ST
+// which InputParser::parse_osc5522 reassembles into one PasteEvent
+// (image bytes preferred over text). Only kitty implements this today —
+// gate emission on env_supports_osc5522().
+[[nodiscard]] std::string request_clipboard_image();
+
+// Does the host terminal speak the OSC 5522 clipboard protocol?
+// Env-driven (no DECRQM round trip): kitty is the only implementation,
+// detected via KITTY_WINDOW_ID locally or TERM containing "kitty" —
+// TERM is the one variable ssh forwards, so this works on the far end
+// of an SSH session where KITTY_WINDOW_ID is absent.
+[[nodiscard]] bool env_supports_osc5522();
 
 // ============================================================================
 // Terminal capability hints

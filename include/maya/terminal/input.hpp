@@ -208,8 +208,26 @@ private:
     // OSC parser. Recognises the OSC 52 clipboard READ response
     // (52;<sel>;<base64>) and emits its decoded bytes as a PasteEvent so
     // image/text paste works over SSH with no remote clipboard tool;
+    // OSC 5522 packets (kitty's multi-format clipboard read — the only
+    // escape path that carries IMAGE bytes) are routed to parse_osc5522;
     // all other OSC replies are silently discarded.
     void parse_osc(std::vector<Event>& events);
+
+    // OSC 5522 (kitty clipboard protocol) read-reply reassembly. The
+    // terminal answers a type=read request with a packet SEQUENCE:
+    //   5522;type=read:status=OK
+    //   5522;type=read:status=DATA:mime=<b64-mime>;<b64-chunk>   (×N)
+    //   5522;type=read:status=DONE
+    // Chunks are individually base64-padded, ≤4096 raw bytes each, and
+    // all chunks of one MIME type arrive before the next type starts.
+    // Types arrive in the REQUEST's preference order (images first, see
+    // ansi::request_clipboard_image), so we keep only the FIRST type's
+    // bytes and emit them as one PasteEvent on DONE — image when the
+    // clipboard has one, text otherwise. Any error status (EPERM /
+    // EBUSY / ENOSYS) or oversize payload abandons the transfer
+    // silently: to the host it looks like a terminal that never
+    // replied, which is already a handled case.
+    void parse_osc5522(std::string_view body, std::vector<Event>& events);
 
     // Decode an RFC 4648 base64 payload to raw bytes (whitespace
     // tolerated, '=' padding ends the data). nullopt on an illegal
@@ -220,6 +238,14 @@ private:
 
     // Parameter parsing utility
     [[nodiscard]] static auto parse_params(std::string_view s) -> std::vector<int>;
+
+    // ---- OSC 5522 read-reply accumulation (see parse_osc5522) ----------
+    // Alive between the status=OK packet and the DONE / error packet of
+    // one clipboard read. reset() clears it like any other partial state.
+    bool        osc5522_active_ = false;  // saw status=OK, DONE pending
+    bool        osc5522_locked_ = false;  // first mime chosen; skip others
+    std::string osc5522_mime_;            // decoded mime of the kept type
+    std::string osc5522_data_;            // decoded bytes of the kept type
 };
 
 } // namespace maya

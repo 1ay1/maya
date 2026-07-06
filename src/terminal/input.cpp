@@ -152,6 +152,10 @@ bool InputParser::has_pending() const noexcept {
 void InputParser::reset() noexcept {
     state_ = State::Ground;
     buf_.clear();
+    osc5522_active_ = false;
+    osc5522_locked_ = false;
+    osc5522_mime_.clear();
+    osc5522_data_.clear();
 }
 
 // ============================================================================
@@ -560,6 +564,15 @@ void InputParser::parse_osc([[maybe_unused]] std::vector<Event>& events) {
         body.remove_suffix(2);                      // ST (ESC \)
     }
 
+    // OSC 5522 — kitty's multi-format clipboard protocol. The read
+    // reply is a PACKET SEQUENCE (OK / DATA… / DONE), reassembled by
+    // parse_osc5522 into a single PasteEvent. This is the only escape
+    // path that carries IMAGE bytes across an SSH pty.
+    if (body.size() >= 5 && body.substr(0, 5) == "5522;") {
+        parse_osc5522(body.substr(5), events);
+        return;
+    }
+
     // OSC 52 — clipboard. A READ response looks like
     //   52 ; <selection> ; <base64-of-clipboard-bytes>
     // The terminal emulator (running on the user's local machine, even
@@ -590,6 +603,109 @@ void InputParser::parse_osc([[maybe_unused]] std::vector<Event>& events) {
         events.emplace_back(PasteEvent{std::move(*decoded)});
     // Malformed base64 — drop silently; a corrupt half-paste is worse
     // than no paste.
+}
+
+void InputParser::parse_osc5522(std::string_view body,
+                                std::vector<Event>& events) {
+    // `body` is the OSC payload past "5522;":
+    //   type=read:status=OK
+    //   type=read:status=DATA:mime=<b64-mime>;<b64-chunk>
+    //   type=read:status=DONE
+    // metadata is colon-separated key=value pairs; the data payload (if
+    // any) follows the first ';'. Anything that isn't a read reply
+    // (write acks, paste events, unknown types) is ignored — we only
+    // ever ISSUE read requests, so nothing else should arrive, but a
+    // multiplexer could leak another client's packets.
+    auto abort_transfer = [&] {
+        osc5522_active_ = false;
+        osc5522_locked_ = false;
+        osc5522_mime_.clear();
+        osc5522_data_.clear();
+        osc5522_data_.shrink_to_fit();
+    };
+
+    std::string_view metadata = body;
+    std::string_view payload;
+    if (auto semi = body.find(';'); semi != std::string_view::npos) {
+        metadata = body.substr(0, semi);
+        payload  = body.substr(semi + 1);
+    }
+
+    // Walk the colon-separated key=value metadata.
+    std::string_view type, status, mime_b64;
+    for (std::string_view rest = metadata; !rest.empty();) {
+        auto colon = rest.find(':');
+        std::string_view kv = rest.substr(0, colon);
+        rest = (colon == std::string_view::npos)
+                   ? std::string_view{} : rest.substr(colon + 1);
+        auto eq = kv.find('=');
+        if (eq == std::string_view::npos) continue;
+        auto key = kv.substr(0, eq);
+        auto val = kv.substr(eq + 1);
+        if      (key == "type")   type     = val;
+        else if (key == "status") status   = val;
+        else if (key == "mime")   mime_b64 = val;
+    }
+
+    if (type != "read") return;
+
+    if (status == "OK") {
+        // Fresh transfer. A dangling previous transfer (terminal died
+        // mid-stream) is superseded.
+        abort_transfer();
+        osc5522_active_ = true;
+        return;
+    }
+
+    if (!osc5522_active_) return;   // stray packet outside a transfer
+
+    if (status == "DATA") {
+        auto mime = decode_base64(mime_b64);
+        if (!mime) { abort_transfer(); return; }
+
+        // Preference: the request lists images before text (see
+        // ansi::request_clipboard_image), and kitty replies in request
+        // order — but don't rely on it. Rank explicitly and keep the
+        // best type seen; all chunks of one type arrive sequentially,
+        // so switching types can discard the old accumulation whole.
+        auto rank = [](std::string_view m) -> int {
+            if (m == "image/png")  return 5;
+            if (m == "image/jpeg") return 4;
+            if (m == "image/webp") return 3;
+            if (m == "image/gif")  return 2;
+            if (m.substr(0, 6) == "image/") return 1;
+            return 0;   // text/plain and anything else
+        };
+        if (*mime != osc5522_mime_) {
+            if (osc5522_locked_ && rank(*mime) <= rank(osc5522_mime_))
+                return;             // keeping the better earlier type
+            osc5522_mime_ = std::move(*mime);
+            osc5522_data_.clear();
+            osc5522_locked_ = true;
+        }
+
+        auto chunk = decode_base64(payload);
+        if (!chunk) { abort_transfer(); return; }
+        // Same DoS bound as the OSC buffer itself: a runaway terminal
+        // must not grow the accumulator without limit.
+        if (osc5522_data_.size() + chunk->size() > kMaxOscLen) {
+            abort_transfer();
+            return;
+        }
+        osc5522_data_ += *chunk;
+        return;
+    }
+
+    if (status == "DONE") {
+        if (!osc5522_data_.empty())
+            events.emplace_back(PasteEvent{std::move(osc5522_data_)});
+        abort_transfer();
+        return;
+    }
+
+    // ENOSYS / EPERM / EBUSY / anything unknown — abandon silently; the
+    // host already handles "terminal never replied".
+    abort_transfer();
 }
 
 std::optional<std::string> InputParser::decode_base64(std::string_view in) {

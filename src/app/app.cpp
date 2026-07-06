@@ -1270,11 +1270,21 @@ void Runtime::write_clipboard(std::string_view text) {
 }
 
 void Runtime::query_clipboard() {
-    // OSC 52 read query. The reply (the terminal's clipboard, base64'd)
-    // arrives on the input stream and is decoded by InputParser into a
-    // PasteEvent. write_or_buffer so a congested tty doesn't drop it;
-    // it's a control sequence the diff path never re-emits.
-    (void)writer_->write_or_buffer(ansi::request_clipboard());
+    // Clipboard read query. Two dialects:
+    //   • OSC 5522 (kitty) — multi-format: the reply can carry IMAGE
+    //     bytes, which OSC 52 read replies never do. kitty is the only
+    //     implementation, so gate on its env fingerprint. Sent alone
+    //     (not alongside OSC 52): kitty answers both, and two replies
+    //     would surface as two paste events.
+    //   • OSC 52 read (everything else) — text-only, but widely
+    //     honoured (iTerm2, WezTerm, foot, Ghostty, xterm w/ opts).
+    // Either reply arrives on the input stream and is decoded by
+    // InputParser into a PasteEvent. write_or_buffer so a congested tty
+    // doesn't drop it; it's a control sequence the diff path never
+    // re-emits.
+    (void)writer_->write_or_buffer(ansi::env_supports_osc5522()
+                                       ? ansi::request_clipboard_image()
+                                       : ansi::request_clipboard());
 }
 
 // ============================================================================

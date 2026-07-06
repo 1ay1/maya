@@ -25,6 +25,7 @@
 #include "maya/terminal/ansi.hpp"   // env_supports_synchronized_output()
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
+#include "maya/widget/markdown/streaming_internal.hpp"
 #include "maya/app/app.hpp"         // request_animation_frame()
 #include "maya/core/animation.hpp"   // anim::ease::*, anim::lerp(Color)
 #include "maya/anim/text_reveal.hpp"  // anim::decorate_text_reveal / end_caret
@@ -528,6 +529,79 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         const std::size_t  revealed_cp = static_cast<std::size_t>(reveal_cp_);
         const std::int64_t age_at_tail_ms = cursor_advance_age_tail_ms_;
 
+        // ── Idle-overlay memo (steady-state fast path) ──────────────────
+        //
+        // build() reaches here every animation frame while the widget is
+        // live_ — including the long stretch AFTER the cursor has caught up
+        // to the live edge and the trail has cooled, when the ONLY moving
+        // part is the end-caret pulse. In that steady state the overlay's
+        // output is a pure function of a handful of quantities:
+        //   • the committed prefix (prefix_->generation),
+        //   • the tail bytes (source_version_),
+        //   • the reveal cursor position (revealed_cp),
+        //   • the trailing-edge age (age_at_tail_ms), which drives the
+        //     scramble/gradient — but only while < the cool threshold,
+        //   • the caret pulse phase (ms_total bucketed to the 650 ms
+        //     pulse's visible-step granularity).
+        //
+        // Everything else in this function (the child-vector reshape, the
+        // find_last_text spine walk, decorate_text_reveal's re-slice +
+        // run rebuild, the end-caret recolour) is deterministic work that
+        // reproduces the SAME cached_live_ when those inputs are unchanged.
+        // Recomputing it burns a few µs per idle frame that scales with the
+        // committed block count (the spine walk + the child refresh) and the
+        // tail length (decorate's re-slice) — the per-frame floor a long
+        // live turn pays between deltas, i.e. the stream_md_lag_test
+        // steady-frame regression. Memoise: when the signature below is
+        // unchanged from the last overlay build, return cached_live_ as-is.
+        //
+        // The caret pulse bucket uses a coarse step (the pulse only visibly
+        // changes a few times a second) so a genuinely-idle frame with the
+        // same bucket is a no-op — matching the frame-request cadence at the
+        // bottom, which already declines to re-arm 60 fps once the reveal is
+        // out of motion. While the tail is still hot (age below the cool
+        // threshold) the age term forces the signature to move every frame
+        // so the scramble/gradient still animate normally.
+        {
+            constexpr std::int64_t kTrailCoolMs   = 700;
+            constexpr std::int64_t kCaretBucketMs  = 60;   // pulse visible step
+            const bool tail_hot = age_at_tail_ms < kTrailCoolMs;
+            // Age term: exact while hot (drives scramble/gradient), pinned to
+            // the cool sentinel once cooled so it stops perturbing the sig.
+            const std::int64_t age_term =
+                tail_hot ? age_at_tail_ms : kTrailCoolMs;
+            OverlaySig sig{
+                prefix_->generation,
+                source_version_,
+                revealed_cp,
+                total_cp,
+                reveal_byte_clip_,
+                age_term,
+                ms_total / kCaretBucketMs,
+            };
+            if (overlay_sig_valid_ && overlay_sig_ == sig
+                && std::holds_alternative<BoxElement>(cached_live_.inner)) {
+                // Nothing visible changed since the last overlay frame; the
+                // previously-decorated cached_live_ is still exact. Still
+                // honour the frame-request cadence so the caret keeps
+                // pulsing when the bucket eventually ticks.
+                if (age_at_tail_ms <= 360 || revealed_cp < total_cp) {
+                    ::maya::request_animation_frame();
+                } else {
+                    static const std::int64_t kAnimPhaseMs =
+                        ansi::env_supports_synchronized_output() ? 33 : 100;
+                    const std::int64_t phase = ms_total / kAnimPhaseMs;
+                    if (phase != last_anim_phase_) {
+                        last_anim_phase_ = phase;
+                        ::maya::request_animation_frame();
+                    }
+                }
+                return cached_live_;
+            }
+            overlay_sig_       = sig;
+            overlay_sig_valid_ = true;
+        }
+
         // Walk a copy of cached_build_ down its rightmost spine to
         // the last leaf TextElement. Descends through ComponentElement
         // by materializing it (calling its render()) and REPLACING it in
@@ -721,7 +795,12 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             auto& build_box = std::get<BoxElement>(cached_build_.inner);
             const std::size_t keep = live_box.children.size() - 1; // drop old tail
             live_box.children.resize(keep);
-            live_box.children.reserve(build_box.children.size());
+            // NO exact-size reserve here (mirrors build()'s growth arm): this
+            // arm runs at every commit and fills the vector exactly, so
+            // reserve(build_n) leaves capacity == size and the NEXT commit
+            // reallocates + moves all N committed children — O(N) per commit,
+            // O(N²) over a long turn. push_back's geometric doubling keeps the
+            // append amortised O(1).
             for (std::size_t i = keep; i < build_box.children.size(); ++i)
                 live_box.children.push_back(build_box.children[i]);
             live_overlay_prefix_gen_ = prefix_->generation;
@@ -771,6 +850,31 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                     ? (total_cp - revealed_cp) : 0u;
             }
 
+            // ── Inert-decoration skip (idle-but-live steady state) ──
+            //
+            // Once the cursor is AT the live edge (nothing ghosted) and the
+            // trailing edge has fully cooled (edge age past the gradient's
+            // 700 ms band — see reveal_detail::trail_style — which also
+            // covers the 376 ms scramble window), decorate_text_reveal is a
+            // provable visual NO-OP: every trail cp takes the base-style
+            // branch, no ghost cells, no sweep. But it still re-slices the
+            // content, rebuilds the runs vector and re-appends the trail
+            // bytes — a few µs of pure waste on EVERY idle animation frame
+            // for as long as the turn stays live (the caret pulse keeps
+            // frames coming). The eager arm below has always had exactly
+            // this gate (age_at_tail_ms <= 720); the prose arm lacking it
+            // made an idle prose tail ~5× the cost of an idle eager tail —
+            // the per-frame floor a long live turn pays between deltas
+            // (stream_md_lag_test's steady-frame ratio). Skipping also
+            // PRESERVES the leaf's real styled runs (bold / inline code) in
+            // the trail window instead of flattening them to base style, so
+            // the settled-cool live frame matches the committed render
+            // byte-for-byte AND style-for-style. The end-caret below still
+            // runs — it is the only live decoration at this point.
+            constexpr std::int64_t kTrailCoolMs = 700;
+            const bool decoration_inert =
+                unrevealed_cp == 0 && age_at_tail_ms >= kTrailCoolMs;
+            if (!decoration_inert) {
             // ── Delegate the trailing-edge decoration to the framework ──
             //
             // The scramble / hot→cool gradient / ghost-materialise / sweep
@@ -798,6 +902,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             rp.char_step_ms          = kCharStepMs;
             rp.ghost_extra           = kGhostExtra;
             (void)anim::decorate_text_reveal(*tail, rp);
+            }
         } else if (eager_render
                    && (age_at_tail_ms <= 720
                        || cursor_advance_total_cp_ > revealed_cp)) {

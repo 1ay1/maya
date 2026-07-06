@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -248,15 +249,25 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
         && tail_canon_cache_in_fence_ == in_code_fence_;
     if (version_match) return *tail_canon_cache_el_;
 
-    const std::uint64_t tail_hash = fnv1a64(tail);
+    // Slow-path bytes-equality fallback: only reachable when the version
+    // bumped but the tail bytes might be identical (a mutation that
+    // round-trips the tail). A DIFFERENT length can never be a hit, so
+    // skip the O(tail) hash entirely unless the lengths already match —
+    // this keeps the common streaming frame (tail grew, version bumped)
+    // off the whole-tail hash, which is otherwise the dominant per-frame
+    // cost on a long uncommitted tail (reveal cursor lagging tens of KB).
+    std::uint64_t tail_hash = 0;
     if (tail_canon_cache_el_
         && tail_canon_cache_len_      == tail.size()
-        && tail_canon_cache_hash_     == tail_hash
         && tail_canon_cache_in_fence_ == in_code_fence_) {
-        // Bytes are identical despite a version bump — refresh the version
-        // stamp so subsequent frames take the cheap version_match path.
-        tail_canon_cache_version_ = source_version_;
-        return *tail_canon_cache_el_;
+        tail_hash = fnv1a64(tail);
+        if (tail_canon_cache_hash_ == tail_hash) {
+            // Bytes are identical despite a version bump — refresh the
+            // version stamp so subsequent frames take the cheap
+            // version_match path.
+            tail_canon_cache_version_ = source_version_;
+            return *tail_canon_cache_el_;
+        }
     }
 
     Element result = [&]() -> Element {
@@ -297,6 +308,14 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
     while (s < tail.size() && tail[s] == '\n') ++s;
     if (s >= tail.size()) return render_tail_inner(tail);
     std::string_view body = tail.substr(s);
+
+    // Absolute source offset of `body`'s start. render_tail is handed
+    // tail = source_[committed_, visible_end]; `s` skips the leading
+    // newlines. Absolute offsets are used to key the terminated caches
+    // below so they survive the commit-behind-cursor shifts that move
+    // committed_ forward every frame (source_version_ bumps every frame
+    // and would defeat the memo).
+    const std::size_t body_abs_start = committed_ + s;
 
     // Split the tail at the last newline: [terminated_prefix][live_line].
     // Only the terminated prefix is safe to render canonically — the
@@ -343,52 +362,179 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
     // dominant cost; the layout/highlight re-run was). The key moves only
     // when a new row terminates, so a growing block re-lays-out once per
     // committed row, not once per frame. Mirrors render_eager_slice.
-    std::size_t term_block_count = 0;
-    std::uint64_t term_slice_hash = 0;
-    auto terminated_rendered = [&]() -> std::vector<std::shared_ptr<const Element>> {
-        const std::uint64_t term_hash =
-            (tail_term_cache_version_ == source_version_)
-                ? tail_term_cache_hash_ : fnv1a64(terminated);
-        if (!tail_term_cache_blocks_.empty()
-            && tail_term_cache_len_      == terminated.size()
-            && tail_term_cache_in_fence_ == in_code_fence_
-            && (tail_term_cache_version_ == source_version_
-                || tail_term_cache_hash_ == term_hash)) {
-            term_block_count = tail_term_cache_blocks_.size();
-            term_slice_hash  = tail_term_cache_hash_;
-            tail_term_cache_version_ = source_version_;
-            return tail_term_cache_blocks_;
+    //
+    // Forward-scan the byte offset where the LAST top-level block in
+    // `terminated` begins. Everything in [0, last_block_start) is frozen
+    // (closed by a blank-line / fence boundary a later byte can't reach
+    // back across); only the final block [last_block_start, end) can
+    // still grow as more rows terminate. Branch/newline scan only — no
+    // markdown parse — cheap relative to the parse it gates, and it keeps
+    // both the incremental stable-prefix memo (below) and the live-line
+    // merge test (further down) O(last block) instead of O(terminated).
+    std::size_t last_block_start = 0;
+    {
+        bool in_fence = in_code_fence_;
+        std::size_t p = 0;
+        std::size_t block_start = 0;
+        bool prev_blank = false;
+        while (p < terminated.size()) {
+            std::size_t e = terminated.find('\n', p);
+            if (e == std::string_view::npos) e = terminated.size();
+            std::string_view ln = terminated.substr(p, e - p);
+            std::size_t k = 0;
+            while (k < ln.size() && ln[k] == ' ') ++k;
+            const bool fence_line =
+                ln.size() - k >= 3 && (ln[k] == '`' || ln[k] == '~');
+            const bool blank =
+                ln.find_first_not_of(" \t\r") == std::string_view::npos;
+            if (fence_line) { in_fence = !in_fence; prev_blank = false; }
+            else if (!in_fence && blank) { prev_blank = true; }
+            else { if (prev_blank) block_start = p; prev_blank = false; }
+            p = e + 1;
         }
-        auto blocks = canonical_blocks(fence_prefix + std::string{terminated});
-        std::vector<std::shared_ptr<const Element>> els;
-        els.reserve(blocks.size());
-        for (auto& blk : blocks) {
-            apply_live_table_floor_(blk);   // live-table width floor (no-op otherwise)
-            els.push_back(std::make_shared<const Element>(md_block_to_element(blk)));
-        }
-        term_block_count           = blocks.size();
-        term_slice_hash            = fnv1a64(terminated);
-        tail_term_cache_blocks_    = els;
-        tail_term_cache_len_       = terminated.size();
-        tail_term_cache_hash_      = term_slice_hash;
-        tail_term_cache_in_fence_  = in_code_fence_;
-        tail_term_cache_version_   = source_version_;
-        return els;
-    }();
-    if (terminated_rendered.empty()) return render_tail_inner(tail);
+        last_block_start = block_start;
+    }
 
-    // Wrap a cached terminated block in a hash-keyed ComponentElement so
-    // the renderer blits its cells. Key = (tag, instance, terminated
-    // slice hash, block index): stable while the terminated prefix is
-    // unchanged, moves when a new row lands.
+    // Absolute source offsets pinning the terminated slice + its last
+    // (still-growing) block. Stable across commit shifts — the memo keys.
+    const std::size_t term_abs_end   = body_abs_start + terminated.size();
+    const std::size_t last_blk_abs   = body_abs_start + last_block_start;
+
+    // term_slice_hash keys the still-growing last block's ComponentElement
+    // wrapper (it must rotate when a new row lands = when term_abs_end
+    // moves). The frozen-prefix wrappers key on last_blk_abs instead.
+    const std::uint64_t term_slice_hash =
+        (term_abs_end * 0x9E3779B97F4A7C15ull) ^ terminated.size();
+    // Rendered blocks for the FROZEN prefix [0, last_block_start) only —
+    // NOT the still-growing last block. The last block is rendered exactly
+    // once below (either merged with the live line, or standalone),
+    // eliminating the double last-block render (terminated_rendered used
+    // to render it AND the merge test re-rendered it every frame). Keyed
+    // on absolute offsets so it survives commit shifts.
+    auto stable_rendered = [&]() -> const std::vector<std::shared_ptr<const Element>>& {
+        const bool stable_hit =
+            tail_stable_cache_in_fence_ == in_code_fence_
+            && tail_stable_cache_abs_end_  == last_blk_abs
+            && tail_stable_cache_len_      == last_block_start;
+        if (stable_hit) return tail_stable_cache_blocks_;
+        tail_stable_cache_blocks_.clear();
+        if (last_block_start > 0) {
+            // Parse the frozen prefix [0, last_block_start) once. It ends
+            // on a blank-line separator (block boundary), so it parses to
+            // a clean set of complete blocks with no dangling open block.
+            std::string_view frozen = terminated.substr(0, last_block_start);
+            auto blocks = canonical_blocks(fence_prefix + std::string{frozen});
+            tail_stable_cache_blocks_.reserve(blocks.size());
+            for (auto& blk : blocks) {
+                apply_live_table_floor_(blk);
+                tail_stable_cache_blocks_.push_back(
+                    std::make_shared<const Element>(md_block_to_element(blk)));
+            }
+        }
+        tail_stable_cache_len_      = last_block_start;
+        tail_stable_cache_in_fence_ = in_code_fence_;
+        tail_stable_cache_abs_end_  = last_blk_abs;
+        return tail_stable_cache_blocks_;
+    };
+
+    // Render the still-growing LAST terminated block (without the live
+    // line). Memoized on the terminated slice's absolute end. This is the
+    // block the merge test may replace with a live-line-merged version;
+    // when the live line does NOT continue it, this standalone render is
+    // used. Cheap re-parse of just the last block on the miss frame.
+    auto last_block_rendered = [&]() -> std::shared_ptr<const Element> {
+        if (tail_term_cache_blocks_.size() == 1
+            && tail_term_cache_in_fence_ == in_code_fence_
+            && tail_term_cache_abs_end_  == term_abs_end
+            && tail_term_cache_len_      == terminated.size())
+            return tail_term_cache_blocks_.front();
+        std::string last_src;
+        if (last_block_start == 0) last_src = fence_prefix;
+        last_src.append(terminated.data() + last_block_start,
+                        terminated.size() - last_block_start);
+        auto blocks = canonical_blocks(last_src);
+        std::shared_ptr<const Element> el;
+        if (!blocks.empty()) {
+            apply_live_table_floor_(blocks.back());
+            el = std::make_shared<const Element>(
+                md_block_to_element(blocks.back()));
+        }
+        tail_term_cache_blocks_.clear();
+        if (el) tail_term_cache_blocks_.push_back(el);
+        tail_term_cache_len_      = terminated.size();
+        tail_term_cache_in_fence_ = in_code_fence_;
+        tail_term_cache_abs_end_  = term_abs_end;
+        return el;
+    };
+
+    // Wrap a cached FROZEN block in a hash-keyed ComponentElement so the
+    // renderer blits its cells. Key = (tag, instance, STABLE-prefix abs
+    // end, block index): stable while the frozen prefix is unchanged (it
+    // only advances once per block boundary), so the renderer keeps the
+    // painted cells warm across the many drain frames where only the last
+    // block / live line move. Keying on the terminated abs_end instead
+    // would rotate the key every frame and force a needless re-render of
+    // the whole frozen prefix.
     auto wrap_term_block = [&](const std::shared_ptr<const Element>& blk,
                                std::size_t idx) -> Element {
         ComponentElement comp;
         comp.hash_id = ::maya::CacheIdBuilder{}
             .add(std::string_view{"strmd-term"})
             .add(static_cast<std::uint64_t>(instance_id_))
-            .add(term_slice_hash)
+            .add(static_cast<std::uint64_t>(last_blk_abs))
             .add(static_cast<std::uint64_t>(idx))
+            .build();
+        comp.render = [blk](int, int) -> Element { return *blk; };
+        return Element{std::move(comp)};
+    };
+
+    // FROZEN-prefix blocks [0, last_block_start) as a SINGLE cached vstack
+    // Element. Each block inside is still its own hash-keyed
+    // ComponentElement (so the renderer blits per block — no single-wrapper
+    // cells-height bug), but they're pre-assembled into one vstack once per
+    // block-boundary and cached, so the caller splices ONE Element handle
+    // instead of copying ~130 per-block handles + re-running the vstack
+    // builder over them EVERY frame (the residual O(frozen blocks)
+    // per-frame cost during a burst drain). Safe against scrollback: the
+    // frozen prefix sits BEHIND the reveal cursor, so commit-behind-cursor
+    // commits it (into build()'s per-block committed children) before it
+    // can scroll off as a tail sub-tree — the oracle/reveal_scrollback
+    // tests gate this. Memoized on the frozen prefix's absolute end.
+    auto stable_vstack = [&](const std::vector<std::shared_ptr<const Element>>& stable)
+            -> const Element& {
+        const std::size_t n = stable.size();
+        const bool hit =
+            tail_wrap_cache_abs_end_  == last_blk_abs
+            && tail_wrap_cache_in_fence_ == in_code_fence_
+            && tail_wrap_cache_block_count_ == n
+            && tail_wrap_cache_blocks_.size() == 1;
+        if (hit) return tail_wrap_cache_blocks_.front();
+        std::vector<Element> kids;
+        kids.reserve(n);
+        for (std::size_t i = 0; i < n; ++i)
+            kids.push_back(wrap_term_block(stable[i], i));
+        Element vs = (kids.size() == 1)
+            ? std::move(kids.front())
+            : detail::vstack().gap(1)(std::move(kids)).build();
+        tail_wrap_cache_blocks_.clear();
+        tail_wrap_cache_blocks_.push_back(std::move(vs));
+        tail_wrap_cache_abs_end_     = last_blk_abs;
+        tail_wrap_cache_len_         = last_block_start;
+        tail_wrap_cache_in_fence_    = in_code_fence_;
+        tail_wrap_cache_block_count_ = n;
+        return tail_wrap_cache_blocks_.front();
+    };
+
+    // Wrap the still-growing LAST terminated block for the non-continuing
+    // path. Its hash_id keys on the terminated slice's absolute end so it
+    // re-renders (renderer blits from cache) only when a new row lands.
+    auto wrap_last_block = [&](const std::shared_ptr<const Element>& blk)
+            -> Element {
+        ComponentElement comp;
+        comp.hash_id = ::maya::CacheIdBuilder{}
+            .add(std::string_view{"strmd-term-last"})
+            .add(static_cast<std::uint64_t>(instance_id_))
+            .add(term_slice_hash)
             .build();
         comp.render = [blk](int, int) -> Element { return *blk; };
         return Element{std::move(comp)};
@@ -451,30 +597,91 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
 
         bool live_continues = false;
         if (!trimmed_live.empty()) {
-            std::string merged = fence_prefix + std::string{terminated};
-            merged += trimmed_live;
-            merged += '\n';
-            auto merged_blocks = canonical_blocks(merged);
-            if (merged_blocks.size() == term_block_count) {
-                // Live line merged into the last block — the live row is a
-                // continuation, so blocks [0, N-1) are byte-identical to
-                // the terminated render (reuse the cached Elements) and
-                // only the LAST block grew. Re-render just that one.
-                live_continues = true;
-                rendered.reserve(merged_blocks.size() + 1);
-                for (std::size_t i = 0; i + 1 < merged_blocks.size(); ++i)
-                    rendered.push_back(wrap_term_block(terminated_rendered[i], i));
-                if (!merged_blocks.empty()) {
-                    apply_live_table_floor_(merged_blocks.back());
-                    rendered.push_back(
-                        md_block_to_element(merged_blocks.back()));
+            // Continuation test: does the live line fold INTO the last
+            // terminated block (making it one taller) or START a new one?
+            //
+            // The naive form re-parsed `fence_prefix + terminated +
+            // live_line` in full every frame the live line grew — O(the
+            // whole uncommitted tail) per frame, which after a big burst
+            // delta (the reveal cursor lagging tens of KB behind the live
+            // edge) is the dominant streaming cost. But the ONLY block the
+            // live line can extend is the LAST terminated one; every block
+            // before it is closed by a blank-line / fence boundary that the
+            // live line cannot reach back across. So parse only the last
+            // terminated block's span + the live line, and compare against
+            // 1 (did the live line stay inside that single block?) instead
+            // of re-deriving the whole prefix's block count. That makes the
+            // per-frame merge test O(last block), not O(tail).
+            //
+            // last_block_start (hoisted above, shared with the incremental
+            // terminated-render memo): byte offset in `terminated` where
+            // the last top-level block begins.
+
+            // Parse only [last_block_start, end) + the live line. The
+            // fence_prefix re-opener is only needed when the LAST block
+            // itself begins inside the committed-side open fence, i.e. the
+            // whole terminated prefix is that one open-fence block
+            // (last_block_start == 0). Otherwise the last block is a fresh
+            // top-level block whose own opener (if any) is inside the slice.
+            //
+            // Memoized: keyed on (last block abs start, terminated abs end,
+            // live-line hash, fence). When none moved since last frame the
+            // continuation verdict + merged render are byte-identical, so
+            // reuse them and skip the parse + md_block_to_element entirely
+            // — the repeated last-block render was the dominant per-frame
+            // cost during a burst drain.
+            const std::uint64_t live_hash = fnv1a64(trimmed_live);
+            if (tail_merge_cache_el_
+                && tail_merge_cache_last_blk_abs_ == last_blk_abs
+                && tail_merge_cache_term_abs_end_ == term_abs_end
+                && tail_merge_cache_live_hash_    == live_hash
+                && tail_merge_cache_in_fence_     == in_code_fence_) {
+                if (tail_merge_cache_continues_) {
+                    live_continues = true;
+                    if (last_block_start > 0)
+                        rendered.push_back(stable_vstack(stable_rendered()));
+                    rendered.push_back(*tail_merge_cache_el_);
                 }
+                // else: verdict was "does not continue" — fall through to
+                //       the !live_continues path below (cheap, no parse).
+            } else {
+                std::string merged;
+                if (last_block_start == 0) merged = fence_prefix;
+                merged.append(terminated.data() + last_block_start,
+                              terminated.size() - last_block_start);
+                merged += trimmed_live;
+                merged += '\n';
+                auto merged_blocks = canonical_blocks(merged);
+                // The live line folded into the last block iff the
+                // last-block slice + live line still parses to exactly ONE
+                // block.
+                const bool continues = merged_blocks.size() == 1;
+                Element merged_el;
+                if (continues) {
+                    live_continues = true;
+                    if (last_block_start > 0)
+                        rendered.push_back(stable_vstack(stable_rendered()));
+                    apply_live_table_floor_(merged_blocks.back());
+                    merged_el = md_block_to_element(merged_blocks.back());
+                    rendered.push_back(merged_el);
+                }
+                // Store the memo (the merged Element only when it exists).
+                tail_merge_cache_last_blk_abs_ = last_blk_abs;
+                tail_merge_cache_term_abs_end_ = term_abs_end;
+                tail_merge_cache_live_hash_    = live_hash;
+                tail_merge_cache_in_fence_     = in_code_fence_;
+                tail_merge_cache_continues_    = continues;
+                tail_merge_cache_el_ = continues
+                    ? std::make_shared<const Element>(std::move(merged_el))
+                    : nullptr;
             }
         }
         if (!live_continues) {
-            rendered.reserve(terminated_rendered.size() + 1);
-            for (std::size_t i = 0; i < terminated_rendered.size(); ++i)
-                rendered.push_back(wrap_term_block(terminated_rendered[i], i));
+            // Frozen prefix (one cached vstack) + the standalone last block.
+            if (last_block_start > 0)
+                rendered.push_back(stable_vstack(stable_rendered()));
+            if (auto last_blk = last_block_rendered())
+                rendered.push_back(wrap_last_block(last_blk));
         }
 
         // Live line that STARTS a new block stays inline below.

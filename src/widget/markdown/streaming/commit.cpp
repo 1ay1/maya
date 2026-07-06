@@ -145,8 +145,13 @@ void StreamingMarkdown::commit_range(size_t boundary) {
 
     auto& prefix_blocks = prefix_->blocks;
     auto& prefix_metas  = prefix_->metas;
-    prefix_blocks.reserve(prefix_blocks.size() + parsed.blocks.size());
-    prefix_metas.reserve (prefix_metas.size()  + parsed.blocks.size());
+    // NO exact-size reserve here. commit_range runs once per block boundary
+    // for the whole turn, appending a handful of blocks each time; a
+    // reserve(size + new) fills capacity exactly, so the NEXT commit's
+    // reserve always exceeds capacity and reallocates — moving every
+    // committed block/meta, O(N) per commit, O(N²) per long turn (the same
+    // exact-reserve trap fixed in build()'s pure-growth arm). push_back's
+    // geometric doubling keeps these appends amortised O(1).
 
     const bool seg_match = seg_ranges.size() == parsed.blocks.size();
     // Synthetic monotone offset used when segment count diverges from
@@ -511,6 +516,24 @@ void StreamingMarkdown::clear() {
     tail_term_cache_len_       = 0;
     tail_term_cache_in_fence_  = false;
     tail_term_cache_blocks_.clear();
+    tail_term_cache_abs_end_   = static_cast<std::size_t>(-1);
+    tail_stable_cache_version_  = 0;
+    tail_stable_cache_len_      = 0;
+    tail_stable_cache_in_fence_ = false;
+    tail_stable_cache_blocks_.clear();
+    tail_stable_cache_abs_end_  = static_cast<std::size_t>(-1);
+    tail_wrap_cache_version_     = 0;
+    tail_wrap_cache_len_         = 0;
+    tail_wrap_cache_in_fence_    = false;
+    tail_wrap_cache_block_count_ = 0;
+    tail_wrap_cache_blocks_.clear();
+    tail_wrap_cache_abs_end_     = static_cast<std::size_t>(-1);
+    tail_merge_cache_last_blk_abs_ = static_cast<std::size_t>(-1);
+    tail_merge_cache_term_abs_end_ = static_cast<std::size_t>(-1);
+    tail_merge_cache_live_hash_    = 0;
+    tail_merge_cache_in_fence_     = false;
+    tail_merge_cache_continues_    = false;
+    tail_merge_cache_el_.reset();
     // Reset the build-cache shape flags so the next build() falls into
     // the full-rebuild path rather than trying to mutate a stale
     // structural template.
@@ -533,6 +556,7 @@ void StreamingMarkdown::clear() {
     cached_build_         = Element{TextElement{""}};
     cached_live_          = Element{TextElement{""}};
     live_overlay_prefix_gen_ = static_cast<std::uint64_t>(-1);
+    overlay_sig_valid_    = false;
     live_                 = false;
 
     // Fold map keys at byte offsets in the prior source_; that source

@@ -509,6 +509,28 @@ private:
     // (uint64_t)-1 forces a full rebuild on the first overlay frame.
     mutable std::uint64_t live_overlay_prefix_gen_ =
         static_cast<std::uint64_t>(-1);
+
+    // ── Idle-overlay memo ──────────────────────────────────────────────
+    // render_live_overlay_ runs every animation frame while live_, but its
+    // output cached_live_ is a pure function of the fields below. During the
+    // long idle-but-live stretch after the reveal catches up to the edge and
+    // the trail cools, only the caret pulse moves — bucketed coarse here so
+    // most idle frames share a signature and return cached_live_ untouched,
+    // skipping the O(blocks) spine walk + O(tail) decorate re-slice that was
+    // the per-frame floor a long live turn paid between deltas. See the memo
+    // block in render_live_overlay_ for the full rationale.
+    struct OverlaySig {
+        std::uint64_t prefix_gen   = 0;
+        std::uint64_t src_version  = 0;
+        std::size_t   revealed_cp  = 0;
+        std::size_t   total_cp     = 0;
+        std::size_t   byte_clip    = 0;
+        std::int64_t  age_term     = 0;
+        std::int64_t  caret_bucket = 0;
+        bool operator==(const OverlaySig&) const = default;
+    };
+    mutable OverlaySig overlay_sig_{};
+    mutable bool       overlay_sig_valid_ = false;
     mutable bool    build_dirty_  = true;
     mutable size_t  cached_tail_size_ = 0;   // tail length when cache was built
     // Generation reflected in cached_build_'s prefix component slot —
@@ -695,6 +717,83 @@ private:
     mutable std::size_t             tail_term_cache_len_      = 0;
     mutable bool                    tail_term_cache_in_fence_ = false;
     mutable std::vector<std::shared_ptr<const Element>> tail_term_cache_blocks_;
+    // Absolute source byte offset where the cached terminated slice ENDS
+    // (committed_ + leading-nl-skip + terminated.size()). Absolute offsets
+    // are stable across the commit-behind-cursor shifts that move
+    // committed_ forward every frame, so keying the term memo on this (not
+    // on source_version_, which bumps every frame) lets an unchanged
+    // terminated slice hit even as committed_ slides — the fix that keeps
+    // render_tail from re-parsing the last block on every drain frame.
+    mutable std::size_t             tail_term_cache_abs_end_  = static_cast<std::size_t>(-1);
+
+    // ── Incremental terminated-prefix render (stable-block memo) ────────
+    // The whole-tail memo above re-parses the ENTIRE terminated prefix
+    // whenever a new row lands — O(terminated) per committed row. When
+    // the reveal cursor lags far behind the live edge (a big burst
+    // delta), that terminated prefix can be tens of KB of fully-complete
+    // blocks, so the parse+render is the dominant per-frame cost of a
+    // long streaming turn (stream_md_lag_test's growth-window ratio).
+    //
+    // But every terminated block EXCEPT the last is closed by a
+    // blank-line / fence boundary that no later byte can reach back
+    // across — it is byte-frozen the moment the next block opens. So we
+    // only ever need to re-parse the FINAL (still-growing) terminated
+    // block. This memo caches the rendered Elements for the stable
+    // prefix [0, stable_len) and the byte length that produced them;
+    // when stable_len advances (a block closed) we parse only the newly
+    // frozen span and append. Keyed on (version, in_fence, stable_len)
+    // — stable_len is monotonic within a stream, reset on clear() /
+    // divergent set_content via the version check. Turns the per-row
+    // terminated render from O(terminated) to O(last block).
+    mutable std::uint64_t           tail_stable_cache_version_  = 0;
+    mutable std::size_t             tail_stable_cache_len_      = 0;
+    mutable bool                    tail_stable_cache_in_fence_ = false;
+    mutable std::vector<std::shared_ptr<const Element>> tail_stable_cache_blocks_;
+    // Absolute source offset where the cached stable (frozen) prefix ENDS
+    // = absolute start of the still-growing last block. Stable across
+    // commit shifts; the stable memo hits whenever the last block hasn't
+    // advanced past a new boundary.
+    mutable std::size_t             tail_stable_cache_abs_end_  = static_cast<std::size_t>(-1);
+
+    // ── Wrapped terminated-block Elements (per-frame reshape memo) ──────
+    // Even with the incremental parse memo above, render_tail rebuilt the
+    // vstack of hash-keyed ComponentElement wrappers over ALL terminated
+    // blocks every frame — O(terminated blocks) ComponentElement + CacheId
+    // constructions per frame. On a long uncommitted tail (reveal cursor
+    // lagging tens of KB) that's hundreds of blocks re-wrapped each
+    // animation frame, independent of the parse. But the wrappers are a
+    // pure function of the terminated bytes (their hash_id is keyed on the
+    // terminated slice hash + block index), so they only change when a new
+    // row terminates. Cache the wrapped vector keyed on (version,
+    // terminated len, in_fence): a frame that only grows the LIVE line
+    // (terminated unchanged) reuses the wrapped terminated blocks by value
+    // copy of the small Element handles and only rebuilds the live-line
+    // tail — O(live line), not O(terminated blocks).
+    mutable std::uint64_t           tail_wrap_cache_version_  = 0;
+    mutable std::size_t             tail_wrap_cache_len_      = 0;
+    mutable bool                    tail_wrap_cache_in_fence_ = false;
+    mutable std::size_t             tail_wrap_cache_block_count_ = 0;
+    mutable std::vector<Element>    tail_wrap_cache_blocks_;
+    // Absolute source offset the cached wrapped-block vector's terminated
+    // slice ends at — same absolute-offset gate as the term memo.
+    mutable std::size_t             tail_wrap_cache_abs_end_  = static_cast<std::size_t>(-1);
+
+    // ── Merged last-block render memo (live-line continuation) ────────
+    // render_tail's continuation test parses [last_block, end)+live_line
+    // and, when it folds to one block, re-renders that merged block via
+    // md_block_to_element EVERY frame — a full parse + block render on top
+    // of the terminated_rendered parse of the same last block. On a burst
+    // drain that's the dominant repeated cost. Memoize the merged render
+    // keyed on the last block's absolute start, the terminated slice's
+    // absolute end, and a hash of the trimmed live line: unchanged inputs
+    // (a frame where neither the last block nor the live line moved) reuse
+    // the cached Element + continuation verdict with zero parsing.
+    mutable std::size_t tail_merge_cache_last_blk_abs_ = static_cast<std::size_t>(-1);
+    mutable std::size_t tail_merge_cache_term_abs_end_ = static_cast<std::size_t>(-1);
+    mutable std::uint64_t tail_merge_cache_live_hash_  = 0;
+    mutable bool         tail_merge_cache_in_fence_    = false;
+    mutable bool         tail_merge_cache_continues_   = false;
+    mutable std::shared_ptr<const Element> tail_merge_cache_el_;
 
     // ── Per-block fold state ───────────────────────────────────────────
     // Keyed by BlockMeta::source_offset so fold state survives the rare

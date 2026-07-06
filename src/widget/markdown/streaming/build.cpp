@@ -367,9 +367,21 @@ const Element& StreamingMarkdown::build() const {
         if (pure_growth) {
             // Drop the old tail slot (if any); append the new block
             // components M..N-1; then push the fresh tail.
+            //
+            // NO reserve() here — and that absence is load-bearing. This arm
+            // runs on EVERY commit (once per block boundary on a long turn),
+            // and it fills the vector exactly (nb new blocks + tail), so a
+            // reserve(new_n + 1) leaves capacity == size behind. The NEXT
+            // commit's exact reserve is then always > capacity and
+            // reallocates, moving all N committed children — O(N) per
+            // commit, O(N²) per turn: the long-turn streaming lag the
+            // per-block component design was supposed to eliminate
+            // (measured: ~15–190 µs/frame by 50 KB in). push_back's
+            // amortised geometric doubling makes the same appends O(1)
+            // amortised — exact-size reserve in a grow-a-little-every-frame
+            // loop is strictly worse than no reserve at all.
             if (cached_has_tail_ && !box.children.empty())
                 box.children.pop_back();
-            box.children.reserve(new_n + (has_tail ? 1u : 0u));
             for (std::size_t i = old_n; i < new_n; ++i)
                 box.children.push_back(make_block_component(i));
             if (has_tail) {

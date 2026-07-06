@@ -1104,11 +1104,35 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             last_anim_phase_ = ms_total / kAnimPhaseMs;
             ::maya::request_animation_frame();
         } else {
-            const std::int64_t phase = ms_total / kAnimPhaseMs;
-            if (phase != last_anim_phase_) {
-                last_anim_phase_ = phase;
-                ::maya::request_animation_frame();
+            // Reveal is settled: cursor at the edge, tail cooled. The only
+            // remaining animation is the "awaiting next byte" end-caret
+            // pulse. That cue is meaningful for a few seconds after the last
+            // byte — but a widget can sit live_ INDEFINITELY (a settled turn
+            // that never had finish() called: e.g. a no-tool reply whose
+            // size was unchanged on its settle frame, or a thread rehydrated
+            // from disk). Re-arming the caret bucket forever then drives a
+            // permanent ~10-20 Hz wake loop over the WHOLE idle session:
+            // every wake re-runs the host view + this overlay for zero
+            // visible change beyond a caret nobody is waiting on. Bound it.
+            //
+            // Past kCaretPulseWindowMs of edge-idle, stop re-arming — the
+            // caret freezes on its current phase and the loop returns to a
+            // true idle poll (zero CPU). A real resumed stream re-grows
+            // source_, which resets reveal_edge_reached_ms_ to 0 upstream,
+            // flips reveal_in_motion true again, and the caret revives on the
+            // very next frame. So the cue is preserved exactly where it
+            // matters (right after a byte) and dropped only once it's inert.
+            constexpr std::int64_t kCaretPulseWindowMs = 4000;
+            const bool caret_still_relevant =
+                cursor_advance_age_tail_ms_ <= kCaretPulseWindowMs;
+            if (caret_still_relevant) {
+                const std::int64_t phase = ms_total / kAnimPhaseMs;
+                if (phase != last_anim_phase_) {
+                    last_anim_phase_ = phase;
+                    ::maya::request_animation_frame();
+                }
             }
+            // else: inert settled caret — do NOT re-arm. Idle drops to zero.
         }
         return cached_live_;
 }

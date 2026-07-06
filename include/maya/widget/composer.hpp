@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -144,8 +145,29 @@ public:
         // requested) while idle; a streaming/executing composer holds a
         // steady cursor.
         constexpr double kBlinkPeriodMs = 530.0;
-        const bool blink_off =
-            !active && anim::loop_phase(kBlinkPeriodMs) >= 0.5;
+        // Compute the blink phase directly off the clock rather than via
+        // anim::loop_phase() — which unconditionally re-arms the next frame
+        // at the loop's ~16 ms animation interval. A 530 ms blink driven at
+        // 60 fps wakes the whole event loop ~33 times per visible toggle,
+        // and each idle wake re-runs the host's visual_hash walk; on a long
+        // thread that alone is ~10% CPU while the user sits idle. Instead we
+        // read the phase ourselves and, while idle, ask for the next frame
+        // only when the caret cell will actually flip (the half-period
+        // boundary). One wake per visible toggle — ~4 Hz — instead of 60.
+        bool blink_off = false;
+        if (!active) {
+            const std::int64_t now_ms = anim::default_clock().now_ms();
+            const double period_pos =
+                std::fmod(static_cast<double>(now_ms), kBlinkPeriodMs);
+            blink_off = period_pos >= kBlinkPeriodMs * 0.5;
+            // Milliseconds until the next visible toggle (the next half or
+            // full period boundary). Wake the loop then — not at 60 fps.
+            const double half = kBlinkPeriodMs * 0.5;
+            const double into_half = std::fmod(period_pos, half);
+            const std::int64_t until_toggle =
+                static_cast<std::int64_t>(half - into_half) + 1;
+            ::maya::request_animation_frame_after(until_toggle);
+        }
 
         std::string with_cursor = cfg_.text;
         int cur = std::min<int>(cfg_.cursor, static_cast<int>(cfg_.text.size()));

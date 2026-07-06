@@ -143,6 +143,18 @@ inline constexpr auto kAnimationFrameInterval = std::chrono::milliseconds{16};
 // single-threaded UI — same ownership model as live_scroll_states.
 inline thread_local bool animation_requested_ = false;
 
+// Companion to animation_requested_: the MINIMUM delay (ms) the widget is
+// willing to wait for its next frame. 0 = the default kAnimationFrameInterval
+// (~16 ms / 60 fps) used by fast animations (spinner, streaming reveal). A
+// SLOW animation (the 530 ms composer caret blink) sets this to its own
+// visible-step period so the loop wakes near the next toggle instead of
+// polling at 60 fps for a 2 Hz effect — the difference between an idle
+// session costing ~1% and ~12% CPU. The loop takes the MAX of all requests
+// this frame (widgets accumulate into it, coarsest wins is wrong — the
+// FINEST cadence any live widget needs must be honoured, so we track the
+// SMALLEST non-zero request). Reset to 0 each render alongside the flag.
+inline thread_local std::int64_t next_frame_delay_ms_ = 0;
+
 // Opt-in loop-state probe (MAYA_IO_LOG=<path>). Appends to the same file the
 // app.cpp poll/render trace uses; entries are timestamp-ordered so the two
 // streams interleave correctly when sorted. Throttled per call site. No-op
@@ -162,6 +174,22 @@ inline void loop_dbg(std::string_view s) {
 
 inline void request_animation_frame() noexcept {
     detail::animation_requested_ = true;
+}
+
+// Request the next frame no sooner than `delay_ms` from now (instead of the
+// default ~16 ms). For SLOW, self-driving animations (the composer caret
+// blink at its 265 ms half-period) so the run loop sleeps between visible
+// steps rather than waking at 60 fps to re-check an effect that toggles a
+// few times a second. Implies request_animation_frame(). When multiple
+// widgets request different delays in one frame, the loop honours the
+// SMALLEST non-zero one (the finest cadence any live widget needs), so a
+// fast animation always overrides a slow widget's coarse request.
+inline void request_animation_frame_after(std::int64_t delay_ms) noexcept {
+    detail::animation_requested_ = true;
+    if (delay_ms < 0) delay_ms = 0;
+    if (detail::next_frame_delay_ms_ == 0
+        || delay_ms < detail::next_frame_delay_ms_)
+        detail::next_frame_delay_ms_ = delay_ms;
 }
 
 // Wire the decoupled motion-framework frame-request hook to the real run
@@ -1705,6 +1733,10 @@ void run(RunConfig cfg = {}) {
             // a chance to re-request. Clearing on skip is exactly what
             // froze RAF animations until a keypress.
             if (!skip_render) detail::animation_requested_ = false;
+            // Reset the requested delay in lockstep with the flag: build()
+            // re-sets both, a skip clears neither (build() didn't run, so
+            // the latched delay must ride to the next scheduling).
+            if (!skip_render) detail::next_frame_delay_ms_ = 0;
 
             if (!skip_render) {
                 // Pure: view(model) → Element → render to terminal
@@ -1751,17 +1783,29 @@ void run(RunConfig cfg = {}) {
             //     animating without a keypress.
             if (!skip_render) {
                 if (detail::animation_requested_) {
-                    next_frame_at = std::chrono::steady_clock::now()
-                                  + detail::kAnimationFrameInterval;
+                    // Honour a widget's requested minimum delay (the slow
+                    // caret blink asks for its ~265 ms half-period) so the
+                    // loop sleeps between visible steps instead of waking at
+                    // 60 fps. 0 (the common case) falls back to the default
+                    // ~16 ms interval used by fast animations.
+                    const auto delay = detail::next_frame_delay_ms_ > 0
+                        ? std::chrono::milliseconds(detail::next_frame_delay_ms_)
+                        : detail::kAnimationFrameInterval;
+                    next_frame_at = std::chrono::steady_clock::now() + delay;
                 } else {
                     next_frame_at = std::chrono::steady_clock::time_point{};
                 }
             } else if (next_frame_at != std::chrono::steady_clock::time_point{}) {
                 // Keep riding: advance to the next interval from now so
                 // the loop doesn't busy-spin re-detecting an already-due
-                // frame it just chose to skip.
-                next_frame_at = std::chrono::steady_clock::now()
-                              + detail::kAnimationFrameInterval;
+                // frame it just chose to skip. A skip can't observe a fresh
+                // delay request (build() didn't run), so use the last one
+                // still latched in next_frame_delay_ms_ (not cleared on a
+                // skip, mirroring animation_requested_).
+                const auto delay = detail::next_frame_delay_ms_ > 0
+                    ? std::chrono::milliseconds(detail::next_frame_delay_ms_)
+                    : detail::kAnimationFrameInterval;
+                next_frame_at = std::chrono::steady_clock::now() + delay;
             }
             // Same scroll-writeback re-render as the simple run() path:
             // if a ScrollState's max_* changed during this paint, the

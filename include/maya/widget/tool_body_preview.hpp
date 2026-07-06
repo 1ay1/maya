@@ -48,6 +48,11 @@
 
 namespace maya {
 
+// Defined in render/canvas.cpp — the pipeline's active color capability
+// (3 = truecolor, 2 = 256, 1 = 16). Declared here (not #include'd from
+// render/canvas.hpp) to keep this widget header light.
+[[nodiscard]] int terminal_color_level() noexcept;
+
 class ToolBodyPreview {
 public:
     enum class Kind : std::uint8_t {
@@ -928,8 +933,14 @@ private:
         // Line-number gutter rides the same green band as the code so the
         // whole row is one solid rectangle (no dim stripe cutting through);
         // the number reads in a medium green, the code in bright green.
-        const Style num_st  = Style{}.with_fg(num_fg).with_bg(add_bg);
-        const Style code_st = Style{}.with_fg(add_fg_br).with_bg(add_bg);
+        // 16-color fallback: plain green fg, no band (see diff_bands_ok).
+        const bool  bands   = diff_bands_ok();
+        const Style num_st  = bands
+            ? Style{}.with_fg(num_fg).with_bg(add_bg)
+            : Style{}.with_fg(Color::green()).with_dim();
+        const Style code_st = bands
+            ? Style{}.with_fg(add_fg_br).with_bg(add_bg)
+            : Style{}.with_fg(Color::green());
 
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 2);
@@ -943,8 +954,24 @@ private:
         for (std::size_t i = 0; i < p.lines.size(); ++i) {
             char numbuf[8];
             std::snprintf(numbuf, sizeof(numbuf), "%3d ", line_num++);
-            rows.push_back(band_row(numbuf, num_st,
-                                    std::string{p.lines[i]}, code_st, add_bg));
+            if (bands) {
+                rows.push_back(band_row(numbuf, num_st,
+                                        std::string{p.lines[i]}, code_st, add_bg));
+            } else {
+                std::string out = numbuf;
+                const std::size_t gl = out.size();
+                out += p.lines[i];
+                std::vector<StyledRun> runs;
+                runs.push_back({0, gl, num_st});
+                if (out.size() > gl)
+                    runs.push_back({gl, out.size() - gl, code_st});
+                rows.push_back(Element{TextElement{
+                    .content = std::move(out),
+                    .style   = {},
+                    .wrap    = TextWrap::TruncateEnd,
+                    .runs    = std::move(runs),
+                }});
+            }
         }
 
         if (cfg_.show_footer_stats) {
@@ -961,6 +988,20 @@ private:
         }
 
         return v(rows).build();
+    }
+
+    // ── Diff-band capability gate ──
+    // The dark, saturated RGB row bands (GitHub-dark-diff style) are a
+    // truecolor/256 design. On a 16-color terminal (TERM=xterm over SSH,
+    // vt100, linux console) the emit-time degrade quantizes the dark
+    // vivid bg to the nearest ANSI cell — FULL bright green / red / blue
+    // blocks with washed-out text: the "garish solid bands over SSH"
+    // report. There is no 16-color bg that reads as a subtle band, so
+    // below 256 colors we drop the bands entirely and fall back to the
+    // classic fg-colored diff (green/red +/- text, blue @@ headers) —
+    // exactly what `git diff` itself looks like on such terminals.
+    [[nodiscard]] static bool diff_bands_ok() noexcept {
+        return terminal_color_level() >= 2;
     }
 
     // Helper: build a styled-text row with NoWrap so AgentTimeline's per-
@@ -1070,12 +1111,18 @@ private:
             // continuous tri-color stack (slate header → red removes →
             // green adds) instead of a jagged "tint, blank, tint" strip.
             // Full-width band so the header rule spans the same rectangle
-            // as the −/+ sides below it.
-            const Color hdr_bg = Color::rgb(44, 54, 122);
-            const Color hdr_fg = Color::rgb(188, 202, 252);
-            rows.push_back(band_row("   ", Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
-                std::move(header),
-                Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
+            // as the −/+ sides below it. 16-color fallback: plain dim
+            // blue text, no band (see push_diff_side).
+            if (diff_bands_ok()) {
+                const Color hdr_bg = Color::rgb(44, 54, 122);
+                const Color hdr_fg = Color::rgb(188, 202, 252);
+                rows.push_back(band_row("   ", Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
+                    std::move(header),
+                    Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
+            } else {
+                rows.push_back(text_row("   " + header,
+                    Style{}.with_fg(Color::blue()).with_bold()));
+            }
 
             push_diff_side(rows, h.old_text, '-', danger());
             push_diff_side(rows, h.new_text, '+', success());
@@ -1128,6 +1175,7 @@ private:
                + " / +" + std::to_string(count_lines(last.new_text));
         const Color hdr_bg = Color::rgb(44, 54, 122);
         const Color hdr_fg = Color::rgb(188, 202, 252);
+        const bool  bands  = diff_bands_ok();
 
         // Find the earliest hunk that can still contribute to the last-K
         // window (each side contributes at most K rows after its per-side
@@ -1154,10 +1202,14 @@ private:
 
         std::vector<Element> rows;
         rows.reserve(body.size() + 1);
-        rows.push_back(band_row("   ",
-            Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
-            std::move(header),
-            Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
+        if (bands)
+            rows.push_back(band_row("   ",
+                Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
+                std::move(header),
+                Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
+        else
+            rows.push_back(text_row("   " + header,
+                Style{}.with_fg(Color::blue()).with_bold()));
         for (auto& e : body) rows.push_back(std::move(e));
         return v(rows).build();
     }
@@ -1196,6 +1248,12 @@ private:
         // " + " / " - " gutter rides a brighter, even more saturated rail of
         // the same hue so the change marker pops like a GitHub / GitLab line
         // indicator.
+        //
+        // 16-color fallback (diff_bands_ok false): no bg at all — classic
+        // fg-colored ± lines, like `git diff` on the same terminal. The
+        // degrade would otherwise turn the dark band into a FULL bright
+        // green/red block per row (the "garish bands over SSH" report).
+        const bool bands = diff_bands_ok();
         const Color bg      = is_add ? Color::rgb(12, 80, 38)
                                      : Color::rgb(92, 18, 26);
         const Color rail_bg = is_add ? Color::rgb(26, 116, 44)
@@ -1204,8 +1262,12 @@ private:
                                      : Color::rgb(252, 180, 188);
         (void)c;   // c was the legacy fg; kept in signature for callers
 
-        const Style sign_st = Style{}.with_fg(fg_br).with_bg(rail_bg).with_bold();
-        const Style body_st = Style{}.with_fg(fg_br).with_bg(bg);
+        const Style sign_st = bands
+            ? Style{}.with_fg(fg_br).with_bg(rail_bg).with_bold()
+            : Style{}.with_fg(is_add ? Color::green() : Color::red()).with_bold();
+        const Style body_st = bands
+            ? Style{}.with_fg(fg_br).with_bg(bg)
+            : Style{}.with_fg(is_add ? Color::green() : Color::red());
 
         std::string gutter = " ";
         gutter += marker;
@@ -1214,9 +1276,27 @@ private:
         for (int i = 0; i < static_cast<int>(p.lines.size()); ++i) {
             if (i == p.elision_at && p.elided > 0)
                 rows.push_back(elision_marker(p.elided));
-            rows.push_back(band_row(gutter, sign_st,
-                                    std::string{p.lines[std::size_t(i)]},
-                                    body_st, bg));
+            if (bands) {
+                rows.push_back(band_row(gutter, sign_st,
+                                        std::string{p.lines[std::size_t(i)]},
+                                        body_st, bg));
+            } else {
+                // Plain fg row: " + content" — sign gutter + body, two
+                // styled runs, no band, no pipe separator.
+                std::string out = gutter;
+                out += p.lines[std::size_t(i)];
+                std::vector<StyledRun> runs;
+                runs.push_back({0, gutter.size(), sign_st});
+                if (out.size() > gutter.size())
+                    runs.push_back({gutter.size(), out.size() - gutter.size(),
+                                    body_st});
+                rows.push_back(Element{TextElement{
+                    .content = std::move(out),
+                    .style   = {},
+                    .wrap    = TextWrap::TruncateEnd,
+                    .runs    = std::move(runs),
+                }});
+            }
         }
     }
 
@@ -1269,11 +1349,26 @@ private:
         // filename header — so the colored bands read as changes floating
         // over unchanged code, the classic GitHub/delta hierarchy, with no
         // leaked `a//tmp/x` double-slash plumbing.
-        const Style add_sign_st = Style{}.with_fg(add_fg_br).with_bg(add_rail).with_bold();
-        const Style add_body_st = Style{}.with_fg(add_fg_br).with_bg(add_bg);
-        const Style rem_sign_st = Style{}.with_fg(rem_fg_br).with_bg(rem_rail).with_bold();
-        const Style rem_body_st = Style{}.with_fg(rem_fg_br).with_bg(rem_bg);
-        const Style hunk_st     = Style{}.with_fg(hunk_fg).with_bg(hunk_bg).with_bold();
+        //
+        // 16-color fallback (diff_bands_ok false): classic fg-colored diff
+        // (green/red ± text, blue @@), no backgrounds — the degrade would
+        // otherwise render full bright-color blocks per row.
+        const bool bands = diff_bands_ok();
+        const Style add_sign_st = bands
+            ? Style{}.with_fg(add_fg_br).with_bg(add_rail).with_bold()
+            : Style{}.with_fg(Color::green()).with_bold();
+        const Style add_body_st = bands
+            ? Style{}.with_fg(add_fg_br).with_bg(add_bg)
+            : Style{}.with_fg(Color::green());
+        const Style rem_sign_st = bands
+            ? Style{}.with_fg(rem_fg_br).with_bg(rem_rail).with_bold()
+            : Style{}.with_fg(Color::red()).with_bold();
+        const Style rem_body_st = bands
+            ? Style{}.with_fg(rem_fg_br).with_bg(rem_bg)
+            : Style{}.with_fg(Color::red());
+        const Style hunk_st     = bands
+            ? Style{}.with_fg(hunk_fg).with_bg(hunk_bg).with_bold()
+            : Style{}.with_fg(Color::blue()).with_bold();
         const Style file_st     = Style{}.with_fg(accent()).with_bold();
         const Style ctx_st      = Style{}.with_fg(cfg_.text_color);
 
@@ -1339,16 +1434,27 @@ private:
             }
 
             if (ln.starts_with("@@")) {
-                rows.push_back(band_row("   ", hunk_st, std::string{ln},
-                                        hunk_st, hunk_bg));
+                if (bands)
+                    rows.push_back(band_row("   ", hunk_st, std::string{ln},
+                                            hunk_st, hunk_bg));
+                else
+                    rows.push_back(text_row("   " + std::string{ln}, hunk_st));
             } else if (!ln.empty() && ln[0] == '+') {
-                rows.push_back(band_row(" + ", add_sign_st,
-                                        std::string{ln.substr(1)},
-                                        add_body_st, add_bg));
+                if (bands)
+                    rows.push_back(band_row(" + ", add_sign_st,
+                                            std::string{ln.substr(1)},
+                                            add_body_st, add_bg));
+                else
+                    rows.push_back(text_row(" + " + std::string{ln.substr(1)},
+                                            add_body_st));
             } else if (!ln.empty() && ln[0] == '-') {
-                rows.push_back(band_row(" - ", rem_sign_st,
-                                        std::string{ln.substr(1)},
-                                        rem_body_st, rem_bg));
+                if (bands)
+                    rows.push_back(band_row(" - ", rem_sign_st,
+                                            std::string{ln.substr(1)},
+                                            rem_body_st, rem_bg));
+                else
+                    rows.push_back(text_row(" - " + std::string{ln.substr(1)},
+                                            rem_body_st));
             } else {
                 // Context line — unchanged code, plain dim, aligned with
                 // the band content column (3-col gutter).

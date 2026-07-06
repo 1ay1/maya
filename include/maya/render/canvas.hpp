@@ -26,6 +26,19 @@
 namespace maya {
 
 // ============================================================================
+// terminal_color_level — the render pipeline's active color capability
+// ============================================================================
+// 3 = truecolor, 2 = 256-color, 1 = 16-color. Detected once from the
+// environment (COLORTERM / TERM / NO_COLOR — see maya::env::color_level)
+// and overridable with MAYA_COLOR=truecolor|256|16|auto. This is the SAME
+// level StylePool uses to degrade RGB SGR at emit time; widgets that pick
+// between an RGB-band design and a plain-fg fallback (e.g. diff row bands,
+// which quantize to garish full-bright cells at 16 colors) should branch
+// on it so their design intent survives the degrade instead of being
+// mangled by it.
+[[nodiscard]] int terminal_color_level() noexcept;
+
+// ============================================================================
 // AlignedBuffer - 64-byte cache-line aligned buffer for SIMD
 // ============================================================================
 // AVX2 loads from 32-byte aligned addresses avoid split cache-line penalties.

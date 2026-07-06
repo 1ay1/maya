@@ -43,6 +43,8 @@ int active_color_level() noexcept {
 
 } // namespace
 
+int terminal_color_level() noexcept { return active_color_level(); }
+
 // ============================================================================
 // AlignedBuffer
 // ============================================================================

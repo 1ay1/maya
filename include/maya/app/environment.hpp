@@ -55,10 +55,38 @@ enum class ColorLevel : uint8_t {
         if (s == "truecolor" || s == "24bit") return ColorLevel::TrueColor;
     }
 
-    // TERM containing 256color
     if (auto term = std::getenv("TERM")) {
         std::string_view s{term};
-        if (s.find("256color") != std::string_view::npos) return ColorLevel::Ansi256;
+        // terminfo convention: a "-direct" TERM (xterm-direct,
+        // tmux-direct, ...) advertises 24-bit RGB.
+        if (s.find("direct") != std::string_view::npos)
+            return ColorLevel::TrueColor;
+        // Terminals that are truecolor-capable but say so only via
+        // COLORTERM — which SSH does NOT forward (it's not in most
+        // sshd AcceptEnv lists), while TERM is. Over SSH the escape
+        // bytes are interpreted by the LOCAL terminal, so when TERM
+        // names one of these emitting 38;2 truecolor is always right.
+        // Without this, a remote agentty session degraded to 16-color
+        // ANSI: the diff's dark vivid green/red row bands quantized to
+        // FULL bright green/red cells with grey text — the "garish
+        // solid bands over SSH" report.
+        for (std::string_view name :
+             {"kitty", "ghostty", "wezterm", "alacritty", "foot",
+              "iterm", "konsole", "contour", "rio"}) {
+            if (s.find(name) != std::string_view::npos)
+                return ColorLevel::TrueColor;
+        }
+        // TERM containing 256color
+        if (s.find("256color") != std::string_view::npos)
+            return ColorLevel::Ansi256;
+        // Any other xterm / screen / tmux flavor: real xterm has
+        // supported 256 colors for two decades, GNU screen and tmux
+        // both pass 48;5 through, and everything that masquerades as
+        // xterm-* does too. Treating these as Basic was the harmful
+        // default — 48;5 indexed SGR is universally safe here.
+        if (s.substr(0, 5) == "xterm" || s.substr(0, 6) == "screen"
+            || s.substr(0, 4) == "tmux")
+            return ColorLevel::Ansi256;
     }
 
     // Default: basic colors if TTY

@@ -143,17 +143,20 @@ inline constexpr auto kAnimationFrameInterval = std::chrono::milliseconds{16};
 // single-threaded UI — same ownership model as live_scroll_states.
 inline thread_local bool animation_requested_ = false;
 
-// Companion to animation_requested_: the MINIMUM delay (ms) the widget is
-// willing to wait for its next frame. 0 = the default kAnimationFrameInterval
-// (~16 ms / 60 fps) used by fast animations (spinner, streaming reveal). A
-// SLOW animation (the 530 ms composer caret blink) sets this to its own
-// visible-step period so the loop wakes near the next toggle instead of
-// polling at 60 fps for a 2 Hz effect — the difference between an idle
-// session costing ~1% and ~12% CPU. The loop takes the MAX of all requests
-// this frame (widgets accumulate into it, coarsest wins is wrong — the
-// FINEST cadence any live widget needs must be honoured, so we track the
-// SMALLEST non-zero request). Reset to 0 each render alongside the flag.
-inline thread_local std::int64_t next_frame_delay_ms_ = 0;
+// Companion to animation_requested_: the frame-delay policy for THIS render.
+// Sentinel -1 = "unset" (no request yet this frame). 0 = at least one FAST
+// requester (plain request_animation_frame / the motion framework's
+// request_frame) wants the default ~16 ms / 60 fps cadence. A positive value
+// = every requester so far opted into a minimum delay, and this is the
+// SMALLEST such delay (the finest slow cadence any live widget needs).
+//
+// Merge rule (see the two setters below): a FAST request pins this to 0 and
+// nothing can raise it again this frame — 60 fps for the welcome bob /
+// spinner / streaming reveal must always win over a slow widget (the 265 ms
+// caret blink) that happens to render in the same frame. Only when EVERY
+// requester this frame asked for a delay does the loop sleep longer. Reset
+// to -1 each render alongside animation_requested_.
+inline thread_local std::int64_t next_frame_delay_ms_ = -1;
 
 // Opt-in loop-state probe (MAYA_IO_LOG=<path>). Appends to the same file the
 // app.cpp poll/render trace uses; entries are timestamp-ordered so the two
@@ -174,22 +177,29 @@ inline void loop_dbg(std::string_view s) {
 
 inline void request_animation_frame() noexcept {
     detail::animation_requested_ = true;
+    // A plain request wants the fast default cadence. Pin the policy to 0
+    // (fast) so no slow request_animation_frame_after() this frame can raise
+    // it — the welcome bob / spinner / streaming reveal always win over a
+    // co-live slow widget (the caret blink).
+    detail::next_frame_delay_ms_ = 0;
 }
 
 // Request the next frame no sooner than `delay_ms` from now (instead of the
 // default ~16 ms). For SLOW, self-driving animations (the composer caret
 // blink at its 265 ms half-period) so the run loop sleeps between visible
 // steps rather than waking at 60 fps to re-check an effect that toggles a
-// few times a second. Implies request_animation_frame(). When multiple
-// widgets request different delays in one frame, the loop honours the
-// SMALLEST non-zero one (the finest cadence any live widget needs), so a
-// fast animation always overrides a slow widget's coarse request.
+// few times a second. Implies request_animation_frame().
+//
+// A delay only takes effect if EVERY requester this frame opted in: a single
+// fast request (delay 0, pinned by request_animation_frame) dominates and is
+// never raised. Among competing delays the SMALLEST wins (finest slow
+// cadence any live widget needs).
 inline void request_animation_frame_after(std::int64_t delay_ms) noexcept {
     detail::animation_requested_ = true;
     if (delay_ms < 0) delay_ms = 0;
-    if (detail::next_frame_delay_ms_ == 0
-        || delay_ms < detail::next_frame_delay_ms_)
-        detail::next_frame_delay_ms_ = delay_ms;
+    auto& cur = detail::next_frame_delay_ms_;
+    if (cur == 0) return;                 // a fast requester already won
+    if (cur < 0 || delay_ms < cur) cur = delay_ms;   // unset, or a finer delay
 }
 
 // Wire the decoupled motion-framework frame-request hook to the real run
@@ -1733,10 +1743,11 @@ void run(RunConfig cfg = {}) {
             // a chance to re-request. Clearing on skip is exactly what
             // froze RAF animations until a keypress.
             if (!skip_render) detail::animation_requested_ = false;
-            // Reset the requested delay in lockstep with the flag: build()
+            // Reset the delay policy in lockstep with the flag: build()
             // re-sets both, a skip clears neither (build() didn't run, so
-            // the latched delay must ride to the next scheduling).
-            if (!skip_render) detail::next_frame_delay_ms_ = 0;
+            // the latched policy must ride to the next scheduling). -1 =
+            // "unset" so the next frame's first requester establishes it.
+            if (!skip_render) detail::next_frame_delay_ms_ = -1;
 
             if (!skip_render) {
                 // Pure: view(model) → Element → render to terminal

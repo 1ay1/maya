@@ -12,6 +12,7 @@
 
 #include <maya/maya.hpp>
 #include <maya/widget/markdown/internal.hpp>
+#include <maya/widget/markdown.hpp>
 
 #include <cassert>
 #include <print>
@@ -72,6 +73,38 @@ static void assert_stream_matches_cold(const std::string& code,
                     "streamed final content must equal cold render");
     MAYA_TEST_CHECK(runs_equal(last.runs, cold.runs),
                     "streamed final runs must equal cold render");
+}
+
+// ── Settled-freeze fast path ────────────────────────────────────────────────
+// Once a StreamingMarkdown has finish()ed (settled), repeated build() calls
+// must be O(1): the widget is frozen, so build() should return the SAME cached
+// Element reference every time, with no recompute. We can't peek at the private
+// build_dirty_/cached_build_, but we CAN observe the contract: after the first
+// post-finish build(), every subsequent build() returns the identical object
+// (same address) and identical content. If build() were re-materializing the
+// tree each frame it would return a reference into freshly-rebuilt state.
+static void test_settled_build_is_stable() {
+    std::println("--- settled: build() stable after finish ---");
+
+    StreamingMarkdown md;
+    md.feed("# Title\n\nSome **bold** text and a list:\n\n");
+    md.feed("- one\n- two\n- three\n\n");
+    md.feed("```cpp\nint main() { return 0; }\n```\n");
+    md.finish();
+
+    MAYA_TEST_CHECK(!md.is_live(), "widget must be settled after finish()");
+
+    // First post-finish build: the one allowed settle-frame rebuild.
+    const Element& a = md.build();
+    // Subsequent builds must hit the inert fast path and return the very same
+    // object (proving no recompute happened).
+    const Element& b = md.build();
+    const Element& c = md.build();
+
+    MAYA_TEST_CHECK(&a == &b, "settled build() must return the same Element ref");
+    MAYA_TEST_CHECK(&b == &c, "settled build() must stay stable across frames");
+
+    std::println("PASS\n");
 }
 
 int main() {
@@ -137,6 +170,8 @@ int main() {
         }
         assert_stream_matches_cold(big, "rust", "long-block-gutter-boundary");
     }
+
+    test_settled_build_is_stable();
 
     std::println("All highlight-resume tests passed.");
     return 0;

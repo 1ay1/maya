@@ -34,6 +34,27 @@ using ::maya::md_detail::streaming::fnv1a64;
 
 const Element& StreamingMarkdown::build() const {
 
+    // ── Inert fast path ────────────────────────────────────
+    // Once a message has SETTLED (finish() flipped live_ off) and the
+    // settle-frame rebuild has run (build_dirty_ cleared), the widget is
+    // frozen: no reveal cursor to advance, no tail to re-clip, no async
+    // parse can still land (streaming is over). cached_build_ is the final
+    // transcript Element and can never change until clear()/set_content
+    // mutates the widget (both of which re-set build_dirty_). Return it
+    // directly — an O(1) branch that skips the async-mutex acquire in
+    // maybe_apply_async_(), the UTF-8 scans in advance_reveal_cursor_(),
+    // and the two-hop indirection through render_live_overlay_().
+    //
+    // The host loop already stops requesting frames for a settled widget
+    // (is_live()/is_finalizing()/is_parsing() all false), so this path is
+    // rarely hit — but it makes a settled widget cheap even when something
+    // DOES call build() (a resize relayout, a stray repaint). Guarded on
+    // !live_ so the still-animating case is completely untouched, and on
+    // !build_dirty_ so the one settle-frame rebuild still happens.
+    if (!live_ && !build_dirty_ && !is_parsing()) {
+        return cached_build_;
+    }
+
     // Poll any landed async parse — may mutate prefix_/source_ and
     // flip build_dirty_, so it must run BEFORE the early-out.
     maybe_apply_async_();

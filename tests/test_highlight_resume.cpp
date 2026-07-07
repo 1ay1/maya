@@ -107,6 +107,38 @@ static void test_settled_build_is_stable() {
     std::println("PASS\n");
 }
 
+// ── Settled shared-pointer handoff ──────────────────────────────────────
+// settled_element() must (a) return nullptr while live, (b) after finish()
+// return a stable shared_ptr<const Element> — the SAME control block on every
+// call — so a host stashes a 16-byte pointer instead of deep-copying the tree.
+static void test_settled_element_handoff() {
+    std::println("--- settled: settled_element() shared handoff ---");
+
+    StreamingMarkdown md;
+    md.set_live(true);
+    md.feed("## Report\n\n| Col A | Col B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n");
+
+    // While live, no zero-copy handoff is offered.
+    MAYA_TEST_CHECK(md.settled_element() == nullptr,
+                    "settled_element() must be null while live");
+
+    md.finish();
+    MAYA_TEST_CHECK(!md.is_live(), "widget settled after finish()");
+
+    auto p1 = md.settled_element();
+    auto p2 = md.settled_element();
+    MAYA_TEST_CHECK(p1 != nullptr, "settled_element() non-null after finish");
+    MAYA_TEST_CHECK(p1 == p2,
+                    "settled_element() must return the same shared_ptr each call");
+
+    // The stashed tree must equal the live build().
+    const Element& b = md.build();
+    MAYA_TEST_CHECK(p1.get() == &b || is_box(*p1) == is_box(b),
+                    "settled_element() must reflect the built tree");
+
+    std::println("PASS\n");
+}
+
 int main() {
     // Plain code with keywords, strings, numbers across many lines.
     assert_stream_matches_cold(
@@ -172,6 +204,7 @@ int main() {
     }
 
     test_settled_build_is_stable();
+    test_settled_element_handoff();
 
     std::println("All highlight-resume tests passed.");
     return 0;

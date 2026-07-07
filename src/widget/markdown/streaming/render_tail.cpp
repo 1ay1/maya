@@ -113,28 +113,36 @@ void StreamingMarkdown::refresh_live_table_floor_() const {
         && live_table_floor_base_ == committed_)
         return;
     live_table_floor_version_ = source_version_;
-    live_table_floor_base_    = committed_;
-    live_table_floor_.clear();
 
     // The floor only matters when the reveal cursor can hide arrived rows
     // (reveal_fx live). Otherwise the displayed tail already holds every
     // arrived row, so its natural ideal == the floor — computing it would be
     // a pure-overhead parse. Skip.
-    if (!(reveal_fx_ && live_)) return;
+    if (!(reveal_fx_ && live_)) {
+        live_table_floor_.clear();
+        live_table_floor_base_     = committed_;
+        live_table_floor_rows_end_ = static_cast<std::size_t>(-1);
+        return;
+    }
 
     // Escape hatch for A/B measurement / emergencies: AGENTTY_NO_TABLE_FLOOR
     // disables the reservation (table reverts to per-revealed-row widths).
     static const bool disabled =
         [] { const char* e = std::getenv("AGENTTY_NO_TABLE_FLOOR");
              return e && e[0] && e[0] != '0'; }();
-    if (disabled) return;
+    if (disabled) { live_table_floor_.clear(); return; }
 
     // Start of the live tail's first non-blank line.
     std::size_t base = committed_;
     while (base < source_.size()
            && (source_[base] == '\n' || source_[base] == '\r'))
         ++base;
-    if (base >= source_.size()) return;
+    if (base >= source_.size()) {
+        live_table_floor_.clear();
+        live_table_floor_base_     = committed_;
+        live_table_floor_rows_end_ = static_cast<std::size_t>(-1);
+        return;
+    }
 
     // line [ls, le): does it start with '|' after ≤3 leading spaces (GFM)?
     auto first_pipe = [&](std::size_t ls, std::size_t le) -> bool {
@@ -143,13 +151,21 @@ void StreamingMarkdown::refresh_live_table_floor_() const {
         return k < le && source_[k] == '|';
     };
 
+    // Any early-out that means "the live tail is not a (valid) table" clears
+    // the floor and forgets the incremental cursor.
+    auto not_a_table = [&]() {
+        live_table_floor_.clear();
+        live_table_floor_base_     = committed_;
+        live_table_floor_rows_end_ = static_cast<std::size_t>(-1);
+    };
+
     // Header line must be terminated and pipe-led.
     std::size_t he = source_.find('\n', base);
-    if (he == std::string::npos || !first_pipe(base, he)) return;
+    if (he == std::string::npos || !first_pipe(base, he)) { not_a_table(); return; }
     // Delimiter line must be terminated, pipe-led, and well-formed.
     std::size_t ds = he + 1;
     std::size_t de = source_.find('\n', ds);
-    if (de == std::string::npos || !first_pipe(ds, de)) return;
+    if (de == std::string::npos || !first_pipe(ds, de)) { not_a_table(); return; }
     {
         bool has_dash = false, ok = true;
         std::size_t k = ds, lim = std::min(ds + 4, de);
@@ -161,7 +177,7 @@ void StreamingMarkdown::refresh_live_table_floor_() const {
                 continue;
             ok = false; break;
         }
-        if (!ok || !has_dash) return;
+        if (!ok || !has_dash) { not_a_table(); return; }
     }
 
     // Walk arrived data rows: each fully-terminated '|'-led line after the
@@ -177,10 +193,34 @@ void StreamingMarkdown::refresh_live_table_floor_() const {
         end = p;
     }
 
+    // ── Row-gated recompute ─────────────────────────────────────
+    // The floor is a monotone function of the terminated rows: it changes
+    // ONLY when a new row terminates (advances `end`). source_version_ bumps
+    // on every byte, so keying on it recomputed the whole floor per token =
+    // O(rows)/token = O(rows^2)/stream. Gate on (base, end) instead: same
+    // table base with no new terminated row since we last folded → the
+    // cached floor is exact, return without parsing.
+    const bool same_table = (live_table_floor_base_ == committed_
+                             && !live_table_floor_.empty()
+                             && live_table_floor_rows_end_
+                                    != static_cast<std::size_t>(-1));
+    if (same_table && end <= live_table_floor_rows_end_) {
+        return;  // no new terminated row — floor unchanged, O(1)
+    }
+    live_table_floor_base_ = committed_;
+
     // Parse [base, end) — header + delimiter + all terminated rows — and
     // take each column's max flattened width, EXACTLY as the renderer
     // computes ideal (same flatten_inline + string_width), so the floor
     // equals the committed table's natural width: continuous at the seam.
+    //
+    // parse_markdown_impl needs the header+delimiter to recognise the table
+    // at all, so this re-parses [base, end) rather than only the new rows.
+    // But because it now runs ONLY when `end` advances (a new row
+    // terminated) rather than on every byte, the whole stream pays one
+    // parse per row TERMINATION instead of one per byte — the O(rows^2) →
+    // O(rows) collapse. The monotone max means re-folding already-seen rows
+    // is harmless (widths never shrink).
     std::string_view arrived =
         std::string_view{source_}.substr(base, end - base);
     ::maya::md_detail::RefDefsScope guard(
@@ -199,10 +239,17 @@ void StreamingMarkdown::refresh_live_table_floor_() const {
             flatten_inline(sp, base_st, content, runs);
         return string_width(content);
     };
-    std::vector<int> w(static_cast<std::size_t>(ncols), 0);
+    // Seed from the existing floor when re-folding the same table (monotone
+    // widening); start fresh for a new table or a column-count change.
+    std::vector<int> w;
+    if (same_table && static_cast<int>(live_table_floor_.size()) == ncols)
+        w = live_table_floor_;
+    else
+        w.assign(static_cast<std::size_t>(ncols), 0);
     for (int c = 0; c < ncols; ++c)
-        w[static_cast<std::size_t>(c)] =
-            std::max(1, cell_w(t->header.cells[static_cast<std::size_t>(c)].spans));
+        w[static_cast<std::size_t>(c)] = std::max(
+            w[static_cast<std::size_t>(c)],
+            std::max(1, cell_w(t->header.cells[static_cast<std::size_t>(c)].spans)));
     for (auto& row : t->rows)
         for (int c = 0; c < ncols
                  && static_cast<std::size_t>(c) < row.cells.size(); ++c)
@@ -210,6 +257,7 @@ void StreamingMarkdown::refresh_live_table_floor_() const {
                 w[static_cast<std::size_t>(c)],
                 cell_w(row.cells[static_cast<std::size_t>(c)].spans));
     live_table_floor_ = std::move(w);
+    live_table_floor_rows_end_ = end;
 }
 
 void StreamingMarkdown::apply_live_table_floor_(md::Block& block) const {

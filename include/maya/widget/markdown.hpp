@@ -676,6 +676,16 @@ private:
         static_cast<std::uint64_t>(-1);
     mutable std::size_t             live_table_floor_base_ =
         static_cast<std::size_t>(-1);
+    // Absolute source offset just past the last terminated table row already
+    // folded into live_table_floor_. The floor is monotone (column widths
+    // only ever grow as rows arrive) and each row is parsed at most once:
+    // on a refresh where the table base is unchanged we parse ONLY the rows
+    // in [live_table_floor_rows_end_, new_end) and max them into the floor,
+    // turning the per-token cost from O(all rows) = O(rows^2)/stream into
+    // O(newly-terminated rows) amortised O(1). Reset to -1 (force full
+    // recompute) when the table base moves or on clear().
+    mutable std::size_t             live_table_floor_rows_end_ =
+        static_cast<std::size_t>(-1);
 
     // ── Canonical render_tail memo ──────────────────────────
     // render_tail runs a FULL parse_markdown_impl over the whole
@@ -693,6 +703,19 @@ private:
     mutable std::size_t             tail_canon_cache_len_      = 0;
     mutable bool                    tail_canon_cache_in_fence_ = false;
     mutable std::shared_ptr<const Element> tail_canon_cache_el_;
+
+    // ── Settled shared handoff ─────────────────────────────────────────
+    // Once the widget has settled (finish() ran), build() returns a stable
+    // reference into cached_build_ that never changes. A host that wants to
+    // STASH that tree (frozen scrollback: keep the settled turn alive on the
+    // heap so the renderer can blit it by cached shared_ptr identity and
+    // skip relayout) would otherwise deep-copy the whole N-child Element.
+    // settled_element() materialises cached_build_ into a shared_ptr<const
+    // Element> ONCE and hands back the same shared_ptr on every later call,
+    // so the host copies a 16-byte pointer and the renderer keys its
+    // cross-frame cache on the stable control block. Populated lazily on
+    // first call after settle; reset by clear()/set_content growth.
+    mutable std::shared_ptr<const Element> settled_el_;
 
     // ── Terminated-prefix block-render memo ─────────────────────────
     // Inside render_tail's canonical path, the terminated prefix (the
@@ -1112,6 +1135,25 @@ public:
     /// a reference into the per-frame cache; valid until the next
     /// mutator call.
     [[nodiscard]] const Element& build() const;
+
+    /// Zero-copy handoff of a SETTLED widget's final tree. Only valid once
+    /// the widget has finished (is_live() == false); returns nullptr while
+    /// still live. Materialises build()'s result into a shared_ptr<const
+    /// Element> once and returns the same pointer on every later call, so a
+    /// host stashing the settled turn (frozen scrollback) copies a 16-byte
+    /// pointer instead of deep-copying the whole block tree, and the
+    /// renderer can key its cross-frame cache on the stable control block.
+    /// Invalidated by clear() / set_content growth (both re-live the widget).
+    [[nodiscard]] std::shared_ptr<const Element> settled_element() const {
+        if (live_) return nullptr;
+        // Re-materialise if never built, or if the widget was mutated since
+        // (build_dirty_ set by any feed/clear/set_content after a settle) so
+        // the stash never hands back a stale tree.
+        if (!settled_el_ || build_dirty_) {
+            settled_el_ = std::make_shared<const Element>(build());
+        }
+        return settled_el_;
+    }
 
     /// Current full source text (codepoint-clean; never contains a
     /// half-written multi-byte sequence).

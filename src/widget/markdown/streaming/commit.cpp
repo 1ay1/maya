@@ -562,6 +562,11 @@ void StreamingMarkdown::clear() {
     cp_to_byte_cache_cp_     = 0;
     cp_to_byte_cache_byte_   = 0;
     cp_to_byte_cache_at_     = 0;
+    live_table_floor_.clear();
+    live_table_floor_version_  = static_cast<std::uint64_t>(-1);
+    live_table_floor_base_     = static_cast<std::size_t>(-1);
+    live_table_floor_rows_end_ = static_cast<std::size_t>(-1);
+    settled_el_.reset();
     cached_build_         = Element{TextElement{""}};
     cached_live_          = Element{TextElement{""}};
     live_overlay_prefix_gen_ = static_cast<std::uint64_t>(-1);

@@ -113,10 +113,6 @@ static Element highlight_code_from(const std::string& code,
                                    const std::string& lang_tag,
                                    ResumeState* resume);
 
-static Element highlight_code_impl(const std::string& code, const std::string& lang_tag) {
-    return highlight_code_from(code, lang_tag, /*resume=*/nullptr);
-}
-
 // highlight_code_from — tokeniser + gutter pass, with an optional incremental
 // resume path (see ResumeState). When `resume` is non-null and holds a valid
 // cached prefix of `code`, the tokeniser seeds from that prefix and re-scans
@@ -650,20 +646,20 @@ static Element highlight_code_from(const std::string& code,
             std::vector<StyledRun> runs2;
             runs2.reserve(runs_split.size() + line_starts.size() * 2);
 
-            for (std::size_t i = 0; i < line_starts.size(); ++i) {
-                // Gutter for line i+1.
+            for (std::size_t li = 0; li < line_starts.size(); ++li) {
+                // Gutter for line li+1.
                 char buf[24];
-                int n = std::snprintf(buf, sizeof(buf), "%*zu",
-                                      w_digits, i + 1);
-                runs2.push_back({out2.size(), static_cast<std::size_t>(n), gstyle});
-                out2.append(buf, static_cast<std::size_t>(n));
+                int ndig = std::snprintf(buf, sizeof(buf), "%*zu",
+                                      w_digits, li + 1);
+                runs2.push_back({out2.size(), static_cast<std::size_t>(ndig), gstyle});
+                out2.append(buf, static_cast<std::size_t>(ndig));
                 runs2.push_back({out2.size(), kSepBytes, gstyle});
                 out2.append(kSep);
 
                 // Line content.
-                std::size_t s = line_starts[i];
-                std::size_t e = (i + 1 < line_starts.size())
-                              ? line_starts[i + 1]
+                std::size_t s = line_starts[li];
+                std::size_t e = (li + 1 < line_starts.size())
+                              ? line_starts[li + 1]
                               : out.size();
                 out2.append(out.data() + s, e - s);
             }

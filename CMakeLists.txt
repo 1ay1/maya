@@ -29,6 +29,12 @@ endif()
 # chip of the relevant arch supports.
 option(MAYA_NATIVE_TUNING "Bake the host CPU into the binary (-march=native -mtune=native). OFF for portable / standalone releases." ON)
 
+# Treat warnings as errors. OFF by default so day-to-day dev builds aren't
+# blocked by a stray warning; CI turns it ON (-DMAYA_WERROR=ON) to keep the
+# tree warning-clean. Applies -Werror (GCC/Clang) or /WX (MSVC) to the maya
+# target; -Wall -Wextra / -W4 are always on regardless of this flag.
+option(MAYA_WERROR "Treat compiler warnings as errors (CI)." OFF)
+
 # ── Fast test iteration ───────────────────────────────────────────────────
 # The production `maya` library compiles every TU at -O3 with LTO + loop
 # unrolling + Graphite polyhedral passes (see MAYA_LINUX_CXX_FLAGS). Great for
@@ -246,6 +252,14 @@ else()
             -O3
             $<$<BOOL:${MAYA_NATIVE_TUNING}>:-march=native>
             -funroll-loops
+            # Warnings. This code is SIMD- and pointer-heavy; -Wall -Wextra
+            # is exactly the net that catches the class of bug (unaligned
+            # intrinsics, sign/size mismatches) that has bitten this file
+            # before. Opt into -Werror via -DMAYA_WERROR=ON in CI only — the
+            # default keeps warnings visible without breaking dev builds.
+            -Wall
+            -Wextra
+            $<$<BOOL:${MAYA_WERROR}>:-Werror>
         >
         $<$<CXX_COMPILER_ID:MSVC>:
             /utf-8
@@ -258,6 +272,8 @@ else()
             /EHsc
             /bigobj
             /MP
+            /W4                # match -Wall -Wextra
+            $<$<BOOL:${MAYA_WERROR}>:/WX>
             /wd4100
             /wd4127
             /wd4324

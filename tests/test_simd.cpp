@@ -119,7 +119,7 @@ void test_find_first_diff_single_element_differs() {
     std::println("--- test_find_first_diff_single_element_differs ---");
     uint64_t a[1] = {5};
     uint64_t b[1] = {6};
-    assert(simd::find_first_diff(a, b, 6) == 0);
+    assert(simd::find_first_diff(a, b, 1) == 0);
     std::println("PASS\n");
 }
 

@@ -103,8 +103,18 @@ struct Ops<Avx512> {
             return;
         }
 
+        // _mm512_stream_si512 requires 64-byte alignment of dst. The cell
+        // buffer is 64-byte aligned, but per-region fills (base + y0 * width_)
+        // can land on any 8-byte boundary when width_ is not a multiple of 8.
+        // Handle the misaligned head with scalar stores so the NT loop sees an
+        // aligned pointer; otherwise we'd take an alignment fault (#GP -> SIGSEGV).
         std::size_t i = 0;
         __m512i val = _mm512_set1_epi64(static_cast<long long>(value));
+        std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(dst);
+        std::size_t head = (64 - (addr & 63)) & 63;          // bytes to align
+        std::size_t head_cells = head / sizeof(uint64_t);    // 8B per cell
+        if (head_cells > count) head_cells = count;
+        for (; i < head_cells; ++i) dst[i] = value;
         for (; i + 8 <= count; i += 8)
             _mm512_stream_si512(reinterpret_cast<__m512i*>(dst + i), val);
 

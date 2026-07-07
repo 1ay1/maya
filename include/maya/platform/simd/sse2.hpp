@@ -85,8 +85,18 @@ struct Ops<Sse2> {
             return;
         }
 
+        // _mm_stream_si128 requires 16-byte alignment of dst. The cell
+        // buffer is 64-byte aligned, but per-region fills (base + y0 * width_)
+        // can land on any 8-byte boundary when width_ is odd. Handle the
+        // misaligned head with scalar stores so the NT loop sees an aligned
+        // pointer; otherwise we'd take an alignment fault (#GP -> SIGSEGV).
         std::size_t i = 0;
         __m128i val = _mm_set1_epi64x(static_cast<long long>(value));
+        std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(dst);
+        std::size_t head = (16 - (addr & 15)) & 15;          // bytes to align
+        std::size_t head_cells = head / sizeof(uint64_t);    // 8B per cell
+        if (head_cells > count) head_cells = count;
+        for (; i < head_cells; ++i) dst[i] = value;
         for (; i + 2 <= count; i += 2)
             _mm_stream_si128(reinterpret_cast<__m128i*>(dst + i), val);
 

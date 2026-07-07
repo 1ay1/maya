@@ -379,6 +379,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_overlay_layer.cpp
         tests/test_static_split.cpp
         tests/test_highlight.cpp
+        tests/test_highlight_resume.cpp
         tests/test_layout.cpp
         tests/test_border.cpp
         tests/test_simd.cpp

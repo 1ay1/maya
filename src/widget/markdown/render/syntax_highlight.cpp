@@ -97,7 +97,36 @@ static inline bool is_op_char(char c) {
     return kOpChar[static_cast<unsigned char>(c)];
 }
 
+// Incremental resume state for a streaming code fence. Caches the tokeniser
+// output for the largest "safe" prefix of the fence — the bytes up to the
+// last newline at which the lexer held no cross-line state (no open block
+// comment or triple-quoted string). See highlight_code_from() for why this
+// prefix is a byte-for-byte-stable frozen cache during streaming.
+struct ResumeState {
+    std::string            lang_tag;
+    std::size_t            ground_off = 0;  // safe resume offset into `code`
+    std::string            pre_out;         // tokeniser out for [0, ground_off)
+    std::vector<StyledRun> pre_runs;        // runs for [0, ground_off)
+};
+
+static Element highlight_code_from(const std::string& code,
+                                   const std::string& lang_tag,
+                                   ResumeState* resume);
+
 static Element highlight_code_impl(const std::string& code, const std::string& lang_tag) {
+    return highlight_code_from(code, lang_tag, /*resume=*/nullptr);
+}
+
+// highlight_code_from — tokeniser + gutter pass, with an optional incremental
+// resume path (see ResumeState). When `resume` is non-null and holds a valid
+// cached prefix of `code`, the tokeniser seeds from that prefix and re-scans
+// only the tail; otherwise it tokenises the whole `code`. Either way it
+// refreshes `resume` with the new safe prefix. The rendered Element is
+// identical to a full re-tokenise — load-bearing, because the reveal
+// animation clips by byte offset.
+static Element highlight_code_from(const std::string& code,
+                                   const std::string& lang_tag,
+                                   ResumeState* resume) {
     LangId lang = detect_lang(lang_tag);
 
     // Special case: diff gets its own highlighter
@@ -107,11 +136,36 @@ static Element highlight_code_impl(const std::string& code, const std::string& l
     auto feat = features_for(lang);
 
     std::string out;
-    out.reserve(code.size());
     std::vector<StyledRun> runs;
 
-    size_t i = 0;
+    // ── Incremental resume ──────────────────────────────────────────
+    // If the cache's frozen prefix is still a genuine prefix of `code`,
+    // seed out/runs from it and begin scanning at ground_off. The prefix
+    // is validated byte-for-byte so a fence that was edited/replaced (not
+    // purely appended) safely falls back to a full re-tokenise.
+    size_t start_i = 0;
+    if (resume && resume->lang_tag == lang_tag && resume->ground_off > 0 &&
+        resume->ground_off <= code.size() &&
+        resume->pre_out.size() >= resume->ground_off &&
+        // The cached prefix bytes must equal the current code's prefix
+        // (guards against a fence being edited/replaced rather than appended).
+        std::equal(code.begin(),
+                   code.begin() + static_cast<std::ptrdiff_t>(resume->ground_off),
+                   resume->pre_out.begin())) {
+        out = resume->pre_out;
+        runs = resume->pre_runs;
+        start_i = resume->ground_off;
+        out.reserve(code.size());
+    } else {
+        out.reserve(code.size());
+    }
+
+    size_t i = start_i;
     size_t n = code.size();
+    // ground_off: byte offset of the last newline seen while the lexer holds
+    // no cross-line state — the safe point to resume from next token. Seeded
+    // from the resume cache (start_i) since everything before it is ground.
+    std::size_t ground_off = start_i;
 
     auto emit = [&](size_t start, size_t byte_len, Style sty) {
         if (byte_len == 0) return;
@@ -127,6 +181,11 @@ static Element highlight_code_impl(const std::string& code, const std::string& l
             out += '\n';
             emit(s, 1, syntax::plain());
             ++i;
+            // Reaching a newline in the main loop means the lexer is in
+            // ground state (every multi-line construct is consumed to its
+            // close within its own branch below, so control only returns
+            // here between constructs). Record this as a safe resume point.
+            ground_off = i;
             continue;
         }
 
@@ -463,6 +522,28 @@ static Element highlight_code_impl(const std::string& code, const std::string& l
         }
     }
 
+    // ── Refresh the incremental resume cache ─────────────────────────
+    // At this point `out` still holds the code bytes verbatim (the gutter
+    // pass below has not run yet), so out[0..ground_off) == code[0..ground_off).
+    // Snapshot the ground-state prefix + its runs so the next (longer) token
+    // can resume from here instead of re-tokenising byte 0. Runs are copied
+    // up to the last one fully inside [0, ground_off); a run straddling the
+    // boundary (only possible for a construct still open at end, which by
+    // definition sits AFTER ground_off) is excluded.
+    if (resume) {
+        resume->lang_tag = lang_tag;
+        resume->ground_off = ground_off;
+        resume->pre_out.assign(out.data(), ground_off);
+        resume->pre_runs.clear();
+        resume->pre_runs.reserve(runs.size());
+        for (const auto& r : runs) {
+            if (r.byte_offset + r.byte_length <= ground_off)
+                resume->pre_runs.push_back(r);
+            else
+                break;  // runs are emitted in increasing offset order
+        }
+    }
+
     // ── Gutter pass: prepend a right-aligned line-number column to each
     //    line. Height of the rendered block is unchanged — exactly one
     //    line out per line in, so monotonicity is preserved (a code
@@ -669,7 +750,17 @@ static Element highlight_code(const std::string& code, const std::string& lang_t
         if (e.key == key) return e.elem;
     }
 
-    Element elem = highlight_code_impl(code, lang_tag);
+    // ── Streaming resume ─────────────────────────────────────
+    // On a content-key miss (which happens every token while a fence grows,
+    // because the key hashes the whole body), hand highlight_code_from a
+    // per-language resume cache. It seeds the tokeniser from the last
+    // ground-state prefix and re-scans only the newly-arrived tail — turning
+    // the per-token cost from O(fence) into O(last block of lines). The
+    // cache is keyed per language and validated byte-for-byte inside
+    // highlight_code_from, so a switch to a different fence (or an edit that
+    // isn't a pure append) transparently falls back to a full tokenise.
+    thread_local ResumeState resume;
+    Element elem = highlight_code_from(code, lang_tag, &resume);
 
     if (cache.size() >= kMaxEntries) {
         cache.erase(cache.begin(), cache.begin() + kMaxEntries / 2);

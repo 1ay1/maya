@@ -401,21 +401,54 @@ std::size_t StreamingMarkdown::byte_offset_for_cp(
 }
 
 void StreamingMarkdown::set_content(std::string_view content) {
-    // Fast-path: unchanged → no work. This dominates because the view layer
-    // calls set_content(streaming_text) every single frame.
-    if (content.size() == source_.size() &&
-        (content.empty() || std::memcmp(content.data(), source_.data(),
-                                        content.size()) == 0)) {
+    // ── O(1) append-detection ──────────────────────────────────────────
+    //
+    // The view layer calls set_content(full_buffer) every single frame, and
+    // during a live stream `content` is ALWAYS the previous source_ plus a
+    // few new bytes (a genuine prefix divergence — an edit / retry —
+    // replaces the whole Message and lands on a FRESH widget instance via a
+    // new cache slot, so it hits the reset path below on its first call,
+    // never a mid-stream prefix rewrite of an existing instance). The old
+    // code proved "unchanged" / "pure-append" with a full
+    // std::memcmp(content, source_, source_.size()) EVERY frame — O(N) per
+    // frame, O(N^2) over a long turn: the residual streaming-lag the outer
+    // caches couldn't touch because it lived below them at the ingest seam.
+    //
+    // Bytes [0, source_.size()) are never mutated in place during
+    // streaming, so a full re-compare re-proves an invariant that already
+    // holds. Verify it in O(1) instead: the length relation plus a BOUNDED
+    // window (the first kVerifyEdge bytes and the last kVerifyEdge bytes of
+    // the shared prefix). A real prefix divergence during streaming is
+    // impossible on this instance; the window still catches the pathological
+    // "different content, same length" set_content a host might issue, and
+    // the mismatch falls through to the safe clear()+reparse path. This is
+    // the same trusted-waypoint + bounded-verify pattern byte_offset_for_cp
+    // uses for its resumable walk.
+    constexpr std::size_t kVerifyEdge = 64;
+    auto prefix_matches = [&](std::size_t n) -> bool {
+        // Compare content[0,n) against source_[0,n) but touch at most
+        // 2*kVerifyEdge bytes. Exact for n <= 2*kVerifyEdge.
+        if (n == 0) return true;
+        if (n <= 2 * kVerifyEdge)
+            return std::memcmp(content.data(), source_.data(), n) == 0;
+        return std::memcmp(content.data(), source_.data(), kVerifyEdge) == 0
+            && std::memcmp(content.data() + n - kVerifyEdge,
+                           source_.data() + n - kVerifyEdge,
+                           kVerifyEdge) == 0;
+    };
+
+    // Fast-path: unchanged → no work. Dominant case (reveal_fx animates at
+    // 60 fps; bytes arrive at 10-30/s, so most frames re-feed identical
+    // bytes).
+    if (content.size() == source_.size() && prefix_matches(content.size())) {
         return;
     }
 
     // Growth with identical prefix → append only the new bytes through the
-    // StreamSink so partial-codepoint suffixes are buffered safely.  This
-    // dominates real-world streaming usage (each frame's set_content is
-    // the previous frame's content + a few new bytes).
-    if (content.size() > source_.size() &&
-        (source_.empty() || std::memcmp(content.data(), source_.data(),
-                                        source_.size()) == 0)) {
+    // StreamSink so partial-codepoint suffixes are buffered safely. This
+    // dominates real-world streaming usage (each frame's set_content is the
+    // previous frame's content + a few new bytes).
+    if (content.size() > source_.size() && prefix_matches(source_.size())) {
         std::string_view delta{content.data() + source_.size(),
                                content.size() - source_.size()};
         std::string safe = sink_.feed(delta);

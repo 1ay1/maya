@@ -43,19 +43,31 @@ bool StreamingMarkdown::is_parsing() const noexcept {
 }
 
 void StreamingMarkdown::set_content_async(std::string_view content) {
+    // O(1) append-detection mirroring set_content: a bounded edge-window
+    // compare instead of a full O(source_) memcmp every frame. See the
+    // detailed rationale in commit.cpp::set_content — during streaming this
+    // instance only ever sees pure-append growth, and a genuine divergence
+    // lands on a fresh instance, so the bounded window is exact in practice
+    // while removing the per-frame O(N^2) re-verify at the ingest seam.
+    constexpr std::size_t kVerifyEdge = 64;
+    auto prefix_matches = [&](std::size_t n) -> bool {
+        if (n == 0) return true;
+        if (n <= 2 * kVerifyEdge)
+            return std::memcmp(content.data(), source_.data(), n) == 0;
+        return std::memcmp(content.data(), source_.data(), kVerifyEdge) == 0
+            && std::memcmp(content.data() + n - kVerifyEdge,
+                           source_.data() + n - kVerifyEdge,
+                           kVerifyEdge) == 0;
+    };
     // Same fast-path as set_content: no-op on unchanged.
-    if (content.size() == source_.size() &&
-        (content.empty() || std::memcmp(content.data(), source_.data(),
-                                        content.size()) == 0)) {
+    if (content.size() == source_.size() && prefix_matches(content.size())) {
         return;
     }
     // Pure-append growth → cheap incremental sync path is strictly
     // better than handing the delta off to a worker (the steady-state
     // streaming case). The expensive case async exists for is the
     // "divergent prefix" / large initial set path below.
-    if (content.size() > source_.size() &&
-        (source_.empty() || std::memcmp(content.data(), source_.data(),
-                                        source_.size()) == 0)) {
+    if (content.size() > source_.size() && prefix_matches(source_.size())) {
         set_content(content);
         return;
     }

@@ -209,53 +209,110 @@ void StreamingMarkdown::refresh_live_table_floor_() const {
     }
     live_table_floor_base_ = committed_;
 
-    // Parse [base, end) — header + delimiter + all terminated rows — and
-    // take each column's max flattened width, EXACTLY as the renderer
-    // computes ideal (same flatten_inline + string_width), so the floor
-    // equals the committed table's natural width: continuous at the seam.
+    // ── TRUE incremental floor — measure ONLY the newly-terminated rows ──
     //
-    // parse_markdown_impl needs the header+delimiter to recognise the table
-    // at all, so this re-parses [base, end) rather than only the new rows.
-    // But because it now runs ONLY when `end` advances (a new row
-    // terminated) rather than on every byte, the whole stream pays one
-    // parse per row TERMINATION instead of one per byte — the O(rows^2) →
-    // O(rows) collapse. The monotone max means re-folding already-seen rows
-    // is harmless (widths never shrink).
-    std::string_view arrived =
-        std::string_view{source_}.substr(base, end - base);
+    // The floor is a per-column max over every terminated row's flattened
+    // cell width, computed EXACTLY as the renderer computes ideal (same
+    // split_table_cells + parse_inlines + flatten_inline + string_width),
+    // so the floor equals the committed table's natural width: continuous
+    // at the seam. It is monotone (widths only grow), so re-folding an
+    // already-seen row is harmless — which means we never NEED to re-measure
+    // a row we've already folded.
+    //
+    // Previously this re-parsed the WHOLE [base, end) slice with
+    // parse_markdown_impl on every row termination — O(all rows) per
+    // termination = O(rows^2) over the table's life. The parser was only
+    // needed to RECOGNISE the table (header + delimiter), not to measure a
+    // data row: a GFM row's cell widths come straight from
+    // split_table_cells + parse_inlines on that one line. So we measure
+    // each row exactly once, scanning only the delta window
+    // [row_scan_start, end) — turning the whole stream into O(total rows)
+    // = amortised O(1) per termination.
+    //
+    // The header/delimiter recognition already happened above (first_pipe +
+    // the dash-scan on the delimiter line), so here we know [base, end) is a
+    // valid table body. Column count is fixed by the header row.
     ::maya::md_detail::RefDefsScope guard(
         const_cast<std::unordered_map<std::string, md::LinkRef>*>(&ref_defs_));
-    auto blocks = parse_markdown_impl(std::string{arrived}, 0).blocks;
-    if (blocks.empty()) return;
-    auto* t = std::get_if<md::Table>(&blocks.front().inner);
-    if (!t) return;
-    const int ncols = static_cast<int>(t->header.cells.size());
-    if (ncols == 0) return;
-    auto cell_w = [](const std::vector<md::Inline>& spans) -> int {
-        std::string content;
-        std::vector<StyledRun> runs;
-        const Style base_st{};
-        for (const auto& sp : spans)
-            flatten_inline(sp, base_st, content, runs);
-        return string_width(content);
+
+    // Local GFM pipe-cell splitter. Splits `line` on UNESCAPED `|`,
+    // drops the leading/trailing pipe delimiters, and trims each cell
+    // — matching the engine's split_pipe_cells (cm_block.cpp) so the
+    // measured widths equal what the committed table renders. Kept local
+    // (the engine's splitter is file-static + not exported); the logic is
+    // small and stable (GFM cell delimiting is a fixed grammar).
+    auto split_cells = [](std::string_view t) {
+        std::vector<std::string_view> cells;
+        // Strip one leading and one trailing pipe (GFM edge delimiters).
+        std::size_t lo = 0, hi = t.size();
+        while (lo < hi && (t[lo] == ' ' || t[lo] == '\t')) ++lo;
+        while (hi > lo && (t[hi-1] == ' ' || t[hi-1] == '\t'
+                           || t[hi-1] == '\r' || t[hi-1] == '\n')) --hi;
+        t = t.substr(lo, hi - lo);
+        if (!t.empty() && t.front() == '|') t.remove_prefix(1);
+        if (!t.empty() && t.back()  == '|') t.remove_suffix(1);
+        auto trim = [](std::string_view s) {
+            std::size_t a = 0, b = s.size();
+            while (a < b && (s[a] == ' ' || s[a] == '\t')) ++a;
+            while (b > a && (s[b-1] == ' ' || s[b-1] == '\t')) --b;
+            return s.substr(a, b - a);
+        };
+        std::size_t start = 0;
+        for (std::size_t i = 0; i < t.size(); ++i) {
+            if (t[i] == '\\') { ++i; continue; }  // escaped char
+            if (t[i] == '|') { cells.push_back(trim(t.substr(start, i - start)));
+                               start = i + 1; }
+        }
+        cells.push_back(trim(t.substr(start)));
+        return cells;
     };
-    // Seed from the existing floor when re-folding the same table (monotone
-    // widening); start fresh for a new table or a column-count change.
+
+    auto row_cell_widths = [&](std::string_view line, std::vector<int>& w) {
+        auto cells = split_cells(line);
+        if (w.empty()) w.assign(cells.size(), 0);
+        for (std::size_t c = 0; c < cells.size() && c < w.size(); ++c) {
+            std::string content;
+            std::vector<StyledRun> runs;
+            const Style base_st{};
+            for (const auto& sp : ::maya::md_detail::parse_inlines(cells[c]))
+                flatten_inline(sp, base_st, content, runs);
+            w[c] = std::max(w[c], std::max(1, string_width(content)));
+        }
+    };
+
+    // Seed from the existing floor when extending the same table (monotone
+    // widening) and resume the row scan just past the last-folded row.
+    // Start fresh for a new table base (row_scan_start = header line).
     std::vector<int> w;
-    if (same_table && static_cast<int>(live_table_floor_.size()) == ncols)
+    std::size_t row_scan_start;
+    if (same_table && !live_table_floor_.empty()
+        && live_table_floor_rows_end_ != static_cast<std::size_t>(-1)
+        && live_table_floor_rows_end_ >= base
+        && live_table_floor_rows_end_ <= end) {
         w = live_table_floor_;
-    else
-        w.assign(static_cast<std::size_t>(ncols), 0);
-    for (int c = 0; c < ncols; ++c)
-        w[static_cast<std::size_t>(c)] = std::max(
-            w[static_cast<std::size_t>(c)],
-            std::max(1, cell_w(t->header.cells[static_cast<std::size_t>(c)].spans)));
-    for (auto& row : t->rows)
-        for (int c = 0; c < ncols
-                 && static_cast<std::size_t>(c) < row.cells.size(); ++c)
-            w[static_cast<std::size_t>(c)] = std::max(
-                w[static_cast<std::size_t>(c)],
-                cell_w(row.cells[static_cast<std::size_t>(c)].spans));
+        row_scan_start = live_table_floor_rows_end_;  // only the NEW rows
+    } else {
+        // Fresh table: fold the header, SKIP the delimiter line (`|:--|`
+        // carries no content width), then fold every data row below.
+        std::size_t hl_end = source_.find('\n', base);
+        if (hl_end == std::string::npos) return;
+        row_cell_widths(
+            std::string_view{source_}.substr(base, hl_end - base), w);
+        std::size_t dl_end = source_.find('\n', hl_end + 1);
+        if (dl_end == std::string::npos) return;
+        row_scan_start = dl_end + 1;  // first data row
+    }
+
+    // Fold each fully-terminated data row in [row_scan_start, end).
+    for (std::size_t p = row_scan_start; p < end;) {
+        std::size_t e = source_.find('\n', p);
+        if (e == std::string::npos || e >= end) break;
+        row_cell_widths(
+            std::string_view{source_}.substr(p, e - p), w);
+        p = e + 1;
+    }
+
+    if (w.empty()) return;
     live_table_floor_ = std::move(w);
     live_table_floor_rows_end_ = end;
 }

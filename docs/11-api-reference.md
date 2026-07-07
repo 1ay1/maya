@@ -93,6 +93,26 @@ effect. `Cmd::quit()` exits the app. `Cmd::batch()` combines multiple commands.
 `Cmd::after()` sends a delayed message. `Cmd::task()` runs an async function
 that may produce a message.
 
+#### `Cmd::query_clipboard()` / `write_clipboard()` — clipboard I/O over the escape channel
+
+```cpp
+static Cmd write_clipboard(std::string text);   // put text on the clipboard
+static Cmd query_clipboard();                    // read clipboard → PasteEvent
+```
+
+Both travel **in-band over the terminal escape channel**, so they work across
+SSH with no remote clipboard tool. `write_clipboard()` emits OSC 52.
+`query_clipboard()` asks the terminal to send its clipboard back; the reply
+arrives as a **`PasteEvent`** (matched by `pasted()` / `Sub::on_paste`).
+
+Maya picks the read protocol from the host: OSC 52 (text-only) by default, or
+kitty's **OSC 5522** multi-format read when a kitty host is detected
+(`KITTY_WINDOW_ID` set, or kitty-like `TERM` — both survive an sshd hop). Only
+OSC 5522 can carry **image** bytes, which is what enables **screenshot paste
+over SSH**: the decoded image is delivered as one `PasteEvent` whose `content`
+holds the raw bytes. See [Events → Clipboard reads and image paste over
+SSH](06-events.md#clipboard-reads-and-image-paste-over-ssh).
+
 #### `Cmd::suspend()` — hand the real terminal to an interactive child
 
 ```cpp

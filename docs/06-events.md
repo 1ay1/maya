@@ -258,6 +258,36 @@ if (pasted(ev, &pasted_text)) {
 }
 ```
 
+### Clipboard reads and image paste over SSH
+
+`Cmd<Msg>::query_clipboard()` asks the terminal to send its clipboard back,
+and the reply arrives as a **`PasteEvent`** — the same event `pasted()` above
+matches. This works across SSH with **no remote clipboard tool**, because the
+request and reply travel in-band over the terminal escape channel.
+
+Maya picks the read protocol from the host terminal:
+
+- **OSC 52** (the portable default) — a *text-only* protocol. Its reply can
+  never carry image bytes, so on a plain terminal `query_clipboard()` returns
+  text.
+- **OSC 5522** (kitty's multi-format clipboard read) — the only in-band escape
+  path that can carry **image** bytes. When maya detects a kitty host it sends
+  this instead, reassembles the chunked `status=OK` / `DATA` / `DONE` reply,
+  and delivers the decoded bytes as one `PasteEvent`. This is what makes
+  **screenshot paste work over SSH**: the image never touches a local file or
+  a remote clipboard helper.
+
+Detection is by environment, not a round-trip probe: maya emits the OSC 5522
+read only when `KITTY_WINDOW_ID` is set or `TERM` looks like kitty (an sshd
+forwards those env vars but not arbitrary terminal capabilities). Everywhere
+else it falls back to OSC 52 text.
+
+!!! note "The app-facing shape is unchanged"
+    A `PasteEvent` carries opaque `content` bytes either way — for an image the
+    bytes *are* the image (e.g. PNG). You handle both with the same `pasted()`
+    check; sniff the payload (magic bytes) if you need to tell text from an
+    image. Nothing in your `update()` changes to gain SSH image paste.
+
 ## Focus Events
 
 ```cpp

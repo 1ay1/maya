@@ -250,6 +250,51 @@ its own consistent timeline). You rarely touch it directly — `Motion`,
     of the real tick interval, and its animation crawls. A tick-driven value
     should use its own inter-tick wall-clock gap. Keep the two clocks separate.
 
+### `anim_now_ms()` — the one skewable wall clock
+
+Every *phase*-driven read in the framework — the `Clock`'s `now_ms()` and
+`dt`, `pulse()` / `loop_phase()`, `Mount`, `RateCursor`'s reveal cursor and
+finalize ramp, and the built-in widgets' scroll/scramble/drift phases —
+ultimately reads **one** function:
+
+```cpp
+#include <maya/core/anim_clock.hpp>
+
+std::int64_t maya::anim_now_ms() noexcept;   // steady_clock + a test skew
+```
+
+In production this **is** `steady_clock`: the skew is `0` and the only added
+cost is one relaxed atomic load on top of the clock read — free. It stays
+monotone (steady_clock is monotone; the skew is non-decreasing).
+
+Why funnel every time source through one function? So a **test can advance
+animation time without sleeping**:
+
+```cpp
+#include <maya/core/anim_clock.hpp>
+
+for (int frame = 0; frame < 60; ++frame) {
+    maya::testing::advance_anim_clock_ms(20);   // +20ms of ANIMATION time…
+    render_one_frame();                         // …with zero wall time
+}
+```
+
+`advance_anim_clock_ms(ms)` bumps the skew by `ms`, so every widget computes
+the *exact* ages / phases / deadlines it would have after a real 20 ms sleep —
+because they all read this one clock. Wall-clock-bound integration suites that
+used to `sleep_for(20ms)` per frame (spending >95 % of their runtime asleep)
+now advance the skew instead, at identical widget dynamics.
+
+!!! danger "`advance_anim_clock_ms` is test-only"
+    It lives in `namespace maya::testing` and is **additive only** — there is
+    deliberately no rewind API, so `anim_now_ms()` can never go backwards and
+    latched "first time X happened" stamps stay consistent. Production code
+    must never call it. If you write a **new** time-driven widget, read
+    `anim_now_ms()` (directly, or transitively via `Clock` / `pulse` /
+    `Mount`) rather than `steady_clock::now()` — otherwise your widget's
+    motion won't advance under the test skew and its animation becomes
+    untestable without real sleeps.
+
 ---
 
 ## `Motion<T>` — the headline type

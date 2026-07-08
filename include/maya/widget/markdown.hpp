@@ -549,6 +549,19 @@ private:
     // Whether cached_build_ currently holds a prefix child slot. Same
     // reason — flipping this requires a structural rebuild.
     mutable bool          cached_has_prefix_ = false;
+    // Committed-prefix window state reflected in cached_build_. The
+    // committed blocks are emitted as [head_wrapper?(covers [0, lo)),
+    // block_lo .. block_{N-1}] so the OUTER renderer walks only O(window)
+    // children per frame instead of O(N). cached_block_count_ is N (the
+    // committed block count baked into the cache); cached_window_lo_ is
+    // the window base lo. The commit-append fast path uses these to tell
+    // a same-window pure growth (lo unchanged → keep the head + old
+    // window blocks, append the new ones) from a window SLIDE (lo
+    // advanced across a chunk boundary → the head wrapper's hash changed
+    // and some formerly-individual blocks fold into it, forcing a full
+    // children re-emit).
+    mutable std::size_t   cached_block_count_ = 0;
+    mutable std::size_t   cached_window_lo_   = 0;
     // 64-bit FNV-1a hash of the tail bytes that produced cached_build_'s
     // tail child, plus the tail length (so two different-length tails
     // can't alias) plus the committed-side fence parity at that time.

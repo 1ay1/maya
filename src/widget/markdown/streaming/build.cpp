@@ -155,6 +155,8 @@ const Element& StreamingMarkdown::build() const {
         cached_prefix_gen_ = prefix_->generation;
         cached_has_tail_   = false;
         cached_has_prefix_ = false;
+        cached_block_count_ = 0;
+        cached_window_lo_   = 0;
         cached_tail_version_     = source_version_;
         cached_tail_clip_        = visible_end;
         build_dirty_       = false;
@@ -260,10 +262,126 @@ const Element& StreamingMarkdown::build() const {
         return Element{std::move(block_comp)};
     };
 
-    // Helper: append all committed-block components into `dst`.
+    // ── Committed-prefix windowing (outer-tree O(1)/frame) ──────────
+    //
+    // Even though make_block_component keeps the WIDGET's per-commit cost
+    // O(new block) (blocks 0..N-1 carry stable hash_ids and blit from the
+    // renderer's cell cache), the OUTER renderer still walks all N block
+    // children EVERY frame: build_layout_tree emplaces N leaf layout
+    // nodes, layout::compute runs a flex pass over N items, and
+    // paint_element iterates N children. That is O(committed blocks)/frame
+    // — the 1.6x per-frame render() growth on a long streaming turn (the
+    // ~30% CPU report).
+    //
+    // Fix: collapse the OLD committed blocks (blocks [0, lo), which are
+    // immutable and sit far above the viewport) into ONE hash-keyed
+    // wrapper ComponentElement. The outer vstack then sees
+    //   [head_wrapper?, block_lo .. block_{N-1}, tail]
+    // = O(K) children regardless of N. The wrapper's inner vstack renders
+    // ONCE (when lo advances) and the renderer caches + blits its cells by
+    // hash_id on every later frame, so its per-frame cost collapses to an
+    // O(1) hash-cache measure hit + a row blit (and above the viewport it
+    // paints zero rows).
+    //
+    // lo advances in CHUNK-sized steps (not every commit) so the wrapper's
+    // hash is stable across ~CHUNK commits: the individual-block window
+    // stays within [K, K+CHUNK) blocks, and the O(lo) wrapper re-render
+    // happens once per CHUNK commits, never per frame.
+    //
+    // Row-layout identity (scrollback-safety): the outer container is
+    // vstack().gap(1).padding(0,0,0,2). Replacing [block0..block_{lo-1}]
+    // with one head_wrapper child keeps exactly one outer gap after it
+    // (== the original gap after block_{lo-1}), and the wrapper's inner
+    // vstack().gap(1) reproduces the gaps between blocks 0..lo-1. The
+    // wrapper carries NO extra padding — the outer padding already indents
+    // the whole column and the wrapper occupies that indented region. So
+    // every committed row lands on exactly the row it did before, and
+    // whatever scrolls off into native scrollback matches byte-for-byte.
+    constexpr std::size_t kWindowBlocks = 32;  // individual-block window
+    constexpr std::size_t kWindowChunk  = 16;  // lo advances in these steps
+
+    // First block index kept as an individual child. Blocks [0, lo) are
+    // collapsed into the head wrapper. Chunk-quantised so the wrapper's
+    // hash (keyed on lo) only changes every ~kWindowChunk commits.
+    auto window_lo = [&](std::size_t n) -> std::size_t {
+        if (n <= kWindowBlocks) return 0;
+        return ((n - kWindowBlocks) / kWindowChunk) * kWindowChunk;
+    };
+
+    // Helper: build the head-wrapper ComponentElement collapsing committed
+    // blocks [0, lo) into one hash-keyed child. Empty (returns nullopt)
+    // when lo == 0. Hash-keyed on (instance, lo, fold_generation) — lo
+    // uniquely identifies the covered span (always [0, lo)), and folds are
+    // mixed in so a fold toggle inside the collapsed head invalidates it.
+    auto make_head_wrapper = [&](std::size_t lo) -> Element {
+        ComponentElement head;
+        head.hash_id = CacheIdBuilder{}
+            .add(std::string_view{"strmd-head"})
+            .add(static_cast<std::uint64_t>(instance_id_))
+            .add(static_cast<std::uint64_t>(lo))
+            .add(static_cast<std::uint64_t>(fold_generation_))
+            .build();
+        // Capture what the render lambda needs by value: the prefix
+        // snapshot (shared_ptr, cheap) and fold state for [0, lo). The
+        // lambda re-emits the same per-block Elements make_block_component
+        // would, wrapped in a gap(1) vstack with NO padding.
+        auto p = prefix_;
+        auto folds = folds_;
+        head.render = [p, folds, lo](int, int) -> Element {
+            std::vector<Element> kids;
+            kids.reserve(lo);
+            for (std::size_t i = 0; i < lo && i < p->blocks.size(); ++i) {
+                const auto& meta =
+                    (i < p->metas.size()) ? p->metas[i] : BlockMeta{};
+                auto fit = folds.find(meta.source_offset);
+                const bool folded = fit != folds.end() && fit->second;
+                if (folded) {
+                    const char* kind_label = "block";
+                    switch (meta.kind) {
+                        case BlockKind::CodeBlock:  kind_label = "code";       break;
+                        case BlockKind::Table:      kind_label = "table";      break;
+                        case BlockKind::List:       kind_label = "list";       break;
+                        case BlockKind::Blockquote: kind_label = "blockquote"; break;
+                        case BlockKind::Paragraph:  kind_label = "paragraph";  break;
+                        case BlockKind::Heading:    kind_label = "heading";    break;
+                        case BlockKind::HtmlBlock:  kind_label = "html";       break;
+                        default: break;
+                    }
+                    char buf[160];
+                    if (!meta.lang.empty()) {
+                        std::snprintf(buf, sizeof(buf),
+                            "\xe2\x96\xb8 %u line%s of %s (%s) hidden \xe2\x80\x94 unfold",
+                            static_cast<unsigned>(meta.line_count),
+                            meta.line_count == 1 ? "" : "s",
+                            kind_label, meta.lang.c_str());
+                    } else {
+                        std::snprintf(buf, sizeof(buf),
+                            "\xe2\x96\xb8 %u line%s of %s hidden \xe2\x80\x94 unfold",
+                            static_cast<unsigned>(meta.line_count),
+                            meta.line_count == 1 ? "" : "s",
+                            kind_label);
+                    }
+                    kids.push_back(Element{TextElement{
+                        .content = std::string{buf},
+                        .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+                    }});
+                } else {
+                    kids.push_back(*p->blocks[i]);
+                }
+            }
+            return (detail::vstack().gap(1)(std::move(kids))).build();
+        };
+        return Element{std::move(head)};
+    };
+
+    // Helper: append the WINDOWED committed-block children into `dst`:
+    //   [head_wrapper (if lo>0), block_lo .. block_{N-1}]
     auto append_block_components = [&](std::vector<Element>& dst) {
-        dst.reserve(dst.size() + prefix_->blocks.size());
-        for (std::size_t i = 0; i < prefix_->blocks.size(); ++i)
+        const std::size_t n  = prefix_->blocks.size();
+        const std::size_t lo = window_lo(n);
+        dst.reserve(dst.size() + (lo > 0 ? 1u : 0u) + (n - lo));
+        if (lo > 0) dst.push_back(make_head_wrapper(lo));
+        for (std::size_t i = lo; i < n; ++i)
             dst.push_back(make_block_component(i));
     };
 
@@ -273,8 +391,16 @@ const Element& StreamingMarkdown::build() const {
         && cached_has_tail_   == has_tail
         && std::holds_alternative<BoxElement>(cached_build_.inner)) {
         auto& box = std::get<BoxElement>(cached_build_.inner);
-        const std::size_t prefix_n =
-            has_prefix ? prefix_->blocks.size() : 0u;
+        // Windowed prefix child count: [head_wrapper?, block_lo..N-1].
+        // Generation is unchanged here, so N (and therefore lo, the
+        // window base) is unchanged too — the prefix child layout is
+        // byte-identical and only the tail child can have moved.
+        std::size_t prefix_n = 0;
+        if (has_prefix) {
+            const std::size_t n  = prefix_->blocks.size();
+            const std::size_t lo = window_lo(n);
+            prefix_n = (lo > 0 ? 1u : 0u) + (n - lo);
+        }
         const std::size_t expected = prefix_n + (has_tail ? 1u : 0u);
         if (box.children.size() == expected) {
             if (has_tail) {
@@ -377,30 +503,44 @@ const Element& StreamingMarkdown::build() const {
         // without it, a 250-block turn re-wraps all 250 block components at
         // every paragraph boundary (the residual streaming-window cost).
         const std::size_t new_n = prefix_->blocks.size();
+        const std::size_t new_lo = window_lo(new_n);
         const std::size_t old_total = box.children.size();
-        const std::size_t old_n =
-            (cached_has_tail_ && old_total > 0) ? old_total - 1 : old_total;
+
+        // Reconstruct the OLD prefix child model from the tracked window
+        // state: [head?(old_lo>0), block_old_lo .. block_{old_n-1}, tail?].
+        const std::size_t old_n  = cached_block_count_;
+        const std::size_t old_lo = cached_window_lo_;
+        const std::size_t old_head    = (old_lo > 0) ? 1u : 0u;
+        const std::size_t old_window_n = (old_n >= old_lo) ? (old_n - old_lo) : 0u;
+        const std::size_t old_tail    = cached_has_tail_ ? 1u : 0u;
+        const std::size_t expected_old_total = old_head + old_window_n + old_tail;
+
+        // Pure same-window growth: the window base lo did NOT advance
+        // (no chunk boundary crossed), folds are unchanged, blocks only
+        // grew, and the cached child vector matches the reconstructed old
+        // model. Then the head wrapper (if any) is byte-identical (same
+        // lo, same fold_gen → same hash), blocks [old_lo, old_n) stay put,
+        // and we append the NEW individual blocks [old_n, new_n). Per-
+        // commit cost stays O(new blocks). When lo DID advance, the head
+        // wrapper's hash changed and some formerly-individual blocks fold
+        // into it — that reshape falls through to the full re-emit below.
         const bool pure_growth =
             cached_fold_gen_ == fold_generation_
             && new_n >= old_n
-            && old_total == old_n + (cached_has_tail_ ? 1u : 0u);
+            && new_lo == old_lo
+            && old_total == expected_old_total;
 
         if (pure_growth) {
             // Drop the old tail slot (if any); append the new block
-            // components M..N-1; then push the fresh tail.
+            // components old_n..new_n-1; then push the fresh tail.
             //
             // NO reserve() here — and that absence is load-bearing. This arm
             // runs on EVERY commit (once per block boundary on a long turn),
-            // and it fills the vector exactly (nb new blocks + tail), so a
-            // reserve(new_n + 1) leaves capacity == size behind. The NEXT
-            // commit's exact reserve is then always > capacity and
-            // reallocates, moving all N committed children — O(N) per
-            // commit, O(N²) per turn: the long-turn streaming lag the
-            // per-block component design was supposed to eliminate
-            // (measured: ~15–190 µs/frame by 50 KB in). push_back's
-            // amortised geometric doubling makes the same appends O(1)
-            // amortised — exact-size reserve in a grow-a-little-every-frame
-            // loop is strictly worse than no reserve at all.
+            // and it fills the vector exactly, so a reserve leaves
+            // capacity == size behind; the NEXT commit's exact reserve then
+            // always reallocates, moving all committed children — O(N) per
+            // commit, O(N²) per turn. push_back's amortised geometric
+            // doubling makes the same appends O(1) amortised.
             if (cached_has_tail_ && !box.children.empty())
                 box.children.pop_back();
             for (std::size_t i = old_n; i < new_n; ++i)
@@ -414,15 +554,19 @@ const Element& StreamingMarkdown::build() const {
                 cached_tail_version_  = source_version_;
                 cached_tail_clip_     = visible_end;
             }
-            cached_prefix_gen_ = prefix_->generation;
-            cached_fold_gen_   = fold_generation_;
-            cached_tail_size_  = tail.size();
-            build_dirty_       = false;
+            cached_prefix_gen_  = prefix_->generation;
+            cached_fold_gen_    = fold_generation_;
+            cached_block_count_ = new_n;
+            cached_window_lo_   = new_lo;
+            cached_tail_size_   = tail.size();
+            build_dirty_        = false;
             return render_live_overlay_();
         }
 
-        // Fold toggle / non-growth reshape: fall back to a full children
-        // re-emit (still O(blocks), but folds change rarely).
+        // Window slide / fold toggle / non-growth reshape: fall back to a
+        // full children re-emit (still O(window), but rare — a window
+        // slide happens once per kWindowChunk commits, folds change
+        // rarely).
         std::vector<Element> kids;
         append_block_components(kids);
         if (has_tail) {
@@ -435,10 +579,12 @@ const Element& StreamingMarkdown::build() const {
             cached_tail_clip_     = visible_end;
         }
         box.children = std::move(kids);
-        cached_prefix_gen_ = prefix_->generation;
-        cached_fold_gen_   = fold_generation_;
-        cached_tail_size_  = tail.size();
-        build_dirty_       = false;
+        cached_prefix_gen_  = prefix_->generation;
+        cached_fold_gen_    = fold_generation_;
+        cached_block_count_ = new_n;
+        cached_window_lo_   = new_lo;
+        cached_tail_size_   = tail.size();
+        build_dirty_        = false;
         return render_live_overlay_();
     }
 
@@ -516,6 +662,8 @@ const Element& StreamingMarkdown::build() const {
     cached_fold_gen_      = fold_generation_;
     cached_has_tail_      = has_tail;
     cached_has_prefix_    = has_prefix;
+    cached_block_count_   = has_prefix ? prefix_->blocks.size() : 0u;
+    cached_window_lo_     = has_prefix ? window_lo(prefix_->blocks.size()) : 0u;
     cached_tail_in_fence_ = in_code_fence_;
     if (has_tail) {
         cached_tail_hash_ = fnv1a64(tail);

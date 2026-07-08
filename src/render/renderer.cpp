@@ -475,13 +475,43 @@ std::size_t build_layout_tree(
                         // the measure pass become O(1).
                         if (!comp.hash_id.empty()) {
                             auto it = cache.entries_by_hash.find(comp.hash_id);
-                            if (it != cache.entries_by_hash.end()
-                                && !it->second.cells.empty()) {
-                                it->second.last_frame = cache.current_frame;
-                                it->second.last_touched_at =
-                                    std::chrono::steady_clock::now();
-                                return {Columns{max_width},
-                                        Rows{it->second.height}};
+                            if (it != cache.entries_by_hash.end()) {
+                                // Trust the stored height for a hash-keyed
+                                // (content-identity) entry whether or not
+                                // its cells have been captured. The height
+                                // was produced by a real layout::compute
+                                // over this exact content on the store
+                                // path below, and it is width-stable across
+                                // the small measure/paint width deltas in
+                                // play (see the note above) — so it's valid
+                                // regardless of paint state.
+                                //
+                                // The cells-empty case is NOT a corner case
+                                // to reject: a hash-keyed component whose
+                                // rows sit ABOVE the viewport (a windowed
+                                // streaming-markdown head wrapper collapsing
+                                // the old committed blocks; a frozen
+                                // scrollback prefix) is measured every frame
+                                // by the outer flex pass but NEVER painted
+                                // (it's clipped off-screen), so its cells
+                                // are never captured. Demanding non-empty
+                                // cells here forced that component to
+                                // re-render() + re-lay-out its whole subtree
+                                // EVERY frame — reintroducing the O(N) per-
+                                // frame cost the wrapper existed to remove.
+                                // Trusting the stored height makes the
+                                // measure O(1); if the component IS later
+                                // painted (scrolls into view) the paint
+                                // slow-path re-renders from `result` and
+                                // captures cells, and a genuine resize
+                                // evicts the width-keyed entry.
+                                if (it->second.height > 0) {
+                                    it->second.last_frame = cache.current_frame;
+                                    it->second.last_touched_at =
+                                        std::chrono::steady_clock::now();
+                                    return {Columns{max_width},
+                                            Rows{it->second.height}};
+                                }
                             }
                         }
                         // Trust the cached height when:

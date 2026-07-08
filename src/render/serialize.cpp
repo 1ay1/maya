@@ -6,11 +6,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>    // gate/generation diagnostics (getenv-gated fprintf)
+#include <cstdlib>   // std::getenv / std::abort for the invariant tripwires
 #include <cstring>
-#ifdef MAYA_DEBUG_SHADOW_VERIFY
-#  include <cstdio>
-#  include <cstdlib>
-#endif
 
 namespace maya {
 
@@ -88,6 +86,35 @@ InlineFrameState InlineFrameState::committed(ScrollbackMarker marker) && noexcep
     InlineFrameState s{std::move(*this)};
     const int rows = marker.rows();
 
+    // ── Generation guard (type-theoretic single-source-of-truth) ──────
+    // The marker captured the issuing state's generation. If it no
+    // longer matches THIS state's gen_, the marker was measured against
+    // a superseded frame (an intervening compose / commit / recovery
+    // advanced the state) — committing its row count now would be the
+    // deposit-watermark second-accountant bug: dropping rows the CURRENT
+    // shadow never actually pushed to scrollback. Reject it. In a debug
+    // build this is LOUD (the same discipline as the scrollback-invariant
+    // gate abort in Runtime::render); in release it is a safe no-op —
+    // never a silent MISAPPLY. An empty marker (gen_==0, rows==0) falls
+    // through the rows<=0 no-op below regardless.
+    if (!marker.empty() && marker.generation() != s.gen_) {
+#ifndef NDEBUG
+        if (!std::getenv("MAYA_NO_GATE_ABORT")) {
+            std::fprintf(stderr,
+                "[maya] FATAL: ScrollbackMarker generation mismatch "
+                "(marker.gen=%llu state.gen=%llu rows=%d). A commit token "
+                "outlived the frame it was issued from — a stale row count "
+                "from a superseded accountant. Set MAYA_NO_GATE_ABORT=1 to "
+                "no-op instead.\n",
+                static_cast<unsigned long long>(marker.generation()),
+                static_cast<unsigned long long>(s.gen_), rows);
+            std::fflush(stderr);
+            std::abort();
+        }
+#endif
+        return s;   // release: reject the stale marker, no mutation
+    }
+
     // Bounds: clamp to [0, prev_rows].  Negative / zero is a no-op;
     // an over-commit (rows >= prev_rows) is interpreted as
     // "everything is scrollback now" and returns a reset state.
@@ -145,6 +172,7 @@ InlineFrameState InlineFrameState::committed(ScrollbackMarker marker) && noexcep
     // target rows by their distance from the current cursor row,
     // not absolute coordinates. As long as the application commits
     // BEFORE the next render(), the delta math is consistent.
+    ++s.gen_;   // content-advancing: invalidates any outstanding marker
     return s;
 }
 
@@ -926,6 +954,7 @@ compose_inline_frame_impl(const Canvas& canvas,
         state.prev_width_ = W;
         state.prev_rows_  = content_rows;
         state.wire_cursor_rows_ = std::min(content_rows, term_h);
+        ++state.gen_;   // content-advancing: invalidates any outstanding marker
         // Seed per-row hashes for the whole fresh frame and the combine.
         {
             const uint64_t* cbase = state.prev_cells_.data();
@@ -1283,6 +1312,7 @@ compose_inline_frame_impl(const Canvas& canvas,
     state.prev_width_ = W;
     state.prev_rows_  = content_rows;
     state.wire_cursor_rows_ = std::min(content_rows, term_h);
+    ++state.gen_;   // content-advancing: invalidates any outstanding marker
 
     // ── Production shadow-of-wire hash (incremental) ───────────────────
     //

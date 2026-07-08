@@ -282,6 +282,13 @@ public:
     [[nodiscard]] int wire_cursor_rows() const noexcept {
         return state_.wire_cursor_rows();
     }
+    /// Identity stamp of the underlying state (see InlineFrameState::
+    /// generation / ScrollbackMarker). A marker minted from this frame
+    /// carries this value; committing it against a frame whose stamp has
+    /// since advanced is rejected. Exposed for the provenance oracle.
+    [[nodiscard]] std::uint64_t state_generation() const noexcept {
+        return state_.generation();
+    }
 
     [[nodiscard]] InlineFrame<Sealed> finalize(std::string& out) && noexcept;
 

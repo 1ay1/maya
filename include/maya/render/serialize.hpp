@@ -167,17 +167,33 @@ struct FinalizeResult;   // forward — returned by InlineFrameState::finalize()
 /// the marker via `InlineFrameState::commit(marker)` is the only way
 /// to advance the state's scrollback boundary through the typed path.
 ///
-/// The marker carries no state pointer / generation — single-threaded
-/// inline rendering means the marker is created and consumed in close
-/// temporal proximity within the same Runtime tick. The safety the
-/// type provides is "you can't construct a row count from thin air" —
-/// the application has to obtain a marker from a live state, which
-/// forces them to read the current `prev_rows` rather than carrying a
-/// stale int around.
+/// ── Type-theoretic strengthening: a generation-tagged affine capability ──
+///
+/// The marker is not merely a "row count with provenance" — it is a
+/// capability bound to the IDENTITY of the exact state that issued it.
+/// Every content-advancing operation on an `InlineFrameState` (compose,
+/// commit, reset-for-recovery) bumps a private monotonic generation
+/// stamp; `scrollback_marker(rows)` copies that stamp into the marker,
+/// and `committed(marker)` refuses any marker whose stamp does not match
+/// the state's CURRENT generation.
+///
+/// This closes the second-accountant class BY TYPE, not by clamp: the
+/// deposit-watermark family of bugs was always "a row count measured
+/// against frame A applied to frame B." With the generation binding,
+/// such a cross-frame apply is a DETECTED no-op (loud abort under
+/// NDEBUG-off; silent no-op in release — never a silent MISAPPLY). The
+/// application still cannot fabricate a count from thin air (the only
+/// producer is a live state), and now it additionally cannot carry a
+/// count ACROSS an intervening state advance without the mismatch
+/// surfacing. The marker is affine: single-use, move-only in spirit
+/// (it is a trivially-copyable value, but consuming it against a fresh
+/// generation invalidates any duplicate).
 class [[nodiscard("ScrollbackMarker is a single-use commit token — dropping it loses the scrollback advance for this tick")]] ScrollbackMarker {
 public:
     /// Empty marker — committing it is a no-op. Useful as a default
-    /// when no scrollback advance is wanted this tick.
+    /// when no scrollback advance is wanted this tick. Generation 0 is
+    /// the never-issued sentinel; a real state's generation starts at 1,
+    /// so an empty marker's stamp can never collide with a live one.
     constexpr ScrollbackMarker() noexcept = default;
 
     /// Number of rows the marker will commit when consumed.
@@ -185,9 +201,17 @@ public:
 
     [[nodiscard]] constexpr bool empty() const noexcept { return rows_ <= 0; }
 
+    /// The generation of the state that issued this marker (0 = empty /
+    /// never issued). Opaque to callers — only `committed()` compares it.
+    [[nodiscard]] constexpr std::uint64_t generation() const noexcept {
+        return gen_;
+    }
+
 private:
-    int rows_ = 0;
-    constexpr explicit ScrollbackMarker(int r) noexcept : rows_(r) {}
+    int           rows_ = 0;
+    std::uint64_t gen_  = 0;   // 0 = empty; matched against state's gen_
+    constexpr ScrollbackMarker(int r, std::uint64_t g) noexcept
+        : rows_(r), gen_(g) {}
     friend class InlineFrameState;
 };
 
@@ -306,6 +330,11 @@ public:
     [[nodiscard]] int      prev_rows()        const noexcept { return prev_rows_; }
     [[nodiscard]] int      wire_cursor_rows() const noexcept { return wire_cursor_rows_; }
     [[nodiscard]] uint64_t shadow_hash()      const noexcept { return shadow_hash_; }
+    /// Monotonic identity stamp. Bumped by every content-advancing
+    /// operation (compose, commit, reset-for-recovery). A ScrollbackMarker
+    /// captures this value at issue and `committed()` rejects a marker
+    /// whose stamp no longer matches — see the type note on ScrollbackMarker.
+    [[nodiscard]] uint64_t generation()       const noexcept { return gen_; }
 
     // ── Pure advancing operations ───────────────────────────────────
     // Each consumes `*this` by rvalue-move and returns the successor
@@ -329,6 +358,7 @@ public:
         s.ghost_rows_above_  = 0;
         s.wire_cursor_rows_  = 0;
         s.row_hashes_.clear();
+        ++s.gen_;   // content-advancing: invalidates any outstanding marker
         return s;
     }
 
@@ -346,7 +376,15 @@ public:
     /// `committed()`, not by issuing it.
     [[nodiscard]] ScrollbackMarker scrollback_marker(int rows) const noexcept {
         if (rows <= 0 || prev_rows_ <= 0) return ScrollbackMarker{};
-        return ScrollbackMarker{std::min(rows, prev_rows_)};
+        // Stamp the marker with THIS state's current generation. A
+        // gen_ of 0 (a never-advanced initial state) still issues a
+        // usable marker: committed() only rejects a MISMATCH, and an
+        // unadvanced state matches its own zero stamp. But scrollback
+        // can only be committed against a state that has actually
+        // rendered (prev_rows_ > 0), which implies at least one
+        // compose advanced gen_ past 0 — so live markers carry a
+        // non-zero stamp in every real code path.
+        return ScrollbackMarker{std::min(rows, prev_rows_), gen_};
     }
 
     /// True iff the first `rows` rows of `canvas` are byte-identical to
@@ -399,6 +437,7 @@ public:
         s.decawm_off_       = false;
         s.shadow_hash_      = static_cast<uint64_t>(-1);
         s.row_hashes_.clear();
+        ++s.gen_;   // content-advancing: invalidates any outstanding marker
         return s;
     }
 
@@ -438,6 +477,14 @@ private:
     int           ghost_rows_above_ = 0;
     int           wire_cursor_rows_ = 0;
     uint64_t      shadow_hash_      = static_cast<uint64_t>(-1);
+    // Monotonic identity stamp for ScrollbackMarker generation-binding.
+    // Starts at 0 on the initial state; every content-advancing
+    // operation (compose_inline_frame_impl, committed(), reset_state,
+    // abandoned_for_recovery) does ++gen_. A marker captures gen_ at
+    // issue; committed() rejects a marker whose stamp != the current
+    // gen_ (a stale count from a superseded frame). u64 never wraps in
+    // any realistic session (2^64 frames). See ScrollbackMarker's note.
+    uint64_t      gen_              = 0;
     // Per-row shadow hashes (one FNV-1a fold per row of prev_cells,
     // each mixed with its row index so row reordering is detected).
     // shadow_hash_ is their position-independent XOR combine. Compose

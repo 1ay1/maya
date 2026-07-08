@@ -1770,6 +1770,79 @@ static void st_committed_cells_stable() {
     }
 }
 
+// Regression: a LIST immediately followed by an ATX heading with NO blank
+// line between them ("- item\n## Header") is the loose-GFM shape an LLM
+// emits constantly. The boundary scanner used to eager-commit at the
+// heading start, which split the list into an ISOLATED commit range whose
+// re-parse re-flowed cell-for-cell differently from how the live tail had
+// already painted it — a rewrite of settled scrollback (the "reply
+// repaints itself / duplicated rows" symptom). The fix gates the ATX
+// eager-commit on a preceding blank line (mirroring the HR setext gate);
+// with no blank above, the list+heading stay cohesive in the tail until a
+// genuine \n\n boundary lands. This pins the committed-cell invariant for
+// that exact shape, streamed byte-by-byte.
+static void st_list_then_heading_no_blank_stable() {
+    const std::string doc =
+        "- alpha bullet before a tight heading\n"
+        "- beta bullet before a tight heading\n"
+        "## Tight heading with no blank line above it\n\n"
+        "1. ordered item after the heading\n"
+        "2. second ordered item\n\n"
+        "Closing paragraph.\n";
+
+    StreamingMarkdown md;
+    md.set_live(true);
+
+    std::vector<std::uint64_t> prev_cells;
+    int prev_h = 0;
+    std::size_t prev_committed = 0;
+
+    auto snapshot = [&](int& out_h) {
+        Element el = md.build();
+        StylePool pool;
+        Canvas canvas(80, /*h=*/4000, &pool);
+        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        out_h = content_height(canvas);
+        const std::uint64_t* c = canvas.cells();
+        std::size_t n = static_cast<std::size_t>(canvas.width()) * out_h;
+        return std::vector<std::uint64_t>(c, c + n);
+    };
+
+    for (std::size_t i = 0; i < doc.size(); ++i) {
+        md.append(std::string_view{doc}.substr(i, 1));
+        std::size_t committed_now = md.block_count();
+        int h = 0;
+        auto cells = snapshot(h);
+
+        if (committed_now > prev_committed && !prev_cells.empty()) {
+            std::size_t cmp_rows = static_cast<std::size_t>(std::min(prev_h, h));
+            std::size_t tail_guard = 3;
+            if (cmp_rows > tail_guard) cmp_rows -= tail_guard; else cmp_rows = 0;
+            const std::size_t width = 80;
+            for (std::size_t r = 0; r < cmp_rows; ++r) {
+                for (std::size_t col = 0; col < width; ++col) {
+                    std::size_t idx = r * width + col;
+                    if (idx >= cells.size() || idx >= prev_cells.size()) continue;
+                    if (cells[idx] != prev_cells[idx]) {
+                        std::string ctx{doc.substr(i > 20 ? i - 20 : 0, 40)};
+                        for (auto& c : ctx) if (c == '\n') c = '?';
+                        throw std::runtime_error(
+                            "COMMITTED CELL REWRITTEN (list->heading no-blank) at row "
+                            + std::to_string(r) + " when blocks went "
+                            + std::to_string(prev_committed) + "->"
+                            + std::to_string(committed_now)
+                            + " (near: '" + ctx + "') — the ATX eager-commit split "
+                            "the list and re-flowed the settled prefix.");
+                    }
+                }
+            }
+        }
+        prev_cells = std::move(cells);
+        prev_h = h;
+        prev_committed = committed_now;
+    }
+}
+
 // Per-construct height-snap sweep: for every risky block kind, feed the
 // block WITHOUT its trailing blank line (so it sits in the live tail) and
 // assert its live height equals the committed height. This is the
@@ -2734,6 +2807,7 @@ int main() {
     std::println("\n-- F. height monotonicity / no-flicker --");
     run("height monotonic (transitions)", 5000ms, st_height_monotonic_transitions);
     run("committed cells stable",         5000ms, st_committed_cells_stable);
+    run("list->heading no-blank stable",   3000ms, st_list_then_heading_no_blank_stable);
     run("eager block no-snap (all kinds)", 3000ms, st_eager_block_no_snap);
     run("reveal-fx monotonic (post-feed)", 12000ms, st_reveal_fx_height_monotonic);
     run("reveal-fx monotonic (streaming)", 12000ms, st_reveal_fx_height_monotonic_streaming);

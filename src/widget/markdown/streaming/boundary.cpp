@@ -414,20 +414,54 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                         && (source_[i + hashes] == ' '
                             || source_[i + hashes] == '\t');
                     if (is_atx) {
-                        record(i);
-                        // If the heading line has fully arrived,
-                        // anchor the boundary past it so the next
-                        // paragraph/heading/etc. starts a fresh
-                        // commit. If it hasn't (`eol == npos`), fall
-                        // through to the line-step `break` below;
-                        // the resumable scan will retry once more
-                        // bytes land.
-                        std::size_t heading_eol = source_.find('\n', i);
-                        if (heading_eol != std::string::npos) {
-                            i = heading_eol + 1;
-                            record(i);
-                            continue;
+                        // Setext/tight-block safety gate (mirrors the HR
+                        // branch below). Eager-committing at the heading
+                        // start splits whatever precedes it into an
+                        // ISOLATED commit range. That is only safe when a
+                        // blank line already separates the heading from
+                        // the block above — a true block boundary. When
+                        // there is NO blank line (the loose-GFM shape an
+                        // LLM emits: "- item\n## Header", or
+                        // "paragraph\n## Header"), the preceding block's
+                        // shape is not yet provably final: a list keeps
+                        // absorbing lines, a paragraph could still be a
+                        // setext target. Committing [committed_, i) here
+                        // re-parses that block WITHOUT the following bytes,
+                        // and its isolated re-flow can differ cell-for-cell
+                        // from how the live tail rendered it — a rewrite of
+                        // already-settled scrollback (see
+                        // st_committed_cells_stable's list->heading case).
+                        // So only eager-commit when the line ABOVE is
+                        // blank; otherwise fall through to the normal
+                        // blank-line commit path, keeping the whole run
+                        // cohesive in the tail until a genuine \n\n lands.
+                        bool blank_above = (i == 0);
+                        if (!blank_above) {
+                            std::size_t back = i;
+                            if (back > 0 && source_[back - 1] == '\n') --back;
+                            while (back > 0 && source_[back - 1] == '\r') --back;
+                            blank_above = (back == 0)
+                                || (source_[back - 1] == '\n');
                         }
+                        if (blank_above) {
+                            record(i);
+                            // If the heading line has fully arrived,
+                            // anchor the boundary past it so the next
+                            // paragraph/heading/etc. starts a fresh
+                            // commit. If it hasn't (`eol == npos`), fall
+                            // through to the line-step `break` below;
+                            // the resumable scan will retry once more
+                            // bytes land.
+                            std::size_t heading_eol = source_.find('\n', i);
+                            if (heading_eol != std::string::npos) {
+                                i = heading_eol + 1;
+                                record(i);
+                                continue;
+                            }
+                        }
+                        // No blank line above: the heading and the block
+                        // it hugs commit together at the next real blank-
+                        // line boundary. Fall through to the line-step.
                     }
                 }
                 if (source_[i] == '|') {

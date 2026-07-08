@@ -67,9 +67,29 @@ std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexce
     if (state.row_hashes_.size() != static_cast<std::size_t>(state.prev_rows_))
         return std::nullopt;
 
+    // shadow_hash_ is maintained INCREMENTALLY at the end of every
+    // compose (XOR the changed rows out/in — see the incremental-combine
+    // block in compose_inline_frame_impl), so it already equals the fold
+    // of row_hashes_ by construction on the hot path. Re-folding the
+    // whole array here to "double-check" is O(prev_rows) per frame and
+    // was the residual linear `cf`-growth cost on a tall transcript: at
+    // 7000 committed rows it XORed 7000 u64s every single frame purely
+    // to reconfirm a value compose already maintained exactly.
+    //
+    // The re-fold's only real job is to catch an OUT-OF-BAND mutation of
+    // row_hashes_ / prev_cells_ (a code path that wrote the shadow
+    // without going through compose). No such path exists, and the
+    // lockstep-size check above already rejects the one realistic
+    // corruption (an out-of-band clear/resize). In debug builds we still
+    // pay the full re-fold as a tripwire; release trusts the maintained
+    // hash and returns O(1).
+#ifndef NDEBUG
     const uint64_t h = combine_rows(state.row_hashes_);
     if (h != state.shadow_hash_) return std::nullopt;
     return ShadowWitness{&state, h};
+#else
+    return ShadowWitness{&state, state.shadow_hash_};
+#endif
 }
 
 FinalizeResult InlineFrameState::finalize() && noexcept {
@@ -264,6 +284,25 @@ bool InlineFrameState::scrollback_prefix_matches(
     return match;
 }
 
+bool InlineFrameState::scrollback_prefix_window_matches(
+    const Canvas& canvas, int lo, int hi) const noexcept
+{
+    if (lo < 0) lo = 0;
+    if (hi <= lo) return true;
+    const int W = prev_width_;
+    if (W <= 0 || canvas.width() != W) return false;
+    // Can't compare more rows than either buffer holds.
+    if (hi > prev_rows_) return false;
+    const std::size_t hi_need = static_cast<std::size_t>(hi) * W;
+    if (prev_cells_.size() < hi_need) return false;
+    if (canvas.cell_count() < hi_need) return false;
+    const std::size_t off = static_cast<std::size_t>(lo) * W;
+    const std::size_t span = static_cast<std::size_t>(hi - lo) * W;
+    return std::memcmp(prev_cells_.data() + off,
+                       canvas.cells() + off,
+                       span * sizeof(uint64_t)) == 0;
+}
+
 int content_height(const Canvas& canvas) noexcept {
     // O(1): canvas tracks max_y_ during painting. -1 ⇒ nothing was
     // ever written this frame ⇒ zero rows of content.
@@ -295,9 +334,69 @@ std::optional<ScrollbackProof> check_scrollback(
     // Overflowed: the top `overflow` rows have scrolled off and are
     // immutable in native scrollback. The diff is scrollback-safe iff
     // the shadow's committed prefix is byte-identical to what the canvas
-    // claims scrolled off. This is the exact memcmp the old bool gate
-    // ran; failure means the prefix SHIFTED and the caller MUST recover.
+    // claims scrolled off.
+    //
+    // BOUNDED GATE. A full memcmp of the whole [0, overflow) prefix is
+    // O(overflow x width) and is the dominant per-frame cost on a long
+    // streaming turn: a 14k-row transcript re-memcmp'd ~13 MB EVERY
+    // frame purely to reconfirm a prefix that only ever grows at its
+    // BOTTOM edge. The corruption this gate exists to catch — a
+    // committed-prefix SHIFT (a card above the viewport shrank/grew,
+    // sliding every row below it, including the fold-adjacent rows,
+    // upward) — is a BLOCK move: if ANY committed row shifts, the rows
+    // immediately above the fold (the newest committed rows, the ones a
+    // shift pushes across the term_h boundary) shift too. So comparing a
+    // bounded WINDOW just above the fold detects every shift that could
+    // strand a duplicate, at O(1) cost.
+    //
+    // The window must be at least as tall as the largest single-frame
+    // committed-prefix growth, so no newly-committed row escapes the
+    // compare between frames, AND tall enough that a shift originating
+    // some rows ABOVE the fold still reaches into the window. kGateWindow
+    // (256 rows) is empirically the value at which the PTY oracles report
+    // ZERO gate recoveries across every shape (a 64-row window let one
+    // oracle shape's settle-shift escape the window and trip a
+    // full-compare recovery); it still dwarfs any real per-frame growth
+    // (a fat batched SSE delta is a few dozen rows). The clean-grow gate
+    // re-runs the FULL compare on any frame that grew by MORE than the
+    // window in one step (the grow<=kGateWindow guard below), so a burst
+    // can never smuggle an unverified row across the fold.
+    //
+    // FULL-COMPARE FALLBACK. The bounded window is only sound for a
+    // clean append-GROW from the previously-verified state. Any frame
+    // that is NOT a monotone grow of the same-width prefix — a shrink
+    // (content got shorter: a fold collapsed, a card settled), a width
+    // change, or the FIRST overflow (no prior verified prefix) — gets
+    // the full memcmp. Those are exactly the frames where a prefix row
+    // ABOVE the window could change without touching the window, and
+    // they are rare (once per settle/fold, never in steady streaming).
     const int overflow = prev_rows - term_h;
+    constexpr int kGateWindow = 256;
+    // content_rows for THIS frame = the canvas's painted height. A
+    // monotone grow means the new frame is at least as tall as the
+    // shadow (nothing above the fold could have moved UP).
+    const int content_rows = content_height(canvas);
+    const int grow = content_rows - prev_rows;
+    const bool clean_grow =
+        grow >= 0                                 // monotone grow (or equal)
+        && grow <= kGateWindow                    // no burst past the window
+        && canvas.width() == state.prev_width_;   // same-width prefix
+    if (clean_grow && overflow > kGateWindow) {
+        // Verify only the window just above the fold. Any shift reaches
+        // it (block move), so a match here proves the whole prefix is
+        // stable for THIS append-grow frame.
+        const int win_lo = overflow - kGateWindow;
+        if (!state.scrollback_prefix_window_matches(canvas, win_lo, overflow)) {
+            // Window mismatch — a shift reached the fold. Confirm with a
+            // full compare before recovering (the window could, in
+            // principle, false-positive on a within-window-only change
+            // that is actually benign; the full compare is the source of
+            // truth). Cheap relative to the recovery it may trigger.
+            if (!state.scrollback_prefix_matches(canvas, overflow))
+                return std::nullopt;
+        }
+        return ScrollbackProof{&state, overflow, /*valid=*/true};
+    }
     if (!state.scrollback_prefix_matches(canvas, overflow)) {
         return std::nullopt;
     }
@@ -652,10 +751,29 @@ compose_inline_frame_impl(const Canvas& canvas,
     // Pre-reserve `out` so the per-row ANSI emission doesn't trip a
     // reallocation cascade.  Rough heuristic: 24 bytes per row of pure
     // movement + EL + style switches, plus ~200 bytes for the frame
-    // wrapper.  Streaming workloads rarely write more than a few rows
-    // per frame, so this dominates the actual byte count and saves
-    // 2-3 reallocations on the hot path.
-    out.reserve(out.size() + 256 + static_cast<std::size_t>(content_rows) * 24);
+    // wrapper.
+    //
+    // Bound the reserve to the ACTUAL emit span, not content_rows. The
+    // per-row loop below only visits rows [first_changed, content_rows),
+    // and on a steady streaming frame first_changed sits near the bottom
+    // (only the tail grows), so the emitted byte count is a handful of
+    // rows. Reserving content_rows*24 unconditionally allocated O(content
+    // _rows) bytes EVERY frame — ~336 KB per frame on a 14k-row transcript
+    // — purely as headroom the frame never fills. That per-frame
+    // allocation + zero-touch was a residual linear `cf` cost on a tall
+    // turn. first_changed is computed just below, so hoist a cheap
+    // upper-bound scan is unnecessary: cap the reserve at the viewport
+    // span (term_h) plus a grow margin, which bounds the emit for every
+    // streaming frame and is still generous for the rare full-viewport
+    // repaint (which never emits more than term_h rows anyway). Fresh /
+    // shrink paths reserve their own exact sizes further down.
+    {
+        const int grow = std::max(0, content_rows - state.prev_rows_);
+        const int emit_span_ub = std::min(content_rows, term_h + grow);
+        const std::size_t reserve_rows =
+            static_cast<std::size_t>(std::max(1, emit_span_ub));
+        out.reserve(out.size() + 256 + reserve_rows * 24);
+    }
 
     const uint64_t* cells = canvas.cells();
     const int prev_rows       = state.prev_rows_;
@@ -1358,15 +1476,44 @@ compose_inline_frame_impl(const Canvas& canvas,
         const bool in_lockstep =
             state.row_hashes_.size() == static_cast<std::size_t>(prev_rows);
         if (in_lockstep) {
+            // INCREMENTAL COMBINE. shadow_hash_ is the XOR-fold of every
+            // row hash; XOR is its own inverse, so the fold is maintained
+            // in O(changed rows) instead of the O(content_rows) full
+            // re-fold combine_rows() would cost. On a long streaming turn
+            // only the tail rows change each frame (first_changed sits
+            // near content_rows-1), so a full re-fold XORed all
+            // ~content_rows hashes every frame — the linear `cf` growth
+            // that pinned a tall transcript at ~3ms/frame. Here we:
+            //   1. XOR OUT every tail row that is being dropped by a
+            //      shrink (rows [content_rows, prev_rows) leave the fold),
+            //   2. XOR OUT the old hash of each row we are about to
+            //      re-hash, re-hash it, then XOR IN the new hash.
+            // The result is bit-identical to combine_rows() over the
+            // final array (proven by the XOR associativity the design
+            // note at combine_rows documents), at O(changed) cost.
+            uint64_t h = state.shadow_hash_;
+            // Shrink: fold out the tail rows that no longer exist. Do this
+            // BEFORE the resize so the stale hashes are still readable.
+            for (int y = content_rows; y < prev_rows; ++y)
+                h ^= state.row_hashes_[static_cast<std::size_t>(y)];
             // Resize the array to the new row count (shrink drops tail
             // hashes; grow leaves new slots to be filled by the loop).
             state.row_hashes_.resize(static_cast<std::size_t>(content_rows));
             const int begin = std::min(first_changed, content_rows);
-            for (int y = begin; y < content_rows; ++y)
-                state.row_hashes_[static_cast<std::size_t>(y)] =
+            for (int y = begin; y < content_rows; ++y) {
+                // Grown rows (y >= prev_rows) had no prior hash in the
+                // fold, so there is nothing to XOR out for them; the
+                // resize left their slot default-constructed (0), and
+                // 0 is the XOR identity, so the unconditional xor-out
+                // below is a harmless no-op for new rows.
+                h ^= state.row_hashes_[static_cast<std::size_t>(y)];
+                const uint64_t nh =
                     hash_row(shadow_base + static_cast<std::size_t>(y) * W,
                              static_cast<std::size_t>(W), y);
-            state.shadow_hash_ = combine_rows(state.row_hashes_);
+                state.row_hashes_[static_cast<std::size_t>(y)] = nh;
+                h ^= nh;
+            }
+            state.shadow_hash_ = h;
         } else {
             state.row_hashes_.assign(static_cast<std::size_t>(content_rows), 0);
             for (int y = 0; y < content_rows; ++y)

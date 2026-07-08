@@ -398,6 +398,18 @@ public:
     [[nodiscard]] bool scrollback_prefix_matches(
         const Canvas& canvas, int rows) const noexcept;
 
+    /// True iff rows [lo, hi) of `canvas` are byte-identical to the same
+    /// rows of this state's prev_cells (same width). The bounded sibling
+    /// of scrollback_prefix_matches: check_scrollback uses it to verify
+    /// only a WINDOW just above the fold on a clean append-grow frame,
+    /// which detects any committed-prefix SHIFT (a block move touches the
+    /// fold-adjacent rows) at O(window) instead of O(overflow). Rows
+    /// outside [lo, hi) are NOT compared — the caller is responsible for
+    /// only invoking this when a prefix change above `lo` is provably
+    /// impossible (monotone same-width grow). Defined in serialize.cpp.
+    [[nodiscard]] bool scrollback_prefix_window_matches(
+        const Canvas& canvas, int lo, int hi) const noexcept;
+
     /// Consume the marker and return the successor state with
     /// `marker.rows()` rows shifted off the top of prev_cells. A
     /// marker that targets all rows (or more) returns a reset

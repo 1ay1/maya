@@ -648,16 +648,24 @@ void compute_node(
                     item.cross_offset = cross_cursor + (line.cross_size - item.cross) / 2;
                     break;
 
-                case Align::Stretch:
+                case Align::Stretch: {
                     item.cross_offset = cross_cursor;
                     // Stretch the cross dimension to fill the line — UNLESS
-                    // the container is a scroll viewport, where children must
-                    // keep their natural cross size so a wider inner row can
-                    // be horizontally scrolled into view. overflow=Hidden
-                    // (plain clip, no scroll state) DOES want stretch so that
+                    // (a) the container is a scroll viewport, where children
+                    // must keep their natural cross size so a wider inner row
+                    // can be horizontally scrolled into view (overflow=Hidden,
+                    // plain clip with no scroll state, DOES want stretch so
                     // bordered cards with align_items=Stretch behave like
-                    // every other CSS flex parent.
-                    if (style.overflow != Overflow::Scroll) {
+                    // every other CSS flex parent), OR (b) the child has a
+                    // DEFINITE cross-axis size. Per CSS Flexbox §9.4, a
+                    // definite cross size wins over align-items:stretch — the
+                    // item keeps its own width/height and is not grown to the
+                    // line. Without this, component(width=cells(5)) inside a
+                    // column gets stretched to the full container width.
+                    const auto& ics = nodes[item.index].style;
+                    const bool cross_is_definite =
+                        row ? !ics.height.is_auto() : !ics.width.is_auto();
+                    if (style.overflow != Overflow::Scroll && !cross_is_definite) {
                         item.cross = line.cross_size;
                         if (row) {
                             nodes[item.index].computed.size.height = Rows{item.cross};
@@ -666,6 +674,7 @@ void compute_node(
                         }
                     }
                     break;
+                }
 
                 // SpaceBetween/Around/Evenly are not standard for align_items
                 // per-item; treat them as Start.

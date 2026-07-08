@@ -258,6 +258,41 @@ void test_align_items_center() {
     std::println("PASS\n");
 }
 
+// Regression: a Row with a DEFINITE height and an auto-height child +
+// align=center must vertically CENTER the child, not stretch it to fill
+// the cross axis. Before the fix, section 3d forced the auto-cross child
+// to the container's full height before positioning, so (cross_size -
+// item.cross)/2 == 0 and align=center was a silent no-op (the user's
+// "card just stretches to height=9" report).
+void test_align_center_definite_cross_not_stretched() {
+    std::println("--- test_align_center_definite_cross_not_stretched ---");
+    StylePool pool;
+    Canvas canvas(20, 9, &pool);
+    // Row, height 9, a single-line child. Centered vertically the child
+    // should land around row 4 (9 rows, 1-row child -> offset (9-1)/2 = 4),
+    // with blank rows above and below it.
+    render_tree(
+        box().direction(Row)
+             .height(Dimension::fixed(9))
+             .align_items(Align::Center)(
+            text("MID")
+        ), canvas, pool, theme::dark);
+    dump(canvas, 9);
+    int found = -1;
+    for (int y = 0; y < 9; ++y) {
+        if (get_row(canvas, y).find("MID") != std::string::npos) { found = y; break; }
+    }
+    assert(found != -1);
+    // Must NOT be at the top edge (that's the stretch/no-op bug), and must
+    // sit near the vertical middle.
+    assert(found > 0);
+    assert(found >= 3 && found <= 5);
+    // Top row must be blank — the child is not stretched to fill.
+    assert(get_row(canvas, 0).find("MID") == std::string::npos);
+    std::println("  MID@row{}", found);
+    std::println("PASS\n");
+}
+
 void test_justify_space_between() {
     std::println("--- test_justify_space_between ---");
     StylePool pool;
@@ -673,6 +708,7 @@ int main() {
     test_spacer_pushes_content();
     test_grow_fills_remaining_space();
     test_align_items_center();
+    test_align_center_definite_cross_not_stretched();
     test_justify_space_between();
     test_justify_center();
     test_fixed_width_box();
@@ -683,5 +719,5 @@ int main() {
     test_separator_draws_horizontal_line();
     test_counter_tree();
     test_string_child_auto_text();
-    std::println("=== ALL 25 TESTS PASSED ===");
+    std::println("=== ALL 26 TESTS PASSED ===");
 }

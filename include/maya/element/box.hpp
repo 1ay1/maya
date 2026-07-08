@@ -40,10 +40,11 @@ enum class FlexWrap : uint8_t {
 
 /// Cross-axis alignment (analogous to CSS align-items / align-self).
 enum class Align : uint8_t {
+    Auto,      ///< align_self only: inherit the parent's align_items.
     Start,
     Center,
     End,
-    Stretch,   ///< Fill the cross axis (default).
+    Stretch,   ///< Fill the cross axis (default for align_items).
     Baseline,
 };
 
@@ -80,7 +81,7 @@ struct FlexStyle {
     FlexDirection direction = FlexDirection::Row;
     FlexWrap      wrap      = FlexWrap::NoWrap;
     Align         align_items   = Align::Stretch;
-    Align         align_self    = Align::Start;
+    Align         align_self    = Align::Auto;
     Justify       justify       = Justify::Start;
 
     /// Flex grow factor (0 = don't grow).

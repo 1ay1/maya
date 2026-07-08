@@ -909,6 +909,12 @@ struct WrappedNode {
                 box->layout.scroll_y = scrl_state_->y;
                 box->scroll_state    = scrl_state_;
                 box->scroll_role     = ScrollRole::Viewport;
+                // Keep the viewport at its own natural/fixed cross size — a
+                // parent whose align_items is Stretch (the CSS default for
+                // align_self=Auto) must not stretch it, or the scrolled
+                // content is constrained to the parent width and max_x/y
+                // (the scrollable extent) collapses.
+                box->layout.align_self = Align::Start;
                 if (scrl_vw_ > 0) box->layout.width  = Dimension::fixed(scrl_vw_);
                 if (scrl_vh_ > 0) box->layout.height = Dimension::fixed(scrl_vh_);
             }
@@ -940,6 +946,7 @@ struct WrappedNode {
                 bx->layout.scroll_y = scrl_state_->y;
                 bx->scroll_state    = scrl_state_;
                 bx->scroll_role     = ScrollRole::Viewport;
+                bx->layout.align_self = Align::Start;   // see as_box() branch
                 if (scrl_vw_ > 0) bx->layout.width  = Dimension::fixed(scrl_vw_);
                 if (scrl_vh_ > 0) bx->layout.height = Dimension::fixed(scrl_vh_);
             }

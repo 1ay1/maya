@@ -299,6 +299,10 @@ struct ScrollbarStyle {
     if (auto* bx = as_box(bar)) {
         bx->scroll_state = const_cast<ScrollState*>(&s);
         bx->scroll_role  = ScrollRole::VerticalBar;
+        // Pin to the natural viewport-height extent: a parent whose
+        // align_items is Stretch (the CSS default) must not cross-stretch
+        // the bar, or bar_v_bounds diverges from the rendered cells.
+        bx->layout.align_self = Align::Start;
     }
     return bar;
 }
@@ -352,6 +356,11 @@ struct ScrollbarStyle {
     if (auto* bx = as_box(bar)) {
         bx->scroll_state = const_cast<ScrollState*>(&s);
         bx->scroll_role  = ScrollRole::HorizontalBar;
+        // Pin to the natural `viewport_w` extent: a parent whose align_items
+        // is Stretch (the CSS default) must not cross-stretch the bar past
+        // the width it paints, or the hit-test geometry (bar_h_bounds)
+        // diverges from the rendered cells.
+        bx->layout.align_self = Align::Start;
     }
     return bar;
 }

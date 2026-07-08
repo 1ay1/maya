@@ -405,6 +405,20 @@ void compute_node(
             const auto& cs = child.style;
 
             int child_w, child_h;
+            // Effective cross-axis alignment for THIS child (align_self
+            // overrides the container's align_items; Auto inherits). Only a
+            // Stretch child should be forced to the container's cross size
+            // before positioning — Center/Start/End children keep their
+            // natural cross size so the alignment step below has room to
+            // move them. Without this gate an auto-cross child is stretched
+            // to fill the cross axis unconditionally, making align=center a
+            // no-op (the item already spans the whole line, so the centering
+            // offset is zero).
+            const Align eff_align =
+                (cs.align_self != Align::Auto) ? cs.align_self
+                                               : style.align_items;
+            const bool cross_stretch = (eff_align == Align::Stretch
+                                     || eff_align == Align::Auto);
             if (row) {
                 child_w = item.main;
                 child_h = cs.height.is_auto() ? cross_avail : cs.height.resolve(content_h);
@@ -443,13 +457,17 @@ void compute_node(
 
                     // Determine whether 3d would force either axis to a
                     // definite size (overriding the child's intrinsic).
+                    // The cross axis is only forced to the container's
+                    // definite size when the child actually stretches;
+                    // a Center/Start/End child keeps its natural cross
+                    // size so the 3e alignment step can position it.
                     bool force_w, force_h;
                     if (row) {
                         force_w = (main_changed || !saved_w.is_auto());
-                        force_h = (cross_definite || !saved_h.is_auto());
+                        force_h = ((cross_definite && cross_stretch) || !saved_h.is_auto());
                     } else {
                         force_h = (main_changed || !saved_h.is_auto());
-                        force_w = (cross_definite || !saved_w.is_auto());
+                        force_w = ((cross_definite && cross_stretch) || !saved_w.is_auto());
                     }
 
                     // Fast path: when 3a already laid this child out at the
@@ -478,7 +496,7 @@ void compute_node(
                         // recompute its intrinsic width at the resolved cross size.
                         if (main_changed || !saved_w.is_auto())
                             child.style.width = Dimension::fixed(child_w);
-                        if (cross_definite || !saved_h.is_auto())
+                        if ((cross_definite && cross_stretch) || !saved_h.is_auto())
                             child.style.height = Dimension::fixed(child_h);
                     } else {
                         // Force height (main) only when grow/shrink changed it
@@ -487,7 +505,7 @@ void compute_node(
                         // narrower widths cause text to wrap to more lines.
                         if (main_changed || !saved_h.is_auto())
                             child.style.height = Dimension::fixed(child_h);
-                        if (cross_definite || !saved_w.is_auto())
+                        if ((cross_definite && cross_stretch) || !saved_w.is_auto())
                             child.style.width = Dimension::fixed(child_w);
                     }
                     compute_node(nodes, item.index, child_w, child_h, content_w, content_h);

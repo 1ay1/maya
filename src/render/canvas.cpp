@@ -66,15 +66,28 @@ void AlignedBuffer::resize(std::size_t count, uint64_t fill_value) {
         size_ = count;
         return;
     }
+    // Geometric capacity growth. A tall streaming turn grows content_rows
+    // by ~1 row EVERY frame, so a compose that resizes prev_cells_ /
+    // the canvas to EXACTLY content_rows*width reallocated + full-copied
+    // the entire multi-MB buffer every single frame — an O(content_rows)
+    // memcpy that scaled linearly with the live turn (the residual `cf`
+    // creep). Over-allocate to 1.5x the requested size (never below the
+    // request) so a monotone grow reallocates O(log N) times instead of
+    // O(N): the amortised per-frame copy drops to O(1). `size_` still
+    // tracks the logical length exactly, so every reader (serialize,
+    // the diff scan, content_height) is unaffected — only the physical
+    // capacity carries slack.
+    const std::size_t new_cap = std::max(count, capacity_ + capacity_ / 2);
     auto* new_data = static_cast<uint64_t*>(
-        ::operator new(count * sizeof(uint64_t), std::align_val_t{64}));
+        ::operator new(new_cap * sizeof(uint64_t), std::align_val_t{64}));
     if (data_) {
         std::copy(data_, data_ + size_, new_data);
         free();
     }
     std::fill(new_data + size_, new_data + count, fill_value);
     data_ = new_data;
-    size_ = capacity_ = count;
+    size_ = count;
+    capacity_ = new_cap;
 }
 
 void AlignedBuffer::assign(std::size_t count, uint64_t value) {

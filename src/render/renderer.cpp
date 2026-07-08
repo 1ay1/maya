@@ -1343,7 +1343,26 @@ void paint_element(
                 // full memcpy. Pointer-keyed entries (ephemeral, always
                 // freshly cleared) can't benefit — keep the plain blit.
                 const bool use_cached_blit = !node.hash_id.empty();
-                for (int y = 0; y < rows; ++y) {
+                // Bound the blit to rows that actually land ON the canvas.
+                // A cached segment straddling the viewport top has a very
+                // negative content_y (thousands of its rows are above row 0);
+                // a segment whose bottom hangs below the viewport has rows
+                // past canvas height. blit_packed_row_cached clips each of
+                // those internally with a `y<0 || y>=height_` early-return —
+                // but the LOOP still called it once per off-canvas row,
+                // O(entry->cells_rows) wasted calls every frame on a tall
+                // committed segment (the residual `cf` creep on a long turn).
+                // The canvas row is content_y + y, so on-canvas rows are
+                // exactly y in [max(0, -content_y), canvas_h - content_y).
+                // The clip scope is [content_y, content_y+content_h) and
+                // rows <= content_h, so the canvas clamp is the only binding
+                // constraint. Skipped iterations were pure no-ops (an
+                // early-returned blit updates no max_y_/last_col_ state), so
+                // this is behaviour-neutral, just cheaper.
+                const int canvas_h_blit = canvas.height();
+                const int y_lo = std::max(0, -content_y);
+                const int y_hi = std::min(rows, canvas_h_blit - content_y);
+                for (int y = y_lo; y < y_hi; ++y) {
                     const bool row_has_content = (y <= max_y);
                     const int hint = have_per_row
                         ? entry->cells_row_last_col[static_cast<std::size_t>(y)]

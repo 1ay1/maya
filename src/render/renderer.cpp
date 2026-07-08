@@ -1266,7 +1266,56 @@ void paint_element(
             // layout::compute, no recursive paint_element walk over
             // the cached Element. This is what makes per-cached-turn
             // cost O(width) rather than O(child_tree_size).
-            if (auto* entry = find_component_cache(cache, node, content_w);
+            //
+            // Width tolerance (hash-keyed only). find_component_cache
+            // demands an EXACT width match, which a genuine resize needs
+            // (reflowed text). But a hash-keyed component can jitter by a
+            // COLUMN or two frame-to-frame WITHOUT any real reflow when it
+            // self-sizes against a parent whose resolved width wobbles ±1
+            // (a streaming-markdown widget rendered as a flex root instead
+            // of a stretched child; a live-reveal tail nudging the outer
+            // vstack's natural width). Re-rendering the whole subtree for a
+            // 1-column trailing-padding difference is pure waste — and on a
+            // long committed prefix it re-renders every collapsed segment
+            // (measured: 188 inner renders on a stray reveal frame at
+            // width 98↔99). So: accept a hash-keyed entry whose stored
+            // width differs from content_w AS LONG AS every cached row's
+            // real content fits within BOTH widths (cells_max_col ≤ the
+            // smaller width). Then the differing columns are provably blank
+            // padding and the cached cells are visually exact; we blit the
+            // overlapping min-width and the clip scope leaves the rest
+            // (already blank) untouched. A real reflow moves content into
+            // the wider column, cells_max_col exceeds the min width, and
+            // this guard correctly falls through to a re-render.
+            auto* fast_entry = find_component_cache(cache, node, content_w);
+            if (!fast_entry && !node.hash_id.empty()) {
+                auto it = cache.entries_by_hash.find(node.hash_id);
+                if (it != cache.entries_by_hash.end()
+                    && !it->second.cells.empty()
+                    && it->second.cells_rows > 0) {
+                    // Only absorb SMALL sub-cell jitter, never a real
+                    // resize. A genuine terminal/pane resize moves the
+                    // width by many columns and MUST re-render so content
+                    // re-wraps + re-aligns to the new width (test_render_
+                    // scaling's resize gate depends on this). The layout
+                    // wobble we want to swallow is ±1-2 columns from a
+                    // self-sizing widget's natural-width flicker.
+                    constexpr int kWidthJitterEps = 2;
+                    const int dw = it->second.width - content_w;
+                    if (dw >= -kWidthJitterEps && dw <= kWidthJitterEps) {
+                        // Rightmost non-blank column across all cached rows.
+                        int max_col = -1;
+                        for (int c : it->second.cells_row_last_col)
+                            if (c > max_col) max_col = c;
+                        const int min_w = std::min(it->second.width, content_w);
+                        // Content fits within both widths → the differing
+                        // columns are blank padding; cells are safe to blit.
+                        if (max_col < min_w)
+                            fast_entry = &it->second;
+                    }
+                }
+            }
+            if (auto* entry = fast_entry;
                 entry && !entry->cells.empty() && entry->cells_rows > 0)
             {
                 entry->last_frame = cache.current_frame;
@@ -1278,6 +1327,12 @@ void paint_element(
                 });
                 const int rows = std::min(entry->cells_rows, content_h);
                 const int max_y = entry->cells_max_y;
+                // Blit only the columns that exist in BOTH the cached row
+                // and the paint region — a width-tolerant hit blits the
+                // overlap; an exact hit blits the full stored width (they
+                // are equal). The clip scope bounds writes to content_w so
+                // a wider cached row can never overrun.
+                const int blit_w = std::min(entry->width, content_w);
                 const bool have_per_row =
                     static_cast<int>(entry->cells_row_last_col.size()) == entry->cells_rows;
                 // Hash-keyed entries are immutable content re-blitted to
@@ -1297,14 +1352,14 @@ void paint_element(
                         canvas.blit_packed_row_cached(
                             content_x, content_y + y,
                             entry->cells.data() + static_cast<std::size_t>(y) * entry->width,
-                            entry->width,
+                            blit_w,
                             row_has_content,
                             hint);
                     } else {
                         canvas.blit_packed_row(
                             content_x, content_y + y,
                             entry->cells.data() + static_cast<std::size_t>(y) * entry->width,
-                            entry->width,
+                            blit_w,
                             row_has_content,
                             hint);
                     }

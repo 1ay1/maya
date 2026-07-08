@@ -228,18 +228,16 @@ void live_reveal_prefix_stays_cached() {
         render_frame(md, canvas, pool);
     }
     // Long committed prefix now exists. Append a growing live tail and
-    // measure per-frame render calls. NOTE: this drives render_tree
-    // directly into a fresh-cleared canvas each frame (not the Runtime's
-    // persistent-canvas + compose path). Under reveal_fx the overlay
-    // value-copies the committed children each frame with stable hash_ids,
-    // but a few segments can width-key-miss under the direct auto-height
-    // render (measure hands kUnconstrained width, paint the real width),
-    // cascading into their inner blocks. The REAL Runtime inline path
-    // (measured by tests/stream_cpu_probe.cpp) shows this does NOT recur:
-    // only the first paint of the backdrop misses, then every streaming
-    // frame misses ~a constant (live tail only). So this bound is a coarse
-    // guard against a TRUE O(prefix)-every-frame regression, not a tight
-    // steady-state assertion.
+    // measure per-frame render calls. This drives render_tree directly
+    // into a fresh-cleared canvas each frame with the widget as the flex
+    // ROOT (no stretch parent), so the outer vstack self-sizes and its
+    // resolved content width can jitter ±1 column frame-to-frame as the
+    // live-reveal tail nudges its natural width. The renderer's paint
+    // fast-path absorbs that sub-cell jitter (width-tolerant hash-keyed
+    // blit: cached cells whose real content fits within both the stored
+    // and current width are blitted without a re-render), so the committed
+    // prefix stays cached through the wobble. Before that fix this frame
+    // re-rendered ~188 segment-inner blocks on every jitter frame.
     std::uint64_t worst = 0;
     for (int f = 0; f < 30; ++f) {
         md.feed("more live tail text " + std::to_string(f) + " ");
@@ -248,12 +246,11 @@ void live_reveal_prefix_stays_cached() {
     }
     std::println("    live-tail over 150-block prefix: worst per-frame render calls = {}",
                  worst);
-    // Coarse ceiling: a real per-frame full re-render of the 150-block
-    // prefix would be ~600+ inner renders (150 blocks × their sub-elements)
-    // EVERY frame. Assert we stay well under that — the reveal path touches
-    // at most a few segments' worth, not the whole transcript.
-    MAYA_TEST_CHECK(worst < 300,
-        "live-tail frame re-rendered the whole committed prefix");
+    // Bounded by a small constant (the live tail + at most one segment's
+    // worth on a rare >1-column jitter), NOT the O(prefix) full re-render
+    // (~150 blocks × sub-elements = many hundreds) it was before.
+    MAYA_TEST_CHECK(worst < 40,
+        "live-tail frame re-rendered an unbounded slice of the committed prefix");
 }
 
 int main() {

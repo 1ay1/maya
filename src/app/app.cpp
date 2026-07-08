@@ -933,6 +933,47 @@ auto Runtime::render(const Element& root) -> Status {
                             const int overflow = prev_rows - term_h.value();
                             if (!arm.scrollback_prefix_matches(canvas_,
                                                                overflow)) {
+#ifndef NDEBUG
+                                // ── Debug-only invariant tripwire ──────────
+                                // In a release build this mismatch is a
+                                // SILENT, correct soft recovery (commit +
+                                // case-B repaint, no corruption). But a
+                                // mismatch here means SOMETHING upstream fed
+                                // a frame whose committed prefix shifted —
+                                // exactly the class of bug every scrollback
+                                // fix in this codebase chased for hours via
+                                // the PTY oracle. In a debug build we want it
+                                // LOUD and ATTRIBUTABLE the instant it
+                                // happens, with the offending rows dumped,
+                                // instead of only surfacing as a rare
+                                // recovered flicker. Re-run the compare with
+                                // the env-gated per-row dumper forced on so
+                                // the ±8-row window (see
+                                // InlineFrameState::scrollback_prefix_matches)
+                                // lands on stderr, then abort. Opt out with
+                                // MAYA_NO_GATE_ABORT=1 for a debug session
+                                // that intentionally exercises the recovery.
+                                if (!std::getenv("MAYA_NO_GATE_ABORT")) {
+#ifdef _WIN32
+                                    _putenv_s("MAYA_DEBUG_GATE", "1");
+#else
+                                    setenv("MAYA_DEBUG_GATE", "1", 1);
+#endif
+                                    (void)arm.scrollback_prefix_matches(
+                                        canvas_, overflow);
+                                    std::fprintf(stderr,
+                                        "[maya] FATAL: scrollback-invariant "
+                                        "gate fired (committed prefix shifted: "
+                                        "prev_rows=%d term_h=%d overflow=%d). "
+                                        "A frame rewrote a committed row. See "
+                                        "the [gate] dump above. Set "
+                                        "MAYA_NO_GATE_ABORT=1 to soft-recover "
+                                        "instead.\n",
+                                        prev_rows, term_h.value(), overflow);
+                                    std::fflush(stderr);
+                                    std::abort();
+                                }
+#endif
                                 verify_demoted = true;
                                 // Commit + soft-repaint — for GROW and
                                 // SHRINK alike. Case (B) is viewport-

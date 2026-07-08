@@ -1,7 +1,9 @@
 #include "maya/render/renderer.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -16,6 +18,15 @@
 namespace maya {
 
 namespace render_detail {
+
+// Diagnostic counter — see renderer.hpp. Relaxed: it's a monotone tally
+// read only between frames by tests, never a synchronisation point.
+namespace {
+std::atomic<std::uint64_t> g_component_render_calls{0};
+}
+std::uint64_t component_render_calls() noexcept {
+    return g_component_render_calls.load(std::memory_order_relaxed);
+}
 
 // ============================================================================
 // Cross-frame ComponentElement render cache
@@ -548,6 +559,8 @@ std::size_t build_layout_tree(
                         // and avoid a second render() call within
                         // this frame — but the entry won't be honored
                         // across frames at the measure site.
+                        g_component_render_calls.fetch_add(
+                            1, std::memory_order_relaxed);
                         Element child = comp.render(max_width, kBigH);
 
                         std::vector<layout::LayoutNode> tmp;
@@ -1197,6 +1210,48 @@ void paint_element(
 
             auto& cache = component_cache();
 
+            // ── Off-screen skip: nothing visible to paint ──────────────
+            // A hash-keyed component whose entire row span sits ABOVE the
+            // viewport top (content_y + ah <= 0) or BELOW the bottom
+            // (content_y >= canvas_h) contributes zero visible cells this
+            // frame — the clip scope would discard every write anyway.
+            // Bail before the slow render/paint/capture pipeline.
+            //
+            // This is the load-bearing case for the windowed streaming
+            // markdown head wrapper (and any tall frozen scrollback
+            // prefix): it is laid out every frame by the outer flex pass
+            // but scrolls fully off-screen the instant the live tail grows
+            // past the viewport. Its cells can NEVER be captured (the
+            // capture rect gates on content_y >= 0 && content_y+rows <=
+            // canvas_h, both false off-screen), so without this bail the
+            // paint slow-path re-render()ed it EVERY frame — O(prefix) per
+            // frame, exactly the cost the windowing was meant to remove.
+            // Its height is already known to the outer layout from the
+            // measure cache, so skipping paint changes nothing visible.
+            //
+            // Gated on hash_id: a pointer-keyed component has no stable
+            // cross-frame identity and its measure may depend on this
+            // paint running, so leave that path untouched. Only skip when
+            // the component genuinely has no on-canvas rows.
+            if (!node.hash_id.empty()) {
+                const int canvas_h_now = canvas.height();
+                const bool fully_above = content_y + ah <= 0;
+                const bool fully_below = content_y >= canvas_h_now;
+                if (fully_above || fully_below) {
+                    // Keep the entry warm so the top-of-frame LRU sweep
+                    // doesn't evict a component that's merely scrolled out
+                    // of view (it may scroll back). Touch by hash without
+                    // rendering or blitting.
+                    if (auto* entry =
+                            find_component_cache(cache, node, content_w)) {
+                        entry->last_frame = cache.current_frame;
+                        entry->last_touched_at =
+                            std::chrono::steady_clock::now();
+                    }
+                    return;
+                }
+            }
+
             // ── Fast path: cached cells exist for this entry ────────────
             // The first paint of an entry captures its painted cells
             // (see the miss path below). Every subsequent frame reaches
@@ -1290,6 +1345,8 @@ void paint_element(
                 // don't trust it across frames. store_component_cache
                 // returns the inserted entry pointer so we don't pay
                 // a second hashmap probe to get back at it.
+                g_component_render_calls.fetch_add(
+                    1, std::memory_order_relaxed);
                 fresh_render = node.render(content_w, content_h);
                 auto* stored = store_component_cache(cache, node, {
                     content_w,

@@ -12,6 +12,7 @@
 // children that extend beyond the box boundary are silently discarded.
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,18 @@
 namespace maya {
 
 namespace render_detail {
+
+// ============================================================================
+// Diagnostic: total ComponentElement render() invocations
+// ============================================================================
+// Monotone process-wide counter, bumped every time the renderer actually
+// CALLS a ComponentElement's render() closure (a cache MISS at either the
+// measure site or the paint site). A cache HIT never bumps it. Tests read
+// the delta across a window of frames to PROVE that a hash-keyed component
+// (e.g. StreamingMarkdown's collapsed head wrapper) renders O(1) times as
+// the transcript grows instead of once per frame. Not wired into any hot
+// path beyond a relaxed atomic increment on the already-slow miss branch.
+[[nodiscard]] std::uint64_t component_render_calls() noexcept;
 
 // ============================================================================
 // Layout tree builder

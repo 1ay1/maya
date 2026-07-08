@@ -405,6 +405,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_promoted.cpp
         tests/test_markdown.cpp
         tests/test_streaming_cache.cpp
+        tests/test_streaming_window.cpp
         tests/test_tracked.cpp
         tests/test_unicode_width.cpp
         tests/test_stream_sink.cpp

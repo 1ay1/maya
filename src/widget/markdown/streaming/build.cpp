@@ -270,67 +270,75 @@ const Element& StreamingMarkdown::build() const {
     // children EVERY frame: build_layout_tree emplaces N leaf layout
     // nodes, layout::compute runs a flex pass over N items, and
     // paint_element iterates N children. That is O(committed blocks)/frame
-    // — the 1.6x per-frame render() growth on a long streaming turn (the
-    // ~30% CPU report).
+    // — the per-frame render() growth on a long streaming turn (the ~30%
+    // CPU report).
     //
-    // Fix: collapse the OLD committed blocks (blocks [0, lo), which are
-    // immutable and sit far above the viewport) into ONE hash-keyed
-    // wrapper ComponentElement. The outer vstack then sees
-    //   [head_wrapper?, block_lo .. block_{N-1}, tail]
-    // = O(K) children regardless of N. The wrapper's inner vstack renders
-    // ONCE (when lo advances) and the renderer caches + blits its cells by
-    // hash_id on every later frame, so its per-frame cost collapses to an
-    // O(1) hash-cache measure hit + a row blit (and above the viewport it
-    // paints zero rows).
+    // Fix: collapse the OLD committed blocks (which are immutable and sit
+    // far above the viewport) into a bounded number of hash-keyed SEGMENT
+    // wrapper ComponentElements, each covering a FIXED block range
+    // [k*CHUNK, (k+1)*CHUNK). The outer vstack then sees
+    //   [seg_0, seg_1, ..., seg_{m-1}, block_lo .. block_{N-1}, tail]
+    // = O(N/CHUNK + window) children. Off-screen segments measure O(1)
+    // (cached height) and are skipped in paint (off-screen bail), so their
+    // per-frame cost is a single hash-map touch.
     //
-    // lo advances in CHUNK-sized steps (not every commit) so the wrapper's
-    // hash is stable across ~CHUNK commits: the individual-block window
-    // stays within [K, K+CHUNK) blocks, and the O(lo) wrapper re-render
-    // happens once per CHUNK commits, never per frame.
+    // Why FIXED-range segments, not one growing head wrapper: a single
+    // wrapper covering [0, lo) has a hash keyed on lo, which advances as
+    // the stream grows — so every window slide re-renders the ENTIRE
+    // collapsed prefix (O(lo) blocks), giving O(N²) total render work over
+    // a long turn (measured: per-commit render calls climbing 8→58, worst
+    // 299). A fixed-range segment's hash is keyed on its immutable block
+    // range: once the segment is COMPLETE (the window base has advanced
+    // past its end) it is frozen forever and renders EXACTLY ONCE. Only
+    // the single newest, still-filling segment re-renders as blocks land
+    // in it — bounded to O(CHUNK). Total collapsed-prefix render work is
+    // therefore O(N/CHUNK) segment renders × O(CHUNK) each = O(N), not
+    // O(N²).
     //
     // Row-layout identity (scrollback-safety): the outer container is
-    // vstack().gap(1).padding(0,0,0,2). Replacing [block0..block_{lo-1}]
-    // with one head_wrapper child keeps exactly one outer gap after it
-    // (== the original gap after block_{lo-1}), and the wrapper's inner
-    // vstack().gap(1) reproduces the gaps between blocks 0..lo-1. The
-    // wrapper carries NO extra padding — the outer padding already indents
-    // the whole column and the wrapper occupies that indented region. So
-    // every committed row lands on exactly the row it did before, and
-    // whatever scrolls off into native scrollback matches byte-for-byte.
+    // vstack().gap(1).padding(0,0,0,2). Each segment wrapper is one outer
+    // child, so the outer gap(1) sits between segments exactly where the
+    // gap between block_{k*CHUNK-1} and block_{k*CHUNK} was; inside a
+    // segment, an inner vstack().gap(1) reproduces the gaps between its
+    // blocks; and the wrappers carry NO padding (the outer padding already
+    // indents the column). So every committed row lands on exactly the row
+    // it did before and native scrollback stays byte-identical.
     constexpr std::size_t kWindowBlocks = 32;  // individual-block window
-    constexpr std::size_t kWindowChunk  = 16;  // lo advances in these steps
+    constexpr std::size_t kSegBlocks    = 32;  // blocks per collapsed segment
 
     // First block index kept as an individual child. Blocks [0, lo) are
-    // collapsed into the head wrapper. Chunk-quantised so the wrapper's
-    // hash (keyed on lo) only changes every ~kWindowChunk commits.
+    // collapsed into fixed-size segments. lo is quantised DOWN to a
+    // segment boundary so a segment is only ever collapsed as a WHOLE —
+    // the newest individual window never straddles a partially-collapsed
+    // segment, and a completed segment's block range is fixed forever.
     auto window_lo = [&](std::size_t n) -> std::size_t {
         if (n <= kWindowBlocks) return 0;
-        return ((n - kWindowBlocks) / kWindowChunk) * kWindowChunk;
+        // Largest segment-boundary ≤ (n - kWindowBlocks): everything below
+        // it is collapsed into complete segments; the remainder stays
+        // individual (≥ kWindowBlocks, < kWindowBlocks + kSegBlocks).
+        return ((n - kWindowBlocks) / kSegBlocks) * kSegBlocks;
     };
 
-    // Helper: build the head-wrapper ComponentElement collapsing committed
-    // blocks [0, lo) into one hash-keyed child. Empty (returns nullopt)
-    // when lo == 0. Hash-keyed on (instance, lo, fold_generation) — lo
-    // uniquely identifies the covered span (always [0, lo)), and folds are
-    // mixed in so a fold toggle inside the collapsed head invalidates it.
-    auto make_head_wrapper = [&](std::size_t lo) -> Element {
-        ComponentElement head;
-        head.hash_id = CacheIdBuilder{}
-            .add(std::string_view{"strmd-head"})
+    // Helper: build ONE segment wrapper collapsing blocks [seg_lo, seg_hi)
+    // into a single hash-keyed ComponentElement. Hash-keyed on
+    // (instance, seg_lo, seg_hi, fold_generation) — the range is FIXED
+    // for a completed segment, so its hash (and cached cells) are stable
+    // forever; a fold toggle bumps fold_generation and re-keys it.
+    auto make_segment = [&](std::size_t seg_lo, std::size_t seg_hi) -> Element {
+        ComponentElement seg;
+        seg.hash_id = CacheIdBuilder{}
+            .add(std::string_view{"strmd-seg"})
             .add(static_cast<std::uint64_t>(instance_id_))
-            .add(static_cast<std::uint64_t>(lo))
+            .add(static_cast<std::uint64_t>(seg_lo))
+            .add(static_cast<std::uint64_t>(seg_hi))
             .add(static_cast<std::uint64_t>(fold_generation_))
             .build();
-        // Capture what the render lambda needs by value: the prefix
-        // snapshot (shared_ptr, cheap) and fold state for [0, lo). The
-        // lambda re-emits the same per-block Elements make_block_component
-        // would, wrapped in a gap(1) vstack with NO padding.
         auto p = prefix_;
         auto folds = folds_;
-        head.render = [p, folds, lo](int, int) -> Element {
+        seg.render = [p, folds, seg_lo, seg_hi](int, int) -> Element {
             std::vector<Element> kids;
-            kids.reserve(lo);
-            for (std::size_t i = 0; i < lo && i < p->blocks.size(); ++i) {
+            kids.reserve(seg_hi - seg_lo);
+            for (std::size_t i = seg_lo; i < seg_hi && i < p->blocks.size(); ++i) {
                 const auto& meta =
                     (i < p->metas.size()) ? p->metas[i] : BlockMeta{};
                 auto fit = folds.find(meta.source_offset);
@@ -371,16 +379,27 @@ const Element& StreamingMarkdown::build() const {
             }
             return (detail::vstack().gap(1)(std::move(kids))).build();
         };
-        return Element{std::move(head)};
+        return Element{std::move(seg)};
+    };
+
+    // Helper: append the collapsed segments covering [0, lo) into `dst`.
+    // lo is always a multiple of kSegBlocks (window_lo quantises it), so
+    // this emits floor(lo / kSegBlocks) full segments, each with a fixed
+    // block range.
+    auto append_segments = [&](std::vector<Element>& dst, std::size_t lo) {
+        for (std::size_t s = 0; s < lo; s += kSegBlocks) {
+            const std::size_t hi = std::min(lo, s + kSegBlocks);
+            dst.push_back(make_segment(s, hi));
+        }
     };
 
     // Helper: append the WINDOWED committed-block children into `dst`:
-    //   [head_wrapper (if lo>0), block_lo .. block_{N-1}]
+    //   [seg_0 .. seg_{m-1}, block_lo .. block_{N-1}]
     auto append_block_components = [&](std::vector<Element>& dst) {
         const std::size_t n  = prefix_->blocks.size();
         const std::size_t lo = window_lo(n);
-        dst.reserve(dst.size() + (lo > 0 ? 1u : 0u) + (n - lo));
-        if (lo > 0) dst.push_back(make_head_wrapper(lo));
+        dst.reserve(dst.size() + (lo / kSegBlocks) + (n - lo));
+        append_segments(dst, lo);
         for (std::size_t i = lo; i < n; ++i)
             dst.push_back(make_block_component(i));
     };
@@ -399,7 +418,7 @@ const Element& StreamingMarkdown::build() const {
         if (has_prefix) {
             const std::size_t n  = prefix_->blocks.size();
             const std::size_t lo = window_lo(n);
-            prefix_n = (lo > 0 ? 1u : 0u) + (n - lo);
+            prefix_n = (lo / kSegBlocks) + (n - lo);
         }
         const std::size_t expected = prefix_n + (has_tail ? 1u : 0u);
         if (box.children.size() == expected) {
@@ -507,23 +526,26 @@ const Element& StreamingMarkdown::build() const {
         const std::size_t old_total = box.children.size();
 
         // Reconstruct the OLD prefix child model from the tracked window
-        // state: [head?(old_lo>0), block_old_lo .. block_{old_n-1}, tail?].
+        // state: [seg_0..seg_{old_lo/kSeg-1}, block_old_lo..block_{old_n-1},
+        // tail?].
         const std::size_t old_n  = cached_block_count_;
         const std::size_t old_lo = cached_window_lo_;
-        const std::size_t old_head    = (old_lo > 0) ? 1u : 0u;
+        const std::size_t old_segs    = old_lo / kSegBlocks;
         const std::size_t old_window_n = (old_n >= old_lo) ? (old_n - old_lo) : 0u;
         const std::size_t old_tail    = cached_has_tail_ ? 1u : 0u;
-        const std::size_t expected_old_total = old_head + old_window_n + old_tail;
+        const std::size_t expected_old_total = old_segs + old_window_n + old_tail;
 
-        // Pure same-window growth: the window base lo did NOT advance
-        // (no chunk boundary crossed), folds are unchanged, blocks only
-        // grew, and the cached child vector matches the reconstructed old
-        // model. Then the head wrapper (if any) is byte-identical (same
-        // lo, same fold_gen → same hash), blocks [old_lo, old_n) stay put,
-        // and we append the NEW individual blocks [old_n, new_n). Per-
-        // commit cost stays O(new blocks). When lo DID advance, the head
-        // wrapper's hash changed and some formerly-individual blocks fold
-        // into it — that reshape falls through to the full re-emit below.
+        // Pure same-window growth: the window base lo did NOT advance (no
+        // new segment collapsed), folds are unchanged, blocks only grew,
+        // and the cached child vector matches the reconstructed old model.
+        // Then every collapsed segment is byte-identical (same fixed range,
+        // same fold_gen → same hash), the individual blocks [old_lo, old_n)
+        // stay put, and we append the NEW individual blocks [old_n, new_n).
+        // Per-commit cost stays O(new blocks). When lo advanced, a new
+        // segment must be collapsed and the individual window re-based —
+        // that reshape falls through to the full re-emit below (which is
+        // still bounded: it re-wraps only O(N/kSeg) segment handles +
+        // O(window) blocks, and the segments blit from cache).
         const bool pure_growth =
             cached_fold_gen_ == fold_generation_
             && new_n >= old_n

@@ -1233,15 +1233,21 @@ void paint_element(
             // cross-frame identity and its measure may depend on this
             // paint running, so leave that path untouched. Only skip when
             // the component genuinely has no on-canvas rows.
+            //
+            // Unconditional (cells or not): off-screen content contributes
+            // zero visible cells this frame regardless of cache state, and
+            // its height is already known to the outer layout from the
+            // measure cache (which trusts the stored height even with empty
+            // cells). Rendering it would only capture cells we can't use
+            // (the capture rect requires on-canvas rows and would clear
+            // them anyway), so skip the whole pipeline.
             if (!node.hash_id.empty()) {
                 const int canvas_h_now = canvas.height();
                 const bool fully_above = content_y + ah <= 0;
                 const bool fully_below = content_y >= canvas_h_now;
                 if (fully_above || fully_below) {
                     // Keep the entry warm so the top-of-frame LRU sweep
-                    // doesn't evict a component that's merely scrolled out
-                    // of view (it may scroll back). Touch by hash without
-                    // rendering or blitting.
+                    // doesn't evict a component merely scrolled out of view.
                     if (auto* entry =
                             find_component_cache(cache, node, content_w)) {
                         entry->last_frame = cache.current_frame;

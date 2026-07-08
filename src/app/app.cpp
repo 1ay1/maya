@@ -595,6 +595,7 @@ auto Runtime::render(const Element& root) -> Status {
         // both by construction).
         const int term_h_now = query_term_rows(output_handle_).value();
         int keep_top = 0;
+        constexpr int kPreserveMargin = 8;
         // Only preserve when the prior frame ended in the steady Synced
         // state (coherence index 2). Any structural event — a trim /
         // freeze that dropped or reshuffled frozen entries, a
@@ -623,12 +624,30 @@ auto Runtime::render(const Element& root) -> Status {
             && prev_content_rows > 0
             && term_h_now > 0
             && prev_content_rows > term_h_now) {
-            constexpr int kPreserveMargin = 8;
             keep_top = prev_content_rows - term_h_now - kPreserveMargin;
             if (keep_top < 0) keep_top = 0;
         }
-        if (keep_top > 0) canvas_.clear_below(keep_top);
-        else              canvas_.clear();
+        if (keep_top > 0) {
+            // Cap the cleared tail at the previous frame's painted extent
+            // (plus a small margin), NOT the full canvas height. The
+            // canvas is grown with ~25% headroom slack above the content
+            // so a resize fires rarely; that slack is never painted, yet
+            // clearing [keep_top, height_) re-blanked it EVERY frame — an
+            // O(rows)/frame fill that scaled with the turn length (the
+            // residual `rt` creep the frame profiler pinned on a tall
+            // streaming turn: rt/krow held constant at ~0.18ms while cf
+            // stayed flat). prev_content_rows bounds the region that could
+            // hold content this frame: a GROW extends into the
+            // freshly-blank slack (assign() left it blank at the last
+            // resize) so uncleared slack there is already correct; a
+            // SHRINK abandons rows in [new_content, prev_content) which
+            // this cap still covers. The margin absorbs a one-frame grow
+            // that outruns prev_content_rows before the next clear.
+            const int clear_bottom = prev_content_rows + kPreserveMargin;
+            canvas_.clear_below(keep_top, clear_bottom);
+        } else {
+            canvas_.clear();
+        }
 
         auto t_rt0 = std::chrono::steady_clock::now();
         render_tree(root, canvas_, pool_, theme_, layout_nodes_,

@@ -777,7 +777,19 @@ public:
     /// content_height() stays exact whether the tallest content is
     /// above or below keep_top. `keep_top <= 0` degenerates to a full
     /// clear(); `keep_top >= height` clears nothing.
-    void clear_below(int keep_top);
+    ///
+    /// `clear_bottom` caps the cleared tail at row `clear_bottom`
+    /// (exclusive): rows [max(keep_top, ...), min(height_, clear_bottom))
+    /// are blanked, and rows [clear_bottom, height_) are left untouched.
+    /// The default (INT_MAX) clears the whole tail. Callers that grow the
+    /// canvas with headroom slack (inline auto-height) pass the height
+    /// they will actually PAINT this frame, so the never-painted slack
+    /// above it isn't re-blanked every frame — that slack scales with the
+    /// turn length (25% headroom), so clearing it was an O(rows)/frame
+    /// fill. Leaving it dirty is safe: nothing paints there, so last_col_
+    /// stays -1 (set by the last resize) and the diff / content_height
+    /// never read it.
+    void clear_below(int keep_top, int clear_bottom = INT_MAX);
 
     /// Drain a single row back to default_cell() and reset its
     /// per-row bookkeeping (last_col_[y] → -1, max_y_ rescanned if y

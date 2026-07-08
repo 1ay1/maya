@@ -641,10 +641,10 @@ void Canvas::clear_rows(int n) {
     stage_ = CanvasStage::Drained;
 }
 
-void Canvas::clear_below(int keep_top) {
+void Canvas::clear_below(int keep_top, int clear_bottom) {
     // Degenerate cases: keep nothing → full clear; keep everything →
     // no-op on cells (but still ensure stage/state coherence).
-    if (keep_top <= 0) { clear(); return; }
+    if (keep_top <= 0 && clear_bottom >= height_) { clear(); return; }
     if (keep_top >= height_) {
         // Nothing to clear; preserved region already correct. Leave
         // cells, last_col_, max_y_ untouched — the frame's paint will
@@ -652,21 +652,41 @@ void Canvas::clear_below(int keep_top) {
         // reads the surviving rows as-is.
         return;
     }
+    if (keep_top < 0) keep_top = 0;
+    // Cap the cleared tail at clear_bottom. Rows [bottom, height_) are
+    // never painted this frame (they are headroom slack an oversized
+    // resize left above the content), so re-blanking them every frame
+    // is an O(rows)/frame fill that scales with the turn length. They
+    // stay blank from the last resize's assign(); leaving them dirty is
+    // sound because nothing reads them (last_col_ there is -1, so
+    // max_y_ can't pick them up, and the diff only walks the painted
+    // extent).
+    const int bottom = std::min(height_, clear_bottom);
+    if (bottom <= keep_top) {
+        // Preserved head only; the (would-be) cleared band is entirely
+        // above the bottom cap. Still refresh bookkeeping/stage below.
+        // Fall through with an empty fill span.
+    }
     const uint64_t blank = default_cell();
     uint64_t* base = cells_.data();
-    const std::size_t off = static_cast<std::size_t>(keep_top) * width_;
-    const std::size_t count =
-        static_cast<std::size_t>(height_ - keep_top) * width_;
-    // Regular fill for the cleared tail; the preserved head keeps its
-    // prior-frame bytes so blit_packed_row_cached can skip re-writing
-    // an unchanged frozen prefix.
-    std::fill(base + off, base + off + count, blank);
-    std::fill(last_col_.begin() + keep_top, last_col_.end(), -1);
+    if (bottom > keep_top) {
+        const std::size_t off = static_cast<std::size_t>(keep_top) * width_;
+        const std::size_t count =
+            static_cast<std::size_t>(bottom - keep_top) * width_;
+        // Regular fill for the cleared tail; the preserved head keeps its
+        // prior-frame bytes so blit_packed_row_cached can skip re-writing
+        // an unchanged frozen prefix.
+        std::fill(base + off, base + off + count, blank);
+        std::fill(last_col_.begin() + keep_top,
+                  last_col_.begin() + bottom, -1);
+    }
     // Re-derive max_y_ across the WHOLE canvas: the preserved head may
     // hold the tallest content (a tall frozen prefix with an empty
     // live tail) or the cleared tail may (steady streaming). Scan the
     // preserved head from the bottom up via last_col_ (kept current by
     // set/blit/fill); the cleared tail is all blank so it can't win.
+    // The un-cleared slack [bottom, height_) has last_col_ == -1 (from
+    // the last resize; nothing paints there), so it never contributes.
     int new_max_y = -1;
     for (int y = keep_top - 1; y >= 0; --y) {
         if (last_col_[static_cast<std::size_t>(y)] >= 0) { new_max_y = y; break; }
@@ -675,7 +695,7 @@ void Canvas::clear_below(int keep_top) {
     // Damage must cover the region the diff may need to re-emit; the
     // preserved head is unchanged so damage starts at keep_top.
     damage_ = Rect{{Columns{0}, Rows{keep_top}},
-                   {Columns{width_}, Rows{height_ - keep_top}}};
+                   {Columns{width_}, Rows{std::max(0, bottom - keep_top)}}};
     stage_ = CanvasStage::Drained;
 }
 

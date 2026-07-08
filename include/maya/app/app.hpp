@@ -565,6 +565,16 @@ public:
     // inline state that doesn't carry a row count (Empty, Fresh,
     // HardReset, Sealed) — by construction these states have no
     // committed-frame row count to report.
+    // Monotonic count of scrollback-invariant recoveries (committed
+    // off-viewport rows + soft-repaint) since program start. Zero on a
+    // healthy session; a rising value in the field is the release-build
+    // signal that the single-source-of-truth invariant (maya's prev_rows
+    // shadow) was violated by an upstream frame and recovered. Exposed so
+    // a host / test harness can assert it stayed 0. See the member decl.
+    [[nodiscard]] unsigned long scrollback_recovery_count() const noexcept {
+        return scrollback_recovery_count_;
+    }
+
     [[nodiscard]] int inline_content_rows() const noexcept {
         if (auto* s = std::get_if<inline_frame::InlineFrame<inline_frame::Synced>>(
                 &in_coherence_))
@@ -835,6 +845,18 @@ private:
     int           hold_decay_         = 0;
     int           hold_last_unpadded_ = 0;
     static constexpr int kHoldDecayFrames = 6;
+    // Release-safe scrollback-invariant recovery counter. Bumped every
+    // time the overflowed-frame gate (or the verify-poison arm) has to
+    // COMMIT off-viewport rows + soft-repaint because prev_cells no
+    // longer matches the wire — i.e. a frame that would have corrupted
+    // native scrollback was caught and recovered. Zero on a healthy
+    // session. Unlike the #ifndef NDEBUG abort tripwire in
+    // Runtime::render (which fires on the specific committed-prefix
+    // MISMATCH), this counts EVERY non-Synced recovery and survives into
+    // release builds, so a field regression surfaces as a rising metric
+    // in the profiler line / via scrollback_recovery_count() instead of
+    // only under a debug build. Monotonic; never reset.
+    unsigned long scrollback_recovery_count_ = 0;
     // One-shot inhibitor for the bounded-clear canvas preservation in
     // Runtime::render. Set by commit_inline_prefix / commit_inline_overflow
     // — the two structural events that shift the shadow while REMAINING

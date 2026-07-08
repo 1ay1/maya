@@ -975,6 +975,7 @@ auto Runtime::render(const Element& root) -> Status {
                                 }
 #endif
                                 verify_demoted = true;
+                                ++scrollback_recovery_count_;
                                 // Commit + soft-repaint — for GROW and
                                 // SHRINK alike. Case (B) is viewport-
                                 // capped (no bottom-edge scroll at any
@@ -995,6 +996,7 @@ auto Runtime::render(const Element& root) -> Status {
                     auto wit = arm.verify();
                     if (!wit) {
                         verify_demoted = true;
+                        ++scrollback_recovery_count_;
                         // Shadow poisoned: prev_cells no longer matches the
                         // wire. If the frame is OVERFLOWED, the committed
                         // prefix was already validated by the invariant
@@ -1043,11 +1045,12 @@ auto Runtime::render(const Element& root) -> Status {
             // the verify-poison Synced→Stale transition specifically.
             std::fprintf(prof_out,
                 "maya-frame: rt=%.2f cf=%.2f total=%.2f nodes=%zu rows=%d w=%d "
-                "term_h=%d coh=%zu->%zu peak=%d pad=%d decay=%d%s%s\n",
+                "term_h=%d coh=%zu->%zu peak=%d pad=%d decay=%d recov=%lu%s%s\n",
                 rt_ms, cf_ms, since(t_frame_start),
                 layout_nodes_.size(), ch, w, term_h.value(),
                 coh_before, in_coherence_.index(),
                 hold_peak_, render_ctx_.inline_min_content, hold_decay_,
+                scrollback_recovery_count_,
                 coh_before != 2 ? " FLICKER" : "",
                 verify_demoted ? " VERIFY-DEMOTE" : "");
             std::fflush(prof_out);

@@ -1037,6 +1037,33 @@ auto Runtime::render(const Element& root) -> Status {
                 verify_demoted ? " VERIFY-DEMOTE" : "");
             std::fflush(prof_out);
         }
+
+        // Live-app surfacing of the SoT invariant, independent of the
+        // profiler (which needs MAYA_IO_LOG + a log reader). Gated on
+        // MAYA_WARN_RECOVERY so it never disturbs a normal session: the
+        // FIRST time the scrollback gate recovers (shadow disagreed with
+        // the wire OR the host committed a stale debt), emit a single
+        // stderr line pointing the operator at the metric. One-shot via a
+        // static latch — a rising counter is the field signature of a
+        // scrollback regression the type guards + PTY oracle are meant to
+        // keep at zero. Off by default; costs one getenv the first frame.
+        if (scrollback_recovery_count_ != 0) {
+            static bool warned = false;
+            static const bool want_warn =
+                std::getenv("MAYA_WARN_RECOVERY") != nullptr;
+            if (want_warn && !warned) {
+                warned = true;
+                std::fprintf(stderr,
+                    "[maya] NOTICE: scrollback gate recovered (recov=%lu). The "
+                    "single-source-of-truth invariant held \u2014 no corruption "
+                    "reached the screen \u2014 but a shadow/wire (or host-debt) "
+                    "disagreement was caught + repaired. On a healthy session this "
+                    "stays 0; a rising count is a regression. Run under "
+                    "MAYA_IO_LOG=<path> to see the recov= metric per frame.\n",
+                    scrollback_recovery_count_);
+                std::fflush(stderr);
+            }
+        }
         return ok();
     }
 

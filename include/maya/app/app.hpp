@@ -600,12 +600,26 @@ public:
 
     // Mark prev-frame rows as committed to scrollback.
     //
-    // SAFETY: the `rows` argument is ADVISORY. The actual rows
-    // committed are `min(rows, max(0, prev_rows - term_h))` — only
-    // rows that have provably overflowed the viewport are ever
-    // removed from prev_cells. A caller that over-claims is silently
-    // clamped to the safe value rather than corrupting prev_cells
-    // alignment.
+    // SAFETY: the `rows` argument is a MEASURED debt from the host's
+    // ScrollbackLedger::harvest() (paint-recorded rows) OR a legacy
+    // host guess. The actual rows committed are
+    // `min(rows, max(0, prev_rows - term_h))` — only rows that have
+    // PROVABLY overflowed the current shadow's viewport are ever removed
+    // from prev_cells. A caller that over-claims is clamped to the safe
+    // value rather than corrupting prev_cells alignment.
+    //
+    // OBSERVABILITY (the type-hardening seam): the clamp is the exact
+    // second-accountant signature — a row count measured against one
+    // frame's geometry applied to a shadow that has since advanced
+    // (harvest at frame N, this commit at frame N+k after another
+    // render). It was historically SILENT, masking host↔shadow drift as
+    // a benign no-op. We now COUNT every biting clamp into the release-
+    // safe scrollback_recovery_count_ (so a field regression surfaces as
+    // a rising metric / fails the PTY oracle's `== 0` assertion) and, in
+    // debug builds, abort on it as an invariant tripwire — the host must
+    // not hand maya a stale debt. A well-behaved host (ledger harvest in
+    // the same update cycle that renders) never trips this: its debt is
+    // exactly the rows the current shadow overflowed.
     //
     // Only meaningful when inline coherence is Synced; any other state
     // (Empty, Fresh, Stale, HardReset, Sealed) has no committed-frame
@@ -619,6 +633,26 @@ public:
         const int term_h = std::max(1, size_.height.raw());
         const int safe_max = std::max(0, s->rows() - term_h);
         const int safe_rows = std::min(rows, safe_max);
+        if (rows > safe_max) {
+            // Host over-claimed against the current shadow: a stale debt.
+            // Count it (release-safe, monotonic) so the drift is never
+            // masked; tripwire it in debug so a mis-plumbed host is caught
+            // at development time rather than in the field.
+            ++scrollback_recovery_count_;
+#ifndef NDEBUG
+            if (!std::getenv("MAYA_NO_GATE_ABORT")) {
+                std::fprintf(stderr,
+                    "[maya] commit_inline_prefix: host claimed %d rows but only "
+                    "%d have provably overflowed the current shadow (prev_rows=%d, "
+                    "term_h=%d). This is a STALE DEBT applied to a superseded "
+                    "frame -- the host harvested against one frame and committed "
+                    "against another. Set MAYA_NO_GATE_ABORT=1 to observe-and-clamp "
+                    "instead of aborting.\n",
+                    rows, safe_max, s->rows(), term_h);
+                std::abort();
+            }
+#endif
+        }
         if (safe_rows <= 0) return;
         // Move the Synced out, commit, store the new Synced back.
         // ScrollbackMarker is consumed by `commit()`; the typed token

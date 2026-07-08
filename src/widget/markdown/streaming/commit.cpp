@@ -344,60 +344,41 @@ void StreamingMarkdown::commit_revealed_() {
         if (b > cursor_byte) break;
     }
 
-    // ── Line-granular commit inside the trailing block ──────────────────
+    // ── Reveal-paced trailing line-commit: DISABLED ────────────────────
     //
-    // The final paragraph of a message never receives its terminating
-    // \n\n, so it produces NO scan_boundaries_ entry — without this, the
-    // whole trailing paragraph stays inline (uncommitted) until finish()
-    // force-commits it in one snap. On the ToolUse guard that snap is the
-    // reveal BURST ("first char sticks, then it all appears at once with
-    // the next tool"); at settle it is the flat-inline→canonical rewrap
-    // hazard that strands rows in native scrollback if they crossed the
-    // viewport top while still inline.
+    // 84dcc42 added a line-granular commit here: as the reveal cursor swept
+    // past each completed line of the still-unterminated trailing block, it
+    // advanced committed_ to that line so the trailing paragraph settled
+    // line-by-line instead of snapping whole at finish(). The intent was to
+    // kill the end-of-message reveal BURST.
     //
-    // Fix: also commit up to the end of the last COMPLETE line the cursor
-    // has swept, even when that line is mid-paragraph (no boundary). This
-    // keeps committed_ following the reveal cursor line-by-line through
-    // the trailing paragraph, so every row that could ever scroll off is
-    // already in its FINAL committed form as the cursor passes it — the
-    // reveal can then GLIDE to the edge (no burst) with zero scrollback
-    // risk, because only the single actively-typed last line stays
-    // uncommitted and that line is the bottom-most live edge which never
-    // scrolls off while it's being typed.
+    // But moving committed_ mid-block moves the prefix/tail split, and the
+    // committed-block render is NOT row-identical to the canonical tail
+    // render of those same bytes at every host width/padding: agentty's
+    // midrun_seam_test (test_streaming_text_prefix_freeze) proves a
+    // committed row that had already scrolled into native scrollback SHIFTS
+    // by a row on the next frame once the line-commit fires — the exact
+    // scrollback corruption the whole freeze design exists to prevent
+    // (agent_session commits ONCE per turn at MessageStop for precisely
+    // this reason; see frozen.cpp's deleted-carve NOTE). The burst it was
+    // meant to smooth is cosmetic; a rewritten scrollback row is a
+    // correctness bug. So the trailing block now stays live until its real
+    // \n\n boundary (committed by the scan_boundaries_ loop above) or until
+    // finish() force-commits the remainder at settle — the proven path.
     //
-    // ROW STABILITY: build()'s tail already renders every COMPLETE line
-    // via the SAME parse_markdown_impl + md_block_to_element that
-    // commit_range uses (the canonical tail path; the flat-inline
-    // off-by-one only ever affects the un-terminated last line), so
-    // committing a completed line produces byte-identical rows — no
-    // reflow at the commit seam.
-    //
-    // REPARSE SAFETY: commit_range parses source_[committed_, target) as a
-    // standalone fragment and NEVER rewrites an already-committed block.
-    // Committing at a line end (never mid-word) means a split inline span
-    // (e.g. **bold across a newline**) at worst renders literal in the
-    // committed fragment — stable, never a committed-block mutation. Model
-    // prose does not hard-wrap mid-span, so this is vanishingly rare.
-    //
-    // GUARD: skip while inside an OPEN code fence — committing half a
-    // fenced block would split the fence and the still-arriving closing
-    // ``` could not re-attach. in_code_fence_ tracks committed-side fence
-    // parity; when true the trailing region is inside a fence and only a
-    // real boundary (the closing fence, recorded in scan_boundaries_) may
-    // advance committed_. The boundary loop above still handles that case.
-    if (!in_code_fence_ && cursor_byte > committed_
-        && cursor_byte < source_.size()) {
-        // End of the last complete line at/behind the cursor: the newline
-        // strictly before cursor_byte, +1 to include it. rfind over the
-        // committed→cursor slice is bounded by the cursor's lag window
-        // (~one paragraph), not the whole turn.
-        const std::size_t nl =
-            std::string_view{source_}.rfind('\n', cursor_byte - 1);
-        if (nl != std::string_view::npos && nl + 1 > committed_
-            && nl + 1 > target) {
-            target = nl + 1;
-        }
-    }
+    // The reveal still GLIDES smoothly to the edge: build()'s canonical
+    // tail renders every completed line in its final committed shape and
+    // the eager bottom-row pacing types rows out exactly like prose; only
+    // the commit WATERMARK differs, and that is invisible on screen.
+    // Removing the line-commit also fixes st_reveal_fx_table_animates: the
+    // line-commit used to strip a streaming table's newest data row out of
+    // the live tail (settling it as a committed block) before the eager
+    // reveal overlay could animate it, so a streaming table popped
+    // row-by-row instead of shimmering. With the trailing block held live
+    // until its real \n\n boundary, the table stays in the tail and
+    // animates like the prose around it.
+    (void)in_code_fence_;
+    (void)cursor_byte;
 
     if (target > committed_) commit_range(target);
 }

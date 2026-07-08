@@ -229,6 +229,7 @@ namespace inline_frame {
 }
 class  FrameBytes;
 class  ShadowWitness;
+class  ScrollbackProof;
 struct StylePool;
 class  Canvas;
 [[nodiscard]] std::optional<ShadowWitness> verify_shadow(const InlineFrameState&) noexcept;
@@ -453,6 +454,8 @@ private:
                               InlineFrameState&&, bool,
                               std::string_view);
     friend std::optional<ShadowWitness> verify_shadow(const InlineFrameState&) noexcept;
+    friend std::optional<ScrollbackProof> check_scrollback(
+        const InlineFrameState&, const Canvas&, int) noexcept;
     friend class FrameBytes;
     template <class Tag> friend class inline_frame::InlineFrame;
     // The witness-chain free function lives in frame_bytes.cpp; it
@@ -627,5 +630,111 @@ private:
 /// the same hash compose stores at the end of the prior frame;
 /// `verify_shadow` is the symmetric reader.
 [[nodiscard]] std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexcept;
+
+// ============================================================================
+// ScrollbackProof — proof that the committed off-viewport prefix is stable
+// ============================================================================
+//
+// Part of the Witness Chain. Sibling of ShadowWitness, discharging the
+// OTHER half of the no-corruption theorem for OVERFLOWED frames.
+//
+// ShadowWitness proves "prev_cells matches the wire's VISIBLE viewport."
+// It says nothing about the rows that already scrolled OFF the top into
+// native scrollback — those are immutable at the VT level and the diff
+// must never rewrite them. The gate that guards this is a memcmp of the
+// canvas's top `overflow` rows against the shadow's committed prefix
+// (InlineFrameState::scrollback_prefix_matches). Historically that gate
+// was a bare `bool` the render path was DISCIPLINED (not FORCED) to call
+// — every scrollback-corruption bug in this codebase's history was a
+// frame that reached the diff with a SHIFTED committed prefix because
+// some path forgot, or short-circuited, that check.
+//
+// ScrollbackProof lifts the obligation into the type system, exactly as
+// ShadowWitness did for the shadow: it is a move-only token whose
+// constructor is private, whose SOLE producer is `check_scrollback`
+// below, and which `InlineFrame<Synced>::render` now CONSUMES by value.
+// "Render an overflowed frame without checking the committed prefix" is
+// therefore a compile error — there is no way to obtain the required
+// argument except by running the check.
+//
+// Two discharge shapes, both carried by the SAME type so render's
+// signature is uniform:
+//   - VACUOUS: the frame fits the viewport (prev_rows ≤ term_h). Nothing
+//     overflowed, there is no committed prefix, the obligation is
+//     trivially true. check_scrollback returns a vacuous proof.
+//   - WITNESSED: the frame overflowed AND the committed prefix is
+//     byte-identical to what physically scrolled off. check_scrollback
+//     ran the memcmp and it matched.
+// When the prefix SHIFTED, check_scrollback returns std::nullopt and the
+// caller MUST recover (commit + soft-repaint) instead of rendering —
+// the same control flow the old bool-gate expressed, now unforgeable.
+//
+// Provenance binding mirrors ShadowWitness: the proof carries the
+// address of the state it was issued against and the overflow row count
+// it validated; render asserts (debug) the proof was minted for the
+// same state it is rendering.
+class [[nodiscard("ScrollbackProof is single-use proof the committed prefix is stable — dropping it forfeits the render it authorises")]] ScrollbackProof {
+public:
+    ScrollbackProof(ScrollbackProof&& o) noexcept
+        : state_(o.state_), overflow_(o.overflow_) {
+        o.state_ = nullptr;
+        o.overflow_ = 0;
+    }
+    ScrollbackProof& operator=(ScrollbackProof&& o) noexcept {
+        if (this != &o) {
+            state_    = o.state_;
+            overflow_ = o.overflow_;
+            o.state_    = nullptr;
+            o.overflow_ = 0;
+        }
+        return *this;
+    }
+    ScrollbackProof(const ScrollbackProof&)            = delete;
+    ScrollbackProof& operator=(const ScrollbackProof&) = delete;
+
+    /// True for a freshly-issued proof, false after move-from. render
+    /// asserts this before use.
+    [[nodiscard]] bool valid() const noexcept { return valid_; }
+
+    /// State the proof was issued against (nullptr for a vacuous proof
+    /// whose frame didn't overflow — there was no prefix to bind). Used
+    /// by render to detect cross-state misuse of a WITNESSED proof.
+    [[nodiscard]] const InlineFrameState* bound_to() const noexcept {
+        return state_;
+    }
+
+    /// The overflow row count this proof validated (0 for vacuous).
+    [[nodiscard]] int overflow_rows() const noexcept { return overflow_; }
+
+    /// Deleted default ctor — the only producer is check_scrollback.
+    ScrollbackProof() = delete;
+
+private:
+    ScrollbackProof(const InlineFrameState* s, int overflow, bool valid) noexcept
+        : state_(s), overflow_(overflow), valid_(valid) {}
+    friend std::optional<ScrollbackProof> check_scrollback(
+        const InlineFrameState&, const Canvas&, int) noexcept;
+
+    const InlineFrameState* state_    = nullptr;
+    int                     overflow_ = 0;
+    bool                    valid_    = true;
+};
+
+/// The sole producer of ScrollbackProof. Given a state, the frame's
+/// canvas, and the current terminal height:
+///
+///   - prev_rows ≤ term_h → nothing overflowed → VACUOUS proof (state_
+///     nullptr, overflow_ 0). The diff can rewrite every on-screen row.
+///   - prev_rows > term_h AND the committed prefix (canvas top `overflow`
+///     rows) is byte-identical to the shadow → WITNESSED proof bound to
+///     `state` with the validated overflow count.
+///   - prev_rows > term_h AND the prefix SHIFTED → std::nullopt. The
+///     caller MUST recover (commit off-viewport + soft-repaint), never
+///     render — the diff would rewrite a row already in native scrollback.
+///
+/// This is the exact predicate the old bool gate computed; the return
+/// type change is what forces every render caller through it.
+[[nodiscard]] std::optional<ScrollbackProof> check_scrollback(
+    const InlineFrameState& state, const Canvas& canvas, int term_h) noexcept;
 
 } // namespace maya

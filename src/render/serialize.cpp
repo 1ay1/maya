@@ -281,6 +281,29 @@ int content_height(const Canvas& canvas) noexcept {
     return canvas.max_content_row() + 1;
 }
 
+std::optional<ScrollbackProof> check_scrollback(
+    const InlineFrameState& state, const Canvas& canvas, int term_h) noexcept
+{
+    const int prev_rows = state.prev_rows_;
+    // Frame fits the viewport: nothing overflowed, no committed prefix
+    // exists, the obligation is vacuously discharged. Issue a vacuous
+    // proof (state_ nullptr, overflow_ 0) so render's signature stays
+    // uniform without the caller distinguishing the two cases.
+    if (prev_rows <= term_h) {
+        return ScrollbackProof{nullptr, 0, /*valid=*/true};
+    }
+    // Overflowed: the top `overflow` rows have scrolled off and are
+    // immutable in native scrollback. The diff is scrollback-safe iff
+    // the shadow's committed prefix is byte-identical to what the canvas
+    // claims scrolled off. This is the exact memcmp the old bool gate
+    // ran; failure means the prefix SHIFTED and the caller MUST recover.
+    const int overflow = prev_rows - term_h;
+    if (!state.scrollback_prefix_matches(canvas, overflow)) {
+        return std::nullopt;
+    }
+    return ScrollbackProof{&state, overflow, /*valid=*/true};
+}
+
 namespace {
 
 // ──────────────────────────────────────────────────────────────────────

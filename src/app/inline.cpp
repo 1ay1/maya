@@ -152,9 +152,22 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
                 if (!wit) {
                     return std::move(arm).demote_to_stale();
                 }
+                // Scrollback gate, type-enforced: render REQUIRES the
+                // proof. nullopt = committed prefix shifted → recover via
+                // commit-off-viewport + soft-repaint (case B), matching
+                // the Runtime::render gate. A vacuous proof is issued when
+                // the frame fits the viewport.
+                auto proof = arm.check_scrollback(st.canvas_, term_h.value());
+                if (!proof) {
+                    const int prev_rows = arm.rows();
+                    const int overflow  = prev_rows - term_h.value();
+                    auto marker = arm.scrollback_marker(overflow);
+                    auto committed = std::move(arm).commit(marker);
+                    return std::move(committed).demote_to_stale();
+                }
                 return lift(std::move(arm).render(
                     st.canvas_, rows, term_h, pool, *st.writer_,
-                    *std::move(wit), sync));
+                    *std::move(wit), *std::move(proof), sync));
             }
             else if constexpr (std::is_same_v<T, InlineFrame<Stale>>) {
                 return lift(std::move(arm).render(

@@ -92,8 +92,22 @@ RenderOutcome InlineFrame<Synced>::render(
     const StylePool& pool,
     Writer& writer,
     ShadowWitness&& witness,
+    ScrollbackProof&& proof,
     bool synchronized_output) &&
 {
+    // Consume the scrollback proof. Its OBLIGATION was discharged when
+    // check_scrollback produced it (vacuous if the frame fit the
+    // viewport, witnessed if the committed prefix matched). Requiring
+    // it here is the whole point: the type system forced the caller
+    // through the gate. Validate it wasn't moved-from, and — for a
+    // WITNESSED proof — that it was minted for THIS state, catching a
+    // proof smuggled in from a different frame (debug builds).
+    assert(proof.valid() && "ScrollbackProof was moved-from before render");
+    assert((proof.bound_to() == nullptr
+            || proof.bound_to() == &state_)
+           && "ScrollbackProof was issued for a DIFFERENT state");
+    (void)proof;   // obligation discharged; nothing further to do with it
+
     FrameBytes capsule = compose_inline_frame(
         canvas, rows, term_h, pool,
         std::move(state_), std::move(witness),

@@ -238,7 +238,11 @@ public:
     }
 
     /// Render a new frame against the verified shadow. Consumes the
-    /// witness; returns Synced, Stale, or HardReset.
+    /// witness AND a ScrollbackProof (proof the committed off-viewport
+    /// prefix is byte-stable — obtained from check_scrollback, vacuous
+    /// when the frame fits the viewport). Requiring the proof makes
+    /// "render an overflowed frame without the scrollback gate" a
+    /// COMPILE error. Returns Synced, Stale, or HardReset.
     [[nodiscard]] RenderOutcome render(
         const Canvas& canvas,
         ContentRows rows,
@@ -246,6 +250,7 @@ public:
         const StylePool& pool,
         Writer& writer,
         ShadowWitness&& witness,
+        ScrollbackProof&& proof,
         bool synchronized_output = true) &&;
 
     /// Explicit soft demotion. Used by force_redraw and by verify()
@@ -275,6 +280,16 @@ public:
     [[nodiscard]] bool scrollback_prefix_matches(
         const Canvas& canvas, int rows) const noexcept {
         return state_.scrollback_prefix_matches(canvas, rows);
+    }
+
+    /// Run the scrollback gate and, on success, mint the ScrollbackProof
+    /// that render() requires. Returns nullopt iff the committed prefix
+    /// shifted (caller must recover). This is the ONLY way to obtain the
+    /// proof — forwarding to the free `check_scrollback` with the private
+    /// state so the obligation binds to THIS frame's shadow.
+    [[nodiscard]] std::optional<ScrollbackProof> check_scrollback(
+        const Canvas& canvas, int term_h) const noexcept {
+        return maya::check_scrollback(state_, canvas, term_h);
     }
 
     [[nodiscard]] int rows()  const noexcept { return state_.prev_rows(); }

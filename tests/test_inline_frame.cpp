@@ -241,8 +241,13 @@ static void test_synced_verify_render() {
 
     // Second render: same canvas, no diff expected.
     Canvas c2 = labeled_canvas(80, 3, pool);
+    // render() requires the scrollback proof. The frame fits the viewport
+    // (3 rows << 24), so check_scrollback issues a vacuous proof.
+    auto proof = s.check_scrollback(c2, 24);
+    CHECK(proof.has_value());
     auto outcome = std::move(s).render(
-        c2, content_rows(c2), term_rows_for_test(24), pool, writer, std::move(*wit), false);
+        c2, content_rows(c2), term_rows_for_test(24), pool, writer,
+        std::move(*wit), std::move(*proof), false);
 
     bool stayed_synced = std::visit([](auto&& arm) {
         using T = std::decay_t<decltype(arm)>;

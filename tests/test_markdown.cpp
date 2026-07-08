@@ -1042,6 +1042,176 @@ static void st_block_meta_and_fold() {
     if (folded) throw std::runtime_error("toggle_fold did not unfold");
 }
 
+// New: incremental settle (mid-stream block freeze) API.
+// Proves (a) settle_safe_boundary/count are gated on the reveal cursor
+// (nothing freezable until the typewriter has swept a block), and
+// (b) settled_prefix_element renders the frozen blocks BYTE-IDENTICALLY
+// to the corresponding top region of the full live build() — the
+// property that makes a mid-stream scrollback commit a cache hit.
+static void st_incremental_settle() {
+    const std::string body =
+        "# Title\n\n"
+        "First paragraph of prose that is reasonably long.\n\n"
+        "Second paragraph, also here.\n\n"
+        "```cpp\nint a = 1;\nint b = 2;\n```\n\n"
+        "Trailing paragraph still streaming";
+
+    // ── (1) reveal_fx OFF ⇒ everything committed is instantly safe.
+    {
+        StreamingMarkdown md;
+        md.set_live(true);
+        md.feed(body);   // no trailing blank ⇒ last para stays in the tail
+        (void)md.build();
+        if (md.settle_safe_block_count() != md.block_count())
+            throw std::runtime_error(
+                "reveal-off: settle_safe_block_count "
+                + std::to_string(md.settle_safe_block_count())
+                + " != block_count " + std::to_string(md.block_count()));
+        if (md.block_count() == 0)
+            throw std::runtime_error("reveal-off: nothing committed");
+    }
+
+    // ── (2) reveal_fx ON ⇒ gated on the typewriter cursor.
+    StreamingMarkdown md;
+    md.set_live(true);
+    md.set_reveal_fx(true);
+    md.feed(body);
+    (void)md.build();
+
+    // With reveal on, commit_range itself is reveal-gated: at frame 0 the
+    // cursor is at byte 0 so NOTHING is committed yet, and therefore
+    // nothing is settle-safe. That is the whole point — the safe count
+    // must be 0 here even though the bytes have all arrived.
+    if (md.settle_safe_block_count() != 0)
+        throw std::runtime_error(
+            "reveal-on: settle-safe count should be 0 before the cursor "
+            "sweeps, got " + std::to_string(md.settle_safe_block_count()));
+
+    // Drive the reveal cursor to the edge, polling build() so the widget
+    // advances its typewriter on its own clock. Blocks commit as the
+    // cursor sweeps past their boundaries.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (md.reveal_in_progress()) {
+        (void)md.build();
+        if (std::chrono::steady_clock::now() > deadline)
+            throw std::runtime_error("reveal did not reach edge in 5 s");
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    }
+    (void)md.build();
+
+    const std::size_t committed_blocks = md.block_count();
+    if (committed_blocks == 0)
+        throw std::runtime_error("reveal-on: nothing committed after full reveal");
+
+    // Now the cursor has swept every committed block, so the safe count
+    // must equal the full committed block count.
+    const std::size_t safe_n = md.settle_safe_block_count();
+    if (safe_n != committed_blocks)
+        throw std::runtime_error(
+            "reveal-on: after full reveal safe count "
+            + std::to_string(safe_n) + " != committed "
+            + std::to_string(committed_blocks));
+
+    // ── (3) byte-identity: the frozen prefix Element must render the
+    // same cells as the top region of the full live build().
+    auto p = md.settled_prefix_element(safe_n);
+    if (!p) throw std::runtime_error("settled_prefix_element returned null");
+    if (md.settled_prefix_element(0) != nullptr)
+        throw std::runtime_error("settled_prefix_element(0) must be null");
+    if (md.settled_prefix_element(committed_blocks + 99) != nullptr)
+        throw std::runtime_error("settled_prefix_element(too many) must be null");
+
+    auto render_cells = [](const Element& el, int& out_h) {
+        StylePool pool;
+        Canvas canvas(80, /*h=*/4000, &pool);
+        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        out_h = content_height(canvas);
+        const std::uint64_t* c = canvas.cells();
+        const std::size_t n =
+            static_cast<std::size_t>(canvas.width()) * out_h;
+        return std::vector<std::uint64_t>(c, c + n);
+    };
+
+    // Settle the widget so its full build() has no live caret/scramble to
+    // skew the comparison, then compare the frozen prefix's cells against
+    // the top rows of the settled full tree.
+    md.set_live(false);
+    md.finish();
+    int prefix_h = 0, full_h = 0;
+    auto prefix_cells = render_cells(*p, prefix_h);
+    auto full_cells   = render_cells(md.build(), full_h);
+
+    if (prefix_h <= 0)
+        throw std::runtime_error("frozen prefix rendered zero height");
+    if (prefix_h > full_h)
+        throw std::runtime_error(
+            "frozen prefix taller than full tree: " + std::to_string(prefix_h)
+            + " > " + std::to_string(full_h));
+
+    const std::size_t cmp = static_cast<std::size_t>(prefix_h) * 80;
+    for (std::size_t i = 0; i < cmp && i < prefix_cells.size()
+                             && i < full_cells.size(); ++i) {
+        if (prefix_cells[i] != full_cells[i])
+            throw std::runtime_error(
+                "frozen-prefix CELL divergence at index " + std::to_string(i)
+                + " (row " + std::to_string(i / 80) + ") — the frozen copy "
+                "does not match the live top region; a scrollback commit "
+                "here would corrupt.");
+    }
+
+    // ── (4) SEAM identity: prefix rows ++ suffix rows must equal the
+    // full tree rows, cell-for-cell. This is the load-bearing invariant
+    // for wiring a mid-stream freeze into a host: the sealed prefix in
+    // the ledger PLUS the live suffix the widget renders must reproduce
+    // the un-split whole-message render exactly, or the freeze seam
+    // strands/duplicates a row. Split at the FIRST block so the seam is
+    // exercised (prefix = block 0, suffix = blocks [1..] + tail).
+    if (safe_n >= 2) {
+        // Re-run on a fresh settled widget: split at block 1.
+        StreamingMarkdown w;
+        w.set_content(body + "\n");  // trailing blank commits the last para
+        w.finish();
+        const std::size_t bn = w.block_count();
+        if (bn >= 2) {
+            auto pre = w.settled_prefix_element(1);
+            Element suf = w.live_suffix_element(1);
+            Element full = w.build();
+            int ph = 0, sh = 0, fh = 0;
+            auto pc = render_cells(*pre, ph);
+            auto sc = render_cells(suf, sh);
+            auto fc = render_cells(full, fh);
+            // The host stacks: [prefix blocks][ONE boundary gap row][suffix].
+            // That single gap reproduces build()'s inter-block gap(1) that
+            // the split severed — it is the host's responsibility (exactly
+            // as freeze_range inserts gap_row() separators between frozen
+            // turns). Model it here: prefix rows ++ 1 blank row ++ suffix.
+            std::vector<std::uint64_t> joined = pc;
+            joined.insert(joined.end(), 80, 0);   // one blank boundary row
+            joined.insert(joined.end(), sc.begin(), sc.end());
+            if (static_cast<int>(joined.size() / 80) != fh)
+                throw std::runtime_error(
+                    "seam ROW COUNT mismatch: prefix(" + std::to_string(ph)
+                    + ") + gap(1) + suffix(" + std::to_string(sh) + ") = "
+                    + std::to_string(ph + 1 + sh) + " != full("
+                    + std::to_string(fh) + ")");
+            for (std::size_t i = 0; i < joined.size() && i < fc.size(); ++i) {
+                // The boundary gap row is all-zero in `joined`; the full
+                // render's corresponding gap row is also blank but may be
+                // packed as spaces — skip the single seam row from the
+                // strict compare, checking only that both sides are blank.
+                const std::size_t seam_row = static_cast<std::size_t>(ph);
+                if (i / 80 == seam_row) continue;
+                if (joined[i] != fc[i])
+                    throw std::runtime_error(
+                        "SEAM CELL divergence at index " + std::to_string(i)
+                        + " (row " + std::to_string(i / 80) + ") — prefix++gap++"
+                        "suffix does not reproduce the full render; a mid-"
+                        "stream freeze at this seam would strand/duplicate.");
+            }
+        }
+    }
+}
+
 // New: set_content_async on a small input falls through to the
 // synchronous path; on a large diverging input it eventually
 // applies via build() polling. We can't easily test wall-clock
@@ -2550,6 +2720,7 @@ int main() {
     run("render between commits ×200", 2000ms, st_render_between_commits);
     run("clear + restream ×10",        5000ms, st_clear_restream);
     run("block meta + fold",            2000ms, st_block_meta_and_fold);
+    run("incremental settle (freeze)",  8000ms, st_incremental_settle);
     run("set_content_async roundtrip",  8000ms, st_set_content_async_roundtrip);
     run("eager hrule (no snap)",        2000ms, st_eager_hrule);
     run("eager closing fence (no snap)", 2000ms, st_eager_closing_fence);

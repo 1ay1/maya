@@ -204,62 +204,7 @@ const Element& StreamingMarkdown::build() const {
     // the content-stable cell cache whose capture path guards OOB reads
     // and width changes.
     auto make_block_component = [&](std::size_t i) -> Element {
-        auto p = prefix_;
-        const auto& meta = (i < p->metas.size()) ? p->metas[i] : BlockMeta{};
-        auto fit = folds_.find(meta.source_offset);
-        const bool folded = fit != folds_.end() && fit->second;
-
-        ComponentElement block_comp;
-        block_comp.hash_id = CacheIdBuilder{}
-            .add(std::string_view{"strmd-block"})
-            .add(static_cast<std::uint64_t>(instance_id_))
-            .add(static_cast<std::uint64_t>(meta.source_offset))
-            .add(static_cast<std::uint64_t>(meta.source_end))
-            .add(static_cast<std::uint64_t>(folded ? 1u : 0u))
-            .build();
-
-        if (folded) {
-            // Single-line dim stub summarising the hidden block.
-            const char* kind_label = "block";
-            switch (meta.kind) {
-                case BlockKind::CodeBlock:  kind_label = "code";       break;
-                case BlockKind::Table:      kind_label = "table";      break;
-                case BlockKind::List:       kind_label = "list";       break;
-                case BlockKind::Blockquote: kind_label = "blockquote"; break;
-                case BlockKind::Paragraph:  kind_label = "paragraph";  break;
-                case BlockKind::Heading:    kind_label = "heading";    break;
-                case BlockKind::HtmlBlock:  kind_label = "html";       break;
-                default: break;
-            }
-            char buf[160];
-            if (!meta.lang.empty()) {
-                std::snprintf(buf, sizeof(buf),
-                    "\xe2\x96\xb8 %u line%s of %s (%s) hidden \xe2\x80\x94 unfold",
-                    static_cast<unsigned>(meta.line_count),
-                    meta.line_count == 1 ? "" : "s",
-                    kind_label, meta.lang.c_str());
-            } else {
-                std::snprintf(buf, sizeof(buf),
-                    "\xe2\x96\xb8 %u line%s of %s hidden \xe2\x80\x94 unfold",
-                    static_cast<unsigned>(meta.line_count),
-                    meta.line_count == 1 ? "" : "s",
-                    kind_label);
-            }
-            std::string stub{buf};
-            block_comp.render =
-                [stub = std::move(stub)](int, int) -> Element {
-                    return Element{TextElement{
-                        .content = stub,
-                        .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
-                    }};
-                };
-        } else {
-            auto blk = p->blocks[i];   // shared_ptr<const Element>
-            block_comp.render = [blk](int, int) -> Element {
-                return *blk;
-            };
-        }
-        return Element{std::move(block_comp)};
+        return render_committed_block_(i);
     };
 
     // ── Committed-prefix windowing (outer-tree O(1)/frame) ──────────

@@ -995,6 +995,13 @@ private:
     // completion). Defined in reveal_fx.cpp.
     bool advance_reveal_cursor_() const;
 
+    // Build ONE committed block's hash-keyed ComponentElement (key =
+    // instance + source byte range + fold state). Single-sourced between
+    // build()'s prefix assembly and settled_prefix_element so the frozen
+    // copy is byte-identical to the live one (same hash_id ⇒ renderer
+    // component-cache HIT). i must be < prefix_->blocks.size().
+    [[nodiscard]] Element render_committed_block_(std::size_t i) const;
+
     // Internal append — assumes bytes are already codepoint-clean.  Public
     // entry points (feed / append / set_content) route through StreamSink.
     void append_safe(std::string_view safe_bytes);
@@ -1167,6 +1174,83 @@ public:
         }
         return settled_el_;
     }
+
+    /// ── Incremental settle (mid-stream block freeze) ──────────────────
+    ///
+    /// The largest source byte offset that is BOTH (a) parse-committed —
+    /// it ends a finalized top-level block, never splitting the
+    /// in-progress tail block — AND (b) fully behind the reveal cursor,
+    /// so every cell in [0, offset) is painted in its FINAL glyph/style
+    /// (no scramble / ghost-blank left by the typewriter overlay).
+    ///
+    /// This is the ONLY boundary a host may irreversibly freeze into
+    /// terminal scrollback mid-stream. Freezing at plain `committed_`
+    /// (the parse seam) is unsafe while reveal_fx is on: a block can be
+    /// structurally done yet still mid-reveal, so its on-screen cells
+    /// contain scramble glyphs that would freeze into scrollback as
+    /// garbage. Gating on the reveal cursor closes that gap — the frozen
+    /// rows are guaranteed byte-identical to what build() painted last
+    /// frame, so the host's scrollback commit is a cache HIT (no
+    /// re-emit, no duplicate-strand). Returns 0 when nothing is yet
+    /// safe to freeze.
+    ///
+    /// When reveal_fx is OFF (or the widget is settled) every committed
+    /// block is instantly final on screen, so this equals `committed_`.
+    [[nodiscard]] std::size_t settle_safe_boundary() const noexcept;
+
+    /// Number of committed blocks fully within [0, settle_safe_boundary()).
+    /// A host freezes exactly this many blocks per incremental step; the
+    /// remaining committed blocks + the live tail stay in the widget.
+    [[nodiscard]] std::size_t settle_safe_block_count() const noexcept;
+
+    /// Materialise the first `n` committed blocks (n <=
+    /// settle_safe_block_count()) into a standalone Element, laid out
+    /// byte-IDENTICALLY to how build() renders those same blocks: the
+    /// same outer vstack().gap(1).padding(0,0,0,2) column and the same
+    /// per-block hash-keyed ComponentElements (key = instance + source
+    /// byte range + fold), so the renderer's component cache HITS on the
+    /// frozen copy exactly as it did on the live tail's copy. Returns a
+    /// shared_ptr the host can stash zero-copy. nullptr if n == 0 or
+    /// n > block_count().
+    ///
+    /// Does NOT mutate the widget — the frozen blocks stay in the
+    /// widget's prefix too; the host is responsible for advancing its
+    /// own view start so the two don't double-paint. (The widget cannot
+    /// drop them because its resumable scanner / ref-def map / reveal
+    /// cursor are all keyed on absolute source offsets.)
+    [[nodiscard]] std::shared_ptr<const Element>
+    settled_prefix_element(std::size_t n) const;
+
+    /// Materialise committed blocks [from, to) into a standalone Element,
+    /// laid out with the same per-block hash-keyed ComponentElements +
+    /// vstack().gap(1).padding(0,0,0,2) container build() uses — the
+    /// generalisation of settled_prefix_element (which is [0, n)). Used
+    /// by a host that seals blocks INCREMENTALLY: the first carve seals
+    /// [0, k0), the next seals [k0, k1), etc. Each range's blocks keep
+    /// the SAME hash_ids build() stamped, so every sealed increment is a
+    /// renderer cache HIT. Returns nullptr if from >= to or to >
+    /// block_count(). The boundary gap BETWEEN successive ranges is the
+    /// host's responsibility (one blank row), matching how build()'s
+    /// single vstack().gap(1) would have separated them.
+    [[nodiscard]] std::shared_ptr<const Element>
+    settled_range_element(std::size_t from, std::size_t to) const;
+
+    /// The COMPLEMENT of settled_prefix_element: render committed blocks
+    /// [from, block_count()) plus the live in-progress tail, in the same
+    /// container/gaps build() uses — but WITHOUT the first `from` blocks.
+    /// Used by a host that has sealed blocks [0, from) into its own
+    /// scrollback (via settled_prefix_element) and now needs the live
+    /// widget to render only the un-frozen remainder so the two don't
+    /// double-paint. Blocks [from, N) keep the SAME per-block hash_ids
+    /// build() stamped, so they still blit from the renderer's cache.
+    /// `from` is clamped to block_count(); from==0 is just build()'s tree.
+    ///
+    /// NOTE: the returned tree is a plain vstack of the suffix blocks +
+    /// tail; it carries NO turn header. The host renders the frozen
+    /// header alongside the sealed prefix and this suffix as a
+    /// header-suppressed (continuation) body, so the message reads as one
+    /// unit across the frozen/live seam.
+    [[nodiscard]] Element live_suffix_element(std::size_t from) const;
 
     /// Current full source text (codepoint-clean; never contains a
     /// half-written multi-byte sequence).

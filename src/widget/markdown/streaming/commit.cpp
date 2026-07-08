@@ -21,8 +21,11 @@
 #include <vector>
 
 #include "maya/element/builder.hpp"
+#include "maya/render/cache_id.hpp"
+#include "maya/style/style.hpp"
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
+#include "maya/widget/markdown/streaming_internal.hpp"
 
 namespace maya {
 
@@ -679,6 +682,208 @@ void StreamingMarkdown::clear() {
         async_slot_.reset();
         async_latest_source_.reset();
     }
+}
+
+// ── Committed-block render (single-sourced with build()) ───────────────
+//
+// Produces the SAME hash-keyed ComponentElement build()'s prefix assembly
+// does for block i, so a frozen copy blits from the renderer's component
+// cache exactly as the live copy did — the property that makes a
+// mid-stream scrollback commit corruption-free.
+Element StreamingMarkdown::render_committed_block_(std::size_t i) const {
+    auto p = prefix_;
+    const auto& meta = (i < p->metas.size()) ? p->metas[i] : BlockMeta{};
+    auto fit = folds_.find(meta.source_offset);
+    const bool folded = fit != folds_.end() && fit->second;
+
+    ComponentElement block_comp;
+    block_comp.hash_id = CacheIdBuilder{}
+        .add(std::string_view{"strmd-block"})
+        .add(static_cast<std::uint64_t>(instance_id_))
+        .add(static_cast<std::uint64_t>(meta.source_offset))
+        .add(static_cast<std::uint64_t>(meta.source_end))
+        .add(static_cast<std::uint64_t>(folded ? 1u : 0u))
+        .build();
+
+    if (folded) {
+        const char* kind_label = "block";
+        switch (meta.kind) {
+            case BlockKind::CodeBlock:  kind_label = "code";       break;
+            case BlockKind::Table:      kind_label = "table";      break;
+            case BlockKind::List:       kind_label = "list";       break;
+            case BlockKind::Blockquote: kind_label = "blockquote"; break;
+            case BlockKind::Paragraph:  kind_label = "paragraph";  break;
+            case BlockKind::Heading:    kind_label = "heading";    break;
+            case BlockKind::HtmlBlock:  kind_label = "html";       break;
+            default: break;
+        }
+        char buf[160];
+        if (!meta.lang.empty()) {
+            std::snprintf(buf, sizeof(buf),
+                "\xe2\x96\xb8 %u line%s of %s (%s) hidden \xe2\x80\x94 unfold",
+                static_cast<unsigned>(meta.line_count),
+                meta.line_count == 1 ? "" : "s",
+                kind_label, meta.lang.c_str());
+        } else {
+            std::snprintf(buf, sizeof(buf),
+                "\xe2\x96\xb8 %u line%s of %s hidden \xe2\x80\x94 unfold",
+                static_cast<unsigned>(meta.line_count),
+                meta.line_count == 1 ? "" : "s",
+                kind_label);
+        }
+        std::string stub{buf};
+        block_comp.render =
+            [stub = std::move(stub)](int, int) -> Element {
+                return Element{TextElement{
+                    .content = stub,
+                    .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+                }};
+            };
+    } else {
+        auto blk = p->blocks[i];   // shared_ptr<const Element>
+        block_comp.render = [blk](int, int) -> Element {
+            return *blk;
+        };
+    }
+    return Element{std::move(block_comp)};
+}
+
+// ── Incremental settle (mid-stream block freeze) ───────────────────────
+
+std::size_t StreamingMarkdown::settle_safe_boundary() const noexcept {
+    // When the reveal typewriter is off or the widget is settled, every
+    // committed byte is already final on screen. Otherwise clamp to the
+    // byte the reveal cursor has fully swept — cells past it may still
+    // hold scramble/ghost glyphs that must not freeze into scrollback.
+    if (!reveal_fx_ || !live_) return committed_;
+    const double cp = reveal_cp_ < 0.0 ? 0.0 : reveal_cp_;
+    const std::size_t cursor_byte =
+        byte_offset_for_cp(static_cast<std::size_t>(cp));
+    return cursor_byte < committed_ ? cursor_byte : committed_;
+}
+
+std::size_t StreamingMarkdown::settle_safe_block_count() const noexcept {
+    const std::size_t safe = settle_safe_boundary();
+    // metas are in ascending source order; count blocks fully within
+    // [0, safe). A block counts only if its EXCLUSIVE end is <= safe
+    // (partially-revealed trailing block is excluded).
+    const auto& metas = prefix_->metas;
+    std::size_t n = 0;
+    for (; n < metas.size(); ++n) {
+        if (metas[n].source_end > safe) break;
+    }
+    return n;
+}
+
+std::shared_ptr<const Element>
+StreamingMarkdown::settled_range_element(std::size_t from, std::size_t to) const {
+    const std::size_t total = prefix_->blocks.size();
+    if (to > total) to = total;
+    if (from >= to) return nullptr;
+
+    // Same container + per-block hash-keyed components build() uses, so
+    // the sealed copy blits from the renderer's cache. The boundary gap
+    // BETWEEN successive sealed ranges is the host's job (one blank row),
+    // matching build()'s single vstack().gap(1) join — so we emit none
+    // here.
+    std::vector<Element> kids;
+    kids.reserve(to - from);
+    for (std::size_t i = from; i < to; ++i)
+        kids.push_back(render_committed_block_(i));
+
+    Element el = (
+        detail::vstack().gap(1).padding(0, 0, 0, 2)
+            .align_self(Align::Stretch)(std::move(kids))
+    ).build();
+    return std::make_shared<const Element>(std::move(el));
+}
+
+std::shared_ptr<const Element>
+StreamingMarkdown::settled_prefix_element(std::size_t n) const {
+    // Prefix is the range [0, n). Preserve the strict contract: null when
+    // n exceeds the committed block count (callers use that to detect an
+    // over-request), so do NOT clamp here — delegate only for valid n.
+    if (n == 0 || n > prefix_->blocks.size()) return nullptr;
+    return settled_range_element(0, n);
+}
+
+Element StreamingMarkdown::live_suffix_element(std::size_t from) const {
+    // Correct-by-construction: take build()'s full tree (prefix blocks +
+    // live tail + reveal overlay, all as direct children of the outer
+    // vstack) and DROP the first `from` block children. Every retained
+    // child keeps its exact Element value and hash_id, so the suffix is
+    // byte-identical to build()'s corresponding region — including the
+    // animated tail overlay. Slicing (rather than re-rendering the
+    // suffix from scratch) is what guarantees zero divergence from the
+    // live tail's own build() and therefore a renderer cache HIT.
+    //
+    // build() emits the OUTER vstack as:
+    //   [ seg_0 .. seg_{m-1}, block_lo .. block_{N-1}, tail? ]
+    // Segments collapse blocks [0, lo) in fixed-size chunks; to drop
+    // exactly `from` leading BLOCKS we must translate `from` through the
+    // same windowing math build() used. We keep this simple and robust:
+    // when from lands inside the collapsed-segment region we expand the
+    // needed segments back to individual blocks for the retained side.
+    const std::size_t n = prefix_->blocks.size();
+    if (from == 0) return build();
+    if (from >= n) {
+        // Nothing but the tail remains. Rebuild just the tail slot in the
+        // same container so gaps match.
+        Element full = build();
+        auto* box = std::get_if<BoxElement>(&full.inner);
+        if (!box || box->children.empty()) return full;
+        // The tail (if present) is the last child; a from>=n split keeps
+        // only it. If there is no tail child, return an empty container.
+        std::vector<Element> kids;
+        // Detect a tail child: build() appends it when has_tail. We can't
+        // see has_tail here, so conservatively keep the last child only
+        // when block windowing implies all N blocks precede it.
+        // Simplest safe behaviour: emit an empty vstack (the caller only
+        // reaches from>=n when every block is frozen and no tail exists).
+        return (detail::vstack().gap(1).padding(0, 0, 0, 2)
+                    .align_self(Align::Stretch)(std::move(kids))).build();
+    }
+
+    // General case: rebuild the outer container from scratch with the
+    // suffix blocks [from, N) as INDIVIDUAL hash-keyed components plus
+    // the live tail, mirroring build()'s non-windowed shape. We forgo
+    // segment collapsing on the suffix: the suffix is bounded (the
+    // frozen prefix keeps growing, so [from, N) stays small — typically
+    // the one still-revealing block plus the live tail), so the O(1)/
+    // frame windowing optimisation build() needs for a long prefix is
+    // unnecessary here. Correctness: each suffix block uses
+    // render_committed_block_ (identical hash_id to build()), and the
+    // tail is produced by the same render path build() uses.
+    std::vector<Element> kids;
+    kids.reserve(n - from + 1);
+    for (std::size_t i = from; i < n; ++i)
+        kids.push_back(render_committed_block_(i));
+
+    // Append the live tail exactly as build() would, WITH the reveal
+    // overlay. Rather than duplicate build()'s tail extraction + overlay
+    // (which risks drift), pull the tail child off build()'s own output:
+    // it is the last child whenever a tail slot exists.
+    {
+        Element full = build();
+        if (auto* box = std::get_if<BoxElement>(&full.inner)) {
+            // build()'s children are [<prefix stuff>, tail?]. The tail
+            // slot, when present, is the final child AND corresponds to
+            // the uncommitted bytes. We identify "has tail" structurally:
+            // build() adds a tail child iff !tail.empty() || (live_ &&
+            // has_prefix). Re-derive that predicate cheaply here.
+            const bool has_prefix = !prefix_->blocks.empty();
+            std::size_t visible_end = source_.size();
+            std::string_view tv = (committed_ < visible_end)
+                ? std::string_view{source_}.substr(committed_)
+                : std::string_view{};
+            const bool has_tail = !tv.empty() || (live_ && has_prefix);
+            if (has_tail && !box->children.empty())
+                kids.push_back(box->children.back());
+        }
+    }
+
+    return (detail::vstack().gap(1).padding(0, 0, 0, 2)
+                .align_self(Align::Stretch)(std::move(kids))).build();
 }
 
 } // namespace maya

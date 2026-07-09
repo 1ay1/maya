@@ -117,6 +117,20 @@ public:
         // height — never SHRINKS a composer that already has more
         // content than the floor.
         int min_body_rows = 1;
+
+        // Wall-clock (anim::default_clock().now_ms()) of the user's last
+        // composer edit. The idle blink STOPS 15 s after this, mirroring
+        // kitty's own cursor_stop_blinking_after: once the user stops
+        // typing, the painted block cursor goes solid-visible and the
+        // composer cell stops changing. This is load-bearing for idle CPU
+        // on GPU terminals with an aggressive repaint_delay (kitty defaults
+        // repaint at up to 100 fps whenever ANY cell is dirty) — a forever-
+        // blinking painted cursor keeps the compositor awake indefinitely,
+        // where kitty's OWN hardware cursor would have stopped after 15 s.
+        // agentty hides the hardware cursor and paints its own, so it must
+        // reproduce that stop itself. 0 (default) ⇒ never times out (legacy
+        // always-blink) so callers that don't plumb activity are unchanged.
+        std::int64_t last_edit_ms = 0;
     };
 
     explicit Composer(Config c) : cfg_(std::move(c)) {}
@@ -209,16 +223,33 @@ public:
         bool blink_off = false;
         if (!active) {
             const std::int64_t now_ms = anim::default_clock().now_ms();
-            const double period_pos =
-                std::fmod(static_cast<double>(now_ms), kBlinkPeriodMs);
-            blink_off = period_pos >= kBlinkPeriodMs * 0.5;
-            // Milliseconds until the next visible toggle (the next half or
-            // full period boundary). Wake the loop then — not at 60 fps.
-            const double half = kBlinkPeriodMs * 0.5;
-            const double into_half = std::fmod(period_pos, half);
-            const std::int64_t until_toggle =
-                static_cast<std::int64_t>(half - into_half) + 1;
-            ::maya::request_animation_frame_after(until_toggle);
+            // Mirror kitty's cursor_stop_blinking_after: once the user has
+            // been idle (no edit) for 15 s, hold the cursor SOLID-visible
+            // and stop requesting frames. The composer cell then stops
+            // changing, so a GPU terminal with an aggressive repaint_delay
+            // stops compositing — the idle-CPU fix. A default last_edit_ms
+            // of 0 disables the timeout (legacy always-blink).
+            constexpr std::int64_t kStopBlinkAfterMs = 15'000;
+            const bool blink_expired =
+                cfg_.last_edit_ms != 0
+                && (now_ms - cfg_.last_edit_ms) >= kStopBlinkAfterMs;
+            if (blink_expired) {
+                // Solid cursor, NO frame request — the cell is now static
+                // and nothing wakes the loop until real input arrives.
+                blink_off = false;
+            } else {
+                const double period_pos =
+                    std::fmod(static_cast<double>(now_ms), kBlinkPeriodMs);
+                blink_off = period_pos >= kBlinkPeriodMs * 0.5;
+                // Milliseconds until the next visible toggle (the next half
+                // or full period boundary). Wake the loop then — not at 60
+                // fps.
+                const double half = kBlinkPeriodMs * 0.5;
+                const double into_half = std::fmod(period_pos, half);
+                const std::int64_t until_toggle =
+                    static_cast<std::int64_t>(half - into_half) + 1;
+                ::maya::request_animation_frame_after(until_toggle);
+            }
         }
 
         std::string with_cursor = cfg_.text;

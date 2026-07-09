@@ -589,14 +589,16 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // hot the age drives the FX, but feeding it EXACT (ms-precise)
             // made the signature move every single frame, so the memo below
             // never hit and every glide frame paid the full spine walk +
-            // decorate re-slice (the steady-frame cost that scales with the
-            // committed-block count and tail length). The scramble/gradient
-            // only change perceptibly every ~16 ms anyway, so bucket the age
-            // to that step: consecutive frames inside one bucket reuse the
-            // cached overlay (memo hit) while the FX still steps smoothly at
-            // ~60 fps. 16 ms == the RAF interval, so no visible age step is
-            // skipped.
-            constexpr std::int64_t kAgeBucketMs = 16;
+            // decorate re-slice. The scramble/gradient change imperceptibly
+            // between ~33 ms steps, so bucket the age to ~30 fps: consecutive
+            // frames inside one bucket reuse the cached overlay (memo hit)
+            // AND — because the memo'd frame re-arms at the SAME cadence
+            // below — emit ZERO bytes to the terminal. This halves the reveal
+            // repaint rate the host terminal must parse / shape / GPU-upload
+            // during a live stream (kitty-class GPU emulators spend real CPU
+            // per repainted row), for no perceptible loss: the gradient cools
+            // over 700 ms, so ~21 steps still read smooth.
+            constexpr std::int64_t kAgeBucketMs = 33;
             const bool tail_hot = age_at_tail_ms < kTrailCoolMs;
             // Age term: bucketed while hot (drives scramble/gradient but lets
             // same-bucket frames hit the memo), pinned to the cool sentinel

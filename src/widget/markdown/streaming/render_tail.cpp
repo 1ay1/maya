@@ -794,21 +794,68 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             std::string_view ll = live_line;
             while (!ll.empty() && ll.front() == '\n') ll.remove_prefix(1);
             if (!ll.empty()) {
-                auto spans = parse_inlines(ll);
-                std::string content;
-                std::vector<StyledRun> runs;
-                const Style base = Style{}.with_fg(colors::text);
-                for (const auto& sp : spans)
-                    flatten_inline(sp, base, content, runs);
-                if (!runs.empty()) {
-                    if (runs.size() == 1)
-                        rendered.push_back(Element{TextElement{
-                            .content = std::move(content), .style = runs[0].style}});
-                    else
-                        rendered.push_back(Element{TextElement{
-                            .content = std::move(content),
-                            .style   = Style{}.with_fg(colors::text),
-                            .runs    = std::move(runs)}});
+                // A live line that OPENS a fresh list item / blockquote row
+                // (no prior same-kind block to continue — so the merge test
+                // above returned "does not continue") would otherwise render
+                // as RAW inline text (`- item`, `1. item`, `> quote`) in body
+                // colour until its '\n' lands, then SNAP into the styled block
+                // when it commits — the reported "list item renders
+                // unformatted, then jumps to the formatted block and takes
+                // the composer up" artefact. Render it eagerly in committed
+                // shape instead: synthesize the terminating '\n' and route
+                // through the SAME render_eager_slice (parse_markdown_impl +
+                // md_block_to_element) pipeline commit_range uses, so the
+                // live single-item block is byte- and row-identical to what
+                // eventually commits — no unformatted phase, no height snap.
+                // Only the last (live) line is affected; the commit
+                // watermark and reveal clip are untouched.
+                bool is_ll_list  = ul_marker_len(ll) > 0 || ol_marker_len(ll) > 0;
+                bool is_ll_quote = false;
+                if (!is_ll_list) {
+                    std::size_t k = 0;
+                    while (k < 4 && k < ll.size() && ll[k] == ' ') ++k;
+                    if (k < ll.size() && ll[k] == '>')
+                        is_ll_quote = (k + 1 == ll.size()
+                                       || ll[k + 1] == ' ' || ll[k + 1] == '\t');
+                }
+                bool eager_done = false;
+                if (is_ll_list || is_ll_quote) {
+                    std::string synth;
+                    synth.reserve(ll.size() + 1);
+                    synth.assign(ll);
+                    while (!synth.empty()
+                           && (synth.back() == '\n' || synth.back() == '\r'))
+                        synth.pop_back();
+                    synth.push_back('\n');
+                    std::vector<Element> ekids;
+                    ekids.reserve(1);
+                    render_eager_slice(synth, ekids);
+                    if (ekids.size() == 1) {
+                        rendered.push_back(std::move(ekids.front()));
+                        eager_done = true;
+                    } else if (!ekids.empty()) {
+                        rendered.push_back(
+                            detail::vstack().gap(1)(std::move(ekids)).build());
+                        eager_done = true;
+                    }
+                }
+                if (!eager_done) {
+                    auto spans = parse_inlines(ll);
+                    std::string content;
+                    std::vector<StyledRun> runs;
+                    const Style base = Style{}.with_fg(colors::text);
+                    for (const auto& sp : spans)
+                        flatten_inline(sp, base, content, runs);
+                    if (!runs.empty()) {
+                        if (runs.size() == 1)
+                            rendered.push_back(Element{TextElement{
+                                .content = std::move(content), .style = runs[0].style}});
+                        else
+                            rendered.push_back(Element{TextElement{
+                                .content = std::move(content),
+                                .style   = Style{}.with_fg(colors::text),
+                                .runs    = std::move(runs)}});
+                    }
                 }
             }
         }
@@ -942,14 +989,24 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
     }
 
     // ── ATX heading at tail start: render the first line in its
-    //    committed shape (bold + heading colour, hash markers stripped)
-    //    so the heading style appears as soon as `# ` is typed instead
-    //    of waiting for the next blank line to commit.  Monotonic: the
-    //    heading line grows by one character per byte (single-line
-    //    height stays at 1, multi-line wrap only ADDS rows).  Any
-    //    follow-up content stays as inline parse below — promoting it
-    //    to block parse would break monotonicity (list/table/quote
-    //    snapping in/out of shape causes ghosting).
+    //    committed shape so the heading style appears as soon as `# ` is
+    //    typed instead of waiting for the next blank line to commit.
+    //
+    //    HEIGHT-CONTINUITY (the composer-jump fix). The canonical committed
+    //    render (md_block_to_element, render_block.cpp) gives h1/h2 a
+    //    leading ▍ accent AND a full-width ═/─ underline RULE ROW below the
+    //    title — so a committed h1/h2 is TWO rows tall. If the live tail
+    //    rendered the heading as a bare one-row TextElement (as it used to),
+    //    the total turn height jumped +1 the instant the heading committed,
+    //    shoving the composer/status bar up by a row — the reported
+    //    "headings move the composer" artefact. Fix: render a RECOGNISED
+    //    h1/h2 through the SAME md_block_to_element pipeline commit_range
+    //    uses, so the accent + rule are present from `# ` onward and the
+    //    height is 2 rows before AND after commit — byte-identical, zero
+    //    snap. h3–h6 have no rule row (one row canonical), so their bare
+    //    text render already matches; they keep the cheap inline path.
+    //    Monotonic: the title line grows char-by-char (multi-line wrap only
+    //    ADDS rows); the rule row is reserved from the start.
     int hashes = 0;
     while (hashes < 6 && static_cast<size_t>(hashes) < body.size() &&
            body[hashes] == '#') ++hashes;
@@ -965,26 +1022,30 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
                                 : body.substr(eol + 1);
         std::string_view text  = first.substr(static_cast<size_t>(hashes) + 1);
 
-        Style sty = Style{}.with_bold();
-        switch (hashes) {
-            case 1: sty = sty.with_fg(colors::heading1); break;
-            case 2: sty = sty.with_fg(colors::heading2); break;
-            case 3: sty = sty.with_fg(colors::heading3); break;
-            default: sty = sty.with_fg(colors::heading3).with_dim(); break;
+        // Strip a trailing CR the wire may carry so the synthesized span
+        // matches what parse_markdown_impl would store.
+        while (!text.empty() && (text.back() == '\r')) text.remove_suffix(1);
+
+        // Build the heading Element the SAME way commit does: a real
+        // md::Heading fed to md_block_to_element. This carries the ▍ accent
+        // (h1/h2) + underline rule (h1/h2) so the live render is byte- and
+        // row-identical to the committed block — no height snap at the
+        // commit seam. Inline-parse the title exactly as the engine does on
+        // commit (so `**bold**` etc. in a heading render identically).
+        // Reserve the title row with a single space when the text is still
+        // empty (`# ` typed, no glyphs yet) so the row never collapses to
+        // zero and flickers.
+        md::Heading hd;
+        hd.level = hashes;
+        if (text.empty()) {
+            hd.spans.push_back(md::Inline{md::Text{" "}});
+        } else {
+            hd.spans = parse_inlines(text);
+            if (hd.spans.empty())
+                hd.spans.push_back(md::Inline{md::Text{" "}});
         }
-        // The heading line ALWAYS occupies exactly one row, even when the
-        // text is still empty (`# ` typed, no glyphs yet). An empty
-        // TextElement collapses to zero rows, which drops the total height
-        // BELOW the just-committed prefix for one frame and then snaps back
-        // when the first text byte arrives — a visible 1-row flicker on
-        // every streamed heading. Reserve the row with a single space so
-        // height is monotonic across `#` -> `# ` -> `# A`.
-        std::string content = text.empty() ? std::string{" "}
-                                           : std::string{text};
-        Element heading_el = Element{TextElement{
-            .content = std::move(content),
-            .style   = sty,
-        }};
+        Element heading_el = md_block_to_element(md::Block{std::move(hd)});
+
         while (!rest.empty() && rest.front() == '\n') rest.remove_prefix(1);
         if (rest.empty()) return heading_el;
         auto spans = parse_inlines(rest);

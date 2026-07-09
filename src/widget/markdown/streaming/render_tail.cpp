@@ -520,7 +520,15 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
         const bool stable_hit =
             tail_stable_cache_in_fence_ == in_code_fence_
             && tail_stable_cache_abs_end_  == last_blk_abs
-            && tail_stable_cache_len_      == last_block_start;
+            && tail_stable_cache_len_      == last_block_start
+            // Self-heal: a cache entry whose KEY matches but whose block
+            // vector is empty while the frozen prefix is non-empty would
+            // silently drop the prefix (e.g. "Notes..." above a list)
+            // for the frame the key first lands — the reported "line was
+            // missing while the list rendered, then came back". Treat an
+            // empty-but-should-be-populated entry as a MISS so it
+            // recomputes this frame instead of returning nothing.
+            && !(last_block_start > 0 && tail_stable_cache_blocks_.empty());
         if (stable_hit) return tail_stable_cache_blocks_;
         tail_stable_cache_blocks_.clear();
         if (last_block_start > 0) {

@@ -79,6 +79,34 @@ public:
         // Layout
         bool expanded = false;
 
+        // Content-stable cross-frame cache identity. When non-empty,
+        // build() wraps its result in a ComponentElement carrying this
+        // hash_id, so the renderer's cross-frame component cache blits
+        // the composer's laid-out cells instead of re-running
+        // layout::compute over the whole box (border + divider +
+        // width-adaptive hint component) every frame.
+        //
+        // WHY: during streaming the host re-runs view() on every delta,
+        // rebuilding the composer Element fresh each frame. Without a
+        // stable key the renderer pointer-keys on a brand-new
+        // ComponentElement address that never matches the prior frame,
+        // so it re-lays-out the whole subtree — and the width-adaptive
+        // hint row's 1-cell layout drift reads as flicker. The caller
+        // derives this id from exactly the fields that change the
+        // rendered pixels (text, cursor, state, colors, counts, width),
+        // so it stays constant across the many streaming frames where
+        // none of those move — turning per-frame relayout into an O(1)
+        // cache blit. Leave empty to keep legacy per-frame rebuild.
+        //
+        // NOTE: the blink phase is deliberately NOT folded into the id.
+        // While active (streaming / executing) the cursor holds steady
+        // (no blink), so the composer is genuinely frame-invariant and
+        // the cache is always fresh. While idle the widget requests its
+        // own animation frames for the blink; the id excludes blink so
+        // the caller doesn't have to thread wall-clock state through —
+        // idle repaints are cheap and rare (~4 Hz) either way.
+        CacheId cache_id{};
+
         // Minimum body-row count. The composer pads its inner column
         // with blank rows up to this floor so transient height
         // changes (empty→one char, last char→empty, 1-line→2-line
@@ -96,6 +124,30 @@ public:
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        // Cross-frame cache wrap. Engage ONLY when a stable id was
+        // supplied AND the composer is in an active (streaming /
+        // executing) state. Those are exactly the frames where (a) the
+        // host re-runs view() on every delta — so an uncached composer
+        // pays a full relayout per frame, the flicker source — and (b)
+        // the cursor holds steady (no blink), so the composer is
+        // genuinely frame-invariant and a cached blit is correct. While
+        // idle the caret blinks (cells change ~every 530 ms) so caching
+        // would freeze the blink; fall through to a live build there.
+        const bool active = (cfg_.state == State::Streaming
+                          || cfg_.state == State::ExecutingTool);
+        if (!cfg_.cache_id.empty() && active) {
+            ComponentElement comp;
+            comp.hash_id = cfg_.cache_id;
+            Config snapshot = cfg_;
+            comp.render = [snapshot = std::move(snapshot)](int, int) -> Element {
+                return Composer{snapshot}.build_impl();
+            };
+            return Element{std::move(comp)};
+        }
+        return build_impl();
+    }
+
+    [[nodiscard]] Element build_impl() const {
         using namespace dsl;
 
         const Color muted = Color::bright_black();

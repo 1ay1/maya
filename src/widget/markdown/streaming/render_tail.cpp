@@ -1103,6 +1103,44 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
     const bool tail_is_list  = is_list_row_start(first_line);
     const bool tail_is_quote = !tail_is_list && is_quote_row_start(first_line);
 
+    // ── Live-first-row eager render ───────────────────────────────────
+    //
+    // When the tail's first line is a list/quote marker that has NOT yet
+    // received its terminating '\n', the terminated-row walk below finds
+    // nothing to commit and we historically fell through to the inline
+    // path — which paints the raw marker bytes (`- `, `1. `, `> `) in
+    // body colour until the newline lands, then SNAPS into a styled
+    // block. That snap is the "rows start unformatted then jump into the
+    // block" artefact.
+    //
+    // Fix: mirror the heading / code-fence eager paths — synthesize a
+    // terminated single-row slice and render it in its committed shape
+    // right now. render_eager_slice feeds it through the same
+    // parse_markdown_impl + md_block_to_element pipeline commit_range
+    // uses, so the Element is byte-identical to what eventually commits:
+    // no second snap when the '\n' finally arrives.
+    //
+    // Monotonicity: a single list item / quote line occupies a height
+    // determined by its own bytes (wrap inside its column). As bytes
+    // extend the live row the item can only grow taller; once the '\n'
+    // lands the row joins the terminated-rows walk above unchanged.
+    if ((tail_is_list || tail_is_quote)
+        && first_line_end == std::string_view::npos
+        && !first_line.empty())
+    {
+        std::string synth;
+        synth.reserve(first_line.size() + 1);
+        synth.assign(first_line);
+        synth.push_back('\n');
+        std::vector<Element> kids;
+        kids.reserve(1);
+        render_eager_slice(synth, kids);
+        if (kids.size() == 1) return std::move(kids.front());
+        if (!kids.empty())
+            return detail::vstack().gap(1)(std::move(kids)).build();
+        // render_eager_slice produced nothing (defensive) — fall through.
+    }
+
     if ((tail_is_list || tail_is_quote) && first_line_end != std::string_view::npos) {
         // Walk lines forward, greedily consuming everything that still
         // belongs to the same block (list rows + their continuations,

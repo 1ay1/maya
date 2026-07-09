@@ -22,10 +22,12 @@
 #include <maya/widget/agent_timeline.hpp>
 #include <maya/widget/tool_body_preview.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -705,9 +707,23 @@ void test_agent_timeline_per_event_hash_id_bounds_cost() {
         return std::chrono::duration<double, std::micro>(t1 - t0).count() / kFrames;
     };
 
-    double base_no    = measure(0, false);   // 1 running, baseline
-    double n10_no     = measure(10, false);  // 10 done + 1 running, NO hash_id
-    double n10_cached = measure(10, true);   // 10 done + 1 running, WITH hash_id
+    // Best-of-N: wall-clock microbenchmarks are noisy, especially on shared
+    // CI runners doing other work concurrently. A single sample can put a
+    // scheduler hiccup on the cached run and none on the uncached one,
+    // inverting the ratio and tripping the assert for reasons unrelated to a
+    // real regression. Take the MINIMUM across a few reps — the least-
+    // contended sample is the closest to the true cost and is stable.
+    auto best_of = [&](int n_done, bool with_hash_id) -> double {
+        constexpr int kReps = 5;
+        double best = std::numeric_limits<double>::max();
+        for (int r = 0; r < kReps; ++r)
+            best = std::min(best, measure(n_done, with_hash_id));
+        return best;
+    };
+
+    double base_no    = best_of(0, false);   // 1 running, baseline
+    double n10_no     = best_of(10, false);  // 10 done + 1 running, NO hash_id
+    double n10_cached = best_of(10, true);   // 10 done + 1 running, WITH hash_id
 
     std::printf("[agent-timeline]  baseline (1 running):     %6.1f us/frame\n",
                 base_no);
@@ -726,12 +742,20 @@ void test_agent_timeline_per_event_hash_id_bounds_cost() {
     // sped up, so the cache's RELATIVE advantage narrowed even though
     // it still saves real time. (Absolute saving intact; ratio is just
     // compressed by a faster baseline.)
-    CHECK(n10_cached < n10_no,
-          "  per-event hash_id did not reduce cost: %.1f us cached >= %.1f us baseline\n",
+    // Directional check: the cached path must not be MEASURABLY slower. Allow
+    // a small tolerance so residual best-of-N noise (a few percent) can't
+    // flip a genuine tie into a failure.
+    CHECK(n10_cached <= n10_no * 1.05,
+          "  per-event hash_id did not reduce cost: %.1f us cached vs %.1f us baseline\n",
           n10_cached, n10_no);
+    // Ratio floor: an absolute-magnitude perf claim, so — like the other
+    // wall-time budgets in this file — skip it under sanitizers, where
+    // instrumentation distorts the cached/uncached ratio unpredictably.
+#if !MAYA_UNDER_SANITIZER
     CHECK(n10_no / n10_cached >= 1.1,
           "  per-event hash_id speedup too small: %.2fx (expected >= 1.1x)\n",
           n10_no / n10_cached);
+#endif
 }
 
 } // namespace

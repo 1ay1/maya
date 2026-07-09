@@ -321,6 +321,12 @@ private:
     // increases monotonically as the cursor passes it.
     mutable double       reveal_cp_  = 0.0;
     mutable std::int64_t reveal_ms_  = 0;
+    // Microsecond stamp of the last cursor advance — the sub-ms companion
+    // to reveal_ms_. reveal_ms_ stays for the ms-based scramble/gradient
+    // age math; reveal_us_ drives ONLY the per-frame dt fed to the cursor
+    // integrator, where ms truncation would zero out sub-ms frames and
+    // stall the glide. 0 = unset (stamped on first advance).
+    mutable std::int64_t reveal_us_  = 0;
 
     // Central typewriter integrator. reveal_cp_ above is the public face
     // of the reveal cursor (read by reveal_in_progress(), the byte clip,

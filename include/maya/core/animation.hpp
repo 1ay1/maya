@@ -523,6 +523,15 @@ class RateCursor {
     // single-frame paste. Small enough that the reveal still feels prompt
     // (~a few frames), large enough to smear a chunk into motion.
     double rate_tau_   = 0.15;
+    // Tracks whether the finalize ramp was active on the PREVIOUS tick, so
+    // the ramp re-seed of smoothed_rate_ fires only on the rising edge
+    // (entering the ramp) rather than every ramp frame. The host arms the
+    // deadline afresh each frame (set_deadline(remaining)), so without this
+    // the smoothed rate was overwritten with the ramp rate on EVERY ramp
+    // frame and then had to re-relax — a visible speed wobble right at
+    // end-of-turn. Re-seeding once, on entry, keeps the post-ramp glide
+    // continuous.
+    bool was_ramping_ = false;
     // Retained for the (currently unused) set_smoothing API; the rate-
     // smoothed glide no longer applies a separate burst multiplier.
     double max_burst_mult_ = 1.8;
@@ -595,6 +604,7 @@ public:
         if (backlog <= 0.0) {
             pos_ = target;
             if (ramp_left_ >= 0.0) ramp_left_ -= dt;
+            was_ramping_ = (ramp_left_ >= 0.0);
             return pos_;
         }
 
@@ -635,7 +645,17 @@ public:
                 if (ramp > rate) rate = ramp;
             }
             ramp_left_ -= dt;
-            smoothed_rate_ = rate;     // re-seed so post-ramp doesn't lurch
+            // Re-seed the smoothed rate ONCE, on the rising edge of the ramp
+            // (the frame we first enter it). Re-seeding every ramp frame
+            // overwrote the low-pass state with the ever-changing ramp rate,
+            // so when the ramp cleared the glide lurched from that value back
+            // toward the wire rate — a speed wobble at end-of-turn. Seeding
+            // once lets the low-pass carry a continuous rate through and out
+            // of the ramp.
+            if (!was_ramping_) smoothed_rate_ = rate;
+            was_ramping_ = true;
+        } else {
+            was_ramping_ = false;
         }
 
         // Never overshoot the live edge on a tiny-backlog frame.
@@ -649,6 +669,7 @@ public:
 
     constexpr void reset() noexcept {
         pos_ = 0.0; ramp_left_ = -1.0; smoothed_rate_ = -1.0;
+        was_ramping_ = false;
     }
 };
 

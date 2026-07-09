@@ -45,6 +45,25 @@ inline std::atomic<std::int64_t>& anim_clock_skew_ms() noexcept {
                       .load(std::memory_order_relaxed);
 }
 
+/// Microseconds on the animation clock: steady_clock + test skew.
+///
+/// Companion to anim_now_ms() for the ONE place ms granularity is too
+/// coarse: the reveal cursor's per-frame dt. anim_now_ms() truncates to
+/// whole milliseconds, so two build() calls landing in the same ms give a
+/// dt of 0 — the RateCursor early-outs (dt <= 0) and the cursor doesn't
+/// move that frame, bunching motion into the next ms tick (a micro-stutter
+/// that is WORSE on fast/local terminals, where sub-ms frames are common).
+/// Microsecond resolution removes that quantum. The test skew is still
+/// ms-granular (advance_anim_clock_ms) — it is applied here ×1000 so
+/// anim_now_us() advances in lock-step with anim_now_ms() under a test
+/// skew, staying monotone and phase-consistent with every ms-based widget.
+[[nodiscard]] inline std::int64_t anim_now_us() noexcept {
+    const auto real = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return real + detail::anim_clock_skew_ms()
+                      .load(std::memory_order_relaxed) * 1000;
+}
+
 namespace testing {
 
 /// Advance the animation clock by `ms` WITHOUT sleeping. Test-only:

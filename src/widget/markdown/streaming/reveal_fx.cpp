@@ -267,6 +267,7 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         last_grow_ms_   = ms_total;
         reveal_cp_      = 0.0;
         reveal_ms_      = ms_total;
+        reveal_us_      = 0;   // re-stamp on next advance (µs clock)
         reveal_edge_reached_ms_ = 0;
     }
 
@@ -319,9 +320,28 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         reveal_cp_ = static_cast<double>(committed_cp);
 
     {
-        double elapsed_s = (ms_total - reveal_ms_) / 1000.0;
-        if (elapsed_s < 0.0)   elapsed_s = 0.0;
-        if (elapsed_s > 0.120) elapsed_s = 0.120;
+        // Per-frame dt in SECONDS, from the MICROSECOND clock. anim_now_ms()
+        // truncates to whole ms, so two build()s in the same ms give dt==0
+        // and the cursor stalls that frame (RateCursor early-outs on
+        // dt<=0), bunching motion into the next ms tick — a micro-stutter
+        // that is worst on fast/local terminals. reveal_us_ tracks the same
+        // instants at µs resolution so the dt is exact.
+        const std::int64_t us_total = anim_now_us();
+        if (reveal_us_ == 0) reveal_us_ = us_total;
+        double elapsed_s = (us_total - reveal_us_) / 1'000'000.0;
+        if (elapsed_s < 0.0) elapsed_s = 0.0;
+        // Cap a catch-up frame so a long stall (GC pause, blocked terminal
+        // write, SSH round-trip) doesn't teleport the cursor to the edge in
+        // one frame. 250 ms (was 120 ms): the old cap discarded real elapsed
+        // time on any frame gap > 120 ms, so the backlog then drained over
+        // FOLLOWING frames via the low-pass instead of being caught up —
+        // turning a delivery hitch into visible slow-motion lag. 250 ms
+        // still bounds a pathological pop while letting an ordinary dropped
+        // frame (one skipped 60 fps wake ≈ 33 ms, or a 100 ms non-sync tick)
+        // integrate its true duration so motion stays continuous. The
+        // finalize ramp handles genuine end-of-stream catch-up separately.
+        if (elapsed_s > 0.250) elapsed_s = 0.250;
+        reveal_us_ = us_total;
         reveal_ms_ = ms_total;
 #if MAYA_REVEAL_CENTRAL_CURSOR
         // Central integrator path. The RateCursor reproduces the inline
@@ -565,11 +585,24 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         {
             constexpr std::int64_t kTrailCoolMs   = 700;
             constexpr std::int64_t kCaretBucketMs  = 60;   // pulse visible step
+            // Quantum for the scramble/gradient age term. While the tail is
+            // hot the age drives the FX, but feeding it EXACT (ms-precise)
+            // made the signature move every single frame, so the memo below
+            // never hit and every glide frame paid the full spine walk +
+            // decorate re-slice (the steady-frame cost that scales with the
+            // committed-block count and tail length). The scramble/gradient
+            // only change perceptibly every ~16 ms anyway, so bucket the age
+            // to that step: consecutive frames inside one bucket reuse the
+            // cached overlay (memo hit) while the FX still steps smoothly at
+            // ~60 fps. 16 ms == the RAF interval, so no visible age step is
+            // skipped.
+            constexpr std::int64_t kAgeBucketMs = 16;
             const bool tail_hot = age_at_tail_ms < kTrailCoolMs;
-            // Age term: exact while hot (drives scramble/gradient), pinned to
-            // the cool sentinel once cooled so it stops perturbing the sig.
+            // Age term: bucketed while hot (drives scramble/gradient but lets
+            // same-bucket frames hit the memo), pinned to the cool sentinel
+            // once cooled so it stops perturbing the sig entirely.
             const std::int64_t age_term =
-                tail_hot ? age_at_tail_ms : kTrailCoolMs;
+                tail_hot ? (age_at_tail_ms / kAgeBucketMs) : (kTrailCoolMs / kAgeBucketMs);
             OverlaySig sig{
                 prefix_->generation,
                 source_version_,
@@ -585,9 +618,22 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 // previously-decorated cached_live_ is still exact. Still
                 // honour the frame-request cadence so the caret keeps
                 // pulsing when the bucket eventually ticks.
-                if (age_at_tail_ms <= 360 || revealed_cp < total_cp) {
+                //
+                // Re-arm 60 fps for the WHOLE hot-tail window (age <=
+                // kTrailCoolMs), not a shorter 360 ms slice: the gradient
+                // trail visibly cools until kTrailCoolMs, so cutting the 60
+                // fps re-arm off at 360 ms left the 360..700 ms fade-out
+                // stepping at the coarse 100 ms non-sync bucket — a visible
+                // stutter in the cool-down. Keying both on the same
+                // kTrailCoolMs constant keeps the position glide and the FX
+                // fade on ONE cadence.
+                if (age_at_tail_ms <= kTrailCoolMs || revealed_cp < total_cp) {
                     ::maya::request_animation_frame();
                 } else {
+                    // Fully cooled, cursor at edge: only the caret pulses.
+                    // Step at the coarse phase bucket so a non-sync terminal
+                    // doesn't tear the chrome at 60 fps for a pulse that only
+                    // changes a few times a second.
                     static const std::int64_t kAnimPhaseMs =
                         ansi::env_supports_synchronized_output() ? 33 : 100;
                     const std::int64_t phase = ms_total / kAnimPhaseMs;

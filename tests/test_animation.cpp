@@ -299,8 +299,13 @@ void test_rate_cursor_glide_invariants() {
     std::println("    max speed seen   : {:.1f} cps", max_speed_seen);
     std::println("    max speed jump   : {:.1f} cps/frame", max_speed_jump);
     // The cursor should have tracked the edge (caught up by the end, since
-    // the feed stopped growing well before frame 4000's steady tail).
-    c.tick(total, dt);
+    // the feed stopped growing well before frame 4000's steady tail). Give
+    // it a few settle frames: with a bounded-lag glide the cursor sits
+    // ~drain_secs behind the edge, so a single tick can't clear a backlog
+    // left by a chunk that landed on one of the last frames — drain until
+    // the wall-clock lag window has elapsed (0.5 s lead / 0.016 s ≈ 32
+    // frames, use 64 for margin).
+    for (int i = 0; i < 64; ++i) c.tick(total, dt);
     assert(std::abs(c.pos() - total) < 1.0);
     // Speed never exploded: a backlog-proportional model would have hit
     // tens of thousands of cps on a fat chunk; the glide caps it.
@@ -325,6 +330,112 @@ void test_rate_cursor_ramp_still_lands() {
     std::println("PASS (ramp lands on deadline)\n");
 }
 
+// ── RateCursor: sub-millisecond frames must still advance ───────────────────
+//
+// anim_now_ms() truncates to whole ms, so on a fast/local terminal two
+// build()s can land in the same ms and hand tick() a dt of 0 (the cursor
+// stalls that frame, motion bunches into the next ms tick — a micro-
+// stutter). The reveal path now derives dt from anim_now_us() so a sub-ms
+// dt is a real, non-zero advance. Pin that tick() itself makes forward
+// progress on a stream of tiny dts summing to a normal frame budget, and
+// that many sub-ms frames reveal the same total as one combined frame
+// (no motion lost to quantisation).
+void test_rate_cursor_submillisecond_dt() {
+    std::println("--- test_rate_cursor_submillisecond_dt ---");
+    const double kCruise = 120.0, kLead = 0.5;
+
+    // A: ten 0.6 ms frames (6 ms total) — the sub-ms regime a µs clock
+    // preserves but a ms clock would round to a mix of 0 ms and 1 ms.
+    RateCursor a(kCruise, kLead);
+    const double target = 1000.0;
+    for (int i = 0; i < 10; ++i) {
+        const double before = a.pos();
+        a.tick(target, 0.0006);
+        // Every sub-ms frame makes strictly forward progress (backlog is
+        // huge, floor rate applies) — never a stalled 0-advance frame.
+        assert(a.pos() > before);
+    }
+
+    // B: one combined 6 ms frame reveals ~the same amount (integration is
+    // dt-additive; the smoothing differs slightly frame-to-frame but the
+    // TOTAL over the window must match within a small tolerance — proving
+    // no motion is lost or double-counted by sub-stepping).
+    RateCursor b(kCruise, kLead);
+    b.tick(target, 0.006);
+
+    const double diff = std::abs(a.pos() - b.pos());
+    std::println("    10x0.6ms pos={:.2f}  1x6ms pos={:.2f}  diff={:.2f}",
+                 a.pos(), b.pos(), diff);
+    // Backlog/drain rate over 6 ms at ~floor is ~0.72 cp; the low-pass
+    // makes the split path a touch slower, but the two must agree to well
+    // under a codepoint — the quantisation error a ms clock introduced.
+    assert(diff < 1.0);
+    // And the sub-ms path did move (not stuck at 0).
+    assert(a.pos() > 0.0);
+    std::println("PASS (sub-ms frames advance, no quantisation stall)\n");
+}
+
+// ── RateCursor: the finalize ramp must not wobble the post-ramp speed ───────
+//
+// The host re-arms the finalize deadline every frame (set_deadline(remaining)).
+// The ramp used to re-seed smoothed_rate_ on EVERY ramp frame, so it stored
+// the (large, deadline-driven) ramp rate into the low-pass state; when the
+// ramp then CLEARED, the next non-ramp frame started from that inflated
+// smoothed_rate_ and had to relax back down — a burst of over-fast glide
+// AFTER the deadline (a visible speed wobble at end-of-turn). The re-seed
+// now fires only on the ramp's rising edge, so the low-pass keeps its
+// wire-tracking rate through the ramp and the FIRST post-ramp frame glides
+// at the normal rate, not the ramp rate.
+//
+// This is checked directly: run a ramp to completion, CLEAR the deadline,
+// then feed a modest steady backlog and assert the first post-ramp frame's
+// speed is near the cruise glide — NOT the inflated ramp speed. (The
+// speed DURING the ramp is legitimately large — that's the deadline
+// guarantee — so we measure only the hand-off frame.)
+void test_rate_cursor_ramp_no_wobble() {
+    std::println("--- test_rate_cursor_ramp_no_wobble ---");
+    const double kCruise = 120.0, kLead = 0.5;
+    RateCursor c(kCruise, kLead);
+    const double dt = 0.016;
+
+    // Warm up a steady glide behind a growing edge.
+    double total = 0.0;
+    for (int i = 0; i < 30; ++i) { total += 8.0; c.tick(total, dt); }
+
+    // Run a finalize ramp to completion (host re-arms the deadline each
+    // frame). This drives the cursor to the edge fast and — under the old
+    // per-frame re-seed — leaves smoothed_rate_ inflated to the ramp rate.
+    double rl = 0.2;
+    for (int i = 0; i < 16; ++i) {
+        c.set_deadline(rl);
+        c.tick(total, dt);
+        rl -= dt;
+    }
+    c.clear_deadline();
+
+    // Now grow the edge by a modest steady amount and measure the FIRST
+    // post-ramp frame's speed. With the rising-edge re-seed the low-pass
+    // still holds ~the wire rate, so this frame glides near cruise. With
+    // the old per-frame re-seed smoothed_rate_ was pinned to the (much
+    // larger) ramp rate, so this frame would lurch far above cruise.
+    const double pos_before = c.pos();
+    total += 8.0;                      // ~one frame of wire at 500 cps
+    c.tick(total, dt);
+    const double handoff_speed = (c.pos() - pos_before) / dt;
+
+    std::println("    first post-ramp frame speed: {:.1f} cps (cruise {:.0f})",
+                 handoff_speed, kCruise);
+    // The hand-off must not lurch: a small backlog (8 cp) at a healthy
+    // glide clears in a few frames, so the speed sits near the backlog/lead
+    // rate, comfortably under a few× cruise. The old wobble drove this to
+    // the ramp rate (many hundreds of cps) — orders of magnitude higher.
+    assert(handoff_speed < 3.0 * kCruise);
+    // Cursor still tracks the edge afterward.
+    for (int i = 0; i < 64; ++i) c.tick(total, dt);
+    assert(std::abs(c.pos() - total) < 1.0);
+    std::println("PASS (ramp re-seed on rising edge only, no post-ramp wobble)\n");
+}
+
 int main() {
     test_easing_constexpr();
     test_tween_basic();
@@ -344,6 +455,8 @@ int main() {
     test_rate_cursor_deadline_ramp();
     test_rate_cursor_glide_invariants();
     test_rate_cursor_ramp_still_lands();
+    test_rate_cursor_submillisecond_dt();
+    test_rate_cursor_ramp_no_wobble();
     std::println("All animation tests passed.");
     return 0;
 }

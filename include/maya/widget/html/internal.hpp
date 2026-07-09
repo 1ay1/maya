@@ -4,9 +4,13 @@
 // implementation; NOT installed.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "maya/style/color.hpp"
+#include "maya/style/style.hpp"
 
 namespace maya::html::detail {
 
@@ -52,6 +56,21 @@ struct Node {
 // Tokenize + build a tolerant DOM (implied closes, void elements, raw-text
 // elements). Returns a Document node.
 [[nodiscard]] Node parse(std::string_view src);
+
+// ── CSS style parsing (css.cpp) ──────────────────────────────────────────────
+// Parse a `style="..."` attribute value (semicolon-separated `prop: value`
+// declarations) and overlay the recognised properties onto `base`. Understands
+// color / background[-color] / font-weight / font-style / text-decoration.
+[[nodiscard]] Style parse_inline_style(std::string_view css, Style base);
+
+// Parse a single CSS color token (named, #rgb, #rrggbb, rgb()/rgba()) into a
+// maya Color. Returns nullopt when the token is empty or unrecognised.
+[[nodiscard]] std::optional<Color> parse_css_color(std::string_view tok);
+
+// Apply presentational attributes (color=, bgcolor=, face-agnostic) plus any
+// inline `style=` onto `base`, in CSS cascade order (presentational first,
+// then style overrides). Used by both render paths for <span>/<font>/etc.
+[[nodiscard]] Style apply_presentation(const std::vector<Attr>& attrs, Style base);
 
 // ── element classification (tags.cpp) ───────────────────────────────────────
 // Void elements never have content/closing tags (br, hr, img, …).

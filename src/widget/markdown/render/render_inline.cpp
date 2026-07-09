@@ -256,7 +256,17 @@ static void flatten_inlines(const std::vector<md::Inline>& spans,
                 continue;
             }
             if (tag->name == "wbr") continue;  // zero-width break opportunity
-            if (role != html::Role::None) {
+
+            // A tag is "styling" if it maps to a phrasing role OR carries
+            // inline CSS / presentational color attributes (span, font, or
+            // any element with style="..."). span/font have Role::None but
+            // still open a style scope so `<span style="color:red">…</span>`
+            // colours its children instead of dumping literal tag text.
+            bool has_css = !tag->style.empty() || !tag->color.empty() ||
+                           !tag->bgcolor.empty();
+            bool container = tag->name == "span" || tag->name == "font" ||
+                             tag->name == "div" || tag->name == "p";
+            if (role != html::Role::None || has_css || container) {
                 if (tag->is_close) {
                     for (int k = static_cast<int>(stack.size()) - 1; k >= 0; --k)
                         if (stack[static_cast<std::size_t>(k)].name == tag->name) {
@@ -266,7 +276,9 @@ static void flatten_inlines(const std::vector<md::Inline>& spans,
                         }
                 } else if (!tag->self_closing) {
                     stack.push_back({tag->name, cur});
-                    cur = html_role_style(role, cur);
+                    Style styled = html_role_style(role, cur);
+                    styled = html::tag_style(*tag, styled);  // CSS overrides role
+                    cur = styled;
                 }
                 continue;  // styling tags emit no literal text
             }

@@ -189,6 +189,7 @@ set(MAYA_LIB_SOURCES
     src/widget/html/tags.cpp
     src/widget/html/tokenizer.cpp
     src/widget/html/parser.cpp
+    src/widget/html/css.cpp
     src/widget/html/render.cpp
 )
 

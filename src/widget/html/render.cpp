@@ -81,7 +81,11 @@ private:
         if (n.kind != Node::Kind::Element) return;
         Role r = inline_role(n.tag);
         if (r == Role::Break) { segs.push_back({"", cur, true}); return; }
+        // Role styling first, then per-element CSS (style=/color=/bgcolor=)
+        // overlays so `<span style=...>` and `<font color=...>` win over the
+        // inherited/role style, exactly like the CSS cascade.
         Style st = apply_role(r, cur, n);
+        st = detail::apply_presentation(n.attrs, st);
         for (const auto& c : n.children) emit_inline(c, st, segs);
     }
 

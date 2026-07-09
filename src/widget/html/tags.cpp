@@ -85,6 +85,22 @@ std::optional<Tag> parse_tag(std::string_view fragment) {
     out.self_closing = tag->self_closing;
     out.href = std::string(detail::attr_of(tag->attrs, "href"));
     out.title = std::string(detail::attr_of(tag->attrs, "title"));
+    out.style = std::string(detail::attr_of(tag->attrs, "style"));
+    out.color = std::string(detail::attr_of(tag->attrs, "color"));
+    out.bgcolor = std::string(detail::attr_of(tag->attrs, "bgcolor"));
+    return out;
+}
+
+// ── public: tag styling overlay ──────────────────────────────────────────
+Style tag_style(const Tag& tag, Style base) {
+    Style out = base;
+    // Presentational attributes first (color=, bgcolor=), then inline CSS.
+    if (!tag.color.empty())
+        if (auto c = detail::parse_css_color(tag.color)) out = out.with_fg(*c);
+    if (!tag.bgcolor.empty())
+        if (auto c = detail::parse_css_color(tag.bgcolor)) out = out.with_bg(*c);
+    if (!tag.style.empty())
+        out = detail::parse_inline_style(tag.style, out);
     return out;
 }
 

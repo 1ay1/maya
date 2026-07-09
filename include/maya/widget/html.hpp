@@ -85,6 +85,9 @@ struct Tag {
     bool        self_closing = false;
     std::string href;            // <a href>
     std::string title;           // title= (e.g. <abbr title>)
+    std::string style;           // style="..." (inline CSS, entity-decoded)
+    std::string color;           // color= presentational attribute
+    std::string bgcolor;         // bgcolor= presentational attribute
 };
 
 /// Parse one tag fragment (e.g. a markdown RawInline). nullopt if `fragment`
@@ -94,5 +97,12 @@ struct Tag {
 /// Classify a (lowercased) element name's phrasing role. Role::None for
 /// unknown or block-level names.
 [[nodiscard]] Role inline_role(std::string_view name);
+
+/// Overlay a tag's presentational + inline-CSS styling (color=, bgcolor=,
+/// style="...") onto `base`, following the CSS cascade (attributes first,
+/// then `style`). Returns `base` unchanged when the tag carries no styling.
+/// Lets the markdown widget honour `<span style="color:red">` and
+/// `<font color=...>` with the same engine the standalone renderer uses.
+[[nodiscard]] Style tag_style(const Tag& tag, Style base);
 
 } // namespace maya::html

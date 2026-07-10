@@ -360,6 +360,57 @@ void test_regrow_blank_boundary() {
     std::println("PASS\n");
 }
 
+// ============================================================================
+// Test 16: text inherits the enclosing box's bg (ambient background)
+// ============================================================================
+// The terminal cell model doesn't composite — write_text replaces cells
+// wholesale, and a style with no bg resets to the terminal default at
+// SGR time. Before ambient-bg inheritance, a box's bgc() fill survived
+// only in cells no text touched: every fg-only glyph punched a
+// default-bg hole in the strip (selected-row strips, filled buttons).
+// Now paint_element records the nearest enclosing box bg and folds it
+// into any text run that doesn't declare its own; explicit run bgs win.
+void test_ambient_bg_inheritance() {
+    std::println("--- test_ambient_bg_inheritance ---");
+    StylePool pool;
+    Canvas canvas(30, 3, &pool);
+    const Color strip = Color::hex(0x2c2c44);
+    const Color chip  = Color::hex(0x113355);
+
+    // Row: fg-only text + a run with its own bg, on a bg-filled h-box.
+    std::vector<StyledRun> runs;
+    runs.push_back({0, 3, Style{}.with_fg(Color::green())});          // "abc"
+    runs.push_back({3, 3, Style{}.with_bg(chip)});                    // "def"
+    Element styled{TextElement{.content = "abcdef", .style = {},
+                               .wrap = TextWrap::NoWrap,
+                               .runs = std::move(runs)}};
+    render_tree((h(text("hi"), std::move(styled)) | bgc(strip)).build(),
+                canvas, pool, theme::dark);
+    dump(canvas, 1);
+
+    auto bg_at = [&](int x) -> std::optional<Color> {
+        return pool.get(canvas.get(x, 0).style_id).bg;
+    };
+    // "hi" (cols 0-1): fg-only text must carry the strip bg, not default.
+    MAYA_TEST_CHECK(bg_at(0) == strip,
+                    "fg-only text glyph lost the enclosing box bg");
+    // "abc" run (cols 2-4): fg-only run inherits the strip too.
+    MAYA_TEST_CHECK(bg_at(2) == strip,
+                    "fg-only styled run lost the enclosing box bg");
+    // "def" run (cols 5-7): explicit run bg must WIN over the ambient.
+    MAYA_TEST_CHECK(bg_at(5) == chip,
+                    "explicit run bg was clobbered by the ambient bg");
+    // Untouched fill cell (col 20): plain strip fill.
+    MAYA_TEST_CHECK(bg_at(20) == strip,
+                    "box fill missing outside the text span");
+    // And text OUTSIDE any bg box must stay default-bg.
+    Canvas c2(10, 1, &pool);
+    render_tree(text("zz"), c2, pool, theme::dark);
+    MAYA_TEST_CHECK(!pool.get(c2.get(0, 0).style_id).bg.has_value(),
+                    "ambient bg leaked outside its box scope");
+    std::println("PASS\n");
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     test_bare_text();
@@ -377,6 +428,7 @@ int main() {
     test_style_transition();
     test_writer();
     test_regrow_blank_boundary();
+    test_ambient_bg_inheritance();
 
-    std::println("=== ALL {} TESTS PASSED ===", 15);
+    std::println("=== ALL {} TESTS PASSED ===", 16);
 }

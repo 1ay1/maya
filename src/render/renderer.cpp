@@ -225,6 +225,52 @@ inline int& render_depth() {
     return d;
 }
 
+// ── Ambient background (paint-time bg inheritance) ──────────────────
+// The bg color of the nearest enclosing BoxElement that declared one.
+//
+// The terminal cell model doesn't composite: write_text/set REPLACE the
+// cell wholesale, and a Style with no bg emits an SGR that resets the
+// cell to the TERMINAL DEFAULT background. So a box's bgc() fill only
+// survived in cells no descendant text touched — every fg-only glyph
+// punched a default-bg hole in the strip (the classic "text has its own
+// background" artifact on selected-row strips, filled buttons, chips).
+//
+// Fix: while painting a box with style.bg set, record that color as the
+// ambient background; every descendant TextElement run that does NOT
+// carry its own bg is interned with the ambient bg baked in — the same
+// resolution CSS does for `background: transparent` children. Runs with
+// an explicit bg (code chips, meter grooves, highlight marks) win over
+// the ambient, and a run that WANTS the terminal-default bg inside a
+// filled box can say so explicitly with Color::Kind::Default.
+//
+// Thread-local + RAII scope (not a paint_element parameter) so the
+// inheritance flows through every recursion seam — ElementList
+// fragments, stack overlays, and ComponentElement sub-renders — without
+// touching the public paint_element signature. NB: a hash-keyed
+// component's captured cells bake the ambient bg that was active at
+// capture time; hosts whose component content can sit on differently-
+// colored strips must fold that color into the hash_id (same contract
+// as any other appearance input).
+inline std::optional<Color>& ambient_bg() {
+    thread_local std::optional<Color> bg;
+    return bg;
+}
+
+struct AmbientBgScope {
+    std::optional<Color> prev_;
+    bool engaged_ = false;
+    explicit AmbientBgScope(const std::optional<Color>& next) {
+        if (next.has_value()) {
+            prev_ = ambient_bg();
+            ambient_bg() = next;
+            engaged_ = true;
+        }
+    }
+    ~AmbientBgScope() { if (engaged_) ambient_bg() = prev_; }
+    AmbientBgScope(const AmbientBgScope&) = delete;
+    AmbientBgScope& operator=(const AmbientBgScope&) = delete;
+};
+
 }  // anonymous
 
 // ============================================================================
@@ -733,6 +779,14 @@ void paint_element(
                 canvas.fill(abs_rect, U' ', bg_style_id);
             }
 
+            // 1b. Establish the ambient background for this box's entire
+            //     subtree (children + stack overlays). Descendant text runs
+            //     with no explicit bg inherit it at intern time — see the
+            //     TextElement visitor — so glyphs can't punch terminal-
+            //     default holes in the fill painted above. RAII: restores
+            //     the enclosing ambient when this lambda returns.
+            AmbientBgScope ambient_scope(node.style.bg);
+
             // 2. Draw border.
             if (node.has_border()) {
                 Style border_style = node.style;
@@ -979,8 +1033,23 @@ void paint_element(
         [&](const TextElement& node) {
             const auto& lines = node.format(aw);
 
+            // Ambient-bg fold: a run with no explicit bg inherits the
+            // nearest enclosing box's bg (see AmbientBgScope). Without
+            // this, the SGR for a bg-less style resets the cell to the
+            // terminal default and the glyph punches a hole in the box's
+            // fill. An explicit bg — including Color::Kind::Default as
+            // the deliberate "terminal bg" opt-out — always wins.
+            auto intern_bg = [&](const Style& s) -> uint16_t {
+                const auto& amb = ambient_bg();
+                if (amb.has_value() && !s.bg.has_value()) {
+                    Style folded = s;
+                    return pool.intern(folded.with_bg(*amb));
+                }
+                return pool.intern(s);
+            };
+
             if (node.runs.empty()) {
-                uint16_t style_id = pool.intern(node.style);
+                uint16_t style_id = intern_bg(node.style);
                 for (const auto& [row, line] :
                          lines | std::views::enumerate | std::views::take(ah)) {
                     canvas.write_text(ax, ay + static_cast<int>(row),
@@ -1009,7 +1078,7 @@ void paint_element(
                            pos >= node.runs[ri].byte_offset +
                                   node.runs[ri].byte_length)
                         ++ri;
-                    return pool.intern(
+                    return intern_bg(
                         node.runs[std::min(ri, node.runs.size() - 1)].style);
                 };
 
@@ -1038,7 +1107,7 @@ void paint_element(
                         std::size_t ce = std::min(le, b + rem);
                         if (ce <= b) ce = b + 1;
                         auto sv = std::string_view(ln).substr(b, ce - b);
-                        canvas.write_text(xc, yy, sv, pool.intern(r.style));
+                        canvas.write_text(xc, yy, sv, intern_bg(r.style));
                         xc += string_width(sv);
                         b = ce;
                     }
@@ -1070,7 +1139,7 @@ void paint_element(
                     return;
                 }
 
-                uint16_t sid = pool.intern(node.style);
+                uint16_t sid = intern_bg(node.style);
                 canvas.write_text(ax, y, line, sid);
                 return;
             }
@@ -1115,7 +1184,7 @@ void paint_element(
 
                         auto chunk = std::string_view(line_text)
                                          .substr(line_byte, chunk_end - line_byte);
-                        uint16_t sid = pool.intern(run.style);
+                        uint16_t sid = intern_bg(run.style);
                         canvas.write_text(x_cursor, y, chunk, sid);
                         x_cursor += string_width(chunk);
                         line_byte = chunk_end;

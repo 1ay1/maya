@@ -27,6 +27,7 @@
 #include "maya/element/builder.hpp"
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
+#include "maya/widget/markdown/streaming_internal.hpp"
 
 namespace maya {
 
@@ -131,15 +132,28 @@ void StreamingMarkdown::spawn_async_worker_(std::string source) const {
         seg_ranges.reserve(parsed.blocks.size() + 1);
         {
             bool seg_in_fence = false;
+            char seg_fence_ch = '\0';
+            std::size_t seg_fence_len = 0;
             std::size_t k = 0;
             while (k < src.size() && src[k] == '\n') ++k;
             std::size_t seg_start = k;
             while (k < src.size()) {
                 bool at_ls = (k == 0 || src[k - 1] == '\n');
-                if (at_ls && k + 3 <= src.size() &&
-                    ((src[k] == '`' && src[k+1] == '`' && src[k+2] == '`') ||
-                     (src[k] == '~' && src[k+1] == '~' && src[k+2] == '~'))) {
-                    seg_in_fence = !seg_in_fence;
+                std::size_t eol0 = src.find('\n', k);
+                std::size_t le = (eol0 == std::string::npos) ? src.size() : eol0;
+                bool is_code_open = false;
+                if (at_ls) {
+                    md_detail::streaming::FenceState fs{
+                        seg_in_fence, seg_fence_ch, seg_fence_len};
+                    is_code_open = md_detail::streaming::fence_scan_line(
+                        fs, std::string_view{src}, k, le);
+                    if (is_code_open) {
+                        seg_in_fence  = fs.in_fence;
+                        seg_fence_ch  = fs.open_ch;
+                        seg_fence_len = fs.open_len;
+                    }
+                }
+                if (is_code_open) {
                     std::size_t eol = src.find('\n', k);
                     if (eol == std::string::npos) { k = src.size(); break; }
                     k = eol + 1;
@@ -204,18 +218,21 @@ void StreamingMarkdown::spawn_async_worker_(std::string source) const {
             slot->metas.push_back(std::move(meta));
         }
         slot->ref_defs = std::move(defs);
-        // in_code_fence at end-of-source — count ``` / ~~~ fence
-        // toggles at line starts.
-        bool fence = false;
+        // in_code_fence at end-of-source — spec-faithful ``` / ~~~ parity
+        // (≤3 indent, char + run-length matched close) via the shared
+        // classifier, so the async result agrees with the incremental path.
+        md_detail::streaming::FenceState fst;
         for (std::size_t j = 0; j < src.size(); ++j) {
             bool at_ls = (j == 0 || src[j - 1] == '\n');
             if (!at_ls) continue;
-            if (j + 3 <= src.size() &&
-                ((src[j] == '`' && src[j+1] == '`' && src[j+2] == '`') ||
-                 (src[j] == '~' && src[j+1] == '~' && src[j+2] == '~')))
-                fence = !fence;
+            std::size_t eol = src.find('\n', j);
+            std::size_t le = (eol == std::string::npos) ? src.size() : eol;
+            (void)md_detail::streaming::fence_scan_line(
+                fst, std::string_view{src}, j, le);
         }
-        slot->in_code_fence = fence;
+        slot->in_code_fence  = fst.in_fence;
+        slot->fence_open_ch  = fst.open_ch;
+        slot->fence_open_len = fst.open_len;
         // Publish: release-store on `ready` so the foreground's
         // acquire-load sees the populated vectors above.
         slot->ready.store(true, std::memory_order_release);

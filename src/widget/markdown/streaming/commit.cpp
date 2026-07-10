@@ -81,6 +81,8 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     };
     {
         bool seg_in_fence = false;
+        char seg_fence_ch = '\0';
+        std::size_t seg_fence_len = 0;
         size_t seg_start = base;
         size_t k = base;
         // Skip leading blank lines so the first segment starts at real
@@ -90,13 +92,25 @@ void StreamingMarkdown::commit_range(size_t boundary) {
         seg_start = k;
         while (k < boundary) {
             bool at_ls = (k == base || source_[k - 1] == '\n');
-            bool is_code_open = at_ls && k + 3 <= boundary &&
-                ((source_[k] == '`' && source_[k+1] == '`' && source_[k+2] == '`') ||
-                 (source_[k] == '~' && source_[k+1] == '~' && source_[k+2] == '~'));
-            bool is_math_open = !is_code_open && at_ls &&
+            size_t eol0 = std::string_view{source_}.find('\n', k);
+            size_t le = (eol0 == std::string_view::npos || eol0 > boundary)
+                            ? boundary : eol0;
+            bool is_code_open = false;
+            if (at_ls) {
+                md_detail::streaming::FenceState fs{
+                    seg_in_fence, seg_fence_ch, seg_fence_len};
+                is_code_open = md_detail::streaming::fence_scan_line(
+                    fs, std::string_view{source_}, k, le);
+                if (is_code_open) {
+                    seg_in_fence  = fs.in_fence;
+                    seg_fence_ch  = fs.open_ch;
+                    seg_fence_len = fs.open_len;
+                }
+            }
+            bool is_math_open = !is_code_open && at_ls && !seg_in_fence &&
                                 is_math_fence_line(k, boundary);
+            if (is_math_open) seg_in_fence = !seg_in_fence;
             if (is_code_open || is_math_open) {
-                seg_in_fence = !seg_in_fence;
                 // advance to end of fence line
                 size_t eol = std::string_view{source_}.find('\n', k);
                 if (eol == std::string_view::npos || eol >= boundary) { k = boundary; break; }
@@ -196,16 +210,29 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     for (size_t j = committed_; j < boundary; ++j) {
         bool at_line_start = (j == 0 || source_[j - 1] == '\n');
         if (!at_line_start) continue;
-        bool is_code = j + 3 <= boundary &&
-            ((source_[j] == '`' && source_[j+1] == '`' && source_[j+2] == '`') ||
-             (source_[j] == '~' && source_[j+1] == '~' && source_[j+2] == '~'));
+        std::size_t eol = std::string_view{source_}.find('\n', j);
+        std::size_t line_end = (eol == std::string_view::npos || eol > boundary)
+                                   ? boundary : eol;
+        // Spec-faithful ``` / ~~~ parity via the shared classifier (≤3
+        // indent, char + run-length matched close) so committed_/
+        // in_code_fence_ track the SAME fences the engine parser does.
+        md_detail::streaming::FenceState fst{
+            in_code_fence_, fence_open_ch_, fence_open_len_};
+        bool is_code = md_detail::streaming::fence_scan_line(
+            fst, std::string_view{source_}, j, line_end);
+        if (is_code) {
+            in_code_fence_  = fst.in_fence;
+            fence_open_ch_  = fst.open_ch;
+            fence_open_len_ = fst.open_len;
+            continue;
+        }
         // Math: $$-alone-on-line (gated identically to the boundary
         // scanner and the seg walker above). Treating `$$foo` as a
         // fence here would flip in_code_fence_ without the scanner
         // agreeing — a divergence that buries subsequent paragraphs
         // in an opaque fence forever.
-        bool is_math = !is_code && is_math_fence_line(j, boundary);
-        if (is_code || is_math) in_code_fence_ = !in_code_fence_;
+        bool is_math = is_math_fence_line(j, boundary);
+        if (is_math) in_code_fence_ = !in_code_fence_;
     }
 
     committed_ = boundary;
@@ -252,6 +279,8 @@ void StreamingMarkdown::commit_range(size_t boundary) {
     if (committed_ >= scan_cursor_) {
         scan_cursor_   = committed_;
         scan_in_fence_ = in_code_fence_;
+        scan_fence_open_ch_  = fence_open_ch_;
+        scan_fence_open_len_ = fence_open_len_;
     }
 }
 
@@ -524,6 +553,8 @@ void StreamingMarkdown::finish() {
     if (committed_ < source_.size()) {
         commit_range(source_.size());
         in_code_fence_ = false;
+        fence_open_ch_ = '\0';
+        fence_open_len_ = 0;
     }
 
     // Stream is over: drop the blinking cursor so the settled
@@ -566,12 +597,16 @@ void StreamingMarkdown::clear() {
     instance_id_ = detail::next_component_generation();
     ref_defs_.clear();
     in_code_fence_ = false;
+    fence_open_ch_ = '\0';
+    fence_open_len_ = 0;
     sink_.reset();
     build_dirty_ = true;
     cached_tail_size_ = 0;
     // Reset the resumable boundary scanner.
     scan_cursor_        = 0;
     scan_in_fence_      = false;
+    scan_fence_open_ch_ = '\0';
+    scan_fence_open_len_ = 0;
     scan_last_boundary_ = 0;
     scan_boundaries_.clear();
     // Reset the inline-tail cache. Strictly speaking the prefix-match

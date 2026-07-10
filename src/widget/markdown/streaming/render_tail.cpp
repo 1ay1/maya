@@ -478,22 +478,24 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
     // merge test (further down) O(last block) instead of O(terminated).
     std::size_t last_block_start = 0;
     {
-        bool in_fence = in_code_fence_;
+        md_detail::streaming::FenceState fst{
+            in_code_fence_, fence_open_ch_, fence_open_len_};
         std::size_t p = 0;
         std::size_t block_start = 0;
         bool prev_blank = false;
         while (p < terminated.size()) {
             std::size_t e = terminated.find('\n', p);
             if (e == std::string_view::npos) e = terminated.size();
+            // Spec-faithful ``` / ~~~ parity via the shared classifier so
+            // this block-boundary scan agrees with committed_/in_code_fence_.
+            const bool was_in = fst.in_fence;
+            const bool fence_line = md_detail::streaming::fence_scan_line(
+                fst, terminated, p, e);
             std::string_view ln = terminated.substr(p, e - p);
-            std::size_t k = 0;
-            while (k < ln.size() && ln[k] == ' ') ++k;
-            const bool fence_line =
-                ln.size() - k >= 3 && (ln[k] == '`' || ln[k] == '~');
             const bool blank =
                 ln.find_first_not_of(" \t\r") == std::string_view::npos;
-            if (fence_line) { in_fence = !in_fence; prev_blank = false; }
-            else if (!in_fence && blank) { prev_blank = true; }
+            if (fence_line) { prev_blank = false; }
+            else if (!was_in && blank) { prev_blank = true; }
             else { if (prev_blank) block_start = p; prev_blank = false; }
             p = e + 1;
         }
@@ -686,25 +688,20 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                 // rows: an opener/closer is a line whose first non-space
                 // run is >=3 of the same fence char. Odd parity = the
                 // last terminated row left us INSIDE a fence, so this
-                // all-fence live line is the closing delimiter.
-                bool inside = in_code_fence_;
+                // all-fence live line is the closing delimiter. Uses the
+                // shared spec-faithful classifier (char + run-length
+                // matched close) so the verdict agrees with in_code_fence_.
+                md_detail::streaming::FenceState fst{
+                    in_code_fence_, fence_open_ch_, fence_open_len_};
                 std::size_t p = 0;
                 while (p < terminated.size()) {
                     std::size_t e = terminated.find('\n', p);
                     if (e == std::string_view::npos) e = terminated.size();
-                    std::string_view ln = terminated.substr(p, e - p);
-                    std::size_t k = 0;
-                    while (k < ln.size() && ln[k] == ' ') ++k;
-                    if (ln.size() - k >= 3 &&
-                        (ln[k] == '`' || ln[k] == '~')) {
-                        char fc = ln[k];
-                        std::size_t run = 0;
-                        while (k + run < ln.size() && ln[k + run] == fc) ++run;
-                        if (run >= 3) inside = !inside;
-                    }
+                    (void)md_detail::streaming::fence_scan_line(
+                        fst, terminated, p, e);
                     p = e + 1;
                 }
-                if (inside) trimmed_live.clear();
+                if (fst.in_fence) trimmed_live.clear();
             }
         }
 

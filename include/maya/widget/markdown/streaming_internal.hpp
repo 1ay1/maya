@@ -69,6 +69,68 @@ struct TableScanResult {
 [[nodiscard]] TableScanResult find_table_end(std::string_view src,
                                              std::size_t line_start) noexcept;
 
+// ── Code-fence line classifier (single source of truth) ────────────────────
+// The streaming widget tracks ``` / ~~~ fence parity in five places (the
+// boundary scanner, commit_range's seg walker and its parity walker, the
+// async worker, and render_tail's closer-suppression probe). Each used to
+// hand-inline a bare 3-char test, which diverged from the real engine parser
+// (engine/cm_block.cpp code_fence / append_to_leaf) on three axes — so
+// committed_ / in_code_fence_ could describe a DIFFERENT document than
+// parse_markdown_impl produced, committing prose as code (or vice versa)
+// depending on chunk boundaries. This predicate mirrors the engine exactly:
+//   • up to 3 leading spaces are allowed before the marker (spec §4.5);
+//   • a marker is ≥3 of the SAME char (backtick or tilde);
+//   • an OPENER records its (char, run length); a CLOSER must be the same
+//     char AND run length ≥ the opener's, with only whitespace after it
+//     (backtick openers additionally may not carry a backtick in the info
+//     string — that makes it an inline code span, not a fence).
+struct FenceState {
+    bool        in_fence = false;  // parity BEFORE the line being classified
+    char        open_ch  = '\0';   // fence char of the currently-open fence
+    std::size_t open_len = 0;      // marker run length of the open fence
+};
+
+// Advance `st` across one line [line_start, line_end) (line_end excludes the
+// terminating '\n'). Returns true when the line was a fence open/close (parity
+// flipped). A non-fence line leaves `st` unchanged and returns false.
+[[nodiscard]] inline bool fence_scan_line(FenceState& st, std::string_view src,
+                                          std::size_t line_start,
+                                          std::size_t line_end) noexcept {
+    if (line_end > src.size()) line_end = src.size();
+    std::size_t k = line_start;
+    int sp = 0;
+    while (k < line_end && src[k] == ' ' && sp < 4) { ++k; ++sp; }
+    if (sp >= 4 || k >= line_end) return false;   // indented code, not a fence
+    char c = src[k];
+    if (c != '`' && c != '~') return false;
+    std::size_t run = 0;
+    while (k + run < line_end && src[k + run] == c) ++run;
+    if (run < 3) return false;
+
+    if (!st.in_fence) {
+        // Opener. Backtick fences forbid a backtick anywhere in the info
+        // string (that would be an inline code span); tilde fences allow it.
+        if (c == '`') {
+            for (std::size_t q = k + run; q < line_end; ++q)
+                if (src[q] == '`') return false;
+        }
+        st.in_fence = true;
+        st.open_ch  = c;
+        st.open_len = run;
+        return true;
+    }
+    // Potential closer: same char, run ≥ opener, only trailing whitespace.
+    if (c != st.open_ch || run < st.open_len) return false;
+    for (std::size_t q = k + run; q < line_end; ++q) {
+        char cc = src[q];
+        if (cc != ' ' && cc != '\t' && cc != '\r') return false;
+    }
+    st.in_fence = false;
+    st.open_ch  = '\0';
+    st.open_len = 0;
+    return true;
+}
+
 } // namespace streaming
 } // namespace md_detail
 } // namespace maya

@@ -232,6 +232,12 @@ private:
                                         // (used by render_tail to know
                                         // whether the in-progress tail
                                         // starts inside an open fence)
+    // Open-fence descriptor at committed_ (valid when in_code_fence_): the
+    // marker char and run length of the opener, so a closer is matched
+    // spec-correctly (same char, run >= opener) instead of "any 3+ backticks
+    // or tildes". Paired with in_code_fence_ everywhere it's maintained.
+    char        fence_open_ch_  = '\0';
+    std::size_t fence_open_len_ = 0;
 
     // Host-set: "more bytes are coming". When true, build() wraps
     // its output in a ComponentElement that re-renders on every
@@ -466,6 +472,8 @@ private:
     //     again on the next find call.
     size_t scan_cursor_         = 0;
     bool   scan_in_fence_       = false;
+    char   scan_fence_open_ch_  = '\0';   // opener char at scan_cursor_
+    size_t scan_fence_open_len_ = 0;      // opener run length at scan_cursor_
     size_t scan_last_boundary_  = 0;
 
     // ── Pending-boundary ledger ──
@@ -892,6 +900,8 @@ private:
         std::vector<BlockMeta>                      metas;
         std::unordered_map<std::string, md::LinkRef> ref_defs;
         bool                                        in_code_fence = false;
+        char                                        fence_open_ch  = '\0';
+        std::size_t                                 fence_open_len = 0;
         // Set true by the worker just before exit. Read by
         // foreground's poll. Atomic so the bool flip publishes the
         // string/vector writes above (the mutex provides full

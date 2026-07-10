@@ -230,6 +230,8 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
     // \n\n separator. Same correction applies to the heading marker.
     size_t i             = scan_cursor_;
     bool   in_fence      = scan_in_fence_;
+    char   fence_ch      = scan_fence_open_ch_;
+    size_t fence_len     = scan_fence_open_len_;
     size_t last_boundary = scan_last_boundary_;
 
     // Ledger recorder: every boundary the scanner discovers is ALSO
@@ -249,9 +251,17 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
         bool at_line_start = (i == 0 || source_[i - 1] == '\n');
 
         if (at_line_start) {
-            bool is_code_fence = i + 3 <= source_.size() &&
-                ((source_[i] == '`' && source_[i+1] == '`' && source_[i+2] == '`') ||
-                 (source_[i] == '~' && source_[i+1] == '~' && source_[i+2] == '~'));
+            // Spec-faithful fence detection (≤3 indent, same-char + run-length
+            // matched close) via the shared classifier. Peek the parity flip
+            // on a probe copy so the existing eager-commit control flow below
+            // (which needs the eol / marker-only handling) stays intact.
+            std::size_t probe_eol = source_.find('\n', i);
+            std::size_t line_end = (probe_eol == std::string::npos)
+                                       ? source_.size() : probe_eol;
+            md_detail::streaming::FenceState fprobe{in_fence, fence_ch, fence_len};
+            bool is_code_fence =
+                md_detail::streaming::fence_scan_line(
+                    fprobe, std::string_view{source_}, i, line_end);
             // Math fence ($$): treat as a block fence ONLY when the
             // opener line is exactly "$$" (optionally with trailing
             // whitespace and/or \r), terminated by '\n'. Plain `$$`
@@ -285,6 +295,15 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                 // paragraph above can be rendered immediately with its
                 // final styling, even if no blank line separates them.
                 if (!in_fence) record(i);
+                // A math ($$) fence isn't handled by fence_scan_line (which
+                // only knows ``` / ~~~); flip the probe manually so the
+                // shared post-line adopt below is correct for both kinds.
+                // $$ carries no char/len descriptor — leave it sentinel.
+                if (is_math_fence) {
+                    fprobe.in_fence = !in_fence;
+                    fprobe.open_ch  = fprobe.in_fence ? '$' : '\0';
+                    fprobe.open_len = fprobe.in_fence ? 2 : 0;
+                }
                 size_t eol = source_.find('\n', i);
                 if (eol == std::string::npos) {
                     // The fence line isn't newline-terminated. A CLOSING
@@ -320,14 +339,18 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                     // in the tail: its language / first line are still
                     // arriving.
                     if (in_fence) {
-                        // Skip the full fence-marker run (``` may be
-                        // ```` etc.; ~~~ likewise) before checking the
-                        // rest of the line is whitespace-only.
-                        char fence_ch = source_[i];
+                        // Skip the full fence-marker run and require the
+                        // closer to match the opener (same char, run ≥
+                        // opener) with only whitespace after it — same rule
+                        // as fence_scan_line, applied to the unterminated
+                        // final line.
+                        char close_ch = source_[i];
                         std::size_t q = i;
-                        while (q < source_.size() && source_[q] == fence_ch) ++q;
-                        bool marker_only = true;
-                        for (; q < source_.size(); ++q) {
+                        while (q < source_.size() && source_[q] == close_ch) ++q;
+                        std::size_t close_run = q - i;
+                        bool marker_only =
+                            close_ch == fence_ch && close_run >= fence_len;
+                        for (; marker_only && q < source_.size(); ++q) {
                             char cc = source_[q];
                             if (cc != ' ' && cc != '\t' && cc != '\r') {
                                 marker_only = false; break;
@@ -335,6 +358,8 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                         }
                         if (marker_only) {
                             in_fence = false;
+                            fence_ch = '\0';
+                            fence_len = 0;
                             i = source_.size();
                             record(i);
                             continue;
@@ -342,7 +367,11 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                     }
                     break;
                 }
-                in_fence = !in_fence;
+                // Real fence open/close: adopt the probe's post-line state
+                // (parity + opener descriptor).
+                in_fence  = fprobe.in_fence;
+                fence_ch  = fprobe.open_ch;
+                fence_len = fprobe.open_len;
                 i = eol + 1;
                 if (!in_fence) record(i);
                 continue;
@@ -624,6 +653,8 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
     // next call without re-walking the prefix.
     scan_cursor_        = i;
     scan_in_fence_      = in_fence;
+    scan_fence_open_ch_ = fence_ch;
+    scan_fence_open_len_ = fence_len;
     scan_last_boundary_ = last_boundary;
     return last_boundary;
 }

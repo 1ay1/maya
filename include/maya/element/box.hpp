@@ -166,6 +166,12 @@ struct BoxElement {
     /// widgets set it to VerticalBar / HorizontalBar. Default None means
     /// "no scroll role" — scroll_state is ignored if set.
     ScrollRole             scroll_role = ScrollRole::None;
+
+    /// Hit-region identity (see maya/core/hit.hpp). When non-zero, the
+    /// painter appends this box's ABSOLUTE painted rect to the per-frame
+    /// hit registry, and hit_test(x, y) resolves mouse coordinates to it.
+    /// Set via the `| hit(id)` DSL pipe. 0 = not a hit target.
+    std::uint64_t          hit_id = 0;
     // No `{}` initializer here. With one, the compiler must instantiate
     // vector<Element>::vector() (and its `_GLIBCXX20_CONSTEXPR` destructor,
     // which does pointer arithmetic on Element*) while parsing this header —

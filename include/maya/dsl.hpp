@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "core/scroll_state.hpp"
+#include "core/hit.hpp"
 #include "element/builder.hpp"
 #include "style/border.hpp"
 #include "style/color.hpp"
@@ -799,6 +800,11 @@ struct RScroll {
     int viewport_h = 0;
 };
 
+// Hit pipe — tags the box as a mouse hit target (see core/hit.hpp). The
+// painter records the box's absolute painted rect under this id every
+// frame; maya::hit_test(x, y) resolves a mouse event to the topmost id.
+struct RHit { HitId id; };
+
 // -- Runtime pipe factories --
 
 [[nodiscard]] inline RPad    padding(int all)                  { return {all,all,all,all}; }
@@ -818,6 +824,7 @@ struct RScroll {
 [[nodiscard]] inline RAlign  align(Align a)                     { return {a}; }
 [[nodiscard]] inline RJust   justify(Justify j)                 { return {j}; }
 [[nodiscard]] inline ROvf    overflow(Overflow o)               { return {o}; }
+[[nodiscard]] inline RHit    hit(HitId id)                      { return {id}; }
 
 // Scroll factories. Vertical is the common case; horizontal is opt-in via
 // scrollx() or the 2-arg form. Passing 0 for a viewport size means "let
@@ -849,7 +856,7 @@ struct WrappedNode {
     static constexpr uint16_t PAD=1,GAP=2,BRD=4,BCOL=8,BTXT=16,
                               GRW=32,WD=64,HT=128,STY=256,
                               MGN=512,ALN=1024,JST=2048,OVF=4096,
-                              SCRL=8192;
+                              SCRL=8192,HIT=16384;
 
     Inner inner;
     int pt_=0, pr_=0, pb_=0, pl_=0, gap_=0;
@@ -867,6 +874,7 @@ struct WrappedNode {
     Overflow ovf_{};
     ScrollState* scrl_state_ = nullptr;
     int scrl_vw_ = 0, scrl_vh_ = 0;
+    HitId hit_id_ = 0;
     uint16_t f_=0;
 
     operator Element() const { return build(); }
@@ -893,6 +901,7 @@ struct WrappedNode {
             if (f_&ALN)  box->layout.align_items = aln_;
             if (f_&JST)  box->layout.justify = jst_;
             if (f_&OVF)  box->overflow = ovf_;
+            if (f_&HIT)  box->hit_id = hit_id_;
             if (f_&SCRL) {
                 // Apply scroll AFTER explicit width/height pipes so the
                 // user can override the viewport size with | width/| height
@@ -947,6 +956,9 @@ struct WrappedNode {
         // builder doesn't expose. See the as_box() branch above for the
         // mirror image.
         Element built = b(std::move(inner_elem));
+        if (f_&HIT) {
+            if (auto* bx = maya::as_box(built)) bx->hit_id = hit_id_;
+        }
         if (f_&SCRL) {
             if (auto* bx = maya::as_box(built)) {
                 bx->overflow = Overflow::Scroll;
@@ -1032,6 +1044,10 @@ template <Node N> [[nodiscard]] auto operator|(N n, RJust t) {
 template <Node N> [[nodiscard]] auto operator|(N n, ROvf t) {
     auto w = as_wrapped(std::move(n));
     w.ovf_=t.o; w.f_ |= decltype(w)::OVF; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RHit t) {
+    auto w = as_wrapped(std::move(n));
+    w.hit_id_=t.id; w.f_ |= decltype(w)::HIT; return w;
 }
 template <Node N> [[nodiscard]] auto operator|(N n, RScroll t) {
     auto w = as_wrapped(std::move(n));

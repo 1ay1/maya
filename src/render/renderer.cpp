@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "maya/core/overload.hpp"
+#include "maya/core/hit.hpp"
 #include "maya/core/render_context.hpp"
 #include "maya/core/scroll_state.hpp"
 #include "maya/render/scrollback_ledger.hpp"
@@ -783,6 +784,17 @@ void paint_element(
 
     visit_element(elem, overload{
         [&](const BoxElement& node) {
+            // 0. Hit-region writeback: a box tagged `| hit(id)` records its
+            //    ABSOLUTE painted rect in the per-frame registry so mouse
+            //    coordinates resolve to it via maya::hit_test(). Recorded
+            //    BEFORE children paint — children registered after are
+            //    later in the vector, and hit_test's backward scan gives
+            //    them precedence (innermost/topmost target wins).
+            if (node.hit_id != 0 && aw > 0 && ah > 0) {
+                maya::detail::hit_regions().push_back(
+                    {node.hit_id, ax, ay, aw, ah});
+            }
+
             // 1. Fill background if the box has a bg color.
             if (node.style.bg.has_value()) {
                 uint16_t bg_style_id = pool.intern(
@@ -1748,6 +1760,10 @@ void render_tree(
         // last paint stops receiving auto-dispatched events.
         ++detail::paint_generation;
         detail::live_scroll_states().clear();
+        // Same discipline for the hit-region registry: this frame's
+        // paint re-registers every `| hit(id)` box at its new position;
+        // targets that left the tree stop hit-testing automatically.
+        maya::detail::hit_regions().clear();
 
         auto& cache = render_detail::component_cache();
         // Evict before bumping current_frame so entries from the

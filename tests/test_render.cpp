@@ -432,6 +432,61 @@ void test_ambient_bg_inheritance() {
     std::println("PASS\n");
 }
 
+// ============================================================================
+// Test 17: hit-region registry — `| hit(id)` resolves mouse coordinates
+// ============================================================================
+// The painter records each hit-tagged box's ABSOLUTE painted rect;
+// hit_test(x,y) returns the topmost (last painted) id; the registry
+// resets every render so removed targets stop hit-testing.
+void test_hit_regions() {
+    std::println("--- test_hit_regions ---");
+    StylePool pool;
+    Canvas canvas(40, 6, &pool);
+
+    constexpr HitId kLeft  = hit_id(1);
+    constexpr HitId kRight = hit_id(2);
+    constexpr HitId kRow   = hit_id(3, 7);   // parameterized: kind 3, row 7
+
+    // Row: [left 10 cols][right 10 cols]; a nested row-target inside right.
+    render_tree(
+        h(
+            v(text("L")) | width(10) | hit(kLeft),
+            (v(
+                text("head"),
+                v(text("row")) | hit(kRow)
+            ) | width(10) | hit(kRight))
+        ).build(),
+        canvas, pool, theme::dark);
+
+    // Left box owns columns 0-9.
+    MAYA_TEST_CHECK(hit_test(0, 0) == std::optional<HitId>{kLeft},
+                    "click at (0,0) must resolve to the left box");
+    MAYA_TEST_CHECK(hit_test(9, 0) == std::optional<HitId>{kLeft},
+                    "click at (9,0) must resolve to the left box");
+    // Right box owns columns 10-19; its row 1 is the nested target and
+    // must WIN over the enclosing box (painted later = topmost).
+    MAYA_TEST_CHECK(hit_test(10, 0) == std::optional<HitId>{kRight},
+                    "click at (10,0) must resolve to the right box");
+    MAYA_TEST_CHECK(hit_test(10, 1) == std::optional<HitId>{kRow},
+                    "nested target must beat its enclosing box (z-order)");
+    MAYA_TEST_CHECK(hit_kind(*hit_test(10, 1)) == 3
+                    && hit_index(*hit_test(10, 1)) == 7,
+                    "hit_id kind/index round-trip");
+    // Outside everything → no id.
+    MAYA_TEST_CHECK(!hit_test(30, 0).has_value(),
+                    "click outside all targets must miss");
+    // Reverse query: where did kRight land?
+    auto rr = hit_rect(kRight);
+    MAYA_TEST_CHECK(rr && rr->x == 10 && rr->y == 0 && rr->w == 10,
+                    "hit_rect must report the painted rect");
+
+    // A new frame WITHOUT the targets clears them.
+    render_tree(text("empty"), canvas, pool, theme::dark);
+    MAYA_TEST_CHECK(!hit_test(0, 0).has_value(),
+                    "registry must reset on the next render");
+    std::println("PASS\n");
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     test_bare_text();
@@ -450,6 +505,7 @@ int main() {
     test_writer();
     test_regrow_blank_boundary();
     test_ambient_bg_inheritance();
+    test_hit_regions();
 
-    std::println("=== ALL {} TESTS PASSED ===", 16);
+    std::println("=== ALL {} TESTS PASSED ===", 17);
 }

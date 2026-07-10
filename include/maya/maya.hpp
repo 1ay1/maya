@@ -40,6 +40,7 @@
 #include <maya/core/overload.hpp>
 #include <maya/core/scope_exit.hpp>
 #include <maya/core/focus.hpp>
+#include <maya/core/hit.hpp>
 #include <maya/core/render_context.hpp>
 
 // ── Style: colors, text styles, borders, themes ─────────────────────────

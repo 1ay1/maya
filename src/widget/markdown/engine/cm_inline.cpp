@@ -364,7 +364,14 @@ private:
     // ── autolinks + raw HTML (§6.5, §6.6) ────────────────────────────────
     bool try_autolink_or_html(std::size_t i, std::string& pending, std::size_t& adv) {
         // absolute URI autolink: <scheme:...>
-        std::size_t close = text_.find('>', i + 1);
+        // Bound the closing-'>' search: a valid autolink/email has no spaces
+        // or '<' inside and is short in practice, so a runaway '<' with no
+        // nearby '>' should fail fast rather than scan to end-of-input on
+        // every '<' (the O(n²) adversarial `<<<<...` path). 4000 matches the
+        // raw-HTML closer bound (find_html_closer max_dist).
+        constexpr std::size_t kMaxAutolink = 4000;
+        std::size_t search_end = std::min(text_.size(), i + 1 + kMaxAutolink);
+        std::size_t close = text_.substr(0, search_end).find('>', i + 1);
         if (close == std::string_view::npos) return false;
         std::string_view inner = text_.substr(i + 1, close - (i + 1));
         if (inner.find(' ') == std::string_view::npos &&

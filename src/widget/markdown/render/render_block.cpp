@@ -411,7 +411,13 @@ Element md_block_to_element(const md::Block& block) {
                            && ((content[i] == ' '
                                 || content[i] == '\t') == ws)) {
                         int n = cb(static_cast<unsigned char>(content[i]));
-                        ++tok_w;
+                        // Display width, not codepoint count: a wide
+                        // (CJK/emoji) glyph occupies 2 cells, matching the
+                        // string_width() used for column padding below.
+                        // Counting ++tok_w here overran wide-glyph cells.
+                        std::size_t dp = i;
+                        char32_t cp = decode_utf8(content, dp);
+                        tok_w += is_wide_char(cp) ? 2 : 1;
                         i += static_cast<size_t>(n);
                     }
                     if (line_w + tok_w <= max_w) {
@@ -425,8 +431,12 @@ Element md_block_to_element(const md::Block& block) {
                     int forced = 0;
                     while (pos < i && forced < max_w) {
                         int n = cb(static_cast<unsigned char>(content[pos]));
+                        std::size_t dp = pos;
+                        char32_t cp = decode_utf8(content, dp);
+                        int cw = is_wide_char(cp) ? 2 : 1;
+                        if (forced + cw > max_w && forced > 0) break;
                         pos += static_cast<size_t>(n);
-                        ++forced;
+                        forced += cw;
                     }
                     end_line();
                     i = pos;
@@ -581,7 +591,13 @@ Element md_block_to_element(const md::Block& block) {
                                    && ((content[i] == ' '
                                         || content[i] == '\t') == ws)) {
                                 int n = cb(static_cast<unsigned char>(content[i]));
-                                ++tok_w;
+                                // Display width, not codepoint count — keep
+                                // in lockstep with wrap_cell_lines (measure)
+                                // so row counts match, and with the
+                                // string_width() padding below.
+                                std::size_t dp = i;
+                                char32_t cp = decode_utf8(content, dp);
+                                tok_w += is_wide_char(cp) ? 2 : 1;
                                 i += static_cast<size_t>(n);
                             }
 
@@ -612,8 +628,12 @@ Element md_block_to_element(const md::Block& block) {
                             int forced_w = 0;
                             while (pos < i && forced_w < max_w) {
                                 int n = cb(static_cast<unsigned char>(content[pos]));
+                                std::size_t dp = pos;
+                                char32_t cp = decode_utf8(content, dp);
+                                int cw = is_wide_char(cp) ? 2 : 1;
+                                if (forced_w + cw > max_w && forced_w > 0) break;
                                 pos += static_cast<size_t>(n);
-                                ++forced_w;
+                                forced_w += cw;
                             }
                             flush_line(pos);
                             line_start = pos;
@@ -1051,6 +1071,19 @@ MarkdownPalette default_markdown_palette() {
     };
 }
 
+// Overwrites the ~35 mutable colors:: globals the render path reads live.
+//
+// THREADING CONTRACT: the async streaming worker (spawn_async_worker_)
+// parses off-thread and reaches md_block_to_element, which reads these
+// globals directly. Overwriting them here concurrently with a running
+// worker is a data race. Call this ONLY before any StreamingMarkdown is
+// live (e.g. once at startup / theme init), or with all streaming widgets
+// quiesced. Each Color is a 4-byte trivially-copyable value, so an
+// individual read never tears, but the palette as a whole is not published
+// atomically — a worker mid-parse could observe a mix of old and new
+// colours for one frame. (agentty does not call this at all; the defaults
+// stand. A future atomic-publish-behind-a-pointer refactor would lift the
+// contract if live re-theming during a stream is ever required.)
 void set_markdown_palette(const MarkdownPalette& p) {
     colors::text = p.text;                 colors::heading1 = p.heading1;
     colors::heading2 = p.heading2;         colors::heading3 = p.heading3;

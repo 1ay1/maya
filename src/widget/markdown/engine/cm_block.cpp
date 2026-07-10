@@ -404,9 +404,19 @@ public:
         // Normalize: split into lines. Strip a single trailing newline; keep
         // internal structure. Tabs are handled by the column model.
         std::size_t i = 0;
-        std::string src(source);
-        // Replace NUL with U+FFFD per spec §2.3 (insecure characters).
-        for (char& c : src) if (c == '\0') c = '\xEF';  // crude; rare in practice
+        std::string src;
+        // Replace NUL with U+FFFD per spec §2.3 (insecure characters). Must
+        // emit the FULL 3-byte replacement (EF BF BD); writing a lone 0xEF
+        // is a broken UTF-8 lead byte that swallows the next two bytes.
+        if (source.find('\0') == std::string_view::npos) {
+            src.assign(source);
+        } else {
+            src.reserve(source.size());
+            for (char c : source) {
+                if (c == '\0') src.append("\xEF\xBF\xBD");
+                else            src.push_back(c);
+            }
+        }
         while (i <= src.size()) {
             std::size_t nl = src.find('\n', i);
             std::string_view line;
@@ -519,7 +529,13 @@ private:
             !blank &&
             !line_starts_new_block(line.rest()) &&
             !continues_open_list(line.rest())) {
-            leaf->text += std::string(strip(line.rest()));
+            // Append the raw line rest (not strip()'d) so a trailing
+            // two-space hard-break marker survives — matching the normal
+            // paragraph-continuation path in open_leaf (which appends the
+            // unstripped content). Phase-2 inline parsing strips the whole
+            // paragraph's outer whitespace, so leading indent is handled
+            // there; stripping here silently dropped hard breaks.
+            leaf->text += std::string(line.rest());
             leaf->text += '\n';
             apply_last_line_blank(cur_container_, blank);
             return;
@@ -991,13 +1007,17 @@ private:
                     return;
                 }
             }
-            // content line: strip up to fence_indent leading spaces
+            // content line: strip up to fence_indent leading columns.
+            // Tabs advance to the next 4-column tab stop (spec §2.2), not a
+            // flat 4 — a tab at column 1 spans 3 columns, at column 0 it
+            // spans 4. Counting it flat over-consumed indentation when the
+            // fence opener sat at a non-zero column.
             int strip_n = leaf->fence_indent;
             std::size_t k = 0;
             int removed = 0;
             while (k < rest.size() && removed < strip_n &&
                    (rest[k] == ' ' || rest[k] == '\t')) {
-                removed += (rest[k] == '\t') ? 4 : 1;
+                removed += (rest[k] == '\t') ? (4 - (removed % 4)) : 1;
                 ++k;
             }
             leaf->text += std::string(rest.substr(k));

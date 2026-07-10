@@ -264,8 +264,21 @@ void StreamingMarkdown::maybe_apply_async_() const {
         self->source_ = slot->source;
         self->committed_ = slot->source.size();
         self->in_code_fence_ = slot->in_code_fence;
+        self->fence_open_ch_ = slot->fence_open_ch;
+        self->fence_open_len_ = slot->fence_open_len;
         self->ref_defs_ = std::move(slot->ref_defs);
         self->sink_.reset();
+        // The source_ buffer was replaced wholesale (async worker
+        // reparsed a possibly-different byte sequence), so the cp
+        // caches' "bytes [0,cached_at) unchanged" invariant no longer
+        // holds — invalidate them exactly as clear() does.
+        self->cached_total_cp_        = 0;
+        self->cached_total_cp_at_     = 0;
+        self->cached_committed_cp_    = 0;
+        self->cached_committed_cp_at_ = 0;
+        self->cp_to_byte_cache_cp_    = 0;
+        self->cp_to_byte_cache_byte_  = 0;
+        self->cp_to_byte_cache_at_    = 0;
         auto fresh = std::make_shared<CommittedPrefix>();
         fresh->blocks = std::move(slot->blocks);
         fresh->metas  = std::move(slot->metas);
@@ -279,6 +292,8 @@ void StreamingMarkdown::maybe_apply_async_() const {
         // Reset scanner / sink state to the new committed end.
         self->scan_cursor_ = self->committed_;
         self->scan_in_fence_ = self->in_code_fence_;
+        self->scan_fence_open_ch_  = self->fence_open_ch_;
+        self->scan_fence_open_len_ = self->fence_open_len_;
         self->scan_last_boundary_ = self->committed_;
         // The whole buffer is committed — every pending boundary is consumed.
         self->scan_boundaries_.clear();

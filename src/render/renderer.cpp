@@ -110,6 +110,16 @@ struct ComponentCacheEntry {
     std::vector<std::uint64_t> cells;
     int cells_rows  = 0;
     int cells_max_y = -1;
+    // Ambient background active when `cells` were captured (see
+    // ambient_bg() below). The captured cells BAKE that bg into every
+    // glyph's style id, so they are only valid to blit when the
+    // CURRENT ambient matches. A hash-keyed component whose content
+    // moves between differently-colored strips (e.g. a row widget that
+    // gains a selection band) would otherwise blit stale-bg cells —
+    // the fast path gates on this and falls through to a re-render +
+    // recapture instead. Layout identity (width/height/result) is
+    // bg-independent, so only the cells are gated, never the measure.
+    std::optional<Color> cells_ambient;
     // Per-row rightmost non-blank column (length == cells_rows). Captured
     // alongside the cells in the slow path, then handed to
     // blit_packed_row on the fast path so the canvas can update its
@@ -246,11 +256,12 @@ inline int& render_depth() {
 // Thread-local + RAII scope (not a paint_element parameter) so the
 // inheritance flows through every recursion seam — ElementList
 // fragments, stack overlays, and ComponentElement sub-renders — without
-// touching the public paint_element signature. NB: a hash-keyed
-// component's captured cells bake the ambient bg that was active at
-// capture time; hosts whose component content can sit on differently-
-// colored strips must fold that color into the hash_id (same contract
-// as any other appearance input).
+// touching the public paint_element signature. Hash-keyed component
+// cell caches are ambient-safe WITHOUT host cooperation: each entry
+// stamps the ambient active at capture time (cells_ambient) and the
+// blit fast path refuses to serve cells captured under a different
+// ambient — it falls through to a re-render + recapture. Hosts do NOT
+// need to fold strip colors into hash_id.
 inline std::optional<Color>& ambient_bg() {
     thread_local std::optional<Color> bg;
     return bg;
@@ -1385,7 +1396,8 @@ void paint_element(
                 }
             }
             if (auto* entry = fast_entry;
-                entry && !entry->cells.empty() && entry->cells_rows > 0)
+                entry && !entry->cells.empty() && entry->cells_rows > 0
+                && entry->cells_ambient == ambient_bg())
             {
                 entry->last_frame = cache.current_frame;
                 entry->last_touched_at = std::chrono::steady_clock::now();
@@ -1545,10 +1557,22 @@ void paint_element(
                 const bool will_cache =
                     !node.hash_id.empty() && content_w > 0 && content_h > 0;
                 if (will_cache) {
+                    // Blank with the AMBIENT bg, not the default style:
+                    // this component may sit on a bg strip (ambient-bg
+                    // inheritance), and a style-0 fill would bake
+                    // terminal-default holes into the captured cells —
+                    // the blit would then punch through the strip on
+                    // every subsequent frame. The ambient is recorded
+                    // on the entry below so the fast path only blits
+                    // when the same strip is (or isn't) behind it.
+                    const auto& amb = ambient_bg();
+                    const uint16_t fill_sid = amb.has_value()
+                        ? pool.intern(Style{}.with_bg(*amb))
+                        : 0;
                     canvas.fill(
                         Rect{{Columns{content_x}, Rows{content_y}},
                              {Columns{content_w}, Rows{content_h}}},
-                        U' ', /*style_id=*/0);
+                        U' ', fill_sid);
                 }
                 paint_element(child, canvas, pool, sub_nodes, sub_root,
                               content_x, content_y);
@@ -1606,6 +1630,7 @@ void paint_element(
                         entry->cells.clear();
                         entry->cells_rows = 0;
                         entry->cells_max_y = -1;
+                        entry->cells_ambient.reset();
                         entry->cells_row_last_col.clear();
                     } else if (captured_rows > 0) {
                         // Fast capture: per-row memcpy of the visible
@@ -1647,6 +1672,10 @@ void paint_element(
                             if (row_last >= 0) last_nonblank = y;
                         }
                         entry->cells_max_y = last_nonblank;
+                        // Stamp the ambient the cells were captured under;
+                        // the fast path refuses to blit under a different
+                        // ambient and re-renders + recaptures instead.
+                        entry->cells_ambient = ambient_bg();
                         (void)max_y_before;
                         (void)max_y_after;
                     }

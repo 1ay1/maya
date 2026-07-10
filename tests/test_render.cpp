@@ -408,6 +408,27 @@ void test_ambient_bg_inheritance() {
     render_tree(text("zz"), c2, pool, theme::dark);
     MAYA_TEST_CHECK(!pool.get(c2.get(0, 0).style_id).bg.has_value(),
                     "ambient bg leaked outside its box scope");
+
+    // Hash-keyed component cell cache must be ambient-aware: capture
+    // cells under NO ambient, then paint the SAME hash_id inside a
+    // bg strip — the cached (default-bg) cells must NOT be blitted;
+    // the entry re-renders and the glyphs carry the strip bg.
+    auto make_comp = [] {
+        ComponentElement ce;
+        ce.render = [](int, int) -> Element {
+            return dsl::text("cc").build();
+        };
+        ce.hash_id = CacheIdBuilder{}.add("ambient-cache-probe").build();
+        return Element{std::move(ce)};
+    };
+    Canvas c3(10, 1, &pool);
+    render_tree(make_comp(), c3, pool, theme::dark);          // capture, no ambient
+    render_tree(make_comp(), c3, pool, theme::dark);          // warm blit path
+    Canvas c4(10, 1, &pool);
+    render_tree((h(make_comp()) | bgc(strip)).build(), c4, pool, theme::dark);
+    MAYA_TEST_CHECK(pool.get(c4.get(0, 0).style_id).bg == strip,
+                    "cached component cells blitted under a DIFFERENT ambient "
+                    "(stale default-bg cells punched through the strip)");
     std::println("PASS\n");
 }
 

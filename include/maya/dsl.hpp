@@ -921,6 +921,14 @@ struct WrappedNode {
             return inner_elem;
         }
         auto b = maya::detail::box();
+        // A TextElement inner cannot receive the style from the wrapper box:
+        // paint interns the text node's own style and there is no box→text
+        // fg/bg cascade in the renderer. Merge piped style (fgc/bgc) straight
+        // into the text node so `text("x") | fgc(c)` actually colors it.
+        if (f_&STY) {
+            if (auto* t = maya::as_text(inner_elem))
+                t->style = t->style.merge(sty_);
+        }
         if (f_&PAD)  b.padding(pt_,pr_,pb_,pl_);
         if (f_&GAP)  b.gap(gap_);
         if (f_&BRD)  b.border(brd_);

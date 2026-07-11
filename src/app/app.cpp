@@ -1044,16 +1044,37 @@ auto Runtime::render(const Element& root) -> Status {
             // before-index). 2 == Synced (the steady, no-flicker path);
             // anything else is a full-viewport repaint. `demote` flags
             // the verify-poison Synced→Stale transition specifically.
+            static std::uint64_t prev_skip = 0, prev_cmp = 0, prev_ent = 0;
+            static std::uint64_t prev_stamp = 0;
+            static std::uint64_t prev_b = 0, prev_l = 0, prev_p = 0;
+            const std::uint64_t now_skip = render_detail::blit_rows_epoch_skip();
+            const std::uint64_t now_cmp  = render_detail::blit_rows_compared();
+            const std::uint64_t now_ent  = render_detail::blit_entries_walked();
+            const std::uint64_t now_stamp = canvas_.stamp_row_count();
+            const std::uint64_t now_b = render_detail::rt_build_ns();
+            const std::uint64_t now_l = render_detail::rt_layout_ns();
+            const std::uint64_t now_p = render_detail::rt_paint_ns();
             std::fprintf(prof_out,
                 "maya-frame: rt=%.2f cf=%.2f total=%.2f nodes=%zu rows=%d w=%d "
-                "term_h=%d coh=%zu->%zu peak=%d pad=%d decay=%d recov=%lu%s%s\n",
+                "term_h=%d coh=%zu->%zu peak=%d pad=%d decay=%d recov=%lu "
+                "blit[ent=%llu skip=%llu cmp=%llu] stamps=%llu "
+                "ph[b=%.2f l=%.2f p=%.2f]%s%s\n",
                 rt_ms, cf_ms, since(t_frame_start),
                 layout_nodes_.size(), ch, w, term_h.value(),
                 coh_before, in_coherence_.index(),
                 hold_peak_, render_ctx_.inline_min_content, hold_decay_,
                 scrollback_recovery_count_,
+                (unsigned long long)(now_ent - prev_ent),
+                (unsigned long long)(now_skip - prev_skip),
+                (unsigned long long)(now_cmp - prev_cmp),
+                (unsigned long long)(now_stamp - prev_stamp),
+                (now_b - prev_b) / 1e6, (now_l - prev_l) / 1e6,
+                (now_p - prev_p) / 1e6,
                 coh_before != 2 ? " FLICKER" : "",
                 verify_demoted ? " VERIFY-DEMOTE" : "");
+            prev_skip = now_skip; prev_cmp = now_cmp; prev_ent = now_ent;
+            prev_stamp = now_stamp;
+            prev_b = now_b; prev_l = now_l; prev_p = now_p;
             std::fflush(prof_out);
         }
 

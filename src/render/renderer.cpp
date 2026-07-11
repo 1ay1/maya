@@ -24,10 +24,35 @@ namespace render_detail {
 // read only between frames by tests, never a synchronisation point.
 namespace {
 std::atomic<std::uint64_t> g_component_render_calls{0};
+
+// Blit-path telemetry (relaxed; read by the frame profiler).
+std::atomic<std::uint64_t> g_blit_rows_epoch_skip{0};   // per-row epoch skip hits
+std::atomic<std::uint64_t> g_blit_rows_compared{0};     // rows sent to bulk_eq/memcpy
+std::atomic<std::uint64_t> g_blit_entries{0};           // fast-path entries walked
 }
 std::uint64_t component_render_calls() noexcept {
     return g_component_render_calls.load(std::memory_order_relaxed);
 }
+std::uint64_t blit_rows_epoch_skip() noexcept {
+    return g_blit_rows_epoch_skip.load(std::memory_order_relaxed);
+}
+std::uint64_t blit_rows_compared() noexcept {
+    return g_blit_rows_compared.load(std::memory_order_relaxed);
+}
+std::uint64_t blit_entries_walked() noexcept {
+    return g_blit_entries.load(std::memory_order_relaxed);
+}
+
+// Phase accumulators for the TOP-LEVEL render_tree call (build → layout
+// → paint). Nanosecond totals, monotonic; the frame profiler diffs them.
+namespace {
+std::atomic<std::uint64_t> g_rt_build_ns{0};
+std::atomic<std::uint64_t> g_rt_layout_ns{0};
+std::atomic<std::uint64_t> g_rt_paint_ns{0};
+}
+std::uint64_t rt_build_ns()  noexcept { return g_rt_build_ns.load(std::memory_order_relaxed); }
+std::uint64_t rt_layout_ns() noexcept { return g_rt_layout_ns.load(std::memory_order_relaxed); }
+std::uint64_t rt_paint_ns()  noexcept { return g_rt_paint_ns.load(std::memory_order_relaxed); }
 
 // ============================================================================
 // Cross-frame ComponentElement render cache
@@ -130,6 +155,33 @@ struct ComponentCacheEntry {
     // and previously paid that scan even though we knew the answer at
     // capture time. Empty when cells is empty.
     std::vector<int> cells_row_last_col;
+
+    // ── Whole-entry blit-skip record (write-epoch proof) ────────────
+    // After a successful cells blit, we snapshot WHERE we blitted
+    // (canvas uid, absolute position, span, row range, effective clip)
+    // and the canvas's write-epoch counter. On the next frame, if the
+    // geometry is identical AND no row in our range carries an epoch
+    // greater than the snapshot, then nothing (no clear, no other
+    // component, no direct write) touched those rows since our blit —
+    // the canvas provably still holds our exact bytes AND the
+    // last_col_/max_y_ bookkeeping our blit implied (clear_below
+    // preserves both together; every reset path stamps). The entire
+    // per-row bulk_eq/memcpy loop can be skipped: O(rows) integer
+    // compares instead of O(rows × width) byte compares. This is what
+    // makes a tall frozen prefix O(~zero) per frame instead of the
+    // dominant render_tree cost on a long streaming turn.
+    //
+    // Correctness never depends on the skip: any doubt (geometry moved,
+    // clip changed, epoch advanced, cells recaptured → record reset)
+    // falls through to the byte-compare path that has always run.
+    std::uint64_t     blit_skip_uid   = 0;   // 0 = no record (uids start at 1)
+    std::uint64_t     blit_skip_epoch = 0;
+    int               blit_skip_x     = 0;
+    int               blit_skip_y     = 0;
+    int               blit_skip_w     = 0;
+    int               blit_skip_y_lo  = 0;
+    int               blit_skip_y_hi  = 0;
+    Canvas::ClipBounds blit_skip_clip{};
 };
 
 struct ComponentCache {
@@ -1455,7 +1507,43 @@ void paint_element(
                 const int canvas_h_blit = canvas.height();
                 const int y_lo = std::max(0, -content_y);
                 const int y_hi = std::min(rows, canvas_h_blit - content_y);
+
+                // ── Per-row epoch skip ───────────────────────
+                // If we blitted this exact entry to this exact place
+                // last time (same canvas, position, span, clip), then
+                // any row whose write-epoch hasn't advanced past our
+                // recorded snapshot provably still holds our bytes AND
+                // its last_col_ bookkeeping (every clear/write stamps).
+                // Those rows are skipped with one integer compare each;
+                // only rows someone touched since (the per-frame cleared
+                // viewport band, an overlapping paint) fall through to
+                // the bulk_eq/memcpy blit. Per-row — NOT all-or-nothing —
+                // because a tall entry (a live turn spanning thousands of
+                // rows) always has its bottom rows inside the cleared
+                // band; disarming the whole entry for that would keep the
+                // O(rows × width) compare cost this exists to kill. See
+                // the record fields on ComponentCacheEntry for the proof.
+                const bool skip_armed =
+                    use_cached_blit
+                    && entry->blit_skip_uid == canvas.uid()
+                    && entry->blit_skip_x    == content_x
+                    && entry->blit_skip_y    == content_y
+                    && entry->blit_skip_w    == blit_w
+                    && entry->blit_skip_y_lo == y_lo
+                    && entry->blit_skip_y_hi == y_hi
+                    && entry->blit_skip_clip == canvas.effective_clip();
+                const std::uint64_t skip_snap =
+                    skip_armed ? entry->blit_skip_epoch : 0;
+
+                std::uint64_t rows_skipped = 0, rows_compared = 0;
+                g_blit_entries.fetch_add(1, std::memory_order_relaxed);
                 for (int y = y_lo; y < y_hi; ++y) {
+                    if (skip_armed
+                        && canvas.row_write_epoch(content_y + y) <= skip_snap) {
+                        ++rows_skipped;
+                        continue;   // untouched since our last blit
+                    }
+                    ++rows_compared;
                     const bool row_has_content = (y <= max_y);
                     const int hint = have_per_row
                         ? entry->cells_row_last_col[static_cast<std::size_t>(y)]
@@ -1475,6 +1563,24 @@ void paint_element(
                             row_has_content,
                             hint);
                     }
+                }
+                // Record the blit for next frame's whole-entry skip.
+                // Snapshot AFTER the loop: every row we stamped is ≤ the
+                // counter now; any later stamp (another component, a
+                // clear) is strictly greater and disarms the record.
+                g_blit_rows_epoch_skip.fetch_add(rows_skipped,
+                                                 std::memory_order_relaxed);
+                g_blit_rows_compared.fetch_add(rows_compared,
+                                               std::memory_order_relaxed);
+                if (use_cached_blit) {
+                    entry->blit_skip_uid   = canvas.uid();
+                    entry->blit_skip_epoch = canvas.write_epoch_counter();
+                    entry->blit_skip_x     = content_x;
+                    entry->blit_skip_y     = content_y;
+                    entry->blit_skip_w     = blit_w;
+                    entry->blit_skip_y_lo  = y_lo;
+                    entry->blit_skip_y_hi  = y_hi;
+                    entry->blit_skip_clip  = canvas.effective_clip();
                 }
                 return;
             }
@@ -1638,6 +1744,11 @@ void paint_element(
                     const bool fits_rows =
                         content_x >= 0 && content_y >= 0 &&
                         content_y + captured_rows <= canvas_h;
+                    // The cells (and thus the bytes any prior blit left on
+                    // a canvas) are being replaced — a stale skip record
+                    // would vouch for the OLD bytes. Disarm it; the next
+                    // blit re-records against the new cells.
+                    entry->blit_skip_uid = 0;
                     if (!fits_rows || cap_w <= 0) {
                         entry->cells.clear();
                         entry->cells_rows = 0;
@@ -1853,7 +1964,9 @@ void render_tree(
     // Phase 1: Build the layout tree (reusing the caller's vector).
     layout_nodes.clear();
 
+    const auto t_build0 = std::chrono::steady_clock::now();
     std::size_t root_idx = render_detail::build_layout_tree(root, layout_nodes, theme);
+    const auto t_build1 = std::chrono::steady_clock::now();
 
     // Phase 2: Constrain root to terminal dimensions.
     layout_nodes[root_idx].style.width  = Dimension::fixed(canvas.width());
@@ -1862,11 +1975,27 @@ void render_tree(
 
     // Phase 3: Run layout. Positions are parent-relative after this.
     layout::compute(layout_nodes, root_idx, canvas.width(), canvas.height());
+    const auto t_layout1 = std::chrono::steady_clock::now();
 
     // Phase 4: Paint to canvas.
     render_detail::paint_element(
         root, canvas, pool, layout_nodes, root_idx,
         /*offset_x=*/0, /*offset_y=*/0);
+    const auto t_paint1 = std::chrono::steady_clock::now();
+    if (top_level) {
+        using namespace render_detail;
+        auto ns = [](auto a, auto b) {
+            return static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(b - a)
+                    .count());
+        };
+        g_rt_build_ns.fetch_add(ns(t_build0, t_build1),
+                                std::memory_order_relaxed);
+        g_rt_layout_ns.fetch_add(ns(t_build1, t_layout1),
+                                 std::memory_order_relaxed);
+        g_rt_paint_ns.fetch_add(ns(t_layout1, t_paint1),
+                                std::memory_order_relaxed);
+    }
 }
 
 void render_tree_at(

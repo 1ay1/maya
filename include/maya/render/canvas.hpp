@@ -407,6 +407,54 @@ public:
     /// (clear/clear_rows/resize) transition any → Drained.
     [[nodiscard]] CanvasStage stage() const noexcept { return stage_; }
 
+    // -- Write-epoch tracking (renderer whole-entry blit skip) ---------------
+    //
+    // Every mutation that can change a row's cells (or its last_col_
+    // bookkeeping) stamps that row with a fresh, canvas-monotonic epoch
+    // value. A reader that records a row's epoch immediately after
+    // writing it can later prove "nothing touched this row since my
+    // write" with a single integer compare — the foundation of the
+    // renderer's whole-entry blit skip, which collapses the per-frame
+    // O(content-rows) `bulk_eq` re-verification of the preserved frozen
+    // prefix into O(1) epoch compares per row (a 64-bit load vs a
+    // width-cells SIMD compare).
+    //
+    // Soundness direction: a SPURIOUS stamp (stamping a row whose bytes
+    // didn't actually change) merely disables a skip — the caller falls
+    // back to the byte-compare path. A MISSING stamp would let a stale
+    // skip serve wrong bytes, so every mutator stamps LIBERALLY (before
+    // fine-grained clip analysis, when cheap). Epochs are strictly
+    // increasing per stamp (shared monotonic counter), so a recorded
+    // value can never be re-produced by a later, different write (no
+    // ABA).
+    //
+    // The UID distinguishes canvases: a record made against a warmup
+    // scratch canvas (or the fullscreen front/back pair) can never
+    // match the live inline canvas.
+    [[nodiscard]] std::uint64_t uid() const noexcept { return uid_; }
+    /// Monotonic per-canvas stamp counter. A snapshot taken after a set
+    /// of writes upper-bounds the epoch of every row those writes (and
+    /// all earlier ones) stamped; any later mutation stamps strictly
+    /// greater. Used with row_write_epoch() to prove a row range is
+    /// untouched since the snapshot.
+    [[nodiscard]] std::uint64_t write_epoch_counter() const noexcept {
+        return epoch_counter_;
+    }
+    [[nodiscard]] MAYA_ALWAYS_INLINE std::uint64_t row_write_epoch(int y) const noexcept {
+        if (static_cast<unsigned>(y) >= static_cast<unsigned>(height_))
+            return ~std::uint64_t{0};   // OOB: never matches a recorded value
+        return row_epoch_[static_cast<std::size_t>(y)];
+    }
+    /// Effective clip bounds active right now ([x0,x1) × [y0,y1)); the
+    /// full canvas when no clip is pushed. Recorded by the renderer's
+    /// blit-skip so a differing outer clip re-verifies bytes.
+    struct ClipBounds { int x0, y0, x1, y1;
+        bool operator==(const ClipBounds&) const = default; };
+    [[nodiscard]] ClipBounds effective_clip() const noexcept {
+        if (!has_clip_) return {0, 0, width_, height_};
+        return {clip_x0_, clip_y0_, clip_x1_, clip_y1_};
+    }
+
     // -- Cell access ----------------------------------------------------------
 
     /// Set a cell at (x, y). Clipped or out-of-bounds coordinates are silently ignored.
@@ -445,7 +493,18 @@ public:
 
         auto idx = cell_index(x, y);
         uint64_t packed = Cell{ch, style_id, 0, width}.pack();
-        cells_[idx] = packed;  // unconditional write; diff will skip unchanged cells
+        // Value-gated write + stamp: a byte-identical set() is a no-op
+        // for the canvas AND for the row's epoch. Chrome that repaints
+        // the same border/rail/header cells every frame (the settled
+        // tool panel) must not disarm the per-row blit skip of the
+        // cached bodies sharing those rows — only a write that CHANGES
+        // the cell does. Bookkeeping below still runs on the equal path
+        // (cheap, and keeps semantics byte-for-byte identical to the
+        // unconditional-store version).
+        if (cells_[idx] != packed) {
+            cells_[idx] = packed;
+            stamp_row(y);
+        }
         const bool visible = (ch != U' ' || style_id != 0);
         if (visible) {
             if (y > max_y_) max_y_ = y;
@@ -637,6 +696,7 @@ private:
             x1 = std::min(x1, clip_x1_);
         }
         if (x1 <= x0) return;
+        stamp_row(y);
 
         std::size_t dst_off = static_cast<std::size_t>(y * width_ + x0);
         int src_off = x0 - x;
@@ -934,6 +994,38 @@ private:
     // by set()/fill()/write_text(); reset by clear()/clear_rows()/resize().
     // Size always equals height_. Reads via last_content_col() are O(1).
     std::vector<int> last_col_;
+    // Per-row write epoch (see the public accessors above). Size always
+    // equals height_. 0 = never stamped since construction.
+    std::vector<std::uint64_t> row_epoch_;
+    std::uint64_t epoch_counter_ = 0;
+    std::uint64_t uid_ = next_canvas_uid();
+
+    [[nodiscard]] static std::uint64_t next_canvas_uid() noexcept;
+
+    MAYA_ALWAYS_INLINE void stamp_row(int y) noexcept {
+        row_epoch_[static_cast<std::size_t>(y)] = ++epoch_counter_;
+        ++stamp_row_count_;
+    }
+    // Stamp rows [y0, y1) with one fresh epoch value (batch mutators —
+    // fill/clear*). A shared value within the batch is fine: it is still
+    // strictly greater than every previously recorded epoch.
+    void stamp_rows(int y0, int y1) noexcept {
+        if (y0 < 0) y0 = 0;
+        if (y1 > height_) y1 = height_;
+        if (y0 >= y1) return;
+        const std::uint64_t e = ++epoch_counter_;
+        for (int y = y0; y < y1; ++y)
+            row_epoch_[static_cast<std::size_t>(y)] = e;
+        stamp_row_count_ += static_cast<std::uint64_t>(y1 - y0);
+    }
+public:
+    // Telemetry: total rows stamped over the canvas lifetime (profiler
+    // diffs across frames). Not part of any correctness path.
+    [[nodiscard]] std::uint64_t stamp_row_count() const noexcept {
+        return stamp_row_count_;
+    }
+private:
+    std::uint64_t stamp_row_count_ = 0;
     StylePool* style_pool_ = nullptr;
     Rect damage_{};
     std::vector<Rect> clip_stack_;

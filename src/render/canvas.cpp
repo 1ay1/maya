@@ -415,6 +415,12 @@ Canvas::Canvas(int width, int height, StylePool* pool)
 {
     cells_.resize(static_cast<std::size_t>(width_ * height_), default_cell());
     last_col_.assign(static_cast<std::size_t>(height_), -1);
+    row_epoch_.assign(static_cast<std::size_t>(height_), 0);
+}
+
+std::uint64_t Canvas::next_canvas_uid() noexcept {
+    static std::atomic<std::uint64_t> counter{1};
+    return counter.fetch_add(1, std::memory_order_relaxed);
 }
 
 Cell Canvas::get(int x, int y) const noexcept {
@@ -438,6 +444,13 @@ void Canvas::write_text(int x, int y, std::string_view text, uint16_t style_id) 
     std::size_t pos = 0;
     const std::size_t len = text.size();
     const char* data = text.data();
+
+    // Value-gated stamping (matches set()): only stamp the row if some
+    // cell actually CHANGED. A label/header re-painting byte-identical
+    // text every frame must not disarm the per-row blit skip of cached
+    // content sharing this row. The non-ASCII slow path routes through
+    // set(), which is itself value-gated.
+    bool changed = false;
 
     // Highest x written this call — used to update last_col_/max_y_
     // once at the end instead of per-character. Starts at -1 so an
@@ -471,8 +484,10 @@ void Canvas::write_text(int x, int y, std::string_view text, uint16_t style_id) 
                 continue;
             }
             if (cx >= x_min) {
-                base[row_off + static_cast<std::size_t>(cx)] =
+                const uint64_t packed =
                     Cell{static_cast<char32_t>(byte), style_id, 0, 0}.pack();
+                uint64_t& slot = base[row_off + static_cast<std::size_t>(cx)];
+                if (slot != packed) { slot = packed; changed = true; }
                 const bool visible = (byte != ' ' || style_id != 0);
                 if (visible) {
                     if (cx > highest_x) highest_x = cx;
@@ -502,6 +517,7 @@ void Canvas::write_text(int x, int y, std::string_view text, uint16_t style_id) 
         }
     }
 
+    if (changed) stamp_row(y);
     if (any_visible) {
         if (y > max_y_) max_y_ = y;
         if (highest_x > last_col_[static_cast<std::size_t>(y)])
@@ -525,6 +541,7 @@ void Canvas::fill(Rect region, char32_t ch, uint16_t style_id) {
     }
 
     if (x0 >= x1 || y0 >= y1) return;
+    stamp_rows(y0, y1);
 
     uint64_t packed = Cell{ch, style_id, 0, 0}.pack();
     uint64_t* base  = cells_.data();
@@ -587,6 +604,7 @@ void Canvas::clear() {
                              static_cast<std::size_t>(total_cells),
                              blank);
         std::fill(last_col_.begin(), last_col_.end(), -1);
+        stamp_rows(0, height_);
     }
     damage_ = full_rect();
     max_y_ = -1;
@@ -600,6 +618,7 @@ void Canvas::clear_row(int y) noexcept {
     const std::size_t row_off = static_cast<std::size_t>(y) * width_;
     std::fill(base + row_off, base + row_off + width_, blank);
     last_col_[static_cast<std::size_t>(y)] = -1;
+    stamp_row(y);
     if (y == max_y_) {
         // Rescan downward from y-1 to find the new max_y_.
         int new_max = -1;
@@ -621,6 +640,7 @@ void Canvas::clear_rows(int n) {
     std::fill(cells_.data(), cells_.data() + count, blank);
     damage_ = Rect{{Columns{0}, Rows{0}}, {Columns{width_}, Rows{rows}}};
     std::fill(last_col_.begin(), last_col_.begin() + rows, -1);
+    stamp_rows(0, rows);
     // Partial clear: rows [n, height_) may still hold non-blank content,
     // so max_y_ is NOT canvas-wide -1. Rescan the surviving rows from
     // the bottom up via last_col_ (kept current by set/blit/fill).
@@ -679,6 +699,11 @@ void Canvas::clear_below(int keep_top, int clear_bottom) {
         std::fill(base + off, base + off + count, blank);
         std::fill(last_col_.begin() + keep_top,
                   last_col_.begin() + bottom, -1);
+        // Stamp ONLY the cleared band. The preserved head [0, keep_top)
+        // keeps its epochs untouched — that is exactly what lets the
+        // renderer's whole-entry blit skip prove the frozen prefix is
+        // still byte-identical without re-comparing it.
+        stamp_rows(keep_top, bottom);
     }
     // Re-derive max_y_ across the WHOLE canvas: the preserved head may
     // hold the tallest content (a tall frozen prefix with an empty
@@ -732,6 +757,13 @@ void Canvas::resize(int w, int h) {
     max_y_ = -1;
     cells_.assign(static_cast<std::size_t>(w * h), default_cell());
     last_col_.assign(static_cast<std::size_t>(h), -1);
+    // Fresh allocation — nothing previously recorded against this canvas
+    // may skip. epoch_counter_ survives the resize (monotonic for the
+    // canvas lifetime), so stamping every row with a NEW epoch strictly
+    // invalidates every pre-resize record; a plain zero-assign would
+    // RE-ARM old records (0 <= recorded epoch) against blank memory.
+    row_epoch_.assign(static_cast<std::size_t>(h), 0);
+    stamp_rows(0, h);
     damage_ = full_rect();
     clip_stack_.clear();
     update_clip_cache();

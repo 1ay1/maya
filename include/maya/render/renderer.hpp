@@ -39,6 +39,17 @@ namespace render_detail {
 // the transcript grows instead of once per frame. Not wired into any hot
 // path beyond a relaxed atomic increment on the already-slow miss branch.
 [[nodiscard]] std::uint64_t component_render_calls() noexcept;
+// Blit-path telemetry: rows skipped by the per-row write-epoch proof vs
+// rows that went through the bulk_eq/memcpy compare, and fast-path cache
+// entries walked. Monotonic totals; diff across frames to get per-frame.
+[[nodiscard]] std::uint64_t blit_rows_epoch_skip() noexcept;
+[[nodiscard]] std::uint64_t blit_rows_compared() noexcept;
+[[nodiscard]] std::uint64_t blit_entries_walked() noexcept;
+// Top-level render_tree phase totals (build_layout_tree / layout::compute /
+// paint_element), nanoseconds, monotonic.
+[[nodiscard]] std::uint64_t rt_build_ns() noexcept;
+[[nodiscard]] std::uint64_t rt_layout_ns() noexcept;
+[[nodiscard]] std::uint64_t rt_paint_ns() noexcept;
 
 // ============================================================================
 // Layout tree builder

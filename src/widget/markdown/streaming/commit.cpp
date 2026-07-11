@@ -668,6 +668,10 @@ void StreamingMarkdown::clear() {
     tail_merge_cache_in_fence_     = false;
     tail_merge_cache_continues_    = false;
     tail_merge_cache_el_.reset();
+    tail_list_chunks_.clear();
+    tail_list_chunks_abs_start_ = static_cast<std::size_t>(-1);
+    tail_list_chunks_abs_end_   = static_cast<std::size_t>(-1);
+    tail_list_next_ord_         = -1;
     // Reset the build-cache shape flags so the next build() falls into
     // the full-rebuild path rather than trying to mutate a stale
     // structural template.

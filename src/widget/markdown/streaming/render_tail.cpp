@@ -706,7 +706,252 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
         }
 
         bool live_continues = false;
-        if (!trimmed_live.empty()) {
+        bool list_chunked   = false;
+
+        // ── Incremental chunked render for a TIGHT-LIST tail ────────────
+        //
+        // A tight list (no \n\n between items — the dominant LLM reply
+        // shape) never reaches a commit boundary, so the WHOLE list rides
+        // the live tail for its entire stream. The merge test below keys
+        // on the live-line hash, which moves EVERY reveal frame, so it
+        // re-parsed + re-rendered the whole list block per frame — cost
+        // rising linearly with list length (10 ms/frame at ~3000 items:
+        // the "long turn gets stuck, then bursts" stall).
+        //
+        // Lists are chunk-splittable at TOP-LEVEL ITEM boundaries with
+        // cell-identical output: md_block_to_element(List) is a gap-0
+        // vstack of item rows, nested content binds to its parent item,
+        // and ordered numbering is forced continuous across chunks by
+        // overriding each chunk's start_num. So seal every kChunkItems
+        // closed items into a hash-keyed ComponentElement ONCE (the
+        // renderer blits it from cache thereafter) and re-parse only
+        // [unsealed closed items + live line] per frame — O(chunk), not
+        // O(list).
+        //
+        // Engage rules (all must hold; otherwise the general path below
+        // is authoritative):
+        //   • not inside an open code fence;
+        //   • the LAST block of the terminated prefix starts with a list
+        //     marker at its own base indent;
+        //   • that block slice contains no blank lines (pure TIGHT — a
+        //     loose list's items render with different spacing, and a
+        //     single-item chunk of a loose list would re-parse as tight).
+        static const bool chunk_disabled = [] {
+            const char* e = std::getenv("MAYA_NO_LIST_CHUNK");
+            return e && e[0] && e[0] != '0';
+        }();
+        if (!chunk_disabled && !in_code_fence_) {
+            std::string_view blk = terminated.substr(last_block_start);
+            const std::size_t blk_abs = body_abs_start + last_block_start;
+            // First line must be a list marker; capture its indent as the
+            // top-level base.
+            std::size_t fl_end = blk.find('\n');
+            std::string_view fl = (fl_end == std::string_view::npos)
+                ? blk : blk.substr(0, fl_end);
+            const bool fl_is_item =
+                ul_marker_len(fl) > 0 || ol_marker_len(fl) > 0;
+            const int base_indent = fl_is_item ? count_indent(fl) : 0;
+            // TIGHT check: no blank line inside the block slice. (A
+            // blank line would have been a block boundary unless
+            // classify_blank_line held it intra-list — the loose case.)
+            const bool tight = fl_is_item
+                && blk.find("\n\n") == std::string_view::npos
+                && blk.find("\n\r\n") == std::string_view::npos;
+            if (tight) {
+                // Offsets (relative to blk) of every TOP-LEVEL item start.
+                std::vector<std::size_t> item_starts;
+                std::size_t p = 0;
+                while (p < blk.size()) {
+                    std::size_t e = blk.find('\n', p);
+                    if (e == std::string_view::npos) e = blk.size();
+                    std::string_view ln = blk.substr(p, e - p);
+                    if ((ul_marker_len(ln) > 0 || ol_marker_len(ln) > 0)
+                        && count_indent(ln) == base_indent)
+                        item_starts.push_back(p);
+                    p = e + 1;
+                }
+                if (!item_starts.empty()) {
+                    constexpr std::size_t kChunkItems = 16;
+                    // Reset the chunk cache when the block base moved
+                    // (commit fired / clip rebase / different list).
+                    if (tail_list_chunks_abs_start_ != blk_abs) {
+                        tail_list_chunks_.clear();
+                        tail_list_chunks_abs_start_ = blk_abs;
+                        tail_list_chunks_abs_end_   = blk_abs;  // sealed end
+                        tail_list_next_ord_         = -1;
+                    }
+                    std::size_t sealed_off =
+                        tail_list_chunks_abs_end_ - blk_abs;   // rel to blk
+                    // Defensive: sealed_off must sit ON an item boundary
+                    // within the current slice; otherwise resync from 0.
+                    if (sealed_off > blk.size()) {
+                        tail_list_chunks_.clear();
+                        tail_list_chunks_abs_end_ = blk_abs;
+                        tail_list_next_ord_       = -1;
+                        sealed_off = 0;
+                    }
+                    // Count closed items: every top-level item start
+                    // strictly BEFORE the last one owns fully-terminated
+                    // rows. items in [first_unsealed_idx, closed_count)
+                    // are sealable.
+                    const std::size_t last_item_off = item_starts.back();
+                    // index of first item at/after sealed_off
+                    std::size_t idx = 0;
+                    while (idx < item_starts.size()
+                           && item_starts[idx] < sealed_off) ++idx;
+                    // Seal in blocks of kChunkItems while enough CLOSED
+                    // items (strictly before the last item) remain.
+                    while (idx + kChunkItems < item_starts.size()
+                           && item_starts[idx + kChunkItems] <= last_item_off) {
+                        std::size_t a = item_starts[idx];
+                        std::size_t b = item_starts[idx + kChunkItems];
+                        auto blocks = canonical_blocks(
+                            std::string{blk.substr(a, b - a)});
+                        if (blocks.size() != 1) break;  // engine disagrees — bail
+                        if (auto* l = std::get_if<md::List>(&blocks.front().inner)) {
+                            if (l->ordered) {
+                                if (tail_list_next_ord_ < 0)
+                                    tail_list_next_ord_ = l->start_num;
+                                l->start_num =
+                                    static_cast<int>(tail_list_next_ord_);
+                                tail_list_next_ord_ +=
+                                    static_cast<long>(l->items.size());
+                            }
+                        } else {
+                            break;                       // not a list — bail
+                        }
+                        auto el = std::make_shared<const Element>(
+                            md_block_to_element(blocks.front()));
+                        ComponentElement comp;
+                        comp.hash_id = ::maya::CacheIdBuilder{}
+                            .add(std::string_view{"strmd-listchunk"})
+                            .add(static_cast<std::uint64_t>(instance_id_))
+                            .add(static_cast<std::uint64_t>(blk_abs + a))
+                            .add(static_cast<std::uint64_t>(b - a))
+                            .build();
+                        comp.render = [el](int, int) -> Element { return *el; };
+                        tail_list_chunks_.push_back(Element{std::move(comp)});
+                        tail_list_chunks_abs_end_ = blk_abs + b;
+                        idx += kChunkItems;
+                        sealed_off = b;
+                    }
+
+                    // Per-frame slice: unsealed closed items + last item
+                    // + live line. Bounded at < 2*kChunkItems items.
+                    std::string pending;
+                    pending.append(blk.data() + sealed_off,
+                                   blk.size() - sealed_off);
+                    const bool has_live = !trimmed_live.empty();
+                    if (has_live) { pending += trimmed_live; pending += '\n'; }
+                    auto pblocks = canonical_blocks(pending);
+                    // The pending slice must still be ONE list block —
+                    // the live line either continues the list (another
+                    // item / lazy continuation) or the whole thing is
+                    // list-shaped without it. If the live line opened a
+                    // NEW block (heading, fence…), render the closed part
+                    // as the list and let the standard live-line handling
+                    // below place the new block's eager/inline render.
+                    bool pending_is_list =
+                        pblocks.size() == 1
+                        && std::holds_alternative<md::List>(pblocks.front().inner);
+                    bool live_folded = pending_is_list;
+                    if (!pending_is_list && has_live) {
+                        // Retry without the live line: closed items only.
+                        pending.resize(pending.size() - trimmed_live.size() - 1);
+                        pblocks = canonical_blocks(pending);
+                        pending_is_list =
+                            pblocks.size() == 1
+                            && std::holds_alternative<md::List>(
+                                   pblocks.front().inner);
+                        live_folded = false;
+                    }
+                    if (pending_is_list) {
+                        auto& pl = std::get<md::List>(pblocks.front().inner);
+                        if (pl.ordered && tail_list_next_ord_ >= 0)
+                            pl.start_num =
+                                static_cast<int>(tail_list_next_ord_);
+                        Element pend_el =
+                            md_block_to_element(pblocks.front());
+                        // Assemble the full list as ONE gap-0 vstack —
+                        // identical rows to the whole-list render.
+                        std::vector<Element> lk;
+                        lk.reserve(tail_list_chunks_.size() + 1);
+                        for (const auto& c : tail_list_chunks_)
+                            lk.push_back(c);
+                        lk.push_back(std::move(pend_el));
+                        Element list_el = (lk.size() == 1)
+                            ? std::move(lk.front())
+                            : detail::vstack()(std::move(lk)).build();
+                        if (last_block_start > 0)
+                            rendered.push_back(
+                                stable_vstack(stable_rendered()));
+                        rendered.push_back(std::move(list_el));
+                        list_chunked   = true;
+                        live_continues = live_folded;
+                        if (live_folded) trimmed_live.clear();
+                        // A live line that did NOT fold falls through to
+                        // the standard "live line starts a new block"
+                        // handling below (eager / inline).
+                    }
+                }
+            }
+        }
+
+        if (!list_chunked && !trimmed_live.empty()) {
+            // ── Big-table fold bypass ──
+            //
+            // Folding the live partial row into the last block re-renders
+            // that block EVERY frame the live row grows a byte. For most
+            // blocks that's cheap, but a TABLE's md_block_to_element is
+            // O(rows) of column measurement + cell layout — on a table
+            // that has streamed hundreds of rows without a blank line the
+            // fold costs multiple ms per frame (the long-table "stuck then
+            // burst" stall; the merge TEST itself is an O(rows) parse per
+            // frame too). Above a row threshold, skip the fold entirely:
+            // the standalone last_block_rendered() render is memoized per
+            // row-commit (re-parses once per '\n', not once per byte) and
+            // the live row renders inline below, exactly like the eager
+            // table path in render_tail_inner. Costs a 1-row seam jitter
+            // as each row folds in — invisible next to a multi-ms stall —
+            // and only engages on tables far larger than any test/doc
+            // shape (threshold 200 lines).
+            constexpr std::size_t kBigTableLines = 200;
+            bool big_table_bypass = false;
+            if (!in_code_fence_) {
+                std::string_view blk = terminated.substr(last_block_start);
+                // Cheap shape probe: first line starts with '|' (≤3 sp),
+                // second line is a delimiter row, and the block exceeds
+                // the line threshold. No parse.
+                std::size_t k = 0;
+                while (k < 4 && k < blk.size() && blk[k] == ' ') ++k;
+                if (k < blk.size() && blk[k] == '|') {
+                    std::size_t l1 = blk.find('\n');
+                    if (l1 != std::string_view::npos && l1 + 1 < blk.size()) {
+                        std::string_view d = blk.substr(l1 + 1);
+                        std::size_t l2 = d.find('\n');
+                        std::string_view dl = (l2 == std::string_view::npos)
+                            ? d : d.substr(0, l2);
+                        std::size_t dk = 0;
+                        while (dk < 4 && dk < dl.size() && dl[dk] == ' ') ++dk;
+                        bool has_dash = false, ok = dk < dl.size() && dl[dk] == '|';
+                        for (std::size_t q = dk; ok && q < dl.size(); ++q) {
+                            char c = dl[q];
+                            if (c == '-') { has_dash = true; continue; }
+                            if (c == '|' || c == ':' || c == ' '
+                                || c == '\t' || c == '\r') continue;
+                            ok = false;
+                        }
+                        if (ok && has_dash) {
+                            std::size_t lines = 0;
+                            for (std::size_t q = 0;
+                                 q < blk.size() && lines <= kBigTableLines; ++q)
+                                if (blk[q] == '\n') ++lines;
+                            big_table_bypass = lines > kBigTableLines;
+                        }
+                    }
+                }
+            }
+            if (!big_table_bypass) {
             // Continuation test: does the live line fold INTO the last
             // terminated block (making it one taller) or START a new one?
             //
@@ -785,8 +1030,9 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                     ? std::make_shared<const Element>(std::move(merged_el))
                     : nullptr;
             }
+            }
         }
-        if (!live_continues) {
+        if (!list_chunked && !live_continues) {
             // Frozen prefix (one cached vstack) + the standalone last block.
             if (last_block_start > 0)
                 rendered.push_back(stable_vstack(stable_rendered()));

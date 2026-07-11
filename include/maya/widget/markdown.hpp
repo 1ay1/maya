@@ -852,6 +852,30 @@ private:
     mutable bool         tail_merge_cache_continues_   = false;
     mutable std::shared_ptr<const Element> tail_merge_cache_el_;
 
+    // ── Incremental cohesive-list tail render (chunked items) ──────────
+    // A TIGHT list (no \n\n between items — the dominant LLM reply shape)
+    // never reaches a commit boundary, so the whole list rides the live
+    // tail for its entire stream. The canonical path's merge test keyed on
+    // the live-line hash re-parsed + re-rendered that WHOLE block every
+    // frame (the live line grows every reveal frame), so the per-frame
+    // cost rose linearly with list length — the "long turn gets stuck,
+    // then bursts" stall. Lists are chunk-splittable at TOP-LEVEL ITEM
+    // boundaries with cell-identical output: render_list vstacks items
+    // with no gap, nested content binds to its parent item, and ordered
+    // numbering is forced continuous by overriding each chunk's start_num.
+    // So closed items render ONCE into hash-keyed chunk Elements (renderer
+    // blits them) and only [last top-level item + live line] re-parses per
+    // frame — O(item), not O(list). Keyed on absolute source offsets so a
+    // commit shift / clip move self-heals via key mismatch.
+    mutable std::vector<Element> tail_list_chunks_;
+    mutable std::size_t          tail_list_chunks_abs_start_ = static_cast<std::size_t>(-1);
+    mutable std::size_t          tail_list_chunks_abs_end_   = static_cast<std::size_t>(-1);
+    // Next expected ordered-list number after the chunked items (−0 =
+    // unordered / unknown). Forcing each chunk's start_num to this keeps
+    // "1. 1. 1."-style source numbering sequential across chunks, matching
+    // the whole-list render the block eventually commits as.
+    mutable long                 tail_list_next_ord_ = -1;
+
     // ── Per-block fold state ───────────────────────────────────────────
     // Keyed by BlockMeta::source_offset so fold state survives the rare
     // "set_content with diverging prefix" path (where commit_range is

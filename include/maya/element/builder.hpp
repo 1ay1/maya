@@ -325,6 +325,21 @@ public:
         return *this;
     }
 
+    /// Supply an explicit measure callback (the component's natural size
+    /// for layout). WITHOUT one, the framework auto-measures by RENDERING
+    /// the component at an unbounded height (1<<20) and counting the rows
+    /// it emits. That is correct for a content-sized render, but CATASTROPHIC
+    /// for a HEIGHT-FILLING render that sizes its output to the `h` it is
+    /// handed — measured at 1<<20 it would emit ~a million rows and report an
+    /// absurd natural height, poisoning its flex-basis so grow can never
+    /// expand it. A fill component MUST report a small finite basis here so
+    /// flex-grow has something to grow FROM. Prefer the `fill()` factory,
+    /// which wires this correctly for you.
+    auto measure(std::function<Size(int max_width)> fn) -> ComponentBuilder& {
+        element_.measure = std::move(fn);
+        return *this;
+    }
+
     // Set the content-stable cache key (Witness Chain).
     //
     // Non-empty CacheId values route this component through the
@@ -367,6 +382,53 @@ namespace detail {
     -> ComponentBuilder
 {
     return ComponentBuilder{std::move(render_fn)};
+}
+
+// ============================================================================
+// fill() - A component that FILLS the size flex allocates to it
+// ============================================================================
+// The height-responsive (and width-responsive) counterpart to component().
+//
+// component() sizes to CONTENT: its natural height is whatever its render
+// produces, and flex positions it at that size. fill() sizes to its SLOT:
+// it grows to consume the space its flex container gives it, and its render
+// callback receives the REAL allocated (w, h) at paint time. Size your
+// graph / canvas / gauge to `h` and it always fits the box exactly — no
+// hand-computed row budget threaded down from the parent, so the estimate
+// can never drift from what the layout engine actually allocates.
+//
+//   // A graph that always fills the space left after the meters:
+//   v(
+//       fill([&](int w, int h){ return area_chart(data, w, h); }),  // fills
+//       meter_row(), meter_row()                                    // natural
+//   ) | height(N)     // definite parent → the fill grows into the slack
+//
+// Mechanics (why this needs a factory, not just component().grow(1)):
+//   * A plain grow(1) component with no measure is auto-measured by
+//     rendering at an unbounded height and counting rows — a fill render
+//     emits ~2^20 rows there and reports a nonsense basis, so grow can
+//     never expand it. fill() installs a measure that reports a small
+//     fixed minimum (min_w x min_h) instead, giving grow a finite basis.
+//   * fill() sets grow(1) so it claims the container's free space.
+//
+// Requirement: the container must be DEFINITE on the fill axis for grow to
+// distribute — an explicit height()/width() on an ancestor, or cross-axis
+// stretch inherited from a definite-size parent. Same rule as any grow
+// child; an auto-sized container has no free space to hand out. When the
+// slot is too small the callback simply receives a small `h` (down to
+// min_h) — collapse gracefully there (e.g. return blank() below a floor).
+[[nodiscard]] inline auto fill(std::function<Element(int w, int h)> render_fn,
+                               int min_w = 0, int min_h = 1)
+    -> ComponentBuilder
+{
+    ComponentBuilder b{std::move(render_fn)};
+    b.measure([min_w, min_h](int max_width) -> Size {
+        int w = max_width > 0 ? max_width : 0;
+        if (w < min_w) w = min_w;
+        return {Columns{w}, Rows{min_h < 1 ? 1 : min_h}};
+    });
+    b.grow(1.0f);
+    return b;
 }
 
 // ============================================================================

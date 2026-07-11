@@ -653,6 +653,7 @@ using maya::detail::hstack;
 using maya::detail::center;
 using maya::detail::zstack;
 using maya::detail::component;
+using maya::detail::fill;
 using maya::detail::nothing;
 using maya::detail::list_ref;
 using maya::detail::ledger_ref;

@@ -53,6 +53,7 @@
 #include "../core/cmd.hpp"
 #include "../core/concepts.hpp"
 #include "../core/expected.hpp"
+#include "../core/function.hpp"
 #include "../core/motion.hpp"
 #include "../core/overload.hpp"
 #include "../core/render_context.hpp"
@@ -999,12 +1000,12 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
     // ── Task side (UI → workers) ──────────────────────────────────────────
     // std::condition_variable_any so we can wait with a stop_token; std::jthread
     // owns the cooperative-shutdown stop_source, joins on destruction, and
-    // makes the explicit shutdown flag obsolete. std::move_only_function
+    // makes the explicit shutdown flag obsolete. MoveOnlyFunction
     // avoids copy requirements that std::function imposes on captures —
     // tasks routinely move-capture unique_ptrs / move-only socket handles.
     std::mutex                                       work_mutex_;
     std::condition_variable_any                      work_cv_;
-    std::deque<std::move_only_function<void()>>      work_;
+    std::deque<MoveOnlyFunction<void()>>      work_;
     std::vector<std::jthread>                        workers_;
     int                                              idle_workers_ = 0;
     unsigned                                         max_workers_ =
@@ -1071,7 +1072,7 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
     // throwing (e.g. EAGAIN at the system thread cap) leaves workers_
     // unchanged because vector::emplace_back has the strong-exception
     // guarantee when the move ctor is noexcept (jthread's is).
-    void post(std::move_only_function<void()> fn) {
+    void post(MoveOnlyFunction<void()> fn) {
         std::lock_guard lk(work_mutex_);
         work_.push_back(std::move(fn));
         if (idle_workers_ == 0 && workers_.size() < max_workers_) {
@@ -1108,7 +1109,7 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
 private:
     void worker_loop(std::stop_token stop) {
         while (!stop.stop_requested()) {
-            std::move_only_function<void()> task;
+            MoveOnlyFunction<void()> task;
             {
                 std::unique_lock lk(work_mutex_);
                 ++idle_workers_;

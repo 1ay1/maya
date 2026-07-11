@@ -18,9 +18,12 @@
 #include <utility>
 #include <vector>
 
+#include "function.hpp"
+
 // C++23: move_only_function avoids the copy overhead of std::function.
 // Reactive callbacks are never copied — they are captured once and invoked
-// in-place. move_only_function is the correct abstraction here.
+// in-place. MoveOnlyFunction (std::move_only_function where the standard
+// library provides it) is the correct abstraction here.
 
 namespace maya {
 
@@ -282,11 +285,11 @@ public:
 template <typename T>
 class Computed {
     struct Node final : detail::ReactiveNode {
-        std::move_only_function<T()> compute_fn;
+        MoveOnlyFunction<T()> compute_fn;
         T                            cached_value;
         bool                         dirty = true;
 
-        explicit Node(std::move_only_function<T()> fn)
+        explicit Node(MoveOnlyFunction<T()> fn)
             : compute_fn(std::move(fn)), cached_value{} {}
 
         void mark_dirty() override {
@@ -387,10 +390,10 @@ auto computed(F&& fn) -> Computed<std::invoke_result_t<F>> {
 
 class Effect {
     struct Node final : detail::ReactiveNode {
-        std::move_only_function<void()> effect_fn;
+        MoveOnlyFunction<void()> effect_fn;
         bool                            dirty = true;
 
-        explicit Node(std::move_only_function<void()> fn)
+        explicit Node(MoveOnlyFunction<void()> fn)
             : effect_fn(std::move(fn)) {}
 
         ~Node() override {

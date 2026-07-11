@@ -230,7 +230,7 @@ namespace inline_frame {
 class  FrameBytes;
 class  ShadowWitness;
 class  ScrollbackProof;
-struct StylePool;
+class  StylePool;
 class  Canvas;
 [[nodiscard]] std::optional<ShadowWitness> verify_shadow(const InlineFrameState&) noexcept;
 

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -53,7 +54,7 @@ class Radio {
     FocusNode   focus_;
     RadioConfig cfg_;
 
-    std::move_only_function<void(int, std::string_view)> on_change_;
+    MoveOnlyFunction<void(int, std::string_view)> on_change_;
 
 public:
     explicit Radio(std::vector<std::string> items, RadioConfig cfg = {})

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -69,8 +70,8 @@ class Input {
     History history_{};
 
     // Callbacks
-    std::move_only_function<void(std::string_view)> on_submit_;
-    std::move_only_function<void(std::string_view)> on_change_;
+    MoveOnlyFunction<void(std::string_view)> on_submit_;
+    MoveOnlyFunction<void(std::string_view)> on_change_;
 
     // Placeholder text
     std::string placeholder_;

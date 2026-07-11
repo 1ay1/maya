@@ -728,10 +728,14 @@ template <typename StyleAt>
         runs.push_back(StyledRun{start, pos - start, style_at(col, total)});
         col += w;
     }
-    return Element{TextElement{.content = std::move(text),
-                               .style   = {},
-                               .wrap    = TextWrap::NoWrap,
-                               .runs    = std::move(runs)}};
+    // Assemble without designated-init: TextElement carries mutable cache
+    // fields with defaults, and newer clang warns on every designated-init
+    // that omits them (-Wmissing-designated-field-initializers).
+    TextElement te;
+    te.content = std::move(text);
+    te.wrap    = TextWrap::NoWrap;
+    te.runs    = std::move(runs);
+    return Element{std::move(te)};
 }
 
 } // namespace detail

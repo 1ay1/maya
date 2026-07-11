@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -44,7 +45,7 @@ class CommandPalette {
     FocusNode focus_;
     bool visible_ = false;
 
-    std::move_only_function<void(int)> on_execute_;
+    MoveOnlyFunction<void(int)> on_execute_;
 
 public:
     explicit CommandPalette(std::vector<Command> commands)

@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -71,7 +72,7 @@ class List {
     bool filtering_ = false;
     std::string filter_;
 
-    std::move_only_function<void(int, std::string_view)> on_select_;
+    MoveOnlyFunction<void(int, std::string_view)> on_select_;
 
     // Cached list of visible (filtered) indices into items_
     [[nodiscard]] std::vector<int> visible_indices() const {

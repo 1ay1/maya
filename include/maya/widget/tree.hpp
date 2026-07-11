@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -72,7 +73,7 @@ class Tree {
     FocusNode focus_;
     TreeConfig cfg_;
 
-    std::move_only_function<void(std::string_view)> on_select_;
+    MoveOnlyFunction<void(std::string_view)> on_select_;
 
     // A flattened row for rendering
     struct FlatRow {

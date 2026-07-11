@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -35,7 +36,7 @@ struct ModalButton {
 
     std::string label;
     Variant variant = Default;
-    std::move_only_function<void()> callback;
+    MoveOnlyFunction<void()> callback;
 };
 
 // ============================================================================

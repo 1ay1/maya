@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -34,7 +35,7 @@ class Tabs {
     Signal<int> active_{0};
     FocusNode focus_;
 
-    std::move_only_function<void(int)> on_change_;
+    MoveOnlyFunction<void(int)> on_change_;
 
 public:
     explicit Tabs(std::vector<std::string> labels)

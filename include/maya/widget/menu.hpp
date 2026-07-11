@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -40,7 +41,7 @@ class Menu {
     Signal<int> cursor_{0};
     FocusNode focus_;
 
-    std::move_only_function<void(int)> on_select_;
+    MoveOnlyFunction<void(int)> on_select_;
 
 public:
     explicit Menu(std::vector<MenuItem> items)

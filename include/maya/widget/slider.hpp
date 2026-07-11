@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../element/builder.hpp"
@@ -54,7 +55,7 @@ class Slider {
     std::string   label_;
     SliderConfig  cfg_;
 
-    std::move_only_function<void(float)> on_change_;
+    MoveOnlyFunction<void(float)> on_change_;
 
 public:
     Slider() : value_(0.0f) {}

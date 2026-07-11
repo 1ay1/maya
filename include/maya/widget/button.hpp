@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../dsl.hpp"
 #include "../element/text.hpp"
@@ -63,13 +64,13 @@ class Button {
     FocusNode   focus_;
     ButtonVariant variant_ = ButtonVariant::Default;
 
-    std::move_only_function<void()> on_click_;
+    MoveOnlyFunction<void()> on_click_;
 
 public:
     Button() = default;
 
     explicit Button(std::string label,
-                    std::move_only_function<void()> on_click = {},
+                    MoveOnlyFunction<void()> on_click = {},
                     ButtonVariant variant = ButtonVariant::Default)
         : label_(std::move(label))
         , variant_(variant)

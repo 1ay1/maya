@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../dsl.hpp"
@@ -48,7 +49,7 @@ class Select {
     FocusNode focus_;
     SelectConfig cfg_;
 
-    std::move_only_function<void(int, std::string_view)> on_select_;
+    MoveOnlyFunction<void(int, std::string_view)> on_select_;
 
 public:
     explicit Select(std::vector<std::string> items, SelectConfig cfg = {})

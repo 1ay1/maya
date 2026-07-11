@@ -94,6 +94,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/hit.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
@@ -258,8 +259,8 @@ class Table {
 
     Signal<int> cursor_{0};
     FocusNode focus_;
-    std::move_only_function<void(int)> on_change_;
-    std::move_only_function<void(int)> on_activate_;
+    MoveOnlyFunction<void(int)> on_change_;
+    MoveOnlyFunction<void(int)> on_activate_;
     // Body rows in the last render — read by PgUp/PgDn. Shared with the
     // deferred render lambda so build() never has to capture `this`:
     // a Table built fresh every view() (the TEA idiom) stays safe even

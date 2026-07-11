@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "../core/focus.hpp"
+#include "../core/function.hpp"
 #include "../core/overload.hpp"
 #include "../core/signal.hpp"
 #include "../element/builder.hpp"
@@ -43,7 +44,7 @@ class Checkbox {
     FocusNode    focus_;
     std::string  label_;
 
-    std::move_only_function<void(bool)> on_change_;
+    MoveOnlyFunction<void(bool)> on_change_;
 
 public:
     Checkbox() = default;
@@ -145,7 +146,7 @@ class ToggleSwitch {
     FocusNode    focus_;
     std::string  label_;
 
-    std::move_only_function<void(bool)> on_change_;
+    MoveOnlyFunction<void(bool)> on_change_;
 
 public:
     ToggleSwitch() = default;

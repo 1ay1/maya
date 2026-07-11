@@ -608,6 +608,18 @@ content. All are in `maya::dsl`; `solve_columns` lives in
 `<maya/layout/columns.hpp>`.
 
 ```cpp
+// THE GRID — Bootstrap for terminal cells. One declaration, every width:
+// mobile-first spans per breakpoint (xs<60≤sm<90≤md<120≤lg<160≤xl<200≤xxl,
+// keyed on the SLOT width so nested grids collapse independently).
+grid({
+    col(cpu).md(6).xl(3),            // full width → half at md → quarter at xl
+    col(mem).md(6).xl(3),
+    col(sidebar).xxl(Columns{42}),   // FIXED 42 cells at xxl (TUI col-auto)
+    col(debug).span(0).lg(12),       // hidden until lg
+})
+// Full rows solve widths EXACTLY (largest remainder — no ragged edge);
+// fixed columns take real width off the top, spans share the rest.
+
 // Ask a fragment its real rendered size (same engine the renderer uses).
 Size measure_element(const Element& el, int max_w, int max_h = 1 << 20);
 

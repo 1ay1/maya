@@ -79,6 +79,7 @@ which lives in the dependency-free header `<maya/layout/columns.hpp>`.
 
 | Primitive | The question it answers | Kind |
 |-----------|-------------------------|------|
+| [`grid`](#the-grid-one-declaration-every-width) | "Lay out the whole page, **correct at every width**." | component |
 | [`measure_element`](#measure_element-ask-dont-estimate) | "How wide/tall does *this* fragment actually render?" | function |
 | [`fill`](#fill-size-to-the-slot) | "Make this content **fill** the space flex gives it." | component |
 | [`adapt`](#adapt-restructure-by-width) | "Build a **different tree** depending on the width I get." | component |
@@ -97,6 +98,9 @@ which lives in the dependency-free header `<maya/layout/columns.hpp>`.
 
 The mental model:
 
+- **`grid`** is the page-level answer — the Bootstrap grid for terminal cells.
+  Start here; reach for the narrower primitives when a piece needs bespoke
+  behavior inside a cell.
 - **`measure_element`** is the primitive everything else is built on — it runs a
   real layout pass and hands back the natural size.
 - **`fill`** responds to the size it is *given* (height and width).
@@ -104,6 +108,117 @@ The mental model:
   a different structure.
 - **`solve_columns`** is pure arithmetic for the one case flex can't express: a
   grid whose header row and body rows must agree on column widths.
+
+---
+
+## The grid — one declaration, every width
+
+```cpp
+enum class Bk { XS, SM, MD, LG, XL, XXL };
+struct Breaks { int sm = 60, md = 90, lg = 120, xl = 160, xxl = 200; };
+struct GridOpts { int columns = 12; int gap_x = 1; int gap_y = 0;
+                  bool grow_rows = false; Breaks breaks{}; };
+
+GridCol col(Element el);                       // .span/.xs/.sm/.md/.lg/.xl/.xxl/.order
+auto grid(std::vector<GridCol> cols, GridOpts opts = {}) -> ComponentBuilder;
+```
+
+The hand-rolled tier switch — `if (w >= 200) wide(); else if (w >= 84)
+classic(); else narrow();` with three separately-maintained layouts — is the
+last big piece of width arithmetic left in a typical TUI. The grid kills it
+the way Bootstrap killed it on the web: **one declaration** where each column
+states its width *per breakpoint*, and the framework re-solves the packing at
+every resize.
+
+A system dashboard — the full rockbottom shape — in its entirety:
+
+```cpp
+// The stat panels: full width on a phone, 2×2 from md up.
+auto stats = grid({
+    col(cpu_panel).md(6),
+    col(mem_panel).md(6),
+    col(net_panel).md(6),
+    col(disk_panel).md(6),
+});
+
+// The page: stats above the table — until xxl, where they become a
+// fixed 42-cell sidebar and the process table takes everything else.
+auto body = grid({
+    col(stats).xxl(Columns{42}),
+    col(proc_table),
+});
+```
+
+That is the whole layout. At `< 90` columns everything stacks; at `≥ 90` the
+panels pair up above the full-width table; at `≥ 200` the stats compress into
+a sidebar. No widths computed, no tiers switched, nothing to drift.
+
+### Mobile-first spans
+
+Every column defaults to **span 12** — full width — so an undecorated grid
+stacks everything in one column on the narrowest terminal, automatically. A
+value set at a tier applies to that tier **and every tier above it** until
+overridden, exactly like Bootstrap's `col-12 col-md-6 col-xl-3`:
+
+```cpp
+col(panel)               // 12 everywhere: always full width
+col(panel).md(6)         // 12 below md, half from md up
+col(panel).md(6).xl(3)   // …and a quarter from xl up
+```
+
+Spans are grid units out of `GridOpts::columns` (default 12). Columns pack
+greedily into rows in declaration order; a column that would overflow the
+row's 12 units starts a new row. When a row's spans sum to 12 its widths
+solve **exactly** — largest-remainder distribution, no ragged right edge from
+integer division.
+
+### Fixed-cell columns — the TUI `col-auto`
+
+Terminals have a pattern the web grid never needed: the **fixed-width
+sidebar** (a 40-cell stats rail, a 3-cell gutter). Pass `Columns{n}` instead
+of a span:
+
+```cpp
+col(sidebar).xxl(Columns{42})    // spans below xxl, exactly 42 cells at xxl+
+col(rail).span(Columns{3})       // fixed 3 cells at every tier
+```
+
+Fixed columns consume no grid units — the row's span columns share whatever
+width remains after the fixed ones (and the gaps) are taken off the top.
+
+### Hiding and ordering
+
+```cpp
+col(debug_pane).span(0).lg(12)   // hidden until lg, full-width row from lg
+col(cpu).span(0).md(4)           // Bootstrap d-none d-md-block
+col(proc_table).order(-1)        // pack first at every tier
+```
+
+Span `0` (or `Columns{0}`) hides the column at that tier and above until a
+higher tier resets it. `.order(n)` stable-sorts columns before packing — put
+the table first on a phone and third on an ultrawide.
+
+### Slot-width tiers — grids nest and re-solve independently
+
+Breakpoints key on the width of the **slot the grid sits in**, not the
+terminal. That is what makes the dashboard above work: on a 230-column
+terminal the outer grid is at `xxl`, but the stats grid inside the 42-cell
+sidebar sees 42 columns — below `md` — so its panels restack 1-across *inside
+the sidebar* while the rest of the screen stays wide. Composition is free;
+nothing needs to know where it will be mounted.
+
+### Heights
+
+Rows are natural-height; every cell in a row is stretched to the tallest
+(flex cross-stretch). Two knobs for full-screen dashboards:
+
+- `GridOpts{.grow_rows = true}` — rows share surplus height equally when the
+  grid fills a definite-height slot.
+- A cell whose content should fill its cell vertically uses the usual grow
+  chain: `col(proc_table | grow(1))` inside a definite band.
+
+See [`examples/grid.cpp`](https://github.com/1ay1/maya/blob/master/examples/grid.cpp)
+for the complete dashboard — resize it and watch all three shapes.
 
 ---
 
@@ -439,6 +554,7 @@ it's cheap enough to solve every frame and trivial to unit-test in isolation.
 ## Choosing a primitive
 
 ```text
+A whole page correct at every width?         → grid
 Need a raw size number?                      → measure_element
 Content should FILL the space it's given?    → fill
 Child should be PINNED in its slot?          → place

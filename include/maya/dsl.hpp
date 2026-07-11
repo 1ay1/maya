@@ -44,6 +44,7 @@
 #include "core/scroll_state.hpp"
 #include "core/hit.hpp"
 #include "element/builder.hpp"
+#include "element/grid.hpp"
 #include "style/border.hpp"
 #include "style/color.hpp"
 #include "style/style.hpp"
@@ -671,6 +672,14 @@ using maya::VAlign;
 using maya::detail::place;
 using maya::Bp;
 using maya::detail::responsive;
+
+// The grid — Bootstrap-style tiered layout (element/grid.hpp)
+using maya::grid;
+using maya::col;
+using maya::GridCol;
+using maya::GridOpts;
+using maya::Bk;
+using maya::Breaks;
 
 // ── User-defined literal for text nodes ─────────────────────────────────────
 //

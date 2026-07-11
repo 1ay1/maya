@@ -598,6 +598,10 @@ auto fit_row(std::vector<FitItem> items, int gap = 0);
 auto responsive(std::vector<Bp> tiers);
 Element place(Element child, HAlign h = HAlign::Center, VAlign v = VAlign::Middle);
 
+// The grid — Bootstrap-style tiered layout (see "Responsive layout" below)
+GridCol col(Element el);
+auto grid(std::vector<GridCol> cols, GridOpts opts = {});
+
 // Pretty text (see "Gradients" below)
 Element gradient(std::string text, Color from, Color to, Style base = {});
 Element gradient(std::string text, Gradient g, Style base = {});
@@ -996,6 +1000,47 @@ Measure-driven primitives for layouts that restructure with the terminal size.
 Full treatment in [Responsive Layouts](15-responsive.md). All are in `maya::dsl`
 (and `maya::`); `solve_columns` and its types live in
 `<maya/layout/columns.hpp>`.
+
+### grid() / col() / GridCol / GridOpts / Bk / Breaks
+
+```cpp
+// Breakpoint tiers, keyed on the SLOT width in cells (not the terminal):
+enum class Bk { XS, SM, MD, LG, XL, XXL };
+struct Breaks { int sm = 60, md = 90, lg = 120, xl = 160, xxl = 200;
+                Bk tier(int w) const; };
+
+struct GridOpts {
+    int    columns   = 12;      // grid units per row
+    int    gap_x     = 1;       // cells between columns
+    int    gap_y     = 0;       // rows between rows
+    bool   grow_rows = false;   // rows share surplus height (definite slot)
+    Breaks breaks{};
+};
+
+// One column. Mobile-first: a value set at a tier applies upward until
+// overridden. int = span (grid units; 0 hides), Columns{n} = FIXED n cells
+// (consumes no grid units — span columns share the remainder).
+GridCol col(Element el);
+GridCol& GridCol::span(int units);        // xs and up
+GridCol& GridCol::span(Columns cells);
+GridCol& GridCol::xs/sm/md/lg/xl/xxl(int units);
+GridCol& GridCol::xs/sm/md/lg/xl/xxl(Columns cells);
+GridCol& GridCol::order(int n);           // stable pack order (default 0)
+
+// The Bootstrap grid for terminal cells: columns pack greedily into 12-unit
+// rows at the tier the slot width selects; full rows solve their widths
+// EXACTLY (largest-remainder — no ragged right edge). Re-solves per frame
+// from the real allocated width (adapt() underneath), so nested grids
+// collapse independently of the screen.
+auto grid(std::vector<GridCol> cols, GridOpts opts = {}) -> ComponentBuilder;
+
+//   grid({
+//       col(cpu).md(6).xl(3),
+//       col(mem).md(6).xl(3),
+//       col(sidebar).xxl(Columns{42}),
+//       col(debug).span(0).lg(12),      // hidden until lg
+//   })
+```
 
 ### measure_element()
 

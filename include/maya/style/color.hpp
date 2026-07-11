@@ -372,6 +372,34 @@ public:
         return Color::rgb(drop(r_), drop(g_), drop(b_));
     }
 
+    // Resolve this color to a concrete Rgb value. Named colors project
+    // through the ANSI-16 palette, Indexed through the xterm-256 table,
+    // Rgb passes through, and Default falls back to white. Unlike the raw
+    // r()/g()/b() accessors (which return the palette index for Named /
+    // Indexed, NOT channels), to_rgb() always yields true color channels —
+    // so gradient interpolation and blending are correct for ANY color kind.
+    [[nodiscard]] constexpr Color to_rgb() const noexcept {
+        switch (kind_) {
+            case Kind::Rgb:
+                return *this;
+            case Kind::Named: {
+                const auto& c = detail::kAnsi16[r_ & 15];
+                return Color::rgb(static_cast<uint8_t>(c[0]),
+                                  static_cast<uint8_t>(c[1]),
+                                  static_cast<uint8_t>(c[2]));
+            }
+            case Kind::Indexed: {
+                detail::Rgb3 c = detail::xterm256_to_rgb(r_);
+                return Color::rgb(static_cast<uint8_t>(c.r),
+                                  static_cast<uint8_t>(c.g),
+                                  static_cast<uint8_t>(c.b));
+            }
+            case Kind::Default:
+                return Color::rgb(255, 255, 255);
+        }
+        return *this;
+    }
+
     constexpr auto operator<=>(const Color&) const = default;
 };
 

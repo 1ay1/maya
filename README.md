@@ -18,7 +18,8 @@
 - **Compile-time UI trees.** `t<"Hello"> | Bold | border_<Round>` is type-state safe — try to set border color without a border and it's a compile error, not a runtime no-op.
 - **SIMD frame diff.** AVX2 / SSE4.2 / NEON. 64-bit packed cells, O(1) compare. Only changed cells write to the terminal.
 - **Real flexbox.** Yoga layout — `grow()`, `gap()`, `align()`, `justify()`. No `printf` column-counting.
-- **Responsive by measurement.** `fit_row` sheds low-priority items, `solve_columns` keeps a table's header and rows on one width plan, `fill` sizes a graph to its slot, `adapt` restructures by width — all measured, never hand-estimated. See [Responsive Layouts](docs/15-responsive.md).
+- **Responsive by measurement.** `fit_row` sheds low-priority items, `solve_columns` keeps a table's header and rows on one width plan, `fill` sizes a graph to its slot, `responsive` switches layouts at breakpoints, `place` pins content to any corner — all measured, never hand-estimated. See [Responsive Layouts](docs/15-responsive.md).
+- **Pretty by default.** `gradient("MAYA", a, b)` sweeps color across text, `rainbow()` does the full spectrum, `gradient_rule()` draws a divider that re-tiles to its pane — one `TextElement` under the hood, so it wraps and measures like plain text. See [Gradients](docs/03-styling.md#gradients).
 - **Two render modes.** Fullscreen (alternate screen) or **inline** (lives in your scrollback, doesn't take over the terminal).
 - **Two app APIs.** `run(event_fn, render_fn)` for quick tools; `run<Program>()` Elm-style for testable pure logic with algebraic effects.
 - **Header-mostly.** `#include <maya/maya.hpp>` is the public surface. Widgets opt-in individually.
@@ -90,7 +91,7 @@ int main() { run<Counter>({.title = "counter"}); }
 
 ## Examples
 
-34 examples ship with the framework:
+36 examples ship with the framework:
 
 <table>
 <tr>

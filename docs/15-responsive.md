@@ -22,7 +22,7 @@ row budget down from the parent. That arithmetic lives in a different place than
 the thing it measures, so it drifts the moment either side changes — and it
 drifts *silently*, only showing up as a ragged table at one specific width.
 
-maya's answer is one idea in five shapes: **measure, don't estimate.**
+maya's answer is one idea in a handful of shapes: **measure, don't estimate.**
 
 ---
 
@@ -73,7 +73,7 @@ the measurement follows, because the thing measured **is** the thing rendered.
 
 ## The toolkit at a glance
 
-Five primitives, each answering one question. All are in `maya::dsl` (or
+Seven primitives, each answering one question. All are in `maya::dsl` (or
 `maya::`); no extra include beyond `<maya/maya.hpp>` — except `solve_columns`,
 which lives in the dependency-free header `<maya/layout/columns.hpp>`.
 
@@ -83,7 +83,17 @@ which lives in the dependency-free header `<maya/layout/columns.hpp>`.
 | [`fill`](#fill-size-to-the-slot) | "Make this content **fill** the space flex gives it." | component |
 | [`adapt`](#adapt-restructure-by-width) | "Build a **different tree** depending on the width I get." | component |
 | [`fit_row`](#fit_row-a-row-that-sheds-items) | "Lay out this row, **dropping** low-priority items when tight." | component |
+| [`responsive`](#responsive-named-width-breakpoints) | "Switch whole **layouts** at named width breakpoints." | component |
+| [`place`](#place-pin-content-anywhere-in-a-slot) | "**Pin** this child to a corner/edge/center of its slot." | element |
 | [`solve_columns`](#solve_columns-one-plan-for-a-table) | "Give me **one** width plan a whole table shares." | function |
+
+!!! note "Components are first-class nodes"
+    Everything returning a component (`component`, `fill`, `adapt`, `fit_row`,
+    `responsive`, `gradient_rule`) satisfies the `Node` concept: use them
+    directly as children of `v()` / `h()` and pipe runtime modifiers onto them
+    (`fill(…) | grow(1)`, `gradient_rule(a, b) | width(40)`) like any other
+    node. The builder's own methods (`.grow()`, `.width(Dimension)`) also work
+    and avoid the wrapper box a pipe introduces.
 
 The mental model:
 
@@ -218,6 +228,64 @@ estimate to get wrong.
     The most frequent use of `adapt` is "drop trailing items when the row gets
     tight." `fit_row` is that, pre-built and measured for you — reach for raw
     `adapt` only when you're switching between genuinely different structures.
+
+---
+
+## `responsive` — named width breakpoints
+
+```cpp
+struct Bp {
+    int min_width = 0;
+    std::function<Element(int w)> build;
+};
+
+auto responsive(std::vector<Bp> tiers) -> ComponentBuilder;
+```
+
+Tier sugar over `adapt` for the "phone / laptop / ultrawide" case: list your
+breakpoints once, and the **widest tier whose `min_width` the slot satisfies**
+builds the view. The builder still receives the real width, so tiers can fine-
+tune within their band:
+
+```cpp
+responsive({
+    { 0,   [](int)   { return compact_view(); } },   // < 80 cols
+    { 80,  [](int)   { return two_pane(); } },        // 80..119
+    { 120, [](int w) { return three_pane(w); } },     // >= 120
+})
+```
+
+If the slot is narrower than every tier, the smallest tier is used — there is
+always something to draw. Unlike a global "screen size" switch, `responsive`
+keys on the width of the **slot it sits in**, so a sidebar can collapse to its
+compact tier while the main pane stays wide.
+
+---
+
+## `place` — pin content anywhere in a slot
+
+```cpp
+enum class HAlign { Left, Center, Right };
+enum class VAlign { Top, Middle, Bottom };
+
+Element place(Element child,
+              HAlign h = HAlign::Center,
+              VAlign v = VAlign::Middle);
+```
+
+The declarative answer to "center this", "pin it bottom-right". `place()`
+fills the space its parent allocates and positions the child on both axes:
+
+```cpp
+place(spinner)                                   // dead center (default)
+place(hint, HAlign::Right, VAlign::Bottom)       // status corner
+place(logo, HAlign::Center, VAlign::Top)
+```
+
+Because it *fills* (like a grow child), it tracks every resize with zero
+arithmetic — the child just stays put at its corner / edge / center of an
+ever-changing box. Same definiteness rule as `fill`: the slot must come from
+an explicit ancestor size or the default cross-stretch.
 
 ---
 
@@ -373,8 +441,10 @@ it's cheap enough to solve every frame and trivial to unit-test in isolation.
 ```text
 Need a raw size number?                      → measure_element
 Content should FILL the space it's given?    → fill
+Child should be PINNED in its slot?          → place
 Structure changes with the WIDTH it's given? → adapt
-  …and it's "drop trailing items when tight"? → fit_row
+  …named phone/laptop/ultrawide tiers?       → responsive
+  …"drop trailing items when tight"?         → fit_row
 A header + rows that must share columns?     → solve_columns
 ```
 
@@ -425,6 +495,9 @@ is not a single hand-computed breakpoint or row budget in it.
 
 - [Layout](04-layout.md) — the flexbox model these primitives build on
   (`grow`, `gap`, `align`, `wrap`, `Dimension`).
+- [Styling › Gradients](03-styling.md#gradients) — `gradient()`, `rainbow()`,
+  and `gradient_rule()`, the pretty counterpart to this toolkit (a
+  `gradient_rule` is itself responsive: it re-tiles to its slot width).
 - [Runtime Content](05-runtime-content.md) — `component()`, `dyn()`, and the
   measure-aware render callbacks these extend.
 - [API Reference › Responsive layout](11-api-reference.md#responsive-layout) —

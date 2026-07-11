@@ -595,6 +595,16 @@ Size measure_element(const Element& el, int max_w, int max_h = 1 << 20);
 auto fill(std::function<Element(int w, int h)> fn, int min_w = 0, int min_h = 1);
 auto adapt(std::function<Element(int w)> fn);
 auto fit_row(std::vector<FitItem> items, int gap = 0);
+auto responsive(std::vector<Bp> tiers);
+Element place(Element child, HAlign h = HAlign::Center, VAlign v = VAlign::Middle);
+
+// Pretty text (see "Gradients" below)
+Element gradient(std::string text, Color from, Color to, Style base = {});
+Element gradient(std::string text, Gradient g, Style base = {});
+Element rainbow(std::string text, Style base = {},
+                float saturation = 0.85f, float lightness = 0.62f);
+auto    gradient_rule(Color from, Color to, char32_t glyph = U'─');
+auto    gradient_rule(Gradient g, char32_t glyph = U'─');
 
 // Empty element (renders nothing, satisfies Node)
 Element nothing();
@@ -790,6 +800,7 @@ public:
     // Adjustment (constexpr)
     Color lighten(float amount) const;
     Color darken(float amount) const;
+    Color to_rgb() const;   // resolve Named/Indexed → true RGB channels
 
     // SGR sequences
     std::string fg_sgr() const;
@@ -1033,6 +1044,38 @@ struct FitItem {
 auto fit_row(std::vector<FitItem> items, int gap = 0) -> ComponentBuilder;
 ```
 
+### responsive() / Bp
+
+```cpp
+struct Bp {
+    int min_width = 0;
+    std::function<Element(int w)> build;
+};
+
+// Named width breakpoints over adapt(): the widest tier whose min_width the
+// slot satisfies builds the view (the builder receives the real width). If
+// the slot is narrower than every tier, the smallest tier is used.
+auto responsive(std::vector<Bp> tiers) -> ComponentBuilder;
+```
+
+### place() / HAlign / VAlign
+
+```cpp
+enum class HAlign { Left, Center, Right };
+enum class VAlign { Top, Middle, Bottom };
+
+// Fill the slot the flex parent allocates and pin `child` at the given
+// corner / edge / center. Tracks every resize with zero arithmetic.
+Element place(Element child, HAlign h = HAlign::Center,
+              VAlign v = VAlign::Middle);
+```
+
+!!! note
+    `ComponentBuilder` (returned by `component` / `fill` / `adapt` / `fit_row`
+    / `responsive` / `gradient_rule`) satisfies the `Node` concept — components
+    go directly in `v()` / `h()` and accept runtime pipes (`| grow(1)`,
+    `| width(40)`, `| hit(id)`).
+
 ### solve_columns() / ColSpec / ColPlan
 
 ```cpp
@@ -1061,6 +1104,49 @@ struct ColPlan {
 // surplus waterfill clamped at max. With an unbounded weighted column the plan
 // fills `avail` exactly. Pure arithmetic — no Element types, no layout engine.
 ColPlan solve_columns(std::span<const ColSpec> cols, int avail, int gap = 1);
+```
+
+---
+
+## Gradients
+
+Multi-color "pretty" primitives. Full treatment in
+[Styling › Gradients](03-styling.md#gradients).
+
+### Gradient
+
+```cpp
+#include <maya/maya.hpp>          // or <maya/style/gradient.hpp> standalone
+
+struct Gradient {
+    std::vector<Color> stops;
+
+    Gradient(std::initializer_list<Color> stops);
+    static Gradient two(Color from, Color to);
+
+    // Sample at t ∈ [0,1] (clamped): linear RGB blend across the two nearest
+    // stops. Named/Indexed stops resolve via Color::to_rgb() first.
+    Color at(float t) const;
+};
+```
+
+### gradient() / rainbow() / gradient_rule()
+
+```cpp
+// Horizontal gradient text — ONE TextElement with per-codepoint StyledRuns,
+// so it wraps/truncates/measures exactly like plain text(). `base` carries
+// non-color attributes (bold/italic) into every run.
+Element gradient(std::string text, Color from, Color to, Style base = {});
+Element gradient(std::string text, Gradient g, Style base = {});
+
+// Full HSL hue sweep across the text width.
+Element rainbow(std::string text, Style base = {},
+                float saturation = 0.85f, float lightness = 0.62f);
+
+// Full-width divider that re-tiles `glyph` to its real allocated width and
+// sweeps the gradient across it. Responsive by construction.
+auto gradient_rule(Color from, Color to, char32_t glyph = U'─') -> ComponentBuilder;
+auto gradient_rule(Gradient g,           char32_t glyph = U'─') -> ComponentBuilder;
 ```
 
 ---

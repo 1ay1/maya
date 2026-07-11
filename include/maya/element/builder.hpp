@@ -16,6 +16,7 @@
 
 #include "element.hpp"
 #include "../layout/columns.hpp"   // kKeepAlways (shared with solve_columns)
+#include "../style/gradient.hpp"   // Gradient (shared with gradient()/gradient_rule())
 
 #include <concepts>
 #include <cstdint>
@@ -368,6 +369,16 @@ public:
     operator Element() && {
         return Element{std::move(element_)};
     }
+
+    /// Materialize to Element. Having build() makes ComponentBuilder satisfy
+    /// the Node concept, so component() / fill() / adapt() / fit_row() /
+    /// responsive() / gradient_rule() can be used DIRECTLY as children of the
+    /// compile-time v() / h() and accept the runtime | pipes (| grow(1),
+    /// | width(n), | hit(id), ...) like any other node — no more routing a
+    /// component through a vector<Element> or a runtime builder just to place
+    /// it. (The builder's own .grow()/.width(Dimension) methods still work and
+    /// avoid the extra wrapper box a pipe introduces.)
+    [[nodiscard]] Element build() const { return Element{element_}; }
 };
 
 // ============================================================================
@@ -561,6 +572,211 @@ namespace detail {
         auto b = hstack();
         if (gap > 0) b.gap(gap);
         return b(std::move(out));
+    });
+}
+
+} // namespace detail
+
+// ============================================================================
+// Pretty text — gradient() / rainbow() (multi-color text via StyledRuns)
+// ============================================================================
+// A gradient heading is one of the highest-ROI "this looks designed" wins in
+// a TUI, and maya already has the machinery: a TextElement carries per-byte
+// StyledRuns, each painted with its own color. gradient() splits the string
+// into one run per codepoint and colors each by its horizontal position, so
+// the color sweeps smoothly across the text. No renderer changes, no per-char
+// Element explosion — it is ONE TextElement that wraps, truncates, and
+// measures exactly like plain text().
+//
+//   gradient("MAYA", Color::hex(0xFF5F6D), Color::hex(0xFFC371))
+//   gradient("weather", Gradient{{sky, teal, gold}})   // multi-stop
+//   rainbow("party mode")                               // full hue sweep
+//
+// `base` supplies non-color attributes (bold/italic/underline) merged into
+// every run — pipe operators can't reach the runs, so pass attributes here:
+//   gradient("MAYA", a, b, Style{}.with_bold())
+
+namespace detail {
+
+// Minimal UTF-8 encoder (used by gradient_rule to tile a glyph to width).
+inline void encode_utf8(std::string& out, char32_t cp) {
+    if (cp < 0x80) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800) {
+        out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+        out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+        out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
+}
+
+// Build one StyledRun per codepoint, colored by a callback mapping the
+// codepoint's horizontal cell position (col) + total width to a Style.
+template <typename StyleAt>
+[[nodiscard]] inline Element paint_per_cp(std::string text, StyleAt&& style_at) {
+    std::vector<StyledRun> runs;
+    runs.reserve(text.size());
+    const int total = string_width(text);
+    int col = 0;
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        const std::size_t start = pos;
+        const char32_t cp = decode_utf8(text, pos);   // advances pos
+        const int w = is_wide_char(cp) ? 2 : 1;
+        runs.push_back(StyledRun{start, pos - start, style_at(col, total)});
+        col += w;
+    }
+    return Element{TextElement{.content = std::move(text),
+                               .style   = {},
+                               .wrap    = TextWrap::NoWrap,
+                               .runs    = std::move(runs)}};
+}
+
+} // namespace detail
+
+/// Horizontal gradient text: each character colored by its position, from
+/// the gradient's first stop on the left to its last on the right.
+[[nodiscard]] inline Element gradient(std::string text, Gradient g, Style base = {}) {
+    return detail::paint_per_cp(std::move(text),
+        [g = std::move(g), base](int col, int total) -> Style {
+            const float denom = total > 1 ? static_cast<float>(total - 1) : 1.0f;
+            Style s = base;
+            s.fg = g.at(static_cast<float>(col) / denom);
+            return s;
+        });
+}
+
+/// Two-color gradient text: from (left) → to (right).
+[[nodiscard]] inline Element gradient(std::string text, Color from, Color to,
+                                      Style base = {}) {
+    return gradient(std::move(text), Gradient::two(from, to), base);
+}
+
+/// Full-spectrum rainbow text (HSL hue sweep across the width).
+[[nodiscard]] inline Element rainbow(std::string text, Style base = {},
+                                     float saturation = 0.85f, float lightness = 0.62f) {
+    return detail::paint_per_cp(std::move(text),
+        [base, saturation, lightness](int col, int total) -> Style {
+            const float denom = total > 0 ? static_cast<float>(total) : 1.0f;
+            Style s = base;
+            s.fg = Color::hsl(360.0f * static_cast<float>(col) / denom,
+                              saturation, lightness);
+            return s;
+        });
+}
+
+namespace detail {
+
+// ============================================================================
+// gradient_rule() - A full-width horizontal divider with a color gradient
+// ============================================================================
+// Responsive by construction: it measures the width it is allotted and tiles
+// a glyph across it, coloring the line from the gradient's first stop to its
+// last. Perfect for section dividers and hero underlines that should always
+// span the pane, at any terminal size.
+//
+//   gradient_rule(Color::hex(0x7F5AF0), Color::hex(0x2CB67D))
+//   gradient_rule(Gradient{{a, b, c}}, U'━')
+[[nodiscard]] inline auto gradient_rule(Gradient g, char32_t glyph = U'─')
+    -> ComponentBuilder
+{
+    return adapt([g = std::move(g), glyph](int w) -> Element {
+        if (w <= 0) return Element{ElementList{}};
+        std::string line;
+        line.reserve(static_cast<std::size_t>(w) * 3);
+        for (int i = 0; i < w; ++i) encode_utf8(line, glyph);
+        return gradient(std::move(line), g);
+    });
+}
+
+[[nodiscard]] inline auto gradient_rule(Color from, Color to, char32_t glyph = U'─')
+    -> ComponentBuilder
+{
+    return gradient_rule(Gradient::two(from, to), glyph);
+}
+
+} // namespace detail
+
+// ============================================================================
+// place() - Position content within the slot it is given
+// ============================================================================
+// The declarative answer to "center this", "pin it bottom-right", "top-left".
+// place() fills the space its flex parent allocates and positions the child
+// on both axes per HAlign x VAlign. Because it FILLS (like a grow child), it
+// tracks any terminal resize with zero arithmetic — the child just stays put
+// at its corner / edge / center of an ever-changing box.
+//
+//   place(spinner)                                   // dead center (default)
+//   place(hint, HAlign::Right, VAlign::Bottom)       // status corner
+//   place(logo, HAlign::Center, VAlign::Top)
+//
+// Needs a definite slot to fill (an explicit size on an ancestor, or the
+// cross-stretch every flex container gives its children by default) — the
+// same rule as any grow child.
+
+enum class HAlign : std::uint8_t { Left, Center, Right };
+enum class VAlign : std::uint8_t { Top, Middle, Bottom };
+
+namespace detail {
+
+[[nodiscard]] inline Element place(Element child, HAlign h = HAlign::Center,
+                                  VAlign v = VAlign::Middle) {
+    const Justify main = v == VAlign::Top    ? Justify::Start
+                       : v == VAlign::Bottom ? Justify::End
+                                             : Justify::Center;
+    const Align cross = h == HAlign::Left  ? Align::Start
+                      : h == HAlign::Right ? Align::End
+                                           : Align::Center;
+    auto b = vstack();
+    b.grow(1.0f);
+    b.justify(main);
+    b.align_items(cross);
+    return b(std::move(child));
+}
+
+} // namespace detail
+
+// ============================================================================
+// responsive() - Pick a layout by width breakpoint
+// ============================================================================
+// Named-tier sugar over adapt(): list your breakpoints as { min_width,
+// builder }, and the widest tier whose min_width the slot satisfies wins.
+// If the slot is narrower than every tier, the smallest tier is used (so
+// there is always something to draw). The builder receives the real width.
+//
+//   responsive({
+//       { 0,   [](int){ return compact_view(); } },   // < 80 cols
+//       { 80,  [](int){ return two_pane(); } },        // 80..119
+//       { 120, [](int w){ return three_pane(w); } },   // >= 120
+//   })
+
+struct Bp {
+    int min_width = 0;
+    std::function<Element(int w)> build;
+};
+
+namespace detail {
+
+[[nodiscard]] inline auto responsive(std::vector<Bp> tiers) -> ComponentBuilder {
+    return adapt([tiers = std::move(tiers)](int w) -> Element {
+        const Bp* chosen = nullptr;
+        for (const auto& bp : tiers)
+            if (w >= bp.min_width &&
+                (chosen == nullptr || bp.min_width >= chosen->min_width))
+                chosen = &bp;
+        if (chosen == nullptr)          // narrower than every tier → smallest
+            for (const auto& bp : tiers)
+                if (chosen == nullptr || bp.min_width < chosen->min_width)
+                    chosen = &bp;
+        if (chosen == nullptr || !chosen->build) return Element{ElementList{}};
+        return chosen->build(w);
     });
 }
 

@@ -637,9 +637,45 @@ std::array<ColSpec, N> spec{{
 }};
 ColPlan plan = solve_columns(spec, avail_w, /*gap=*/1);
 if (plan.has(i)) cell | width(plan.at(i));   // else emit nothing()
+
+// Whole-layout breakpoints — widest tier whose min_width fits wins.
+responsive({
+    { 0,   [](int){ return compact(); } },
+    { 80,  [](int){ return two_pane(); } },
+    { 120, [](int w){ return three_pane(w); } },
+})
+
+// Pin content in its slot — fills the space, positions the child.
+place(spinner)                                // dead center
+place(hint, HAlign::Right, VAlign::Bottom)    // status corner
 ```
 
+Components (`component` / `fill` / `adapt` / `fit_row` / `responsive` /
+`gradient_rule`) satisfy the `Node` concept: use them directly in `v()` / `h()`
+and pipe runtime modifiers onto them (`fill(…) | grow(1)`).
+
 See the [Responsive Layouts guide](docs/15-responsive.md) for the full treatment.
+
+### Gradients
+
+Multi-color text is a one-liner — ONE `TextElement` with per-codepoint styled
+runs, so it wraps/truncates/measures exactly like plain `text()`:
+
+```cpp
+gradient("MAYA", Color::hex(0xFF5F6D), Color::hex(0xFFC371))    // two-stop sweep
+gradient("bar", Gradient{{sky, teal, gold}})                     // multi-stop
+gradient("HEADING", a, b, Style{}.with_bold())                   // base attributes
+rainbow("party mode")                                             // full hue sweep
+gradient_rule(a, b)             // full-width divider, re-tiles to its pane
+gradient_rule(Gradient{{a,b,c}}, U'━')
+
+// Gradient is also a standalone value→color engine:
+Gradient health{{green, amber, red}};
+Color c = health.at(load);      // load ∈ 0..1, blended in true RGB
+Color rgb = Color::cyan().to_rgb();   // Named/Indexed → real channels
+```
+
+See [Styling › Gradients](docs/03-styling.md#gradients).
 
 ---
 

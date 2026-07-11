@@ -661,6 +661,17 @@ using maya::detail::nothing;
 using maya::detail::list_ref;
 using maya::detail::ledger_ref;
 
+// Pretty + responsive toolkit
+using maya::Gradient;
+using maya::gradient;
+using maya::rainbow;
+using maya::detail::gradient_rule;
+using maya::HAlign;
+using maya::VAlign;
+using maya::detail::place;
+using maya::Bp;
+using maya::detail::responsive;
+
 // ── User-defined literal for text nodes ─────────────────────────────────────
 //
 // C++26 string literal operator template — compile-time text via UDL:

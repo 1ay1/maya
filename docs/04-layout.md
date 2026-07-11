@@ -326,6 +326,8 @@ measured toolkit that replaces hand-counted breakpoints:
 | `fill(fn(w,h), min_w, min_h)` | "Fill the space flex gives me." |
 | `adapt(fn(w))` | "Build a different tree for the width I get." |
 | `fit_row({items…})` | "Lay out this row, dropping low-priority items when tight." |
+| `responsive({tiers…})` | "Switch whole layouts at named width breakpoints." |
+| `place(child, h, v)` | "Pin this child to a corner/edge/center of its slot." |
 | `solve_columns(specs, avail)` | "One width plan a whole table shares." |
 
 The rule they all follow is **measure, don't estimate** — the thing measured is

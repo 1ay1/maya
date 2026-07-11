@@ -167,7 +167,67 @@ Color::indexed(196)    // Bright red in the 256-color palette
 auto c = Color::rgb(100, 180, 255);
 auto lighter = c.lighten(0.2f);   // 20% lighter
 auto darker  = c.darken(0.3f);    // 30% darker
+auto rgb     = Color::cyan().to_rgb();   // resolve Named/Indexed → true RGB
 ```
+
+`to_rgb()` projects any color kind onto real RGB channels (Named through the
+ANSI-16 palette, Indexed through the xterm-256 table). Use it whenever you need
+to do channel math on a color you didn't create — the raw `r()/g()/b()`
+accessors return the *palette index* for Named/Indexed colors, not channels.
+
+## Gradients
+
+Multi-color text is a one-liner. `gradient()` sweeps a color across a string —
+each character gets its own interpolated color by horizontal position — and
+`rainbow()` does a full hue sweep:
+
+```cpp
+gradient("MAYA", Color::hex(0xFF5F6D), Color::hex(0xFFC371))   // two-stop
+gradient("status", Gradient{{sky, teal, gold}})                 // multi-stop
+rainbow("party mode")                                            // full spectrum
+```
+
+Under the hood this is ONE `TextElement` carrying per-codepoint `StyledRun`s —
+not a per-character element explosion — so gradient text wraps, truncates, and
+measures exactly like plain `text()`, and costs the same to lay out.
+
+Style **attributes** (bold/italic/underline) ride along via the `base`
+parameter — pipes can't reach inside the runs:
+
+```cpp
+gradient("HEADING", a, b, Style{}.with_bold())
+```
+
+### The Gradient type
+
+`Gradient` is an ordered list of stops sampled by `t ∈ [0, 1]` — useful on its
+own for any value-driven color (gauges, heatmaps, load bars):
+
+```cpp
+Gradient health{{ Color::hex(0x2ECC71),    // green
+                  Color::hex(0xF1C40F),    // amber
+                  Color::hex(0xE74C3C) }}; // red
+Color c = health.at(load);                 // load ∈ 0..1
+```
+
+Stops of any color kind work — Named/Indexed stops are resolved through
+`to_rgb()` before blending, so interpolation is always channel-correct.
+
+### Gradient rules
+
+`gradient_rule()` is a full-width divider that tracks its pane — it receives
+its real allocated width at paint time and tiles a glyph across it:
+
+```cpp
+v(
+    header,
+    gradient_rule(Color::hex(0x7F5AF0), Color::hex(0x2CB67D)),   // spans the pane
+    body,
+    gradient_rule(Gradient{{a, b, c}}, U'━')                      // custom glyph
+)
+```
+
+Resize the terminal and the rule re-tiles — no width to compute, ever.
 
 ## Themes
 
@@ -283,12 +343,21 @@ dyn([&] {
 
 ### Gradient/computed colors
 
+For threshold-band colors, a small function still reads well:
+
 ```cpp
 Color gauge_color(float pct) {
     if (pct < 50) return Color::rgb(80, 220, 120);   // green
     if (pct < 80) return Color::rgb(240, 200, 60);    // yellow
     return Color::rgb(240, 80, 80);                    // red
 }
+```
+
+For smooth blends, use the real thing — [`Gradient`](#gradients):
+
+```cpp
+Gradient heat{{Color::rgb(80,220,120), Color::rgb(240,200,60), Color::rgb(240,80,80)}};
+text("42%", Style{}.with_fg(heat.at(pct / 100.0f)))
 ```
 
 ### Style presets

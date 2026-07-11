@@ -374,6 +374,64 @@ public:
         return b;
     }
 
+    // ── Host-owned flow ──
+    // Some hosts don't hand the table a rectangle: their pane is a FLOW
+    // of one-row Elements that an outer scroller windows element-by-
+    // element (a drill-down pane mixing sections, graphs and a table).
+    // build()'s block Element would enter that flow as ONE unit and
+    // break row-granular scrolling. flow_rows solves the column plan
+    // ONCE at `width` and returns the chrome the config asks for
+    // (header, separator, empty placeholder) plus EVERY data row as its
+    // own one-row Element — same ink, same spans, same … truncation as
+    // build(). Visibility is the host's job here: the windowing knobs
+    // (visible_rows / window_top / scrollbar / status) and the border
+    // don't apply.
+    [[nodiscard]] std::vector<Element> flow_rows(int width) const {
+        std::vector<Element> out;
+        if (d_.columns.empty()) return out;
+        const Data& d = d_;
+        const int pad = d.cfg.cell_padding;
+        const int gut = d.cfg.selectable ? 2 : 0;                    // "▎ "
+        const int avail = width > 0 ? width - gut : 1 << 14;
+        auto widths = natural_widths(d);
+        ColPlan plan = solve_columns(specs(d, widths), std::max(1, avail),
+                                     d.cfg.column_gap);
+        auto content_w = [&](size_t c) {
+            return std::max(1, plan.at(c) - pad * 2);
+        };
+
+        const int n = static_cast<int>(d.rows.size());
+        out.reserve(static_cast<size_t>(n) + 3);
+        if (d.cfg.show_header) {
+            out.push_back(build_header(d, plan, content_w, gut, /*bar=*/0, pad));
+            if (d.cfg.show_separator)
+                out.push_back(build_separator(d, plan, gut, /*bar=*/0));
+        }
+        const int cur = std::clamp(cursor_(), 0, std::max(0, n - 1));
+        for (int i = 0; i < n; ++i) {
+            const bool on = d.cfg.selectable && i == cur;
+            const bool alt = d.cfg.stripe_rows && !on && (i % 2 == 1);
+            Element row = build_row(d, d.rows[static_cast<size_t>(i)], plan,
+                                    content_w, gut, pad, on, alt, "");
+            if (on && d.cfg.selected_bg)
+                row = dsl::h(std::move(row)) | dsl::bgc(*d.cfg.selected_bg);
+            if (d.cfg.row_hit_kind != 0)
+                row = std::move(row)
+                    | dsl::hit(hit_id(d.cfg.row_hit_kind,
+                                      static_cast<std::uint32_t>(i)));
+            out.push_back(std::move(row));
+        }
+        if (n == 0 && !d.cfg.empty_text.empty()) {
+            out.push_back(Element{TextElement{
+                .content = std::string(static_cast<size_t>(gut + pad), ' ')
+                           + d.cfg.empty_text,
+                .style = Style{}.with_dim(),
+                .wrap = TextWrap::NoWrap,
+            }});
+        }
+        return out;
+    }
+
 private:
     // Chrome the border adds around the content grid.
     [[nodiscard]] static int chrome_w(const Data& d) { return d.cfg.show_border ? 4 : 0; }

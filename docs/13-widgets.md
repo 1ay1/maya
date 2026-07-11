@@ -301,6 +301,17 @@ per-column `header_style` paints your own ink tiers, and per-column
 `hit_index` remaps header clicks onto YOUR enum (two columns can share one
 sort key; `kNoHeaderHit` opts a column out).
 
+**Host-owned flow.** Some panes aren't rectangles: a drill-down view is a
+FLOW of one-row Elements (sections, graphs, a table) that an outer
+scroller windows element-by-element — `build()`'s block Element would
+enter that flow as ONE unit and break row-granular scrolling.
+`tbl.flow_rows(width)` solves the column plan ONCE at `width` and returns
+the configured chrome (header, separator, empty placeholder) plus every
+data row as its own one-row Element — same ink, spans, hits and `…`
+truncation as `build()`. Visibility is the host's job there: the
+windowing knobs (`visible_rows` / `window_top` / scrollbar / status) and
+the border don't apply.
+
 **Header:** `widget/table.hpp`
 
 ```cpp
@@ -376,7 +387,7 @@ class Table;
 `clear_rows()`, `row_count()`, `set_title(sv)`, `set_bordered(bool)`,
 `set_sort(col, desc)`, `selected()`, `set_selected(idx)`,
 `handle(KeyEvent)`, `on_change(fn)`, `on_activate(fn)`, `focus_node()`,
-`config()`.
+`config()`, `flow_rows(width)` (per-row Elements for host-owned flows).
 
 ```cpp
 // Classic static card — unchanged:

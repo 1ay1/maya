@@ -57,6 +57,7 @@ A self-contained primer on how every TUI works.
 - [The Compile-Time DSL](02-dsl.md) — elements and the type-state builder.
 - [Styling](03-styling.md) — colors, attributes, modifiers.
 - [Layout](04-layout.md) — Yoga flexbox: rows, columns, grow/shrink, alignment.
+- [Responsive Layouts](15-responsive.md) — measure-driven UIs that restructure with the terminal size.
 - [Runtime Content](05-runtime-content.md) — dynamic views and the Program (MVU) architecture.
 - [Event Handling](06-events.md) — keys, mouse, paste, resize.
 - [Signals & Reactivity](09-signals.md) — reactive state.

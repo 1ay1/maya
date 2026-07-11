@@ -599,6 +599,48 @@ auto ui = v(
 ) | padding(1) | gap(1);
 ```
 
+### Responsive layout
+
+Measure-driven primitives for UIs whose *structure* changes with the terminal
+size (not just their flow). The rule is **measure, don't estimate** — the thing
+measured is the thing rendered, so a layout never drifts out of sync with its
+content. All are in `maya::dsl`; `solve_columns` lives in
+`<maya/layout/columns.hpp>`.
+
+```cpp
+// Ask a fragment its real rendered size (same engine the renderer uses).
+Size measure_element(const Element& el, int max_w, int max_h = 1 << 20);
+
+// Content that FILLS the (w, h) flex gives it (graphs, canvases, gauges).
+// Needs a definite parent on the fill axis; sets grow(1) internally.
+fill([data](int w, int h) { return area_chart(*data, w, h); }, /*min_w*/0, /*min_h*/2)
+
+// Content that BUILDS a different tree for the width it gets.
+adapt([=](int w) { return w >= 60 ? wide() : narrow(); })
+
+// A row that DROPS low-priority items when it doesn't fit. Lowest keep-rank
+// goes first; kKeepAlways never drops; dsl::space measures 0 and survives.
+fit_row({
+    {logo},                    // kKeepAlways (essential)
+    {host_chip, 5},
+    {Element{space}},          // grow spacer
+    {procs_chip, 1},           // first to go
+})
+
+// ONE width plan a whole table shares — header row and body rows read it, so
+// they can never drift onto different column rails.
+using namespace maya;
+std::array<ColSpec, N> spec{{
+    {.min = 8},                     // fixed, essential
+    {.min = 8, .weight = 3},        // takes the slack (breathes, no cliff)
+    {.min = 9, .keep = 1},          // first to drop
+}};
+ColPlan plan = solve_columns(spec, avail_w, /*gap=*/1);
+if (plan.has(i)) cell | width(plan.at(i));   // else emit nothing()
+```
+
+See the [Responsive Layouts guide](docs/15-responsive.md) for the full treatment.
+
 ---
 
 ## Widgets

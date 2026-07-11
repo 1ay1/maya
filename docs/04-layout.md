@@ -312,6 +312,27 @@ hstack().wrap(FlexWrap::Wrap)(many, children, here, ...)
 | `FlexWrap::Wrap` | Wrap to next line |
 | `FlexWrap::WrapReverse` | Wrap in reverse direction |
 
+## Responsive layout
+
+Everything above reflows automatically — `grow`, `gap`, `wrap`, and `Dimension`
+adapt as the terminal resizes. The harder cases, where the *structure* of the UI
+has to change with the size (a status bar that sheds detail, a table that hides
+columns, a graph that fills the leftover height), are handled by a small,
+measured toolkit that replaces hand-counted breakpoints:
+
+| Primitive | Answers |
+|-----------|---------|
+| `measure_element(el, max_w)` | "How wide/tall does this fragment *actually* render?" |
+| `fill(fn(w,h), min_w, min_h)` | "Fill the space flex gives me." |
+| `adapt(fn(w))` | "Build a different tree for the width I get." |
+| `fit_row({items…})` | "Lay out this row, dropping low-priority items when tight." |
+| `solve_columns(specs, avail)` | "One width plan a whole table shares." |
+
+The rule they all follow is **measure, don't estimate** — the thing measured is
+the thing rendered, so a layout can never drift out of sync with its content.
+See the dedicated [Responsive Layouts](15-responsive.md) guide for the full
+treatment with worked examples.
+
 ## Layout Shortcuts
 
 The DSL namespace provides pre-configured runtime builders for containers

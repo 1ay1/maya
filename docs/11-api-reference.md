@@ -590,6 +590,12 @@ Element zstack(std::vector<Element> layers);
 // Measure-aware component: receives the (width, height) it was allotted
 Element component(std::function<Element(int w, int h)> fn);
 
+// Responsive layout toolkit (see "Responsive layout" below)
+Size measure_element(const Element& el, int max_w, int max_h = 1 << 20);
+auto fill(std::function<Element(int w, int h)> fn, int min_w = 0, int min_h = 1);
+auto adapt(std::function<Element(int w)> fn);
+auto fit_row(std::vector<FitItem> items, int gap = 0);
+
 // Empty element (renders nothing, satisfies Node)
 Element nothing();
 
@@ -969,6 +975,92 @@ struct Edges {
     T horizontal() const;    // left + right
     T vertical() const;      // top + bottom
 };
+```
+
+---
+
+## Responsive Layout
+
+Measure-driven primitives for layouts that restructure with the terminal size.
+Full treatment in [Responsive Layouts](15-responsive.md). All are in `maya::dsl`
+(and `maya::`); `solve_columns` and its types live in
+`<maya/layout/columns.hpp>`.
+
+### measure_element()
+
+```cpp
+// Runs a real layout pass over `el` and returns its natural size within the
+// given bounds. The measurement uses the SAME engine the renderer uses, so it
+// can never disagree with the eventual paint. Cheap enough to call per frame.
+Size measure_element(const Element& el, int max_width, int max_height = 1 << 20);
+```
+
+Pass a large `max_width` (e.g. `1 << 14`) for the natural one-line width; pass a
+real width to learn how many rows the fragment wraps to.
+
+### fill()
+
+```cpp
+// A component that GROWS to fill the (w, h) its flex container allocates, then
+// calls `fn` with the real allocated size at paint time. `min_w`/`min_h` set
+// the measured minimum so grow has a finite basis. Sets grow(1) internally.
+// The container must be DEFINITE on the fill axis for it to expand.
+auto fill(std::function<Element(int w, int h)> fn, int min_w = 0, int min_h = 1)
+    -> ComponentBuilder;
+```
+
+### adapt()
+
+```cpp
+// A component that BUILDS a different tree depending on the width it is given.
+// `fn` receives the real allocated width at paint time; natural height is
+// auto-measured from what `fn` returns (measure runs the callback).
+auto adapt(std::function<Element(int w)> fn) -> ComponentBuilder;
+```
+
+### fit_row() / FitItem
+
+```cpp
+struct FitItem {
+    Element el;
+    int     keep = kKeepAlways;   // importance; lower ranks drop first
+};
+
+// A row that DROPS items when they don't fit: lowest-`keep` first (ties drop
+// the rightmost) until the remainder fits. Widths come from measure_element
+// over the real fragments. `kKeepAlways` items never drop. `gap` spaces the
+// KEPT items. Grow spacers (dsl::space) measure 0 and always survive.
+auto fit_row(std::vector<FitItem> items, int gap = 0) -> ComponentBuilder;
+```
+
+### solve_columns() / ColSpec / ColPlan
+
+```cpp
+#include <maya/layout/columns.hpp>
+
+inline constexpr int kKeepAlways = std::numeric_limits<int>::max();
+
+struct ColSpec {
+    int   min    = 1;             // minimum content width (cells)
+    int   max    = 0;             // growth cap; 0 = unbounded (weight > 0 only)
+    float weight = 0.0f;          // share of surplus space; 0 = fixed at min
+    int   keep   = kKeepAlways;    // drop order: LOWER dropped first
+};
+
+struct ColPlan {
+    std::vector<int> width;       // solved widths; 0 = dropped
+    int gap = 0;
+
+    bool has(std::size_t i) const;   // is column i visible?
+    int  at(std::size_t i) const;    // solved width (0 when dropped/out of range)
+    int  used() const;               // total cells: visible widths + inter-column gaps
+};
+
+// Solve one shared width plan for a table, so the header row and every body row
+// read the same column widths. Drop phase (lowest keep first) then weighted
+// surplus waterfill clamped at max. With an unbounded weighted column the plan
+// fills `avail` exactly. Pure arithmetic — no Element types, no layout engine.
+ColPlan solve_columns(std::span<const ColSpec> cols, int avail, int gap = 1);
 ```
 
 ---

@@ -16,9 +16,9 @@
 // to miss. The toast collapses back to the regular activity row the
 // moment its TTL expires; height stays constant either way.
 //
-// Width-adaptive: the activity row's optional pieces (breadcrumb,
-// token stream slot, ctx bar) drop progressively below their
-// thresholds.
+// Width-adaptive by MEASUREMENT: the activity row builds its real
+// fragments at progressively leaner shapes and takes the richest one
+// whose measured width fits — no thresholds, nothing to tune.
 //
 //   maya::StatusBar{{
 //       .phase_color   = phase_color(m.s.phase),
@@ -65,18 +65,13 @@ public:
         // Status row — takes over the activity_row slot when present.
         StatusBanner::Config         status_banner;
 
-        // Width thresholds for activity-row pieces. Each piece drops
-        // (highest min_width first) as the terminal narrows, so the row
-        // is always meaningful AND always exactly one line — the phase
-        // chip (what's happening now) is the last survivor.
-        int breadcrumb_min_width    = 130;
-        int token_stream_min_width  = 110;
-        int ctx_bar_min_width       = 55;   // < this: numbers only, no bar
-        int ctx_tokens_min_width    = 120;  // < this: drop raw token counts (compact)
-        int ctx_gauge_min_width     = 38;   // < this: drop the ctx gauge entirely
-        int model_badge_min_width   = 30;   // < this: drop the provider badge
-        int phase_verb_min_width    = 50;     // < this drops phase verb
-        int phase_elapsed_min_width = 80;     // < this drops phase elapsed
+        // NO width thresholds. The activity row is a measured
+        // degradation ladder: every piece is built as its real styled
+        // fragment and the row sheds detail step by step — breadcrumb
+        // → ctx token counts → token-stream chip → phase elapsed → ctx
+        // bar → phase verb → ctx gauge → model badge — until the
+        // measured total fits the width the row was actually given.
+        // The phase chip (what's happening now) is the last survivor.
     };
 
     explicit StatusBar(Config c) : cfg_(std::move(c)) {}
@@ -133,93 +128,122 @@ private:
             const Color pcolor = cfg.phase_color;
             const bool  active = cfg.phase.breathing;
 
-            // Width-adaptive copies of the sub-configs.
-            PhaseChip::Config pc = cfg.phase;
-            pc.verb_width   = (w < cfg.phase_verb_min_width)    ? 0    : 10;
-            if (w < cfg.phase_elapsed_min_width) pc.elapsed_secs = -1.0f;
+            auto width_of = [w](const Element& el) {
+                return measure_element(el, w > 0 ? w : 1).width.value;
+            };
 
-            ContextGauge::Config ctx = cfg.context;
-            ctx.show_bar    = (w >= cfg.ctx_bar_min_width);
-            ctx.show_tokens = (w >= cfg.ctx_tokens_min_width);
+            // ── Measured degradation ladder ──
+            // Build the row's REAL fragments at progressively leaner
+            // shapes and take the richest one whose measured width
+            // fits. No thresholds, no estimates — a relabeled model
+            // badge or a longer verb re-decides by itself. Shed order
+            // (first → last): ctx token counts · token-stream chip ·
+            // phase elapsed · ctx bar · phase verb · ctx gauge · model
+            // badge. The breadcrumb (most expendable of all) is added
+            // LAST from whatever measured leftover remains.
+            struct Shape {
+                bool tokens, stream, elapsed, bar, verb, gauge, badge;
+            };
+            static constexpr Shape kLadder[] = {
+                {true,  true,  true,  true,  true,  true,  true },
+                {false, true,  true,  true,  true,  true,  true },
+                {false, false, true,  true,  true,  true,  true },
+                {false, false, false, true,  true,  true,  true },
+                {false, false, false, false, true,  true,  true },
+                {false, false, false, false, false, true,  true },
+                {false, false, false, false, false, false, true },
+                {false, false, false, false, false, false, false},
+            };
 
-            // ── Right group: model + ctx — built FIRST so the breadcrumb
-            //    budget below can be MEASURED, not estimated. Each piece
-            //    drops as width shrinks so the group never overflows the
-            //    row. The token-stream chip lives in the MIDDLE slot
-            //    (below), not here: adaptive mode grows it across the dead
-            //    space between the phase chip and these chips.
-            std::vector<Element> rparts;
-            bool emitted_right = false;
-            const bool show_stream = (w >= cfg.token_stream_min_width);
-            if (show_stream && !cfg.token_stream.adaptive) {
-                rparts.push_back(TokenStreamSparkline{cfg.token_stream}.build());
-                rparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));
-                emitted_right = true;
-            }
-            if (w >= cfg.model_badge_min_width) {
-                rparts.push_back(cfg.model_badge);
-                emitted_right = true;
-            }
-            if (cfg.context.max > 0 && w >= cfg.ctx_gauge_min_width) {
-                if (emitted_right)
-                    rparts.push_back(text(" \xc2\xb7 ", fg_dim_(muted)));
-                rparts.push_back(ContextGauge{ctx}.build());
-                emitted_right = true;
-            }
-            rparts.push_back(text(" "));
-            Element right = h(std::move(rparts)).build();
+            Element right, phase_el, middle;
+            bool stream_on = false;
+            int fixed_w = 0;
+            for (const Shape& s : kLadder) {
+                PhaseChip::Config pc = cfg.phase;
+                pc.verb_width = s.verb ? 10 : 0;
+                if (!s.elapsed) pc.elapsed_secs = -1.0f;
 
-            // ── Left group: breadcrumb (when wide enough) + ▌ rail + phase chip.
+                ContextGauge::Config ctx = cfg.context;
+                ctx.show_bar    = s.bar;
+                ctx.show_tokens = s.tokens;
+
+                std::vector<Element> rparts;
+                bool emitted_right = false;
+                if (s.stream && !cfg.token_stream.adaptive) {
+                    rparts.push_back(TokenStreamSparkline{cfg.token_stream}.build());
+                    rparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));
+                    emitted_right = true;
+                }
+                if (s.badge) {
+                    rparts.push_back(cfg.model_badge);
+                    emitted_right = true;
+                }
+                if (cfg.context.max > 0 && s.gauge) {
+                    if (emitted_right)
+                        rparts.push_back(text(" \xc2\xb7 ", fg_dim_(muted)));
+                    rparts.push_back(ContextGauge{ctx}.build());
+                    emitted_right = true;
+                }
+                rparts.push_back(text(" "));
+                Element cand_right = h(std::move(rparts)).build();
+                Element cand_phase = PhaseChip{pc}.build();
+
+                // The adaptive stream chip rides the middle slot and
+                // shrinks by itself — it only needs a nominal minimum.
+                const int middle_min = (s.stream && cfg.token_stream.adaptive)
+                    ? 8 + 7   // spark floor + "   ·   " separator
+                    : 0;
+
+                const int need = 1 /*lead sp*/ + 1 /*rail*/ + 1 /*sp*/
+                    + width_of(cand_phase) + middle_min
+                    + width_of(cand_right);
+                const bool last = &s == &kLadder[std::size(kLadder) - 1];
+                if (need <= w || last) {
+                    right     = std::move(cand_right);
+                    phase_el  = std::move(cand_phase);
+                    stream_on = s.stream;
+                    fixed_w   = need;
+                    middle = (s.stream && cfg.token_stream.adaptive)
+                        ? (h(TokenStreamSparkline{cfg.token_stream}.build(),
+                             text("   \xc2\xb7   ", fg_dim_(muted))) | grow(1.0f)).build()
+                        : Element{spacer().build()};
+                    break;
+                }
+            }
+            (void)stream_on;
+
+            // ── Left group: breadcrumb + ▌ rail + phase chip. The
+            //    breadcrumb gets exactly the measured leftover — it
+            //    appears the moment its 14-cell floor + separator fit,
+            //    capped at the config's max_chars.
             std::vector<Element> lparts;
             lparts.push_back(text(" "));
-            if (!cfg.breadcrumb.title.empty()
-                && w >= cfg.breadcrumb_min_width) {
-                TitleChip::Config bc = cfg.breadcrumb;
-                // MEASURED budget, not width tiers: everything else on the
-                // row is already built (right group) or fixed (rail, pads,
-                // separator, phase chip at its configured shape), so the
-                // title gets exactly the leftover — capped at the config's
-                // max_chars, floored at 14 so a crowded row still shows a
-                // meaningful stub before breadcrumb_min_width drops it.
-                const int fixed_w =
-                    measure_element(right, w).width.value
-                    + measure_element(PhaseChip{pc}.build(), w).width.value
-                    + 1 /*lead sp*/ + 1 /*rail*/ + 1 /*sp*/ + 7 /*  ·  sep*/
-                    + 3 /*middle breathing room*/;
-                const int budget = w - fixed_w;
-                bc.max_chars = static_cast<std::size_t>(
-                    std::clamp(budget, 14, static_cast<int>(
-                        cfg.breadcrumb.max_chars > 0 ? cfg.breadcrumb.max_chars
-                                                     : 28)));
-                lparts.push_back(TitleChip{bc}.build());
-                lparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));   // ·
+            if (!cfg.breadcrumb.title.empty()) {
+                const int leftover = w - fixed_w - 7 /*  ·  sep*/;
+                if (leftover >= 14) {
+                    TitleChip::Config bc = cfg.breadcrumb;
+                    bc.max_chars = static_cast<std::size_t>(
+                        std::min(leftover, static_cast<int>(
+                            cfg.breadcrumb.max_chars > 0 ? cfg.breadcrumb.max_chars
+                                                         : 28)));
+                    lparts.push_back(TitleChip{bc}.build());
+                    lparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));   // ·
+                }
             }
             Style rail_style = active
                 ? Style{}.with_fg(pcolor).with_bold()
                 : Style{}.with_fg(pcolor).with_dim();
             lparts.push_back(text("\xe2\x96\x8c", rail_style));             // ▌
             lparts.push_back(text(" "));
-            lparts.push_back(PhaseChip{pc}.build());
+            lparts.push_back(std::move(phase_el));
             auto left = h(std::move(lparts));
 
-            // Middle slot: the free space between the groups. When the
-            // adaptive token-stream chip is enabled it OWNS that space
-            // — the sparkline stretches across what used to be a blank
-            // spacer (right-pinned internally, clamped to
-            // max_spark_cells), so a wide terminal shows a long rate
-            // history instead of dead cells. Otherwise a plain spacer
-            // keeps the classic left/right split.
-            Element middle = (show_stream && cfg.token_stream.adaptive)
-                ? (h(TokenStreamSparkline{cfg.token_stream}.build(),
-                     text("   \xc2\xb7   ", fg_dim_(muted))) | grow(1.0f)).build()
-                : spacer().build();
-
             // overflow:Hidden guarantees the activity row is ALWAYS
-            // exactly one line: if the (already width-pruned) left+right
-            // groups still can't both fit on an extremely narrow
-            // terminal, the content is clipped at the right edge rather
-            // than wrapping onto a phantom second row that would shove
-            // the Thread above it and trigger a full-viewport repaint.
+            // exactly one line: if even the leanest measured shape can't
+            // fit an extremely narrow terminal, the content is clipped
+            // at the right edge rather than wrapping onto a phantom
+            // second row that would shove the Thread above it and
+            // trigger a full-viewport repaint.
             return (h(left, std::move(middle), std::move(right))
                     | overflow(Overflow::Hidden)).build();
         });

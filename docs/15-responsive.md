@@ -692,12 +692,14 @@ their richest arrangement that actually fits (two columns → one; label row →
 shortcut — by measurement, never shearing a label. `FileRef` and
 `SearchResult` collapse directories to `…/` so the FILENAME survives.
 `Toast`, `Modal`, and `CommandPalette` clamp to their conventional widths
-instead of stretching into banners on an ultrawide. `StatusBar` budgets its
-breadcrumb from MEASURED neighbors and `Composer` measures its hint clusters
-— no glyph-tally tables left to drift. The charts (`BarChart`, `LineChart`,
+instead of stretching into banners on an ultrawide. `StatusBar` renders its
+activity row as a measured degradation ladder (no threshold knobs — the
+richest shape that actually fits wins) and `Composer` measures its hint
+clusters — no glyph-tally tables left to drift. The charts (`BarChart`, `LineChart`,
 `Heatmap`, `Sparkline`, `Gauge`, `FlameChart`, `Waterfall`, `Timeline`) size
 themselves with `fill`/`adapt`, and `ShortcutRow` / `WelcomeScreen` shed
-detail row-by-row as their strip narrows or shortens.
+detail row-by-row as their strip narrows or shortens (`WelcomeScreen` sheds
+against its REAL allocated height — `max_rows` is only the inline-mode cap).
 
 ---
 

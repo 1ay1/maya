@@ -99,19 +99,18 @@ public:
         // completed spiral statically from frame 1 (skip the intro).
         int                      sigil_draw_ms = 1800;
 
-        // Hard row budget for the whole widget (0 = unlimited). When
-        // > 0, build() drops decorative rows in tiers (blank separators
-        // first, then the pixel sigil collapses to a one-row wordmark)
-        // until the welcome fits. Hosts running inline mode should set
-        // this to terminal_rows minus their surrounding chrome: a
-        // welcome that overflows the viewport is a scrollback hazard —
-        // the overflow rows commit to native scrollback at startup, and
-        // the first welcome→conversation swap (a shrink with a changed
-        // prefix) strands them there permanently. The widget reads this
-        // instead of available_height() because hosts build the view
-        // tree BEFORE the framework's render pass installs the sized
-        // RenderContext — at build() time available_height() is the
-        // 24-row default, not the real terminal.
+        // Row CAP for the whole widget (0 = uncapped). The widget now
+        // sheds against its REAL allocated height — the layout is built
+        // inside a component whose render sees the definite slot, so in
+        // fullscreen the budget measures itself and this knob can stay
+        // 0. Hosts running INLINE mode should still set it to
+        // terminal_rows minus their surrounding chrome: an auto-height
+        // root gives the welcome as many rows as it wants, so the slot
+        // cannot tell the widget the terminal is shorter — and a
+        // welcome that overflows the viewport is a scrollback hazard
+        // (the overflow rows commit to native scrollback at startup,
+        // and the first welcome→conversation swap strands them there
+        // permanently).
         int                      max_rows = 0;
     };
 
@@ -120,6 +119,20 @@ public:
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        // Height- AND width-aware: the whole layout is built inside a
+        // component so the shedding budget below reads the REAL
+        // allocated (w, h) at render time — the definite fullscreen
+        // slot measures itself; cfg.max_rows remains as the host CAP
+        // for inline/auto-height roots where the slot is as tall as the
+        // content wants (the layout cannot know the terminal there and
+        // an overflowing welcome is a scrollback hazard).
+        return detail::component([self = *this](int w, int h) -> Element {
+            return self.build_at(w, h);
+        });
+    }
+
+private:
+    [[nodiscard]] Element build_at(int slot_w, int slot_h) const {
         using namespace dsl;
 
         const Color muted = Color::bright_black();
@@ -172,14 +185,17 @@ public:
         // render — on an absurdly short terminal the frame may still
         // overflow by a row or two, but that floor is 4 rows.
         constexpr int kSigilCh = (kFontH + 1 + 2 + 1) / 2;  // = render_sigil_'s CH
-        const int budget = cfg_.max_rows > 0 ? cfg_.max_rows : 1 << 20;
+        // MEASURED budget: the rows the slot actually affords, capped
+        // by the host's max_rows when set (inline-mode safety valve).
+        const int cap    = cfg_.max_rows > 0 ? cfg_.max_rows : 1 << 20;
+        const int budget = std::min(cap, slot_h > 0 ? slot_h : 1 << 20);
 
         // Essential content rows: tagline + chips + hint. The hint is
         // width-responsive (greedy line fill), so count its REAL line
-        // count at the current width — under-counting it by one is
+        // count at the REAL slot width — under-counting it by one is
         // exactly the off-by-one that pushes the frame into scrollback.
         const int hint_rows = hint_line_count_(
-            cfg_, std::max(0, available_width() - 2));
+            cfg_, std::max(0, (slot_w > 0 ? slot_w : available_width()) - 2));
         const int kEssential = 2 + std::max(1, hint_rows);
         const bool pixel_sigil = budget >= kEssential + kSigilCh;
         const int sigil_h = pixel_sigil ? kSigilCh : 1;
@@ -254,7 +270,6 @@ public:
         return (v(rows) | padding(0, 1) | grow(1.0f)).build();
     }
 
-private:
     Config cfg_;
 
     // ─────────────────────────────────────────────────────────────────────

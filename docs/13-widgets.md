@@ -1556,12 +1556,14 @@ right. `StatusBar` composes them; the pieces are also usable standalone.
 ### StatusBar
 
 Three-row status bar: a top/bottom `PhaseAccent` rail sandwiching a
-hard-locked single-line activity row. Each activity-row piece drops (widest
-`*_min_width` first) as the terminal narrows, so the row is always exactly one
-line and the phase chip — *what's happening now* — is the last survivor. The
-breadcrumb's width is a MEASURED budget — the right group and phase chip are
-built first and measured, and the title gets exactly the leftover (capped at
-its config `max_chars`) — not a hand-tiered table. When
+hard-locked single-line activity row. The row is a MEASURED degradation
+ladder — the real styled fragments are built at progressively leaner shapes
+and the richest one whose measured width fits renders. Shed order: ctx token
+counts · token-stream chip · phase elapsed · ctx bar · phase verb · ctx
+gauge · model badge; the phase chip — *what's happening now* — is the last
+survivor, and the breadcrumb is added last from the measured leftover
+(capped at its config `max_chars`). There are NO width-threshold knobs to
+tune — the old `*_min_width` Config fields are gone. When
 `status_banner.text` is set the middle row becomes a full-width toast instead.
 
 **Header:** `widget/status_bar.hpp`

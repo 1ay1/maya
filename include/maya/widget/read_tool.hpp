@@ -175,37 +175,21 @@ public:
 private:
     struct IconInfo { std::string icon; Color color; };
 
-    // Trim `s` to at most `max_bytes` without splitting a UTF-8 code point.
-    // Used by build_path_row — we need to chop the *head* of long paths
-    // without producing a broken multibyte prefix.
-    [[nodiscard]] static std::string utf8_trim_head(std::string_view s, std::size_t max_bytes) {
-        if (s.size() <= max_bytes) return std::string{s};
-        std::size_t skip = s.size() - max_bytes;
-        while (skip < s.size()
-               && (static_cast<unsigned char>(s[skip]) & 0xC0) == 0x80) {
-            ++skip;
-        }
-        return std::string{s.substr(skip)};
-    }
-
     // Build a single-line header "src/.../main.cpp    0.2s" that fits in w.
     // Unlike a command, a path's tail (filename) carries the information —
     // so we truncate from the left with a leading `…` rather than the right.
+    // MEASURED in display cells (string_width / truncate_start) — a path
+    // with non-ASCII segments is wider than its byte count, and byte math
+    // here either sheared the row or wasted the budget.
     [[nodiscard]] static Element build_path_row(std::string_view path,
                                                 std::string_view suffix,
                                                 int w) {
-        constexpr std::string_view kEllipsis = "\xe2\x80\xa6";  // …
-        int avail = w - static_cast<int>(suffix.size());
+        int avail = w - string_width(suffix);
         if (avail < 1) avail = 1;
 
-        std::string shown_path;
-        if (static_cast<int>(path.size()) <= avail) {
-            shown_path = std::string{path};
-        } else {
-            std::size_t keep = avail > 1 ? static_cast<std::size_t>(avail - 1) : 0;
-            shown_path = std::string{kEllipsis};
-            shown_path += utf8_trim_head(path, keep);
-        }
+        std::string shown_path = (string_width(path) <= avail)
+            ? std::string{path}
+            : truncate_start(path, avail);   // leading …, cell-exact
 
         std::string content = shown_path;
         std::size_t suffix_off = content.size();

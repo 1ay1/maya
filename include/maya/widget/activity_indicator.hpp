@@ -162,9 +162,13 @@ public:
             constexpr int kPerByteHex   = 4;   // "xx " + last has no space, +1 added back
             constexpr int kPerByteAscii = 1;
             const int indent_cost = 2;
-            const int off_cost    = static_cast<int>(off_str.size());
+            // MEASURED, not byte-counted: off_str is ASCII but `detail`
+            // is host text — "⚙ résolution" is 14 bytes, 12 cells; a
+            // byte count here over-charges the chrome and starves the
+            // byte window.
+            const int off_cost    = string_width(off_str);
             const int det_cost    = detail.empty() ? 0
-                : static_cast<int>(detail.size()) + 5;   // "  ·  " + detail
+                : string_width(detail) + 5;   // "  ·  " + detail
             // Chrome cost = everything that's NOT the per-byte budget.
             // Every variant includes the two outer `|` pipes of the
             // gutter (2 cols) since we never drop the gutter.

@@ -160,42 +160,23 @@ public:
 private:
     struct IconInfo { std::string icon; Color color; };
 
-    // Truncate `s` to at most `max_bytes` without splitting a UTF-8 code
-    // point. Good enough for command text which is ASCII in the common
-    // case; for the odd non-ASCII arg we avoid printing a broken sequence
-    // that would render as replacement glyphs on the next redraw.
-    [[nodiscard]] static std::string utf8_trunc(std::string_view s, std::size_t max_bytes) {
-        if (s.size() <= max_bytes) return std::string{s};
-        std::size_t cut = max_bytes;
-        while (cut > 0
-               && (static_cast<unsigned char>(s[cut]) & 0xC0) == 0x80) {
-            --cut;
-        }
-        return std::string{s.substr(0, cut)};
-    }
-
     // Build a single-line header "$ command ... elapsed" that fits in w.
     // Layout: `$ ` (green prompt) + command (truncated with `…` if needed)
     //        + right-aligned elapsed suffix. Total never exceeds w, so the
     //        elapsed time is always visible even for very long commands.
+    // MEASURED in display cells (string_width / truncate_end) — a
+    // command with CJK args or emoji is wider than its byte count, and
+    // byte math here either sheared the row or wasted the budget.
     [[nodiscard]] static Element build_command_row(std::string_view cmd,
                                                    std::string_view suffix,
                                                    int w) {
         constexpr std::size_t kPromptBytes = 2;            // "$ "
-        constexpr std::string_view kEllipsis = "\xe2\x80\xa6";  // …
-        int avail = w - static_cast<int>(kPromptBytes)
-                      - static_cast<int>(suffix.size());
+        int avail = w - 2 /*prompt cells*/ - string_width(suffix);
         if (avail < 1) avail = 1;
 
-        std::string shown_cmd;
-        if (static_cast<int>(cmd.size()) <= avail) {
-            shown_cmd = std::string{cmd};
-        } else {
-            // Leave 1 display column for the ellipsis (3 bytes in UTF-8).
-            std::size_t keep = avail > 1 ? static_cast<std::size_t>(avail - 1) : 0;
-            shown_cmd = utf8_trunc(cmd, keep);
-            shown_cmd += std::string{kEllipsis};
-        }
+        std::string shown_cmd = (string_width(cmd) <= avail)
+            ? std::string{cmd}
+            : truncate_end(cmd, avail);   // ellipsis included, cell-exact
 
         std::string content;
         content.reserve(kPromptBytes + shown_cmd.size() + suffix.size() + 8);

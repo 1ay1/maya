@@ -650,6 +650,27 @@ fit_row({
     {procs_chip, 1},           // first to go
 })
 
+// The vertical fit_row — sheds panels when the terminal is SHORT instead of
+// shearing borders mid-panel. Whole panels in, whole panels out.
+fit_col({
+    {header},                  // kKeepAlways
+    {cpu_panel, 5},
+    {mem_panel, 4},
+    {disk_panel, 1},           // first to go at 12 rows
+})
+
+// SwiftUI's ViewThatFits: the first alternative that MEASURES as fitting
+// renders; the last is the always-rendered fallback. No breakpoints.
+pick({
+    h(icon, host, kernel, uptime),   // rich
+    h(icon, host),                   // medium
+    icon,                            // tiny
+})
+
+// libadwaita's AdwClamp: never wider than 100 cells, centered beyond — the
+// "too wide" half of responsive design (ultrawide terminals).
+clamp(article, 100)
+
 // ONE width plan a whole table shares — header row and body rows read it, so
 // they can never drift onto different column rails.
 using namespace maya;

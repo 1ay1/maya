@@ -19,6 +19,7 @@
 #include "../style/gradient.hpp"   // Gradient (shared with gradient()/gradient_rule())
 
 #include <concepts>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <memory>
@@ -578,6 +579,100 @@ namespace detail {
 } // namespace detail
 
 // ============================================================================
+// fit_col() - A column that DROPS items when the slot is too SHORT
+// ============================================================================
+// The vertical counterpart to fit_row(), for the axis everyone forgets:
+// HEIGHT. A dashboard that looks right at 40 rows shows garbage at 12 —
+// panels crushed, borders sheared. fit_col() lists the column's items once,
+// tags the optional ones with a `keep` rank, and sheds lowest-rank first
+// until what remains fits the rows it was actually given.
+//
+//   fit_col({
+//       {header},                     // essential (kKeepAlways)
+//       {cpu_panel,   5},
+//       {mem_panel,   4},
+//       {net_panel,   2},
+//       {disk_panel,  1},             // first to go on a short terminal
+//   })
+//
+// Heights come from measure_element() over the REAL fragments at the REAL
+// slot width (wrapping accounted for) — nothing estimated. Mechanics:
+//   * Natural size (measure) is ALL items — in a natural-height context
+//     nothing is ever shed; the column just takes its full height.
+//   * In a definite-height slot that is SHORTER than natural, flex shrink
+//     (on by default) reduces the allocation and the render sees the real
+//     budget — that is when shedding kicks in.
+//   * If even the kKeepAlways items overflow, they are all emitted and the
+//     column overflows (clip downstream) — fit_col never drops an essential.
+
+namespace detail {
+
+[[nodiscard]] inline auto fit_col(std::vector<FitItem> items, int gap = 0)
+    -> ComponentBuilder
+{
+    auto shared = std::make_shared<const std::vector<FitItem>>(std::move(items));
+
+    ComponentBuilder b{[shared, gap](int w, int h) -> Element {
+        const auto& its = *shared;
+        const std::size_t n = its.size();
+        std::vector<char> kept(n, 1);
+        std::vector<int> nat(n, 0);
+        for (std::size_t i = 0; i < n; ++i)
+            nat[i] = measure_element(its[i].el, w > 0 ? w : 1).height.value;
+
+        auto total = [&]() -> long long {
+            long long t = 0;
+            int c = 0;
+            for (std::size_t i = 0; i < n; ++i)
+                if (kept[i]) { t += nat[i]; ++c; }
+            if (c > 1) t += static_cast<long long>(gap) * (c - 1);
+            return t;
+        };
+        while (total() > h) {
+            int best = -1;
+            int best_keep = kKeepAlways;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (!kept[i] || its[i].keep >= kKeepAlways) continue;
+                if (its[i].keep <= best_keep) {
+                    best = static_cast<int>(i);
+                    best_keep = its[i].keep;
+                }
+            }
+            if (best < 0) break;   // only essentials left
+            kept[static_cast<std::size_t>(best)] = 0;
+        }
+
+        std::vector<Element> out;
+        out.reserve(n);
+        for (std::size_t i = 0; i < n; ++i)
+            if (kept[i]) out.push_back(its[i].el);
+        auto vb = vstack();
+        if (gap > 0) vb.gap(gap);
+        return vb(std::move(out));
+    }};
+
+    // Natural size = everything kept — shedding only happens when a
+    // definite slot hands us less than this via flex shrink.
+    b.measure([shared, gap](int max_width) -> Size {
+        int wmax = 0;
+        long long hsum = 0;
+        int c = 0;
+        for (const auto& it : *shared) {
+            const Size s = measure_element(it.el, max_width > 0 ? max_width : 1);
+            wmax = std::max(wmax, s.width.value);
+            hsum += s.height.value;
+            ++c;
+        }
+        if (c > 1) hsum += static_cast<long long>(gap) * (c - 1);
+        if (hsum < 1) hsum = 1;
+        return {Columns{wmax}, Rows{static_cast<int>(hsum)}};
+    });
+    return b;
+}
+
+} // namespace detail
+
+// ============================================================================
 // Pretty text — gradient() / rainbow() (multi-color text via StyledRuns)
 // ============================================================================
 // A gradient heading is one of the highest-ROI "this looks designed" wins in
@@ -777,6 +872,71 @@ namespace detail {
                     chosen = &bp;
         if (chosen == nullptr || !chosen->build) return Element{ElementList{}};
         return chosen->build(w);
+    });
+}
+
+} // namespace detail
+
+// ============================================================================
+// pick() - The first alternative that FITS (measured, no breakpoints)
+// ============================================================================
+// SwiftUI's ViewThatFits, for terminals. Give the alternatives in order of
+// preference — richest first — and the slot gets the first one whose REAL
+// measured width fits. No breakpoints to pick, no widths to estimate: the
+// decision comes from measuring the actual styled fragments, so it stays
+// correct when a label, icon, or font changes.
+//
+//   pick({
+//       h(icon, text(" "), text(host), text(" · "), text(kernel)),  // rich
+//       h(icon, text(" "), text(host)),                             // medium
+//       icon,                                                       // tiny
+//   })
+//
+// The LAST alternative is the fallback — it is used even when it does not
+// fit (something must render). Alternatives are measured at their natural
+// unwrapped width; multi-line alternatives work (their widest line decides).
+
+namespace detail {
+
+[[nodiscard]] inline auto pick(std::vector<Element> alternatives)
+    -> ComponentBuilder
+{
+    return adapt([alts = std::move(alternatives)](int w) -> Element {
+        if (alts.empty()) return Element{ElementList{}};
+        for (const auto& alt : alts) {
+            if (measure_element(alt, /*max_width=*/1 << 14).width.value <= w)
+                return Element{alt};
+        }
+        return Element{alts.back()};   // fallback: least-detailed alternative
+    });
+}
+
+// ============================================================================
+// clamp() - Cap content width on huge terminals (and center it)
+// ============================================================================
+// libadwaita's AdwClamp, for terminals. Full-width prose on a 300-column
+// ultrawide is unreadable — the eye loses the line on the way back. clamp()
+// lets content use the full slot up to `max_width`, then stops growing and
+// centers it, like a web page's container column. One number: the widest
+// the content still looks good.
+//
+//   clamp(article, 100)        // never wider than 100 cells, centered
+//   clamp(dialog, 60)
+//
+// Below max_width it is a transparent wrapper — the child gets the whole
+// slot. Composes with everything: clamp(col({...}), 120) gives a dashboard
+// a maximum "design width" while row/grid keep re-solving inside it.
+
+[[nodiscard]] inline auto clamp(Element el, int max_width)
+    -> ComponentBuilder
+{
+    return adapt([el = std::move(el), max_width](int w) -> Element {
+        if (max_width <= 0 || w <= max_width) return Element{el};
+        auto inner = vstack();
+        inner.width(Dimension::fixed(max_width));
+        auto outer = hstack();
+        outer.justify(Justify::Center);
+        return outer(inner(Element{el}));
     });
 }
 

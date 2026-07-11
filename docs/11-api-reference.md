@@ -595,6 +595,9 @@ Size measure_element(const Element& el, int max_w, int max_h = 1 << 20);
 auto fill(std::function<Element(int w, int h)> fn, int min_w = 0, int min_h = 1);
 auto adapt(std::function<Element(int w)> fn);
 auto fit_row(std::vector<FitItem> items, int gap = 0);
+auto fit_col(std::vector<FitItem> items, int gap = 0);
+auto pick(std::vector<Element> alternatives);
+auto clamp(Element el, int max_width);
 auto responsive(std::vector<Bp> tiers);
 Element place(Element child, HAlign h = HAlign::Center, VAlign v = VAlign::Middle);
 
@@ -1102,6 +1105,31 @@ struct FitItem {
 // over the real fragments. `kKeepAlways` items never drop. `gap` spaces the
 // KEPT items. Grow spacers (dsl::space) measure 0 and always survive.
 auto fit_row(std::vector<FitItem> items, int gap = 0) -> ComponentBuilder;
+
+// The vertical fit_row: DROPS items when the slot is too SHORT, lowest-`keep`
+// first, until what remains fits the rows actually given. Heights come from
+// measure_element at the real slot width (wrapping accounted for). Natural
+// size is ALL items — shedding only happens when a definite-height slot
+// hands it fewer rows (flex shrink, on by default, delivers the budget).
+auto fit_col(std::vector<FitItem> items, int gap = 0) -> ComponentBuilder;
+```
+
+### pick()
+
+```cpp
+// SwiftUI's ViewThatFits: the FIRST alternative whose real measured width
+// fits the slot renders; richest first, the LAST is the always-rendered
+// fallback. No breakpoints — the decision measures the actual fragments.
+auto pick(std::vector<Element> alternatives) -> ComponentBuilder;
+```
+
+### clamp()
+
+```cpp
+// libadwaita's AdwClamp: content uses the full slot up to max_width, then
+// stops growing and centers — a web page's container column. Transparent
+// below max_width. The "too wide" half of responsive design.
+auto clamp(Element el, int max_width) -> ComponentBuilder;
 ```
 
 ### responsive() / Bp

@@ -330,6 +330,9 @@ measured toolkit that replaces hand-counted breakpoints:
 | `fill(fn(w,h), min_w, min_h)` | "Fill the space flex gives me." |
 | `adapt(fn(w))` | "Build a different tree for the width I get." |
 | `fit_row({items…})` | "Lay out this row, dropping low-priority items when tight." |
+| `fit_col({items…})` | "Lay out this column, dropping low-priority items when SHORT." |
+| `pick({rich, medium, tiny})` | "Show the richest alternative that actually fits." |
+| `clamp(el, 100)` | "Stop growing at 100 cells; center beyond (ultrawide)." |
 | `responsive({tiers…})` | "Switch whole layouts at named width breakpoints." |
 | `place(child, h, v)` | "Pin this child to a corner/edge/center of its slot." |
 | `solve_columns(specs, avail)` | "One width plan a whole table shares." |

@@ -551,11 +551,20 @@ void compute_node(
         line.main_size = lm;
     }
 
-    // For single-line containers with a definite cross dimension, the
-    // line's cross size spans the full available cross space (CSS §9.4).
+    // For single-line containers with a definite cross dimension, the line
+    // IS the container: its cross size equals the container's inner cross
+    // size EXACTLY (CSS Flexbox §9.4.8) — not max(content, avail). The old
+    // max() let a measured leaf (a fill/adapt/fit_col component, whose
+    // measure reports natural height) inflate the line past a definite
+    // budget; Align::Stretch then handed the child line.cross_size = its own
+    // natural height instead of the real budget, so height-aware components
+    // painted past the box (clipped) and never learned the actual rows they
+    // had — the "fit_col never sheds inside a piped wrapper" bug class.
+    // Items TALLER than the line overflow and clip exactly as CSS specifies;
+    // auto-cross containers (def < 0) are untouched.
     bool cross_definite_for_line = row ? (def_h >= 0) : (def_w >= 0);
     if (n_lines == 1 && cross_definite_for_line) {
-        active_lines[0].cross_size = std::max(active_lines[0].cross_size, cross_avail);
+        active_lines[0].cross_size = cross_avail;
     }
 
     // ------------------------------------------------------------------

@@ -87,6 +87,9 @@ which lives in the dependency-free header `<maya/layout/columns.hpp>`.
 | [`fill`](#fill-size-to-the-slot) | "Make this content **fill** the space flex gives it." | component |
 | [`adapt`](#adapt-restructure-by-width) | "Build a **different tree** depending on the width I get." | component |
 | [`fit_row`](#fit_row-a-row-that-sheds-items) | "Lay out this row, **dropping** low-priority items when tight." | component |
+| [`fit_col`](#fit_col-a-column-that-sheds-items-when-short) | "Lay out this column, **dropping** low-priority items when **short**." | component |
+| [`pick`](#pick-the-first-alternative-that-fits) | "Show the **richest alternative** that actually fits." | component |
+| [`clamp`](#clamp-cap-content-width-on-huge-terminals) | "Stop growing at N cells; **center** beyond (ultrawide)." | component |
 | [`responsive`](#responsive-named-width-breakpoints) | "Switch whole **layouts** at named width breakpoints." | component |
 | [`place`](#place-pin-content-anywhere-in-a-slot) | "**Pin** this child to a corner/edge/center of its slot." | element |
 | [`solve_columns`](#solve_columns-one-plan-for-a-table) | "Give me **one** width plan a whole table shares." | function |
@@ -109,7 +112,10 @@ The mental model:
   real layout pass and hands back the natural size.
 - **`fill`** responds to the size it is *given* (height and width).
 - **`adapt`** and **`fit_row`** respond to the *width* they are given by choosing
-  a different structure.
+  a different structure; **`fit_col`** does the same for the *height* — the
+  axis everyone forgets; **`pick`** chooses between whole alternatives by
+  measuring them; **`clamp`** stops your UI being stretched thin on an
+  ultrawide.
 - **`solve_columns`** is pure arithmetic for the one case flex can't express: a
   grid whose header row and body rows must agree on column widths.
 
@@ -470,6 +476,99 @@ important." You don't need them contiguous.
 
 ---
 
+## `fit_col` — a column that sheds items when SHORT
+
+```cpp
+auto fit_col(std::vector<FitItem> items, int gap = 0) -> ComponentBuilder;
+```
+
+The vertical `fit_row`, for the axis everyone forgets: **height**. A dashboard
+that looks right at 40 rows shows garbage at 12 — panels crushed, borders
+sheared mid-box. `fit_col` lists the column's items once, tags the optional
+ones with a `keep` rank, and sheds lowest-rank first until what remains fits
+the rows it was actually given:
+
+```cpp
+fit_col({
+    {header,      kKeepAlways},   // never drops
+    {cpu_panel,   5},
+    {mem_panel,   4},
+    {net_panel,   2},
+    {disk_panel,  1},             // first to go on a short terminal
+})
+```
+
+A 9-row terminal shows the header and the CPU panel, whole. A 13-row terminal
+adds MEM, whole. Nothing is ever half-drawn.
+
+Heights come from `measure_element` over the real fragments **at the real slot
+width** — wrapping is accounted for, nothing estimated. The same `FitItem` /
+`keep` rules as `fit_row` apply (atomic items, essentials never drop).
+
+One mechanic worth knowing: `fit_col`'s natural size is *all items*, so in a
+natural-height context nothing is ever shed — shedding only kicks in when a
+definite-height slot hands it fewer rows than it wants (flex shrink is on by
+default, so that just works — pipe `| grow(1)` onto it to also claim spare
+rows on tall terminals).
+
+---
+
+## `pick` — the first alternative that fits
+
+```cpp
+auto pick(std::vector<Element> alternatives) -> ComponentBuilder;
+```
+
+SwiftUI's `ViewThatFits`, for terminals. Give the alternatives in order of
+preference — richest first — and the slot renders the **first one whose real
+measured width fits**:
+
+```cpp
+pick({
+    h(icon, text(" "), host, text(" · "), kernel, text(" · "), uptime),  // rich
+    h(icon, text(" "), host),                                            // medium
+    icon,                                                                // tiny
+})
+```
+
+Where `fit_row` sheds *items from one layout*, `pick` swaps *whole layouts* —
+use it when the alternatives are genuinely different shapes (a horizontal
+toolbar vs a compact menu button; a spelled-out label vs an abbreviation).
+There are no breakpoints: the decision comes from measuring the actual styled
+fragments, so it stays correct when a label, icon, or gap changes.
+
+The **last** alternative is the fallback — it renders even when it doesn't
+fit (something must). Alternatives are measured at their natural unwrapped
+width; for multi-line alternatives the widest line decides.
+
+---
+
+## `clamp` — cap content width on huge terminals
+
+```cpp
+auto clamp(Element el, int max_width) -> ComponentBuilder;
+```
+
+libadwaita's `AdwClamp`, for terminals — the missing half of responsive
+design. Everything above handles "too narrow"; `clamp` handles **too wide**:
+full-width prose on a 300-column ultrawide is unreadable, and a dashboard
+stretched across it looks abandoned. `clamp` lets content use the full slot
+up to `max_width`, then stops growing and centers it — a web page's container
+column:
+
+```cpp
+clamp(article_text, 100)      // never wider than 100 cells, centered
+clamp(dialog, 60)
+clamp(col({ row({a, b, c}), table }), 120)   // a max "design width" for the
+                                             // whole page; row/grid keep
+                                             // re-solving inside it
+```
+
+Below `max_width` it is a transparent wrapper — the child gets the whole
+slot. One number: the widest your content still looks good.
+
+---
+
 ## `solve_columns` — one plan for a table
 
 ```cpp
@@ -569,6 +668,9 @@ Child should be PINNED in its slot?          → place
 Structure changes with the WIDTH it's given? → adapt
   …named phone/laptop/ultrawide tiers?       → responsive
   …"drop trailing items when tight"?         → fit_row
+  …whole alternatives, richest that fits?    → pick
+Too SHORT — drop low-priority rows?          → fit_col
+Too WIDE — stop stretching, center it?       → clamp
 A header + rows that must share columns?     → solve_columns
 ```
 

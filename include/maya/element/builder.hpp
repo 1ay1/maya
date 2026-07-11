@@ -922,20 +922,24 @@ namespace detail {
 //
 //   clamp(article, 100)        // never wider than 100 cells, centered
 //   clamp(dialog, 60)
+//   clamp(toast, 60, HAlign::Right)   // corner-anchored (toasts, popups)
 //
 // Below max_width it is a transparent wrapper — the child gets the whole
 // slot. Composes with everything: clamp(col({...}), 120) gives a dashboard
 // a maximum "design width" while row/grid keep re-solving inside it.
 
-[[nodiscard]] inline auto clamp(Element el, int max_width)
+[[nodiscard]] inline auto clamp(Element el, int max_width,
+                                HAlign align = HAlign::Center)
     -> ComponentBuilder
 {
-    return adapt([el = std::move(el), max_width](int w) -> Element {
+    return adapt([el = std::move(el), max_width, align](int w) -> Element {
         if (max_width <= 0 || w <= max_width) return Element{el};
         auto inner = vstack();
         inner.width(Dimension::fixed(max_width));
         auto outer = hstack();
-        outer.justify(Justify::Center);
+        outer.justify(align == HAlign::Left    ? Justify::Start
+                      : align == HAlign::Right ? Justify::End
+                                               : Justify::Center);
         return outer(inner(Element{el}));
     });
 }

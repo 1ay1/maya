@@ -97,6 +97,15 @@ public:
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        // Width-aware: rows shed their SHORTCUT hint (whole, fit_row-
+        // style) when label + shortcut would overflow the measured slot
+        // — the label never shears. Captures `this`: a Menu is long-
+        // lived interactive state that outlives the frame's tree.
+        return detail::adapt([this](int w) { return build_at(w); });
+    }
+
+private:
+    [[nodiscard]] Element build_at(int avail) const {
         int cur = cursor_();
         bool focused = focus_.focused();
 
@@ -106,6 +115,12 @@ public:
         auto active_sc      = Style{}.with_fg(Color::blue());
         auto disabled_style = Style{}.with_dim();
         auto sep_style      = Style{}.with_fg(Color::bright_black());
+
+        // Whether a shortcut still fits beside its label at this width.
+        auto sc_fits = [avail](const std::string& base, const std::string& sc) {
+            return avail <= 0
+                || string_width(base) + 4 + string_width(sc) <= avail;
+        };
 
         std::vector<Element> rows;
         rows.reserve(items_.size());
@@ -138,7 +153,7 @@ public:
 
             if (is_disabled) {
                 // Entire row dimmed
-                if (!item.shortcut.empty()) {
+                if (!item.shortcut.empty() && sc_fits(content, item.shortcut)) {
                     content += "    " + item.shortcut;
                 }
                 runs.push_back(StyledRun{0, content.size(), disabled_style});
@@ -148,7 +163,7 @@ public:
                 // Actually, let's rebuild with proper indicator
                 content = "\xe2\x9d\xaf " + item.label; // "❯ "
                 runs.push_back(StyledRun{0, content.size(), active_style});
-                if (!item.shortcut.empty()) {
+                if (!item.shortcut.empty() && sc_fits(content, item.shortcut)) {
                     size_t sc_start = content.size();
                     content += "    " + item.shortcut;
                     // Re-run: label part active, shortcut part lighter
@@ -159,7 +174,7 @@ public:
             } else {
                 // Normal item
                 runs.push_back(StyledRun{0, content.size(), normal_style});
-                if (!item.shortcut.empty()) {
+                if (!item.shortcut.empty() && sc_fits(content, item.shortcut)) {
                     size_t sc_start = content.size();
                     content += "    " + item.shortcut;
                     runs.push_back(StyledRun{sc_start, content.size() - sc_start, shortcut_style});
@@ -169,6 +184,7 @@ public:
             rows.push_back(Element{TextElement{
                 .content = std::move(content),
                 .style = normal_style,
+                .wrap = TextWrap::NoWrap,
                 .runs = std::move(runs),
             }});
         }

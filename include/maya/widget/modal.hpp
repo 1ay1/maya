@@ -47,6 +47,7 @@ class Modal {
     Element content_;
     std::vector<ModalButton> buttons_;
     bool visible_ = false;
+    int max_width_ = 80;
     FocusNode focus_;
     Signal<int> focused_button_{0};
 
@@ -152,11 +153,21 @@ public:
         auto inner = (dsl::v(std::move(body), std::move(button_row)) | dsl::gap(1)).build();
 
         auto border_color = Color::bright_black();
-        return (dsl::v(std::move(inner))
+        Element card = (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round) | dsl::bcolor(border_color)
             | dsl::btext(title_, BorderTextPos::Top)
             | dsl::padding(1, 2)).build();
+
+        // Dialog convention: never wider than max_width_ (default 80),
+        // centered beyond — a modal that spans a 300-col ultrawide reads
+        // as a banner, not a dialog. Below the cap the clamp is
+        // transparent.
+        if (max_width_ <= 0) return card;
+        return detail::clamp(std::move(card), max_width_);
     }
+
+    /// Cap the dialog's width (cells); 0 = full slot. Default 80.
+    void set_max_width(int w) { max_width_ = w; }
 
 private:
     void cycle_next() {

@@ -30,6 +30,7 @@
 //       .status_banner = status_banner_config(m),  // toast — hides activity row when present
 //   }}.build();
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -141,28 +142,11 @@ private:
             ctx.show_bar    = (w >= cfg.ctx_bar_min_width);
             ctx.show_tokens = (w >= cfg.ctx_tokens_min_width);
 
-            // ── Left group: breadcrumb (when wide enough) + ▌ rail + phase chip.
-            std::vector<Element> lparts;
-            lparts.push_back(text(" "));
-            if (!cfg.breadcrumb.title.empty()
-                && w >= cfg.breadcrumb_min_width) {
-                TitleChip::Config bc = cfg.breadcrumb;
-                bc.max_chars = (w >= 170) ? 28 : (w >= 150) ? 20 : 14;
-                lparts.push_back(TitleChip{bc}.build());
-                lparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));   // ·
-            }
-            Style rail_style = active
-                ? Style{}.with_fg(pcolor).with_bold()
-                : Style{}.with_fg(pcolor).with_dim();
-            lparts.push_back(text("\xe2\x96\x8c", rail_style));             // ▌
-            lparts.push_back(text(" "));
-            lparts.push_back(PhaseChip{pc}.build());
-            auto left = h(std::move(lparts));
-
-            // ── Right group: model + ctx. Each piece drops as width
-            //    shrinks so the group never overflows the row. The
-            //    token-stream chip lives in the MIDDLE slot (below),
-            //    not here: adaptive mode grows it across the dead
+            // ── Right group: model + ctx — built FIRST so the breadcrumb
+            //    budget below can be MEASURED, not estimated. Each piece
+            //    drops as width shrinks so the group never overflows the
+            //    row. The token-stream chip lives in the MIDDLE slot
+            //    (below), not here: adaptive mode grows it across the dead
             //    space between the phase chip and these chips.
             std::vector<Element> rparts;
             bool emitted_right = false;
@@ -183,7 +167,40 @@ private:
                 emitted_right = true;
             }
             rparts.push_back(text(" "));
-            auto right = h(std::move(rparts));
+            Element right = h(std::move(rparts)).build();
+
+            // ── Left group: breadcrumb (when wide enough) + ▌ rail + phase chip.
+            std::vector<Element> lparts;
+            lparts.push_back(text(" "));
+            if (!cfg.breadcrumb.title.empty()
+                && w >= cfg.breadcrumb_min_width) {
+                TitleChip::Config bc = cfg.breadcrumb;
+                // MEASURED budget, not width tiers: everything else on the
+                // row is already built (right group) or fixed (rail, pads,
+                // separator, phase chip at its configured shape), so the
+                // title gets exactly the leftover — capped at the config's
+                // max_chars, floored at 14 so a crowded row still shows a
+                // meaningful stub before breadcrumb_min_width drops it.
+                const int fixed_w =
+                    measure_element(right, w).width.value
+                    + measure_element(PhaseChip{pc}.build(), w).width.value
+                    + 1 /*lead sp*/ + 1 /*rail*/ + 1 /*sp*/ + 7 /*  ·  sep*/
+                    + 3 /*middle breathing room*/;
+                const int budget = w - fixed_w;
+                bc.max_chars = static_cast<std::size_t>(
+                    std::clamp(budget, 14, static_cast<int>(
+                        cfg.breadcrumb.max_chars > 0 ? cfg.breadcrumb.max_chars
+                                                     : 28)));
+                lparts.push_back(TitleChip{bc}.build());
+                lparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));   // ·
+            }
+            Style rail_style = active
+                ? Style{}.with_fg(pcolor).with_bold()
+                : Style{}.with_fg(pcolor).with_dim();
+            lparts.push_back(text("\xe2\x96\x8c", rail_style));             // ▌
+            lparts.push_back(text(" "));
+            lparts.push_back(PhaseChip{pc}.build());
+            auto left = h(std::move(lparts));
 
             // Middle slot: the free space between the groups. When the
             // adaptive token-stream chip is enabled it OWNS that space
@@ -203,7 +220,7 @@ private:
             // terminal, the content is clipped at the right edge rather
             // than wrapping onto a phantom second row that would shove
             // the Thread above it and trigger a full-viewport repaint.
-            return (h(left, std::move(middle), right)
+            return (h(left, std::move(middle), std::move(right))
                     | overflow(Overflow::Hidden)).build();
         });
     }

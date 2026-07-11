@@ -76,6 +76,17 @@ public:
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        // Width-aware: long file paths truncate at the START (…/dir/file
+        // keeps the FILENAME — the part you came for) instead of the
+        // NoWrap clip eating the tail. Captures `this`: the widget is
+        // long-lived host state that outlives the frame's tree.
+        return detail::adapt([this](int w) { return build_at(w); });
+    }
+
+private:
+    [[nodiscard]] Element build_at(int w) const {
+        // Rows render inside border(2) + padding(2) — 4 cells of chrome.
+        const int avail = w > 4 ? w - 4 : w;
         auto [icon, icon_color] = status_icon();
         std::string tool_name = (kind_ == SearchKind::Grep) ? "Grep" : "Glob";
         std::string border_label = " " + icon + " " + tool_name + " ";
@@ -149,9 +160,13 @@ public:
             auto match_style = Style{};
 
             for (auto const& group : groups_) {
-                // File header
+                // File header — truncate at the start so the filename
+                // survives on a narrow slot.
                 rows.push_back(Element{TextElement{
-                    .content = group.file_path,
+                    .content = (avail > 0
+                                && string_width(group.file_path) > avail)
+                        ? truncate_start(group.file_path, avail)
+                        : group.file_path,
                     .style = file_style,
                     .wrap = TextWrap::NoWrap,
                 }});

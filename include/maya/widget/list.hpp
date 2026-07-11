@@ -242,6 +242,17 @@ public:
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        // Width-aware: the row builder runs inside adapt() so each row
+        // can shed its DESCRIPTION when the measured line wouldn't fit
+        // the real slot — the label stays whole instead of the tail of
+        // every row shearing off at the terminal edge. Captures `this`:
+        // a List is long-lived interactive state (signals + focus) that
+        // outlives the frame's Element tree.
+        return detail::adapt([this](int w) { return build_at(w); });
+    }
+
+private:
+    [[nodiscard]] Element build_at(int avail) const {
         auto vis = visible_indices();
         int cur = cursor_();
         bool focused = focus_.focused();
@@ -316,12 +327,16 @@ public:
             runs.insert(runs.begin(), StyledRun{prefix_start, prefix.size(), label_s});
             runs.push_back(StyledRun{label_start, item.label.size(), label_s});
 
-            // Description
+            // Description — shed (whole, fit_row-style) when the row's
+            // measured width would overflow the slot; the label survives.
             if (!item.description.empty()) {
-                line += "  ";
-                size_t desc_start = line.size();
-                line += item.description;
-                runs.push_back(StyledRun{desc_start, item.description.size(), cfg_.desc_style});
+                std::string with_desc = line + "  " + item.description;
+                if (avail <= 0 || string_width(with_desc) <= avail) {
+                    line += "  ";
+                    size_t desc_start = line.size();
+                    line += item.description;
+                    runs.push_back(StyledRun{desc_start, item.description.size(), cfg_.desc_style});
+                }
             }
 
             rows.push_back(Element{TextElement{

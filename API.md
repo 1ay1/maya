@@ -670,6 +670,7 @@ pick({
 // libadwaita's AdwClamp: never wider than 100 cells, centered beyond — the
 // "too wide" half of responsive design (ultrawide terminals).
 clamp(article, 100)
+clamp(toasts, 60, HAlign::Right)   // corner-anchored (toasts, popups)
 
 // ONE width plan a whole table shares — header row and body rows read it, so
 // they can never drift onto different column rails.
@@ -752,7 +753,7 @@ All widgets satisfy the `Node` concept and work directly in DSL expressions.
 | Widget | Description |
 |--------|-------------|
 | `Table` | Column-aligned data table with headers and borders; sheds columns by `keep` rank when narrow (solve_columns) |
-| `List<Cfg>` | Scrollable list with selection and search |
+| `List<Cfg>` | Scrollable list with selection and search; rows shed descriptions when narrow |
 | `Tree<T>` | Tree view with expand/collapse |
 | `Sparkline` | Inline sparkline chart |
 
@@ -761,9 +762,9 @@ All widgets satisfy the `Node` concept and work directly in DSL expressions.
 | Widget | Description |
 |--------|-------------|
 | `Tabs` | Tab bar with selection indicator; ‹ active i/n › fallback when narrow (pick) |
-| `Breadcrumb` | Path breadcrumb trail |
-| `Menu` | Vertical menu with keyboard navigation |
-| `CommandPalette` | Fuzzy search command palette |
+| `Breadcrumb` | Path breadcrumb trail; collapses to first › … › last (pick) |
+| `Menu` | Vertical menu with keyboard navigation; shortcuts shed when narrow |
+| `CommandPalette` | Fuzzy search command palette; clamped, rows shed detail when narrow |
 
 ### Display
 
@@ -771,8 +772,8 @@ All widgets satisfy the `Node` concept and work directly in DSL expressions.
 |--------|-------------|
 | `Badge` | Inline colored label — `Badge::success("ok")`, `Badge::error("fail")` |
 | `Callout` | Severity-based alert — `Callout::error("title", "desc")` |
-| `ToastManager` | Notification stack with auto-dismiss |
-| `FileRef` | File path with dimmed directory, underlined filename |
+| `ToastManager` | Notification stack with auto-dismiss; clamped right-anchored cards |
+| `FileRef` | File path with dimmed directory, underlined filename; dir collapses to …/ when narrow |
 | `UserMessage` / `AssistantMessage` | Chat message bubbles |
 | `ProgressBar` | Progress bar with dynamic width |
 | `ActivityBar` | Activity status indicator |
@@ -782,7 +783,7 @@ All widgets satisfy the `Node` concept and work directly in DSL expressions.
 
 | Widget | Description |
 |--------|-------------|
-| `Modal` | Dialog with title, body, action buttons |
+| `Modal` | Dialog with title, body, action buttons; clamped to dialog width |
 | `Popup` | Tooltip/popup box |
 | `ScrollableView` | Scrollable viewport with scrollbar |
 
@@ -817,7 +818,7 @@ All widgets satisfy the `Node` concept and work directly in DSL expressions.
 | `BashTool` | Shell command execution |
 | `EditTool` / `WriteTool` / `ReadTool` | File operation displays |
 | `FetchTool` | URL fetch display |
-| `SearchResult` | Search result display |
+| `SearchResult` | Search result display; paths keep their filename when narrow |
 | `AgentTool` | Sub-agent invocation display |
 | `Permission` | Permission request dialog |
 

@@ -392,7 +392,7 @@ public:
         auto lbl = [muted](const char* l) { return text(l, fg_dim_(muted)); };
         auto dot = [muted]() { return text("  \xc2\xb7  ", fg_dim_(muted)); };
 
-        // ── Width-adaptive hint clusters.
+        // ── Width-adaptive hint clusters — MEASURED.
         //
         // Both sides progressively shed segments as available width
         // shrinks. The profile chip on the right is the only must-keep
@@ -400,28 +400,22 @@ public:
         // queued / words / tokens on the right) sheds in priority
         // order once the combined natural width can't fit.
         //
-        // Per-segment widths are measured in display columns by
-        // tallying the printed glyphs (UTF-8 codepoints counted as
-        // 1 column each — the kbd glyphs we use are all narrow).
-        // The result is an upper bound the layout pass never
-        // exceeds, so the row never wraps or clips the chip.
-        //
-        // Hysteresis on absolute thresholds isn't enough here: a
-        // shrink during streaming (sparkline growing) would cause
-        // the right cluster to overflow the left when avail is
-        // narrow. Computing required-width vs avail every frame
-        // keeps the row coherent across resizes, profile swaps,
+        // Every decision below measures the REAL styled fragments via
+        // measure_element — there is no glyph-tally table to keep in
+        // sync with the builders, so a relabeled hint or a wider glyph
+        // re-decides by itself. Computing required-width vs avail every
+        // frame keeps the row coherent across resizes, profile swaps,
         // and ticking word counters.
-        auto hint_left_builder = [kbd, lbl, dot](int avail_width) {
+        auto hint_left_builder = [kbd, lbl, dot](int density) {
             std::vector<Element> out;
             out.push_back(kbd("\xe2\x86\xb5"));           // ↵
             out.push_back(lbl(" send"));
-            if (avail_width >= 64) {
+            if (density >= 1) {
                 out.push_back(dot());
                 out.push_back(kbd("\xe2\x87\xa7\xe2\x86\xb5 / \xe2\x8c\xa5\xe2\x86\xb5"));
                 out.push_back(lbl(" newline"));
             }
-            if (avail_width >= 94) {
+            if (density >= 2) {
                 out.push_back(dot());
                 out.push_back(kbd("^E"));
                 out.push_back(lbl(" expand"));
@@ -454,82 +448,75 @@ public:
             std::string{cfg_.profile.label},
         };
 
-        // Approximate column width of a left cluster for a given
-        // avail_width (used to compute remaining space for the right
-        // cluster). Keep in sync with hint_left_builder: send=6,
-        // dot=5, newline glyphs+label=12, expand glyphs+label=9.
-        auto left_cols = [](int avail) {
-            int w = 1 /*↵*/ + 5 /* send*/;
-            if (avail >= 64) w += 5 /*dot*/ + 7 /*⇧↵ / ⌥↵ (7 narrow cells)*/ + 8 /* newline*/;
-            if (avail >= 94) w += 5 /*dot*/ + 2 /*^E*/ + 7 /* expand*/;
-            return w;
-        };
-
         Element hint_element = component(
-            [hint_left_builder, left_cols, ri, kbd, lbl, dot](int w, int /*h*/) -> Element {
+            [hint_left_builder, ri, kbd, lbl, dot](int w, int /*h*/) -> Element {
                 using namespace dsl;
-                auto left = hint_left_builder(w);
 
                 // 2-col indent + trailing space + padding(0,1) on both
                 // sides eat 6 cols of chrome — subtract before deciding
-                // what the right cluster can afford.
+                // what each cluster can afford.
                 constexpr int kChromeCols = 6;
-                const int budget = std::max(0, w - kChromeCols - left_cols(w));
+                const int avail = std::max(0, w - kChromeCols);
 
-                // Profile chip widths: "▎ " (2) + small-caps label.
-                // small_caps_ inserts a space between each char, so a
-                // 5-char label renders as 9 cols ("W R I T E").
-                const int chip_cols = 2 + static_cast<int>(
-                    ri.profile_label.empty() ? 0
-                    : ri.profile_label.size() * 2 - 1);
+                auto width_of = [w](const Element& el) {
+                    return measure_element(el, w > 0 ? w : 1).width.value;
+                };
 
-                // queued segment width: "❚ " (2) + 2-wide int + " queued" (7) + dot (5) = 16
-                constexpr int kQueuedCols = 16;
-                // words segment: 5-wide int + " words" (6) = 11
-                constexpr int kWordsCols = 11;
-                // separator dot between words and tok = 5
-                // tok segment: "~" (1) + 5-wide int + " tok" (4) = 10, + dot (5) = 15
-                constexpr int kTokCols = 5 + 10;
-                constexpr int kCountersCols = kWordsCols + kTokCols + 5 /*trailing dot*/;
-
-                std::vector<Element> hint_right;
-
-                // Always include the chip — it's the profile-identity
-                // anchor. If even the chip can't fit, the row falls
-                // back to chip-only with no left cluster (`left` shrinks
-                // to just "↵ send" at narrow widths via avail_width
-                // thresholds; if even that overflows, the spacer eats
-                // the slack and maya clips the row, but the chip stays
-                // visible because it's on the right edge).
-                const bool show_queued   = ri.queued > 0
-                    && budget >= chip_cols + kQueuedCols;
-                const bool show_counters = ri.has_text
-                    && budget >= chip_cols
-                        + (show_queued ? kQueuedCols : 0)
-                        + kCountersCols;
-
-                if (show_queued) {
-                    hint_right.push_back(text("\xe2\x9d\x9a ",
-                        Style{}.with_fg(ri.highlight_color)));
-                    hint_right.push_back(text(
-                        tabular_int_(ri.queued, 2) + " queued",
-                        Style{}.with_fg(ri.highlight_color).with_bold()));
-                    hint_right.push_back(dot());
-                }
-                if (show_counters) {
-                    hint_right.push_back(text(
-                        tabular_int_(ri.words, 5) + " words", fg_dim_(ri.muted_color)));
-                    hint_right.push_back(text("  \xc2\xb7  ", fg_dim_(ri.muted_color)));
-                    hint_right.push_back(text(
-                        "~" + tabular_int_(ri.toks, 5) + " tok", fg_dim_(ri.muted_color)));
-                    hint_right.push_back(dot());
-                }
-                hint_right.push_back(text("\xe2\x96\x8e",
+                // The profile chip — the must-keep right anchor.
+                std::vector<Element> chip_parts;
+                chip_parts.push_back(text("\xe2\x96\x8e",
                     Style{}.with_fg(ri.profile_color)));
-                hint_right.push_back(text(" "));
-                hint_right.push_back(text(
+                chip_parts.push_back(text(" "));
+                chip_parts.push_back(text(
                     small_caps_(ri.profile_label),
                     Style{}.with_fg(ri.profile_color).with_bold()));
+                Element chip = h(std::move(chip_parts)).build();
+                const int chip_cols = width_of(chip);
+
+                // Left cluster: richest density whose MEASURED width
+                // still leaves room for the chip; "↵ send" is the floor.
+                std::vector<Element> left;
+                for (int density = 2; density >= 0; --density) {
+                    auto cand = hint_left_builder(density);
+                    Element probe = h(cand).build();
+                    if (density == 0
+                        || width_of(probe) + chip_cols <= avail) {
+                        left = std::move(cand);
+                        break;
+                    }
+                }
+                const int left_cols = width_of(h(left).build());
+                const int budget = std::max(0, avail - left_cols);
+
+                // Optional right segments, measured as the real fragments.
+                Element queued_seg = h(
+                    text("\xe2\x9d\x9a ", Style{}.with_fg(ri.highlight_color)),
+                    text(tabular_int_(ri.queued, 2) + " queued",
+                         Style{}.with_fg(ri.highlight_color).with_bold()),
+                    dot()).build();
+                Element counters_seg = h(
+                    text(tabular_int_(ri.words, 5) + " words",
+                         fg_dim_(ri.muted_color)),
+                    text("  \xc2\xb7  ", fg_dim_(ri.muted_color)),
+                    text("~" + tabular_int_(ri.toks, 5) + " tok",
+                         fg_dim_(ri.muted_color)),
+                    dot()).build();
+
+                // Counters need the most room so they shed first, then
+                // queued; the chip never sheds — if even the chip can't
+                // fit, the spacer eats the slack and maya clips the row,
+                // but the chip stays visible because it's on the right
+                // edge.
+                const bool show_queued   = ri.queued > 0
+                    && width_of(queued_seg) + chip_cols <= budget;
+                const bool show_counters = ri.has_text
+                    && (show_queued ? width_of(queued_seg) : 0)
+                        + width_of(counters_seg) + chip_cols <= budget;
+
+                std::vector<Element> hint_right;
+                if (show_queued)   hint_right.push_back(std::move(queued_seg));
+                if (show_counters) hint_right.push_back(std::move(counters_seg));
+                hint_right.push_back(std::move(chip));
 
                 // 2-col indent so the hint row lines up with body text:
                 // `inner` has padding(0,1) (→1 col left), and body row 0

@@ -308,7 +308,9 @@ Table t2({{"Name"}, {"Status", 0, ColumnAlign::Left, 2},
 ### List
 
 Scrollable selectable list with icon, label, description, and optional
-filtering via `/` key.
+filtering via `/` key. Width-aware: a row sheds its DESCRIPTION (whole,
+fit_row-style) when the measured line wouldn't fit the slot — the label
+never shears.
 
 **Header:** `widget/list.hpp`
 
@@ -444,6 +446,9 @@ auto ui = dsl::v(tabs, content);
 ### Breadcrumb
 
 Passive path/context breadcrumb trail. Last segment is highlighted.
+Responsive via `pick()` (ViewThatFits): the full trail renders while its
+measured width fits; a narrow slot collapses the middle to `first › … ›
+last`; the tightest slot shows just the current segment.
 
 **Header:** `widget/breadcrumb.hpp`
 
@@ -465,6 +470,8 @@ auto ui = dsl::v(bc, content);
 ### Menu
 
 Vertical menu with keybind hints, separators, and disabled items.
+Width-aware: a row sheds its SHORTCUT hint when label + shortcut would
+overflow the measured slot — the label never shears.
 
 **Header:** `widget/menu.hpp`
 
@@ -497,6 +504,9 @@ menu.on_select([](int idx) { handle_menu(idx); });
 ### CommandPalette
 
 Fuzzy-search command launcher with embedded Input and highlighted match results.
+Width-aware: rows shed their DESCRIPTION first, then the SHORTCUT, when the
+measured line would overflow; the whole palette is clamped to `max_width`
+(default 72 — `set_max_width(0)` for full slot) and centered on wider slots.
 
 **Header:** `widget/command_palette.hpp`
 
@@ -589,6 +599,9 @@ auto ui = dsl::v(err, info);
 ### ToastManager
 
 Notification toast stack with timed auto-dismissal and severity styling.
+Cards are clamped to `Config::max_width` (default 60) and pinned to the
+right edge — the toast convention — instead of stretching into full-width
+banners on a wide terminal.
 
 **Header:** `widget/toast.hpp`
 
@@ -620,7 +633,9 @@ auto ui = toasts.build();
 ### FileRef
 
 File path reference display with dimmed directory, underlined filename, and
-optional line number.
+optional line number. Width-aware: when the full `dir/name:line` chip can't
+fit the measured slot the directory collapses to a leading `…/` — the
+filename survives whole.
 
 **Header:** `widget/file_ref.hpp`
 
@@ -789,7 +804,8 @@ Spinner<SpinnerStyle::Braille> s2;
 ### Modal
 
 Modal dialog with title, content, and Tab-navigable action buttons. Enter to
-activate, Escape to dismiss.
+activate, Escape to dismiss. Clamped to `set_max_width` (default 80) and
+centered beyond — a dialog, not a banner, on an ultrawide.
 
 **Header:** `widget/modal.hpp`
 
@@ -1399,7 +1415,9 @@ auto ui = ft.build();
 
 ### SearchResult
 
-Search results display (Grep/Glob) with grouped file matches.
+Search results display (Grep/Glob) with grouped file matches. Width-aware:
+long file paths truncate at the START (`…/dir/file.cpp` keeps the filename)
+instead of the tail clipping off.
 
 **Header:** `widget/search_result.hpp`
 
@@ -1497,7 +1515,10 @@ right. `StatusBar` composes them; the pieces are also usable standalone.
 Three-row status bar: a top/bottom `PhaseAccent` rail sandwiching a
 hard-locked single-line activity row. Each activity-row piece drops (widest
 `*_min_width` first) as the terminal narrows, so the row is always exactly one
-line and the phase chip — *what's happening now* — is the last survivor. When
+line and the phase chip — *what's happening now* — is the last survivor. The
+breadcrumb's width is a MEASURED budget — the right group and phase chip are
+built first and measured, and the title gets exactly the leftover (capped at
+its config `max_chars`) — not a hand-tiered table. When
 `status_banner.text` is set the middle row becomes a full-width toast instead.
 
 **Header:** `widget/status_bar.hpp`

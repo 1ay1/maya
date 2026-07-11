@@ -4,6 +4,10 @@
 // Passive display widget showing a navigation path with styled segments.
 // Last segment is highlighted as the current location.
 //
+// Responsive via maya's pick() (ViewThatFits): the full trail renders while
+// its measured width fits; a narrow slot collapses the middle to an ellipsis
+// (first › … › last); the tightest slot shows just the current segment.
+//
 // Usage:
 //   Breadcrumb bc({"src", "widget", "breadcrumb.hpp"});
 //   auto ui = v(bc, content);
@@ -53,35 +57,50 @@ public:
             return Element{TextElement{}};
         }
 
-        auto dim_style = Style{}.with_dim();
-        auto muted_style = Style{}.with_dim();
+        auto muted_style  = Style{}.with_dim();
         auto active_style = Style{}.with_bold();
-        auto sep_style = dim_style;
+        auto sep_style    = muted_style;
 
-        std::string content;
-        std::vector<StyledRun> runs;
-
-        int last = static_cast<int>(segments_.size()) - 1;
-
-        for (int i = 0; i <= last; ++i) {
-            if (i > 0) {
-                std::string sep = " \xe2\x80\xba "; // " › "
-                runs.push_back(StyledRun{content.size(), sep.size(), sep_style});
-                content += sep;
+        // One trail at a chosen density. Each variant is a single NoWrap
+        // TextElement so pick() measures the real styled row.
+        auto trail = [&](bool elide_middle, bool last_only) -> Element {
+            std::string content;
+            std::vector<StyledRun> runs;
+            auto add = [&](std::string_view s, const Style& st) {
+                runs.push_back(StyledRun{content.size(), s.size(), st});
+                content += s;
+            };
+            const int last = static_cast<int>(segments_.size()) - 1;
+            if (last_only) {
+                add(segments_[static_cast<size_t>(last)], active_style);
+            } else if (elide_middle && last >= 2) {
+                add(segments_.front(), muted_style);
+                add(" \xe2\x80\xba ", sep_style);           // ›
+                add("\xe2\x80\xa6", sep_style);              // …
+                add(" \xe2\x80\xba ", sep_style);
+                add(segments_[static_cast<size_t>(last)], active_style);
+            } else {
+                for (int i = 0; i <= last; ++i) {
+                    if (i > 0) add(" \xe2\x80\xba ", sep_style);
+                    add(segments_[static_cast<size_t>(i)],
+                        i == last ? active_style : muted_style);
+                }
             }
-            const auto& seg = segments_[static_cast<size_t>(i)];
-            runs.push_back(StyledRun{
-                content.size(), seg.size(),
-                (i == last) ? active_style : muted_style,
-            });
-            content += seg;
-        }
+            return Element{TextElement{
+                .content = std::move(content),
+                .style = muted_style,
+                .wrap = TextWrap::NoWrap,
+                .runs = std::move(runs),
+            }};
+        };
 
-        return Element{TextElement{
-            .content = std::move(content),
-            .style = muted_style,
-            .runs = std::move(runs),
-        }};
+        // Richest that fits: full trail → first › … › last → last only.
+        std::vector<Element> alts;
+        alts.push_back(trail(false, false));
+        if (segments_.size() >= 3) alts.push_back(trail(true, false));
+        if (segments_.size() >= 2) alts.push_back(trail(false, true));
+        if (alts.size() == 1) return std::move(alts.front());
+        return detail::pick(std::move(alts));
     }
 };
 

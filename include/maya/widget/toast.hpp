@@ -15,6 +15,11 @@
 //   toasts.push("Response complete", ToastLevel::Success);
 //   toasts.advance(dt);
 //   auto ui = toasts.build();
+//
+// Responsive: cards are clamped to `max_width` (default 60) and pinned to
+// the right edge — the toast convention everywhere — instead of stretching
+// into a full-width banner on a wide terminal. Below max_width the clamp is
+// transparent and the message text wraps inside the card.
 
 #include <algorithm>
 #include <cstdint>
@@ -40,6 +45,8 @@ struct ToastManager {
         float duration    = 3.0f;
         float fade_time   = 0.5f;
         int   max_visible = 3;
+        int   max_width   = 60;   // clamp card width; 0 = full slot
+        bool  right_align = true; // pin clamped cards to the right edge
     };
 
 private:
@@ -124,7 +131,11 @@ public:
             cards.push_back(std::move(card));
         }
 
-        return dsl::v(std::move(cards)).build();
+        Element stack = dsl::v(std::move(cards)).build();
+        if (cfg_.max_width <= 0) return stack;
+        return detail::clamp(std::move(stack), cfg_.max_width,
+                             cfg_.right_align ? HAlign::Right
+                                              : HAlign::Center);
     }
 };
 

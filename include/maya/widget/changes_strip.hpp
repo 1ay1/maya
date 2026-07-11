@@ -48,23 +48,30 @@ public:
 
         const Color muted = Color::bright_black();
 
-        auto header = h(
+        // Header is a fit_row: the "Changes (N files)" label and the grow
+        // spacer are essential; the key hints shed lowest-keep first
+        // (review → reject → accept) when the strip is too narrow —
+        // measured, so a relabeled hint re-decides by itself.
+        std::vector<FitItem> header;
+        header.push_back({h(
             text("Changes ", Style{}.with_fg(cfg_.border_color).with_bold()),
             text("(" + std::to_string(cfg_.changes.size()) + " files)",
-                 Style{}.with_fg(muted)),
-            spacer(),
+                 Style{}.with_fg(muted))).build()});
+        header.push_back({Element{spacer().build()}});
+        header.push_back({h(
             text("Ctrl+R", Style{}.with_fg(cfg_.text_color)),
-            text(" review  ", Style{}.with_fg(muted)),
+            text(" review  ", Style{}.with_fg(muted))).build(), 1});
+        header.push_back({h(
             text("A", Style{}.with_fg(cfg_.accept_color)),
-            text(" accept  ", Style{}.with_fg(muted)),
+            text(" accept  ", Style{}.with_fg(muted))).build(), 3});
+        header.push_back({h(
             text("X", Style{}.with_fg(cfg_.reject_color)),
-            text(" reject", Style{}.with_fg(muted))
-        );
+            text(" reject", Style{}.with_fg(muted))).build(), 2});
 
         FileChanges fc;
         for (const auto& c : cfg_.changes) fc.add(c);
 
-        return (v(header.build(), fc.build())
+        return (v(detail::fit_row(std::move(header)), fc.build())
                 | border(BorderStyle::Round)
                 | bcolor(cfg_.border_color)
                 | padding(0, 1)

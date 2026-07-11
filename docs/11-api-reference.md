@@ -597,7 +597,7 @@ auto adapt(std::function<Element(int w)> fn);
 auto fit_row(std::vector<FitItem> items, int gap = 0);
 auto fit_col(std::vector<FitItem> items, int gap = 0);
 auto pick(std::vector<Element> alternatives);
-auto clamp(Element el, int max_width);
+auto clamp(Element el, int max_width, HAlign align = HAlign::Center);
 auto responsive(std::vector<Bp> tiers);
 Element place(Element child, HAlign h = HAlign::Center, VAlign v = VAlign::Middle);
 
@@ -1127,9 +1127,11 @@ auto pick(std::vector<Element> alternatives) -> ComponentBuilder;
 
 ```cpp
 // libadwaita's AdwClamp: content uses the full slot up to max_width, then
-// stops growing and centers — a web page's container column. Transparent
-// below max_width. The "too wide" half of responsive design.
-auto clamp(Element el, int max_width) -> ComponentBuilder;
+// stops growing and aligns (Center by default; Left/Right for corner-
+// anchored content like toasts) — a web page's container column.
+// Transparent below max_width. The "too wide" half of responsive design.
+auto clamp(Element el, int max_width,
+           HAlign align = HAlign::Center) -> ComponentBuilder;
 ```
 
 ### responsive() / Bp
@@ -1469,7 +1471,7 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | `Select` | `widget/select.hpp` | Dropdown select menu |
 | `Slider` | `widget/slider.hpp` | Numeric slider |
 | `Button` | `widget/button.hpp` | Clickable button with variants |
-| `CommandPalette` | `widget/command_palette.hpp` | Fuzzy-search command launcher |
+| `CommandPalette` | `widget/command_palette.hpp` | Fuzzy-search command launcher; clamped, rows shed detail when narrow |
 
 ### Data Display
 
@@ -1490,13 +1492,13 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 | Widget | Header | Description |
 |--------|--------|-------------|
 | `Tabs` | `widget/tabs.hpp` | Tab bar navigation; falls back to ‹ active i/n › when narrow (pick) |
-| `Breadcrumb` | `widget/breadcrumb.hpp` | Breadcrumb path navigation |
-| `Menu` | `widget/menu.hpp` | Menu with selectable items |
+| `Breadcrumb` | `widget/breadcrumb.hpp` | Breadcrumb path navigation; collapses to first › … › last (pick) |
+| `Menu` | `widget/menu.hpp` | Menu with selectable items; shortcuts shed when narrow |
 | `ActivityBar` | `widget/activity_bar.hpp` | Vertical icon sidebar |
 | `Scrollable` | `widget/scrollable.hpp` | Scrollable content region |
 | `Scrollbar` | `widget/scrollbar.hpp` | Visual indicator for a `ScrollState` |
 | `Picker` | `widget/picker.hpp` | Bordered modal picker with scrollable results |
-| `CommandPalette` | `widget/command_palette.hpp` | Fuzzy-search command launcher |
+| `CommandPalette` | `widget/command_palette.hpp` | Fuzzy-search command launcher; clamped, rows shed detail when narrow |
 
 ### Display
 
@@ -1517,9 +1519,9 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 
 | Widget | Header | Description |
 |--------|--------|-------------|
-| `Modal` | `widget/modal.hpp` | Modal dialog with buttons |
+| `Modal` | `widget/modal.hpp` | Modal dialog with buttons; clamped to dialog width |
 | `Popup` | `widget/popup.hpp` | Floating popup |
-| `ToastManager` | `widget/toast.hpp` | Toast notification manager |
+| `ToastManager` | `widget/toast.hpp` | Toast notification manager; clamped right-anchored cards |
 
 ### Visualization
 
@@ -1570,9 +1572,9 @@ is the top-level viewport; the rest are the parts it (or a host) assembles.
 | `InlineDiff` | `widget/inline_diff.hpp` | Two-line word-level LCS diff |
 | `FileChanges` | `widget/file_changes.hpp` | Session file-change summary (created/modified/deleted + counts) |
 | `ChangesStrip` | `widget/changes_strip.hpp` | Bordered "session has pending changes" banner |
-| `FileRef` | `widget/file_ref.hpp` | File reference with icon |
+| `FileRef` | `widget/file_ref.hpp` | File reference with icon; dir collapses to …/ when narrow |
 | `LogViewer` | `widget/log_viewer.hpp` | Filterable log viewer |
-| `SearchResult` | `widget/search_result.hpp` | Grouped search results display |
+| `SearchResult` | `widget/search_result.hpp` | Grouped search results; paths keep their filename when narrow |
 | `ErrorBlock` | `widget/error_block.hpp` | Structured error/exception card |
 | `GitStatus` | `widget/git_status.hpp` | Branch + working-tree status |
 | `ContextWindow` | `widget/context_window.hpp` | Segmented context-window usage meter |

@@ -546,7 +546,8 @@ width; for multi-line alternatives the widest line decides.
 ## `clamp` — cap content width on huge terminals
 
 ```cpp
-auto clamp(Element el, int max_width) -> ComponentBuilder;
+auto clamp(Element el, int max_width,
+           HAlign align = HAlign::Center) -> ComponentBuilder;
 ```
 
 libadwaita's `AdwClamp`, for terminals — the missing half of responsive
@@ -559,6 +560,7 @@ column:
 ```cpp
 clamp(article_text, 100)      // never wider than 100 cells, centered
 clamp(dialog, 60)
+clamp(toasts, 60, HAlign::Right)   // corner-anchored (the toast convention)
 clamp(col({ row({a, b, c}), table }), 120)   // a max "design width" for the
                                              // whole page; row/grid keep
                                              // re-solving inside it
@@ -679,13 +681,21 @@ They compose freely. A real panel might use all of them: a `fit_row` title bar, 
 none of them counting a byte.
 
 The stock widget library rides the same toolkit — you get measured
-responsiveness without writing any of this yourself: `Table` solves one
+responsiveness without writing any of this yourself. `Table` solves one
 `solve_columns` plan for its header, separator, and rows (columns shed
-lowest-`keep` first when narrow), `KeyHelp` picks two columns or one by real
-measurement, `Tabs` falls back to `‹ active i/n ›` when the labels don't
-fit, the charts (`BarChart`, `LineChart`, `Heatmap`, `Sparkline`, `Gauge`,
-`FlameChart`, `Waterfall`, `Timeline`) size themselves with `fill`/`adapt`,
-and `ShortcutRow` / `StatusBar` shed detail as their strip narrows.
+lowest-`keep` first when narrow). `KeyHelp`, `Tabs`, and `Breadcrumb` pick
+their richest arrangement that actually fits (two columns → one; label row →
+`‹ active i/n ›`; full trail → `first › … › last` → last segment). `List`,
+`Menu`, and `CommandPalette` rows shed their optional segments — description,
+shortcut — by measurement, never shearing a label. `FileRef` and
+`SearchResult` collapse directories to `…/` so the FILENAME survives.
+`Toast`, `Modal`, and `CommandPalette` clamp to their conventional widths
+instead of stretching into banners on an ultrawide. `StatusBar` budgets its
+breadcrumb from MEASURED neighbors and `Composer` measures its hint clusters
+— no glyph-tally tables left to drift. The charts (`BarChart`, `LineChart`,
+`Heatmap`, `Sparkline`, `Gauge`, `FlameChart`, `Waterfall`, `Timeline`) size
+themselves with `fill`/`adapt`, and `ShortcutRow` / `WelcomeScreen` shed
+detail row-by-row as their strip narrows or shortens.
 
 ---
 

@@ -20,6 +20,7 @@
 - **Real flexbox.** Yoga layout — `grow()`, `gap()`, `align()`, `justify()`. No `printf` column-counting.
 - **row / col.** The GTK box model with responsiveness built in: `row({cpu, mem, net, disk})` puts cells side by side sharing the width — and wraps, then stacks, by itself as the terminal narrows. `col()` stacks cells that fill the width. Add `sidebar(stats, table, 42)` and a whole three-shape dashboard is two lines — no breakpoints, no spans, zero width arithmetic. See [Responsive Layouts](docs/15-responsive.md).
 - **Responsive by measurement.** `fit_row` sheds low-priority items when narrow, `fit_col` sheds low-priority panels when SHORT, `pick` shows the richest alternative that actually fits (SwiftUI's ViewThatFits), `clamp` stops an ultrawide from stretching your UI thin (libadwaita's AdwClamp), `solve_columns` keeps a table's header and rows on one width plan, `fill` sizes a graph to its slot, `place` pins content to any corner — all measured, never hand-estimated.
+- **A real data table.** `Table` does selection (▎ cursor + ↑↓/j/k/PgUp/PgDn), height-aware windowing with a scrollbar (`tbl.build() | grow(1)` — the row count falls out of the layout), sort indicators, flexible columns that truncate with …, column shedding when narrow, and per-row/header click rects via the hit registry. htop's working set, one widget — see `examples/proc_table.cpp`.
 - **Pretty by default.** `gradient("MAYA", a, b)` sweeps color across text, `rainbow()` does the full spectrum, `gradient_rule()` draws a divider that re-tiles to its pane — one `TextElement` under the hood, so it wraps and measures like plain text. See [Gradients](docs/03-styling.md#gradients).
 - **Two render modes.** Fullscreen (alternate screen) or **inline** (lives in your scrollback, doesn't take over the terminal).
 - **Two app APIs.** `run(event_fn, render_fn)` for quick tools; `run<Program>()` Elm-style for testable pure logic with algebraic effects.
@@ -92,7 +93,7 @@ int main() { run<Counter>({.title = "counter"}); }
 
 ## Examples
 
-38 examples ship with the framework:
+39 examples ship with the framework:
 
 <table>
 <tr>

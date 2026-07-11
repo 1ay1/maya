@@ -683,7 +683,9 @@ none of them counting a byte.
 The stock widget library rides the same toolkit — you get measured
 responsiveness without writing any of this yourself. `Table` solves one
 `solve_columns` plan for its header, separator, and rows (columns shed
-lowest-`keep` first when narrow). `KeyHelp`, `Tabs`, and `Breadcrumb` pick
+lowest-`keep` first when narrow, weighted columns flex) and windows its body
+around the cursor when the slot is SHORT — `tbl.build() | grow(1)` and the
+row count falls out of the layout. `KeyHelp`, `Tabs`, and `Breadcrumb` pick
 their richest arrangement that actually fits (two columns → one; label row →
 `‹ active i/n ›`; full trail → `first › … › last` → last segment). `List`,
 `Menu`, and `CommandPalette` rows shed their optional segments — description,

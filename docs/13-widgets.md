@@ -251,15 +251,33 @@ auto ui = volume.build();
 
 ### Table
 
-Formatted data table with configurable columns, alignment, striping, and
-optional bordered card.
+The data table: configurable columns, alignment, striping, optional
+bordered card — plus selection, keyboard navigation, height-aware
+windowing, a scrollbar, sort indicators, and flexible columns. The
+rockbottom-style process list is a config away (see
+`examples/proc_table.cpp`).
 
-**Responsive.** The table solves ONE column plan (`maya::solve_columns`)
-from the width it is actually given. When every column fits at natural
-width the output is the classic layout; when the slot is too narrow, whole
-columns shed lowest-`keep` first — by default the FIRST column never sheds
-and the rest shed rightmost-first. The header, the separator, and every row
-read the same plan, so they can never drift apart or shear mid-cell.
+**Responsive (width).** ONE column plan (`maya::solve_columns`) is solved
+from the width the table is actually given and feeds the header, the
+separator, and every row — they can never drift apart or shear mid-cell.
+Columns shed lowest-`keep` first when narrow (first column never, rest
+rightmost-first by default). A column with `weight > 0` is FLEXIBLE: it
+absorbs surplus width and shrinks toward `min_width` when tight — cells
+truncate with `…`.
+
+**Responsive (height).** The natural height is all rows — nothing windows
+in an auto-height context. In a definite slot that is SHORTER (or with
+`visible_rows` set) the body windows around the cursor and a `▐` scrollbar
+gutter appears. `tbl.build() | grow(1)` fills a pane and the row count
+falls out of the layout.
+
+**Interactive.** `selectable = true` adds the cursor (▎ bar + highlight)
+and keyboard nav — `↑↓`/`j`/`k`, `PgUp`/`PgDn`, `Home`/`End`/`g`/`G`,
+`Enter` → `on_activate`. Set `row_hit_kind` / `header_hit_kind` and every
+row / header cell registers a `hit_id(kind, index)` rect at paint — resolve
+clicks with `maya::hit_test`, zero coordinate math. `sort_col` +
+`sort_desc` render the `▾`/`▴` arrow and accent on the sorted header (the
+host owns the actual sort).
 
 **Header:** `widget/table.hpp`
 
@@ -268,11 +286,12 @@ enum class ColumnAlign : uint8_t { Left, Center, Right };
 
 struct ColumnDef {
     std::string header;
-    int width = 0;  // 0 = auto-fit
+    int width = 0;        // fixed; 0 = auto-fit
     ColumnAlign align = ColumnAlign::Left;
-    int keep = 0;   // drop order when narrow: LOWER sheds first;
-                    // kKeepAlways never sheds; 0 = auto (first column
-                    // always kept, the rest shed rightmost-first)
+    int keep = 0;         // shed order when narrow: LOWER first;
+                          // kKeepAlways never; 0 = auto
+    float weight = 0.0f;  // > 0 = flexible (absorbs surplus, shrinks to…
+    int min_width = 0;    // …this floor; cells truncate with …)
 };
 
 struct TableConfig {
@@ -282,6 +301,20 @@ struct TableConfig {
     bool show_border = false;
     std::string title;
     Color border_color;
+
+    bool selectable = false;          // cursor + keyboard nav
+    Style selected_style;             // bold by default
+    Color cursor_bar_color;           // the ▎ edge bar
+
+    int sort_col = -1;  bool sort_desc = true;   // ▾/▴ indicator
+    Style sort_header_style;
+
+    int visible_rows = 0;             // fixed window; 0 = fill the slot
+    bool show_scrollbar = true;       // gutter appears when windowed
+    bool show_status = false;         // "cursor/total" footer
+
+    uint32_t row_hit_kind = 0;        // hit_id(kind, row) per row
+    uint32_t header_hit_kind = 0;     // hit_id(kind, col) per header cell
 };
 
 class Table;
@@ -290,17 +323,27 @@ class Table;
 ```
 
 **Key methods:** `add_row(vector<string>)`, `set_rows(...)`, `clear_rows()`,
-`row_count()`, `set_title(sv)`, `set_bordered(bool)`.
+`row_count()`, `set_title(sv)`, `set_bordered(bool)`, `set_sort(col, desc)`,
+`selected()`, `set_selected(idx)`, `handle(KeyEvent)`, `on_change(fn)`,
+`on_activate(fn)`, `focus_node()`, `config()`.
 
 ```cpp
+// Classic static card — unchanged:
 Table tbl({{"Name", 20}, {"Status", 10}});
 tbl.add_row({"main.cpp", "modified"});
-tbl.add_row({"README.md", "staged"});
 auto ui = tbl.build();
 
-// Explicit drop order: keep Name always, shed Size before Status.
-Table t2({{"Name"}, {"Status", 0, ColumnAlign::Left, 2},
-          {"Size", 0, ColumnAlign::Right, 1}});
+// The proc list:
+TableConfig cfg;
+cfg.selectable = true;  cfg.sort_col = 2;  cfg.show_status = true;
+cfg.row_hit_kind = HK_ProcRow;  cfg.header_hit_kind = HK_SortCol;
+Table procs({{"PID", 0, ColumnAlign::Right},
+             {"NAME", 0, ColumnAlign::Left, 0, /*weight=*/1.0f, 10},
+             {"CPU%", 0, ColumnAlign::Right},
+             {"MEM", 0, ColumnAlign::Right, 2}}, cfg);
+procs.set_rows(rows_sorted_by_host);
+procs.set_selected(m.cursor);
+auto pane = procs.build() | grow(1);   // rows = whatever fits
 ```
 
 ---

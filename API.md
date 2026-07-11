@@ -752,7 +752,7 @@ All widgets satisfy the `Node` concept and work directly in DSL expressions.
 
 | Widget | Description |
 |--------|-------------|
-| `Table` | Column-aligned data table with headers and borders; sheds columns by `keep` rank when narrow (solve_columns) |
+| `Table` | The data table: selection + keyboard nav, height-aware windowing + scrollbar, sort indicators, flexible columns, sheds columns by `keep` rank when narrow, row/header hit rects |
 | `List<Cfg>` | Scrollable list with selection and search; rows shed descriptions when narrow |
 | `Tree<T>` | Tree view with expand/collapse |
 | `Sparkline` | Inline sparkline chart |

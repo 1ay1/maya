@@ -107,10 +107,24 @@ void StreamingMarkdown::commit_range(size_t boundary) {
                     seg_fence_len = fs.open_len;
                 }
             }
-            bool is_math_open = !is_code_open && at_ls && !seg_in_fence &&
-                                is_math_fence_line(k, boundary);
-            if (is_math_open) seg_in_fence = !seg_in_fence;
-            if (is_code_open || is_math_open) {
+            // Math fence toggle. OPENER only at a segment start (mirrors
+            // the boundary scanner's blank-above gate — a $$ hugging prose
+            // is lazy paragraph continuation to the parser, not a fence).
+            // CLOSER only while a math fence — not a code fence — is open;
+            // the old `!seg_in_fence` gate here made a math fence
+            // unclosable, so everything after the first $$ collapsed into
+            // one segment and the 1:1 seg↔block attribution always fell
+            // back to synthetic offsets.
+            bool is_math_toggle = !is_code_open && at_ls &&
+                                  (seg_in_fence ? seg_fence_ch == '$'
+                                                : k == seg_start) &&
+                                  is_math_fence_line(k, boundary);
+            if (is_math_toggle) {
+                seg_in_fence  = !seg_in_fence;
+                seg_fence_ch  = seg_in_fence ? '$' : '\0';
+                seg_fence_len = seg_in_fence ? 2 : 0;
+            }
+            if (is_code_open || is_math_toggle) {
                 // advance to end of fence line
                 size_t eol = std::string_view{source_}.find('\n', k);
                 if (eol == std::string_view::npos || eol >= boundary) { k = boundary; break; }
@@ -281,6 +295,9 @@ void StreamingMarkdown::commit_range(size_t boundary) {
         scan_in_fence_ = in_code_fence_;
         scan_fence_open_ch_  = fence_open_ch_;
         scan_fence_open_len_ = fence_open_len_;
+        // Fence state re-derived from the committed parse — a fence open
+        // at committed_ was recognised by the full parser, so it's safe.
+        scan_fence_safe_ = true;
     }
 }
 
@@ -607,6 +624,7 @@ void StreamingMarkdown::clear() {
     scan_in_fence_      = false;
     scan_fence_open_ch_ = '\0';
     scan_fence_open_len_ = 0;
+    scan_fence_safe_    = true;
     scan_last_boundary_ = 0;
     scan_boundaries_.clear();
     // Reset the inline-tail cache. Strictly speaking the prefix-match

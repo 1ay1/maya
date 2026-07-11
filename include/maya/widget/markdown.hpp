@@ -474,6 +474,13 @@ private:
     bool   scan_in_fence_       = false;
     char   scan_fence_open_ch_  = '\0';   // opener char at scan_cursor_
     size_t scan_fence_open_len_ = 0;      // opener run length at scan_cursor_
+    // Whether the open fence's OPENER line had a blank line above it. When
+    // false the "fence" may not be a fence at all in the full parse (e.g.
+    // it is content of a kind-6 HTML block that only a blank line can
+    // close, or it interrupts a paragraph whose shape is still growing), so
+    // the scanner must NOT record a commit boundary at its close — the
+    // whole cohesive run commits together at the next real blank line.
+    bool   scan_fence_safe_     = true;
     size_t scan_last_boundary_  = 0;
 
     // ── Pending-boundary ledger ──

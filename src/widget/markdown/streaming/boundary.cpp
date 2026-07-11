@@ -72,10 +72,90 @@ IntraBlank classify_blank_line(std::string_view src, std::size_t i) noexcept {
     std::string_view prev_line = src.substr(prev_start, prev_end - prev_start);
     bool prev_is_ol = ol_marker_len(prev_line) > 0;
     bool prev_is_ul = ul_marker_len(prev_line) > 0;
-    if (!prev_is_ol && !prev_is_ul) return IntraBlank::No;
     int prev_indent = count_indent(prev_line);
-
-    // ── Look forward: skip any additional consecutive blanks, then read
+    if (!prev_is_ol && !prev_is_ul) {
+        // The line directly above the blank isn't a marker line — but it
+        // may be a CONTINUATION line of a list item: an indented body
+        // line, a definition-list `: def`, or a LAZY continuation (plain
+        // prose at any indent hugging the item — CommonMark absorbs it
+        // into the item's paragraph). Only a line that itself opens a
+        // block-level structure (ATX heading, HR, fence, blockquote)
+        // provably CLOSES the list; for those the blank is a real
+        // boundary. For any other shape, walk back through the cohesive
+        // run (no blank lines) looking for the nearest marker line; if
+        // one exists the blank still separates two items of the SAME
+        // list and splitting there re-numbers / re-flows the second half.
+        auto is_structural_line = [](std::string_view ln) noexcept -> bool {
+            std::size_t k = 0;
+            while (k < 4 && k < ln.size() && ln[k] == ' ') ++k;
+            if (k >= ln.size()) return false;
+            char c = ln[k];
+            if (c == '>') return true;                       // blockquote
+            if (c == '#') {                                  // ATX heading
+                std::size_t h = 0;
+                while (h < 7 && k + h < ln.size() && ln[k + h] == '#') ++h;
+                if (h >= 1 && h <= 6 &&
+                    (k + h >= ln.size() || ln[k + h] == ' ' || ln[k + h] == '\t'))
+                    return true;
+            }
+            if (c == '`' || c == '~') {                      // fence marker
+                std::size_t run = 0;
+                while (k + run < ln.size() && ln[k + run] == c) ++run;
+                if (run >= 3) return true;
+            }
+            if (c == '-' || c == '*' || c == '_') {          // HR
+                std::size_t markers = 0;
+                bool hr = true;
+                for (std::size_t q = k; q < ln.size(); ++q) {
+                    char cc = ln[q];
+                    if (cc == c) { ++markers; continue; }
+                    if (cc != ' ' && cc != '\t' && cc != '\r') { hr = false; break; }
+                }
+                if (hr && markers >= 3) return true;
+            }
+            return false;
+        };
+        if (!is_structural_line(prev_line)) {
+            // Walk back (bounded: kMaxLookbackLines lines of
+            // kMaxListMarkerLineLen bytes each), stopping at blanks and
+            // structural lines — both close the run.
+            constexpr int kMaxLookbackLines = 24;
+        std::size_t line_end2 = prev_start;   // exclusive end of line above
+        for (int back_lines = 0;
+             back_lines < kMaxLookbackLines && line_end2 > 0; ++back_lines) {
+            // line_end2 points just past a '\n'; step to the previous line.
+            std::size_t e = line_end2 - 1;    // the '\n'
+            std::size_t s2 = e;
+            std::size_t floor2 = (e > kMaxListMarkerLineLen)
+                                     ? (e - kMaxListMarkerLineLen) : 0;
+            bool found2 = false;
+            for (std::size_t k = e; k > floor2; --k) {
+                if (src[k - 1] == '\n') { s2 = k; found2 = true; break; }
+            }
+            if (!found2) {
+                if (floor2 == 0) { s2 = 0; found2 = true; }
+                else break;      // over-long line: not a marker line
+            }
+            std::string_view ln = src.substr(s2, e - s2);
+            if (ln.empty()) break;             // blank — run boundary
+            if (is_structural_line(ln)) break; // closes any list above it
+            if (ol_marker_len(ln) > 0) { prev_is_ol = true; }
+            else if (ul_marker_len(ln) > 0) { prev_is_ul = true; }
+            if (prev_is_ol || prev_is_ul) {
+                prev_indent = count_indent(ln);
+                break;
+            }
+            line_end2 = s2;
+        }
+        }
+    }
+    // Same structural gate applies to the LINE ABOVE THE BLANK itself:
+    // if it is a structural line the run above is closed and the blank is
+    // a real boundary regardless of any marker found by the walkback.
+    // (The walkback only runs when prev_line has no marker, so reaching
+    // here with prev_is_* set via prev_line means prev_line IS a marker
+    // line — never structural.)
+    if (!prev_is_ol && !prev_is_ul) return IntraBlank::No;
     //                  the next line. Loose lists sometimes carry two
     //                  blank lines between items; treat the whole run
     //                  as one separator.
@@ -96,16 +176,32 @@ IntraBlank classify_blank_line(std::string_view src, std::size_t i) noexcept {
         // tell — it might become "2. ..." once a space + body arrives,
         // or it might become "Plain paragraph". Wait.
         if (!next_complete) return IntraBlank::Unknown;
+        // A line indented to (or past) the item's CONTENT column is a
+        // continuation of the item across the blank ("- nested\n\n
+        //     indented code" is ONE loose list item in the full parse —
+        // the 4-space line is item content, possibly indented code
+        // INSIDE the item). Splitting there re-parsed the continuation
+        // as a top-level indented code block: different render. The
+        // content column for a bullet is marker col + 2; ordered
+        // markers are wider, so +2 is a safe LOWER bound — anything
+        // less indented is a lazy-continuation/paragraph shape that
+        // the blank genuinely terminates.
+        if (count_indent(next_line) >= prev_indent + 2)
+            return IntraBlank::Yes;
         return IntraBlank::No;
     }
 
-    // Both prev and next are list markers. Same kind + same indent
-    // (±1, matching parse_markdown_impl's tolerance at line 1845) means
-    // they belong to the same list.
-    int next_indent = count_indent(next_line);
+    // Both prev and next are list markers. Same KIND is sufficient: in
+    // CommonMark a same-kind marker after a blank line CONTINUES the list
+    // regardless of indent — a shallower marker is a sibling of an outer
+    // level ("  - nested\n\n- item" is ONE loose list) and a deeper one
+    // is nested content of the previous item. The old ±1 indent
+    // tolerance split such lists into separate commits whose isolated
+    // re-parses render differently (tight vs loose, extra gap row).
+    // Holding cohesive is always safe: it only DELAYS the commit to the
+    // next real boundary, where the whole run parses together.
     bool same_kind = (prev_is_ol && next_is_ol) || (prev_is_ul && next_is_ul);
-    bool same_indent = std::abs(next_indent - prev_indent) <= 1;
-    if (same_kind && same_indent) return IntraBlank::Yes;
+    if (same_kind) return IntraBlank::Yes;
     return IntraBlank::No;
 }
 
@@ -161,11 +257,70 @@ TableScanResult find_table_end(std::string_view src,
     }
     if (!ok || !has_dash) return {TableScan::NotATable, 0};
 
-    // Walk body rows: each line that starts with '|' (after ≤3 spaces)
-    // belongs to the table.  Stop at the first line that doesn't —
-    // that line is the finality boundary.  Require it to be fully
-    // terminated (have a '\n') so we don't commit speculatively on a
-    // line that might yet become `| ...`.
+    // Walk body rows. GFM (and the engine's open_leaf) continue the table
+    // through ANY non-blank line — a plain-text line is a 1-cell row, not
+    // the end of the table (spec example: "| bar | baz |\nbar" keeps `bar`
+    // as a row). The table only breaks at:
+    //   • a blank line, or
+    //   • a line that opens another block-level structure first in the
+    //     engine's open_leaf / try_open_new_blocks order: ≥4-space indent
+    //     (indented code), blockquote, list marker, thematic break, ATX
+    //     heading, code fence, HTML block.
+    // The old rule ("first non-`|` line ends the table") committed a
+    // SHORTER table than the full parse produces whenever a plain line
+    // hugged the last row — the committed re-parse then dropped that row
+    // into its own paragraph, a settled-scrollback rewrite.
+    auto is_blank_ln = [](std::string_view ln) noexcept {
+        for (char c : ln)
+            if (c != ' ' && c != '\t' && c != '\r') return false;
+        return true;
+    };
+    auto is_hr_shape = [](std::string_view ln) noexcept {
+        std::size_t k = 0;
+        while (k < 4 && k < ln.size() && ln[k] == ' ') ++k;
+        if (k >= ln.size()) return false;
+        char m = ln[k];
+        if (m != '-' && m != '*' && m != '_') return false;
+        std::size_t markers = 0;
+        for (std::size_t q = k; q < ln.size(); ++q) {
+            char c = ln[q];
+            if (c == m) { ++markers; continue; }
+            if (c != ' ' && c != '\t' && c != '\r') return false;
+        }
+        return markers >= 3;
+    };
+    auto is_atx_shape = [](std::string_view ln) noexcept {
+        std::size_t k = 0;
+        while (k < 4 && k < ln.size() && ln[k] == ' ') ++k;
+        std::size_t h = 0;
+        while (h < 7 && k + h < ln.size() && ln[k + h] == '#') ++h;
+        if (h < 1 || h > 6) return false;
+        return k + h >= ln.size() || ln[k + h] == ' ' || ln[k + h] == '\t';
+    };
+    auto breaks_table = [&](std::string_view ln) noexcept -> bool {
+        if (is_blank_ln(ln)) return true;
+        if (count_indent(ln) >= 4) return true;          // indented code
+        std::size_t k = 0;
+        while (k < 4 && k < ln.size() && ln[k] == ' ') ++k;
+        if (k >= ln.size()) return true;                 // ws-only (blank)
+        char c = ln[k];
+        if (c == '>') return true;                       // blockquote
+        if (ul_marker_len(ln) > 0 || ol_marker_len(ln) > 0) return true;
+        if (is_hr_shape(ln) || is_atx_shape(ln)) return true;
+        if (c == '`' || c == '~') {                      // code fence opener
+            md_detail::streaming::FenceState probe;
+            if (md_detail::streaming::fence_scan_line(
+                    probe, ln, 0, ln.size()))
+                return true;
+        }
+        if (c == '<' && k + 1 < ln.size()) {             // HTML block
+            char n = ln[k + 1];
+            if ((n >= 'a' && n <= 'z') || (n >= 'A' && n <= 'Z') ||
+                n == '/' || n == '!' || n == '?')
+                return true;
+        }
+        return false;
+    };
     std::size_t pos = delim_end + 1;
     while (pos < src.size()) {
         std::size_t eol = src.find('\n', pos);
@@ -177,25 +332,13 @@ TableScanResult find_table_end(std::string_view src,
             return {TableScan::Incomplete, 0};
         }
         auto line = src.substr(pos, eol - pos);
-        std::size_t off = first_non_space(line);
-        if (off >= line.size() || line[off] != '|') {
-            // Finality boundary. Either a blank line (off >= size) or
-            // a non-pipe line: both end the table. The table's header
-            // + delimiter row are already verified above, so the
-            // bytes [line_start, pos) are PROVABLY a complete table
-            // and can commit now — even if N more tables (each with
-            // their own trailing blanks) follow, they will each
-            // commit at their own blank-line boundary instead of
-            // queueing behind the first non-pipe line in the buffer.
-            //
-            // Previously the blank-line branch returned Incomplete
-            // "so the default blank-line rule fires" — but the outer
-            // scanner sees Incomplete and breaks BEFORE reaching its
-            // own blank-line check, so the table (and every
-            // subsequent block separated only by blank lines) sat
-            // uncommitted until a non-pipe line finally landed.
-            // Symptom: multiple tables stream in invisibly, then
-            // burst-render together when the next paragraph arrives.
+        if (breaks_table(line)) {
+            // Finality boundary. The table's header + delimiter row are
+            // already verified above, so the bytes [line_start, pos) are
+            // PROVABLY a complete table and can commit now — even if N
+            // more tables (each with their own trailing blanks) follow,
+            // they will each commit at their own boundary instead of
+            // queueing behind the first breaking line in the buffer.
             return {TableScan::EndsAt, pos};
         }
         pos = eol + 1;
@@ -232,6 +375,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
     bool   in_fence      = scan_in_fence_;
     char   fence_ch      = scan_fence_open_ch_;
     size_t fence_len     = scan_fence_open_len_;
+    bool   fence_safe    = scan_fence_safe_;
     size_t last_boundary = scan_last_boundary_;
 
     // Ledger recorder: every boundary the scanner discovers is ALSO
@@ -245,6 +389,24 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
         if (b > committed_
             && (scan_boundaries_.empty() || scan_boundaries_.back() < b))
             scan_boundaries_.push_back(b);
+    };
+
+    // A line-start `pos` has a blank line above when pos == 0 or the
+    // previous line is empty (walking back past the '\n' at pos-1 and any
+    // '\r's lands on another '\n' or the buffer start). Eager commits that
+    // SPLIT a run of non-blank lines are only safe when this holds —
+    // otherwise the preceding block's shape is not provably final (lazy
+    // paragraph continuation, setext target, open HTML block) and the
+    // isolated re-parse of the committed range can differ cell-for-cell
+    // from the full-document parse. See the ATX branch below for the
+    // original rationale; the same gate now covers tables, math fences
+    // and code-fence openers.
+    auto has_blank_above = [&](std::size_t pos) noexcept -> bool {
+        if (pos == 0) return true;
+        std::size_t back = pos;
+        if (back > 0 && source_[back - 1] == '\n') --back;
+        while (back > 0 && source_[back - 1] == '\r') --back;
+        return back == 0 || source_[back - 1] == '\n';
     };
 
     while (i < source_.size()) {
@@ -264,16 +426,23 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                     fprobe, std::string_view{source_}, i, line_end);
             // Math fence ($$): treat as a block fence ONLY when the
             // opener line is exactly "$$" (optionally with trailing
-            // whitespace and/or \r), terminated by '\n'. Plain `$$`
-            // followed by any content is paragraph-level inline math
-            // (KaTeX inline) or just dollar signs in prose; treating
-            // it as a block fence would bury the rest of the message
-            // in an opaque fence until the next $$ surfaces. Parser
-            // doesn't emit a Math block kind either, so an over-eager
-            // detection here guarantees a commit-time snap.
+            // whitespace and/or \r), terminated by '\n', AND the
+            // parity is coherent:
+            //   • while a ``` / ~~~ code fence is open, a $$ line is
+            //     CONTENT (LaTeX inside a code example) — treating it
+            //     as a fence flipped the scanner's parity against the
+            //     parser's and mis-committed everything after;
+            //   • an OPENER additionally requires a blank line above.
+            //     parse_markdown_impl has NO math block: a $$ hugging
+            //     a paragraph is lazy continuation ("para $$ x $$" is
+            //     ONE paragraph), so splitting there froze a different
+            //     render than the full parse produces.
+            // Plain `$$` followed by any content is paragraph-level
+            // inline math (KaTeX inline) or just dollar signs in prose.
             bool is_math_fence = false;
             if (!is_code_fence && i + 2 <= source_.size() &&
-                source_[i] == '$' && source_[i+1] == '$') {
+                source_[i] == '$' && source_[i+1] == '$' &&
+                (in_fence ? fence_ch == '$' : has_blank_above(i))) {
                 std::size_t eol = source_.find('\n', i);
                 if (eol != std::string::npos) {
                     bool only_ws = true;
@@ -291,10 +460,32 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                 // with the '\n' present will re-evaluate.
             }
             if (is_code_fence || is_math_fence) {
-                // Opening fence commits any prose that preceded it: the
-                // paragraph above can be rendered immediately with its
-                // final styling, even if no blank line separates them.
-                if (!in_fence) record(i);
+                // Opening fence commits any prose that preceded it — but
+                // ONLY when a blank line already separates them. Without
+                // one the preceding block's shape isn't final: a kind-6
+                // HTML block swallows fence-looking lines until a blank
+                // line ("<div>…</div>\n```py" is ONE HtmlBlock in the
+                // parser), so splitting there committed a phantom code
+                // block. With the gate the whole run stays cohesive and
+                // commits at the fence CLOSE (code) or the next real
+                // blank line — the isolated re-parse then agrees with
+                // the full parse.
+                if (!in_fence && has_blank_above(i)) record(i);
+                // A fence OPENER without a blank line above may not be a
+                // fence at all in the full parse (content of a kind-6 HTML
+                // block, paragraph interruption ambiguity). Track parity so
+                // the scanner doesn't desync, but remember the opener was
+                // UNSAFE: its close must not record a boundary either — the
+                // whole run commits at the next real blank line, where the
+                // isolated re-parse provably matches the full parse.
+                if (!in_fence) fence_safe = has_blank_above(i);
+                // Whether this line CLOSES a math fence (needed after the
+                // probe adopt below overwrites the descriptor): a closed
+                // math block, unlike a closed code fence, can still be
+                // CONTINUED by the next line (it's paragraph text to the
+                // parser), so no boundary is recorded at its close — the
+                // blank-line rule commits it when a real separator lands.
+                const bool math_close = is_math_fence && in_fence;
                 // A math ($$) fence isn't handled by fence_scan_line (which
                 // only knows ``` / ~~~); flip the probe manually so the
                 // shared post-line adopt below is correct for both kinds.
@@ -357,11 +548,13 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                             }
                         }
                         if (marker_only) {
+                            const bool close_safe = fence_safe;
                             in_fence = false;
                             fence_ch = '\0';
                             fence_len = 0;
+                            fence_safe = true;
                             i = source_.size();
-                            record(i);
+                            if (close_safe) record(i);
                             continue;
                         }
                     }
@@ -373,7 +566,11 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                 fence_ch  = fprobe.open_ch;
                 fence_len = fprobe.open_len;
                 i = eol + 1;
-                if (!in_fence) record(i);
+                if (!in_fence) {
+                    const bool close_safe = fence_safe;
+                    fence_safe = true;
+                    if (close_safe && !math_close) record(i);
+                }
                 continue;
             }
 
@@ -464,14 +661,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                         // blank; otherwise fall through to the normal
                         // blank-line commit path, keeping the whole run
                         // cohesive in the tail until a genuine \n\n lands.
-                        bool blank_above = (i == 0);
-                        if (!blank_above) {
-                            std::size_t back = i;
-                            if (back > 0 && source_[back - 1] == '\n') --back;
-                            while (back > 0 && source_[back - 1] == '\r') --back;
-                            blank_above = (back == 0)
-                                || (source_[back - 1] == '\n');
-                        }
+                        bool blank_above = has_blank_above(i);
                         if (blank_above) {
                             record(i);
                             // If the heading line has fully arrived,
@@ -493,7 +683,14 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                         // line boundary. Fall through to the line-step.
                     }
                 }
-                if (source_[i] == '|') {
+                // Table finality gate — only when a blank line separates
+                // the `|` row from whatever precedes it. The parser forms
+                // a table ONLY when the header row is a single-line
+                // paragraph; a `|a|b|` row hugging prose above is lazy
+                // continuation ("para |a|b| |-|-|" is ONE paragraph), so
+                // eagerly committing a "proven" table there rewrote the
+                // paragraph as a table in settled scrollback.
+                if (source_[i] == '|' && has_blank_above(i)) {
                     auto r = find_table_end(
                         std::string_view{source_}, i);
                     if (r.kind == TableScan::EndsAt) {
@@ -588,42 +785,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
                                 // an h2 underline of the line
                                 // above). `*` and `_` are always
                                 // safe.
-                                bool safe = (marker != '-');
-                                if (!safe) {
-                                    // i is at a line start; previous
-                                    // byte is the '\n' that ended
-                                    // the prior line. The line
-                                    // ABOVE is blank if walking back
-                                    // past any '\r' that precedes
-                                    // that '\n' lands on another
-                                    // '\n' (CRLF terminator) or on
-                                    // the buffer start.
-                                    //
-                                    // CRLF tolerance matters: pasted
-                                    // markdown and some shells emit
-                                    // "\r\n". Without this, a `---`
-                                    // after a CRLF-terminated blank
-                                    // line was classified "unsafe"
-                                    // and fell through to the blank-
-                                    // line commit — cosmetically
-                                    // correct but the HR sat in the
-                                    // tail as literal `---` until the
-                                    // next paragraph landed.
-                                    if (i == 0) {
-                                        safe = true;
-                                    } else {
-                                        // Walk back past the '\n' at
-                                        // i-1 and any '\r' before it.
-                                        std::size_t back = i;
-                                        if (back > 0 && source_[back - 1] == '\n') --back;
-                                        while (back > 0 && source_[back - 1] == '\r') --back;
-                                        if (back == 0) {
-                                            safe = true;
-                                        } else if (source_[back - 1] == '\n') {
-                                            safe = true;
-                                        }
-                                    }
-                                }
+                                bool safe = (marker != '-') || has_blank_above(i);
                                 if (safe) {
                                     record(i);
                                     i = hr_eol + 1;
@@ -655,6 +817,7 @@ size_t StreamingMarkdown::find_block_boundary() noexcept {
     scan_in_fence_      = in_fence;
     scan_fence_open_ch_ = fence_ch;
     scan_fence_open_len_ = fence_len;
+    scan_fence_safe_    = fence_safe;
     scan_last_boundary_ = last_boundary;
     return last_boundary;
 }

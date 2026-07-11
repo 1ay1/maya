@@ -751,7 +751,7 @@ All widgets satisfy the `Node` concept and work directly in DSL expressions.
 
 | Widget | Description |
 |--------|-------------|
-| `Table` | Column-aligned data table with headers and borders |
+| `Table` | Column-aligned data table with headers and borders; sheds columns by `keep` rank when narrow (solve_columns) |
 | `List<Cfg>` | Scrollable list with selection and search |
 | `Tree<T>` | Tree view with expand/collapse |
 | `Sparkline` | Inline sparkline chart |
@@ -760,7 +760,7 @@ All widgets satisfy the `Node` concept and work directly in DSL expressions.
 
 | Widget | Description |
 |--------|-------------|
-| `Tabs` | Tab bar with selection indicator |
+| `Tabs` | Tab bar with selection indicator; ‹ active i/n › fallback when narrow (pick) |
 | `Breadcrumb` | Path breadcrumb trail |
 | `Menu` | Vertical menu with keyboard navigation |
 | `CommandPalette` | Fuzzy search command palette |
@@ -805,7 +805,7 @@ All widgets satisfy the `Node` concept and work directly in DSL expressions.
 | `PlanView` | Step-by-step plan viewer |
 | `LogViewer` | Log viewer with severity filtering |
 | `Calendar` | Month calendar grid |
-| `KeyHelp` | Keyboard shortcut help panel |
+| `KeyHelp` | Keyboard shortcut help panel; 2-col ↔ 1-col by real measurement (pick) |
 | `Disclosure` | Expand/collapse section |
 | `ThinkingBlock` | AI thinking/streaming indicator |
 
@@ -833,14 +833,14 @@ All widgets satisfy the `Node` concept and work directly in DSL expressions.
 using namespace maya::dsl;
 
 // Widgets work directly in DSL expressions
+Table tbl({{"Name"}, {"Value"}});
+tbl.add_row({"fps", "60"});
+tbl.add_row({"mem", "128MB"});
 auto ui = v(
     Badge::info("status"),
     Callout::success("Build passed", "All 42 tests green"),
     ProgressBar{.value = 0.75f, .label = "Progress"},
-    Table({
-        .headers = {"Name", "Value"},
-        .rows = {{"fps", "60"}, {"mem", "128MB"}},
-    })
+    tbl
 ) | padding(1);
 ```
 

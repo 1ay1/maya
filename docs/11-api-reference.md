@@ -1475,14 +1475,13 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 
 | Widget | Header | Description |
 |--------|--------|-------------|
-| `Table` | `widget/table.hpp` | Tabular data with column alignment |
+| `Table` | `widget/table.hpp` | Tabular data with column alignment; sheds columns by `keep` rank when narrow (solve_columns) |
 | `Tree` | `widget/tree.hpp` | Expandable tree view |
 | `List` | `widget/list.hpp` | Selectable item list |
-| `KeyHelp` | `widget/key_help.hpp` | Keyboard shortcut legend |
+| `KeyHelp` | `widget/key_help.hpp` | Keyboard shortcut legend; 2-col ↔ 1-col by real measurement (pick) |
 | `Badge` | `widget/badge.hpp` | Inline status badge |
 | `Callout` | `widget/callout.hpp` | Info/success/warning/error callout box |
 | `Link` | `widget/link.hpp` | Hyperlink element |
-| `KeyHelp` | `widget/key_help.hpp` | Keyboard shortcut legend |
 | `ShortcutRow` | `widget/shortcut_row.hpp` | Width-adaptive keyboard hint row (Helix/k9s style) |
 | `ModelBadge` | `widget/model_badge.hpp` | Color-coded active-model indicator |
 
@@ -1490,7 +1489,7 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 
 | Widget | Header | Description |
 |--------|--------|-------------|
-| `Tabs` | `widget/tabs.hpp` | Tab bar navigation |
+| `Tabs` | `widget/tabs.hpp` | Tab bar navigation; falls back to ‹ active i/n › when narrow (pick) |
 | `Breadcrumb` | `widget/breadcrumb.hpp` | Breadcrumb path navigation |
 | `Menu` | `widget/menu.hpp` | Menu with selectable items |
 | `ActivityBar` | `widget/activity_bar.hpp` | Vertical icon sidebar |

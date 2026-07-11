@@ -254,6 +254,13 @@ auto ui = volume.build();
 Formatted data table with configurable columns, alignment, striping, and
 optional bordered card.
 
+**Responsive.** The table solves ONE column plan (`maya::solve_columns`)
+from the width it is actually given. When every column fits at natural
+width the output is the classic layout; when the slot is too narrow, whole
+columns shed lowest-`keep` first — by default the FIRST column never sheds
+and the rest shed rightmost-first. The header, the separator, and every row
+read the same plan, so they can never drift apart or shear mid-cell.
+
 **Header:** `widget/table.hpp`
 
 ```cpp
@@ -263,6 +270,9 @@ struct ColumnDef {
     std::string header;
     int width = 0;  // 0 = auto-fit
     ColumnAlign align = ColumnAlign::Left;
+    int keep = 0;   // drop order when narrow: LOWER sheds first;
+                    // kKeepAlways never sheds; 0 = auto (first column
+                    // always kept, the rest shed rightmost-first)
 };
 
 struct TableConfig {
@@ -287,6 +297,10 @@ Table tbl({{"Name", 20}, {"Status", 10}});
 tbl.add_row({"main.cpp", "modified"});
 tbl.add_row({"README.md", "staged"});
 auto ui = tbl.build();
+
+// Explicit drop order: keep Name always, shed Size before Status.
+Table t2({{"Name"}, {"Status", 0, ColumnAlign::Left, 2},
+          {"Size", 0, ColumnAlign::Right, 1}});
 ```
 
 ---
@@ -404,6 +418,9 @@ auto ui = spark.build();
 ### Tabs
 
 Tabbed content switcher. Left/Right, h/l, and 1-9 number key navigation.
+Responsive via `pick()` (ViewThatFits): the full label row renders while its
+measured width fits; a slot too narrow for every label falls back to
+`‹ active-label  i/n ›` — always readable, never sheared.
 
 **Header:** `widget/tabs.hpp`
 
@@ -1117,8 +1134,10 @@ auto ui = cal.build();
 
 ### KeyHelp
 
-Keyboard shortcut reference panel. Adapts between 1-column and 2-column layout
-based on available width.
+Keyboard shortcut reference panel. Responsive via `pick()` (ViewThatFits):
+the two-column arrangement renders when its REAL measured width fits the
+slot, otherwise the single column does — no byte-count estimates, no
+breakpoints.
 
 **Header:** `widget/key_help.hpp`
 

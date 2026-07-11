@@ -16,10 +16,21 @@
 //    main.cpp      modified   2.3k
 //    README.md     staged     1.1k
 //
+// Responsive: the table solves ONE column plan (maya::solve_columns) from the
+// width it is actually given. When everything fits at natural width the
+// output is exactly the classic layout; when the slot is too narrow, whole
+// columns are shed lowest-`keep` first (default: rightmost goes first, the
+// first column never goes) — the header, separator, and every row read the
+// same plan, so they can never drift apart or shear mid-cell.
+//
 // Usage:
 //   Table tbl({{"Name", 20}, {"Status", 10}});
 //   tbl.add_row({"main.cpp", "modified"});
 //   auto ui = tbl.build();
+//
+//   // Explicit drop order: keep Name always, shed Size before Status.
+//   Table t2({{"Name"}, {"Status", 0, ColumnAlign::Left, 2},
+//             {"Size", 0, ColumnAlign::Right, 1}});
 
 #include <algorithm>
 #include <string>
@@ -29,6 +40,7 @@
 
 #include "../dsl.hpp"
 #include "../element/text.hpp"
+#include "../layout/columns.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
 
@@ -40,6 +52,10 @@ struct ColumnDef {
     std::string header;
     int width         = 0;       // 0 = auto-fit content
     ColumnAlign align = ColumnAlign::Left;
+    // Drop order when the table is too narrow: LOWER sheds first;
+    // kKeepAlways never sheds. 0 = auto — first column never sheds, the
+    // rest shed rightmost-first.
+    int keep          = 0;
 };
 
 struct TableConfig {
@@ -76,17 +92,34 @@ public:
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
-        int ncols = static_cast<int>(columns_.size());
-        if (ncols == 0) return Element{TextElement{}};
+        if (columns_.empty()) return Element{TextElement{}};
 
-        // Compute column widths
+        // Width-aware: the REAL slot width picks the column plan. When the
+        // natural widths fit, the plan is all-visible and the output is the
+        // classic byte-identical layout; when they don't, whole columns shed
+        // lowest-keep first instead of every row shearing at the right edge.
+        return detail::adapt(
+            [cols = columns_, rows = rows_, cfg = cfg_](int w) -> Element {
+                return render_at(cols, rows, cfg, w);
+            });
+    }
+
+private:
+    [[nodiscard]] static Element render_at(
+        const std::vector<ColumnDef>& columns,
+        const std::vector<std::vector<std::string>>& rows,
+        const TableConfig& cfg, int avail)
+    {
+        const int ncols = static_cast<int>(columns.size());
+
+        // Natural column widths (explicit width respected, else content fit).
         std::vector<int> widths(static_cast<size_t>(ncols));
         for (int c = 0; c < ncols; ++c) {
-            if (columns_[static_cast<size_t>(c)].width > 0) {
-                widths[static_cast<size_t>(c)] = columns_[static_cast<size_t>(c)].width;
+            if (columns[static_cast<size_t>(c)].width > 0) {
+                widths[static_cast<size_t>(c)] = columns[static_cast<size_t>(c)].width;
             } else {
-                int max_w = string_width(columns_[static_cast<size_t>(c)].header);
-                for (const auto& row : rows_) {
+                int max_w = string_width(columns[static_cast<size_t>(c)].header);
+                for (const auto& row : rows) {
                     if (c < static_cast<int>(row.size())) {
                         max_w = std::max(max_w, string_width(row[static_cast<size_t>(c)]));
                     }
@@ -95,31 +128,42 @@ public:
             }
         }
 
-        int pad = cfg_.cell_padding;
+        const int pad = cfg.cell_padding;
+
+        // ONE column plan for the header, the separator, and every row —
+        // solved from the width the layout engine actually gave us. Chrome
+        // (border + horizontal padding) eats 4 cells of the slot.
+        const int chrome = cfg.show_border ? 4 : 0;
+        std::vector<ColSpec> spec(static_cast<size_t>(ncols));
+        for (int c = 0; c < ncols; ++c) {
+            spec[static_cast<size_t>(c)].min = widths[static_cast<size_t>(c)] + pad * 2;
+            const int k = columns[static_cast<size_t>(c)].keep;
+            // 0 = auto drop order: first column is the identity — never
+            // sheds; the rest shed rightmost-first.
+            spec[static_cast<size_t>(c)].keep =
+                k != 0 ? k : (c == 0 ? kKeepAlways : ncols - c);
+        }
+        ColPlan plan = solve_columns(spec, avail > 0 ? avail - chrome : 1 << 14,
+                                     /*gap=*/0);
+
         std::vector<Element> output;
-
-        // Header row
-        output.push_back(build_header_row(widths, pad));
-
-        // Separator
-        output.push_back(build_separator(widths, pad));
-
-        // Data rows
-        for (size_t r = 0; r < rows_.size(); ++r) {
-            bool alt = cfg_.stripe_rows && (r % 2 == 1);
-            output.push_back(build_data_row(rows_[r], widths, pad, alt));
+        output.push_back(build_header_row(columns, cfg, plan, widths, pad));
+        output.push_back(build_separator(cfg, plan, widths, pad));
+        for (size_t r = 0; r < rows.size(); ++r) {
+            bool alt = cfg.stripe_rows && (r % 2 == 1);
+            output.push_back(build_data_row(columns, cfg, plan, rows[r], widths, pad, alt));
         }
 
         auto content = dsl::v(std::move(output));
 
-        if (cfg_.show_border) {
+        if (cfg.show_border) {
             auto bordered = std::move(content)
                 | dsl::border(BorderStyle::Round)
-                | dsl::bcolor(cfg_.border_color)
+                | dsl::bcolor(cfg.border_color)
                 | dsl::padding(0, 1, 0, 1);
-            if (!cfg_.title.empty()) {
+            if (!cfg.title.empty()) {
                 bordered = std::move(bordered)
-                    | dsl::btext(" " + cfg_.title + " ",
+                    | dsl::btext(" " + cfg.title + " ",
                         BorderTextPos::Top, BorderTextAlign::Start);
             }
             return std::move(bordered).build();
@@ -128,14 +172,17 @@ public:
         return content.build();
     }
 
-private:
-    [[nodiscard]] Element build_header_row(const std::vector<int>& widths, int pad) const {
+    [[nodiscard]] static Element build_header_row(
+        const std::vector<ColumnDef>& columns, const TableConfig& cfg,
+        const ColPlan& plan, const std::vector<int>& widths, int pad)
+    {
         std::string content;
         std::vector<StyledRun> runs;
 
-        for (size_t c = 0; c < columns_.size(); ++c) {
-            std::string cell = pad_cell(columns_[c].header, widths[c], columns_[c].align, pad);
-            runs.push_back(StyledRun{content.size(), cell.size(), cfg_.header_style});
+        for (size_t c = 0; c < columns.size(); ++c) {
+            if (!plan.has(c)) continue;
+            std::string cell = pad_cell(columns[c].header, widths[c], columns[c].align, pad);
+            runs.push_back(StyledRun{content.size(), cell.size(), cfg.header_style});
             content += cell;
         }
 
@@ -147,16 +194,19 @@ private:
         }};
     }
 
-    [[nodiscard]] Element build_data_row(const std::vector<std::string>& row,
-                                          const std::vector<int>& widths,
-                                          int pad, bool alt) const {
+    [[nodiscard]] static Element build_data_row(
+        const std::vector<ColumnDef>& columns, const TableConfig& cfg,
+        const ColPlan& plan, const std::vector<std::string>& row,
+        const std::vector<int>& widths, int pad, bool alt)
+    {
         std::string content;
         std::vector<StyledRun> runs;
-        Style style = alt ? cfg_.alt_row_style : cfg_.row_style;
+        Style style = alt ? cfg.alt_row_style : cfg.row_style;
 
-        for (size_t c = 0; c < columns_.size(); ++c) {
+        for (size_t c = 0; c < columns.size(); ++c) {
+            if (!plan.has(c)) continue;
             std::string val = c < row.size() ? row[c] : "";
-            std::string cell = pad_cell(val, widths[c], columns_[c].align, pad);
+            std::string cell = pad_cell(val, widths[c], columns[c].align, pad);
             runs.push_back(StyledRun{content.size(), cell.size(), style});
             content += cell;
         }
@@ -169,15 +219,20 @@ private:
         }};
     }
 
-    [[nodiscard]] Element build_separator(const std::vector<int>& widths, int pad) const {
+    [[nodiscard]] static Element build_separator(
+        const TableConfig& cfg, const ColPlan& plan,
+        const std::vector<int>& widths, int pad)
+    {
         std::string line;
         for (size_t c = 0; c < widths.size(); ++c) {
+            if (!plan.has(c)) continue;
             int total = widths[c] + pad * 2;
             for (int i = 0; i < total; ++i) line += "\xe2\x94\x80";  // ─
         }
         return Element{TextElement{
             .content = std::move(line),
-            .style = cfg_.separator_style,
+            .style = cfg.separator_style,
+            .wrap = TextWrap::NoWrap,
         }};
     }
 

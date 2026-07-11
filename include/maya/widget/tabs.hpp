@@ -4,6 +4,10 @@
 // Arrow-key navigable tab bar with focus integration.
 // Supports Left/Right, h/l, and 1-9 number keys.
 //
+// Responsive via maya's pick() (ViewThatFits): the full label row renders
+// while its measured width fits; on a slot too narrow for every label the
+// bar falls back to ‹ active-label  i/n › — always readable, never sheared.
+//
 // Usage:
 //   Tabs tabs({"General", "Editor", "Keybindings"});
 //   tabs.on_change([](int idx) { /* switch content */ });
@@ -125,8 +129,34 @@ public:
         auto tab_row = Element{TextElement{
             .content = std::move(content),
             .style = inactive_style,
+            .wrap = TextWrap::NoWrap,
             .runs = std::move(runs),
         }};
+
+        // Compact fallback for slots too narrow for every label:
+        // ‹ active-label  i/n ›. pick() measures the REAL full row — the
+        // fallback only renders when the labels genuinely don't fit.
+        Element compact = [&]() -> Element {
+            std::string ct;
+            std::vector<StyledRun> cruns;
+            auto add = [&](std::string_view s, const Style& st) {
+                cruns.push_back(StyledRun{ct.size(), s.size(), st});
+                ct += s;
+            };
+            add("\xe2\x80\xb9 ", sep_style);                     // ‹
+            if (cur >= 0 && cur < static_cast<int>(labels_.size()))
+                add(labels_[static_cast<size_t>(cur)], active_style);
+            add("  " + std::to_string(cur + 1) + "/" +
+                    std::to_string(labels_.size()),
+                inactive_style);
+            add(" \xe2\x80\xba", sep_style);                     // ›
+            return Element{TextElement{
+                .content = std::move(ct),
+                .style = inactive_style,
+                .wrap = TextWrap::NoWrap,
+                .runs = std::move(cruns),
+            }};
+        }();
 
         // Full-width separator line below tabs
         auto separator = Element{ComponentElement{
@@ -141,7 +171,8 @@ public:
             .layout = {},
         }};
 
-        return dsl::v(std::move(tab_row), std::move(separator)).build();
+        return dsl::v(detail::pick({std::move(tab_row), std::move(compact)}),
+                      std::move(separator)).build();
     }
 
 private:

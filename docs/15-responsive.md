@@ -678,6 +678,15 @@ They compose freely. A real panel might use all of them: a `fit_row` title bar, 
 `solve_columns` table body, and a `fill` graph footer — each solving its own axis,
 none of them counting a byte.
 
+The stock widget library rides the same toolkit — you get measured
+responsiveness without writing any of this yourself: `Table` solves one
+`solve_columns` plan for its header, separator, and rows (columns shed
+lowest-`keep` first when narrow), `KeyHelp` picks two columns or one by real
+measurement, `Tabs` falls back to `‹ active i/n ›` when the labels don't
+fit, the charts (`BarChart`, `LineChart`, `Heatmap`, `Sparkline`, `Gauge`,
+`FlameChart`, `Waterfall`, `Timeline`) size themselves with `fill`/`adapt`,
+and `ShortcutRow` / `StatusBar` shed detail as their strip narrows.
+
 ---
 
 ## A worked example: a system-monitor panel

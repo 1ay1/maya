@@ -322,7 +322,10 @@ measured toolkit that replaces hand-counted breakpoints:
 
 | Primitive | Answers |
 |-----------|---------|
-| `grid({col(x).md(6)…})` | "Lay out the whole page, correct at every width" (Bootstrap-style tiers). |
+| `row({a, b, c})` | "Cells side by side, equal shares; wraps → stacks by itself." |
+| `col({a, b, c})` | "Cells stacked, each filling the width." |
+| `grid({a, b, c}, 26)` | "row with knobs — tune the cell width, cap the flow." |
+| `sidebar(rail, main, 42)` | "Fixed rail beside a main pane; stack when narrow." |
 | `measure_element(el, max_w)` | "How wide/tall does this fragment *actually* render?" |
 | `fill(fn(w,h), min_w, min_h)` | "Fill the space flex gives me." |
 | `adapt(fn(w))` | "Build a different tree for the width I get." |

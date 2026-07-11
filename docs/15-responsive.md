@@ -73,13 +73,16 @@ the measurement follows, because the thing measured **is** the thing rendered.
 
 ## The toolkit at a glance
 
-Seven primitives, each answering one question. All are in `maya::dsl` (or
-`maya::`); no extra include beyond `<maya/maya.hpp>` — except `solve_columns`,
+A small toolkit — each primitive answers one question. All are in `maya::dsl`
+(or `maya::`); no extra include beyond `<maya/maya.hpp>` — except `solve_columns`,
 which lives in the dependency-free header `<maya/layout/columns.hpp>`.
 
 | Primitive | The question it answers | Kind |
 |-----------|-------------------------|------|
-| [`grid`](#the-grid-one-declaration-every-width) | "Lay out the whole page, **correct at every width**." | component |
+| [`row`](#the-grid-one-number-every-width) | "Cells **side by side**, sharing the width; stack when narrow." | component |
+| [`col`](#the-grid-one-number-every-width) | "Cells **stacked**, each filling the width." | element |
+| [`grid`](#the-grid-one-number-every-width) | "Same as `row`, with knobs (`min`, `max_cols`, gaps)." | component |
+| [`sidebar`](#sidebar-a-rail-beside-a-main-pane) | "A fixed **rail** beside a main pane; stack when narrow." | component |
 | [`measure_element`](#measure_element-ask-dont-estimate) | "How wide/tall does *this* fragment actually render?" | function |
 | [`fill`](#fill-size-to-the-slot) | "Make this content **fill** the space flex gives it." | component |
 | [`adapt`](#adapt-restructure-by-width) | "Build a **different tree** depending on the width I get." | component |
@@ -98,9 +101,10 @@ which lives in the dependency-free header `<maya/layout/columns.hpp>`.
 
 The mental model:
 
-- **`grid`** is the page-level answer — the Bootstrap grid for terminal cells.
-  Start here; reach for the narrower primitives when a piece needs bespoke
-  behavior inside a cell.
+- **`row`**, **`col`**, and **`sidebar`** are the page-level answer — the GTK
+  box model with the responsiveness built in: cells fill their space
+  automatically and stack automatically. Start here; reach for the narrower
+  primitives when a piece needs bespoke behavior inside a cell.
 - **`measure_element`** is the primitive everything else is built on — it runs a
   real layout pass and hands back the natural size.
 - **`fill`** responds to the size it is *given* (height and width).
@@ -111,111 +115,113 @@ The mental model:
 
 ---
 
-## The grid — one declaration, every width
+## The grid — one number, every width
 
 ```cpp
-enum class Bk { XS, SM, MD, LG, XL, XXL };
-struct Breaks { int sm = 60, md = 90, lg = 120, xl = 160, xxl = 200; };
-struct GridOpts { int columns = 12; int gap_x = 1; int gap_y = 0;
-                  bool grow_rows = false; Breaks breaks{}; };
+auto row(std::vector<Element> cells, int min_width = 24) -> ComponentBuilder;
+Element col(std::vector<Element> cells, int gap = 0);
 
-GridCol col(Element el);                       // .span/.xs/.sm/.md/.lg/.xl/.xxl/.order
-auto grid(std::vector<GridCol> cols, GridOpts opts = {}) -> ComponentBuilder;
+struct GridOpts { int min = 24; int max_cols = 0; int gap_x = 1;
+                  int gap_y = 0; bool grow_rows = false; };
+auto grid(std::vector<Element> cells, GridOpts opts = {}) -> ComponentBuilder;
+auto grid(std::vector<Element> cells, int min_width)      -> ComponentBuilder;
 ```
 
 The hand-rolled tier switch — `if (w >= 200) wide(); else if (w >= 84)
 classic(); else narrow();` with three separately-maintained layouts — is the
-last big piece of width arithmetic left in a typical TUI. The grid kills it
-the way Bootstrap killed it on the web: **one declaration** where each column
-states its width *per breakpoint*, and the framework re-solves the packing at
-every resize.
-
-A system dashboard — the full rockbottom shape — in its entirety:
+last big piece of width arithmetic left in a typical TUI. maya kills it with
+the GTK box model plus **one number**: *how wide does one cell need to be to
+look right?*
 
 ```cpp
-// The stat panels: full width on a phone, 2×2 from md up.
-auto stats = grid({
-    col(cpu_panel).md(6),
-    col(mem_panel).md(6),
-    col(net_panel).md(6),
-    col(disk_panel).md(6),
-});
+row({cpu_panel, mem_panel, net_panel, disk_panel});
+```
 
-// The page: stats above the table — until xxl, where they become a
-// fixed 42-cell sidebar and the process table takes everything else.
-auto body = grid({
-    col(stats).xxl(Columns{42}),
-    col(proc_table),
+`row` puts cells side by side, sharing the width equally — and wraps, then
+stacks, **by itself** as the slot narrows: 4-across → 2×2 → one column,
+re-solved live on every resize. `col` stacks cells top to bottom, each
+stretched to the full width. Compose them and every layout fills its space
+automatically:
+
+```cpp
+col({
+    row({cpu_panel, mem_panel, net_panel, disk_panel}),
+    proc_table,
 });
 ```
 
-That is the whole layout. At `< 90` columns everything stacks; at `≥ 90` the
-panels pair up above the full-width table; at `≥ 200` the stats compress into
-a sidebar. No widths computed, no tiers switched, nothing to drift.
+There are no breakpoints to memorize and no spans to keep in sync: the
+cells-per-row count *falls out* of a width you already know. `grid` is the
+same engine as `row` when you want the knobs — tune the cell width
+(`grid(cells, 26)`), cap the flow (`{.max_cols = 2}`), space cells
+(`.gap_x` / `.gap_y`).
 
-### Mobile-first spans
+Semantics:
 
-Every column defaults to **span 12** — full width — so an undecorated grid
-stacks everything in one column on the narrowest terminal, automatically. A
-value set at a tier applies to that tier **and every tier above it** until
-overridden, exactly like Bootstrap's `col-12 col-md-6 col-xl-3`:
+- Cells in a row share the slot width **exactly** — largest-remainder split,
+  no ragged right edge from integer division.
+- A short last row keeps the same cell width as the full rows above it, so
+  columns line up down the whole grid.
+- `GridOpts{.max_cols = 2}` caps the flow (a stats block that should never
+  go wider than 2-across); `.gap_x` / `.gap_y` space cells and rows.
 
-```cpp
-col(panel)               // 12 everywhere: always full width
-col(panel).md(6)         // 12 below md, half from md up
-col(panel).md(6).xl(3)   // …and a quarter from xl up
-```
-
-Spans are grid units out of `GridOpts::columns` (default 12). Columns pack
-greedily into rows in declaration order; a column that would overflow the
-row's 12 units starts a new row. When a row's spans sum to 12 its widths
-solve **exactly** — largest-remainder distribution, no ragged right edge from
-integer division.
-
-### Fixed-cell columns — the TUI `col-auto`
-
-Terminals have a pattern the web grid never needed: the **fixed-width
-sidebar** (a 40-cell stats rail, a 3-cell gutter). Pass `Columns{n}` instead
-of a span:
+### sidebar — a rail beside a main pane
 
 ```cpp
-col(sidebar).xxl(Columns{42})    // spans below xxl, exactly 42 cells at xxl+
-col(rail).span(Columns{3})       // fixed 3 cells at every tier
+struct SidebarOpts { int width = 32; int stack_below = 0;   // 0 = 2×width
+                     int gap = 1; bool right = false; };
+
+auto sidebar(Element rail, Element main, SidebarOpts opts = {}) -> ComponentBuilder;
+auto sidebar(Element rail, Element main, int width)             -> ComponentBuilder;
 ```
 
-Fixed columns consume no grid units — the row's span columns share whatever
-width remains after the fixed ones (and the gaps) are taken off the top.
+The other layout every dashboard needs: a fixed-width rail next to a main
+pane that takes the rest — and the pair stacks vertically (reading order
+preserved) the moment the slot is too narrow for both. Again one number: the
+rail's width. By default the pair stacks when the slot is narrower than
+`2 × width` — side-by-side only while the main pane gets at least as much as
+the rail. Override with `.stack_below`; flip sides with `.right = true`.
 
-### Hiding and ordering
+### The whole dashboard, two lines
 
 ```cpp
-col(debug_pane).span(0).lg(12)   // hidden until lg, full-width row from lg
-col(cpu).span(0).md(4)           // Bootstrap d-none d-md-block
-col(proc_table).order(-1)        // pack first at every tier
+auto stats = row({cpu_panel, mem_panel, net_panel, disk_panel});
+auto body  = sidebar(stats, proc_table, 42);
 ```
 
-Span `0` (or `Columns{0}`) hides the column at that tier and above until a
-higher tier resets it. `.order(n)` stable-sorts columns before packing — put
-the table first on a phone and third on an ultrawide.
+- **wide** — 42-cell rail beside the process table, stats stacked 1-across
+  *inside* the rail
+- **medium** — stats flow 2-, 3-across over a full-width table
+- **narrow** — everything in one column
 
-### Slot-width tiers — grids nest and re-solve independently
+Nothing computed a width, nothing switched a tier, nothing can drift.
 
-Breakpoints key on the width of the **slot the grid sits in**, not the
-terminal. That is what makes the dashboard above work: on a 230-column
-terminal the outer grid is at `xxl`, but the stats grid inside the 42-cell
-sidebar sees 42 columns — below `md` — so its panels restack 1-across *inside
-the sidebar* while the rest of the screen stays wide. Composition is free;
-nothing needs to know where it will be mounted.
+### Slot width, not screen width — everything nests and re-solves independently
+
+`row`, `grid`, and `sidebar` key on the width of the **slot they sit in**
+(`adapt()` underneath), not the terminal. That is what makes the dashboard
+above work: on a wide terminal the sidebar hands the stats row a 42-column
+slot, so its cells restack 1-across *inside the rail* while the rest of the
+screen stays wide. Composition is free; nothing needs to know where it will
+be mounted.
 
 ### Heights
 
 Rows are natural-height; every cell in a row is stretched to the tallest
 (flex cross-stretch). Two knobs for full-screen dashboards:
 
-- `GridOpts{.grow_rows = true}` — rows share surplus height equally when the
-  grid fills a definite-height slot.
-- A cell whose content should fill its cell vertically uses the usual grow
-  chain: `col(proc_table | grow(1))` inside a definite band.
+- `GridOpts{.grow_rows = true}` — wrapped lines share surplus height equally
+  when the grid fills a definite-height slot.
+- Inside a `col`, pipe `| grow(1)` onto the child that should take the
+  leftover height (the process table, the graph).
+
+### When you outgrow it
+
+A cell that must span two columns at one width, hide at another, and jump to
+the front at a third is bespoke behavior — that is what
+[`adapt`](#adapt-restructure-by-width) and
+[`responsive`](#responsive-named-width-breakpoints) are for. The grid stays
+a one-number tool on purpose.
 
 See [`examples/grid.cpp`](https://github.com/1ay1/maya/blob/master/examples/grid.cpp)
 for the complete dashboard — resize it and watch all three shapes.
@@ -554,7 +560,9 @@ it's cheap enough to solve every frame and trivial to unit-test in isolation.
 ## Choosing a primitive
 
 ```text
-A whole page correct at every width?         → grid
+A whole page correct at every width?         → row / col
+A fixed rail beside a main pane?             → sidebar
+A flow of cards with a tuned cell width?     → grid
 Need a raw size number?                      → measure_element
 Content should FILL the space it's given?    → fill
 Child should be PINNED in its slot?          → place

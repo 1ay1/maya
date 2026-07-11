@@ -598,9 +598,11 @@ auto fit_row(std::vector<FitItem> items, int gap = 0);
 auto responsive(std::vector<Bp> tiers);
 Element place(Element child, HAlign h = HAlign::Center, VAlign v = VAlign::Middle);
 
-// The grid — Bootstrap-style tiered layout (see "Responsive layout" below)
-GridCol col(Element el);
-auto grid(std::vector<GridCol> cols, GridOpts opts = {});
+// The grid — responsive layout with one number (see "Responsive layout" below)
+auto row(std::vector<Element> cells, int min_width = 24) -> ComponentBuilder;
+Element col(std::vector<Element> cells, int gap = 0);
+auto grid(std::vector<Element> cells, int min_width) -> ComponentBuilder;
+auto sidebar(Element rail, Element main, int width)  -> ComponentBuilder;
 
 // Pretty text (see "Gradients" below)
 Element gradient(std::string text, Color from, Color to, Style base = {});
@@ -1001,45 +1003,58 @@ Full treatment in [Responsive Layouts](15-responsive.md). All are in `maya::dsl`
 (and `maya::`); `solve_columns` and its types live in
 `<maya/layout/columns.hpp>`.
 
-### grid() / col() / GridCol / GridOpts / Bk / Breaks
+### row() / col() / grid() / GridOpts
 
 ```cpp
-// Breakpoint tiers, keyed on the SLOT width in cells (not the terminal):
-enum class Bk { XS, SM, MD, LG, XL, XXL };
-struct Breaks { int sm = 60, md = 90, lg = 120, xl = 160, xxl = 200;
-                Bk tier(int w) const; };
+// Cells side by side, sharing the width equally and EXACTLY (largest-
+// remainder split — no ragged right edge) — wrapping, then stacking, by
+// itself as the slot narrows: 4-across → 2×2 → one column. `min_width` is
+// the one number: how wide one cell needs to be to look right.
+auto row(std::vector<Element> cells, int min_width = 24) -> ComponentBuilder;
+
+// Cells stacked top to bottom, each stretched to the full width (flex
+// cross-stretch — the GTK "fill"). Pipe `| grow(1)` onto the child that
+// should take the leftover height. Compose: col({ row({a, b}), table }).
+Element col(std::vector<Element> cells, int gap = 0);
 
 struct GridOpts {
-    int    columns   = 12;      // grid units per row
-    int    gap_x     = 1;       // cells between columns
-    int    gap_y     = 0;       // rows between rows
-    bool   grow_rows = false;   // rows share surplus height (definite slot)
-    Breaks breaks{};
+    int  min       = 24;     // a cell's comfortable minimum width (columns)
+    int  max_cols  = 0;      // cap cells-per-row; 0 = as many as fit
+    int  gap_x     = 1;      // blank columns between cells
+    int  gap_y     = 0;      // blank rows between rows
+    bool grow_rows = false;  // rows share surplus height (definite slot)
 };
 
-// One column. Mobile-first: a value set at a tier applies upward until
-// overridden. int = span (grid units; 0 hides), Columns{n} = FIXED n cells
-// (consumes no grid units — span columns share the remainder).
-GridCol col(Element el);
-GridCol& GridCol::span(int units);        // xs and up
-GridCol& GridCol::span(Columns cells);
-GridCol& GridCol::xs/sm/md/lg/xl/xxl(int units);
-GridCol& GridCol::xs/sm/md/lg/xl/xxl(Columns cells);
-GridCol& GridCol::order(int n);           // stable pack order (default 0)
+// row's engine with the knobs exposed. Re-solved from the REAL slot width
+// per frame (adapt() underneath), so nested grids collapse independently.
+// A short last row keeps the same cell width so columns line up.
+auto grid(std::vector<Element> cells, GridOpts opts = {}) -> ComponentBuilder;
+auto grid(std::vector<Element> cells, int min_width)      -> ComponentBuilder;
 
-// The Bootstrap grid for terminal cells: columns pack greedily into 12-unit
-// rows at the tier the slot width selects; full rows solve their widths
-// EXACTLY (largest-remainder — no ragged right edge). Re-solves per frame
-// from the real allocated width (adapt() underneath), so nested grids
-// collapse independently of the screen.
-auto grid(std::vector<GridCol> cols, GridOpts opts = {}) -> ComponentBuilder;
+//   row({cpu, mem, net, disk})        // side by side; stacks by itself
+//   grid(cells, {.min = 24, .max_cols = 2})   // capped 2-across flow
+```
 
-//   grid({
-//       col(cpu).md(6).xl(3),
-//       col(mem).md(6).xl(3),
-//       col(sidebar).xxl(Columns{42}),
-//       col(debug).span(0).lg(12),      // hidden until lg
-//   })
+### sidebar() / SidebarOpts
+
+```cpp
+struct SidebarOpts {
+    int  width       = 32;    // the rail's fixed width (columns)
+    int  stack_below = 0;     // stack when slot < this; 0 = auto (2×width)
+    int  gap         = 1;     // blank columns between rail and main
+    bool right       = false; // rail on the right instead of the left
+};
+
+// Fixed-width rail beside a main pane that takes the rest; the pair stacks
+// vertically (reading order preserved) when the slot is too narrow. The
+// default threshold (2×width) keeps them side-by-side only while the main
+// pane gets at least as much as the rail.
+auto sidebar(Element rail, Element main, SidebarOpts opts = {}) -> ComponentBuilder;
+auto sidebar(Element rail, Element main, int width)             -> ComponentBuilder;
+
+//   sidebar(row({cpu, mem, net, disk}), proc_table, 42)
+//   // wide: 42-cell rail + table · medium: stats flow over the table
+//   // narrow: one column — a whole dashboard in two lines.
 ```
 
 ### measure_element()

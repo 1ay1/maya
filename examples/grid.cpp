@@ -1,24 +1,23 @@
-// grid.cpp — a rockbottom-shaped system dashboard in ONE grid declaration
+// grid.cpp — a rockbottom-shaped system dashboard in two lines
 //
-// The Bootstrap idea, for terminal cells: every column states its width PER
-// BREAKPOINT and the grid re-solves the packing at every resize. This file
-// recreates the layout skeleton of rockbottom (github.com/1ay1/rockbottom) —
-// which originally needed a hand-rolled three-tier switch — as:
+// The whole responsive story:
 //
-//   grid({
-//       col(stats).xxl(Columns{42}),   // fixed 42-cell sidebar on ultrawide
-//       col(table),                    // ...the process table takes the rest
-//   })
+//   auto stats = row({cpu, mem, net, disk});      // side by side, share width
+//   auto body  = sidebar(stats, table, 42);       // 42-col rail + main
 //
-// where `stats` is itself a grid whose cells go 2-across at md and restack
-// automatically inside the narrow xxl sidebar — because maya breakpoints key
-// on the SLOT width, not the screen width. Resize the terminal:
+// row() puts cells side by side sharing the width equally — and wraps, then
+// stacks, by itself as the slot narrows (grid() is the same engine when you
+// want to tune the cell width: grid(cells, 26)). col() stacks cells, each
+// stretched to the full width. sidebar() puts a fixed rail beside the main
+// pane and stacks the pair when the terminal is too narrow. Because every
+// piece re-solves from the width of the slot it SITS IN, the stats restack
+// 1-across by themselves inside the 42-cell rail. Resize the terminal:
 //
-//   < 90 cols   everything stacks in one column
-//   ≥ 90 cols   stat panels pair up 2×2 above the full-width table
-//   ≥ 200 cols  stats become a fixed-width sidebar, table fills the rest
+//   wide      stats rail (1-across) beside a big process table
+//   medium    stats flow 2-, 3-across over a full-width table
+//   narrow    everything in one column
 //
-// Zero width arithmetic, zero tier switches. q quits.
+// Zero width arithmetic, zero tier switches, zero breakpoints. q quits.
 
 #include <maya/maya.hpp>
 
@@ -34,7 +33,7 @@ const Gradient kHeat{{Color::hex(0x2CB67D), Color::hex(0xF1C40F),
                       Color::hex(0xE74C3C)}};
 
 // A labelled value bar colored by load — the bar re-solves to the REAL cell
-// width via adapt(), so it is correct inside any grid cell at any tier.
+// width via adapt(), so it is correct inside any grid cell at any width.
 Element meter(std::string label, float frac) {
     return adapt([label = std::move(label), frac](int w) -> Element {
         const int bar_w = std::max(4, w - 12);
@@ -99,20 +98,10 @@ struct GridDemo {
     }
 
     static Element view(const Model&) {
-        // The stats block: 2-across at md, restacks by itself inside the
-        // 42-cell xxl sidebar (its SLOT drops below the md threshold there).
-        auto stats = grid({
-            col(cpu()).md(6),
-            col(mem()).md(6),
-            col(net()).md(6),
-            col(disk()).md(6),
-        });
-
-        // The whole dashboard: one declaration, three shapes.
-        auto body = grid({
-            col(stats).xxl(Columns{42}),
-            col(table()),
-        });
+        // Two lines, three layouts. The stats row restacks by itself
+        // inside the 42-cell rail because it keys on its SLOT width.
+        auto stats = row({cpu(), mem(), net(), disk()});
+        auto body  = sidebar(stats, table(), 42);
 
         return v(
             h(gradient("griddemo", Color::hex(0xFF5F6D), Color::hex(0xFFC371),

@@ -608,17 +608,28 @@ content. All are in `maya::dsl`; `solve_columns` lives in
 `<maya/layout/columns.hpp>`.
 
 ```cpp
-// THE GRID — Bootstrap for terminal cells. One declaration, every width:
-// mobile-first spans per breakpoint (xs<60≤sm<90≤md<120≤lg<160≤xl<200≤xxl,
-// keyed on the SLOT width so nested grids collapse independently).
-grid({
-    col(cpu).md(6).xl(3),            // full width → half at md → quarter at xl
-    col(mem).md(6).xl(3),
-    col(sidebar).xxl(Columns{42}),   // FIXED 42 cells at xxl (TUI col-auto)
-    col(debug).span(0).lg(12),       // hidden until lg
+// ROW / COL — the GTK box model with responsiveness built in. row() puts
+// cells side by side sharing the width equally and EXACTLY; it wraps, then
+// stacks, BY ITSELF as the slot narrows (4-across → 2×2 → one column).
+// col() stacks cells, each stretched to the full width.
+col({
+    row({cpu, mem, net, disk}),   // stat cards — responsive automatically
+    proc_table,                   // full width below
 })
-// Full rows solve widths EXACTLY (largest remainder — no ragged edge);
-// fixed columns take real width off the top, spans share the rest.
+row(cells, 30)                    // "each cell wants ≥30 columns"
+
+// GRID — row's engine with the knobs exposed.
+grid(cells, {.min = 24, .max_cols = 2})  // capped 2-across flow
+
+// SIDEBAR — a fixed rail beside a main pane that takes the rest; the pair
+// stacks vertically the moment the slot is too narrow (default: below
+// 2×width, i.e. side-by-side only while main ≥ the rail).
+sidebar(stats, proc_table, 42)
+sidebar(stats, proc_table, {.width = 42, .right = true})
+
+// A whole three-shape dashboard in two lines:
+sidebar(row({cpu, mem, net, disk}), proc_table, 42)
+// wide: rail + table · medium: stats flow over the table · narrow: 1 column
 
 // Ask a fragment its real rendered size (same engine the renderer uses).
 Size measure_element(const Element& el, int max_w, int max_h = 1 << 20);

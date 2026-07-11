@@ -1,258 +1,115 @@
 #pragma once
-// maya::grid — the Bootstrap grid, re-thought for terminal cells.
+// maya::grid — responsive layout with ONE number.
 //
-// THE PROBLEM: a dashboard that must be correct at EVERY terminal size ends
-// up as a hand-rolled tier switch — `if (w >= 200) wide(); else if (w >= 84)
-// classic(); else narrow();` — with three separately-maintained layouts that
-// drift apart the moment one is edited. Bootstrap solved this for the web 15
-// years ago with ONE declaration: a 12-unit grid where each cell states its
-// span PER BREAKPOINT and the framework re-solves the packing at every width.
+//   grid({cpu, mem, net, disk}, 26);
 //
-// This is that, for cells instead of pixels:
+// "Each cell wants about 26 columns." That is the entire API. maya fits as
+// many cells per row as the REAL slot width allows, wraps the rest into new
+// rows, and stacks everything in one column on a narrow terminal — re-solved
+// live on every resize. No breakpoints to memorize, no span arithmetic, no
+// per-tier declarations that drift apart: the cell count per row falls out
+// of the width you already know (how wide does one cell need to be to look
+// right?).
 //
-//   grid({
-//       col(cpu_panel),                    // span 12 (full width) by default
-//       col(mem_panel).md(6).xl(3),        // half at md, quarter at xl
-//       col(net_panel).md(6).xl(3),
-//       col(sidebar).xl(Columns{40}),      // FIXED 40 cells at xl (TUI col-auto)
-//       col(debug).span(0).lg(12),         // hidden until lg
-//   })
+//   sidebar(stats, table, 42);
 //
-// Mobile-first, like Bootstrap: a value set at a tier applies to every tier
-// ABOVE it until overridden. Nothing set → span 12 → everything stacks in one
-// column on a narrow terminal, automatically. The grid re-solves from the
-// REAL width of the slot it sits in (adapt() under the hood), so a grid in a
-// sidebar collapses independently of one in the main pane.
+// The other layout every dashboard needs: a fixed-width rail next to a main
+// pane that takes the rest — and the pair stacks vertically the moment the
+// terminal is too narrow for both. Again one number: the rail's width.
 //
-// Semantics:
-//   * `columns` grid units per row (default 12). A cell's span is its
-//     fraction of the row: span 6 of 12 = half the width.
-//   * Cells pack into rows greedily, in order; a cell that would overflow
-//     the row's units starts a new row.
-//   * span 0 (or Columns{0}) = hidden at that tier and above (until reset).
-//   * Columns{n} = a FIXED n-cell column (sidebars, gutters, rails). Fixed
-//     cells consume no grid units — the row's span cells share what remains.
-//   * Widths solve EXACTLY: when a row's spans sum to `columns`, the row
-//     fills its slot to the last cell (largest-remainder distribution — no
-//     ragged right edge from integer division). Spans that sum short leave
-//     Bootstrap-style trailing space.
-//   * .order(n): cells sort by order (stable) before packing — put the
-//     process table first on a phone, third on an ultrawide.
-//   * GridOpts{.grow_rows = true}: rows share surplus height equally when
-//     the grid sits in a definite-height slot (full-screen dashboards).
+//   col({ row({cpu, mem, net, disk}), table });
 //
-// Breakpoints are SLOT-width cells, tuned for terminals (defaults):
-//   xs < 60 ≤ sm < 90 ≤ md < 120 ≤ lg < 160 ≤ xl < 200 ≤ xxl
-// Override per grid via GridOpts{.breaks = Breaks{...}}.
+// And the GTK mental model for whole pages: row() puts cells side by side
+// sharing the width equally — and wraps, then stacks, by itself when the
+// slot narrows. col() stacks cells, each stretched to the full width.
+// Everything fills automatically; nothing needs a hand-computed width.
+//
+// Compose them and you have a full three-shape dashboard in two lines:
+//
+//   sidebar(grid({cpu, mem, net, disk}, 24), table, {.width = 42});
+//
+//   * ultrawide  — 42-cell rail (stats stacked 1-across inside it, because
+//                  the grid re-solves from its SLOT width, not the screen),
+//                  table fills the rest
+//   * medium    — stats flow 2-, 3-, 4-across over a full-width table
+//   * narrow    — everything in one column
+//
+// Semantics worth knowing:
+//   * Cells in a row share the width EXACTLY (largest-remainder split — no
+//     ragged right edge from integer division).
+//   * A short last row keeps the same cell width as the full rows above it,
+//     so columns line up down the whole grid.
+//   * grid re-solves from the width of the slot it SITS IN (adapt() under
+//     the hood) — a grid inside a sidebar collapses independently of one in
+//     the main pane.
+//   * Anything fancier (a cell that spans two columns, tier-specific
+//     hiding) is what adapt()/responsive() are for. The grid stays simple.
 
 #include "builder.hpp"
 
 #include <algorithm>
-#include <cstdint>
 #include <utility>
 #include <vector>
 
 namespace maya {
 
 // ============================================================================
-// Breakpoints
-// ============================================================================
-
-enum class Bk : std::uint8_t { XS = 0, SM, MD, LG, XL, XXL };
-
-struct Breaks {
-    int sm = 60, md = 90, lg = 120, xl = 160, xxl = 200;
-
-    [[nodiscard]] constexpr Bk tier(int w) const noexcept {
-        if (w >= xxl) return Bk::XXL;
-        if (w >= xl)  return Bk::XL;
-        if (w >= lg)  return Bk::LG;
-        if (w >= md)  return Bk::MD;
-        if (w >= sm)  return Bk::SM;
-        return Bk::XS;
-    }
-};
-
-// ============================================================================
-// GridCol — one cell of the grid, with per-breakpoint width rules
-// ============================================================================
-
-struct GridCol {
-    static constexpr int kUnset = -1;
-
-    Element el;
-    int span_[6]  = {kUnset, kUnset, kUnset, kUnset, kUnset, kUnset};
-    int fixed_[6] = {kUnset, kUnset, kUnset, kUnset, kUnset, kUnset};
-    int order_ = 0;
-
-    explicit GridCol(Element e) : el(std::move(e)) {}
-
-    // -- xs-and-up (mobile-first base) --------------------------------------
-    GridCol& span(int units)   { return set_(Bk::XS, units); }
-    GridCol& span(Columns c)   { return set_(Bk::XS, c); }
-
-    // -- per-tier overrides (apply to the tier and everything above) --------
-    GridCol& xs(int u)  { return set_(Bk::XS, u); }
-    GridCol& sm(int u)  { return set_(Bk::SM, u); }
-    GridCol& md(int u)  { return set_(Bk::MD, u); }
-    GridCol& lg(int u)  { return set_(Bk::LG, u); }
-    GridCol& xl(int u)  { return set_(Bk::XL, u); }
-    GridCol& xxl(int u) { return set_(Bk::XXL, u); }
-
-    GridCol& xs(Columns c)  { return set_(Bk::XS, c); }
-    GridCol& sm(Columns c)  { return set_(Bk::SM, c); }
-    GridCol& md(Columns c)  { return set_(Bk::MD, c); }
-    GridCol& lg(Columns c)  { return set_(Bk::LG, c); }
-    GridCol& xl(Columns c)  { return set_(Bk::XL, c); }
-    GridCol& xxl(Columns c) { return set_(Bk::XXL, c); }
-
-    /// Packing order (stable sort; lower first). Default 0 = declaration order.
-    GridCol& order(int n) { order_ = n; return *this; }
-
-    // -- resolution ----------------------------------------------------------
-    struct Resolved {
-        bool hidden   = false;
-        bool is_fixed = false;   ///< amount is cells, not grid units
-        int  amount   = 0;
-    };
-
-    /// Resolve this cell's rule at tier `t`: the nearest value set at or
-    /// below `t` wins (mobile-first inheritance). Nothing set → full width.
-    [[nodiscard]] Resolved at(Bk t, int default_span) const noexcept {
-        for (int i = static_cast<int>(t); i >= 0; --i) {
-            if (fixed_[i] != kUnset)
-                return {fixed_[i] <= 0, true, fixed_[i]};
-            if (span_[i] != kUnset)
-                return {span_[i] <= 0, false, span_[i]};
-        }
-        return {false, false, default_span};
-    }
-
-private:
-    GridCol& set_(Bk t, int units) {
-        span_[static_cast<int>(t)]  = units;
-        fixed_[static_cast<int>(t)] = kUnset;
-        return *this;
-    }
-    GridCol& set_(Bk t, Columns c) {
-        fixed_[static_cast<int>(t)] = c.value;
-        span_[static_cast<int>(t)]  = kUnset;
-        return *this;
-    }
-};
-
-/// Bootstrap-flavored factory: col(element).md(6).xl(3)
-[[nodiscard]] inline GridCol col(Element el) { return GridCol{std::move(el)}; }
-
-// ============================================================================
 // grid()
 // ============================================================================
 
 struct GridOpts {
-    int    columns   = 12;      ///< grid units per row
-    int    gap_x     = 1;       ///< cells between columns
-    int    gap_y     = 0;       ///< rows between rows
-    bool   grow_rows = false;   ///< rows share surplus height (definite slot)
-    Breaks breaks{};            ///< tier thresholds (slot-width cells)
+    int  min       = 24;     ///< a cell's comfortable minimum width (columns)
+    int  max_cols  = 0;      ///< cap cells-per-row; 0 = as many as fit
+    int  gap_x     = 1;      ///< blank columns between cells
+    int  gap_y     = 0;      ///< blank rows between rows
+    bool grow_rows = false;  ///< rows share surplus height (definite slot)
 };
 
-[[nodiscard]] inline auto grid(std::vector<GridCol> cols, GridOpts opts = {})
+/// Auto-flow grid: as many `min`-wide cells per row as fit, wrap the rest,
+/// one column when narrow. `grid(cells, 26)` is the whole call.
+[[nodiscard]] inline auto grid(std::vector<Element> cells, GridOpts opts = {})
     -> ComponentBuilder
 {
-    return detail::adapt([cols = std::move(cols), opts](int w) -> Element {
-        const Bk t = opts.breaks.tier(w);
-        const int units_per_row = opts.columns > 0 ? opts.columns : 12;
+    return detail::adapt([cells = std::move(cells), opts](int w) -> Element {
+        const int n = static_cast<int>(cells.size());
+        if (n == 0) return Element{ElementList{}};
 
-        // 1. Resolve every cell at this tier; drop hidden ones.
-        struct Item {
-            const GridCol* c;
-            bool fixed;
-            int  amount;
-            int  order;
-        };
-        std::vector<Item> items;
-        items.reserve(cols.size());
-        for (const auto& c : cols) {
-            auto r = c.at(t, units_per_row);
-            if (r.hidden) continue;
-            int amt = r.amount;
-            if (!r.is_fixed && amt > units_per_row) amt = units_per_row;
-            items.push_back({&c, r.is_fixed, amt, c.order_});
-        }
-        if (items.empty()) return Element{ElementList{}};
+        const int min   = std::max(1, opts.min);
+        const int gap_x = std::max(0, opts.gap_x);
 
-        // 2. Order, then pack greedily into rows by grid units. Fixed cells
-        //    consume no units (they take real width off the top instead).
-        std::stable_sort(items.begin(), items.end(),
-                         [](const Item& a, const Item& b) {
-                             return a.order < b.order;
-                         });
-        struct Row {
-            std::vector<const Item*> cells;
-            int units = 0;
-        };
-        std::vector<Row> rows;
-        rows.emplace_back();
-        for (const auto& it : items) {
-            const int u = it.fixed ? 0 : it.amount;
-            Row& cur = rows.back();
-            if (!cur.cells.empty() && cur.units + u > units_per_row)
-                rows.emplace_back();
-            rows.back().cells.push_back(&it);
-            rows.back().units += u;
-        }
+        // How many min-wide cells (plus gaps between them) fit in w?
+        int cols = (w + gap_x) / (min + gap_x);
+        cols = std::clamp(cols, 1, n);
+        if (opts.max_cols > 0) cols = std::min(cols, opts.max_cols);
 
-        // 3. Solve each row's widths exactly and build it.
+        // Split the row width exactly: base + largest-remainder spread, so
+        // the last cell ends flush with the slot edge.
+        const int total = std::max(cols, w - gap_x * (cols - 1));
+        const int base  = total / cols;
+        const int rem   = total % cols;
+        std::vector<int> cw(static_cast<std::size_t>(cols));
+        for (int i = 0; i < cols; ++i)
+            cw[static_cast<std::size_t>(i)] = base + (i < rem ? 1 : 0);
+
+        // Wrap into rows. A short last row keeps the same cell widths so
+        // columns line up down the grid.
         std::vector<Element> row_els;
-        row_els.reserve(rows.size());
-        for (const Row& row : rows) {
-            const int n = static_cast<int>(row.cells.size());
-            const int gaps = opts.gap_x * (n > 1 ? n - 1 : 0);
-            int fixed_total = 0;
-            for (const Item* it : row.cells)
-                if (it->fixed) fixed_total += it->amount;
-            const int avail = std::max(0, w - gaps - fixed_total);
-
-            // floor(span/columns * avail) per span cell, then hand the
-            // integer-division remainder out one cell at a time left→right
-            // when the row is FULL (units == columns) so it fills exactly.
-            std::vector<int> cw(static_cast<std::size_t>(n), 0);
-            int span_used = 0;
-            for (int i = 0; i < n; ++i) {
-                const Item* it = row.cells[static_cast<std::size_t>(i)];
-                if (it->fixed) {
-                    cw[static_cast<std::size_t>(i)] = it->amount;
-                } else {
-                    int width_i = static_cast<int>(
-                        static_cast<long long>(it->amount) * avail
-                        / units_per_row);
-                    if (width_i < 1 && avail > 0) width_i = 1;
-                    cw[static_cast<std::size_t>(i)] = width_i;
-                    span_used += width_i;
-                }
-            }
-            if (row.units >= units_per_row) {
-                int leftover = avail - span_used;
-                for (int i = 0; i < n && leftover > 0; ++i) {
-                    if (row.cells[static_cast<std::size_t>(i)]->fixed) continue;
-                    cw[static_cast<std::size_t>(i)] += 1;
-                    --leftover;
-                }
-            }
-
+        row_els.reserve(static_cast<std::size_t>((n + cols - 1) / cols));
+        for (int start = 0; start < n; start += cols) {
+            const int count = std::min(cols, n - start);
             std::vector<Element> cell_els;
-            cell_els.reserve(static_cast<std::size_t>(n));
-            for (int i = 0; i < n; ++i) {
+            cell_els.reserve(static_cast<std::size_t>(count));
+            for (int i = 0; i < count; ++i) {
                 // A Column-direction box with a fixed width: the default
-                // cross-axis Stretch hands the cell content the FULL cell
-                // width, and the row's own Stretch hands it the row height.
+                // cross-axis Stretch hands the content the FULL cell width,
+                // and the row's own Stretch hands it the row height.
                 auto cb = detail::vstack();
                 cb.width(Dimension::fixed(cw[static_cast<std::size_t>(i)]));
                 cell_els.push_back(
-                    cb(Element{row.cells[static_cast<std::size_t>(i)]->c->el}));
+                    cb(Element{cells[static_cast<std::size_t>(start + i)]}));
             }
             auto rb = detail::hstack();
-            if (opts.gap_x > 0) rb.gap(opts.gap_x);
+            if (gap_x > 0) rb.gap(gap_x);
             if (opts.grow_rows) rb.grow(1.0f);
             row_els.push_back(rb(std::move(cell_els)));
         }
@@ -262,6 +119,100 @@ struct GridOpts {
         if (opts.gap_y > 0) vb.gap(opts.gap_y);
         return vb(std::move(row_els));
     });
+}
+
+/// Sugar: `grid(cells, 26)` — "each cell wants about 26 columns".
+[[nodiscard]] inline auto grid(std::vector<Element> cells, int min_width)
+    -> ComponentBuilder
+{
+    return grid(std::move(cells), GridOpts{.min = min_width});
+}
+
+// ============================================================================
+// sidebar()
+// ============================================================================
+
+struct SidebarOpts {
+    int  width       = 32;    ///< the rail's fixed width (columns)
+    int  stack_below = 0;     ///< stack when slot < this; 0 = auto (2×width:
+                              ///< side-by-side only while main ≥ the rail)
+    int  gap         = 1;     ///< blank columns between rail and main
+    bool right       = false; ///< rail on the right instead of the left
+};
+
+/// Fixed-width rail beside a main pane that takes the rest; the pair stacks
+/// vertically (reading order preserved) when the slot is too narrow.
+[[nodiscard]] inline auto sidebar(Element rail, Element main,
+                                  SidebarOpts opts = {}) -> ComponentBuilder
+{
+    return detail::adapt(
+        [rail = std::move(rail), main = std::move(main), opts](int w) -> Element {
+            const int rail_w = std::max(1, opts.width);
+            const int threshold =
+                opts.stack_below > 0 ? opts.stack_below : rail_w * 2;
+
+            if (w >= threshold) {
+                auto rb = detail::vstack();
+                rb.width(Dimension::fixed(rail_w));
+                auto mb = detail::vstack();
+                mb.grow(1.0f);
+                auto rowb = detail::hstack();
+                if (opts.gap > 0) rowb.gap(opts.gap);
+                std::vector<Element> kids;
+                if (opts.right) {
+                    kids.push_back(mb(Element{main}));
+                    kids.push_back(rb(Element{rail}));
+                } else {
+                    kids.push_back(rb(Element{rail}));
+                    kids.push_back(mb(Element{main}));
+                }
+                return rowb(std::move(kids));
+            }
+
+            // Too narrow: stack, preserving reading order (left → top).
+            auto mainb = detail::vstack();
+            mainb.grow(1.0f);
+            auto colb = detail::vstack();
+            std::vector<Element> kids;
+            if (opts.right) {
+                kids.push_back(mainb(Element{main}));
+                kids.push_back(Element{rail});
+            } else {
+                kids.push_back(Element{rail});
+                kids.push_back(mainb(Element{main}));
+            }
+            return colb(std::move(kids));
+        });
+}
+
+/// Sugar: `sidebar(rail, main, 42)` — "42-column rail, main takes the rest".
+[[nodiscard]] inline auto sidebar(Element rail, Element main, int width)
+    -> ComponentBuilder
+{
+    return sidebar(std::move(rail), std::move(main), SidebarOpts{.width = width});
+}
+
+// ============================================================================
+// row() / col() — boxes that keep themselves correct
+// ============================================================================
+
+/// Cells side by side, sharing the width equally and exactly — wrapping,
+/// then stacking, by itself as the slot narrows. Same engine as grid();
+/// the name reads better when composing pages: col({ row({a, b}), table }).
+[[nodiscard]] inline auto row(std::vector<Element> cells, int min_width = 24)
+    -> ComponentBuilder
+{
+    return grid(std::move(cells), GridOpts{.min = min_width});
+}
+
+/// Cells stacked top to bottom, each stretched to the full width (flex
+/// cross-stretch — the GTK "fill"). Pipe `| grow(1)` onto the child that
+/// should take the leftover height.
+[[nodiscard]] inline Element col(std::vector<Element> cells, int gap = 0)
+{
+    auto vb = detail::vstack();
+    if (gap > 0) vb.gap(gap);
+    return vb(std::move(cells));
 }
 
 } // namespace maya

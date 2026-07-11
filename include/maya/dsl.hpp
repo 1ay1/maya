@@ -673,13 +673,13 @@ using maya::detail::place;
 using maya::Bp;
 using maya::detail::responsive;
 
-// The grid — Bootstrap-style tiered layout (element/grid.hpp)
+// The grid — responsive layout with one number (element/grid.hpp)
 using maya::grid;
-using maya::col;
-using maya::GridCol;
 using maya::GridOpts;
-using maya::Bk;
-using maya::Breaks;
+using maya::sidebar;
+using maya::SidebarOpts;
+using maya::row;
+using maya::col;
 
 // ── User-defined literal for text nodes ─────────────────────────────────────
 //

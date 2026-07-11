@@ -15,6 +15,7 @@
 // as implementation details and for use inside dyn() escape hatches.
 
 #include "element.hpp"
+#include "../layout/columns.hpp"   // kKeepAlways (shared with solve_columns)
 
 #include <concepts>
 #include <cstdint>
@@ -430,6 +431,142 @@ namespace detail {
     b.grow(1.0f);
     return b;
 }
+
+} // namespace detail
+
+// ============================================================================
+// measure_element() - Measure an Element tree's natural size
+// ============================================================================
+// Runs a real layout pass over `elem` (the same engine the renderer uses)
+// and returns the size it would occupy given the available bounds. THIS is
+// the primitive that makes hand-written width arithmetic obsolete: never
+// estimate "2 + host.size()" cells for a styled fragment again — build the
+// fragment and ask. Bytes-vs-columns bugs, forgotten gaps, and drifting
+// estimates all die here, because the measurement and the eventual paint
+// share one source of truth.
+//
+// Cost: one layout pass over the fragment — trivial for the small pieces
+// (header segments, table cells) this is meant for. Fine to call per frame.
+// Defined in renderer.cpp.
+
+[[nodiscard]] Size measure_element(const Element& elem,
+                                   int max_width,
+                                   int max_height = 1 << 20);
+
+namespace detail {
+
+// ============================================================================
+// adapt() - A component whose BUILD sees its real slot width
+// ============================================================================
+// The width-responsive counterpart to fill(). fill() is for content that
+// SIZES ITSELF to the slot (graphs, canvases); adapt() is for content whose
+// STRUCTURE depends on the slot — drop a column below 60 cells, collapse
+// labels, switch layouts. The callback receives the real allocated width at
+// paint time and returns the tree for exactly that width; natural height is
+// auto-measured by the framework from what the callback returns (measure
+// literally runs the callback, so measure and paint can never disagree).
+//
+//   adapt([=](int w) {
+//       return w >= 60 ? wide_layout() : narrow_layout();
+//   })
+//
+// Prefer fit_row() for the most common adapt() use case (drop trailing
+// items when a row gets tight) — it measures for you.
+[[nodiscard]] inline auto adapt(std::function<Element(int w)> render_fn)
+    -> ComponentBuilder
+{
+    return ComponentBuilder{
+        [fn = std::move(render_fn)](int w, int) -> Element { return fn(w); }};
+}
+
+} // namespace detail
+
+// ============================================================================
+// fit_row() - A row that DROPS items when they don't fit
+// ============================================================================
+// The declarative kill for the "responsive header" bug class. You list the
+// row's items once, tag the optional ones with a `keep` rank, and the row
+// re-solves itself at every width: items are dropped lowest-`keep` first
+// (ties drop the rightmost) until what remains fits. Widths come from
+// measure_element() over the REAL styled fragments — no hand-summed cell
+// estimates to drift out of sync with the content.
+
+struct FitItem {
+    Element el;
+    /// Importance: kKeepAlways (default) never drops; lower ranks drop first.
+    int keep = kKeepAlways;
+};
+
+namespace detail {
+
+// Usage — a status header that sheds detail as the terminal narrows:
+//
+//   fit_row({
+//       {logo},                       // essential (kKeepAlways)
+//       {hostname_chip, 5},
+//       {kernel_chip,   4},
+//       {Element{space}},             // grow spacer: measures 0, always kept
+//       {battery_chip,  3},
+//       {uptime_chip,   2},
+//       {proc_counts,   1},           // first to go
+//   })
+//
+// Notes:
+//   * An item is atomic — group an icon+label+value cluster into one
+//     Element (h(...)) so it appears/disappears as a unit.
+//   * `gap` inserts uniform spacing between KEPT items only; alternatively
+//     bake leading spaces/separators into each item so they vanish with it.
+//   * Grow spacers (dsl::space) measure 0 wide and still expand at layout,
+//     so left/right clusters keep working.
+//   * If even the kKeepAlways items overflow, they are all emitted and the
+//     row overflows (clip/shrink downstream) — fit_row never drops an
+//     essential.
+[[nodiscard]] inline auto fit_row(std::vector<FitItem> items, int gap = 0)
+    -> ComponentBuilder
+{
+    return adapt([items = std::move(items), gap](int w) -> Element {
+        const std::size_t n = items.size();
+        std::vector<char> kept(n, 1);
+        std::vector<int> nat(n, 0);
+        for (std::size_t i = 0; i < n; ++i)
+            nat[i] = measure_element(items[i].el, /*max_width=*/1 << 14)
+                         .width.value;
+
+        auto total = [&]() -> long long {
+            long long t = 0;
+            int c = 0;
+            for (std::size_t i = 0; i < n; ++i)
+                if (kept[i]) { t += nat[i]; ++c; }
+            if (c > 1) t += static_cast<long long>(gap) * (c - 1);
+            return t;
+        };
+        while (total() > w) {
+            int best = -1;
+            int best_keep = kKeepAlways;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (!kept[i] || items[i].keep >= kKeepAlways) continue;
+                if (items[i].keep <= best_keep) {
+                    best = static_cast<int>(i);
+                    best_keep = items[i].keep;
+                }
+            }
+            if (best < 0) break;   // only essentials left
+            kept[static_cast<std::size_t>(best)] = 0;
+        }
+
+        std::vector<Element> out;
+        out.reserve(n);
+        for (std::size_t i = 0; i < n; ++i)
+            if (kept[i]) out.push_back(items[i].el);
+        auto b = hstack();
+        if (gap > 0) b.gap(gap);
+        return b(std::move(out));
+    });
+}
+
+} // namespace detail
+
+namespace detail {
 
 // ============================================================================
 // nothing() - Zero-height placeholder (transparent empty fragment)

@@ -1699,6 +1699,31 @@ void paint_element(
 
 } // namespace render_detail
 
+Size measure_element(const Element& elem, int max_width, int max_height)
+{
+    // A real layout pass over the fragment — the exact engine the renderer
+    // runs, so the answer can't disagree with the eventual paint. The root
+    // keeps its own width/height styles (usually auto): an auto-width
+    // container shrink-wraps to its widest line (yoga.cpp §4), an auto-width
+    // text leaf reports its natural columns, so the result is the fragment's
+    // NATURAL size within the given bounds.
+    if (max_width < 0) max_width = 0;
+    if (max_height < 0) max_height = 0;
+    thread_local std::vector<layout::LayoutNode> nodes;
+    thread_local bool in_use = false;   // re-entrant (component measure can nest)
+    std::vector<layout::LayoutNode> local;
+    const bool was_in_use = in_use;
+    auto& buf = was_in_use ? local : nodes;
+    buf.clear();
+    in_use = true;
+    std::size_t root = render_detail::build_layout_tree(elem, buf, /*theme=*/{});
+    layout::compute(buf, root, max_width, max_height);
+    Size out{Columns{buf[root].computed.size.width.value},
+             Rows{buf[root].computed.size.height.value}};
+    if (!was_in_use) in_use = false;
+    return out;
+}
+
 void render_tree(
     const Element& root,
     Canvas& canvas,

@@ -683,7 +683,10 @@ none of them counting a byte.
 The stock widget library rides the same toolkit — you get measured
 responsiveness without writing any of this yourself. `Table` solves one
 `solve_columns` plan for its header, separator, and rows (columns shed
-lowest-`keep` first when narrow, weighted columns flex) and windows its body
+lowest-`keep` first when narrow, weighted columns flex `min_width →
+max_width`), truncates rich cells span-exactly with `…`, rebuilds
+`TableCell::dyn` cells at each column's SOLVED width (an inline meter
+breathes with the plan), and windows its body
 around the cursor when the slot is SHORT — `tbl.build() | grow(1)` and the
 row count falls out of the layout. `KeyHelp`, `Tabs`, and `Breadcrumb` pick
 their richest arrangement that actually fits (two columns → one; label row →

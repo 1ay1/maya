@@ -1477,7 +1477,7 @@ All widgets live in `maya::widget`. Full documentation in [13-widgets.md](13-wid
 
 | Widget | Header | Description |
 |--------|--------|-------------|
-| `Table` | `widget/table.hpp` | Data table: selection, height-aware windowing + scrollbar, sort indicators, flexible + shedding columns, hit rects |
+| `Table` | `widget/table.hpp` | Data table: rich cells (spans + width-adaptive builders), selection, height-aware windowing + scrollbar, host-owned scroll, sort indicators, flexible + shedding columns, hit rects |
 | `Tree` | `widget/tree.hpp` | Expandable tree view |
 | `List` | `widget/list.hpp` | Selectable item list |
 | `KeyHelp` | `widget/key_help.hpp` | Keyboard shortcut legend; 2-col ↔ 1-col by real measurement (pick) |

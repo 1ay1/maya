@@ -2,15 +2,20 @@
 //
 // Everything a real proc list needs, all from ONE widget:
 //
-//   • selection      ▎ cursor bar + bold row, ↑↓/j/k, PgUp/PgDn, g/G
+//   • selection      ▎ cursor bar + row strip (selected_bg), ↑↓/j/k,
+//                    PgUp/PgDn, g/G
 //   • windowing      the body shows however many rows FIT the pane —
 //                    tbl.build() | grow(1) and the count falls out of
 //                    the layout; a ▐ scrollbar gutter tracks the window
 //   • sorting        s cycles the sort column, r flips direction — the
 //                    host sorts its data, the table shows ▾/▴ + accent
 //   • responsive     ONE solve_columns plan feeds header + rows: NAME
-//                    flexes (weight=1, truncates with …), low-keep
-//                    columns shed whole as the terminal narrows
+//                    flexes (weight, truncates with …), the meter
+//                    breathes min→max, low-keep columns shed whole
+//   • rich cells     NAME = bright name + dim argv trail in one cell
+//                    (spans clip with the truncation); the CPU bar is
+//                    a TableCell::dyn painted at the SOLVED width; the
+//                    hottest row wears a » edge marker
 //   • mouse-ready    rows/headers register hit_id rects (row_hit_kind /
 //                    header_hit_kind) — resolve clicks with hit_test
 //
@@ -66,6 +71,30 @@ std::string fmt1(double v) {
     char buf[16];
     std::snprintf(buf, sizeof buf, "%.1f", v);
     return buf;
+}
+
+// green → yellow → red for a 0..1 load fraction.
+Color load_color(double f) {
+    if (f < 0.5) return Color::hex(0x50FA7B);
+    if (f < 0.8) return Color::hex(0xF1FA8C);
+    return Color::hex(0xFF5555);
+}
+
+// An eighth-block bar painted at the column's solved width.
+TableCell meter_cell(double frac) {
+    return TableCell::dyn([frac](int w) {
+        static const char* kEighths[] =
+            {"", "\u258f", "\u258e", "\u258d", "\u258c", "\u258b", "\u258a", "\u2589"};
+        const double cells = frac * w;
+        const int full = static_cast<int>(cells);
+        const int frac8 = static_cast<int>((cells - full) * 8.0);
+        TableCell c;
+        std::string bar;
+        for (int i = 0; i < full && i < w; ++i) bar += "\u2588";
+        if (full < w && frac8 > 0) bar += kEighths[frac8];
+        c.span(bar, Style{}.with_fg(load_color(frac)));
+        return c;
+    });
 }
 
 } // namespace
@@ -142,28 +171,81 @@ struct ProcTableDemo {
     }
 
     static Element view(const Model& m) {
+        // The model's sort key is semantic (pid/name/cpu/mem/thr/state);
+        // the BAR column sits at rendered index 2, so keys ≥ 2 shift by 1.
+        const int sort_render_col = m.sort_col < 2 ? m.sort_col : m.sort_col + 1;
         TableConfig cfg;
         cfg.selectable  = true;
-        cfg.sort_col    = m.sort_col;
+        cfg.sort_col    = sort_render_col;
         cfg.sort_desc   = m.desc;
         cfg.show_status = true;
         cfg.show_border = true;
+        cfg.stripe_rows = false;
         cfg.title       = "PROCESSES";
         cfg.border_color = Color::hex(0x44475A);
+        cfg.header_bg    = Color::hex(0x2A2C3A);   // quiet rail band
+        cfg.selected_bg  = Color::hex(0x33354A);   // cursor row strip
+        cfg.selected_style = Style{};              // ink stays semantic
+        cfg.cursor_bar_color = Color::hex(0xFFB86C);
+        cfg.show_separator = false;
+        cfg.cell_padding = 0;
+        cfg.column_gap   = 1;
 
-        Table tbl({{"PID", 0, ColumnAlign::Right},
-                   {"NAME", 0, ColumnAlign::Left, 0, /*weight=*/1.0f, /*min=*/10},
-                   {"CPU%", 0, ColumnAlign::Right},
-                   {"MEM", 0, ColumnAlign::Right, 2},
-                   {"THR", 0, ColumnAlign::Right, 1},
-                   {"S", 0, ColumnAlign::Left, 3}}, cfg);
-        std::vector<std::vector<std::string>> rows;
+        Table tbl({{.header = "PID", .align = ColumnAlign::Right,
+                    .keep = kKeepAlways},
+                   {.header = "NAME", .keep = kKeepAlways, .weight = 3.0f,
+                    .min_width = 10},
+                   {.header = "", .keep = 1, .weight = 1.0f,
+                    .min_width = 6, .max_width = 14,
+                    .hit_index = kNoHeaderHit},           // the CPU bar
+                   {.header = "CPU%", .align = ColumnAlign::Right,
+                    .keep = kKeepAlways},
+                   {.header = "MEM", .align = ColumnAlign::Right, .keep = 3},
+                   {.header = "THR", .align = ColumnAlign::Right, .keep = 2},
+                   {.header = "S", .keep = 4}}, cfg);
+
+        // Hottest process wears the » marker.
+        int hot = 0;
+        for (size_t i = 0; i < m.procs.size(); ++i)
+            if (m.procs[i].cpu > m.procs[hot].cpu) hot = static_cast<int>(i);
+
+        std::vector<TableRow> rows;
         rows.reserve(m.procs.size());
-        for (const auto& p : m.procs)
-            rows.push_back({std::to_string(p.pid), p.name, fmt1(p.cpu),
-                            std::to_string(p.mem_mb) + "M",
-                            std::to_string(p.threads),
-                            std::string(1, p.state)});
+        for (size_t i = 0; i < m.procs.size(); ++i) {
+            const auto& p = m.procs[i];
+            const double frac = std::min(1.0, p.cpu / 100.0);
+            TableRow row;
+
+            row.cells.emplace_back(std::to_string(p.pid),
+                                   Style{}.with_fg(Color::hex(0x6272A4)));
+            // NAME: bright command + dim argv trail, ONE cell — the spans
+            // clip together with the … truncation.
+            TableCell name;
+            const auto sp = p.name.find(' ');
+            if (sp == std::string::npos) {
+                name.span(p.name, Style{}.with_fg(Color::hex(0xF8F8F2)));
+            } else {
+                name.span(p.name.substr(0, sp),
+                          Style{}.with_fg(Color::hex(0xF8F8F2)));
+                name.span(p.name.substr(sp), Style{}.with_dim());
+            }
+            row.cells.push_back(std::move(name));
+            row.cells.push_back(meter_cell(frac));
+            row.cells.emplace_back(fmt1(p.cpu),
+                                   Style{}.with_fg(load_color(frac)));
+            row.cells.emplace_back(std::to_string(p.mem_mb) + "M");
+            row.cells.emplace_back(std::to_string(p.threads),
+                                   Style{}.with_dim());
+            row.cells.emplace_back(std::string(1, p.state),
+                                   p.state == 'R'
+                                       ? Style{}.with_fg(Color::hex(0x50FA7B))
+                                       : Style{}.with_dim());
+            if (static_cast<int>(i) == hot) {
+                row.edge = "\u00bb";
+                row.edge_color = Color::hex(0xFF5555);
+            }
+            rows.push_back(std::move(row));
+        }
         tbl.set_rows(std::move(rows));
         tbl.set_selected(m.cursor);
 

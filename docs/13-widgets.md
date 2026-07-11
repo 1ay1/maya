@@ -253,17 +253,19 @@ auto ui = volume.build();
 
 The data table: configurable columns, alignment, striping, optional
 bordered card — plus selection, keyboard navigation, height-aware
-windowing, a scrollbar, sort indicators, and flexible columns. The
-rockbottom-style process list is a config away (see
-`examples/proc_table.cpp`).
+windowing, a scrollbar, sort indicators, flexible columns, and RICH
+cells (styled spans, width-adaptive builders). The rockbottom process
+list — tree rails, inline CPU meter, culprit marker and all — is a
+config away (see `examples/proc_table.cpp`).
 
 **Responsive (width).** ONE column plan (`maya::solve_columns`) is solved
 from the width the table is actually given and feeds the header, the
 separator, and every row — they can never drift apart or shear mid-cell.
 Columns shed lowest-`keep` first when narrow (first column never, rest
 rightmost-first by default). A column with `weight > 0` is FLEXIBLE: it
-absorbs surplus width and shrinks toward `min_width` when tight — cells
-truncate with `…`.
+absorbs surplus width (capped by `max_width` if set — an inline meter
+breathes `min_width → max_width`) and shrinks toward `min_width` when
+tight — cells truncate with `…`.
 
 **Responsive (height).** The natural height is all rows — nothing windows
 in an auto-height context. In a definite slot that is SHORTER (or with
@@ -271,18 +273,53 @@ in an auto-height context. In a definite slot that is SHORTER (or with
 gutter appears. `tbl.build() | grow(1)` fills a pane and the row count
 falls out of the layout.
 
-**Interactive.** `selectable = true` adds the cursor (▎ bar + highlight)
-and keyboard nav — `↑↓`/`j`/`k`, `PgUp`/`PgDn`, `Home`/`End`/`g`/`G`,
-`Enter` → `on_activate`. Set `row_hit_kind` / `header_hit_kind` and every
-row / header cell registers a `hit_id(kind, index)` rect at paint — resolve
+**Rich cells.** A row is a `TableRow` of `TableCell`s. A cell is plain
+text, text + `StyledRun` spans (multi-color content inside ONE cell —
+tree rails, a dim argv trail after a bright name), or DYNAMIC
+(`TableCell::dyn([](int w){ … })`) — built at the column's SOLVED width
+every frame (inline meters, sparklines). Truncation clips the spans with
+the text, so a rich cell can never shear the columns to its right. Rows
+carry identity too: `TableRow::style` merges UNDER every span (semantic
+row tints), `edge` + `edge_color` paint a gutter marker (» culprit)
+whenever the cursor bar isn't on that row. Plain
+`add_row({"a", "b"})` / `set_rows(vector<vector<string>>)` still work.
+
+**Interactive.** `selectable = true` adds the cursor (▎ bar +
+`selected_style` + optional `selected_bg` full-band strip) and keyboard
+nav — `↑↓`/`j`/`k`, `PgUp`/`PgDn`, `Home`/`End`/`g`/`G`, `Enter` →
+`on_activate`. Set `row_hit_kind` / `header_hit_kind` and every row /
+header cell registers a `hit_id(kind, index)` rect at paint — resolve
 clicks with `maya::hit_test`, zero coordinate math. `sort_col` +
 `sort_desc` render the `▾`/`▴` arrow and accent on the sorted header (the
 host owns the actual sort).
+
+**Host-driven.** A TEA host that owns its own state machine can take over
+every interactive default: `window_top` pins the scroll window (sticky
+scroll-margins live in YOUR model), `show_header = false` swaps the header
+for host chrome (a kill-confirm strip) without changing the row budget,
+per-column `header_style` paints your own ink tiers, and per-column
+`hit_index` remaps header clicks onto YOUR enum (two columns can share one
+sort key; `kNoHeaderHit` opts a column out).
 
 **Header:** `widget/table.hpp`
 
 ```cpp
 enum class ColumnAlign : uint8_t { Left, Center, Right };
+
+struct TableCell {
+    std::string text;
+    std::vector<StyledRun> runs;                 // spans over text
+    std::function<TableCell(int)> dynamic;       // solved width → cell
+    TableCell& span(std::string_view s, Style st = {});  // chainable
+    static TableCell dyn(F&& fn);                // width-adaptive cell
+};
+
+struct TableRow {
+    std::vector<TableCell> cells;
+    Style style;                  // merges UNDER every span
+    std::string edge;             // gutter marker when not selected (»)
+    std::optional<Color> edge_color;
+};
 
 struct ColumnDef {
     std::string header;
@@ -292,12 +329,16 @@ struct ColumnDef {
                           // kKeepAlways never; 0 = auto
     float weight = 0.0f;  // > 0 = flexible (absorbs surplus, shrinks to…
     int min_width = 0;    // …this floor; cells truncate with …)
+    int max_width = 0;    // growth cap for a weighted column; 0 = ∞
+    std::optional<Style> header_style;  // per-column ink override
+    int hit_index = -1;   // header hit payload; kNoHeaderHit = no click
 };
 
 struct TableConfig {
     Style header_style, row_style, alt_row_style, separator_style;
     bool stripe_rows = true;
     int cell_padding = 1;
+    int column_gap = 0;               // extra cells between columns
     bool show_border = false;
     std::string title;
     Color border_color;
@@ -305,16 +346,24 @@ struct TableConfig {
     bool selectable = false;          // cursor + keyboard nav
     Style selected_style;             // bold by default
     Color cursor_bar_color;           // the ▎ edge bar
+    std::optional<Color> selected_bg; // full-band strip on the cursor row
 
     int sort_col = -1;  bool sort_desc = true;   // ▾/▴ indicator
     Style sort_header_style;
 
+    bool show_header = true;          // off = host renders its own strip
+    bool show_separator = true;       // the ── rule under the header
+    std::optional<Color> header_bg;   // full-band header rail tint
+    std::string empty_text;           // dim placeholder when rows empty
+
     int visible_rows = 0;             // fixed window; 0 = fill the slot
     bool show_scrollbar = true;       // gutter appears when windowed
     bool show_status = false;         // "cursor/total" footer
+    int window_top = -1;              // host scroll top; -1 = auto-center
+    Color scrollbar_thumb_color, scrollbar_track_color;
 
     uint32_t row_hit_kind = 0;        // hit_id(kind, row) per row
-    uint32_t header_hit_kind = 0;     // hit_id(kind, col) per header cell
+    uint32_t header_hit_kind = 0;     // hit_id(kind, col.hit_index) per header
 };
 
 class Table;
@@ -322,10 +371,12 @@ class Table;
 // Table(std::vector<ColumnDef> columns, TableConfig cfg)
 ```
 
-**Key methods:** `add_row(vector<string>)`, `set_rows(...)`, `clear_rows()`,
-`row_count()`, `set_title(sv)`, `set_bordered(bool)`, `set_sort(col, desc)`,
-`selected()`, `set_selected(idx)`, `handle(KeyEvent)`, `on_change(fn)`,
-`on_activate(fn)`, `focus_node()`, `config()`.
+**Key methods:** `add_row(TableRow)` (accepts `{"a", "b"}`),
+`set_rows(vector<TableRow>)`, `set_rows(vector<vector<string>>)`,
+`clear_rows()`, `row_count()`, `set_title(sv)`, `set_bordered(bool)`,
+`set_sort(col, desc)`, `selected()`, `set_selected(idx)`,
+`handle(KeyEvent)`, `on_change(fn)`, `on_activate(fn)`, `focus_node()`,
+`config()`.
 
 ```cpp
 // Classic static card — unchanged:
@@ -333,15 +384,26 @@ Table tbl({{"Name", 20}, {"Status", 10}});
 tbl.add_row({"main.cpp", "modified"});
 auto ui = tbl.build();
 
-// The proc list:
+// The proc list (rich cells + host-owned scroll):
 TableConfig cfg;
-cfg.selectable = true;  cfg.sort_col = 2;  cfg.show_status = true;
+cfg.selectable = true;  cfg.sort_col = 3;  cfg.sort_desc = true;
+cfg.selected_bg = Color::hex(0x33354A);  cfg.window_top = m.scroll_top;
 cfg.row_hit_kind = HK_ProcRow;  cfg.header_hit_kind = HK_SortCol;
-Table procs({{"PID", 0, ColumnAlign::Right},
-             {"NAME", 0, ColumnAlign::Left, 0, /*weight=*/1.0f, 10},
-             {"CPU%", 0, ColumnAlign::Right},
-             {"MEM", 0, ColumnAlign::Right, 2}}, cfg);
-procs.set_rows(rows_sorted_by_host);
+Table procs({{.header = "PID", .align = ColumnAlign::Right},
+             {.header = "NAME", .weight = 3.0f, .min_width = 10,
+              .hit_index = static_cast<int>(SortKey::Name)},
+             {.header = "", .keep = 1, .weight = 1.0f,     // inline meter
+              .min_width = 6, .max_width = 14, .hit_index = kNoHeaderHit},
+             {.header = "CPU", .align = ColumnAlign::Right,
+              .hit_index = static_cast<int>(SortKey::Cpu)}}, cfg);
+TableRow row;
+row.cells.emplace_back("937", pid_style);
+row.cells.push_back(TableCell{}.span("├─ ", rail).span("rb", name)
+                               .span("  ./build/rb", dim_trail));
+row.cells.push_back(TableCell::dyn([f](int w) { return meter(f, w); }));
+row.cells.emplace_back("42.5", load_style);
+row.edge = "»";  row.edge_color = Color::red();   // culprit marker
+procs.add_row(std::move(row));
 procs.set_selected(m.cursor);
 auto pane = procs.build() | grow(1);   // rows = whatever fits
 ```

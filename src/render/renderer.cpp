@@ -1125,10 +1125,13 @@ void paint_element(
 
             if (node.runs.empty()) {
                 uint16_t style_id = intern_bg(node.style);
-                for (const auto& [row, line] :
-                         lines | std::views::enumerate | std::views::take(ah)) {
-                    canvas.write_text(ax, ay + static_cast<int>(row),
-                                      line.text, style_id);
+                // Plain counter instead of std::views::enumerate — libc++
+                // (Android/Termux) doesn't ship enumerate even at C++23.
+                int row = 0;
+                for (const auto& line : lines) {
+                    if (row >= ah) break;
+                    canvas.write_text(ax, ay + row, line.text, style_id);
+                    ++row;
                 }
                 return;
             }
@@ -1230,9 +1233,13 @@ void paint_element(
             {
                 std::size_t run_idx = 0;
 
-                for (const auto& [row, line] :
-                         lines | std::views::enumerate | std::views::take(ah)) {
-                    int y = ay + static_cast<int>(row);
+                // Plain counter instead of std::views::enumerate — libc++
+                // (Android/Termux) doesn't ship enumerate even at C++23.
+                int row = 0;
+                for (const auto& line : lines) {
+                    if (row >= ah) break;
+                    int y = ay + row;
+                    ++row;
                     const std::string& line_text = line.text;
                     const std::size_t content_byte = line.byte_offset;
 

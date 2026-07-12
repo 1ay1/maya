@@ -61,6 +61,25 @@ struct AgentTimelineEvent {
     AgentEventStatus        status          = AgentEventStatus::Pending;
     ToolBodyPreview::Config body;                 // empty by default; rendered under `│` stripe
 
+    // Optional SHARED alias of `body` for the terminal-event fast path.
+    //
+    // A terminal tool's body is immutable, and the host already keeps it
+    // behind a shared_ptr<const Config> in its body-config cache. When the
+    // host sets this, append_event's terminal-event ComponentElement
+    // captures THIS shared_ptr directly instead of deep-copying the whole
+    // event (name+detail+body text) into a fresh make_shared every frame.
+    // The deep copy was O(body bytes) per settled event per frame — paid
+    // EVEN on a renderer cache HIT (the closure is built but the renderer
+    // skips invoking it), so a long in-flight run with many tall settled
+    // write/edit cards spent tens of ms/frame copying body text that never
+    // reached a cell. With body_shared the terminal closure is a ref-bump.
+    //
+    // When null, the fast path falls back to the historical
+    // make_shared<const AgentTimelineEvent>(ev) deep copy (correct, just
+    // O(body)). `body` stays the source of truth for the uncached
+    // (running/pending) render path.
+    std::shared_ptr<const ToolBodyPreview::Config> body_shared;
+
     // Optional content-stable cache key (Witness Chain) for the
     // rendered event sub-tree (header row + striped body rows).
     //
@@ -293,6 +312,44 @@ private:
         if (is_terminal && !ev.hash_id.empty()) {
             ComponentElement comp;
             comp.hash_id = ev.hash_id;
+            std::string glyph{tree_glyph(i, cfg_.events.size())};
+            // FAST PATH: when the host supplied a shared body (terminal
+            // tool bodies are immutable and already live behind a
+            // shared_ptr in its cache), capture only the small header
+            // fields by value + the body by ref-bump. This avoids the
+            // O(body) deep copy of the whole event that
+            // make_shared<const AgentTimelineEvent>(ev) performs EVERY
+            // frame — a cost paid even on a renderer cache HIT (the
+            // closure is constructed but never invoked), which on a long
+            // in-flight run with many tall settled cards dominated the
+            // frame (tens of ms/frame of pure std::string copies).
+            if (ev.body_shared) {
+                comp.render = [name = ev.name, detail = ev.detail,
+                               cc = ev.category_color, status = ev.status,
+                               body = ev.body_shared,
+                               glyph_copy = std::move(glyph)]
+                              (int /*w*/, int /*h*/) -> Element {
+                    AgentTimelineEvent e;
+                    e.name = name; e.detail = detail;
+                    e.category_color = cc; e.status = status;
+                    e.body = *body;   // materialized ONLY on a cache miss
+                    std::vector<Element> sub;
+                    sub.reserve(4);
+                    build_event_body(sub, e, /*is_terminal=*/true,
+                                     /*frame=*/0, glyph_copy);
+                    return v(std::move(sub)).build();
+                };
+                rows.push_back(Element{std::move(comp)});
+                if (!is_last) {
+                    const Color next_cc =
+                        event_connector_color(cfg_.events[i + 1].status);
+                    rows.push_back(h(
+                        text("   "),
+                        text("\xe2\x94\x82", Style{}.with_fg(next_cc).with_dim())
+                    ).build());
+                }
+                return;
+            }
             // Capture the event by shared_ptr<const> so the lambda owns
             // a stable view of its inputs without per-frame deep-copy
             // of body text. Prior by-value capture cost
@@ -306,7 +363,6 @@ private:
             // test_agent_timeline_per_event_hash_id_bounds_cost).
             // shared_ptr capture is one ref-bump per frame, fixed cost.
             auto ev_sp = std::make_shared<const AgentTimelineEvent>(ev);
-            std::string glyph{tree_glyph(i, cfg_.events.size())};
             comp.render = [ev_sp = std::move(ev_sp),
                            glyph_copy = std::move(glyph)]
                           (int /*w*/, int /*h*/) -> Element {

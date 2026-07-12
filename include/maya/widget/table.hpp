@@ -203,6 +203,11 @@ struct TableConfig {
     bool show_border      = false;
     std::string title;            // shown in border text when bordered
     Color border_color    = Color::bright_black();
+    // Fill behind the whole bordered box — carries under the frame
+    // glyphs (paint_border interns the box style, so the ╭─╮ cells get
+    // this bg instead of resetting to the terminal default). Unset =
+    // transparent (defer to terminal / ambient).
+    std::optional<Color> box_bg;
 
     // ── Selection (the htop half) ──
     bool selectable        = false;             // cursor + keyboard nav
@@ -634,6 +639,8 @@ private:
                 | dsl::border(BorderStyle::Round)
                 | dsl::bcolor(d.cfg.border_color)
                 | dsl::padding(0, 1, 0, 1);
+            if (d.cfg.box_bg)
+                bordered = std::move(bordered) | dsl::bgc(*d.cfg.box_bg);
             if (!d.cfg.title.empty()) {
                 bordered = std::move(bordered)
                     | dsl::btext(" " + d.cfg.title + " ",

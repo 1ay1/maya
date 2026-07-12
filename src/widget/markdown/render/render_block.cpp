@@ -478,6 +478,9 @@ Element md_block_to_element(const md::Block& block) {
                 // for `mutable` applies.
                 mutable int     cached_w = -1;
                 mutable Element cached_render;
+                // Chunk-seam flags (see md::Table). Fixed at construction.
+                bool omit_top    = false;
+                bool omit_bottom = false;
             };
             // Aligns come from the GFM delimiter row; if for any reason
             // the parser didn't fill them (truncated / legacy callers
@@ -497,6 +500,10 @@ Element md_block_to_element(const md::Block& block) {
                 std::move(aligns_vec),
                 header_base,
                 cell_base,
+                /*cached_w=*/-1,
+                /*cached_render=*/{},
+                tbl.omit_top,
+                tbl.omit_bottom,
             });
 
             // Wrap into a ComponentElement so cell wrapping uses the
@@ -813,19 +820,27 @@ Element md_block_to_element(const md::Block& block) {
                         }};
                     };
 
-                    // ── Compose the full table.
+                    // ── Compose the full table (or a chunk of one — see
+                    // md::Table::omit_top/omit_bottom: a sealed streaming
+                    // chunk renders only its own rows; the header/borders
+                    // are owned by the first/last chunk respectively, and
+                    // the seam to the chunk above is a row separator).
                     std::vector<Element> rows;
                     rows.reserve(rows_flat.size() * 3 + 4);
-                    rows.push_back(make_border_line(0));
-                    for (auto& v : build_row_visuals(header_flat, header_base))
-                        rows.push_back(std::move(v));
-                    rows.push_back(make_border_line(1));
+                    if (!data->omit_top) {
+                        rows.push_back(make_border_line(0));
+                        for (auto& v : build_row_visuals(header_flat, header_base))
+                            rows.push_back(std::move(v));
+                        rows.push_back(make_border_line(1));
+                    }
                     for (std::size_t ri = 0; ri < rows_flat.size(); ++ri) {
-                        if (ri > 0) rows.push_back(make_row_separator());
+                        if (ri > 0 || data->omit_top)
+                            rows.push_back(make_row_separator());
                         for (auto& v : build_row_visuals(rows_flat[ri], cell_base))
                             rows.push_back(std::move(v));
                     }
-                    rows.push_back(make_border_line(2));
+                    if (!data->omit_bottom)
+                        rows.push_back(make_border_line(2));
                     auto built = detail::vstack()(std::move(rows)).build();
                     // Memoise. Subsequent paints at the same width
                     // hand back the cached copy without re-walking

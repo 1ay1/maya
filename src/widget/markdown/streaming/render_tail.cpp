@@ -955,6 +955,7 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
 
         bool live_continues = false;
         bool list_chunked   = false;
+        bool table_chunked  = false;
 
         // ── Incremental chunked render for a TIGHT-LIST tail ────────────
         //
@@ -980,10 +981,20 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
         // is authoritative):
         //   • not inside an open code fence;
         //   • the LAST block of the terminated prefix starts with a list
-        //     marker at its own base indent;
-        //   • that block slice contains no blank lines (pure TIGHT — a
-        //     loose list's items render with different spacing, and a
-        //     single-item chunk of a loose list would re-parse as tight).
+        //     marker at its own base indent.
+        // Loose lists (blank lines between items) engage too: since the
+        // loose-list cohesion fix, classify_blank_line keeps the WHOLE
+        // loose list as the last block, so without chunking every frame
+        // re-parsed + re-rendered the full list — the exact O(list)/frame
+        // cost this chunker was built to kill. Chunking at top-level item
+        // boundaries is render-safe for loose lists because render_list
+        // never reads List::loose (loose/tight only affects <p> wrapping
+        // in HTML renderers): a chunk that re-parses as tight renders
+        // cell-identically to its rows inside the whole-list parse
+        // (proven by the chunk-equivalence probe across ul/ol/multi-para/
+        // nested/task/wrapped shapes). The per-chunk single-List parse
+        // check below remains the bail-out for any shape where the
+        // engine disagrees.
         static const bool chunk_disabled = [] {
             const char* e = std::getenv("MAYA_NO_LIST_CHUNK");
             return e && e[0] && e[0] != '0';
@@ -999,13 +1010,7 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             const bool fl_is_item =
                 ul_marker_len(fl) > 0 || ol_marker_len(fl) > 0;
             const int base_indent = fl_is_item ? count_indent(fl) : 0;
-            // TIGHT check: no blank line inside the block slice. (A
-            // blank line would have been a block boundary unless
-            // classify_blank_line held it intra-list — the loose case.)
-            const bool tight = fl_is_item
-                && blk.find("\n\n") == std::string_view::npos
-                && blk.find("\n\r\n") == std::string_view::npos;
-            if (tight) {
+            if (fl_is_item) {
                 // Offsets (relative to blk) of every TOP-LEVEL item start.
                 std::vector<std::size_t> item_starts;
                 std::size_t p = 0;
@@ -1145,7 +1150,194 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             }
         }
 
-        if (!list_chunked && !trimmed_live.empty()) {
+        if (!list_chunked) {
+            // ── Incremental chunked render for a TABLE tail ────────────
+            //
+            // Mirror of the list chunker above for a long GFM table riding
+            // the live tail. A table only commits when a BREAKING line
+            // lands below it (find_table_end), so a long streaming table
+            // re-rendered wholesale per frame — O(rows) of cell layout,
+            // the md_cache_probe table O(N) escape. Terminated data rows
+            // seal into fixed kChunkRows chunks: each chunk re-parses
+            // [header+delim+rows] so the engine recognises the slice as a
+            // table, then renders with md::Table::omit_top/omit_bottom so
+            // only its own rows paint (header/top border owned by chunk
+            // 0, bottom border by the pending remainder, row-separator
+            // seams emitted by omit_top chunks). The live-table column
+            // floor pins every chunk to identical column widths — the
+            // floor is the per-column max over EVERY arrived row incl.
+            // the header, so each chunk's own ideal folds to exactly the
+            // floor and the concatenation is cell-identical to the
+            // whole-table render (and to the committed render, whose
+            // natural ideal equals the floor by construction). Chunks are
+            // hash-keyed ComponentElements (renderer blits); per frame
+            // only [unsealed rows + live row] re-parse — O(chunk). The
+            // floor hash keys the reset: a new widest cell re-seals
+            // everything at the new widths (rare; amortised O(1)).
+            //
+            // Engage rules: not in a fence, floor present (reveal live —
+            // the floor is what guarantees width equality), the last
+            // block is a well-formed table shape, EVERY terminated line
+            // after the delimiter is a `|` row (a plain continuation line
+            // is legal GFM but changes the parse — bail to the standard
+            // path), and there are enough closed rows to seal at least
+            // one chunk.
+            if (!in_code_fence_ && !live_table_floor_.empty()) {
+                std::string_view blk = terminated.substr(last_block_start);
+                const std::size_t blk_abs = body_abs_start + last_block_start;
+                auto first_pipe_ln = [](std::string_view s) noexcept -> bool {
+                    std::size_t k = 0;
+                    while (k < 4 && k < s.size() && s[k] == ' ') ++k;
+                    return k < s.size() && s[k] == '|';
+                };
+                std::size_t l1 = blk.find('\n');
+                bool shape = l1 != std::string_view::npos
+                             && first_pipe_ln(blk.substr(0, l1));
+                std::size_t delim_end = std::string_view::npos;
+                if (shape) {
+                    delim_end = blk.find('\n', l1 + 1);
+                    shape = delim_end != std::string_view::npos;
+                    if (shape) {
+                        std::string_view dl = blk.substr(l1 + 1,
+                                                         delim_end - l1 - 1);
+                        std::size_t dk = 0;
+                        while (dk < 4 && dk < dl.size() && dl[dk] == ' ') ++dk;
+                        bool has_dash = false;
+                        bool ok = dk < dl.size() && dl[dk] == '|';
+                        for (std::size_t q = dk; ok && q < dl.size(); ++q) {
+                            char c = dl[q];
+                            if (c == '-') { has_dash = true; continue; }
+                            if (c == '|' || c == ':' || c == ' '
+                                || c == '\t' || c == '\r') continue;
+                            ok = false;
+                        }
+                        shape = ok && has_dash;
+                    }
+                }
+                if (shape) {
+                    // Terminated data-row offsets (rel to blk). Bail if any
+                    // terminated line after the delimiter is not a pipe row.
+                    std::vector<std::size_t> row_starts;
+                    std::size_t p = delim_end + 1;
+                    bool all_pipe = true;
+                    while (p < blk.size()) {
+                        std::size_t e = blk.find('\n', p);
+                        if (e == std::string_view::npos) break; // live remainder
+                        if (!first_pipe_ln(blk.substr(p, e - p))) {
+                            all_pipe = false;
+                            break;
+                        }
+                        row_starts.push_back(p);
+                        p = e + 1;
+                    }
+                    constexpr std::size_t kChunkRows = 24;
+                    if (all_pipe && row_starts.size() > kChunkRows) {
+                        std::uint64_t fh = 1469598103934665603ull;
+                        for (int w : live_table_floor_)
+                            fh = (fh ^ static_cast<std::uint64_t>(
+                                      static_cast<unsigned>(w)))
+                                 * 1099511628211ull;
+                        if (tail_table_chunks_abs_start_ != blk_abs
+                            || tail_table_floor_hash_ != fh
+                            || tail_table_chunks_abs_end_ < blk_abs
+                            || tail_table_chunks_abs_end_ - blk_abs > blk.size()) {
+                            tail_table_chunks_.clear();
+                            tail_table_chunks_abs_start_ = blk_abs;
+                            tail_table_chunks_abs_end_   = blk_abs;
+                            tail_table_floor_hash_       = fh;
+                        }
+                        std::string_view head = blk.substr(0, delim_end + 1);
+                        std::size_t sealed_off =
+                            tail_table_chunks_abs_end_ - blk_abs;
+                        std::size_t idx = 0;
+                        while (idx < row_starts.size()
+                               && row_starts[idx] < sealed_off) ++idx;
+                        // Seal while at least one closed row remains
+                        // unsealed (the pending remainder must own ≥1 row
+                        // so it carries the bottom border under real rows).
+                        while (idx + kChunkRows < row_starts.size()) {
+                            std::size_t a = row_starts[idx];
+                            std::size_t b = row_starts[idx + kChunkRows];
+                            std::string csrc{head};
+                            csrc.append(blk.data() + a, b - a);
+                            auto blocks = canonical_blocks(csrc);
+                            if (blocks.size() != 1) break;
+                            auto* t = std::get_if<md::Table>(
+                                &blocks.front().inner);
+                            if (!t) break;
+                            t->min_col_widths = live_table_floor_;
+                            t->omit_top    = !tail_table_chunks_.empty();
+                            t->omit_bottom = true;
+                            auto el = std::make_shared<const Element>(
+                                md_block_to_element(blocks.front()));
+                            ComponentElement comp;
+                            comp.hash_id = ::maya::CacheIdBuilder{}
+                                .add(std::string_view{"strmd-tblchunk"})
+                                .add(static_cast<std::uint64_t>(instance_id_))
+                                .add(static_cast<std::uint64_t>(blk_abs + a))
+                                .add(static_cast<std::uint64_t>(b - a))
+                                .add(fh)
+                                .build();
+                            comp.render = [el](int, int) -> Element {
+                                return *el;
+                            };
+                            tail_table_chunks_.push_back(
+                                Element{std::move(comp)});
+                            tail_table_chunks_abs_end_ = blk_abs + b;
+                            idx += kChunkRows;
+                            sealed_off = b;
+                        }
+                        if (!tail_table_chunks_.empty()) {
+                            // Pending remainder: header+delim + unsealed
+                            // terminated rows. Bounded < 2*kChunkRows rows.
+                            std::string psrc{head};
+                            psrc.append(blk.data() + sealed_off,
+                                        blk.size() - sealed_off);
+                            auto pblocks = canonical_blocks(psrc);
+                            if (pblocks.size() == 1) {
+                                if (auto* pt = std::get_if<md::Table>(
+                                        &pblocks.front().inner)) {
+                                    pt->min_col_widths = live_table_floor_;
+                                    pt->omit_top    = true;
+                                    pt->omit_bottom = false;
+                                    auto pel = std::make_shared<const Element>(
+                                        md_block_to_element(pblocks.front()));
+                                    ComponentElement pcomp;
+                                    pcomp.hash_id = ::maya::CacheIdBuilder{}
+                                        .add(std::string_view{"strmd-tblpend"})
+                                        .add(static_cast<std::uint64_t>(
+                                                 instance_id_))
+                                        .add(static_cast<std::uint64_t>(
+                                                 term_abs_end))
+                                        .add(fh)
+                                        .build();
+                                    pcomp.render = [pel](int, int) -> Element {
+                                        return *pel;
+                                    };
+                                    std::vector<Element> tk;
+                                    tk.reserve(tail_table_chunks_.size() + 1);
+                                    for (const auto& c : tail_table_chunks_)
+                                        tk.push_back(c);
+                                    tk.push_back(Element{std::move(pcomp)});
+                                    Element tbl_el = detail::vstack()(
+                                        std::move(tk)).build();
+                                    if (last_block_start > 0)
+                                        rendered.push_back(
+                                            stable_vstack(stable_rendered()));
+                                    rendered.push_back(std::move(tbl_el));
+                                    table_chunked = true;
+                                    // Live partial row renders inline below
+                                    // via the standard live-line handling
+                                    // (not a list/quote marker → inline).
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!list_chunked && !table_chunked && !trimmed_live.empty()) {
             // ── Big-table fold bypass ──
             //
             // Folding the live partial row into the last block re-renders
@@ -1161,9 +1353,10 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             // the live row renders inline below, exactly like the eager
             // table path in render_tail_inner. Costs a 1-row seam jitter
             // as each row folds in — invisible next to a multi-ms stall —
-            // and only engages on tables far larger than any test/doc
-            // shape (threshold 200 lines).
-            constexpr std::size_t kBigTableLines = 200;
+            // and only engages on tables larger than any test/doc shape
+            // (threshold 60 lines; the render_tail_inner eager table path
+            // behaves this way from row one: live row inline below).
+            constexpr std::size_t kBigTableLines = 60;
             bool big_table_bypass = false;
             if (!in_code_fence_) {
                 std::string_view blk = terminated.substr(last_block_start);
@@ -1234,6 +1427,30 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             // — the repeated last-block render was the dominant per-frame
             // cost during a burst drain.
             const std::uint64_t live_hash = fnv1a64(trimmed_live);
+            // Hash-keyed wrapper for the merged render. Without it the
+            // merged Element is spliced RAW into the tail vstack, so
+            // render_tree re-runs layout::compute + paint over the whole
+            // merged block EVERY FRAME — even on memo-hit frames where
+            // nothing changed. For a paragraph that's noise; for a
+            // 100-row table it's milliseconds per frame (the md_cache_probe
+            // table O(N) escape). The key moves exactly when the merged
+            // content can differ (block base / terminated end / live-line
+            // bytes / fence), so unchanged frames blit cells from the
+            // renderer's component cache instead.
+            auto wrap_merged = [&](const std::shared_ptr<const Element>& el)
+                    -> Element {
+                ComponentElement comp;
+                comp.hash_id = ::maya::CacheIdBuilder{}
+                    .add(std::string_view{"strmd-merged"})
+                    .add(static_cast<std::uint64_t>(instance_id_))
+                    .add(static_cast<std::uint64_t>(last_blk_abs))
+                    .add(static_cast<std::uint64_t>(term_abs_end))
+                    .add(live_hash)
+                    .add(static_cast<std::uint64_t>(in_code_fence_ ? 1 : 0))
+                    .build();
+                comp.render = [el](int, int) -> Element { return *el; };
+                return Element{std::move(comp)};
+            };
             if (tail_merge_cache_el_
                 && tail_merge_cache_last_blk_abs_ == last_blk_abs
                 && tail_merge_cache_term_abs_end_ == term_abs_end
@@ -1243,7 +1460,7 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                     live_continues = true;
                     if (last_block_start > 0)
                         rendered.push_back(stable_vstack(stable_rendered()));
-                    rendered.push_back(*tail_merge_cache_el_);
+                    rendered.push_back(wrap_merged(tail_merge_cache_el_));
                 }
                 // else: verdict was "does not continue" — fall through to
                 //       the !live_continues path below (cheap, no parse).
@@ -1259,28 +1476,27 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                 // last-block slice + live line still parses to exactly ONE
                 // block.
                 const bool continues = merged_blocks.size() == 1;
-                Element merged_el;
                 if (continues) {
                     live_continues = true;
                     if (last_block_start > 0)
                         rendered.push_back(stable_vstack(stable_rendered()));
                     apply_live_table_floor_(merged_blocks.back());
-                    merged_el = md_block_to_element(merged_blocks.back());
-                    rendered.push_back(merged_el);
+                    tail_merge_cache_el_ = std::make_shared<const Element>(
+                        md_block_to_element(merged_blocks.back()));
+                    rendered.push_back(wrap_merged(tail_merge_cache_el_));
+                } else {
+                    tail_merge_cache_el_ = nullptr;
                 }
-                // Store the memo (the merged Element only when it exists).
+                // Store the memo.
                 tail_merge_cache_last_blk_abs_ = last_blk_abs;
                 tail_merge_cache_term_abs_end_ = term_abs_end;
                 tail_merge_cache_live_hash_    = live_hash;
                 tail_merge_cache_in_fence_     = in_code_fence_;
                 tail_merge_cache_continues_    = continues;
-                tail_merge_cache_el_ = continues
-                    ? std::make_shared<const Element>(std::move(merged_el))
-                    : nullptr;
             }
             }
         }
-        if (!list_chunked && !live_continues) {
+        if (!list_chunked && !table_chunked && !live_continues) {
             // Frozen prefix (one cached vstack) + the standalone last block.
             if (last_block_start > 0)
                 rendered.push_back(stable_vstack(stable_rendered()));

@@ -125,6 +125,23 @@ struct Table       {
     // static and committed tables, so their layout is byte-for-byte
     // unchanged (the fold is a no-op on an empty vector).
     std::vector<int> min_col_widths;
+    // Streaming-only CHUNK-SEAM flags. The live tail seals a long
+    // streaming table's terminated rows into fixed row-range chunks so
+    // the renderer blits them from cache instead of repainting the whole
+    // table every time a row lands (O(rows)/frame → O(chunk)/frame). A
+    // chunk is this same md::Table (header kept for column count /
+    // alignment) rendered WITHOUT the parts owned by its neighbours:
+    //   omit_top    — skip the top border + header rows + header rule;
+    //                 emit a row separator BEFORE the first data row
+    //                 instead (the seam to the chunk above).
+    //   omit_bottom — skip the bottom border (a later chunk owns it).
+    // Chunks are only cell-identical to the whole-table render when
+    // min_col_widths pins every column (the streaming floor covers all
+    // arrived rows, so each chunk's natural ideal never exceeds it).
+    // Defaults false: the engine never sets these; committed and static
+    // tables render byte-for-byte as before.
+    bool omit_top    = false;
+    bool omit_bottom = false;
 };
 struct FootnoteDef { std::string label; std::vector<struct Block> children; };
 

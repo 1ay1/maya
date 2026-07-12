@@ -876,6 +876,25 @@ private:
     // the whole-list render the block eventually commits as.
     mutable long                 tail_list_next_ord_ = -1;
 
+    // ── Incremental cohesive-TABLE tail render (chunked rows) ─────────
+    // Same shape as the list chunker above, for a long GFM table riding
+    // the live tail (a table only commits when a breaking line lands, so
+    // a long streaming table re-rendered wholesale every frame — O(rows)
+    // of cell layout per frame). Terminated data rows are sealed in
+    // fixed-size chunks: each chunk re-parses [header+delim+rows] so the
+    // engine recognises the slice as a table, then renders with
+    // md::Table::omit_top/omit_bottom so only its own rows paint; the
+    // live-table column floor (live_table_floor_) pins every chunk to
+    // the same column widths, making the concatenation cell-identical
+    // to the whole-table render. Chunks are hash-keyed ComponentElements
+    // (renderer blits); only [unsealed rows + live row] re-parses per
+    // frame. The floor hash is part of the reset key: a new widest cell
+    // re-seals everything at the new widths (rare — amortised O(1)).
+    mutable std::vector<Element> tail_table_chunks_;
+    mutable std::size_t          tail_table_chunks_abs_start_ = static_cast<std::size_t>(-1);
+    mutable std::size_t          tail_table_chunks_abs_end_   = static_cast<std::size_t>(-1);
+    mutable std::uint64_t        tail_table_floor_hash_       = 0;
+
     // ── Per-block fold state ───────────────────────────────────────────
     // Keyed by BlockMeta::source_offset so fold state survives the rare
     // "set_content with diverging prefix" path (where commit_range is

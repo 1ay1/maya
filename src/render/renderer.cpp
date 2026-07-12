@@ -790,6 +790,19 @@ void paint_border(
         int text_width = string_width(bt.content);
         int display_width = std::min(text_width, avail);
 
+        // A title wider than the border span used to write its FULL content
+        // and overrun the right edge — obliterating the corner glyph and
+        // spilling into the neighbouring cell (a broken, unclosed box on a
+        // narrow panel). Truncate to the available span so the frame always
+        // closes; the ellipsis lands one cell inside the right corner.
+        std::string clipped;
+        std::string_view content = bt.content;
+        if (text_width > avail) {
+            clipped = truncate_end(bt.content, avail);
+            content = clipped;
+            display_width = std::min<int>(string_width(clipped), avail);
+        }
+
         int text_x = [&] {
             switch (bt.align) {
                 case BorderTextAlign::Start:
@@ -803,7 +816,7 @@ void paint_border(
         }();
 
         text_x = std::clamp(text_x, x0 + 1, x1 - 1);
-        canvas.write_text(text_x, edge_y, bt.content, style_id);
+        canvas.write_text(text_x, edge_y, content, style_id);
     };
 
     if (border.text.has_value())     paint_btext(*border.text);

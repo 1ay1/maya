@@ -106,6 +106,9 @@ struct RunConfig {
     std::string_view title      = "";               ///< Terminal window title (OSC 0)
     int              fps        = 0;                ///< Continuous rendering at N fps (0 = event-driven)
     bool             mouse      = false;            ///< Enable mouse event reporting
+    bool             hover_motion = false;          ///< Also report bare (no-button) motion (mode 1003)
+                                                    ///< for hover highlights. Off by default: 1003 floods
+                                                    ///< move events and some terminals handle it oddly.
     Mode             mode       = Mode::Fullscreen; ///< Rendering mode
     Theme            theme      = theme::dark;      ///< Colour theme
 };
@@ -451,9 +454,12 @@ public:
         if (output_handle_ == platform::invalid_handle) return;
         static constexpr std::string_view kOn  =
             "\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h";
+        static constexpr std::string_view kOnHover =
+            "\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?1007h";
         static constexpr std::string_view kOff =
-            "\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l";
-        (void)platform::io_write_all(output_handle_, on ? kOn : kOff);
+            "\x1b[?1007l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+        (void)platform::io_write_all(output_handle_,
+            on ? (hover_motion_ ? kOnHover : kOn) : kOff);
         mouse_enabled_ = on;
     }
 
@@ -917,6 +923,10 @@ private:
     // mouse-reporting enable sequence in create() and the matching disable
     // in cleanup(); cached here so cleanup() doesn't need the RunConfig.
     bool          mouse_enabled_      = false;
+    // RunConfig::hover_motion — when set, the enable sequence also turns on
+    // ANY-motion reporting (mode 1003) so bare hover (no button) produces
+    // move events for hover highlights. Cached so re-enable paths match.
+    bool          hover_motion_       = false;
 
     // -- Wake signaling (background task → UI thread) -------------------------
     // The fd/handle is owned by BackgroundQueue: it must live as long as any

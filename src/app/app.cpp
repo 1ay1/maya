@@ -129,10 +129,17 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     // AltScreen destructors restore raw mode + screen but the simple-run
     // inline path does NOT enable mouse on its own).
     rt.mouse_enabled_ = cfg.mouse;
+    rt.hover_motion_  = cfg.hover_motion;
     if (cfg.mouse) {
+        // Base set: 1000 (press/release) + 1006 (SGR coords) + 1007 (alt-scroll).
+        // Motion: 1002 (button-drag only) by default; 1003 (ANY-motion) when
+        // the app opts into hover highlights via RunConfig::hover_motion.
         static constexpr std::string_view kMouseOn =
             "\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h";
-        (void)platform::io_write_all(output_h, kMouseOn);
+        static constexpr std::string_view kMouseOnHover =
+            "\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?1007h";
+        (void)platform::io_write_all(output_h,
+            cfg.hover_motion ? kMouseOnHover : kMouseOn);
     }
 
     // Query initial terminal size.
@@ -1410,8 +1417,9 @@ void Runtime::query_clipboard() {
 // mirror that here.
 void Runtime::suspend(const std::function<void()>& fn) {
     if (!fn) return;
-    static constexpr std::string_view kMouseOn  = "\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h";
-    static constexpr std::string_view kMouseOff = "\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+    static constexpr std::string_view kMouseOn      = "\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h";
+    static constexpr std::string_view kMouseOnHover = "\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?1007h";
+    static constexpr std::string_view kMouseOff = "\x1b[?1007l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
     // Flush any residue the writer is still holding — those bytes belong
     // to the pre-suspend frame and must not interleave with the child's
@@ -1444,7 +1452,8 @@ void Runtime::suspend(const std::function<void()>& fn) {
     if (writer_) writer_->resume_nonblocking();
 
     if (mouse_enabled_ && output_handle_ != platform::invalid_handle)
-        (void)platform::io_write_all(output_handle_, kMouseOn);
+        (void)platform::io_write_all(output_handle_,
+            hover_motion_ ? kMouseOnHover : kMouseOn);
 
     // ── Re-anchor rendering ──
     fs_coherence_ = coherent::Divergent{};
@@ -1477,7 +1486,7 @@ auto Runtime::cleanup() -> Status {
     // (cleanup runs before ~Runtime / the terminal destructors). Idempotent.
     if (mouse_enabled_) {
         static constexpr std::string_view kMouseOff =
-            "\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+            "\x1b[?1007l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
         (void)platform::io_write_all(output_handle_, kMouseOff);
         mouse_enabled_ = false;
     }
@@ -1503,7 +1512,7 @@ Runtime::~Runtime() {
     // order), so output_handle_ is still valid and raw mode is still on.
     if (mouse_enabled_ && output_handle_ != platform::invalid_handle) {
         static constexpr std::string_view kMouseOff =
-            "\x1b[?1007l\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+            "\x1b[?1007l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
         (void)platform::io_write_all(output_handle_, kMouseOff);
         mouse_enabled_ = false;
     }
@@ -1534,6 +1543,7 @@ Runtime::Runtime(Runtime&& o) noexcept
     , startup_events_(std::move(o.startup_events_))
 {
     mouse_enabled_ = std::exchange(o.mouse_enabled_, false);
+    hover_motion_  = std::exchange(o.hover_motion_, false);
 }
 
 Runtime& Runtime::operator=(Runtime&& o) noexcept {
@@ -1561,6 +1571,7 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         inline_frame_rows_ = o.inline_frame_rows_;
         startup_events_    = std::move(o.startup_events_);
         mouse_enabled_     = std::exchange(o.mouse_enabled_, false);
+        hover_motion_      = std::exchange(o.hover_motion_, false);
     }
     return *this;
 }

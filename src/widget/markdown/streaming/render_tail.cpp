@@ -164,6 +164,82 @@ bool half_list_marker(std::string_view t) noexcept {
     return p + 1 == m.size() && m[p] == ' ';         // "12. "
 }
 
+// ── Paragraph-interruption classifiers for the block-boundary walk ──
+//
+// CommonMark §5.1/§5.2/§4.5: some block openers interrupt a paragraph
+// with NO blank line between — `Summary:\n- item` is two blocks. The
+// walk in render_tail uses these to split at such seams so the paragraph
+// freezes into the stable prefix instead of being silently dropped by
+// the last-block-only render (blocks.back()).
+//
+// Deliberately conservative — anything not recognised keeps the old
+// cohesive verdict (no split), which can never DROP content, only skip
+// an optimisation:
+//   • thematic breaks are EXCLUDED: `---` under a paragraph is a setext
+//     underline (it transforms the paragraph, doesn't interrupt it);
+//   • ordered markers interrupt only with start number 1 (spec rule);
+//   • markers must carry CONTENT after the space (empty items don't
+//     interrupt);
+//   • html openers / tables are left cohesive (tables can't interrupt
+//     a paragraph in GFM; html has its own live-line hide).
+
+// True when `ln`, at a block START, reads as plain paragraph text — no
+// block-level opener. Fence lines never reach the caller's else-branch
+// (fence_scan_line intercepts), so they're not tested here.
+bool para_line_shape(std::string_view ln) noexcept {
+    if (md_detail::count_indent(ln) >= 4) return false;   // indented code
+    std::size_t k = 0;
+    while (k < 4 && k < ln.size() && ln[k] == ' ') ++k;
+    if (k >= ln.size()) return false;                      // blank
+    std::string_view t = ln.substr(k);
+    if (t[0] == '>') return false;                         // quote
+    if (t[0] == '|') return false;                         // table-ish
+    if (t[0] == '#') {                                     // ATX heading?
+        std::size_t h = 0;
+        while (h < t.size() && h < 7 && t[h] == '#') ++h;
+        if (h >= 1 && h <= 6
+            && (h == t.size() || t[h] == ' ' || t[h] == '\t'))
+            return false;
+    }
+    if (ul_marker_len(t) > 0 || ol_marker_len(t) > 0) return false;
+    return true;
+}
+
+// Would `ln` interrupt an open paragraph? (§5.1 conservative subset.)
+bool interrupts_paragraph(std::string_view ln) noexcept {
+    if (md_detail::count_indent(ln) >= 4) return false;    // code can't
+    std::size_t k = 0;
+    while (k < 4 && k < ln.size() && ln[k] == ' ') ++k;
+    if (k >= ln.size()) return false;
+    std::string_view t = ln.substr(k);
+    if (t[0] == '>') return true;                          // blockquote
+    if (t[0] == '#') {                                     // ATX heading
+        std::size_t h = 0;
+        while (h < t.size() && h < 7 && t[h] == '#') ++h;
+        if (h >= 1 && h <= 6
+            && (h == t.size() || t[h] == ' ' || t[h] == '\t'))
+            return true;
+    }
+    // Unordered list item WITH content (`- foo`, not bare `-`).
+    if (int ml = ul_marker_len(t); ml > 0) {
+        std::string_view after = t.substr(static_cast<std::size_t>(ml));
+        for (char c : after)
+            if (c != ' ' && c != '\t' && c != '\r') return true;
+        return false;
+    }
+    // Ordered item: only `1.` / `1)` with content interrupts (spec).
+    if (int ml = ol_marker_len(t); ml > 0) {
+        std::size_t d = 0;
+        while (d < t.size() && t[d] >= '0' && t[d] <= '9') ++d;
+        if (!(d == 1 && t[0] == '1')) return false;
+        std::string_view after = t.substr(static_cast<std::size_t>(ml));
+        for (char c : after)
+            if (c != ' ' && c != '\t' && c != '\r') return true;
+        return false;
+    }
+    return false;
+}
+
 } // namespace
 
 void StreamingMarkdown::render_eager_slice(std::string_view slice,
@@ -612,12 +688,26 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
     //
     // Forward-scan the byte offset where the LAST top-level block in
     // `terminated` begins. Everything in [0, last_block_start) is frozen
-    // (closed by a blank-line / fence boundary a later byte can't reach
-    // back across); only the final block [last_block_start, end) can
-    // still grow as more rows terminate. Branch/newline scan only — no
-    // markdown parse — cheap relative to the parse it gates, and it keeps
-    // both the incremental stable-prefix memo (below) and the live-line
-    // merge test (further down) O(last block) instead of O(terminated).
+    // (closed by a blank-line / fence / paragraph-interruption boundary a
+    // later byte can't reach back across); only the final block
+    // [last_block_start, end) can still grow as more rows terminate.
+    // Branch/newline scan only — no markdown parse — cheap relative to the
+    // parse it gates, and it keeps both the incremental stable-prefix memo
+    // (below) and the live-line merge test (further down) O(last block)
+    // instead of O(terminated).
+    //
+    // PARAGRAPH INTERRUPTION (the vanishing-paragraph bug): blocks are NOT
+    // only separated by blank lines. A list item with content, a `1.`
+    // ordered item, a blockquote `>`, an ATX heading, or a fence opener
+    // INTERRUPTS a paragraph directly (CommonMark §5.1/§5.2/§4.5) —
+    // `Summary:\n- item` is TWO blocks with no blank between. The old
+    // blank-only walk left last_block_start at the paragraph, so the
+    // "last block" slice held para+list and last_block_rendered — which
+    // renders blocks.back() ONLY — silently DROPPED the paragraph from
+    // the frame the moment the first list row terminated; it popped back
+    // when the list committed. Track whether the current block is
+    // paragraph-shaped and split at interrupter lines so the paragraph
+    // lands in the frozen prefix instead.
     std::size_t last_block_start = 0;
     {
         md_detail::streaming::FenceState fst{
@@ -625,6 +715,8 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
         std::size_t p = 0;
         std::size_t block_start = 0;
         bool prev_blank = false;
+        bool cur_para   = false;  // block at block_start is paragraph-shaped
+        bool have_line  = false;  // any content line seen yet
         while (p < terminated.size()) {
             std::size_t e = terminated.find('\n', p);
             if (e == std::string_view::npos) e = terminated.size();
@@ -636,7 +728,24 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             std::string_view ln = terminated.substr(p, e - p);
             const bool blank =
                 ln.find_first_not_of(" \t\r") == std::string_view::npos;
-            if (fence_line) { prev_blank = false; }
+            if (fence_line) {
+                if (!was_in) {
+                    // OPENER. Starts a new block after a blank line (the
+                    // old walk missed this — the fence rode the previous
+                    // block's slice) and also interrupts a paragraph
+                    // directly (§4.5).
+                    if (prev_blank || (have_line && cur_para))
+                        block_start = p;
+                    cur_para = false;
+                }
+                // CLOSER (was_in): the fence block continues through its
+                // closing line; no boundary decision here. (A block
+                // starting right after the closer without a blank line
+                // keeps the old cohesive behaviour — splitting there
+                // would also split fences nested in list items.)
+                have_line  = true;
+                prev_blank = false;
+            }
             else if (!was_in && blank) {
                 // Intra-list blank (loose-list separator) is NOT a block
                 // boundary — same verdict find_block_boundary takes via
@@ -657,7 +766,24 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                     prev_blank = true;
                 }
             }
-            else { if (prev_blank) block_start = p; prev_blank = false; }
+            else if (was_in) {
+                // Fence content — never a boundary.
+                prev_blank = false;
+            }
+            else {
+                if (prev_blank) {
+                    block_start = p;
+                    cur_para = para_line_shape(ln);
+                } else if (!have_line) {
+                    cur_para = para_line_shape(ln);
+                } else if (cur_para && interrupts_paragraph(ln)) {
+                    block_start = p;
+                    cur_para = para_line_shape(ln);
+                }
+                // Lazy continuation lines keep cur_para as-is.
+                have_line  = true;
+                prev_blank = false;
+            }
             p = e + 1;
         }
         last_block_start = block_start;
@@ -931,6 +1057,27 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                 ? blk0 : blk0.substr(0, fe);
             if (ul_marker_len(fl0) > 0 || ol_marker_len(fl0) > 0)
                 trimmed_live.clear();
+        }
+
+        // Live item whose CONTENT is itself a half-typed marker — "- *"
+        // en route to "- **bold**…" (the dominant LLM bullet shape).
+        // Parsed as-is, the "*" content reads as a NESTED empty list:
+        // one row TALLER than the eventual bold/emphasis reading — a
+        // guaranteed shrink on the disambiguating byte. Truncate to the
+        // bare marker while ambiguous: "- " renders as an empty item
+        // (1 row); the next byte either turns it into literal content
+        // ("**" — same row) or a real nested item ("* x" — grows).
+        // Monotonic both ways.
+        if (!trimmed_live.empty() && !in_code_fence_) {
+            std::string_view lv = trimmed_live;
+            int ml = ul_marker_len(lv);
+            if (ml == 0) ml = ol_marker_len(lv);
+            if (ml > 0 && static_cast<std::size_t>(ml) < lv.size()) {
+                std::string_view rest = lv.substr(
+                    static_cast<std::size_t>(ml));
+                if (half_list_marker(rest))
+                    trimmed_live.resize(static_cast<std::size_t>(ml));
+            }
         }
 
         // Live line that will render as ZERO rows once committed — painting
@@ -1504,10 +1651,13 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                 rendered.push_back(wrap_last_block(last_blk));
         }
 
-        // Live line that STARTS a new block stays inline below.
+        // Live line that STARTS a new block stays inline below. Use the
+        // SUPPRESSION-ADJUSTED live text (trimmed_live), not the raw
+        // live_line — the half-marker truncation / hide rules above must
+        // hold on this path too or the taller transient reading leaks
+        // back in through the eager render.
         if (!live_continues && !trimmed_live.empty()) {
-            std::string_view ll = live_line;
-            while (!ll.empty() && ll.front() == '\n') ll.remove_prefix(1);
+            std::string_view ll = trimmed_live;
             if (!ll.empty()) {
                 // A live line that OPENS a fresh list item / blockquote row
                 // (no prior same-kind block to continue — so the merge test
@@ -1917,6 +2067,21 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
         std::string synth;
         synth.reserve(first_line.size() + 1);
         synth.assign(first_line);
+        // Item content that is itself a half-typed marker — "- *" en
+        // route to "- **bold**…". Parsed as-is it reads as a NESTED
+        // empty list (2 rows) until the next byte disambiguates to
+        // literal content (1 row) — a guaranteed shrink. Truncate to the
+        // bare marker while ambiguous (renders as a 1-row empty item);
+        // the disambiguating byte either keeps the row ("**") or grows
+        // it ("* x" nested item). Same rule as the canonical path.
+        if (tail_is_list) {
+            int ml = ul_marker_len(synth);
+            if (ml == 0) ml = ol_marker_len(synth);
+            if (ml > 0 && static_cast<std::size_t>(ml) < synth.size()
+                && half_list_marker(std::string_view{synth}.substr(
+                       static_cast<std::size_t>(ml))))
+                synth.resize(static_cast<std::size_t>(ml));
+        }
         synth.push_back('\n');
         std::vector<Element> kids;
         kids.reserve(1);

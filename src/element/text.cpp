@@ -252,13 +252,15 @@ truncate_start(std::string_view text, int max_width) {
     auto chars = decode_all(text);
     std::size_t first_kept = find_tail_start(chars, budget);
 
+    // budget can fit ZERO codepoints (e.g. all-wide text at max_width 2):
+    // first_kept == chars.size(), and chars[first_kept] is out of bounds.
+    if (first_kept >= chars.size()) return std::string{ellipsis};
+
     std::string result;
     result.reserve(3 + (text.size() - chars[first_kept].offset));
     result += ellipsis;
-    if (first_kept < chars.size()) {
-        result.append(text.data() + chars[first_kept].offset,
-                      text.size() - chars[first_kept].offset);
-    }
+    result.append(text.data() + chars[first_kept].offset,
+                  text.size() - chars[first_kept].offset);
     return result;
 }
 
@@ -289,13 +291,18 @@ truncate_middle(std::string_view text, int max_width) {
     std::size_t first_right = find_tail_start(chars, right_budget);
 
     std::string result;
+    // right_budget can fit ZERO codepoints (all-wide text at tiny widths):
+    // first_right == chars.size(), and chars[first_right] is out of bounds.
+    if (first_right >= chars.size()) {
+        result = std::move(left_part);
+        result += ellipsis;
+        return result;
+    }
     result.reserve(left_part.size() + 3 + (text.size() - chars[first_right].offset));
     result  = std::move(left_part);
     result += ellipsis;
-    if (first_right < chars.size()) {
-        result.append(text.data() + chars[first_right].offset,
-                      text.size() - chars[first_right].offset);
-    }
+    result.append(text.data() + chars[first_right].offset,
+                  text.size() - chars[first_right].offset);
     return result;
 }
 

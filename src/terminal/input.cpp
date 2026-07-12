@@ -47,6 +47,17 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
             break;
 
         case State::Csi:
+            // Bound the CSI buffer. Every real CSI is a few dozen bytes at
+            // most (params + intermediates + one final byte); a stream
+            // that keeps feeding parameter bytes with no final (hostile
+            // peer, corrupted pty) must not grow buf_ forever. On
+            // overflow, abandon the sequence and return to Ground — the
+            // bytes are dropped, never emitted as a corrupt event.
+            if (buf_.size() >= kMaxCsiLen) {
+                state_ = State::Ground;
+                buf_.clear();
+                break;
+            }
             buf_ += static_cast<char>(ch);
             if (is_csi_final(ch)) {
                 parse_csi(events);
@@ -108,6 +119,21 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
             break;
 
         case State::BracketedPaste:
+            // Bound the paste buffer the same way OSC is bounded: a paste
+            // whose ESC[201~ terminator never arrives (dropped bytes, a
+            // hostile peer) must not accumulate forever. On overflow,
+            // emit what arrived as a best-effort paste and return to
+            // Ground — degraded (truncated paste) beats unbounded growth.
+            if (buf_.size() >= kMaxOscLen) {
+                events.emplace_back(PasteEvent{std::move(buf_)});
+                buf_.clear();
+                state_ = State::Ground;
+                // The current byte is not part of the flushed paste —
+                // reprocess it through the state machine (it may be the
+                // ESC of a new sequence, which ground_byte can't start).
+                --i;
+                break;
+            }
             buf_ += static_cast<char>(ch);
             // Look for the terminator: ESC [201~
             if (buf_.size() >= 6) {
@@ -749,7 +775,12 @@ auto InputParser::parse_params(std::string_view s) -> std::vector<int> {
 
     for (char c : s) {
         if (c >= '0' && c <= '9') {
-            current = current * 10 + (c - '0');
+            // Clamp instead of overflowing: a hostile "CSI 99999999999999u"
+            // would run current*10 past INT_MAX — signed overflow, UB. No
+            // legitimate CSI parameter is anywhere near 1e8; saturate there
+            // and keep consuming digits so the parse stays in sync.
+            if (current < 100000000)
+                current = current * 10 + (c - '0');
             has_digit = true;
         } else if (c == ';') {
             result.push_back(has_digit ? current : 0);

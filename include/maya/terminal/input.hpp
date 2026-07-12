@@ -163,6 +163,10 @@ private:
     // abandoned (FSM resets to Ground) rather than growing buf_
     // unbounded on hostile / runaway input.
     static constexpr std::size_t kMaxOscLen = 16u * 1024u * 1024u;
+    // CSI sequences are tiny (params + intermediates + final). 256 bytes is
+    // far beyond any real terminal's emission; past it the sequence is
+    // garbage and the parser abandons it back to Ground.
+    static constexpr std::size_t kMaxCsiLen = 256;
 
     enum class State : uint8_t {
         Ground,

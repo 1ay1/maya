@@ -37,6 +37,135 @@ using ::maya::md_detail::ol_marker_len;
 using ::maya::md_detail::count_indent;
 using ::maya::md_detail::streaming::fnv1a64;
 
+namespace {
+
+// Strip block-quote markers ('>' after ≤3 leading spaces, plus one optional
+// following space) from the front of a line, repeatedly (nested quotes).
+// `depth` (optional) receives the number of markers stripped.
+std::string_view dequote_line(std::string_view ln, int* depth = nullptr) noexcept {
+    int d = 0;
+    for (;;) {
+        std::size_t k = 0;
+        while (k < 4 && k < ln.size() && ln[k] == ' ') ++k;
+        if (k < ln.size() && ln[k] == '>') {
+            ln.remove_prefix(k + 1);
+            if (!ln.empty() && ln.front() == ' ') ln.remove_prefix(1);
+            ++d;
+            continue;
+        }
+        break;
+    }
+    if (depth) *depth = d;
+    return ln;
+}
+
+// True while a LIVE (unterminated) line is a plausible prefix of an HTML
+// block opener whose committed render shows NO raw tag bytes. A committed
+// HtmlBlock renders through html::render, where the tag markup itself is
+// consumed (a lone `<div>` / `</div>` / comment line produces ZERO rows) —
+// so painting the raw `<div>` bytes as a literal row while live guarantees
+// a 1-row shrink the instant the '\n' lands and the line reclassifies.
+// Render nothing instead: hidden live == hidden committed, height
+// continuous. The test must stay true for every prefix of the hidden final
+// shape (else the row would pop in then back out mid-typing): bare `<`,
+// `<!`, `<?`, `</`, a growing tag name, an open tag still collecting
+// attributes, and a completed tag followed only by whitespace are all
+// "still plausibly a bare tag line". The first byte that disproves it —
+// the ':' of `<https://…` autolinks, or CONTENT after the closing '>'
+// (that content renders in the committed html block, so it must show) —
+// flips to visible: a 0→N GROWTH, which monotonicity permits.
+bool html_block_live_prefix(std::string_view line) noexcept {
+    if (md_detail::count_indent(line) >= 4) return false;  // indented code
+    std::size_t k = 0;
+    while (k < 4 && k < line.size() && line[k] == ' ') ++k;
+    if (k >= line.size() || line[k] != '<') return false;
+    std::size_t p = k + 1;
+    if (p >= line.size()) return true;               // bare '<' — ambiguous
+    char c = line[p];
+    if (c == '!' || c == '?') return true;           // comment / PI / decl
+    if (c == '/') {
+        ++p;
+        if (p >= line.size()) return true;
+        c = line[p];
+    }
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return false;
+    while (p < line.size()) {
+        char t = line[p];
+        if ((t >= 'a' && t <= 'z') || (t >= 'A' && t <= 'Z')
+            || (t >= '0' && t <= '9') || t == '-') { ++p; continue; }
+        break;
+    }
+    if (p >= line.size()) return true;               // tag name still growing
+    char t = line[p];
+    if (!(t == ' ' || t == '\t' || t == '>' || t == '/' || t == '\r'))
+        return false;                                // `<https:` etc — prose
+    // Tag shape confirmed. Hidden only while it's a BARE tag line: the tag
+    // is still open (no '>' yet — attributes streaming) or the '>' is
+    // followed by whitespace only. Content after '>' renders in the
+    // committed html block, so it must stay visible.
+    std::size_t gt = line.find('>', p);
+    if (gt == std::string_view::npos) return true;   // tag still open
+    for (std::size_t q = gt + 1; q < line.size(); ++q) {
+        char w = line[q];
+        if (w != ' ' && w != '\t' && w != '\r') return false;
+    }
+    return true;
+}
+
+// True while a LIVE line is a plausible prefix of a link-reference
+// definition (`[label]: url`). The committed parse EXTRACTS ref-def lines
+// into the ref map and renders ZERO rows for them (collect_ref_defs /
+// cm_block leading-refs extraction), so a literal live render vanishes at
+// the terminating '\n' — the 2-row link_ref composer bounce. Footnote defs
+// (`[^label]: …`) stay visible blocks and are excluded. Prefix-stable: `[`,
+// `[lab`, `[label]`, `[label]:` all hold; the first byte proving it is NOT
+// a ref def (anything but ':' after the ']') flips to visible — growth.
+bool link_ref_live_prefix(std::string_view line) noexcept {
+    if (md_detail::count_indent(line) >= 4) return false;  // indented code
+    std::size_t k = 0;
+    while (k < 4 && k < line.size() && line[k] == ' ') ++k;
+    if (k >= line.size() || line[k] != '[') return false;
+    ++k;
+    if (k < line.size() && line[k] == '^') return false;   // footnote def
+    std::size_t close = line.find(']', k);
+    if (close == std::string_view::npos) return true;      // label growing
+    std::size_t after = close + 1;
+    if (after >= line.size()) return true;                  // ']' just landed
+    return line[after] == ':';
+}
+
+// True while a LIVE line is nothing but a HALF-TYPED list-marker prefix
+// ("-", "- ", "  -", "12", "12.", "12. " — a prefix of "marker + space"
+// with no content yet). When the last terminated block is a list, folding
+// such a line into it can TRANSIENTLY reparse as something taller —
+// "- outer\n  -" is a setext-h2 INSIDE the item (3 rows incl. the rule row)
+// until the first content byte turns it into a nested item (2 rows): a
+// mid-typing shrink. Suppressing the marker-only phase renders the list
+// without the live line; the first content byte makes it appear — growth
+// only. Note "12 " (digits + space, no '.'/')') is NOT a marker prefix —
+// no continuation can turn it into a marker — so it stays visible.
+bool half_list_marker(std::string_view t) noexcept {
+    std::size_t k = 0;
+    while (k < t.size() && (t[k] == ' ' || t[k] == '\t')) ++k;
+    if (k >= t.size()) return false;                 // blank — not ours
+    std::string_view m = t.substr(k);
+    if (m[0] == '-' || m[0] == '*' || m[0] == '+') {
+        if (m.size() == 1) return true;              // "-"
+        return m.size() == 2 && m[1] == ' ';         // "- "
+    }
+    std::size_t d = 0;
+    while (d < m.size() && m[d] >= '0' && m[d] <= '9') ++d;
+    if (d == 0 || d > 9) return false;
+    if (d == m.size()) return true;                  // "12"
+    std::size_t p = d;
+    if (m[p] != '.' && m[p] != ')') return false;
+    ++p;
+    if (p == m.size()) return true;                  // "12."
+    return p + 1 == m.size() && m[p] == ' ';         // "12. "
+}
+
+} // namespace
+
 void StreamingMarkdown::render_eager_slice(std::string_view slice,
                                            std::vector<Element>& kids) const {
     // Memoize on (source_version_, slice length, slice hash). The slice
@@ -428,8 +557,21 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
     // would misclassify (and then re-classify next byte, snapping).
     auto last_nl = body.rfind('\n');
     if (last_nl == std::string_view::npos) {
-        // No terminated rows yet — nothing canonical to anchor; the eager
-        // inline render is the floor.
+        // No terminated rows yet — nothing canonical to anchor. The tail
+        // IS one live line, starting at a block boundary (commit_range
+        // only advances committed_ across proven boundaries, so a blank
+        // line above is implied). If that line will render as ZERO rows
+        // once committed — an HTML block-opener tag (`<div>`: html::render
+        // consumes bare tag markup) or a link-reference definition
+        // (`[d]: url`: extracted into the ref map, never rendered) —
+        // painting its raw bytes now guarantees a 1-row shrink the instant
+        // the '\n' lands. Render nothing instead: hidden live == hidden
+        // committed. Both tests are prefix-stable, so a disproving byte
+        // only ever REVEALS the line (growth).
+        if (!in_code_fence_
+            && (html_block_live_prefix(body) || link_ref_live_prefix(body)))
+            return Element{TextElement{}};
+        // Otherwise the eager inline render is the floor.
         return render_tail_inner(tail);
     }
     std::string_view terminated = body.substr(0, last_nl + 1);
@@ -495,7 +637,26 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             const bool blank =
                 ln.find_first_not_of(" \t\r") == std::string_view::npos;
             if (fence_line) { prev_blank = false; }
-            else if (!was_in && blank) { prev_blank = true; }
+            else if (!was_in && blank) {
+                // Intra-list blank (loose-list separator) is NOT a block
+                // boundary — same verdict find_block_boundary takes via
+                // classify_blank_line. Splitting the loose list here made
+                // the tail render it as per-item blocks joined by the
+                // outer gap(1) vstack (a blank row between items) while
+                // the committed whole-list parse renders the items with
+                // NO gap rows — a 1-row shrink per loose blank at the
+                // commit seam (the loose_list composer bounce). Holding
+                // the slice cohesive makes the live render byte-identical
+                // to the committed one.
+                if (ln.empty() && p > 0
+                    && md_detail::streaming::classify_blank_line(
+                           terminated, p)
+                           == md_detail::streaming::IntraBlank::Yes) {
+                    // step over without arming the boundary
+                } else {
+                    prev_blank = true;
+                }
+            }
             else { if (prev_blank) block_start = p; prev_blank = false; }
             p = e + 1;
         }
@@ -703,6 +864,93 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                 }
                 if (fst.in_fence) trimmed_live.clear();
             }
+        }
+
+        // Same rule for a fence nested INSIDE a blockquote ("> ``"). The
+        // top-level test above can't see it: the '>' marker defeats the
+        // all-fence check and in_code_fence_ tracks only top-level fences.
+        // While a quote-nested fence is OPEN, a live line whose DEQUOTED
+        // content is empty (">" / "> ") or all fence chars ("> ``") is a
+        // code row that exists only until the closing "> ```" completes —
+        // rendering it adds a row that vanishes at the close (the
+        // quote_code composer bounce). Compute the nested parity over the
+        // terminated rows: dequote each quote line and feed the shared
+        // classifier; any top-level (depth-0) line closes the quote and
+        // kills the nested fence (lazy continuation doesn't extend a
+        // fenced block). Lines inside an open TOP-LEVEL fence are content
+        // and never touch the nested state.
+        if (!trimmed_live.empty()) {
+            int live_depth = 0;
+            std::string_view dq = dequote_line(trimmed_live, &live_depth);
+            bool candidate = live_depth > 0;
+            if (candidate)
+                for (char c : dq)
+                    if (c != '`' && c != '~') { candidate = false; break; }
+            if (candidate) {
+                md_detail::streaming::FenceState top{
+                    in_code_fence_, fence_open_ch_, fence_open_len_};
+                md_detail::streaming::FenceState qst{};
+                std::size_t p = 0;
+                while (p < terminated.size()) {
+                    std::size_t e = terminated.find('\n', p);
+                    if (e == std::string_view::npos) e = terminated.size();
+                    if (top.in_fence) {
+                        (void)md_detail::streaming::fence_scan_line(
+                            top, terminated, p, e);
+                    } else {
+                        std::string_view ln = terminated.substr(p, e - p);
+                        int d = 0;
+                        std::string_view inner = dequote_line(ln, &d);
+                        if (d > 0) {
+                            (void)md_detail::streaming::fence_scan_line(
+                                qst, inner, 0, inner.size());
+                        } else {
+                            qst = {};   // left the quote — nested fence dies
+                            (void)md_detail::streaming::fence_scan_line(
+                                top, terminated, p, e);
+                        }
+                    }
+                    p = e + 1;
+                }
+                if (qst.in_fence) trimmed_live.clear();
+            }
+        }
+
+        // Half-typed list-marker live line under a LIST block: "  -"
+        // transiently reparses as a setext underline INSIDE the item
+        // (title + full-width rule row — a garbled taller frame) until the
+        // first content byte turns it into a nested item — a shrink plus
+        // one frame of visual garbage (the nested_list bounce). Hide the
+        // marker-only phase; the first content byte reveals the item
+        // (growth only). Gated on the last terminated block being a list
+        // so a "-" under a paragraph keeps its legitimate setext reading.
+        if (!trimmed_live.empty() && half_list_marker(trimmed_live)) {
+            std::string_view blk0 = terminated.substr(last_block_start);
+            std::size_t fe = blk0.find('\n');
+            std::string_view fl0 = (fe == std::string_view::npos)
+                ? blk0 : blk0.substr(0, fe);
+            if (ul_marker_len(fl0) > 0 || ol_marker_len(fl0) > 0)
+                trimmed_live.clear();
+        }
+
+        // Live line that will render as ZERO rows once committed — painting
+        // it now guarantees a shrink at its '\n':
+        //   • an HTML block-opener tag line (`<div>` …): html::render
+        //     consumes bare tag markup — hidden when committed. Kind-6
+        //     openers interrupt paragraphs too, so no blank-above gate.
+        //   • a link-reference definition (`[label]: url`): extracted into
+        //     the ref map, never rendered. Only recognised at a PARAGRAPH
+        //     START (a ref-def can't interrupt a paragraph), so gate on a
+        //     blank line above — mid-paragraph `[d]: …` stays visible text.
+        // Both tests are prefix-stable (hidden from the first byte, flip to
+        // visible only on a disproving byte — a growth), so no pop-in/out.
+        if (!trimmed_live.empty() && !in_code_fence_) {
+            const bool blank_above_live =
+                terminated.size() >= 2
+                && terminated[terminated.size() - 2] == '\n';
+            if (html_block_live_prefix(trimmed_live)
+                || (blank_above_live && link_ref_live_prefix(trimmed_live)))
+                trimmed_live.clear();
         }
 
         bool live_continues = false;
@@ -1111,7 +1359,17 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
             }
         }
     }
-    if (rendered.empty()) return render_tail_inner(tail);
+    if (rendered.empty()) {
+        // Terminated rows exist but produced NOTHING to render. If the
+        // canonical parse of the terminated slice yields zero blocks the
+        // rows are pure link-ref / footnote-def definitions — invisible in
+        // their committed shape — so falling back to render_tail_inner
+        // (which would paint the raw `[d]: url` bytes as literal text)
+        // re-introduces the very row the canonical hide removed, and it
+        // vanishes again at commit: render nothing instead.
+        if (!last_block_rendered()) return Element{TextElement{}};
+        return render_tail_inner(tail);
+    }
 
     Element canonical = (rendered.size() == 1)
         ? std::move(rendered.front())

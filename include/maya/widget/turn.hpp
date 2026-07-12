@@ -110,6 +110,22 @@ public:
         // protocol requires.
         bool                  continuation = false;
 
+        // BARE mode: emit ONLY the body vstack — no header row, no rail
+        // box (border + left padding), no checkpoint divider. The body
+        // rows are assembled through the EXACT same is_blank-gated
+        // gap loop as a normal Turn, so a bare Turn's rows are
+        // byte-identical to the same slots emitted inline into a
+        // parent Turn's body. Purpose: a cacheable, row-transparent
+        // sub-body container. A host can hoist a stable PREFIX of a
+        // still-live Turn's body into a bare Turn stamped with a
+        // content hash_id; the parent Turn emits it as one Element
+        // body slot, so build_inner blits the whole settled prefix
+        // O(1) while the live edge keeps rebuilding. Because a bare
+        // Turn adds no chrome, the parent's rail/indent still wraps it
+        // exactly as if the slots were inline. `error`, `glyph`,
+        // `label`, `meta`, `checkpoint_above` are ignored in bare mode.
+        bool                  bare = false;
+
         // Content-stable cache key (Witness Chain). When non-empty,
         // Turn wraps its output in maya::component(...).hash_id(...),
         // so the renderer reuses the previously-painted cells on every
@@ -157,6 +173,24 @@ private:
     [[nodiscard]] static Element build_inner(const Config& cfg) {
         using namespace dsl;
         const Color muted = Color::bright_black();
+
+        // ── BARE mode: body vstack only, no header / rail / divider.
+        //    Used as a cacheable, row-transparent sub-body container
+        //    (see Config::bare). Reuses the body-assembly loop below
+        //    verbatim so the rows match an inline emit byte-for-byte.
+        if (cfg.bare) {
+            std::vector<Element> rows;
+            rows.reserve(cfg.body.size() * 2);
+            bool emitted = false;
+            for (const auto& slot : cfg.body) {
+                Element rendered = render_slot(slot);
+                if (is_blank(rendered)) continue;
+                if (emitted) rows.push_back(blank().build());
+                rows.push_back(std::move(rendered));
+                emitted = true;
+            }
+            return (v(std::move(rows)) | grow(1.0f)).build();
+        }
 
         // ── Header row: glyph + bold label + spacer + dim meta.
         //    Suppressed entirely on continuation turns — the previous

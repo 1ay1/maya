@@ -4,9 +4,10 @@
 // Usage:
 //   auto elem = gradient("Hello World", Color::red(), Color::blue());
 //
-// Note: this widget cannot truly blend named ANSI colors — it picks the
-// nearest stop per character. Use named ANSI colors so the terminal
-// palette controls the actual hue.
+// Each character is tinted with a true 24-bit RGB blend between the stops
+// (via Color::to_rgb(), so named/indexed stops resolve to real channels
+// first). The terminal-capability degrade pass downgrades the resulting
+// truecolor to 256/16 as needed, so this looks right everywhere.
 
 #include "../element/text.hpp"
 #include "../style/color.hpp"
@@ -18,6 +19,21 @@
 #include <cmath>
 
 namespace maya {
+
+namespace detail {
+
+// Linear RGB blend between two colors at parameter t∈[0,1]. Both stops are
+// resolved to true channels first so named/indexed stops interpolate too.
+[[nodiscard]] inline Color lerp_color(Color from, Color to, float t) noexcept {
+    Color a = from.to_rgb(), b = to.to_rgb();
+    auto mix = [t](std::uint8_t x, std::uint8_t y) -> std::uint8_t {
+        float v = static_cast<float>(x) + (static_cast<float>(y) - x) * t;
+        return static_cast<std::uint8_t>(v + 0.5f);
+    };
+    return Color::rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()));
+}
+
+} // namespace detail
 
 /// Build a TextElement with a linear color gradient across characters.
 /// Interpolates between `from` and `to` colors per-character.
@@ -50,7 +66,7 @@ namespace maya {
 
     for (int i = 0; i < n; ++i) {
         float t = static_cast<float>(i) / static_cast<float>(n - 1);
-        Style s = Style{}.with_fg(t < 0.5f ? from : to);
+        Style s = Style{}.with_fg(detail::lerp_color(from, to, t));
         if (bold) s = s.with_bold();
         runs.push_back({char_spans[i].first, char_spans[i].second, s});
     }
@@ -103,9 +119,8 @@ namespace maya {
         int seg = std::min(static_cast<int>(segment_f), segments - 1);
         float local_t = segment_f - static_cast<float>(seg);
 
-        auto& c0 = colors[seg];
-        auto& c1 = colors[seg + 1];
-        Style s = Style{}.with_fg(local_t < 0.5f ? c0 : c1);
+        Style s = Style{}.with_fg(
+            detail::lerp_color(colors[seg], colors[seg + 1], local_t));
         if (bold) s = s.with_bold();
         runs.push_back({char_spans[i].first, char_spans[i].second, s});
     }

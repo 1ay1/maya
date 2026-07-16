@@ -224,7 +224,20 @@ public:
 
         const int cap = std::max(1, cfg_.viewport_h);
         const int item_count = static_cast<int>(list->size());
-        const int vh = std::min(cap, std::max(1, item_count));
+        // Content height in ROWS. Structured rows are one line each by
+        // contract, so count == rows. Raw `items` may be MULTI-ROW
+        // Elements (a full diff body or a PlanView arrives as ONE
+        // Element) — measure their real heights, or the viewport
+        // collapses to items.size() rows (a one-Element body rendered
+        // a 1-row viewport: the "output not visible" bug).
+        int content_rows = item_count;
+        if (cfg_.rows.empty()) {
+            content_rows = 0;
+            for (const auto& it : *list)
+                content_rows +=
+                    measure_element(it, 1 << 14).height.value;
+        }
+        const int vh = std::min(cap, std::max(1, content_rows));
 
         // Auto-scroll: clamp state->y so the selected row sits inside
         // the viewport. Only fires when the selection is out of view,
@@ -241,7 +254,7 @@ public:
             const int max_y = std::max(0, item_count - vh);
             if (s.y > max_y) s.y = max_y;
             if (s.y < 0)     s.y = 0;
-        } else if (cfg_.scroll && item_count <= vh) {
+        } else if (cfg_.scroll && content_rows <= vh) {
             // List fits entirely inside the viewport — reset to top so
             // a previously-scrolled state (from a longer match set,
             // e.g. before the user typed a more specific query) doesn't

@@ -233,9 +233,15 @@ public:
         int content_rows = item_count;
         if (cfg_.rows.empty()) {
             content_rows = 0;
-            for (const auto& it : *list)
+            for (const auto& it : *list) {
                 content_rows +=
                     measure_element(it, 1 << 14).height.value;
+                // The sum only feeds min(cap, ·) and a <= vh check —
+                // once past the cap the answers can't change, so stop
+                // measuring (a 5000-line body would otherwise pay a
+                // layout pass per line per frame).
+                if (content_rows > cap) break;
+            }
         }
         const int vh = std::min(cap, std::max(1, content_rows));
 

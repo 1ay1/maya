@@ -809,6 +809,7 @@ struct RBorder { BorderStyle bs; };
 struct RBCol   { Color c; };
 struct RBText  { std::string s; BorderTextPos pos; BorderTextAlign align; };
 struct RGrow   { float g; };
+struct RShrink { float s; };
 struct RWidth  { int w; };
 struct RHeight { int h; };
 struct RFg     { Color c; };
@@ -841,6 +842,7 @@ struct RHit { HitId id; };
 [[nodiscard]] inline RBorder border(BorderStyle bs)            { return {bs}; }
 [[nodiscard]] inline RBCol   bcolor(Color c)                   { return {c}; }
 [[nodiscard]] inline RGrow   grow(float g = 1.0f)              { return {g}; }
+[[nodiscard]] inline RShrink shrink(float s = 1.0f)            { return {s}; }
 [[nodiscard]] inline RWidth  width(int w)                      { return {w}; }
 [[nodiscard]] inline RHeight height(int h)                     { return {h}; }
 [[nodiscard]] inline RFg     fgc(Color c)                      { return {c}; }
@@ -883,7 +885,7 @@ struct WrappedNode {
     static constexpr uint16_t PAD=1,GAP=2,BRD=4,BCOL=8,BTXT=16,
                               GRW=32,WD=64,HT=128,STY=256,
                               MGN=512,ALN=1024,JST=2048,OVF=4096,
-                              SCRL=8192,HIT=16384;
+                              SCRL=8192,HIT=16384,SHR=32768;
 
     Inner inner;
     int pt_=0, pr_=0, pb_=0, pl_=0, gap_=0;
@@ -893,6 +895,7 @@ struct WrappedNode {
     BorderTextPos btp_{};
     BorderTextAlign bta_{};
     float grw_=0;
+    float shr_=1.0f;
     int w_=0, h_=0;
     Style sty_{};
     int mt_=0, mr_=0, mb_=0, ml_=0;
@@ -921,6 +924,7 @@ struct WrappedNode {
             if (f_&BCOL) box->border.colors = BorderColors::uniform(bcol_);
             if (f_&BTXT) box->border.text = BorderText{btxt_, btp_, bta_, 0};
             if (f_&GRW)  box->layout.grow = grw_;
+            if (f_&SHR)  box->layout.shrink = shr_;
             if (f_&WD)   box->layout.width = Dimension::fixed(w_);
             if (f_&HT)   box->layout.height = Dimension::fixed(h_);
             if (f_&STY)  box->style = box->style.merge(sty_);
@@ -971,6 +975,7 @@ struct WrappedNode {
         if (f_&BCOL) b.border_color(bcol_);
         if (f_&BTXT) b.border_text(btxt_,btp_,bta_);
         if (f_&GRW)  b.grow(grw_);
+        if (f_&SHR)  b.shrink(shr_);
         if (f_&WD)   b.width(Dimension::fixed(w_));
         if (f_&HT)   b.height(Dimension::fixed(h_));
         if (f_&STY)  b.style(sty_);
@@ -1038,6 +1043,10 @@ template <Node N> [[nodiscard]] auto operator|(N n, RBText t) {
 template <Node N> [[nodiscard]] auto operator|(N n, RGrow t) {
     auto w = as_wrapped(std::move(n));
     w.grw_=t.g; w.f_ |= decltype(w)::GRW; return w;
+}
+template <Node N> [[nodiscard]] auto operator|(N n, RShrink t) {
+    auto w = as_wrapped(std::move(n));
+    w.shr_=t.s; w.f_ |= decltype(w)::SHR; return w;
 }
 template <Node N> [[nodiscard]] auto operator|(N n, RWidth t) {
     auto w = as_wrapped(std::move(n));

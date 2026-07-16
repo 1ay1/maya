@@ -345,13 +345,27 @@ private:
             );
         }
 
+        // Both cells are flexible so the row degrades gracefully at ANY
+        // width — no fixed columns that could crowd a narrow terminal.
+        // Leading grows to absorb slack and is the FIRST to give it back
+        // (shrink 3×): a long primary label truncates well before it can
+        // push the trailing off the row. Trailing keeps its natural width
+        // as long as it fits and only shrinks reluctantly (shrink 1×)
+        // when the row gets genuinely tight, so the diffstat stays whole
+        // on any reasonable terminal but never overflows on a skinny one.
+        // Both | clip, so whichever loses space truncates with an
+        // ellipsis instead of spilling. This is the overflow the raw
+        // grow+clip / clip pair couldn't handle: two long cells (a
+        // paragraph-length checkpoint preview meeting a fat "N files +A
+        // −B" diffstat) now share negative space by shrink weight
+        // instead of fighting over it.
         return hstack()
             .width(Dimension::percent(100))(
             edge,
             text(std::string{" "}),
-            text(r.leading, ls) | clip | grow(1.0f),
+            text(r.leading, ls) | clip | grow(1.0f) | shrink(3.0f),
             spacer(),
-            text(r.trailing, ts) | clip,
+            text(r.trailing, ts) | clip | shrink(1.0f),
             text(std::string{" "})
         );
     }

@@ -128,6 +128,14 @@ public:
         // needs to swap the foreground on the selected row, which
         // means it has to construct the text() node itself.
         struct Row {
+            // Optional category/kind cell painted between the edge bar
+            // and `leading`. Unlike leading/trailing, its style is NOT
+            // overridden on the selected row — the badge is a colour-
+            // coded identity (tool category, file kind, severity) and
+            // must keep its hue while the cursor passes over it. Pad
+            // badges to a common width caller-side for column alignment.
+            std::string  badge;           // empty ⇒ no badge cell
+            Style        badge_style    = {};
             std::string  leading;
             Style        leading_style  = {};
             std::string  trailing;        // empty ⇒ no trailing cell
@@ -332,13 +340,35 @@ private:
             ts = ts.with_fg(Color::bright_white());
         }
 
+        // Badge cell: colour-coded identity column. Natural width, no
+        // shrink — badges are short by contract and column alignment
+        // (caller pads to a common width) is the whole point. Bold on
+        // the selected row so it tracks the leading cell's weight, but
+        // the caller's hue is preserved.
+        auto badge_cell = [&]() -> Element {
+            Style bs = r.badge_style;
+            if (r.selected) bs = bs.with_bold();
+            return text(r.badge, bs);
+        };
+
         // No trailing cell when the caller passes an empty string.
         // Keeps row-builders simple for pickers without a secondary
         // column (e.g. PlanView-embedded rows).
         if (r.trailing.empty()) {
+            if (r.badge.empty()) {
+                return hstack()
+                    .width(Dimension::percent(100))(
+                    edge,
+                    text(std::string{" "}),
+                    text(r.leading, ls) | clip | grow(1.0f),
+                    text(std::string{" "})
+                );
+            }
             return hstack()
                 .width(Dimension::percent(100))(
                 edge,
+                text(std::string{" "}),
+                badge_cell(),
                 text(std::string{" "}),
                 text(r.leading, ls) | clip | grow(1.0f),
                 text(std::string{" "})
@@ -359,9 +389,22 @@ private:
         // paragraph-length checkpoint preview meeting a fat "N files +A
         // −B" diffstat) now share negative space by shrink weight
         // instead of fighting over it.
+        if (r.badge.empty()) {
+            return hstack()
+                .width(Dimension::percent(100))(
+                edge,
+                text(std::string{" "}),
+                text(r.leading, ls) | clip | grow(1.0f) | shrink(3.0f),
+                spacer(),
+                text(r.trailing, ts) | clip | shrink(1.0f),
+                text(std::string{" "})
+            );
+        }
         return hstack()
             .width(Dimension::percent(100))(
             edge,
+            text(std::string{" "}),
+            badge_cell(),
             text(std::string{" "}),
             text(r.leading, ls) | clip | grow(1.0f) | shrink(3.0f),
             spacer(),

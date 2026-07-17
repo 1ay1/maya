@@ -754,12 +754,21 @@ private:
                 runs.push_back(StyledRun{d.cfg.cursor_glyph.size(), 1, base});
             } else if (!row.edge.empty()) {
                 // Host marker (» culprit) rides the gutter when the
-                // cursor bar isn't here.
+                // cursor bar isn't here. The gutter is a FIXED 2-column
+                // budget (1-col marker + 1 space) reserved by `gut`, so
+                // clamp the host-supplied edge to exactly one display
+                // column — a wide (emoji, CJK) or multi-glyph edge would
+                // otherwise overrun the gutter and shear every column on
+                // this row rightward. truncate_end keeps the run's byte
+                // length in sync with the (possibly clipped) marker so
+                // the painter still fully covers it.
+                std::string edge = string_width(row.edge) > 1
+                                     ? truncate_end(row.edge, 1) : row.edge;
                 Style est = row.edge_color ? Style{}.with_fg(*row.edge_color)
                                            : base;
-                runs.push_back(StyledRun{0, row.edge.size(), est});
-                content = row.edge + " ";
-                runs.push_back(StyledRun{row.edge.size(), 1, base});
+                runs.push_back(StyledRun{0, edge.size(), est});
+                content = edge + " ";
+                runs.push_back(StyledRun{edge.size(), 1, base});
             } else {
                 content = "  ";
                 runs.push_back(StyledRun{0, 2, base});

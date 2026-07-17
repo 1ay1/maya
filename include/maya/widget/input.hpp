@@ -98,10 +98,15 @@ public:
     // -- Paste event handling --
     /// Handle a paste event — insert pasted text at cursor position.
     void handle_paste(const PasteEvent& pe) {
-        // Insert each character from the pasted text
+        // Insert each character from the pasted text. Control bytes are
+        // scrubbed, but a newline is kept when this Input is multiline —
+        // otherwise a pasted multi-line block silently collapses onto one
+        // line (0x0A < 0x20 would drop it). Single-line inputs still strip
+        // newlines, matching the textarea's handle_paste policy.
         for (std::size_t pos = 0; pos < pe.content.size(); ) {
             char32_t cp = decode_utf8(pe.content, pos);
-            if (cp >= 0x20) insert_char(cp);  // skip control chars
+            if (cp >= 0x20) insert_char(cp);
+            else if (cp == '\n' && Cfg.multiline) insert_char('\n');
         }
     }
 

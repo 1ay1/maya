@@ -118,6 +118,51 @@ void test_table() {
     }
     assert_resize_stable(tbl, 80, 40, "table");
 
+    // Regression: a host-supplied `edge` gutter marker wider than one
+    // display column (emoji, CJK, or multi-glyph) must NOT shear the row's
+    // columns rightward. The gutter is a fixed 2-column budget; the edge is
+    // clamped to exactly one column in build_row. Build a selectable table
+    // where a NON-cursor row carries a 2-column emoji edge and assert every
+    // data column starts at the same canvas x as on a plain-edge row.
+    {
+        TableConfig cfg;
+        cfg.selectable   = true;
+        cfg.show_header  = false;
+        cfg.show_separator = false;
+        cfg.stripe_rows  = false;
+        Table t({{"A", 8}, {"B", 8}}, cfg);
+        TableRow r0({"aaa", "bbb"});           // cursor row (row 0)
+        TableRow r1({"ccc", "ddd"});
+        r1.edge = "\xf0\x9f\x94\xa5";          // 🔥 U+1F525 (2 display cols)
+        TableRow r2({"eee", "fff"});
+        r2.edge = "x";                          // 1-column edge (reference)
+        t.set_rows({r0, r1, r2});
+        t.set_selected(0);
+
+        StylePool pool;
+        Canvas canvas(40, 8, &pool);
+        render_tree(t.build(), canvas, pool, theme::dark, true);
+
+        // Find the x of the first non-space glyph on the emoji-edge row (1)
+        // and the plain-edge row (2). After the fix they must match: the
+        // gutter is one column + one space regardless of the edge glyph's
+        // width, so the first data cell lands at the same column.
+        auto first_cell_x = [&](int y) {
+            for (int x = 2; x < canvas.width(); ++x) {  // skip 2-col gutter
+                char32_t c = canvas.get(x, y).character;
+                if (c >= 'a' && c <= 'z') return x;
+            }
+            return -1;
+        };
+        int x_emoji = first_cell_x(1);
+        int x_plain = first_cell_x(2);
+        if (x_emoji != x_plain || x_emoji < 0) {
+            std::println("  FAIL [table-wide-edge]: data column sheared "
+                         "(emoji row x={}, plain row x={})", x_emoji, x_plain);
+            assert(false);
+        }
+    }
+
     std::println("  PASS\n");
 }
 
@@ -575,6 +620,33 @@ void test_picker_multirow_autoscroll() {
     std::println("  PASS\n");
 }
 
+// Input.handle_paste: a multi-line bracketed paste must KEEP its newlines
+// when the Input is multiline (0x0A would otherwise be scrubbed as a control
+// byte and the block collapses onto one line). A single-line Input still
+// strips them.
+void test_input_multiline_paste() {
+    std::println("=== test_input_multiline_paste ===");
+
+    // Multiline: newlines survive, embedded control bytes (\t=0x09) drop.
+    {
+        Input<InputConfig{.multiline = true}> inp;
+        inp.handle_paste(PasteEvent{"line1\nline2\tX\nline3"});
+        const std::string& v = inp.value()();
+        assert(v == "line1\nline2X\nline3"
+               && "multiline paste must keep newlines, drop other controls");
+    }
+
+    // Single-line: newlines stripped (block flattened by design).
+    {
+        Input<> inp;
+        inp.handle_paste(PasteEvent{"a\nb\nc"});
+        const std::string& v = inp.value()();
+        assert(v == "abc" && "single-line paste flattens newlines");
+    }
+
+    std::println("  PASS\n");
+}
+
 int main() {
     test_table();
     test_progress();
@@ -593,6 +665,7 @@ int main() {
     test_tool_body_tail_line_numbers();
     test_small_caps_utf8();
     test_picker_multirow_autoscroll();
+    test_input_multiline_paste();
     std::println("All widget tests passed!");
     return 0;
 }

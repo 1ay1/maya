@@ -50,8 +50,16 @@ public:
         if (cfg_.max <= 0) return blank().build();
 
         const bool has_tokens = cfg_.used > 0;
+        // 64-bit intermediate: `used * 100` overflows int32 past ~21.4M
+        // tokens. Hosts feed raw byte counts through this path in some
+        // adapters, so guard rather than assume the domain stays small.
+        // Negative used is already excluded by has_tokens; clamp the
+        // result to [0,100] for the bar/threshold math either way.
         const int  pct = has_tokens
-            ? std::min(100, cfg_.used * 100 / cfg_.max)
+            ? static_cast<int>(std::clamp<long long>(
+                  static_cast<long long>(cfg_.used) * 100
+                      / static_cast<long long>(cfg_.max),
+                  0, 100))
             : 0;
         const Color zone = has_tokens ? threshold_color(pct) : muted;
 
@@ -71,10 +79,13 @@ public:
                 }
                 parts.push_back(bar(pct, cfg_.cells));
             } else {
-                // Placeholder numbers, same 13 cols as live: "  ——/  ——  "
+                // Placeholder numbers, same cols as live: two 6-col token
+                // fields + '/' + trailing space (see format_tokens —
+                // constant 6). "    ——/    —— " keeps the right-group
+                // chips pinned when the first usage event lands.
                 if (cfg_.show_tokens) {
                     parts.push_back(text(
-                        "  \xe2\x80\x94\xe2\x80\x94/  \xe2\x80\x94\xe2\x80\x94  ",
+                        "    \xe2\x80\x94\xe2\x80\x94/    \xe2\x80\x94\xe2\x80\x94 ",
                         fg_dim_(muted)));
                 }
                 parts.push_back(bar(0, cfg_.cells));   // dim track only
@@ -149,15 +160,26 @@ private:
         return Color::red();
     }
 
-    // 5-char tokens: "999.9" / "99.9k" / "9.9M". Space-padded on the left.
+    // Constant 6-char token field: " 999.9" / " 99.9k" / "  9.9M".
+    // CONSTANT width is load-bearing — the widget's contract is a
+    // stable-width slot, and the old 5-char <1000 branch vs 6-char k/M
+    // branches shoved the right-group chips one column sideways the
+    // moment `used` crossed 1000 (and mismatched the placeholder).
     static std::string format_tokens(int n) {
         char buf[16];
-        if (n >= 1'000'000) {
+        // Thresholds are ROUNDING-AWARE: %.1f rounds 999.95 up to
+        // "1000.0", which would overflow the 6-char field for
+        // n ∈ [999950, 999999] under a plain >= 1'000'000 gate.
+        if (n >= 999'950'000) {
+            // "   2.1B" territory — without this branch %5.1fM prints
+            // "1000.0M"+ (7 chars) for n ≥ 999.95M up to INT_MAX.
+            std::snprintf(buf, sizeof(buf), "%5.1fB", static_cast<double>(n) / 1'000'000'000.0);
+        } else if (n >= 999'950) {
             std::snprintf(buf, sizeof(buf), "%5.1fM", static_cast<double>(n) / 1'000'000.0);
         } else if (n >= 1000) {
             std::snprintf(buf, sizeof(buf), "%5.1fk", static_cast<double>(n) / 1000.0);
         } else {
-            std::snprintf(buf, sizeof(buf), "%5d", n);
+            std::snprintf(buf, sizeof(buf), "%6d", n);
         }
         return buf;
     }

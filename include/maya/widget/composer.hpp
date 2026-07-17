@@ -133,7 +133,8 @@ public:
         std::int64_t last_edit_ms = 0;
     };
 
-    explicit Composer(Config c) : cfg_(std::move(c)) {}
+    explicit Composer(Config c)
+        : cfg_sp_(std::make_shared<const Config>(std::move(c))) {}
 
     operator Element() const { return build(); }
 
@@ -147,14 +148,21 @@ public:
         // genuinely frame-invariant and a cached blit is correct. While
         // idle the caret blinks (cells change ~every 530 ms) so caching
         // would freeze the blink; fall through to a live build there.
-        const bool active = (cfg_.state == State::Streaming
-                          || cfg_.state == State::ExecutingTool);
-        if (!cfg_.cache_id.empty() && active) {
+        const bool active = (cfg_sp_->state == State::Streaming
+                          || cfg_sp_->state == State::ExecutingTool);
+        if (!cfg_sp_->cache_id.empty() && active) {
             ComponentElement comp;
-            comp.hash_id = cfg_.cache_id;
-            Config snapshot = cfg_;
-            comp.render = [snapshot = std::move(snapshot)](int, int) -> Element {
-                return Composer{snapshot}.build_impl();
+            comp.hash_id = cfg_sp_->cache_id;
+            // Capture the shared config by ref-bump. The old code copied
+            // the whole Config (text string included) into the closure on
+            // EVERY build() call — a per-frame deep copy paid even on a
+            // renderer cache HIT, where the closure is constructed but
+            // never invoked. Same failure mode as the agent-timeline
+            // per-event capture fix: closures built per frame must be
+            // O(1) to construct; the O(content) work belongs inside the
+            // render callback, which only runs on a cache miss.
+            comp.render = [cfg = cfg_sp_](int, int) -> Element {
+                return Composer{cfg}.build_impl();
             };
             return Element{std::move(comp)};
         }
@@ -163,6 +171,9 @@ public:
 
     [[nodiscard]] Element build_impl() const {
         using namespace dsl;
+        // Local alias so the body reads through the shared config with
+        // the historical `cfg_.` syntax (member is cfg_sp_ below).
+        const Config& cfg_ = *cfg_sp_;
 
         const Color muted = Color::bright_black();
         const bool  has_text     = !cfg_.text.empty();
@@ -253,7 +264,21 @@ public:
         }
 
         std::string with_cursor = cfg_.text;
-        int cur = std::min<int>(cfg_.cursor, static_cast<int>(cfg_.text.size()));
+        // Clamp DOWN into range first (negative or past-the-end cursors
+        // from host-side races must not throw std::out_of_range in
+        // std::string::insert), then snap BACK to the nearest UTF-8
+        // sequence boundary at or below the clamp. A byte offset that
+        // lands inside a multi-byte sequence (host counts columns, or a
+        // stale cursor survives an edit) would otherwise split the
+        // sequence — the two halves each render as U+FFFD and the line
+        // gains a phantom cell, shifting every glyph right of the caret.
+        int cur = std::clamp<int>(cfg_.cursor, 0,
+                                  static_cast<int>(cfg_.text.size()));
+        while (cur > 0
+               && (static_cast<unsigned char>(cfg_.text[static_cast<std::size_t>(cur)])
+                   & 0xC0) == 0x80) {
+            --cur;   // continuation byte → back up to the lead byte
+        }
         // Always insert the FULL BLOCK byte sequence; visibility is a
         // style decision below. Same bytes every frame ⇒ same wrap.
         with_cursor.insert(static_cast<std::size_t>(cur),
@@ -326,20 +351,25 @@ public:
                 Element prefix = (i == 0) ? prompt_chip
                                           : (lines.size() > 1 ? continuation : blank_pre);
                 std::string_view line = lines[i];
-                // Find the cursor placeholder in this line (at most
-                // one per line, since we inserted exactly one). If
-                // present, emit the line as ONE TextElement with three
-                // StyledRuns (pre / cursor / post) instead of three
-                // sibling TextElements in a row. Sibling text elements
-                // are independent flex items — when `pre` word-wraps
-                // internally and overflows to a second visual row, the
-                // cursor element stays glued to the end of row 1 at the
-                // wrap boundary, so the visible cursor doesn't follow
-                // the user's text onto row 2. A single TextElement with
-                // runs lets the wrap engine position the cursor cell at
-                // whatever visual column its byte offset lands on.
-                auto cur_pos = line.find(kBlock);
-                if (cur_pos == std::string_view::npos) {
+                // Locate the cursor by its KNOWN byte offset, not by
+                // searching for the block glyph. The user's own text can
+                // legitimately contain █ (pasted progress bars, block
+                // art); a find() would style the first such glyph as the
+                // cursor — dimming user content to invisible on every
+                // blink phase while the real caret rendered as plain
+                // text. split_lines returns views into with_cursor, so
+                // the line's offset is a pointer subtraction and the
+                // cursor lands in this line iff `cur` falls inside its
+                // byte range (the 3-byte block never spans lines — it
+                // was inserted whole).
+                const std::size_t line_off = static_cast<std::size_t>(
+                    line.data() - with_cursor.data());
+                const std::size_t cur_u = static_cast<std::size_t>(cur);
+                const bool cursor_here =
+                    cur_u >= line_off && cur_u < line_off + line.size();
+                const std::size_t cur_pos =
+                    cursor_here ? cur_u - line_off : std::string_view::npos;
+                if (!cursor_here) {
                     body_rows.push_back(h(
                         prefix,
                         text(std::string{line}, text_style)
@@ -570,7 +600,11 @@ public:
     }
 
 private:
-    Config cfg_;
+    std::shared_ptr<const Config> cfg_sp_;
+
+    // Rebuild-from-shared constructor used by the cached render closure —
+    // ref-bump, no Config copy.
+    explicit Composer(std::shared_ptr<const Config> c) : cfg_sp_(std::move(c)) {}
 
     // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -620,7 +654,12 @@ private:
             char c = s[i];
             out.push_back(static_cast<char>(
                 (c >= 'a' && c <= 'z') ? (c - 32) : c));
-            if (i + 1 < s.size()) out.push_back(' ');
+            // Only letter-space at UTF-8 sequence boundaries — a space
+            // after every BYTE shreds multi-byte profile labels into
+            // mojibake. Continuation bytes match (b & 0xC0) == 0x80.
+            if (i + 1 < s.size()
+                && (static_cast<unsigned char>(s[i + 1]) & 0xC0) != 0x80)
+                out.push_back(' ');
         }
         return out;
     }

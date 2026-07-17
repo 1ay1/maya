@@ -249,17 +249,46 @@ public:
         // the viewport. Only fires when the selection is out of view,
         // so a user who manually scrolled past the cursor's row keeps
         // their position (until they move the cursor again).
+        //
+        // The scroll offset is in ROWS (paint translates by -y rows),
+        // so the clamp must be computed in row space too. Structured
+        // rows are 1 row each (index == row). Raw `items` may be
+        // multi-row Elements — the old index-space clamp under-scrolled
+        // there (item 3 of four 5-row items sits at row 15, not row 3),
+        // leaving the selection stranded off-viewport. Measure the
+        // prefix heights to find the selection's true row extent; the
+        // list is picker-sized (dozens), so O(selected) measures per
+        // frame is cheap, and the common structured-rows path skips
+        // measuring entirely.
         if (cfg_.scroll
             && cfg_.selected >= 0
             && cfg_.selected < item_count) {
             auto& s = *cfg_.scroll;
-            if (cfg_.selected < s.y)
-                s.y = cfg_.selected;
-            else if (cfg_.selected >= s.y + vh)
-                s.y = cfg_.selected - vh + 1;
-            const int max_y = std::max(0, item_count - vh);
-            if (s.y > max_y) s.y = max_y;
-            if (s.y < 0)     s.y = 0;
+            int sel_start = cfg_.selected;   // row where the item begins
+            int sel_rows  = 1;               // its height in rows
+            if (cfg_.rows.empty()) {
+                sel_start = 0;
+                for (int i = 0; i < cfg_.selected; ++i)
+                    sel_start += measure_element(
+                        (*list)[static_cast<std::size_t>(i)], 1 << 14)
+                        .height.value;
+                sel_rows = std::max(1, measure_element(
+                    (*list)[static_cast<std::size_t>(cfg_.selected)], 1 << 14)
+                    .height.value);
+            }
+            const int sel_end = sel_start + sel_rows;   // exclusive
+            if (sel_start < s.y)
+                s.y = sel_start;
+            else if (sel_end > s.y + vh)
+                // Align the item's BOTTOM to the viewport bottom (for a
+                // taller-than-viewport item this shows its tail; the
+                // first branch never fires simultaneously).
+                s.y = sel_end - vh;
+            if (s.y < 0) s.y = 0;
+            // Upper clamp is owned by the renderer's writeback
+            // (s->clamp() against the freshly measured max_y) — the
+            // widget doesn't always know total content rows here (the
+            // measurement loop above early-outs past the cap).
         } else if (cfg_.scroll && content_rows <= vh) {
             // List fits entirely inside the viewport — reset to top so
             // a previously-scrolled state (from a longer match set,

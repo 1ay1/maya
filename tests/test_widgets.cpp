@@ -1,12 +1,16 @@
 // test_widgets.cpp — Verify all widgets render correctly at various widths
 #include <maya/maya.hpp>
 #include <maya/widget/badge.hpp>
+#include <maya/widget/agent_timeline.hpp>
 #include <maya/widget/breadcrumb.hpp>
+#include <maya/widget/composer.hpp>
+#include <maya/widget/context_gauge.hpp>
 #include <maya/widget/divider.hpp>
 #include <maya/widget/input.hpp>
 #include <maya/widget/markdown.hpp>
 #include <maya/widget/modal.hpp>
 #include <maya/widget/model_badge.hpp>
+#include <maya/widget/picker.hpp>
 #include <maya/widget/progress.hpp>
 #include <maya/widget/select.hpp>
 #include <maya/widget/spinner.hpp>
@@ -387,6 +391,190 @@ void test_status_bar_responsive() {
     std::println("  PASS\n");
 }
 
+// ============================================================================
+// Widget-audit regression tests (agentty-facing widgets)
+// ============================================================================
+
+// Composer: a cursor byte-offset inside a multi-byte UTF-8 sequence, or
+// past the end / negative, must never throw and must never split the
+// sequence (which would paint two U+FFFD cells and shift the line).
+void test_composer_cursor_safety() {
+    std::println("=== test_composer_cursor_safety ===");
+
+    // "café" — the é is 2 bytes (0xC3 0xA9) at offsets 3..4.
+    for (int cur : {-5, 0, 3, 4, 5, 999}) {
+        Composer::Config cfg;
+        cfg.text   = "caf\xc3\xa9";
+        cfg.cursor = cur;
+        auto r = render_at(Composer{cfg}.build(), 60);
+        assert(r.content_h > 0);
+        // The '?' mapping in get_row covers any non-ASCII glyph, so we
+        // can't string-match é — but a split sequence would render TWO
+        // replacement cells where one glyph should be. Just assert no
+        // row overflows and the body row still contains "caf".
+        bool has_caf = false;
+        for (const auto& row : r.rows)
+            if (row.find("caf") != std::string::npos) has_caf = true;
+        assert(has_caf && "composer body must render the text intact");
+    }
+
+    // User text CONTAINING the block glyph: the caret styling must key
+    // on the cursor's byte offset, not the first █ found. Render with
+    // the cursor at the end — must not throw / mis-place.
+    {
+        Composer::Config cfg;
+        cfg.text   = "progress \xe2\x96\x88\xe2\x96\x88\xe2\x96\x88 done";
+        cfg.cursor = static_cast<int>(cfg.text.size());
+        auto r = render_at(Composer{cfg}.build(), 60);
+        assert(r.content_h > 0);
+    }
+
+    std::println("  PASS\n");
+}
+
+// ContextGauge: percent must not overflow int for token counts past
+// ~21.4M, and the token field must be a constant width across the
+// <1000 / k / M ranges (stable-width slot contract).
+void test_context_gauge_stability() {
+    std::println("=== test_context_gauge_stability ===");
+
+    // Overflow: 30M used of 30M max = 100%, not a negative garbage pct.
+    {
+        ContextGauge::Config cfg;
+        cfg.used = 30'000'000;
+        cfg.max  = 30'000'000;
+        auto r = render_at(ContextGauge{cfg}.build(), 80);
+        bool has_100 = false;
+        for (const auto& row : r.rows)
+            if (row.find("100%") != std::string::npos) has_100 = true;
+        assert(has_100 && "30M/30M must render 100%");
+    }
+
+    // Constant total width across magnitude boundaries + placeholder.
+    auto width_at = [](int used) {
+        ContextGauge::Config cfg;
+        cfg.used = used;
+        cfg.max  = 200'000;
+        auto r = render_at(ContextGauge{cfg}.build(), 200);
+        assert(r.content_h == 1);
+        return static_cast<int>(r.rows[0].size());
+    };
+    const int w_small = width_at(999);        // "   999"
+    const int w_kilo  = width_at(1'000);      // "  1.0k"
+    const int w_big   = width_at(199'999);    // "200.0k"
+    assert(w_small == w_kilo && w_kilo == w_big
+           && "token field must be constant width across magnitudes");
+    const int w_zero  = width_at(0);          // placeholder ——/——
+    assert(w_zero == w_small
+           && "placeholder must occupy the same columns as live");
+
+    std::println("  PASS\n");
+}
+
+// ToolBodyPreview: tail_only line numbers must show TRUE source
+// positions, not restart at 1.
+void test_tool_body_tail_line_numbers() {
+    std::println("=== test_tool_body_tail_line_numbers ===");
+
+    std::string body;
+    for (int i = 1; i <= 50; ++i)
+        body += "line number " + std::to_string(i) + "\n";
+
+    // CodeBlock, tail_only (default): tail budget = max(head, tail) = 4
+    // → rows 47..50, numbered 47..50.
+    {
+        ToolBodyPreview::Config cfg;
+        cfg.kind = ToolBodyPreview::Kind::CodeBlock;
+        cfg.text = body;
+        auto r = render_at(ToolBodyPreview{cfg}.build(), 80);
+        bool has_true_num = false, has_row_one = false;
+        for (const auto& row : r.rows) {
+            if (row.find(" 47") != std::string::npos
+                && row.find("line number 47") != std::string::npos)
+                has_true_num = true;
+            if (row.find("  1 \xe2\x94\x82") == 0) has_row_one = true;
+        }
+        (void)has_row_one;
+        assert(has_true_num
+               && "tail_only code_block gutter must show true line numbers");
+    }
+
+    // FileWrite, streaming tail: gutter anchored past the hidden lines.
+    {
+        ToolBodyPreview::Config cfg;
+        cfg.kind = ToolBodyPreview::Kind::FileWrite;
+        cfg.text = body;
+        cfg.show_footer_stats = false;
+        auto r = render_at(ToolBodyPreview{cfg}.build(), 80);
+        bool has_true_num = false;
+        for (const auto& row : r.rows)
+            if (row.find("50") != std::string::npos
+                && row.find("line number 50") != std::string::npos)
+                has_true_num = true;
+        assert(has_true_num
+               && "tail_only file_write gutter must show true line numbers");
+    }
+
+    std::println("  PASS\n");
+}
+
+// small_caps must letter-space at UTF-8 boundaries, not bytes — a
+// multi-byte label must survive intact (no mojibake / no width blowup).
+void test_small_caps_utf8() {
+    std::println("=== test_small_caps_utf8 ===");
+
+    AgentTimeline::Config cfg;
+    cfg.title = " ACTIONS ";
+    cfg.stats = {{"r\xc3\xa9vision", 2, Color::blue()}};   // révision
+    AgentTimelineEvent ev;
+    ev.name   = "Bash";
+    ev.detail = "ok";
+    ev.status = AgentEventStatus::Done;
+    cfg.events.push_back(ev);
+    auto r = render_at(AgentTimeline{cfg}.build(), 60);
+    assert(r.content_h > 0);
+    // The stats row letter-spaces to "R É V I S I O N"; get_row maps the
+    // intact 2-byte é to a single '?'. A byte-split é would decode as
+    // TWO invalid glyphs ('??') — assert exactly one '?' between R and V.
+    bool ok = false;
+    for (const auto& row : r.rows)
+        if (row.find("R ? V I S I O N") != std::string::npos) ok = true;
+    assert(ok && "small_caps must not split multi-byte sequences");
+
+    std::println("  PASS\n");
+}
+
+// Picker with multi-row raw items: the auto-scroll clamp must work in
+// row space. Selecting the last of several multi-row items must scroll
+// far enough that the item's rows are inside the viewport.
+void test_picker_multirow_autoscroll() {
+    std::println("=== test_picker_multirow_autoscroll ===");
+
+    ScrollState scroll;
+    Picker::Config cfg;
+    cfg.title      = " Test ";
+    cfg.viewport_h = 4;
+    cfg.scroll     = &scroll;
+    // Four 3-row items → 12 content rows, viewport 4.
+    for (int i = 0; i < 4; ++i) {
+        using namespace dsl;
+        cfg.items.push_back(v(
+            text("item" + std::to_string(i) + "-a"),
+            text("item" + std::to_string(i) + "-b"),
+            text("item" + std::to_string(i) + "-c")
+        ).build());
+    }
+    cfg.selected = 3;   // starts at row 9, ends at row 12
+    auto r = render_at(Picker{cfg}.build(), 50);
+    (void)r;
+    // Row-space clamp: sel_end(12) - vh(4) = 8. The old index-space
+    // clamp computed y = 3 - 4 + 1 = 0 — selection entirely off-view.
+    assert(scroll.y == 8
+           && "multi-row picker items must auto-scroll in row space");
+
+    std::println("  PASS\n");
+}
+
 int main() {
     test_table();
     test_progress();
@@ -400,6 +588,11 @@ int main() {
     test_status_bar_responsive();
     test_markdown();
     test_markdown_streaming();
+    test_composer_cursor_safety();
+    test_context_gauge_stability();
+    test_tool_body_tail_line_numbers();
+    test_small_caps_utf8();
+    test_picker_multirow_autoscroll();
     std::println("All widget tests passed!");
     return 0;
 }

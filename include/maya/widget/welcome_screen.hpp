@@ -672,7 +672,11 @@ private:
             char c = s[i];
             out.push_back(static_cast<char>(
                 (c >= 'a' && c <= 'z') ? (c - 32) : c));
-            if (i + 1 < s.size()) out.push_back(' ');
+            // Letter-space only at UTF-8 sequence boundaries — spacing
+            // every BYTE splits multi-byte titles into mojibake.
+            if (i + 1 < s.size()
+                && (static_cast<unsigned char>(s[i + 1]) & 0xC0) != 0x80)
+                out.push_back(' ');
         }
         return out;
     }

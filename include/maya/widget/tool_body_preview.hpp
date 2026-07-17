@@ -244,6 +244,13 @@ private:
         // Whether index `i` in `lines` is the position where the elision
         // marker should be inserted ABOVE (i.e., between i-1 and i).
         int elision_at = -1;
+        // Lines silently dropped BEFORE lines[0] with NO marker row — the
+        // tail_only path. Line-numbered renderers must offset their
+        // gutter by this so the tail shows TRUE source positions (509,
+        // 510, 511 of a 512-line output) instead of restarting at 1.
+        // Distinct from `elided`, which drives the visible "⋯ N more"
+        // marker; tail_only deliberately renders no marker.
+        int hidden_above = 0;
     };
 
     static ElidedPreview head_tail(std::string_view s, int head, int tail) {
@@ -290,6 +297,12 @@ private:
             // still get a meaningfully sized tail.
             const int t = (head > tail) ? head : tail;
             auto p = head_tail(s, 0, t);
+            // No marker row in tail mode — but PRESERVE the drop count
+            // as hidden_above so gutter renderers keep true line
+            // numbers. Zeroing it (the old behaviour) made a 512-line
+            // output's tail read "1, 2, 3, 4" — actively misleading
+            // when the user cross-references an error's line number.
+            p.hidden_above = p.elided;
             p.elision_at = -1;     // suppress marker emit at boundary
             p.elided     = 0;       // suppress "⋯ N more" row
             return p;
@@ -349,12 +362,10 @@ private:
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 1);
 
-        // Track TRUE line number in the original content. When the
-        // elision marker fires, jump line_num by p.elided so the tail
-        // rows show their actual positions (e.g., 1, 2, 3, ⋯ 506 more,
-        // 510, 511, 512 of a 512-line output) instead of consecutive
-        // rendered-row indices.
-        int line_num = 1;
+        // Track TRUE line number in the original content. hidden_above
+        // accounts for the tail_only silent drop (no marker row); the
+        // elision-marker jump below handles the head+tail split.
+        int line_num = 1 + p.hidden_above;
         for (int i = 0; i < static_cast<int>(p.lines.size()); ++i) {
             if (i == p.elision_at && p.elided > 0) {
                 rows.push_back(elision_marker(p.elided));
@@ -806,8 +817,9 @@ private:
         if (!cfg_.highlight_lines.empty())
             rows.push_back(highlight_summary_row());
 
-        // 2. Gutter rows.
-        int line_num = cfg_.start_line;
+        // 2. Gutter rows. hidden_above offsets past the tail_only drop
+        //    so the numbers stay anchored to the file's real lines.
+        int line_num = cfg_.start_line + p.hidden_above;
         for (int i = 0; i < static_cast<int>(p.lines.size()); ++i) {
             std::string_view ln = p.lines[std::size_t(i)];
             const bool hi = cfg_.highlight_lines.count(line_num) > 0;
@@ -950,7 +962,7 @@ private:
         // the visual order is "⋯ N more above" then the tail rows.
         if (p.elided > 0) rows.push_back(elision_marker(p.elided));
 
-        int line_num = (p.elided > 0) ? (p.elided + 1) : 1;
+        int line_num = p.elided + p.hidden_above + 1;
         for (std::size_t i = 0; i < p.lines.size(); ++i) {
             char numbuf[8];
             std::snprintf(numbuf, sizeof(numbuf), "%3d ", line_num++);

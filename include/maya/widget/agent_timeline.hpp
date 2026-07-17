@@ -311,8 +311,24 @@ private:
 
         if (is_terminal && !ev.hash_id.empty()) {
             ComponentElement comp;
-            comp.hash_id = ev.hash_id;
             std::string glyph{tree_glyph(i, cfg_.events.size())};
+            // The cache key must cover every byte the cached cells
+            // depend on — and the tree glyph is a function of the
+            // event's POSITION and the panel's EVENT COUNT, neither of
+            // which the host's content-addressed hash_id can know
+            // about. Without folding it in, a settled first tool cached
+            // as "── Bash" keeps blitting "──" after a second tool
+            // joins (its glyph should become "╭─"), and the panel
+            // renders an impossible tree ("──" followed by a connector
+            // and "╰─"). Deriving the key as (host id × glyph) keeps
+            // the freeze handoff a pure hit — live and frozen builds of
+            // the same event list produce the same glyph — while a
+            // position/count change correctly mints a fresh entry and
+            // re-renders with the right corner.
+            comp.hash_id = CacheIdBuilder{}
+                .add(ev.hash_id.hash())
+                .add(std::string_view{glyph})
+                .build();
             // FAST PATH: when the host supplied a shared body (terminal
             // tool bodies are immutable and already live behind a
             // shared_ptr in its cache), capture only the small header
@@ -594,7 +610,13 @@ private:
             char c = s[i];
             out.push_back(static_cast<char>(
                 (c >= 'a' && c <= 'z') ? (c - 32) : c));
-            if (i + 1 < s.size()) out.push_back(' ');
+            // Letter-space only at UTF-8 sequence boundaries: inserting
+            // after every BYTE splits multi-byte sequences ("R \xc3 \xa9
+            // …" mojibake for any non-ASCII label). The next byte is a
+            // continuation iff (b & 0xC0) == 0x80 — skip the space then.
+            if (i + 1 < s.size()
+                && (static_cast<unsigned char>(s[i + 1]) & 0xC0) != 0x80)
+                out.push_back(' ');
         }
         return out;
     }

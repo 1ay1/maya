@@ -108,18 +108,30 @@ private:
 // Cell - A single terminal cell (packed into 64 bits)
 // ============================================================================
 // Memory layout (8 bytes total):
-//   [0..3]  char32_t character   (32 bits)
-//   [4..5]  uint16_t style_id    (16 bits - index into StylePool)
-//   [6..7]  uint8_t  hyperlink_id high byte, width low byte
+//   [0..3]  char32_t character    (32 bits)
+//   [4..5]  uint16_t style_id     (16 bits - index into StylePool)
+//   [6]     uint8_t  hyperlink_id (8 bits  - index into a hyperlink pool)
+//   [7]     uint8_t  width        (8 bits  - wide-glyph marker; only 0/1/2)
 //
 // The pack/unpack scheme is designed so that identical cells produce
 // identical 64-bit values, enabling the diff to compare cells with a
 // single integer comparison.
+//
+// hyperlink_id is deliberately uint8_t, NOT uint16_t: byte 7 belongs to
+// `width`, and the diff/renderer hot paths read it as `packed >> 56`
+// (with the top bits assumed zero beyond the 3 width values). A 16-bit
+// hyperlink field shifted <<48 would silently overwrite the width byte
+// for ids > 255 — the diff would then misclassify those cells as
+// wide-glyph halves and skip/overdraw them. The narrow type makes that
+// overflow unrepresentable at compile time instead of a runtime surprise
+// for whichever future feature first interns >255 hyperlinks (such a
+// feature must widen the layout deliberately, touching every `>> 56`
+// reader, not by accident).
 
 struct Cell {
     char32_t character    = U' ';
     uint16_t style_id     = 0;
-    uint16_t hyperlink_id = 0;
+    uint8_t  hyperlink_id = 0;
     uint8_t  width        = 0;  // 0 = normal, 1 = wide first half, 2 = wide second half
 
     /// Pack all fields into a single 64-bit integer for fast comparison.
@@ -127,7 +139,7 @@ struct Cell {
         return static_cast<uint64_t>(character)
              | (static_cast<uint64_t>(style_id)     << 32)
              | (static_cast<uint64_t>(hyperlink_id) << 48)
-             | (static_cast<uint64_t>(width)        << 56);  // top 8 bits unused except 3
+             | (static_cast<uint64_t>(width)        << 56);
     }
 
     /// Reconstruct a Cell from its packed 64-bit representation.
@@ -135,7 +147,7 @@ struct Cell {
         return Cell{
             .character    = static_cast<char32_t>(packed & 0xFFFFFFFF),
             .style_id     = static_cast<uint16_t>((packed >> 32) & 0xFFFF),
-            .hyperlink_id = static_cast<uint16_t>((packed >> 48) & 0xFF),
+            .hyperlink_id = static_cast<uint8_t>((packed >> 48) & 0xFF),
             .width        = static_cast<uint8_t>((packed >> 56) & 0xFF),
         };
     }
@@ -147,6 +159,13 @@ struct Cell {
 static_assert(Cell{U'A', 42, 7, 1}.pack() != 0);
 static_assert(Cell::unpack(Cell{U'A', 42, 7, 1}.pack()) == Cell{U'A', 42, 7, 1});
 static_assert(Cell{}.pack() == Cell{U' ', 0, 0, 0}.pack());
+// Field-isolation proofs: the max value of each field must round-trip
+// without perturbing its neighbours (this is what the old uint16_t
+// hyperlink_id violated — id 256 packed into the width byte).
+static_assert(Cell::unpack(Cell{U'A', 65535, 255, 2}.pack())
+              == Cell{U'A', 65535, 255, 2});
+static_assert(Cell::unpack(Cell{U'A', 0, 255, 0}.pack()).width == 0);
+static_assert(Cell::unpack(Cell{U'A', 0, 0, 2}.pack()).hyperlink_id == 0);
 
 // ============================================================================
 // StylePool - Interning pool for Style objects

@@ -54,6 +54,50 @@ namespace detail {
 // Computed nodes are both (have subscribers AND dependencies).
 // Effects are pure sinks (have dependencies, no subscribers).
 
+struct ReactiveNode;
+
+// Thread-local list of nodes pending notification after a batch completes.
+// Declared ahead of ReactiveNode so ~ReactiveNode() can purge a dying node
+// from the queue. Wrapped in a function to avoid GCC's duplicate TLS-init
+// symbol bug with `inline thread_local` non-trivially-initialized types.
+inline std::vector<ReactiveNode*>& pending_notifications() {
+    thread_local std::vector<ReactiveNode*> v;
+    return v;
+}
+
+// ── Destruction-safe notification frames ────────────────────────────────
+// Every in-flight notification pass (the immediate path of
+// notify_subscribers, and flush_batch) iterates a LOCAL snapshot of raw
+// node pointers. If evaluating one node destroys another node that appears
+// later in the same snapshot (an Effect whose callback disposes another
+// Effect, a Computed dropped by a container rebuild), that snapshot entry
+// dangles and the pass would call evaluate() on freed memory.
+//
+// Each pass therefore registers its snapshot in this thread-local intrusive
+// stack; ~ReactiveNode() walks the stack and nulls every entry that points
+// at the dying node, and the passes skip null entries. Cost: one null check
+// per entry on the hot path; O(active frames × entries) only at node
+// destruction, which is rare and already O(edges) from the unlink.
+struct NotifyFrame {
+    std::vector<ReactiveNode*>* nodes;
+    NotifyFrame*                prev;
+};
+inline thread_local NotifyFrame* active_notify_frames = nullptr;
+
+// RAII registration of a snapshot vector as a notify frame. Exception-safe:
+// a throwing user callback unwinds through this and unregisters the frame.
+class NotifyFrameScope {
+    NotifyFrame frame_;
+public:
+    explicit NotifyFrameScope(std::vector<ReactiveNode*>& nodes) noexcept
+        : frame_{&nodes, active_notify_frames} {
+        active_notify_frames = &frame_;
+    }
+    ~NotifyFrameScope() { active_notify_frames = frame_.prev; }
+    NotifyFrameScope(const NotifyFrameScope&)            = delete;
+    NotifyFrameScope& operator=(const NotifyFrameScope&) = delete;
+};
+
 struct ReactiveNode {
     std::vector<ReactiveNode*> subscribers;
     std::vector<ReactiveNode*> dependencies;
@@ -63,9 +107,44 @@ struct ReactiveNode {
     // O(n) std::ranges::find scan in notify_subscribers().
     bool                       pending = false;
 
-    virtual ~ReactiveNode() = default;
+    virtual ~ReactiveNode() { unlink_all(); }
     virtual void mark_dirty() = 0;
     virtual void evaluate()   = 0;
+
+    // Fully detach this node from the reactive graph so NO raw pointer to
+    // a dead node survives anywhere. Four escape routes are closed:
+    //
+    //   1. dependencies → their subscriber lists drop us. Previously only
+    //      Effect::Node did this (in its own dtor); Computed::Node did
+    //      NOT, so a Computed destroyed before its source Signal left a
+    //      dangling subscriber pointer and the next Signal::set() called
+    //      mark_dirty()/evaluate() on freed memory.
+    //   2. subscribers → their dependency lists drop us. Previously a
+    //      Signal destroyed before its dependents left dangling
+    //      dependency pointers; the dependent's own clear_dependencies()
+    //      (at re-evaluation or destruction) then called unsubscribe()
+    //      through freed memory.
+    //   3. the batch queue — a node queued in pending_notifications() and
+    //      destroyed before the batch flushes must not be evaluated.
+    //   4. in-flight notification snapshots — see NotifyFrame above.
+    //
+    // Runs in the BASE destructor: the derived part is already gone, but
+    // nothing here touches derived state — only the intrusive edge lists.
+    void unlink_all() noexcept {
+        for (auto* dep : dependencies)
+            std::erase(dep->subscribers, this);
+        dependencies.clear();
+        for (auto* sub : subscribers)
+            std::erase(sub->dependencies, this);
+        subscribers.clear();
+        if (pending) {
+            std::erase(pending_notifications(), this);
+            pending = false;
+        }
+        for (auto* f = active_notify_frames; f; f = f->prev)
+            for (auto*& slot : *f->nodes)
+                if (slot == this) slot = nullptr;
+    }
 
     void subscribe(ReactiveNode* node) {
         if (std::ranges::find(subscribers, node) == subscribers.end()) {
@@ -115,14 +194,6 @@ inline thread_local ReactiveScope* current_scope = nullptr;
 // Thread-local batch depth counter. When > 0, notifications are deferred.
 inline thread_local int batch_depth = 0;
 
-// Thread-local list of nodes pending notification after batch completes.
-// Wrapped in a function to avoid GCC's duplicate TLS-init symbol bug
-// with `inline thread_local` non-trivially-initialized types.
-inline std::vector<ReactiveNode*>& pending_notifications() {
-    thread_local std::vector<ReactiveNode*> v;
-    return v;
-}
-
 inline ReactiveScope::ReactiveScope(ReactiveNode* node) noexcept
     : owner(node), previous(current_scope) {
     current_scope = this;
@@ -148,10 +219,14 @@ inline void notify_subscribers(ReactiveNode* source) {
         }
     } else {
         // Immediate: mark all subscribers dirty then evaluate.
-        // Copy the subscriber list — evaluation may modify it.
+        // Copy the subscriber list — evaluation may MUTATE it (re-tracking
+        // adds/removes edges) — and register the copy as a notify frame —
+        // evaluation may DESTROY nodes in it (an effect disposing another
+        // effect), which nulls their entry via ~ReactiveNode().
         auto subs = source->subscribers;
-        for (auto* sub : subs) sub->mark_dirty();
-        for (auto* sub : subs) sub->evaluate();
+        NotifyFrameScope frame(subs);
+        for (auto* sub : subs) if (sub) sub->mark_dirty();
+        for (auto* sub : subs) if (sub) sub->evaluate();
     }
 }
 
@@ -162,14 +237,20 @@ inline void notify_subscribers(ReactiveNode* source) {
 inline void flush_batch() {
     // Take ownership of the pending list so re-entrant batches work.
     auto nodes = std::move(pending_notifications());
+    // Register the local list as a notify frame BEFORE touching any node:
+    // evaluating nodes[i] may destroy nodes[j>i]. The dying node's dtor
+    // can't purge it from pending_notifications() (we already moved the
+    // entries out) — the frame nulling is what keeps the loop safe.
+    NotifyFrameScope frame(nodes);
     // Clear pending flags before evaluating so re-entrant signal sets
     // during evaluation can re-enqueue nodes correctly.
     for (auto* node : nodes) {
+        if (!node) continue;
         node->pending = false;
         node->mark_dirty();
     }
     for (auto* node : nodes) {
-        node->evaluate();
+        if (node) node->evaluate();
     }
 }
 
@@ -396,9 +477,10 @@ class Effect {
         explicit Node(MoveOnlyFunction<void()> fn)
             : effect_fn(std::move(fn)) {}
 
-        ~Node() override {
-            clear_dependencies();
-        }
+        // No explicit destructor: ~ReactiveNode::unlink_all() detaches
+        // this node from the whole graph (dependencies AND subscribers,
+        // batch queue, in-flight notify frames). The old Effect-only
+        // clear_dependencies() override is subsumed by that.
 
         void mark_dirty() override {
             dirty = true;

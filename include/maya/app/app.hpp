@@ -1164,13 +1164,18 @@ struct CmdContext {
 
     // TimerEntry tags each scheduled fire with the originating Sub::Every
     // interval (zero for one-shot Cmd::After). The re-arm logic in the
-    // main loop matches by interval so two distinct Sub::Every
-    // subscriptions don't cancel each other's re-arms (they would with a
-    // pure "any timer pending" check).
+    // main loop matches by (interval, ordinal) so two distinct Sub::Every
+    // subscriptions never cancel each other's re-arms — not even when
+    // they share the SAME interval. `ordinal` is the spec's occurrence
+    // index among same-interval specs in collect_timers() order: the
+    // k-th 100ms spec owns the k-th armed 100ms timer. A pure interval
+    // match (the previous scheme) starved every same-interval spec after
+    // the first — its Msg was never armed, silently, forever.
     struct TimerEntry {
         std::chrono::steady_clock::time_point fire_at;
         Msg                                   msg;
         std::chrono::milliseconds             interval{0};   // 0 = one-shot
+        std::uint32_t                         ordinal{0};    // spec index among same-interval
     };
     std::vector<TimerEntry>& timers;
     std::shared_ptr<BackgroundQueue<Msg>> bg_queue;
@@ -1502,15 +1507,23 @@ void run(RunConfig cfg = {}) {
         }
         // Deferred-write retry: if the last render() couldn't push its
         // bytes to the wire (WouldBlock), the writer is sitting on
-        // residue and needs a re-fire to drain it. Bound the poll
-        // timeout to a single-digit-millisecond retry interval so the
-        // residue clears within a couple of loop iterations rather
-        // than waiting for an unrelated event to come along. Surfaces
-        // as the resize-triggered full repaint resuming smoothly
-        // instead of pausing for seconds when the tty buffer saturates.
+        // residue and needs a re-fire to drain it. While residue is
+        // pending, render() DEFERS the frame entirely (its first act is
+        // try_drain_residue; a still-congested wire returns early), so
+        // rendering "immediately" is pointless — and a zero poll timeout
+        // (needs_render stays true while residue is pending, see the end
+        // of the render block) would busy-spin poll→defer→poll at 100%
+        // CPU until the tty drains. Clamp to a bounded retry band
+        // instead: floor 2ms (never spin, even when needs_render zeroed
+        // the timeout), ceiling 8ms (drain within a couple of loop
+        // iterations rather than waiting for an unrelated event).
+        // Surfaces as the resize-triggered full repaint resuming smoothly
+        // — at a few hundred cheap deferred iterations/sec, not a spin —
+        // when the tty buffer saturates.
         if (rt.has_pending_writes()) {
-            poll_timeout = std::min(poll_timeout,
-                                    std::chrono::milliseconds(8));
+            poll_timeout = std::clamp(poll_timeout,
+                                      std::chrono::milliseconds(2),
+                                      std::chrono::milliseconds(8));
         }
         // Pending-escape retry: the parser is holding a partial escape
         // sequence (lone ESC, or the head of an arrow/Home/End CSI). Only
@@ -1715,17 +1728,32 @@ void run(RunConfig cfg = {}) {
             auto now = std::chrono::steady_clock::now();
             std::vector<std::pair<std::chrono::milliseconds, Msg>> timer_specs;
             detail::collect_timers(current_sub, timer_specs);
-            for (auto& [interval, msg] : timer_specs) {
+            // Ordinal assignment: the k-th spec with a given interval (in
+            // collect_timers order — stable, it's a deterministic tree
+            // walk) owns the k-th armed timer with that interval. This is
+            // what lets two independent widgets both subscribe at, say,
+            // 100ms and each get their own Msg fired: a bare interval
+            // match would see the first spec's armed timer and skip the
+            // second spec every reconcile, starving it permanently.
+            for (std::size_t si = 0; si < timer_specs.size(); ++si) {
+                auto& [interval, msg] = timer_specs[si];
                 if (interval.count() <= 0) continue;   // ill-formed sub
+                std::uint32_t ordinal = 0;
+                for (std::size_t sj = 0; sj < si; ++sj)
+                    if (timer_specs[sj].first == interval) ++ordinal;
                 bool already_pending = false;
                 for (auto& t : timers) {
-                    if (t.interval == interval) { already_pending = true; break; }
+                    if (t.interval == interval && t.ordinal == ordinal) {
+                        already_pending = true;
+                        break;
+                    }
                 }
                 if (!already_pending) {
                     timers.push_back({
                         detail::saturate_add(now, interval),
                         std::move(msg),
                         interval,
+                        ordinal,
                     });
                 }
             }
@@ -2041,12 +2069,17 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         }
         // Deferred-write retry (mirrors the Program<P> loop, app.hpp ~1172):
         // the output fd is non-blocking, so a large frame can leave part of
-        // its bytes in the writer's residue. Bound the poll to a few ms so
-        // the residue drains on its own instead of waiting for the next
-        // input event — without this a backpressured first frame paints only
-        // partially and fills in one chunk per keypress.
+        // its bytes in the writer's residue. While residue is pending,
+        // render() defers the frame, so clamp the poll to a bounded 2–8ms
+        // retry band (floor included — a zero timeout from needs_render
+        // would otherwise spin poll→defer→poll at 100% CPU) so the residue
+        // drains on its own instead of waiting for the next input event —
+        // without this a backpressured first frame paints only partially
+        // and fills in one chunk per keypress.
         if (rt.has_pending_writes()) {
-            poll_timeout = std::min(poll_timeout, std::chrono::milliseconds(8));
+            poll_timeout = std::clamp(poll_timeout,
+                                      std::chrono::milliseconds(2),
+                                      std::chrono::milliseconds(8));
         }
         // Pending-escape retry (mirrors the Program<P> loop): the parser
         // holds a partial escape sequence that only flush_timeout() can

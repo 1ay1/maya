@@ -32,6 +32,56 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
             break;
 
         case State::Escape:
+            if (ch == 0x1b) {
+                // Double-ESC. Legacy altSendsEscape terminals prefix an
+                // ESC to mean Alt: ESC ESC alone is Alt+Escape, and
+                // ESC ESC [ A is Alt+Up. Latch alt and keep waiting for
+                // the rest — do NOT append the second ESC to buf_, so
+                // downstream parsers (parse_csi strips exactly "\x1b[")
+                // see the canonical single-ESC form.
+                //
+                // The old code fell into emit_alt_key(0x1b), whose
+                // ch < 0x20 remap produced Ctrl+Alt+'{' — a garbage
+                // event — and then re-parsed the sequence tail as bare
+                // keystrokes.
+                if (pending_alt_) {
+                    // Triple-ESC: resolve the pending pair as Alt+Escape,
+                    // restart a fresh (single) escape with this byte.
+                    events.emplace_back(KeyEvent{
+                        .key = SpecialKey::Escape,
+                        .mods = {.alt = true},
+                        .raw_sequence = "\x1b\x1b",
+                    });
+                    pending_alt_ = false;
+                } else {
+                    pending_alt_ = true;
+                }
+                escape_start_ = clock::now();
+                break;
+            }
+            if (ch >= 0x80) {
+                // Alt + non-ASCII: terminals send ESC followed by the
+                // key's UTF-8 bytes (Alt+é = ESC 0xC3 0xA9). Decode the
+                // codepoint through the shared UTF-8 machinery with the
+                // alt latch set; the completed KeyEvent carries alt=true.
+                // Previously this path emitted Alt+CharKey{lead-byte}
+                // plus stray invalid-byte events for the continuations.
+                pending_alt_ = true;
+                std::string prefix = std::move(buf_);
+                buf_.clear();
+                if (!begin_utf8(ch, std::move(prefix))) {
+                    // Invalid lead after ESC — emit the replacement
+                    // character with alt, resync to Ground.
+                    events.emplace_back(KeyEvent{
+                        .key = CharKey{char32_t{0xFFFD}},
+                        .mods = {.alt = true},
+                        .raw_sequence = std::string(1, static_cast<char>(ch)),
+                    });
+                    state_ = State::Ground;
+                    pending_alt_ = false;
+                }
+                break;
+            }
             buf_ += static_cast<char>(ch);
             if (ch == '[') {
                 state_ = State::Csi;
@@ -39,10 +89,13 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
                 state_ = State::Ss3;
             } else if (ch == ']') {
                 state_ = State::Osc;
+                pending_alt_ = false;   // OSC replies aren't keyboard input
             } else {
-                // Alt + key
+                // Alt + key (emit_alt_key already sets alt; a latched
+                // double-ESC collapses into the same event)
                 emit_alt_key(ch, events);
                 state_ = State::Ground;
+                pending_alt_ = false;
             }
             break;
 
@@ -56,22 +109,42 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
             if (buf_.size() >= kMaxCsiLen) {
                 state_ = State::Ground;
                 buf_.clear();
+                pending_alt_ = false;
                 break;
             }
             buf_ += static_cast<char>(ch);
             if (is_csi_final(ch)) {
+                // Apply a latched double-ESC alt prefix to whatever key
+                // events this CSI resolves to (ESC ESC [ A = Alt+Up).
+                // Mouse / focus / paste events are left untouched — the
+                // latch is a keyboard-modifier convention only.
+                const std::size_t before = events.size();
                 parse_csi(events);
+                if (pending_alt_) {
+                    for (std::size_t k = before; k < events.size(); ++k)
+                        if (auto* ke = std::get_if<KeyEvent>(&events[k]))
+                            ke->mods.alt = true;
+                }
                 if (state_ == State::Csi)
                     state_ = State::Ground;
+                pending_alt_ = false;
             }
             // Intermediate and parameter bytes: keep accumulating
             break;
 
-        case State::Ss3:
+        case State::Ss3: {
             buf_ += static_cast<char>(ch);
+            const std::size_t before = events.size();
             parse_ss3(ch, events);
+            if (pending_alt_) {
+                for (std::size_t k = before; k < events.size(); ++k)
+                    if (auto* ke = std::get_if<KeyEvent>(&events[k]))
+                        ke->mods.alt = true;
+            }
             state_ = State::Ground;
+            pending_alt_ = false;
             break;
+        }
 
         case State::Osc:
             // Bound the OSC buffer. A well-behaved terminal terminates an
@@ -104,36 +177,44 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
                 utf8_cp_ = (utf8_cp_ << 6) | (ch & 0x3F);
                 utf8_raw_ += static_cast<char>(ch);
                 if (--utf8_remaining_ == 0) {
+                    // Structural validation before emitting. A malformed
+                    // encoder (or hostile peer) can produce sequences
+                    // that decode "successfully" to codepoints UTF-8
+                    // forbids; launder them all to U+FFFD:
+                    //   - overlong: cp below the lead byte's minimum
+                    //     (classic smuggling vector — 0xC0 0xAF → '/')
+                    //   - surrogate halves D800–DFFF (not scalar values)
+                    //   - above U+10FFFF
+                    const bool valid =
+                        utf8_cp_ >= utf8_min_
+                        && utf8_cp_ <= 0x10FFFF
+                        && !(utf8_cp_ >= 0xD800 && utf8_cp_ <= 0xDFFF);
                     events.emplace_back(KeyEvent{
-                        .key = CharKey{utf8_cp_},
-                        .mods = {},
+                        .key = CharKey{valid ? utf8_cp_
+                                             : char32_t{0xFFFD}},
+                        .mods = {.alt = pending_alt_},
                         .raw_sequence = std::move(utf8_raw_),
                     });
                     state_ = State::Ground;
+                    pending_alt_ = false;
                 }
             } else {
-                // Invalid continuation — emit what we had and reprocess
+                // Invalid continuation — the partial sequence is
+                // malformed. Emit U+FFFD for it (the old code dropped
+                // the accumulated bytes silently) and resync on this
+                // byte, which may be the start of something valid.
+                events.emplace_back(KeyEvent{
+                    .key = CharKey{char32_t{0xFFFD}},
+                    .mods = {.alt = pending_alt_},
+                    .raw_sequence = std::move(utf8_raw_),
+                });
                 state_ = State::Ground;
+                pending_alt_ = false;
                 --i; // reprocess this byte
             }
             break;
 
         case State::BracketedPaste:
-            // Bound the paste buffer the same way OSC is bounded: a paste
-            // whose ESC[201~ terminator never arrives (dropped bytes, a
-            // hostile peer) must not accumulate forever. On overflow,
-            // emit what arrived as a best-effort paste and return to
-            // Ground — degraded (truncated paste) beats unbounded growth.
-            if (buf_.size() >= kMaxOscLen) {
-                events.emplace_back(PasteEvent{std::move(buf_)});
-                buf_.clear();
-                state_ = State::Ground;
-                // The current byte is not part of the flushed paste —
-                // reprocess it through the state machine (it may be the
-                // ESC of a new sequence, which ground_byte can't start).
-                --i;
-                break;
-            }
             buf_ += static_cast<char>(ch);
             // Look for the terminator: ESC [201~
             if (buf_.size() >= 6) {
@@ -142,30 +223,127 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
                     // Emit paste content (strip the terminator)
                     auto content = buf_.substr(0, buf_.size() - 6);
                     events.emplace_back(PasteEvent{std::move(content)});
+                    buf_.clear();
                     state_ = State::Ground;
+                    break;
                 }
+            }
+            // Bound the paste accumulation: a paste whose ESC[201~
+            // terminator never arrives (dropped bytes, a hostile peer)
+            // must not grow buf_ forever. Past the cap, ship what
+            // arrived as a PasteEvent CHUNK and stay in BracketedPaste
+            // — an oversized paste streams out as multiple events
+            // rather than one truncated event plus garbage keystrokes.
+            //
+            // Crucially, withhold any buffer tail that is a proper
+            // prefix of the terminator: if the cap lands mid-"\x1b[201~",
+            // a naive flush would ship half the terminator inside the
+            // paste content and re-parse the other half as keystrokes
+            // (paste injection). The ≤5 withheld bytes complete (or
+            // fail) the match against subsequent input as usual.
+            if (buf_.size() >= kMaxOscLen) {
+                static constexpr std::string_view kTerm = "\x1b[201~";
+                std::size_t keep = 0;
+                for (std::size_t k = kTerm.size() - 1; k > 0; --k) {
+                    if (buf_.size() >= k
+                        && std::string_view(buf_).substr(buf_.size() - k)
+                               == kTerm.substr(0, k)) {
+                        keep = k;
+                        break;
+                    }
+                }
+                std::string chunk = buf_.substr(0, buf_.size() - keep);
+                buf_.erase(0, buf_.size() - keep);
+                events.emplace_back(PasteEvent{std::move(chunk)});
             }
             break;
         }
     }
+
+    // Inactivity clock for flush_timeout(): any partial sequence still
+    // pending after this feed measures its timeout from the LAST byte
+    // that arrived, so a slowly-streaming (but live) sequence is never
+    // chopped mid-flight — only a genuinely stalled one.
+    if (state_ != State::Ground && !bytes.empty())
+        escape_start_ = clock::now();
 
     return events;
 }
 
 auto InputParser::flush_timeout() -> std::vector<Event> {
     std::vector<Event> events;
+    if (state_ == State::Ground) return events;
 
-    if (state_ == State::Escape && !buf_.empty()) {
-        auto elapsed = clock::now() - escape_start_;
+    const auto elapsed = clock::now() - escape_start_;
+
+    // Return-to-ground hygiene shared by every branch below.
+    auto to_ground = [&] {
+        state_ = State::Ground;
+        buf_.clear();
+        utf8_raw_.clear();
+        utf8_remaining_ = 0;
+        pending_alt_ = false;
+    };
+
+    switch (state_) {
+    case State::Escape:
+        // The classic lone-ESC disambiguation: no second byte arrived, so
+        // it really was the Escape key (Alt+Escape after a double-ESC).
         if (elapsed >= escape_timeout_) {
             events.emplace_back(KeyEvent{
                 .key = SpecialKey::Escape,
-                .mods = {},
+                .mods = {.alt = pending_alt_},
                 .raw_sequence = std::move(buf_),
             });
-            buf_.clear();
-            state_ = State::Ground;
+            to_ground();
         }
+        break;
+
+    case State::Csi:
+    case State::Ss3:
+        // Truncated control sequence (dropped bytes on a flaky pty /
+        // SSH / tmux). Abandon it — emitting a guess would be worse.
+        // Without this rescue the FSM wedged here FOREVER: has_pending()
+        // kept the event loop waking every 16ms, and the user's next
+        // real keystrokes were swallowed as CSI parameter bytes until
+        // one happened to land in the final-byte range 0x40–0x7E.
+        if (elapsed >= escape_timeout_) to_ground();
+        break;
+
+    case State::Utf8:
+        // Truncated codepoint. Surface U+FFFD so the byte loss is
+        // visible (and any latched Alt isn't silently dropped), resync.
+        if (elapsed >= escape_timeout_) {
+            events.emplace_back(KeyEvent{
+                .key = CharKey{char32_t{0xFFFD}},
+                .mods = {.alt = pending_alt_},
+                .raw_sequence = std::move(utf8_raw_),
+            });
+            to_ground();
+        }
+        break;
+
+    case State::Osc:
+        // OSC replies (clipboard reads) can be megabytes streaming over
+        // a slow link, so the deadline is generous — and it's an
+        // INACTIVITY deadline (feed() refreshes escape_start_ on every
+        // chunk), so only a truly dead transfer is abandoned.
+        if (elapsed >= kOscTimeout) to_ground();
+        break;
+
+    case State::BracketedPaste:
+        // Lost terminator. Flush what arrived as a best-effort paste —
+        // for a real (huge but healthy) paste the inactivity clock keeps
+        // resetting, so this only fires when the stream truly died.
+        if (elapsed >= kPasteTimeout) {
+            if (!buf_.empty())
+                events.emplace_back(PasteEvent{std::move(buf_)});
+            to_ground();
+        }
+        break;
+
+    case State::Ground:
+        break;
     }
 
     return events;
@@ -178,6 +356,9 @@ bool InputParser::has_pending() const noexcept {
 void InputParser::reset() noexcept {
     state_ = State::Ground;
     buf_.clear();
+    pending_alt_ = false;
+    utf8_remaining_ = 0;
+    utf8_raw_.clear();
     osc5522_active_ = false;
     osc5522_locked_ = false;
     osc5522_mime_.clear();
@@ -187,6 +368,33 @@ void InputParser::reset() noexcept {
 // ============================================================================
 // InputParser private methods
 // ============================================================================
+
+bool InputParser::begin_utf8(uint8_t ch, std::string prefix) {
+    // Classify the lead byte, rejecting values that can only produce
+    // ill-formed UTF-8 (RFC 3629 table):
+    //   0x80–0xBF  stray continuation (no lead)
+    //   0xC0/0xC1  2-byte lead whose every decoding is overlong
+    //   0xF5–0xFF  4-byte lead beyond U+10FFFF (or 5/6-byte legacy)
+    // utf8_min_ records the smallest codepoint the accepted lead may
+    // encode; the completion path rejects anything below it (overlong)
+    // plus surrogates — so both halves of validation are structural.
+    int      len;
+    char32_t min;
+    if ((ch & 0xE0) == 0xC0)      { len = 2; min = 0x80; }
+    else if ((ch & 0xF0) == 0xE0) { len = 3; min = 0x800; }
+    else if ((ch & 0xF8) == 0xF0) { len = 4; min = 0x10000; }
+    else return false;              // stray continuation or 0xF8+
+    if (ch < 0xC2) return false;    // 0xC0/0xC1: overlong by construction
+    if (ch > 0xF4) return false;    // beyond U+10FFFF by construction
+
+    utf8_cp_        = ch & (0xFF >> (len + 1));
+    utf8_remaining_ = static_cast<uint8_t>(len - 1);
+    utf8_min_       = min;
+    utf8_raw_       = std::move(prefix);
+    utf8_raw_      += static_cast<char>(ch);
+    state_          = State::Utf8;
+    return true;
+}
 
 void InputParser::ground_byte(uint8_t ch, std::vector<Event>& events) {
     if (ch == '\r' || ch == '\n') {
@@ -234,28 +442,14 @@ void InputParser::ground_byte(uint8_t ch, std::vector<Event>& events) {
             .mods = {},
             .raw_sequence = std::string(1, static_cast<char>(ch)),
         });
-    } else if ((ch & 0xE0) == 0xC0) {
-        // UTF-8 2-byte lead
-        utf8_cp_ = ch & 0x1F;
-        utf8_remaining_ = 1;
-        utf8_raw_.assign(1, static_cast<char>(ch));
-        state_ = State::Utf8;
-    } else if ((ch & 0xF0) == 0xE0) {
-        // UTF-8 3-byte lead
-        utf8_cp_ = ch & 0x0F;
-        utf8_remaining_ = 2;
-        utf8_raw_.assign(1, static_cast<char>(ch));
-        state_ = State::Utf8;
-    } else if ((ch & 0xF8) == 0xF0) {
-        // UTF-8 4-byte lead
-        utf8_cp_ = ch & 0x07;
-        utf8_remaining_ = 3;
-        utf8_raw_.assign(1, static_cast<char>(ch));
-        state_ = State::Utf8;
-    } else {
-        // Invalid byte, emit as-is
+    } else if (!begin_utf8(ch, {})) {
+        // Invalid UTF-8 lead (stray continuation, overlong 0xC0/0xC1,
+        // 0xF5+). Strict decoder: emit U+FFFD rather than laundering
+        // the raw byte into a bogus codepoint — the old fallback
+        // emitted CharKey{ch}, which smuggled non-characters into
+        // hosts' text handling.
         events.emplace_back(KeyEvent{
-            .key = CharKey{static_cast<char32_t>(ch)},
+            .key = CharKey{char32_t{0xFFFD}},
             .mods = {},
             .raw_sequence = std::string(1, static_cast<char>(ch)),
         });

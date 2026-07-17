@@ -1,7 +1,9 @@
 // Tests for the input parser FSM: key events, mouse, UTF-8, modifiers
 #include <maya/maya.hpp>
 #include <cassert>
+#include <chrono>
 #include <print>
+#include <thread>
 
 using namespace maya;
 
@@ -531,6 +533,144 @@ void test_input_reset_clears_state() {
     std::println("PASS\n");
 }
 
+// ── Regression tests for the escape/UTF-8 hardening pass ──────────────
+
+void test_input_double_esc_is_alt_escape() {
+    std::println("--- test_input_double_esc_is_alt_escape ---");
+    // ESC ESC with nothing after = Alt+Escape (altSendsEscape). Before
+    // the alt latch, this decoded as Ctrl+Alt+'{' — a garbage event.
+    InputParser p;
+    auto events = p.feed("\x1b\x1b");
+    assert(events.empty());          // still ambiguous — could prefix a CSI
+    assert(p.has_pending());
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    events = p.flush_timeout();
+    assert(events.size() == 1);
+    const KeyEvent& ke = get_key(events[0]);
+    const auto* sk = std::get_if<SpecialKey>(&ke.key);
+    assert(sk != nullptr && *sk == SpecialKey::Escape);
+    assert(ke.mods.alt);
+    assert(!p.has_pending());
+    std::println("PASS\n");
+}
+
+void test_input_double_esc_csi_is_alt_arrow() {
+    std::println("--- test_input_double_esc_csi_is_alt_arrow ---");
+    // ESC ESC [ A = Alt+Up on altSendsEscape terminals. Before the
+    // latch: garbage Ctrl+Alt+'{' + the tail re-parsed as a bare CSI.
+    InputParser p;
+    auto events = p.feed("\x1b\x1b[A");
+    assert(events.size() == 1);
+    const KeyEvent& ke = get_key(events[0]);
+    const auto* sk = std::get_if<SpecialKey>(&ke.key);
+    assert(sk != nullptr && *sk == SpecialKey::Up);
+    assert(ke.mods.alt);
+    std::println("PASS\n");
+}
+
+void test_input_alt_utf8_key() {
+    std::println("--- test_input_alt_utf8_key ---");
+    // Alt+é arrives as ESC 0xC3 0xA9. Before the fix: Alt+CharKey{0xC3}
+    // plus a stray invalid-byte event.
+    InputParser p;
+    auto events = p.feed("\x1b\xc3\xa9");
+    assert(events.size() == 1);
+    const KeyEvent& ke = get_key(events[0]);
+    const auto* ck = std::get_if<CharKey>(&ke.key);
+    assert(ck != nullptr && ck->codepoint == U'\u00e9');
+    assert(ke.mods.alt);
+    std::println("PASS\n");
+}
+
+void test_input_overlong_utf8_rejected() {
+    std::println("--- test_input_overlong_utf8_rejected ---");
+    // 0xC0 0xAF is the classic overlong '/' smuggle. Strict decoder
+    // rejects the 0xC0 lead outright (U+FFFD), never emits '/'.
+    InputParser p;
+    auto events = p.feed("\xc0\xaf");
+    assert(!events.empty());
+    for (const auto& ev : events) {
+        const KeyEvent& ke = get_key(ev);
+        const auto* ck = std::get_if<CharKey>(&ke.key);
+        assert(ck != nullptr);
+        assert(ck->codepoint != U'/');
+        assert(ck->codepoint == char32_t{0xFFFD});
+    }
+    // Overlong 3-byte: 0xE0 0x80 0xAF would decode to U+002F as well.
+    events = p.feed("\xe0\x80\xaf");
+    for (const auto& ev : events) {
+        const auto* ck = std::get_if<CharKey>(&get_key(ev).key);
+        assert(ck == nullptr || ck->codepoint != U'/');
+    }
+    std::println("PASS\n");
+}
+
+void test_input_surrogate_utf8_rejected() {
+    std::println("--- test_input_surrogate_utf8_rejected ---");
+    // 0xED 0xA0 0x80 decodes numerically to U+D800 — a surrogate half,
+    // not a scalar value. Must surface as U+FFFD, not smuggle through.
+    InputParser p;
+    auto events = p.feed("\xed\xa0\x80");
+    assert(!events.empty());
+    bool saw_fffd = false;
+    for (const auto& ev : events) {
+        const auto* ck = std::get_if<CharKey>(&get_key(ev).key);
+        assert(ck != nullptr);
+        assert(!(ck->codepoint >= 0xD800 && ck->codepoint <= 0xDFFF));
+        if (ck->codepoint == char32_t{0xFFFD}) saw_fffd = true;
+    }
+    assert(saw_fffd);
+    std::println("PASS\n");
+}
+
+void test_input_stray_continuation_rejected() {
+    std::println("--- test_input_stray_continuation_rejected ---");
+    // A lone continuation byte (no lead) is ill-formed. Old fallback
+    // emitted CharKey{0x85} (a C1 control); strict decoder says U+FFFD.
+    InputParser p;
+    auto events = p.feed("\x85");
+    assert(events.size() == 1);
+    const auto* ck = std::get_if<CharKey>(&get_key(events[0]).key);
+    assert(ck != nullptr && ck->codepoint == char32_t{0xFFFD});
+    std::println("PASS\n");
+}
+
+void test_input_invalid_continuation_resyncs() {
+    std::println("--- test_input_invalid_continuation_resyncs ---");
+    // Lead byte followed by ASCII instead of a continuation: the parser
+    // must surface the malformed prefix as U+FFFD AND still deliver the
+    // ASCII byte (old code silently dropped the partial sequence).
+    InputParser p;
+    auto events = p.feed("\xc3" "a");
+    assert(events.size() == 2);
+    const auto* bad = std::get_if<CharKey>(&get_key(events[0]).key);
+    assert(bad != nullptr && bad->codepoint == char32_t{0xFFFD});
+    const auto* ok = std::get_if<CharKey>(&get_key(events[1]).key);
+    assert(ok != nullptr && ok->codepoint == U'a');
+    std::println("PASS\n");
+}
+
+void test_input_stale_csi_rescued_by_timeout() {
+    std::println("--- test_input_stale_csi_rescued_by_timeout ---");
+    // A truncated CSI ("ESC [ 1" then silence — dropped bytes on a flaky
+    // pty) used to wedge the FSM forever: has_pending() stayed true and
+    // the next keystrokes were swallowed as parameter bytes. The timeout
+    // must abandon it and hand the parser back to Ground.
+    InputParser p;
+    auto events = p.feed("\x1b[1");
+    assert(events.empty());
+    assert(p.has_pending());
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    events = p.flush_timeout();
+    assert(events.empty());          // nothing fabricated from the fragment
+    assert(!p.has_pending());        // FSM back at Ground
+    events = p.feed("a");            // next keystroke arrives intact
+    assert(events.size() == 1);
+    const auto* ck = std::get_if<CharKey>(&get_key(events[0]).key);
+    assert(ck != nullptr && ck->codepoint == U'a');
+    std::println("PASS\n");
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     test_input_ascii_char();
@@ -575,5 +715,13 @@ int main() {
     test_input_mixed_sequence();
     test_input_has_pending_false_after_complete();
     test_input_reset_clears_state();
-    std::println("=== ALL 42 TESTS PASSED ===");
+    test_input_double_esc_is_alt_escape();
+    test_input_double_esc_csi_is_alt_arrow();
+    test_input_alt_utf8_key();
+    test_input_overlong_utf8_rejected();
+    test_input_surrogate_utf8_rejected();
+    test_input_stray_continuation_rejected();
+    test_input_invalid_continuation_resyncs();
+    test_input_stale_csi_rescued_by_timeout();
+    std::println("=== ALL 50 TESTS PASSED ===");
 }

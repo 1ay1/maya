@@ -254,7 +254,7 @@ public:
 private:
     void optimize();
     static bool try_merge(RenderOp& existing, const RenderOp& incoming);
-    static bool try_cancel_cursor(const RenderOp& existing, const RenderOp& incoming);
+    static bool try_collapse_cursor(const RenderOp& existing, const RenderOp& incoming);
     void serialize(std::string& buf) const;
     [[nodiscard]] auto write_all(std::string_view data) const -> Status;
 };

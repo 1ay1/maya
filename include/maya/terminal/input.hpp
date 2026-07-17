@@ -140,8 +140,24 @@ public:
     /// Feed raw bytes and extract all complete events.
     [[nodiscard]] auto feed(std::string_view bytes) -> std::vector<Event>;
 
-    /// Call after a poll/read timeout to resolve ambiguous escape.
-    /// If we have a pending bare ESC that has timed out, emit it.
+    /// Call after a poll/read timeout to resolve a stalled partial
+    /// sequence. Per-state deadlines (measured from the LAST byte fed
+    /// while a sequence was pending, so a slowly-streaming sequence is
+    /// never chopped mid-flight):
+    ///   Escape          → emit the bare Escape key (Alt+Escape after
+    ///                     a double-ESC) after 50ms.
+    ///   Csi / Ss3       → abandon the partial sequence after 50ms so a
+    ///                     truncated CSI (dropped bytes on a flaky pty)
+    ///                     can't wedge the FSM and swallow subsequent
+    ///                     keystrokes as parameter bytes forever.
+    ///   Utf8            → emit U+FFFD for the truncated codepoint after
+    ///                     50ms and resync.
+    ///   Osc             → abandon after 1s (OSC replies can be large and
+    ///                     stream slowly over SSH; only true inactivity
+    ///                     aborts).
+    ///   BracketedPaste  → flush the accumulated bytes as a PasteEvent
+    ///                     after 2s of silence (lost \x1b[201~ terminator;
+    ///                     a live paste keeps resetting the clock).
     [[nodiscard]] auto flush_timeout() -> std::vector<Event>;
 
     /// Check if the parser has a partial sequence buffered.
@@ -152,7 +168,10 @@ public:
 
 private:
     using clock = std::chrono::steady_clock;
+    // Inactivity deadlines per pending state — see flush_timeout() docs.
     static constexpr auto escape_timeout_ = std::chrono::milliseconds(50);
+    static constexpr auto kOscTimeout     = std::chrono::milliseconds(1000);
+    static constexpr auto kPasteTimeout   = std::chrono::milliseconds(2000);
 
     // Upper bound on a single OSC string's accumulated length. OSC 52
     // clipboard responses can carry a base64 image (the terminal reads
@@ -180,10 +199,19 @@ private:
 
     State       state_ = State::Ground;
     std::string buf_;
+    // Time of the LAST byte fed while a partial sequence was pending.
+    // flush_timeout() measures inactivity from here, so any state can be
+    // rescued from a truncated sequence — not just a bare Escape.
     clock::time_point escape_start_;
     char32_t    utf8_cp_ = 0;      // accumulated codepoint
     uint8_t     utf8_remaining_ = 0; // continuation bytes left
+    char32_t    utf8_min_ = 0;     // smallest codepoint the lead byte may encode
     std::string utf8_raw_;         // raw bytes for the sequence
+    // Alt latch. Set by a double-ESC prefix (legacy altSendsEscape:
+    // ESC ESC <seq> means Alt+<seq>) and by an ESC-prefixed UTF-8 lead
+    // (Alt+é arrives as ESC 0xC3 0xA9). Applied to the KeyEvent(s) the
+    // pending sequence resolves to, then cleared on return to Ground.
+    bool        pending_alt_ = false;
 
     // Character classification
     static constexpr bool is_csi_final(uint8_t ch) noexcept {
@@ -192,6 +220,13 @@ private:
 
     // Ground state: plain bytes
     void ground_byte(uint8_t ch, std::vector<Event>& events);
+
+    // Start a UTF-8 multi-byte sequence from its lead byte. Shared by
+    // the Ground path and the Escape path (Alt + non-ASCII). `prefix`
+    // carries any already-consumed raw bytes (the ESC of an alt latch)
+    // so raw_sequence stays faithful. Returns false if `ch` is not a
+    // valid lead (overlong 0xC0/0xC1, 0xF5+, stray continuation).
+    [[nodiscard]] bool begin_utf8(uint8_t ch, std::string prefix);
 
     // Alt + key
     void emit_alt_key(uint8_t ch, std::vector<Event>& events);

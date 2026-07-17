@@ -206,6 +206,19 @@ void diff(
         // If old canvas had non-blank cells beyond last_content, a single
         // \x1b[K (erase to end of line) replaces what would otherwise be
         // dozens of individual space writes + cursor moves.
+        //
+        // Soundness guard: \x1b[K erases to the PHYSICAL end of the line,
+        // not to x1. It is only equivalent to "blank the cells in
+        // [last_content+1, x1)" when the damage window reaches the
+        // canvas's right edge (x1 == width) — true for every current
+        // caller (full-width damage rects). For a partial-width window
+        // with live content right of x1, EL would wipe screen cells the
+        // front canvas still records as present: silent front/screen
+        // divergence no later diff would repair (the bytes match in
+        // memory). Such a window instead takes the per-cell fallback
+        // below — explicit blank writes bounded to [trail_start, x1) —
+        // because the main loop never walks past content_end and would
+        // otherwise leave the stale trail on screen entirely.
         if (old_row_valid && last_content < static_cast<int>(x1) - 1) {
             const auto trail_start = static_cast<std::size_t>(last_content + 1);
             const auto trail_end   = std::min(static_cast<std::size_t>(x1),
@@ -213,17 +226,20 @@ void diff(
             // Use SIMD to check if old trailing region is all blank.
             // bulk_eq against a blank row would require a blank buffer;
             // instead use find_first_diff against the new (already blank)
-            // region — if old differs from new anywhere, we need EL.
-            bool need_el = false;
+            // region — if old differs from new anywhere, we need to clear.
+            bool need_clear = false;
+            std::size_t first_diff = 0;
             if (trail_start < trail_end) {
                 const std::size_t trail_len = trail_end - trail_start;
                 const std::size_t same = simd::find_first_diff(
                     new_cells + new_row_base + trail_start,
                     old_cells + old_row_base + trail_start,
                     trail_len);
-                need_el = (same < trail_len);
+                need_clear = (same < trail_len);
+                first_diff = trail_start + same;
             }
-            if (need_el) {
+            if (need_clear && x1 == width) {
+                // Full-width window: one EL wipes the whole trail.
                 flush_ascii();
                 const int el_col = last_content + 1;
                 if (cursor_x != el_col || cursor_y != y) {
@@ -237,6 +253,27 @@ void diff(
                 out += "\x1b[K";
                 cursor_x = el_col;
                 cursor_y = y;
+            } else if (need_clear) {
+                // Partial-width window: bounded per-cell blank writes.
+                // Start at the first actual difference — cells before it
+                // are already blank on screen.
+                flush_ascii();
+                if (current_style != 0) {
+                    out.append(pool.sgr(0));
+                    current_style = 0;
+                }
+                for (std::size_t cx = first_diff; cx < trail_end; ++cx) {
+                    if (new_cells[new_row_base + cx]
+                        == old_cells[old_row_base + cx]) continue;
+                    const int col = static_cast<int>(cx);
+                    if (cursor_x != col || cursor_y != y) {
+                        detail::write_cup(out, col + 1, y + 1);
+                        cursor_x = col;
+                        cursor_y = y;
+                    }
+                    out += ' ';
+                    ++cursor_x;
+                }
             }
         }
     }

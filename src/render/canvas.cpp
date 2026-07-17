@@ -413,7 +413,9 @@ Canvas::Canvas(int width, int height, StylePool* pool)
     , style_pool_(pool)
     , damage_{{Columns{0}, Rows{0}}, {Columns{width}, Rows{height}}}
 {
-    cells_.resize(static_cast<std::size_t>(width_ * height_), default_cell());
+    cells_.resize(static_cast<std::size_t>(width_)
+                      * static_cast<std::size_t>(height_),
+                  default_cell());
     last_col_.assign(static_cast<std::size_t>(height_), -1);
     row_epoch_.assign(static_cast<std::size_t>(height_), 0);
 }
@@ -598,10 +600,14 @@ void Canvas::clear() {
     // scrollback corruption once a stale row scrolls past term_h)
     // dominates the perf delta. damage_ stays full_rect; max_y_
     // resets to -1.
-    const int total_cells = width_ * height_;
+    // Widen BEFORE multiplying: `width_ * height_` in int is UB on
+    // overflow. Unreachable for a real terminal, but inline auto-grow
+    // canvases are as tall as the streamed content — keep the math total.
+    const std::size_t total_cells = static_cast<std::size_t>(width_)
+                                  * static_cast<std::size_t>(height_);
     if (total_cells > 0) {
         simd::streaming_fill(cells_.data(),
-                             static_cast<std::size_t>(total_cells),
+                             total_cells,
                              blank);
         std::fill(last_col_.begin(), last_col_.end(), -1);
         stamp_rows(0, height_);
@@ -755,7 +761,8 @@ void Canvas::resize(int w, int h) {
     width_ = w;
     height_ = h;
     max_y_ = -1;
-    cells_.assign(static_cast<std::size_t>(w * h), default_cell());
+    cells_.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h),
+                  default_cell());
     last_col_.assign(static_cast<std::size_t>(h), -1);
     // Fresh allocation — nothing previously recorded against this canvas
     // may skip. epoch_counter_ survives the resize (monotonic for the

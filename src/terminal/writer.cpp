@@ -379,8 +379,10 @@ void Writer::optimize() {
         if (write > 0 && try_merge(ops_[write - 1], ops_[read])) {
             continue;
         }
-        if (write > 0 && try_cancel_cursor(ops_[write - 1], ops_[read])) {
-            --write;
+        if (write > 0 && try_collapse_cursor(ops_[write - 1], ops_[read])) {
+            // Adjacent Show/Hide (either order): the SECOND op wins —
+            // replace the first with it and drop the duplicate slot.
+            ops_[write - 1] = ops_[read];
             continue;
         }
         if (write != read)
@@ -413,10 +415,21 @@ bool Writer::try_merge(RenderOp& existing, const RenderOp& incoming) {
     }, existing, incoming);
 }
 
-bool Writer::try_cancel_cursor(const RenderOp& existing, const RenderOp& incoming) {
+bool Writer::try_collapse_cursor(const RenderOp& existing, const RenderOp& incoming) {
+    // An adjacent CursorHide/CursorShow pair (either order) collapses to
+    // its SECOND op — the terminal's cursor-visibility state is just the
+    // last DECTCEM it received, so only the final op in a run matters.
+    //
+    // The previous peephole DELETED both ops ("they cancel"), which is
+    // only correct if the terminal already happened to be in the pair's
+    // final state. Hide,Show starting from a hidden cursor must end
+    // VISIBLE; annihilating the pair left it hidden. Same-op runs
+    // (Show,Show) are also collapsed — free dedup, identical semantics.
     return std::visit(overload{
         [](const render_op::CursorHide&, const render_op::CursorShow&) { return true; },
         [](const render_op::CursorShow&, const render_op::CursorHide&) { return true; },
+        [](const render_op::CursorShow&, const render_op::CursorShow&) { return true; },
+        [](const render_op::CursorHide&, const render_op::CursorHide&) { return true; },
         [](const auto&, const auto&) { return false; }
     }, existing, incoming);
 }

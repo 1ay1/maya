@@ -401,10 +401,52 @@ bool contains(const std::string& s, std::string_view needle) {
     if (contains(term, "foot"))     return true;
     if (contains(term, "rio"))      return true;
 
-    // tmux/screen sit between us and the host terminal. They support
-    // 2026 passthrough only when explicitly configured (terminal-features
-    // ',sync' on tmux 3.4+); we can't tell from env alone, so assume no.
-    if (contains(term, "tmux") || term == "screen" || contains(term, "screen-")) {
+    // tmux/screen sit between us and the host terminal, so ALL of the
+    // outer terminal's identifying env vars (KITTY_WINDOW_ID, GHOSTTY_*,
+    // VTE_VERSION, …) are STRIPPED inside a pane — the env heuristic above
+    // is structurally blind here. The blanket "assume no" that used to live
+    // here mis-fires on the common modern case (tmux 3.4+ under a
+    // sync-capable terminal), leaving apps to needlessly throttle animation
+    // to avoid a tearing that never happens.
+    //
+    // What DOES survive the multiplexer, and lets us answer honestly:
+    //
+    //  1. tmux publishes its OWN version as TERM_PROGRAM=tmux +
+    //     TERM_PROGRAM_VERSION (e.g. "3.7b"). tmux 3.4 (2024) is where
+    //     synchronized-output passthrough became reliable and on by default
+    //     for capable terminals. So a modern tmux is a positive signal —
+    //     mirrors the iTerm version check above.
+    //  2. COLORTERM=truecolor/24bit is forwarded by tmux and ssh, and only
+    //     modern terminals set it; it's a strong "the outer terminal is
+    //     recent" tell. On its own that's suggestive, not proof, so we only
+    //     lean on it together with being inside a multiplexer.
+    //
+    // Emitting CSI ?2026h/l is harmless when unsupported (tmux forwards or
+    // drops the private mode; the outer terminal no-ops an unknown one), so
+    // the downside of a false-positive here is nil — worst case an app keeps
+    // its normal cadence on a terminal that happens to tear slightly, which
+    // is exactly the pre-tmux default for every unrecognised terminal.
+    const bool in_multiplexer =
+        !env_str("TMUX").empty()
+        || contains(term, "tmux") || term == "screen"
+        || contains(term, "screen-") || contains(term, "screen.");
+    if (in_multiplexer) {
+        // tmux reporting its own version via TERM_PROGRAM_VERSION.
+        if (term_program == "tmux") {
+            auto ver = env_str("TERM_PROGRAM_VERSION");
+            int major = 0, minor = 0;
+            // Versions look like "3.7b" / "3.4" / "next-3.5"; skip any
+            // leading non-digits, then read MAJOR.MINOR.
+            const char* p = ver.c_str();
+            while (*p && (*p < '0' || *p > '9')) ++p;
+            if (std::sscanf(p, "%d.%d", &major, &minor) >= 1)
+                return (major > 3) || (major == 3 && minor >= 4);
+        }
+        // No usable tmux version (older tmux, or GNU screen): fall back to
+        // the truecolor tell. A pane advertising COLORTERM=truecolor is
+        // almost certainly a recent terminal + recent multiplexer.
+        const auto colorterm = env_str("COLORTERM");
+        if (colorterm == "truecolor" || colorterm == "24bit") return true;
         return false;
     }
 

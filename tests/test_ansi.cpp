@@ -1,6 +1,7 @@
 // Tests for ANSI escape sequence generation and StyleApplier
 #include <maya/maya.hpp>
 #include <cassert>
+#include <cstdlib>   // setenv / unsetenv (tmux sync-detection test)
 #include <print>
 
 using namespace maya;
@@ -236,6 +237,81 @@ void test_style_applier_transition_to_empty_on_same() {
     std::println("PASS\n");
 }
 
+// ============================================================================
+// env_supports_synchronized_output — multiplexer (tmux/screen) robustness
+// ============================================================================
+// Under tmux ALL of the outer terminal's identifying env vars are stripped;
+// the detector must lean on what SURVIVES the pane: tmux's own version
+// (TERM_PROGRAM=tmux + TERM_PROGRAM_VERSION) and COLORTERM. A modern tmux
+// (≥ 3.4) forwards synchronized output, so it must NOT be blanket-disabled.
+void test_sync_detect_tmux() {
+    std::println("--- test_sync_detect_tmux ---");
+
+    // Wipe every var the detector consults so each case is hermetic.
+    auto clear_env = [] {
+        for (const char* v : {"MAYA_FORCE_SYNC", "MAYA_NO_SYNC", "TERM_PROGRAM",
+                              "TERM_PROGRAM_VERSION", "KITTY_WINDOW_ID",
+                              "ALACRITTY_LOG", "ALACRITTY_WINDOW_ID",
+                              "GHOSTTY_RESOURCES_DIR", "WEZTERM_EXECUTABLE",
+                              "WT_SESSION", "KONSOLE_VERSION", "VTE_VERSION",
+                              "TERM", "COLORTERM", "TMUX"})
+            ::unsetenv(v);
+    };
+
+    // Modern tmux (3.4+) reporting its own version → sync supported.
+    clear_env();
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    ::setenv("TERM", "tmux-256color", 1);
+    ::setenv("TERM_PROGRAM", "tmux", 1);
+    ::setenv("TERM_PROGRAM_VERSION", "3.7b", 1);
+    assert(ansi::env_supports_synchronized_output()
+           && "tmux 3.7 must report sync-capable");
+
+    // tmux 3.4 exactly is the cutoff → supported.
+    ::setenv("TERM_PROGRAM_VERSION", "3.4", 1);
+    assert(ansi::env_supports_synchronized_output()
+           && "tmux 3.4 (cutoff) must report sync-capable");
+
+    // Old tmux (3.2) with no truecolor signal → not supported.
+    clear_env();
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    ::setenv("TERM", "tmux-256color", 1);
+    ::setenv("TERM_PROGRAM", "tmux", 1);
+    ::setenv("TERM_PROGRAM_VERSION", "3.2a", 1);
+    assert(!ansi::env_supports_synchronized_output()
+           && "tmux 3.2 without truecolor must NOT report sync-capable");
+
+    // Old/unknown-version multiplexer but COLORTERM=truecolor survives
+    // (modern outer terminal) → treat as supported.
+    clear_env();
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    ::setenv("TERM", "screen-256color", 1);
+    ::setenv("COLORTERM", "truecolor", 1);
+    assert(ansi::env_supports_synchronized_output()
+           && "multiplexer + COLORTERM=truecolor must report sync-capable");
+
+    // GNU screen, no version, no truecolor → not supported (screen never
+    // forwards 2026).
+    clear_env();
+    ::setenv("TERM", "screen", 1);
+    assert(!ansi::env_supports_synchronized_output()
+           && "bare GNU screen must NOT report sync-capable");
+
+    // Explicit override still wins inside a multiplexer.
+    clear_env();
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    ::setenv("TERM", "tmux-256color", 1);
+    ::setenv("TERM_PROGRAM", "tmux", 1);
+    ::setenv("TERM_PROGRAM_VERSION", "3.7b", 1);
+    ::setenv("MAYA_NO_SYNC", "1", 1);
+    assert(!ansi::env_supports_synchronized_output()
+           && "MAYA_NO_SYNC must override even a sync-capable tmux");
+    ::unsetenv("MAYA_NO_SYNC");
+
+    clear_env();
+    std::println("PASS\n");
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     test_move_to_format();
@@ -261,5 +337,6 @@ int main() {
     test_style_applier_transition_to_matches_transition();
     test_style_applier_apply_to_appends();
     test_style_applier_transition_to_empty_on_same();
-    std::println("=== ALL 23 TESTS PASSED ===");
+    test_sync_detect_tmux();
+    std::println("=== ALL 24 TESTS PASSED ===");
 }

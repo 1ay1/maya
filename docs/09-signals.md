@@ -350,3 +350,83 @@ When a signal changes:
 
 This is a **push-then-pull** model: changes push "dirty" flags down the graph,
 then evaluation pulls fresh values as needed.
+
+## Memory Safety Without a Borrow Checker
+
+A reactive graph is the single hardest data structure to express in safe Rust,
+and it is worth understanding *why*, because it is exactly the structure maya
+is built on.
+
+The graph is **cyclic and self-referential by construction.** A `Computed`
+holds pointers to the `Signal`s it reads (its dependencies) *and* is pointed at
+by everything that reads it (its subscribers). Edges run in both directions.
+Nodes are created and destroyed in arbitrary order at runtime — a `Signal` may
+outlive the `Effect` watching it, or the `Effect` may be destroyed first, or a
+`Computed` may be dropped mid-notification while its subscribers are still on
+the notification stack.
+
+This is precisely the shape Rust's borrow checker *cannot* model. `&T` requires
+a single acyclic ownership tree with statically-provable lifetimes; a graph
+with back-edges has neither. Every mature Rust signal library — leptos, sycamore,
+dioxus — resolves this the same way: it abandons `&T` and reaches for
+`Rc<RefCell<Node>>` (or arena indices, or `unsafe`). At that point the
+borrow checker is no longer checking anything about the graph. You have simply
+**moved the aliasing check from compile time to run time**, where a violation
+is a `RefCell::borrow` panic — a crash — instead of a compiler error. The
+reactive re-entrancy that is *normal* in this domain (an effect that writes a
+signal that re-runs the effect) is exactly what trips a `RefCell`.
+
+maya expresses the same graph in plain C++ with raw intrusive back-pointers,
+no reference counting on the hot path, and no runtime borrow flag. In exchange
+for giving up the borrow checker's static guarantee, it takes on the obligation
+to get the lifetime bookkeeping right by hand:
+
+- `~ReactiveNode()` calls `unlink_all()`, which severs every incoming *and*
+  outgoing edge before the node's storage dies. A destroyed node can never be
+  reached from a surviving neighbour's subscriber or dependency list.
+- Notification uses a thread-local `NotifyFrame` stack so a node destroyed
+  *during* its own notification is unlinked from the in-flight walk, not
+  dereferenced after free.
+- The whole system is thread-local by design — one graph per thread — so there
+  is no shared-mutable-aliasing question to answer in the first place.
+
+The claim "we got the lifetime bookkeeping right" is not asserted — it is
+**proven at runtime**, on every CI run, by an AddressSanitizer + UBSan gate.
+[`test_signal.cpp`](https://github.com/1ay1/maya/blob/master/tests/test_signal.cpp)
+contains explicit adversarial lifetime cases:
+
+- `test_computed_destroyed_before_signal` — drop a derived node while its
+  source is still live and mutating.
+- `test_signal_destroyed_before_effect` — drop the source out from under an
+  active effect.
+- `test_effect_disposes_sibling_effect` — an effect that destroys *another*
+  effect while the notification walk is in progress.
+- `test_batched_node_destroyed_before_flush` — destroy a node that has a
+  pending batched notification queued against it.
+- `test_effect_does_not_fire_after_destruction` — the disposed-observer
+  guarantee.
+
+These are use-after-free bugs *by design* — each one deliberately builds the
+timing window a naive graph would crash in. The CI `sanitizers` job compiles
+the entire tree with `-fsanitize=address,undefined` and runs them with
+`detect_leaks=1`. They pass with zero errors:
+
+```
+$ ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1 ./test_signal
+...
+--- test_batched_node_destroyed_before_flush ---
+PASS
+=== ALL 20 TESTS PASSED ===
+```
+
+The takeaway is not "C++ is as safe as Rust." It is more specific and more
+honest than that: **for the class of data structure where Rust's borrow checker
+stops helping and starts costing you** — graphs, back-edges, arbitrary-order
+destruction, deliberate re-entrancy — a C++ codebase with intrusive lifetime
+discipline and a sanitizer gate ends up in the *same* place a Rust codebase
+does (aliasing checked dynamically), except the C++ version never paid the
+`Rc<RefCell>` tax, keeps `&T` for the 95% of the program that *is* a tree, and
+catches the same bug class — plus leaks and integer UB the borrow checker never
+looked at — under one gate. The safety is earned by tooling and discipline
+instead of granted by the type system, and for this problem shape that is the
+better trade.

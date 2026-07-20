@@ -9,6 +9,17 @@ endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Fall back to C++23 when the compiler doesn't advertise C++26 (older Termux
+# clang < 18, gcc < 14). maya uses no C++26-only library facility, so C++23
+# builds cleanly. Matches the same guard on the target_compile_features below.
+if(NOT MSVC AND NOT "cxx_std_26" IN_LIST CMAKE_CXX_COMPILE_FEATURES
+            AND "cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+    set(CMAKE_CXX_STANDARD 23)
+    message(STATUS "maya: C++26 not advertised by "
+                   "${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} "
+                   "— building at C++23.")
+endif()
+
 # Default to Release so out-of-the-box builds get -O3.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -238,7 +249,16 @@ if(MSVC)
         /FI${CMAKE_CURRENT_SOURCE_DIR}/include/maya/platform/detect.hpp
     )
 else()
-    target_compile_features(maya PUBLIC cxx_std_26)
+    # Publicly require C++26 where the compiler advertises it, else fall back
+    # to C++23. maya uses no C++26-only LIBRARY facility, so C++23 builds the
+    # whole target cleanly. This requirement is PUBLIC — it propagates to
+    # every consumer (agentty), so gating it here is what actually lets an
+    # older Termux clang (< 18, i.e. no cxx_std_26) compile the tree.
+    if("cxx_std_26" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+        target_compile_features(maya PUBLIC cxx_std_26)
+    else()
+        target_compile_features(maya PUBLIC cxx_std_23)
+    endif()
 endif()
 
 if(DEFINED MAYA_LINUX_CXX_FLAGS)
@@ -373,7 +393,11 @@ if(MAYA_BUILD_TESTS)
         set_target_properties(maya_test PROPERTIES CXX_SCAN_FOR_MODULES OFF)
         target_include_directories(maya_test PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
-        target_compile_features(maya_test PUBLIC cxx_std_26)
+        if("cxx_std_26" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+            target_compile_features(maya_test PUBLIC cxx_std_26)
+        else()
+            target_compile_features(maya_test PUBLIC cxx_std_23)
+        endif()
         # No LTO, no -O3, no unroll/Graphite. Just enough to be correct + fast
         # to compile. -g0 keeps objects small; debugging a failing test is
         # better done by rebuilding the one TU with -Og if needed.

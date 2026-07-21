@@ -77,8 +77,16 @@ public:
             write_idx = nfds++;
         }
 
-        int r = ::poll(pfds, static_cast<nfds_t>(nfds),
-                        static_cast<int>(timeout.count()));
+        // poll() takes an int millisecond timeout. Clamp the (64-bit)
+        // chrono count into [0, INT_MAX] first: a bare narrowing cast of a
+        // value > INT_MAX can wrap to a negative int, which poll() reads as
+        // "block forever" — a hang instead of the intended bounded wait.
+        const long long timeout_ms = timeout.count();
+        const int poll_ms =
+            timeout_ms < 0            ? 0
+          : timeout_ms > 2147483647LL ? 2147483647
+          :                             static_cast<int>(timeout_ms);
+        int r = ::poll(pfds, static_cast<nfds_t>(nfds), poll_ms);
         if (r < 0) {
             if (errno == EINTR)
                 return ok(ReadyFlags{});

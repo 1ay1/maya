@@ -1433,6 +1433,11 @@ void run(RunConfig cfg = {}) {
                 auto [new_model, cmd] = P::update(std::move(model), std::move(m));
                 model = std::move(new_model);
                 detail::execute_cmd(cmd, ctx);
+                // A Cmd::quit() from this message flips is_running() off.
+                // Stop the batch here so we don't run the side effects
+                // (spawn tasks, commit scrollback, set titles) of messages
+                // queued behind the quit into an already-tearing-down loop.
+                if (!ctx.rt.is_running()) return;
             }
         }
     };

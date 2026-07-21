@@ -316,11 +316,13 @@ static void block_count_consistent_with_finish() {
     ref.finish();
     const std::size_t ref_blocks = ref.block_count();
 
-    // Sweep a wide range of chunk sizes. Record disagreements; fail only
-    // if MORE than the baseline-known count differ. As of the test's
-    // introduction the baseline is 3 (chunks 7, 13, 17 drift); when the
-    // scanner is fixed, lower kBaselineDrift to 0.
-    constexpr std::size_t kBaselineDrift = 3;
+    // Sweep a wide range of chunk sizes. Record disagreements; fail if
+    // ANY chunk size produces a block count that differs from the
+    // whole-buffer reference. The resumable boundary scanner used to
+    // drift on chunks 7/13/17 (baseline was 3); that's since been fixed
+    // and verified drift-free across an exhaustive chunk-size sweep, so
+    // the guard is now tight at 0 to lock the fix in — never raise it.
+    constexpr std::size_t kBaselineDrift = 0;
     std::size_t drifts = 0;
     std::string detail;
     for (std::size_t chunk : {std::size_t{1}, std::size_t{3}, std::size_t{7},

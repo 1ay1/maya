@@ -479,7 +479,14 @@ std::size_t StreamingMarkdown::byte_offset_for_cp(
         }
         ++cps_seen;
     }
-    cp_to_byte_cache_cp_   = n_cp;
+    // Cache the ACHIEVED (cps_seen, bytes_seen) pair, not the REQUESTED
+    // n_cp. When n_cp overshoots the end the walk saturates with
+    // cps_seen < n_cp; storing n_cp there would record a waypoint whose
+    // cp count doesn't match its byte offset, and a later resume after
+    // source_ grows would start cps_seen too high and under-count. cps_seen
+    // == n_cp on the common in-bounds path, so the hot-path short-circuit
+    // is unaffected.
+    cp_to_byte_cache_cp_   = cps_seen;
     cp_to_byte_cache_byte_ = bytes_seen;
     cp_to_byte_cache_at_   = source_.size();
     return bytes_seen;

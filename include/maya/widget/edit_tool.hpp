@@ -125,11 +125,9 @@ public:
                             int side = std::max(0, (w - static_cast<int>(mid.size())) / 2);
                             for (int i = 0; i < side; ++i) line += "\xe2\x94\x88";
                             line += mid;
-                            int rest = std::max(0, w - static_cast<int>(line.size() - (mid.size() - mid.size())));
-                            // crude: pad to width
+                            // Pad the remaining width after the centred label.
                             int used = side + static_cast<int>(mid.size());
                             for (int i = used; i < w; ++i) line += "\xe2\x94\x88";
-                            (void)rest;
                         } else {
                             for (int i = 0; i < w; ++i) line += "\xe2\x94\x88";
                         }

@@ -88,14 +88,14 @@ void diff(
     };
 
     for (int y = y0; y < y1; ++y) {
-        const int  new_row_base  = y * width;
-        const int  old_row_base  = y * old_w;
+        const std::size_t new_row_base = static_cast<std::size_t>(y) * static_cast<std::size_t>(width);
+        const std::size_t old_row_base = static_cast<std::size_t>(y) * static_cast<std::size_t>(old_w);
         const bool old_row_valid = !size_changed && y < old_h;
 
         // Prefetch the next row's data into L2 while processing this row.
         if (y + 1 < y1) [[likely]] {
-            MAYA_PREFETCH_R(new_cells + (y + 1) * width);
-            if (old_row_valid) MAYA_PREFETCH_R(old_cells + (y + 1) * old_w);
+            MAYA_PREFETCH_R(new_cells + static_cast<std::size_t>(y + 1) * width);
+            if (old_row_valid) MAYA_PREFETCH_R(old_cells + static_cast<std::size_t>(y + 1) * old_w);
         }
 
         // ── Level-1 SIMD skip: entire unchanged row ──────────────────────

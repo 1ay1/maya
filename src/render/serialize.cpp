@@ -424,7 +424,7 @@ void emit_cell_run(const Canvas& canvas, const StylePool& pool,
 {
     if (x_begin >= x_end) return;
     const uint64_t* cells = canvas.cells();
-    const int row_base = y * canvas.width();
+    const std::size_t row_base = static_cast<std::size_t>(y) * static_cast<std::size_t>(canvas.width());
 
     char ascii_buf[256];
     int ascii_len = 0;
@@ -795,7 +795,8 @@ compose_inline_frame_impl(const Canvas& canvas,
     int first_changed = common;
     if (have_prev) {
         for (int y = updatable_start; y < common; ++y) {
-            if (!simd::bulk_eq(cells + y * W, prev + y * W,
+            if (!simd::bulk_eq(cells + static_cast<std::size_t>(y) * W,
+                               prev + static_cast<std::size_t>(y) * W,
                                static_cast<std::size_t>(W)))
             {
                 first_changed = y;
@@ -1169,9 +1170,9 @@ compose_inline_frame_impl(const Canvas& canvas,
     for (int y = first_changed; y <= last_row_to_visit; ++y) {
         if (y > first_changed) out += "\r\n";  // advance to row y, col 0
 
-        const uint64_t* cur_row  = cells + y * W;
+        const uint64_t* cur_row  = cells + static_cast<std::size_t>(y) * W;
         const uint64_t* prev_row = (have_prev && y < prev_rows)
-                                 ? prev + y * W
+                                 ? prev + static_cast<std::size_t>(y) * W
                                  : nullptr;
         const bool is_new_row    = (y >= prev_rows);
 

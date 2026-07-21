@@ -79,17 +79,25 @@ MAYA_FORCEINLINE char* write_uint_pos(char* p, unsigned n) noexcept {
         *p++ = static_cast<char>('0' + n / 100);
         *p++ = static_cast<char>('0' + (n / 10) % 10);
         *p++ = static_cast<char>('0' + n % 10);
-    } else {
+    } else if (n < 10000) {
         *p++ = static_cast<char>('0' + n / 1000);
         *p++ = static_cast<char>('0' + (n / 100) % 10);
         *p++ = static_cast<char>('0' + (n / 10) % 10);
         *p++ = static_cast<char>('0' + n % 10);
+    } else {
+        // >= 10000: general base-10 encode. The old 4-digit-only `else`
+        // wrote '0'+n/1000 (>= 10 -> ':' '<' ... non-digit bytes), so a
+        // terminal with >= 10000 rows/cols emitted a malformed CUP escape.
+        char tmp[10];
+        int len = 0;
+        do { tmp[len++] = static_cast<char>('0' + n % 10); n /= 10; } while (n);
+        while (len) *p++ = tmp[--len];
     }
     return p;
 }
 
 MAYA_FORCEINLINE void write_cup(std::string& out, int col, int row) {
-    char buf[16]; // max: \x1b[9999;9999H = 15 chars
+    char buf[24]; // fits two 10-digit uints: \x1b[ + 10 + ; + 10 + H = 24
     char* p = buf;
     *p++ = '\x1b'; *p++ = '[';
     p = write_uint_pos(p, static_cast<unsigned>(row));

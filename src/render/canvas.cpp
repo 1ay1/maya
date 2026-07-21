@@ -553,10 +553,13 @@ void Canvas::fill(Rect region, char32_t ch, uint16_t style_id) {
     // Threshold: 4+ full rows ≈ 320+ cells at width=80.
     const bool full_width = (x0 == 0 && x1 == width_);
     if (full_width && (y1 - y0) >= 4) {
-        simd::streaming_fill(base + y0 * width_, static_cast<std::size_t>((y1 - y0) * width_), packed);
+        simd::streaming_fill(base + static_cast<std::size_t>(y0) * width_,
+                             static_cast<std::size_t>(y1 - y0) * static_cast<std::size_t>(width_),
+                             packed);
     } else {
         for (int y = y0; y < y1; ++y) {
-            std::fill(base + y * width_ + x0, base + y * width_ + x1, packed);
+            std::fill(base + static_cast<std::size_t>(y) * width_ + x0,
+                      base + static_cast<std::size_t>(y) * width_ + x1, packed);
         }
     }
 
@@ -640,7 +643,7 @@ void Canvas::clear_row(int y) noexcept {
 void Canvas::clear_rows(int n) {
     if (n <= 0) return;
     int rows = std::min(n, height_);
-    auto count = static_cast<std::size_t>(rows * width_);
+    auto count = static_cast<std::size_t>(rows) * static_cast<std::size_t>(width_);
     uint64_t blank = default_cell();
     // For small regions (typical inline mode), regular fill keeps L1 warm.
     std::fill(cells_.data(), cells_.data() + count, blank);

@@ -397,7 +397,13 @@ public:
                 return Cmd<B>::task(
                     [run = t.run, mapper = std::forward<F>(f)]
                     (std::function<void(B)> dispatch) {
-                        run([&mapper, &dispatch](Msg m) {
+                        // Capture mapper + dispatch BY VALUE: an async task's
+                        // run() may defer its callback past its own return
+                        // (spawns a thread/timer), at which point by-ref
+                        // captures of the outer lambda's `dispatch` parameter
+                        // (and its `mapper`) would dangle. The copies let the
+                        // stored callback outlive this frame safely.
+                        run([mapper, dispatch](Msg m) {
                             dispatch(mapper(std::move(m)));
                         });
                     });
@@ -406,7 +412,7 @@ public:
                 return Cmd<B>::task_isolated(
                     [run = t.run, mapper = std::forward<F>(f)]
                     (std::function<void(B)> dispatch) {
-                        run([&mapper, &dispatch](Msg m) {
+                        run([mapper, dispatch](Msg m) {
                             dispatch(mapper(std::move(m)));
                         });
                     });

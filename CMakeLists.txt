@@ -231,6 +231,10 @@ if(Python3_Interpreter_FOUND)
     add_custom_target(maya_unicode_regen
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/gen_unicode_width.py
+        COMMAND ${CMAKE_COMMAND}
+            -E copy_if_different
+             ${CMAKE_CURRENT_SOURCE_DIR}/include/maya/text/unicode_width_table.hpp.tmp
+             ${CMAKE_CURRENT_SOURCE_DIR}/include/maya/text/unicode_width_table.hpp
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         BYPRODUCTS ${CMAKE_CURRENT_SOURCE_DIR}/include/maya/text/unicode_width_table.hpp
         COMMENT "Regenerating maya/include/maya/text/unicode_width_table.hpp from pinned UCD"

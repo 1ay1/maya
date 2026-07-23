@@ -34,7 +34,7 @@ from typing import Callable, Iterable
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent  # repo / maya
 DATA = ROOT / "data"
-OUT  = ROOT / "include" / "maya" / "text" / "unicode_width_table.hpp"
+OUT  = ROOT / "include" / "maya" / "text" / "unicode_width_table.hpp.tmp"
 
 # UCD line: "0023" or "1F300..1F5FF" then ';' then property then '#' comment
 LINE_RE = re.compile(r"^([0-9A-Fa-f]+)(?:\.\.([0-9A-Fa-f]+))?\s*;\s*(\w+)")

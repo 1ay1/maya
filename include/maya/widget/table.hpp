@@ -461,7 +461,24 @@ private:
     // arrow on the sorted column. Dynamic cells size to the column's
     // shrink floor — they are built AT the solved width, so they have no
     // natural width of their own.
-    [[nodiscard]] static std::vector<int> natural_widths(const Data& d) {
+    //
+    // [row_lo, row_hi) bounds which rows contribute their cell widths. A
+    // windowed table (visible_rows set) passes its VISIBLE slice: only
+    // on-screen content should drive column widths, exactly like htop/btop.
+    // Two payoffs:
+    //   (1) correctness — a 200-char argv on process #4000, far below the
+    //       fold, must not widen the NAME column of the 78 rows you can see;
+    //   (2) cost — this scan is O(rows × cols) and ran TWICE per frame
+    //       (measure + render_at). On a 700-process list at an 80-row
+    //       terminal that was ~15k string_width() calls/frame for widths
+    //       that only ~78 rows could ever affect. string_width was the #2
+    //       hot leaf in the render profile; windowing it drops ~90% of it.
+    // row_hi <= 0 means "all rows" (the auto-height / unwindowed path).
+    [[nodiscard]] static std::vector<int> natural_widths(
+            const Data& d, int row_lo = 0, int row_hi = -1) {
+        const int nrows = static_cast<int>(d.rows.size());
+        const int lo = std::clamp(row_lo, 0, nrows);
+        const int hi = (row_hi < 0) ? nrows : std::clamp(row_hi, lo, nrows);
         const int ncols = static_cast<int>(d.columns.size());
         std::vector<int> widths(static_cast<size_t>(ncols));
         for (int c = 0; c < ncols; ++c) {
@@ -471,7 +488,8 @@ private:
                 continue;
             }
             int max_w = string_width(col.header) + (c == d.cfg.sort_col ? 2 : 0);
-            for (const auto& row : d.rows) {
+            for (int ri = lo; ri < hi; ++ri) {
+                const auto& row = d.rows[static_cast<size_t>(ri)];
                 if (c >= static_cast<int>(row.cells.size())) continue;
                 const auto& cell = row.cells[static_cast<size_t>(c)];
                 max_w = std::max(max_w, cell.dynamic
@@ -524,7 +542,20 @@ private:
         // table spans its pane like htop's, so weighted columns have
         // surplus to absorb and the plan re-solves on every resize. The
         // natural sum only caps the claim when the offer is unbounded.
-        auto widths = natural_widths(d);
+        //
+        // Width scan is windowed to the same visible slice render_at will
+        // paint (when the host pins window_top + visible_rows), so a huge
+        // off-screen cell neither widens the claim nor pays the O(rows)
+        // scan. Without a pinned window we fall back to all rows.
+        const int nrows0 = static_cast<int>(d.rows.size());
+        int wlo = 0, whi = -1;
+        if (d.cfg.visible_rows > 0 && d.cfg.visible_rows < nrows0) {
+            wlo = d.cfg.window_top >= 0
+                ? std::clamp(d.cfg.window_top, 0, nrows0 - d.cfg.visible_rows)
+                : 0;
+            whi = wlo + d.cfg.visible_rows;
+        }
+        auto widths = natural_widths(d, wlo, whi);
         long long nat = d.cfg.selectable ? 2 : 0;   // cursor gutter "▎ "
         for (size_t c = 0; c < widths.size(); ++c)
             nat += widths[c] + d.cfg.cell_padding * 2;
@@ -572,7 +603,10 @@ private:
         const int gut = d.cfg.selectable ? 2 : 0;                    // "▎ "
         const int bar = (windowed && d.cfg.show_scrollbar) ? 2 : 0;  // " ▐"
         const int avail = w > 0 ? w - chrome_w(d) - gut - bar : 1 << 14;
-        auto widths = natural_widths(d);
+        // Only the VISIBLE window's cells drive column widths (matches
+        // htop/btop, and keeps the scan off the hundreds of off-screen
+        // rows — see natural_widths). Unwindowed tables pass the full range.
+        auto widths = natural_widths(d, start, start + count);
         ColPlan plan = solve_columns(specs(d, widths), std::max(1, avail),
                                      d.cfg.column_gap);
 

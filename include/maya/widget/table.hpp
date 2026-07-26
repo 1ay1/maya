@@ -370,12 +370,22 @@ public:
         // + a shared page counter), never `this` — so both long-lived
         // interactive Tables and per-frame TEA temporaries
         // (dsl::v(Table({…}))) are safe when the deferred render runs.
+        //
+        // The snapshot is taken ONCE into a shared_ptr and shared by the
+        // render and measure lambdas. Capturing `d = d_` separately in each
+        // deep-copied every row — including each cell's std::function — TWICE
+        // per build, and a table is rebuilt every frame under the TEA idiom.
+        // On a full-screen process list that was the single largest allocation
+        // source in the app (Table::Data's copy ctor dominated the profile).
+        // shared_ptr keeps the same lifetime guarantee: the data outlives the
+        // temporary Table, it just isn't duplicated to do so.
+        auto snap = std::make_shared<const Data>(d_);
         auto b = detail::component(
-            [d = d_, cur = cursor_(), page = page_](int w, int h) -> Element {
-                return render_at(d, cur, page.get(), w, h);
+            [snap, cur = cursor_(), page = page_](int w, int h) -> Element {
+                return render_at(*snap, cur, page.get(), w, h);
             });
-        b.measure([d = d_](int max_width) -> Size {
-            return natural_size(d, max_width);
+        b.measure([snap](int max_width) -> Size {
+            return natural_size(*snap, max_width);
         });
         return b;
     }

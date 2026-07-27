@@ -353,8 +353,19 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
     const std::string_view trail_slice = orig.substr(trail_byte_start);
 
     // Codepoint boundaries within the trail slice.
-    std::vector<std::size_t> cp_offs;
-    cp_offs.reserve(trail_cp_target + 1);
+    //
+    // The three per-frame working buffers (cp_offs, new_trail, new_runs) are
+    // THREAD-LOCAL scratch, not fresh locals. decorate_text_reveal is called
+    // once per animating leaf EVERY frame (60fps) for the whole reveal; fresh
+    // std::vector/std::string here would heap-alloc+free 3x/frame/leaf. A
+    // thread-local reused across calls keeps the grown capacity, so after the
+    // first frame the steady state is allocation-free — matching the anim
+    // framework's "allocation-free on the steady-state path" contract.
+    // Thread-local (not static) keeps it safe if a host ever ticks widgets
+    // from more than one thread; the buffers carry no state between calls
+    // (cleared on entry), so reuse is purely an allocation cache.
+    thread_local std::vector<std::size_t> cp_offs;
+    cp_offs.clear();
     for (std::size_t i = 0; i < trail_slice.size();) {
         cp_offs.push_back(i);
         ++i;
@@ -369,9 +380,11 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
     const std::size_t scramble_n =
         p.enable_scramble ? std::min(trail_n, p.scramble_len) : 0;
 
-    std::string new_trail;
+    thread_local std::string new_trail;
+    new_trail.clear();
     new_trail.reserve(trail_slice.size() + scramble_n * 3);
-    std::vector<StyledRun> new_runs;
+    thread_local std::vector<StyledRun> new_runs;
+    new_runs.clear();
     new_runs.reserve((leaf.runs.empty() ? 1 : leaf.runs.size()) + trail_n + 2);
 
     // Carry forward original runs before the trail window.
@@ -469,6 +482,7 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
         const std::size_t out_off = trail_byte_start + new_trail.size();
         new_trail.append(emitted.data(), emitted.size());
         const std::size_t out_len = (trail_byte_start + new_trail.size()) - out_off;
+        if (out_len == 0) continue;  // zero-width emit contributes no run
 
         // Style priority: scramble > ghost(+sweep) > gradient > base.
         Style s;
@@ -504,12 +518,33 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
         } else {
             s = leaf.style;
         }
+        // COALESCE: the trail band emits one logical cell per codepoint, but
+        // whole stretches share a byte-identical Style — the ghost band is a
+        // run of identical dim spaces, the visible base/structural cells all
+        // carry leaf.style, and the gradient re-bands only every few cp. A
+        // naive push-per-cp produced ~1 run/cp (hundreds on a long tail),
+        // which every downstream layout+paint+wrap pass then re-walks EACH
+        // frame for the whole reveal. Extending the previous run when it is
+        // byte-contiguous and carries the same Style is provably output-
+        // identical (the painter maps byte->style; merged equal-style spans
+        // yield the same cells) and collapses the run count to the handful of
+        // genuinely-distinct style bands.
+        if (!new_runs.empty()) {
+            StyledRun& prev = new_runs.back();
+            if (prev.byte_offset + prev.byte_length == out_off &&
+                prev.style == s) {
+                prev.byte_length += out_len;
+                continue;
+            }
+        }
         new_runs.push_back(StyledRun{out_off, out_len, s});
     }
 
     leaf.content.resize(trail_byte_start);
     leaf.content.append(new_trail);
-    leaf.runs = std::move(new_runs);
+    // SWAP (not move) so the leaf's prior runs buffer returns to the
+    // thread-local scratch for reuse next frame — keeps both allocations warm.
+    leaf.runs.swap(new_runs);
 
     // Re-wrap ONLY when the DISPLAY WIDTH of the content could have changed.
     // Scramble can swap a glyph for one of a different column width, so it may

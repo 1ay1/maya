@@ -43,6 +43,7 @@
 //   misses and rebuilds.
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -94,6 +95,15 @@ public:
         std::string           label;
         Color                 rail_color = Color::cyan();
         std::string           meta;
+        // Optional pre-built, right-aligned meta strip. When set (non-null),
+        // it REPLACES the plain dim `meta` string in the header — letting a
+        // caller paint a multi-color meta (e.g. a tinted confidence gauge +
+        // bold percent) that a single-Style string can't express. The
+        // element is emitted flush-right after the spacer, exactly where
+        // `meta` would go, so no layout changes are needed. Ignored in
+        // bare/continuation modes (no header). Kept optional so the common
+        // string path stays a plain text() with zero extra allocation.
+        std::optional<Element> meta_element;
         std::vector<BodySlot> body;
         std::string           error;        // empty = no error banner
         bool                  checkpoint_above = false;
@@ -216,9 +226,11 @@ private:
         std::string glyph_s = cfg.glyph;
         std::string label_s = cfg.label;
         std::string meta_s  = cfg.meta;
+        std::optional<Element> meta_el = cfg.meta_element;
         Element header = maya::detail::component(
             [rail_c, glyph_s = std::move(glyph_s),
-             label_s = std::move(label_s), meta_s = std::move(meta_s), muted]
+             label_s = std::move(label_s), meta_s = std::move(meta_s),
+             meta_el = std::move(meta_el), muted]
             (int /*w*/, int /*h*/) -> Element {
                 using namespace dsl;
                 // The renderer's slow path forces the returned sub-tree's
@@ -227,12 +239,18 @@ private:
                 // Setting width(fixed(w)) would lock the row to whatever
                 // the measure pass passed (typically kUnconstrained),
                 // pushing the meta strip past the canvas right edge.
+                //
+                // meta_el (a pre-colored strip) wins over the plain dim
+                // meta string when present — same flush-right slot.
+                Element meta_slot = meta_el.has_value()
+                    ? *meta_el
+                    : text(meta_s, Style{}.with_fg(muted)).build();
                 return maya::detail::hstack()
                   (text(glyph_s, Style{}.with_fg(rail_c)).build(),
                    text(" ").build(),
                    text(label_s, Style{}.with_fg(rail_c).with_bold()).build(),
                    spacer().build(),
-                   text(meta_s, Style{}.with_fg(muted)).build(),
+                   std::move(meta_slot),
                    text(" ").build());
             })
             .grow(1.0f);

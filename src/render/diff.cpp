@@ -292,13 +292,41 @@ void diff(
 //   - Witnesses are move-only; each consumes exactly one verify_canvas()
 //     call. Re-using a witness, or fabricating one, is a compile error.
 //
-// Postcondition enforced *at runtime* (A4 hedge):
+// Postcondition (A4 hedge), gated by MAYA_WITNESS_AUDIT:
 //   - The cells & caches hashes are recomputed on entry against the canvas
 //     each witness binds. Mismatch ⇒ std::abort. Single-threaded renderer;
 //     the only causes are use-after-free, buffer overrun in adjacent code,
 //     or a host bug that mutated the canvas after verify. Each of those
 //     would silently produce ghost rows on the legacy path — here, the
 //     process dies loudly instead.
+//
+// Why it is a build-gated hedge, not an always-on check: the witness is
+// consumed by the SAME thread that minted it (the renderer is single-
+// threaded), with no canvas-mutating call in between — the type system
+// (move-only, one-verify-per-witness) already proves coherence in correct
+// code. The re-hash only catches memory CORRUPTION from unrelated code, so
+// it belongs in the same tier as the sanitizers. Recomputing it in every
+// release frame re-hashes the FULL cell buffer TWICE more per frame — on a
+// full-screen terminal the dominant fixed frame cost. MAYA_WITNESS_AUDIT
+// defaults ON for debug + sanitizer builds and OFF for release (-DNDEBUG),
+// and can be forced either way from the build. Fully portable — pure
+// preprocessor, no platform-specific code.
+#ifndef MAYA_WITNESS_AUDIT
+#  if !defined(NDEBUG) || defined(__SANITIZE_ADDRESS__) || \
+      defined(__SANITIZE_THREAD__) || defined(MAYA_WITNESS_STRICT)
+#    define MAYA_WITNESS_AUDIT 1
+#  elif defined(__has_feature)
+#    if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
+        __has_feature(memory_sanitizer) || __has_feature(undefined_behavior_sanitizer)
+#      define MAYA_WITNESS_AUDIT 1
+#    else
+#      define MAYA_WITNESS_AUDIT 0
+#    endif
+#  else
+#    define MAYA_WITNESS_AUDIT 0
+#  endif
+#endif
+
 void diff(
     CanvasWitness&& old_witness,
     CanvasWitness&& new_witness,
@@ -308,6 +336,7 @@ void diff(
     const Canvas& old_canvas = old_witness.canvas();
     const Canvas& new_canvas = new_witness.canvas();
 
+#if MAYA_WITNESS_AUDIT
     if (hash_canvas_cells(old_canvas)  != old_witness.cells_hash_at_issue()  ||
         hash_canvas_caches(old_canvas) != old_witness.caches_hash_at_issue() ||
         hash_canvas_cells(new_canvas)  != new_witness.cells_hash_at_issue()  ||
@@ -317,6 +346,14 @@ void diff(
         // frame on the wire and corrupt scrollback.
         std::abort();
     }
+#else
+    // Release: trust the type-system precondition (single-threaded, move-only
+    // witness, no canvas mutation between verify and diff). The hashes stored
+    // on the witness are still consumed — silence the unused-field warning by
+    // touching them once with no side effect.
+    (void)old_witness.cells_hash_at_issue();
+    (void)new_witness.cells_hash_at_issue();
+#endif
 
     diff(old_canvas, new_canvas, pool, out);
 }

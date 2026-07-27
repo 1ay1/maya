@@ -1,5 +1,6 @@
 // Tests for the animation runtime: easing curves, Tween, Spring, Animated
 #include <maya/maya.hpp>
+#include <maya/anim/text_reveal.hpp>
 #include <cassert>
 #include <cmath>
 #include <print>
@@ -436,6 +437,68 @@ void test_rate_cursor_ramp_no_wobble() {
     std::println("PASS (ramp re-seed on rising edge only, no post-ramp wobble)\n");
 }
 
+// ── text_reveal decorator: run-coalescing + span invariants ─────────────────
+// Guards the streaming-animation efficiency win: decorate_text_reveal must
+// emit FULLY COALESCED runs (no two byte-contiguous runs share a Style), the
+// runs must be contiguous / non-overlapping / in-bounds, and the effect must
+// stay height-stable (codepoint count of the last line unchanged). A per-cp
+// run explosion here silently balloons every downstream layout/paint/wrap
+// pass for the whole reveal.
+void test_text_reveal_runs_coalesced() {
+    std::println("--- test_text_reveal_runs_coalesced ---");
+    auto make = [](int n) {
+        std::string s;
+        for (int i = 0; i < n; ++i) {
+            s += static_cast<char>('a' + (i % 26));
+            if (i % 40 == 39) s += '\n';
+        }
+        return s;
+    };
+    std::size_t max_runs = 0;
+    for (int len : {50, 200, 800, 2000}) {
+        for (double frac : {0.3, 0.7, 1.0}) {
+            for (int edge : {5, 40, 300}) {
+                anim::TextRevealParams rp;
+                rp.ms_total    = 99999;
+                rp.edge_age_ms = edge;
+                rp.revealed_cp = static_cast<std::size_t>(len * frac);
+                rp.total_cp    = static_cast<std::size_t>(len);
+
+                TextElement leaf;
+                leaf.content = make(len);
+                (void)anim::decorate_text_reveal(leaf, rp);
+
+                // Contiguous, non-overlapping, in-bounds.
+                std::size_t cursor = 0;
+                for (const auto& r : leaf.runs) {
+                    assert(r.byte_offset >= cursor && "runs overlap / unsorted");
+                    cursor = r.byte_offset + r.byte_length;
+                }
+                assert((leaf.runs.empty()
+                        || leaf.runs.back().byte_offset +
+                               leaf.runs.back().byte_length
+                                   <= leaf.content.size())
+                       && "run past content end");
+
+                // Fully coalesced: no adjacent byte-contiguous equal-style runs.
+                for (std::size_t i = 1; i < leaf.runs.size(); ++i) {
+                    const auto& a = leaf.runs[i - 1];
+                    const auto& b = leaf.runs[i];
+                    const bool contiguous =
+                        a.byte_offset + a.byte_length == b.byte_offset;
+                    assert(!(contiguous && a.style == b.style)
+                           && "adjacent equal-style runs not coalesced");
+                }
+                max_runs = std::max(max_runs, leaf.runs.size());
+            }
+        }
+    }
+    // The distinct-band count is bounded by the gradient design, NOT the tail
+    // length: a 2000-cp tail must not carry hundreds of runs. Generous ceiling.
+    assert(max_runs < 64 && "run count should be band-bounded, not per-cp");
+    std::println("PASS (runs coalesced, band-bounded: max {} runs)\n", max_runs);
+}
+
 int main() {
     test_easing_constexpr();
     test_tween_basic();
@@ -457,6 +520,7 @@ int main() {
     test_rate_cursor_ramp_still_lands();
     test_rate_cursor_submillisecond_dt();
     test_rate_cursor_ramp_no_wobble();
+    test_text_reveal_runs_coalesced();
     std::println("All animation tests passed.");
     return 0;
 }

@@ -1248,6 +1248,33 @@ static void st_set_content_async_roundtrip() {
         throw std::runtime_error("async parse landed empty");
 }
 
+// A newer divergent request must supersede a large in-flight parse. Polling
+// build() should apply only the newest snapshot, regardless of which worker
+// reaches its phase boundary first.
+static void st_set_content_async_supersedes_stale() {
+    StreamingMarkdown md;
+    std::string stale;
+    stale.reserve(80'000);
+    for (int i = 0; i < 1'000; ++i)
+        stale += "# stale " + std::to_string(i) + "\n\nparagraph\n\n";
+    std::string newest;
+    newest.reserve(40'000);
+    for (int i = 0; i < 500; ++i)
+        newest += "# newest " + std::to_string(i) + "\n\nreplacement\n\n";
+
+    md.set_content_async(stale);
+    md.set_content_async(newest);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (md.source() != newest) {
+        render_stream(md);
+        if (std::chrono::steady_clock::now() > deadline)
+            throw std::runtime_error("newest async request did not land within 5 s");
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (md.source().find("stale") != std::string_view::npos)
+        throw std::runtime_error("stale async request overwrote newest source");
+}
+
 // Eager horizontal-rule render: when an HR line terminates but hasn't
 // committed yet (no trailing blank line), the live build must already
 // render the styled rule, and at the SAME content height the finished
@@ -2795,6 +2822,7 @@ int main() {
     run("block meta + fold",            2000ms, st_block_meta_and_fold);
     run("incremental settle (freeze)",  8000ms, st_incremental_settle);
     run("set_content_async roundtrip",  8000ms, st_set_content_async_roundtrip);
+    run("set_content_async supersedes", 8000ms, st_set_content_async_supersedes_stale);
     run("eager hrule (no snap)",        2000ms, st_eager_hrule);
     run("eager closing fence (no snap)", 2000ms, st_eager_closing_fence);
     run("fence chunk-boundary (no desync)", 4000ms, st_fence_chunk_boundary_no_desync);

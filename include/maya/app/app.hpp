@@ -35,6 +35,7 @@
 #include <chrono>
 #include <concepts>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -46,6 +47,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -1422,6 +1425,9 @@ void run(RunConfig cfg = {}) {
     // Interpreter bookkeeping (not part of Model — these are runtime state)
     std::vector<Msg> pending_msgs;
     std::vector<typename detail::CmdContext<Msg>::TimerEntry> timers;
+    // Subscriptions are a pure function of Model. Rebuild/reconcile only
+    // after Model changes rather than on every idle poll iteration.
+    bool subscriptions_dirty = true;
     detail::CmdContext<Msg> ctx{rt, pending_msgs, timers, bg_queue};
 
     // Helper: drain all pending messages through update()
@@ -1432,6 +1438,7 @@ void run(RunConfig cfg = {}) {
             for (auto& m : msgs) {
                 auto [new_model, cmd] = P::update(std::move(model), std::move(m));
                 model = std::move(new_model);
+                subscriptions_dirty = true;
                 detail::execute_cmd(cmd, ctx);
                 // A Cmd::quit() from this message flips is_running() off.
                 // Stop the batch here so we don't run the side effects
@@ -1715,63 +1722,68 @@ void run(RunConfig cfg = {}) {
             needs_render = true;
         }
 
-        // Reconcile Sub::Every timers EVERY iteration — not gated on
-        // needs_render. Invariant: each Sub::Every interval present in
-        // the current subscription must have exactly one armed timer at
-        // all times. Gating this behind the render block created a
-        // freeze-until-keypress hole: if the model became active (e.g. a
-        // background-queue message kicked a new turn) on an iteration
-        // that did NOT also set needs_render, the Tick timer was never
-        // armed, the loop fell back to the 100 ms idle poll, and — since
-        // nothing re-armed it — the spinner/stream sat frozen until an
-        // unrelated event (a keypress) forced a render that finally
-        // reconciled. Rebuilding the sub here keeps the timer set
-        // honest against the live model on every pass. Cheap: a Sub
-        // rebuild + small vector scan, no allocation when steady.
-        current_sub = get_sub();
-        {
+        // Reconcile periodic subscriptions after a model change. Doing this
+        // every iteration used quadratic scans for a large subscription tree
+        // even while idle. Model changes are drained above, so this still arms
+        // a newly-active timer before the loop can sleep.
+        if (subscriptions_dirty) {
+            current_sub = get_sub();
+            subscriptions_dirty = false;
+
+            struct TimerKey {
+                std::int64_t interval;
+                std::uint32_t ordinal;
+                bool operator==(const TimerKey&) const noexcept = default;
+            };
+            struct TimerKeyHash {
+                std::size_t operator()(const TimerKey& k) const noexcept {
+                    const auto a = static_cast<std::uint64_t>(k.interval);
+                    return static_cast<std::size_t>(a ^ (a >> 33) ^
+                        (static_cast<std::uint64_t>(k.ordinal) * 0x9E3779B9u));
+                }
+            };
+
             auto now = std::chrono::steady_clock::now();
             std::vector<std::pair<std::chrono::milliseconds, Msg>> timer_specs;
             detail::collect_timers(current_sub, timer_specs);
-            // Ordinal assignment: the k-th spec with a given interval (in
-            // collect_timers order — stable, it's a deterministic tree
-            // walk) owns the k-th armed timer with that interval. This is
-            // what lets two independent widgets both subscribe at, say,
-            // 100ms and each get their own Msg fired: a bare interval
-            // match would see the first spec's armed timer and skip the
-            // second spec every reconcile, starving it permanently.
-            for (std::size_t si = 0; si < timer_specs.size(); ++si) {
-                auto& [interval, msg] = timer_specs[si];
-                if (interval.count() <= 0) continue;   // ill-formed sub
-                std::uint32_t ordinal = 0;
-                for (std::size_t sj = 0; sj < si; ++sj)
-                    if (timer_specs[sj].first == interval) ++ordinal;
-                bool already_pending = false;
-                for (auto& t : timers) {
-                    if (t.interval == interval && t.ordinal == ordinal) {
-                        already_pending = true;
-                        break;
-                    }
-                }
-                if (!already_pending) {
-                    timers.push_back({
-                        detail::saturate_add(now, interval),
-                        std::move(msg),
-                        interval,
-                        ordinal,
-                    });
-                }
+            std::unordered_map<std::int64_t, std::uint32_t> next_ordinal;
+            next_ordinal.reserve(timer_specs.size());
+            std::unordered_set<TimerKey, TimerKeyHash> wanted;
+            wanted.reserve(timer_specs.size());
+            for (const auto& [interval, msg] : timer_specs) {
+                (void)msg;
+                if (interval.count() <= 0) continue;
+                const auto ordinal = next_ordinal[interval.count()]++;
+                wanted.insert({interval.count(), ordinal});
+            }
+
+            std::unordered_set<TimerKey, TimerKeyHash> armed;
+            armed.reserve(timers.size() + wanted.size());
+            for (const auto& t : timers) {
+                if (t.interval.count() > 0)
+                    armed.insert({t.interval.count(), t.ordinal});
+            }
+            // A removed subscription can leave at most one stale periodic
+            // fire in the old scheme. Remove it now; command one-shots stay.
+            std::erase_if(timers, [&](const auto& t) {
+                return t.interval.count() > 0 &&
+                    !wanted.contains({t.interval.count(), t.ordinal});
+            });
+
+            next_ordinal.clear();
+            for (auto& [interval, msg] : timer_specs) {
+                if (interval.count() <= 0) continue;
+                const auto ordinal = next_ordinal[interval.count()]++;
+                if (armed.contains({interval.count(), ordinal})) continue;
+                timers.push_back({
+                    detail::saturate_add(now, interval), std::move(msg),
+                    interval, ordinal,
+                });
             }
         }
 
         if (needs_render) {
-            // Rebuild subscriptions from current model
-            current_sub = get_sub();
-
-            // (Timer reconciliation moved above the gate — see the
-            // unconditional reconcile block. Each Sub::Every entry needs
-            // exactly one timer scheduled at all times, independent of
-            // whether this iteration renders.)
+            // current_sub was rebuilt above when a model update made it stale.
 
             // Optional visual-hash gate. When the Program provides
             // visual_hash(Model), skip view()+render() if the hash

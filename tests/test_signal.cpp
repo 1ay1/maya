@@ -311,6 +311,49 @@ void test_batched_node_destroyed_before_flush() {
     std::println("PASS\n");
 }
 
+void test_dynamic_dependencies_switch_cleanly() {
+    std::println("--- test_dynamic_dependencies_switch_cleanly ---");
+    Signal<bool> choose_left{true};
+    Signal<int> left{1}, right{10};
+    int runs = 0;
+    int observed = 0;
+    {
+        Effect e([&] {
+            ++runs;
+            observed = choose_left.get() ? left.get() : right.get();
+        });
+        assert(runs == 1 && observed == 1);
+        left.set(2);
+        assert(runs == 2 && observed == 2);
+        choose_left.set(false);
+        assert(runs == 3 && observed == 10);
+        left.set(3);  // stale branch must have been unsubscribed
+        assert(runs == 3);
+        right.set(11);
+        assert(runs == 4 && observed == 11);
+    }
+    std::println("PASS\n");
+}
+
+void test_dynamic_computed_dependencies_in_batch() {
+    std::println("--- test_dynamic_computed_dependencies_in_batch ---");
+    Signal<bool> choose_left{true};
+    Signal<int> left{1}, right{10};
+    auto selected = computed([&] { return choose_left.get() ? left.get() : right.get(); });
+    int runs = 0;
+    Effect e([&] { (void)selected.get(); ++runs; });
+    assert(runs == 1);
+    {
+        Batch batch;
+        choose_left.set(false);
+        right.set(11);
+    }
+    assert(selected.get() == 11 && runs == 2);
+    left.set(2);  // Computed must no longer depend on the old branch.
+    assert(runs == 2);
+    std::println("PASS\n");
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     test_signal_get_set();
@@ -333,5 +376,7 @@ int main() {
     test_signal_destroyed_before_effect();
     test_effect_disposes_sibling_effect();
     test_batched_node_destroyed_before_flush();
-    std::println("=== ALL 20 TESTS PASSED ===");
+    test_dynamic_dependencies_switch_cleanly();
+    test_dynamic_computed_dependencies_in_batch();
+    std::println("=== ALL 22 TESTS PASSED ===");
 }

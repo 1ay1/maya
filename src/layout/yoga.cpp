@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <memory>
+#include <queue>
 #include <span>
 #include <utility>
 #include <vector>
@@ -371,24 +372,44 @@ void compute_node(
                     it.main -= reduction;
                     remaining -= reduction;
                 }
-                // Distribute leftover shrink to the largest items first to
-                // avoid destroying small items (e.g., a 1-row header). Same
-                // floor: an item with content stops shrinking at its min so
-                // it can never collapse onto its neighbour's row.
-                while (remaining > 0) {
-                    int best = -1;
-                    int best_main = 0;
-                    for (int i = 0; i < static_cast<int>(line.items.size()); ++i) {
-                        auto& it = line.items[static_cast<std::size_t>(i)];
-                        if (nodes[it.index].style.flex_shrink > 0.0f &&
-                            it.main > floor_of(it) && it.main > best_main) {
-                            best = i;
-                            best_main = it.main;
-                        }
+                // Distribute residual shrink from the currently largest
+                // items.  A cell-at-a-time linear scan made this O(overflow
+                // * children) on a large, narrow flex line.  The heap keeps
+                // the same largest-first policy while making each reduction
+                // O(log children).
+                struct ShrinkCandidate {
+                    int main;
+                    int item_index;
+                    int floor;
+                };
+                struct SmallerMain {
+                    bool operator()(const ShrinkCandidate& a,
+                                    const ShrinkCandidate& b) const noexcept {
+                        // Stable index tie-break preserves deterministic layout.
+                        return a.main != b.main ? a.main < b.main
+                                                : a.item_index > b.item_index;
                     }
-                    if (best < 0 || best_main <= 0) break;
-                    line.items[static_cast<std::size_t>(best)].main -= 1;
-                    remaining -= 1;
+                };
+                std::priority_queue<ShrinkCandidate,
+                                    std::vector<ShrinkCandidate>,
+                                    SmallerMain> candidates;
+                for (int i = 0; i < static_cast<int>(line.items.size()); ++i) {
+                    const auto& it = line.items[static_cast<std::size_t>(i)];
+                    if (nodes[it.index].style.flex_shrink > 0.0f) {
+                        const int floor = floor_of(it);
+                        if (it.main > floor)
+                            candidates.push({it.main, i, floor});
+                    }
+                }
+                while (remaining > 0 && !candidates.empty()) {
+                    ShrinkCandidate best = candidates.top();
+                    candidates.pop();
+                    auto& it = line.items[static_cast<std::size_t>(best.item_index)];
+                    --it.main;
+                    --remaining;
+                    --best.main;
+                    if (best.main > best.floor)
+                        candidates.push(best);
                 }
             }
         }

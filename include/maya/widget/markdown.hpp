@@ -938,10 +938,14 @@ private:
     // `ready` flag so the foreground's poll is wait-free in the
     // common (not-ready) case.
     struct AsyncResult {
-        // Inputs the worker consumed; foreground compares these
-        // against the current request to decide whether the result
-        // is still relevant.
-        std::string                                 source;
+        // The requested bytes are shared with the coalescer and worker. This
+        // avoids making separate full-buffer copies for the pending request,
+        // slot bookkeeping, and detached-thread capture.
+        std::shared_ptr<std::string>                source;
+        // A newer divergent request makes this result disposable. Workers
+        // poll at phase boundaries and publish a cancelled result so the
+        // foreground can promptly launch the newest request.
+        std::atomic<bool>                           cancelled{false};
         // Outputs: drop-in replacements for prefix_'s contents and
         // for the fence/committed_/ref_defs state the foreground
         // would have arrived at via the synchronous incremental
@@ -980,11 +984,9 @@ private:
     };
     mutable MovableMutex                     async_mu_holder_;
     std::mutex& async_mu_() const noexcept { return async_mu_holder_.m; }
-    // The most recent source set_content_async was called with.
-    // Compared against async_slot_->source when a result lands to
-    // decide whether to apply it directly (current) or queue another
-    // parse (stale). Empty optional == no async pending.
-    mutable std::optional<std::string>       async_latest_source_;
+    // The most recent source set_content_async was called with. Shared with
+    // the slot while it is current so a large pending request is owned once.
+    mutable std::shared_ptr<std::string>            async_latest_source_;
 
     // Apply any ready async result. Foreground-only. No-op if no
     // result is ready. May spawn a follow-up worker.
@@ -993,7 +995,7 @@ private:
     // to call repeatedly — coalesces by storing the request in
     // async_latest_source_ and only spawning when no in-flight worker
     // exists.
-    void spawn_async_worker_(std::string source) const;
+    void spawn_async_worker_(std::shared_ptr<std::string> source) const;
 
     // Find the end of the last complete block boundary.
     // Returns the byte offset up to which blocks are "complete".

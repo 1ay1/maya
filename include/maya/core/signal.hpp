@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -101,6 +102,12 @@ public:
 struct ReactiveNode {
     std::vector<ReactiveNode*> subscribers;
     std::vector<ReactiveNode*> dependencies;
+    // Dependencies are retained across evaluations. Each evaluation advances
+    // dependency_epoch; track() stamps dependencies it observes, and stale
+    // edges are removed once evaluation completes. This avoids tearing down
+    // and rebuilding unchanged subscriptions on every run.
+    std::vector<uint64_t>      dependency_epochs;
+    uint64_t                   dependency_epoch = 0;
     uint64_t                   version = 0;
     // pending: O(1) batch-dedup flag — set when the node is queued in
     // pending_notifications, cleared when the batch flushes. Replaces the
@@ -135,7 +142,7 @@ struct ReactiveNode {
             std::erase(dep->subscribers, this);
         dependencies.clear();
         for (auto* sub : subscribers)
-            std::erase(sub->dependencies, this);
+            sub->remove_dependency(this);
         subscribers.clear();
         if (pending) {
             std::erase(pending_notifications(), this);
@@ -161,13 +168,54 @@ struct ReactiveNode {
             dep->unsubscribe(this);
         }
         dependencies.clear();
+        dependency_epochs.clear();
+    }
+
+    void begin_dependency_tracking() {
+        // Wrapping is practically unreachable, but resetting stamps keeps
+        // the matching invariant correct even then.
+        if (++dependency_epoch == 0) {
+            std::fill(dependency_epochs.begin(), dependency_epochs.end(), 0);
+            ++dependency_epoch;
+        }
+    }
+
+    void end_dependency_tracking() {
+        // Compact retained edges in one pass. Repeated vector::erase here
+        // turned a branch switch that dropped many dependencies into O(D²).
+        std::size_t keep = 0;
+        for (std::size_t i = 0; i < dependencies.size(); ++i) {
+            if (dependency_epochs[i] != dependency_epoch) {
+                dependencies[i]->unsubscribe(this);
+                continue;
+            }
+            if (keep != i) {
+                dependencies[keep] = dependencies[i];
+                dependency_epochs[keep] = dependency_epochs[i];
+            }
+            ++keep;
+        }
+        dependencies.resize(keep);
+        dependency_epochs.resize(keep);
+    }
+
+    void remove_dependency(ReactiveNode* dep) {
+        auto it = std::ranges::find(dependencies, dep);
+        if (it == dependencies.end()) return;
+        const auto index = static_cast<std::size_t>(it - dependencies.begin());
+        dependencies.erase(it);
+        dependency_epochs.erase(dependency_epochs.begin() + index);
     }
 
     void add_dependency(ReactiveNode* dep) {
-        if (std::ranges::find(dependencies, dep) == dependencies.end()) {
-            dependencies.push_back(dep);
-            dep->subscribe(this);
+        auto it = std::ranges::find(dependencies, dep);
+        if (it != dependencies.end()) {
+            dependency_epochs[static_cast<std::size_t>(it - dependencies.begin())] = dependency_epoch;
+            return;
         }
+        dependencies.push_back(dep);
+        dependency_epochs.push_back(dependency_epoch);
+        dep->subscribe(this);
     }
 };
 
@@ -193,6 +241,17 @@ inline thread_local ReactiveScope* current_scope = nullptr;
 
 // Thread-local batch depth counter. When > 0, notifications are deferred.
 inline thread_local int batch_depth = 0;
+
+class DependencyTrackingScope {
+    ReactiveNode* owner_;
+public:
+    explicit DependencyTrackingScope(ReactiveNode* node) noexcept : owner_(node) {
+        owner_->begin_dependency_tracking();
+    }
+    ~DependencyTrackingScope() { owner_->end_dependency_tracking(); }
+    DependencyTrackingScope(const DependencyTrackingScope&)            = delete;
+    DependencyTrackingScope& operator=(const DependencyTrackingScope&) = delete;
+};
 
 inline ReactiveScope::ReactiveScope(ReactiveNode* node) noexcept
     : owner(node), previous(current_scope) {
@@ -380,9 +439,9 @@ class Computed {
         void evaluate() override {
             if (!dirty) return;
 
-            // Clear old dependency edges - they will be re-established
-            // during re-evaluation via track().
-            clear_dependencies();
+            // Retain dependencies observed again and remove only dynamic
+            // branches that were not read this time.
+            detail::DependencyTrackingScope dependencies(this);
 
             // Enter a reactive scope so that any get() calls inside
             // compute_fn register this node as a subscriber.
@@ -489,8 +548,7 @@ class Effect {
         void evaluate() override {
             if (!dirty) return;
 
-            clear_dependencies();
-
+            detail::DependencyTrackingScope dependencies(this);
             detail::ReactiveScope scope(this);
             effect_fn();
 

@@ -20,6 +20,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -35,11 +36,7 @@ using ::maya::md_detail::parse_markdown_impl;
 using ::maya::md_detail::collect_ref_defs;
 
 bool StreamingMarkdown::is_parsing() const noexcept {
-    // No need to lock for a coarse "in flight?" probe — the slot
-    // pointer is set under the mutex and read here without; the
-    // worker only flips `ready` and then the foreground destroys
-    // the slot. A torn read of the shared_ptr is benign (returns
-    // false negative for one frame at worst).
+    std::lock_guard<std::mutex> lk(async_mu_());
     return static_cast<bool>(async_slot_);
 }
 
@@ -86,22 +83,24 @@ void StreamingMarkdown::set_content_async(std::string_view content) {
     // Divergent and large → schedule a background parse. Keep the
     // current cached_build_ visible until the worker lands so the UI
     // doesn't blank.
-    std::string requested{content};
+    auto requested = std::make_shared<std::string>(content);
     {
         std::lock_guard<std::mutex> lk(async_mu_());
+        // Mark obsolete work before replacing the coalesced request. The
+        // detached worker owns its slot, so this cannot shorten its lifetime.
+        if (async_slot_)
+            async_slot_->cancelled.store(true, std::memory_order_release);
         async_latest_source_ = requested;
-        // If a worker is already in flight, just update the latest
-        // request — maybe_apply_async_ will spawn a follow-up on
-        // arrival of the in-flight result. This is the Zed-style
-        // single-flight coalescer.
+        // If a worker is already in flight, it will stop at its next safe
+        // phase boundary; maybe_apply_async_ then starts this newest request.
         if (async_slot_) return;
     }
     spawn_async_worker_(std::move(requested));
 }
 
-void StreamingMarkdown::spawn_async_worker_(std::string source) const {
+void StreamingMarkdown::spawn_async_worker_(std::shared_ptr<std::string> source) const {
     auto slot = std::make_shared<AsyncResult>();
-    slot->source = source;
+    slot->source = std::move(source);
     {
         std::lock_guard<std::mutex> lk(async_mu_());
         async_slot_ = slot;
@@ -114,7 +113,17 @@ void StreamingMarkdown::spawn_async_worker_(std::string source) const {
     // worker writes into its own slot copy (still alive), and the
     // result is then silently discarded when the worker's local
     // shared_ptr falls out of scope.
-    std::thread([slot, src = std::move(source)]() mutable {
+    std::thread([slot]() mutable {
+        // The slot retains the source for the entire detached task; using a
+        // reference avoids a second full-buffer copy in the thread closure.
+        const std::string& src = *slot->source;
+        auto publish_cancelled = [&] {
+            slot->ready.store(true, std::memory_order_release);
+        };
+        if (slot->cancelled.load(std::memory_order_acquire)) {
+            publish_cancelled();
+            return;
+        }
         // Re-parse from scratch. We can't reuse the host's incremental
         // state because that lives on the foreground thread; instead
         // we run the full top-level parse on the worker. Output is
@@ -124,6 +133,10 @@ void StreamingMarkdown::spawn_async_worker_(std::string source) const {
         std::string cleaned = collect_ref_defs(std::string_view{src}, defs);
         ::maya::md_detail::RefDefsScope guard(&defs);
         auto parsed = parse_markdown_impl(cleaned, 0);
+        if (slot->cancelled.load(std::memory_order_acquire)) {
+            publish_cancelled();
+            return;
+        }
 
         // Compute segment ranges over the full src — same algorithm
         // as the foreground commit_range above, just bounded by the
@@ -138,6 +151,11 @@ void StreamingMarkdown::spawn_async_worker_(std::string source) const {
             while (k < src.size() && src[k] == '\n') ++k;
             std::size_t seg_start = k;
             while (k < src.size()) {
+                if ((k & 0xFFFu) == 0
+                    && slot->cancelled.load(std::memory_order_relaxed)) {
+                    publish_cancelled();
+                    return;
+                }
                 bool at_ls = (k == 0 || src[k - 1] == '\n');
                 std::size_t eol0 = src.find('\n', k);
                 std::size_t le = (eol0 == std::string::npos) ? src.size() : eol0;
@@ -181,6 +199,10 @@ void StreamingMarkdown::spawn_async_worker_(std::string source) const {
         slot->metas.reserve (parsed.blocks.size());
         std::size_t synth = 0;
         for (std::size_t bi = 0; bi < parsed.blocks.size(); ++bi) {
+            if (slot->cancelled.load(std::memory_order_relaxed)) {
+                publish_cancelled();
+                return;
+            }
             auto& block = parsed.blocks[bi];
             BlockMeta meta;
             if (seg_match) {
@@ -241,7 +263,7 @@ void StreamingMarkdown::spawn_async_worker_(std::string source) const {
 
 void StreamingMarkdown::maybe_apply_async_() const {
     std::shared_ptr<AsyncResult> slot;
-    std::optional<std::string>   latest_after;
+    std::shared_ptr<std::string>      latest_after;
     {
         std::lock_guard<std::mutex> lk(async_mu_());
         if (!async_slot_) return;
@@ -256,13 +278,13 @@ void StreamingMarkdown::maybe_apply_async_() const {
     //   B. The caller has since asked for a different source →
     //      discard this result, spawn a follow-up on the new
     //      request.
-    const bool current = latest_after && *latest_after == slot->source;
-    if (current) {
+    const bool current = latest_after && latest_after == slot->source;
+    if (current && !slot->cancelled.load(std::memory_order_acquire)) {
         // Adopt. This is the foreground thread (build() calls us),
         // so mutating self's state is safe with no extra locks.
         auto self = const_cast<StreamingMarkdown*>(this);
-        self->source_ = slot->source;
-        self->committed_ = slot->source.size();
+        self->source_ = std::move(*slot->source);
+        self->committed_ = self->source_.size();
         self->in_code_fence_ = slot->in_code_fence;
         self->fence_open_ch_ = slot->fence_open_ch;
         self->fence_open_len_ = slot->fence_open_len;
@@ -297,23 +319,25 @@ void StreamingMarkdown::maybe_apply_async_() const {
         self->scan_last_boundary_ = self->committed_;
         // The whole buffer is committed — every pending boundary is consumed.
         self->scan_boundaries_.clear();
-        // Drop fold map entries that no longer correspond to any
-        // block in the new prefix (offsets shifted under us).
-        std::vector<std::size_t> drop;
-        for (auto& kv : self->folds_) {
-            bool known = false;
-            for (const auto& m : self->prefix_->metas)
-                if (m.source_offset == kv.first) { known = true; break; }
-            if (!known) drop.push_back(kv.first);
+        // Block offsets are the fold-map keys. Build a lookup set once,
+        // then prune in one pass instead of scanning every block per fold.
+        std::unordered_set<std::size_t> offsets;
+        offsets.reserve(self->prefix_->metas.size());
+        for (const auto& m : self->prefix_->metas)
+            offsets.insert(m.source_offset);
+        for (auto it = self->folds_.begin(); it != self->folds_.end();) {
+            if (offsets.find(it->first) == offsets.end())
+                it = self->folds_.erase(it);
+            else
+                ++it;
         }
-        for (auto k : drop) self->folds_.erase(k);
         {
             std::lock_guard<std::mutex> lk(self->async_mu_());
             self->async_latest_source_.reset();
         }
     } else if (latest_after) {
-        // Stale: spawn a follow-up for the most recent request.
-        spawn_async_worker_(std::move(*latest_after));
+        // Stale (or cancelled): spawn a follow-up for the newest request.
+        spawn_async_worker_(std::move(latest_after));
     }
 }
 

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <list>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -74,11 +75,11 @@ std::uint64_t rt_paint_ns()  noexcept { return g_rt_paint_ns.load(std::memory_or
 //      ever (until something invalidates them); only the streaming
 //      card pays the per-frame cost.
 //
-// Eviction policy: at the start of every top-level render_tree() call we
-// drop entries whose last_frame_used predates the previous frame.  Each
-// hit during measure / paint stamps last_frame_used to the current
-// frame, so stable entries survive indefinitely while ephemeral ones
-// (new pointer each frame) age out within one frame of last access.
+// Eviction policy: pointer-keyed entries are dropped at the start of every
+// top-level render_tree() call once they miss a frame. Hash-keyed entries use
+// a bounded LRU instead: every hash hit moves its node to the front and only
+// overflow is removed from the tail. This keeps stable content through idle
+// periods without a per-frame map sweep or temporary eviction index.
 //
 // Why cache by pointer rather than by hash: pointer comparison is one
 // instruction; hashing an Element's content tree is O(content) and would
@@ -93,26 +94,15 @@ struct ComponentCacheEntry {
     int      width  = -1;         // width at which the result was rendered
     int      height = 0;          // measured natural height at that width
     Element  result;              // cached render() output
-    std::uint64_t last_frame = 0; // bumped on every hit
-    // Generation of the ComponentElement instance whose render() output
-    // produced `result`. The pointer alone (the map key) is not a
-    // stable identity — the allocator can reuse a freed
-    // ComponentElement's address for a fresh, unrelated instance, and
-    // a pointer-only cache would alias the new instance to the old's
-    // cached render. Comparing generations on lookup catches that case
-    // and treats it as a miss.
+    // Monotonic frame stamp retained for pointer-keyed same-frame reuse.
+    std::uint64_t last_frame = 0;
+    // Pointer identity needs a generation check because an allocator may
+    // recycle an address for an unrelated ComponentElement.
     std::uint64_t generation = 0;
-    // Wallclock timestamp of the last hit. Used by hash-keyed
-    // (hash_id) eviction so a long idle that produces no frames
-    // doesn't immediately drop entries the user is still interacting
-    // with — fps=0 makes "frames since last hit" a poor proxy for
-    // "how long ago." Set on every hit; checked at top-of-frame
-    // eviction. Default-constructed time_point compares less-than any
-    // sane now(), so a fresh-but-not-yet-touched entry is eligible
-    // for eviction on the first sweep after store — but stays alive
-    // for at least one frame because the SAME-FRAME hit-stamp at
-    // measure/paint moves last_touched_at to now().
-    std::chrono::steady_clock::time_point last_touched_at{};
+    // Hash-keyed entries are linked into ComponentCache::hash_lru.  Keeping
+    // the iterator in the value makes a hit an allocation-free list splice.
+    std::list<CacheId>::iterator lru_it{};
+    bool lru_linked = false;
 
     // Painted-cell cache: a (height × width) grid of packed cell
     // values captured the first time this entry is painted. On every
@@ -197,13 +187,31 @@ struct ComponentCache {
     // alias each other's entries unless their typed hash inputs are
     // bit-identical — the same probabilistic floor (2⁻⁶⁴) the
     // shadow-of-wire hash already accepts.
-    std::unordered_map<CacheId, ComponentCacheEntry>                 entries_by_hash;
+    std::unordered_map<CacheId, ComponentCacheEntry> entries_by_hash;
+    // Most-recently used at front. This is deliberately separate from the
+    // hash table: touching an entry is O(1), and trimming needs no scan or
+    // temporary index allocation.
+    std::list<CacheId> hash_lru;
     std::uint64_t current_frame = 0;
 };
 
 inline ComponentCache& component_cache() {
     thread_local ComponentCache c;
     return c;
+}
+
+inline void touch_hash_cache(ComponentCache& cache,
+                             ComponentCacheEntry& entry) noexcept {
+    if (entry.lru_linked)
+        cache.hash_lru.splice(cache.hash_lru.begin(), cache.hash_lru,
+                              entry.lru_it);
+}
+
+inline void erase_hash_cache_entry(ComponentCache& cache,
+                                   std::unordered_map<CacheId, ComponentCacheEntry>::iterator it) {
+    if (it->second.lru_linked)
+        cache.hash_lru.erase(it->second.lru_it);
+    cache.entries_by_hash.erase(it);
 }
 
 // Look up a ComponentElement in the cross-frame cache. Priority order:
@@ -228,6 +236,7 @@ inline ComponentCacheEntry* find_component_cache(ComponentCache& cache,
         auto it = cache.entries_by_hash.find(comp.hash_id);
         if (it != cache.entries_by_hash.end()
             && it->second.width == width) {
+            touch_hash_cache(cache, it->second);
             return &it->second;
         }
         return nullptr;
@@ -268,15 +277,20 @@ inline ComponentCacheEntry* store_component_cache(ComponentCache& cache,
             // a genuine resize (different width) still falls through to
             // the replace below, correctly invalidating stale-width
             // cells.
-            it->second.height          = entry.height;
-            it->second.last_frame      = entry.last_frame;
-            it->second.generation      = entry.generation;
-            it->second.last_touched_at = entry.last_touched_at;
-            it->second.result          = std::move(entry.result);
+            it->second.height     = entry.height;
+            it->second.last_frame = entry.last_frame;
+            it->second.generation = entry.generation;
+            it->second.result     = std::move(entry.result);
+            touch_hash_cache(cache, it->second);
             return &it->second;
         }
-        auto [iit, _] = cache.entries_by_hash.insert_or_assign(
-            comp.hash_id, std::move(entry));
+        if (it != cache.entries_by_hash.end())
+            erase_hash_cache_entry(cache, it);
+        auto [iit, _] = cache.entries_by_hash.emplace(comp.hash_id,
+                                                       std::move(entry));
+        iit->second.lru_it = cache.hash_lru.insert(cache.hash_lru.begin(),
+                                                    comp.hash_id);
+        iit->second.lru_linked = true;
         return &iit->second;
     }
     auto [it, _] = cache.entries.insert_or_assign(&comp, std::move(entry));
@@ -628,8 +642,7 @@ std::size_t build_layout_tree(
                                 // evicts the width-keyed entry.
                                 if (it->second.height > 0) {
                                     it->second.last_frame = cache.current_frame;
-                                    it->second.last_touched_at =
-                                        std::chrono::steady_clock::now();
+                                    touch_hash_cache(cache, it->second);
                                     return {Columns{max_width},
                                             Rows{it->second.height}};
                                 }
@@ -655,8 +668,8 @@ std::size_t build_layout_tree(
                                 || entry->last_frame == cache.current_frame;
                             if (trust) {
                                 entry->last_frame = cache.current_frame;
-                                entry->last_touched_at =
-                                    std::chrono::steady_clock::now();
+                                if (!comp.hash_id.empty())
+                                    touch_hash_cache(cache, *entry);
                                 return {Columns{max_width},
                                         Rows{entry->height}};
                             }
@@ -687,8 +700,7 @@ std::size_t build_layout_tree(
                             h,
                             std::move(child),
                             cache.current_frame,
-                            comp.generation,
-                            std::chrono::steady_clock::now()
+                            comp.generation
                         });
                         return {Columns{max_width}, Rows{h}};
                     },
@@ -1415,8 +1427,7 @@ void paint_element(
                     if (auto* entry =
                             find_component_cache(cache, node, content_w)) {
                         entry->last_frame = cache.current_frame;
-                        entry->last_touched_at =
-                            std::chrono::steady_clock::now();
+                        touch_hash_cache(cache, *entry);
                     }
                     return;
                 }
@@ -1484,7 +1495,8 @@ void paint_element(
                 && entry->cells_ambient == ambient_bg())
             {
                 entry->last_frame = cache.current_frame;
-                entry->last_touched_at = std::chrono::steady_clock::now();
+                if (!node.hash_id.empty())
+                    touch_hash_cache(cache, *entry);
 
                 auto _ = canvas.clip_scope(Rect{
                     {Columns{content_x}, Rows{content_y}},
@@ -1636,7 +1648,8 @@ void paint_element(
             if (reuse_entry) {
                 child_ptr = &reuse_entry->result;
                 reuse_entry->last_frame = cache.current_frame;
-                reuse_entry->last_touched_at = std::chrono::steady_clock::now();
+                if (!node.hash_id.empty())
+                    touch_hash_cache(cache, *reuse_entry);
             } else {
                 // Render fresh. For pointer-keyed entries we still
                 // store the result so this frame's measure-then-paint
@@ -1652,8 +1665,7 @@ void paint_element(
                     /*height=*/content_h,
                     fresh_render,
                     cache.current_frame,
-                    node.generation,
-                    std::chrono::steady_clock::now()
+                    node.generation
                 });
                 child_ptr = stored ? &stored->result : &fresh_render;
             }
@@ -1943,36 +1955,19 @@ void render_tree(
             }
         }
 
-        // Hash-keyed entries: sized LRU with a high/low-water mark.
-        // hash_id is a content-stable identity — the cached cells are
-        // valid until the id stops appearing in the tree, regardless of
-        // how long the host has been idle. A wallclock cutoff (the
-        // previous policy) misfires under event-driven (fps=0) hosts
-        // that paint only on input: every frozen scrollback entry got
-        // evicted after a few seconds of idle, and the next keystroke
-        // paid an O(N) full re-render to repopulate. Cap by entry count
-        // instead; the LRU bounds memory without timing out live content.
-        //
-        // Trim to a LOW-WATER mark (not exactly kHashCacheMax) so the
-        // O(N) build-index + nth_element fires once every ~(max-low)
-        // insertions instead of on every frame that hovers at the cap.
-        // Without the gap, a steady-state working set sitting right at
-        // kHashCacheMax would re-run the full scan-and-drop every single
-        // frame — an O(N) spike per frame exactly when the cache is
-        // busiest.
+        // Hash-keyed entries use an allocation-free LRU. Evict only the
+        // accumulated overflow from the tail: each erase is O(1), so the
+        // work is amortized over the insertions that created the overflow
+        // rather than a full-map scan in a render frame. Running before the
+        // frame preserves entries inserted by this frame's measure pass.
         constexpr std::size_t kHashCacheMax = 4096;
-        constexpr std::size_t kHashCacheLow = 3072;   // 75% — batch target
-        if (cache.entries_by_hash.size() > kHashCacheMax) {
-            std::vector<std::pair<std::chrono::steady_clock::time_point, CacheId>> idx;
-            idx.reserve(cache.entries_by_hash.size());
-            for (const auto& [id, entry] : cache.entries_by_hash)
-                idx.emplace_back(entry.last_touched_at, id);
-            const std::size_t drop =
-                cache.entries_by_hash.size() - kHashCacheLow;
-            std::nth_element(idx.begin(), idx.begin() + drop, idx.end(),
-                [](const auto& a, const auto& b) { return a.first < b.first; });
-            for (std::size_t i = 0; i < drop; ++i)
-                cache.entries_by_hash.erase(idx[i].second);
+        while (cache.entries_by_hash.size() > kHashCacheMax) {
+            const CacheId oldest = cache.hash_lru.back();
+            auto it = cache.entries_by_hash.find(oldest);
+            if (it != cache.entries_by_hash.end())
+                erase_hash_cache_entry(cache, it);
+            else
+                cache.hash_lru.pop_back(); // defensive consistency repair
         }
         ++cache.current_frame;
     }

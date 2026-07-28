@@ -553,13 +553,14 @@ private:
         return backend_.write_all(seq);
     }
 
-public:
-
-    // ========================================================================
-    // Destructor - RAII cleanup in reverse order of state transitions
-    // ========================================================================
-
-    ~Terminal() {
+private:
+    // Release the terminal state currently owned by this object without ending
+    // its lifetime. Both the destructor and move-assignment need this exact
+    // transition rollback. Calling `this->~Terminal()` in move-assignment and
+    // then assigning members is lifetime UB (the object is dead until a
+    // placement-new), and manifests as UCRT heap corruption under pipe-backed
+    // Windows terminals.
+    void cleanup() noexcept {
         if (moved_from_) return;
 
         if constexpr (std::same_as<State, AltScreen>) {
@@ -611,7 +612,16 @@ public:
             (void)backend_.disable_raw();
         }
         // Cooked: nothing to restore
+        moved_from_ = true;
     }
+
+public:
+
+    // ========================================================================
+    // Destructor - RAII cleanup in reverse order of state transitions
+    // ========================================================================
+
+    ~Terminal() { cleanup(); }
 
     // ========================================================================
     // Move operations
@@ -624,7 +634,7 @@ public:
 
     Terminal& operator=(Terminal&& other) noexcept {
         if (this != &other) {
-            this->~Terminal();
+            cleanup();
             backend_    = std::move(other.backend_);
             moved_from_ = std::exchange(other.moved_from_, true);
         }

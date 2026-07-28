@@ -22,7 +22,9 @@
 #endif
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
+#include <thread>
 
 #include "../../core/expected.hpp"
 #include "../concepts.hpp"
@@ -36,13 +38,17 @@ namespace maya::platform::win32 {
 
 class Win32EventSource {
     HANDLE stdin_;
-    HANDLE stdout_;
     HANDLE wake_ = INVALID_HANDLE_VALUE;
+    // stdin is a pipe (mintty / MSYS2 PTY), not a console. The console input
+    // APIs used to drain untranslatable records don't apply; a signaled wait
+    // means raw VT bytes are ready to ReadFile. Detected once from the handle
+    // type so the EventMultiplexer ctor signature stays unchanged.
+    bool   pipe_ = false;
 
 public:
     Win32EventSource(NativeHandle term_in, [[maybe_unused]] NativeHandle sig_handle) noexcept
         : stdin_(term_in)
-        , stdout_(::GetStdHandle(STD_OUTPUT_HANDLE))
+        , pipe_(::GetFileType(term_in) == FILE_TYPE_PIPE)
     {}
 
     void set_wake_handle(HANDLE h) noexcept {
@@ -72,6 +78,19 @@ public:
                         ? INFINITE
                         : static_cast<DWORD>(count);
 
+        // Pipe path (mintty / MSYS2 PTY): the stdin HANDLE is a byte-mode
+        // named pipe. A named-pipe handle is NOT a data-ready synchronization
+        // object -- WaitForSingleObject on it does not block until bytes
+        // arrive (it reflects I/O-completion / handle state, so it would
+        // busy-spin at ms=0). This is exactly why Cygwin's own select()
+        // implementation polls with PeekNamedPipe instead of waiting on the
+        // handle. We mirror that: PeekNamedPipe for input readiness, and
+        // (when present) wait on the wake event -- which IS a real waitable
+        // object -- so background-task wakeups stay latency-free.
+        if (pipe_) {
+            return wait_pipe(ms, flags);
+        }
+
         if (wake_ != INVALID_HANDLE_VALUE) {
             HANDLE handles[2] = { stdin_, wake_ };
             DWORD result = ::WaitForMultipleObjects(2, handles, FALSE, ms);
@@ -85,7 +104,7 @@ public:
             // handle individually below; WaitForMultipleObjects only
             // reports the lowest signaled index.
             if (::WaitForSingleObject(stdin_, 0) == WAIT_OBJECT_0)
-                drain_system_events(flags);
+                mark_input_ready(flags);
             if (::WaitForSingleObject(wake_, 0) == WAIT_OBJECT_0)
                 flags.wake = true;
         } else {
@@ -93,7 +112,7 @@ public:
             if (result == WAIT_FAILED)
                 return err<ReadyFlags>(Error::io("WaitForSingleObject failed"));
             if (result == WAIT_OBJECT_0) {
-                drain_system_events(flags);
+                mark_input_ready(flags);
             }
         }
 
@@ -108,6 +127,80 @@ public:
     Win32EventSource& operator=(const Win32EventSource&) = delete;
 
 private:
+    // Poll a byte-mode named pipe (MSYS2 PTY) for input readiness up to `ms`.
+    // Cygwin's runtime on the far end of this pipe drives select() the same
+    // way: PeekNamedPipe to see whether unread bytes are buffered. We slice
+    // the timeout into short quanta so a concurrent wake (SetEvent on the
+    // manual-reset wake handle -- a genuinely waitable object) is observed
+    // with sub-quantum latency, and so an idle wait costs almost no CPU.
+    [[nodiscard]] auto wait_pipe(DWORD ms, ReadyFlags flags) -> Result<ReadyFlags>
+    {
+        using clock = std::chrono::steady_clock;
+        const bool infinite = (ms == INFINITE);
+        const auto deadline = clock::now() + std::chrono::milliseconds(ms);
+
+        // Poll quantum: small enough to feel instant, large enough to keep
+        // the idle CPU cost negligible. Wake latency is bounded by this.
+        constexpr DWORD kQuantumMs = 5;
+
+        for (;;) {
+            // 1) Data already buffered in the pipe? -> input ready, return now.
+            DWORD avail = 0;
+            if (::PeekNamedPipe(stdin_, nullptr, 0, nullptr, &avail, nullptr)) {
+                if (avail > 0) {
+                    flags.input = true;
+                    return ok(ReadyFlags{flags});
+                }
+            } else {
+                // Peek failed: the writer closed its end (broken pipe / EOF).
+                // Flag input (so read_raw runs and observes EOF) AND hangup
+                // (so the runtime tears down) rather than spinning forever.
+                flags.input = true;
+                flags.hangup = true;
+                return ok(ReadyFlags{flags});
+            }
+
+            // 2) Wake event pending? (background task signalled the UI thread.)
+            if (wake_ != INVALID_HANDLE_VALUE &&
+                ::WaitForSingleObject(wake_, 0) == WAIT_OBJECT_0) {
+                flags.wake = true;
+                return ok(ReadyFlags{flags});
+            }
+
+            // 3) Timed out?
+            if (!infinite && clock::now() >= deadline)
+                return ok(ReadyFlags{flags});
+
+            // 4) Sleep one quantum, capped at the remaining time. If a wake
+            //    handle exists, block on IT for the quantum so a SetEvent
+            //    returns us immediately instead of after the full sleep.
+            DWORD slice = kQuantumMs;
+            if (!infinite) {
+                const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                      deadline - clock::now()).count();
+                if (left <= 0) return ok(ReadyFlags{flags});
+                slice = static_cast<DWORD>(std::min<long long>(kQuantumMs, left));
+            }
+            if (wake_ != INVALID_HANDLE_VALUE) {
+                if (::WaitForSingleObject(wake_, slice) == WAIT_OBJECT_0) {
+                    flags.wake = true;
+                    return ok(ReadyFlags{flags});
+                }
+            } else {
+                ::Sleep(slice);
+            }
+        }
+    }
+
+    // A signaled stdin means input is ready. For a console we first drain the
+    // untranslatable records (resize/focus/key-up) that would otherwise stall
+    // the byte read; for a pipe there are no such records -- a signal means
+    // raw VT bytes are waiting, so just flag input.
+    void mark_input_ready(ReadyFlags& flags) noexcept {
+        if (pipe_) { flags.input = true; return; }
+        drain_system_events(flags);
+    }
+
     // Peek at the front of the console input queue. Consume events that
     // ReadFile cannot translate in VT mode (resize, focus, menu) so they
     // don't block the byte-oriented read path. Stop at the first real

@@ -487,7 +487,7 @@ public:
     }
 
     // Poll the event source for ready flags.
-    struct PollResult { bool resize = false; bool input = false; bool wake = false; };
+    struct PollResult { bool resize = false; bool input = false; bool wake = false; bool hangup = false; };
     auto poll(std::chrono::milliseconds timeout) -> Result<PollResult>;
 
     // Handle a resize signal: drain, update size, mark needs_clear.
@@ -1650,6 +1650,17 @@ void run(RunConfig cfg = {}) {
             }
         }
 
+        // Controlling terminal closed (stdin EOF / pty slave gone /
+        // MSYS2 pipe writer exited). The `input` flag above already let us
+        // drain any final bytes this iteration; now tear the loop down
+        // instead of spinning on read()=0 / an always-"ready" dead pipe at
+        // 100% CPU. Mirrors a real terminal close — the app exits cleanly.
+        if (poll_result->hangup) {
+            drain_pending();
+            rt.request_quit();
+            break;
+        }
+
         // Drain background task messages.
         //
         // The wake protocol normally guarantees: if any send() pushed a
@@ -2124,6 +2135,10 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
             if (!events) break;
             for (auto& ev : *events) dispatch(ev);
         }
+
+        // Controlling terminal closed (stdin EOF / dead pipe): exit cleanly
+        // rather than spin on read()=0 forever.
+        if (poll_result->hangup) { rt.request_quit(); break; }
 
         for (auto& ev : rt.flush_timeouts()) dispatch(ev);
 

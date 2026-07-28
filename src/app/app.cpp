@@ -253,7 +253,7 @@ auto Runtime::poll(std::chrono::milliseconds timeout) -> Result<PollResult> {
            static_cast<long long>(timeout.count()),
            static_cast<long long>(waited),
            ready.input ? 1 : 0, ready.resize ? 1 : 0, ready.wake ? 1 : 0);
-    return ok(PollResult{.resize = ready.resize, .input = ready.input, .wake = ready.wake});
+    return ok(PollResult{.resize = ready.resize, .input = ready.input, .wake = ready.wake, .hangup = ready.hangup});
 }
 
 // ============================================================================

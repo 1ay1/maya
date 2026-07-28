@@ -354,6 +354,78 @@ void test_dynamic_computed_dependencies_in_batch() {
     std::println("PASS\n");
 }
 
+// Regression for the epoch-tracking diamond glitch: when b and c are pulled
+// LAZILY from inside the effect body, recomputing c must not synchronously
+// re-fire the effect that is still mid-evaluation. This is the exact shape
+// that broke when dependency edges became retained (no eager teardown).
+void test_diamond_deep_no_glitch() {
+    std::println("--- test_diamond_deep_no_glitch ---");
+    // a -> b -> d,  a -> c -> d,  d -> effect  (asymmetric-depth diamond)
+    Signal<int> a{1};
+    auto b = computed([&] { return a.get() * 2; });          // depth 1
+    auto c = computed([&] { return a.get() + 1; });          // depth 1
+    auto d = computed([&] { return b.get() + c.get(); });    // depth 2, joins
+    int fire = 0;
+    int seen = 0;
+    {
+        Effect e([&] { seen = d.get(); ++fire; });
+        assert(fire == 1 && seen == (1 * 2) + (1 + 1));   // 2 + 2 = 4
+        a.set(5);
+        // d recomputes once; effect must fire exactly once more.
+        assert(fire == 2 && seen == (5 * 2) + (5 + 1));   // 10 + 6 = 16
+    }
+    std::println("PASS\n");
+}
+
+// Same diamond, but the whole mutation is wrapped in a Batch. The pending
+// flag dedups the batched path; assert it also produces exactly one fire and
+// the fully-consistent value (no torn read of one branch).
+void test_diamond_no_glitch_in_batch() {
+    std::println("--- test_diamond_no_glitch_in_batch ---");
+    Signal<int> a{1};
+    auto b = computed([&] { return a.get() * 2; });
+    auto c = computed([&] { return a.get() + 1; });
+    int fire = 0;
+    int sb = 0, sc = 0;
+    {
+        Effect e([&] { sb = b.get(); sc = c.get(); ++fire; });
+        assert(fire == 1);
+        {
+            Batch batch;
+            a.set(5);
+        }
+        assert(fire == 2 && sb == 10 && sc == 6);
+    }
+    std::println("PASS\n");
+}
+
+// Wide fan-in: one source feeds N computeds that all feed one effect. The
+// effect must fire exactly once per source change regardless of N — the
+// per-source O(1) evaluating-guard, not O(N) bookkeeping, keeps this glitch
+// free.
+void test_wide_fanin_single_fire() {
+    std::println("--- test_wide_fanin_single_fire ---");
+    Signal<int> a{0};
+    std::vector<Computed<int>> mids;
+    for (int i = 0; i < 8; ++i)
+        mids.push_back(computed([&a, i] { return a.get() + i; }));
+    int fire = 0;
+    {
+        Effect e([&] {
+            int acc = 0;
+            for (auto& m : mids) acc += m.get();
+            (void)acc;
+            ++fire;
+        });
+        assert(fire == 1);
+        a.set(100);
+        assert(fire == 2);  // one coalesced fire, not 8
+        a.set(200);
+        assert(fire == 3);
+    }
+    std::println("PASS\n");
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     test_signal_get_set();
@@ -378,5 +450,8 @@ int main() {
     test_batched_node_destroyed_before_flush();
     test_dynamic_dependencies_switch_cleanly();
     test_dynamic_computed_dependencies_in_batch();
-    std::println("=== ALL 22 TESTS PASSED ===");
+    test_diamond_deep_no_glitch();
+    test_diamond_no_glitch_in_batch();
+    test_wide_fanin_single_fire();
+    std::println("=== ALL 25 TESTS PASSED ===");
 }

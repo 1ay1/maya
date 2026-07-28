@@ -108,11 +108,30 @@ struct ReactiveNode {
     // and rebuilding unchanged subscriptions on every run.
     std::vector<uint64_t>      dependency_epochs;
     uint64_t                   dependency_epoch = 0;
+    // Positional cursor into `dependencies`, reset at the start of each
+    // evaluation. compute_fn almost always reads its sources in the SAME
+    // order every run, so add_dependency() matches dependencies[cursor] on
+    // the fast path — O(1) per get(), O(D) per evaluation. Only a genuine
+    // reordering (rare) falls back to a linear probe. Without this, the
+    // std::ranges::find in add_dependency made re-tracking O(D squared).
+    std::size_t                dependency_cursor = 0;
     uint64_t                   version = 0;
     // pending: O(1) batch-dedup flag — set when the node is queued in
     // pending_notifications, cleared when the batch flushes. Replaces the
     // O(n) std::ranges::find scan in notify_subscribers().
     bool                       pending = false;
+    // evaluating: set for the duration of evaluate()'s body. A node that is
+    // pulled lazily (get()) from *inside* another node's evaluation notifies
+    // its subscribers when it recomputes — but any subscriber that is itself
+    // mid-evaluation has ALREADY observed the fresh value in this same pass,
+    // so re-firing it synchronously is a redundant glitch (the classic
+    // diamond double-fire). Skipping self-and-ancestors that are `evaluating`
+    // collapses the glitch in O(1) with a single bool test — no topological
+    // sort, no per-node generation counter. Since edges are now RETAINED
+    // across evaluations (epoch tracking), the old eager clear_dependencies()
+    // no longer detaches the back-edge for us, so this guard is what keeps
+    // synchronous propagation glitch-free.
+    bool                       evaluating = false;
 
     virtual ~ReactiveNode() { unlink_all(); }
     virtual void mark_dirty() = 0;
@@ -172,6 +191,7 @@ struct ReactiveNode {
     }
 
     void begin_dependency_tracking() {
+        dependency_cursor = 0;
         // Wrapping is practically unreachable, but resetting stamps keeps
         // the matching invariant correct even then.
         if (++dependency_epoch == 0) {
@@ -208,6 +228,19 @@ struct ReactiveNode {
     }
 
     void add_dependency(ReactiveNode* dep) {
+        // Fast path: same source read in the same position as last run.
+        // Restamp in place and advance the cursor — O(1), no search, no
+        // allocation. This is the common case for a stable compute_fn.
+        if (dependency_cursor < dependencies.size() &&
+            dependencies[dependency_cursor] == dep) {
+            dependency_epochs[dependency_cursor] = dependency_epoch;
+            ++dependency_cursor;
+            return;
+        }
+        // Slow path: order changed or a new dep. If it already exists
+        // elsewhere, just restamp it (leave compaction to reorder later);
+        // do NOT advance the cursor, so the next in-order read can still hit
+        // the fast path.
         auto it = std::ranges::find(dependencies, dep);
         if (it != dependencies.end()) {
             dependency_epochs[static_cast<std::size_t>(it - dependencies.begin())] = dependency_epoch;
@@ -253,6 +286,21 @@ public:
     DependencyTrackingScope& operator=(const DependencyTrackingScope&) = delete;
 };
 
+// Marks a node `evaluating` for the duration of its evaluate() body so that a
+// nested lazy recompute (a Computed pulled via get() from inside this body)
+// cannot synchronously re-fire an ancestor that is already mid-evaluation.
+// One bool set/clear — the whole diamond-glitch fix costs two stores.
+class EvaluationScope {
+    ReactiveNode* owner_;
+public:
+    explicit EvaluationScope(ReactiveNode* node) noexcept : owner_(node) {
+        owner_->evaluating = true;
+    }
+    ~EvaluationScope() { owner_->evaluating = false; }
+    EvaluationScope(const EvaluationScope&)            = delete;
+    EvaluationScope& operator=(const EvaluationScope&) = delete;
+};
+
 inline ReactiveScope::ReactiveScope(ReactiveNode* node) noexcept
     : owner(node), previous(current_scope) {
     current_scope = this;
@@ -285,7 +333,12 @@ inline void notify_subscribers(ReactiveNode* source) {
         auto subs = source->subscribers;
         NotifyFrameScope frame(subs);
         for (auto* sub : subs) if (sub) sub->mark_dirty();
-        for (auto* sub : subs) if (sub) sub->evaluate();
+        // Skip any subscriber already mid-evaluation: it was pulled lazily
+        // higher in this same synchronous pass and has already observed the
+        // fresh value. Re-evaluating it now is the diamond double-fire. It
+        // stays dirty only transiently — its own in-flight evaluate() clears
+        // the flag when it completes.
+        for (auto* sub : subs) if (sub && !sub->evaluating) sub->evaluate();
     }
 }
 
@@ -309,7 +362,7 @@ inline void flush_batch() {
         node->mark_dirty();
     }
     for (auto* node : nodes) {
-        if (node) node->evaluate();
+        if (node && !node->evaluating) node->evaluate();
     }
 }
 
@@ -439,6 +492,10 @@ class Computed {
         void evaluate() override {
             if (!dirty) return;
 
+            // Mark self evaluating so a dependency recomputed lazily inside
+            // compute_fn cannot synchronously re-fire us (diamond glitch).
+            detail::EvaluationScope evaluating(this);
+
             // Retain dependencies observed again and remove only dynamic
             // branches that were not read this time.
             detail::DependencyTrackingScope dependencies(this);
@@ -548,6 +605,7 @@ class Effect {
         void evaluate() override {
             if (!dirty) return;
 
+            detail::EvaluationScope evaluating(this);
             detail::DependencyTrackingScope dependencies(this);
             detail::ReactiveScope scope(this);
             effect_fn();

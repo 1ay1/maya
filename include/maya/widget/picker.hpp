@@ -89,10 +89,10 @@ public:
         //
         // Two ways to populate the list — use exactly one:
         //   • `rows`: typed structured rows. The widget draws the
-        //     left-edge cursor/active bar, applies bold/bright_white
-        //     styling on the selected row, and lays out leading +
-        //     trailing cells with a flex spacer. This is the path
-        //     every chrome-consistent picker should take.
+        //     left-edge cursor/active bar, applies a full-width inverse-like
+        //     highlight (light background + dark bold text) on the selected
+        //     row, and lays out leading + trailing cells with a flex spacer.
+        //     This is the path every chrome-consistent picker should take.
         //   • `items`: raw pre-built Elements. Escape hatch for
         //     callers that need full layout control (e.g. embedding
         //     a PlanView). No selection/active styling is applied.
@@ -106,14 +106,14 @@ public:
         //   • col 1:    single-space gutter.
         //   • leading:  caller-supplied primary text (e.g. label).
         //                Painted with `leading_style` (overridden to
-        //                bold + bright_white on the selected row),
+        //                bold + `selected_fg` on the selected row),
         //                truncated with ellipsis on overflow, grows
         //                to absorb slack.
         //   • spacer:   absorbs any remaining width between leading
         //                and trailing.
         //   • trailing: caller-supplied secondary text (e.g.
         //                timestamp, description). Painted with
-        //                `trailing_style` (overridden to bright fg
+        //                `trailing_style` (overridden to `selected_fg`
         //                on the selected row). Right-aligned,
         //                truncated with ellipsis on overflow.
         //   • col -1:   single-space gutter so trailing content
@@ -187,6 +187,12 @@ public:
         // the neon scrollbar thumb and is universally read as "focus"
         // on dark themes.
         Color                        cursor_color = Color::bright_cyan();
+
+        // Selected-row palette. A full-width light background with dark text
+        // mirrors reverse-video selection while remaining deterministic across
+        // terminal themes. Callers can override both for a themed picker.
+        Color                        selected_bg  = Color::bright_white();
+        Color                        selected_fg  = Color::black();
 
         // Active-row bar colour. Magenta by default so it sits on a
         // different colour axis from the cursor and reads as a
@@ -357,8 +363,8 @@ private:
     static constexpr const char* kEdgeBar = "\xe2\x96\x8e";
 
     // Materialise one Row into an Element. Owns every row-chrome
-    // decision: edge bar colour + glyph, selected-state styling
-    // override, full-width hstack with right-pinned trailing cell.
+    // decision: edge bar colour + glyph, full-width selected background,
+    // selected-state styling override, and right-pinned trailing cell.
     [[nodiscard]] Element build_row(const Config::Row& r) const {
         using namespace dsl;
 
@@ -368,35 +374,37 @@ private:
         // stays column-aligned with selected/active rows.
         auto edge = r.selected
             ? text(std::string{kEdgeBar},
-                   Style{}.with_fg(cfg_.cursor_color).with_bold())
+                   Style{}.with_fg(cfg_.selected_fg).with_bold())
             : r.active
                 ? text(std::string{kEdgeBar},
                        Style{}.with_fg(cfg_.active_color).with_bold())
                 : text(std::string{" "});
 
-        // On the selected row, override foreground colours: leading
-        // becomes bright_white + bold (regardless of caller's muted
-        // styling), trailing becomes a non-dim fg so it stays
-        // readable against the (now bolder) leading cell.
+        // On the selected row, use one high-contrast foreground across every
+        // cell. The row box gets `selected_bg` below, including spacer/gutter
+        // cells, so focus reads as the same full-width reverse-video band used
+        // by compact account lists rather than as a subtle edge marker.
         Style ls = r.leading_style;
         Style ts = r.trailing_style;
         if (r.selected) {
-            ls = Style{}.with_fg(Color::bright_white()).with_bold();
-            // Preserve italic/dim intent of caller's trailing style
-            // by only swapping the colour — a description that was
-            // italic stays italic, just brighter.
-            ts = ts.with_fg(Color::bright_white());
+            ls = Style{}.with_fg(cfg_.selected_fg).with_bold();
+            ts = ts.with_fg(cfg_.selected_fg).with_dim(false);
         }
 
-        // Badge cell: colour-coded identity column. Natural width, no
-        // shrink — badges are short by contract and column alignment
-        // (caller pads to a common width) is the whole point. Bold on
-        // the selected row so it tracks the leading cell's weight, but
-        // the caller's hue is preserved.
+        // Badge follows the selected foreground too: preserving a category hue
+        // against the light highlight can make it illegible. Off-selection it
+        // keeps the caller's identity colour unchanged.
         auto badge_cell = [&]() -> Element {
             Style bs = r.badge_style;
-            if (r.selected) bs = bs.with_bold();
+            if (r.selected)
+                bs = bs.with_fg(cfg_.selected_fg).with_dim(false).with_bold();
             return text(r.badge, bs);
+        };
+
+        auto finish = [&](Element row) -> Element {
+            if (r.selected)
+                return std::move(row) | Style{}.with_bg(cfg_.selected_bg);
+            return row;
         };
 
         // No trailing cell when the caller passes an empty string.
@@ -404,15 +412,15 @@ private:
         // column (e.g. PlanView-embedded rows).
         if (r.trailing.empty()) {
             if (r.badge.empty()) {
-                return hstack()
+                return finish(hstack()
                     .width(Dimension::percent(100))(
                     edge,
                     text(std::string{" "}),
                     text(r.leading, ls) | clip | grow(1.0f),
                     text(std::string{" "})
-                );
+                ));
             }
-            return hstack()
+            return finish(hstack()
                 .width(Dimension::percent(100))(
                 edge,
                 text(std::string{" "}),
@@ -420,7 +428,7 @@ private:
                 text(std::string{" "}),
                 text(r.leading, ls) | clip | grow(1.0f),
                 text(std::string{" "})
-            );
+            ));
         }
 
         // Both cells are flexible so the row degrades gracefully at ANY
@@ -438,7 +446,7 @@ private:
         // −B" diffstat) now share negative space by shrink weight
         // instead of fighting over it.
         if (r.badge.empty()) {
-            return hstack()
+            return finish(hstack()
                 .width(Dimension::percent(100))(
                 edge,
                 text(std::string{" "}),
@@ -446,9 +454,9 @@ private:
                 spacer(),
                 text(r.trailing, ts) | clip | shrink(1.0f),
                 text(std::string{" "})
-            );
+            ));
         }
-        return hstack()
+        return finish(hstack()
             .width(Dimension::percent(100))(
             edge,
             text(std::string{" "}),
@@ -458,7 +466,7 @@ private:
             spacer(),
             text(r.trailing, ts) | clip | shrink(1.0f),
             text(std::string{" "})
-        );
+        ));
     }
 
     Config cfg_;

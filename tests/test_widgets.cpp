@@ -620,6 +620,59 @@ void test_picker_multirow_autoscroll() {
     std::println("  PASS\n");
 }
 
+// Structured picker rows use one consistent, unmistakable selection band.
+// Lock both text contrast and full-row background fill so future picker chrome
+// changes cannot regress to the old subtle edge-bar-only focus treatment.
+void test_picker_selected_row_highlight() {
+    std::println("=== test_picker_selected_row_highlight ===");
+
+    ScrollState scroll{.auto_dispatch = false};
+    Picker::Config cfg;
+    cfg.title = " Picker ";
+    cfg.min_width = 30;
+    cfg.viewport_h = 2;
+    cfg.scroll = &scroll;
+    cfg.selected = 0;
+    cfg.rows = {
+        Picker::Config::Row{.leading = "Selected", .trailing = "first",
+                            .selected = true},
+        Picker::Config::Row{.leading = "Unselected", .trailing = "second"},
+    };
+
+    StylePool pool;
+    Canvas canvas(40, 10, &pool);
+    render_tree(Picker{std::move(cfg)}.build(), canvas, pool, theme::dark);
+
+    int selected_y = -1;
+    int selected_x = -1;
+    int unselected_x = -1;
+    int unselected_y = -1;
+    for (int y = 0; y < canvas.height(); ++y) {
+        for (int x = 0; x < canvas.width(); ++x) {
+            const auto ch = canvas.get(x, y).character;
+            if (ch == U'S' && selected_y < 0) { selected_x = x; selected_y = y; }
+            if (ch == U'U' && unselected_y < 0) { unselected_x = x; unselected_y = y; }
+        }
+    }
+    assert(selected_y >= 0 && unselected_y >= 0);
+
+    const Style selected = pool.get(canvas.get(selected_x, selected_y).style_id);
+    const Style unselected = pool.get(canvas.get(unselected_x, unselected_y).style_id);
+    assert(selected.bg == Color::bright_white());
+    assert(selected.fg == Color::black());
+    assert(selected.bold);
+    assert(!unselected.bg.has_value());
+
+    int highlighted_cells = 0;
+    for (int x = 0; x < canvas.width(); ++x)
+        if (pool.get(canvas.get(x, selected_y).style_id).bg
+            == Color::bright_white()) ++highlighted_cells;
+    assert(highlighted_cells >= 24
+           && "selected picker background must span the row, including slack");
+
+    std::println("  PASS\n");
+}
+
 // Input.handle_paste: a multi-line bracketed paste must KEEP its newlines
 // when the Input is multiline (0x0A would otherwise be scrubbed as a control
 // byte and the block collapses onto one line). A single-line Input still
@@ -665,6 +718,7 @@ int main() {
     test_tool_body_tail_line_numbers();
     test_small_caps_utf8();
     test_picker_multirow_autoscroll();
+    test_picker_selected_row_highlight();
     test_input_multiline_paste();
     std::println("All widget tests passed!");
     return 0;

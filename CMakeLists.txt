@@ -236,7 +236,9 @@ if(Python3_Interpreter_FOUND)
              ${CMAKE_CURRENT_SOURCE_DIR}/include/maya/text/unicode_width_table.hpp.tmp
              ${CMAKE_CURRENT_SOURCE_DIR}/include/maya/text/unicode_width_table.hpp
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        BYPRODUCTS ${CMAKE_CURRENT_SOURCE_DIR}/include/maya/text/unicode_width_table.hpp
+        # The generated header is checked into the source tree. Do not list it
+        # as a BYPRODUCT: CMake's clean target deletes byproducts, which made a
+        # clean build remove the required header before compiling Maya.
         COMMENT "Regenerating maya/include/maya/text/unicode_width_table.hpp from pinned UCD"
         VERBATIM
     )

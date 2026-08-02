@@ -673,6 +673,46 @@ void test_picker_selected_row_highlight() {
     std::println("  PASS\n");
 }
 
+// Structured rows must remain exactly one row tall even when badge, leading,
+// and trailing cells all compete for a phone-sized terminal. Wrapping changes
+// row indices and makes the cursor highlight the wrong visual item.
+void test_picker_rows_responsive() {
+    std::println("=== test_picker_rows_responsive ===");
+
+    auto render = [](int width) {
+        static ScrollState scroll{.auto_dispatch = false};
+        scroll.y = 0;
+        Picker::Config cfg;
+        cfg.title = " Tool Outputs ";
+        cfg.min_width = 1;
+        cfg.viewport_h = 3;
+        cfg.scroll = &scroll;
+        cfg.selected = 0;
+        cfg.rows = {
+            Picker::Config::Row{
+                .badge = "Git Commit", .leading = "A very long commit description",
+                .trailing = "ok · 203 KB", .selected = true},
+            Picker::Config::Row{
+                .badge = "Diagnostics", .leading = "cmake --build everything",
+                .trailing = "failed · 41.2s"},
+            Picker::Config::Row{
+                .badge = "● LIVE", .leading = "Bash gh run watch",
+                .trailing = "running · 1 MB"},
+        };
+        return render_at(Picker{std::move(cfg)}.build(), width);
+    };
+
+    const int expected_h = render(80).content_h;
+    for (int width = 8; width <= 120; ++width) {
+        auto r = render(width);
+        assert_fits(r, width, "responsive picker rows");
+        assert(r.content_h == expected_h
+               && "structured picker rows must never wrap at narrow widths");
+    }
+
+    std::println("  PASS\n");
+}
+
 // Input.handle_paste: a multi-line bracketed paste must KEEP its newlines
 // when the Input is multiline (0x0A would otherwise be scrubbed as a control
 // byte and the block collapses onto one line). A single-line Input still
@@ -719,6 +759,7 @@ int main() {
     test_small_caps_utf8();
     test_picker_multirow_autoscroll();
     test_picker_selected_row_highlight();
+    test_picker_rows_responsive();
     test_input_multiline_paste();
     std::println("All widget tests passed!");
     return 0;

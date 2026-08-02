@@ -402,9 +402,16 @@ private:
         };
 
         auto finish = [&](Element row) -> Element {
+            // Structured rows are a one-row contract. Enforce it here rather
+            // than relying on every text child to win flex negotiation: at
+            // phone-sized widths a long badge used to wrap onto a second row,
+            // desynchronising selection indices and crowding adjacent rows.
+            auto bounded = std::move(row)
+                         | height(1)
+                         | overflow(Overflow::Hidden);
             if (r.selected)
-                return std::move(row) | Style{}.with_bg(cfg_.selected_bg);
-            return row;
+                return std::move(bounded) | Style{}.with_bg(cfg_.selected_bg);
+            return bounded;
         };
 
         // No trailing cell when the caller passes an empty string.
@@ -424,7 +431,7 @@ private:
                 .width(Dimension::percent(100))(
                 edge,
                 text(std::string{" "}),
-                badge_cell(),
+                badge_cell() | overflow(Overflow::Hidden) | shrink(0.5f),
                 text(std::string{" "}),
                 text(r.leading, ls) | clip | grow(1.0f),
                 text(std::string{" "})
@@ -460,7 +467,7 @@ private:
             .width(Dimension::percent(100))(
             edge,
             text(std::string{" "}),
-            badge_cell(),
+            badge_cell() | overflow(Overflow::Hidden) | shrink(0.5f),
             text(std::string{" "}),
             text(r.leading, ls) | clip | grow(1.0f) | shrink(3.0f),
             spacer(),

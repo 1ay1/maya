@@ -513,6 +513,52 @@ void test_context_gauge_stability() {
     assert(w_zero == w_small
            && "placeholder must occupy the same columns as live");
 
+    // No gap after the slash: the MAX denominator is left-trimmed, so a 1M
+    // window reads "409.8k/1.0M", never "409.8k/  1.0M" (the constant-width
+    // right-justification used to leave two spaces after the '/').
+    {
+        ContextGauge::Config cfg;
+        cfg.used = 409'800; cfg.max = 1'000'000;
+        auto r = render_at(ContextGauge{cfg}.build(), 200);
+        bool joined = false, gapped = false;
+        for (const auto& row : r.rows) {
+            if (row.find("/1.0M") != std::string::npos) joined = true;
+            if (row.find("/  1.0M") != std::string::npos
+                || row.find("/ 1.0M") != std::string::npos) gapped = true;
+        }
+        assert(joined && "denominator must join the slash: 409.8k/1.0M");
+        assert(!gapped && "no leading-space gap after the slash");
+    }
+
+    // The 1M denominator survives inside a real StatusBar at a normal width:
+    // either the whole "used/max" count shows (with 1.0M intact) or the
+    // ladder drops the counts entirely — it must NEVER show a half-clipped
+    // "409.8k/" with the denominator sheared off.
+    {
+        auto ctx_bar = [](int w) {
+            StatusBar::Config cfg;
+            cfg.phase_color      = Color::cyan();
+            cfg.phase.verb       = "Write";
+            cfg.phase.verb_width = 6;
+            cfg.model_badge      = ModelBadge{"claude-sonnet-4-5"}.build();
+            cfg.context.used     = 409'800;
+            cfg.context.max      = 1'000'000;
+            cfg.context.cells    = 10;
+            auto r = render_at(StatusBar{cfg}.build(), w);
+            std::string joined;
+            for (const auto& row : r.rows) joined += row + "\n";
+            return joined;
+        };
+        for (int w = 30; w <= 200; ++w) {
+            const std::string s = ctx_bar(w);
+            const bool has_used = s.find("409.8k/") != std::string::npos;
+            const bool has_max  = s.find("1.0M") != std::string::npos;
+            // If the numerator is shown, the denominator must be too.
+            assert((!has_used || has_max)
+                   && "denominator must never be clipped while numerator shows");
+        }
+    }
+
     std::println("  PASS\n");
 }
 

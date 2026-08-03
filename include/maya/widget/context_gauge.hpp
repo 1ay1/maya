@@ -73,20 +73,27 @@ public:
             // narrow / phone-width status bar.
             if (has_tokens) {
                 if (cfg_.show_tokens) {
+                    // The USED count keeps a constant 6-col field so the
+                    // right-group chips don't shift as it grows during a turn.
+                    // The MAX (denominator) never changes within a session, so
+                    // it's trimmed of leading pad — otherwise a right-justified
+                    // "  1.0M" shows an ugly gap after the slash
+                    // ("62.9k/  1.0M"). Trimmed reads tight: "62.9k/1.0M".
                     std::string used_str = format_tokens(cfg_.used) + "/"
-                                         + format_tokens(cfg_.max) + " ";
+                                         + ltrim_(format_tokens(cfg_.max))
+                                         + " ";
                     parts.push_back(text(used_str, fg_dim_(muted)));
                 }
                 parts.push_back(bar(pct, cfg_.cells));
             } else {
-                // Placeholder numbers, same cols as live: two 6-col token
-                // fields + '/' + trailing space (see format_tokens —
-                // constant 6). "    ——/    —— " keeps the right-group
-                // chips pinned when the first usage event lands.
+                // Placeholder numbers, same cols as live: the 6-col used
+                // field + '/' + the (trimmed) max + trailing space. Mirrors
+                // the live layout so the right-group chips stay pinned when
+                // the first usage event lands.
                 if (cfg_.show_tokens) {
-                    parts.push_back(text(
-                        "    \xe2\x80\x94\xe2\x80\x94/    \xe2\x80\x94\xe2\x80\x94 ",
-                        fg_dim_(muted)));
+                    std::string ph = std::string("    \xe2\x80\x94\xe2\x80\x94/")
+                                   + ltrim_(format_tokens(cfg_.max)) + " ";
+                    parts.push_back(text(ph, fg_dim_(muted)));
                 }
                 parts.push_back(bar(0, cfg_.cells));   // dim track only
             }
@@ -189,6 +196,16 @@ private:
         if (static_cast<int>(s.size()) >= width) return s;
         return std::string(static_cast<std::size_t>(width - static_cast<int>(s.size())), ' ')
              + s;
+    }
+
+    // Drop leading spaces from a fixed-width formatted field. Used on the MAX
+    // denominator (which never changes within a session, so trimming it can't
+    // cause the right-group chips to shift) to close the gap the constant
+    // 6-col right-justification would otherwise leave after the '/'.
+    static std::string ltrim_(std::string s) {
+        std::size_t i = 0;
+        while (i < s.size() && s[i] == ' ') ++i;
+        return s.substr(i);
     }
 
     static Style fg_dim_(Color c) {

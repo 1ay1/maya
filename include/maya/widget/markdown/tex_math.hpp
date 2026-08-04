@@ -807,7 +807,7 @@ struct Parser {
         return attach_scripts(op, upper, lower, has_up, has_lo);
     }
 
-    // ── environments: matrix / pmatrix / bmatrix / cases ────────────────────
+    // ── environments: matrix / pmatrix / bmatrix / cases / array ────────────
     Box parse_env() {
         skip_ws();
         std::string kind;
@@ -818,9 +818,34 @@ struct Parser {
             kind = std::string(s.substr(start, i - start));
             if (peek() == '}') ++i;
         }
-        // collect rows of cells
+        // `array` (and array-like) carries a SECOND {…} column spec, e.g.
+        // {c|c} or {l r r}. Consume it and record which inter-column gaps get a
+        // vertical rule (a `|` between/around column letters). vrules[k] = a
+        // rule sits to the LEFT of column k; vrules[ncol] = a trailing rule.
+        std::vector<bool> vrules;
+        if (kind == "array") {
+            skip_ws();
+            if (peek() == '{') {
+                ++i;
+                int col = 0;
+                vrules.push_back(false);   // slot before column 0
+                while (i < s.size() && s[i] != '}') {
+                    char c = s[i++];
+                    if (c == '|') { vrules[col] = true; }
+                    else if (c == 'l' || c == 'c' || c == 'r') {
+                        ++col; vrules.push_back(false);
+                    }
+                    // ignore p{..}, @{..}, spaces, etc. (best-effort)
+                }
+                if (peek() == '}') ++i;
+            }
+        }
+        // collect rows of cells; hrules[r] = a horizontal rule sits ABOVE row r
+        // (\hline seen before that row); hrules[nrow] = a trailing rule.
         std::vector<std::vector<Box>> matrix;
+        std::vector<bool> hrules;
         matrix.emplace_back();
+        hrules.push_back(false);
         for (;;) {
             skip_ws();
             if (eof()) break;
@@ -832,7 +857,16 @@ struct Parser {
                     if (peek() == '{') { while (i < s.size() && s[i] != '}') ++i; if (peek()=='}') ++i; }
                     break;
                 }
-                if (w == "\\") { matrix.emplace_back(); continue; }  // row break
+                if (w == "\\") { matrix.emplace_back(); hrules.push_back(false); continue; }  // row break
+                if (w == "hline" || w == "midrule" || w == "toprule"
+                    || w == "bottomrule") {
+                    // A rule attaches to the boundary at the current row. If the
+                    // current row is still empty it's the top border of that
+                    // row; otherwise (rare: \hline mid-row) treat as trailing.
+                    if (matrix.back().empty()) hrules.back() = true;
+                    else { hrules.push_back(true); matrix.emplace_back(); hrules.push_back(false); }
+                    continue;
+                }
                 i = save;
             }
             if (peek() == '&') { ++i; matrix.back().emplace_back(); continue; }
@@ -840,7 +874,7 @@ struct Parser {
             if (matrix.back().empty()) matrix.back().push_back(cell);
             else matrix.back().back() = hcat(matrix.back().back(), cell);
         }
-        return assemble_matrix(matrix, kind);
+        return assemble_matrix(matrix, kind, vrules, hrules);
     }
 
     // parse one matrix cell: until & , \\ , or \end
@@ -1040,10 +1074,18 @@ struct Parser {
         return out;
     }
 
-    Box assemble_matrix(const std::vector<std::vector<Box>>& m, const std::string& kind) {
-        // drop trailing empty row
+    Box assemble_matrix(const std::vector<std::vector<Box>>& m, const std::string& kind,
+                        const std::vector<bool>& vrules = {},
+                        const std::vector<bool>& hrules = {}) {
+        // drop trailing empty row (but keep a matching trailing hrule intent)
         std::vector<std::vector<Box>> rows = m;
-        while (!rows.empty() && rows.back().empty()) rows.pop_back();
+        std::vector<bool> hr = hrules;
+        bool trailing_hrule = false;
+        while (!rows.empty() && rows.back().empty()) {
+            if (hr.size() == rows.size() + 1 && hr.back()) trailing_hrule = true;
+            rows.pop_back();
+            if (!hr.empty()) hr.pop_back();
+        }
         if (rows.empty()) return Box{};
         std::size_t ncol = 0;
         for (auto& r : rows) ncol = std::max(ncol, r.size());
@@ -1055,28 +1097,77 @@ struct Parser {
                 rowh[r]  = std::max(rowh[r], rows[r][c].rows);
                 rowasc[r]= std::max(rowasc[r], rows[r][c].ascent());
             }
+        const bool is_array = (kind == "array");
         int gap = 1;
+        // Vertical rules (array only): a `|` between columns occupies one extra
+        // grid column in the gap. vcol[k] true ⇒ a rule sits left of column k;
+        // vcol[ncol] ⇒ a trailing rule after the last column.
+        auto vcol = [&](std::size_t k) -> bool {
+            return is_array && k < vrules.size() && vrules[k];
+        };
+        // Column x-origin (in the output grid) accounting for gaps + vrules.
+        std::vector<int> colx(ncol, 0);
         int totalw = 0;
-        for (auto w : colw) totalw += w;
-        totalw += static_cast<int>(ncol > 0 ? (ncol - 1) * gap : 0);
+        for (std::size_t c = 0; c < ncol; ++c) {
+            if (vcol(c)) totalw += 1;                 // rule glyph column
+            else if (c > 0) totalw += gap;            // normal inter-col gap
+            colx[c] = totalw;
+            totalw += colw[c];
+        }
+        if (vcol(ncol)) totalw += 1;                  // trailing rule
+        // Horizontal rules (array only): each \hline occupies one extra grid
+        // row. hrow_before[r] ⇒ a rule row precedes row r.
+        auto hrow = [&](std::size_t r) -> bool {
+            return is_array && r < hr.size() && hr[r];
+        };
+        std::vector<int> rowy(rows.size(), 0);
         int totalh = 0;
-        for (auto h : rowh) totalh += h;
-        Box out = blank(totalh, totalw, totalh / 2, pal.normal);
-        int r0 = 0;
         for (std::size_t r = 0; r < rows.size(); ++r) {
-            int c0 = 0;
+            if (hrow(r)) totalh += 1;                  // rule row
+            rowy[r] = totalh;
+            totalh += rowh[r];
+        }
+        if (is_array && trailing_hrule) totalh += 1;
+        Box out = blank(totalh, totalw, totalh / 2, pal.normal);
+        // paint cells
+        for (std::size_t r = 0; r < rows.size(); ++r) {
             for (std::size_t c = 0; c < ncol; ++c) {
                 if (c < rows[r].size()) {
                     const Box& cell = rows[r][c];
-                    int coff = c0 + (colw[c] - cell.cols) / 2;
-                    int roff = r0 + (rowasc[r] - cell.ascent());
+                    int coff = colx[c] + (colw[c] - cell.cols) / 2;
+                    int roff = rowy[r] + (rowasc[r] - cell.ascent());
                     for (int rr = 0; rr < cell.rows; ++rr)
                         for (int cc = 0; cc < cell.cols; ++cc)
                             out.at(roff + rr, coff + cc) = cell.at(rr, cc);
                 }
-                c0 += colw[c] + gap;
             }
-            r0 += rowh[r];
+        }
+        // paint vertical rules down the full height
+        if (is_array) {
+            auto paint_vrule = [&](int x) {
+                if (x < 0 || x >= out.cols) return;
+                for (int r = 0; r < out.rows; ++r)
+                    out.at(r, x) = make_cell("\u2502", pal.delim);
+            };
+            for (std::size_t c = 0; c < ncol; ++c)
+                if (vcol(c)) paint_vrule(colx[c] - 1);
+            if (vcol(ncol)) paint_vrule(totalw - 1);
+            // paint horizontal rules across the full width
+            auto paint_hrule = [&](int y) {
+                if (y < 0 || y >= out.rows) return;
+                for (int c = 0; c < out.cols; ++c) {
+                    // keep a vrule crossing as a cross glyph for legibility
+                    std::string_view cur;
+                    const Cell& ex = out.at(y, c);
+                    if (ex.len && std::string_view(ex.bytes.data(), ex.len) == "\u2502")
+                        cur = "\u253c";
+                    else cur = "\u2500";
+                    out.at(y, c) = make_cell(cur, pal.delim);
+                }
+            };
+            for (std::size_t r = 0; r < rows.size(); ++r)
+                if (hrow(r)) paint_hrule(rowy[r] - 1);
+            if (trailing_hrule) paint_hrule(out.rows - 1);
         }
         // brackets. Add one pad column on each side so the entries don't
         // touch the delimiters (⎛ a  b ⎞ reads better than ⎛a b⎞).
@@ -1085,7 +1176,10 @@ struct Parser {
         else if (kind == "bmatrix") { open='['; close=']'; }
         else if (kind == "Bmatrix") { open='{'; close='}'; }
         else if (kind == "vmatrix") { open='|'; close='|'; }
+        else if (kind == "Vmatrix") { open='|'; close='|'; }
         else if (kind == "cases")   { open='{'; close='\0'; }
+        // `array` intentionally has NO auto-brackets — a surrounding
+        // \left[…\right] (or \left(…) supplies them, matching LaTeX.
         if (open || close) {
             Box padded = blank(out.rows, out.cols + 2, out.axis, pal.normal);
             for (int r = 0; r < out.rows; ++r)

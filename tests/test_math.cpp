@@ -131,6 +131,39 @@ static void test_matrix() {
           "left bracket present");
 }
 
+static void test_array_rules() {
+    // array with a column rule {c|c}: the vertical bar must render as a real
+    // box-drawing │ separating the columns, NOT leak as literal "c|c".
+    auto rows = grid(
+        "\\left[\\begin{array}{c|c} A & B \\\\ C & D \\end{array}\\right]", true);
+    std::string all;
+    for (auto& r : rows) all += r + "\n";
+    CHECK(all.find("c|c") == std::string::npos, "column spec not leaked as text");
+    CHECK(all.find("\u2502") != std::string::npos, "vertical column rule drawn");
+    CHECK(all.find("A") != std::string::npos && all.find("D") != std::string::npos,
+          "array cells present");
+    CHECK(all.find("hline") == std::string::npos, "no leaked hline macro");
+
+    // \hline must render as a horizontal box-drawing rule, not literal text.
+    auto hl = grid(
+        "\\begin{array}{cc} a & b \\\\ \\hline c & d \\end{array}", true);
+    std::string allh;
+    for (auto& r : hl) allh += r + "\n";
+    CHECK(allh.find("hline") == std::string::npos, "hline consumed, not printed");
+    CHECK(allh.find("\u2500") != std::string::npos, "horizontal rule drawn");
+
+    // The partitioned-matrix stress case from the docs: a c|c array with an
+    // \hline, wrapped in \left[…\right]. Must not leak spec/macro text.
+    auto blk = joined(
+        "M = \\left[\\begin{array}{c|c} A & B \\\\ \\hline C & D \\end{array}\\right]",
+        true);
+    CHECK(blk.find("c|c")   == std::string::npos, "block array spec not leaked");
+    CHECK(blk.find("hline") == std::string::npos, "block array hline not leaked");
+    CHECK(blk.find("begin") == std::string::npos, "block array begin not leaked");
+    CHECK(blk.find("\u2502") != std::string::npos, "block array has a vertical rule");
+    CHECK(blk.find("\u2500") != std::string::npos, "block array has a horizontal rule");
+}
+
 static void test_quadratic_formula() {
     // The canonical stress case: real fraction + radical + scripts + \pm.
     auto rows = grid("\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}", true);
@@ -242,6 +275,8 @@ static void test_width_invariant() {
         "\\overline{AB} + \\underline{cd}",
         "\\underbrace{a+b+c}_{3} = \\overbrace{x+y}^{2}",
         "\\boxed{E = mc^2}",
+        "\\left[\\begin{array}{c|c} A & B \\\\ \\hline C & D \\end{array}\\right]",
+        "\\begin{array}{cc} a & b \\\\ \\hline c & d \\end{array}",
     };
     for (const char* tex : cases) {
         for (bool disp : {false, true}) {
@@ -313,6 +348,7 @@ int main() {
         {"sqrt",                    test_sqrt},
         {"bigop_limits",            test_bigop_limits},
         {"matrix",                  test_matrix},
+        {"array_rules",             test_array_rules},
         {"quadratic_formula",       test_quadratic_formula},
         {"unknown_macro_degrades",  test_unknown_macro_degrades},
         {"linearize_inline",        test_linearize_inline},

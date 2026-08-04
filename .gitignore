@@ -21,3 +21,4 @@ build-verify/
 build-md/
 build-gcc/
 testbuild/
+.agentty/

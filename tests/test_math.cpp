@@ -185,6 +185,30 @@ static void test_radical_join() {
     CHECK(rows[1] == "\u221ax", "radical hugs radicand");
 }
 
+static void test_norm_and_braces() {
+    // Norm delimiters: \|, \lVert/\rVert, \Vert all fold to ‖; the single-bar
+    // \lvert/\rvert/\vert fold to ∣. Previously these leaked as raw LaTeX.
+    CHECK(joined("\\|x\\|", false) == "\u2016x\u2016", "\\| folds to ‖");
+    CHECK(joined("\\lVert v \\rVert", false) == "\u2016v\u2016", "lVert/rVert fold");
+    CHECK(joined("\\lvert a \\rvert", false) == "\u2223a\u2223", "lvert/rvert fold");
+
+    // \overline draws a real top rule spanning the whole body (multi-char).
+    auto ol = grid("\\overline{AB}", true);
+    CHECK(ol.size() == 2, "overline is 2 rows");
+    CHECK(ol[0] == "\u203e\u203e", "overline rule spans body width");
+    CHECK(ol[1] == "AB", "overline body below the rule");
+
+    // \underline draws a bottom rule.
+    auto ul = grid("\\underline{xy}", true);
+    CHECK(ul.size() == 2, "underline is 2 rows");
+    CHECK(ul[0] == "xy", "underline body above the rule");
+
+    // \underbrace renders a brace + label instead of dumping the macro name.
+    auto ub = joined("\\underbrace{a+b}_{S}", true);
+    CHECK(ub.find("underbrace") == std::string::npos, "underbrace macro consumed");
+    CHECK(ub.find('S') != std::string::npos, "underbrace label rendered");
+}
+
 // Measure a UTF-8 string's terminal display width the way maya's layout does.
 static int display_width(const std::string& line) {
     int w = 0;
@@ -214,6 +238,10 @@ static void test_width_invariant() {
         "\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}",
         "\\sum_{i=1}^{n} i", "\\int_0^\\infty e^{-x^2} dx",
         "\\alpha \\leq \\beta \\in \\mathbb{R}",
+        "\\|x\\|_2 \\leq \\lVert x \\rVert_1",
+        "\\overline{AB} + \\underline{cd}",
+        "\\underbrace{a+b+c}_{3} = \\overbrace{x+y}^{2}",
+        "\\boxed{E = mc^2}",
     };
     for (const char* tex : cases) {
         for (bool disp : {false, true}) {
@@ -277,6 +305,7 @@ int main() {
         {"linearize_inline",        test_linearize_inline},
         {"spacing_quality",         test_spacing_quality},
         {"radical_join",            test_radical_join},
+        {"norm_and_braces",         test_norm_and_braces},
         {"width_invariant",         test_width_invariant},
         {"markdown_inline_math",    test_markdown_inline_math},
         {"markdown_display_math",   test_markdown_display_math},

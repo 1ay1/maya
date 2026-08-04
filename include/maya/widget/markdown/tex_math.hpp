@@ -284,6 +284,12 @@ inline constexpr SymEntry kSymbols[] = {
     {"dots","\u2026"},{"ldots","\u2026"},{"cdots","\u22ef"},{"vdots","\u22ee"},
     {"ddots","\u22f1"},{"therefore","\u2234"},{"because","\u2235"},{"checkmark","\u2713"},
     {"complement","\u2201"},{"backslash","\\"},
+    {"Vert","\u2016"},{"lVert","\u2016"},{"rVert","\u2016"},
+    {"vert","\u2223"},{"lvert","\u2223"},{"rvert","\u2223"},
+    {"nmid","\u2224"},{"nsubseteq","\u2288"},{"nsupseteq","\u2289"},
+    {"subsetneq","\u228a"},{"supsetneq","\u228b"},{"leqslant","\u2a7d"},
+    {"geqslant","\u2a7e"},{"coloneqq","\u2254"},{"triangleq","\u225c"},
+    {"nleq","\u2270"},{"ngeq","\u2271"},{"asymp","\u224d"},{"bowtie","\u22c8"},
     // blackboard-bold shortcuts for common sets
     {"mathbb{R}","\u211d"},{"R","\u211d"},{"mathbb{N}","\u2115"},{"N","\u2115"},
     {"mathbb{Z}","\u2124"},{"Z","\u2124"},{"mathbb{Q}","\u211a"},{"Q","\u211a"},
@@ -344,7 +350,7 @@ inline std::string_view sub_glyph(char c) {
 // cell of the accented box).
 inline std::string_view accent_combining(std::string_view name) {
     if (name == "hat"  || name == "widehat")   return "\u0302";
-    if (name == "bar"  || name == "overline")  return "\u0304";
+    if (name == "bar")                          return "\u0304";
     if (name == "vec")                          return "\u20d7";
     if (name == "dot")                          return "\u0307";
     if (name == "ddot")                         return "\u0308";
@@ -604,6 +610,11 @@ struct Parser {
     Box parse_ctrl() {
         std::string_view w = read_ctrl();
 
+        // Control SYMBOLS (single non-alpha char after the backslash).
+        if (w == "|") { Box b = hbox("\u2016", pal.delim); return b; }  // \| → ‖
+        if (w == "{") { Box b = hbox("{", pal.delim); b.klass = Box::Cls::Open;  return b; }
+        if (w == "}") { Box b = hbox("}", pal.delim); b.klass = Box::Cls::Close; return b; }
+
         if (w == "frac" || w == "dfrac" || w == "tfrac" || w == "binom") {
             Box top = parse_group();
             Box bot = parse_group();
@@ -652,6 +663,26 @@ struct Parser {
             return Box{};
         }
         if (w == "begin") return parse_env();
+
+        // \overline / \underline: full-width rule (multi-char aware).
+        if (w == "overline" || w == "underline")
+            return make_line(parse_group(), w == "overline");
+
+        // \boxed{…}: framed body.
+        if (w == "boxed") return make_boxed(parse_group());
+
+        // \overbrace{body}^{lbl} / \underbrace{body}_{lbl}.
+        if (w == "overbrace" || w == "underbrace") {
+            bool over = (w == "overbrace");
+            Box body = parse_group();
+            Box label; bool has_label = false;
+            bool save_tight = tight; tight = true;
+            skip_ws();
+            char want = over ? '^' : '_';
+            if (peek() == want) { ++i; label = parse_group(); has_label = true; }
+            tight = save_tight;
+            return make_brace(body, label, over, has_label);
+        }
 
         // accents
         if (!accent_combining(w).empty()) {
@@ -846,6 +877,9 @@ struct Parser {
             if (w == ".") return '\0';
             if (w == "{") return '{'; if (w == "}") return '}';
             if (w == "langle") return '<'; if (w == "rangle") return '>';
+            if (w == "|" || w == "Vert" || w == "lVert" || w == "rVert")
+                return '|';
+            if (w == "lvert" || w == "rvert" || w == "vert") return '|';
             return '\0';
         }
         char c = peek();
@@ -864,6 +898,74 @@ struct Parser {
         // axis on the bar row
         stacked.axis = num.rows;
         return stacked;
+    }
+
+    // \overline{X} / \underline{X}: draw a full-width rule above / below the
+    // body (a real bar, not a per-cell combining mark, so it works for
+    // multi-character bodies like \overline{AB}). The body keeps the axis.
+    Box make_line(const Box& body, bool over) {
+        int w = std::max(1, body.cols);
+        Box rule = blank(1, w, 0, pal.rule);
+        for (int c = 0; c < w; ++c)
+            rule.at(0, c) = make_cell(over ? "\u203e" : "\u2500", pal.rule);
+        Box out = over ? vstack({rule, body}, 1, pal.normal)
+                       : vstack({body, rule}, 0, pal.normal);
+        out.axis = over ? 1 + body.axis : body.axis;
+        return out;
+    }
+
+    // \overbrace{…}^{lbl} / \underbrace{…}_{lbl}: a horizontal brace above /
+    // below the body with an optional label. The brace is drawn from the
+    // box-drawing set so it scales to the body width.
+    Box make_brace(const Box& body, const Box& label, bool over, bool has_label) {
+        int w = std::max(2, body.cols);
+        Box brace = blank(1, w, 0, pal.rule);
+        for (int c = 0; c < w; ++c) {
+            std::string_view g;
+            if (over)  g = (c == 0) ? "\u2570" : (c == w-1) ? "\u256f"
+                        : (c == w/2) ? "\u252c" : "\u2500";
+            else       g = (c == 0) ? "\u256d" : (c == w-1) ? "\u256e"
+                        : (c == w/2) ? "\u2534" : "\u2500";
+            brace.at(0, c) = make_cell(g, pal.rule);
+        }
+        std::vector<Box> parts;
+        int axis_row;
+        if (over) {
+            if (has_label) parts.push_back(label);
+            parts.push_back(brace);
+            parts.push_back(body);
+            axis_row = static_cast<int>(parts.size()) - 1;
+        } else {
+            parts.push_back(body);
+            parts.push_back(brace);
+            if (has_label) parts.push_back(label);
+            axis_row = 0;
+        }
+        Box out = vstack(parts, axis_row, pal.normal);
+        out.axis = over ? (has_label ? 2 : 1) : 0;
+        return out;
+    }
+
+    // \boxed{…}: draw a light box-drawing frame around the body.
+    Box make_boxed(const Box& body) {
+        int w = body.cols, h = body.rows;
+        Box out = blank(h + 2, w + 2, body.axis + 1, pal.normal);
+        for (int r = 0; r < h; ++r)
+            for (int c = 0; c < w; ++c)
+                out.at(r + 1, c + 1) = body.at(r, c);
+        out.at(0, 0)         = make_cell("\u250c", pal.delim);
+        out.at(0, w + 1)     = make_cell("\u2510", pal.delim);
+        out.at(h + 1, 0)     = make_cell("\u2514", pal.delim);
+        out.at(h + 1, w + 1) = make_cell("\u2518", pal.delim);
+        for (int c = 1; c <= w; ++c) {
+            out.at(0, c)     = make_cell("\u2500", pal.delim);
+            out.at(h + 1, c) = make_cell("\u2500", pal.delim);
+        }
+        for (int r = 1; r <= h; ++r) {
+            out.at(r, 0)     = make_cell("\u2502", pal.delim);
+            out.at(r, w + 1) = make_cell("\u2502", pal.delim);
+        }
+        return out;
     }
 
     Box make_binom(const Box& top, const Box& bot) {

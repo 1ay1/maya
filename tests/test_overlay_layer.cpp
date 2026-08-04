@@ -1,6 +1,9 @@
 // Tests for the absolute-positioned z-ordered overlay compositor.
 #include <maya/maya.hpp>
 #include <maya/app/overlay_layer.hpp>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
 #include <cassert>
 #include <print>
 #include <string>

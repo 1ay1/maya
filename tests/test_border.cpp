@@ -1,5 +1,8 @@
 // Tests for border rendering: single, double, round, bold, classic styles
 #include <maya/maya.hpp>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
 #include <cassert>
 #include <print>
 

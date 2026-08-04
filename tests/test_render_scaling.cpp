@@ -17,6 +17,11 @@
 // Each test prints a one-line summary so a human reading CI output
 // can see the actual numbers, not just "ok / fail."
 
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
+#include <cassert>
+
 #include <maya/maya.hpp>
 #include <maya/render/renderer.hpp>
 #include <maya/widget/agent_timeline.hpp>

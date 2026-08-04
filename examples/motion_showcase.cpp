@@ -376,7 +376,7 @@ struct Showcase {
             rp.edge_age_ms = age - arrived_ms;
             rp.revealed_cp = revealed;
             rp.total_cp    = total_cp;
-            anim::decorate_text_reveal(leaf, rp);
+            (void)anim::decorate_text_reveal(leaf, rp);
             const bool caught_up = revealed >= total_cp;
             const bool cooled    = rp.edge_age_ms > 700;
             if (caught_up && !cooled)

@@ -260,7 +260,7 @@ void test_text_reveal_typewriter() {
     p.revealed_cp     = cursor;
     p.total_cp        = total;
     p.enable_scramble = false;   // isolate the reveal/ghost split
-    anim::decorate_text_reveal(leaf, p);
+    (void)anim::decorate_text_reveal(leaf, p);
 
     // Content bytes for revealed cp must be UNCHANGED (real glyphs), and their
     // style must NOT be ghost. Codepoints at/after the cursor must be ghost
@@ -309,7 +309,7 @@ void test_text_reveal_complete_no_ghost() {
     p.revealed_cp     = string_width(body);
     p.total_cp        = string_width(body);
     p.enable_scramble = false;
-    anim::decorate_text_reveal(leaf, p);
+    (void)anim::decorate_text_reveal(leaf, p);
     for (std::size_t i = 0; i < leaf.content.size(); ++i) {
         const StyledRun* r = run_at(leaf, i);
         assert(r && !is_ghost_style(r->style) &&
@@ -459,7 +459,7 @@ void test_text_reveal_ghost_blank() {
     p.total_cp        = total;
     p.enable_scramble = false;   // isolate the ghost band
     // ghost_blank defaults true.
-    anim::decorate_text_reveal(leaf, p);
+    (void)anim::decorate_text_reveal(leaf, p);
 
     // DISPLAY WIDTH preserved (load-bearing: no reflow).
     assert(string_width(leaf.content) == static_cast<int>(total) &&

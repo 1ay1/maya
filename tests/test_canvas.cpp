@@ -1,6 +1,9 @@
 // Tests for Canvas, StylePool, and Cell
 #include <maya/maya.hpp>
 #include <array>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
 #include <cassert>
 #include <print>
 

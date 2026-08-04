@@ -891,7 +891,7 @@ static void test_drag_is_lag_free() {
                  back_thumb_x - initial_thumb_x, 4);
     assert(back_thumb_x - initial_thumb_x == 4);
 
-    state.handle(release_at(click_col + 4, click_row));
+    (void)state.handle(release_at(click_col + 4, click_row));
     assert(!state.dragging_h);
 
     std::println("PASS\n");
@@ -984,7 +984,7 @@ static void test_multiple_bars_one_state() {
     assert(state.dragging_h);
     assert(state.drag_bar.y == bar2.y);
 
-    state.handle(release_at(bar2.x + 8, bar2.y));
+    (void)state.handle(release_at(bar2.x + 8, bar2.y));
     assert(!state.dragging_h);
 
     std::println("PASS\n");
@@ -1102,7 +1102,7 @@ static void test_drag_axis_switch_does_not_dual_flag() {
     assert(state.dragging_v);
     assert(!state.dragging_h);   // h was cleared on the v-bar press
 
-    state.handle(release_at(state.bar_v_bounds.x, state.bar_v_bounds.y));
+    (void)state.handle(release_at(state.bar_v_bounds.x, state.bar_v_bounds.y));
     assert(!state.is_dragging());
 
     std::println("PASS\n");
@@ -1165,7 +1165,7 @@ static void test_content_fits_viewport() {
     // Scroll attempts are no-ops when content fits.
     s.scroll_by(0, +5);
     assert(s.y == 0);
-    s.handle(key_event(SpecialKey::Down));
+    (void)s.handle(key_event(SpecialKey::Down));
     assert(s.y == 0);
     assert(s.at_top() && s.at_bottom());
 

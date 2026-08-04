@@ -6,6 +6,9 @@
 #include <maya/maya.hpp>
 #include <maya/app/static_region.hpp>
 #include <algorithm>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
 #include <cassert>
 #include <cctype>
 #include <cstdio>

@@ -15,6 +15,9 @@
 #include <maya/widget/spinner.hpp>
 #include <maya/widget/table.hpp>
 #include <maya/widget/toast.hpp>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
 #include <cassert>
 #include <print>
 #include <string>

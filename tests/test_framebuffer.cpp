@@ -1,6 +1,9 @@
 // Tests for FrameBuffer: double-buffered rendering, diff cycle, persistent buffer
 #include <maya/maya.hpp>
 #include <maya/render/frame.hpp>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
 #include <cassert>
 #include <print>
 

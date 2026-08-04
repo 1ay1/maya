@@ -1,5 +1,8 @@
 // Tests for the diff algorithm: direct ANSI output, zero intermediate allocations
 #include <maya/maya.hpp>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
 #include <cassert>
 #include <print>
 

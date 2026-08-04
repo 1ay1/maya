@@ -8,6 +8,9 @@
 // In addition, the safe prefix returned by every feed() must always end
 // on a UTF-8 codepoint boundary and must not split a CSI / OSC sequence.
 
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
 #include <cassert>
 #include <print>
 #include <random>

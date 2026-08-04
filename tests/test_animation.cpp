@@ -1,6 +1,9 @@
 // Tests for the animation runtime: easing curves, Tween, Spring, Animated
 #include <maya/maya.hpp>
 #include <maya/anim/text_reveal.hpp>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
 #include <cassert>
 #include <cmath>
 #include <print>

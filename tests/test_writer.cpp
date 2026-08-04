@@ -1,5 +1,8 @@
 // Tests for the Writer buffered I/O: push, flush, write_raw
 #include <maya/maya.hpp>
+// NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
+// assert(). Undefine it here so this file's runtime asserts actually fire.
+#undef NDEBUG
 #include <cassert>
 #include <print>
 #include <fcntl.h>

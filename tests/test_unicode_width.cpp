@@ -45,6 +45,33 @@ void test_control_codes() {
     std::println("PASS");
 }
 
+void test_combining_marks() {
+    std::println("--- test_combining_marks ---");
+    // Combining marks stack on the preceding base glyph and add NO columns.
+    // Counting them as 1 over-measures every accented string and shoves
+    // following content (and any border) one cell right — the bug that made
+    // \vec{v} / \hat{x} leak past a math block's border.
+    static_assert(W(0x0300) == 0);  // combining grave
+    static_assert(W(0x0301) == 0);  // combining acute (é = e + this)
+    static_assert(W(0x0302) == 0);  // circumflex (x̂)
+    static_assert(W(0x0304) == 0);  // macron / overline (\bar)
+    static_assert(W(0x0307) == 0);  // dot above (\dot)
+    static_assert(W(0x030C) == 0);  // caron (\check)
+    static_assert(W(0x036F) == 0);  // last Combining Diacritical Marks
+    static_assert(W(0x20D7) == 0);  // combining right arrow above (\vec)
+    static_assert(W(0x20D0) == 0);  // first Combining Marks for Symbols
+    static_assert(W(0x20FF) == 0);  // last of that block
+    static_assert(W(0x1DC0) == 0);  // Combining Diacritical Marks Supplement
+    static_assert(W(0xFE20) == 0);  // Combining Half Marks
+    static_assert(W(0x200B) == 0);  // zero-width space
+    static_assert(W(0x200D) == 0);  // zero-width joiner
+    static_assert(W(0xFEFF) == 0);  // BOM / zero-width no-break space
+    // The base characters around them stay width 1.
+    static_assert(W(0x02FF) == 1);  // just before the combining block
+    static_assert(W(0x0370) == 1);  // just after (Greek)
+    std::println("PASS");
+}
+
 void test_east_asian_wide() {
     std::println("--- test_east_asian_wide ---");
     // CJK Unified — every terminal in existence renders these as 2 cols.
@@ -121,6 +148,7 @@ void test_no_off_by_one() {
 int main() {
     test_ascii_and_latin();
     test_control_codes();
+    test_combining_marks();
     test_east_asian_wide();
     test_emoji_presentation();
     test_no_off_by_one();

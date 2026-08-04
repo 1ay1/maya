@@ -14,6 +14,7 @@
 
 #include "maya/widget/markdown/tex_math.hpp"
 #include "maya/widget/markdown.hpp"
+#include "maya/text/unicode_width.hpp"
 #include "maya/render/canvas.hpp"
 #include "maya/render/renderer.hpp"
 #include "maya/render/serialize.hpp"
@@ -184,6 +185,52 @@ static void test_radical_join() {
     CHECK(rows[1] == "\u221ax", "radical hugs radicand");
 }
 
+// Measure a UTF-8 string's terminal display width the way maya's layout does.
+static int display_width(const std::string& line) {
+    int w = 0;
+    std::size_t i = 0;
+    while (i < line.size()) {
+        unsigned char c0 = static_cast<unsigned char>(line[i]);
+        std::size_t len = c0 >= 0xF0 ? 4 : c0 >= 0xE0 ? 3 : c0 >= 0xC0 ? 2 : 1;
+        char32_t cp = c0;
+        if (len == 2) cp = ((c0 & 0x1Fu) << 6) | (line[i+1] & 0x3Fu);
+        else if (len == 3) cp = ((c0 & 0x0Fu) << 12) | ((line[i+1] & 0x3Fu) << 6) | (line[i+2] & 0x3Fu);
+        else if (len == 4) cp = ((c0 & 0x07u) << 18) | ((line[i+1] & 0x3Fu) << 12) | ((line[i+2] & 0x3Fu) << 6) | (line[i+3] & 0x3Fu);
+        w += unicode::char_width(cp, unicode::WidthMode::Modern);
+        i += len;
+    }
+    return w;
+}
+
+// The load-bearing invariant: EVERY grid row of a typeset box measures to the
+// SAME display width as the box's declared `cols`. When this breaks (e.g. a
+// combining mark counted as a column, or a wide glyph as one), rows come out
+// ragged and a surrounding border leaks into the margin.
+static void test_width_invariant() {
+    const char* cases[] = {
+        "\\vec{v}", "\\hat{x} + \\bar{y}", "\\dot{x} = \\tilde{v}",
+        "\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}",
+        "\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix} \\cdot \\vec{v} = \\lambda \\vec{v}",
+        "\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}",
+        "\\sum_{i=1}^{n} i", "\\int_0^\\infty e^{-x^2} dx",
+        "\\alpha \\leq \\beta \\in \\mathbb{R}",
+    };
+    for (const char* tex : cases) {
+        for (bool disp : {false, true}) {
+            texmath::Box b = texmath::typeset(tex, texmath::MathPalette{}, disp);
+            for (int r = 0; r < b.rows; ++r) {
+                std::string line;
+                for (int c = 0; c < b.cols; ++c) {
+                    const auto& cell = b.at(r, c);
+                    if (cell.len) line.append(cell.bytes.data(), cell.len);
+                }
+                CHECK(display_width(line) == b.cols,
+                      "grid row display width must equal box.cols");
+            }
+        }
+    }
+}
+
 // ── 2. markdown integration ──────────────────────────────────────────────────
 
 // Full render at a realistic width; asserts it doesn't crash and produces
@@ -230,6 +277,7 @@ int main() {
         {"linearize_inline",        test_linearize_inline},
         {"spacing_quality",         test_spacing_quality},
         {"radical_join",            test_radical_join},
+        {"width_invariant",         test_width_invariant},
         {"markdown_inline_math",    test_markdown_inline_math},
         {"markdown_display_math",   test_markdown_display_math},
     };

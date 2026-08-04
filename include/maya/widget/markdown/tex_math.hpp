@@ -42,6 +42,7 @@
 
 #include "../../core/types.hpp"
 #include "../../style/style.hpp"
+#include "../../text/unicode_width.hpp"
 
 namespace maya::texmath {
 
@@ -123,9 +124,13 @@ inline Box blank(int rows, int cols, int axis, Style s) {
     return b;
 }
 
-// A single-row box from a UTF-8 string. Each grapheme is one cell; a small
-// combining/width heuristic keeps CJK/emoji at width 2 and drops combining
-// marks onto the previous cell.
+// A single-row box from a UTF-8 string. Each grapheme is one cell whose
+// display width comes from maya's authoritative unicode::char_width, so the
+// box's `cols` ALWAYS matches what the terminal (and maya's own layout /
+// measure pass) will render. Combining marks (width 0) fold onto the
+// preceding base cell rather than occupying a column of their own — without
+// this, an accented glyph (v⃗, x̂) would over-count by one and push every
+// following atom (and any surrounding border) one cell to the right.
 inline Box hbox(std::string_view s, Style style) {
     std::vector<Cell> cells;
     std::size_t i = 0;
@@ -137,18 +142,29 @@ inline Box hbox(std::string_view s, Style style) {
         else if (c0 >= 0xC0) len = 2;
         if (i + len > s.size()) len = 1;
         std::string_view g = s.substr(i, len);
-        // Wide: CJK (U+3000..U+9FFF, U+FF00..), rough gate on lead bytes.
-        int w = 1;
-        if (len == 3) {
-            char32_t cp = (static_cast<char32_t>(c0 & 0x0F) << 12) |
-                          (static_cast<char32_t>(static_cast<unsigned char>(s[i + 1]) & 0x3F) << 6) |
-                          (static_cast<char32_t>(static_cast<unsigned char>(s[i + 2]) & 0x3F));
-            if ((cp >= 0x1100 && cp <= 0x115F) || (cp >= 0x2E80 && cp <= 0xA4CF) ||
-                (cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0xF900 && cp <= 0xFAFF) ||
-                (cp >= 0xFE30 && cp <= 0xFE4F) || (cp >= 0xFF00 && cp <= 0xFF60) ||
-                (cp >= 0xFFE0 && cp <= 0xFFE6))
-                w = 2;
+        // decode the codepoint for the width lookup
+        char32_t cp = c0;
+        if (len == 2) cp = ((c0 & 0x1Fu) << 6) |
+                           (static_cast<unsigned char>(s[i + 1]) & 0x3Fu);
+        else if (len == 3) cp = ((c0 & 0x0Fu) << 12) |
+                           ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 6) |
+                           (static_cast<unsigned char>(s[i + 2]) & 0x3Fu);
+        else if (len == 4) cp = ((c0 & 0x07u) << 18) |
+                           ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 12) |
+                           ((static_cast<unsigned char>(s[i + 2]) & 0x3Fu) << 6) |
+                           (static_cast<unsigned char>(s[i + 3]) & 0x3Fu);
+        int w = maya::unicode::char_width(cp, maya::unicode::WidthMode::Modern);
+        if (w == 0 && !cells.empty()) {
+            // combining mark: append its bytes to the previous cell's grapheme
+            // (up to the 4-byte Cell budget) so it renders composed and adds
+            // no column. Overflow marks are simply dropped (rare in math).
+            Cell& prev = cells.back();
+            for (std::size_t k = 0; k < len && prev.len < 4; ++k)
+                prev.bytes[prev.len++] = g[k];
+            i += len;
+            continue;
         }
+        if (w == 0) w = 1;  // a leading combining mark with no base: show it
         cells.push_back(make_cell(g, style, w));
         i += len;
     }
@@ -163,7 +179,6 @@ inline Box hbox(std::string_view s, Style style) {
         b.grid.push_back(c);
         if (c.width == 2) b.grid.push_back(make_cell("", c.style, 1)); // continuation
     }
-    if (b.cols == 0) { b.cols = 0; }
     return b;
 }
 

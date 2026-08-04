@@ -68,7 +68,8 @@ namespace detail {
 
 /// Display width of a single Unicode code point, in terminal columns.
 ///
-///   0 — control chars (<0x20, except a few combining marks not modelled here)
+///   0 — control chars (<0x20), and zero-width combining marks / joiners
+///       (they stack on the preceding base glyph and add no columns)
 ///   1 — narrow / neutral / ambiguous
 ///   2 — East_Asian_Wide / Fullwidth, plus Emoji_Presentation under WidthMode::Modern
 ///
@@ -76,6 +77,26 @@ namespace detail {
 /// builders) get a fully-folded constant. Runtime callers pay one O(log n)
 /// binary search per code point — fast enough to call inside the hot
 /// per-cell text-shaping loop.
+[[nodiscard]] constexpr bool is_zero_width(char32_t cp) noexcept {
+    // Combining marks and format controls occupy no display columns — they
+    // compose onto the preceding base character (é = e + U+0301, x̂, v⃗). A
+    // renderer that counts them as 1 column over-measures every accented
+    // string and pushes following content one cell to the right. These are
+    // the Unicode combining-mark blocks plus the common zero-width formatters.
+    return (cp >= 0x0300 && cp <= 0x036F) ||   // Combining Diacritical Marks
+           (cp >= 0x0483 && cp <= 0x0489) ||   // Cyrillic combining
+           (cp >= 0x0591 && cp <= 0x05BD) ||   // Hebrew points (subset)
+           (cp >= 0x0610 && cp <= 0x061A) ||   // Arabic marks (subset)
+           (cp >= 0x064B && cp <= 0x065F) ||   // Arabic diacritics
+           cp == 0x0670                    ||   // Arabic superscript alef
+           (cp >= 0x1AB0 && cp <= 0x1AFF) ||   // Combining Diacritical Ext.
+           (cp >= 0x1DC0 && cp <= 0x1DFF) ||   // Combining Diacritical Supp.
+           (cp >= 0x20D0 && cp <= 0x20FF) ||   // Combining Marks for Symbols
+           (cp >= 0xFE20 && cp <= 0xFE2F) ||   // Combining Half Marks
+           cp == 0x200B || cp == 0x200C ||     // ZWSP, ZWNJ
+           cp == 0x200D || cp == 0xFEFF;       // ZWJ, ZWNBSP/BOM
+}
+
 [[nodiscard]] constexpr int char_width(
     char32_t cp,
     WidthMode mode = WidthMode::Modern) noexcept
@@ -87,7 +108,13 @@ namespace detail {
     // Greek/Cyrillic/etc. Short-circuit so the per-cell text-shaping hot
     // path skips BOTH O(log n) binary searches for the overwhelmingly
     // common case. (Keep this bound in sync with kWideRanges[0].first.)
+    //
+    // EXCEPTION: combining diacritics live at U+0300+ (below U+1100) and are
+    // zero-width. Check them before the short-circuit so accented text and
+    // math accents (\hat \bar \vec) measure correctly.
+    if (cp >= 0x0300 && is_zero_width(cp)) return 0;
     if (cp < 0x1100) return 1;
+    if (is_zero_width(cp)) return 0;             // U+1AB0+, U+20D0+, U+FE20+ …
     if (detail::in_ranges(cp, detail::kWideRanges)) return 2;
     if (mode == WidthMode::Modern &&
         detail::in_ranges(cp, detail::kEmojiPresentationRanges)) return 2;

@@ -1,0 +1,217 @@
+// test_math.cpp — coverage for the LaTeX math markdown extension.
+//
+// Two layers:
+//   1. The standalone TeX typesetter (widget/markdown/tex_math.hpp): assert on
+//      the exact typeset cell grid for representative formulae — deterministic,
+//      no layout engine involved.
+//   2. Integration: `$…$`, `\(…\)`, `$$…$$` and ```math fences flow through the
+//      full markdown() path and produce a renderable Element without crashing.
+//
+// Uses MAYA_TEST_CHECK (not assert) because CMake builds tests -DNDEBUG, which
+// strips assert() — see tests/check.hpp.
+
+#include "check.hpp"
+
+#include "maya/widget/markdown/tex_math.hpp"
+#include "maya/widget/markdown.hpp"
+#include "maya/render/canvas.hpp"
+#include "maya/render/renderer.hpp"
+#include "maya/render/serialize.hpp"
+#include "maya/style/theme.hpp"
+
+#include <print>
+#include <string>
+#include <string_view>
+#include <vector>
+
+using namespace maya;
+
+#define CHECK(c, m) MAYA_TEST_CHECK((c), (m))
+
+// Render a typeset Box to a vector of UTF-8 row strings (skipping wide-glyph
+// continuation cells, trimming trailing blanks) for exact comparison.
+static std::vector<std::string> grid(std::string_view latex, bool display) {
+    texmath::MathPalette pal;
+    texmath::Box b = texmath::typeset(latex, pal, display);
+    std::vector<std::string> rows;
+    for (int r = 0; r < b.rows; ++r) {
+        std::string line;
+        for (int c = 0; c < b.cols; ++c) {
+            const auto& cell = b.at(r, c);
+            if (cell.len) line.append(cell.bytes.data(), cell.len);
+        }
+        while (!line.empty() && line.back() == ' ') line.pop_back();
+        rows.push_back(std::move(line));
+    }
+    return rows;
+}
+
+static std::string joined(std::string_view latex, bool display) {
+    auto rows = grid(latex, display);
+    std::string out;
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (i) out += '\n';
+        out += rows[i];
+    }
+    return out;
+}
+
+// ── 1. typesetter unit tests ─────────────────────────────────────────────────
+
+static void test_inline_scripts() {
+    // Simple exponent / index fold to Unicode super/subscript, staying 1 row.
+    CHECK(joined("x^2", false)     == "x\u00b2",       "x^2 -> x super2");
+    CHECK(joined("a_1", false)     == "a\u2081",       "a_1 -> a sub1");
+    CHECK(joined("x^2 + y^2", false) == "x\u00b2+y\u00b2", "sum of squares one row");
+    // A multi-char exponent that can't fold stays legible (superscript box).
+    auto rows = grid("e^{x+1}", false);
+    CHECK(rows.size() >= 1, "e^{x+1} produced rows");
+}
+
+static void test_greek_and_symbols() {
+    CHECK(joined("\\alpha", false) == "\u03b1", "alpha");
+    CHECK(joined("\\Sigma", false) == "\u03a3", "Sigma");
+    CHECK(joined("\\infty", false) == "\u221e", "infty");
+    CHECK(joined("\\pi", false)    == "\u03c0", "pi");
+    // relation + set membership + blackboard R
+    CHECK(joined("\\alpha \\leq \\beta", false) == "\u03b1\u2264\u03b2", "alpha <= beta");
+    CHECK(joined("x \\in \\mathbb{R}", false).find("\u2208") != std::string::npos,
+          "in operator present");
+    CHECK(joined("x \\in \\mathbb{R}", false).find("\u211d") != std::string::npos,
+          "blackboard R present");
+}
+
+static void test_fraction() {
+    // \frac{a}{b} typesets to 3 rows: num / bar / den, axis on the bar.
+    auto rows = grid("\\frac{a}{b}", true);
+    CHECK(rows.size() == 3, "fraction is 3 rows");
+    CHECK(rows[0] == "a", "numerator row");
+    CHECK(rows[1] == "\u2500", "bar row is box-drawing horizontal");
+    CHECK(rows[2] == "b", "denominator row");
+    // The bar widens to the max of num/den width.
+    auto wide = grid("\\frac{n+1}{2}", true);
+    CHECK(wide[1].find("\u2500") != std::string::npos, "wide bar drawn");
+}
+
+static void test_sqrt() {
+    // \sqrt{x} has a vinculum row above and a radical stroke on the baseline.
+    auto rows = grid("\\sqrt{x}", true);
+    CHECK(rows.size() == 2, "sqrt is 2 rows");
+    CHECK(rows[0].find("\u203e") != std::string::npos, "vinculum overline present");
+    CHECK(rows[1].find("\u221a") != std::string::npos, "radical sign present");
+    CHECK(rows[1].find("x") != std::string::npos, "radicand under the stroke");
+}
+
+static void test_bigop_limits() {
+    // Display \sum with limits stacks upper / operator / lower (3 rows).
+    auto rows = grid("\\sum_{i=1}^{n}", true);
+    CHECK(rows.size() == 3, "display sum has 3 rows (upper/op/lower)");
+    CHECK(rows[0].find("n") != std::string::npos, "upper limit on top");
+    CHECK(rows[1].find("\u2211") != std::string::npos, "sigma on the axis row");
+    CHECK(rows[2].find("i") != std::string::npos, "lower limit on bottom");
+
+    // \int keeps limits as scripts even in display mode (integral convention).
+    auto integ = grid("\\int_0^1", true);
+    CHECK(integ[integ.size()/2].find("\u222b") != std::string::npos,
+          "integral sign present");
+}
+
+static void test_matrix() {
+    // 2x2 pmatrix: 2 rows of content wrapped in tall parens.
+    auto rows = grid("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", true);
+    CHECK(rows.size() == 2, "2x2 matrix has 2 content rows");
+    CHECK(rows[0].find("a") != std::string::npos && rows[0].find("b") != std::string::npos,
+          "first matrix row has a,b");
+    CHECK(rows[1].find("c") != std::string::npos && rows[1].find("d") != std::string::npos,
+          "second matrix row has c,d");
+    // tall paren pieces present
+    CHECK(rows[0].find("\u239b") != std::string::npos || rows[0].find("(") != std::string::npos,
+          "left bracket present");
+}
+
+static void test_quadratic_formula() {
+    // The canonical stress case: real fraction + radical + scripts + \pm.
+    auto rows = grid("\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}", true);
+    CHECK(rows.size() == 4, "quadratic formula lays out in 4 rows");
+    // \pm glyph and the radical both survive.
+    std::string all;
+    for (auto& r : rows) all += r;
+    CHECK(all.find("\u00b1") != std::string::npos, "plus-minus present");
+    CHECK(all.find("\u221a") != std::string::npos, "radical present");
+    CHECK(all.find("\u2500") != std::string::npos, "fraction bar present");
+}
+
+static void test_unknown_macro_degrades() {
+    // An unrecognised control word must NOT crash and should surface its name.
+    auto rows = grid("\\foobarbaz", false);
+    CHECK(!rows.empty(), "unknown macro still produces output");
+    CHECK(rows[0].find("foobarbaz") != std::string::npos, "unknown macro shows its name");
+}
+
+static void test_linearize_inline() {
+    texmath::MathPalette pal;
+    // inline fraction collapses to a/b
+    std::string lin = texmath::linearize("\\frac{a}{b}", pal);
+    CHECK(lin.find("a") != std::string::npos && lin.find("b") != std::string::npos,
+          "inline fraction keeps operands");
+    CHECK(lin.find('/') != std::string::npos, "inline fraction uses / separator");
+    // scripts fold
+    CHECK(texmath::linearize("x^2", pal) == "x\u00b2", "inline x^2 folds");
+}
+
+// ── 2. markdown integration ──────────────────────────────────────────────────
+
+// Full render at a realistic width; asserts it doesn't crash and produces
+// non-zero height.
+static int render_height(std::string_view src) {
+    Element el = markdown(src);
+    StylePool pool;
+    Canvas canvas(80, /*h=*/2000, &pool);
+    render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+    return content_height(canvas);
+}
+
+static void test_markdown_inline_math() {
+    // $…$ and \(…\) both parse and render.
+    CHECK(render_height("The value $x^2 + 1$ is positive.") > 0, "dollar inline renders");
+    CHECK(render_height("Euler: \\(e^{i\\pi} + 1 = 0\\) is elegant.") > 0,
+          "\\(...\\) inline renders");
+    // Currency must NOT be eaten as math: "$5 and $10" stays prose.
+    CHECK(render_height("It costs $5 and then $10 total.") > 0, "currency doesn't crash");
+}
+
+static void test_markdown_display_math() {
+    // $$…$$ block typesets as a multi-row bordered box → taller than one line.
+    int h = render_height("Before\n\n$$\n\\frac{n(n+1)}{2}\n$$\n\nAfter");
+    CHECK(h >= 5, "display fraction block adds vertical rows");
+    // ```math fence path
+    int h2 = render_height("```math\n\\sum_{i=1}^{n} i\n```");
+    CHECK(h2 >= 3, "math fence block renders multi-row");
+}
+
+// ── driver ───────────────────────────────────────────────────────────────────
+
+int main() {
+    struct T { const char* name; void (*fn)(); };
+    const T tests[] = {
+        {"inline_scripts",          test_inline_scripts},
+        {"greek_and_symbols",       test_greek_and_symbols},
+        {"fraction",                test_fraction},
+        {"sqrt",                    test_sqrt},
+        {"bigop_limits",            test_bigop_limits},
+        {"matrix",                  test_matrix},
+        {"quadratic_formula",       test_quadratic_formula},
+        {"unknown_macro_degrades",  test_unknown_macro_degrades},
+        {"linearize_inline",        test_linearize_inline},
+        {"markdown_inline_math",    test_markdown_inline_math},
+        {"markdown_display_math",   test_markdown_display_math},
+    };
+    for (const auto& t : tests) {
+        std::print("  {:<28}", t.name);
+        std::fflush(stdout);
+        t.fn();
+        std::println("ok");
+    }
+    std::println("\nAll math tests passed.");
+    return 0;
+}

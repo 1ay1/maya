@@ -10,8 +10,12 @@
 // (^x^), horizontal rules, backslash escapes, autolinks, bare URLs, email
 // autolinks, hard line breaks, HTML entities, emoji shortcodes, definition
 // lists, an HTML subset (<br>, <kbd>, <mark>, <sub>, <sup>, <abbr>,
-// <strong>/<em>/<span>, <details>/<summary>, <a id="…">), and GitHub-style
-// @user / #123 / org/repo#42 references.
+// <strong>/<em>/<span>, <details>/<summary>, <a id="…">), GitHub-style
+// @user / #123 / org/repo#42 references, and LaTeX MATH — inline `$…$` /
+// `\(…\)` (typeset to Unicode super/subscripts + symbols on one row) and
+// display `$$…$$` / ```math / ```latex fences (a real 2-D box: fractions,
+// radicals, matrices, big operators with limits). See widget/markdown/
+// tex_math.hpp — provider-agnostic, since every chat model emits the same TeX.
 //
 // Usage:
 //   auto ui = markdown("## Hello\nThis is **bold** and `code`.");

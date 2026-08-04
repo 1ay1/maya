@@ -106,6 +106,13 @@ private:
                 case '\\': {
                     if (i + 1 < text_.size()) {
                         char n = text_[i + 1];
+                        // ext: \(...\) inline math (LaTeX delimiters used by
+                        // most chat models). Content is verbatim TeX — typeset
+                        // by the terminal renderer, NOT re-parsed as markdown.
+                        if (ext_ && n == '(') {
+                            std::size_t adv;
+                            if (try_math_paren(i, pending, adv)) { i = adv; continue; }
+                        }
                         if (n == '\n') {
                             // hard break
                             flush();
@@ -226,6 +233,19 @@ private:
                     if (!try_close_link(i)) { pending += ']'; ++i; }
                     continue;
                 }
+                case '$': {
+                    // ext: $...$ inline math (TeX / dollar delimiters). A $$ run
+                    // here is display math better handled at block level, but a
+                    // paragraph-embedded $$a$$ still typesets inline as a
+                    // fallback. Escaped \$ was already consumed as a literal in
+                    // the backslash case, so any $ reaching here is a delimiter
+                    // candidate.
+                    std::size_t adv;
+                    if (ext_ && try_math_dollar(i, pending, adv)) { i = adv; continue; }
+                    pending += '$';
+                    ++i;
+                    continue;
+                }
                 default:
                     pending += c;
                     ++i;
@@ -292,6 +312,67 @@ private:
         push_node(make(std::move(kids)));
         adv = j + 1;
         return true;
+    }
+
+    // ── math spans ($…$, \(…\)) ─────────────────────────────────────────
+    // The body is captured VERBATIM (no markdown re-parse, no entity decode,
+    // no backslash-escape collapse) because it is LaTeX destined for the math
+    // typesetter. Delimiters follow the de-facto chat-model conventions:
+    //   • `$x$`   — inline; a `$` with no matching close, or a `$ `/`100$`
+    //               currency pattern, stays literal.
+    //   • `\(x\)` — the LaTeX inline form (Claude/OpenAI emit this a lot).
+    bool make_math(std::size_t body_start, std::size_t body_end,
+                   std::string& pending, std::size_t adv, std::size_t& out_adv) {
+        std::string_view body = text_.substr(body_start, body_end - body_start);
+        if (body.find_first_not_of(" \t\n") == std::string_view::npos) return false;
+        flush_pending(pending);
+        push_node(md::MathInline{std::string(body)});
+        out_adv = adv;
+        return true;
+    }
+
+    bool try_math_dollar(std::size_t i, std::string& pending, std::size_t& adv) {
+        std::size_t open = i + 1;
+        bool dbl = (open < text_.size() && text_[open] == '$');
+        std::string_view close_delim = dbl ? "$$" : "$";
+        std::size_t body_start = i + close_delim.size();
+        if (body_start >= text_.size()) return false;
+        if (!dbl) {
+            char nx = text_[body_start];
+            if (nx == ' ' || nx == '\t' || nx == '\n') return false;  // "$ " literal
+        }
+        std::size_t limit = std::min(text_.size(), body_start + 4000);
+        std::size_t j = body_start;
+        while (j < limit) {
+            if (text_[j] == '\\') { j += 2; continue; }  // \$ etc. inside math
+            if (dbl) {
+                if (j + 1 < text_.size() && text_[j] == '$' && text_[j + 1] == '$') break;
+            } else if (text_[j] == '$') {
+                break;
+            }
+            if (text_[j] == '\n' && j + 1 < text_.size() && text_[j + 1] == '\n')
+                return false;  // blank line inside inline math: not a span
+            ++j;
+        }
+        if (j >= limit) return false;
+        if (!dbl && j + 1 < text_.size() &&
+            std::isdigit(static_cast<unsigned char>(text_[j + 1]))) {
+            return false;  // "...$5" — glued to a digit → currency, bail
+        }
+        return make_math(body_start, j, pending, j + close_delim.size(), adv);
+    }
+
+    bool try_math_paren(std::size_t i, std::string& pending, std::size_t& adv) {
+        // i points at '\', text_[i+1] == '('. Close is the literal "\)".
+        std::size_t body_start = i + 2;
+        std::size_t limit = std::min(text_.size(), body_start + 4000);
+        std::size_t j = body_start;
+        while (j + 1 < limit) {
+            if (text_[j] == '\\' && text_[j + 1] == ')') break;
+            ++j;
+        }
+        if (j + 1 >= limit) return false;
+        return make_math(body_start, j, pending, j + 2, adv);
     }
 
     // ~~strike~~ / ==highlight== / ~sub~ / ^sup^
@@ -961,6 +1042,7 @@ std::string inline_plain_text(const std::vector<md::Inline>& spans) {
             if constexpr (std::is_same_v<T, md::Text>) out += n.content;
             else if constexpr (std::is_same_v<T, md::Code>) out += n.content;
             else if constexpr (std::is_same_v<T, md::RawInline>) out += n.content;
+            else if constexpr (std::is_same_v<T, md::MathInline>) out += n.latex;
             else if constexpr (std::is_same_v<T, md::HardBreak>) out += '\n';
             else if constexpr (std::is_same_v<T, md::SoftBreak>) out += ' ';
             else if constexpr (requires { n.children; })

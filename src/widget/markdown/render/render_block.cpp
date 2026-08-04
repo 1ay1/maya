@@ -25,6 +25,7 @@
 #include "maya/widget/html.hpp"
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
+#include "maya/widget/markdown/tex_math_render.hpp"
 
 namespace maya {
 
@@ -160,6 +161,33 @@ Element md_block_to_element(const md::Block& block) {
                 }};
             }
 
+            // Display math: `$$…$$` and ```math / ```latex fences typeset via
+            // the terminal TeX engine into a real 2-D box (fractions, roots,
+            // matrices, big operators with limits above/below). Wrapped in the
+            // same round border as code so it reads as a distinct block, with
+            // a subtle " math " tag. This is the DISPLAY path — inline `$…$`
+            // is linearised separately in render_inline.cpp.
+            if (c.lang == "math" || c.lang == "latex") {
+                texmath::MathPalette pal;
+                auto body = Style{}.with_fg(colors::text);
+                pal.normal = body;
+                pal.op     = body.with_bold();
+                pal.num    = body;
+                pal.rule   = Style{}.with_fg(colors::code_border);
+                pal.delim  = Style{}.with_fg(colors::link_fg);
+                pal.text   = body;
+                Element formula =
+                    texmath::render_math(c.content, pal, /*display=*/true);
+                return detail::vstack()
+                    .align_self(Align::Stretch)
+                    .border(BorderStyle::Round)
+                    .border_color(colors::code_border)
+                    .padding(0, 1, 0, 1)
+                    .border_text(" math ", BorderTextPos::Top,
+                                 BorderTextAlign::Start)(
+                        detail::center()(std::move(formula)));
+            }
+
             // Zed style: round border, subtle bg, language label top-left.
             // align_self(Stretch) anchors the right border at the parent's
             // available width instead of the code's natural width.
@@ -184,11 +212,11 @@ Element md_block_to_element(const md::Block& block) {
 
             if (!c.lang.empty()) {
                 std::string label = " " + c.lang + " ";
-                // Diagram/math fences we can't layout: flag them in the label
-                // so users know the content is a textual fallback, not the
-                // intended rendering.
+                // Diagram fences we can't layout: flag them in the label so
+                // users know the content is a textual fallback, not the
+                // intended rendering. (math/latex are handled above via the
+                // real typesetter and never reach here.)
                 if (c.lang == "mermaid" || c.lang == "matrix" ||
-                    c.lang == "math"    || c.lang == "latex"  ||
                     c.lang == "dot"     || c.lang == "graphviz") {
                     label = " " + c.lang + " (diagram) ";
                 }

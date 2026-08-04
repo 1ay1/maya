@@ -141,6 +141,11 @@ struct Line {
 }
 
 // Fenced code start: ``` or ~~~ (>=3), info string. Returns fence length or 0.
+// Extension: a `$$` line opens a DISPLAY-MATH fence — the de-facto convention
+// every chat model uses for block equations. It lowers to a CodeBlock whose
+// language is "math", which render_block.cpp typesets via the tex engine.
+// The fence char is '$' with length 2, so append_to_leaf's generic
+// same-char/≥-len close logic matches a bare `$$` line unchanged.
 [[nodiscard]] int code_fence(std::string_view line, char& fc, std::string& info,
                              int& indent_out) {
     std::size_t bytes;
@@ -149,6 +154,19 @@ struct Line {
     auto t = line.substr(bytes);
     if (t.empty()) return 0;
     char c = t[0];
+    if (c == '$') {
+        // Require the line to be EXACTLY `$$` (optionally trailing ws) so we
+        // never swallow inline `$$a+b$$` or a `$5` currency line.
+        if (t.size() < 2 || t[1] != '$') return 0;
+        std::size_t n = 0;
+        while (n < t.size() && t[n] == '$') ++n;
+        if (n != 2) return 0;               // `$$$` etc. → not a math fence
+        if (!strip(t.substr(n)).empty()) return 0;  // `$$x` is inline, not a fence
+        fc = '$';
+        info = "math";
+        indent_out = ind;
+        return 2;
+    }
     if (c != '`' && c != '~') return 0;
     std::size_t n = 0;
     while (n < t.size() && t[n] == c) ++n;
@@ -889,6 +907,10 @@ private:
             std::string info;
             int find;
             int flen = code_fence(content, fc, info, find);
+            // The `$$` display-math fence is an extension: ignore it (fall
+            // through to paragraph) when extensions are off so plain
+            // CommonMark keeps `$$` as literal text.
+            if (flen && fc == '$' && !ext_) flen = 0;
             if (flen) {
                 CMBlock* code = open_child(container, BlockType::CodeFence);
                 code->fence_char = fc;

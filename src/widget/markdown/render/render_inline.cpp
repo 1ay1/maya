@@ -22,6 +22,7 @@
 #include "maya/widget/html.hpp"
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
+#include "maya/widget/markdown/tex_math.hpp"
 
 namespace maya {
 
@@ -30,6 +31,22 @@ namespace maya {
 Element md_block_to_element(const md::Block& block);
 
 namespace {
+
+// Build the math typesetter palette from the markdown colour scheme so
+// typeset formulae sit in the same visual language as the surrounding prose.
+// Variables read as body text (italic by TeX convention), operators pick up a
+// touch of bold, numbers stay plain, fraction bars / radical strokes reuse the
+// dim rule colour, delimiters the link accent.
+[[nodiscard]] static texmath::MathPalette math_palette(const Style& inherited) {
+    texmath::MathPalette pal;
+    pal.normal = inherited;
+    pal.op     = inherited.with_bold();
+    pal.num    = inherited;
+    pal.rule   = inherited.with_fg(colors::strike_fg);
+    pal.delim  = inherited.with_fg(colors::link_fg);
+    pal.text   = inherited;
+    return pal;
+}
 
 // loads + an &&-chain that the compiler folds well). Most flatten_inline
 // recursion chains feed `inherited` from a prior merge, so `base` is
@@ -204,6 +221,16 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             auto sty = fold_style(inherited, Style{}.with_fg(colors::footnote_fg));
             runs.push_back({out.size(), r.content.size(), sty});
             out += r.content;
+        },
+        [&](const md::MathInline& m) {
+            // Inline `$…$` / `\(…\)`: typeset the TeX to a single baseline row
+            // (Unicode sub/superscripts, symbols, greek; fractions collapse to
+            // a/b) so it flows inside the paragraph. Display `$$…$$` keeps the
+            // real 2-D box via the block path in render_block.cpp.
+            std::string glyphs = texmath::linearize(m.latex, math_palette(inherited));
+            if (glyphs.empty()) glyphs = m.latex;  // degrade to raw TeX
+            runs.push_back({out.size(), glyphs.size(), inherited});
+            out += glyphs;
         },
     }, span.inner);
 }

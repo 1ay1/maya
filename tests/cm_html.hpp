@@ -137,6 +137,12 @@ inline void inline_to_html(std::string& out, const md::Inline& span) {
             out += "\n";
         } else if constexpr (std::is_same_v<T, md::RawInline>) {
             out += n.content;  // verbatim — raw HTML / passthrough
+        } else if constexpr (std::is_same_v<T, md::MathInline>) {
+            // KaTeX/MathJax convention: inline math as \(…\) inside a
+            // span the client-side typesetter picks up.
+            out += "<span class=\"math inline\">\\(";
+            esc_text(out, n.latex);
+            out += "\\)</span>";
         }
     }, span.inner);
 }

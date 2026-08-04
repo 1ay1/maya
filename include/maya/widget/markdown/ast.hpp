@@ -52,12 +52,15 @@ struct FootnoteRef { std::string label; };
 struct HardBreak   {};
 struct SoftBreak   {};                       // raw newline inside a paragraph
 struct RawInline   { std::string content; }; // verbatim inline HTML / entity passthrough
+// Inline math: `$…$` or `\(…\)`. `latex` is the raw TeX between the
+// delimiters, typeset by the terminal renderer (widget/markdown/tex_math).
+struct MathInline  { std::string latex; };
 
 struct Inline {
     using Variant = std::variant<Text, Bold, Italic, BoldItalic, Code,
                                  Link, Image, Strike, Highlight, Sub, Sup,
                                  Kbd, Abbr, Mention, FootnoteRef, HardBreak,
-                                 SoftBreak, RawInline>;
+                                 SoftBreak, RawInline, MathInline>;
     Variant inner;
 
     Inline(Text t)        : inner(std::move(t)) {}
@@ -78,6 +81,7 @@ struct Inline {
     Inline(HardBreak)     : inner(HardBreak{}) {}
     Inline(SoftBreak)     : inner(SoftBreak{}) {}
     Inline(RawInline r)   : inner(std::move(r)) {}
+    Inline(MathInline m)  : inner(std::move(m)) {}
 };
 
 // ============================================================================

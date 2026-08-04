@@ -76,6 +76,21 @@ public:
         std::size_t queued = 0;
         ProfileChip profile;
 
+        // Ambient-counter overrides. The composer `text` the widget
+        // sees is the CHIP-RENDERED display string — a long paste or
+        // @file is a short caption like "[Pasted text · 412 lines ·
+        // 14 KB]", NOT its expanded body. Counting words / tokens /
+        // lines off that caption undercounts wildly the moment any
+        // attachment exists (a 400-line paste reads as "1 line, ~10
+        // tok"). When the caller knows the real figures — it can
+        // expand attachment bodies — it sets these; the widget uses
+        // them verbatim instead of deriving from `text`. -1 (default)
+        // ⇒ derive from the visible text (legacy, correct when there
+        // are no attachments).
+        int token_estimate = -1;
+        int word_estimate  = -1;
+        int line_estimate  = -1;
+
         // Layout
         bool expanded = false;
 
@@ -470,8 +485,10 @@ public:
         RightInputs ri{
             has_text,
             static_cast<int>(cfg_.queued),
-            has_text ? word_count(cfg_.text) : 0,
-            has_text ? approx_tokens(cfg_.text) : 0,
+            has_text ? (cfg_.word_estimate  >= 0 ? cfg_.word_estimate
+                                                 : word_count(cfg_.text)) : 0,
+            has_text ? (cfg_.token_estimate >= 0 ? cfg_.token_estimate
+                                                 : approx_tokens(cfg_.text)) : 0,
             cfg_.highlight_color,
             muted,
             cfg_.profile.color,
@@ -563,7 +580,9 @@ public:
             });
 
         // ── Box composition with optional bottom-right line-count caption.
-        int line_count = static_cast<int>(split_lines(cfg_.text).size());
+        int line_count = cfg_.line_estimate >= 0
+            ? cfg_.line_estimate
+            : static_cast<int>(split_lines(cfg_.text).size());
 
         // ── Divider between body and hint row — hairline rule in the
         // box color so the input area visually splits from the

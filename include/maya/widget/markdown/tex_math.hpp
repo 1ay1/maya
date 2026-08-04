@@ -73,6 +73,13 @@ struct Box {
     int               axis = 0;               // baseline row (0-based)
     std::vector<Cell> grid;                   // rows*cols, row-major
 
+    // TeX-style atom class of the WHOLE box, consulted by the sequence layout
+    // to insert inter-atom spacing (a relation gets air around it, a binary
+    // operator a thinner air, an open/close delimiter hugs its operand). Only
+    // meaningful for leaf/simple boxes; composites reset to Ord.
+    enum class Cls : std::uint8_t { Ord, Op, Bin, Rel, Open, Close, Punct, Inner };
+    Cls klass = Cls::Ord;
+
     [[nodiscard]] int ascent()  const noexcept { return axis; }
     [[nodiscard]] int descent() const noexcept { return rows - axis - 1; }
 
@@ -346,6 +353,10 @@ struct Parser {
     std::size_t      i = 0;
     const MathPalette& pal;
     bool             display;
+    // When true, parse_seq/parse_group suppress inter-atom spacing. Set while
+    // typesetting a superscript/subscript/limit, where TeX also uses a
+    // cramped style — `e^{-x}` should read `e⁻ˣ`, not `e⁻ ˣ`.
+    bool             tight = false;
 
     Parser(std::string_view src, const MathPalette& p, bool disp)
         : s(src), pal(p), display(disp) {}
@@ -380,9 +391,13 @@ struct Parser {
         return parse_atom();
     }
 
-    // Parse a sequence of atoms until `stop` (or eof), concatenating boxes.
+    // Parse a sequence of atoms until `stop` (or eof), concatenating boxes
+    // with TeX-style inter-atom spacing (air around relations and binary
+    // operators) so the result reads like typeset math, not a run-on string.
     Box parse_seq(char stop) {
         Box acc;  // empty
+        bool have_prev = false;
+        Box::Cls prev_cls = Box::Cls::Ord;
         while (!eof() && peek() != stop) {
             // \right / \end terminate a sub-parse regardless of `stop`.
             if (peek() == '\\') {
@@ -394,22 +409,48 @@ struct Parser {
             }
             if (peek() == '&') break;  // matrix column sep
             Box a = parse_atom();
+            Box::Cls cur_cls = a.klass;
             a = maybe_scripts(std::move(a));
+            if (have_prev) {
+                int sp = tight ? 0 : inter_atom_space(prev_cls, cur_cls);
+                if (sp > 0) acc = hcat(acc, blank(1, sp, 0, pal.normal));
+            }
             acc = hcat(acc, a);
+            have_prev = true;
+            prev_cls = cur_cls;
         }
         return acc;
+    }
+
+    // TeX-inspired inter-atom spacing table (in cells). We keep it modest for
+    // a character grid: 1 cell of air around relations and binary operators,
+    // none inside tight pairs (Ord-Ord “implicit multiplication”, Open-Ord,
+    // Ord-Close, before Punct). Big-operator (Op) gets a leading cell so
+    // `\sum i` doesn't glue.
+    static int inter_atom_space(Box::Cls a, Box::Cls b) {
+        using C = Box::Cls;
+        // no space hugging delimiters / before punctuation
+        if (a == C::Open || b == C::Close || b == C::Punct) return 0;
+        if (a == C::Rel  || b == C::Rel)  return 1;   // relations breathe
+        if (a == C::Bin  || b == C::Bin)  return 1;   // + − ± × …
+        if (a == C::Op   || b == C::Op)   return 1;   // ∑ ∫ ∏ \sin …
+        if (a == C::Punct)                return 1;   // after a comma
+        return 0;                                     // Ord–Ord: implicit mult
     }
 
     // After an atom, attach ^ and _ scripts if present.
     Box maybe_scripts(Box base) {
         Box sup, sub;
         bool has_sup = false, has_sub = false;
+        bool save_tight = tight;
+        tight = true;   // scripts are set cramped: e^{-x} not e^{- x}
         for (;;) {
             skip_ws();
             if (peek() == '^') { ++i; sup = parse_group(); has_sup = true; }
             else if (peek() == '_') { ++i; sub = parse_group(); has_sub = true; }
             else break;
         }
+        tight = save_tight;
         if (!has_sup && !has_sub) return base;
         return attach_scripts(std::move(base), sup, sub, has_sup, has_sub);
     }
@@ -440,8 +481,34 @@ struct Parser {
             std::string u = try_unicode(sub, false);
             if (!u.empty()) return hcat(base, hbox(u, pal.normal));
         }
-        // General path: build a 2-or-3 row box beside the base. Superscript sits
-        // above the axis, subscript below.
+        // Inline fallback: in \textstyle (inline `$…$`) a script that can't
+        // Unicode-fold would force the whole formula multi-row, which the
+        // inline linearizer then has to drop. Keep it on one row with caret/
+        // underscore notation instead — `e^{i\pi}` reads as `e^(i\u03c0)`,
+        // legible and lossless. Display math (\displaystyle) keeps the real
+        // stacked box so `\sum_{i=1}^{n}` typesets properly.
+        if (!display) {
+            auto flat = [](const Box& b) {
+                std::string out;
+                for (int r = 0; r < b.rows; ++r)
+                    for (int c = 0; c < b.cols; ++c) {
+                        const Cell& cell = b.at(r, c);
+                        if (cell.len) out.append(cell.bytes.data(), cell.len);
+                    }
+                return out;
+            };
+            auto wrap = [](const std::string& s) {
+                bool multi = s.size() > 1 &&
+                             s.find_first_of(" +-") != std::string::npos;
+                return multi ? "(" + s + ")" : s;
+            };
+            Box out = base;
+            if (has_sup) out = hcat(out, hbox("^" + wrap(flat(sup)), pal.normal));
+            if (has_sub) out = hcat(out, hbox("_" + wrap(flat(sub)), pal.normal));
+            return out;
+        }
+        // General display path: build a 2-or-3 row box beside the base.
+        // Superscript sits above the axis, subscript below.
         int width = std::max(has_sup ? sup.cols : 0, has_sub ? sub.cols : 0);
         std::vector<Box> parts;
         int axis_row;
@@ -466,8 +533,20 @@ struct Parser {
         char c = peek();
         if (c == '\\') { ++i; return parse_ctrl(); }
         if (c == '{')  { return parse_group(); }
-        if (c == '(' || c == ')' || c == '[' || c == ']' || c == '|') {
-            ++i; return hbox(std::string_view(&s[i - 1], 1), pal.delim);
+        if (c == '(' || c == '[') {
+            ++i; Box b = hbox(std::string_view(&s[i - 1], 1), pal.delim);
+            b.klass = Box::Cls::Open; return b;
+        }
+        if (c == ')' || c == ']') {
+            ++i; Box b = hbox(std::string_view(&s[i - 1], 1), pal.delim);
+            b.klass = Box::Cls::Close; return b;
+        }
+        if (c == '|') {
+            ++i; return hbox("\u2502", pal.delim);  // proper vertical bar
+        }
+        if (c == ',' || c == ';') {
+            ++i; Box b = hbox(std::string_view(&s[i - 1], 1), pal.normal);
+            b.klass = Box::Cls::Punct; return b;
         }
         // digit run
         if (std::isdigit(static_cast<unsigned char>(c))) {
@@ -477,11 +556,23 @@ struct Parser {
                 ++i;
             return hbox(s.substr(start, i - start), pal.num);
         }
-        // operators / relations
-        if (c=='+'||c=='-'||c=='='||c=='<'||c=='>'||c=='*'||c=='/') {
+        // binary operators
+        if (c=='+'||c=='-'||c=='*') {
             ++i;
-            // render around a bit of air for readability
-            return hbox(std::string_view(&s[i - 1], 1), pal.op);
+            std::string_view g = (c=='-') ? std::string_view("\u2212")   // real minus
+                               : (c=='*') ? std::string_view("\u2217")   // asterisk op
+                                          : std::string_view(&s[i - 1], 1);
+            Box b = hbox(g, pal.op);
+            b.klass = Box::Cls::Bin; return b;
+        }
+        // relations
+        if (c=='='||c=='<'||c=='>') {
+            ++i;
+            Box b = hbox(std::string_view(&s[i - 1], 1), pal.op);
+            b.klass = Box::Cls::Rel; return b;
+        }
+        if (c=='/') {
+            ++i; return hbox("/", pal.op);
         }
         // a letter → italic variable (single char)
         if (std::isalpha(static_cast<unsigned char>(c))) {
@@ -559,7 +650,11 @@ struct Parser {
             return parse_bigop(big, w);
 
         // named function (\sin \log …): upright, keep following space
-        if (is_named_op(w)) return hbox(w, pal.op);
+        if (is_named_op(w)) {
+            Box b = hbox(w, pal.op);
+            b.klass = Box::Cls::Op;
+            return b;
+        }
 
         // \mathbb{X} etc. — try the combined key first (e.g. "mathbb{R}").
         if (w == "mathbb" || w == "mathcal" || w == "mathfrak") {
@@ -582,14 +677,41 @@ struct Parser {
 
         // named symbol
         if (auto g = lookup_symbol(w); !g.empty()) {
-            bool opish = (w=="sum"||w=="int"||w=="prod"); // handled above, safety
-            Style st = opish ? pal.op : pal.normal;
-            return hbox(g, st);
+            Box b = hbox(g, pal.normal);
+            b.klass = classify_symbol(w);
+            if (b.klass == Box::Cls::Bin || b.klass == Box::Cls::Rel ||
+                b.klass == Box::Cls::Op)
+                for (auto& cell : b.grid) cell.style = pal.op;
+            return b;
         }
 
         // spacing commands already in table as " "; unknown → dim literal name
         return hbox(std::string("\\") + std::string(w),
                     pal.text.with_dim());
+    }
+
+    // Classify a named LaTeX symbol so the sequence layout can space it. This
+    // is the coarse TeX math-class of the control word (relations breathe,
+    // binary operators breathe a little, delimiters hug).
+    static Box::Cls classify_symbol(std::string_view w) {
+        using C = Box::Cls;
+        // relations
+        for (auto r : {"leq","le","geq","ge","neq","ne","equiv","approx","cong",
+                       "simeq","sim","propto","ll","gg","subset","supset",
+                       "subseteq","supseteq","sqsubseteq","sqsupseteq","in",
+                       "ni","notin","vdash","dashv","models","perp","mid",
+                       "parallel","asymp","doteq","prec","succ","preceq",
+                       "succeq","to","rightarrow","leftarrow","gets",
+                       "leftrightarrow","Rightarrow","Leftarrow","iff",
+                       "implies","impliedby","mapsto","Leftrightarrow"})
+            if (w == r) return C::Rel;
+        // binary operators
+        for (auto b : {"times","div","pm","mp","cdot","ast","star","circ",
+                       "bullet","oplus","ominus","otimes","oslash","odot",
+                       "cap","cup","sqcap","sqcup","wedge","land","vee","lor",
+                       "setminus","wr","amalg","dagger","ddagger"})
+            if (w == b) return C::Bin;
+        return C::Ord;
     }
 
     // Big-operator glyph for a control word, or empty.
@@ -615,12 +737,15 @@ struct Parser {
     Box parse_bigop(std::string_view glyph, std::string_view name) {
         Box lower, upper;
         bool has_lo = false, has_up = false;
+        bool save_tight = tight;
+        tight = true;   // limits are cramped too
         for (;;) {
             skip_ws();
             if (peek() == '_') { ++i; lower = parse_group(); has_lo = true; }
             else if (peek() == '^') { ++i; upper = parse_group(); has_up = true; }
             else break;
         }
+        tight = save_tight;
         Box op = hbox(glyph, pal.op.with_bold());
         bool limits_above = display && name != "int" && name != "iint" &&
                             name != "iiint" && name != "oint";
@@ -675,6 +800,8 @@ struct Parser {
     // parse one matrix cell: until & , \\ , or \end
     Box parse_seq_cell() {
         Box acc;
+        bool have_prev = false;
+        Box::Cls prev_cls = Box::Cls::Ord;
         while (!eof()) {
             skip_ws();
             if (peek() == '&') break;
@@ -685,8 +812,15 @@ struct Parser {
                 if (w == "\\" || w == "end") break;
             }
             Box a = parse_atom();
+            Box::Cls cur_cls = a.klass;
             a = maybe_scripts(std::move(a));
+            if (have_prev) {
+                int sp = inter_atom_space(prev_cls, cur_cls);
+                if (sp > 0) acc = hcat(acc, blank(1, sp, 0, pal.normal));
+            }
             acc = hcat(acc, a);
+            have_prev = true;
+            prev_cls = cur_cls;
         }
         return acc;
     }
@@ -726,23 +860,19 @@ struct Parser {
     Box make_sqrt(const Box& rad, const Box& index, bool has_index) {
         int h = rad.rows;
         int w = rad.cols;
-        // Radical layout:
-        //      ___________          row 0: vinculum spanning the radicand,
-        //   \ /  radicand           joined to the stroke's top-right nook
-        //    v                      rows 1..: stroke col + radicand
+        // Radical layout — the stroke sits directly left of the radicand and
+        // the vinculum runs across the top, joined at the hook:
         //
-        // The stroke occupies column 0; a one-column gap (column 1) separates
-        // it from the radicand so the '√' hook doesn't collide with the first
-        // glyph. The vinculum therefore starts at column 1 and runs to the
-        // right edge, sitting flush above the whole radicand.
+        //       ‾‾‾‾‾‾‾        row 0: vinculum over the radicand (+1 lead col)
+        //      √b²−4ac         rows 1..: '√' stroke immediately left of radicand
+        //
         int stroke_col = 0;
-        int pad_col    = 1;   // gap between stroke and radicand
-        int rad_col    = pad_col + 1;
-        int extra_top  = 1;   // vinculum row
+        int rad_col    = 1;          // radicand right after the stroke, no gap
+        int extra_top  = 1;          // vinculum row
         int total_w    = rad_col + w;
         Box out = blank(h + extra_top, total_w, rad.axis + extra_top, pal.normal);
-        // vinculum: from the gap column across the full radicand width
-        for (int c = pad_col; c < total_w; ++c)
+        // vinculum over the radicand columns (and one lead col above the hook)
+        for (int c = 0; c < total_w; ++c)
             out.at(0, c) = make_cell("\u203e", pal.rule);
         // radical stroke on the baseline row of the radicand region
         out.at(extra_top + std::max(0, h - 1), stroke_col) =
@@ -831,14 +961,21 @@ struct Parser {
             }
             r0 += rowh[r];
         }
-        // brackets
+        // brackets. Add one pad column on each side so the entries don't
+        // touch the delimiters (⎛ a  b ⎞ reads better than ⎛a b⎞).
         char open = '\0', close = '\0';
         if (kind == "pmatrix") { open='('; close=')'; }
         else if (kind == "bmatrix") { open='['; close=']'; }
         else if (kind == "Bmatrix") { open='{'; close='}'; }
         else if (kind == "vmatrix") { open='|'; close='|'; }
         else if (kind == "cases")   { open='{'; close='\0'; }
-        if (open || close) out = wrap_delims(out, open, close);
+        if (open || close) {
+            Box padded = blank(out.rows, out.cols + 2, out.axis, pal.normal);
+            for (int r = 0; r < out.rows; ++r)
+                for (int c = 0; c < out.cols; ++c)
+                    padded.at(r, c + 1) = out.at(r, c);
+            out = wrap_delims(padded, open, close);
+        }
         return out;
     }
 
@@ -888,29 +1025,68 @@ inline std::string linearize(std::string_view latex, const MathPalette& pal) {
     };
     if (b.rows == 1) return row_text(0);
 
-    // Detect a simple fraction: exactly 3 rows whose middle (axis) row is a
-    // solid run of the box-drawing bar '\u2500'. If so, join num/den with '/'.
-    auto axis_all_bar = [&]() {
-        bool any = false;
-        for (int c = 0; c < b.cols; ++c) {
-            const Cell& cell = b.at(1, c);
-            if (cell.len == 0) continue;
-            std::string_view g(cell.bytes.data(), cell.len);
-            if (g == "\u2500") { any = true; continue; }
-            if (g == " ") continue;
-            return false;
+    // Find a fraction bar: the FIRST full-width run of the box-drawing bar
+    // '\u2500'. A top-level fraction's bar spans (nearly) the whole width; a
+    // bar that only covers part of the row is a sub-fraction and we leave it
+    // to the raw-latex fallback below.
+    auto bar_row = [&]() -> int {
+        for (int r = 0; r < b.rows; ++r) {
+            int bars = 0, other = 0;
+            for (int c = 0; c < b.cols; ++c) {
+                const Cell& cell = b.at(r, c);
+                if (cell.len == 0) continue;
+                std::string_view g(cell.bytes.data(), cell.len);
+                if (g == "\u2500") ++bars;
+                else if (g != " ") ++other;
+            }
+            if (bars >= 1 && other == 0 && bars >= b.cols - 2) return r;
         }
-        return any;
+        return -1;
     };
-    if (b.rows == 3 && axis_all_bar()) {
-        std::string num = row_text(0), den = row_text(2);
+    int br = bar_row();
+    if (br >= 0) {
+        // Collapse everything above the bar into num, below into den, each
+        // flattened to one line (drops any inner 2-D structure like a radical
+        // vinculum — acceptable inline; the display form keeps it).
+        auto region = [&](int lo, int hi) {
+            std::string best;
+            int best_weight = -1;
+            for (int r = lo; r < hi; ++r) {
+                std::string line = row_text(r);
+                // weight = count of glyphs that aren't space or vinculum
+                int weight = 0;
+                for (int c = 0; c < b.cols; ++c) {
+                    const Cell& cell = b.at(r, c);
+                    if (cell.len == 0) continue;
+                    std::string_view g(cell.bytes.data(), cell.len);
+                    if (g != " " && g != "\u203e") ++weight;
+                }
+                if (weight > best_weight) { best_weight = weight; best = line; }
+            }
+            // strip a leading/trailing vinculum run and surrounding spaces
+            std::string cleaned;
+            for (std::size_t k = 0; k < best.size(); ) {
+                if (best.compare(k, 3, "\u203e") == 0) { k += 3; continue; }
+                cleaned += best[k++];
+            }
+            std::size_t a = cleaned.find_first_not_of(' ');
+            std::size_t z = cleaned.find_last_not_of(' ');
+            if (a == std::string::npos) return std::string{};
+            return cleaned.substr(a, z - a + 1);
+        };
+        std::string num = region(0, br), den = region(br + 1, b.rows);
         if (!num.empty() && !den.empty()) {
-            bool wrap_num = num.find_first_of("+- ") != std::string::npos;
-            bool wrap_den = den.find_first_of("+- ") != std::string::npos;
+            auto needs_parens = [](const std::string& s) {
+                return s.find(' ') != std::string::npos ||
+                       s.find('+') != std::string::npos ||
+                       s.find('-') != std::string::npos ||
+                       s.find("\u2212") != std::string::npos ||
+                       s.find("\u00b1") != std::string::npos;
+            };
             std::string out;
-            out += wrap_num ? "(" + num + ")" : num;
+            out += needs_parens(num) ? "(" + num + ")" : num;
             out += "/";
-            out += wrap_den ? "(" + den + ")" : den;
+            out += needs_parens(den) ? "(" + den + ")" : den;
             return out;
         }
     }

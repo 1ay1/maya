@@ -62,7 +62,8 @@ static void test_inline_scripts() {
     // Simple exponent / index fold to Unicode super/subscript, staying 1 row.
     CHECK(joined("x^2", false)     == "x\u00b2",       "x^2 -> x super2");
     CHECK(joined("a_1", false)     == "a\u2081",       "a_1 -> a sub1");
-    CHECK(joined("x^2 + y^2", false) == "x\u00b2+y\u00b2", "sum of squares one row");
+    // Binary operators now breathe (TeX-style thin space around '+').
+    CHECK(joined("x^2 + y^2", false) == "x\u00b2 + y\u00b2", "sum of squares spaced");
     // A multi-char exponent that can't fold stays legible (superscript box).
     auto rows = grid("e^{x+1}", false);
     CHECK(rows.size() >= 1, "e^{x+1} produced rows");
@@ -73,8 +74,8 @@ static void test_greek_and_symbols() {
     CHECK(joined("\\Sigma", false) == "\u03a3", "Sigma");
     CHECK(joined("\\infty", false) == "\u221e", "infty");
     CHECK(joined("\\pi", false)    == "\u03c0", "pi");
-    // relation + set membership + blackboard R
-    CHECK(joined("\\alpha \\leq \\beta", false) == "\u03b1\u2264\u03b2", "alpha <= beta");
+    // relation gets air around it: α ≤ β
+    CHECK(joined("\\alpha \\leq \\beta", false) == "\u03b1 \u2264 \u03b2", "alpha <= beta spaced");
     CHECK(joined("x \\in \\mathbb{R}", false).find("\u2208") != std::string::npos,
           "in operator present");
     CHECK(joined("x \\in \\mathbb{R}", false).find("\u211d") != std::string::npos,
@@ -150,13 +151,37 @@ static void test_unknown_macro_degrades() {
 
 static void test_linearize_inline() {
     texmath::MathPalette pal;
-    // inline fraction collapses to a/b
-    std::string lin = texmath::linearize("\\frac{a}{b}", pal);
-    CHECK(lin.find("a") != std::string::npos && lin.find("b") != std::string::npos,
-          "inline fraction keeps operands");
-    CHECK(lin.find('/') != std::string::npos, "inline fraction uses / separator");
-    // scripts fold
+    // inline fraction collapses to a/b, parenthesizing compound parts
+    CHECK(texmath::linearize("\\frac{a}{b}", pal) == "a/b", "a/b");
+    CHECK(texmath::linearize("\\frac{a+b}{2}", pal) == "(a + b)/2",
+          "compound numerator parenthesized");
+    CHECK(texmath::linearize("\\frac{\\sqrt{2}}{2}", pal) == "\u221a2/2",
+          "radical numerator collapses");
+    // scripts fold to Unicode
     CHECK(texmath::linearize("x^2", pal) == "x\u00b2", "inline x^2 folds");
+    // unfoldable script uses caret notation, stays one row
+    CHECK(texmath::linearize("e^{i\\pi}", pal) == "e^i\u03c0", "caret fallback");
+}
+
+static void test_spacing_quality() {
+    // Binary operators and relations get one cell of air.
+    CHECK(joined("a+b", false)   == "a + b", "binary op spaced");
+    CHECK(joined("a=b", false)   == "a = b", "relation spaced");
+    // Implicit multiplication stays tight.
+    CHECK(joined("2x", false)    == "2x",    "implicit mult tight");
+    CHECK(joined("abc", false)   == "abc",   "adjacent letters tight");
+    // ASCII '-' becomes a real minus sign U+2212.
+    CHECK(joined("a-b", false)   == "a \u2212 b", "minus is U+2212");
+    // A comma gets a trailing space, no leading.
+    CHECK(joined("a,b", false)   == "a, b",  "comma spacing");
+}
+
+static void test_radical_join() {
+    // The radical stroke sits immediately left of the radicand (no gap).
+    auto rows = grid("\\sqrt{x}", true);
+    CHECK(rows.size() == 2, "sqrt is 2 rows");
+    // baseline row is exactly "\u221ax" (stroke then radicand, adjacent)
+    CHECK(rows[1] == "\u221ax", "radical hugs radicand");
 }
 
 // ── 2. markdown integration ──────────────────────────────────────────────────
@@ -203,6 +228,8 @@ int main() {
         {"quadratic_formula",       test_quadratic_formula},
         {"unknown_macro_degrades",  test_unknown_macro_degrades},
         {"linearize_inline",        test_linearize_inline},
+        {"spacing_quality",         test_spacing_quality},
+        {"radical_join",            test_radical_join},
         {"markdown_inline_math",    test_markdown_inline_math},
         {"markdown_display_math",   test_markdown_display_math},
     };

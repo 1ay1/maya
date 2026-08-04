@@ -287,6 +287,19 @@ static void test_markdown_display_math() {
     // ```math fence path
     int h2 = render_height("```math\n\\sum_{i=1}^{n} i\n```");
     CHECK(h2 >= 3, "math fence block renders multi-row");
+    // SINGLE-LINE `$$ … $$` form (the shape chat models emit inline). Must
+    // typeset as a real 2-D box, NOT fall through to a raw-LaTeX paragraph.
+    int h3 = render_height("Before\n\n$$x = \\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$\n\nAfter");
+    CHECK(h3 >= 5, "one-line $$…$$ fraction typesets multi-row");
+    // A single-line $$…$$ with no 2-D content still renders as a math box
+    // (bordered), so it's taller than the same text as a bare paragraph.
+    int hm = render_height("$$a^2 + b^2 = c^2$$");
+    int hp = render_height("a^2 + b^2 = c^2");
+    CHECK(hm > hp, "one-line $$…$$ renders as a bordered math block");
+    // Guard rails: `$5` currency and inline `$$a$$ b $$c$$` must NOT become
+    // a display block (no crash / no swallow). Just assert they render.
+    CHECK(render_height("price is $5 today") >= 1, "currency not math");
+    CHECK(render_height("$$a$$ and $$b$$ inline") >= 1, "ambiguous defers");
 }
 
 // ── driver ───────────────────────────────────────────────────────────────────

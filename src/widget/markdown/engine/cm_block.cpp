@@ -180,6 +180,35 @@ struct Line {
     return static_cast<int>(n);
 }
 
+// Single-line display math: a whole line of the form `$$ … $$` where the
+// closing `$$` is on the SAME line and there is non-empty content between.
+// Chat models emit this form constantly (`$$x = \frac{-b}{2a}$$` on one
+// line) alongside the canonical `$$`-alone-on-its-own-line fence, so we
+// accept it as a self-contained display-math block instead of leaking raw
+// LaTeX into a paragraph. Returns true and fills `content` (the inner TeX,
+// stripped) on a match. Rejected: `$$$…`, `$$` with an empty body, and any
+// leftover `$` in the body (`$$a$$b$$` is ambiguous → leave to inline).
+[[nodiscard]] bool one_line_math_block(std::string_view line,
+                                       std::string& content) {
+    std::size_t bytes;
+    int ind = leading_indent(line, bytes);
+    if (ind > 3) return false;
+    auto t = strip(line.substr(bytes));
+    // exactly `$$` … `$$`, at least one char between the delimiters
+    if (t.size() < 5) return false;                    // `$$` + x + `$$` = 5
+    if (t[0] != '$' || t[1] != '$') return false;
+    if (t[2] == '$') return false;                     // `$$$…` → not this
+    if (t[t.size() - 1] != '$' || t[t.size() - 2] != '$') return false;
+    auto body = t.substr(2, t.size() - 4);
+    auto inner = strip(body);
+    if (inner.empty()) return false;
+    // A stray `$` inside means the `$$…$$` pairing is ambiguous (e.g.
+    // `$$a$$ text $$b$$`): defer to the inline parser rather than guess.
+    if (inner.find('$') != std::string_view::npos) return false;
+    content = std::string(inner);
+    return true;
+}
+
 // Bullet list marker: -, +, * followed by space/eol. Returns marker width
 // (1) and sets delim. Ordered: digits(1-9) then . or ) — returns digit count.
 struct ListMarker {
@@ -917,6 +946,22 @@ private:
                 code->fence_len = flen;
                 code->fence_indent = find;
                 code->info = info;
+                return;
+            }
+            // Single-line `$$ … $$` display math (ext only): emit a
+            // self-closing math CodeFence carrying the inner TeX. This is
+            // the form chat models emit inline-on-one-line; without this it
+            // would fall through to a paragraph and render as raw LaTeX.
+            std::string math_body;
+            if (ext_ && one_line_math_block(content, math_body)) {
+                CMBlock* code = open_child(container, BlockType::CodeFence);
+                code->fence_char = '$';
+                code->fence_len = 2;
+                code->fence_indent = 0;
+                code->info = "math";
+                code->text = std::move(math_body);
+                code->text += '\n';   // lower_block trims the trailing NL
+                code->open = false;   // complete block, no closing line
                 return;
             }
         }

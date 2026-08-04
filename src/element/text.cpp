@@ -51,6 +51,10 @@ constexpr int codepoint_width(char32_t cp) noexcept {
     if (cp >= 0x1160 && cp <= 0x11FF) return -1;       // Hangul jungseong/jongseong
     if (cp >= 0x200B && cp <= 0x200F) return -1;       // zero-width spaces / directional marks
     if (cp >= 0x0300 && cp <= 0x036F) return -1;       // combining diacritical marks
+    if (cp >= 0x1AB0 && cp <= 0x1AFF) return -1;       // combining diacritical marks extended
+    if (cp >= 0x1DC0 && cp <= 0x1DFF) return -1;       // combining diacritical marks supplement
+    if (cp >= 0x20D0 && cp <= 0x20FF) return -1;       // combining marks for symbols (\vec, ⃗)
+    if (cp >= 0xFE20 && cp <= 0xFE2F) return -1;       // combining half marks
     if (cp == 0xFEFF) return -1;                       // BOM / zero-width no-break space
     return is_wide_char(cp) ? 2 : 1;
 }
@@ -103,7 +107,12 @@ struct LineWrapper {
         while (pos < line.size()) {
             std::size_t char_start = pos;
             char32_t cp = decode_utf8(line, pos);
-            int cw = (cp < 0x20) ? 0 : (is_wide_char(cp) ? 2 : 1);
+            // Use the shared codepoint_width so combining marks (é = e+U+0301,
+            // x̂, v⃗), joiners and other zero-width code points cost 0 columns.
+            // Counting them as 1 broke wrapping: every base+mark pair forced a
+            // premature break, doubling the line count on accented text.
+            int cw = codepoint_width(cp);
+            if (cw < 0) cw = 0;   // -1 (skip-entirely) counts as zero width here
 
             // Whitespace and hyphens are potential break points.
             if (cp == ' ' || cp == '\t' || cp == '-') {

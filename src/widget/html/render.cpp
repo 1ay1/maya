@@ -182,9 +182,45 @@ private:
         for (const auto& c : n.children) gather_text(c, out);
     }
 
+    // Hard cap on block-nesting recursion. HTML parses into an arbitrarily
+    // deep tree (the parser uses an explicit stack, so PARSING deep input is
+    // safe), but rendering recurses that tree on the native call stack:
+    // render_block → stack_children → render_children → render_block. Adversarial
+    // or LLM-generated markup like `<div><div>…×20000` would overflow the stack
+    // and crash the process. Past this depth we stop descending and render the
+    // remaining subtree as its flattened text — legible, bounded, no crash.
+    //
+    // NOTE: this is a SEPARATE counter from the `depth` parameter (which tracks
+    // LIST/nesting level for bullet styling and increments only in list/
+    // details/deflist). recursion_ counts actual call-stack frames so the guard
+    // is exact regardless of which element types nest. 64 comfortably exceeds
+    // any real document while keeping worst-case frames well under an 8 MiB
+    // stack.
+    static constexpr int kMaxDepth = 64;
+    int recursion_ = 0;
+
+    struct DepthScope {
+        int& d;
+        explicit DepthScope(int& r) noexcept : d(r) { ++d; }
+        ~DepthScope() { --d; }
+    };
+
     // One block element → one Element.
     Element render_block(const Node& n, int depth) {
+        DepthScope guard(recursion_);
         const std::string& tag = n.tag;
+
+        if (recursion_ > kMaxDepth) {
+            // Bail out of recursion: gather the whole subtree's text and
+            // render it flat. Keeps deeply-pathological input safe.
+            std::string text;
+            gather_text(n, text);
+            while (!text.empty() && (text.back() == '\n' || text.back() == ' '))
+                text.pop_back();
+            if (text.empty()) return Element{TextElement{}};
+            return Element{TextElement{.content = std::move(text),
+                                       .style = base_text()}};
+        }
 
         if (tag == "h1" || tag == "h2" || tag == "h3" || tag == "h4" ||
             tag == "h5" || tag == "h6")

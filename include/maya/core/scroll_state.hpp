@@ -64,9 +64,45 @@ inline thread_local int paint_generation = 0;
 // linker rejects the duplicates (surfaces under LTO). A function-local
 // thread_local keeps the init wrapper local to this inline function,
 // which is properly deduplicated.
+// True while the thread_local registry is alive. Flips false when the registry
+// is torn down at thread/program exit. Load-bearing fix for a static/TLS
+// DESTRUCTION-ORDER hazard: a long-lived ScrollState (a function-local
+// `static`, or any state that outlives the registry) runs its destructor during
+// exit; if that happens AFTER the states vector was freed by __call_tls_dtors,
+// touching it is a use-after-free. Every registry mutator checks this first.
+inline bool& scroll_registry_alive() {
+    static thread_local bool alive = false;
+    return alive;
+}
+
 inline std::vector<ScrollState*>& live_scroll_states() {
+    // The vector and a liveness guard are declared IN THE SAME SCOPE so their
+    // destruction order is well-defined: reverse of construction. `guard` is
+    // declared AFTER `states`, so at exit `guard` is destroyed FIRST — it flips
+    // the alive flag to false while `states` is still valid. Any ScrollState
+    // destructor that runs later (and calls unregister_scroll_state) then sees
+    // alive==false and skips the freed vector. Both are function-local statics
+    // in ONE function, so no cross-TU / cross-function ordering ambiguity.
+    struct Guard {
+        Guard()  noexcept { scroll_registry_alive() = true; }
+        ~Guard() noexcept { scroll_registry_alive() = false; }
+    };
     static thread_local std::vector<ScrollState*> states;
+    static thread_local Guard guard;   // destroyed before `states`
+    (void)guard;
     return states;
+}
+
+// Remove every occurrence of `s` from the live-state registry. Called from
+// ~ScrollState (and the move/copy assignment ops) so a state destroyed or
+// relocated between a paint and the next event dispatch can never be reached
+// through a stale raw pointer — the registry holds non-owning ScrollState* and
+// is only cleared at the START of the next render, so without this a state torn
+// down inside update() would be a use-after-free on the next input event.
+inline void unregister_scroll_state(ScrollState* s) noexcept {
+    if (!scroll_registry_alive()) return;   // registry already torn down at exit
+    auto& v = live_scroll_states();
+    v.erase(std::remove(v.begin(), v.end(), s), v.end());
 }
 }  // namespace detail
 
@@ -130,6 +166,61 @@ struct ScrollState {
     //    detail::paint_generation; when they differ, clear bars_h/v
     //    on the next writeback (start-of-frame reset). --
     int paint_gen_seen = -1;
+
+    // ------------------------------------------------------------------
+    // Lifetime: the renderer registers `&state` in a thread-local
+    // non-owning registry (detail::live_scroll_states) during paint, and
+    // the run() loop dispatches events to it until the next render clears
+    // the list. If a state is destroyed or relocated in that window (e.g.
+    // a scrollable widget removed inside update()), the registry would hold
+    // a dangling pointer -> use-after-free on the next input event. These
+    // special members keep the registry consistent.
+    //
+    // Default construction stays trivial; a freshly constructed (incl.
+    // copy-/move-constructed) state is simply NOT in the registry yet.
+    ScrollState() = default;
+    ~ScrollState() { detail::unregister_scroll_state(this); }
+
+    ScrollState(const ScrollState&)            = default;
+    ScrollState(ScrollState&&)                 = default;
+
+    // Assignment can overwrite a state that is currently registered; drop
+    // its registry membership first so the (logically new) contents aren't
+    // reachable through the old registration until the next paint re-adds it.
+    ScrollState& operator=(const ScrollState& o) {
+        if (this != &o) {
+            detail::unregister_scroll_state(this);
+            // copy every field EXCEPT re-registering; paint_gen_seen reset so
+            // the next writeback treats this as a fresh paint.
+            x = o.x; y = o.y; max_x = o.max_x; max_y = o.max_y;
+            step_x = o.step_x; step_y = o.step_y;
+            bars_h = o.bars_h; bars_v = o.bars_v;
+            bar_h_bounds = o.bar_h_bounds; bar_v_bounds = o.bar_v_bounds;
+            viewport_bounds = o.viewport_bounds;
+            auto_dispatch = o.auto_dispatch;
+            dragging_h = o.dragging_h; dragging_v = o.dragging_v;
+            drag_bar = o.drag_bar;
+            drag_offset_h = o.drag_offset_h; drag_offset_v = o.drag_offset_v;
+            paint_gen_seen = -1;
+        }
+        return *this;
+    }
+    ScrollState& operator=(ScrollState&& o) noexcept {
+        if (this != &o) {
+            detail::unregister_scroll_state(this);
+            x = o.x; y = o.y; max_x = o.max_x; max_y = o.max_y;
+            step_x = o.step_x; step_y = o.step_y;
+            bars_h = std::move(o.bars_h); bars_v = std::move(o.bars_v);
+            bar_h_bounds = o.bar_h_bounds; bar_v_bounds = o.bar_v_bounds;
+            viewport_bounds = o.viewport_bounds;
+            auto_dispatch = o.auto_dispatch;
+            dragging_h = o.dragging_h; dragging_v = o.dragging_v;
+            drag_bar = o.drag_bar;
+            drag_offset_h = o.drag_offset_h; drag_offset_v = o.drag_offset_v;
+            paint_gen_seen = -1;
+        }
+        return *this;
+    }
 
     // ------------------------------------------------------------------
     // Position queries + clamping

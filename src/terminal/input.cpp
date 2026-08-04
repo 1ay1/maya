@@ -706,6 +706,15 @@ void InputParser::parse_sgr_mouse(std::string_view params_str, uint8_t final_byt
     int px = params[1];
     int py = params[2];
 
+    // SGR mouse coordinates are 1-BASED (column/row 1 is the top-left cell).
+    // A malformed report like `\x1b[<0;0;0m` yields 0, which downstream code
+    // that converts to 0-based (px-1) would turn into -1 and use to index a
+    // cell grid. Clamp to the valid floor at the trust boundary so no consumer
+    // ever sees a sub-1 coordinate. (No upper clamp: the terminal size isn't
+    // known here, and consumers already bound against the live viewport.)
+    if (px < 1) px = 1;
+    if (py < 1) py = 1;
+
     // Decode button and modifiers from cb
     Modifiers mods{
         .ctrl  = (cb & 16) != 0,
@@ -725,11 +734,15 @@ void InputParser::parse_sgr_mouse(std::string_view params_str, uint8_t final_byt
         kind = MouseEventKind::Move;
     }
 
-    // Decode button
+    // Decode button. In SGR, a DRAG report is the held button's code with the
+    // motion bit (32) set, so cb=32 (button_bits==0 + motion) is a genuine
+    // LEFT-button drag and must decode as Left. A BUTTONLESS move is reported
+    // as button code 3 (button_bits==3), which maps to None below — so no
+    // special-casing is needed here; the plain table is correct.
     if (button_bits == 0)       button = MouseButton::Left;
     else if (button_bits == 1)  button = MouseButton::Middle;
     else if (button_bits == 2)  button = MouseButton::Right;
-    else if (button_bits == 3)  button = MouseButton::None; // release (X10)
+    else if (button_bits == 3)  button = MouseButton::None; // release / buttonless move
     else if (button_bits == 64) button = MouseButton::ScrollUp;
     else if (button_bits == 65) button = MouseButton::ScrollDown;
     else if (button_bits == 66) button = MouseButton::ScrollLeft;   // SGR horizontal wheel

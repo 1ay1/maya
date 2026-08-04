@@ -318,6 +318,17 @@ inline void notify_subscribers(ReactiveNode* source) {
     if (batch_depth > 0) {
         // Defer: enqueue each subscriber once using the O(1) pending flag.
         // This replaces the old O(n) std::ranges::find scan.
+        //
+        // No NotifyFrameScope here (unlike the immediate branch and
+        // flush_batch): this loop performs NO evaluation — it only sets
+        // `pending` and appends to the queue, neither of which can run user
+        // code, re-track edges, or destroy nodes. `source->subscribers` is
+        // therefore stable for the duration of the loop. The actual
+        // evaluation (where a node can die and invalidate the list) happens
+        // later in flush_batch, which DOES install a frame; and a subscriber
+        // destroyed while merely sitting in the queue is purged by
+        // ~ReactiveNode()::unlink_all() (erases from pending_notifications +
+        // clears its pending flag). So the deferred path is race-free as-is.
         for (auto* sub : source->subscribers) {
             if (!sub->pending) {
                 sub->pending = true;

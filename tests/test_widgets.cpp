@@ -17,6 +17,8 @@
 #include <maya/widget/status_bar.hpp>
 #include <maya/widget/table.hpp>
 #include <maya/widget/toast.hpp>
+#include <maya/element/text.hpp>
+#include "check.hpp"
 #include <cassert>
 #include <print>
 #include <string>
@@ -672,7 +674,8 @@ void test_picker_multirow_autoscroll() {
 void test_picker_selected_row_highlight() {
     std::println("=== test_picker_selected_row_highlight ===");
 
-    ScrollState scroll{.auto_dispatch = false};
+    ScrollState scroll;
+    scroll.auto_dispatch = false;
     Picker::Config cfg;
     cfg.title = " Picker ";
     cfg.min_width = 30;
@@ -726,7 +729,11 @@ void test_picker_rows_responsive() {
     std::println("=== test_picker_rows_responsive ===");
 
     auto render = [](int width) {
-        static ScrollState scroll{.auto_dispatch = false};
+        static ScrollState scroll = [] {
+            ScrollState s;
+            s.auto_dispatch = false;
+            return s;
+        }();
         scroll.y = 0;
         Picker::Config cfg;
         cfg.title = " Tool Outputs ";
@@ -786,6 +793,26 @@ void test_input_multiline_paste() {
     std::println("  PASS\n");
 }
 
+// Word-wrap must treat combining marks as ZERO width. `à` = 'a' + U+0300
+// occupies one column, so N accented chars wrap into ceil(N/width) lines, not
+// double that. Regression for the emit_lines width bug (marks counted as 1
+// forced a premature break after every base+mark pair).
+void test_word_wrap_combining() {
+    std::println("=== test_word_wrap_combining ===");
+    std::string accented;
+    for (int i = 0; i < 40; ++i) accented += "a\xcc\x80";  // 'a' + combining grave
+    auto lines = maya::word_wrap(accented, 10);
+    // 40 display columns at width 10 => 4 lines. (Pre-fix: 8.)
+    MAYA_TEST_CHECK(lines.size() == 4,
+                    "combining marks are zero-width in word_wrap");
+    // A pure combining-mark string (no base) must not hang or explode either.
+    std::string marks;
+    for (int i = 0; i < 20; ++i) marks += "\xcc\x80";
+    auto ml = maya::word_wrap(marks, 4);
+    MAYA_TEST_CHECK(!ml.empty(), "pure combining-mark wrap does not hang");
+    std::println("PASS");
+}
+
 int main() {
     test_table();
     test_progress();
@@ -807,6 +834,7 @@ int main() {
     test_picker_selected_row_highlight();
     test_picker_rows_responsive();
     test_input_multiline_paste();
+    test_word_wrap_combining();
     std::println("All widget tests passed!");
     return 0;
 }

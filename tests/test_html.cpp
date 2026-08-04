@@ -304,6 +304,29 @@ int main() {
     (void)text_of("<<<>>> <a href= ");
     (void)text_of("");
 
+    // ── deeply-nested blocks must NOT overflow the render stack ─────────
+    // render_block recurses the parse tree on the native call stack; without
+    // a depth cap, `<div><div>…` from an LLM or untrusted content crashes the
+    // process (verified SIGSEGV pre-fix). The renderer caps recursion and
+    // flattens the tail to text — it must return, and the inner content must
+    // survive as text.
+    {
+        std::string deep;
+        for (int i = 0; i < 20000; ++i) deep += "<div>";
+        deep += "INNER";
+        for (int i = 0; i < 20000; ++i) deep += "</div>";
+        std::string s = text_of(deep);
+        MAYA_TEST_CHECK(contains(s, "INNER"),
+                        "deeply nested <div> renders (flattened) without crash");
+    }
+    {
+        // Same via a single unclosed-tag flood + a blockquote flood.
+        std::string bq;
+        for (int i = 0; i < 20000; ++i) bq += "<blockquote>";
+        bq += "Q";
+        (void)text_of(bq);   // must simply return, no crash
+    }
+
     std::println("test_html: all checks passed");
     return 0;
 }

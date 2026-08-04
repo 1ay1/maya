@@ -1283,6 +1283,46 @@ static void test_writeback_dirty_flag() {
     std::println("PASS\n");
 }
 
+// Regression: the renderer registers &state in a non-owning thread-local
+// registry (detail::live_scroll_states) during paint, and the run() loop
+// dispatches events to those pointers until the NEXT render clears the list.
+// A ScrollState destroyed in that window (e.g. a scrollable removed inside
+// update()) must remove itself from the registry, or the next input event is a
+// use-after-free. Verify the dtor and move/copy-assign keep the registry clean.
+static void test_registry_unregisters_on_destroy() {
+    std::println("--- test_registry_unregisters_on_destroy ---");
+    auto& reg = detail::live_scroll_states();
+    reg.clear();
+
+    // Simulate a paint registering a heap state, then destroy it.
+    {
+        auto* s = new ScrollState();
+        reg.push_back(s);
+        assert(reg.size() == 1);
+        delete s;                       // <- must self-unregister
+        assert(reg.empty());            // no dangling pointer left behind
+    }
+
+    // Move-assignment into a registered target drops its registration.
+    {
+        ScrollState a, b;
+        reg.push_back(&a);
+        assert(reg.size() == 1);
+        a = std::move(b);               // a was registered -> unregistered
+        assert(reg.empty());
+    }
+
+    // Scope-exit destruction of a registered stack state also cleans up.
+    {
+        ScrollState local;
+        reg.push_back(&local);
+        assert(reg.size() == 1);
+    }
+    assert(reg.empty());
+
+    std::println("PASS\n");
+}
+
 int main() {
     test_scroll_state_basics();
     test_scroll_state_imperative();
@@ -1314,6 +1354,7 @@ int main() {
     test_zero_viewport_scrollbar();
     test_large_content();
     test_writeback_dirty_flag();
+    test_registry_unregisters_on_destroy();
     std::println("=== ALL SCROLL TESTS PASSED ===");
     return 0;
 }

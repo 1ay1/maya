@@ -642,7 +642,10 @@ struct Parser {
             return wrap_delims(inner, open, close);
         }
         if (w == "text" || w == "mathrm" || w == "operatorname" ||
-            w == "mathbf" || w == "mathit" || w == "mathsf" || w == "mathtt") {
+            w == "mathbf" || w == "mathit" || w == "mathsf" || w == "mathtt" ||
+            w == "texttt" || w == "textrm" || w == "textbf" ||
+            w == "textit" || w == "textsf" || w == "textsc" ||
+            w == "textnormal" || w == "emph") {
             skip_ws();
             if (peek() == '{') {
                 ++i;
@@ -655,8 +658,9 @@ struct Parser {
                 }
                 std::string_view body = s.substr(start, i - start);
                 if (peek() == '}') ++i;
-                Style st = (w == "mathbf") ? pal.text.with_bold()
-                         : (w == "mathit") ? pal.text.with_italic()
+                Style st = (w == "mathbf" || w == "textbf") ? pal.text.with_bold()
+                         : (w == "mathit" || w == "textit"
+                            || w == "emph") ? pal.text.with_italic()
                          : pal.text;
                 return hbox(body, st);
             }
@@ -682,6 +686,35 @@ struct Parser {
             if (peek() == want) { ++i; label = parse_group(); has_label = true; }
             tight = save_tight;
             return make_brace(body, label, over, has_label);
+        }
+
+        // extensible arrows: \xrightarrow[under]{over}, \xleftarrow…, etc.
+        // The label(s) sit over/under a long arrow. Optional [..] then {..}.
+        if (w == "xrightarrow" || w == "xleftarrow"
+         || w == "xRightarrow" || w == "xLeftarrow"
+         || w == "xleftrightarrow" || w == "xmapsto"
+         || w == "xhookrightarrow" || w == "xhookleftarrow") {
+            Box under; bool has_under = false;
+            skip_ws();
+            if (peek() == '[') {   // optional under-label
+                ++i;
+                under = parse_seq(']');
+                if (peek() == ']') ++i;
+                has_under = true;
+            }
+            Box over; bool has_over = false;
+            skip_ws();
+            if (peek() == '{') { over = parse_group(); has_over = true; }
+            std::string_view glyph =
+                  (w == "xleftarrow")        ? "\u2190"
+                : (w == "xRightarrow")       ? "\u21d2"
+                : (w == "xLeftarrow")        ? "\u21d0"
+                : (w == "xleftrightarrow")   ? "\u2194"
+                : (w == "xmapsto")           ? "\u21a6"
+                : (w == "xhookrightarrow")   ? "\u21aa"
+                : (w == "xhookleftarrow")    ? "\u21a9"
+                :                              "\u2192";   // xrightarrow
+            return make_labeled_arrow(glyph, over, under, has_over, has_under);
         }
 
         // accents
@@ -932,6 +965,61 @@ struct Parser {
         // axis on the bar row
         stacked.axis = num.rows;
         return stacked;
+    }
+
+    // \xrightarrow{over}[under]: a long arrow at least as wide as its labels,
+    // with the over-label centered above and the under-label below. In tight
+    // (inline / script) context we can't stack rows, so collapse to a single
+    // row: a short arrow rule carrying the label, e.g. `─parse→`.
+    Box make_labeled_arrow(std::string_view glyph, const Box& over,
+                           const Box& under, bool has_over, bool has_under) {
+        int lblw = std::max(has_over ? over.cols : 0,
+                            has_under ? under.cols : 0);
+        // Determine arrow direction from the glyph to know which end gets the
+        // head; default (right/`→`) draws `──→`, left (`←`) draws `←──`.
+        const bool leftish = glyph == "\u2190" || glyph == "\u21d0";
+        // Arrow body width: label width + a little air, min 3 so the shaft
+        // reads as an arrow even with a 1-char label.
+        int shaft = std::max(3, lblw + 2);
+
+        auto build_arrow_row = [&]() -> Box {
+            Box row = blank(1, shaft, 0, pal.op);
+            for (int c = 0; c < shaft; ++c) {
+                std::string_view g = "\u2500";                 // shaft ─
+                if (leftish && c == 0)            g = glyph;   // head at left
+                else if (!leftish && c == shaft-1) g = glyph;  // head at right
+                row.at(0, c) = make_cell(g, pal.op);
+            }
+            row.klass = Box::Cls::Rel;   // an arrow is a relation — give it air
+            return row;
+        };
+
+        if (!display || (!has_over && !has_under)) {
+            // Inline (textstyle) or unlabeled: keep it to a single row so it
+            // never inflates line height. Layout: right arrows read
+            // `label─→`, left arrows `←─label`.
+            Box arrow = build_arrow_row();
+            if (!has_over && !has_under) return arrow;
+            const Box& lbl = has_over ? over : under;
+            if (lbl.rows == 1) {
+                Box a = build_arrow_row();
+                Box res = leftish ? hcat(a, lbl) : hcat(lbl, a);
+                res.klass = Box::Cls::Rel;
+                return res;
+            }
+            return arrow;
+        }
+
+        // Display: stack over-label / arrow / under-label, arrow on the axis.
+        Box arrow = build_arrow_row();
+        std::vector<Box> parts;
+        int axis_row = 0;
+        if (has_over)  { parts.push_back(over); ++axis_row; }
+        parts.push_back(arrow);
+        if (has_under)   parts.push_back(under);
+        Box out = vstack(parts, axis_row, pal.normal);
+        out.klass = Box::Cls::Rel;
+        return out;
     }
 
     // \overline{X} / \underline{X}: draw a full-width rule above / below the

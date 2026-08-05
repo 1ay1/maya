@@ -242,6 +242,41 @@ static void test_norm_and_braces() {
     CHECK(ub.find('S') != std::string::npos, "underbrace label rendered");
 }
 
+static void test_text_fonts_and_arrows() {
+    // \texttt / \textrm / \textbf etc. must render their body as text, NOT
+    // leak the macro name (previously `\texttt{expected}` showed "texttt"
+    // + italic body).
+    CHECK(joined("\\texttt{expected}", false) == "expected",
+          "texttt renders body, no leaked macro name");
+    CHECK(joined("\\textbf{ok}", false) == "ok", "textbf body rendered");
+    CHECK(joined("\\text{parse}", false).find("text") == std::string::npos
+          || joined("\\text{parse}", false) == "parse", "text body only");
+    // The exact failing case from the report: a labeled-arrow pipeline with
+    // \texttt operands must not spill raw LaTeX. In display mode the label
+    // sits ABOVE the arrow, so check across all rows.
+    auto pipe_rows = grid(
+        "\\texttt{parse} \\xrightarrow{expected} \\texttt{render}", true);
+    std::string pipe;
+    for (const auto& r : pipe_rows) { pipe += r; pipe += '\n'; }
+    CHECK(pipe.find("xrightarrow") == std::string::npos,
+          "xrightarrow macro consumed, not literal");
+    CHECK(pipe.find("texttt") == std::string::npos, "texttt consumed");
+    CHECK(pipe.find("parse") != std::string::npos
+          && pipe.find("render") != std::string::npos, "operands present");
+    CHECK(pipe.find("\u2192") != std::string::npos, "arrow glyph rendered");
+    CHECK(pipe.find("expected") != std::string::npos, "arrow label rendered");
+
+    // Inline (textstyle) xrightarrow collapses to one row: `label─→`.
+    auto inl = grid("a \\xrightarrow{f} b", false);
+    CHECK(inl.size() == 1, "inline labeled arrow stays one row");
+    CHECK(inl[0].find("\u2192") != std::string::npos, "inline arrow head present");
+    CHECK(inl[0].find('f') != std::string::npos, "inline arrow label present");
+
+    // Left variant points the other way.
+    CHECK(joined("\\xleftarrow{g}", false).find("\u2190") != std::string::npos,
+          "xleftarrow renders a left arrow");
+}
+
 // Measure a UTF-8 string's terminal display width the way maya's layout does.
 static int display_width(const std::string& line) {
     int w = 0;
@@ -275,6 +310,9 @@ static void test_width_invariant() {
         "\\overline{AB} + \\underline{cd}",
         "\\underbrace{a+b+c}_{3} = \\overbrace{x+y}^{2}",
         "\\boxed{E = mc^2}",
+        "\\texttt{parse} \\xrightarrow{expected} \\texttt{render}",
+        "a \\xrightarrow[below]{above} b",
+        "x \\xleftarrow{g} y",
         "\\left[\\begin{array}{c|c} A & B \\\\ \\hline C & D \\end{array}\\right]",
         "\\begin{array}{cc} a & b \\\\ \\hline c & d \\end{array}",
     };
@@ -355,6 +393,7 @@ int main() {
         {"spacing_quality",         test_spacing_quality},
         {"radical_join",            test_radical_join},
         {"norm_and_braces",         test_norm_and_braces},
+        {"text_fonts_and_arrows",    test_text_fonts_and_arrows},
         {"width_invariant",         test_width_invariant},
         {"markdown_inline_math",    test_markdown_inline_math},
         {"markdown_display_math",   test_markdown_display_math},

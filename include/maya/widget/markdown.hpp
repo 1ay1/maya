@@ -1192,7 +1192,17 @@ public:
     ///
     /// Cheap + idempotent: if the cursor is already at the edge it's a
     /// no-op. Bumps build_dirty_ so the next build() re-renders the tail.
-    void snap_reveal_to_edge() noexcept;
+    ///
+    /// `glide_ms` > 0 turns the instant snap into a BOUNDED GLIDE: instead of
+    /// pasting the whole backlog in one frame, the cursor sprints to the edge
+    /// over a hard `glide_ms` deadline (a fast but VISIBLE catch-up). Use
+    /// this at a tool-card boundary — the reveal must reach the edge before a
+    /// growing card can strand a lagged row (scrollback safety), but it does
+    /// NOT have to get there in one frame; ~150 ms of fast typewriter reads as
+    /// "catching up to land", not a paste. glide_ms == 0 (default) keeps the
+    /// instant snap for the resize-safety path (a discrete event where one
+    /// fully-revealed frame is imperceptible).
+    void snap_reveal_to_edge(int glide_ms = 0) noexcept;
 
     /// Opt into the animated streaming-reveal effect (gradient trail +
     /// scramble + pulsing caret). Off by default — see `reveal_fx_`.

@@ -1212,6 +1212,13 @@ public:
     }
     [[nodiscard]] bool is_live() const noexcept { return live_; }
 
+    /// Test/probe-only: the current line-granular reveal byte clip
+    /// (SIZE_MAX when no clip is active). Lets a smoothness probe correlate
+    /// per-frame visible-cell deltas with the raw cursor position.
+    [[nodiscard]] std::size_t debug_reveal_byte_clip() const noexcept {
+        return reveal_byte_clip_;
+    }
+
     /// True while the internal reveal cursor is still catching up to the
     /// available source (the typewriter hasn't reached the live edge).
     /// Hosts use this to keep the 16 ms animation frame armed across a

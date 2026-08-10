@@ -602,6 +602,17 @@ public:
     constexpr void set_pos(double p) noexcept { pos_ = p < 0.0 ? 0.0 : p; }
     [[nodiscard]] constexpr double pos() const noexcept { return pos_; }
 
+    /// The current low-passed glide rate (cells/sec) the cursor is moving at,
+    /// or the effective floor before the first tick. Hosts use it to scale
+    /// time-based trailing-edge effects (scramble/gradient window) so their
+    /// SPATIAL extent stays consistent whatever the reveal speed.
+    [[nodiscard]] constexpr double effective_rate() const noexcept {
+        if (smoothed_rate_ > 0.0) return smoothed_rate_;
+        return adaptive_ ? (wire_cps_ > adapt_floor_min_ ? wire_cps_
+                                                         : adapt_floor_min_)
+                         : floor_rate_;
+    }
+
     // Ensure the cursor is at least `floor` (snap-to-committed). Monotone.
     constexpr void advance_floor(double floor) noexcept {
         if (pos_ < floor) pos_ = floor;

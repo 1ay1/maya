@@ -546,9 +546,16 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
     // uses, and settle_window_ms() is the exact expression the decorator's
     // internal "caught-up" check computes. static_assert pins the legacy
     // value so an accidental default change is caught at compile time.
-    constexpr std::int64_t kScrambleSettleMs =
-        anim::TextRevealParams{}.settle_window_ms();
-    static_assert(kScrambleSettleMs == 220 + 6 * 26,
+    // The gate must cover the WORST-CASE scramble window. The prose overlay
+    // now speed-scales scramble_ms/char_step_ms up to 2.5× the defaults on a
+    // slow wire (see the decoration above), so a fixed 376 ms gate could flip
+    // live_ off while the tail is still churning — freezing scramble glyphs
+    // onto settled text. Multiply the single-source-of-truth window by the
+    // same max scale.
+    constexpr double kMaxScrambleScale = 2.5;
+    constexpr std::int64_t kScrambleSettleMs = static_cast<std::int64_t>(
+        anim::TextRevealParams{}.settle_window_ms() * kMaxScrambleScale);
+    static_assert(anim::TextRevealParams{}.settle_window_ms() == 220 + 6 * 26,
                   "reveal settle window drifted from decorate_text_reveal "
                   "defaults; the finalize gate would freeze scramble glyphs "
                   "onto settled text");
@@ -1039,8 +1046,23 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             rp.clipped_unrevealed_cp = unrevealed_cp;
             rp.trail_len             = kTrailLen;
             rp.scramble_len          = kScrambleLen;
-            rp.scramble_ms           = kScrambleMs;
-            rp.char_step_ms          = kCharStepMs;
+            // Speed-scaled shimmer: the scramble/gradient windows are TIME
+            // constants, so at a fast reveal they smear over far more cells
+            // than at a slow one — the trail looks inconsistent as the
+            // adaptive rate varies. Scale the per-char step (and the scramble
+            // duration with it) inversely with the glide rate so the shimmer
+            // always covers ~a constant SPATIAL window (~kScrambleLen cells).
+            // At the reference 45 cps the values equal the historical
+            // constants; clamped so it never gets jittery-fast or sluggish.
+            {
+                const double rate = reveal_rate_cursor_.effective_rate();
+                constexpr double kRefCps = 45.0;
+                double scale = (rate > 1.0) ? (kRefCps / rate) : 1.0;
+                if (scale < 0.35) scale = 0.35;   // fast wire: keep some churn
+                if (scale > 2.5)  scale = 2.5;    // slow wire: don't drag
+                rp.scramble_ms  = static_cast<std::int64_t>(kScrambleMs * scale);
+                rp.char_step_ms = static_cast<std::int64_t>(kCharStepMs * scale);
+            }
             rp.ghost_extra           = kGhostExtra;
             (void)anim::decorate_text_reveal(*tail, rp);
             }

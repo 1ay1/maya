@@ -440,6 +440,60 @@ void test_rate_cursor_ramp_no_wobble() {
     std::println("PASS (ramp re-seed on rising edge only, no post-ramp wobble)\n");
 }
 
+// ── RateCursor: adaptive floor tracks the wire, stays in band ──────────────
+void test_rate_cursor_adaptive_floor() {
+    std::println("--- test_rate_cursor_adaptive_floor ---");
+    const double dt = 0.016;
+
+    // A SLOW wire (~30 cps) with a high fixed floor would make the cursor
+    // outrun the edge and freeze between deltas. With adaptive on, the floor
+    // settles near the observed rate, so the cursor keeps pace and does NOT
+    // sit idle at the edge waiting.
+    auto count_idle = [&](bool adaptive, double wire_cps) {
+        RateCursor c(120.0, 0.4);          // high fixed seed floor
+        c.set_adaptive(adaptive, 20.0, 200.0);
+        double edge = 0.0, prev = 0.0;
+        int idle = 0, warm = 0;
+        for (int f = 0; f < 400; ++f) {
+            edge += wire_cps * dt;         // steady wire
+            c.tick(edge, dt);
+            if (warm++ > 120) {            // after warm-up
+                if (c.pos() >= edge - 1e-6 && std::abs(c.pos() - prev) < 1e-9)
+                    ++idle;
+            }
+            prev = c.pos();
+        }
+        return idle;
+    };
+
+    // On a slow steady wire the cursor should track continuously (few/no
+    // idle-at-edge frames) once adaptive has learned the rate. A high fixed
+    // floor drains ahead and stalls far more often.
+    const int idle_fixed    = count_idle(false, 30.0);
+    const int idle_adaptive = count_idle(true,  30.0);
+    std::println("    slow wire idle-at-edge frames: fixed={} adaptive={}",
+                 idle_fixed, idle_adaptive);
+    assert(idle_adaptive <= idle_fixed &&
+           "adaptive must not stall MORE than a high fixed floor");
+
+    // Clamp: a near-zero wire never drives the floor below the readable min.
+    {
+        RateCursor c(120.0, 0.4);
+        c.set_adaptive(true, 20.0, 200.0);
+        double edge = 0.0;
+        for (int f = 0; f < 300; ++f) { edge += 2.0 * dt; c.tick(edge, dt); }
+        // Feed a small backlog and confirm it reveals at >= the min floor.
+        const double before = c.pos();
+        edge += 50.0;
+        c.tick(edge, dt);
+        const double speed = (c.pos() - before) / dt;
+        std::println("    clamped low-wire reveal speed: {:.1f} cps (min 20)",
+                     speed);
+        assert(speed >= 20.0 - 1.0 && "floor must not fall below the min clamp");
+    }
+    std::println("PASS (adaptive floor tracks wire, respects band)\n");
+}
+
 // ── text_reveal decorator: run-coalescing + span invariants ─────────────────
 // Guards the streaming-animation efficiency win: decorate_text_reveal must
 // emit FULLY COALESCED runs (no two byte-contiguous runs share a Style), the
@@ -547,6 +601,7 @@ int main() {
     test_rate_cursor_ramp_still_lands();
     test_rate_cursor_submillisecond_dt();
     test_rate_cursor_ramp_no_wobble();
+    test_rate_cursor_adaptive_floor();
     test_text_reveal_runs_coalesced();
     test_reveal_settle_window_matches_defaults();
     std::println("All animation tests passed.");

@@ -294,6 +294,11 @@ private:
     // visually against recorded streams.
     double reveal_floor_cps_  = 120.0;
     double reveal_drain_secs_ = 0.8;
+    // Adaptive pacing (set_reveal_adaptive): when on, the RateCursor auto-
+    // tunes its floor to the wire rate; reveal_floor_cps_ is then the seed.
+    bool   reveal_adaptive_        = false;
+    double reveal_adapt_floor_min_ = 20.0;
+    double reveal_adapt_floor_max_ = 220.0;
 
     // ── Per-build size tracking for age-based animation ──
     //
@@ -1219,6 +1224,20 @@ public:
     void set_reveal_pacing(double floor_cps, double drain_secs) noexcept {
         if (floor_cps  > 0.0) reveal_floor_cps_  = floor_cps;
         if (drain_secs > 0.0) reveal_drain_secs_ = drain_secs;
+    }
+
+    /// Enable adaptive pacing: the reveal auto-tunes its floor speed to the
+    /// wire's observed delivery rate (clamped to [min,max] cps), instead of
+    /// the fixed floor from set_reveal_pacing. This makes the glide smooth
+    /// across models of very different speeds without hand-picked constants —
+    /// a slow local model and a fast hosted one both read as a steady
+    /// typewriter. The fixed floor becomes the cold-start seed. drain_secs
+    /// (the lag buffer) still applies.
+    void set_reveal_adaptive(bool on, double floor_min = 20.0,
+                             double floor_max = 220.0) noexcept {
+        reveal_adaptive_        = on;
+        reveal_adapt_floor_min_ = floor_min;
+        reveal_adapt_floor_max_ = floor_max;
     }
     [[nodiscard]] bool is_live() const noexcept { return live_; }
 

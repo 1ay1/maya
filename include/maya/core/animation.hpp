@@ -523,6 +523,22 @@ class RateCursor {
     // single-frame paste. Small enough that the reveal still feels prompt
     // (~a few frames), large enough to smear a chunk into motion.
     double rate_tau_   = 0.15;
+
+    // ── Adaptive floor (auto-tune the reveal speed to the wire) ──
+    // A FIXED floor_rate_ is a guess: too high for a slow model (the cursor
+    // outruns the wire and freezes at the edge, stop-and-go), too low for a
+    // fast one (text lags seconds behind). When adaptive_ is on, the cursor
+    // estimates the wire's actual delivery rate from `target` growth and sets
+    // an EFFECTIVE floor to match it, clamped to a readable band. The
+    // measured rate is an EMA over WALL time (not per-delta), so idle gaps
+    // between bursts correctly pull the estimate DOWN — the reveal paces to
+    // the model's real average throughput, whatever provider it is.
+    bool   adaptive_        = false;
+    double wire_cps_        = 0.0;   // EMA of observed delivery rate (cps)
+    double adapt_floor_min_ = 20.0;  // never crawl below this (readable min)
+    double adapt_floor_max_ = 220.0; // never sprint above this (readable max)
+    double adapt_tau_       = 1.0;   // EMA window for the wire estimate (s)
+    double last_target_     = -1.0;  // previous tick's target (for d_target)
     // Tracks whether the finalize ramp was active on the PREVIOUS tick, so
     // the ramp re-seed of smoothed_rate_ fires only on the rising edge
     // (entering the ramp) rather than every ramp frame. The host arms the
@@ -553,6 +569,18 @@ public:
     constexpr void set_pacing(double floor_rate, double drain_secs) noexcept {
         if (floor_rate > 0.0) floor_rate_ = floor_rate;
         if (drain_secs > 0.0) drain_secs_ = drain_secs;
+    }
+
+    // Enable/configure adaptive floor: auto-tune the reveal speed to the
+    // wire's observed rate instead of the fixed floor_rate_. `min`/`max`
+    // bound the readable band; pass a non-positive value to keep a default.
+    // When on, floor_rate_ becomes only the COLD-START seed (used until the
+    // wire estimate warms up).
+    constexpr void set_adaptive(bool on, double floor_min = -1.0,
+                                double floor_max = -1.0) noexcept {
+        adaptive_ = on;
+        if (floor_min > 0.0) adapt_floor_min_ = floor_min;
+        if (floor_max > 0.0) adapt_floor_max_ = floor_max;
     }
 
     // Tune the glide shaping. rate_tau (first arg): how quickly the glide
@@ -600,25 +628,44 @@ public:
     constexpr double tick(double target, double dt) noexcept {
         if (dt < 0.0) dt = 0.0;
 
+        // ── Wire-rate estimate (adaptive floor) ──
+        // Measure how fast `target` (the live edge) grows, EMA'd over WALL
+        // time so idle gaps count as zero-rate and pull the estimate down to
+        // the model's true average throughput. eff_floor is the reveal speed
+        // used everywhere below: the observed wire rate (clamped readable)
+        // when adaptive, else the fixed floor_rate_. Runs every tick,
+        // including idle-at-edge frames, so the estimate keeps tracking.
+        double eff_floor = floor_rate_;
+        if (adaptive_) {
+            if (last_target_ >= 0.0 && dt > 0.0) {
+                const double grew = target - last_target_;
+                const double inst = (grew > 0.0) ? grew / dt : 0.0;
+                const double a = dt / (dt + adapt_tau_);
+                wire_cps_ += (inst - wire_cps_) * a;
+            }
+            last_target_ = target;
+            // Track the wire directly (k=1): the drain_secs_ lag already
+            // provides the smoothing buffer, so matching the average rate
+            // keeps the cursor gliding continuously without lagging or
+            // outrunning. Clamp to the readable band; before the estimate
+            // warms up (wire_cps_ still ~0) fall back to the seed floor.
+            double est = wire_cps_;
+            if (est < adapt_floor_min_) est = adapt_floor_min_;
+            if (est > adapt_floor_max_) est = adapt_floor_max_;
+            eff_floor = est;
+        }
+
         const double backlog = target - pos_;
         if (backlog <= 0.0) {
             pos_ = target;
             if (ramp_left_ >= 0.0) ramp_left_ -= dt;
             was_ramping_ = (ramp_left_ >= 0.0);
             // Decay the low-passed rate back toward the floor while idle at
-            // the edge. Without this, smoothed_rate_ held whatever HIGH value
-            // the last burst pushed it to; when the wire delivers slower than
-            // floor_rate_ (small deltas with idle gaps between — the common
-            // real case), the cursor drains each tiny backlog to the edge,
-            // idles here holding the stale high rate, then the NEXT fat delta
-            // starts gliding from that high rate and pastes in one frame.
-            // Decaying to the floor means every delta begins its glide at the
-            // readable floor speed, so a burst always animates over several
-            // frames instead of teleporting.
-            if (smoothed_rate_ > floor_rate_ && rate_tau_ > 0.0) {
+            // the edge (see the non-adaptive rationale below).
+            if (smoothed_rate_ > eff_floor && rate_tau_ > 0.0) {
                 const double a = dt / (dt + rate_tau_);
-                smoothed_rate_ += (floor_rate_ - smoothed_rate_) * a;
-                if (smoothed_rate_ < floor_rate_) smoothed_rate_ = floor_rate_;
+                smoothed_rate_ += (eff_floor - smoothed_rate_) * a;
+                if (smoothed_rate_ < eff_floor) smoothed_rate_ = eff_floor;
             }
             return pos_;
         }
@@ -638,16 +685,16 @@ public:
         // Seeding from the floor (not the first frame's spike) keeps a cold
         // whole-reply dump from teleporting on frame one.
         double rate_target = backlog / drain_secs_;
-        if (rate_target < floor_rate_) rate_target = floor_rate_;
+        if (rate_target < eff_floor) rate_target = eff_floor;
         if (smoothed_rate_ < 0.0) {
-            smoothed_rate_ = floor_rate_;            // cold start at the floor
+            smoothed_rate_ = eff_floor;              // cold start at the floor
         } else if (rate_tau_ > 0.0) {
             const double a = dt / (dt + rate_tau_);
             smoothed_rate_ += (rate_target - smoothed_rate_) * a;
         } else {
             smoothed_rate_ = rate_target;
         }
-        if (smoothed_rate_ < floor_rate_) smoothed_rate_ = floor_rate_;
+        if (smoothed_rate_ < eff_floor) smoothed_rate_ = eff_floor;
         double rate = smoothed_rate_;
 
         if (ramp_left_ >= 0.0) {

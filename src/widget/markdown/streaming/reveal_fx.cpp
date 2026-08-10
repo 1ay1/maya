@@ -408,6 +408,9 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         // Keep it in lock-step with reveal_cp_ (the public cursor) every
         // frame: push the committed-snap + pacing in, integrate, read back.
         reveal_rate_cursor_.set_pacing(reveal_floor_cps_, reveal_drain_secs_);
+        reveal_rate_cursor_.set_adaptive(reveal_adaptive_,
+                                         reveal_adapt_floor_min_,
+                                         reveal_adapt_floor_max_);
         reveal_rate_cursor_.set_pos(reveal_cp_);          // honour the snap above
         if (finalize_armed_) {
             // #4: re-evaluate the ramp target every frame. If source_ grew

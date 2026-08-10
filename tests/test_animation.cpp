@@ -502,6 +502,30 @@ void test_text_reveal_runs_coalesced() {
     std::println("PASS (runs coalesced, band-bounded: max {} runs)\n", max_runs);
 }
 
+// ── TextRevealParams::settle_window_ms — single source of truth ─────────────
+//
+// StreamingMarkdown's finalize gate holds the widget live until the tail's
+// scramble has resolved, using a settle threshold it now DERIVES from
+// TextRevealParams::settle_window_ms() (was a hardcoded 220 + 6*26 copy).
+// If that expression ever drifts from the decorator's own scramble window,
+// the gate flips live_ off mid-scramble and freezes garbage glyphs onto a
+// settled message. Pin the relationship here (and it is constexpr, so the
+// widget's static_assert also guards it at compile time).
+void test_reveal_settle_window_matches_defaults() {
+    std::println("--- test_reveal_settle_window_matches_defaults ---");
+    constexpr anim::TextRevealParams p{};
+    static_assert(p.settle_window_ms() ==
+                      p.scramble_ms +
+                          static_cast<std::int64_t>(p.scramble_len) *
+                              p.char_step_ms,
+                  "settle_window_ms must equal the decorator scramble window");
+    static_assert(p.settle_window_ms() == 220 + 6 * 26,
+                  "default settle window drifted from 376 ms");
+    assert(p.settle_window_ms() == 376);
+    std::println("PASS (settle window = {} ms, single source of truth)\n",
+                 p.settle_window_ms());
+}
+
 int main() {
     test_easing_constexpr();
     test_tween_basic();
@@ -524,6 +548,7 @@ int main() {
     test_rate_cursor_submillisecond_dt();
     test_rate_cursor_ramp_no_wobble();
     test_text_reveal_runs_coalesced();
+    test_reveal_settle_window_matches_defaults();
     std::println("All animation tests passed.");
     return 0;
 }

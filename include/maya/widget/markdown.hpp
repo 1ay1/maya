@@ -297,23 +297,17 @@ private:
 
     // ── Per-build size tracking for age-based animation ──
     //
-    // Each time build() runs and the source has grown since the
-    // previous build, we stamp `last_grow_ms_` with the current
-    // monotonic time. The finalize() lambda compares the current
-    // time against this stamp to age out the trailing-edge effects
-    // (scramble → resolve, hot → cool color trail). Without this we
-    // can only animate based on absolute time, which gives every
-    // visible char the same animation phase — the eye reads that as
-    // "some lights are flashing", not "text is appearing".
-    //
-    // The tracking is approximate: we don't time-stamp individual
-    // bytes (too much state), we time-stamp the "trailing batch" as
-    // a whole and assume the model emits at a roughly steady rate.
-    // Combined with the typewriter reveal in moha (which feeds bytes
-    // at a fixed rate of ~220 chars/sec), this gives each char an
-    // age that's accurate to within a frame.
+    // last_seen_size_ is the source-size edge-change detector: build()
+    // compares it each frame to notice a grow (invalidate the cursor-edge
+    // clock) or a shrink (clear()/rollback → reset the cursor). The
+    // trailing-edge AGE that drives the scramble→resolve / hot→cool trail
+    // is measured from the CURSOR-edge clock (reveal_edge_reached_ms_),
+    // not from a byte-arrival timestamp — so no last_grow_ms_ is kept. An
+    // earlier model stamped byte-arrival time and assumed a fixed ~220
+    // cps feed; it desynced from the real reveal cursor whenever
+    // reveal_floor_cps_ was retuned. The cursor-edge clock is
+    // assumption-free and always agrees with what the eye sees.
     mutable std::size_t last_seen_size_ = 0;
-    mutable std::int64_t last_grow_ms_   = 0;
 
     // ── Continuous reveal cursor (maya-owned typewriter) ──
     //
@@ -435,7 +429,14 @@ private:
     // calls this once when its turn settles; if the cursor is already at
     // the edge the widget flips live_=false on the very next build().
     //
-    // finalize_deadline_ms_ == 0 means no ramp in flight.
+    // finalize_armed_ is the sole source of truth for "a ramp is in
+    // flight"; finalize_deadline_ms_ is only meaningful while it is true.
+    // A naked deadline==0 sentinel is unsafe: the deadline is now_ms +
+    // ramp_ms on the animation clock, and under a frozen test clock
+    // (freeze_anim_clock(0)) or any zero-based host clock, now_ms + 0 can
+    // legitimately equal 0 — indistinguishable from "no ramp". The flag
+    // removes that in-band collision.
+    mutable bool         finalize_armed_       = false;
     mutable std::int64_t finalize_deadline_ms_ = 0;
 
     // Animation throttle: bucket the wall clock into ~33 ms phases
@@ -1136,7 +1137,7 @@ public:
         // If the host explicitly forces live_=false (cancel / clear / hard
         // reset path) we drop any pending finalize ramp too — there's
         // nothing left to glide toward.
-        if (!live) finalize_deadline_ms_ = 0;
+        if (!live) { finalize_armed_ = false; finalize_deadline_ms_ = 0; }
         // The Tracked<> wrapper around live_ auto-bumps build_dirty_ on
         // every assignment — the has_tail / cache-shape coupling is
         // structural now, not a manual pairing. No need to check the
@@ -1168,7 +1169,7 @@ public:
     /// 16 ms animation frame armed through the ramp so the cursor keeps
     /// gliding to the edge.
     [[nodiscard]] bool is_finalizing() const noexcept {
-        return finalize_deadline_ms_ != 0;
+        return finalize_armed_;
     }
 
     /// Force the reveal cursor to the live edge for the NEXT build(),

@@ -127,6 +127,19 @@ inline void collect_last_content_leaf(Element& e, TextElement*& last_any,
     return last_content ? last_content : last_any;
 }
 
+// Count UTF-8 codepoints in [begin, end) of `s` — a lead byte is any byte
+// that is NOT a 0b10xxxxxx continuation. Used by request_finalize() to
+// derive an ACCURATE backlog: the integrator keeps an incremental cp count
+// (cached_total_cp_) but that cache can be stale at finalize time, and
+// falling back to source_.size() (raw BYTES) over-counts multibyte text —
+// inflating the backlog and stretching the finalize ramp past its target.
+[[nodiscard]] inline std::size_t utf8_cp_count(std::string_view s) noexcept {
+    std::size_t n = 0;
+    for (unsigned char b : s)
+        if ((b & 0xC0) != 0x80) ++n;
+    return n;
+}
+
 } // namespace
 
 void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
@@ -142,7 +155,7 @@ void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     // per frame at settle — the idempotency that matters is "called
     // every frame while settled" (turn.cpp passes through here every
     // render) not recomputing the deadline forward.
-    if (finalize_deadline_ms_ != 0) return;
+    if (finalize_armed_) return;
     if (ramp_ms < 0) ramp_ms = 0;
 
     // Adaptive ramp floor: the host passes a SHORT fixed ramp (e.g. 200 ms)
@@ -161,9 +174,14 @@ void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     {
         const std::size_t cur_cp =
             static_cast<std::size_t>(reveal_cp_ < 0.0 ? 0.0 : reveal_cp_);
+        // Accurate codepoint total. The integrator's incremental cache
+        // (cached_total_cp_) is only valid when it covers the whole
+        // source; if it is stale, recount codepoints rather than falling
+        // back to source_.size() (raw BYTES), which would over-count
+        // multibyte text and inflate the backlog → an over-long ramp.
         const std::size_t total_cp =
             (cached_total_cp_at_ == source_.size())
-                ? cached_total_cp_ : source_.size();   // cp count (or byte UB)
+                ? cached_total_cp_ : utf8_cp_count(source_);
         const double backlog =
             (total_cp > cur_cp) ? static_cast<double>(total_cp - cur_cp) : 0.0;
         if (backlog > 0.0 && reveal_floor_cps_ > 0.0) {
@@ -187,6 +205,7 @@ void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     }
 
     const auto now_ms = anim_now_ms();
+    finalize_armed_ = true;
     finalize_deadline_ms_ = now_ms + ramp_ms;
 }
 
@@ -254,9 +273,14 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
     const std::int64_t ms_total = anim_now_ms();
     cursor_advance_ms_total_ = ms_total;
 
-    // Grow-time stamp.
+    // Grow / shrink detection off source_ size. last_seen_size_ is the
+    // edge-change detector; the trailing-edge AGE is derived from the
+    // cursor-edge clock (reveal_edge_reached_ms_), NOT from a byte-arrival
+    // timestamp — so no last_grow_ms_ is kept. (An earlier age model
+    // stamped a byte-arrival time and assumed a fixed ~220 cps reveal
+    // rate; it desynced from the real cursor whenever reveal_floor_cps_
+    // was retuned. The cursor-edge clock has no such assumption.)
     if (source_.size() > last_seen_size_) {
-        last_grow_ms_   = ms_total;
         last_seen_size_ = source_.size();
         // New bytes arrived — the cursor will fall behind the (now
         // larger) edge, so the "reached edge" clock is invalid. Restart
@@ -264,7 +288,6 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         reveal_edge_reached_ms_ = 0;
     } else if (source_.size() < last_seen_size_) {
         last_seen_size_ = source_.size();
-        last_grow_ms_   = ms_total;
         reveal_cp_      = 0.0;
         reveal_ms_      = ms_total;
         reveal_us_      = 0;   // re-stamp on next advance (µs clock)
@@ -340,8 +363,27 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         // frame (one skipped 60 fps wake ≈ 33 ms, or a 100 ms non-sync tick)
         // integrate its true duration so motion stays continuous. The
         // finalize ramp handles genuine end-of-stream catch-up separately.
-        if (elapsed_s > 0.250) elapsed_s = 0.250;
-        reveal_us_ = us_total;
+        //
+        // Crucially the clamp does NOT throw the excess elapsed time away:
+        // it advances reveal_us_ by only the consumed slice, so the residual
+        // is integrated on subsequent frames. Discarding it (the old
+        // behaviour) permanently shortened the reveal budget by the stall
+        // duration — a 2 s pause made ~1.75 s of typewriter time vanish and
+        // the tail could paste, the exact artifact this animation prevents.
+        constexpr double kMaxCatchupS = 0.250;
+        std::int64_t consumed_us = us_total - reveal_us_;
+        if (elapsed_s > kMaxCatchupS) {
+            elapsed_s = kMaxCatchupS;
+            consumed_us = static_cast<std::int64_t>(kMaxCatchupS * 1'000'000.0);
+        }
+        // Carry the un-consumed residual forward ONLY while there is a
+        // backlog to reveal. If the cursor is already at the edge (idle at
+        // settle, or between bursts) there is nothing owed — snap the clock
+        // to now so a long idle gap can't accumulate "owed" time that then
+        // bursts the next chunk out in one frame. reveal_cp_ still holds the
+        // pre-tick value here; total_cp is this frame's true target.
+        const bool has_backlog = reveal_cp_ < static_cast<double>(total_cp);
+        reveal_us_ = has_backlog ? (reveal_us_ + consumed_us) : us_total;
         reveal_ms_ = ms_total;
 #if MAYA_REVEAL_CENTRAL_CURSOR
         // Central integrator path. The RateCursor reproduces the inline
@@ -351,7 +393,27 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         // frame: push the committed-snap + pacing in, integrate, read back.
         reveal_rate_cursor_.set_pacing(reveal_floor_cps_, reveal_drain_secs_);
         reveal_rate_cursor_.set_pos(reveal_cp_);          // honour the snap above
-        if (finalize_deadline_ms_ != 0) {
+        if (finalize_armed_) {
+            // #4: re-evaluate the ramp target every frame. If source_ grew
+            // AFTER the ramp was armed (finalize is often requested before
+            // the last wire delta drains), the original deadline was set
+            // against a smaller total and would land early — revealing the
+            // late-arriving tail via the fallback path faster than the
+            // ramp, i.e. a paste. Push the deadline forward so the current
+            // backlog still glides out at ≤ kFinishSpeedup× cruise.
+            constexpr double kFinishSpeedup = 2.0;
+            constexpr double kMaxFinishMs   = 2500.0;
+            const double backlog =
+                static_cast<double>(total_cp) - reveal_cp_;
+            if (backlog > 0.0 && reveal_floor_cps_ > 0.0) {
+                double need_ms =
+                    (backlog / (reveal_floor_cps_ * kFinishSpeedup)) * 1000.0;
+                if (need_ms > kMaxFinishMs) need_ms = kMaxFinishMs;
+                const std::int64_t want_deadline =
+                    ms_total + static_cast<std::int64_t>(need_ms);
+                if (want_deadline > finalize_deadline_ms_)
+                    finalize_deadline_ms_ = want_deadline;
+            }
             const double remaining_s =
                 (finalize_deadline_ms_ - ms_total) / 1000.0;
             reveal_rate_cursor_.set_deadline(remaining_s);
@@ -380,7 +442,7 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
             const double kDrainSecs = reveal_drain_secs_;
             const double burst_cps  = backlog / kDrainSecs;
             double cps = (burst_cps > kFloorCps) ? burst_cps : kFloorCps;
-            if (finalize_deadline_ms_ != 0) {
+            if (finalize_armed_) {
                 const std::int64_t remaining_ms =
                     finalize_deadline_ms_ - ms_total;
                 if (remaining_ms <= 0) {
@@ -396,6 +458,18 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
                 reveal_cp_ = static_cast<double>(total_cp);
         }
 #endif
+        // #6: NaN/Inf guard. Every downstream consumer casts reveal_cp_ to
+        // std::size_t (byte clip, overlay revealed_cp, age math); a non-
+        // finite value (e.g. a 0/0 from a degenerate rate·dt) casts to an
+        // implementation-defined size_t — 0 on some targets, a colossal
+        // out-of-range index on others (→ tail over-clip / OOB). Clamp back
+        // to a sane bound before anyone reads it.
+        if (!std::isfinite(reveal_cp_)) {
+            reveal_cp_ = static_cast<double>(committed_cp);
+#if MAYA_REVEAL_CENTRAL_CURSOR
+            reveal_rate_cursor_.set_pos(reveal_cp_);
+#endif
+        }
     }
 
     // ── Cursor-edge clock ──
@@ -436,7 +510,7 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
     // IS clean text, so the freeze handoff captures clean cells. The settle
     // threshold matches decorate_text_reveal's scramble_active window:
     //   scramble_ms + scramble_len * char_step_ms
-    // = 220 + 6*26 = 376 ms.
+    // = 220 + 6*26 = 376 ms (derived below from anim::TextRevealParams).
     //
     // CRITICAL: the window is measured from reveal_edge_reached_ms_ (when
     // the CURSOR reached the edge), NOT from last_grow_ms_ (when the last
@@ -445,12 +519,26 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
     // would already be > 376 ms in the past and the gate would pass
     // immediately, freezing the still-scrambling cursor-swept tail. Keying
     // off the cursor-edge clock gives the swept tail its full window.
-    constexpr std::int64_t kScrambleSettleMs = 220 + 6 * 26;  // 376 ms
+    // The settle window MUST equal decorate_text_reveal's worst-case
+    // scramble window, or a tunable change there silently freezes scramble
+    // glyphs onto the settled tail (#5). Derive it from the ONE source of
+    // truth (anim::TextRevealParams) instead of hardcoding 220 + 6*26 here:
+    // a default-constructed params carries the same tunables the decorator
+    // uses, and settle_window_ms() is the exact expression the decorator's
+    // internal "caught-up" check computes. static_assert pins the legacy
+    // value so an accidental default change is caught at compile time.
+    constexpr std::int64_t kScrambleSettleMs =
+        anim::TextRevealParams{}.settle_window_ms();
+    static_assert(kScrambleSettleMs == 220 + 6 * 26,
+                  "reveal settle window drifted from decorate_text_reveal "
+                  "defaults; the finalize gate would freeze scramble glyphs "
+                  "onto settled text");
     const std::int64_t edge_age_ms =
         cursor_at_edge ? (ms_total - reveal_edge_reached_ms_) : 0;
     const bool tail_visually_settled = edge_age_ms >= kScrambleSettleMs;
-    if (finalize_deadline_ms_ != 0 && cursor_at_edge) {
+    if (finalize_armed_ && cursor_at_edge) {
         if (tail_visually_settled) {
+            finalize_armed_ = false;
             finalize_deadline_ms_ = 0;
             live_ = false;
             request_animation_frame();

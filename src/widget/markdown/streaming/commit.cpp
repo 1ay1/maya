@@ -593,6 +593,7 @@ void StreamingMarkdown::finish() {
     // host that re-arms a frame on is_finalizing() (agentty's turn.cpp does)
     // then spins ~20 fps while idle. Clearing it here — alongside live_ —
     // makes finish() the true terminal transition it advertises.
+    finalize_armed_ = false;
     finalize_deadline_ms_ = 0;
 }
 

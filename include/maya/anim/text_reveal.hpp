@@ -81,6 +81,20 @@ struct TextRevealParams {
     std::int64_t char_step_ms = 26;   // per-cp age increment leftward
     std::size_t  ghost_extra  = 96;   // ghost band beyond the gradient
 
+    // The trailing edge is still churning until the freshest scrambled cp
+    // has aged past scramble_ms AND every cp in the scramble window has
+    // stepped out of it (each is char_step_ms older leftward). This is the
+    // SAME expression the decorator uses internally to decide edge
+    // "caught-up" (see decorate_text_reveal). Hosts that must hold a widget
+    // live until the tail visually resolves (StreamingMarkdown's finalize
+    // gate) MUST derive their settle threshold from HERE, not hardcode a
+    // copy — otherwise a tunable change here silently freezes scramble
+    // glyphs onto a settled message.
+    [[nodiscard]] constexpr std::int64_t settle_window_ms() const noexcept {
+        return scramble_ms +
+               static_cast<std::int64_t>(scramble_len) * char_step_ms;
+    }
+
     // Master toggles so a caller can take just the parts it wants.
     bool enable_scramble = true;
     bool enable_gradient = true;

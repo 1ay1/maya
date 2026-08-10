@@ -988,18 +988,15 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 reveal_fx_
                 && reveal_byte_clip_ != static_cast<std::size_t>(-1)
                 && reveal_byte_clip_ < source_.size();
-            // The tail leaf now ends AT the reveal cursor (build.cpp clips
-            // the in-progress line to the cursor, not to end-of-line), so
-            // there is NO not-yet-typed content in the leaf to ghost —
-            // unrevealed_cp is 0 for the decorator's ghost band. The
-            // scramble + gradient + caret instead ride the trailing edge of
-            // the REVEALED bytes (the "just typed" shimmer), which is what
-            // remains visible now that the glide itself is gated by the clip.
+            // The tail leaf ends AT the reveal cursor (build.cpp gates the
+            // tail at the cursor, never rounding a settled-but-uncommitted
+            // line whole), so there is NO not-yet-typed content in the leaf
+            // to ghost — unrevealed_cp is 0. The scramble + gradient + caret
+            // ride the trailing edge of the REVEALED bytes.
             const std::size_t unrevealed_cp = 0;
             (void)clip_active;
 
             // ── Inert-decoration skip (idle-but-live steady state) ──
-            //
             // Once the cursor is AT the live edge (nothing ghosted) and the
             // trailing edge has fully cooled (edge age past the gradient's
             // 700 ms band — see reveal_detail::trail_style — which also

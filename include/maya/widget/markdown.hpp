@@ -1256,6 +1256,9 @@ public:
     [[nodiscard]] std::size_t debug_source_size() const noexcept {
         return source_.size();
     }
+    [[nodiscard]] std::size_t debug_tail_clip() const noexcept {
+        return cached_tail_clip_;
+    }
 
     /// True while the internal reveal cursor is still catching up to the
     /// available source (the typewriter hasn't reached the live edge).

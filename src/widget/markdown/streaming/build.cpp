@@ -122,39 +122,60 @@ const Element& StreamingMarkdown::build() const {
     if (reveal_fx_ && live_
         && reveal_byte_clip_ != static_cast<std::size_t>(-1)) {
         std::size_t clip = std::min(source_.size(), reveal_byte_clip_);
+        std::size_t bcap = source_.size();
         if (clip < source_.size()) {
-            // Round the clip UP to the end of the line it lands in — BUT only
-            // when that line is already COMPLETE (a '\n' exists at/before the
-            // live edge). A completed line must render whole so a row that
-            // scrolls into native (immutable) scrollback is never frozen
-            // half-revealed (reveal_scrollback_test).
+            // Gate the tail exactly at the reveal cursor. An earlier design
+            // rounded a COMPLETED line up to its '\n' so it rendered whole —
+            // but a completed *source* line is a whole soft-wrapped
+            // *paragraph* (prose is one source line per paragraph; build has
+            // no width and cannot know the wrap points). Rounding dumped the
+            // entire remaining paragraph the instant its '\n' arrived (a
+            // measured +172-cell one-frame pop) AND pushed the settled block
+            // through render_tail's component path, defeating the prose ghost
+            // band. Gating at the cursor keeps the in-progress block a flat
+            // TextElement the overlay glides through per glyph.
             //
-            // The IN-PROGRESS last line (no '\n' between the cursor and the
-            // live edge) must NOT be rounded up: doing so revealed the whole
-            // line the instant its delta arrived — e.g. a heading or a
-            // paragraph delta with no trailing newline appeared in ONE frame,
-            // the cursor gated nothing, and the reveal "burst then stuck".
-            // That in-progress line stays clipped exactly at the cursor; its
-            // not-yet-typed remainder is held by the conceal band, and it is
-            // never in scrollback yet (it's the live tail), so there is no
-            // scrollback-safety concern to satisfy.
-            const std::size_t nl = source_.find('\n', clip);
-            if (nl != std::string::npos)
-                clip = nl + 1;   // completed line — safe to reveal whole
-            // else: in-progress final line — leave clip AT the cursor.
+            // The tail slice [committed_, clip) is entirely UNCOMMITTED and
+            // redrawn in place each frame; only commit_range (reveal-paced,
+            // block-aligned) freezes bytes into scrollback, and by then the
+            // cursor is past the block — so gating here is scrollback-safe.
+            //
+            // bcap: never let the clip (or the monotonic clamp below) cross a
+            // block boundary the cursor hasn't reached. A blank line ('\n\n')
+            // ends a block; without this the clamp would walk the clip into
+            // the NEXT block, so a completed block stops being the tail's last
+            // leaf and the overlay's last-leaf conceal misses it — the
+            // paragraph→blockquote pop. (A blank line is width-independent, so
+            // build can find it safely.)
+            bcap = clip;
+            while (true) {
+                std::size_t b = source_.find('\n', bcap);
+                if (b == std::string::npos) { bcap = source_.size(); break; }
+                if (b + 1 < source_.size() && source_[b + 1] == '\n') {
+                    bcap = b + 1;   // stop at the blank line's first '\n'
+                    break;
+                }
+                bcap = b + 1;       // soft line break inside the block — keep going
+                if (bcap >= source_.size()) break;
+            }
+            if (clip > bcap) clip = bcap;
         }
         visible_end = clip;
         // Monotonic clip: never reveal LESS than a previous frame did for
-        // the same live stream. The reveal cursor only advances, but the
-        // line-rounding above can make visible_end briefly DROP the frame a
-        // line completes (cursor at N with no '\n' revealed N; the next
-        // frame a '\n' lands earlier and rounds to a smaller nl+1). A drop
-        // un-renders an already-visible row — a height shrink that violates
-        // the scrollback-monotonicity invariant. Clamp up to the last clip.
+        // the same live stream. The reveal cursor advances monotonically, so
+        // visible_end should only ever grow — but keep this clamp as a safety
+        // belt: a drop would un-render an already-visible row, a height shrink
+        // that violates the scrollback-monotonicity invariant. Clamp up to
+        // the last frame's clip.
         if (cached_tail_clip_ != static_cast<std::size_t>(-1)
             && cached_tail_clip_ <= source_.size()
             && visible_end < cached_tail_clip_)
             visible_end = cached_tail_clip_;
+        // The block-boundary cap wins over the monotonic clamp too: a stale
+        // higher cached_tail_clip_ from a previous frame must not re-introduce
+        // the next block into the tail. (bcap only ever grows as the cursor
+        // advances into later blocks, so this never un-reveals committed work.)
+        if (visible_end > bcap) visible_end = bcap;
     }
     std::string_view tail = (committed_ < visible_end)
         ? std::string_view{source_}.substr(committed_, visible_end - committed_)

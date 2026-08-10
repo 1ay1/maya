@@ -123,10 +123,38 @@ const Element& StreamingMarkdown::build() const {
         && reveal_byte_clip_ != static_cast<std::size_t>(-1)) {
         std::size_t clip = std::min(source_.size(), reveal_byte_clip_);
         if (clip < source_.size()) {
+            // Round the clip UP to the end of the line it lands in — BUT only
+            // when that line is already COMPLETE (a '\n' exists at/before the
+            // live edge). A completed line must render whole so a row that
+            // scrolls into native (immutable) scrollback is never frozen
+            // half-revealed (reveal_scrollback_test).
+            //
+            // The IN-PROGRESS last line (no '\n' between the cursor and the
+            // live edge) must NOT be rounded up: doing so revealed the whole
+            // line the instant its delta arrived — e.g. a heading or a
+            // paragraph delta with no trailing newline appeared in ONE frame,
+            // the cursor gated nothing, and the reveal "burst then stuck".
+            // That in-progress line stays clipped exactly at the cursor; its
+            // not-yet-typed remainder is held by the conceal band, and it is
+            // never in scrollback yet (it's the live tail), so there is no
+            // scrollback-safety concern to satisfy.
             const std::size_t nl = source_.find('\n', clip);
-            clip = (nl == std::string::npos) ? source_.size() : (nl + 1);
+            if (nl != std::string::npos)
+                clip = nl + 1;   // completed line — safe to reveal whole
+            // else: in-progress final line — leave clip AT the cursor.
         }
         visible_end = clip;
+        // Monotonic clip: never reveal LESS than a previous frame did for
+        // the same live stream. The reveal cursor only advances, but the
+        // line-rounding above can make visible_end briefly DROP the frame a
+        // line completes (cursor at N with no '\n' revealed N; the next
+        // frame a '\n' lands earlier and rounds to a smaller nl+1). A drop
+        // un-renders an already-visible row — a height shrink that violates
+        // the scrollback-monotonicity invariant. Clamp up to the last clip.
+        if (cached_tail_clip_ != static_cast<std::size_t>(-1)
+            && cached_tail_clip_ <= source_.size()
+            && visible_end < cached_tail_clip_)
+            visible_end = cached_tail_clip_;
     }
     std::string_view tail = (committed_ < visible_end)
         ? std::string_view{source_}.substr(committed_, visible_end - committed_)

@@ -962,29 +962,15 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 reveal_fx_
                 && reveal_byte_clip_ != static_cast<std::size_t>(-1)
                 && reveal_byte_clip_ < source_.size();
-            std::size_t unrevealed_cp;
-            if (clip_active) {
-                // Count cp in [reveal_byte_clip_, end-of-tail-leaf). The
-                // tail leaf ends at the line-granular visible_end; the
-                // bytes past reveal_byte_clip_ are the unrevealed slice of
-                // the current line. Count directly off source_ (cheap:
-                // bounded by one line's length).
-                const std::size_t clip_b =
-                    std::min(reveal_byte_clip_, source_.size());
-                std::size_t line_end = clip_b;
-                while (line_end < source_.size()
-                       && source_[line_end] != '\n')
-                    ++line_end;
-                std::size_t cnt = 0;
-                for (std::size_t i = clip_b; i < line_end; ++i)
-                    if ((static_cast<unsigned char>(source_[i]) & 0xC0)
-                            != 0x80)
-                        ++cnt;
-                unrevealed_cp = cnt;
-            } else {
-                unrevealed_cp = (total_cp > revealed_cp)
-                    ? (total_cp - revealed_cp) : 0u;
-            }
+            // The tail leaf now ends AT the reveal cursor (build.cpp clips
+            // the in-progress line to the cursor, not to end-of-line), so
+            // there is NO not-yet-typed content in the leaf to ghost —
+            // unrevealed_cp is 0 for the decorator's ghost band. The
+            // scramble + gradient + caret instead ride the trailing edge of
+            // the REVEALED bytes (the "just typed" shimmer), which is what
+            // remains visible now that the glide itself is gated by the clip.
+            const std::size_t unrevealed_cp = 0;
+            (void)clip_active;
 
             // ── Inert-decoration skip (idle-but-live steady state) ──
             //

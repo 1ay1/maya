@@ -1218,6 +1218,15 @@ public:
     [[nodiscard]] std::size_t debug_reveal_byte_clip() const noexcept {
         return reveal_byte_clip_;
     }
+    [[nodiscard]] std::size_t debug_committed() const noexcept {
+        return committed_;
+    }
+    [[nodiscard]] double debug_reveal_cp() const noexcept {
+        return reveal_cp_;
+    }
+    [[nodiscard]] std::size_t debug_source_size() const noexcept {
+        return source_.size();
+    }
 
     /// True while the internal reveal cursor is still catching up to the
     /// available source (the typewriter hasn't reached the live edge).

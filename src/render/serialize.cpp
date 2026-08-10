@@ -435,6 +435,14 @@ void emit_cell_run(const Canvas& canvas, const StylePool& pool,
         }
     };
 
+    // Whether the CURRENT style conceals (SGR 8). Resolved once per style
+    // transition, not per cell. A concealed cell keeps its column(s) but
+    // paints a SPACE instead of its glyph — background-independent and
+    // universal, unlike delegating SGR 8 to the terminal (widely unsupported
+    // / inconsistently rendered). This is what lets the streaming reveal's
+    // ghost band hold the real text (stable wrap geometry) yet show nothing.
+    bool current_conceal = false;
+
     for (int x = x_begin; x < x_end; ++x) {
         const uint64_t packed = cells[row_base + x];
         const auto ch  = static_cast<char32_t>(packed & 0xFFFFFFFF);
@@ -450,14 +458,18 @@ void emit_cell_run(const Canvas& canvas, const StylePool& pool,
             flush_ascii();
             pool.write_transition_sgr(current_style, sid, out);
             current_style = sid;
+            current_conceal = pool.get(sid).conceal;
         }
 
-        if (ch < 0x80) [[likely]] {
-            ascii_buf[ascii_len++] = static_cast<char>(ch);
+        // Concealed: emit a space to occupy the column, never the glyph.
+        const char32_t out_ch = current_conceal ? U' ' : ch;
+
+        if (out_ch < 0x80) [[likely]] {
+            ascii_buf[ascii_len++] = static_cast<char>(out_ch);
             if (ascii_len == 256) [[unlikely]] flush_ascii();
         } else {
             flush_ascii();
-            detail::encode_utf8(ch, out);
+            detail::encode_utf8(out_ch, out);
         }
     }
     flush_ascii();

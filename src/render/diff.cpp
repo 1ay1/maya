@@ -79,6 +79,13 @@ void diff(
     char ascii_buf[256];
     int  ascii_len = 0;
 
+    // Whether the CURRENT style conceals (SGR 8). Resolved once per style
+    // transition; a concealed cell paints a SPACE (occupy the column, show
+    // no glyph) — background-independent, terminal-independent. Mirrors
+    // emit_cell_run in serialize.cpp so the incremental diff path and the
+    // full-repaint path agree.
+    bool current_conceal = false;
+
     // Lambda: flush the ASCII batch buffer.
     auto flush_ascii = [&] {
         if (ascii_len > 0) {
@@ -184,18 +191,22 @@ void diff(
                 flush_ascii();
                 pool.write_transition_sgr(current_style, style_id, out);
                 current_style = style_id;
+                current_conceal = pool.get(style_id).conceal;
             }
 
+            // Concealed cell: paint a space, keep the column.
+            const char32_t out_ch = current_conceal ? U' ' : character;
+
             // Character — batch ASCII into buffer, encode non-ASCII directly.
-            if (character < 0x80) [[likely]] {
-                ascii_buf[ascii_len++] = static_cast<char>(character);
+            if (out_ch < 0x80) [[likely]] {
+                ascii_buf[ascii_len++] = static_cast<char>(out_ch);
                 if (ascii_len == 256) [[unlikely]] {
                     out.append(ascii_buf, 256);
                     ascii_len = 0;
                 }
             } else {
                 flush_ascii();
-                detail::encode_utf8(character, out);
+                detail::encode_utf8(out_ch, out);
             }
             // Wide-char first half (width==1) occupies 2 columns; normal chars 1.
             cursor_x += (cell_w == 1) ? 2 : 1;

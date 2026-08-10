@@ -136,11 +136,15 @@ struct TextRevealParams {
     // How the not-yet-typed (ghost) cp render. The leaf must stay
     // HEIGHT/WIDTH-stable (the markdown streaming path commits rows to native
     // scrollback), so unrevealed cp can't simply be deleted. Two modes:
-    //   • ghost_blank = true  (default): each unrevealed cp is replaced by
-    //     display-width-matched SPACES — genuinely INVISIBLE (a space paints
-    //     nothing) while preserving the exact column count. This is the true
-    //     left-to-right typewriter every caller wants: text materialises out
-    //     of empty space instead of fading up from a dim-but-readable body.
+    //   • ghost_blank = true  (default): keep the REAL glyph but mark it
+    //     conceal (SGR 8 — occupy the column, paint nothing). Genuinely
+    //     INVISIBLE and background-independent, and — crucially — the leaf
+    //     content bytes are UNCHANGED, so the word-wrapper computes the exact
+    //     same line breaks as the settled frame. The reveal is then a pure
+    //     paint-layer flip with zero reflow. (An earlier implementation swap-
+    //     ped in display-width-matched SPACES; the wrapper trims/skips a
+    //     trailing ghost-space run at a wrap boundary, so a wrapping line
+    //     revealed a whole WORD at a time — the "smooth then bursts" stutter.)
     //   • ghost_blank = false: keep the real glyph but style it
     //     default-fg + dim. Only invisible when the leaf sits on the terminal
     //     default background; otherwise the body reads as "already there."
@@ -149,8 +153,9 @@ struct TextRevealParams {
 
     // Result flag: set true by the decorator when the trailing bytes were
     // rewritten (scramble substituted glyphs of different byte width), so the
-    // caller knows to invalidate the leaf's wrap cache. Pure recolor frames
-    // leave it false (cheap path — no re-wrap).
+    // caller knows to invalidate the leaf's wrap cache. Ghost/recolor frames
+    // (including conceal ghosting, which leaves content bytes intact) leave
+    // it false (cheap path — no re-wrap).
 };
 
 namespace reveal_detail {
@@ -465,30 +470,29 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
             in_scramble && scrambleable && age < p.scramble_ms;
 
         std::string scramble_owned;
-        std::string blank_owned;
         std::string_view emitted;
         // Structural glyphs are never ghosted: the table frame stays fully
-        // present so only cell content materialises out of (width-matched)
-        // blank space.
+        // present so only cell content materialises out of (concealed) space.
         const bool is_ghost =
             p.enable_ghost && i_from_tail < unrevealed_cp && !structural;
         const bool is_sweep_head =
             is_ghost && p.enable_sweep && i_from_tail == unrevealed_cp - 1;
+        // Ghost cells now keep their REAL glyph and are made invisible via
+        // the conceal STYLE (below), not by swapping the content to spaces.
+        // Why: the word-wrapper sees the leaf's content bytes to decide line
+        // breaks and to trim/skip trailing whitespace at a wrap point. A run
+        // of ghost-SPACES gets skipped as "leading whitespace on the next
+        // line", so a wrapping line's visible width did not advance as the
+        // reveal front swept through the ghost run — then a whole WORD popped
+        // in at once when its first real glyph un-ghosted (the "smooth then
+        // bursts" stutter). Keeping the real glyphs means the wrap geometry
+        // is byte-for-byte the settled layout every frame; the reveal is a
+        // pure paint-layer flip (conceal → visible) with zero reflow.
+        const bool ghost_conceal = is_ghost && p.ghost_blank && !is_sweep_head;
         if (scrambling) {
             scramble_owned = std::string{reveal_detail::scramble_pick(
                 trail_byte_start + cp_offs[k], age, ms_total)};
             emitted = scramble_owned;
-        } else if (is_ghost && p.ghost_blank && !is_sweep_head) {
-            // TRUE invisibility, width-exact: replace the not-yet-typed glyph
-            // with as many spaces as its display width (1 for ASCII/most, 2
-            // for CJK/wide). A space paints nothing, so the cp is genuinely
-            // absent — the text appears to type out of empty space — yet the
-            // column count is identical, so committed rows never reflow. The
-            // sweep-cursor head keeps its real glyph (it's the bright "now
-            // typing" cell) and is excluded here.
-            const int w = string_width(real_cp);
-            blank_owned.assign(static_cast<std::size_t>(w > 0 ? w : 1), ' ');
-            emitted = blank_owned;
         } else {
             emitted = real_cp;
         }
@@ -506,11 +510,12 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
                                       : Color::rgb(255, 160, 60))
                        .with_bold();
         } else if (is_ghost) {
-            // Ghost cell. When ghost_blank is on the glyph is already a space
-            // (emitted above), so the style barely matters — but keep it dim
-            // default so the rare non-blank ghost (sweep head fallthrough)
-            // stays subdued. The sweep head overrides with the bright cursor.
+            // Ghost cell. ghost_conceal keeps the REAL glyph but conceals it
+            // (paints nothing, holds the column) — stable wrap geometry, no
+            // pop. Non-conceal ghosts (ghost_blank off) fall back to a dim
+            // subdued glyph. The sweep head overrides with the bright cursor.
             s = Style{}.with_fg(Color::default_color()).with_dim();
+            if (ghost_conceal) s = s.with_conceal();
             if (p.enable_sweep && i_from_tail == unrevealed_cp - 1) {
                 const double pp = reveal_detail::pulse01(ms_total, kSweepMs);
                 s = Style{}

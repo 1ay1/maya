@@ -444,7 +444,12 @@ void test_clip_to_cursor() {
     std::println("PASS");
 }
 
-// ── text_reveal: ghost_blank (default) renders unrevealed cp as SPACES ────
+// ── text_reveal: ghost_blank (default) conceals unrevealed cp, keeps glyphs ─
+// The ghost band no longer substitutes SPACES into the content — it keeps the
+// REAL glyph and marks its run conceal (SGR 8: occupy the column, paint
+// nothing). This is what keeps the word-wrapper seeing identical bytes every
+// frame (stable wrap geometry, no word-pop at a wrap boundary) while the cp
+// still renders invisibly.
 void test_text_reveal_ghost_blank() {
     std::println("--- test_text_reveal_ghost_blank ---");
     const std::string body = "the quick brown fox jumps over the lazy dog";
@@ -464,21 +469,27 @@ void test_text_reveal_ghost_blank() {
     // DISPLAY WIDTH preserved (load-bearing: no reflow).
     assert(string_width(leaf.content) == static_cast<int>(total) &&
            "ghost_blank is width-stable");
-    // The not-yet-typed body (past the sweep head) must be SPACES — truly
-    // invisible, not dim-readable glyphs. The sweep head (cursor-1) keeps its
-    // real glyph, so check strictly past the front.
-    int blanks = 0, reals = 0;
+    // CONTENT is byte-for-byte the real body — NOT rewritten to spaces. This
+    // is the whole point of conceal ghosting: the wrapper sees final bytes,
+    // so line breaks match the settled frame every frame.
+    assert(leaf.content == body &&
+           "conceal ghosting leaves content bytes unchanged (real glyphs)");
+    // The not-yet-typed body (strictly past the sweep head) must carry the
+    // conceal style so it renders invisible; the sweep head keeps its bright
+    // real glyph (not concealed).
+    int concealed = 0, reals = 0;
     for (std::size_t i = 0; i < leaf.content.size(); ++i) {
-        if (i < cursor) { ++reals; continue; }            // revealed: real
-        if (i == cursor) continue;                        // sweep head: real
-        if (leaf.content[i] == ' ') ++blanks;
-        else { /* an unrevealed cp that isn't a space = visible ghost = bug */
-            assert(false && "unrevealed cp must blank to a space");
-        }
+        const StyledRun* r = run_at(leaf, i);
+        assert(r && "every byte covered by a run");
+        if (i < cursor) { ++reals; assert(!r->style.conceal); continue; }
+        if (i == cursor) { assert(!r->style.conceal); continue; } // sweep head
+        assert(r->style.conceal &&
+               "unrevealed cp must be concealed (invisible), not visible");
+        ++concealed;
     }
-    std::println("  reals={} blanks={} (cursor={}/{})", reals, blanks,
+    std::println("  reals={} concealed={} (cursor={}/{})", reals, concealed,
                  cursor, total);
-    assert(blanks > 0 && "there ARE unrevealed cp, blanked to spaces");
+    assert(concealed > 0 && "there ARE unrevealed cp, concealed");
     std::println("PASS");
 }
 

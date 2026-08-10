@@ -37,6 +37,17 @@ struct Style {
     bool strikethrough = false;
     bool inverse       = false;
 
+    /// SGR 8 (conceal / hidden). The cell still occupies its column(s) but
+    /// paints NO glyph, independent of the terminal background. This is the
+    /// true "occupy width, show nothing" primitive the streaming reveal's
+    /// ghost band needs: it lets the not-yet-typed tail keep the REAL text
+    /// in the leaf (so word-wrap geometry is byte-for-byte identical to the
+    /// settled frame) while rendering invisibly. Substituting spaces
+    /// instead — the old ghost path — made the wrapper trim/skip the ghost
+    /// run at a wrap boundary, so a wrapping line revealed a WHOLE WORD at a
+    /// time (the "starts smooth then bursts" stutter).
+    bool conceal       = false;
+
     // -- Fluent builder (each returns a new Style) ---------------------------
 
     /// Return a copy with the foreground color set.
@@ -95,6 +106,14 @@ struct Style {
         return s;
     }
 
+    /// Return a copy with conceal (SGR 8) enabled — occupy width, paint
+    /// nothing. See the `conceal` field.
+    [[nodiscard]] constexpr Style with_conceal(bool v = true) const noexcept {
+        Style s = *this;
+        s.conceal = v;
+        return s;
+    }
+
     // -- SGR generation ------------------------------------------------------
 
     /// Build the full ANSI SGR escape sequence for this style.
@@ -113,6 +132,11 @@ struct Style {
         if (italic)        append("3");
         if (underline)     append("4");
         if (inverse)       append("7");
+        // NB: conceal (SGR 8) is deliberately NOT emitted here. It is
+        // resolved at PAINT time (emit_cell_run substitutes a space) so it
+        // works on every terminal regardless of SGR-8 support and stays
+        // background-independent. Emitting \e[8m too would be redundant and
+        // could double-hide on terminals that honour it.
         if (strikethrough) append("9");
 
         if (fg.has_value()) append(fg->fg_sgr());
@@ -144,6 +168,7 @@ struct Style {
         if (other.underline)     out.underline     = true;
         if (other.strikethrough) out.strikethrough = true;
         if (other.inverse)       out.inverse       = true;
+        if (other.conceal)       out.conceal       = true;
 
         return out;
     }
@@ -152,7 +177,7 @@ struct Style {
     [[nodiscard]] constexpr bool empty() const noexcept {
         return !fg.has_value() && !bg.has_value()
             && !bold && !dim && !italic && !underline
-            && !strikethrough && !inverse;
+            && !strikethrough && !inverse && !conceal;
     }
 
     constexpr auto operator<=>(const Style&) const = default;

@@ -605,6 +605,21 @@ public:
             pos_ = target;
             if (ramp_left_ >= 0.0) ramp_left_ -= dt;
             was_ramping_ = (ramp_left_ >= 0.0);
+            // Decay the low-passed rate back toward the floor while idle at
+            // the edge. Without this, smoothed_rate_ held whatever HIGH value
+            // the last burst pushed it to; when the wire delivers slower than
+            // floor_rate_ (small deltas with idle gaps between — the common
+            // real case), the cursor drains each tiny backlog to the edge,
+            // idles here holding the stale high rate, then the NEXT fat delta
+            // starts gliding from that high rate and pastes in one frame.
+            // Decaying to the floor means every delta begins its glide at the
+            // readable floor speed, so a burst always animates over several
+            // frames instead of teleporting.
+            if (smoothed_rate_ > floor_rate_ && rate_tau_ > 0.0) {
+                const double a = dt / (dt + rate_tau_);
+                smoothed_rate_ += (floor_rate_ - smoothed_rate_) * a;
+                if (smoothed_rate_ < floor_rate_) smoothed_rate_ = floor_rate_;
+            }
             return pos_;
         }
 

@@ -1094,6 +1094,9 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 // Cursor's horizontal progress (0..1) through the SOURCE row
                 // the typewriter is currently on — the newest rendered row's
                 // span. Mirrors the prose clip math, expressed as a fraction.
+                // Per-LINE (not per-block) because line_bounded confines the
+                // reveal to the leaf's bottom visual row — the only row we can
+                // prove hasn't scrolled into immutable scrollback.
                 double reveal_frac = 1.0;
                 const bool clip_active =
                     reveal_fx_
@@ -1141,6 +1144,18 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                     // materialised rows; if it already produced a Box/Text
                     // tree, decorate it directly. Either way decorate only the
                     // newest CONTENT row — exactly like the prose tail.
+                    //
+                    // NOTE: line_bounded stays TRUE (bottom row only). An
+                    // earlier attempt to conceal across ALL rows of a multi-
+                    // row eager block (to per-glyph the completed rows above
+                    // the cursor under a burst) re-rendered a row that had
+                    // already scrolled into native immutable scrollback —
+                    // reveal_scrollback_test R5 caught the duplicated line.
+                    // The overlay can't see the viewport/scroll position, so
+                    // the only row provably NOT in scrollback is the live
+                    // bottom one. The residual burst row-pop is bounded, under
+                    // the probe's report-only cap, and cosmetic; a scrollback
+                    // rewrite is a hard corruption. Bottom-row-only it is.
                     if (auto* inner =
                             std::get_if<ComponentElement>(&out.inner)) {
                         auto inner_render = inner->render;

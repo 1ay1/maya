@@ -464,6 +464,18 @@ if(MAYA_BUILD_TESTS)
         tests/test_wire_row.cpp
         tests/test_commonmark_spec.cpp
         tests/test_html.cpp
+        # Streaming-reveal WIDGET-CONTRACT tests. These pin behavior that is
+        # implemented entirely inside StreamingMarkdown / RateCursor (pacing
+        # invariants, finalize-ramp disarm, idle-gap clock carry, per-block
+        # reveal uniformity, long-turn ingest lag, async-parse liveness), so
+        # they are enforced HERE, where the implementation lives — not only
+        # in a host's suite. agentty's ctest builds the same files (single
+        # source of truth: maya/tests/) so both projects gate on them.
+        tests/reveal_pacing_test.cpp
+        tests/reveal_resume_test.cpp
+        tests/reveal_smoothness_probe.cpp
+        tests/stream_md_lag_test.cpp
+        tests/stream_async_freeze_test.cpp
         tests/bench_thread_scaling.cpp
     )
 

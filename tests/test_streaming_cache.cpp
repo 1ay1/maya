@@ -527,42 +527,42 @@ static void screenshot_repro_no_ghost_box() {
 }
 
 // T9. The reveal-fx animation (scramble/gradient/caret) must reach the
-// rightmost text leaf even when the live tail is rendered as an eager
-// block — table, list, blockquote, code block. Earlier the find_last_text
-// helper bailed at the first ComponentElement on the rightmost spine,
-// which is exactly what render_tail emits for those shapes; result: a
-// streaming table got NO animated edge at all ("animation doesn't show
-// when things like tables are streaming"). Now find_last_text
-// materializes the ComponentElement and continues descending.
+// live tail even when it is rendered as an eager block — table, list,
+// blockquote, code block. Earlier the find_last_text helper bailed at the
+// first ComponentElement on the rightmost spine with NO fallback; result:
+// a streaming table got NO animated edge at all ("animation doesn't show
+// when things like tables are streaming").
 //
-// The test pins the contract: for each eager shape, after the widget
-// has emitted some live content, there exists a non-empty TextElement on
-// the rightmost spine of the built tree (after materializing any
-// ComponentElements along the way). If not, reveal_fx has nothing to
-// paint and the user sees a frozen tail.
+// The CURRENT production contract (reveal_fx.cpp) is two-armed:
+//   • flat tails expose a non-empty TextElement on the rightmost spine
+//     (production find_last_text decorates it in place);
+//   • eager tails surface a ComponentElement on that spine — production
+//     does NOT materialize it at descent time (render(0,0) yields a
+//     width-0 layout: one-cell tables, one-glyph-per-line code — the
+//     char-chopped-table bug), it wraps the component's render() and
+//     animates the materialised rows at paint time (eager_render branch).
+// So the invariant this test pins is: for every shape, the rightmost
+// spine reaches EITHER a non-empty TextElement (walking through Boxes
+// only) OR a ComponentElement. Reaching neither — an empty leaf / bare
+// dead end — means reveal_fx has nothing to animate: a frozen tail.
 static void rightmost_leaf_reachable_in_eager_renders() {
-    // Walk rightmost spine; descend through Box children and materialize
-    // ComponentElements by calling their render(). To avoid moving out of
-    // a BoxElement's children vector (its destructor still owns them),
-    // we hold an `Element` value across the descent: when we hit a Box,
-    // copy the rightmost child into the local. When we hit a Component,
-    // call its render() and assign the result. Costs an O(rightmost
-    // chain) Element copy — fine for a test, and bounded by tree depth.
-    auto find_rightmost_text = [](const Element& root) -> bool {
-        Element cur = root;
+    // Walk the rightmost spine through Boxes ONLY — mirroring production
+    // find_last_text, which never materializes a ComponentElement during
+    // descent. A ComponentElement terminates the walk as SUCCESS (the
+    // eager overlay branch animates it); a non-empty TextElement is the
+    // flat-tail success; anything else is the frozen-tail failure.
+    auto tail_is_animatable = [](const Element& root) -> bool {
+        const Element* cur = &root;
         for (int depth = 0; depth < 64; ++depth) {
-            if (auto* t = std::get_if<TextElement>(&cur.inner))
+            if (auto* t = std::get_if<TextElement>(&cur->inner))
                 return !t->content.empty();
-            if (auto* b = std::get_if<BoxElement>(&cur.inner)) {
+            if (auto* b = std::get_if<BoxElement>(&cur->inner)) {
                 if (b->children.empty()) return false;
-                cur = b->children.back();   // copy
+                cur = &b->children.back();
                 continue;
             }
-            if (auto* c = std::get_if<ComponentElement>(&cur.inner)) {
-                if (!c->render) return false;
-                cur = c->render(0, 0);      // fresh Element
-                continue;
-            }
+            if (std::holds_alternative<ComponentElement>(cur->inner))
+                return true;   // eager tail: overlay wraps its render()
             return false;
         }
         return false;  // depth exceeded
@@ -605,9 +605,10 @@ static void rightmost_leaf_reachable_in_eager_renders() {
         // off, build() returns cached_build_ unmodified.
         md.set_content(c.src);
         Element snapshot = md.build();
-        if (!find_rightmost_text(snapshot)) {
+        if (!tail_is_animatable(snapshot)) {
             throw std::runtime_error(
-                std::string("no rightmost TextElement reachable for shape '")
+                std::string("no animatable tail (text leaf or eager "
+                            "component) reachable for shape '")
                 + c.name + "' — reveal_fx has nothing to animate. Source: "
                 + c.src);
         }

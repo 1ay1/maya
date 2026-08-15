@@ -42,6 +42,7 @@
 
 #include "maya/widget/markdown.hpp"
 #include "maya/element/element.hpp"
+#include "maya/core/anim_clock.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -51,7 +52,6 @@
 #include <print>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 using namespace maya;
@@ -112,13 +112,16 @@ std::string make_long_reply(int paragraphs) {
 }
 
 // Drive the widget like the REAL render loop: feed `target` bytes of `body`
-// in `step`-byte deltas, calling build() after each. CRUCIALLY we let real
-// wall-clock time pass between frames — the reveal cursor (and therefore the
-// commit-behind-cursor that bounds the live tail) is paced on steady_clock,
-// exactly as it is when the host paints at ~60 fps. A test that pumps frames
-// with zero elapsed time freezes the cursor at 0, which never happens in
-// production and would measure an unreachable state. `frame_gap` is the
-// simulated inter-frame interval.
+// in `step`-byte deltas, calling build() after each. The reveal cursor (and
+// therefore the commit-behind-cursor that bounds the live tail) is paced on
+// anim_now_ms(); we advance it explicitly via advance_anim_clock_ms(), NOT
+// via std::this_thread::sleep_for. Two reasons: (1) zero wall time, so the
+// test runs instantly instead of sleeping 2 ms × hundreds of frames; (2) the
+// cursor advance is now DETERMINISTIC — no scheduler jitter deciding how far
+// it moved. Only the build() cost itself is measured on the real clock
+// (t0/t1), which is exactly the thing under test; the ANIMATION clock is
+// frozen+stepped so it can't leak into that measurement. `frame_gap` is the
+// simulated inter-frame interval, applied to the anim clock.
 struct WindowCost {
     double total_us = 0.0;
     int    frames   = 0;
@@ -129,6 +132,9 @@ WindowCost drive_window(StreamingMarkdown& md, const std::string& body,
                         std::size_t from, std::size_t to, std::size_t step,
                         std::chrono::microseconds frame_gap) {
     WindowCost wc;
+    const std::int64_t gap_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(frame_gap)
+            .count();
     for (std::size_t n = from; n <= to && n <= body.size(); n += step) {
         std::string_view src{body.data(), n};
         auto t0 = clock_t_::now();
@@ -137,7 +143,7 @@ WindowCost drive_window(StreamingMarkdown& md, const std::string& body,
         auto t1 = clock_t_::now();
         wc.total_us += std::chrono::duration<double, std::micro>(t1 - t0).count();
         ++wc.frames;
-        if (frame_gap.count() > 0) std::this_thread::sleep_for(frame_gap);
+        if (gap_ms > 0) maya::testing::advance_anim_clock_ms(gap_ms);
     }
     return wc;
 }
@@ -164,8 +170,9 @@ void long_turn_per_frame_cost_stays_bounded() {
     md.set_reveal_pacing(20'000.0, 0.05);
     md.set_live(true);
 
-    // ~2 ms inter-frame gap — enough wall-clock for the cursor to advance
-    // and the live tail to commit behind it, like the real 60 fps loop.
+    // ~2 ms simulated inter-frame gap on the ANIM clock — enough for the
+    // cursor to advance and the live tail to commit behind it, like the
+    // real 60 fps loop, but with zero wall time and no jitter.
     const auto gap = std::chrono::microseconds(2'000);
 
     // Warm up from 0 → 2KB so the early window isn't paying first-frame
@@ -233,12 +240,14 @@ void live_tail_reprocess_stays_bounded() {
         for (std::size_t n = 256; n <= target && n <= body.size(); n += 512) {
             md.set_content(std::string_view{body.data(), n});
             (void)md.build();
-            std::this_thread::sleep_for(gap);
+            maya::testing::advance_anim_clock_ms(
+                std::chrono::duration_cast<std::chrono::milliseconds>(gap)
+                    .count());
         }
         // Let the cursor reach the edge so the body fully reveals + commits.
         for (int i = 0; i < 40; ++i) {
             (void)md.build();
-            std::this_thread::sleep_for(std::chrono::microseconds(2'000));
+            maya::testing::advance_anim_clock_ms(2);
         }
         // Time steady (no new bytes) frames — the idle-but-live floor.
         const int reps = 200;
@@ -302,6 +311,11 @@ void live_tail_reprocess_stays_bounded() {
 
 int main() {
     std::println("=== stream_md_lag_test ===");
+    // Freeze the animation clock: cursor advancement is driven explicitly
+    // via advance_anim_clock_ms() below, so nothing rides on wall time.
+    // (build() cost is still measured on the real steady_clock — that IS
+    // the thing under test.)
+    maya::testing::freeze_anim_clock(0);
     long_turn_per_frame_cost_stays_bounded();
     live_tail_reprocess_stays_bounded();
     std::println("\n  passed: {}   failed: {}",

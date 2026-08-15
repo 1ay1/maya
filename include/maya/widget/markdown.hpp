@@ -1287,6 +1287,21 @@ public:
             && reveal_cp_ < static_cast<double>(source_.size());
     }
 
+    /// THE authoritative "this widget is not yet in its settled shape"
+    /// predicate: live, or the reveal cursor still gliding, or a finalize
+    /// ramp in flight, or a background parse pending. agentty's freeze
+    /// gate (live_tail_reveal_settled), its live-tail cache-key gate
+    /// (reveal_settled), and its is_idle settle-skip all consult THIS
+    /// method instead of hand-mirroring the four-predicate union at each
+    /// site — the mirrors were documented as "MUST agree or the freeze
+    /// stamps a key the live tail never painted", which made every future
+    /// edit to one site a latent duplicate-turn bug. One definition, no
+    /// drift.
+    [[nodiscard]] bool is_animating() const noexcept {
+        return is_live() || is_finalizing() || reveal_in_progress()
+            || is_parsing();
+    }
+
     /// Build the element tree: cached blocks + monotonic tail.  Returns
     /// a reference into the per-frame cache; valid until the next
     /// mutator call.

@@ -443,6 +443,18 @@ private:
     // removes that in-band collision.
     mutable bool         finalize_armed_       = false;
     mutable std::int64_t finalize_deadline_ms_ = 0;
+    // HARD deadline (snap_reveal_to_edge glide): the caller has done the
+    // scrollback-safety analysis for exactly `glide_ms` and the adaptive
+    // #4 deadline re-evaluation in advance_reveal_cursor_ must NOT stretch
+    // it for a big backlog. false = adaptive ramp (request_finalize), which
+    // may be extended so a large backlog still glides at ≤2× cruise.
+    mutable bool         finalize_hard_        = false;
+    // source_.size() at the instant the ramp was armed. If the stream
+    // RESUMES (source_ grows) after the cursor has reached the edge of the
+    // armed-time content, the "stream is ending" premise is dead — the
+    // ramp is disarmed so the normal jitter-buffered glide resumes instead
+    // of cruising in ramp mode for the rest of the turn.
+    mutable std::size_t  finalize_armed_size_  = 0;
 
     // Animation throttle: bucket the wall clock into ~33 ms phases
     // and only request the next animation frame when the phase
@@ -1142,7 +1154,10 @@ public:
         // If the host explicitly forces live_=false (cancel / clear / hard
         // reset path) we drop any pending finalize ramp too — there's
         // nothing left to glide toward.
-        if (!live) { finalize_armed_ = false; finalize_deadline_ms_ = 0; }
+        if (!live) {
+            finalize_armed_ = false; finalize_deadline_ms_ = 0;
+            finalize_hard_  = false; finalize_armed_size_  = 0;
+        }
         // The Tracked<> wrapper around live_ auto-bumps build_dirty_ on
         // every assignment — the has_tail / cache-shape coupling is
         // structural now, not a manual pairing. No need to check the

@@ -608,9 +608,14 @@ public:
     /// SPATIAL extent stays consistent whatever the reveal speed.
     [[nodiscard]] constexpr double effective_rate() const noexcept {
         if (smoothed_rate_ > 0.0) return smoothed_rate_;
-        return adaptive_ ? (wire_cps_ > adapt_floor_min_ ? wire_cps_
-                                                         : adapt_floor_min_)
-                         : floor_rate_;
+        if (!adaptive_) return floor_rate_;
+        // Mirror tick()'s eff_floor derivation: a below-band estimate
+        // (cold start / post-pause decay) falls back to the seed.
+        double est = wire_cps_;
+        if (est < adapt_floor_min_) est = floor_rate_;
+        if (est < adapt_floor_min_) est = adapt_floor_min_;
+        if (est > adapt_floor_max_) est = adapt_floor_max_;
+        return est;
     }
 
     // Ensure the cursor is at least `floor` (snap-to-committed). Monotone.
@@ -658,9 +663,23 @@ public:
             // Track the wire directly (k=1): the drain_secs_ lag already
             // provides the smoothing buffer, so matching the average rate
             // keeps the cursor gliding continuously without lagging or
-            // outrunning. Clamp to the readable band; before the estimate
-            // warms up (wire_cps_ still ~0) fall back to the seed floor.
+            // outrunning. Clamp to the readable band.
+            //
+            // Below-band estimate → SEED, not min-clamp. Two cases land
+            // here and neither is a usable pacing signal:
+            //   • cold start (wire_cps_ still ~0 before the first delta) —
+            //     the documented contract is "floor_rate_ becomes only the
+            //     COLD-START seed", but the old code clamped 0 up to
+            //     adapt_floor_min_ and never consulted the seed, so every
+            //     message's first ~τ seconds typed at the band minimum
+            //     instead of the tuned floor;
+            //   • post-pause decay (a multi-second wire stall EMA'd the
+            //     estimate toward 0) — revealing at the band minimum until
+            //     the estimate re-warms reads as a post-pause crawl.
+            // In both, the tuned seed is the better guess; the cursor can
+            // never outrun the live edge anyway (pos_ clamps to target).
             double est = wire_cps_;
+            if (est < adapt_floor_min_) est = floor_rate_;
             if (est < adapt_floor_min_) est = adapt_floor_min_;
             if (est > adapt_floor_max_) est = adapt_floor_max_;
             eff_floor = est;

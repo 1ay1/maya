@@ -519,11 +519,21 @@ void StreamingMarkdown::set_content(std::string_view content) {
     constexpr std::size_t kVerifyEdge = 64;
     auto prefix_matches = [&](std::size_t n) -> bool {
         // Compare content[0,n) against source_[0,n) but touch at most
-        // 2*kVerifyEdge bytes. Exact for n <= 2*kVerifyEdge.
+        // 3*kVerifyEdge bytes. Exact for n <= 2*kVerifyEdge.
         if (n == 0) return true;
         if (n <= 2 * kVerifyEdge)
             return std::memcmp(content.data(), source_.data(), n) == 0;
+        // Head + tail + MIDPOINT windows. The head/tail pair alone lets a
+        // same-length mid-buffer divergence alias as "unchanged" (the
+        // fresh-widget-per-replaced-Message slot lifecycle makes that
+        // unreachable today, but that invariant is enforced two layers
+        // away in cache.hpp — don't depend on it silently). A third
+        // window at n/2 makes an aliased rewrite need to preserve three
+        // disjoint regions; still O(1).
+        const std::size_t mid = n / 2 - kVerifyEdge / 2;
         return std::memcmp(content.data(), source_.data(), kVerifyEdge) == 0
+            && std::memcmp(content.data() + mid, source_.data() + mid,
+                           kVerifyEdge) == 0
             && std::memcmp(content.data() + n - kVerifyEdge,
                            source_.data() + n - kVerifyEdge,
                            kVerifyEdge) == 0;
@@ -595,6 +605,8 @@ void StreamingMarkdown::finish() {
     // makes finish() the true terminal transition it advertises.
     finalize_armed_ = false;
     finalize_deadline_ms_ = 0;
+    finalize_hard_        = false;
+    finalize_armed_size_  = 0;
 }
 
 void StreamingMarkdown::clear() {

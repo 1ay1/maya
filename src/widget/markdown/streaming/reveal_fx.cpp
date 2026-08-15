@@ -207,6 +207,8 @@ void StreamingMarkdown::request_finalize(int ramp_ms) noexcept {
     const auto now_ms = anim_now_ms();
     finalize_armed_ = true;
     finalize_deadline_ms_ = now_ms + ramp_ms;
+    finalize_hard_ = false;               // adaptive ramp: #4 re-eval may extend
+    finalize_armed_size_ = source_.size();
 }
 
 void StreamingMarkdown::snap_reveal_to_edge(int glide_ms) noexcept {
@@ -240,6 +242,13 @@ void StreamingMarkdown::snap_reveal_to_edge(int glide_ms) noexcept {
     if (glide_ms > 0) {
         finalize_armed_ = true;
         finalize_deadline_ms_ = anim_now_ms() + glide_ms;
+        // HARD deadline: the caller's scrollback-safety analysis assumed
+        // exactly glide_ms. Suppress the adaptive #4 stretch in
+        // advance_reveal_cursor_ (a 300-cp backlog at floor 45 cps would
+        // otherwise stretch a 150 ms tool-seam snap to 2.5 s, holding
+        // deferred tool cards hidden the whole time).
+        finalize_hard_ = true;
+        finalize_armed_size_ = source_.size();
         build_dirty_ = true;
         return;
     }
@@ -247,15 +256,20 @@ void StreamingMarkdown::snap_reveal_to_edge(int glide_ms) noexcept {
     // Instant snap (glide_ms == 0). Jump the public cursor and the central
     // integrator to the edge so the next build() renders the tail fully-
     // revealed (no ghost cells, no scramble). Keep live_ intact — the widget
-    // resumes normal typewriter pacing on the next grow. Stamp reveal_ms_ so
-    // the following frame's elapsed-time delta starts from now (no spurious
-    // catch-up burst).
+    // resumes normal typewriter pacing on the next grow. Stamp BOTH clocks
+    // so the following frame's elapsed-time delta starts from now (no
+    // spurious catch-up burst): reveal_ms_ feeds the scramble/gradient age
+    // math, but the per-frame dt is integrated off reveal_us_ (the µs
+    // clock) — stamping only the ms clock (#6, the old bug) left up to
+    // kMaxCatchupS of stale µs-elapsed to burst-integrate if bytes arrived
+    // right after a mid-stream resize snap.
     reveal_cp_ = total_cp;
 #if MAYA_REVEAL_CENTRAL_CURSOR
     reveal_rate_cursor_.set_pos(total_cp);
 #endif
     const auto now_ms2 = anim_now_ms();
     reveal_ms_ = now_ms2;
+    reveal_us_ = anim_now_us();
     reveal_edge_reached_ms_ = now_ms2;
     // The tail shape depends on reveal_byte_clip_ (derived from reveal_cp_):
     // force a rebuild so build() re-extracts the now-unclipped tail.
@@ -297,6 +311,37 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
     // rate; it desynced from the real cursor whenever reveal_floor_cps_
     // was retuned. The cursor-edge clock has no such assumption.)
     if (source_.size() > last_seen_size_) {
+        // Stream RESUMED after the ramp did its job: if a finalize ramp is
+        // armed and the cursor had already reached the edge of the content
+        // it was armed against (reveal_edge_reached_ms_ != 0 → previous
+        // frame ended at-edge), the "stream is ending" premise is dead —
+        // this is a mid-message pause (or an interleaved text block), not
+        // the end. Disarm, or the widget stays in ramp mode for the rest
+        // of the turn: every frame the #4 re-eval rolls the deadline to
+        // backlog/(2·floor) and the cursor cruises at ≥2× floor, collapsing
+        // the drain_secs jitter buffer into exactly the stop-and-go the
+        // pacing retune removed. The genuine #4 case (finalize armed while
+        // the last delta is still draining) has the cursor BEHIND the edge
+        // (reveal_edge_reached_ms_ == 0) and is untouched.
+        if (finalize_armed_ && reveal_edge_reached_ms_ != 0
+            && source_.size() > finalize_armed_size_) {
+            finalize_armed_       = false;
+            finalize_deadline_ms_ = 0;
+            finalize_hard_        = false;
+            finalize_armed_size_  = 0;
+        }
+        // #3: if the cursor was AT THE EDGE when this growth arrived, the
+        // wall-clock gap since the last build is idle-waiting, not owed
+        // typewriter time. The at-edge snap in the dt block below
+        // (reveal_us_ = us_total) only runs while builds keep coming — but
+        // frames STOP once the caret-pulse window (4 s) expires, so after
+        // a long model silence reveal_us_ is seconds stale. The next build
+        // (this one, triggered by the new bytes) would see a huge dt with
+        // a backlog and drain the gap at kMaxCatchupS per frame ≈ 15× real
+        // time — the incoming chunk PASTES, exactly the artifact the carry
+        // comment promises to prevent. Re-stamp on next advance instead:
+        // the burst frame integrates from now, dt ≈ 0, normal glide.
+        if (reveal_edge_reached_ms_ != 0) reveal_us_ = 0;
         last_seen_size_ = source_.size();
         // New bytes arrived — the cursor will fall behind the (now
         // larger) edge, so the "reached edge" clock is invalid. Restart
@@ -420,11 +465,18 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
             // late-arriving tail via the fallback path faster than the
             // ramp, i.e. a paste. Push the deadline forward so the current
             // backlog still glides out at ≤ kFinishSpeedup× cruise.
+            //
+            // HARD deadlines (snap_reveal_to_edge glide) are exempt: the
+            // caller guaranteed that exact window is scrollback-safe and
+            // the stretch would silently 16× it on a big backlog. A hard
+            // ramp still tracks late GROWTH via the RateCursor deadline
+            // rate below (backlog/remaining bypasses the cruise cap), so
+            // completion by the promised wall-clock stays guaranteed.
             constexpr double kFinishSpeedup = 2.0;
             constexpr double kMaxFinishMs   = 2500.0;
             const double backlog =
                 static_cast<double>(total_cp) - reveal_cp_;
-            if (backlog > 0.0 && reveal_floor_cps_ > 0.0) {
+            if (!finalize_hard_ && backlog > 0.0 && reveal_floor_cps_ > 0.0) {
                 double need_ms =
                     (backlog / (reveal_floor_cps_ * kFinishSpeedup)) * 1000.0;
                 if (need_ms > kMaxFinishMs) need_ms = kMaxFinishMs;
@@ -566,6 +618,8 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         if (tail_visually_settled) {
             finalize_armed_ = false;
             finalize_deadline_ms_ = 0;
+            finalize_hard_        = false;
+            finalize_armed_size_  = 0;
             live_ = false;
             request_animation_frame();
             return true;

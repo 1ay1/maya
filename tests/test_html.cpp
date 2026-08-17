@@ -2,6 +2,8 @@
 // We flatten the rendered Element tree back to plain text (+ a style probe)
 // and assert on structure, since the renderer's job is faithful translation.
 
+#include "agtest.hpp"
+
 #include <string>
 #include <string_view>
 #include <variant>
@@ -83,7 +85,7 @@ bool styled(std::string_view html, std::string_view needle, Pred pred) {
 
 } // namespace
 
-int main() {
+TEST_CASE("html") {
     // ── entities decode ───────────────────────────────────────────────
     MAYA_TEST_CHECK(contains(text_of("a &amp; b &lt;c&gt; &#42; &copy;"),
                              "a & b <c> * \xc2\xa9"),
@@ -328,5 +330,4 @@ int main() {
     }
 
     std::println("test_html: all checks passed");
-    return 0;
 }

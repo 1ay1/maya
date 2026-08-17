@@ -18,7 +18,7 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 #include <string>
 #include <vector>
@@ -29,7 +29,7 @@ using namespace maya;
 // Helpers
 // ============================================================================
 
-std::string get_row(const Canvas& canvas, int y) {
+static std::string get_row(const Canvas& canvas, int y) {
     std::string s;
     for (int x = 0; x < canvas.width(); ++x) {
         Cell c = canvas.get(x, y);
@@ -100,7 +100,7 @@ void cycle(const Element& elem, int w1, int w2, const char* ctx) {
 // ============================================================================
 // Test: Every standalone widget survives resize cycle
 // ============================================================================
-void test_all_widgets_resize() {
+TEST_CASE("all widgets resize") {
     std::println("=== test_all_widgets_resize ===");
 
     // Table
@@ -205,8 +205,3 @@ void test_all_widgets_resize() {
     std::println("  PASS\n");
 }
 
-int main() {
-    test_all_widgets_resize();
-    std::println("All resize tests passed!");
-    return 0;
-}

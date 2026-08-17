@@ -3,12 +3,12 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
 
-void test_strong_arithmetic() {
+TEST_CASE("strong arithmetic") {
     std::println("--- test_strong_arithmetic ---");
     Columns a{5}, b{3};
     assert((a + b).value == 8);
@@ -19,7 +19,7 @@ void test_strong_arithmetic() {
     std::println("PASS\n");
 }
 
-void test_strong_comparison() {
+TEST_CASE("strong comparison") {
     std::println("--- test_strong_comparison ---");
     Columns a{5}, b{3}, c{5};
     assert(a > b);
@@ -31,7 +31,7 @@ void test_strong_comparison() {
     std::println("PASS\n");
 }
 
-void test_strong_compound_assign() {
+TEST_CASE("strong compound assign") {
     std::println("--- test_strong_compound_assign ---");
     Columns x{10};
     x += Columns{5};
@@ -41,7 +41,7 @@ void test_strong_compound_assign() {
     std::println("PASS\n");
 }
 
-void test_strong_scalar_multiply() {
+TEST_CASE("strong scalar multiply") {
     std::println("--- test_strong_scalar_multiply ---");
     Columns c{4};
     assert((3 * c).value == 12);
@@ -49,7 +49,7 @@ void test_strong_scalar_multiply() {
     std::println("PASS\n");
 }
 
-void test_strong_explicit_conversion() {
+TEST_CASE("strong explicit conversion") {
     std::println("--- test_strong_explicit_conversion ---");
     Columns c{7};
     assert(static_cast<int>(c) == 7);
@@ -57,7 +57,7 @@ void test_strong_explicit_conversion() {
     std::println("PASS\n");
 }
 
-void test_strong_default_zero() {
+TEST_CASE("strong default zero") {
     std::println("--- test_strong_default_zero ---");
     Columns c;
     Rows r;
@@ -66,7 +66,7 @@ void test_strong_default_zero() {
     std::println("PASS\n");
 }
 
-void test_size_is_zero() {
+TEST_CASE("size is zero") {
     std::println("--- test_size_is_zero ---");
     Size zero{Columns{0}, Rows{0}};
     assert(zero.is_zero());
@@ -79,7 +79,7 @@ void test_size_is_zero() {
     std::println("PASS\n");
 }
 
-void test_size_area() {
+TEST_CASE("size area") {
     std::println("--- test_size_area ---");
     Size s{Columns{10}, Rows{5}};
     assert(s.area() == 50);
@@ -89,7 +89,7 @@ void test_size_area() {
     std::println("PASS\n");
 }
 
-void test_size_equality() {
+TEST_CASE("size equality") {
     std::println("--- test_size_equality ---");
     Size a{Columns{3}, Rows{4}};
     Size b{Columns{3}, Rows{4}};
@@ -99,7 +99,7 @@ void test_size_equality() {
     std::println("PASS\n");
 }
 
-void test_position_origin() {
+TEST_CASE("position origin") {
     std::println("--- test_position_origin ---");
     auto p = Position::origin();
     assert(p.x.value == 0);
@@ -107,7 +107,7 @@ void test_position_origin() {
     std::println("PASS\n");
 }
 
-void test_position_equality() {
+TEST_CASE("position equality") {
     std::println("--- test_position_equality ---");
     Position a{Columns{3}, Rows{7}};
     Position b{Columns{3}, Rows{7}};
@@ -118,7 +118,7 @@ void test_position_equality() {
     std::println("PASS\n");
 }
 
-void test_rect_accessors() {
+TEST_CASE("rect accessors") {
     std::println("--- test_rect_accessors ---");
     Rect r{{Columns{2}, Rows{3}}, {Columns{4}, Rows{5}}};
     assert(r.left().value   == 2);       // pos.x
@@ -128,7 +128,7 @@ void test_rect_accessors() {
     std::println("PASS\n");
 }
 
-void test_rect_contains() {
+TEST_CASE("rect contains") {
     std::println("--- test_rect_contains ---");
     // Rect from (2,3) with size (4,5): covers x=[2,6), y=[3,8)
     Rect r{{Columns{2}, Rows{3}}, {Columns{4}, Rows{5}}};
@@ -142,7 +142,7 @@ void test_rect_contains() {
     std::println("PASS\n");
 }
 
-void test_rect_intersect() {
+TEST_CASE("rect intersect") {
     std::println("--- test_rect_intersect ---");
     Rect a{{Columns{0}, Rows{0}}, {Columns{6}, Rows{6}}};
     Rect b{{Columns{3}, Rows{3}}, {Columns{4}, Rows{4}}};
@@ -154,7 +154,7 @@ void test_rect_intersect() {
     std::println("PASS\n");
 }
 
-void test_rect_intersect_disjoint() {
+TEST_CASE("rect intersect disjoint") {
     std::println("--- test_rect_intersect_disjoint ---");
     Rect a{{Columns{0}, Rows{0}}, {Columns{3}, Rows{3}}};
     Rect b{{Columns{5}, Rows{5}}, {Columns{3}, Rows{3}}};
@@ -163,7 +163,7 @@ void test_rect_intersect_disjoint() {
     std::println("PASS\n");
 }
 
-void test_rect_unite() {
+TEST_CASE("rect unite") {
     std::println("--- test_rect_unite ---");
     Rect a{{Columns{0}, Rows{0}}, {Columns{3}, Rows{3}}};
     Rect b{{Columns{2}, Rows{2}}, {Columns{4}, Rows{4}}};
@@ -175,7 +175,7 @@ void test_rect_unite() {
     std::println("PASS\n");
 }
 
-void test_rect_unite_with_zero() {
+TEST_CASE("rect unite with zero") {
     std::println("--- test_rect_unite_with_zero ---");
     Rect zero{Position::origin(), {Columns{0}, Rows{0}}};
     Rect r{{Columns{2}, Rows{3}}, {Columns{4}, Rows{5}}};
@@ -184,14 +184,14 @@ void test_rect_unite_with_zero() {
     std::println("PASS\n");
 }
 
-void test_edges_uniform() {
+TEST_CASE("edges uniform") {
     std::println("--- test_edges_uniform ---");
     Edges<int> e(5);
     assert(e.top == 5 && e.right == 5 && e.bottom == 5 && e.left == 5);
     std::println("PASS\n");
 }
 
-void test_edges_vertical_horizontal() {
+TEST_CASE("edges vertical horizontal") {
     std::println("--- test_edges_vertical_horizontal ---");
     Edges<int> e(2, 4); // vertical=2, horizontal=4
     assert(e.top == 2 && e.bottom == 2);
@@ -199,14 +199,14 @@ void test_edges_vertical_horizontal() {
     std::println("PASS\n");
 }
 
-void test_edges_all_four() {
+TEST_CASE("edges all four") {
     std::println("--- test_edges_all_four ---");
     Edges<int> e(1, 2, 3, 4); // top, right, bottom, left
     assert(e.top == 1 && e.right == 2 && e.bottom == 3 && e.left == 4);
     std::println("PASS\n");
 }
 
-void test_edges_subscript() {
+TEST_CASE("edges subscript") {
     std::println("--- test_edges_subscript ---");
     Edges<int> e(1, 2, 3, 4);
     assert(e[Edge::Top]    == 1);
@@ -216,7 +216,7 @@ void test_edges_subscript() {
     std::println("PASS\n");
 }
 
-void test_dimension_auto() {
+TEST_CASE("dimension auto") {
     std::println("--- test_dimension_auto ---");
     Dimension d;
     assert(d.is_auto());
@@ -225,7 +225,7 @@ void test_dimension_auto() {
     std::println("PASS\n");
 }
 
-void test_dimension_fixed() {
+TEST_CASE("dimension fixed") {
     std::println("--- test_dimension_fixed ---");
     Dimension d = Dimension::fixed(42);
     assert(d.is_fixed());
@@ -234,7 +234,7 @@ void test_dimension_fixed() {
     std::println("PASS\n");
 }
 
-void test_dimension_percent() {
+TEST_CASE("dimension percent") {
     std::println("--- test_dimension_percent ---");
     Dimension d = Dimension::percent(50.0f);
     assert(d.is_percent());
@@ -242,7 +242,7 @@ void test_dimension_percent() {
     std::println("PASS\n");
 }
 
-void test_dimension_from_int() {
+TEST_CASE("dimension from int") {
     std::println("--- test_dimension_from_int ---");
     Dimension d(10);
     assert(d.is_fixed());
@@ -250,32 +250,3 @@ void test_dimension_from_int() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_strong_arithmetic();
-    test_strong_comparison();
-    test_strong_compound_assign();
-    test_strong_scalar_multiply();
-    test_strong_explicit_conversion();
-    test_strong_default_zero();
-    test_size_is_zero();
-    test_size_area();
-    test_size_equality();
-    test_position_origin();
-    test_position_equality();
-    test_rect_accessors();
-    test_rect_contains();
-    test_rect_intersect();
-    test_rect_intersect_disjoint();
-    test_rect_unite();
-    test_rect_unite_with_zero();
-    test_edges_uniform();
-    test_edges_vertical_horizontal();
-    test_edges_all_four();
-    test_edges_subscript();
-    test_dimension_auto();
-    test_dimension_fixed();
-    test_dimension_percent();
-    test_dimension_from_int();
-    std::println("=== ALL 25 TESTS PASSED ===");
-}

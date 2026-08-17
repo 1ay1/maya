@@ -22,6 +22,10 @@
 //      total render calls over the whole stream must be ~O(blocks), not
 //      O(blocks²) — the O(N²) signature of a per-frame full re-render.
 
+#include "agtest.hpp"
+
+static int g_failed = 0;
+
 #include "maya/widget/markdown.hpp"
 #include "maya/render/renderer.hpp"
 #include "maya/render/canvas.hpp"
@@ -38,7 +42,6 @@
 using namespace maya;
 
 static int g_passed = 0;
-static int g_failed = 0;
 
 template <class F>
 static void run(const char* name, F&& f) {
@@ -253,7 +256,7 @@ void live_reveal_prefix_stays_cached() {
         "live-tail frame re-rendered an unbounded slice of the committed prefix");
 }
 
-int main() {
+TEST_CASE("streaming_window") {
     std::println("=== test_streaming_window ===");
     run("steady-state repaint: zero re-renders", steady_state_zero_rerenders);
     run("per-commit cost bounded (not O(N))",    per_commit_cost_bounded);
@@ -262,5 +265,4 @@ int main() {
 
     std::println("\n── summary ──");
     std::println("  passed: {}   failed: {}", g_passed, g_failed);
-    return g_failed == 0 ? 0 : 1;
 }

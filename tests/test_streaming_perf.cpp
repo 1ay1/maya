@@ -20,6 +20,10 @@
 // measured values) so a loaded CI box passes while a genuine O(N) escape
 // (which shows up as 10-100x) still fails deterministically.
 
+#include "agtest.hpp"
+
+static int g_failed = 0;
+
 #include <maya/maya.hpp>
 #include <maya/widget/markdown.hpp>
 
@@ -33,7 +37,6 @@ using namespace maya;
 
 namespace {
 
-int g_failed = 0;
 
 void check(bool ok, const char* what) {
     std::printf("  %-58s %s\n", what, ok ? "ok" : "FAIL");
@@ -119,7 +122,7 @@ StreamResult stream_doc(const std::string& doc, std::size_t chunk) {
 
 }  // namespace
 
-int main() {
+TEST_CASE("streaming_perf") {
     std::printf("=== test_streaming_perf ===\n");
 
     // 1x doc ≈ 33 KB, 8x ≈ 267 KB. 24-byte chunks ≈ one LLM token burst.
@@ -151,10 +154,5 @@ int main() {
     check(r8.idle_ms < 3.0 * r1.idle_ms || r8.idle_ms < 0.5,
           "settled idle repaint bounded by viewport (8x vs 1x)");
 
-    if (g_failed) {
-        std::printf("test_streaming_perf: %d FAILED\n", g_failed);
-        return 1;
-    }
-    std::printf("test_streaming_perf: ok\n");
-    return 0;
+    CHECK(g_failed == 0);
 }

@@ -9,7 +9,7 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <cctype>
 #include <cstdio>
 #include <print>
@@ -123,7 +123,7 @@ struct TermEmu {
 };
 
 // ── ANSI helper bytes ───────────────────────────────────────────────────────
-void test_ansi_scroll_region_bytes() {
+TEST_CASE("ansi scroll region bytes") {
     std::println("--- test_ansi_scroll_region_bytes ---");
     std::string s;
     ansi::write_scroll_region(s, 3, 20);
@@ -141,7 +141,7 @@ void test_ansi_scroll_region_bytes() {
 }
 
 // ── StaticSplit geometry bookkeeping ────────────────────────────────────────
-void test_split_geometry() {
+TEST_CASE("split geometry") {
     std::println("--- test_split_geometry ---");
     StylePool pool;
     std::string out;
@@ -165,7 +165,7 @@ void test_split_geometry() {
 }
 
 // ── Invariant: never freeze the last active row ─────────────────────────────
-void test_split_keeps_active_row() {
+TEST_CASE("split keeps active row") {
     std::println("--- test_split_keeps_active_row ---");
     StylePool pool;
     std::string out;
@@ -184,7 +184,7 @@ void test_split_keeps_active_row() {
 }
 
 // ── End-to-end through the emulator: frozen rows survive scrolling ──────────
-void test_frozen_survives_scroll() {
+TEST_CASE("frozen survives scroll") {
     std::println("--- test_frozen_survives_scroll ---");
     StylePool pool;
     const int H = 8, W = 40;
@@ -215,7 +215,7 @@ void test_frozen_survives_scroll() {
 }
 
 // ── end() restores the full-screen scroll region ────────────────────────────
-void test_end_restores_region() {
+TEST_CASE("end restores region") {
     std::println("--- test_end_restores_region ---");
     StylePool pool;
     const int H = 6, W = 20;
@@ -242,7 +242,7 @@ void test_end_restores_region() {
 // (scrollback ++ on-screen rows). Under DECSTBM that holds structurally: frozen
 // rows leave only via a real scroll, never a from-the-top re-emit, so the
 // duplicate-strand failure mode cannot occur.
-void test_agentty_freeze_trim_no_dup() {
+TEST_CASE("agentty freeze trim no dup") {
     std::println("--- test_agentty_freeze_trim_no_dup ---");
     StylePool pool;
     const int H = 12, W = 40;
@@ -320,7 +320,7 @@ void test_agentty_freeze_trim_no_dup() {
 //   I2 no-loss      — every frozen row that was trimmed OR is still on screen
 //                     appears at least once (nothing silently dropped by a
 //                     clamp or a trim).
-void test_agentty_decstbm_lifecycle() {
+TEST_CASE("agentty decstbm lifecycle") {
     std::println("--- test_agentty_decstbm_lifecycle ---");
     StylePool pool;
 
@@ -410,14 +410,3 @@ void test_agentty_decstbm_lifecycle() {
     std::println("PASS (multi-row × 4 shapes × varied budget, strand-free + no-loss)\n");
 }
 
-int main() {
-    test_ansi_scroll_region_bytes();
-    test_split_geometry();
-    test_split_keeps_active_row();
-    test_frozen_survives_scroll();
-    test_end_restores_region();
-    test_agentty_freeze_trim_no_dup();
-    test_agentty_decstbm_lifecycle();
-    std::println("All static-split tests passed.");
-    return 0;
-}

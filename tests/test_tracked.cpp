@@ -17,6 +17,10 @@
 // on Tracked itself, so any future regression in the wrapper fails here
 // FIRST, before higher-level cache tests trip.
 
+#include "agtest.hpp"
+
+static int g_failed = 0;
+
 #include "maya/core/tracked.hpp"
 #include "check.hpp"
 
@@ -32,7 +36,6 @@ using namespace maya;
 // ── harness ────────────────────────────────────────────────────────────────
 
 static int g_passed = 0;
-static int g_failed = 0;
 
 template <typename F>
 static void run(const char* name, F&& fn) {
@@ -50,11 +53,7 @@ static void run(const char* name, F&& fn) {
     }
 }
 
-#define REQUIRE(cond, msg) do { \
-    if (!(cond)) throw std::runtime_error(std::string("REQUIRE(") + #cond + "): " + (msg)); \
-} while (0)
-
-// ── fixture ────────────────────────────────────────────────────────────────
+// ── fixture ───────────────────────────────────────────────────────────────
 
 // Minimal Owner: just counts invalidations. Real owners (StreamingMarkdown)
 // flip a build_dirty_ flag; here the counter is the more useful probe.
@@ -202,7 +201,7 @@ static void no_mutation_skips_invalidator() {
 
 // ── main ───────────────────────────────────────────────────────────────────
 
-int main() {
+TEST_CASE("tracked") {
     std::println("=== test_tracked ===");
 
     run("assignment invalidates once",           assignment_invalidates_once);
@@ -216,5 +215,4 @@ int main() {
 
     std::println("\n── summary ──────────────────────────────────────────────");
     std::println("  passed: {}   failed: {}", g_passed, g_failed);
-    return g_failed == 0 ? 0 : 1;
 }

@@ -4,7 +4,7 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <cmath>
 #include <print>
 
@@ -16,7 +16,7 @@ static bool approx(double a, double b, double eps = 1e-9) {
 }
 
 // ── Easing curves are constexpr and well-behaved ────────────────────────────
-void test_easing_constexpr() {
+TEST_CASE("easing constexpr") {
     std::println("--- test_easing_constexpr ---");
     // Endpoints pinned at 0 and 1 for every curve.
     static_assert(ease::linear(0.0) == 0.0 && ease::linear(1.0) == 1.0);
@@ -49,7 +49,7 @@ void test_easing_constexpr() {
 }
 
 // ── Tween reaches target exactly after its duration ─────────────────────────
-void test_tween_basic() {
+TEST_CASE("tween basic") {
     std::println("--- test_tween_basic ---");
     auto t = Tween<double>(0.0, 100.0, 1.0, ease::linear);
     assert(approx(t.value(), 0.0));
@@ -65,7 +65,7 @@ void test_tween_basic() {
     std::println("PASS\n");
 }
 
-void test_tween_zero_duration() {
+TEST_CASE("tween zero duration") {
     std::println("--- test_tween_zero_duration ---");
     auto t = Tween<int>(3, 9, 0.0);
     assert(t.value() == 9);   // instantaneous
@@ -73,7 +73,7 @@ void test_tween_zero_duration() {
     std::println("PASS\n");
 }
 
-void test_tween_retarget_continuity() {
+TEST_CASE("tween retarget continuity") {
     std::println("--- test_tween_retarget_continuity ---");
     auto t = Tween<double>(0.0, 100.0, 1.0, ease::linear);
     t.tick(0.3);
@@ -86,7 +86,7 @@ void test_tween_retarget_continuity() {
 }
 
 // ── Spring converges to target and reports rest ─────────────────────────────
-void test_spring_converges() {
+TEST_CASE("spring converges") {
     std::println("--- test_spring_converges ---");
     auto s = Spring<double>(0.0, spring_presets::snappy);
     s.set_target(1.0);
@@ -97,7 +97,7 @@ void test_spring_converges() {
     std::println("PASS\n");
 }
 
-void test_spring_critical_no_overshoot() {
+TEST_CASE("spring critical no overshoot") {
     std::println("--- test_spring_critical_no_overshoot ---");
     // ζ = 1 (stiff preset) should not overshoot past the target.
     auto s = Spring<double>(0.0, spring_presets::stiff);
@@ -111,7 +111,7 @@ void test_spring_critical_no_overshoot() {
     std::println("PASS\n");
 }
 
-void test_spring_underdamped_overshoots() {
+TEST_CASE("spring underdamped overshoots") {
     std::println("--- test_spring_underdamped_overshoots ---");
     auto s = Spring<double>(0.0, spring_presets::wobbly);  // ζ = 0.45
     s.set_target(1.0);
@@ -125,7 +125,7 @@ void test_spring_underdamped_overshoots() {
     std::println("PASS\n");
 }
 
-void test_spring_dropped_frame_stable() {
+TEST_CASE("spring dropped frame stable") {
     std::println("--- test_spring_dropped_frame_stable ---");
     // A huge dt (a dropped frame / paused tab) must not blow up.
     auto s = Spring<double>(0.0, spring_presets::stiff);
@@ -136,7 +136,7 @@ void test_spring_dropped_frame_stable() {
     std::println("PASS\n");
 }
 
-void test_spring_zeta_validation() {
+TEST_CASE("spring zeta validation") {
     std::println("--- test_spring_zeta_validation ---");
     constexpr SpringParams p = spring_presets::make(200.0, 0.5);
     static_assert(p.stiffness == 200.0);
@@ -145,7 +145,7 @@ void test_spring_zeta_validation() {
 }
 
 // ── Animated<T> wrapper dispatches correctly ────────────────────────────────
-void test_animated_tween_mode() {
+TEST_CASE("animated tween mode") {
     std::println("--- test_animated_tween_mode ---");
     auto a = Animated<double>::tween(0.0, 10.0, 1.0, ease::linear);
     assert(!a.is_spring());
@@ -156,7 +156,7 @@ void test_animated_tween_mode() {
     std::println("PASS\n");
 }
 
-void test_animated_spring_mode() {
+TEST_CASE("animated spring mode") {
     std::println("--- test_animated_spring_mode ---");
     auto a = Animated<double>::spring(0.0, spring_presets::gentle);
     assert(a.is_spring());
@@ -167,7 +167,7 @@ void test_animated_spring_mode() {
 }
 
 // ── Colour interpolation ────────────────────────────────────────────────────
-void test_color_lerp() {
+TEST_CASE("color lerp") {
     std::println("--- test_color_lerp ---");
     Color a = Color::rgb(0, 0, 0);
     Color b = Color::rgb(255, 255, 255);
@@ -185,7 +185,7 @@ void test_color_lerp() {
     std::println("PASS\n");
 }
 
-void test_color_spring() {
+TEST_CASE("color spring") {
     std::println("--- test_color_spring ---");
     auto s = Spring<Color>(Color::rgb(0, 0, 0), spring_presets::snappy);
     s.set_target(Color::rgb(200, 100, 50));
@@ -199,7 +199,7 @@ void test_color_spring() {
 }
 
 // ── RateCursor: monotone, floor-rate ceiling, burst drain, deadline ─────────
-void test_rate_cursor_basic() {
+TEST_CASE("rate cursor basic") {
     std::println("--- test_rate_cursor_basic ---");
     RateCursor c(30.0, 0.25);
     assert(approx(c.pos(), 0.0));
@@ -216,7 +216,7 @@ void test_rate_cursor_basic() {
     std::println("PASS\n");
 }
 
-void test_rate_cursor_burst_drain() {
+TEST_CASE("rate cursor burst drain") {
     std::println("--- test_rate_cursor_burst_drain ---");
     RateCursor c(30.0, 0.25);
     double t = 0.0;
@@ -228,7 +228,7 @@ void test_rate_cursor_burst_drain() {
     std::println("PASS\n");
 }
 
-void test_rate_cursor_deadline_ramp() {
+TEST_CASE("rate cursor deadline ramp") {
     std::println("--- test_rate_cursor_deadline_ramp ---");
     RateCursor c(30.0, 5.0);
     c.set_deadline(0.2);
@@ -254,7 +254,7 @@ void test_rate_cursor_deadline_ramp() {
 // pattern the per-frame SPEED stays bounded and changes only gradually (no
 // sprint/idle sawtooth), while the cursor still tracks the edge and the
 // finalize ramp still hits its deadline.
-void test_rate_cursor_glide_invariants() {
+TEST_CASE("rate cursor glide invariants") {
     std::println("--- test_rate_cursor_glide_invariants ---");
     const double kCruise = 120.0, kLead = 0.5;
     RateCursor c(kCruise, kLead);
@@ -318,7 +318,7 @@ void test_rate_cursor_glide_invariants() {
 }
 
 // ── RateCursor: finalize ramp still hits its deadline ───────────────────────
-void test_rate_cursor_ramp_still_lands() {
+TEST_CASE("rate cursor ramp still lands") {
     std::println("--- test_rate_cursor_ramp_still_lands ---");
     RateCursor c(60.0, 0.5);
     double total = 200.0;          // a backlog the cruise speed won't clear fast
@@ -344,7 +344,7 @@ void test_rate_cursor_ramp_still_lands() {
 // progress on a stream of tiny dts summing to a normal frame budget, and
 // that many sub-ms frames reveal the same total as one combined frame
 // (no motion lost to quantisation).
-void test_rate_cursor_submillisecond_dt() {
+TEST_CASE("rate cursor submillisecond dt") {
     std::println("--- test_rate_cursor_submillisecond_dt ---");
     const double kCruise = 120.0, kLead = 0.5;
 
@@ -396,7 +396,7 @@ void test_rate_cursor_submillisecond_dt() {
 // speed is near the cruise glide — NOT the inflated ramp speed. (The
 // speed DURING the ramp is legitimately large — that's the deadline
 // guarantee — so we measure only the hand-off frame.)
-void test_rate_cursor_ramp_no_wobble() {
+TEST_CASE("rate cursor ramp no wobble") {
     std::println("--- test_rate_cursor_ramp_no_wobble ---");
     const double kCruise = 120.0, kLead = 0.5;
     RateCursor c(kCruise, kLead);
@@ -441,7 +441,7 @@ void test_rate_cursor_ramp_no_wobble() {
 }
 
 // ── RateCursor: adaptive floor tracks the wire, stays in band ──────────────
-void test_rate_cursor_adaptive_floor() {
+TEST_CASE("rate cursor adaptive floor") {
     std::println("--- test_rate_cursor_adaptive_floor ---");
     const double dt = 0.016;
 
@@ -501,7 +501,7 @@ void test_rate_cursor_adaptive_floor() {
 // stay height-stable (codepoint count of the last line unchanged). A per-cp
 // run explosion here silently balloons every downstream layout/paint/wrap
 // pass for the whole reveal.
-void test_text_reveal_runs_coalesced() {
+TEST_CASE("text reveal runs coalesced") {
     std::println("--- test_text_reveal_runs_coalesced ---");
     auto make = [](int n) {
         std::string s;
@@ -565,7 +565,7 @@ void test_text_reveal_runs_coalesced() {
 // the gate flips live_ off mid-scramble and freezes garbage glyphs onto a
 // settled message. Pin the relationship here (and it is constexpr, so the
 // widget's static_assert also guards it at compile time).
-void test_reveal_settle_window_matches_defaults() {
+TEST_CASE("reveal settle window matches defaults") {
     std::println("--- test_reveal_settle_window_matches_defaults ---");
     constexpr anim::TextRevealParams p{};
     static_assert(p.settle_window_ms() ==
@@ -580,30 +580,3 @@ void test_reveal_settle_window_matches_defaults() {
                  p.settle_window_ms());
 }
 
-int main() {
-    test_easing_constexpr();
-    test_tween_basic();
-    test_tween_zero_duration();
-    test_tween_retarget_continuity();
-    test_spring_converges();
-    test_spring_critical_no_overshoot();
-    test_spring_underdamped_overshoots();
-    test_spring_dropped_frame_stable();
-    test_spring_zeta_validation();
-    test_animated_tween_mode();
-    test_animated_spring_mode();
-    test_color_lerp();
-    test_color_spring();
-    test_rate_cursor_basic();
-    test_rate_cursor_burst_drain();
-    test_rate_cursor_deadline_ramp();
-    test_rate_cursor_glide_invariants();
-    test_rate_cursor_ramp_still_lands();
-    test_rate_cursor_submillisecond_dt();
-    test_rate_cursor_ramp_no_wobble();
-    test_rate_cursor_adaptive_floor();
-    test_text_reveal_runs_coalesced();
-    test_reveal_settle_window_matches_defaults();
-    std::println("All animation tests passed.");
-    return 0;
-}

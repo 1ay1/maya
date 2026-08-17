@@ -20,7 +20,7 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 
 #include <maya/maya.hpp>
 #include <maya/render/renderer.hpp>
@@ -46,16 +46,6 @@ using namespace maya::dsl;
 // turning a perf regression into a test-pass). CHECK prints the
 // failed expression, the file:line, and the (optional) extra context
 // the call site supplies, then aborts so ctest reports a failure.
-#define CHECK(cond, ...)                                                    \
-    do {                                                                    \
-        if (!(cond)) {                                                      \
-            std::fprintf(stderr, "\nCHECK failed: %s\n  at %s:%d\n",        \
-                         #cond, __FILE__, __LINE__);                        \
-            std::fprintf(stderr, "  " __VA_ARGS__);                         \
-            std::fprintf(stderr, "\n");                                     \
-            std::abort();                                                   \
-        }                                                                   \
-    } while (0)
 
 // Perf-budget CHECKs below measure ABSOLUTE wall-time. Sanitizer
 // instrumentation (ASan/TSan/UBSan) inflates that 3–15x, so the budget
@@ -163,7 +153,7 @@ double render_us(const Element& root, Canvas& canvas, StylePool& pool) {
 
 // ── Test 1: hash_id is honoured every frame after the first ────────────────
 
-void test_hash_id_hits_across_frames() {
+TEST_CASE("hash id hits across frames") {
     constexpr int N = 50;
     constexpr int kFrames = 10;
     auto counter = std::make_shared<Counter>();
@@ -188,7 +178,7 @@ void test_hash_id_hits_across_frames() {
           "%d renders vs %d expected\n", total, N);
 }
 
-void test_no_hash_id_misses_every_frame() {
+TEST_CASE("no hash id misses every frame") {
     constexpr int N = 50;
     constexpr int kFrames = 10;
     auto counter = std::make_shared<Counter>();
@@ -216,7 +206,7 @@ void test_no_hash_id_misses_every_frame() {
 
 // ── Test 2: warm-frame time at increasing N ─────────────────────────────────
 
-void test_warm_frame_time_at_high_turn_count() {
+TEST_CASE("warm frame time at high turn count") {
     constexpr int kFrames = 30;
     const std::vector<int> kSizes = {25, 50, 100, 200};
 
@@ -287,7 +277,7 @@ void test_warm_frame_time_at_high_turn_count() {
 //      window) and then evicted by the LRU/age path when it scrolls
 //      out of view. No per-frame re-renders for stable settled turns.
 
-void test_long_session_with_virtualization() {
+TEST_CASE("long session with virtualization") {
     constexpr int kViewWindow = 20;
     constexpr int kTotalTurns = 500;
     constexpr int kSampleFrames = 40;       // measure first/last 40
@@ -370,7 +360,7 @@ void test_long_session_with_virtualization() {
 // change invalidates them. We assert: exactly N misses on the first
 // frame at the new width, then steady cache hits.
 
-void test_width_change_invalidates_then_restabilises() {
+TEST_CASE("width change invalidates then restabilises") {
     constexpr int N = 30;
     auto counter = std::make_shared<Counter>();
 
@@ -425,7 +415,7 @@ void test_width_change_invalidates_then_restabilises() {
 // hit cache. Per-frame cost should be dominated by the live tail —
 // adding more settled turns should barely move the needle.
 
-void test_live_tail_dominates_settled_prefix() {
+TEST_CASE("live tail dominates settled prefix") {
     constexpr int kFrames = 30;
     auto counter = std::make_shared<Counter>();
 
@@ -502,7 +492,7 @@ void test_live_tail_dominates_settled_prefix() {
 // counter equals N*K (every frame is a full miss), and the process
 // hasn't run out of memory or hit some unbounded-growth pathology.
 
-void test_ephemeral_components_do_not_leak() {
+TEST_CASE("ephemeral components do not leak") {
     constexpr int N = 40;
     constexpr int kFrames = 200;
     auto counter = std::make_shared<Counter>();
@@ -567,7 +557,7 @@ void test_ephemeral_components_do_not_leak() {
 // when we should hit (count too high) or we hit when we should miss
 // (count too low — stale cells served under fresh content).
 
-void test_id_for_shared_churn_recycles_ids() {
+TEST_CASE("id for shared churn recycles ids") {
     constexpr int kChurnCycles = 200;   // > kIncSweepEvery (64) → exercises sweep
     auto counter = std::make_shared<Counter>();
 
@@ -641,7 +631,7 @@ void test_id_for_shared_churn_recycles_ids() {
 // cost should NOT scale linearly with N — each done card's cell blit
 // is bounded, and only the running card pays full layout+paint.
 
-void test_agent_timeline_per_event_hash_id_bounds_cost() {
+TEST_CASE("agent timeline per event hash id bounds cost") {
     constexpr int kFrames = 200;
     StylePool pool;
     Canvas canvas(120, 5000, &pool);
@@ -775,16 +765,3 @@ void test_agent_timeline_per_event_hash_id_bounds_cost() {
 
 } // namespace
 
-int main() {
-    test_hash_id_hits_across_frames();
-    test_no_hash_id_misses_every_frame();
-    test_warm_frame_time_at_high_turn_count();
-    test_long_session_with_virtualization();
-    test_width_change_invalidates_then_restabilises();
-    test_live_tail_dominates_settled_prefix();
-    test_ephemeral_components_do_not_leak();
-    test_id_for_shared_churn_recycles_ids();
-    test_agent_timeline_per_event_hash_id_bounds_cost();
-    std::printf("\ntest_render_scaling: ok\n");
-    return 0;
-}

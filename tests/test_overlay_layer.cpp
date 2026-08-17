@@ -4,7 +4,7 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 #include <string>
 
@@ -28,7 +28,7 @@ static int find_col(const Canvas& c, int y, const std::string& needle) {
 }
 
 // Flow layer present, no overlays ⇒ base untouched.
-void test_base_only() {
+TEST_CASE("base only") {
     std::println("--- test_base_only ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -43,7 +43,7 @@ void test_base_only() {
 }
 
 // TopRight anchor lands the float at the right edge.
-void test_anchor_top_right() {
+TEST_CASE("anchor top right") {
     std::println("--- test_anchor_top_right ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -62,7 +62,7 @@ void test_anchor_top_right() {
 }
 
 // Center anchor centers both axes.
-void test_anchor_center() {
+TEST_CASE("anchor center") {
     std::println("--- test_anchor_center ---");
     StylePool pool;
     Canvas canvas(40, 11, &pool);
@@ -79,7 +79,7 @@ void test_anchor_center() {
 }
 
 // Runtime offset positions the float at an explicit cell.
-void test_overlay_at() {
+TEST_CASE("overlay at") {
     std::println("--- test_overlay_at ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -94,7 +94,7 @@ void test_overlay_at() {
 }
 
 // z-index: higher z paints over lower z at the same cell.
-void test_z_order() {
+TEST_CASE("z order") {
     std::println("--- test_z_order ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -114,7 +114,7 @@ void test_z_order() {
 }
 
 // Insertion order breaks z ties (stable sort).
-void test_z_tie_stable() {
+TEST_CASE("z tie stable") {
     std::println("--- test_z_tie_stable ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -132,7 +132,7 @@ void test_z_tie_stable() {
 }
 
 // Clamp keeps an off-screen-nudged float fully visible.
-void test_clamp_on_screen() {
+TEST_CASE("clamp on screen") {
     std::println("--- test_clamp_on_screen ---");
     StylePool pool;
     Canvas canvas(20, 6, &pool);
@@ -151,7 +151,7 @@ void test_clamp_on_screen() {
 }
 
 // Overlay floats over flow content without disturbing it elsewhere.
-void test_float_over_flow() {
+TEST_CASE("float over flow") {
     std::println("--- test_float_over_flow ---");
     StylePool pool;
     Canvas canvas(40, 6, &pool);
@@ -174,15 +174,3 @@ void test_float_over_flow() {
     std::println("PASS\n");
 }
 
-int main() {
-    test_base_only();
-    test_anchor_top_right();
-    test_anchor_center();
-    test_overlay_at();
-    test_z_order();
-    test_z_tie_stable();
-    test_clamp_on_screen();
-    test_float_over_flow();
-    std::println("All overlay tests passed.");
-    return 0;
-}

@@ -3,7 +3,7 @@
 #include <maya/app/inline.hpp>
 #include <maya/render/frame.hpp>
 #include "check.hpp"
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 #include <string>
 #include <vector>
@@ -12,7 +12,7 @@ using namespace maya;
 using namespace maya::detail;
 using namespace maya::dsl;
 
-std::string get_row(const Canvas& canvas, int y) {
+static std::string get_row(const Canvas& canvas, int y) {
     std::string s;
     for (int x = 0; x < canvas.width(); ++x) {
         Cell c = canvas.get(x, y);
@@ -37,7 +37,7 @@ void dump(const Canvas& canvas, int rows = -1) {
 // ============================================================================
 // Test 1: bare text element fills root
 // ============================================================================
-void test_bare_text() {
+TEST_CASE("bare text") {
     std::println("--- test_bare_text ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
@@ -50,7 +50,7 @@ void test_bare_text() {
 // ============================================================================
 // Test 2: column box with padding
 // ============================================================================
-void test_column_padding() {
+TEST_CASE("column padding") {
     std::println("--- test_column_padding ---");
     StylePool pool;
     Canvas canvas(30, 8, &pool);
@@ -70,7 +70,7 @@ void test_column_padding() {
 // ============================================================================
 // Test 3: row layout places children horizontally
 // ============================================================================
-void test_row_layout() {
+TEST_CASE("row layout") {
     std::println("--- test_row_layout ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
@@ -94,7 +94,7 @@ void test_row_layout() {
 // ============================================================================
 // Test 4: flex-grow spacer pushes content to bottom
 // ============================================================================
-void test_spacer() {
+TEST_CASE("spacer") {
     std::println("--- test_spacer ---");
     StylePool pool;
     Canvas canvas(20, 10, &pool);
@@ -113,7 +113,7 @@ void test_spacer() {
 // ============================================================================
 // Test 5: border draws box-drawing characters
 // ============================================================================
-void test_border() {
+TEST_CASE("border") {
     std::println("--- test_border ---");
     StylePool pool;
     Canvas canvas(20, 5, &pool);
@@ -133,7 +133,7 @@ void test_border() {
 // ============================================================================
 // Test 6: nested boxes
 // ============================================================================
-void test_nested() {
+TEST_CASE("nested") {
     std::println("--- test_nested ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -156,7 +156,7 @@ void test_nested() {
 // ============================================================================
 // Test 7: counter example element tree
 // ============================================================================
-void test_counter_tree() {
+TEST_CASE("counter tree") {
     std::println("--- test_counter_tree ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -174,7 +174,7 @@ void test_counter_tree() {
 // ============================================================================
 // Test 8: diff produces ops for changed cells
 // ============================================================================
-void test_diff() {
+TEST_CASE("diff") {
     std::println("--- test_diff ---");
     StylePool pool;
     Canvas old_canvas(20, 3, &pool);
@@ -205,7 +205,7 @@ void test_diff() {
 // ============================================================================
 // Test 9: FrameBuffer render + diff cycle
 // ============================================================================
-void test_framebuffer() {
+TEST_CASE("framebuffer") {
     std::println("--- test_framebuffer ---");
     FrameBuffer fb(30, 5);
 
@@ -228,7 +228,7 @@ void test_framebuffer() {
 // ============================================================================
 // Test 10: input parser basics
 // ============================================================================
-void test_input_parser() {
+TEST_CASE("input parser") {
     std::println("--- test_input_parser ---");
     InputParser parser;
 
@@ -258,7 +258,7 @@ void test_input_parser() {
 // ============================================================================
 // Test 11: signal reactivity
 // ============================================================================
-void test_signal() {
+TEST_CASE("signal") {
     std::println("--- test_signal ---");
     Signal<int> count{0};
     assert(count.get() == 0);
@@ -283,7 +283,7 @@ void test_signal() {
 // ============================================================================
 // Test 12: style SGR generation
 // ============================================================================
-void test_style_sgr() {
+TEST_CASE("style sgr") {
     std::println("--- test_style_sgr ---");
     auto s = Style{}.with_bold().with_fg(Color::red());
     std::string sgr = s.to_sgr();
@@ -300,7 +300,7 @@ void test_style_sgr() {
 // ============================================================================
 // Test 13: StyleApplier transition
 // ============================================================================
-void test_style_transition() {
+TEST_CASE("style transition") {
     std::println("--- test_style_transition ---");
     Style a = Style{}.with_bold();
     Style b = Style{}.with_bold().with_fg(Color::green());
@@ -318,7 +318,7 @@ void test_style_transition() {
 // ============================================================================
 // Test 14: writer batches and flushes
 // ============================================================================
-void test_writer() {
+TEST_CASE("writer") {
     std::println("--- test_writer ---");
     // Write to /dev/null to test the pipeline doesn't crash
     int fd = ::open("/dev/null", O_WRONLY);
@@ -344,7 +344,7 @@ void test_writer() {
 // regrow precondition never trips and the tail rows (the app chrome:
 // composer, status bar) are silently clipped. The gate must key on the
 // layout's computed height instead.
-void test_regrow_blank_boundary() {
+TEST_CASE("regrow blank boundary") {
     std::println("--- test_regrow_blank_boundary ---");
     std::vector<Element> rows;
     for (int i = 0; i < 480; ++i)
@@ -370,7 +370,7 @@ void test_regrow_blank_boundary() {
 // default-bg hole in the strip (selected-row strips, filled buttons).
 // Now paint_element records the nearest enclosing box bg and folds it
 // into any text run that doesn't declare its own; explicit run bgs win.
-void test_ambient_bg_inheritance() {
+TEST_CASE("ambient bg inheritance") {
     std::println("--- test_ambient_bg_inheritance ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
@@ -438,7 +438,7 @@ void test_ambient_bg_inheritance() {
 // The painter records each hit-tagged box's ABSOLUTE painted rect;
 // hit_test(x,y) returns the topmost (last painted) id; the registry
 // resets every render so removed targets stop hit-testing.
-void test_hit_regions() {
+TEST_CASE("hit regions") {
     std::println("--- test_hit_regions ---");
     StylePool pool;
     Canvas canvas(40, 6, &pool);
@@ -487,25 +487,3 @@ void test_hit_regions() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_bare_text();
-    test_column_padding();
-    test_row_layout();
-    test_spacer();
-    test_border();
-    test_nested();
-    test_counter_tree();
-    test_diff();
-    test_framebuffer();
-    test_input_parser();
-    test_signal();
-    test_style_sgr();
-    test_style_transition();
-    test_writer();
-    test_regrow_blank_boundary();
-    test_ambient_bg_inheritance();
-    test_hit_regions();
-
-    std::println("=== ALL {} TESTS PASSED ===", 17);
-}

@@ -9,6 +9,8 @@
 // Scoring is at the AST level: parse_markdown(md) -> md::Document ->
 // cm::to_html() -> normalized compare against the spec's expected HTML.
 
+#include "agtest.hpp"
+
 #include <cctype>
 #include <cstdio>
 #include <map>
@@ -174,15 +176,15 @@ std::string read_file(const char* path) {
 
 } // namespace
 
-int main() {
+TEST_CASE("commonmark_spec") {
     std::printf("=== CommonMark 0.31.2 parser conformance ===\n\n");
 
     std::string path = std::string(MAYA_SOURCE_DIR) +
                        "/tests/fixtures/commonmark-0.31.2.json";
     std::string raw = read_file(path.c_str());
     if (raw.empty()) {
-        std::fprintf(stderr, "could not read %s\n", path.c_str());
-        return 2;
+        MESSAGE("skip: could not read " << path);
+        return;
     }
 
     auto examples = parse_spec(raw);
@@ -225,6 +227,4 @@ int main() {
     // failing CI; bump this number every time conformance climbs.
     constexpr double kFloor = 0.0;
     MAYA_TEST_CHECK(rate >= kFloor, "conformance below ratchet floor");
-
-    return 0;
 }

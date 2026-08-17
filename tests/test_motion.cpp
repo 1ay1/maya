@@ -9,7 +9,7 @@
 // is animating.
 #include <maya/maya.hpp>
 #include <maya/anim/text_reveal.hpp>
-#include <cassert>
+#include "agtest.hpp"
 #include <cmath>
 #include <print>
 
@@ -40,7 +40,7 @@ struct RafGuard {
 };
 
 // ── Clock: dt clamps long stalls and zeroes a remount ───────────────────────
-void test_clock_dt_semantics() {
+TEST_CASE("clock dt semantics") {
     std::println("--- test_clock_dt_semantics ---");
     Clock clk;
     // First dt() is ~0 (epoch == last on construction). Subsequent reads in
@@ -56,7 +56,7 @@ void test_clock_dt_semantics() {
 }
 
 // ── Motion: settles, stops requesting frames, no jump on retarget ───────────
-void test_motion_basic() {
+TEST_CASE("motion basic") {
     std::println("--- test_motion_basic ---");
     RafGuard g;
     Clock clk;
@@ -98,7 +98,7 @@ void test_motion_basic() {
 // instead, test the Timeline (which exposes a seekable playhead) for the
 // time-accurate path, and here assert the monotone approach property using
 // peek() after to().
-void test_motion_no_visual_jump_on_retarget() {
+TEST_CASE("motion no visual jump on retarget") {
     std::println("--- test_motion_no_visual_jump_on_retarget ---");
     Clock clk;
     Motion<double> m{0.0, 0.20, ease::linear};
@@ -114,7 +114,7 @@ void test_motion_no_visual_jump_on_retarget() {
 }
 
 // ── Motion<Color> compiles & lerps endpoints ────────────────────────────────
-void test_motion_color() {
+TEST_CASE("motion color") {
     std::println("--- test_motion_color ---");
     Clock clk;
     Motion<Color> c{Color::rgb(0, 0, 0), 0.25};
@@ -129,7 +129,7 @@ void test_motion_color() {
 }
 
 // ── pulse / loop_phase: bounded, periodic, frame-requesting ─────────────────
-void test_pulse_loop() {
+TEST_CASE("pulse loop") {
     std::println("--- test_pulse_loop ---");
     RafGuard g;
     Clock clk;
@@ -148,7 +148,7 @@ void test_pulse_loop() {
 }
 
 // ── Timeline: seekable, keyframes interpolate, parallel tracks ──────────────
-void test_timeline_keyframes() {
+TEST_CASE("timeline keyframes") {
     std::println("--- test_timeline_keyframes ---");
     Timeline tl;
     auto opacity = tl.track(0.0);
@@ -181,7 +181,7 @@ void test_timeline_keyframes() {
 }
 
 // ── Timeline: play() advances the playhead and reports done() ───────────────
-void test_timeline_play_done() {
+TEST_CASE("timeline play done") {
     std::println("--- test_timeline_play_done ---");
     Timeline tl;
     auto a = tl.track(0.0);
@@ -197,7 +197,7 @@ void test_timeline_play_done() {
 }
 
 // ── Stagger: per-item phased progress + completion ──────────────────────────
-void test_stagger() {
+TEST_CASE("stagger") {
     std::println("--- test_stagger ---");
     // step 0.05s, dur 0.30s, linear.
     // item 0 starts at 0.0; item 3 starts at 0.15.
@@ -242,7 +242,7 @@ static bool is_ghost_style(const Style& s) {
     return s.fg.has_value() && s.fg->kind() == Color::Kind::Default && s.dim;
 }
 
-void test_text_reveal_typewriter() {
+TEST_CASE("text reveal typewriter") {
     std::println("--- test_text_reveal_typewriter ---");
     // Pure-ASCII body so 1 cp == 1 byte (offset math is trivial).
     const std::string body =
@@ -298,7 +298,7 @@ void test_text_reveal_typewriter() {
 }
 
 // ── text_reveal: full reveal (cursor at end) ghosts NOTHING ───────────────
-void test_text_reveal_complete_no_ghost() {
+TEST_CASE("text reveal complete no ghost") {
     std::println("--- test_text_reveal_complete_no_ghost ---");
     const std::string body = "the quick brown fox jumps over the lazy dog";
     TextElement leaf;
@@ -319,7 +319,7 @@ void test_text_reveal_complete_no_ghost() {
 }
 
 // ── RateCursor is still reachable through the motion umbrella ───────────────
-void test_rate_cursor_reachable() {
+TEST_CASE("rate cursor reachable") {
     std::println("--- test_rate_cursor_reachable ---");
     RateCursor rc{120.0, 0.8};
     rc.set_pos(0.0);
@@ -337,7 +337,7 @@ static int display_width_of(const TextElement& t) {
     return string_width(t.content);
 }
 
-void test_text_reveal_height_stable() {
+TEST_CASE("text reveal height stable") {
     std::println("--- test_text_reveal_height_stable ---");
     const std::string body =
         "The quick brown fox jumps over the lazy dog and keeps on running "
@@ -374,7 +374,7 @@ void test_text_reveal_height_stable() {
 }
 
 // ── text_reveal: empty leaf is a no-op ──────────────────────────────────────
-void test_text_reveal_empty() {
+TEST_CASE("text reveal empty") {
     std::println("--- test_text_reveal_empty ---");
     TextElement leaf;  // empty
     anim::TextRevealParams p;
@@ -384,7 +384,7 @@ void test_text_reveal_empty() {
 }
 
 // ── decorate_end_caret: recolors last glyph, width-stable; empty gets ▊ ─────
-void test_end_caret() {
+TEST_CASE("end caret") {
     std::println("--- test_end_caret ---");
     TextElement leaf;
     leaf.content = "hello";
@@ -402,7 +402,7 @@ void test_end_caret() {
 }
 
 // ── clip_text_to_cursor: TRUE typewriter — content physically cut at cursor ─
-void test_clip_to_cursor() {
+TEST_CASE("clip to cursor") {
     std::println("--- test_clip_to_cursor ---");
     const std::string body = "the quick brown fox";  // 19 cp, all 1-byte
     // Cut at 9 cp: content must be EXACTLY the first 9 bytes, nothing past it.
@@ -450,7 +450,7 @@ void test_clip_to_cursor() {
 // nothing). This is what keeps the word-wrapper seeing identical bytes every
 // frame (stable wrap geometry, no word-pop at a wrap boundary) while the cp
 // still renders invisibly.
-void test_text_reveal_ghost_blank() {
+TEST_CASE("text reveal ghost blank") {
     std::println("--- test_text_reveal_ghost_blank ---");
     const std::string body = "the quick brown fox jumps over the lazy dog";
     const std::size_t total = string_width(body);
@@ -493,23 +493,3 @@ void test_text_reveal_ghost_blank() {
     std::println("PASS");
 }
 
-int main() {
-    test_clock_dt_semantics();
-    test_motion_basic();
-    test_motion_no_visual_jump_on_retarget();
-    test_motion_color();
-    test_pulse_loop();
-    test_timeline_keyframes();
-    test_timeline_play_done();
-    test_stagger();
-    test_rate_cursor_reachable();
-    test_text_reveal_height_stable();
-    test_text_reveal_empty();
-    test_text_reveal_typewriter();
-    test_text_reveal_complete_no_ghost();
-    test_text_reveal_ghost_blank();
-    test_clip_to_cursor();
-    test_end_caret();
-    std::println("\nAll motion tests passed.");
-    return 0;
-}

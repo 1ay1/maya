@@ -3,12 +3,12 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
 
-void test_signal_get_set() {
+TEST_CASE("signal get set") {
     std::println("--- test_signal_get_set ---");
     Signal<int> s{0};
     assert(s.get() == 0);
@@ -17,7 +17,7 @@ void test_signal_get_set() {
     std::println("PASS\n");
 }
 
-void test_signal_update() {
+TEST_CASE("signal update") {
     std::println("--- test_signal_update ---");
     Signal<int> s{10};
     s.update([](int& v) { v += 5; });
@@ -27,7 +27,7 @@ void test_signal_update() {
     std::println("PASS\n");
 }
 
-void test_signal_string() {
+TEST_CASE("signal string") {
     std::println("--- test_signal_string ---");
     Signal<std::string> s{"hello"};
     assert(s.get() == "hello");
@@ -36,7 +36,7 @@ void test_signal_string() {
     std::println("PASS\n");
 }
 
-void test_computed_basic() {
+TEST_CASE("computed basic") {
     std::println("--- test_computed_basic ---");
     Signal<int> x{5};
     auto doubled = computed([&] { return x.get() * 2; });
@@ -46,7 +46,7 @@ void test_computed_basic() {
     std::println("PASS\n");
 }
 
-void test_computed_chain() {
+TEST_CASE("computed chain") {
     std::println("--- test_computed_chain ---");
     Signal<int> a{3};
     auto b = computed([&] { return a.get() * 2; });     // b = a*2
@@ -64,7 +64,7 @@ void test_computed_chain() {
     std::println("PASS\n");
 }
 
-void test_computed_memoization() {
+TEST_CASE("computed memoization") {
     std::println("--- test_computed_memoization ---");
     Signal<int> x{1};
     int eval_count = 0;
@@ -80,7 +80,7 @@ void test_computed_memoization() {
     std::println("PASS\n");
 }
 
-void test_effect_fires_on_construction() {
+TEST_CASE("effect fires on construction") {
     std::println("--- test_effect_fires_on_construction ---");
     Signal<int> x{0};
     int count = 0;
@@ -91,7 +91,7 @@ void test_effect_fires_on_construction() {
     std::println("PASS\n");
 }
 
-void test_effect_fires_on_signal_change() {
+TEST_CASE("effect fires on signal change") {
     std::println("--- test_effect_fires_on_signal_change ---");
     Signal<int> x{0};
     int last = -1;
@@ -106,7 +106,7 @@ void test_effect_fires_on_signal_change() {
     std::println("PASS\n");
 }
 
-void test_effect_does_not_fire_after_destruction() {
+TEST_CASE("effect does not fire after destruction") {
     std::println("--- test_effect_does_not_fire_after_destruction ---");
     Signal<int> x{0};
     int count = 0;
@@ -120,7 +120,7 @@ void test_effect_does_not_fire_after_destruction() {
     std::println("PASS\n");
 }
 
-void test_effect_multiple_dependencies() {
+TEST_CASE("effect multiple dependencies") {
     std::println("--- test_effect_multiple_dependencies ---");
     Signal<int> a{1};
     Signal<int> b{2};
@@ -136,7 +136,7 @@ void test_effect_multiple_dependencies() {
     std::println("PASS\n");
 }
 
-void test_batch_coalesces_updates() {
+TEST_CASE("batch coalesces updates") {
     std::println("--- test_batch_coalesces_updates ---");
     Signal<int> x{0};
     int fire_count = 0;
@@ -159,7 +159,7 @@ void test_batch_coalesces_updates() {
     std::println("PASS\n");
 }
 
-void test_batch_multiple_signals() {
+TEST_CASE("batch multiple signals") {
     std::println("--- test_batch_multiple_signals ---");
     Signal<int> a{0}, b{0};
     int fire_count = 0;
@@ -177,7 +177,7 @@ void test_batch_multiple_signals() {
     std::println("PASS\n");
 }
 
-void test_multiple_effects_all_notified() {
+TEST_CASE("multiple effects all notified") {
     std::println("--- test_multiple_effects_all_notified ---");
     Signal<int> x{0};
     int count1 = 0, count2 = 0, count3 = 0;
@@ -192,7 +192,7 @@ void test_multiple_effects_all_notified() {
     std::println("PASS\n");
 }
 
-void test_diamond_dependency_no_double_fire() {
+TEST_CASE("diamond dependency no double fire") {
     std::println("--- test_diamond_dependency_no_double_fire ---");
     // Diamond: a → b, a → c, (b+c) → effect
     // Changing a should fire the effect once, not twice
@@ -210,7 +210,7 @@ void test_diamond_dependency_no_double_fire() {
     std::println("PASS\n");
 }
 
-void test_signal_bool() {
+TEST_CASE("signal bool") {
     std::println("--- test_signal_bool ---");
     Signal<bool> flag{false};
     assert(!flag.get());
@@ -221,7 +221,7 @@ void test_signal_bool() {
     std::println("PASS\n");
 }
 
-void test_computed_with_effect() {
+TEST_CASE("computed with effect") {
     std::println("--- test_computed_with_effect ---");
     Signal<int> x{2};
     auto squared = computed([&] { return x.get() * x.get(); });
@@ -241,7 +241,7 @@ void test_computed_with_effect() {
 // Each of these was a use-after-free before ~ReactiveNode::unlink_all()
 // + the NotifyFrame machinery. Run under ASan to prove the negative.
 
-void test_computed_destroyed_before_signal() {
+TEST_CASE("computed destroyed before signal") {
     std::println("--- test_computed_destroyed_before_signal ---");
     // A Computed dropped while its source Signal lives must unsubscribe
     // itself; the next set() then walks a clean subscriber list. Before
@@ -257,7 +257,7 @@ void test_computed_destroyed_before_signal() {
     std::println("PASS\n");
 }
 
-void test_signal_destroyed_before_effect() {
+TEST_CASE("signal destroyed before effect") {
     std::println("--- test_signal_destroyed_before_effect ---");
     // A Signal dropped while a dependent Effect lives must remove itself
     // from the effect's dependency list; the effect's later destruction
@@ -275,7 +275,7 @@ void test_signal_destroyed_before_effect() {
     std::println("PASS\n");
 }
 
-void test_effect_disposes_sibling_effect() {
+TEST_CASE("effect disposes sibling effect") {
     std::println("--- test_effect_disposes_sibling_effect ---");
     // Effect A's callback disposes Effect B while both are in the same
     // notification snapshot. B's entry must be nulled (NotifyFrame), not
@@ -296,7 +296,7 @@ void test_effect_disposes_sibling_effect() {
     std::println("PASS\n");
 }
 
-void test_batched_node_destroyed_before_flush() {
+TEST_CASE("batched node destroyed before flush") {
     std::println("--- test_batched_node_destroyed_before_flush ---");
     // A node queued in pending_notifications() and destroyed before the
     // batch flushes must be purged from the queue (route 3 of
@@ -314,7 +314,7 @@ void test_batched_node_destroyed_before_flush() {
     std::println("PASS\n");
 }
 
-void test_dynamic_dependencies_switch_cleanly() {
+TEST_CASE("dynamic dependencies switch cleanly") {
     std::println("--- test_dynamic_dependencies_switch_cleanly ---");
     Signal<bool> choose_left{true};
     Signal<int> left{1}, right{10};
@@ -338,7 +338,7 @@ void test_dynamic_dependencies_switch_cleanly() {
     std::println("PASS\n");
 }
 
-void test_dynamic_computed_dependencies_in_batch() {
+TEST_CASE("dynamic computed dependencies in batch") {
     std::println("--- test_dynamic_computed_dependencies_in_batch ---");
     Signal<bool> choose_left{true};
     Signal<int> left{1}, right{10};
@@ -361,7 +361,7 @@ void test_dynamic_computed_dependencies_in_batch() {
 // LAZILY from inside the effect body, recomputing c must not synchronously
 // re-fire the effect that is still mid-evaluation. This is the exact shape
 // that broke when dependency edges became retained (no eager teardown).
-void test_diamond_deep_no_glitch() {
+TEST_CASE("diamond deep no glitch") {
     std::println("--- test_diamond_deep_no_glitch ---");
     // a -> b -> d,  a -> c -> d,  d -> effect  (asymmetric-depth diamond)
     Signal<int> a{1};
@@ -383,7 +383,7 @@ void test_diamond_deep_no_glitch() {
 // Same diamond, but the whole mutation is wrapped in a Batch. The pending
 // flag dedups the batched path; assert it also produces exactly one fire and
 // the fully-consistent value (no torn read of one branch).
-void test_diamond_no_glitch_in_batch() {
+TEST_CASE("diamond no glitch in batch") {
     std::println("--- test_diamond_no_glitch_in_batch ---");
     Signal<int> a{1};
     auto b = computed([&] { return a.get() * 2; });
@@ -406,7 +406,7 @@ void test_diamond_no_glitch_in_batch() {
 // effect must fire exactly once per source change regardless of N — the
 // per-source O(1) evaluating-guard, not O(N) bookkeeping, keeps this glitch
 // free.
-void test_wide_fanin_single_fire() {
+TEST_CASE("wide fanin single fire") {
     std::println("--- test_wide_fanin_single_fire ---");
     Signal<int> a{0};
     std::vector<Computed<int>> mids;
@@ -429,32 +429,3 @@ void test_wide_fanin_single_fire() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_signal_get_set();
-    test_signal_update();
-    test_signal_string();
-    test_computed_basic();
-    test_computed_chain();
-    test_computed_memoization();
-    test_effect_fires_on_construction();
-    test_effect_fires_on_signal_change();
-    test_effect_does_not_fire_after_destruction();
-    test_effect_multiple_dependencies();
-    test_batch_coalesces_updates();
-    test_batch_multiple_signals();
-    test_multiple_effects_all_notified();
-    test_diamond_dependency_no_double_fire();
-    test_signal_bool();
-    test_computed_with_effect();
-    test_computed_destroyed_before_signal();
-    test_signal_destroyed_before_effect();
-    test_effect_disposes_sibling_effect();
-    test_batched_node_destroyed_before_flush();
-    test_dynamic_dependencies_switch_cleanly();
-    test_dynamic_computed_dependencies_in_batch();
-    test_diamond_deep_no_glitch();
-    test_diamond_no_glitch_in_batch();
-    test_wide_fanin_single_fire();
-    std::println("=== ALL 25 TESTS PASSED ===");
-}

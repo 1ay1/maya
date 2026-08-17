@@ -10,6 +10,8 @@
 // Uses MAYA_TEST_CHECK (not assert) because CMake builds tests -DNDEBUG, which
 // strips assert() — see tests/check.hpp.
 
+#include "agtest.hpp"
+
 #include "check.hpp"
 
 #include "maya/widget/markdown/tex_math.hpp"
@@ -26,8 +28,6 @@
 #include <vector>
 
 using namespace maya;
-
-#define CHECK(c, m) MAYA_TEST_CHECK((c), (m))
 
 // Render a typeset Box to a vector of UTF-8 row strings (skipping wide-glyph
 // continuation cells, trimming trailing blanks) for exact comparison.
@@ -59,7 +59,7 @@ static std::string joined(std::string_view latex, bool display) {
 
 // ── 1. typesetter unit tests ─────────────────────────────────────────────────
 
-static void test_inline_scripts() {
+TEST_CASE("inline scripts") {
     // Simple exponent / index fold to Unicode super/subscript, staying 1 row.
     CHECK(joined("x^2", false)     == "x\u00b2",       "x^2 -> x super2");
     CHECK(joined("a_1", false)     == "a\u2081",       "a_1 -> a sub1");
@@ -70,7 +70,7 @@ static void test_inline_scripts() {
     CHECK(rows.size() >= 1, "e^{x+1} produced rows");
 }
 
-static void test_greek_and_symbols() {
+TEST_CASE("greek and symbols") {
     CHECK(joined("\\alpha", false) == "\u03b1", "alpha");
     CHECK(joined("\\Sigma", false) == "\u03a3", "Sigma");
     CHECK(joined("\\infty", false) == "\u221e", "infty");
@@ -83,7 +83,7 @@ static void test_greek_and_symbols() {
           "blackboard R present");
 }
 
-static void test_fraction() {
+TEST_CASE("fraction") {
     // \frac{a}{b} typesets to 3 rows: num / bar / den, axis on the bar.
     auto rows = grid("\\frac{a}{b}", true);
     CHECK(rows.size() == 3, "fraction is 3 rows");
@@ -95,7 +95,7 @@ static void test_fraction() {
     CHECK(wide[1].find("\u2500") != std::string::npos, "wide bar drawn");
 }
 
-static void test_sqrt() {
+TEST_CASE("sqrt") {
     // \sqrt{x} has a vinculum row above and a radical stroke on the baseline.
     auto rows = grid("\\sqrt{x}", true);
     CHECK(rows.size() == 2, "sqrt is 2 rows");
@@ -104,7 +104,7 @@ static void test_sqrt() {
     CHECK(rows[1].find("x") != std::string::npos, "radicand under the stroke");
 }
 
-static void test_bigop_limits() {
+TEST_CASE("bigop limits") {
     // Display \sum with limits stacks upper / operator / lower (3 rows).
     auto rows = grid("\\sum_{i=1}^{n}", true);
     CHECK(rows.size() == 3, "display sum has 3 rows (upper/op/lower)");
@@ -118,7 +118,7 @@ static void test_bigop_limits() {
           "integral sign present");
 }
 
-static void test_matrix() {
+TEST_CASE("matrix") {
     // 2x2 pmatrix: 2 rows of content wrapped in tall parens.
     auto rows = grid("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", true);
     CHECK(rows.size() == 2, "2x2 matrix has 2 content rows");
@@ -131,7 +131,7 @@ static void test_matrix() {
           "left bracket present");
 }
 
-static void test_array_rules() {
+TEST_CASE("array rules") {
     // array with a column rule {c|c}: the vertical bar must render as a real
     // box-drawing │ separating the columns, NOT leak as literal "c|c".
     auto rows = grid(
@@ -164,7 +164,7 @@ static void test_array_rules() {
     CHECK(blk.find("\u2500") != std::string::npos, "block array has a horizontal rule");
 }
 
-static void test_quadratic_formula() {
+TEST_CASE("quadratic formula") {
     // The canonical stress case: real fraction + radical + scripts + \pm.
     auto rows = grid("\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}", true);
     CHECK(rows.size() == 4, "quadratic formula lays out in 4 rows");
@@ -176,14 +176,14 @@ static void test_quadratic_formula() {
     CHECK(all.find("\u2500") != std::string::npos, "fraction bar present");
 }
 
-static void test_unknown_macro_degrades() {
+TEST_CASE("unknown macro degrades") {
     // An unrecognised control word must NOT crash and should surface its name.
     auto rows = grid("\\foobarbaz", false);
     CHECK(!rows.empty(), "unknown macro still produces output");
     CHECK(rows[0].find("foobarbaz") != std::string::npos, "unknown macro shows its name");
 }
 
-static void test_linearize_inline() {
+TEST_CASE("linearize inline") {
     texmath::MathPalette pal;
     // inline fraction collapses to a/b, parenthesizing compound parts
     CHECK(texmath::linearize("\\frac{a}{b}", pal) == "a/b", "a/b");
@@ -197,7 +197,7 @@ static void test_linearize_inline() {
     CHECK(texmath::linearize("e^{i\\pi}", pal) == "e^i\u03c0", "caret fallback");
 }
 
-static void test_spacing_quality() {
+TEST_CASE("spacing quality") {
     // Binary operators and relations get one cell of air.
     CHECK(joined("a+b", false)   == "a + b", "binary op spaced");
     CHECK(joined("a=b", false)   == "a = b", "relation spaced");
@@ -210,7 +210,7 @@ static void test_spacing_quality() {
     CHECK(joined("a,b", false)   == "a, b",  "comma spacing");
 }
 
-static void test_radical_join() {
+TEST_CASE("radical join") {
     // The radical stroke sits immediately left of the radicand (no gap).
     auto rows = grid("\\sqrt{x}", true);
     CHECK(rows.size() == 2, "sqrt is 2 rows");
@@ -218,7 +218,7 @@ static void test_radical_join() {
     CHECK(rows[1] == "\u221ax", "radical hugs radicand");
 }
 
-static void test_norm_and_braces() {
+TEST_CASE("norm and braces") {
     // Norm delimiters: \|, \lVert/\rVert, \Vert all fold to ‖; the single-bar
     // \lvert/\rvert/\vert fold to ∣. Previously these leaked as raw LaTeX.
     CHECK(joined("\\|x\\|", false) == "\u2016x\u2016", "\\| folds to ‖");
@@ -242,7 +242,7 @@ static void test_norm_and_braces() {
     CHECK(ub.find('S') != std::string::npos, "underbrace label rendered");
 }
 
-static void test_text_fonts_and_arrows() {
+TEST_CASE("text fonts and arrows") {
     // \texttt / \textrm / \textbf etc. must render their body as text, NOT
     // leak the macro name (previously `\texttt{expected}` showed "texttt"
     // + italic body).
@@ -298,7 +298,7 @@ static int display_width(const std::string& line) {
 // SAME display width as the box's declared `cols`. When this breaks (e.g. a
 // combining mark counted as a column, or a wide glyph as one), rows come out
 // ragged and a surrounding border leaks into the margin.
-static void test_width_invariant() {
+TEST_CASE("width invariant") {
     const char* cases[] = {
         "\\vec{v}", "\\hat{x} + \\bar{y}", "\\dot{x} = \\tilde{v}",
         "\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}",
@@ -344,7 +344,7 @@ static int render_height(std::string_view src) {
     return content_height(canvas);
 }
 
-static void test_markdown_inline_math() {
+TEST_CASE("markdown inline math") {
     // $…$ and \(…\) both parse and render.
     CHECK(render_height("The value $x^2 + 1$ is positive.") > 0, "dollar inline renders");
     CHECK(render_height("Euler: \\(e^{i\\pi} + 1 = 0\\) is elegant.") > 0,
@@ -353,7 +353,7 @@ static void test_markdown_inline_math() {
     CHECK(render_height("It costs $5 and then $10 total.") > 0, "currency doesn't crash");
 }
 
-static void test_markdown_display_math() {
+TEST_CASE("markdown display math") {
     // $$…$$ block typesets as a multi-row bordered box → taller than one line.
     int h = render_height("Before\n\n$$\n\\frac{n(n+1)}{2}\n$$\n\nAfter");
     CHECK(h >= 5, "display fraction block adds vertical rows");
@@ -377,33 +377,3 @@ static void test_markdown_display_math() {
 
 // ── driver ───────────────────────────────────────────────────────────────────
 
-int main() {
-    struct T { const char* name; void (*fn)(); };
-    const T tests[] = {
-        {"inline_scripts",          test_inline_scripts},
-        {"greek_and_symbols",       test_greek_and_symbols},
-        {"fraction",                test_fraction},
-        {"sqrt",                    test_sqrt},
-        {"bigop_limits",            test_bigop_limits},
-        {"matrix",                  test_matrix},
-        {"array_rules",             test_array_rules},
-        {"quadratic_formula",       test_quadratic_formula},
-        {"unknown_macro_degrades",  test_unknown_macro_degrades},
-        {"linearize_inline",        test_linearize_inline},
-        {"spacing_quality",         test_spacing_quality},
-        {"radical_join",            test_radical_join},
-        {"norm_and_braces",         test_norm_and_braces},
-        {"text_fonts_and_arrows",    test_text_fonts_and_arrows},
-        {"width_invariant",         test_width_invariant},
-        {"markdown_inline_math",    test_markdown_inline_math},
-        {"markdown_display_math",   test_markdown_display_math},
-    };
-    for (const auto& t : tests) {
-        std::print("  {:<28}", t.name);
-        std::fflush(stdout);
-        t.fn();
-        std::println("ok");
-    }
-    std::println("\nAll math tests passed.");
-    return 0;
-}

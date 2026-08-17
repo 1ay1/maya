@@ -12,7 +12,7 @@
 // The values come from the official Unicode 16.0 UCD; bumping the table
 // to a newer revision should not regress any of these.
 
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 
 #include <maya/text/unicode_width.hpp>
@@ -24,7 +24,7 @@ constexpr int W(char32_t cp,
     return maya::unicode::char_width(cp, m);
 }
 
-void test_ascii_and_latin() {
+TEST_CASE("ascii and latin") {
     std::println("--- test_ascii_and_latin ---");
     static_assert(W('A')      == 1);
     static_assert(W('z')      == 1);
@@ -36,7 +36,7 @@ void test_ascii_and_latin() {
     std::println("PASS");
 }
 
-void test_control_codes() {
+TEST_CASE("control codes") {
     std::println("--- test_control_codes ---");
     static_assert(W(0x00) == 0);
     static_assert(W(0x09) == 0);  // tab
@@ -45,7 +45,7 @@ void test_control_codes() {
     std::println("PASS");
 }
 
-void test_is_control() {
+TEST_CASE("is control") {
     std::println("--- test_is_control ---");
     using maya::unicode::is_control;
     // is_control() is the SECURITY predicate: a renderer drops these before
@@ -77,7 +77,7 @@ void test_is_control() {
     std::println("PASS");
 }
 
-void test_combining_marks() {
+TEST_CASE("combining marks") {
     std::println("--- test_combining_marks ---");
     // Combining marks stack on the preceding base glyph and add NO columns.
     // Counting them as 1 over-measures every accented string and shoves
@@ -104,7 +104,7 @@ void test_combining_marks() {
     std::println("PASS");
 }
 
-void test_east_asian_wide() {
+TEST_CASE("east asian wide") {
     std::println("--- test_east_asian_wide ---");
     // CJK Unified — every terminal in existence renders these as 2 cols.
     static_assert(W(U'中')    == 2);  // U+4E2D
@@ -121,7 +121,7 @@ void test_east_asian_wide() {
     std::println("PASS");
 }
 
-void test_emoji_presentation() {
+TEST_CASE("emoji presentation") {
     std::println("--- test_emoji_presentation ---");
     // The bug-of-record. ⚡ is in Misc Symbols (U+2600 block) but
     // Unicode 16.0 EAW classifies it as Wide, so it's 2 cols on Windows
@@ -152,7 +152,7 @@ void test_emoji_presentation() {
     std::println("PASS");
 }
 
-void test_no_off_by_one() {
+TEST_CASE("no off by one") {
     std::println("--- test_no_off_by_one ---");
     // Boundary checks on the most common wide ranges.
     static_assert(W(0x10FF) == 1);  // just before Hangul Jamo
@@ -177,14 +177,3 @@ void test_no_off_by_one() {
 
 } // namespace
 
-int main() {
-    test_ascii_and_latin();
-    test_control_codes();
-    test_is_control();
-    test_combining_marks();
-    test_east_asian_wide();
-    test_emoji_presentation();
-    test_no_off_by_one();
-    std::println("\n=== ALL UNICODE WIDTH TESTS PASSED ===");
-    return 0;
-}

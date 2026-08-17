@@ -19,14 +19,14 @@
 #include <maya/widget/toast.hpp>
 #include <maya/element/text.hpp>
 #include "check.hpp"
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 #include <string>
 #include <vector>
 
 using namespace maya;
 
-std::string get_row(const Canvas& canvas, int y) {
+static std::string get_row(const Canvas& canvas, int y) {
     std::string s;
     for (int x = 0; x < canvas.width(); ++x) {
         Cell c = canvas.get(x, y);
@@ -105,7 +105,7 @@ void assert_resize_stable(const Element& elem, int w1, int w2, const char* ctx) 
 // ============================================================================
 // Table tests
 // ============================================================================
-void test_table() {
+TEST_CASE("table") {
     std::println("=== test_table ===");
 
     Table tbl({{"Property", 0}, {"Value", 0}});
@@ -171,7 +171,7 @@ void test_table() {
 // ============================================================================
 // ProgressBar tests
 // ============================================================================
-void test_progress() {
+TEST_CASE("progress") {
     std::println("=== test_progress ===");
 
     ProgressBar bar;
@@ -190,7 +190,7 @@ void test_progress() {
 // ============================================================================
 // Divider tests
 // ============================================================================
-void test_divider() {
+TEST_CASE("divider") {
     std::println("=== test_divider ===");
 
     Divider plain;
@@ -213,7 +213,7 @@ void test_divider() {
 // ============================================================================
 // Badge tests
 // ============================================================================
-void test_badge() {
+TEST_CASE("badge") {
     std::println("=== test_badge ===");
 
     auto b = Badge::tool("read_file");
@@ -229,7 +229,7 @@ void test_badge() {
 // ============================================================================
 // Breadcrumb tests
 // ============================================================================
-void test_breadcrumb() {
+TEST_CASE("breadcrumb") {
     std::println("=== test_breadcrumb ===");
 
     Breadcrumb bc({"project", "src", "widget", "table.hpp"});
@@ -246,7 +246,7 @@ void test_breadcrumb() {
 // ============================================================================
 // Select tests
 // ============================================================================
-void test_select() {
+TEST_CASE("select") {
     std::println("=== test_select ===");
 
     Select menu({"Option A", "Option B", "Long option with lots of text"});
@@ -263,7 +263,7 @@ void test_select() {
 // ============================================================================
 // Toast tests
 // ============================================================================
-void test_toast() {
+TEST_CASE("toast") {
     std::println("=== test_toast ===");
 
     ToastManager toasts;
@@ -282,7 +282,7 @@ void test_toast() {
 // ============================================================================
 // Spinner tests
 // ============================================================================
-void test_spinner() {
+TEST_CASE("spinner") {
     std::println("=== test_spinner ===");
 
     Spinner spin;
@@ -298,7 +298,7 @@ void test_spinner() {
 // ============================================================================
 // Input tests
 // ============================================================================
-void test_input() {
+TEST_CASE("input") {
     std::println("=== test_input ===");
 
     Input inp;
@@ -316,7 +316,7 @@ void test_input() {
 // ============================================================================
 // Markdown tests
 // ============================================================================
-void test_markdown() {
+TEST_CASE("markdown") {
     std::println("=== test_markdown ===");
 
     auto test_md = [](const char* label, const char* src) {
@@ -353,7 +353,7 @@ void test_markdown() {
 // ============================================================================
 // Streaming markdown tests
 // ============================================================================
-void test_markdown_streaming() {
+TEST_CASE("markdown streaming") {
     std::println("=== test_markdown_streaming ===");
 
     std::vector<std::string> tokens = {
@@ -394,7 +394,7 @@ void test_markdown_streaming() {
 // assert the most meaningful piece (the phase verb) survives down to a
 // usably-wide terminal, and that no glyphs ever bleed past the right
 // edge (every rendered row must fit within `width` columns).
-void test_status_bar_responsive() {
+TEST_CASE("status bar responsive") {
     std::println("=== test_status_bar_responsive ===");
 
     auto make = []() {
@@ -445,7 +445,7 @@ void test_status_bar_responsive() {
 // Composer: a cursor byte-offset inside a multi-byte UTF-8 sequence, or
 // past the end / negative, must never throw and must never split the
 // sequence (which would paint two U+FFFD cells and shift the line).
-void test_composer_cursor_safety() {
+TEST_CASE("composer cursor safety") {
     std::println("=== test_composer_cursor_safety ===");
 
     // "café" — the é is 2 bytes (0xC3 0xA9) at offsets 3..4.
@@ -482,7 +482,7 @@ void test_composer_cursor_safety() {
 // ContextGauge: percent must not overflow int for token counts past
 // ~21.4M, and the token field must be a constant width across the
 // <1000 / k / M ranges (stable-width slot contract).
-void test_context_gauge_stability() {
+TEST_CASE("context gauge stability") {
     std::println("=== test_context_gauge_stability ===");
 
     // Overflow: 30M used of 30M max = 100%, not a negative garbage pct.
@@ -566,7 +566,7 @@ void test_context_gauge_stability() {
 
 // ToolBodyPreview: tail_only line numbers must show TRUE source
 // positions, not restart at 1.
-void test_tool_body_tail_line_numbers() {
+TEST_CASE("tool body tail line numbers") {
     std::println("=== test_tool_body_tail_line_numbers ===");
 
     std::string body;
@@ -613,7 +613,7 @@ void test_tool_body_tail_line_numbers() {
 
 // small_caps must letter-space at UTF-8 boundaries, not bytes — a
 // multi-byte label must survive intact (no mojibake / no width blowup).
-void test_small_caps_utf8() {
+TEST_CASE("small caps utf8") {
     std::println("=== test_small_caps_utf8 ===");
 
     AgentTimeline::Config cfg;
@@ -640,7 +640,7 @@ void test_small_caps_utf8() {
 // Picker with multi-row raw items: the auto-scroll clamp must work in
 // row space. Selecting the last of several multi-row items must scroll
 // far enough that the item's rows are inside the viewport.
-void test_picker_multirow_autoscroll() {
+TEST_CASE("picker multirow autoscroll") {
     std::println("=== test_picker_multirow_autoscroll ===");
 
     ScrollState scroll;
@@ -671,7 +671,7 @@ void test_picker_multirow_autoscroll() {
 // Structured picker rows use one consistent, unmistakable selection band.
 // Lock both text contrast and full-row background fill so future picker chrome
 // changes cannot regress to the old subtle edge-bar-only focus treatment.
-void test_picker_selected_row_highlight() {
+TEST_CASE("picker selected row highlight") {
     std::println("=== test_picker_selected_row_highlight ===");
 
     ScrollState scroll;
@@ -725,7 +725,7 @@ void test_picker_selected_row_highlight() {
 // Structured rows must remain exactly one row tall even when badge, leading,
 // and trailing cells all compete for a phone-sized terminal. Wrapping changes
 // row indices and makes the cursor highlight the wrong visual item.
-void test_picker_rows_responsive() {
+TEST_CASE("picker rows responsive") {
     std::println("=== test_picker_rows_responsive ===");
 
     auto render = [](int width) {
@@ -770,7 +770,7 @@ void test_picker_rows_responsive() {
 // when the Input is multiline (0x0A would otherwise be scrubbed as a control
 // byte and the block collapses onto one line). A single-line Input still
 // strips them.
-void test_input_multiline_paste() {
+TEST_CASE("input multiline paste") {
     std::println("=== test_input_multiline_paste ===");
 
     // Multiline: newlines survive, embedded control bytes (\t=0x09) drop.
@@ -797,7 +797,7 @@ void test_input_multiline_paste() {
 // occupies one column, so N accented chars wrap into ceil(N/width) lines, not
 // double that. Regression for the emit_lines width bug (marks counted as 1
 // forced a premature break after every base+mark pair).
-void test_word_wrap_combining() {
+TEST_CASE("word wrap combining") {
     std::println("=== test_word_wrap_combining ===");
     std::string accented;
     for (int i = 0; i < 40; ++i) accented += "a\xcc\x80";  // 'a' + combining grave
@@ -813,28 +813,3 @@ void test_word_wrap_combining() {
     std::println("PASS");
 }
 
-int main() {
-    test_table();
-    test_progress();
-    test_divider();
-    test_badge();
-    test_breadcrumb();
-    test_select();
-    test_toast();
-    test_spinner();
-    test_input();
-    test_status_bar_responsive();
-    test_markdown();
-    test_markdown_streaming();
-    test_composer_cursor_safety();
-    test_context_gauge_stability();
-    test_tool_body_tail_line_numbers();
-    test_small_caps_utf8();
-    test_picker_multirow_autoscroll();
-    test_picker_selected_row_highlight();
-    test_picker_rows_responsive();
-    test_input_multiline_paste();
-    test_word_wrap_combining();
-    std::println("All widget tests passed!");
-    return 0;
-}

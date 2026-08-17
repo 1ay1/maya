@@ -3,13 +3,13 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 #include <fcntl.h>
 
 using namespace maya;
 
-void test_writer_flush_to_devnull() {
+TEST_CASE("writer flush to devnull") {
     std::println("--- test_writer_flush_to_devnull ---");
     int fd = ::open("/dev/null", O_WRONLY);
     assert(fd >= 0);
@@ -25,7 +25,7 @@ void test_writer_flush_to_devnull() {
     std::println("PASS\n");
 }
 
-void test_writer_write_raw() {
+TEST_CASE("writer write raw") {
     std::println("--- test_writer_write_raw ---");
     int fd = ::open("/dev/null", O_WRONLY);
     assert(fd >= 0);
@@ -36,7 +36,7 @@ void test_writer_write_raw() {
     std::println("PASS\n");
 }
 
-void test_writer_empty_flush() {
+TEST_CASE("writer empty flush") {
     std::println("--- test_writer_empty_flush ---");
     int fd = ::open("/dev/null", O_WRONLY);
     assert(fd >= 0);
@@ -47,7 +47,7 @@ void test_writer_empty_flush() {
     std::println("PASS\n");
 }
 
-void test_writer_multiple_writes_merged() {
+TEST_CASE("writer multiple writes merged") {
     std::println("--- test_writer_multiple_writes_merged ---");
     int fd = ::open("/dev/null", O_WRONLY);
     assert(fd >= 0);
@@ -62,7 +62,7 @@ void test_writer_multiple_writes_merged() {
     std::println("PASS\n");
 }
 
-void test_writer_cursor_ops() {
+TEST_CASE("writer cursor ops") {
     std::println("--- test_writer_cursor_ops ---");
     int fd = ::open("/dev/null", O_WRONLY);
     assert(fd >= 0);
@@ -76,7 +76,7 @@ void test_writer_cursor_ops() {
     std::println("PASS\n");
 }
 
-void test_writer_style_and_write() {
+TEST_CASE("writer style and write") {
     std::println("--- test_writer_style_and_write ---");
     int fd = ::open("/dev/null", O_WRONLY);
     assert(fd >= 0);
@@ -90,7 +90,7 @@ void test_writer_style_and_write() {
     std::println("PASS\n");
 }
 
-void test_writer_write_raw_empty_string() {
+TEST_CASE("writer write raw empty string") {
     std::println("--- test_writer_write_raw_empty_string ---");
     int fd = ::open("/dev/null", O_WRONLY);
     assert(fd >= 0);
@@ -101,7 +101,7 @@ void test_writer_write_raw_empty_string() {
     std::println("PASS\n");
 }
 
-void test_writer_large_output() {
+TEST_CASE("writer large output") {
     std::println("--- test_writer_large_output ---");
     int fd = ::open("/dev/null", O_WRONLY);
     assert(fd >= 0);
@@ -120,14 +120,14 @@ void test_writer_large_output() {
 // property we care about: for every prefix of `data` that the kernel
 // might accept (0..safe), the wire is left at a complete-unit
 // boundary — no half-CSI, no half-UTF-8, no orphan ESC.
-void test_safe_break_len_plain_ascii() {
+TEST_CASE("safe break len plain ascii") {
     std::println("--- test_safe_break_len_plain_ascii ---");
     assert(detail::safe_break_len("") == 0);
     assert(detail::safe_break_len("hello") == 5);
     std::println("PASS\n");
 }
 
-void test_safe_break_len_complete_csi() {
+TEST_CASE("safe break len complete csi") {
     std::println("--- test_safe_break_len_complete_csi ---");
     // \x1b[31m = SGR red. Final byte 'm' is in 0x40–0x7E.
     std::string_view s = "\x1b[31m";
@@ -138,7 +138,7 @@ void test_safe_break_len_complete_csi() {
     std::println("PASS\n");
 }
 
-void test_safe_break_len_incomplete_csi() {
+TEST_CASE("safe break len incomplete csi") {
     std::println("--- test_safe_break_len_incomplete_csi ---");
     // Half a CSI — parameter bytes only.
     assert(detail::safe_break_len("abc\x1b[3") == 3);
@@ -149,7 +149,7 @@ void test_safe_break_len_incomplete_csi() {
     std::println("PASS\n");
 }
 
-void test_safe_break_len_osc_bel() {
+TEST_CASE("safe break len osc bel") {
     std::println("--- test_safe_break_len_osc_bel ---");
     // OSC 0;title BEL — BEL terminates.
     std::string_view s = "\x1b]0;hi\x07" "after";
@@ -160,7 +160,7 @@ void test_safe_break_len_osc_bel() {
     std::println("PASS\n");
 }
 
-void test_safe_break_len_osc_st() {
+TEST_CASE("safe break len osc st") {
     std::println("--- test_safe_break_len_osc_st ---");
     // OSC … ST (\x1b\\).
     std::string_view s = "\x1b]52;c;dGVzdA==\x1b\\";
@@ -174,7 +174,7 @@ void test_safe_break_len_osc_st() {
     std::println("PASS\n");
 }
 
-void test_safe_break_len_utf8_split() {
+TEST_CASE("safe break len utf8 split") {
     std::println("--- test_safe_break_len_utf8_split ---");
     // "é" is C3 A9 (2-byte UTF-8). Cut mid-codepoint.
     std::string_view s = "ab\xc3";   // missing A9
@@ -191,7 +191,7 @@ void test_safe_break_len_utf8_split() {
     std::println("PASS\n");
 }
 
-void test_safe_break_len_can_sub_clear_pending() {
+TEST_CASE("safe break len can sub clear pending") {
     std::println("--- test_safe_break_len_can_sub_clear_pending ---");
     // CAN (\x18) is a one-byte unit even mid-ESC — the helper
     // treats it like ASCII (a complete unit), which is correct
@@ -201,22 +201,3 @@ void test_safe_break_len_can_sub_clear_pending() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_writer_flush_to_devnull();
-    test_writer_write_raw();
-    test_writer_empty_flush();
-    test_writer_multiple_writes_merged();
-    test_writer_cursor_ops();
-    test_writer_style_and_write();
-    test_writer_write_raw_empty_string();
-    test_writer_large_output();
-    test_safe_break_len_plain_ascii();
-    test_safe_break_len_complete_csi();
-    test_safe_break_len_incomplete_csi();
-    test_safe_break_len_osc_bel();
-    test_safe_break_len_osc_st();
-    test_safe_break_len_utf8_split();
-    test_safe_break_len_can_sub_clear_pending();
-    std::println("=== ALL 15 TESTS PASSED ===");
-}

@@ -4,7 +4,7 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
@@ -13,7 +13,7 @@ using namespace maya;
 // Canvas tests
 // ============================================================================
 
-void test_canvas_dimensions() {
+TEST_CASE("canvas dimensions") {
     std::println("--- test_canvas_dimensions ---");
     StylePool pool;
     Canvas canvas(20, 10, &pool);
@@ -22,7 +22,7 @@ void test_canvas_dimensions() {
     std::println("PASS\n");
 }
 
-void test_canvas_set_get_char() {
+TEST_CASE("canvas set get char") {
     std::println("--- test_canvas_set_get_char ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
@@ -32,7 +32,7 @@ void test_canvas_set_get_char() {
     std::println("PASS\n");
 }
 
-void test_canvas_set_get_different_chars() {
+TEST_CASE("canvas set get different chars") {
     std::println("--- test_canvas_set_get_different_chars ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
@@ -45,7 +45,7 @@ void test_canvas_set_get_different_chars() {
     std::println("PASS\n");
 }
 
-void test_canvas_set_get_style() {
+TEST_CASE("canvas set get style") {
     std::println("--- test_canvas_set_get_style ---");
     StylePool pool;
     uint16_t sid = pool.intern(Style{}.with_bold());
@@ -57,7 +57,7 @@ void test_canvas_set_get_style() {
     std::println("PASS\n");
 }
 
-void test_canvas_set_oob_no_crash() {
+TEST_CASE("canvas set oob no crash") {
     std::println("--- test_canvas_set_oob_no_crash ---");
     StylePool pool;
     Canvas canvas(5, 5, &pool);
@@ -73,7 +73,7 @@ void test_canvas_set_oob_no_crash() {
     std::println("PASS\n");
 }
 
-void test_canvas_clear_zeroes_cells() {
+TEST_CASE("canvas clear zeroes cells") {
     std::println("--- test_canvas_clear_zeroes_cells ---");
     StylePool pool;
     Canvas canvas(5, 3, &pool);
@@ -84,7 +84,7 @@ void test_canvas_clear_zeroes_cells() {
     std::println("PASS\n");
 }
 
-void test_canvas_write_text_chars() {
+TEST_CASE("canvas write text chars") {
     std::println("--- test_canvas_write_text_chars ---");
     StylePool pool;
     Canvas canvas(20, 5, &pool);
@@ -97,7 +97,7 @@ void test_canvas_write_text_chars() {
     std::println("PASS\n");
 }
 
-void test_canvas_write_text_style() {
+TEST_CASE("canvas write text style") {
     std::println("--- test_canvas_write_text_style ---");
     StylePool pool;
     uint16_t sid = pool.intern(Style{}.with_bold());
@@ -113,7 +113,7 @@ void test_canvas_write_text_style() {
 // introducers; if any reach the terminal they inject a sequence the emulator
 // acts on. The filter must catch C0, DEL, AND the C1 block (raw and
 // UTF-8-encoded) — while leaving the surrounding printable glyphs intact.
-void test_canvas_write_text_drops_control_bytes() {
+TEST_CASE("canvas write text drops control bytes") {
     std::println("--- test_canvas_write_text_drops_control_bytes ---");
     StylePool pool;
 
@@ -163,7 +163,7 @@ void test_canvas_write_text_drops_control_bytes() {
     std::println("PASS\n");
 }
 
-void test_canvas_fill_rect() {
+TEST_CASE("canvas fill rect") {
     std::println("--- test_canvas_fill_rect ---");
     StylePool pool;
     Canvas canvas(10, 6, &pool);
@@ -185,7 +185,7 @@ void test_canvas_fill_rect() {
     std::println("PASS\n");
 }
 
-void test_canvas_push_pop_clip() {
+TEST_CASE("canvas push pop clip") {
     std::println("--- test_canvas_push_pop_clip ---");
     StylePool pool;
     Canvas canvas(10, 10, &pool);
@@ -202,7 +202,7 @@ void test_canvas_push_pop_clip() {
     std::println("PASS\n");
 }
 
-void test_canvas_clip_restored_after_pop() {
+TEST_CASE("canvas clip restored after pop") {
     std::println("--- test_canvas_clip_restored_after_pop ---");
     StylePool pool;
     Canvas canvas(10, 10, &pool);
@@ -218,7 +218,7 @@ void test_canvas_clip_restored_after_pop() {
     std::println("PASS\n");
 }
 
-void test_canvas_damage_after_clear() {
+TEST_CASE("canvas damage after clear") {
     std::println("--- test_canvas_damage_after_clear ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
@@ -231,7 +231,7 @@ void test_canvas_damage_after_clear() {
     std::println("PASS\n");
 }
 
-void test_canvas_reset_damage() {
+TEST_CASE("canvas reset damage") {
     std::println("--- test_canvas_reset_damage ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
@@ -242,7 +242,7 @@ void test_canvas_reset_damage() {
     std::println("PASS\n");
 }
 
-void test_canvas_mark_all_damaged() {
+TEST_CASE("canvas mark all damaged") {
     std::println("--- test_canvas_mark_all_damaged ---");
     StylePool pool;
     Canvas canvas(10, 5, &pool);
@@ -254,7 +254,7 @@ void test_canvas_mark_all_damaged() {
     std::println("PASS\n");
 }
 
-void test_canvas_get_packed_roundtrip() {
+TEST_CASE("canvas get packed roundtrip") {
     std::println("--- test_canvas_get_packed_roundtrip ---");
     StylePool pool;
     Canvas canvas(5, 5, &pool);
@@ -265,7 +265,7 @@ void test_canvas_get_packed_roundtrip() {
     std::println("PASS\n");
 }
 
-void test_canvas_resize() {
+TEST_CASE("canvas resize") {
     std::println("--- test_canvas_resize ---");
     StylePool pool;
     Canvas canvas(5, 5, &pool);
@@ -275,7 +275,7 @@ void test_canvas_resize() {
     std::println("PASS\n");
 }
 
-void test_canvas_cells_span_size() {
+TEST_CASE("canvas cells span size") {
     std::println("--- test_canvas_cells_span_size ---");
     StylePool pool;
     Canvas canvas(8, 4, &pool);
@@ -287,7 +287,7 @@ void test_canvas_cells_span_size() {
 // StylePool tests
 // ============================================================================
 
-void test_style_pool_intern_dedup() {
+TEST_CASE("style pool intern dedup") {
     std::println("--- test_style_pool_intern_dedup ---");
     StylePool pool;
     Style s = Style{}.with_bold();
@@ -297,7 +297,7 @@ void test_style_pool_intern_dedup() {
     std::println("PASS\n");
 }
 
-void test_style_pool_different_styles_different_ids() {
+TEST_CASE("style pool different styles different ids") {
     std::println("--- test_style_pool_different_styles_different_ids ---");
     StylePool pool;
     uint16_t id1 = pool.intern(Style{}.with_bold());
@@ -306,7 +306,7 @@ void test_style_pool_different_styles_different_ids() {
     std::println("PASS\n");
 }
 
-void test_style_pool_get_roundtrip() {
+TEST_CASE("style pool get roundtrip") {
     std::println("--- test_style_pool_get_roundtrip ---");
     StylePool pool;
     Style s = Style{}.with_bold().with_fg(Color::red());
@@ -318,7 +318,7 @@ void test_style_pool_get_roundtrip() {
     std::println("PASS\n");
 }
 
-void test_style_pool_default_id_zero_is_empty_style() {
+TEST_CASE("style pool default id zero is empty style") {
     std::println("--- test_style_pool_default_id_zero_is_empty_style ---");
     StylePool pool;
     // Style id 0 should be the default (empty) style
@@ -331,7 +331,7 @@ void test_style_pool_default_id_zero_is_empty_style() {
 // Cell tests
 // ============================================================================
 
-void test_cell_pack_unpack_char() {
+TEST_CASE("cell pack unpack char") {
     std::println("--- test_cell_pack_unpack_char ---");
     Cell c{U'\u2603', 0, 0, 0}; // snowman ☃
     uint64_t packed = c.pack();
@@ -340,7 +340,7 @@ void test_cell_pack_unpack_char() {
     std::println("PASS\n");
 }
 
-void test_cell_pack_unpack_style_id() {
+TEST_CASE("cell pack unpack style id") {
     std::println("--- test_cell_pack_unpack_style_id ---");
     Cell c{U'A', 42, 0, 0};
     Cell got = Cell::unpack(c.pack());
@@ -349,7 +349,7 @@ void test_cell_pack_unpack_style_id() {
     std::println("PASS\n");
 }
 
-void test_cell_default_character() {
+TEST_CASE("cell default character") {
     std::println("--- test_cell_default_character ---");
     StylePool pool;
     Canvas canvas(5, 5, &pool);
@@ -365,7 +365,7 @@ void test_cell_default_character() {
 // stale glyphs at those cells (the renderer would treat the orphan
 // trail's placeholder as a normal cell, or the orphan lead as a
 // normal-width char that overdraws its neighbour).
-void test_canvas_blit_wide_orphan_right_edge() {
+TEST_CASE("canvas blit wide orphan right edge") {
     std::println("--- test_canvas_blit_wide_orphan_right_edge ---");
     StylePool pool;
     Canvas canvas(10, 2, &pool);
@@ -398,7 +398,7 @@ void test_canvas_blit_wide_orphan_right_edge() {
     std::println("PASS\n");
 }
 
-void test_canvas_blit_wide_orphan_left_edge() {
+TEST_CASE("canvas blit wide orphan left edge") {
     std::println("--- test_canvas_blit_wide_orphan_left_edge ---");
     StylePool pool;
     Canvas canvas(10, 2, &pool);
@@ -431,7 +431,7 @@ void test_canvas_blit_wide_orphan_left_edge() {
 // flag must surface the condition. Filling 65k+ styles would be
 // slow; instead use the test-only knowledge that the cap is
 // `max_styles` and just push past it.
-void test_style_pool_overflow_returns_default() {
+TEST_CASE("style pool overflow returns default") {
     std::println("--- test_style_pool_overflow_returns_default ---");
     StylePool pool;
     assert(!pool.overflowed());
@@ -468,7 +468,7 @@ void test_style_pool_overflow_returns_default() {
 
 // Canvas::clear_row drains one row's cells and resets last_col_[y],
 // rescanning max_y_ if the cleared row was the previous max.
-void test_canvas_clear_row() {
+TEST_CASE("canvas clear row") {
     std::println("--- test_canvas_clear_row ---");
     StylePool pool;
     Canvas canvas(10, 4, &pool);
@@ -490,36 +490,3 @@ void test_canvas_clear_row() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_canvas_dimensions();
-    test_canvas_set_get_char();
-    test_canvas_set_get_different_chars();
-    test_canvas_set_get_style();
-    test_canvas_set_oob_no_crash();
-    test_canvas_clear_zeroes_cells();
-    test_canvas_write_text_chars();
-    test_canvas_write_text_style();
-    test_canvas_write_text_drops_control_bytes();
-    test_canvas_fill_rect();
-    test_canvas_push_pop_clip();
-    test_canvas_clip_restored_after_pop();
-    test_canvas_damage_after_clear();
-    test_canvas_reset_damage();
-    test_canvas_mark_all_damaged();
-    test_canvas_get_packed_roundtrip();
-    test_canvas_resize();
-    test_canvas_cells_span_size();
-    test_style_pool_intern_dedup();
-    test_style_pool_different_styles_different_ids();
-    test_style_pool_get_roundtrip();
-    test_style_pool_default_id_zero_is_empty_style();
-    test_cell_pack_unpack_char();
-    test_cell_pack_unpack_style_id();
-    test_cell_default_character();
-    test_canvas_blit_wide_orphan_right_edge();
-    test_canvas_blit_wide_orphan_left_edge();
-    test_style_pool_overflow_returns_default();
-    test_canvas_clear_row();
-    std::println("=== ALL 28 TESTS PASSED ===");
-}

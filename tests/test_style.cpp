@@ -3,18 +3,18 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
 
-void test_style_empty_sgr() {
+TEST_CASE("style empty sgr") {
     std::println("--- test_style_empty_sgr ---");
     assert(Style{}.to_sgr().empty());
     std::println("PASS\n");
 }
 
-void test_style_bold_sgr() {
+TEST_CASE("style bold sgr") {
     std::println("--- test_style_bold_sgr ---");
     auto s = Style{}.with_bold();
     auto sgr = s.to_sgr();
@@ -25,7 +25,7 @@ void test_style_bold_sgr() {
     std::println("PASS\n");
 }
 
-void test_style_dim_sgr() {
+TEST_CASE("style dim sgr") {
     std::println("--- test_style_dim_sgr ---");
     auto s = Style{}.with_dim();
     assert(s.dim == true);
@@ -33,7 +33,7 @@ void test_style_dim_sgr() {
     std::println("PASS\n");
 }
 
-void test_style_italic_sgr() {
+TEST_CASE("style italic sgr") {
     std::println("--- test_style_italic_sgr ---");
     auto s = Style{}.with_italic();
     assert(s.italic == true);
@@ -41,7 +41,7 @@ void test_style_italic_sgr() {
     std::println("PASS\n");
 }
 
-void test_style_underline_sgr() {
+TEST_CASE("style underline sgr") {
     std::println("--- test_style_underline_sgr ---");
     auto s = Style{}.with_underline();
     assert(s.underline == true);
@@ -49,7 +49,7 @@ void test_style_underline_sgr() {
     std::println("PASS\n");
 }
 
-void test_style_inverse_sgr() {
+TEST_CASE("style inverse sgr") {
     std::println("--- test_style_inverse_sgr ---");
     auto s = Style{}.with_inverse();
     assert(s.inverse == true);
@@ -57,7 +57,7 @@ void test_style_inverse_sgr() {
     std::println("PASS\n");
 }
 
-void test_style_strikethrough_sgr() {
+TEST_CASE("style strikethrough sgr") {
     std::println("--- test_style_strikethrough_sgr ---");
     auto s = Style{}.with_strikethrough();
     assert(s.strikethrough == true);
@@ -65,7 +65,7 @@ void test_style_strikethrough_sgr() {
     std::println("PASS\n");
 }
 
-void test_style_fg_color_sgr() {
+TEST_CASE("style fg color sgr") {
     std::println("--- test_style_fg_color_sgr ---");
     auto s = Style{}.with_fg(Color::green());
     assert(s.fg.has_value());
@@ -75,7 +75,7 @@ void test_style_fg_color_sgr() {
     std::println("PASS\n");
 }
 
-void test_style_bg_color_sgr() {
+TEST_CASE("style bg color sgr") {
     std::println("--- test_style_bg_color_sgr ---");
     auto s = Style{}.with_bg(Color::blue());
     assert(s.bg.has_value());
@@ -85,7 +85,7 @@ void test_style_bg_color_sgr() {
     std::println("PASS\n");
 }
 
-void test_style_rgb_fg_sgr() {
+TEST_CASE("style rgb fg sgr") {
     std::println("--- test_style_rgb_fg_sgr ---");
     auto s = Style{}.with_fg(Color::rgb(100, 150, 200));
     auto sgr = s.to_sgr();
@@ -93,7 +93,7 @@ void test_style_rgb_fg_sgr() {
     std::println("PASS\n");
 }
 
-void test_style_combined_sgr() {
+TEST_CASE("style combined sgr") {
     std::println("--- test_style_combined_sgr ---");
     auto s = Style{}.with_bold().with_fg(Color::red());
     auto sgr = s.to_sgr();
@@ -103,7 +103,7 @@ void test_style_combined_sgr() {
     std::println("PASS\n");
 }
 
-void test_style_merge_additive() {
+TEST_CASE("style merge additive") {
     std::println("--- test_style_merge_additive ---");
     Style a = Style{}.with_bold();
     Style b = Style{}.with_italic().with_fg(Color::cyan());
@@ -116,7 +116,7 @@ void test_style_merge_additive() {
     std::println("PASS\n");
 }
 
-void test_style_merge_second_wins_fg() {
+TEST_CASE("style merge second wins fg") {
     std::println("--- test_style_merge_second_wins_fg ---");
     Style a = Style{}.with_fg(Color::red());
     Style b = Style{}.with_fg(Color::blue());
@@ -127,7 +127,7 @@ void test_style_merge_second_wins_fg() {
     std::println("PASS\n");
 }
 
-void test_style_operator_pipe() {
+TEST_CASE("style operator pipe") {
     std::println("--- test_style_operator_pipe ---");
     Style a = Style{}.with_bold();
     Style b = Style{}.with_fg(Color::magenta());
@@ -138,7 +138,7 @@ void test_style_operator_pipe() {
     std::println("PASS\n");
 }
 
-void test_style_pipe_equals_merge() {
+TEST_CASE("style pipe equals merge") {
     std::println("--- test_style_pipe_equals_merge ---");
     Style a = Style{}.with_bold().with_fg(Color::red());
     Style b = Style{}.with_italic().with_bg(Color::blue());
@@ -146,7 +146,7 @@ void test_style_pipe_equals_merge() {
     std::println("PASS\n");
 }
 
-void test_style_empty_predicate() {
+TEST_CASE("style empty predicate") {
     std::println("--- test_style_empty_predicate ---");
     assert( Style{}.empty());
     assert(!Style{}.with_bold().empty());
@@ -155,27 +155,27 @@ void test_style_empty_predicate() {
     std::println("PASS\n");
 }
 
-void test_style_predefined_bold() {
+TEST_CASE("style predefined bold") {
     std::println("--- test_style_predefined_bold ---");
     assert(bold_style.bold == true);
     assert(bold_style.to_sgr().find("1") != std::string::npos);
     std::println("PASS\n");
 }
 
-void test_style_predefined_dim() {
+TEST_CASE("style predefined dim") {
     std::println("--- test_style_predefined_dim ---");
     assert(dim_style.dim == true);
     std::println("PASS\n");
 }
 
-void test_style_predefined_fg_colors() {
+TEST_CASE("style predefined fg colors") {
     std::println("--- test_style_predefined_fg_colors ---");
     assert(fg_red.fg.has_value()   && fg_red.fg->fg_sgr()   == "31");
     assert(fg_green.fg.has_value() && fg_green.fg->fg_sgr() == "32");
     std::println("PASS\n");
 }
 
-void test_style_equality() {
+TEST_CASE("style equality") {
     std::println("--- test_style_equality ---");
     Style a = Style{}.with_bold().with_fg(Color::red());
     Style b = Style{}.with_bold().with_fg(Color::red());
@@ -185,27 +185,3 @@ void test_style_equality() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_style_empty_sgr();
-    test_style_bold_sgr();
-    test_style_dim_sgr();
-    test_style_italic_sgr();
-    test_style_underline_sgr();
-    test_style_inverse_sgr();
-    test_style_strikethrough_sgr();
-    test_style_fg_color_sgr();
-    test_style_bg_color_sgr();
-    test_style_rgb_fg_sgr();
-    test_style_combined_sgr();
-    test_style_merge_additive();
-    test_style_merge_second_wins_fg();
-    test_style_operator_pipe();
-    test_style_pipe_equals_merge();
-    test_style_empty_predicate();
-    test_style_predefined_bold();
-    test_style_predefined_dim();
-    test_style_predefined_fg_colors();
-    test_style_equality();
-    std::println("=== ALL 20 TESTS PASSED ===");
-}

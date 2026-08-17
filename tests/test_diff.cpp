@@ -3,13 +3,13 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
 using namespace maya::dsl;
 
-void test_diff_identical_canvases_empty_output() {
+TEST_CASE("diff identical canvases empty output") {
     std::println("--- test_diff_identical_canvases_empty_output ---");
     StylePool pool;
     Canvas old_c(20, 3, &pool);
@@ -23,7 +23,7 @@ void test_diff_identical_canvases_empty_output() {
     std::println("PASS\n");
 }
 
-void test_diff_no_damage_empty_output() {
+TEST_CASE("diff no damage empty output") {
     std::println("--- test_diff_no_damage_empty_output ---");
     StylePool pool;
     Canvas old_c(10, 3, &pool);
@@ -36,7 +36,7 @@ void test_diff_no_damage_empty_output() {
     std::println("PASS\n");
 }
 
-void test_diff_changed_cell_nonempty() {
+TEST_CASE("diff changed cell nonempty") {
     std::println("--- test_diff_changed_cell_nonempty ---");
     StylePool pool;
     Canvas old_c(20, 3, &pool);
@@ -51,7 +51,7 @@ void test_diff_changed_cell_nonempty() {
     std::println("PASS\n");
 }
 
-void test_diff_single_cell_change() {
+TEST_CASE("diff single cell change") {
     std::println("--- test_diff_single_cell_change ---");
     StylePool pool;
     Canvas old_c(10, 3, &pool);
@@ -73,7 +73,7 @@ void test_diff_single_cell_change() {
     std::println("PASS\n");
 }
 
-void test_diff_size_mismatch_full_repaint() {
+TEST_CASE("diff size mismatch full repaint") {
     std::println("--- test_diff_size_mismatch_full_repaint ---");
     StylePool pool;
     Canvas old_c(20, 5, &pool);
@@ -88,7 +88,7 @@ void test_diff_size_mismatch_full_repaint() {
     std::println("PASS\n");
 }
 
-void test_diff_unicode_char_encoded_correctly() {
+TEST_CASE("diff unicode char encoded correctly") {
     std::println("--- test_diff_unicode_char_encoded_correctly ---");
     StylePool pool;
     Canvas old_c(10, 3, &pool);
@@ -104,7 +104,7 @@ void test_diff_unicode_char_encoded_correctly() {
     std::println("PASS\n");
 }
 
-void test_diff_multi_byte_unicode_sequence() {
+TEST_CASE("diff multi byte unicode sequence") {
     std::println("--- test_diff_multi_byte_unicode_sequence ---");
     StylePool pool;
     Canvas old_c(10, 3, &pool);
@@ -119,7 +119,7 @@ void test_diff_multi_byte_unicode_sequence() {
     std::println("PASS\n");
 }
 
-void test_diff_two_byte_utf8() {
+TEST_CASE("diff two byte utf8") {
     std::println("--- test_diff_two_byte_utf8 ---");
     StylePool pool;
     Canvas old_c(10, 3, &pool);
@@ -134,7 +134,7 @@ void test_diff_two_byte_utf8() {
     std::println("PASS\n");
 }
 
-void test_diff_contains_cursor_move() {
+TEST_CASE("diff contains cursor move") {
     std::println("--- test_diff_contains_cursor_move ---");
     StylePool pool;
     Canvas old_c(20, 3, &pool);
@@ -150,7 +150,7 @@ void test_diff_contains_cursor_move() {
     std::println("PASS\n");
 }
 
-void test_diff_full_repaint_all_cells() {
+TEST_CASE("diff full repaint all cells") {
     std::println("--- test_diff_full_repaint_all_cells ---");
     StylePool pool;
     Canvas old_c(5, 3, &pool);
@@ -170,7 +170,7 @@ void test_diff_full_repaint_all_cells() {
     std::println("PASS\n");
 }
 
-void test_diff_style_change_emits_sgr() {
+TEST_CASE("diff style change emits sgr") {
     std::println("--- test_diff_style_change_emits_sgr ---");
     StylePool pool;
     uint16_t bold_id = pool.intern(Style{}.with_bold());
@@ -186,18 +186,3 @@ void test_diff_style_change_emits_sgr() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_diff_identical_canvases_empty_output();
-    test_diff_no_damage_empty_output();
-    test_diff_changed_cell_nonempty();
-    test_diff_single_cell_change();
-    test_diff_size_mismatch_full_repaint();
-    test_diff_unicode_char_encoded_correctly();
-    test_diff_multi_byte_unicode_sequence();
-    test_diff_two_byte_utf8();
-    test_diff_contains_cursor_move();
-    test_diff_full_repaint_all_cells();
-    test_diff_style_change_emits_sgr();
-    std::println("=== ALL 11 TESTS PASSED ===");
-}

@@ -11,7 +11,7 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 #include <random>
 #include <string>
@@ -25,7 +25,7 @@ using maya::StreamSink;
 
 // ── Property: feed-in-pieces equals feed-whole ──────────────────────────────
 
-void test_chunked_equals_whole_ascii() {
+TEST_CASE("chunked equals whole ascii") {
     std::println("--- test_chunked_equals_whole_ascii ---");
     constexpr std::string_view src = "Hello, world! This is plain ASCII text.";
     StreamSink s;
@@ -36,7 +36,7 @@ void test_chunked_equals_whole_ascii() {
     assert(!s.has_pending());
 }
 
-void test_chunked_equals_whole_utf8_dense() {
+TEST_CASE("chunked equals whole utf8 dense") {
     std::println("--- test_chunked_equals_whole_utf8_dense ---");
     // Em-dashes, arrows, checkmarks, hexagrams — the kind of multi-byte
     // glyphs that show up in real LLM markdown output.
@@ -52,7 +52,7 @@ void test_chunked_equals_whole_utf8_dense() {
     assert(acc == src);
 }
 
-void test_random_chunks_equal_whole() {
+TEST_CASE("random chunks equal whole") {
     std::println("--- test_random_chunks_equal_whole ---");
     // Mix of ASCII, multi-byte UTF-8, and ANSI escape sequences.
     const std::string src =
@@ -108,7 +108,7 @@ bool ends_on_codepoint_boundary(std::string_view s) {
     return i + std::size_t(len) == s.size();
 }
 
-void test_feed_never_splits_codepoint() {
+TEST_CASE("feed never splits codepoint") {
     std::println("--- test_feed_never_splits_codepoint ---");
     constexpr std::string_view src =
         "ASCII \xe2\x80\x94 mixed \xe2\x9c\x93 \xf0\x9f\x9a\x80 \xe6\x9c\x88 end";
@@ -159,7 +159,7 @@ bool contains_split_csi(std::string_view s) {
     return false;
 }
 
-void test_feed_never_splits_csi() {
+TEST_CASE("feed never splits csi") {
     std::println("--- test_feed_never_splits_csi ---");
     constexpr std::string_view src =
         "before \x1b[1;31mred text\x1b[0m middle "
@@ -183,7 +183,7 @@ void test_feed_never_splits_csi() {
 
 // ── Reset clears state ──────────────────────────────────────────────────────
 
-void test_reset_clears_pending() {
+TEST_CASE("reset clears pending") {
     std::println("--- test_reset_clears_pending ---");
     StreamSink s;
     // Feed a half-codepoint.
@@ -200,13 +200,3 @@ void test_reset_clears_pending() {
 
 } // namespace
 
-int main() {
-    test_chunked_equals_whole_ascii();
-    test_chunked_equals_whole_utf8_dense();
-    test_random_chunks_equal_whole();
-    test_feed_never_splits_codepoint();
-    test_feed_never_splits_csi();
-    test_reset_clears_pending();
-    std::println("All StreamSink tests passed.");
-    return 0;
-}

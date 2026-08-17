@@ -3,13 +3,13 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <cstring>
 #include <print>
 
 using namespace maya;
 
-void test_bulk_eq_identical_arrays() {
+TEST_CASE("bulk eq identical arrays") {
     std::println("--- test_bulk_eq_identical_arrays ---");
     uint64_t a[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     uint64_t b[8] = {1, 2, 3, 4, 5, 6, 7, 8};
@@ -17,7 +17,7 @@ void test_bulk_eq_identical_arrays() {
     std::println("PASS\n");
 }
 
-void test_bulk_eq_all_zeros() {
+TEST_CASE("bulk eq all zeros") {
     std::println("--- test_bulk_eq_all_zeros ---");
     uint64_t a[16] = {};
     uint64_t b[16] = {};
@@ -25,7 +25,7 @@ void test_bulk_eq_all_zeros() {
     std::println("PASS\n");
 }
 
-void test_bulk_eq_last_element_differs() {
+TEST_CASE("bulk eq last element differs") {
     std::println("--- test_bulk_eq_last_element_differs ---");
     uint64_t a[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     uint64_t b[8] = {1, 2, 3, 4, 5, 6, 7, 9}; // last differs
@@ -33,7 +33,7 @@ void test_bulk_eq_last_element_differs() {
     std::println("PASS\n");
 }
 
-void test_bulk_eq_first_element_differs() {
+TEST_CASE("bulk eq first element differs") {
     std::println("--- test_bulk_eq_first_element_differs ---");
     uint64_t a[8] = {99, 2, 3, 4, 5, 6, 7, 8};
     uint64_t b[8] = {0,  2, 3, 4, 5, 6, 7, 8};
@@ -41,7 +41,7 @@ void test_bulk_eq_first_element_differs() {
     std::println("PASS\n");
 }
 
-void test_bulk_eq_middle_element_differs() {
+TEST_CASE("bulk eq middle element differs") {
     std::println("--- test_bulk_eq_middle_element_differs ---");
     uint64_t a[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     uint64_t b[8] = {1, 2, 3, 4, 5, 6, 7, 8};
@@ -50,7 +50,7 @@ void test_bulk_eq_middle_element_differs() {
     std::println("PASS\n");
 }
 
-void test_bulk_eq_single_element_same() {
+TEST_CASE("bulk eq single element same") {
     std::println("--- test_bulk_eq_single_element_same ---");
     uint64_t a[1] = {42};
     uint64_t b[1] = {42};
@@ -58,7 +58,7 @@ void test_bulk_eq_single_element_same() {
     std::println("PASS\n");
 }
 
-void test_bulk_eq_single_element_differs() {
+TEST_CASE("bulk eq single element differs") {
     std::println("--- test_bulk_eq_single_element_differs ---");
     uint64_t a[1] = {1};
     uint64_t b[1] = {2};
@@ -66,7 +66,7 @@ void test_bulk_eq_single_element_differs() {
     std::println("PASS\n");
 }
 
-void test_bulk_eq_avx2_boundary_size_4() {
+TEST_CASE("bulk eq avx2 boundary size 4") {
     std::println("--- test_bulk_eq_avx2_boundary_size_4 ---");
     // Exactly 4 elements: one AVX2 iteration, tests AVX2 boundary
     uint64_t a[4] = {10, 20, 30, 40};
@@ -77,7 +77,7 @@ void test_bulk_eq_avx2_boundary_size_4() {
     std::println("PASS\n");
 }
 
-void test_find_first_diff_all_identical() {
+TEST_CASE("find first diff all identical") {
     std::println("--- test_find_first_diff_all_identical ---");
     uint64_t a[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     uint64_t b[8] = {1, 2, 3, 4, 5, 6, 7, 8};
@@ -86,7 +86,7 @@ void test_find_first_diff_all_identical() {
     std::println("PASS\n");
 }
 
-void test_find_first_diff_first_element() {
+TEST_CASE("find first diff first element") {
     std::println("--- test_find_first_diff_first_element ---");
     uint64_t a[8] = {99, 2, 3, 4, 5, 6, 7, 8};
     uint64_t b[8] = {0,  2, 3, 4, 5, 6, 7, 8};
@@ -94,7 +94,7 @@ void test_find_first_diff_first_element() {
     std::println("PASS\n");
 }
 
-void test_find_first_diff_middle_element() {
+TEST_CASE("find first diff middle element") {
     std::println("--- test_find_first_diff_middle_element ---");
     uint64_t a[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     uint64_t b[8] = {1, 2, 3, 0, 5, 6, 7, 8}; // index 3 differs
@@ -102,7 +102,7 @@ void test_find_first_diff_middle_element() {
     std::println("PASS\n");
 }
 
-void test_find_first_diff_last_element() {
+TEST_CASE("find first diff last element") {
     std::println("--- test_find_first_diff_last_element ---");
     uint64_t a[8] = {1, 2, 3, 4, 5, 6, 7, 8};
     uint64_t b[8] = {1, 2, 3, 4, 5, 6, 7, 0}; // index 7 differs
@@ -110,7 +110,7 @@ void test_find_first_diff_last_element() {
     std::println("PASS\n");
 }
 
-void test_find_first_diff_single_element_same() {
+TEST_CASE("find first diff single element same") {
     std::println("--- test_find_first_diff_single_element_same ---");
     uint64_t a[1] = {5};
     uint64_t b[1] = {5};
@@ -118,7 +118,7 @@ void test_find_first_diff_single_element_same() {
     std::println("PASS\n");
 }
 
-void test_find_first_diff_single_element_differs() {
+TEST_CASE("find first diff single element differs") {
     std::println("--- test_find_first_diff_single_element_differs ---");
     uint64_t a[1] = {5};
     uint64_t b[1] = {6};
@@ -126,7 +126,7 @@ void test_find_first_diff_single_element_differs() {
     std::println("PASS\n");
 }
 
-void test_find_first_diff_large_array() {
+TEST_CASE("find first diff large array") {
     std::println("--- test_find_first_diff_large_array ---");
     constexpr std::size_t N = 256;
     uint64_t a[N] = {};
@@ -139,7 +139,7 @@ void test_find_first_diff_large_array() {
     std::println("PASS\n");
 }
 
-void test_skip_equal_finds_first_diff() {
+TEST_CASE("skip equal finds first diff") {
     std::println("--- test_skip_equal_finds_first_diff ---");
     uint64_t a[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     uint64_t b[8] = {0, 0, 0, 42, 0, 0, 0, 0}; // index 3 differs
@@ -148,7 +148,7 @@ void test_skip_equal_finds_first_diff() {
     std::println("PASS\n");
 }
 
-void test_skip_equal_with_start_offset() {
+TEST_CASE("skip equal with start offset") {
     std::println("--- test_skip_equal_with_start_offset ---");
     uint64_t a[8] = {0, 0, 0, 0, 0, 99, 0, 0};
     uint64_t b[8] = {0, 0, 0, 0, 0, 0,  0, 0}; // index 5 differs
@@ -157,7 +157,7 @@ void test_skip_equal_with_start_offset() {
     std::println("PASS\n");
 }
 
-void test_skip_equal_all_same_returns_end() {
+TEST_CASE("skip equal all same returns end") {
     std::println("--- test_skip_equal_all_same_returns_end ---");
     uint64_t a[4] = {7, 7, 7, 7};
     uint64_t b[4] = {7, 7, 7, 7};
@@ -165,7 +165,7 @@ void test_skip_equal_all_same_returns_end() {
     std::println("PASS\n");
 }
 
-void test_bulk_eq_large_terminal_row() {
+TEST_CASE("bulk eq large terminal row") {
     std::println("--- test_bulk_eq_large_terminal_row ---");
     // Simulate a 120-column terminal row (120 cells)
     constexpr int W = 120;
@@ -180,26 +180,3 @@ void test_bulk_eq_large_terminal_row() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_bulk_eq_identical_arrays();
-    test_bulk_eq_all_zeros();
-    test_bulk_eq_last_element_differs();
-    test_bulk_eq_first_element_differs();
-    test_bulk_eq_middle_element_differs();
-    test_bulk_eq_single_element_same();
-    test_bulk_eq_single_element_differs();
-    test_bulk_eq_avx2_boundary_size_4();
-    test_find_first_diff_all_identical();
-    test_find_first_diff_first_element();
-    test_find_first_diff_middle_element();
-    test_find_first_diff_last_element();
-    test_find_first_diff_single_element_same();
-    test_find_first_diff_single_element_differs();
-    test_find_first_diff_large_array();
-    test_skip_equal_finds_first_diff();
-    test_skip_equal_with_start_offset();
-    test_skip_equal_all_same_returns_end();
-    test_bulk_eq_large_terminal_row();
-    std::println("=== ALL 19 TESTS PASSED ===");
-}

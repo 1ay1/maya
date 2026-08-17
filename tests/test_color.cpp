@@ -3,12 +3,12 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
 
-void test_color_named_fg_sgr() {
+TEST_CASE("color named fg sgr") {
     std::println("--- test_color_named_fg_sgr ---");
     // AnsiColor values: Black=0, Red=1, Green=2, Yellow=3, Blue=4, Cyan=6, White=7
     // fg SGR = 30 + index for dark colors
@@ -23,7 +23,7 @@ void test_color_named_fg_sgr() {
     std::println("PASS\n");
 }
 
-void test_color_bright_fg_sgr() {
+TEST_CASE("color bright fg sgr") {
     std::println("--- test_color_bright_fg_sgr ---");
     // BrightX values: 8-15, fg SGR = 90 + (index - 8)
     assert(Color::bright_black().fg_sgr()   == "90");
@@ -35,7 +35,7 @@ void test_color_bright_fg_sgr() {
     std::println("PASS\n");
 }
 
-void test_color_named_bg_sgr() {
+TEST_CASE("color named bg sgr") {
     std::println("--- test_color_named_bg_sgr ---");
     // bg SGR = 40 + index for dark colors
     assert(Color::black().bg_sgr()   == "40");
@@ -47,7 +47,7 @@ void test_color_named_bg_sgr() {
     std::println("PASS\n");
 }
 
-void test_color_bright_bg_sgr() {
+TEST_CASE("color bright bg sgr") {
     std::println("--- test_color_bright_bg_sgr ---");
     // bg SGR = 100 + (index - 8) for bright colors
     assert(Color::bright_black().bg_sgr() == "100");
@@ -56,7 +56,7 @@ void test_color_bright_bg_sgr() {
     std::println("PASS\n");
 }
 
-void test_color_rgb_fg_sgr() {
+TEST_CASE("color rgb fg sgr") {
     std::println("--- test_color_rgb_fg_sgr ---");
     auto c = Color::rgb(255, 128, 0);
     assert(c.fg_sgr() == "38;2;255;128;0");
@@ -67,14 +67,14 @@ void test_color_rgb_fg_sgr() {
     std::println("PASS\n");
 }
 
-void test_color_rgb_bg_sgr() {
+TEST_CASE("color rgb bg sgr") {
     std::println("--- test_color_rgb_bg_sgr ---");
     auto c = Color::rgb(10, 20, 30);
     assert(c.bg_sgr() == "48;2;10;20;30");
     std::println("PASS\n");
 }
 
-void test_color_indexed_fg_sgr() {
+TEST_CASE("color indexed fg sgr") {
     std::println("--- test_color_indexed_fg_sgr ---");
     auto c = Color::indexed(42);
     assert(c.fg_sgr()  == "38;5;42");
@@ -83,14 +83,14 @@ void test_color_indexed_fg_sgr() {
     std::println("PASS\n");
 }
 
-void test_color_indexed_bg_sgr() {
+TEST_CASE("color indexed bg sgr") {
     std::println("--- test_color_indexed_bg_sgr ---");
     auto c = Color::indexed(200);
     assert(c.bg_sgr() == "48;5;200");
     std::println("PASS\n");
 }
 
-void test_color_hex() {
+TEST_CASE("color hex") {
     std::println("--- test_color_hex ---");
     constexpr auto c = Color::hex(0xFF8000);
     assert(c.r() == 0xFF);
@@ -101,7 +101,7 @@ void test_color_hex() {
     std::println("PASS\n");
 }
 
-void test_color_hex_black_white() {
+TEST_CASE("color hex black white") {
     std::println("--- test_color_hex_black_white ---");
     constexpr auto black = Color::hex(0x000000);
     constexpr auto white = Color::hex(0xFFFFFF);
@@ -110,7 +110,7 @@ void test_color_hex_black_white() {
     std::println("PASS\n");
 }
 
-void test_color_hsl_red() {
+TEST_CASE("color hsl red") {
     std::println("--- test_color_hsl_red ---");
     // Pure red: hue=0, saturation=1, lightness=0.5
     auto c = Color::hsl(0.0f, 1.0f, 0.5f);
@@ -121,7 +121,7 @@ void test_color_hsl_red() {
     std::println("PASS\n");
 }
 
-void test_color_hsl_gray() {
+TEST_CASE("color hsl gray") {
     std::println("--- test_color_hsl_gray ---");
     // Gray: saturation=0, lightness=0.5 → r=g=b=127 or 128
     auto c = Color::hsl(0.0f, 0.0f, 0.5f);
@@ -131,7 +131,7 @@ void test_color_hsl_gray() {
     std::println("PASS\n");
 }
 
-void test_color_append_fg_matches_fg_sgr() {
+TEST_CASE("color append fg matches fg sgr") {
     std::println("--- test_color_append_fg_matches_fg_sgr ---");
     // Zero-alloc append must produce the same result as the allocating method
     for (auto c : {Color::red(), Color::rgb(10,20,30), Color::indexed(7)}) {
@@ -143,7 +143,7 @@ void test_color_append_fg_matches_fg_sgr() {
     std::println("PASS\n");
 }
 
-void test_color_append_bg_matches_bg_sgr() {
+TEST_CASE("color append bg matches bg sgr") {
     std::println("--- test_color_append_bg_matches_bg_sgr ---");
     for (auto c : {Color::blue(), Color::rgb(50,100,150), Color::indexed(42)}) {
         std::string direct = c.bg_sgr();
@@ -154,7 +154,7 @@ void test_color_append_bg_matches_bg_sgr() {
     std::println("PASS\n");
 }
 
-void test_color_kind_variants() {
+TEST_CASE("color kind variants") {
     std::println("--- test_color_kind_variants ---");
     assert(Color::red().kind()      == Color::Kind::Named);
     assert(Color::indexed(5).kind() == Color::Kind::Indexed);
@@ -162,7 +162,7 @@ void test_color_kind_variants() {
     std::println("PASS\n");
 }
 
-void test_color_default_is_white() {
+TEST_CASE("color default is white") {
     std::println("--- test_color_default_is_white ---");
     // Default Color() is white (AnsiColor::White = 7)
     Color c;
@@ -171,23 +171,3 @@ void test_color_default_is_white() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_color_named_fg_sgr();
-    test_color_bright_fg_sgr();
-    test_color_named_bg_sgr();
-    test_color_bright_bg_sgr();
-    test_color_rgb_fg_sgr();
-    test_color_rgb_bg_sgr();
-    test_color_indexed_fg_sgr();
-    test_color_indexed_bg_sgr();
-    test_color_hex();
-    test_color_hex_black_white();
-    test_color_hsl_red();
-    test_color_hsl_gray();
-    test_color_append_fg_matches_fg_sgr();
-    test_color_append_bg_matches_bg_sgr();
-    test_color_kind_variants();
-    test_color_default_is_white();
-    std::println("=== ALL 16 TESTS PASSED ===");
-}

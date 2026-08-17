@@ -4,13 +4,13 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
 using namespace maya::dsl;
 
-void test_framebuffer_first_render_nonempty() {
+TEST_CASE("framebuffer first render nonempty") {
     std::println("--- test_framebuffer_first_render_nonempty ---");
     FrameBuffer fb(30, 5);
     const auto& out = fb.render(text("hello"), theme::dark);
@@ -19,7 +19,7 @@ void test_framebuffer_first_render_nonempty() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_contains_sync_markers() {
+TEST_CASE("framebuffer contains sync markers") {
     std::println("--- test_framebuffer_contains_sync_markers ---");
     FrameBuffer fb(20, 5);
     const auto& out = fb.render(text("test"), theme::dark);
@@ -30,7 +30,7 @@ void test_framebuffer_contains_sync_markers() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_contains_cursor_hide() {
+TEST_CASE("framebuffer contains cursor hide") {
     std::println("--- test_framebuffer_contains_cursor_hide ---");
     FrameBuffer fb(20, 5);
     const auto& out = fb.render(text("test"), theme::dark);
@@ -39,7 +39,7 @@ void test_framebuffer_contains_cursor_hide() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_same_content_second_render_smaller() {
+TEST_CASE("framebuffer same content second render smaller") {
     std::println("--- test_framebuffer_same_content_second_render_smaller ---");
     FrameBuffer fb(30, 5);
     const auto& out1 = fb.render(text("hello world"), theme::dark);
@@ -52,7 +52,7 @@ void test_framebuffer_same_content_second_render_smaller() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_changed_content_produces_output() {
+TEST_CASE("framebuffer changed content produces output") {
     std::println("--- test_framebuffer_changed_content_produces_output ---");
     FrameBuffer fb(30, 5);
     (void)fb.render(text("frame1"), theme::dark);
@@ -63,7 +63,7 @@ void test_framebuffer_changed_content_produces_output() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_persistent_buffer_reused() {
+TEST_CASE("framebuffer persistent buffer reused") {
     std::println("--- test_framebuffer_persistent_buffer_reused ---");
     FrameBuffer fb(20, 5);
     // Render several frames; the returned reference points to the internal buffer.
@@ -80,7 +80,7 @@ void test_framebuffer_persistent_buffer_reused() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_resize_forces_repaint() {
+TEST_CASE("framebuffer resize forces repaint") {
     std::println("--- test_framebuffer_resize_forces_repaint ---");
     FrameBuffer fb(20, 5);
     (void)fb.render(text("hello"), theme::dark); // warm up
@@ -92,7 +92,7 @@ void test_framebuffer_resize_forces_repaint() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_invalidate_forces_repaint() {
+TEST_CASE("framebuffer invalidate forces repaint") {
     std::println("--- test_framebuffer_invalidate_forces_repaint ---");
     FrameBuffer fb(20, 5);
     (void)fb.render(text("hello"), theme::dark); // warm up
@@ -104,7 +104,7 @@ void test_framebuffer_invalidate_forces_repaint() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_dimensions() {
+TEST_CASE("framebuffer dimensions") {
     std::println("--- test_framebuffer_dimensions ---");
     FrameBuffer fb(40, 15);
     assert(fb.width()  == 40);
@@ -116,7 +116,7 @@ void test_framebuffer_dimensions() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_cursor_control() {
+TEST_CASE("framebuffer cursor control") {
     std::println("--- test_framebuffer_cursor_control ---");
     FrameBuffer fb(20, 5);
     fb.set_cursor(Position{Columns{5}, Rows{2}});
@@ -129,7 +129,7 @@ void test_framebuffer_cursor_control() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_swap_front_back() {
+TEST_CASE("framebuffer swap front back") {
     std::println("--- test_framebuffer_swap_front_back ---");
     FrameBuffer fb(20, 5);
     render_tree(text("front"), fb.front().canvas, fb.style_pool(), theme::dark);
@@ -144,7 +144,7 @@ void test_framebuffer_swap_front_back() {
     std::println("PASS\n");
 }
 
-void test_framebuffer_default_constructed_zero_size() {
+TEST_CASE("framebuffer default constructed zero size") {
     std::println("--- test_framebuffer_default_constructed_zero_size ---");
     FrameBuffer fb; // default: 0x0
     assert(fb.width()  == 0);
@@ -152,19 +152,3 @@ void test_framebuffer_default_constructed_zero_size() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_framebuffer_first_render_nonempty();
-    test_framebuffer_contains_sync_markers();
-    test_framebuffer_contains_cursor_hide();
-    test_framebuffer_same_content_second_render_smaller();
-    test_framebuffer_changed_content_produces_output();
-    test_framebuffer_persistent_buffer_reused();
-    test_framebuffer_resize_forces_repaint();
-    test_framebuffer_invalidate_forces_repaint();
-    test_framebuffer_dimensions();
-    test_framebuffer_cursor_control();
-    test_framebuffer_swap_front_back();
-    test_framebuffer_default_constructed_zero_size();
-    std::println("=== ALL 12 TESTS PASSED ===");
-}

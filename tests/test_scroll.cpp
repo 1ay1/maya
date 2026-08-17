@@ -18,7 +18,7 @@
 #include <maya/widget/scrollable.hpp>
 #include <maya/widget/scrollbar.hpp>
 
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 #include <string>
 #include <vector>
@@ -117,7 +117,7 @@ static MouseEvent release_at(int col, int row) {
 // ============================================================================
 // 1. ScrollState — pure data + clamp + accessors
 // ============================================================================
-static void test_scroll_state_basics() {
+TEST_CASE("scroll state basics") {
     std::println("--- test_scroll_state_basics ---");
     ScrollState s;
     assert(s.x == 0 && s.y == 0);
@@ -144,7 +144,7 @@ static void test_scroll_state_basics() {
 // ============================================================================
 // 2. scroll_by / scroll_to_* clamp correctly on both axes
 // ============================================================================
-static void test_scroll_state_imperative() {
+TEST_CASE("scroll state imperative") {
     std::println("--- test_scroll_state_imperative ---");
     ScrollState s;
     s.max_x = 20;
@@ -179,7 +179,7 @@ static void test_scroll_state_imperative() {
 // ============================================================================
 // 3. Key handling: arrows, PgUp/Dn, Home/End, Ctrl variants
 // ============================================================================
-static void test_scroll_state_keys() {
+TEST_CASE("scroll state keys") {
     std::println("--- test_scroll_state_keys ---");
     ScrollState s;
     s.max_x = 50;
@@ -216,7 +216,7 @@ static void test_scroll_state_keys() {
 // ============================================================================
 // 4. Mouse handling: wheel + Shift+wheel for horizontal
 // ============================================================================
-static void test_scroll_state_mouse() {
+TEST_CASE("scroll state mouse") {
     std::println("--- test_scroll_state_mouse ---");
     ScrollState s;
     s.max_x = 50;
@@ -262,7 +262,7 @@ static void test_scroll_state_mouse() {
 // ============================================================================
 // 5. step_x / step_y honored
 // ============================================================================
-static void test_scroll_state_step() {
+TEST_CASE("scroll state step") {
     std::println("--- test_scroll_state_step ---");
     ScrollState s;
     s.max_x = 100; s.max_y = 100;
@@ -278,7 +278,7 @@ static void test_scroll_state_step() {
 // ============================================================================
 // 6. DSL pipe sets BoxElement fields correctly (overflow / scroll_x/y / ptr)
 // ============================================================================
-static void test_dsl_pipe_sets_fields() {
+TEST_CASE("dsl pipe sets fields") {
     std::println("--- test_dsl_pipe_sets_fields ---");
     ScrollState s;
     s.x = 3;
@@ -310,7 +310,7 @@ static void test_dsl_pipe_sets_fields() {
 // ============================================================================
 // 7. Renderer: vertical content shifts with scroll_y
 // ============================================================================
-static void test_renderer_vertical_scroll() {
+TEST_CASE("renderer vertical scroll") {
     std::println("--- test_renderer_vertical_scroll ---");
     StylePool pool;
 
@@ -358,7 +358,7 @@ static void test_renderer_vertical_scroll() {
 // Horizontal scroll requires content with a defined natural width — a
 // row of cells, or a TextElement with wrap = NoWrap. (A default-wrap
 // text in a narrow viewport just word-wraps; nothing to scroll past.)
-static void test_renderer_horizontal_scroll() {
+TEST_CASE("renderer horizontal scroll") {
     std::println("--- test_renderer_horizontal_scroll ---");
     StylePool pool;
 
@@ -418,7 +418,7 @@ static void test_renderer_horizontal_scroll() {
 //
 // Grid of single-char cells in h()-of-h() form so each cell has a known
 // natural size — same reason as test_renderer_horizontal_scroll.
-static void test_renderer_2d_scroll() {
+TEST_CASE("renderer 2d scroll") {
     std::println("--- test_renderer_2d_scroll ---");
     StylePool pool;
 
@@ -477,7 +477,7 @@ static void test_renderer_2d_scroll() {
 // ============================================================================
 // 10. max_x / max_y written back after layout
 // ============================================================================
-static void test_max_offset_writeback() {
+TEST_CASE("max offset writeback") {
     std::println("--- test_max_offset_writeback ---");
     StylePool pool;
 
@@ -511,7 +511,7 @@ static void test_max_offset_writeback() {
 // ============================================================================
 // 11. Stale offset is clamped after layout
 // ============================================================================
-static void test_stale_offset_clamps() {
+TEST_CASE("stale offset clamps") {
     std::println("--- test_stale_offset_clamps ---");
     StylePool pool;
     ScrollState s;
@@ -527,7 +527,7 @@ static void test_stale_offset_clamps() {
 // ============================================================================
 // 12. scrollbar_y — thumb position and proportional size
 // ============================================================================
-static void test_scrollbar_y() {
+TEST_CASE("scrollbar y") {
     std::println("--- test_scrollbar_y ---");
     StylePool pool;
 
@@ -593,7 +593,7 @@ static void test_scrollbar_y() {
 // ============================================================================
 // 13. scrollbar_x — symmetric to scrollbar_y on the x axis
 // ============================================================================
-static void test_scrollbar_x() {
+TEST_CASE("scrollbar x") {
     std::println("--- test_scrollbar_x ---");
     StylePool pool;
     ScrollState s;
@@ -633,7 +633,7 @@ static void test_scrollbar_x() {
 // ============================================================================
 // 14. Backwards-compat: Scrollable widget still works (delegates to primitive)
 // ============================================================================
-static void test_scrollable_widget_compat() {
+TEST_CASE("scrollable widget compat") {
     std::println("--- test_scrollable_widget_compat ---");
     StylePool pool;
     Scrollable view({.height = 8, .show_indicator = false});
@@ -659,7 +659,7 @@ static void test_scrollable_widget_compat() {
 // ============================================================================
 // 14b. Hover over horizontal scrollbar → wheel pans horizontally
 // ============================================================================
-static void test_hover_over_hbar() {
+TEST_CASE("hover over hbar") {
     std::println("--- test_hover_over_hbar ---");
     StylePool pool;
     ScrollState state;
@@ -717,7 +717,7 @@ static void test_hover_over_hbar() {
 // ============================================================================
 // 14c. Click + drag on horizontal scrollbar — absolute jump + continuous drag
 // ============================================================================
-static void test_click_drag_h_bar() {
+TEST_CASE("click drag h bar") {
     std::println("--- test_click_drag_h_bar ---");
     StylePool pool;
     ScrollState state;
@@ -782,7 +782,7 @@ static void test_click_drag_h_bar() {
 // ============================================================================
 // 14d. Click + drag on vertical scrollbar — same but on y axis
 // ============================================================================
-static void test_click_drag_v_bar() {
+TEST_CASE("click drag v bar") {
     std::println("--- test_click_drag_v_bar ---");
     StylePool pool;
     ScrollState state;
@@ -825,7 +825,7 @@ static void test_click_drag_v_bar() {
 //       painted position by exactly N cells (cursor stays glued to the same
 //       point on the thumb).
 // ============================================================================
-static void test_drag_is_lag_free() {
+TEST_CASE("drag is lag free") {
     std::println("--- test_drag_is_lag_free ---");
     StylePool pool;
     ScrollState state;
@@ -904,7 +904,7 @@ static void test_drag_is_lag_free() {
 //        because the bar widget paints `viewport_w` cells but flexbox
 //        cross-stretches the container.
 // ============================================================================
-static void test_stretched_bar_uses_natural_extent() {
+TEST_CASE("stretched bar uses natural extent") {
     std::println("--- test_stretched_bar_uses_natural_extent ---");
     StylePool pool;
     ScrollState state;
@@ -942,7 +942,7 @@ static void test_stretched_bar_uses_natural_extent() {
 // 14d3. Multi-bar — clicking ANY of several bars all driven by one state
 //        starts a drag on the correct bar (showcase pattern).
 // ============================================================================
-static void test_multiple_bars_one_state() {
+TEST_CASE("multiple bars one state") {
     std::println("--- test_multiple_bars_one_state ---");
     StylePool pool;
     ScrollState state;
@@ -993,7 +993,7 @@ static void test_multiple_bars_one_state() {
 // ============================================================================
 // 14e. Drag robustness — Right Release doesn't cancel an active Left drag
 // ============================================================================
-static void test_drag_right_release_does_not_cancel() {
+TEST_CASE("drag right release does not cancel") {
     std::println("--- test_drag_right_release_does_not_cancel ---");
     StylePool pool;
     ScrollState state;
@@ -1040,7 +1040,7 @@ static void test_drag_right_release_does_not_cancel() {
 // ============================================================================
 // 14f. Drag robustness — click on bar with max=0 doesn't start a stuck drag
 // ============================================================================
-static void test_drag_skipped_when_no_scroll_room() {
+TEST_CASE("drag skipped when no scroll room") {
     std::println("--- test_drag_skipped_when_no_scroll_room ---");
     StylePool pool;
     ScrollState state;
@@ -1069,7 +1069,7 @@ static void test_drag_skipped_when_no_scroll_room() {
 // ============================================================================
 // 14g. Drag robustness — Press on the other bar mid-drag switches axes cleanly
 // ============================================================================
-static void test_drag_axis_switch_does_not_dual_flag() {
+TEST_CASE("drag axis switch does not dual flag") {
     std::println("--- test_drag_axis_switch_does_not_dual_flag ---");
     StylePool pool;
     ScrollState state;
@@ -1111,7 +1111,7 @@ static void test_drag_axis_switch_does_not_dual_flag() {
 // ============================================================================
 // 14h. Drag robustness — end_drag() unsticks a lost-release drag
 // ============================================================================
-static void test_end_drag_recovers_from_lost_release() {
+TEST_CASE("end drag recovers from lost release") {
     std::println("--- test_end_drag_recovers_from_lost_release ---");
     StylePool pool;
     ScrollState state;
@@ -1151,7 +1151,7 @@ static void test_end_drag_recovers_from_lost_release() {
 // ============================================================================
 // 15. Edge case: content fits viewport — max_x/y both 0, scroll is no-op
 // ============================================================================
-static void test_content_fits_viewport() {
+TEST_CASE("content fits viewport") {
     std::println("--- test_content_fits_viewport ---");
     StylePool pool;
     ScrollState s;
@@ -1175,7 +1175,7 @@ static void test_content_fits_viewport() {
 // ============================================================================
 // 16. Edge case: empty content — bounds stay at zero, no UB
 // ============================================================================
-static void test_empty_content() {
+TEST_CASE("empty content") {
     std::println("--- test_empty_content ---");
     StylePool pool;
     ScrollState s;
@@ -1196,7 +1196,7 @@ static void test_empty_content() {
 // ============================================================================
 // 17. Edge case: stale state.y far past max_y — clamped on render
 // ============================================================================
-static void test_stale_state_far_past_max() {
+TEST_CASE("stale state far past max") {
     std::println("--- test_stale_state_far_past_max ---");
     StylePool pool;
     ScrollState s;
@@ -1215,7 +1215,7 @@ static void test_stale_state_far_past_max() {
 // ============================================================================
 // 18. Edge case: viewport_h = 0 → scrollbar widget returns empty Element
 // ============================================================================
-static void test_zero_viewport_scrollbar() {
+TEST_CASE("zero viewport scrollbar") {
     std::println("--- test_zero_viewport_scrollbar ---");
     ScrollState s;
     s.max_y = 100;
@@ -1231,7 +1231,7 @@ static void test_zero_viewport_scrollbar() {
 // ============================================================================
 // 19. Edge case: large content (10,000 rows) — writeback math doesn't overflow
 // ============================================================================
-static void test_large_content() {
+TEST_CASE("large content") {
     std::println("--- test_large_content ---");
     StylePool pool;
     ScrollState s;
@@ -1253,7 +1253,7 @@ static void test_large_content() {
 // ============================================================================
 // 20. Edge case: writeback dirty flag fires once per max-change, not idle
 // ============================================================================
-static void test_writeback_dirty_flag() {
+TEST_CASE("writeback dirty flag") {
     std::println("--- test_writeback_dirty_flag ---");
     StylePool pool;
     ScrollState s;
@@ -1289,7 +1289,7 @@ static void test_writeback_dirty_flag() {
 // A ScrollState destroyed in that window (e.g. a scrollable removed inside
 // update()) must remove itself from the registry, or the next input event is a
 // use-after-free. Verify the dtor and move/copy-assign keep the registry clean.
-static void test_registry_unregisters_on_destroy() {
+TEST_CASE("registry unregisters on destroy") {
     std::println("--- test_registry_unregisters_on_destroy ---");
     auto& reg = detail::live_scroll_states();
     reg.clear();
@@ -1323,38 +1323,3 @@ static void test_registry_unregisters_on_destroy() {
     std::println("PASS\n");
 }
 
-int main() {
-    test_scroll_state_basics();
-    test_scroll_state_imperative();
-    test_scroll_state_keys();
-    test_scroll_state_mouse();
-    test_scroll_state_step();
-    test_dsl_pipe_sets_fields();
-    test_renderer_vertical_scroll();
-    test_renderer_horizontal_scroll();
-    test_renderer_2d_scroll();
-    test_max_offset_writeback();
-    test_stale_offset_clamps();
-    test_scrollbar_y();
-    test_scrollbar_x();
-    test_scrollable_widget_compat();
-    test_hover_over_hbar();
-    test_click_drag_h_bar();
-    test_click_drag_v_bar();
-    test_drag_is_lag_free();
-    test_stretched_bar_uses_natural_extent();
-    test_multiple_bars_one_state();
-    test_drag_right_release_does_not_cancel();
-    test_drag_skipped_when_no_scroll_room();
-    test_drag_axis_switch_does_not_dual_flag();
-    test_end_drag_recovers_from_lost_release();
-    test_content_fits_viewport();
-    test_empty_content();
-    test_stale_state_far_past_max();
-    test_zero_viewport_scrollbar();
-    test_large_content();
-    test_writeback_dirty_flag();
-    test_registry_unregisters_on_destroy();
-    std::println("=== ALL SCROLL TESTS PASSED ===");
-    return 0;
-}

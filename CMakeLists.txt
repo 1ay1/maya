@@ -428,7 +428,23 @@ if(MAYA_BUILD_TESTS)
         endif()
     endif()
 
-    set(MAYA_TEST_SOURCES
+    # doctest — single maya_tests binary. The pure unit tests are doctest
+    # TEST_CASEs auto-registered into one executable (linking maya once) via
+    # doctest_discover_tests, instead of one executable per file.
+    include(FetchContent)
+    FetchContent_Declare(
+        doctest
+        GIT_REPOSITORY https://github.com/doctest/doctest.git
+        GIT_TAG        v2.4.11
+        GIT_SHALLOW    TRUE
+    )
+    set(DOCTEST_WITH_TESTS OFF CACHE INTERNAL "")
+    set(DOCTEST_NO_INSTALL ON CACHE INTERNAL "")
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE INTERNAL "")
+    FetchContent_MakeAvailable(doctest)
+    unset(CMAKE_POLICY_VERSION_MINIMUM CACHE)
+
+    set(MAYA_CONSOLIDATED_TESTS
         tests/test_render.cpp
         tests/test_render_scaling.cpp
         tests/test_types.cpp
@@ -443,8 +459,6 @@ if(MAYA_BUILD_TESTS)
         tests/test_motion.cpp
         tests/test_overlay_layer.cpp
         tests/test_static_split.cpp
-        tests/test_highlight.cpp
-        tests/test_highlight_resume.cpp
         tests/test_layout.cpp
         tests/test_border.cpp
         tests/test_simd.cpp
@@ -452,9 +466,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_writer.cpp
         tests/test_widgets.cpp
         tests/test_promoted.cpp
-        tests/test_markdown.cpp
         tests/test_math.cpp
-        tests/test_streaming_cache.cpp
         tests/test_streaming_perf.cpp
         tests/test_streaming_window.cpp
         tests/test_tracked.cpp
@@ -464,13 +476,24 @@ if(MAYA_BUILD_TESTS)
         tests/test_wire_row.cpp
         tests/test_commonmark_spec.cpp
         tests/test_html.cpp
-        # Streaming-reveal WIDGET-CONTRACT tests. These pin behavior that is
-        # implemented entirely inside StreamingMarkdown / RateCursor (pacing
-        # invariants, finalize-ramp disarm, idle-gap clock carry, per-block
-        # reveal uniformity, long-turn ingest lag, async-parse liveness), so
-        # they are enforced HERE, where the implementation lives — not only
-        # in a host's suite. agentty's ctest builds the same files (single
-        # source of truth: maya/tests/) so both projects gate on them.
+    )
+    add_executable(maya_tests tests/test_main.cpp ${MAYA_CONSOLIDATED_TESTS})
+    target_link_libraries(maya_tests PRIVATE ${MAYA_TEST_LIB} doctest::doctest)
+    target_compile_definitions(maya_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_options(maya_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:${MAYA_TEST_OPT}>)
+    include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
+    doctest_discover_tests(maya_tests)
+
+    # Still one-executable-per-file: multi-main files (test_markdown,
+    # test_streaming_cache have secondary sub-program mains), the streaming
+    # reveal/lag probes shared verbatim with agentty's suite, and the
+    # benchmark. These keep their own int main().
+    set(MAYA_TEST_SOURCES
+        tests/test_markdown.cpp
+        tests/test_streaming_cache.cpp
+        tests/test_highlight.cpp
+        tests/test_highlight_resume.cpp
         tests/reveal_pacing_test.cpp
         tests/reveal_resume_test.cpp
         tests/reveal_smoothness_probe.cpp

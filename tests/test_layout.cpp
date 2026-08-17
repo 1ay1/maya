@@ -3,7 +3,7 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 
 using namespace maya;
@@ -36,7 +36,7 @@ static void dump(const Canvas& canvas, int rows = -1) {
 // Text element
 // ============================================================================
 
-void test_bare_text_renders_at_origin() {
+TEST_CASE("bare text renders at origin") {
     std::println("--- test_bare_text_renders_at_origin ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
@@ -46,7 +46,7 @@ void test_bare_text_renders_at_origin() {
     std::println("PASS\n");
 }
 
-void test_text_with_style_renders() {
+TEST_CASE("text with style renders") {
     std::println("--- test_text_with_style_renders ---");
     StylePool pool;
     Canvas canvas(20, 3, &pool);
@@ -57,7 +57,7 @@ void test_text_with_style_renders() {
     std::println("PASS\n");
 }
 
-void test_text_truncate_end() {
+TEST_CASE("text truncate end") {
     std::println("--- test_text_truncate_end ---");
     StylePool pool;
     Canvas canvas(5, 3, &pool);
@@ -72,7 +72,7 @@ void test_text_truncate_end() {
     std::println("PASS\n");
 }
 
-void test_text_no_wrap_stays_on_one_row() {
+TEST_CASE("text no wrap stays on one row") {
     std::println("--- test_text_no_wrap_stays_on_one_row ---");
     StylePool pool;
     Canvas canvas(5, 5, &pool);
@@ -88,7 +88,7 @@ void test_text_no_wrap_stays_on_one_row() {
 // Column layout
 // ============================================================================
 
-void test_column_stacks_children_vertically() {
+TEST_CASE("column stacks children vertically") {
     std::println("--- test_column_stacks_children_vertically ---");
     StylePool pool;
     Canvas canvas(30, 5, &pool);
@@ -105,7 +105,7 @@ void test_column_stacks_children_vertically() {
     std::println("PASS\n");
 }
 
-void test_column_with_padding() {
+TEST_CASE("column with padding") {
     std::println("--- test_column_with_padding ---");
     StylePool pool;
     Canvas canvas(30, 8, &pool);
@@ -121,7 +121,7 @@ void test_column_with_padding() {
     std::println("PASS\n");
 }
 
-void test_column_gap() {
+TEST_CASE("column gap") {
     std::println("--- test_column_gap ---");
     StylePool pool;
     Canvas canvas(20, 8, &pool);
@@ -147,7 +147,7 @@ void test_column_gap() {
 // Row layout
 // ============================================================================
 
-void test_row_places_children_horizontally() {
+TEST_CASE("row places children horizontally") {
     std::println("--- test_row_places_children_horizontally ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
@@ -167,7 +167,7 @@ void test_row_places_children_horizontally() {
     std::println("PASS\n");
 }
 
-void test_row_gap() {
+TEST_CASE("row gap") {
     std::println("--- test_row_gap ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
@@ -186,7 +186,7 @@ void test_row_gap() {
     std::println("PASS\n");
 }
 
-void test_row_with_padding() {
+TEST_CASE("row with padding") {
     std::println("--- test_row_with_padding ---");
     StylePool pool;
     Canvas canvas(30, 5, &pool);
@@ -207,7 +207,7 @@ void test_row_with_padding() {
 // Flex properties
 // ============================================================================
 
-void test_spacer_pushes_content() {
+TEST_CASE("spacer pushes content") {
     std::println("--- test_spacer_pushes_content ---");
     StylePool pool;
     Canvas canvas(20, 10, &pool);
@@ -223,7 +223,7 @@ void test_spacer_pushes_content() {
     std::println("PASS\n");
 }
 
-void test_grow_fills_remaining_space() {
+TEST_CASE("grow fills remaining space") {
     std::println("--- test_grow_fills_remaining_space ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
@@ -243,7 +243,7 @@ void test_grow_fills_remaining_space() {
     std::println("PASS\n");
 }
 
-void test_align_items_center() {
+TEST_CASE("align items center") {
     std::println("--- test_align_items_center ---");
     StylePool pool;
     Canvas canvas(20, 10, &pool);
@@ -267,7 +267,7 @@ void test_align_items_center() {
 // to the container's full height before positioning, so (cross_size -
 // item.cross)/2 == 0 and align=center was a silent no-op (the user's
 // "card just stretches to height=9" report).
-void test_align_center_definite_cross_not_stretched() {
+TEST_CASE("align center definite cross not stretched") {
     std::println("--- test_align_center_definite_cross_not_stretched ---");
     StylePool pool;
     Canvas canvas(20, 9, &pool);
@@ -296,7 +296,7 @@ void test_align_center_definite_cross_not_stretched() {
     std::println("PASS\n");
 }
 
-void test_justify_space_between() {
+TEST_CASE("justify space between") {
     std::println("--- test_justify_space_between ---");
     StylePool pool;
     Canvas canvas(20, 3, &pool);
@@ -317,7 +317,7 @@ void test_justify_space_between() {
     std::println("PASS\n");
 }
 
-void test_justify_center() {
+TEST_CASE("justify center") {
     std::println("--- test_justify_center ---");
     StylePool pool;
     Canvas canvas(20, 3, &pool);
@@ -339,7 +339,7 @@ void test_justify_center() {
 // Fixed size constraints
 // ============================================================================
 
-void test_fixed_width_box() {
+TEST_CASE("fixed width box") {
     std::println("--- test_fixed_width_box ---");
     StylePool pool;
     Canvas canvas(40, 3, &pool);
@@ -359,7 +359,7 @@ void test_fixed_width_box() {
     std::println("PASS\n");
 }
 
-void test_fixed_height_box() {
+TEST_CASE("fixed height box") {
     std::println("--- test_fixed_height_box ---");
     StylePool pool;
     Canvas canvas(20, 10, &pool);
@@ -378,7 +378,7 @@ void test_fixed_height_box() {
 // Nested layouts
 // ============================================================================
 
-void test_nested_column_inside_row() {
+TEST_CASE("nested column inside row") {
     std::println("--- test_nested_column_inside_row ---");
     StylePool pool;
     Canvas canvas(40, 5, &pool);
@@ -401,7 +401,7 @@ void test_nested_column_inside_row() {
     std::println("PASS\n");
 }
 
-void test_deeply_nested() {
+TEST_CASE("deeply nested") {
     std::println("--- test_deeply_nested ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -425,7 +425,7 @@ void test_deeply_nested() {
 // Margin
 // ============================================================================
 
-void test_margin_offsets_child() {
+TEST_CASE("margin offsets child") {
     std::println("--- test_margin_offsets_child ---");
     StylePool pool;
     Canvas canvas(20, 8, &pool);
@@ -447,7 +447,7 @@ void test_margin_offsets_child() {
 // next sibling over by the margin extent. Before the fix, flex line-packing
 // ignored child margins, so "B" landed directly after "A" and the right margin
 // silently overlapped.
-void test_flex_child_margin_consumes_main_space() {
+TEST_CASE("flex child margin consumes main space") {
     std::println("--- test_flex_child_margin_consumes_main_space ---");
     StylePool pool;
     Canvas canvas(20, 3, &pool);
@@ -471,7 +471,7 @@ void test_flex_child_margin_consumes_main_space() {
 // Separators
 // ============================================================================
 
-void test_separator_draws_horizontal_line() {
+TEST_CASE("separator draws horizontal line") {
     std::println("--- test_separator_draws_horizontal_line ---");
     StylePool pool;
     Canvas canvas(20, 5, &pool);
@@ -492,7 +492,7 @@ void test_separator_draws_horizontal_line() {
 // Counter-style tree (real-world pattern)
 // ============================================================================
 
-void test_counter_tree() {
+TEST_CASE("counter tree") {
     std::println("--- test_counter_tree ---");
     StylePool pool;
     Canvas canvas(40, 10, &pool);
@@ -511,7 +511,7 @@ void test_counter_tree() {
 // String children (auto-wrapped as text elements)
 // ============================================================================
 
-void test_string_child_auto_text() {
+TEST_CASE("string child auto text") {
     std::println("--- test_string_child_auto_text ---");
     StylePool pool;
     Canvas canvas(20, 3, &pool);
@@ -528,7 +528,7 @@ void test_string_child_auto_text() {
 // Dashboard-like layout: vstack(header, hstack(left_col, right_col), procs, footer)
 // ============================================================================
 
-void test_dashboard_layout() {
+TEST_CASE("dashboard layout") {
     std::println("--- test_dashboard_layout ---");
     StylePool pool;
     Canvas canvas(80, 40, &pool);
@@ -662,7 +662,7 @@ void test_dashboard_layout() {
 // Regression: column child's height should recompute when width changes
 // ============================================================================
 
-void test_column_child_height_recomputes() {
+TEST_CASE("column child height recomputes") {
     std::println("--- test_column_child_height_recomputes ---");
     StylePool pool;
     Canvas canvas(40, 20, &pool);
@@ -718,34 +718,3 @@ void test_column_child_height_recomputes() {
     std::println("PASS\n");
 }
 
-int main() {
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    test_column_child_height_recomputes();
-    test_dashboard_layout();
-    test_bare_text_renders_at_origin();
-    test_text_with_style_renders();
-    test_text_truncate_end();
-    test_text_no_wrap_stays_on_one_row();
-    test_column_stacks_children_vertically();
-    test_column_with_padding();
-    test_column_gap();
-    test_row_places_children_horizontally();
-    test_row_gap();
-    test_row_with_padding();
-    test_spacer_pushes_content();
-    test_grow_fills_remaining_space();
-    test_align_items_center();
-    test_align_center_definite_cross_not_stretched();
-    test_justify_space_between();
-    test_justify_center();
-    test_fixed_width_box();
-    test_fixed_height_box();
-    test_nested_column_inside_row();
-    test_deeply_nested();
-    test_margin_offsets_child();
-    test_flex_child_margin_consumes_main_space();
-    test_separator_draws_horizontal_line();
-    test_counter_tree();
-    test_string_child_auto_text();
-    std::println("=== ALL 26 TESTS PASSED ===");
-}

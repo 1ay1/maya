@@ -4,7 +4,7 @@
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 #include <string>
 #include <string_view>
@@ -25,7 +25,7 @@ static Capture cap_of(std::string_view src, const std::vector<Span>& spans,
 }
 
 // ── constexpr theme structure ───────────────────────────────────────────────
-void test_theme_constexpr() {
+TEST_CASE("theme constexpr") {
     std::println("--- test_theme_constexpr ---");
     // The theme table is fully constexpr.
     static_assert(themes::monokai.style_for(Capture::Keyword).fg->kind()
@@ -42,7 +42,7 @@ void test_theme_constexpr() {
     std::println("PASS\n");
 }
 
-void test_lang_from_tag() {
+TEST_CASE("lang from tag") {
     std::println("--- test_lang_from_tag ---");
     assert(lang_from_tag("cpp") == Lang::Cpp);
     assert(lang_from_tag("C++") == Lang::Cpp);
@@ -58,7 +58,7 @@ void test_lang_from_tag() {
 }
 
 // ── span contract: sorted, non-overlapping, in-bounds ───────────────────────
-void test_span_contract() {
+TEST_CASE("span contract") {
     std::println("--- test_span_contract ---");
     std::string src = R"(int main() {
     // entry point
@@ -78,7 +78,7 @@ void test_span_contract() {
 }
 
 // ── C++ classification ──────────────────────────────────────────────────────
-void test_cpp_captures() {
+TEST_CASE("cpp captures") {
     std::println("--- test_cpp_captures ---");
     std::string src =
         "const int x = 0xFF; // note\n"
@@ -96,7 +96,7 @@ void test_cpp_captures() {
 }
 
 // ── Python classification ───────────────────────────────────────────────────
-void test_python_captures() {
+TEST_CASE("python captures") {
     std::println("--- test_python_captures ---");
     std::string src =
         "def greet(name):\n"
@@ -113,7 +113,7 @@ void test_python_captures() {
 }
 
 // ── Rust attributes + types ─────────────────────────────────────────────────
-void test_rust_captures() {
+TEST_CASE("rust captures") {
     std::println("--- test_rust_captures ---");
     std::string src =
         "#[derive(Debug)]\n"
@@ -132,7 +132,7 @@ void test_rust_captures() {
 }
 
 // ── Shell variables ─────────────────────────────────────────────────────────
-void test_shell_captures() {
+TEST_CASE("shell captures") {
     std::println("--- test_shell_captures ---");
     std::string src =
         "if [ -n $HOME ]; then\n"
@@ -147,7 +147,7 @@ void test_shell_captures() {
 }
 
 // ── Block comments don't swallow the rest of the file ───────────────────────
-void test_block_comment_bounds() {
+TEST_CASE("block comment bounds") {
     std::println("--- test_block_comment_bounds ---");
     std::string src = "a /* comment */ b\n";
     auto spans = highlight(src, Lang::Cpp);
@@ -164,23 +164,10 @@ void test_block_comment_bounds() {
 }
 
 // ── Empty input is handled ──────────────────────────────────────────────────
-void test_empty() {
+TEST_CASE("empty") {
     std::println("--- test_empty ---");
     auto spans = highlight("", Lang::Cpp);
     assert(spans.empty());
     std::println("PASS\n");
 }
 
-int main() {
-    test_theme_constexpr();
-    test_lang_from_tag();
-    test_span_contract();
-    test_cpp_captures();
-    test_python_captures();
-    test_rust_captures();
-    test_shell_captures();
-    test_block_comment_bounds();
-    test_empty();
-    std::println("All highlight tests passed.");
-    return 0;
-}

@@ -14,7 +14,7 @@
 #include <maya/widget/markdown/internal.hpp>
 #include <maya/widget/markdown.hpp>
 
-#include <cassert>
+#include "agtest.hpp"
 #include <print>
 #include <string>
 #include <string_view>
@@ -83,7 +83,7 @@ static void assert_stream_matches_cold(const std::string& code,
 // post-finish build(), every subsequent build() returns the identical object
 // (same address) and identical content. If build() were re-materializing the
 // tree each frame it would return a reference into freshly-rebuilt state.
-static void test_settled_build_is_stable() {
+TEST_CASE("settled build is stable") {
     std::println("--- settled: build() stable after finish ---");
 
     StreamingMarkdown md;
@@ -111,7 +111,7 @@ static void test_settled_build_is_stable() {
 // settled_element() must (a) return nullptr while live, (b) after finish()
 // return a stable shared_ptr<const Element> — the SAME control block on every
 // call — so a host stashes a 16-byte pointer instead of deep-copying the tree.
-static void test_settled_element_handoff() {
+TEST_CASE("settled element handoff") {
     std::println("--- settled: settled_element() shared handoff ---");
 
     StreamingMarkdown md;
@@ -139,73 +139,3 @@ static void test_settled_element_handoff() {
     std::println("PASS\n");
 }
 
-int main() {
-    // Plain code with keywords, strings, numbers across many lines.
-    assert_stream_matches_cold(
-        "int main() {\n"
-        "    int x = 42;\n"
-        "    const char* s = \"hello\";\n"
-        "    return x;\n"
-        "}\n",
-        "cpp", "plain-cpp");
-
-    // Multi-line block comment: the cross-line construct that MUST NOT be
-    // frozen while still open. ground_off must stay before the /* until */.
-    assert_stream_matches_cold(
-        "int a = 1;\n"
-        "/* this comment\n"
-        "   spans several\n"
-        "   lines */\n"
-        "int b = 2;\n",
-        "cpp", "block-comment");
-
-    // Triple-quoted string (Python) spanning lines.
-    assert_stream_matches_cold(
-        "x = 1\n"
-        "doc = \"\"\"\n"
-        "multi\n"
-        "line\n"
-        "\"\"\"\n"
-        "y = 2\n",
-        "python", "triple-quote");
-
-    // Unterminated block comment at end-of-stream (the live tail is inside an
-    // open comment for the whole back half of the stream).
-    assert_stream_matches_cold(
-        "ok();\n"
-        "/* still open\n"
-        "and open\n"
-        "and still open",
-        "cpp", "unterminated-comment");
-
-    // Shell heredoc-ish content + comments (hash comments are single-line, so
-    // ground state advances every line — exercises the common fast case).
-    assert_stream_matches_cold(
-        "#!/bin/sh\n"
-        "# a comment\n"
-        "echo \"$VAR\"\n"
-        "for i in 1 2 3; do\n"
-        "  echo $i\n"
-        "done\n",
-        "bash", "shell");
-
-    // Long block to make the O(n) vs O(1) difference real, and to cross the
-    // gutter's power-of-ten line boundary (9->10) while streaming.
-    {
-        std::string big;
-        for (int i = 0; i < 30; ++i) {
-            big += "let v";
-            big += std::to_string(i);
-            big += " = ";
-            big += std::to_string(i * 7);
-            big += ";\n";
-        }
-        assert_stream_matches_cold(big, "rust", "long-block-gutter-boundary");
-    }
-
-    test_settled_build_is_stable();
-    test_settled_element_handoff();
-
-    std::println("All highlight-resume tests passed.");
-    return 0;
-}

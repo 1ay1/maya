@@ -476,6 +476,8 @@ if(MAYA_BUILD_TESTS)
         tests/test_wire_row.cpp
         tests/test_commonmark_spec.cpp
         tests/test_html.cpp
+        tests/test_highlight.cpp
+        tests/test_highlight_resume.cpp
     )
     add_executable(maya_tests tests/test_main.cpp ${MAYA_CONSOLIDATED_TESTS})
     target_link_libraries(maya_tests PRIVATE ${MAYA_TEST_LIB} doctest::doctest)
@@ -492,8 +494,6 @@ if(MAYA_BUILD_TESTS)
     set(MAYA_TEST_SOURCES
         tests/test_markdown.cpp
         tests/test_streaming_cache.cpp
-        tests/test_highlight.cpp
-        tests/test_highlight_resume.cpp
         tests/reveal_pacing_test.cpp
         tests/reveal_resume_test.cpp
         tests/reveal_smoothness_probe.cpp

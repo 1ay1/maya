@@ -394,6 +394,10 @@ WordClass classify_word(std::string_view word, LangId lang) {
     case LangId::R:
     case LangId::CMake:
     case LangId::Markdown:
+    // Diff is line-oriented (handled by the line highlighter, not per word),
+    // so a word is always plain. Listed explicitly so -Wswitch flags any
+    // future LangId that forgets to decide.
+    case LangId::Diff:
     case LangId::Unknown:
         break;
     }

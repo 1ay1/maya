@@ -579,7 +579,6 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 
     if (W <= 0 || y_begin >= y_end) return;
 
-    const uint64_t* cells = canvas.cells();
     uint16_t current_style = UINT16_MAX; // sentinel: no SGR emitted yet
 
     // Disable auto-wrap (DECAWM reset) so that characters extending past

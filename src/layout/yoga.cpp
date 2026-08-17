@@ -167,8 +167,13 @@ void compute_node(
         // flex_basis takes priority, then width/height, then measure/auto.
         const auto& cs = child.style;
 
-        int child_outer_main_extra  = row ? outer_horizontal(cs) : outer_vertical(cs);
-        int child_outer_cross_extra = row ? outer_vertical(cs)   : outer_horizontal(cs);
+        // Margin extents in main/cross orientation. border+padding are folded
+        // into the item's border-box main/cross size below (via inner_*), so we
+        // reserve ONLY the margin here — line-breaking, free-space and the main
+        // cursor advance add it back so a margined child occupies its full
+        // outer footprint (CSS Flexbox §9.2/§9.5).
+        int child_margin_main  = row ? margin_horizontal(cs) : margin_vertical(cs);
+        int child_margin_cross = row ? margin_vertical(cs)   : margin_horizontal(cs);
 
         // Resolve flex basis
         Dimension basis = cs.flex_basis;
@@ -226,6 +231,8 @@ void compute_node(
             .cross        = 0,
             .main_offset  = 0,
             .cross_offset = 0,
+            .margin_main  = child_margin_main,
+            .margin_cross = child_margin_cross,
             .laid_out     = laid_out_in_3a,
             .avail_w      = avail_w_3a,
             .avail_h      = avail_h_3a,
@@ -260,12 +267,15 @@ void compute_node(
         FlexLine* current = &next_line();
         int line_main = 0;
         for (auto& item : all_items) {
-            int needed = item.hypothetical + (current->items.empty() ? 0 : style.gap);
+            // Outer main size = border-box main + main-axis margin. Wrapping
+            // must break on the child's full footprint, not just its content.
+            int outer = item.hypothetical + item.margin_main;
+            int needed = outer + (current->items.empty() ? 0 : style.gap);
             if (!current->items.empty() && line_main + needed > main_avail) {
                 current = &next_line();
                 line_main = 0;
             }
-            line_main += item.hypothetical + (current->items.empty() ? 0 : style.gap);
+            line_main += outer + (current->items.empty() ? 0 : style.gap);
             current->items.push_back(item);
         }
         // A trailing empty line can occur only if all_items was empty, which
@@ -290,11 +300,17 @@ void compute_node(
         if (num_gaps < 0) num_gaps = 0;
         int total_gap = num_gaps * style.gap;
 
-        // Sum of hypothetical main sizes
+        // Sum of hypothetical OUTER main sizes (border-box + margin). Margins
+        // consume main-axis space just like content, so free-space available
+        // for grow/shrink must exclude them.
         int total_hypo = 0;
-        for (auto& it : line.items) total_hypo += it.hypothetical;
+        int total_margin_main = 0;
+        for (auto& it : line.items) {
+            total_hypo += it.hypothetical;
+            total_margin_main += it.margin_main;
+        }
 
-        int free_space = main_avail - total_hypo - total_gap;
+        int free_space = main_avail - total_hypo - total_margin_main - total_gap;
 
         if (free_space > 0 && main_definite) {
             // Distribute positive free space via flex_grow.
@@ -452,9 +468,11 @@ void compute_node(
             child_w = clamp_dim(child_w, cs.min_width, cs.max_width, parent_width);
             child_h = clamp_dim(child_h, cs.min_height, cs.max_height, parent_height);
 
-            // Recursively compute children of this child
+            // Recursively compute children of this child. inner_w feeds the
+            // natural-size measure probe below; the height axis has no probe
+            // (measure takes only a width), so no inner_h is needed — the
+            // recursive compute_node subtracts the child's own insets itself.
             int inner_w = std::max(0, child_w - inner_horizontal(cs));
-            int inner_h = std::max(0, child_h - inner_vertical(cs));
             if (!child.children.empty()) {
                 if (style.overflow == Overflow::Scroll) {
                     // Scroll viewport — children keep natural cross sizes
@@ -507,7 +525,7 @@ void compute_node(
                         child_h = child.computed.size.height.value;
                         item.main  = row ? child_w : child_h;
                         item.cross = row ? child_h : child_w;
-                        line_cross = std::max(line_cross, item.cross);
+                        line_cross = std::max(line_cross, item.cross + item.margin_cross);
                         continue;
                     }
 
@@ -559,14 +577,17 @@ void compute_node(
             item.main  = row ? child_w : child_h;
             item.cross = row ? child_h : child_w;
 
-            line_cross = std::max(line_cross, item.cross);
+            // Line cross size must fit the child's OUTER cross extent
+            // (border-box cross + cross-axis margin), else a margined child
+            // gets clipped at the line edge.
+            line_cross = std::max(line_cross, item.cross + item.margin_cross);
         }
         line.cross_size = line_cross;
 
-        // Sum main sizes + gaps for this line
+        // Sum main sizes + margins + gaps for this line (its outer footprint).
         int lm = 0;
         for (std::size_t i = 0; i < line.items.size(); ++i) {
-            lm += line.items[i].main;
+            lm += line.items[i].main + line.items[i].margin_main;
             if (i + 1 < line.items.size()) lm += style.gap;
         }
         line.main_size = lm;
@@ -644,18 +665,23 @@ void compute_node(
                 break;
         }
 
-        // Walk items along main axis
+        // Walk items along main axis. main_offset marks the start of each
+        // item's MARGIN box; the leading margin is added at final positioning
+        // (§3f), so the cursor must step past the item's full outer main
+        // footprint = margin_main + main.
         int main_cursor = main_start;
         for (std::size_t i = 0; i < line.items.size(); ++i) {
             auto& item = line.items[i];
             item.main_offset = main_cursor;
-            main_cursor += item.main + style.gap + main_between;
+            main_cursor += item.main + item.margin_main + style.gap + main_between;
         }
 
-        // Handle reverse: mirror offsets
+        // Handle reverse: mirror offsets. Mirror the full outer extent so the
+        // trailing margin lands on the correct side after flipping.
         if (reverse) {
             for (auto& item : line.items) {
-                item.main_offset = main_avail - item.main_offset - item.main;
+                item.main_offset =
+                    main_avail - item.main_offset - item.main - item.margin_main;
             }
         }
 
@@ -671,11 +697,15 @@ void compute_node(
                     break;
 
                 case Align::End:
-                    item.cross_offset = cross_cursor + line.cross_size - item.cross;
+                    // Push the item's outer (margin) box to the far cross edge.
+                    item.cross_offset =
+                        cross_cursor + line.cross_size - item.cross - item.margin_cross;
                     break;
 
                 case Align::Center:
-                    item.cross_offset = cross_cursor + (line.cross_size - item.cross) / 2;
+                    // Center the outer (margin) box within the line.
+                    item.cross_offset =
+                        cross_cursor + (line.cross_size - item.cross - item.margin_cross) / 2;
                     break;
 
                 case Align::Stretch: {
@@ -696,7 +726,10 @@ void compute_node(
                     const bool cross_is_definite =
                         row ? !ics.height.is_auto() : !ics.width.is_auto();
                     if (style.overflow != Overflow::Scroll && !cross_is_definite) {
-                        item.cross = line.cross_size;
+                        // Stretch fills the line MINUS this child's cross
+                        // margins, so the margin box (not the border box)
+                        // spans the line exactly.
+                        item.cross = std::max(0, line.cross_size - item.margin_cross);
                         if (row) {
                             nodes[item.index].computed.size.height = Rows{item.cross};
                         } else {

@@ -185,6 +185,16 @@ namespace detail {
     return s.border.top + s.padding.top;
 }
 
+/// Margin extent on each axis. Unlike outer_*, this is margin ONLY (no
+/// border/padding), for flex code that has already folded border+padding into
+/// an item's border-box main/cross size and must add just the margin on top.
+[[nodiscard]] constexpr int margin_horizontal(const FlexStyle& s) noexcept {
+    return s.margin.horizontal();
+}
+[[nodiscard]] constexpr int margin_vertical(const FlexStyle& s) noexcept {
+    return s.margin.vertical();
+}
+
 // --------------------------------------------------------------------------
 // Per-flex-line item tracking during the algorithm
 // --------------------------------------------------------------------------
@@ -196,6 +206,15 @@ struct FlexItem {
     int         cross;          // Final cross size
     int         main_offset;    // Offset along main axis (set during positioning)
     int         cross_offset;   // Offset along cross axis
+    // Outer margin+border+padding extents on each axis (border/padding are
+    // already folded into main/cross, so these carry ONLY the margins). Flex
+    // line-breaking, free-space distribution, the main-axis cursor advance and
+    // the container's own auto content-size must all reserve these — a child's
+    // margin occupies main/cross space just like its content does (CSS Flexbox
+    // §9.2/§9.5). Kept separate from `main`/`cross` because those stay the
+    // border-box size handed to the child's own compute_node.
+    int         margin_main = 0;  // margin extent along the main axis
+    int         margin_cross = 0; // margin extent along the cross axis
     // Whether section 3a fully recursed this child (its `computed` is valid)
     // and the available width/height it was laid out under. The 3d pass can
     // skip re-running an identical layout when these match what it would pass.

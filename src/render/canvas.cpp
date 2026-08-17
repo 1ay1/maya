@@ -193,6 +193,12 @@ char* StylePool::append_color_sgr(char* p, const Color& in, bool is_fg) noexcept
             p = write_uint_sgr(p, c.r()); *p++ = ';';
             p = write_uint_sgr(p, c.g()); *p++ = ';';
             return write_uint_sgr(p, c.b());
+        case Color::Kind::Default:
+            // Terminal default fg/bg. Both call sites currently filter Default
+            // out before calling, so this is defensive: emit the ANSI reset
+            // (39 = default fg, 49 = default bg) rather than fall through to
+            // UB if that invariant ever changes.
+            return write_uint_sgr(p, is_fg ? 39u : 49u);
     }
     __builtin_unreachable();
 }

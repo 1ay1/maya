@@ -443,6 +443,30 @@ void test_margin_offsets_child() {
     std::println("PASS\n");
 }
 
+// Regression: a flex CHILD's margin must consume main-axis space, pushing the
+// next sibling over by the margin extent. Before the fix, flex line-packing
+// ignored child margins, so "B" landed directly after "A" and the right margin
+// silently overlapped.
+void test_flex_child_margin_consumes_main_space() {
+    std::println("--- test_flex_child_margin_consumes_main_space ---");
+    StylePool pool;
+    Canvas canvas(20, 3, &pool);
+    render_tree(
+        box().direction(Row)(
+            box().margin(0, 3, 0, 0)(text("A")),
+            text("B")
+        ), canvas, pool, theme::dark);
+    dump(canvas, 3);
+    const std::string row = get_row(canvas, 0);
+    const auto a = row.find('A');
+    const auto b = row.find('B');
+    assert(a != std::string::npos && b != std::string::npos);
+    // A at column 0; B must be at 0 + 1 (A's width) + 3 (A's right margin) = 4.
+    assert(a == 0);
+    assert(b == 4);
+    std::println("PASS\n");
+}
+
 // ============================================================================
 // Separators
 // ============================================================================
@@ -719,6 +743,7 @@ int main() {
     test_nested_column_inside_row();
     test_deeply_nested();
     test_margin_offsets_child();
+    test_flex_child_margin_consumes_main_space();
     test_separator_draws_horizontal_line();
     test_counter_tree();
     test_string_child_auto_text();

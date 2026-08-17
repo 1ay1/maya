@@ -45,6 +45,38 @@ void test_control_codes() {
     std::println("PASS");
 }
 
+void test_is_control() {
+    std::println("--- test_is_control ---");
+    using maya::unicode::is_control;
+    // is_control() is the SECURITY predicate: a renderer drops these before
+    // emitting text so untrusted input (process names, filenames, pasted
+    // blobs) can't inject a terminal escape sequence. It must catch C0, DEL,
+    // AND the C1 block — the last is the part naive `< 0x20` filters miss,
+    // and it contains the 8-bit CSI/OSC/DCS/ST introducers.
+    static_assert(is_control(0x00));
+    static_assert(is_control(0x1B));  // ESC
+    static_assert(is_control(0x07));  // BEL
+    static_assert(is_control(0x0A));  // newline (a control; callers keep it explicitly)
+    static_assert(is_control(0x1F));  // last C0
+    static_assert(is_control(0x7F));  // DEL
+    static_assert(is_control(0x80));  // first C1
+    static_assert(is_control(0x90));  // DCS
+    static_assert(is_control(0x9B));  // CSI (8-bit)
+    static_assert(is_control(0x9C));  // ST
+    static_assert(is_control(0x9D));  // OSC
+    static_assert(is_control(0x9F));  // last C1
+    // Printable / legitimate text must NOT be flagged — no false positives
+    // that would mangle real names. U+00A0 (nbsp) sits just past C1.
+    static_assert(!is_control(0x20));    // space
+    static_assert(!is_control('A'));
+    static_assert(!is_control(0x7E));    // ~
+    static_assert(!is_control(0xA0));    // no-break space (NOT a control)
+    static_assert(!is_control(0x00E9));  // é
+    static_assert(!is_control(0x4E2D));  // 中
+    static_assert(!is_control(0x1F680)); // 🚀
+    std::println("PASS");
+}
+
 void test_combining_marks() {
     std::println("--- test_combining_marks ---");
     // Combining marks stack on the preceding base glyph and add NO columns.
@@ -148,6 +180,7 @@ void test_no_off_by_one() {
 int main() {
     test_ascii_and_latin();
     test_control_codes();
+    test_is_control();
     test_combining_marks();
     test_east_asian_wide();
     test_emoji_presentation();

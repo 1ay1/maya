@@ -78,7 +78,10 @@ public:
     void handle_paste(const PasteEvent& pe) {
         for (std::size_t pos = 0; pos < pe.content.size(); ) {
             char32_t cp = decode_utf8(pe.content, pos);
-            if (cp >= 0x20 || cp == '\n') insert_char(cp);
+            // Scrub control codepoints from pasted (untrusted) text — not just
+            // C0 but DEL and the C1 block, which are terminal escape
+            // introducers. Keep '\n' since this is a multi-line editor.
+            if (cp == '\n' || !maya::unicode::is_control(cp)) insert_char(cp);
         }
     }
 

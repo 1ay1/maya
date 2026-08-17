@@ -473,7 +473,7 @@ void Canvas::write_text(int x, int y, std::string_view text, uint16_t style_id) 
         // Scan run of printable ASCII bytes.
         while (pos < len) {
             auto byte = static_cast<unsigned char>(data[pos]);
-            if (byte >= 0x80 || byte < 0x20) break;
+            if (byte >= 0x80 || byte < 0x20 || byte == 0x7F) break;
             if (cx >= x_max) {
                 // Past the right clip/canvas edge — walk the rest of
                 // the ASCII run as no-ops (we still need to advance
@@ -505,9 +505,12 @@ void Canvas::write_text(int x, int y, std::string_view text, uint16_t style_id) 
         // guard runs and updates last_col_/max_y_ for us.
         if (pos < len) {
             auto byte = static_cast<unsigned char>(data[pos]);
-            if (byte < 0x20) { ++pos; continue; } // skip control
+            if (byte < 0x20 || byte == 0x7F) { ++pos; continue; } // skip C0/DEL
             char32_t cp = decode_utf8(text, pos);
-            if (cp < 0x20) continue;
+            // Drop control codepoints (C0, DEL, and the C1 block U+0080..U+009F,
+            // incl. UTF-8-encoded C1 which decode_utf8 folds to this range) so
+            // untrusted text can't inject a terminal escape sequence.
+            if (maya::unicode::is_control(cp)) continue;
             if (is_wide_char(cp)) {
                 set(cx, y, cp, style_id, 1);
                 set(cx + 1, y, U' ', style_id, 2);

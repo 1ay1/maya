@@ -97,6 +97,24 @@ namespace detail {
            cp == 0x200D || cp == 0xFEFF;       // ZWJ, ZWNBSP/BOM
 }
 
+[[nodiscard]] constexpr bool is_control(char32_t cp) noexcept {
+    // Control codepoints that must NEVER be emitted verbatim to the terminal:
+    // they ARE, or INTRODUCE, in-band escape sequences the emulator acts on.
+    // Rendering an untrusted one is a terminal-escape-injection vector — a
+    // hostile process name, filename, branch name or pasted blob could move
+    // the cursor, rewrite scrollback, or via OSC tamper with the window title
+    // or clipboard. A renderer that draws externally-sourced text must drop
+    // these; callers should route untrusted strings through this predicate.
+    //   C0  U+0000..U+001F  — incl. ESC 0x1B, BEL, CR, BS, TAB
+    //   DEL U+007F
+    //   C1  U+0080..U+009F  — the 8-bit introducers CSI (0x9B), OSC (0x9D),
+    //                         DCS (0x90), ST (0x9C). A UTF-8-encoded C1 (e.g.
+    //                         0xC2 0x9B) decodes to this range, so a single
+    //                         post-decode codepoint check catches both the
+    //                         raw-byte and UTF-8 forms.
+    return cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F);
+}
+
 [[nodiscard]] constexpr int char_width(
     char32_t cp,
     WidthMode mode = WidthMode::Modern) noexcept

@@ -108,6 +108,61 @@ void test_canvas_write_text_style() {
     std::println("PASS\n");
 }
 
+// SECURITY: write_text must NOT emit terminal-control codepoints to cells.
+// Untrusted text (process names, filenames, pasted blobs) can carry escape
+// introducers; if any reach the terminal they inject a sequence the emulator
+// acts on. The filter must catch C0, DEL, AND the C1 block (raw and
+// UTF-8-encoded) — while leaving the surrounding printable glyphs intact.
+void test_canvas_write_text_drops_control_bytes() {
+    std::println("--- test_canvas_write_text_drops_control_bytes ---");
+    StylePool pool;
+
+    auto no_control = [](Canvas& c, int w, int h) {
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                char32_t cp = c.get(x, y).character;
+                // A control codepoint must never appear in a cell. (Empty
+                // cells read as 0, which IS < 0x20 — so assert the exact
+                // dangerous ranges, not "any control".)
+                assert(!(cp == 0x7F || (cp >= 0x80 && cp <= 0x9F)));
+                assert(!(cp >= 0x01 && cp < 0x20));
+            }
+    };
+
+    // C0 CSI clear-screen, 8-bit CSI (0x9B), OSC (0x9D), ST (0x9C), DEL, and a
+    // UTF-8-encoded C1 CSI (0xC2 0x9B), each right after a marker letter. The
+    // control bytes must vanish; the printable bytes around them (including the
+    // now-inert "[2J"/"31m" that followed the stripped introducers) may remain
+    // — what matters for security is that NO control codepoint reaches a cell.
+    {
+        Canvas canvas(40, 3, &pool);
+        std::string evil = std::string("A\x1b" "B\x9b" "C\x9d" "D\x9c" "E\x7f" "F\xC2\x9B" "G");
+        canvas.write_text(0, 0, evil, 0);
+        no_control(canvas, 40, 3);
+        // The marker letters A..G survive in order. Raw 8-bit C1 bytes are not
+        // valid UTF-8 leads, so decode_utf8 renders them as U+FFFD (the
+        // replacement glyph) rather than dropping them — that is SAFE (U+FFFD
+        // is inert), so we filter it out when checking letter order. The
+        // UTF-8-ENCODED C1 (0xC2 0x9B) does decode to U+009B and IS dropped.
+        std::u32string letters;
+        for (int x = 0; x < 40; ++x) {
+            char32_t cp = canvas.get(x, 0).character;
+            if (cp >= U'A' && cp <= U'Z') letters.push_back(cp);
+        }
+        assert(letters == U"ABCDEFG");
+    }
+
+    // Legitimate UTF-8 (accent, CJK, emoji) must render — no false positives.
+    {
+        Canvas canvas(20, 3, &pool);
+        canvas.write_text(0, 0, "caf\xC3\xA9", 0);          // café
+        assert(canvas.get(0, 0).character == U'c');
+        assert(canvas.get(3, 0).character == U'\u00E9');    // é preserved
+        no_control(canvas, 20, 3);
+    }
+    std::println("PASS\n");
+}
+
 void test_canvas_fill_rect() {
     std::println("--- test_canvas_fill_rect ---");
     StylePool pool;
@@ -445,6 +500,7 @@ int main() {
     test_canvas_clear_zeroes_cells();
     test_canvas_write_text_chars();
     test_canvas_write_text_style();
+    test_canvas_write_text_drops_control_bytes();
     test_canvas_fill_rect();
     test_canvas_push_pop_clip();
     test_canvas_clip_restored_after_pop();

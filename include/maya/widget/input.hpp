@@ -105,8 +105,11 @@ public:
         // newlines, matching the textarea's handle_paste policy.
         for (std::size_t pos = 0; pos < pe.content.size(); ) {
             char32_t cp = decode_utf8(pe.content, pos);
-            if (cp >= 0x20) insert_char(cp);
-            else if (cp == '\n' && Cfg.multiline) insert_char('\n');
+            // Scrub control codepoints from pasted (untrusted) text — not just
+            // C0 but DEL and the C1 block, which are terminal escape
+            // introducers. Keep '\n' only when this Input is multiline.
+            if (cp == '\n') { if (Cfg.multiline) insert_char('\n'); }
+            else if (!maya::unicode::is_control(cp)) insert_char(cp);
         }
     }
 

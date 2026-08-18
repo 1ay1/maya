@@ -501,10 +501,12 @@ if(MAYA_BUILD_TESTS)
     include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
     doctest_discover_tests(maya_tests)
 
-    # Still one-executable-per-file: multi-main files (test_markdown,
-    # test_streaming_cache have secondary sub-program mains), the streaming
+    # These keep their own int main() (multi-phase programs, the streaming
     # reveal/lag probes shared verbatim with agentty's suite, and the
-    # benchmark. These keep their own int main().
+    # benchmark), so they can't be doctest cases inside maya_tests. They do NOT
+    # each need their own link though: all 8 are bundled into ONE binary,
+    # maya_standalone_tests, argv-dispatched so each still runs in its OWN
+    # process per ctest entry — isolation unchanged, 8 links -> 1.
     set(MAYA_TEST_SOURCES
         tests/test_markdown.cpp
         tests/test_streaming_cache.cpp
@@ -516,14 +518,21 @@ if(MAYA_BUILD_TESTS)
         tests/bench_thread_scaling.cpp
     )
 
+    add_executable(maya_standalone_tests
+        tests/maya_standalone_tests_main.cpp ${MAYA_TEST_SOURCES})
+    target_link_libraries(maya_standalone_tests PRIVATE ${MAYA_TEST_LIB})
+    target_include_directories(maya_standalone_tests PRIVATE tests)
+    target_compile_definitions(maya_standalone_tests PRIVATE
+        MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_options(maya_standalone_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU,Clang>:${MAYA_TEST_OPT}>)
     foreach(src ${MAYA_TEST_SOURCES})
         get_filename_component(tgt ${src} NAME_WE)
-        add_executable(${tgt} ${src})
-        target_link_libraries(${tgt} PRIVATE ${MAYA_TEST_LIB})
-        target_compile_definitions(${tgt} PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-        target_compile_options(${tgt} PRIVATE
-            $<$<CXX_COMPILER_ID:GNU,Clang>:${MAYA_TEST_OPT}>)
-        add_test(NAME ${tgt} COMMAND ${tgt})
+        # Rename this TU's main() so the dispatcher can call it; each test still
+        # runs in its OWN process via `maya_standalone_tests <name>`.
+        set_source_files_properties(${src} PROPERTIES
+            COMPILE_DEFINITIONS "main=${tgt}_main")
+        add_test(NAME ${tgt} COMMAND maya_standalone_tests ${tgt})
         set_tests_properties(${tgt} PROPERTIES TIMEOUT 120)
     endforeach()
 

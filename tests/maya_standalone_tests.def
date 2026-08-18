@@ -1,0 +1,14 @@
+// maya_standalone_tests.def — the folded test set. Included repeatedly by
+// maya_standalone_tests_main.cpp with MAYA_FOLD redefined (X-macro). Keep in
+// sync with MAYA_TEST_SOURCES in ../CMakeLists.txt.
+//
+// All of these are `int main()` (no args), so one flat list suffices.
+
+MAYA_FOLD(test_markdown)
+MAYA_FOLD(test_streaming_cache)
+MAYA_FOLD(reveal_pacing_test)
+MAYA_FOLD(reveal_resume_test)
+MAYA_FOLD(reveal_smoothness_probe)
+MAYA_FOLD(stream_md_lag_test)
+MAYA_FOLD(stream_async_freeze_test)
+MAYA_FOLD(bench_thread_scaling)

@@ -219,6 +219,13 @@ target_include_directories(maya PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+# Namespaced ALIAS so consumers link the canonical `maya::maya` target: a `::`
+# name is guaranteed to be a real target (a bare `maya` could silently be a
+# system lib), so a rename/removal fails at configure with a clear error.
+# Previously agentty synthesised this alias itself as a workaround; maya now
+# owns it, for every consumer.
+add_library(maya::maya ALIAS maya)
+
 # ── Unicode width table regeneration (manual target) ─────────────────────
 # `cmake --build build --target maya_unicode_regen` re-runs the generator
 # script over the pinned UCD files in maya/data/ and overwrites

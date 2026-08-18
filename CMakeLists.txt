@@ -385,7 +385,11 @@ if(MAYA_BUILD_EXAMPLES)
     endforeach()
 endif()
 
-option(MAYA_BUILD_TESTS "Build tests" OFF)
+# Default ON only when maya is the top-level project (standalone). Embedded via
+# add_subdirectory (e.g. by agentty) it defaults OFF so the parent never pulls
+# maya's tests into its build — each repo runs its own tests. (maya requires
+# CMake 3.28, so PROJECT_IS_TOP_LEVEL is always defined.)
+option(MAYA_BUILD_TESTS "Build tests" ${PROJECT_IS_TOP_LEVEL})
 if(MAYA_BUILD_TESTS)
     enable_testing()
 

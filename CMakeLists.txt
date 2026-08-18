@@ -1,5 +1,8 @@
-cmake_minimum_required(VERSION 3.28)
-project(maya VERSION 0.1.0 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.28...3.31)
+project(maya
+    VERSION     0.1.0
+    DESCRIPTION "A fast immediate-mode terminal UI + markdown renderer in modern C++"
+    LANGUAGES   CXX)
 
 if(MSVC)
     set(CMAKE_CXX_STANDARD 23)
@@ -370,7 +373,7 @@ endif()
 
 option(MAYA_BUILD_EXAMPLES "Build example programs" ON)
 if(MAYA_BUILD_EXAMPLES)
-    file(GLOB MAYA_EXAMPLE_SOURCES examples/*.cpp)
+    file(GLOB MAYA_EXAMPLE_SOURCES CONFIGURE_DEPENDS examples/*.cpp)
     foreach(src ${MAYA_EXAMPLE_SOURCES})
         get_filename_component(name ${src} NAME_WE)
         set(tgt maya_${name})

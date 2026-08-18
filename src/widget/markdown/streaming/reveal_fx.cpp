@@ -1082,12 +1082,24 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // call on any text leaf. The markdown widget keeps only the
             // tree-specific glue: walking to the live tail leaf (above) and
             // computing the clip-aware unrevealed-cp span (above). The
-            // visual algorithm itself is shared. The decorator is
-            // height-stable (no cp added except equal-width scramble
-            // substitutions) so the scrollback-safety invariants are
-            // preserved exactly. Tunables below mirror the historical
-            // constants (kTrailLen / kScrambleLen / kScrambleMs / kCharStepMs
-            // / kGhostExtra) so behaviour is unchanged byte-for-byte.
+            // visual algorithm itself is shared. Tunables below mirror the
+            // historical constants (kTrailLen / kScrambleLen / kScrambleMs /
+            // kCharStepMs / kGhostExtra) so behaviour is unchanged.
+            //
+            // SCROLLBACK SAFETY (line_bounded). The ghost band is a CONCEAL
+            // STYLE (SGR-8), not a content edit, since 468a48d fixed the
+            // wrap-boundary word-pop. Concealing is width-stable but it
+            // MUTATES the style of every cell in the unrevealed tail — and
+            // that tail spans multiple WRAPPED visual lines on a long
+            // paragraph. When an upper wrapped line scrolls into native
+            // immutable scrollback while still concealed, the later un-
+            // conceal rewrites a committed row → the duplicated line
+            // reveal_scrollback_test R5 catches. Confine every effect to the
+            // leaf's LAST visual line — the only row provably NOT in
+            // scrollback — exactly like the eager/table arm below. (Before
+            // 468a48d the ghost was width-matched SPACES, a content edit that
+            // left committed rows byte-identical, so the unbounded band was
+            // safe; the conceal rewrite made line_bounded load-bearing.)
             anim::TextRevealParams rp;
             rp.ms_total              = ms_total;
             rp.edge_age_ms           = age_at_tail_ms;
@@ -1095,6 +1107,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             rp.total_cp              = total_cp;
             rp.clip_active           = clip_active;
             rp.clipped_unrevealed_cp = unrevealed_cp;
+            rp.line_bounded          = true;   // bottom visual line only — scrollback-safe
             rp.trail_len             = kTrailLen;
             rp.scramble_len          = kScrambleLen;
             // Speed-scaled shimmer: the scramble/gradient windows are TIME

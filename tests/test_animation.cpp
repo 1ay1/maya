@@ -556,7 +556,62 @@ TEST_CASE("text reveal runs coalesced") {
     std::println("PASS (runs coalesced, band-bounded: max {} runs)\n", max_runs);
 }
 
-// ── TextRevealParams::settle_window_ms — single source of truth ─────────────
+// ── text_reveal: line_bounded confines every effect to the last visual line ─
+// SCROLLBACK SAFETY. The ghost band is a conceal STYLE (468a48d), so an
+// unrevealed cell keeps its glyph but carries a conceal bit that later flips
+// when revealed. On a multi-line leaf that mutates the STYLE of upper lines
+// every frame. If an upper line has scrolled into native immutable
+// scrollback, the flip rewrites a committed row → the duplicated-line bug
+// (reveal_scrollback_test R5). line_bounded=true must clamp the trail/ghost
+// window to the LAST visual line so no run ever begins before the final '\n'
+// — the only row provably not in scrollback. The streaming markdown prose +
+// eager arms both rely on this. Pin it here.
+TEST_CASE("text reveal line_bounded confines to last line") {
+    std::println("--- test_text_reveal_line_bounded ---");
+    // A tall multi-line leaf (a wrapped paragraph / code block as one
+    // TextElement), revealed only partway so a big unrevealed ghost band
+    // exists and would, unbounded, reach into the upper lines.
+    std::string content;
+    for (int i = 0; i < 40; ++i) {
+        for (int c = 0; c < 30; ++c) content += static_cast<char>('a' + (c % 26));
+        content += '\n';
+    }
+    const std::size_t last_nl = content.rfind('\n', content.size() - 2);
+    const std::size_t last_line_start = (last_nl == std::string::npos) ? 0 : last_nl + 1;
+
+    anim::TextRevealParams rp;
+    rp.ms_total     = 99999;
+    rp.edge_age_ms  = 0;
+    rp.total_cp     = 0;          // derived over the bounded region
+    rp.reveal_frac  = 0.2;        // most of the tail unrevealed → wide ghost band
+    rp.enable_ghost = true;
+    rp.ghost_blank  = true;       // conceal path
+    rp.line_bounded = true;       // THE INVARIANT UNDER TEST
+
+    TextElement leaf;
+    leaf.content = content;
+    (void)anim::decorate_text_reveal(leaf, rp);
+
+    // No run may begin before the last line's start: every animated/concealed
+    // cell is confined to the bottom (live) visual line.
+    for (const auto& r : leaf.runs) {
+        // Runs entirely in the settled prefix carry the base style untouched;
+        // what must never happen is a run STYLED by the reveal (conceal/
+        // gradient/scramble) starting above last_line_start. The decorator
+        // only emits reveal-styled runs from trail_byte_start onward, and
+        // line_bounded clamps trail_byte_start >= last_line_start, so ALL
+        // emitted runs at or past the trail start sit in the last line.
+        // Assert the strong form: the trail region (where styles diverge from
+        // base) never starts before last_line_start.
+        if (r.style != leaf.style)
+            assert(r.byte_offset >= last_line_start &&
+                   "line_bounded leaked a reveal-styled run into an upper line");
+    }
+    std::println("PASS (line_bounded confines conceal/trail to the last visual line)\n");
+}
+
+
+// ── TextRevealParams::settle_window_ms — single source of truth ───────────
 //
 // StreamingMarkdown's finalize gate holds the widget live until the tail's
 // scramble has resolved, using a settle threshold it now DERIVES from

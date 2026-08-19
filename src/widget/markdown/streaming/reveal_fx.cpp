@@ -1110,6 +1110,13 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             rp.line_bounded          = true;   // bottom visual line only — scrollback-safe
             rp.trail_len             = kTrailLen;
             rp.scramble_len          = kScrambleLen;
+            // SCROLLBACK SAFETY: keep the churn's visual signature but emit the
+            // REAL glyph, never a random one. The live bottom row can scroll
+            // into immutable scrollback at any frame (the overlay is
+            // viewport-blind), and a substituted glyph frozen there is
+            // permanent corruption — scrollback_oracle_test's SCRAMBLE-GARBAGE
+            // check reproduces it ("…like real assistan8??/%8").
+            rp.scramble_glyph_safe   = true;
             // Speed-scaled shimmer: the scramble/gradient windows are TIME
             // constants, so at a fast reveal they smear over far more cells
             // than at a slow one — the trail looks inconsistent as the

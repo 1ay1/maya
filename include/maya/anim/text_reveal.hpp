@@ -151,6 +151,24 @@ struct TextRevealParams {
     //     Retained for callers that deliberately want a fade-in look.
     bool ghost_blank = true;
 
+    // SCROLLBACK SAFETY. The scramble effect normally SWAPS the real glyph for
+    // a random one while a codepoint is churning. That is a content edit: if
+    // the row it lives on scrolls off the viewport into the terminal's
+    // IMMUTABLE native scrollback before the churn resolves, the random glyph
+    // is frozen there forever — the user sees permanent garbage like
+    //     "… exactly like real assistan8??/%8"   (should be "…assistant prose")
+    // The overlay cannot self-guard: it is viewport-blind by construction, so
+    // it never knows the live bottom row is one frame from scrolling away.
+    //
+    // With `scramble_glyph_safe` the churn keeps its full VISUAL signature
+    // (the hot pink/orange flicker styling below) but emits the REAL glyph
+    // instead of a random one. The effect still reads as "characters heating
+    // up as they land", while every byte on screen — and therefore every byte
+    // that can ever reach scrollback — is already final. Cheap: it only drops
+    // the glyph substitution, and it also removes the scramble's re-wrap
+    // (a swapped glyph could change column width; the real one can't).
+    bool scramble_glyph_safe = false;
+
     // Result flag: set true by the decorator when the trailing bytes were
     // rewritten (scramble substituted glyphs of different byte width), so the
     // caller knows to invalidate the leaf's wrap cache. Ghost/recolor frames
@@ -489,11 +507,15 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
         // is byte-for-byte the settled layout every frame; the reveal is a
         // pure paint-layer flip (conceal → visible) with zero reflow.
         const bool ghost_conceal = is_ghost && p.ghost_blank && !is_sweep_head;
-        if (scrambling) {
+        if (scrambling && !p.scramble_glyph_safe) {
             scramble_owned = std::string{reveal_detail::scramble_pick(
                 trail_byte_start + cp_offs[k], age, ms_total)};
             emitted = scramble_owned;
         } else {
+            // Either not churning, or churning in GLYPH-SAFE mode: emit the
+            // real codepoint. In safe mode `scrambling` stays true below so
+            // the cell still gets the hot flicker STYLE — the effect reads the
+            // same, but nothing that can reach immutable scrollback is fake.
             emitted = real_cp;
         }
 

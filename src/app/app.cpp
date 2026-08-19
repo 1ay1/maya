@@ -1167,6 +1167,30 @@ auto Runtime::render(const Element& root) -> Status {
         }
     }
 
+    // Style ids are uint16_t and pool-local. Truecolor animation can intern
+    // thousands of previously unseen fg/bg pairs per frame; retaining them
+    // forever eventually exhausts the id space, after which intern() safely
+    // falls back to style 0 (plain white). A resize increases the number of
+    // sampled pixels and commonly makes the failure appear at that moment.
+    //
+    // Reserve enough ids for a worst-case next frame (one unique style per
+    // visible cell plus modest paint-overdraw). Rebase before saturation,
+    // invalidate every cache carrying old ids, and force a coherent full
+    // repaint. Ordinary widget apps never approach this branch.
+    constexpr std::size_t kUsableStyleIds = 65534;
+    const auto visible_cells =
+        static_cast<std::size_t>(std::max(1, canvas_.width())) *
+        static_cast<std::size_t>(std::max(1, canvas_.height()));
+    const auto frame_headroom = std::min(kUsableStyleIds,
+        std::max<std::size_t>(4096, visible_cells + 1024));
+    if (pool_.overflowed() ||
+        pool_.size() >= kUsableStyleIds - frame_headroom) {
+        pool_.clear();
+        render_detail::clear_component_cache();
+        fs_coherence_ = coherent::Divergent{};
+        canvas_.clear();
+    }
+
     Status write_status = ok();
     fs_coherence_ = std::visit(overload{
         // Synced → Synced (success) or Synced → Divergent (write fail).

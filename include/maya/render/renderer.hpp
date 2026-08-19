@@ -45,6 +45,9 @@ namespace render_detail {
 [[nodiscard]] std::uint64_t blit_rows_epoch_skip() noexcept;
 [[nodiscard]] std::uint64_t blit_rows_compared() noexcept;
 [[nodiscard]] std::uint64_t blit_entries_walked() noexcept;
+// Drop cached component canvases. Required when a StylePool is rebased:
+// cached cells contain pool-local uint16_t style ids and cannot survive it.
+void clear_component_cache() noexcept;
 // Top-level render_tree phase totals (build_layout_tree / layout::compute /
 // paint_element), nanoseconds, monotonic.
 [[nodiscard]] std::uint64_t rt_build_ns() noexcept;

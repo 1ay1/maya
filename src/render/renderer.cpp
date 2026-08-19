@@ -200,6 +200,12 @@ inline ComponentCache& component_cache() {
     return c;
 }
 
+void clear_component_cache_impl() noexcept {
+    // Component cache cells carry StylePool-local uint16_t ids. Replacing the
+    // cache wholesale is both cheaper and safer than walking/remapping them.
+    component_cache() = ComponentCache{};
+}
+
 inline void touch_hash_cache(ComponentCache& cache,
                              ComponentCacheEntry& entry) noexcept {
     if (entry.lru_linked)
@@ -350,6 +356,10 @@ struct AmbientBgScope {
 };
 
 }  // anonymous
+
+void clear_component_cache() noexcept {
+    clear_component_cache_impl();
+}
 
 // ============================================================================
 // Stateless enum mappers (anonymous namespace — internal linkage)

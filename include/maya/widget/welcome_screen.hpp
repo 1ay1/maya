@@ -43,6 +43,7 @@
 //                          {"^J", " threads", Color::cyan()}},
 //   }}.build();
 
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -520,29 +521,61 @@ private:
     }
 
     [[nodiscard]] Element render_sigil_(int age_ms) const {
+        const SigilState st = sigil_state_(age_ms);
+
+        // The rendered pixels are a PURE function of (dys, in_pulse,
+        // sigil_color): the per-letter dy is already snapped to the integer
+        // pixel grid, so most 60 fps RAF frames produce byte-identical
+        // output — the 2200 ms bob only crosses an integer pixel a few
+        // times a second. Wrap the raster in a hash-keyed component so the
+        // renderer's cross-frame cache serves those frames as O(1) cell
+        // blits instead of rebuilding + laying out + painting 144
+        // half-block TextElements (measured: the sigil dominated the whole
+        // frame — idle welcome burned ~21% of a core). The bob's dy
+        // vectors REPEAT every period, so after one cycle every state is
+        // cached and the welcome animates via pure blits.
+        //
+        // Fixed width/height (the raster's intrinsic size) keep layout
+        // from ever needing the measure probe, and keep the centering
+        // spacers around this component exact.
+        CacheIdBuilder idb;
+        idb.add(std::string_view{"maya.welcome.sigil"});
+        idb.add(st.in_pulse);
+        idb.add(color_key_(cfg_.sigil_color));
+        for (int dy : st.dys) idb.add(dy);
         using namespace dsl;
+        return component([self = *this, st](int /*w*/, int /*h*/) -> Element {
+                   return self.render_sigil_raster_(st);
+               })
+            .width(Dimension::fixed(kSigilPW))
+            .height(Dimension::fixed(kSigilCHRows))
+            .hash_id(idb.build());
+    }
 
-        // Layout: chevron + AGENTTY, 1-pixel spacer between glyphs.
-        static constexpr std::string_view kText  = ">AGENTTY";
-        static constexpr int               kSpacer = 1;
-        constexpr int PW = static_cast<int>(kText.size()) * kFontW
-                         + (static_cast<int>(kText.size()) - 1) * kSpacer;
+    // Quantized animation state — everything the raster depends on.
+    struct SigilState {
+        std::array<int, 8> dys{};   // per-letter integer y offset
+        bool in_pulse = false;
+    };
 
-        // Canvas vertical layout: a 1-px pad on top + the kFontH font
-        // body + a 2-px pad on bottom (enough room for the ±1.5 px
-        // bob in Phase 2 plus the heartbeat flash to look uncramped).
-        constexpr int kPadTop     = 1;
-        constexpr int kPadBottom  = 2;
-        constexpr int kLetterY    = kPadTop;
-        constexpr int PH          = kFontH + kPadTop + kPadBottom;
-        constexpr int CH          = (PH + 1) / 2;
-        constexpr int kGridRows   = CH * 2;
+    static constexpr std::string_view kSigilText  = ">AGENTTY";
+    static constexpr int kSigilSpacer = 1;
+    static constexpr int kSigilPW =
+        static_cast<int>(kSigilText.size()) * kFontW
+        + (static_cast<int>(kSigilText.size()) - 1) * kSigilSpacer;
+    static constexpr int kSigilPadTop    = 1;
+    static constexpr int kSigilPadBottom = 2;
+    static constexpr int kSigilLetterY   = kSigilPadTop;
+    static constexpr int kSigilPH        = kFontH + kSigilPadTop + kSigilPadBottom;
+    static constexpr int kSigilCHRows    = (kSigilPH + 1) / 2;
+    static constexpr int kSigilGridRows  = kSigilCHRows * 2;
 
-        // ── Animation parameters ────────────────────────────────────
+    [[nodiscard]] static SigilState sigil_state_(int age_ms) noexcept {
+        // ── Animation parameters ────────────────────────────────
         // Cascade drop
         constexpr int   kStaggerMs       = 100;
         constexpr int   kDropDurationMs  = 500;
-        const     int   kPhase1EndMs     = static_cast<int>(kText.size() - 1)
+        const     int   kPhase1EndMs     = static_cast<int>(kSigilText.size() - 1)
                                          * kStaggerMs + kDropDurationMs;
         // Per-letter bob (Phase 2)
         constexpr float kBobAmp          = 1.5f;        // px
@@ -552,57 +585,85 @@ private:
         constexpr int   kPulsePeriod     = 3200;
         constexpr int   kPulseWidth      = 80;
 
+        SigilState st;
         // Heartbeat — only fires after Phase 1 settles so the cascade
         // entry doesn't get strobed.
-        const bool in_pulse = age_ms > kPhase1EndMs
+        st.in_pulse = age_ms > kPhase1EndMs
             && ((age_ms - kPhase1EndMs) % kPulsePeriod) < kPulseWidth;
 
         // Per-letter Y offset. Combines cascade drop (Phase 1) and
         // sine bob (Phase 2). Negative = above letter's home row.
-        auto letter_y_offset = [&](int li) -> float {
-            const int drop_start = li * kStaggerMs;
+        for (std::size_t li = 0; li < kSigilText.size(); ++li) {
+            const int drop_start = static_cast<int>(li) * kStaggerMs;
             const int drop_end   = drop_start + kDropDurationMs;
             // Off-screen-above starting position — full kFontH + the
             // top pad, so the bottom-row pixels are also above the
             // canvas before the drop animates.
-            const float kOff = -static_cast<float>(kFontH + kPadTop + 1);
-            if (age_ms < drop_start) return kOff;
-            if (age_ms < drop_end) {
+            const float kOff = -static_cast<float>(kFontH + kSigilPadTop + 1);
+            float off;
+            if (age_ms < drop_start) {
+                off = kOff;
+            } else if (age_ms < drop_end) {
                 const float t = static_cast<float>(age_ms - drop_start)
                               / static_cast<float>(kDropDurationMs);
                 const float eased = 1.0f
                                   - (1.0f - t) * (1.0f - t) * (1.0f - t);
-                return kOff * (1.0f - eased);
+                off = kOff * (1.0f - eased);
+            } else {
+                // Phase 2 — per-letter sine bob with phase offset.
+                const float t = static_cast<float>(age_ms - drop_end);
+                const float phase = 2.0f * 3.14159265f * t / kBobPeriodMs
+                                  + static_cast<float>(li) * kBobLetterPhase;
+                off = std::sin(phase) * kBobAmp;
             }
-            // Phase 2 — per-letter sine bob with phase offset.
-            const float t = static_cast<float>(age_ms - drop_end);
-            const float phase = 2.0f * 3.14159265f * t / kBobPeriodMs
-                              + static_cast<float>(li) * kBobLetterPhase;
-            return std::sin(phase) * kBobAmp;
-        };
+            // Snap to integer pixel offset — terminal pixels are
+            // integer-grid, anti-aliased bob would just create flicker.
+            st.dys[li] = static_cast<int>(std::lround(off));
+        }
+        return st;
+    }
+
+    // Fold a Color into a hashable key (kind + payload).
+    [[nodiscard]] static std::uint64_t color_key_(const Color& c) noexcept {
+        switch (c.kind()) {
+            case Color::Kind::Default: return 1;
+            case Color::Kind::Named:
+            case Color::Kind::Indexed:
+                return 2 | (static_cast<std::uint64_t>(c.index()) << 8);
+            case Color::Kind::Rgb:
+                return 3 | (static_cast<std::uint64_t>(c.r()) << 8)
+                         | (static_cast<std::uint64_t>(c.g()) << 16)
+                         | (static_cast<std::uint64_t>(c.b()) << 24);
+        }
+        return 0;
+    }
+
+    [[nodiscard]] Element render_sigil_raster_(const SigilState& st) const {
+        using namespace dsl;
+
+        constexpr int PW        = kSigilPW;
+        constexpr int CH        = kSigilCHRows;
+        constexpr int kGridRows = kSigilGridRows;
 
         // Pixel grid — taller than kFontH to give the bob room and
         // pad an even number of rows for the half-block cell loop.
         std::vector<std::optional<Color>> px(
             static_cast<std::size_t>(PW * kGridRows));
 
-        const Color pixel_color = in_pulse
+        const Color pixel_color = st.in_pulse
             ? Color::bright_white()
             : cfg_.sigil_color;
 
-        for (std::size_t li = 0; li < kText.size(); ++li) {
-            const Glyph& g      = glyph_for_(kText[li]);
-            const int    base_x = static_cast<int>(li) * (kFontW + kSpacer);
-            // Snap to integer pixel offset — terminal pixels are
-            // integer-grid, anti-aliased bob would just create flicker.
-            const int    dy     = static_cast<int>(
-                std::lround(letter_y_offset(static_cast<int>(li))));
+        for (std::size_t li = 0; li < kSigilText.size(); ++li) {
+            const Glyph& g      = glyph_for_(kSigilText[li]);
+            const int    base_x = static_cast<int>(li) * (kFontW + kSigilSpacer);
+            const int    dy     = st.dys[li];
             for (int row = 0; row < kFontH; ++row) {
                 const char* row_str = g.rows[row];
                 for (int col = 0; col < kFontW; ++col) {
                     if (row_str[col] != '#') continue;
                     const int x = base_x + col;
-                    const int y = kLetterY + row + dy;
+                    const int y = kSigilLetterY + row + dy;
                     if (y < 0 || y >= kGridRows) continue;
                     px[static_cast<std::size_t>(y)
                        * static_cast<std::size_t>(PW)

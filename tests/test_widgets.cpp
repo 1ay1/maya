@@ -813,3 +813,52 @@ TEST_CASE("word wrap combining") {
     std::println("PASS");
 }
 
+TEST_CASE("model badge never shows raw wire ids") {
+    std::println("=== test_model_badge_labels ===");
+    auto rendered = [](maya::ModelBadge mb) {
+        auto r = render_at(mb.build(), 80);
+        std::string joined;
+        for (const auto& row : r.rows) joined += row;
+        return joined;
+    };
+
+    // Known families resolve to their word.
+    MAYA_TEST_CHECK(rendered(maya::ModelBadge{"claude-sonnet-4-5"})
+                        .find("Sonnet") != std::string::npos,
+                    "sonnet family recognized");
+
+    // UNKNOWN Claude family (a line newer than the table): title-cased
+    // family word, never the raw id.
+    {
+        maya::ModelBadge mb{"claude-fable-1-20260101"};
+        const std::string s = rendered(mb);
+        MAYA_TEST_CHECK(s.find("Fable") != std::string::npos,
+                        "unknown claude family shows its family word");
+        MAYA_TEST_CHECK(s.find("claude-fable-") == std::string::npos,
+                        "raw id never rendered for a claude-family model");
+        // The 8-digit date stamp must not be mistaken for a version.
+        MAYA_TEST_CHECK(s.find("20260101") == std::string::npos,
+                        "date stamp is not a version");
+    }
+
+    // Unknown non-Claude id with a host fallback label: fallback wins.
+    {
+        maya::ModelBadge mb{"some-vendor-model-7-2"};
+        mb.set_fallback_label("Vendor Model 7.2");
+        const std::string s = rendered(mb);
+        MAYA_TEST_CHECK(s.find("Vendor Model 7.2") != std::string::npos,
+                        "host fallback label used for unknown ids");
+        MAYA_TEST_CHECK(s.find("some-vendor") == std::string::npos,
+                        "raw id suppressed when a fallback exists");
+    }
+
+    // No fallback provided: raw id is still the last resort (never blank).
+    {
+        maya::ModelBadge mb{"mystery-model"};
+        const std::string s = rendered(mb);
+        MAYA_TEST_CHECK(s.find("mystery-model") != std::string::npos,
+                        "no-fallback unknown id still renders something");
+    }
+    std::println("PASS");
+}
+

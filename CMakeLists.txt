@@ -500,6 +500,28 @@ if(MAYA_BUILD_TESTS)
         $<$<CXX_COMPILER_ID:GNU,Clang>:${MAYA_TEST_OPT}>)
     include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)
     doctest_discover_tests(maya_tests)
+    # Timing-budget cases (render-scaling ratios, warm-frame budgets) measure
+    # wall time and flake under parallel ctest load — six test binaries
+    # fighting for cores can triple a 100µs baseline. Label them `perf` so
+    # `ctest -LE perf` (and CI's parallel lane) skips them; a serial
+    # `ctest -L perf` still gates them.
+    #
+    # doctest tests are discovered at BUILD time (the discovery file is a
+    # TEST_INCLUDE_FILES entry), so a configure-time set_tests_properties
+    # sees no such test and silently no-ops. Append our OWN include file
+    # after the discovery one — include files run in order, so by the time
+    # ours executes the discovered tests exist.
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/maya_perf_labels.cmake" [=[
+# Runs AFTER the doctest discovery include (see TEST_INCLUDE_FILES order),
+# so the discovered tests already exist. Unconditional: if a case is
+# renamed, this errors loudly instead of silently un-labelling it.
+set_tests_properties(
+    [==[long session with virtualization]==]
+    [==[warm frame time at high turn count]==]
+    PROPERTIES LABELS perf)
+]=])
+    set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/maya_perf_labels.cmake")
 
     # These keep their own int main() (multi-phase programs, the streaming
     # reveal/lag probes shared verbatim with agentty's suite, and the

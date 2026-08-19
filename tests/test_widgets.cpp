@@ -1,4 +1,15 @@
 // test_widgets.cpp — Verify all widgets render correctly at various widths
+//
+// ASSERTS MUST BE LIVE HERE. The test suite builds Release (-DNDEBUG), which
+// silently compiles out every assert() below — the file was green while
+// checking NOTHING. Undef NDEBUG before <cassert> so the checks run in every
+// build type. (New checks should still prefer MAYA_TEST_CHECK from check.hpp,
+// which never depended on NDEBUG.)
+#ifdef NDEBUG
+#  undef NDEBUG
+#endif
+#include <cassert>
+
 #include <maya/maya.hpp>
 #include <maya/widget/badge.hpp>
 #include <maya/widget/agent_timeline.hpp>
@@ -433,6 +444,64 @@ TEST_CASE("status bar responsive") {
             if (row.find("Streaming") != std::string::npos) has_verb = true;
         assert(has_verb && "phase verb must survive at 60 cols");
     }
+
+    // ── NO SILENT CLIPPING (the "overlapped status bar" field artifact).
+    // overflow:Hidden keeps the row 1 line tall, but if the ladder accepts
+    // a shape wider than the terminal, the RIGHT group is what gets cut —
+    // the context gauge dies mid-glyph ("… · C") while a lower-value
+    // fragment (thread title) still shows. Invariant: the context gauge is
+    // the rightmost fragment and always ends with '%'; at EVERY width, if
+    // any activity-row content rendered at all, the trimmed row must end
+    // with the intact gauge — clipping is never the mechanism that makes
+    // the row fit. And the thread title must be the FIRST thing shed:
+    // whenever the title survives, the full gauge must too.
+    auto activity_row = [](const std::vector<std::string>& rows) {
+        // Row 0/2 are the accent rules; row 1 is the activity strip.
+        return rows.size() >= 2 ? rows[1] : std::string{};
+    };
+    auto rtrim = [](std::string s) {
+        while (!s.empty() && s.back() == ' ') s.pop_back();
+        return s;
+    };
+    for (int w = 24; w <= 220; ++w) {
+        auto cfg = make();
+        // A LONG raw model id (the field case: unknown family rendered by a
+        // host without fallback) + a long title — maximum squeeze pressure.
+        // The host-style " · Provider" suffix widens the badge like agentty's
+        // real status bar does.
+        cfg.model_badge = h(ModelBadge{"claude-fable-1-20260101"}.build(),
+                            dsl::text(" \xc2\xb7 Anthropic")).build();
+        auto r = render_at(StatusBar{cfg}.build(), w);
+        const std::string row = rtrim(activity_row(r.rows));
+        if (row.empty()) continue;   // sub-minimal width: fine, nothing shows
+        // SHED, NEVER CLIP: a fragment is either fully present or fully
+        // absent. "Streamin" without the g, "Anthropi", "CTX … 4" without
+        // the % — each means the ladder admitted a shape wider than the
+        // terminal and overflow:Hidden ate the excess mid-word (the field
+        // "overlapped status bar" artifact). The leanest rungs legitimately
+        // shed the gauge / verb entirely — absence is fine, amputation isn't.
+        if (row.find("CTX") != std::string::npos)
+            MAYA_TEST_CHECK(row.find('%') != std::string::npos,
+                            "gauge present implies intact percent readout");
+        if (auto p = row.find("Streamin"); p != std::string::npos)
+            MAYA_TEST_CHECK(row.compare(p, 9, "Streaming") == 0,
+                            "phase verb must never be clipped mid-word");
+        if (auto p = row.find("Anthropi"); p != std::string::npos)
+            MAYA_TEST_CHECK(row.compare(p, 9, "Anthropic") == 0,
+                            "provider suffix must never be clipped mid-word");
+        if (auto p = row.find("Fabl"); p != std::string::npos)
+            MAYA_TEST_CHECK(row.compare(p, 5, "Fable") == 0,
+                            "model name must never be clipped mid-word");
+        if (row.find("refactor") != std::string::npos) {
+            // Title is the MOST expendable fragment: its presence implies
+            // every higher-value fragment (verb, badge, gauge) also fits.
+            MAYA_TEST_CHECK(row.find("Streaming") != std::string::npos,
+                            "title present implies phase verb present");
+            MAYA_TEST_CHECK(row.find('%') != std::string::npos,
+                            "title present implies gauge present");
+        }
+    }
+    std::println("  no clipped right edge across widths 24..220");
 
     std::println("  3 rows + no overflow across widths 12..220");
     std::println("  PASS\n");

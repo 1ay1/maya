@@ -128,8 +128,13 @@ private:
             const Color pcolor = cfg.phase_color;
             const bool  active = cfg.phase.breathing;
 
-            auto width_of = [w](const Element& el) {
-                return measure_element(el, w > 0 ? w : 1).width.value;
+            auto width_of = [](const Element& el) {
+                // NATURAL width (unbounded measure). Measuring at the slot
+                // width clamps: a too-wide candidate reports ≤ w and the
+                // ladder accepts a shape that does NOT actually fit — the
+                // row then paints past the edge and overflow:Hidden clips
+                // the right group (the "CTX gauge cut mid-word" artifact).
+                return measure_element(el, /*max_width=*/1 << 14).width.value;
             };
 
             // ── Measured degradation ladder ──
@@ -213,21 +218,34 @@ private:
             (void)stream_on;
 
             // ── Left group: breadcrumb + ▌ rail + phase chip. The
-            //    breadcrumb gets exactly the measured leftover — it
-            //    appears the moment its 14-cell floor + separator fit,
-            //    capped at the config's max_chars.
+            //    breadcrumb is the most expendable fragment, so it is
+            //    added LAST — and by MEASUREMENT, like every other
+            //    fragment: build the real chip at the candidate cap and
+            //    include it only if its measured width (chip glyphs +
+            //    separator) provably fits the leftover. The previous
+            //    hand-arithmetic (`max_chars = leftover`) ignored the
+            //    chip's own ▎+space overhead and the ellipsis, so a
+            //    2-3 col overflow shoved the right group off the edge
+            //    exactly when space was tightest.
             std::vector<Element> lparts;
             lparts.push_back(text(" "));
             if (!cfg.breadcrumb.title.empty()) {
-                const int leftover = w - fixed_w - 7 /*  ·  sep*/;
-                if (leftover >= 14) {
+                constexpr int kSepW      = 7;   // "   ·   "
+                constexpr int kChipDecor = 2;   // ▎ + space
+                constexpr int kMinTitle  = 12;  // below this a title is noise
+                const int leftover = w - fixed_w - kSepW;
+                if (leftover >= kChipDecor + kMinTitle) {
                     TitleChip::Config bc = cfg.breadcrumb;
-                    bc.max_chars = static_cast<std::size_t>(
-                        std::min(leftover, static_cast<int>(
-                            cfg.breadcrumb.max_chars > 0 ? cfg.breadcrumb.max_chars
-                                                         : 28)));
-                    lparts.push_back(TitleChip{bc}.build());
-                    lparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));   // ·
+                    const std::size_t cfg_cap =
+                        cfg.breadcrumb.max_chars > 0 ? cfg.breadcrumb.max_chars : 28;
+                    bc.max_chars = std::min<std::size_t>(
+                        static_cast<std::size_t>(leftover - kChipDecor), cfg_cap);
+                    Element chip = TitleChip{bc}.build();
+                    // Proof pass: accept only if the REAL rendered chip fits.
+                    if (width_of(chip) + kSepW <= w - fixed_w) {
+                        lparts.push_back(std::move(chip));
+                        lparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));   // ·
+                    }
                 }
             }
             Style rail_style = active

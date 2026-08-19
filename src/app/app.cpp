@@ -967,12 +967,19 @@ auto Runtime::render(const Element& root) -> Status {
                         const int prev_rows = arm.rows();
                         const int overflow  = prev_rows - term_h.value();
 #ifndef NDEBUG
-                        // Debug-only invariant tripwire (unchanged
-                        // semantics): a shifted committed prefix is exactly
-                        // the bug class every scrollback fix chased. Make it
-                        // LOUD and attributable; opt out with
-                        // MAYA_NO_GATE_ABORT=1.
-                        if (!std::getenv("MAYA_NO_GATE_ABORT")) {
+                        // Debug-only invariant tripwire, now OPT-IN via
+                        // MAYA_GATE_ABORT=1. A shifted committed prefix is
+                        // the bug class every scrollback fix chased — but a
+                        // Debug build is also what people daily-drive, and
+                        // this abort killed real user sessions (two field
+                        // SIGABRTs, 2026-08-15) when the perfectly good
+                        // soft-recovery below would have self-healed with no
+                        // visible artifact. The invariant is now guarded by
+                        // scrollback_oracle_test's detectors in CI, so the
+                        // LOUD-crash default has done its job: keep the dump
+                        // + abort available for bug hunts, default to
+                        // recovering the user's session.
+                        if (std::getenv("MAYA_GATE_ABORT")) {
 #ifdef _WIN32
                             _putenv_s("MAYA_DEBUG_GATE", "1");
 #else
@@ -985,8 +992,8 @@ auto Runtime::render(const Element& root) -> Status {
                                 "gate fired (committed prefix shifted: "
                                 "prev_rows=%d term_h=%d overflow=%d). "
                                 "A frame rewrote a committed row. See "
-                                "the [gate] dump above. Set "
-                                "MAYA_NO_GATE_ABORT=1 to soft-recover "
+                                "the [gate] dump above. Unset "
+                                "MAYA_GATE_ABORT to soft-recover "
                                 "instead.\n",
                                 prev_rows, term_h.value(), overflow);
                             std::fflush(stderr);

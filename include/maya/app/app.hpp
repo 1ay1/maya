@@ -650,13 +650,13 @@ public:
             // at development time rather than in the field.
             ++scrollback_recovery_count_;
 #ifndef NDEBUG
-            if (!std::getenv("MAYA_NO_GATE_ABORT")) {
+            if (std::getenv("MAYA_GATE_ABORT")) {
                 std::fprintf(stderr,
                     "[maya] commit_inline_prefix: host claimed %d rows but only "
                     "%d have provably overflowed the current shadow (prev_rows=%d, "
                     "term_h=%d). This is a STALE DEBT applied to a superseded "
                     "frame -- the host harvested against one frame and committed "
-                    "against another. Set MAYA_NO_GATE_ABORT=1 to observe-and-clamp "
+                    "against another. Unset MAYA_GATE_ABORT to observe-and-clamp "
                     "instead of aborting.\n",
                     rows, safe_max, s->rows(), term_h);
                 std::abort();

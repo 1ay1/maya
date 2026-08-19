@@ -119,12 +119,16 @@ InlineFrameState InlineFrameState::committed(ScrollbackMarker marker) && noexcep
     // through the rows<=0 no-op below regardless.
     if (!marker.empty() && marker.generation() != s.gen_) {
 #ifndef NDEBUG
-        if (!std::getenv("MAYA_NO_GATE_ABORT")) {
+        // Opt-in tripwire (MAYA_GATE_ABORT=1): same policy as the
+        // scrollback-invariant gate in Runtime::render — the reject-the-
+        // stale-marker fallthrough below is a safe no-op, so a daily-driven
+        // Debug build should self-heal rather than die; CI bug hunts can
+        // export MAYA_GATE_ABORT=1 to make it LOUD and fatal.
+        if (std::getenv("MAYA_GATE_ABORT")) {
             std::fprintf(stderr,
                 "[maya] FATAL: ScrollbackMarker generation mismatch "
-                "(marker.gen=%llu state.gen=%llu rows=%d). A commit token "
-                "outlived the frame it was issued from — a stale row count "
-                "from a superseded accountant. Set MAYA_NO_GATE_ABORT=1 to "
+                "(marker.gen=%llu state.gen=%llu rows=%d) — commit issued "
+                "from a superseded accountant. Unset MAYA_GATE_ABORT to "
                 "no-op instead.\n",
                 static_cast<unsigned long long>(marker.generation()),
                 static_cast<unsigned long long>(s.gen_), rows);

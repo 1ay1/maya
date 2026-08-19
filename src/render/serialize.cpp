@@ -1037,51 +1037,43 @@ compose_inline_frame_impl(const Canvas& canvas,
 
             // Where the new frame's top must land for its bottom to coincide
             // with the cursor (cursor_row). If negative, the new frame is
-            // taller than the cursor's offset from viewport top — the excess
-            // must scroll the viewport so host content above goes into native
-            // scrollback (the same effect normal streaming produces).
+            // taller than the old one — the overwrite below simply extends
+            // past the old bottom, and the per-row \r\n advance scrolls the
+            // viewport exactly when it actually runs out of room (the same
+            // bottom-edge behaviour normal streaming growth produces).
             const int new_top   = cursor_row - (emit_rows - 1);
             const int extra_top = (new_top > 0) ? new_top : 0;
-            const int scroll_n  = (new_top < 0) ? -new_top : 0;
 
-            if (scroll_n > 0) {
-                // Frame doesn't fit above the cursor. Walk to the bottom
-                // edge, emit scroll_n newlines (each \n at row term_h - 1
-                // scrolls the viewport), then move up to the new frame's
-                // top row and serialize.
-                const int down_to_bottom = (term_h - 1) - cursor_row;
-                if (down_to_bottom > 0)
-                    ansi::write_cursor_down(out, down_to_bottom);
-                out += '\r';
-                for (int i = 0; i < scroll_n; ++i) out += '\n';
-                if (emit_rows - 1 > 0)
-                    ansi::write_cursor_up(out, emit_rows - 1);
-                out += '\r';
-                serialize(canvas, pool, out, content_rows, start_row);
-                out += "\x1b[J";
-            } else if (extra_top > 0) {
-                // Stale rows sit above the new frame's top — EL-erase them.
-                // Walk up to the old frame's top, then EL+LF down past the
-                // stale rows. After the loop the cursor sits at col 0 of
-                // the new frame's top row.
-                if (cursor_row > 0)
-                    ansi::write_cursor_up(out, cursor_row);
-                out += '\r';
-                for (int i = 0; i < extra_top; ++i) {
-                    out += "\x1b[K";
-                    out += '\n';
-                }
-                serialize(canvas, pool, out, content_rows, start_row);
-                out += "\x1b[J";
-            } else {
-                // New frame fits exactly above the cursor with no stale
-                // rows to clean above. Move up to the new frame's top.
-                if (emit_rows - 1 > 0)
-                    ansi::write_cursor_up(out, emit_rows - 1);
-                out += '\r';
-                serialize(canvas, pool, out, content_rows, start_row);
-                out += "\x1b[J";
+            // ONE relative shape for grow / shrink / exact-fit. The cursor's
+            // ABSOLUTE viewport row is unknowable in inline mode (the frame
+            // may be anchored mid-screen below host output); every movement
+            // must be relative to the cursor. An earlier version of the grow
+            // case bottom-anchored instead — cursor_down((term_h-1) -
+            // cursor_row) then scroll_n newlines — which implicitly assumed
+            // the frame top sat at physical row 0. For a SHORT frame anchored
+            // mid-screen (early session, force_redraw before first overflow),
+            // CUD clamps at the bottom edge, the newlines over-scrolled, and
+            // the repaint landed below the old frame's top rows — leaving
+            // stale duplicates above that the next growth committed to native
+            // scrollback permanently (the "duplicated rows in scrollback"
+            // symptom).
+            //
+            // Relative version: walk UP to the old frame's top (a distance we
+            // know exactly: cursor_row = wire_rows - 1), EL-erase any surplus
+            // old rows when the new frame is SHORTER, then serialize the new
+            // frame downward from the top. Growth scrolls at the bottom edge
+            // naturally; every old row is either overwritten or erased; host
+            // content above the frame is never touched. Correct at any
+            // anchor row, including 0.
+            if (cursor_row > 0)
+                ansi::write_cursor_up(out, cursor_row);
+            out += '\r';
+            for (int i = 0; i < extra_top; ++i) {
+                out += "\x1b[K";
+                out += '\n';
             }
+            serialize(canvas, pool, out, content_rows, start_row);
+            out += "\x1b[J";
             state.ghost_rows_above_ = 0;
         } else {
             // Fresh state (A): inline-mode growth from cursor.

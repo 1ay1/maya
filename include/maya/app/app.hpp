@@ -716,6 +716,16 @@ public:
                 &in_coherence_)) {
             in_coherence_ = std::move(*s).demote_to_stale();
         }
+        // This demote is CONTENT-PRESERVING: force_redraw drops wire
+        // trust (ghost glyphs, foreign writes) but the canvas — the
+        // app's own truth — is untouched, and the recovery repaint
+        // re-serializes only the viewport window. Mark the next render
+        // eligible for the frozen-prefix canvas preserve so a tall
+        // transcript doesn't pay a full O(content_rows) clear+repaint
+        // for a viewport-scoped fix. Recovery demotes (verify poison /
+        // gate recovery) do NOT set this — their content may have
+        // shifted, which is exactly why they demoted.
+        canvas_preserve_stale_ok_ = true;
         // Fresh/Stale/HardReset already produce the right behavior on
         // the next render. Empty/Sealed are non-render states; ignore.
     }
@@ -908,6 +918,10 @@ private:
     // (cleared) by the next render, which full-clears the canvas instead
     // of preserving a prefix that no longer matches the shortened tree.
     bool          canvas_preserve_inhibit_ = false;
+    // One-shot: the pending Stale frame came from force_redraw (content
+    // unchanged), so the frozen-prefix canvas preserve may fire despite
+    // coherence not being Synced. Consumed by the next render pass.
+    bool          canvas_preserve_stale_ok_ = false;
     // Whether to EMIT the DEC ?2026 wrapper around every frame. On by
     // default (only MAYA_NO_SYNC disables it) because unknown DEC private
     // modes are no-ops where unsupported — emitting costs ~12 bytes/frame

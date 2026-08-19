@@ -572,11 +572,156 @@ static void test_shrink_overflow_poison_recovery() {
         "is not clearing the mismatched committed scrollback.");
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// 5. MID-SCREEN GHOST RECOVERY (the "duplicated rows in scrollback" bug).
+//
+//    A SHORT inline frame anchored mid-screen (host shell output above —
+//    the normal early-session state), demoted to Stale (force_redraw /
+//    Ctrl+L, or a height-only resize), then re-rendered TALLER (content
+//    grew before the recovery repaint).
+//
+//    The ghost-recovery grow branch used to bottom-anchor: CUD to
+//    (term_h-1) - cursor_row, scroll_n newlines, CUU back — math that
+//    assumes the frame top sits at physical row 0. Mid-screen, the
+//    repaint landed at the viewport bottom while the old frame's rows
+//    stayed un-repainted above it — duplicates that the next growth
+//    committed into native scrollback permanently. The fixed branch is
+//    fully cursor-relative (CUU to frame top, overwrite downward), so
+//    the anchor row is irrelevant.
+// ─────────────────────────────────────────────────────────────────────────
+static void test_midscreen_ghost_recovery_no_duplicates() {
+    std::println("--- test_midscreen_ghost_recovery_no_duplicates ---");
+    const int W = 80, TERM_H = 24;
+    const int HOST_ROWS = 6;    // shell output above the frame
+    const int SHORT_ROWS = 6;   // frame height before Ctrl+L
+    const int TALL_ROWS = 14;   // frame height after growth (still < term_h)
+
+    StylePool pool;
+    auto [writer, rfd] = make_pipe_writer();
+    TermEmu emu(W, TERM_H);
+
+    // Host output anchors the frame mid-screen: cursor lands on row
+    // HOST_ROWS, exactly like launching agentty at a shell prompt.
+    for (int i = 0; i < HOST_ROWS; ++i) {
+        std::string host = "HOST-" + std::to_string(i) + "\r\n";
+        emu.feed(host);
+    }
+
+    // Short frame rendered and Synced mid-screen.
+    Canvas shortc = marked_canvas(W, SHORT_ROWS, pool, "TURN");
+    auto synced = drive_to_synced(emu, pool, writer, rfd, shortc, TERM_H);
+    expect(synced.has_value(), "mid-screen short frame should reach Synced");
+    if (!synced) { close(rfd); return; }
+
+    // force_redraw: demote to Stale (abandoned_for_recovery — the ghost
+    // path), then the next render arrives TALLER (streaming growth).
+    auto stale = std::move(*synced).demote_to_stale();
+    synced.reset();
+    Canvas tallc = marked_canvas(W, TALL_ROWS, pool, "TURN");
+    auto o = std::move(stale).render(
+        tallc, content_rows(tallc), term_rows_for_test(TERM_H),
+        pool, writer, false);
+    emu.feed(read_fd(rfd));
+    const bool resynced = std::visit([](auto&& a) {
+        using T = std::decay_t<decltype(a)>;
+        return std::is_same_v<T, InlineFrame<Synced>>;
+    }, std::move(o));
+    expect(resynced, "ghost recovery render should reach Synced");
+    dump(emu, "mid-screen ghost recovery");
+
+    // No TURN row may appear twice anywhere (scrollback ++ viewport).
+    auto d = scan_dups(emu, "TURN-row-");
+    expect(d.a < 0,
+        "mid-screen recovery duplicated a frame row (rows "
+        + std::to_string(d.a) + "/" + std::to_string(d.b) + " |" + d.line
+        + "|) — the ghost grow branch is not cursor-relative");
+
+    // All TALL_ROWS frame rows present exactly once, ascending.
+    auto all = emu.transcript();
+    int expected = 0;
+    bool order_ok = true;
+    for (const auto& ln : all) {
+        if (ln.find("TURN-row-") == std::string::npos) continue;
+        std::string want = "TURN-row-" + std::to_string(expected);
+        if (ln.find(want) == std::string::npos) { order_ok = false; break; }
+        ++expected;
+    }
+    expect(order_ok && expected == TALL_ROWS,
+        "recovery must repaint all " + std::to_string(TALL_ROWS)
+        + " rows once, in order (saw " + std::to_string(expected) + ")");
+
+    // Host rows above the frame must be untouched, still exactly once.
+    auto hd = scan_dups(emu, "HOST-");
+    expect(hd.a < 0, "host rows above the frame must not be duplicated");
+    int host_seen = 0;
+    for (const auto& ln : all)
+        if (ln.find("HOST-") != std::string::npos) ++host_seen;
+    expect(host_seen == HOST_ROWS,
+        "all host rows preserved (saw " + std::to_string(host_seen) + ")");
+
+    char drain[4096]; while (read(rfd, drain, sizeof(drain)) > 0) {}
+    close(rfd);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 6. Same recovery, SHRINK direction — the taller-then-shorter shape.
+//    Old frame taller than the new one, still mid-screen: surplus old
+//    rows above the new top must be EL-erased, none duplicated.
+// ─────────────────────────────────────────────────────────────────────────
+static void test_midscreen_ghost_recovery_shrink() {
+    std::println("--- test_midscreen_ghost_recovery_shrink ---");
+    const int W = 80, TERM_H = 24;
+    const int HOST_ROWS = 4;
+    const int TALL_ROWS = 12;
+    const int SHORT_ROWS = 5;
+
+    StylePool pool;
+    auto [writer, rfd] = make_pipe_writer();
+    TermEmu emu(W, TERM_H);
+
+    for (int i = 0; i < HOST_ROWS; ++i) {
+        std::string host = "HOST-" + std::to_string(i) + "\r\n";
+        emu.feed(host);
+    }
+
+    Canvas tallc = marked_canvas(W, TALL_ROWS, pool, "OLD");
+    auto synced = drive_to_synced(emu, pool, writer, rfd, tallc, TERM_H);
+    expect(synced.has_value(), "mid-screen tall frame should reach Synced");
+    if (!synced) { close(rfd); return; }
+
+    auto stale = std::move(*synced).demote_to_stale();
+    synced.reset();
+    Canvas shortc = marked_canvas(W, SHORT_ROWS, pool, "NEW");
+    auto o = std::move(stale).render(
+        shortc, content_rows(shortc), term_rows_for_test(TERM_H),
+        pool, writer, false);
+    emu.feed(read_fd(rfd));
+    (void)o;
+    dump(emu, "mid-screen ghost shrink");
+
+    // Every OLD row must be gone — overwritten or EL-erased.
+    auto all = emu.transcript();
+    int old_survivors = 0;
+    for (const auto& ln : all)
+        if (ln.find("OLD-row-") != std::string::npos) ++old_survivors;
+    expect(old_survivors == 0,
+        "shrink recovery left " + std::to_string(old_survivors)
+        + " stale OLD rows visible");
+
+    auto d = scan_dups(emu, "NEW-row-");
+    expect(d.a < 0, "shrink recovery duplicated a NEW frame row");
+
+    char drain[4096]; while (read(rfd, drain, sizeof(drain)) > 0) {}
+    close(rfd);
+}
+
 int main() {
     test_startup_oversized_ordering();
     test_recommit_via_empty_prefix_strands();
     test_hardreset_wipe_makes_oversized_safe();
     test_shrink_overflow_poison_recovery();
+    test_midscreen_ghost_recovery_no_duplicates();
+    test_midscreen_ghost_recovery_shrink();
     if (failures) {
         std::println("FRESH-OVERSIZED SCROLLBACK TESTS FAILED ({} failures)",
                      failures);

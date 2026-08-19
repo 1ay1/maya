@@ -623,9 +623,12 @@ auto Runtime::render(const Element& root) -> Status {
         // "whole chrome in the scrollback / rows cut off" corruption.
         // Those paths set canvas_preserve_inhibit_; consume it here
         // (one-shot) and full-clear.
-        const bool prev_synced = (in_coherence_.index() == 2)
+        const bool prev_synced = (in_coherence_.index() == 2
+                                  || (in_coherence_.index() == 3
+                                      && canvas_preserve_stale_ok_))
                               && !canvas_preserve_inhibit_;
-        canvas_preserve_inhibit_ = false;
+        canvas_preserve_inhibit_  = false;
+        canvas_preserve_stale_ok_ = false;
         if (!canvas_reallocated
             && prev_synced
             && prev_content_rows > 0

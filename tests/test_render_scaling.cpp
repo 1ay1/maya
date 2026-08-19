@@ -443,10 +443,16 @@ TEST_CASE("live tail dominates settled prefix") {
         // Warm-up.
         (void)render_us(build(), canvas, pool);
 
-        double sum = 0;
+        // MINIMUM across frames, not the mean: this test runs under a
+        // parallel ctest schedule (-j8+), where scheduler preemption
+        // inflates individual frames by whole timeslices. Preemption
+        // only ever ADDS time, so the min is the contention-robust
+        // estimator of the true per-frame cost; the mean flaked the
+        // suite roughly once per hundred parallel runs.
+        double best = 1e300;
         for (int f = 0; f < kFrames; ++f)
-            sum += render_us(build(), canvas, pool);
-        return sum / kFrames;
+            best = std::min(best, render_us(build(), canvas, pool));
+        return best;
     };
 
     double t_0_settled  = measure_with_settled(0);
@@ -467,6 +473,13 @@ TEST_CASE("live tail dominates settled prefix") {
     // either the cells cache stops populating or the paint phase
     // falls back to recursive layout/paint over the cached Element.
     double per_turn_marginal_us = (t_50_settled - t_0_settled) / 50.0;
+    // One retry before failing: even the min-of-frames estimator can be
+    // inflated when every frame of a short run lands on a saturated core.
+    if (per_turn_marginal_us >= 1.5) {
+        t_0_settled  = measure_with_settled(0);
+        t_50_settled = measure_with_settled(50);
+        per_turn_marginal_us = (t_50_settled - t_0_settled) / 50.0;
+    }
     std::printf("                marginal per-turn cost: %.2f us\n",
                 per_turn_marginal_us);
 #if MAYA_UNDER_SANITIZER

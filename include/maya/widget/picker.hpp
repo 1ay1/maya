@@ -138,6 +138,13 @@ public:
             Style        badge_style    = {};
             std::string  leading;
             Style        leading_style  = {};
+            // Optional match-highlight: byte offsets into `leading` to render
+            // in the accent hue (bold) — the characters a fuzzy query matched.
+            // Empty ⇒ leading painted as one span. The highlight colour keeps
+            // its hue even on the selected row (so "which chars matched" stays
+            // legible under the cursor).
+            std::vector<int> highlight;
+            Color        highlight_fg   = Color::bright_cyan();
             std::string  trailing;        // empty ⇒ no trailing cell
             Style        trailing_style = {};
             bool         selected = false;  // cursor is on this row
@@ -421,6 +428,32 @@ private:
             return text(r.badge, bs);
         };
 
+        // Leading cell — a single text span, unless the caller supplied
+        // `highlight` offsets (fuzzy-match positions), in which case the
+        // matched characters render in the accent hue (bold) and the rest in
+        // the normal leading style. The highlight keeps its hue on the
+        // selected row so "which chars matched" stays legible under the cursor.
+        auto leading_cell = [&]() -> Element {
+            if (r.highlight.empty()) return text(r.leading, ls) | clip;
+            std::vector<bool> hot(r.leading.size(), false);
+            for (int p : r.highlight)
+                if (p >= 0 && p < static_cast<int>(r.leading.size())) hot[p] = true;
+            Style hs = ls.with_fg(r.highlight_fg).with_bold();
+            // Build one text span per run of same-highlight chars, then hand
+            // them to hstack() in a SINGLE variadic call (the builder takes
+            // its children at once; incremental calls don't accumulate).
+            std::vector<Element> spans;
+            std::size_t i = 0;
+            while (i < r.leading.size()) {
+                bool h = hot[i];
+                std::size_t j = i;
+                while (j < r.leading.size() && hot[j] == h) ++j;
+                spans.push_back(text(r.leading.substr(i, j - i), h ? hs : ls));
+                i = j;
+            }
+            return hstack()(spans);
+        };
+
         auto finish = [&](Element row) -> Element {
             // Structured rows are a one-row contract. Enforce it here rather
             // than relying on every text child to win flex negotiation: at
@@ -443,7 +476,7 @@ private:
                     .width(Dimension::percent(100))(
                     edge,
                     text(std::string{" "}),
-                    text(r.leading, ls) | clip | grow(1.0f),
+                    leading_cell() | grow(1.0f),
                     text(std::string{" "})
                 ));
             }
@@ -453,7 +486,7 @@ private:
                 text(std::string{" "}),
                 badge_cell() | overflow(Overflow::Hidden) | shrink(0.5f),
                 text(std::string{" "}),
-                text(r.leading, ls) | clip | grow(1.0f),
+                leading_cell() | grow(1.0f),
                 text(std::string{" "})
             ));
         }
@@ -477,7 +510,7 @@ private:
                 .width(Dimension::percent(100))(
                 edge,
                 text(std::string{" "}),
-                text(r.leading, ls) | clip | grow(1.0f) | shrink(3.0f),
+                leading_cell() | grow(1.0f) | shrink(3.0f),
                 spacer(),
                 text(r.trailing, ts) | clip | shrink(1.0f),
                 text(std::string{" "})
@@ -489,7 +522,7 @@ private:
             text(std::string{" "}),
             badge_cell() | overflow(Overflow::Hidden) | shrink(0.5f),
             text(std::string{" "}),
-            text(r.leading, ls) | clip | grow(1.0f) | shrink(3.0f),
+            leading_cell() | grow(1.0f) | shrink(3.0f),
             spacer(),
             text(r.trailing, ts) | clip | shrink(1.0f),
             text(std::string{" "})

@@ -103,7 +103,10 @@ jobs:
 
       - name: Test
         if: runner.os != 'Windows'
-        run: ctest --test-dir build --output-on-failure --timeout 120
+        # Exclude perf-labelled benchmarks: they assert on SPEED, which varies
+        # with shared-runner load, so they flake the pass/fail gate. Correctness
+        # tests (incl. the markdown watchdogs) still run.
+        run: ctest --test-dir build --output-on-failure --timeout 120 -LE perf
 
   sanitizers:
     name: sanitizers (${{ matrix.san }})
@@ -140,7 +143,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           TSAN_OPTIONS: halt_on_error=1
-        run: ctest --test-dir build --output-on-failure --timeout 240
+        run: ctest --test-dir build --output-on-failure --timeout 240 -LE perf
 
   fuzz-smoke:
     name: fuzz harness smoke

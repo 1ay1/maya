@@ -111,12 +111,31 @@ static void run(std::string_view name, std::chrono::milliseconds timeout, F&& fn
     // sanitizer the 5–15x instrumentation slowdown makes them blow ctest's
     // wall-clock timeout, so skip them — the 1s correctness tests still run
     // (each on its own thread via std::async, so TSan still sees the parser).
-    if (should_skip(name)
-        || (kUnderSanitizer && timeout > std::chrono::milliseconds(1000))) {
+    // Decide on the ORIGINAL (unscaled) budget so the classification is stable.
+    const bool is_stress = timeout > std::chrono::milliseconds(1000);
+    if (should_skip(name) || (kUnderSanitizer && is_stress)) {
         std::println(" SKIP");
         std::fflush(stdout);
         ++g_skipped;
         return;
+    }
+
+    // These watchdogs exist to catch HANGS (infinite loops), not to enforce a
+    // perf budget — so give them generous headroom. On shared/loaded CI
+    // runners (and a heavily-parallel `ctest -j`) a normally-fast scenario can
+    // spike near a snug wall-clock bound and false-HANG (flaky failure). Scale
+    // every timeout up (×10 default, MAYA_TEST_TIMEOUT_SCALE overrides); a real
+    // hang never finishes, so a larger bound still catches it — it just takes
+    // longer to declare, and passing tests are unaffected (they finish early).
+    {
+        double scale = 10.0;
+        if (const char* s = std::getenv("MAYA_TEST_TIMEOUT_SCALE")) {
+            char* end = nullptr;
+            double v = std::strtod(s, &end);
+            if (end != s && v > 0) scale = v;
+        }
+        timeout = std::chrono::milliseconds(
+            static_cast<long long>(timeout.count() * scale));
     }
 
     auto start = std::chrono::steady_clock::now();

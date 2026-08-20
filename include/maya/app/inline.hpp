@@ -129,6 +129,11 @@ void print(const Element& root, int width);
 /// Useful for testing, CI output, and documentation generation.
 [[nodiscard]] std::string render_to_string(const Element& root, int width = 80);
 
+// Like render_to_string but keeps styling as SGR escapes (colour + bold), so a
+// test can assert on WHAT COLOUR something rendered — e.g. that a fuzzy match's
+// characters are in the accent hue. A render-verification aid, not for output.
+[[nodiscard]] std::string render_to_string_ansi(const Element& root, int width = 80);
+
 // ── LiveConfig ─────────────────────────────────────────────────────────────
 
 struct LiveConfig {

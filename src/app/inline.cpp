@@ -273,4 +273,45 @@ std::string render_to_string(const Element& root, int width) {
     return result;
 }
 
+// Like render_to_string, but PRESERVES styling as SGR escape sequences — each
+// cell's interned style is emitted when it changes, and a reset closes each
+// line. Lets a test assert on colour/bold ("the matched chars are actually in
+// the accent hue"), which the plain variant can't. Not for production output;
+// it's a render-verification aid.
+std::string render_to_string_ansi(const Element& root, int width) {
+    StylePool pool;
+    std::vector<layout::LayoutNode> layout_nodes;
+    Canvas canvas{width, 500, &pool};
+    render_tree(root, canvas, pool, theme::dark, layout_nodes, /*auto_height=*/true);
+    int rows = content_height(canvas);
+    if (!layout_nodes.empty()) {
+        int needed = layout_nodes[0].computed.size.height.raw();
+        if (needed > canvas.height()) {
+            canvas.resize(width, needed + 8);
+            canvas.clear();
+            render_tree(root, canvas, pool, theme::dark, layout_nodes, /*auto_height=*/true);
+            rows = content_height(canvas);
+        }
+    }
+    if (rows < 0) return {};
+
+    std::string result;
+    for (int y = 0; y <= rows; ++y) {
+        uint16_t cur = UINT16_MAX;   // unknown → first cell forces a full SGR
+        for (int x = 0; x < width; ++x) {
+            const Cell c = canvas.get(x, y);
+            if (c.width == 2) continue;   // second half of a wide glyph
+            if (c.style_id != cur) {
+                result += pool.sgr(c.style_id);
+                cur = c.style_id;
+            }
+            char32_t ch = c.character == U'\0' ? U' ' : c.character;
+            detail::encode_utf8(ch, result);
+        }
+        result += "\x1b[0m";
+        if (y < rows) result += '\n';
+    }
+    return result;
+}
+
 } // namespace maya

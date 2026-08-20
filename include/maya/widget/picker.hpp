@@ -142,6 +142,12 @@ public:
             Style        trailing_style = {};
             bool         selected = false;  // cursor is on this row
             bool         active   = false;  // "currently in use" marker
+            // Non-selectable SECTION HEADER. Renders as a dim label with no
+            // edge bar and no selection band; the widget never paints it as
+            // selected. Callers that inject headers must keep the cursor off
+            // them (headers carry no action) — point `selected`/`Row::selected`
+            // at real rows only.
+            bool         is_header = false;
         };
 
         // Structured rows. Mutually exclusive with `items`: if this
@@ -367,6 +373,20 @@ private:
     // selected-state styling override, and right-pinned trailing cell.
     [[nodiscard]] Element build_row(const Config::Row& r) const {
         using namespace dsl;
+
+        // Section header: a dim, non-selectable label that groups the rows
+        // beneath it. No edge bar, never highlighted (callers keep the cursor
+        // off headers). Reads as a quiet divider — an uppercased section name
+        // in its category hue with leading indent — set off from the rows.
+        if (r.is_header) {
+            Style hs = r.leading_style.with_dim(true).with_bold(true);
+            return hstack()
+                       .width(Dimension::percent(100))(
+                       text(std::string{"  "}),
+                       text(r.leading, hs) | clip,
+                       spacer())
+                 | height(1) | overflow(Overflow::Hidden);
+        }
 
         // Edge bar: cursor wins on overlap (cursor is transient and
         // the user just moved it here; active is what they're moving

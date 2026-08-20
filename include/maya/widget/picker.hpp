@@ -147,6 +147,13 @@ public:
             Color        highlight_fg   = Color::bright_cyan();
             std::string  trailing;        // empty ⇒ no trailing cell
             Style        trailing_style = {};
+            // When true, the TRAILING cell is secondary to the leading label
+            // and yields space FIRST under width pressure (shrink 4× vs the
+            // leading's 1×). Use for rows where the label is what the user
+            // selects (command palette) so a long description never eats the
+            // label on a narrow terminal. Default false keeps the file-picker
+            // policy (leading gives first — the diffstat/locus matters more).
+            bool         trailing_secondary = false;
             bool         selected = false;  // cursor is on this row
             bool         active   = false;  // "currently in use" marker
             // Non-selectable SECTION HEADER. Renders as a dim label with no
@@ -505,14 +512,25 @@ private:
         // paragraph-length checkpoint preview meeting a fat "N files +A
         // −B" diffstat) now share negative space by shrink weight
         // instead of fighting over it.
+        // Shrink policy: normally the leading gives space first (3×) so a fat
+        // trailing diffstat/locus survives (file & checkpoint pickers). But
+        // when `trailing_secondary` is set the LABEL is what the user selects
+        // (command palette), so invert it — leading barely shrinks (1×) and the
+        // trailing yields first (5×), and we insert a 2-col gap so the label and
+        // description never touch even as the description truncates to nothing.
+        const float lead_shrink  = r.trailing_secondary ? 1.0f : 3.0f;
+        const float trail_shrink = r.trailing_secondary ? 5.0f : 1.0f;
+        auto gap = r.trailing.empty() ? text(std::string{})
+                                      : text(std::string{"  "});
         if (r.badge.empty()) {
             return finish(hstack()
                 .width(Dimension::percent(100))(
                 edge,
                 text(std::string{" "}),
-                leading_cell() | grow(1.0f) | shrink(3.0f),
+                leading_cell() | grow(1.0f) | shrink(lead_shrink),
                 spacer(),
-                text(r.trailing, ts) | clip | shrink(1.0f),
+                gap,
+                text(r.trailing, ts) | clip | shrink(trail_shrink),
                 text(std::string{" "})
             ));
         }
@@ -522,9 +540,10 @@ private:
             text(std::string{" "}),
             badge_cell() | overflow(Overflow::Hidden) | shrink(0.5f),
             text(std::string{" "}),
-            leading_cell() | grow(1.0f) | shrink(3.0f),
+            leading_cell() | grow(1.0f) | shrink(lead_shrink),
             spacer(),
-            text(r.trailing, ts) | clip | shrink(1.0f),
+            gap,
+            text(r.trailing, ts) | clip | shrink(trail_shrink),
             text(std::string{" "})
         ));
     }

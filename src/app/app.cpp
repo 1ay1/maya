@@ -1361,35 +1361,6 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
 
     out_.clear();
 
-    // Scrollback commit: the app froze `grid_pending_commit_` rows into history
-    // since the last frame.  Tell the host to move its top N grid rows into
-    // scrollback, then shift OUR prev-cell snapshot up by N so the diff below
-    // compares the new (scrolled-up) canvas against the right baseline.  A
-    // commit forces the changed-row set to be recomputed against the shifted
-    // snapshot; rows that slid up but kept their glyphs then diff clean.
-    if (grid_pending_commit_ > 0 && grid_prev_w_ == w && grid_prev_rows_ > 0) {
-        int n = grid_pending_commit_;
-        if (n > grid_prev_rows_) n = grid_prev_rows_;
-        if (n > 0) {
-            render::emit_commit(n, out_);
-            if (!grid_need_full_) {
-                // Shift the snapshot up by n rows (drop the committed prefix).
-                const std::size_t stride = static_cast<std::size_t>(w);
-                const std::size_t kept   =
-                    static_cast<std::size_t>(grid_prev_rows_ - n) * stride;
-                if (kept > 0)
-                    std::memmove(grid_prev_cells_.data(),
-                                 grid_prev_cells_.data() + static_cast<std::size_t>(n) * stride,
-                                 kept * sizeof(std::uint64_t));
-                for (std::size_t i = kept;
-                     i < static_cast<std::size_t>(grid_prev_rows_) * stride; ++i)
-                    grid_prev_cells_[i] = 0;
-                grid_prev_rows_ -= n;
-            }
-        }
-    }
-    grid_pending_commit_ = 0;
-
     const bool dims_changed = (grid_prev_w_ != w || grid_prev_rows_ != rows);
     if (dims_changed || grid_need_full_) {
         render::emit_resize(w, rows, out_);

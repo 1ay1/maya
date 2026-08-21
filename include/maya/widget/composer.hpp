@@ -584,14 +584,16 @@ public:
             ? cfg_.line_estimate
             : static_cast<int>(split_lines(cfg_.text).size());
 
-        // ── Divider between body and hint row — hairline rule in the
-        // box color so the input area visually splits from the
-        // chrome (key hints + ambient counters + profile chip).
+        // ── Divider between body and hint row — a VERY THIN hairline:
+        // the Dashed border's light triple-dash glyph (┄) reads far
+        // airier than a solid rule, and .with_dim() drops it into the
+        // chrome so the input area splits from the key hints / counters
+        // / profile chip without a heavy bar cutting the box in two.
         // Left padding = 3 to clear `inner`'s padding(0,1) plus the
         // 2-col "❯ " prompt, so the rule's left end sits exactly under
         // the first body character. Right padding = 1 matches `inner`.
         auto rule = (Divider{DividerConfig{
-            .line       = BorderStyle::Single,
+            .line       = BorderStyle::Dashed,
             .line_style = Style{}.with_fg(box_color).with_dim(),
         }}.build() | padding(0, 1, 0, 3)).build();
 

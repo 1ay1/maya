@@ -1348,26 +1348,26 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     // switch / reset / reflow) — the old history no longer aligns.
     if (grid_committed_rows_ > content_h) grid_committed_rows_ = 0;
 
-    const int overflow = (content_h - grid_committed_rows_) - term_h;
-    if (overflow > 0 && w > 0) {
-        // These rows just scrolled off the top of the screen: hand them to the
-        // host once, then advance the committed watermark.  Emitted with
-        // base_row = -committed so their row numbers are batch-relative (0..n).
-        std::vector<int> crows;
-        crows.reserve(static_cast<std::size_t>(overflow));
-        for (int i = 0; i < overflow; ++i)
-            crows.push_back(grid_committed_rows_ + i);
-        render::emit_commit_rows(canvas_, pool_, crows, overflow,
-                                 /*base_row=*/-grid_committed_rows_, out_);
-        grid_committed_rows_ += overflow;
-        // The screen shifted under the host: its next diff must be a full
-        // re-state of the new screen.
-        grid_need_full_ = true;
-    }
+    // A terminal NEVER moves rows to scrollback on its own: only an explicit
+    // scroll from the app (LF at the bottom row, or SU) does that, just as it
+    // only clears cells when the app sends ED/EL.  agentty never scrolls in
+    // grid mode -- it redraws a screen -- so we must not invent scrolls here.
+    // Committing on "content taller than the screen" froze live rows (the
+    // composer/status) into history while agentty kept re-rendering them: the
+    // duplicated composer + status bar.  The screen is simply the bottom
+    // term_h rows of the content, redrawn in place; clearing is handled by the
+    // full re-state below whenever the content height moves.
+    grid_committed_rows_ = 0;
 
-    // The screen: the un-committed tail, at most term_h rows.
-    const int view_top = grid_committed_rows_;
-    const int rows = std::max(1, std::min(term_h, content_h - view_top));
+    // ── INLINE: EMIT THE WHOLE CONTENT ──
+    // agentty runs INLINE: it deliberately renders more than one screen and
+    // relies on the terminal keeping the overflow as scrollback.  Clamping the
+    // emitted rows to the bottom term_h threw that history away — the host had
+    // exactly one screen, so there was nothing to scroll and no scrollbar.
+    // Emit every content row; the host buffer becomes the scrollback and its
+    // window shows the tail, which is precisely what a terminal does.
+    const int view_top = 0;
+    const int rows = std::max(1, content_h);
 
     // Content height changes shift every screen row, so re-state the whole
     // screen; a stale row (old composer/status) must never survive a shift.

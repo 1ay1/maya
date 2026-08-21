@@ -5,7 +5,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>  // memmove: grid snapshot shift on scrollback commit
 #include <format>
+#include <utility>  // std::exchange: drain grid_pending_commit_
 #include <thread>   // DSR cursor-position query: brief sleep between polls
 
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
@@ -1359,6 +1361,46 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     // full re-state below whenever the content height moves.
     grid_committed_rows_ = 0;
 
+    // ── EXPLICIT COMMITS (host-side scrollback freeze) ──
+    // The app's frozen-block ledger commits N front rows via
+    // Cmd::commit_scrollback -> commit_inline_prefix -> grid_pending_commit_.
+    // Those rows' TEXT is already present and correct in the host buffer (we
+    // emitted it on earlier frames), so a commit needs NO glyphs on the wire:
+    // a header-only Commit(n) tells the host "freeze your top n live lines
+    // into immutable history".  The content tree is n rows shorter this
+    // frame; shifting our diff snapshot up by n aligns prev row (y+n) with
+    // new row y, so the subsequent per-row diff sees the survivors as
+    // UNCHANGED and emits nothing for them — the commit costs O(1) on the
+    // wire and zero repaint in the host.  Without the shift (the old code's
+    // full re-state), every commit forced thousands of host row-patches: the
+    // flicker and the destroyed scroll anchors.
+    const int pending_commit = std::exchange(grid_pending_commit_, 0);
+    out_.clear();
+    if (pending_commit > 0) {
+        render::emit_commit(pending_commit, out_);
+        const int prev_rows_now = grid_prev_rows_;
+        const int keep = std::max(0, prev_rows_now - pending_commit);
+        if (keep > 0 && grid_prev_w_ == w &&
+            static_cast<std::size_t>(prev_rows_now) * w == grid_prev_cells_.size()) {
+            // Shift the snapshot up: prev row (y + committed) becomes row y.
+            std::memmove(grid_prev_cells_.data(),
+                         grid_prev_cells_.data() +
+                             static_cast<std::size_t>(pending_commit) * w,
+                         static_cast<std::size_t>(keep) * w * sizeof(std::uint64_t));
+            grid_prev_cells_.resize(static_cast<std::size_t>(keep) * w);
+            grid_prev_rows_ = keep;
+            // The prev content height shrank by the same amount: keep the
+            // growth heuristic below from misreading the shift as a resize.
+            if (grid_prev_content_h_ > 0)
+                grid_prev_content_h_ =
+                    std::max(0, grid_prev_content_h_ - pending_commit);
+        } else {
+            // Snapshot can't be aligned (width changed mid-commit or empty):
+            // fall back to a full re-state of the (shorter) live surface.
+            grid_need_full_ = true;
+        }
+    }
+
     // ── INLINE: EMIT THE WHOLE CONTENT ──
     // agentty runs INLINE: it deliberately renders more than one screen and
     // relies on the terminal keeping the overflow as scrollback.  Clamping the
@@ -1369,9 +1411,17 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     const int view_top = 0;
     const int rows = std::max(1, content_h);
 
-    // Content height changes shift every screen row, so re-state the whole
-    // screen; a stale row (old composer/status) must never survive a shift.
-    if (content_h != grid_prev_content_h_) grid_need_full_ = true;
+    // Content-height changes: the old code forced a FULL re-state of every
+    // row on ANY height change — agentty streams a line, content grows by 1,
+    // and the entire multi-thousand-row transcript was re-emitted and
+    // re-patched into the host buffer (the slowness AND the flicker).  In
+    // maya's inline layout, GROWTH appends rows at the bottom: existing rows
+    // keep their index, so the per-row diff below handles growth exactly —
+    // unchanged prefix emits nothing, new tail rows differ from the
+    // (zero-padded) snapshot and are emitted.  Only a SHRINK still forces a
+    // full re-state: rows shifted or vanished and the host must truncate via
+    // Resize + re-stated survivors (stale rows must never linger).
+    if (content_h < grid_prev_content_h_) grid_need_full_ = true;
     grid_prev_content_h_ = content_h;
 
     // Snapshot the visible rows as packed cells for the diff.  y is a VIEWPORT
@@ -1381,9 +1431,14 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
         for (int x = 0; x < w; ++x) dst[x] = canvas_.get_packed(x, view_top + y);
     };
 
-    out_.clear();
+    // out_ was cleared above (before Commit emission — the Commit frame must
+    // survive into this frame's write).
 
-    const bool dims_changed = (grid_prev_w_ != w || grid_prev_rows_ != rows);
+    // Width change or SHRINK re-states the surface; pure GROWTH takes the
+    // diff branch (existing rows keep their index; new tail rows are emitted
+    // as changed).  Including growth in dims_changed would re-state the whole
+    // transcript on every streamed line — the bug this rewrite removes.
+    const bool dims_changed = (grid_prev_w_ != w || rows < grid_prev_rows_);
     if (dims_changed || grid_need_full_) {
         render::emit_resize(w, rows, out_);
         render::GridCursor cur{rows > 0 ? rows - 1 : 0, 0, false};
@@ -1396,9 +1451,17 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
         render::emit_diff(canvas_, pool_, all, /*base_row=*/-view_top, &cur, out_);
         grid_need_full_ = false;
     } else {
-        // DIFF: row-compare vs the snapshot, emit only changed rows.
+        // GROWTH: tell the host the new surface height first (cheap — its
+        // resize only appends blank lines on grow; truncation happens solely
+        // in the full-re-state path).
+        if (rows > grid_prev_rows_)
+            render::emit_resize(w, rows, out_);
+        // DIFF: row-compare vs the snapshot, emit only changed rows.  Rows
+        // beyond the snapshot (fresh growth) have no prev to compare — they
+        // are new content, always emitted.
         std::vector<int> changed;
         for (int y = 0; y < rows; ++y) {
+            if (y >= grid_prev_rows_) { changed.push_back(view_top + y); continue; }
             const std::uint64_t* prev =
                 &grid_prev_cells_[static_cast<std::size_t>(y) * w];
             bool same = true;
@@ -1412,6 +1475,9 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
         }
     }
 
+    // Growth without full re-state reaches here with rows > grid_prev_rows_:
+    // the diff loop above compared the shared prefix; the appended tail rows
+    // were compared against zero (empty snapshot) and emitted iff non-empty.
     // Update the snapshot to the just-emitted frame.
     grid_prev_cells_.assign(static_cast<std::size_t>(rows) * static_cast<std::size_t>(w), 0);
     for (int y = 0; y < rows; ++y)

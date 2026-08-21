@@ -13,11 +13,22 @@ namespace maya::render {
 
 namespace {
 
+// Wire protocol version.  v2 added the u32 length prefix in `wrap_apc' so the
+// frame is self-delimiting regardless of payload bytes (v1 relied on scanning
+// for the ESC \ terminator, which a binary payload could spoof).
+constexpr std::uint8_t GRID_PROTO_VER = 2;
+
 // ── little-endian appenders ────────────────────────────────────────────────
 inline void put_u8 (std::string& o, std::uint8_t v)  { o.push_back(static_cast<char>(v)); }
 inline void put_u16(std::string& o, std::uint16_t v) {
     o.push_back(static_cast<char>(v & 0xFF));
     o.push_back(static_cast<char>((v >> 8) & 0xFF));
+}
+inline void put_u32(std::string& o, std::uint32_t v) {
+    o.push_back(static_cast<char>( v        & 0xFF));
+    o.push_back(static_cast<char>((v >>  8) & 0xFF));
+    o.push_back(static_cast<char>((v >> 16) & 0xFF));
+    o.push_back(static_cast<char>((v >> 24) & 0xFF));
 }
 
 // A color tagged for the host to resolve.  Named/Default carry no true RGB
@@ -46,10 +57,19 @@ inline std::uint16_t pack_attrs(const Style& s) {
         (s.conceal       ? 1u << 6 : 0));
 }
 
-// APC wrapper: ESC _ G <payload> ESC \ .  Built into a scratch buffer then
-// wrapped so we never have to length-prefix (APC is terminated, not counted).
+// APC wrapper:  ESC _ G  <u32 payload_len LE>  <payload>  ESC \ .
+//
+// The payload is RAW BINARY (u16 fields, UTF-8 text) and can contain ANY byte
+// — including the terminator pair ESC \ (0x1b 0x5c), a NUL, etc.  So the frame
+// must NOT be delimited by scanning for ESC \: it is LENGTH-PREFIXED.  The host
+// reads the u32 immediately after `ESC _ G`, consumes exactly that many payload
+// bytes, and treats the trailing ESC \ as a sanity check only.  This makes the
+// framing content-independent and safe across arbitrary pty chunk boundaries.
+// (The u16 you'd otherwise appended is unchanged; only wrap_apc gained a
+// length prefix.)
 inline void wrap_apc(const std::string& payload, std::string& out) {
     out += "\x1b_G";
+    put_u32(out, static_cast<std::uint32_t>(payload.size()));
     out += payload;
     out += "\x1b\\";
 }
@@ -86,6 +106,18 @@ struct StyleTable {
 // trailing-half column, matching how the host lays a wide glyph across cells.
 struct Run { std::uint16_t row, col, len, style; std::string utf8; };
 
+// A cell's character must never reach the wire as invalid UTF-8: NUL, a UTF-16
+// surrogate, or an out-of-range code point would make the host's decoder
+// produce mojibake or (pre-length-prefix) desync the stream.  Map anything
+// ill-formed to U+FFFD.  A blank cell (NUL from a raw memset path) becomes a
+// space so the column still occupies one cell.
+inline char32_t sanitize_cp(char32_t cp) {
+    if (cp == 0) return U' ';
+    if (cp >= 0xD800 && cp <= 0xDFFF) return 0xFFFD;   // lone surrogate
+    if (cp > 0x10FFFF) return 0xFFFD;                   // out of Unicode range
+    return cp;
+}
+
 void build_row_runs(const Canvas& canvas, int row, std::vector<Run>& out,
                     StyleTable& table) {
     const int w = canvas.width();
@@ -102,7 +134,7 @@ void build_row_runs(const Canvas& canvas, int row, std::vector<Run>& out,
             Cell cc = canvas.get(cx, row);
             if (cc.width == 2) { ++cx; continue; }
             if (cc.style_id != style) break;
-            maya::detail::encode_utf8(cc.character, run.utf8);
+            maya::detail::encode_utf8(sanitize_cp(cc.character), run.utf8);
             ++run.len;
             ++cx;
         }
@@ -138,7 +170,7 @@ void emit_cells(const Canvas& canvas, const StylePool& pool,
     std::string p;
     const std::uint8_t flags =
         (table.empty() ? 0u : 1u) | (cursor ? 2u : 0u);
-    put_u8 (p, 1);                                   // ver
+    put_u8 (p, GRID_PROTO_VER);                      // ver
     put_u8 (p, static_cast<std::uint8_t>(type));
     put_u8 (p, flags);
     put_u8 (p, 0);                                   // reserved
@@ -171,7 +203,7 @@ void emit_header_only(GridFrameType type, int cols, int rows,
                       const GridCursor* cursor, std::string& out) {
     std::string p;
     const std::uint8_t flags = (cursor ? 2u : 0u);
-    put_u8 (p, 1);
+    put_u8 (p, GRID_PROTO_VER);
     put_u8 (p, static_cast<std::uint8_t>(type));
     put_u8 (p, flags);
     put_u8 (p, 0);

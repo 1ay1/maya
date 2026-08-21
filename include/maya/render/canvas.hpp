@@ -247,6 +247,13 @@ public:
 
     /// Look up a style by its ID. The caller must ensure the ID is valid.
     [[nodiscard]] MAYA_ALWAYS_INLINE const Style& get(uint16_t id) const noexcept {
+        // Clamp a stale/out-of-range id to the always-present default style
+        // (id 0) rather than reading past styles_ into freed/uninitialized
+        // capacity.  A cell can legitimately carry a style_id interned in a
+        // frame BEFORE clear() shrank the pool; grid_emit's StyleTable::write
+        // and any other reader must not fault on it.  Mirrors the same guard
+        // already present on sgr().
+        if (id >= styles_.size()) id = 0;
         return styles_[id];
     }
 

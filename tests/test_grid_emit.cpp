@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <print>
+#include <random>
 
 using namespace maya;
 using namespace maya::dsl;
@@ -39,6 +40,7 @@ struct Reader {
     explicit Reader(const std::string& b) : s(b) {}
     std::uint8_t  u8()  { return static_cast<std::uint8_t>(s[i++]); }
     std::uint16_t u16() { std::uint16_t v = u8(); v |= std::uint16_t(u8()) << 8; return v; }
+    std::uint32_t u32() { std::uint32_t v = u16(); v |= std::uint32_t(u16()) << 16; return v; }
     DecColor color() {
         DecColor c{u8(), 0, 0, 0};
         if (c.kind == 1 || c.kind == 2) c.a = u8();
@@ -47,14 +49,21 @@ struct Reader {
     }
 };
 
-// Strip the APC wrapper (ESC _ G … ESC \) and decode the payload.
+// Strip the APC wrapper (ESC _ G <u32 len> <payload> ESC \) and decode the
+// payload.  The frame is LENGTH-PREFIXED (v2): read the u32 immediately after
+// ESC _ G and take exactly that many payload bytes — never scan for ESC \,
+// which the binary payload can contain.
 DecFrame decode(const std::string& wire) {
-    // find ESC _ G
     auto p = wire.find("\x1b_G");
     assert(p != std::string::npos);
-    auto end = wire.find("\x1b\\", p);
-    assert(end != std::string::npos);
-    std::string payload = wire.substr(p + 3, end - (p + 3));
+    // 4-byte LE length follows the ESC _ G introducer.
+    Reader lr(wire); lr.i = p + 3;
+    std::uint32_t plen = lr.u32();
+    std::size_t pstart = p + 3 + 4;
+    assert(pstart + plen + 2 <= wire.size());
+    // trailing ESC \ is a sanity check, not the delimiter.
+    assert(wire[pstart + plen] == '\x1b' && wire[pstart + plen + 1] == '\\');
+    std::string payload = wire.substr(pstart, plen);
 
     Reader r(payload);
     DecFrame f;
@@ -121,7 +130,7 @@ TEST_CASE("grid emit: full frame round-trips text + dimensions") {
     emit_full(c, pool, /*base_row=*/0, /*cursor=*/nullptr, wire);
     DecFrame f = decode(wire);
 
-    assert(f.ver == 1);
+    assert(f.ver == 2);
     assert(f.type == static_cast<std::uint8_t>(GridFrameType::Full));
     assert(f.cols == 12);
     assert(f.rows == 2);
@@ -210,4 +219,130 @@ TEST_CASE("grid emit: style table dedups + carries attributes") {
     for (auto& st : f.styles) if (st.attrs & 1u) any_bold = true;
     assert(any_bold);
     std::println("PASS (styles=%zu, bold present)", f.styles.size());
+}
+
+TEST_CASE("grid emit: length prefix survives ESC-backslash bytes in payload") {
+    std::println("--- grid_emit self-delimiting framing ---");
+    // A resize whose ROWS field is 0x5c1b encodes, little-endian, as the bytes
+    // 0x1b 0x5c — a FAKE `ESC \` terminator sitting INSIDE the payload.  With
+    // the v1 terminator-scan this truncated the frame; with the v2 length
+    // prefix the decoder consumes exactly payload_len bytes and is immune.
+    std::string wire;
+    emit_resize(/*cols=*/40, /*rows=*/0x5c1b, wire);
+
+    // The payload must actually contain the 1b 5c pair (before the real end).
+    auto p = wire.find("\x1b_G");
+    assert(p != std::string::npos);
+    std::size_t body = p + 3 + 4;                 // past ESC _ G + u32 len
+    bool has_fake_term = false;
+    for (std::size_t k = body; k + 1 < wire.size() - 2; ++k)
+        if ((std::uint8_t)wire[k] == 0x1b && (std::uint8_t)wire[k+1] == '\\')
+            has_fake_term = true;
+    assert(has_fake_term && "test must actually embed a fake ESC\\ in the body");
+
+    // Decode by length prefix: must recover the real frame, not truncate.
+    DecFrame f = decode(wire);
+    assert(f.ver == 2);
+    assert(f.type == static_cast<std::uint8_t>(GridFrameType::Resize));
+    assert(f.cols == 40);
+    assert(f.rows == 0x5c1b);
+    std::println("PASS (fake ESC\\ in payload, framed by length)");
+}
+
+// Reconstruct the DISPLAY (one string per column-cell, wide glyph occupies two)
+// from a decoded FULL frame and compare it, cell for cell, against the canvas.
+// This is the real round-trip oracle: any column/width/text/style-boundary bug
+// in build_row_runs shows up as a mismatch here.
+static std::u32string decode_utf8_to_u32(const std::string& s) {
+    std::u32string out; std::size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = (unsigned char)s[i];
+        char32_t cp; int nb;
+        if (c < 0x80) { cp = c; nb = 1; }
+        else if (c < 0xE0) { cp = c & 0x1F; nb = 2; }
+        else if (c < 0xF0) { cp = c & 0x0F; nb = 3; }
+        else { cp = c & 0x07; nb = 4; }
+        for (int b = 1; b < nb && i + (std::size_t)b < s.size(); ++b)
+            cp = (cp << 6) | ((unsigned char)s[i + (std::size_t)b] & 0x3F);
+        out.push_back(cp); i += (std::size_t)nb;
+    }
+    return out;
+}
+
+TEST_CASE("grid emit: FULL frame round-trips a wide/styled canvas cell-for-cell") {
+    std::println("--- grid_emit round-trip fuzz ---");
+    std::mt19937 rng(0xC0FFEE);
+    const char32_t glyphs[] = { U'a', U'b', U'Z', U'世', U'界', U'あ', U' ', U'#' };
+    int mismatches = 0;
+    for (int iter = 0; iter < 200; ++iter) {
+        int W = 4 + (int)(rng() % 20), H = 1 + (int)(rng() % 5);
+        StylePool pool;
+        Canvas c(W, H, &pool);
+        // reference display grid: one char32_t per column (0 = continuation)
+        std::vector<std::u32string> ref(H);
+        for (int y = 0; y < H; ++y) ref[y].assign((std::size_t)W, U' ');
+        for (int y = 0; y < H; ++y) {
+            int x = 0;
+            while (x < W) {
+                char32_t g = glyphs[rng() % (sizeof glyphs / sizeof *glyphs)];
+                int gw = (g == U'世' || g == U'界' || g == U'あ') ? 2 : 1;
+                if (x + gw > W) { x++; continue; }
+                std::uint16_t sid = (std::uint16_t)(rng() % 3);   // a few styles
+                Style st; if (sid == 1) st.bold = true; else if (sid == 2) st.fg = Color::red();
+                std::uint16_t id = pool.intern(st);
+                if (gw == 2) { c.set(x, y, g, id, 1); c.set(x + 1, y, U' ', id, 2);
+                              ref[y][(std::size_t)x] = g; ref[y][(std::size_t)x + 1] = 0; }
+                else         { c.set(x, y, g, id, 0); ref[y][(std::size_t)x] = g; }
+                x += gw;
+            }
+        }
+        std::string wire; emit_full(c, pool, 0, nullptr, wire);
+        DecFrame f = decode(wire);
+        // reconstruct display grid from runs
+        std::vector<std::u32string> got(H);
+        for (int y = 0; y < H; ++y) got[y].assign((std::size_t)W, U' ');
+        for (auto& r : f.runs) {
+            std::u32string cps = decode_utf8_to_u32(r.utf8);
+            int col = r.col;
+            for (char32_t cp : cps) {
+                int cw = (cp == U'世' || cp == U'界' || cp == U'あ') ? 2 : 1;
+                if (col < W) got[r.row][(std::size_t)col] = cp;
+                if (cw == 2 && col + 1 < W) got[r.row][(std::size_t)col + 1] = 0;
+                col += cw;
+            }
+        }
+        for (int y = 0; y < H && mismatches < 5; ++y)
+            if (got[y] != ref[y]) {
+                ++mismatches;
+                std::println("  MISMATCH iter=%d row=%d", iter, y);
+            }
+    }
+    assert(mismatches == 0);
+    std::println("PASS (200 random wide/styled canvases round-trip)");
+}
+
+TEST_CASE("grid emit: ill-formed cell code points never reach the wire") {
+    std::println("--- grid_emit utf-8 sanitizer ---");
+    StylePool pool;
+    Canvas c(6, 1, &pool);
+    // Force pathological characters into cells (NUL, lone surrogate, > U+10FFFF).
+    c.set(0, 0, U'\0',      0, 0);
+    c.set(1, 0, (char32_t)0xD83D, 0, 0);   // lone high surrogate
+    c.set(2, 0, (char32_t)0x140000, 0, 0); // beyond Unicode
+    c.set(3, 0, U'A',       0, 0);
+    std::string wire; emit_full(c, pool, 0, nullptr, wire);
+    DecFrame f = decode(wire);
+
+    // Every run's text must be well-formed UTF-8 (no NUL, no bad sequence).
+    for (auto& r : f.runs) {
+        std::u32string cps = decode_utf8_to_u32(r.utf8);
+        for (char32_t cp : cps) {
+            assert(cp != 0 && "NUL must have been mapped to space");
+            assert(!(cp >= 0xD800 && cp <= 0xDFFF) && "surrogate leaked");
+            assert(cp <= 0x10FFFF && "out-of-range code point leaked");
+        }
+        // Byte-level: no NUL, and re-decoding is lossless (valid UTF-8).
+        for (char ch : r.utf8) assert(ch != '\0');
+    }
+    std::println("PASS (NUL→space, surrogate/oob→U+FFFD)");
 }

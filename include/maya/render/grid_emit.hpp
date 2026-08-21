@@ -15,16 +15,27 @@
 //
 // so it rides the SAME pty/stdout as everything else.  A terminal that isn't
 // the host treats it as an unknown APC and ignores it (no corruption); the
-// host scans for `ESC _ G`, decodes the payload, and never involves a terminal
-// emulator.  Grid mode REPLACES ANSI frame output — it is chosen at startup
-// (RunConfig / env), not mixed per frame.
+// host scans for `ESC _ G`, reads the payload length, decodes exactly that many
+// bytes, and never involves a terminal emulator.  Grid mode REPLACES ANSI
+// frame output — it is chosen at startup (RunConfig / env), not mixed per frame.
 //
-// Wire format (little-endian, versioned).  All multi-byte ints LE.
+// Wire envelope (v2):
+//
+//   ESC _ G  <u32 payload_len LE>  <payload>  ESC \
+//
+// The payload is RAW BINARY and may contain any byte, INCLUDING the terminator
+// pair ESC \ (0x1b 0x5c) and NUL.  The frame is therefore LENGTH-PREFIXED, not
+// terminator-scanned: the host reads the u32 right after `ESC _ G`, consumes
+// exactly payload_len bytes, and uses the trailing ESC \ only as a sanity
+// check.  (v1 had no length prefix and relied on scanning for ESC \, which a
+// binary payload could spoof — corrupting the frame and everything after it.)
+//
+// Payload format (little-endian, versioned).  All multi-byte ints LE.
 //
 //   frame := header  [style_table]  cell_runs  [cursor]
 //
 //   header:
-//     u8   ver        = 1
+//     u8   ver        = 2
 //     u8   type       0=DIFF 1=FULL 2=RESIZE 3=CURSOR 4=CLEAR 5=BELL
 //     u8   flags      bit0 has_style_table · bit1 has_cursor
 //     u8   reserved   = 0

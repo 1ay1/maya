@@ -126,7 +126,8 @@ void write_runs(const std::vector<Run>& runs, std::string& o) {
 // Common frame builder for Diff/Full.
 void emit_cells(const Canvas& canvas, const StylePool& pool,
                 const std::vector<int>& rows, int base_row,
-                GridFrameType type, const GridCursor* cursor, std::string& out) {
+                GridFrameType type, const GridCursor* cursor, std::string& out,
+                int header_rows = -1) {
     StyleTable table;
     std::vector<Run> runs;
     for (int row : rows) {
@@ -142,7 +143,10 @@ void emit_cells(const Canvas& canvas, const StylePool& pool,
     put_u8 (p, flags);
     put_u8 (p, 0);                                   // reserved
     put_u16(p, static_cast<std::uint16_t>(canvas.width()));
-    put_u16(p, static_cast<std::uint16_t>(canvas.height()));
+    // header `rows`: the canvas height, OR an explicit override (Commit frames
+    // put their COMMIT COUNT here instead of a grid height).
+    put_u16(p, static_cast<std::uint16_t>(
+                   header_rows >= 0 ? header_rows : canvas.height()));
     put_u16(p, static_cast<std::uint16_t>(base_row));
     if (!table.empty()) table.write(pool, p);
     write_runs(runs, p);
@@ -152,6 +156,14 @@ void emit_cells(const Canvas& canvas, const StylePool& pool,
         put_u8 (p, cursor->visible ? 1 : 0);
     }
     wrap_apc(p, out);
+}
+
+// Emit committed rows as a Commit frame (count in the header rows field).
+void emit_commit_rows_impl(const Canvas& canvas, const StylePool& pool,
+                           const std::vector<int>& rows, int count,
+                           int base_row, std::string& out) {
+    emit_cells(canvas, pool, rows, base_row, GridFrameType::Commit,
+               nullptr, out, /*header_rows=*/count);
 }
 
 // Header-only frames (Resize/Cursor/Clear/Bell) share this skeleton.
@@ -211,6 +223,12 @@ void emit_bell(std::string& out) {
 void emit_commit(int rows, std::string& out) {
     // The commit COUNT rides the `rows` header field; cols is irrelevant.
     emit_header_only(GridFrameType::Commit, 0, rows, nullptr, out);
+}
+
+void emit_commit_rows(const Canvas& canvas, const StylePool& pool,
+                      const std::vector<int>& rows, int count, int base_row,
+                      std::string& out) {
+    emit_commit_rows_impl(canvas, pool, rows, count, base_row, out);
 }
 
 } // namespace maya::render

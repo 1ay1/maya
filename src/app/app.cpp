@@ -1317,17 +1317,40 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     }
     const int content_h = std::max(0, ch);
 
-    // TERMINAL VIEWPORT.  A terminal shows a FIXED window of `term_h` rows with
-    // the newest content (composer/cursor) at the bottom; older rows scroll up
-    // and off the top.  The grid canvas holds the whole content_h tree, so the
-    // viewport is its BOTTOM term_h rows.  This is the fix for "content marches
-    // off the bottom of the host viewport": the host sees a stable term_h grid,
-    // exactly like the ANSI inline path clamps to term_h and commits overflow.
+    // ── TERMINAL SCROLLBACK MODEL ──
+    // grid_committed_rows_ is the count of canvas rows PERMANENTLY pushed to the
+    // host's scrollback (written once, never re-emitted).  The live viewport is
+    // canvas rows [grid_committed_rows_, content_h), shown at term_h tall.  When
+    // the un-committed content exceeds term_h, the OVERFLOW at the top scrolls
+    // into history: we emit those exact rows as a Commit frame (the host
+    // appends them to scrollback) and advance grid_committed_rows_.  Because the
+    // viewport origin only moves forward by exactly what we committed, and
+    // committed rows are never re-emitted, nothing can duplicate.
     int term_h = size_.height.raw();
     if (term_h <= 0) term_h = content_h;
-    const int view_h = std::min(content_h, term_h);
-    const int view_top = content_h - view_h;   // first content row shown
-    const int rows = view_h;
+
+    // Guard: if the canvas was rebuilt (full repaint / resize) the committed
+    // prefix may no longer be valid; a smaller content_h than what we already
+    // committed means the transcript was reset — start over.
+    if (grid_committed_rows_ > content_h) grid_committed_rows_ = 0;
+
+    int visible = content_h - grid_committed_rows_;
+    int overflow = visible - term_h;
+    if (overflow > 0 && !grid_need_full_) {
+        // Emit the overflow rows [committed, committed+overflow) as a Commit
+        // frame carrying their content, so the host puts them in scrollback.
+        std::vector<int> crows;
+        crows.reserve(static_cast<std::size_t>(overflow));
+        for (int i = 0; i < overflow; ++i) crows.push_back(grid_committed_rows_ + i);
+        // Commit frame = the rows' cells + a header type Commit + count.
+        render::emit_commit_rows(canvas_, pool_, crows, overflow,
+                                 /*base_row=*/-grid_committed_rows_, out_);
+        grid_committed_rows_ += overflow;
+    }
+
+    const int view_top = grid_committed_rows_;   // fixed live-viewport origin
+    const int view_h   = std::min(content_h - view_top, term_h);
+    const int rows = std::max(0, view_h);
 
     // Snapshot the visible rows as packed cells for the diff.  y is a VIEWPORT
     // row [0,view_h); the canvas row it reads is view_top+y (the bottom window

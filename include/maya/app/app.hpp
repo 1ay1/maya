@@ -895,6 +895,11 @@ private:
     // them (host appends its top N rows to scrollback) and shifts its own
     // prev-cell snapshot up by N so the next diff lines up.
     int                             grid_pending_commit_ = 0;
+    // True scrollback: total canvas rows PERMANENTLY committed to the host's
+    // history.  The live viewport starts at this row and never re-emits below
+    // it, so committed content can't duplicate.  Advances only when content
+    // overflows term_h (render_grid_frame emits a Commit for the overflow).
+    int                             grid_committed_rows_ = 0;
     std::vector<std::uint64_t>      grid_prev_cells_; // packed cells, row-major
     // Paint `root`, diff against grid_prev_cells_, emit a grid frame. Called
     // from render() when grid_mode_. Returns the same Status contract.

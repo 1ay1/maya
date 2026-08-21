@@ -114,4 +114,12 @@ void emit_bell(std::string& out);
 // no runs; the host moves its current top `rows` grid rows into scrollback.
 void emit_commit(int rows, std::string& out);
 
+// Scrollback commit WITH content: emit the given canvas `rows` as cell runs in
+// a Commit frame (count = `count` in the header).  The host appends these exact
+// rows to its scrollback (they scroll off the live viewport permanently).
+// base_row makes the run row numbers viewport-relative like emit_diff.
+void emit_commit_rows(const Canvas& canvas, const StylePool& pool,
+                      const std::vector<int>& rows, int count, int base_row,
+                      std::string& out);
+
 } // namespace maya::render

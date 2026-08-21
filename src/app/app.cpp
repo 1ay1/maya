@@ -1359,10 +1359,18 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     // The viewport is ALWAYS term_h rows tall.  When the un-committed content is
     // shorter than term_h we still emit term_h rows (the extra ones read the
     // canvas's blank padding rows) so the host's live region is fully painted
-    // edge-to-edge — otherwise the unpainted bottom rows kept stale content and
-    // the last row appeared to "erase slowly".  The canvas is padded to
-    // kMinCanvasHeight, so reading up to view_top+term_h is always in-bounds.
+    // edge-to-edge.  The canvas is padded to kMinCanvasHeight, so reading up to
+    // view_top+term_h is always in-bounds.
     const int rows = std::min(term_h, std::max(1, canvas_.height() - view_top));
+
+    // Force a FULL frame when the CONTENT HEIGHT changed since the last frame.
+    // The viewport is a fixed-height window over content that grows/shrinks (a
+    // turn settling, welcome->conversation, the composer gaining a line): when
+    // content_h moves, every viewport row's content shifts, and a row-diff that
+    // happened to match stale bytes could leave a ghost of the old composer /
+    // status bar.  A full re-state is cheap (term_h rows) and always correct.
+    if (content_h != grid_prev_content_h_) grid_need_full_ = true;
+    grid_prev_content_h_ = content_h;
 
     // Snapshot the visible rows as packed cells for the diff.  y is a VIEWPORT
     // row [0,view_h); the canvas row it reads is view_top+y (the bottom window

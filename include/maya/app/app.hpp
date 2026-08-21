@@ -900,6 +900,7 @@ private:
     // it, so committed content can't duplicate.  Advances only when content
     // overflows term_h (render_grid_frame emits a Commit for the overflow).
     int                             grid_committed_rows_ = 0;
+    int                             grid_prev_content_h_ = -1;   // last content_h
     std::vector<std::uint64_t>      grid_prev_cells_; // packed cells, row-major
     // Paint `root`, diff against grid_prev_cells_, emit a grid frame. Called
     // from render() when grid_mode_. Returns the same Status contract.

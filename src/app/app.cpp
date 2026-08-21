@@ -1346,23 +1346,20 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     // No Commit stream is needed or emitted; keep the counter pinned at 0.
     grid_committed_rows_ = 0;
 
-    // ── TERMINAL MODEL: APPEND-ONLY, HOST OWNS SCROLLBACK ──
-    // Emit the WHOLE content, not a sliding window.  A sliding viewport shifts
-    // every row's content by one each time the content grows, so every row
-    // diffs dirty and the host rewrites the entire screen — that mass rewrite
-    // is what flickered once the composer reached the bottom.  Emitting the
-    // full content makes growth APPEND-ONLY: existing rows are byte-identical
-    // and diff clean, only the new rows at the bottom are dirty.  The host
-    // buffer then holds the whole transcript = native scrollback + scrollbar,
-    // and it keeps the tail (composer) in view like a terminal at the end of
-    // its scrollback.
-    const int view_top = 0;
-    const int rows = std::max(1, content_h);
+    // ── FIXED VIEWPORT (terminal screen) ──
+    // agentty re-renders its WHOLE tree every frame, so rows are NOT immutable:
+    // the composer/status move as content grows.  An append-only emission would
+    // therefore leave the old composer/status behind (duplicates) and grow the
+    // host buffer past its window.  So emit a FIXED term_h screen anchored at
+    // the BOTTOM of the content — newest rows + composer always visible, and
+    // the host's live region is exactly one screen, redrawn in place.
+    const int view_top = std::max(0, content_h - term_h);
+    const int rows = std::min(term_h, std::max(1, canvas_.height() - view_top));
 
-    // NOTE: no full-frame-on-content-change here.  With append-only emission a
-    // height change only adds rows at the bottom; existing rows are unchanged
-    // and diff clean.  Forcing a full frame would rewrite the whole transcript
-    // on every append — the opposite of what we want.
+    // A shifting screen means every row's content can move: force a full frame
+    // whenever the content height changes so no stale row (an old composer or
+    // status bar) can survive the shift.
+    if (content_h != grid_prev_content_h_) grid_need_full_ = true;
     grid_prev_content_h_ = content_h;
 
     // Snapshot the visible rows as packed cells for the diff.  y is a VIEWPORT

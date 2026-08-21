@@ -555,6 +555,15 @@ public:
     // honour OSC 52 reads (no reply ever arrives — host falls back).
     void query_clipboard();
 
+    // Emit an arbitrary, already-formed control sequence to the host
+    // terminal, out-of-band with the frame renderer (see Cmd::EmitHostSequence
+    // for the cursor-neutrality contract). Rides the SAME writer path as
+    // set_title / write_clipboard — write_or_buffer, so a congested tty won't
+    // drop it and the frame diff never re-emits it. The caller owns
+    // well-formedness; maya writes it verbatim between frames. Empty sequence
+    // is a no-op.
+    void emit_host_sequence(std::string_view sequence);
+
     // Suspend the TUI, hand the real terminal to `fn` (an interactive
     // child process that inherits stdin/stdout/stderr), then restore the
     // TUI and force a full repaint. Blocks for the child's whole run —
@@ -1221,6 +1230,9 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
         },
         [&](const typename Cmd<Msg>::QueryClipboard&) {
             ctx.rt.query_clipboard();
+        },
+        [&](const typename Cmd<Msg>::EmitHostSequence& e) {
+            ctx.rt.emit_host_sequence(e.sequence);
         },
         [&](const typename Cmd<Msg>::Task& t) {
             if (ctx.bg_queue) {

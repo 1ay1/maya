@@ -28,6 +28,7 @@
 #include <chrono>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -79,6 +80,28 @@ public:
     // and InputParser::parse_osc. The portable, remote-tool-free way to
     // read the clipboard across an SSH pty.
     struct QueryClipboard {};
+
+    /// Emit an arbitrary, already-formed control sequence to the HOST
+    /// terminal, out-of-band with the frame renderer. This is the escape
+    /// hatch for talking to a cooperating host emulator (an editor running
+    /// maya on its PTY — Emacs/vterm's OSC hooks, iTerm2/kitty/WezTerm
+    /// integration protocols, terminal notifications, hyperlinks, etc).
+    ///
+    /// CONTRACT — the sequence MUST be cursor-neutral and self-contained.
+    /// maya writes it verbatim through the same writer as the frame, between
+    /// frames, without accounting for it in the double-buffer. That is safe
+    /// for OSC (`ESC ] … BEL|ST`), DCS/APC passthrough, and mode-independent
+    /// sequences — exactly like SetTitle (OSC 0) and WriteClipboard (OSC 52),
+    /// which ride the same path. It is NOT safe to move the cursor, switch
+    /// screens, scroll, or emit SGR that outlives the sequence: maya's front
+    /// buffer would then disagree with the terminal and the next diff would
+    /// corrupt the display. Malformed / cursor-moving payloads are the
+    /// caller's bug, not maya's to police (we can't parse every host
+    /// protocol). Use emit_osc() below for the common, guaranteed-neutral
+    /// OSC case.
+    struct EmitHostSequence {
+        std::string sequence;
+    };
 
     /// Escape hatch: arbitrary async work. The function receives a dispatch
     /// callback and calls it with a Msg when the result is ready. Runs on
@@ -236,7 +259,8 @@ public:
     };
 
     using Variant = std::variant<None, Quit, Batch, After, SetTitle,
-                                 WriteClipboard, QueryClipboard, Task, IsolatedTask,
+                                 WriteClipboard, QueryClipboard, EmitHostSequence,
+                                 Task, IsolatedTask,
                                  CommitScrollback, CommitScrollbackOverflow,
                                  ForceRedraw, ResetInline, SetHeightHold,
                                  Suspend>;
@@ -263,6 +287,28 @@ public:
     /// (OSC 52 read). Works across SSH with no remote clipboard tool.
     [[nodiscard]] static auto query_clipboard() -> Cmd {
         return {QueryClipboard{}};
+    }
+
+    /// Emit a raw, already-formed control sequence to the host terminal
+    /// (see struct EmitHostSequence for the cursor-neutrality contract).
+    [[nodiscard]] static auto emit_host_sequence(std::string seq) -> Cmd {
+        return {EmitHostSequence{std::move(seq)}};
+    }
+
+    /// Build and emit a well-formed OSC sequence: `ESC ] <code> ; <payload> ST`
+    /// (ST = `ESC \`, the spec-preferred terminator). This is the SAFE,
+    /// common path — OSC never moves the cursor, so it's always frame-safe.
+    /// Use it for host-integration protocols keyed by an OSC number (e.g. a
+    /// private code an editor's terminal hooks watch for). The payload is
+    /// sent verbatim; the caller owns its encoding (percent/base64/JSON).
+    [[nodiscard]] static auto emit_osc(int code, std::string_view payload)
+        -> Cmd {
+        std::string seq = "\x1b]";
+        seq += std::to_string(code);
+        seq += ';';
+        seq.append(payload);
+        seq += "\x1b\\";   // ST
+        return {EmitHostSequence{std::move(seq)}};
     }
 
     template <std::invocable<std::function<void(Msg)>> F>
@@ -386,6 +432,7 @@ public:
             [](const SetTitle& s)     -> Cmd<B> { return Cmd<B>::set_title(s.title); },
             [](const WriteClipboard& w) -> Cmd<B> { return Cmd<B>::write_clipboard(w.content); },
             [](const QueryClipboard&) -> Cmd<B> { return Cmd<B>::query_clipboard(); },
+            [](const EmitHostSequence& e) -> Cmd<B> { return Cmd<B>::emit_host_sequence(e.sequence); },
             [&](const Batch& b)       -> Cmd<B> {
                 std::vector<Cmd<B>> mapped;
                 mapped.reserve(b.cmds.size());

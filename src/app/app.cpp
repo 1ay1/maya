@@ -1422,6 +1422,19 @@ void Runtime::query_clipboard() {
 }
 
 // ============================================================================
+// Runtime::emit_host_sequence — raw host escape, out-of-band with the frame
+// ============================================================================
+void Runtime::emit_host_sequence(std::string_view sequence) {
+    if (sequence.empty()) return;
+    // Same transport + buffering discipline as set_title/write_clipboard: the
+    // bytes ride write_or_buffer so a congested tty stashes rather than drops
+    // them, and the frame diff never accounts for or re-emits them. The
+    // caller guarantees cursor-neutrality (Cmd::EmitHostSequence contract), so
+    // no coherence-state change is needed here.
+    (void)writer_->write_or_buffer(sequence);
+}
+
+// ============================================================================
 // Runtime::suspend — hand the real terminal to an interactive child
 // ============================================================================
 //

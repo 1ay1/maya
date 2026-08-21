@@ -1355,12 +1355,11 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
         grid_committed_rows_ += overflow;
     }
 
-    const int view_top = grid_committed_rows_;   // fixed live-viewport origin
-    // The viewport is ALWAYS term_h rows tall.  When the un-committed content is
-    // shorter than term_h we still emit term_h rows (the extra ones read the
-    // canvas's blank padding rows) so the host's live region is fully painted
-    // edge-to-edge.  The canvas is padded to kMinCanvasHeight, so reading up to
-    // view_top+term_h is always in-bounds.
+    // Viewport: a fixed term_h window anchored at the BOTTOM of the content
+    // (newest rows / composer / cursor visible), like every TUI.  view_top is
+    // clamped >= 0; when content is shorter than term_h it's 0 and the extra
+    // rows read the canvas's blank padding.
+    const int view_top = std::max(0, content_h - term_h);
     const int rows = std::min(term_h, std::max(1, canvas_.height() - view_top));
 
     // Force a FULL frame when the CONTENT HEIGHT changed since the last frame.
@@ -1741,6 +1740,8 @@ Runtime::Runtime(Runtime&& o) noexcept
     , grid_need_full_(o.grid_need_full_)
     , grid_prev_w_(o.grid_prev_w_)
     , grid_prev_rows_(o.grid_prev_rows_)
+    , grid_committed_rows_(o.grid_committed_rows_)
+    , grid_prev_content_h_(o.grid_prev_content_h_)
     , grid_prev_cells_(std::move(o.grid_prev_cells_))
     , fs_coherence_(std::move(o.fs_coherence_))
     , in_coherence_(std::move(o.in_coherence_))
@@ -1775,6 +1776,8 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         grid_need_full_    = o.grid_need_full_;
         grid_prev_w_       = o.grid_prev_w_;
         grid_prev_rows_    = o.grid_prev_rows_;
+        grid_committed_rows_ = o.grid_committed_rows_;
+        grid_prev_content_h_ = o.grid_prev_content_h_;
         grid_prev_cells_   = std::move(o.grid_prev_cells_);
         fs_coherence_      = std::move(o.fs_coherence_);
         in_coherence_      = std::move(o.in_coherence_);

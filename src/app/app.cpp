@@ -1336,29 +1336,41 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     int term_h = size_.height.raw();
     if (term_h <= 0) term_h = content_h;
 
-    // Guard: if the canvas was rebuilt (full repaint / resize) the committed
-    // prefix may no longer be valid; a smaller content_h than what we already
-    // committed means the transcript was reset — start over.
+    // ── TERMINAL SCROLL ──
+    // A terminal's screen is term_h rows; when content grows past it the top
+    // rows SCROLL OFF into scrollback.  grid_committed_rows_ counts rows that
+    // have already scrolled off: they are emitted exactly ONCE (as a Commit
+    // frame carrying their glyphs) and then never rendered again, so the host
+    // can keep them as history (its buffer above the home marker) with no
+    // duplication.  The screen is the un-committed tail [committed, content_h).
+    //
+    // Reset the committed prefix if the transcript shrank below it (thread
+    // switch / reset / reflow) — the old history no longer aligns.
     if (grid_committed_rows_ > content_h) grid_committed_rows_ = 0;
 
-    // Scrollback is the HOST's buffer now (we emit the whole content, so the
-    // host holds the full transcript and gets native scrollback + scrollbar).
-    // No Commit stream is needed or emitted; keep the counter pinned at 0.
-    grid_committed_rows_ = 0;
+    const int overflow = (content_h - grid_committed_rows_) - term_h;
+    if (overflow > 0 && w > 0) {
+        // These rows just scrolled off the top of the screen: hand them to the
+        // host once, then advance the committed watermark.  Emitted with
+        // base_row = -committed so their row numbers are batch-relative (0..n).
+        std::vector<int> crows;
+        crows.reserve(static_cast<std::size_t>(overflow));
+        for (int i = 0; i < overflow; ++i)
+            crows.push_back(grid_committed_rows_ + i);
+        render::emit_commit_rows(canvas_, pool_, crows, overflow,
+                                 /*base_row=*/-grid_committed_rows_, out_);
+        grid_committed_rows_ += overflow;
+        // The screen shifted under the host: its next diff must be a full
+        // re-state of the new screen.
+        grid_need_full_ = true;
+    }
 
-    // ── FIXED VIEWPORT (terminal screen) ──
-    // agentty re-renders its WHOLE tree every frame, so rows are NOT immutable:
-    // the composer/status move as content grows.  An append-only emission would
-    // therefore leave the old composer/status behind (duplicates) and grow the
-    // host buffer past its window.  So emit a FIXED term_h screen anchored at
-    // the BOTTOM of the content — newest rows + composer always visible, and
-    // the host's live region is exactly one screen, redrawn in place.
-    const int view_top = std::max(0, content_h - term_h);
-    const int rows = std::min(term_h, std::max(1, canvas_.height() - view_top));
+    // The screen: the un-committed tail, at most term_h rows.
+    const int view_top = grid_committed_rows_;
+    const int rows = std::max(1, std::min(term_h, content_h - view_top));
 
-    // A shifting screen means every row's content can move: force a full frame
-    // whenever the content height changes so no stale row (an old composer or
-    // status bar) can survive the shift.
+    // Content height changes shift every screen row, so re-state the whole
+    // screen; a stale row (old composer/status) must never survive a shift.
     if (content_h != grid_prev_content_h_) grid_need_full_ = true;
     grid_prev_content_h_ = content_h;
 

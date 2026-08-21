@@ -548,6 +548,12 @@ class RateCursor {
     // end-of-turn. Re-seeding once, on entry, keeps the post-ramp glide
     // continuous.
     bool was_ramping_ = false;
+    // False until the cursor first reaches the live edge; gates the cold-
+    // start opener easing (a tiny first backlog is paced by the drain
+    // window instead of floored, so it doesn't race-then-freeze before the
+    // provider's first burst). Latches true on the first edge touch and is
+    // re-armed only by reset(), so it costs nothing after the opening delta.
+    bool primed_ = false;
     // Retained for the (currently unused) set_smoothing API; the rate-
     // smoothed glide no longer applies a separate burst multiplier.
     double max_burst_mult_ = 1.8;
@@ -599,7 +605,16 @@ public:
     // Hard-set the cursor (e.g. snap forward past already-committed units,
     // or reset on a content rollback). Never moves the cursor backward via
     // tick(); this is the explicit override.
-    constexpr void set_pos(double p) noexcept { pos_ = p < 0.0 ? 0.0 : p; }
+    constexpr void set_pos(double p) noexcept {
+        const double np = p < 0.0 ? 0.0 : p;
+        // A jump back to the very start means a new message is reusing this
+        // cursor (reveal_cp_ was reset to 0 on content-shrink). Re-arm the
+        // cold-start opener easing so the next message's opening delta is
+        // paced, not raced. A forward set_pos (the normal per-frame
+        // reconciliation, or a snap) leaves primed_ untouched.
+        if (np <= 0.0 && pos_ > 0.0) primed_ = false;
+        pos_ = np;
+    }
     [[nodiscard]] constexpr double pos() const noexcept { return pos_; }
 
     /// The current low-passed glide rate (cells/sec) the cursor is moving at,
@@ -716,8 +731,32 @@ public:
         // whole-reply dump from teleporting on frame one.
         double rate_target = backlog / drain_secs_;
         if (rate_target < eff_floor) rate_target = eff_floor;
+        // Cold-start easing (no added latency, no fake slowness). At the very
+        // start of a message the wire typically delivers a TINY opening delta
+        // (a word or two) and then pauses ~90-200 ms before the first real
+        // burst. Flooring that opener up to eff_floor races it to the edge in
+        // a blink, so the cursor then sits IDLE through the gap — the "one
+        // word, then stuck, then it flows" stutter. While the cursor has
+        // never yet reached the edge (still on the opening backlog) and that
+        // backlog is smaller than one drain window's worth at the floor, drop
+        // the floor and let the drain controller pace it: rate = backlog /
+        // drain_secs_. That spreads the opener smoothly across ~drain_secs_
+        // (text STILL starts on frame one — zero latency) so the eye is
+        // watching it glide when the burst lands, instead of a race-then-
+        // freeze. The instant real backlog builds (a burst, or the opener
+        // exceeds one window) the normal floor re-engages, and this never
+        // fires again this message (primed_ latches at the first edge touch).
+        if (!primed_) {
+            const double one_window = eff_floor * drain_secs_;
+            if (backlog <= one_window)
+                rate_target = backlog / drain_secs_;   // ease, don't floor
+        }
         if (smoothed_rate_ < 0.0) {
-            smoothed_rate_ = eff_floor;              // cold start at the floor
+            // Cold start: seed at the eased target when priming a tiny opener
+            // (so frame one already moves at the gentle rate), else the floor
+            // (so a fat cold dump can't teleport before the low-pass warms).
+            smoothed_rate_ =
+                (!primed_ && rate_target < eff_floor) ? rate_target : eff_floor;
         } else if (rate_tau_ > 0.0) {
             const double a = dt / (dt + rate_tau_);
             smoothed_rate_ += (rate_target - smoothed_rate_) * a;
@@ -756,12 +795,16 @@ public:
 
         pos_ += rate * dt;
         if (pos_ > target) pos_ = target;
+        // Latch primed_ once the cursor first reaches the live edge: the
+        // opening delta is out and normal floor pacing governs the rest of
+        // the stream. (epsilon absorbs FP slack around exact equality.)
+        if (!primed_ && pos_ >= target - 1e-6) primed_ = true;
         return pos_;
     }
 
     constexpr void reset() noexcept {
         pos_ = 0.0; ramp_left_ = -1.0; smoothed_rate_ = -1.0;
-        was_ramping_ = false;
+        was_ramping_ = false; primed_ = false;
     }
 };
 

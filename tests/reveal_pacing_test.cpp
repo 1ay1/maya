@@ -208,12 +208,60 @@ void fat_chunk_slides_not_teleports() {
 
 } // namespace
 
+// ── The "one word, then stuck, then it flows" cold-start stutter.
+// A provider opens a message with a TINY delta (a few chars) then pauses
+// before the first burst. Flooring that opener up to the floor rate raced it
+// to the edge in a blink, so the cursor sat idle through the gap. The cold-
+// start easing paces a sub-window opener by the drain controller instead —
+// it must (a) START immediately (zero added latency) and (b) NOT race the
+// tiny opener out in the first couple of frames.
+void cold_start_opener_eases_not_races() {
+    RateCursor rc{/*floor*/ 90.0, /*drain*/ 0.15};
+    const double dt = 1.0 / 60.0;
+
+    const double opener = 9.0;   // "# A Brief" — the real fixture's first delta
+
+    // Frame 1 must already move (text starts immediately — no hold/latency).
+    const double p1 = rc.tick(opener, dt);
+    check(p1 > 0.0,
+          "cold start added latency: nothing revealed on frame 1 (p=" +
+          std::to_string(p1) + ")");
+
+    // But it must NOT race the whole opener out in ~2 frames the way the
+    // floor rate did (90 cps → ~1.5 cp/frame → 9 cp in ~6 frames, and the
+    // burst-accel made it worse). Eased at backlog/drain the opener glides
+    // gently, so after 2 frames only a fraction is out.
+    rc.tick(opener, dt);
+    const double after_2 = rc.pos();
+    check(after_2 < opener * 0.75,
+          "cold start RACED the opener: " + std::to_string(after_2) +
+          " of 9 cp out after 2 frames — it will finish and then freeze "
+          "through the pre-burst gap (the stutter)");
+    std::println("  cold start: opener eased to {:.1f}/9 cp after 2 frames "
+                 "(started frame 1)", after_2);
+
+    // And once a real burst lands, normal pacing resumes at full speed —
+    // the easing is a ONE-SHOT for the opener, it must not cap the stream.
+    double target = opener;
+    for (int f = 0; f < 8; ++f) rc.tick(target, dt);   // drain the opener
+    target += 300.0;                                   // the burst arrives
+    double before = rc.pos();
+    for (int f = 0; f < 30; ++f) rc.tick(target, dt);
+    const double burst_adv = rc.pos() - before;
+    check(burst_adv > 100.0,
+          "easing leaked past the opener and throttled the burst (only " +
+          std::to_string(burst_adv) + " cp in 30 frames)");
+    std::println("  cold start: post-opener burst revealed {:.0f} cp in "
+                 "30 frames (full speed resumed)", burst_adv);
+}
+
 int main() {
     std::println("=== reveal_pacing_test ===");
     tracks_fast_stream_no_crawl_no_teleport();
     cruise_tracks_a_slow_stream();
     finalize_ramp_still_flushes();
     fat_chunk_slides_not_teleports();
-    std::println("\n  passed: {}   failed: {}", (4 - g_failed), g_failed);
+    cold_start_opener_eases_not_races();
+    std::println("\n  passed: {}   failed: {}", (5 - g_failed), g_failed);
     return g_failed == 0 ? 0 : 1;
 }

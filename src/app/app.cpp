@@ -1315,13 +1315,25 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
             grid_need_full_ = true;
         }
     }
-    const int rows = std::max(0, ch);
+    const int content_h = std::max(0, ch);
 
-    // Snapshot the visible rows as packed cells for the diff.  The grid diff
-    // is OUR OWN state (grid_prev_cells_), independent of the ANSI witness
-    // machine — grid and ANSI never share mutable diff state.
+    // TERMINAL VIEWPORT.  A terminal shows a FIXED window of `term_h` rows with
+    // the newest content (composer/cursor) at the bottom; older rows scroll up
+    // and off the top.  The grid canvas holds the whole content_h tree, so the
+    // viewport is its BOTTOM term_h rows.  This is the fix for "content marches
+    // off the bottom of the host viewport": the host sees a stable term_h grid,
+    // exactly like the ANSI inline path clamps to term_h and commits overflow.
+    int term_h = size_.height.raw();
+    if (term_h <= 0) term_h = content_h;
+    const int view_h = std::min(content_h, term_h);
+    const int view_top = content_h - view_h;   // first content row shown
+    const int rows = view_h;
+
+    // Snapshot the visible rows as packed cells for the diff.  y is a VIEWPORT
+    // row [0,view_h); the canvas row it reads is view_top+y (the bottom window
+    // of the content).  grid and ANSI never share mutable diff state.
     auto snapshot_row = [&](int y, std::uint64_t* dst) {
-        for (int x = 0; x < w; ++x) dst[x] = canvas_.get_packed(x, y);
+        for (int x = 0; x < w; ++x) dst[x] = canvas_.get_packed(x, view_top + y);
     };
 
     out_.clear();
@@ -1359,11 +1371,13 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     if (dims_changed || grid_need_full_) {
         render::emit_resize(w, rows, out_);
         render::GridCursor cur{rows > 0 ? rows - 1 : 0, 0, false};
-        // FULL frame: re-state every visible row.
+        // FULL frame: re-state every visible row.  emit_diff reads canvas rows
+        // [view_top, view_top+view_h); passing base_row = -view_top makes the
+        // emitted row numbers viewport-relative [0, view_h).
         std::vector<int> all;
         all.reserve(static_cast<std::size_t>(rows));
-        for (int y = 0; y < rows; ++y) all.push_back(y);
-        render::emit_diff(canvas_, pool_, all, /*base_row=*/0, &cur, out_);
+        for (int y = 0; y < rows; ++y) all.push_back(view_top + y);
+        render::emit_diff(canvas_, pool_, all, /*base_row=*/-view_top, &cur, out_);
         grid_need_full_ = false;
     } else {
         // DIFF: row-compare vs the snapshot, emit only changed rows.
@@ -1373,12 +1387,12 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
                 &grid_prev_cells_[static_cast<std::size_t>(y) * w];
             bool same = true;
             for (int x = 0; x < w; ++x)
-                if (prev[x] != canvas_.get_packed(x, y)) { same = false; break; }
-            if (!same) changed.push_back(y);
+                if (prev[x] != canvas_.get_packed(x, view_top + y)) { same = false; break; }
+            if (!same) changed.push_back(view_top + y);   // canvas row
         }
         if (!changed.empty()) {
             render::GridCursor cur{rows > 0 ? rows - 1 : 0, 0, false};
-            render::emit_diff(canvas_, pool_, changed, /*base_row=*/0, &cur, out_);
+            render::emit_diff(canvas_, pool_, changed, /*base_row=*/-view_top, &cur, out_);
         }
     }
 

@@ -7,6 +7,7 @@
 // builds on Linux, macOS, and Windows (MSVC) out of the box.
 
 #include <maya/maya.hpp>
+#include <maya/core/anim_clock.hpp>
 #include <maya/widget/markdown.hpp>
 
 #include <cassert>
@@ -1960,6 +1961,18 @@ static void st_reveal_fx_height_monotonic() {
     // reveal for the visible-typewriter effect, and rely on the host
     // wrapping the widget in a min_height container if it needs
     // chrome-stable reflow.
+    // Deterministic reveal clock. The reveal cursor is driven entirely by
+    // maya's anim clock; freezing it and stepping by a fixed dt makes the
+    // per-frame cursor advance a pure function of the model instead of
+    // racing steady_clock. Under a loaded CI runner a real sleep_for(2ms)
+    // overshoots, jumping the cursor past a wrapped inline-span boundary so
+    // an extent momentarily reports one row short — a spurious 1-row shrink.
+    // Stepping the frozen clock removes that jitter entirely.
+    maya::testing::freeze_anim_clock(0);
+    struct AnimClockGuard {
+        ~AnimClockGuard() { maya::testing::unfreeze_anim_clock(); }
+    } anim_clock_guard;
+
     StreamingMarkdown md;
     md.set_live(true);
     md.set_reveal_fx(true);
@@ -1980,7 +1993,7 @@ static void st_reveal_fx_height_monotonic() {
         }
         prev_h = h;
         if (!md.reveal_in_progress()) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        maya::testing::advance_anim_clock_ms(2);
     }
 
     // Strict non-decreasing height across the entire reveal. render_tail
@@ -2066,6 +2079,14 @@ static void st_reveal_fx_stable_height_during_animation() {
     // shrink, ever. The strict "min == max == first" invariant from
     // the previous design is incompatible with showing characters
     // appear one at a time.
+    // See st_reveal_fx_height_monotonic: freeze + step the anim clock so
+    // the cursor advance is deterministic and the no-shrink invariant
+    // can't be tripped by a CI scheduling stall overshooting sleep_for.
+    maya::testing::freeze_anim_clock(0);
+    struct AnimClockGuard {
+        ~AnimClockGuard() { maya::testing::unfreeze_anim_clock(); }
+    } anim_clock_guard;
+
     StreamingMarkdown md;
     md.set_live(true);
     md.set_reveal_fx(true);
@@ -2083,7 +2104,7 @@ static void st_reveal_fx_stable_height_during_animation() {
     int worst_drop = 0;
     int frames = 0;
 
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < 400; ++i) {
         int h = stream_height(md);
         if (h < prev_h) {
             int drop = prev_h - h;
@@ -2093,7 +2114,7 @@ static void st_reveal_fx_stable_height_during_animation() {
         prev_h = h;
         ++frames;
         if (!md.reveal_in_progress()) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        maya::testing::advance_anim_clock_ms(16);
     }
 
     if (worst_drop > 0) {
@@ -2395,6 +2416,15 @@ static void st_reveal_fx_table_no_border_corruption() {
 // bytes before the next chunk lands. This is the actual on-the-wire
 // pattern (model streams a token, cursor reveals it, next token arrives).
 static void st_reveal_fx_height_monotonic_streaming() {
+    // Deterministic reveal clock (see st_reveal_fx_height_monotonic): the
+    // cursor is a wall-clock typewriter, so freeze + step the anim clock to
+    // make the interleaved feed/reveal walk a pure function of the model and
+    // immune to CI scheduling jitter overshooting a real sleep.
+    maya::testing::freeze_anim_clock(0);
+    struct AnimClockGuard {
+        ~AnimClockGuard() { maya::testing::unfreeze_anim_clock(); }
+    } anim_clock_guard;
+
     StreamingMarkdown md;
     md.set_live(true);
     md.set_reveal_fx(true);
@@ -2450,7 +2480,7 @@ static void st_reveal_fx_height_monotonic_streaming() {
             }
             prev_h = h;
             if (!md.reveal_in_progress()) break;
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            maya::testing::advance_anim_clock_ms(1);
         }
     }
 
@@ -2464,7 +2494,7 @@ static void st_reveal_fx_height_monotonic_streaming() {
             if (drop > worst_drop) worst_drop = drop;
         }
         prev_h = h;
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        maya::testing::advance_anim_clock_ms(1);
     }
 
     // Widget contract: render_tail is canonical, so each revealed extent

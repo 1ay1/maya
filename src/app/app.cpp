@@ -17,6 +17,7 @@
 #include "maya/platform/select.hpp"
 #include "maya/platform/thread.hpp"
 #include "maya/terminal/ansi.hpp"
+#include "maya/render/grid_emit.hpp"
 
 namespace maya::detail {
 
@@ -86,6 +87,11 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     rt.event_source_    = std::move(event_source);
     rt.writer_          = std::make_unique<Writer>(output_h);
     rt.theme_           = cfg.theme;
+    // Grid backend: emit binary cell frames for a cooperating host instead of
+    // ANSI.  The host paints cells directly — so we also suppress the ANSI-
+    // only chrome (the DEC-2026 sync wrapper below) that would otherwise
+    // interleave escape bytes into the grid stream.
+    rt.grid_mode_       = (cfg.backend == RenderBackend::Grid);
     // Emit DEC mode 2026 (synchronized output) brackets by DEFAULT, not
     // only when the env-heuristic can fingerprint the terminal. On every
     // terminal that supports the mode they make each frame swap atomically
@@ -469,6 +475,10 @@ auto Runtime::render(const Element& root) -> Status {
     }
     const int w = size_.width.raw();
     if (w <= 0) return ok();
+
+    // Grid backend: emit a binary cell frame instead of ANSI. Self-contained
+    // (own snapshot + diff), never touches the ANSI witness machine below.
+    if (grid_mode_) return render_grid_frame(root);
 
     render_ctx_.width       = w;
     render_ctx_.height      = size_.height.raw();
@@ -1270,9 +1280,101 @@ auto Runtime::render(const Element& root) -> Status {
 // Width/height: matches the live canvas_'s width (cached cells are
 // width-keyed and a width mismatch invalidates the entry); height
 // gets `auto_height=true` and grows under content.
+auto Runtime::render_grid_frame(const Element& root) -> Status {
+    const int w = size_.width.raw();
+    if (w <= 0) return ok();
+
+    render_ctx_.width       = w;
+    render_ctx_.height      = size_.height.raw();
+    render_ctx_.auto_height = true;
+    RenderContextGuard ctx_guard(render_ctx_);
+
+    // Paint the tree — same path as the ANSI inline render, so all the layout
+    // + component-cache machinery is reused.  We keep it simple vs render():
+    // no bounded-clear preservation (the grid diff below IS the bounded
+    // update), just a full clear + paint + one grow-and-retry.
+    constexpr int kMinCanvasHeight = 500;
+    if (canvas_.width() != w || canvas_.height() < kMinCanvasHeight) {
+        canvas_.set_style_pool(&pool_);
+        canvas_.resize(w, std::max(kMinCanvasHeight, canvas_.height()));
+        grid_need_full_ = true;   // reallocation invalidates the snapshot
+    }
+    canvas_.reset_clips();
+    canvas_.clear();
+    render_tree(root, canvas_, pool_, theme_, layout_nodes_, /*auto_height=*/true);
+    int ch = content_height(canvas_);
+    if (!layout_nodes_.empty()) {
+        const int needed = layout_nodes_[0].computed.size.height.raw();
+        if (needed > canvas_.height()) {
+            const int headroom = std::max(64, needed / 4);
+            canvas_.resize(w, needed + headroom);
+            canvas_.clear();
+            render_tree(root, canvas_, pool_, theme_, layout_nodes_,
+                        /*auto_height=*/true);
+            ch = content_height(canvas_);
+            grid_need_full_ = true;
+        }
+    }
+    const int rows = std::max(0, ch);
+
+    // Snapshot the visible rows as packed cells for the diff.  The grid diff
+    // is OUR OWN state (grid_prev_cells_), independent of the ANSI witness
+    // machine — grid and ANSI never share mutable diff state.
+    auto snapshot_row = [&](int y, std::uint64_t* dst) {
+        for (int x = 0; x < w; ++x) dst[x] = canvas_.get_packed(x, y);
+    };
+
+    out_.clear();
+    const bool dims_changed = (grid_prev_w_ != w || grid_prev_rows_ != rows);
+    if (dims_changed || grid_need_full_) {
+        render::emit_resize(w, rows, out_);
+        render::GridCursor cur{rows > 0 ? rows - 1 : 0, 0, false};
+        // FULL frame: re-state every visible row.
+        std::vector<int> all;
+        all.reserve(static_cast<std::size_t>(rows));
+        for (int y = 0; y < rows; ++y) all.push_back(y);
+        render::emit_diff(canvas_, pool_, all, /*base_row=*/0, &cur, out_);
+        grid_need_full_ = false;
+    } else {
+        // DIFF: row-compare vs the snapshot, emit only changed rows.
+        std::vector<int> changed;
+        for (int y = 0; y < rows; ++y) {
+            const std::uint64_t* prev =
+                &grid_prev_cells_[static_cast<std::size_t>(y) * w];
+            bool same = true;
+            for (int x = 0; x < w; ++x)
+                if (prev[x] != canvas_.get_packed(x, y)) { same = false; break; }
+            if (!same) changed.push_back(y);
+        }
+        if (!changed.empty()) {
+            render::GridCursor cur{rows > 0 ? rows - 1 : 0, 0, false};
+            render::emit_diff(canvas_, pool_, changed, /*base_row=*/0, &cur, out_);
+        }
+    }
+
+    // Update the snapshot to the just-emitted frame.
+    grid_prev_cells_.assign(static_cast<std::size_t>(rows) * static_cast<std::size_t>(w), 0);
+    for (int y = 0; y < rows; ++y)
+        snapshot_row(y, &grid_prev_cells_[static_cast<std::size_t>(y) * w]);
+    grid_prev_w_    = w;
+    grid_prev_rows_ = rows;
+
+    if (out_.empty()) return ok();
+    if (auto wr = writer_->write_or_buffer(out_); !wr) {
+        writer_->discard_residue();
+        grid_need_full_ = true;   // next frame re-states everything
+        return wr;
+    }
+    return ok();
+}
+
+// Warm the cross-frame component cache by laying out + painting `root` into a
+// scratch canvas (populates the thread_local cache), WITHOUT touching the wire.
+// Same paint path as render()'s inline branch (so cache entries match: keys are
+// width-keyed and a width mismatch invalidates the entry); height
+// gets `auto_height=true` and grows under content.
 void Runtime::warmup_render(const Element& root) {
     const int w = canvas_.width();
-    if (w <= 0) return;   // pre-create state; render() will populate later.
 
     // Scratch canvas — same pool as the live render so captured style
     // ids stay valid when blit'd. Seed height at the current live
@@ -1577,6 +1679,11 @@ Runtime::Runtime(Runtime&& o) noexcept
     , canvas_(std::move(o.canvas_))
     , out_(std::move(o.out_))
     , layout_nodes_(std::move(o.layout_nodes_))
+    , grid_mode_(o.grid_mode_)
+    , grid_need_full_(o.grid_need_full_)
+    , grid_prev_w_(o.grid_prev_w_)
+    , grid_prev_rows_(o.grid_prev_rows_)
+    , grid_prev_cells_(std::move(o.grid_prev_cells_))
     , fs_coherence_(std::move(o.fs_coherence_))
     , in_coherence_(std::move(o.in_coherence_))
     , theme_(o.theme_)
@@ -1606,6 +1713,11 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         canvas_            = std::move(o.canvas_);
         out_               = std::move(o.out_);
         layout_nodes_      = std::move(o.layout_nodes_);
+        grid_mode_         = o.grid_mode_;
+        grid_need_full_    = o.grid_need_full_;
+        grid_prev_w_       = o.grid_prev_w_;
+        grid_prev_rows_    = o.grid_prev_rows_;
+        grid_prev_cells_   = std::move(o.grid_prev_cells_);
         fs_coherence_      = std::move(o.fs_coherence_);
         in_coherence_      = std::move(o.in_coherence_);
         theme_             = o.theme_;

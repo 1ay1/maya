@@ -99,6 +99,16 @@ enum class Mode {
     Fullscreen,  // Alt screen buffer, double-buffered cell diff
 };
 
+// How a rendered frame reaches the host.
+//   Ansi — serialize the cell diff to ANSI escapes for a terminal (default).
+//   Grid — emit the cell diff as a binary grid frame for a COOPERATING HOST
+//          (an Emacs module, a GPU frontend) that paints cells directly,
+//          skipping the ANSI encode+reparse round trip.  See render/grid_emit.
+enum class RenderBackend {
+    Ansi,
+    Grid,
+};
+
 // ============================================================================
 // RunConfig — application configuration
 // ============================================================================
@@ -113,6 +123,7 @@ struct RunConfig {
                                                     ///< for hover highlights. Off by default: 1003 floods
                                                     ///< move events and some terminals handle it oddly.
     Mode             mode       = Mode::Fullscreen; ///< Rendering mode
+    RenderBackend    backend    = RenderBackend::Ansi; ///< Frame transport (see RenderBackend)
     Theme            theme      = theme::dark;      ///< Colour theme
 };
 
@@ -504,6 +515,10 @@ public:
     // Inline: uses compose_inline_frame (row-diff, scrollback-preserving).
     auto render(const Element& root) -> Status;
 
+    // True when this Runtime emits binary grid frames (RenderBackend::Grid)
+    // instead of ANSI — a cooperating host is painting cells for us.
+    [[nodiscard]] bool grid_mode() const noexcept { return grid_mode_; }
+
     // Pre-warm the cross-frame component cache by laying out + painting
     // `root` into a scratch canvas, WITHOUT touching the wire.
     //
@@ -858,6 +873,21 @@ private:
     Canvas                          canvas_;
     std::string                     out_;
     std::vector<layout::LayoutNode> layout_nodes_;
+
+    // ── Grid render backend (RenderBackend::Grid) ─────────────────────────
+    // A parallel output path for a cooperating host: emit the cell diff as a
+    // binary grid frame instead of ANSI, WITHOUT involving the ANSI inline
+    // witness machine.  We keep our own previous-frame cell snapshot and row-
+    // diff canvas_ against it (the same 64-bit-packed compare the ANSI path
+    // uses), so grid and ANSI never share mutable diff state.
+    bool                            grid_mode_        = false;
+    bool                            grid_need_full_   = true;   // full frame next
+    int                             grid_prev_w_      = 0;
+    int                             grid_prev_rows_   = 0;
+    std::vector<std::uint64_t>      grid_prev_cells_; // packed cells, row-major
+    // Paint `root`, diff against grid_prev_cells_, emit a grid frame. Called
+    // from render() when grid_mode_. Returns the same Status contract.
+    auto render_grid_frame(const Element& root) -> Status;
     // Initial state matters: in inline mode, defaulting to anything
     // that emits a hard-reset (\x1b[2J\x1b[3J\x1b[H) would wipe the
     // user's shell scrollback on startup. The Witness Chain's

@@ -173,6 +173,7 @@ set(MAYA_LIB_SOURCES
     src/render/renderer.cpp
     src/render/diff.cpp
     src/render/serialize.cpp
+    src/render/grid_emit.cpp
     src/render/frame_bytes.cpp
     src/render/inline_frame.cpp
     src/render/canvas_witness.cpp
@@ -466,6 +467,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_style.cpp
         tests/test_canvas.cpp
         tests/test_diff.cpp
+        tests/test_grid_emit.cpp
         tests/test_framebuffer.cpp
         tests/test_input.cpp
         tests/test_signal.cpp

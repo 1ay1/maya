@@ -1341,34 +1341,28 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     // committed means the transcript was reset — start over.
     if (grid_committed_rows_ > content_h) grid_committed_rows_ = 0;
 
-    int visible = content_h - grid_committed_rows_;
-    int overflow = visible - term_h;
-    if (overflow > 0 && !grid_need_full_) {
-        // Emit the overflow rows [committed, committed+overflow) as a Commit
-        // frame carrying their content, so the host puts them in scrollback.
-        std::vector<int> crows;
-        crows.reserve(static_cast<std::size_t>(overflow));
-        for (int i = 0; i < overflow; ++i) crows.push_back(grid_committed_rows_ + i);
-        // Commit frame = the rows' cells + a header type Commit + count.
-        render::emit_commit_rows(canvas_, pool_, crows, overflow,
-                                 /*base_row=*/-grid_committed_rows_, out_);
-        grid_committed_rows_ += overflow;
-    }
+    // Scrollback is the HOST's buffer now (we emit the whole content, so the
+    // host holds the full transcript and gets native scrollback + scrollbar).
+    // No Commit stream is needed or emitted; keep the counter pinned at 0.
+    grid_committed_rows_ = 0;
 
-    // Viewport: a fixed term_h window anchored at the BOTTOM of the content
-    // (newest rows / composer / cursor visible), like every TUI.  view_top is
-    // clamped >= 0; when content is shorter than term_h it's 0 and the extra
-    // rows read the canvas's blank padding.
-    const int view_top = std::max(0, content_h - term_h);
-    const int rows = std::min(term_h, std::max(1, canvas_.height() - view_top));
+    // ── TERMINAL MODEL: APPEND-ONLY, HOST OWNS SCROLLBACK ──
+    // Emit the WHOLE content, not a sliding window.  A sliding viewport shifts
+    // every row's content by one each time the content grows, so every row
+    // diffs dirty and the host rewrites the entire screen — that mass rewrite
+    // is what flickered once the composer reached the bottom.  Emitting the
+    // full content makes growth APPEND-ONLY: existing rows are byte-identical
+    // and diff clean, only the new rows at the bottom are dirty.  The host
+    // buffer then holds the whole transcript = native scrollback + scrollbar,
+    // and it keeps the tail (composer) in view like a terminal at the end of
+    // its scrollback.
+    const int view_top = 0;
+    const int rows = std::max(1, content_h);
 
-    // Force a FULL frame when the CONTENT HEIGHT changed since the last frame.
-    // The viewport is a fixed-height window over content that grows/shrinks (a
-    // turn settling, welcome->conversation, the composer gaining a line): when
-    // content_h moves, every viewport row's content shifts, and a row-diff that
-    // happened to match stale bytes could leave a ghost of the old composer /
-    // status bar.  A full re-state is cheap (term_h rows) and always correct.
-    if (content_h != grid_prev_content_h_) grid_need_full_ = true;
+    // NOTE: no full-frame-on-content-change here.  With append-only emission a
+    // height change only adds rows at the bottom; existing rows are unchanged
+    // and diff clean.  Forcing a full frame would rewrite the whole transcript
+    // on every append — the opposite of what we want.
     grid_prev_content_h_ = content_h;
 
     // Snapshot the visible rows as packed cells for the diff.  y is a VIEWPORT

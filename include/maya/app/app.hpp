@@ -659,8 +659,13 @@ public:
     // (Empty, Fresh, Stale, HardReset, Sealed) has no committed-frame
     // row count to commit against and the call is a no-op.
     void commit_inline_prefix(int rows) noexcept {
-        if (!is_inline()) return;
         if (rows <= 0) return;
+        // Grid backend: the ANSI witness machine is inert.  Record the commit
+        // so the next render_grid_frame emits a Commit frame — the host moves
+        // its top `rows` grid rows into scrollback.  Return before touching
+        // the inline coherence variant (which is Empty in grid mode).
+        if (grid_mode_) { grid_pending_commit_ += rows; return; }
+        if (!is_inline()) return;
         auto* s = std::get_if<inline_frame::InlineFrame<inline_frame::Synced>>(
             &in_coherence_);
         if (!s) return;
@@ -884,6 +889,12 @@ private:
     bool                            grid_need_full_   = true;   // full frame next
     int                             grid_prev_w_      = 0;
     int                             grid_prev_rows_   = 0;
+    // Scrollback: rows the app has committed to history since the last grid
+    // frame.  commit_inline_prefix() accumulates here in grid mode (the ANSI
+    // witness machine is inert); render_grid_frame() emits a Commit frame for
+    // them (host appends its top N rows to scrollback) and shifts its own
+    // prev-cell snapshot up by N so the next diff lines up.
+    int                             grid_pending_commit_ = 0;
     std::vector<std::uint64_t>      grid_prev_cells_; // packed cells, row-major
     // Paint `root`, diff against grid_prev_cells_, emit a grid frame. Called
     // from render() when grid_mode_. Returns the same Status contract.

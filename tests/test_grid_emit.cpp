@@ -96,6 +96,19 @@ std::string runs_text(const DecFrame& f) {
 
 } // namespace
 
+TEST_CASE("grid emit: commit frame carries the scrollback row count") {
+    std::println("--- grid_emit commit frame ---");
+    // A Commit frame tells the host: N rows scrolled into history.  The count
+    // rides the `rows` header field; there are no runs.
+    std::string wire; emit_commit(7, wire);
+    DecFrame f = decode(wire);
+    assert(f.type == static_cast<std::uint8_t>(GridFrameType::Commit));
+    assert(f.rows == 7);
+    assert(f.runs.empty());
+    assert(!f.has_cursor);
+    std::println("PASS (commit rows=%d)", f.rows);
+}
+
 TEST_CASE("grid emit: full frame round-trips text + dimensions") {
     std::println("--- grid_emit full round-trip ---");
     StylePool pool;

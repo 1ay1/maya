@@ -73,6 +73,10 @@ enum class GridFrameType : std::uint8_t {
     Cursor = 3,   // cursor moved only
     Clear  = 4,   // wipe the surface
     Bell   = 5,   // audible/visual bell passthrough
+    Commit = 6,   // scrollback: the top N rows have scrolled off into
+                  // history; the host appends its current top N grid rows
+                  // to its scrollback and shifts the live grid up by N.
+                  // The row COUNT rides the `rows` header field.
 };
 
 // Cursor position + visibility for a frame that carries one.
@@ -105,5 +109,9 @@ void emit_clear(int cols, int rows, std::string& out);
 
 // Bell.
 void emit_bell(std::string& out);
+
+// Scrollback commit: the top `rows` rows have scrolled into history.  Carries
+// no runs; the host moves its current top `rows` grid rows into scrollback.
+void emit_commit(int rows, std::string& out);
 
 } // namespace maya::render

@@ -208,4 +208,9 @@ void emit_bell(std::string& out) {
     emit_header_only(GridFrameType::Bell, 0, 0, nullptr, out);
 }
 
+void emit_commit(int rows, std::string& out) {
+    // The commit COUNT rides the `rows` header field; cols is irrelevant.
+    emit_header_only(GridFrameType::Commit, 0, rows, nullptr, out);
+}
+
 } // namespace maya::render

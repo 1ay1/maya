@@ -1295,9 +1295,16 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     // update), just a full clear + paint + one grow-and-retry.
     constexpr int kMinCanvasHeight = 500;
     if (canvas_.width() != w || canvas_.height() < kMinCanvasHeight) {
+        const bool width_changed = (canvas_.width() != w);
         canvas_.set_style_pool(&pool_);
         canvas_.resize(w, std::max(kMinCanvasHeight, canvas_.height()));
         grid_need_full_ = true;   // reallocation invalidates the snapshot
+        // On a WIDTH change (host window resized) the committed scrollback was
+        // laid out at the old width and is no longer valid to align against.
+        // A terminal reflows: drop the committed prefix so the whole viewport
+        // re-renders at the new width from row 0.  (Height-only growth of the
+        // canvas doesn't invalidate committed rows.)
+        if (width_changed) grid_committed_rows_ = 0;
     }
     canvas_.reset_clips();
     canvas_.clear();
@@ -1349,8 +1356,13 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     }
 
     const int view_top = grid_committed_rows_;   // fixed live-viewport origin
-    const int view_h   = std::min(content_h - view_top, term_h);
-    const int rows = std::max(0, view_h);
+    // The viewport is ALWAYS term_h rows tall.  When the un-committed content is
+    // shorter than term_h we still emit term_h rows (the extra ones read the
+    // canvas's blank padding rows) so the host's live region is fully painted
+    // edge-to-edge — otherwise the unpainted bottom rows kept stale content and
+    // the last row appeared to "erase slowly".  The canvas is padded to
+    // kMinCanvasHeight, so reading up to view_top+term_h is always in-bounds.
+    const int rows = std::min(term_h, std::max(1, canvas_.height() - view_top));
 
     // Snapshot the visible rows as packed cells for the diff.  y is a VIEWPORT
     // row [0,view_h); the canvas row it reads is view_top+y (the bottom window

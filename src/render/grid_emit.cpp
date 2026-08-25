@@ -118,8 +118,23 @@ inline char32_t sanitize_cp(char32_t cp) {
     return cp;
 }
 
+// Set once at startup from AGENTTY_GRID_WIDTH_RESOLVED=1. When true, wide
+// glyphs are emitted with a U+0000 CONTINUATION codepoint filling their
+// trailing column, so a run's codepoint count equals its COLUMN count. A host
+// then advances one column per codepoint and renders U+0000 as nothing — no
+// wcwidth on the host side, no column drift. Off by default (v2 behaviour:
+// trailing half is skipped, len = codepoints < columns).
+inline bool width_resolved_mode() {
+    static const bool on = [] {
+        const char* e = std::getenv("AGENTTY_GRID_WIDTH_RESOLVED");
+        return e && e[0] == '1';
+    }();
+    return on;
+}
+
 void build_row_runs(const Canvas& canvas, int row, std::vector<Run>& out,
                     StyleTable& table) {
+    const bool resolved = width_resolved_mode();
     const int w = canvas.width();
     int x = 0;
     while (x < w) {
@@ -137,6 +152,12 @@ void build_row_runs(const Canvas& canvas, int row, std::vector<Run>& out,
             maya::detail::encode_utf8(sanitize_cp(cc.character), run.utf8);
             ++run.len;
             ++cx;
+            // Width-resolved: a wide lead glyph (its trailing half is the next
+            // width==2 cell) gets a U+0000 continuation so len tracks columns.
+            if (resolved && cx < w && canvas.get(cx, row).width == 2) {
+                run.utf8.push_back('\0');   // U+0000, one byte, valid UTF-8
+                ++run.len;
+            }
         }
         table.note(style);
         out.push_back(std::move(run));
@@ -169,7 +190,8 @@ void emit_cells(const Canvas& canvas, const StylePool& pool,
 
     std::string p;
     const std::uint8_t flags =
-        (table.empty() ? 0u : 1u) | (cursor ? 2u : 0u);
+        (table.empty() ? 0u : 1u) | (cursor ? 2u : 0u)
+        | (width_resolved_mode() ? 8u : 0u);   // bit3 = width-resolved runs
     put_u8 (p, GRID_PROTO_VER);                      // ver
     put_u8 (p, static_cast<std::uint8_t>(type));
     put_u8 (p, flags);

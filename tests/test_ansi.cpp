@@ -315,3 +315,73 @@ TEST_CASE("sync detect tmux") {
     std::println("PASS\n");
 }
 
+// ============================================================================
+// tmux clipboard passthrough (image paste under tmux)
+// ============================================================================
+
+TEST_CASE("wrap_for_tmux wraps only inside tmux, doubling ESCs") {
+    std::println("--- test_wrap_for_tmux ---");
+
+    // Not in tmux: sequence returned unchanged.
+    ::unsetenv("TMUX");
+    const std::string seq = "\x1b]5522;type=read;Zm9v\x1b\\";
+    assert(ansi::wrap_for_tmux(seq) == seq
+           && "outside tmux wrap_for_tmux must be a no-op");
+
+    // In tmux: wrapped in ESC P tmux ; … ESC \ with every inner ESC DOUBLED.
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    const std::string wrapped = ansi::wrap_for_tmux(seq);
+    // Must start with the DCS passthrough intro and end with ST.
+    assert(wrapped.rfind("\x1bPtmux;", 0) == 0
+           && "tmux wrap must start with ESC P tmux ;");
+    assert(wrapped.size() >= 2
+           && wrapped[wrapped.size() - 2] == '\x1b'
+           && wrapped[wrapped.size() - 1] == '\\'
+           && "tmux wrap must end with ST (ESC \\)");
+    // Every ESC from the ORIGINAL payload is doubled. The original seq has 2
+    // ESCs (the OSC intro and its ST); the wrapper adds its own intro ESC and
+    // a trailing ST ESC. Count ESCs: wrapper_intro(1) + doubled_payload(2*2=4)
+    // + trailing_ST(1) = 6.
+    std::size_t escs = 0;
+    for (char c : wrapped) if (c == '\x1b') ++escs;
+    assert(escs == 6 && "payload ESCs must be doubled inside the tmux wrapper");
+
+    ::unsetenv("TMUX");
+    std::println("PASS\n");
+}
+
+TEST_CASE("env_supports_osc5522 is speculative inside tmux") {
+    std::println("--- test_osc5522_tmux ---");
+    auto clear = [] {
+        for (const char* v : {"KITTY_WINDOW_ID", "TERM", "TMUX"})
+            ::unsetenv(v);
+    };
+
+    // kitty locally.
+    clear();
+    ::setenv("KITTY_WINDOW_ID", "1", 1);
+    assert(ansi::env_supports_osc5522() && "KITTY_WINDOW_ID -> true");
+
+    // kitty over ssh (only TERM survives).
+    clear();
+    ::setenv("TERM", "xterm-kitty", 1);
+    assert(ansi::env_supports_osc5522() && "TERM=xterm-kitty -> true");
+
+    // Plain non-kitty, no tmux: false.
+    clear();
+    ::setenv("TERM", "xterm-256color", 1);
+    assert(!ansi::env_supports_osc5522() && "plain xterm -> false");
+
+    // Inside tmux, kitty's fingerprints are erased (TERM rewritten, no
+    // KITTY_WINDOW_ID) — we return true SPECULATIVELY so the tmux-wrapped
+    // request gets sent and kitty (if outer) can answer with an image.
+    clear();
+    ::setenv("TERM", "tmux-256color", 1);
+    ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    assert(ansi::env_supports_osc5522()
+           && "inside tmux env_supports_osc5522 must be speculatively true");
+
+    clear();
+    std::println("PASS\n");
+}
+

@@ -507,6 +507,10 @@ public:
     // Read terminal input, parse into events.
     auto read_events() -> Result<std::vector<Event>>;
 
+    // Drop a duplicate clipboard-read PasteEvent (the tmux OSC 5522 + OSC 52
+    // double-reply case). Mutates `events` in place.
+    void dedup_clipboard_pastes(std::vector<Event>& events);
+
     // Flush parser timeout events (e.g., bare Escape after delay).
     auto flush_timeouts() -> std::vector<Event>;
 
@@ -1016,6 +1020,13 @@ private:
     // -- State ----------------------------------------------------------------
     InputParser parser_;
     bool        running_ = true;
+
+    // Dedup guard for clipboard-read paste replies. Inside tmux we send BOTH
+    // OSC 5522 (kitty image) and OSC 52 (text) because kitty is undetectable
+    // there; a kitty outer terminal answers both, which would otherwise
+    // surface as two paste events. Drop a PasteEvent that arrives within a
+    // short window of the previous one. Zero value = no paste seen yet.
+    std::chrono::steady_clock::time_point last_paste_at_{};
 
     // Inline-mode mouse anchor: 1-based terminal row of the frame's top,
     // learned via a cursor-position query (DSR) at create() when mouse is

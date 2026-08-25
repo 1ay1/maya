@@ -301,8 +301,17 @@ private:
 // Env-driven (no DECRQM round trip): kitty is the only implementation,
 // detected via KITTY_WINDOW_ID locally or TERM containing "kitty" —
 // TERM is the one variable ssh forwards, so this works on the far end
-// of an SSH session where KITTY_WINDOW_ID is absent.
+// of an SSH session where KITTY_WINDOW_ID is absent.  Also returns true
+// SPECULATIVELY inside tmux (TMUX set), where kitty's fingerprints are
+// erased and the request is sent tmux-wrapped (see wrap_for_tmux).
 [[nodiscard]] bool env_supports_osc5522();
+
+// Wrap a control sequence in tmux's DCS passthrough envelope
+// (ESC P tmux ; <payload, inner ESCs doubled> ESC \) so tmux forwards it to
+// the OUTER terminal instead of swallowing it.  Returns `seq` unchanged when
+// not inside tmux, so callers can wrap unconditionally.  Needs tmux
+// `allow-passthrough on` (default since tmux 3.4).
+[[nodiscard]] std::string wrap_for_tmux(std::string_view seq);
 
 // ============================================================================
 // Terminal capability hints

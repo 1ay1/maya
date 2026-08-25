@@ -381,8 +381,34 @@ auto Runtime::read_events() -> Result<std::vector<Event>> {
                 result.push_back(std::move(event));
         }
     }
+    dedup_clipboard_pastes(result);
     io_log("read_events -> %zu events", result.size());
     return ok(std::move(result));
+}
+
+// Drop a clipboard-read PasteEvent that lands within a short window of a
+// previous one. In tmux we send OSC 5522 (kitty image) AND OSC 52 (text)
+// because kitty can't be identified there; a kitty outer terminal answers
+// both and we'd otherwise paste twice. The window is generous enough to
+// span the two near-simultaneous replies but far shorter than any human
+// double-paste, so genuine consecutive pastes are untouched.
+void Runtime::dedup_clipboard_pastes(std::vector<Event>& events) {
+    constexpr auto kWindow = std::chrono::milliseconds(250);
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<Event> kept;
+    kept.reserve(events.size());
+    for (auto& ev : events) {
+        if (std::holds_alternative<PasteEvent>(ev)) {
+            if (last_paste_at_.time_since_epoch().count() != 0
+                && now - last_paste_at_ < kWindow) {
+                last_paste_at_ = now;   // keep sliding so a 3rd reply also drops
+                continue;               // swallow the duplicate
+            }
+            last_paste_at_ = now;
+        }
+        kept.push_back(std::move(ev));
+    }
+    events = std::move(kept);
 }
 
 // ============================================================================
@@ -1635,15 +1661,33 @@ void Runtime::query_clipboard() {
     // Clipboard read query. Two dialects:
     //   • OSC 5522 (kitty) — multi-format: the reply can carry IMAGE
     //     bytes, which OSC 52 read replies never do. kitty is the only
-    //     implementation, so gate on its env fingerprint. Sent alone
-    //     (not alongside OSC 52): kitty answers both, and two replies
-    //     would surface as two paste events.
+    //     implementation, so gate on its env fingerprint.
     //   • OSC 52 read (everything else) — text-only, but widely
     //     honoured (iTerm2, WezTerm, foot, Ghostty, xterm w/ opts).
     // Either reply arrives on the input stream and is decoded by
     // InputParser into a PasteEvent. write_or_buffer so a congested tty
     // doesn't drop it; it's a control sequence the diff path never
     // re-emits.
+    //
+    // tmux twist: inside tmux kitty is undetectable (its env fingerprints
+    // are stripped and TERM is rewritten), AND tmux swallows any OSC it
+    // doesn't recognise unless it's wrapped in tmux passthrough. So when
+    // TMUX is set we (1) send the OSC 5522 image request WRAPPED for tmux
+    // — a kitty outer terminal answers with the image, a non-kitty one
+    // ignores the unknown OSC — and (2) ALSO send OSC 52 (likewise wrapped)
+    // as the text fallback for the non-kitty case. On kitty both may reply;
+    // a short dedup window (see on paste handling) drops the second.
+    const bool in_tmux = [] {
+        const char* m = std::getenv("TMUX");
+        return m && *m;
+    }();
+    if (in_tmux) {
+        (void)writer_->write_or_buffer(
+            ansi::wrap_for_tmux(ansi::request_clipboard_image()));
+        (void)writer_->write_or_buffer(
+            ansi::wrap_for_tmux(ansi::request_clipboard()));
+        return;
+    }
     (void)writer_->write_or_buffer(ansi::env_supports_osc5522()
                                        ? ansi::request_clipboard_image()
                                        : ansi::request_clipboard());

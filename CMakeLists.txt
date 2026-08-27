@@ -485,6 +485,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_math.cpp
         tests/test_streaming_perf.cpp
         tests/wire_bytes_bench.cpp
+        tests/test_wire_coalesce.cpp
         tests/test_streaming_window.cpp
         tests/test_tracked.cpp
         tests/test_unicode_width.cpp

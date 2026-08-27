@@ -55,6 +55,7 @@
 
 #include "../core/cmd.hpp"
 #include "../core/concepts.hpp"
+#include "wire_coalesce.hpp"
 #include "../core/expected.hpp"
 #include "../core/function.hpp"
 #include "../core/motion.hpp"
@@ -958,6 +959,34 @@ private:
     int           hold_peak_          = 0;
     int           hold_decay_         = 0;
     int           hold_last_unpadded_ = 0;
+
+    // ── Adaptive wire coalescing (backpressure-driven frame batching) ──────
+    //
+    // On a REMOTE link (mosh / SSH / Tailscale) the wire, not the CPU, is
+    // the bottleneck: a streaming turn firing ~60 RAF/sec pushes ~60 tiny
+    // diff frames/sec, and each pays a fixed CUP+SGR navigation tax. The
+    // wire_bytes_bench measured this as a 12.8x amplification (70 KB on the
+    // wire for a 5.5 KB doc). Coalescing N appends into ONE cumulative diff
+    // frame removes that per-frame overhead (identical content reaches the
+    // wire) — measured 3-5x less wire.
+    //
+    // Runtime::render() enforces a MINIMUM interval between composes that is
+    // 0 on a fast wire (zero behavior change) and grows only when the wire
+    // shows backpressure. `coalesce_.congestion` is an EWMA in [0,1] of "did
+    // last frame leave residue / defer": 0 = wire keeps up, 1 = saturated.
+    // `coalesce_.last_compose_ms` timestamps the last frame actually
+    // composed. A frame that arrives inside the congestion-scaled interval
+    // is SKIPPED (coalesced): the model keeps advancing, so the next compose
+    // is cumulative and strictly cheaper than the frames it replaced. A
+    // deferred frame is never lost — needs_render stays set by the caller
+    // and the residue-retry poll clamp re-fires it. MAYA_NO_COALESCE=1
+    // disables entirely.
+    // ── Adaptive wire coalescing state (see wire_coalesce.hpp) ───────────
+    // The EWMA congestion estimate + last-compose timestamp that decide
+    // whether to batch a streaming frame. Inert on a fast wire.
+    detail::CoalesceState coalesce_{};
+    std::chrono::steady_clock::time_point coalesce_epoch_{
+        std::chrono::steady_clock::now()};
     static constexpr int kHoldDecayFrames = 6;
     // Release-safe scrollback-invariant recovery counter. Bumped every
     // time the overflowed-frame gate (or the verify-poison arm) has to

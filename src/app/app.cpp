@@ -1,4 +1,5 @@
 #include "maya/app/app.hpp"
+#include "maya/app/wire_coalesce.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -514,6 +515,16 @@ auto Runtime::render(const Element& root) -> Status {
     RenderContextGuard ctx_guard(render_ctx_);
 
     if (is_inline()) {
+        // ── Adaptive wire coalescing: congestion sample ───────────────
+        // Residue on entry = the wire couldn't take last frame in full →
+        // a congestion sample of 1.0; a clean entry = 0.0. The EWMA
+        // (α=0.25) smooths transient hiccups into a stable [0,1] estimate
+        // that drives the coalesce interval below. Cheap, allocation-free,
+        // computed once per render. See the field doc in app.hpp.
+        static const bool coalesce_enabled =
+            (std::getenv("MAYA_NO_COALESCE") == nullptr);
+        const bool congested_now = writer_->has_residue();
+
         // ── Backpressure via non-blocking writer ───────────────────────
         // Output fd is O_NONBLOCK (set by Writer ctor). On a congested
         // tty the previous frame may have left bytes in the writer's
@@ -552,6 +563,33 @@ auto Runtime::render(const Element& root) -> Status {
                             return std::move(arm);
                     }, std::move(in_coherence_));
                 return d;
+            }
+        }
+
+        // ── Adaptive wire coalescing: the compose gate ─────────────────
+        // With residue now drained, decide whether to compose THIS frame or
+        // coalesce it into the next. The interval scales with measured
+        // congestion: 0 ms on a fast wire (coalesce_.congestion ≈ 0 → gate is
+        // a no-op, zero behavior change), rising to ~33 ms (≈30 fps) as the
+        // wire saturates. A frame arriving inside the interval is skipped;
+        // the model keeps advancing between the caller's re-fires, so the
+        // next compose is a single CUMULATIVE diff covering every append
+        // that landed meanwhile — removing the per-frame CUP+SGR tax that
+        // the wire_bytes_bench isolated. The skipped frame is never lost:
+        // the caller's needs_render stays set and the residue-retry poll
+        // clamp (2-8 ms) re-fires promptly.
+        //
+        // Safety: this only ever DELAYS a compose, and only while the wire
+        // is already too slow to have shown the intermediate frames anyway.
+        // It never touches the Witness Chain state, never composes a frame
+        // the wire won't receive, and cannot strand the stream (bounded
+        // interval + guaranteed re-fire). On a fast/local wire it is inert.
+        if (coalesce_enabled) {
+            using namespace std::chrono;
+            const double now_ms = duration<double, std::milli>(
+                steady_clock::now() - coalesce_epoch_).count();
+            if (coalesce_.should_coalesce(now_ms, congested_now)) {
+                return ok();   // coalesce: skip this compose, batch into next
             }
         }
 

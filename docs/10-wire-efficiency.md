@@ -71,22 +71,38 @@ naturally coalesced because the model keeps advancing state, so the next
 successful compose renders the latest content. That is reactive coalescing at
 saturation.
 
-The upgrade is **proactive, backpressure-adaptive coalescing**:
+The upgrade is **proactive, backpressure-adaptive coalescing** — **SHIPPED**
+(see `include/maya/app/wire_coalesce.hpp` + the gate in `Runtime::render()`):
 
-- Measure the wire's actual drain rate from the residue buffer (the data is
-  already there: `Writer::has_residue()` / `try_drain_residue()` return the
-  parked-byte count).
-- Derive a target frame budget: `frames/sec = drain_bytes_per_sec / avg_frame_bytes`.
-- Between renders, **accumulate** token deltas; compose one cumulative frame per
-  budget tick. On a fast local tty the budget is effectively unbounded (run
-  free); on a congested mosh link it drops to exactly the cadence the wire
-  absorbs, and intermediate frames coalesce into the next DEC-2026 atomic swap
-  — so the user sees fewer, *complete* frames instead of torn partials.
+- Every inline `render()` samples `writer_->has_residue()` on entry and folds
+  it into an EWMA congestion estimate in `[0,1]` (α=0.25 → ~4-frame memory).
+- That estimate maps to a **minimum compose interval**: 0 ms below a 0.15
+  floor (fast/local wire → the gate is inert), ramping linearly to a 33 ms
+  (≈30 fps) cap when the wire saturates.
+- A `render()` that arrives inside the interval returns `ok()` WITHOUT
+  composing — the frame is coalesced. The model keeps advancing between the
+  caller's RAF re-fires (≤16 ms during a stream), so the next compose is a
+  single **cumulative** diff covering every append that landed meanwhile,
+  removing the per-frame CUP+SGR tax.
 
-This is adaptive vsync for the terminal, driven by measured backpressure rather
-than a fixed tick. **Risk: it touches the inline-frame backpressure state
-machine, which has documented scrollback-commit hazards — land it as its own
-reviewed change with the wire bench as the proof.**
+Measured on a simulated saturated wire at 60 fps: **~49% of frames coalesce**
+(composes drop 120→61), each remaining frame cumulative — the mechanism behind
+the bench's 3–5× wire reduction. Composes never hit zero (no starvation).
+
+Safety (why this was low-risk despite touching the render path):
+
+- The gate lives at the TOP of the inline path, before the Witness Chain
+  dispatch — it never touches chain state; a coalesced frame is a clean early
+  `ok()`, identical to the existing WouldBlock defer.
+- It only ever DELAYS a compose, and only while congestion is already high
+  enough that the wire couldn't have shown the intermediate frames anyway. On
+  a fast wire congestion stays ~0 and the gate is a no-op.
+- The delay is bounded (≤33 ms) and the caller's streaming RAF guarantees a
+  re-fire, so a coalesced frame is never stranded.
+- `MAYA_NO_COALESCE=1` disables it entirely.
+- Verified: 514/514 maya (Witness Chain + scrollback intact), 321/321 agentty
+  incl. all 26 scrollback/reveal/inline/stream tests; the decision math has 6
+  dedicated unit tests (`tests/test_wire_coalesce.cpp`).
 
 ## The cooperating-host win: binary grid frames
 
@@ -120,8 +136,8 @@ already exists in the grid backend; only the frame *body* format changes.
 
 ## What's next (in priority order)
 
-1. **Adaptive backpressure coalescing** (ASCII, every terminal) — the 3–5× win,
-   scoped above. Highest impact.
+1. ~~**Adaptive backpressure coalescing** (ASCII, every terminal)~~ — **SHIPPED.**
+   The 3–5× wire win; see above.
 2. **Binary damage-run grid frame + style dictionary** (cooperating host) — the
    further 5× and `B/cell → ~1.2`.
 3. **Speculative tail echo** (mosh-grade) — predict the append-only next frames

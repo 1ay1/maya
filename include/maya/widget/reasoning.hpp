@@ -102,6 +102,14 @@ public:
     }
     [[nodiscard]] bool is_live() const noexcept { return live_; }
 
+    /// Tell the widget how many reasoning CHARACTERS were produced, so the
+    /// settled header can show an accurate token estimate. Hosts whose body
+    /// lives outside the widget (build_with_body) MUST call this — otherwise
+    /// the estimate falls back to the widget's own StreamingMarkdown, which
+    /// is empty on that path ("~0 tokens"). No-op to omit for the self-owned
+    /// streaming path.
+    void set_char_hint(std::size_t chars) noexcept { char_hint_ = chars; }
+
     /// True while ANYTHING is still animating (reveal glide, live caret,
     /// spinner, in-flight async parse). Hosts drive request_animation_frame
     /// off this so the block stays smooth without a wasteful always-on tick.
@@ -142,67 +150,125 @@ public:
 
 private:
     [[nodiscard]] Element assemble(Element body) const {
+        // A labeled top rule announces the block ("✦ Thinking ───") and — once
+        // settled — a matching bottom rule CLOSES it, so the reasoning is a
+        // clearly-enclosed, titled section that visually separates from the
+        // answer that follows. The body sits indented beneath the label.
         std::vector<Element> rows;
-        rows.reserve(2);
-        rows.push_back(build_header());
-        rows.push_back(std::move(body));
+        rows.reserve(3);
+        rows.push_back(build_rule(/*with_label=*/true));
 
-        // The block: a left rail (accent while live, dimmed when settled) so
-        // the whole reasoning stream reads as one quiet, distinct aside.
+        BoxElement indent;
+        indent.layout.direction = FlexDirection::Column;
+        indent.layout.padding   = Edges<int>{0, 0, 0, 2};
+        indent.children.push_back(std::move(body));
+        rows.push_back(Element{std::move(indent)});
+
+        // Closing rule only when settled — while live the block is still
+        // growing, so a bottom edge would jitter as text streams in.
+        if (!live_)
+            rows.push_back(build_rule(/*with_label=*/false));
+
         BoxElement box;
         box.layout.direction = FlexDirection::Column;
-        box.layout.padding   = Edges<int>{0, 0, 0, 1}; // 1 col gap after rail
-        box.border = BorderConfig{
-            .style  = BorderStyle::Bold,                // ┃ heavier = a "rail"
-            .sides  = BorderSides{false, false, false, true}, // left only
-            .colors = BorderColors{
-                .left = live_ ? cfg_.accent : dim(cfg_.accent),
-            },
-        };
         box.children = std::move(rows);
         return Element{std::move(box)};
+    }
+
+    // A full-width rule. With a label it's the block's titled top edge
+    // ("✦ Thinking ─────", flush-left so the sigil catches the eye); without,
+    // it's the plain bottom edge that closes the block. The rule fills the
+    // available width via a ComponentElement.
+    [[nodiscard]] Element build_rule(bool with_label) const {
+        const Color accent = live_ ? cfg_.accent : dim(cfg_.accent);
+        const Color rule_c = dim(accent);
+        const Style rule_st  = Style{}.with_fg(rule_c);
+        const Style label_st = live_
+            ? Style{}.with_fg(cfg_.header_word).with_bold()
+            : Style{}.with_fg(cfg_.header_word).with_dim();
+        const Style sigil_st = Style{}.with_fg(accent);
+
+        std::string word;
+        std::string meta;
+        if (with_label) {
+            word = live_ ? cfg_.live_word : cfg_.settled_word;
+            if (live_) {
+                word += " ";
+                word += std::string{spinner_frame()};
+            } else if (reasoning_chars() > 0) {
+                meta = "  \xc2\xb7  " + token_estimate() + " tokens";   // ·
+            }
+        }
+
+        return Element{ComponentElement{
+            .render = [=](int w, int) -> Element {
+                if (!with_label) {
+                    std::string line;
+                    for (int i = 0; i < w; ++i) line += "\xe2\x94\x80"; // ─
+                    return Element{TextElement{.content = std::move(line),
+                                               .style = rule_st}};
+                }
+                // "✦ Word meta ─────" flush-left.
+                std::vector<Element> parts;
+                parts.push_back(Element{TextElement{
+                    .content = "\xe2\x9c\xa6 ", .style = sigil_st}}); // ✦
+                parts.push_back(Element{TextElement{
+                    .content = word, .style = label_st}});
+                if (!meta.empty())
+                    parts.push_back(Element{TextElement{
+                        .content = meta, .style = rule_st}});
+                // Trailing space, then a fill rule for the remaining width.
+                // ✦(2) + word + meta + ─ fill; a leading space before the rule.
+                int used = 2 + utf8_cols(word) + utf8_cols(meta);
+                int fill = w - used - 1; // 1 for the space before the rule
+                if (fill < 0) fill = 0;
+                std::string rule = " ";
+                for (int i = 0; i < fill; ++i) rule += "\xe2\x94\x80";
+                parts.push_back(Element{TextElement{
+                    .content = std::move(rule), .style = rule_st}});
+                return dsl::h(std::move(parts)).build();
+            },
+            .layout = {},
+        }};
+    }
+
+    // Column width of a UTF-8 string, treating every non-continuation byte as
+    // one column (the label is ASCII words + a 1-col braille spinner + a ·,
+    // all width-1) — enough to size the fill rule.
+    static int utf8_cols(std::string_view s) {
+        int n = 0;
+        for (unsigned char c : s)
+            if ((c & 0xC0) != 0x80) ++n;
+        return n;
     }
 
     Config cfg_;
     std::shared_ptr<StreamingMarkdown> md_;
     Spinner<SpinnerStyle::Dots> spinner_{Style{}.with_dim()};
     bool live_ = true;
+    std::size_t char_hint_ = 0; // host-supplied reasoning length (0 = use md_)
 
     // A dimmer variant of a color for the settled rail (recede once done).
     static Color dim(Color c) noexcept { return c.darken(0.45f); }
 
-    [[nodiscard]] Element build_header() const {
-        std::string content;
-        std::vector<StyledRun> runs;
-        auto push = [&](std::string_view part, Style st) {
-            const std::size_t s = content.size();
-            content.append(part);
-            runs.push_back(StyledRun{s, content.size() - s, st});
-        };
+    // Reasoning length in characters: the host hint if set, else the widget's
+    // own streamed source (the self-owned path).
+    [[nodiscard]] std::size_t reasoning_chars() const noexcept {
+        return char_hint_ ? char_hint_ : md_->source().size();
+    }
 
-        // ✦ sigil in the accent hue.
-        push("\xe2\x9c\xa6 ", Style{}.with_fg(live_ ? cfg_.accent
-                                                    : dim(cfg_.accent)));
-
-        if (live_) {
-            push(cfg_.live_word, Style{}.with_fg(cfg_.header_word).with_bold());
-            // Spinner frame off the shared clock (deterministic in tests) so
-            // it breathes even without a host advance() call.
-            push(" ", Style{});
-            push(spinner_frame(), Style{}.with_fg(cfg_.accent).with_dim());
-        } else {
-            push(cfg_.settled_word, Style{}.with_fg(cfg_.header_word).with_dim());
-            const std::size_t approx = (md_->source().size() + 3) / 4;
-            push("  \xc2\xb7  ~" + std::to_string(approx) + " tokens", // · ~N tokens
-                 Style{}.with_dim().with_italic());
+    // Humanized token estimate: "~4" → "820" → "1.2k" → "18k". Roughly
+    // 4 chars/token, matching the rest of the app's rough token accounting.
+    [[nodiscard]] std::string token_estimate() const {
+        const std::size_t toks = (reasoning_chars() + 3) / 4;
+        if (toks < 1000) return std::to_string(toks);
+        if (toks < 10000) {
+            // one decimal: 1.2k
+            const std::size_t whole = toks / 1000;
+            const std::size_t tenth = (toks % 1000) / 100;
+            return std::to_string(whole) + "." + std::to_string(tenth) + "k";
         }
-
-        return Element{TextElement{
-            .content = std::move(content),
-            .style   = {},
-            .wrap    = TextWrap::TruncateEnd, // one row, never wraps
-            .runs    = std::move(runs),
-        }};
+        return std::to_string((toks + 500) / 1000) + "k";
     }
 
     [[nodiscard]] Element build_body() const {

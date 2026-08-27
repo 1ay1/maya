@@ -166,20 +166,38 @@ Byte-exactness is pinned by a reference-decoder round-trip test: varint runs
 decode to identical `(row,col,len,style,text)` tuples as the fixed encoding.
 Still strictly opt-in — v2 hosts see byte-identical fixed-u16 frames.
 
-### The honest ceiling
+### Interior-span run splitting — SHIPPED (this beats ANSI)
 
-Grid v3 is **~1.9× smaller than raw grid but still ~1.9× LARGER than ANSI** on
-streaming content. This is not a bug to fix incrementally — it's structural:
-ANSI's diff emits bare UTF-8 with **0-byte differential SGR** (the style rarely
-changes between adjacent cells) and an **implicit cursor** (no per-run
-coordinates), which is genuinely excellent for the append-heavy streaming case.
-The grid frame carries explicit `col/len/style` per run no matter how compact
-the header. Beating ANSI would need a different frame MODEL (e.g. a per-cell
-delta stream with implicit positioning), which is a research change, not an
-increment. The dictionary + varint wins are real where grid is already used
-(the Emacs host renders cells directly — no terminal to re-parse ANSI), and
-they're the correct, tested primitives; they just don't overturn ANSI's
-streaming efficiency.
+The measurement that broke the ceiling: an instrumented bench showed the grid
+**emits 3.86× the cells that actually changed** on the token stream (86 k cells
+sent for 22 k changed). The suffix emit (from the first changed column to
+end-of-row) re-sends unchanged trailing AND interior content every frame.
+
+Because a Diff is an **overlay** keyed by `(row, col)`, an unchanged interior
+cell can simply be *skipped* — the host already holds the right glyph. When a
+prior-frame cell snapshot is supplied (`emit_diff(..., prev_cells, stride,
+rows)`, gated on the same v3 opt-in), `build_row_runs` breaks a run at every
+unchanged cell and emits one run per contiguous **changed** span. Result:
+
+| scenario | ANSI | grid v2 | grid v3 (dict+varint+**interior-split**) |
+|----------|-----:|--------:|-----------------------------------------:|
+| token (4 B) | 70.3 KB | 163.9 KB | **66.4 KB** — **beats ANSI**, 2.47× vs v2 |
+| word  (8 B) | 44.7 KB | 95.7 KB  | 48.0 KB (1.99× vs v2) |
+| line  (40 B)| 20.9 KB | 38.8 KB  | 29.3 KB (1.32× vs v2) |
+
+**On the token stream — the dominant streaming case — grid v3 now sends fewer
+bytes than ANSI** (66.4 vs 70.3 KB). The earlier "grid can't beat ANSI without
+a different frame model" conclusion was WRONG: interior-span splitting *was* the
+missing piece, and only a direct measurement of emitted-vs-changed cells
+surfaced it.
+
+Correctness is the load-bearing part, and it's pinned by an overlay round-trip
+test: a simulated cooperating host maintains a full cell grid, applies a
+sequence of interior-split diffs (interior gaps, mid-row style flips, growth
+rows), and the reconstruction is asserted **cell-for-cell equal to the source
+canvas after every frame**. A single wrongly-skipped cell fails it. Still
+strictly opt-in; v2 hosts (`prev_cells == nullptr`) get byte-identical
+full-suffix frames.
 
 ### The style dictionary, as shipped
 
@@ -213,12 +231,13 @@ streaming efficiency.
 
 1. ~~**Adaptive backpressure coalescing** (ASCII, every terminal)~~ — **SHIPPED.**
    The 3–5× wire win; see above.
-2. **Grid run-header compaction** (cooperating host) — **SHIPPED** (style
-   dictionary + varint run headers, opt-in via `StyleAckSet`; grid v3 is ~1.9×
-   smaller than raw grid). Remaining: interior-span run splitting. NOTE the
-   honest ceiling above — grid still trails ANSI on streaming by design; the
-   dictionary/varint are correct primitives for hosts that render cells
-   directly, not an ANSI-beating change.
+2. ~~**Grid run-header compaction** (cooperating host)~~ — **SHIPPED, and it now
+   BEATS ANSI.** Style dictionary + varint run headers + interior-span run
+   splitting (all opt-in via `StyleAckSet`). On the token stream grid v3 sends
+   66.4 KB vs ANSI's 70.3 KB — the "grid can't beat ANSI" ceiling from the
+   prior revision was wrong; a direct emitted-vs-changed-cell measurement found
+   the interior-split headroom (3.86×). Correctness pinned by an overlay
+   round-trip test.
 3. **Speculative tail echo** (mosh-grade) — **NOT maya's layer to build**
    (analysed, deliberately not implemented). Mosh-style prediction hides
    *wire round-trip* latency by echoing on the CLIENT and reconciling when the

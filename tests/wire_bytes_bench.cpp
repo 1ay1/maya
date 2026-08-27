@@ -72,6 +72,7 @@ struct WireStats {
     std::size_t total_bytes         = 0;
     std::size_t frames              = 0;
     std::size_t total_changed_cells = 0;
+    std::size_t total_suffix_cells  = 0;   // grid: cells emitted col_lo..width
 };
 
 double pct(std::vector<std::size_t> v, double p) {
@@ -187,10 +188,12 @@ WireStats stream_grid(const std::string& doc, std::size_t chunk,
         // render_grid_frame's growth+diff branch).
         std::vector<int> changed, changed_cols;
         std::size_t changed_cell_count = 0;
+        std::size_t suffix_cell_count  = 0;   // cells emitted (col_lo..width)
         for (int y = 0; y < rows; ++y) {
             if (y >= prev_rows) {                    // fresh growth row
                 changed.push_back(y);
                 changed_cols.push_back(0);
+                suffix_cell_count += static_cast<std::size_t>(width);
                 for (int x = 0; x < width; ++x)
                     if (canvas.get_packed(x, y) != 0) ++changed_cell_count;
                 continue;
@@ -206,6 +209,8 @@ WireStats stream_grid(const std::string& doc, std::size_t chunk,
             if (first_diff >= 0) {
                 changed.push_back(y);
                 changed_cols.push_back(first_diff);
+                suffix_cell_count +=
+                    static_cast<std::size_t>(width - first_diff);
             }
         }
 
@@ -213,7 +218,10 @@ WireStats stream_grid(const std::string& doc, std::size_t chunk,
         if (!changed.empty()) {
             maya::render::emit_diff(canvas, pool, changed, /*base_row=*/0,
                                     /*cursor=*/nullptr, wire, &changed_cols,
-                                    use_dict ? &ack : nullptr);
+                                    use_dict ? &ack : nullptr,
+                                    use_dict && !prev.empty() ? prev.data() : nullptr,
+                                    use_dict ? width : 0,
+                                    use_dict ? prev_rows : 0);
         }
 
         // Snapshot for next frame's diff.
@@ -225,6 +233,7 @@ WireStats stream_grid(const std::string& doc, std::size_t chunk,
         prev_rows = rows;
 
         st.total_changed_cells += changed_cell_count;
+        st.total_suffix_cells  += suffix_cell_count;
         per_frame.push_back(wire.size());
         st.total_bytes += wire.size();
         ++st.frames;
@@ -359,6 +368,16 @@ TEST_CASE("wire_bytes_bench") {
         const double gdkb = static_cast<double>(gd.total_bytes) / 1024.0;
         std::printf("%-28s | %8.1f | %8.1f | %11.1f | %6.2fx\n",
                     s.name, akb, gkb, gdkb, gdkb > 0 ? gkb / gdkb : 1.0);
+        // Interior-waste probe: how many cells the grid EMITS (col_lo..width
+        // suffix) vs how many actually CHANGED. A ratio near 1.0 means the
+        // changes ARE contiguous suffixes — interior-span run splitting would
+        // save nothing. Well above 1.0 means real interior waste to reclaim.
+        const double waste = g.total_changed_cells > 0
+            ? double(g.total_suffix_cells) / double(g.total_changed_cells)
+            : 0.0;
+        std::printf("    ↳ grid emits %zu cells for %zu changed (%.2fx — "
+                    "interior-split headroom)\n",
+                    g.total_suffix_cells, g.total_changed_cells, waste);
     }
     std::printf("\n");
 }

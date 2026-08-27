@@ -155,7 +155,9 @@ void emit_diff(const Canvas& canvas, const StylePool& pool,
                const std::vector<int>& changed_rows, int base_row,
                const GridCursor* cursor, std::string& out,
                const std::vector<int>* changed_cols = nullptr,
-               StyleAckSet* ack = nullptr);
+               StyleAckSet* ack = nullptr,
+               const std::uint64_t* prev_cells = nullptr,
+               int prev_stride = 0, int prev_rows = 0);
 
 // Encode the WHOLE canvas as a FULL frame (initial paint / hard reset).
 // A Full frame re-states the surface, so it also RESETS the ack set (the

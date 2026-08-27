@@ -169,7 +169,8 @@ inline bool width_resolved_mode() {
 }
 
 void build_row_runs(const Canvas& canvas, int row, std::vector<Run>& out,
-                    StyleTable& table, int col_lo = 0) {
+                    StyleTable& table, int col_lo = 0,
+                    const std::uint64_t* prev_row = nullptr) {
     const bool resolved = width_resolved_mode();
     const int w = canvas.width();
     // `col_lo` restricts emission to columns >= col_lo. A Diff frame is an
@@ -178,6 +179,16 @@ void build_row_runs(const Canvas& canvas, int row, std::vector<Run>& out,
     // suffix is byte-identical on screen but far smaller on the wire, which is
     // the dominant per-frame cost during the streaming glide (only a row's
     // tail columns change each frame). col_lo=0 reproduces full-row behaviour.
+    //
+    // `prev_row`, when non-null, is this row's packed cells in the host's
+    // CURRENT frame. Because a Diff is an overlay, an UNCHANGED interior cell
+    // (equal to prev_row[x]) can be SKIPPED entirely — the host already holds
+    // the right glyph there. So instead of one run from col_lo to end-of-row
+    // (re-sending unchanged trailing/interior content), we emit one run PER
+    // contiguous CHANGED span. Measured on the token stream, the suffix path
+    // re-sends 3.86x the cells that actually changed; interior-span splitting
+    // reclaims that. Opt-in (v3): v2 callers pass prev_row=nullptr and get the
+    // byte-identical suffix behaviour.
     int x = std::max(0, col_lo);
     // If col_lo landed on the TRAILING half of a wide glyph, back up to its
     // lead cell so we never emit a dangling continuation / half a glyph.
@@ -185,15 +196,20 @@ void build_row_runs(const Canvas& canvas, int row, std::vector<Run>& out,
     while (x < w) {
         Cell c = canvas.get(x, row);
         if (c.width == 2) { ++x; continue; }        // trailing half; folded already
+        // Interior-span skip: an unchanged cell breaks the run. The host keeps
+        // its existing cell there (overlay). A wide glyph is only skippable if
+        // BOTH halves are unchanged, else we'd split a glyph — check the lead.
+        if (prev_row && canvas.get_packed(x, row) == prev_row[x]) { ++x; continue; }
         const std::uint16_t style = c.style_id;
         Run run{static_cast<std::uint16_t>(row), static_cast<std::uint16_t>(x),
                 0, style, {}};
-        // extend while same style
+        // extend while same style AND (if diffing) still changed
         int cx = x;
         while (cx < w) {
             Cell cc = canvas.get(cx, row);
             if (cc.width == 2) { ++cx; continue; }
             if (cc.style_id != style) break;
+            if (prev_row && canvas.get_packed(cx, row) == prev_row[cx]) break;
             maya::detail::encode_utf8(sanitize_cp(cc.character), run.utf8);
             ++run.len;
             ++cx;
@@ -242,15 +258,29 @@ void emit_cells(const Canvas& canvas, const StylePool& pool,
                 GridFrameType type, const GridCursor* cursor, std::string& out,
                 int header_rows = -1,
                 const std::vector<int>* changed_cols = nullptr,
-                StyleAckSet* ack = nullptr) {
+                StyleAckSet* ack = nullptr,
+                const std::uint64_t* prev_cells = nullptr,
+                int prev_stride = 0, int prev_rows = 0) {
     StyleTable table;
     std::vector<Run> runs;
+    // Interior-span run splitting is a v3 (cooperating-host) feature: it needs
+    // the host to hold the prior frame's cells (which the overlay preserves).
+    // Gate it on the same opt-in object as the dictionary/varint so a v2 host
+    // never receives interior gaps it can't fill.
+    const bool interior_split =
+        ack && ack->varint_runs && prev_cells && prev_stride > 0;
     for (std::size_t i = 0; i < rows.size(); ++i) {
         const int row = rows[i];
         if (row < 0 || row >= canvas.height()) continue;
         const int col_lo = (changed_cols && i < changed_cols->size())
                                ? (*changed_cols)[i] : 0;
-        build_row_runs(canvas, row, runs, table, col_lo);
+        // Only rows within the host's prior frame can be interior-diffed;
+        // fresh growth rows (row >= prev_rows) have no prev to compare.
+        const std::uint64_t* prev_row =
+            (interior_split && row < prev_rows)
+                ? prev_cells + static_cast<std::size_t>(row) * prev_stride
+                : nullptr;
+        build_row_runs(canvas, row, runs, table, col_lo, prev_row);
     }
 
     std::string p;
@@ -329,9 +359,12 @@ void emit_diff(const Canvas& canvas, const StylePool& pool,
                const std::vector<int>& changed_rows, int base_row,
                const GridCursor* cursor, std::string& out,
                const std::vector<int>* changed_cols,
-               StyleAckSet* ack) {
+               StyleAckSet* ack,
+               const std::uint64_t* prev_cells,
+               int prev_stride, int prev_rows) {
     emit_cells(canvas, pool, changed_rows, base_row, GridFrameType::Diff,
-               cursor, out, /*header_rows=*/-1, changed_cols, ack);
+               cursor, out, /*header_rows=*/-1, changed_cols, ack,
+               prev_cells, prev_stride, prev_rows);
 }
 
 void emit_full(const Canvas& canvas, const StylePool& pool,

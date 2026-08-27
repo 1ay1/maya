@@ -613,3 +613,132 @@ TEST_CASE("grid emit: varint headers shrink the run section") {
     DecFrame vf = decode(var);
     assert(!vf.runs.empty() && "word-runs must survive the varint round-trip");
 }
+
+// ── v3: interior-span run splitting — OVERLAY correctness across frames ───
+//
+// This is the load-bearing test for the biggest grid win. Interior splitting
+// SKIPS unchanged cells, trusting the host to keep them (overlay semantics).
+// If that trust is ever misplaced the screen corrupts. So: simulate a real
+// cooperating host — a full cell grid the host maintains — feed it a sequence
+// of interior-split diff frames built against the host's OWN prior cells, and
+// assert the host's reconstructed grid matches the source canvas CELL-FOR-CELL
+// after every frame. A single wrong skip fails this.
+TEST_CASE("grid emit: interior-split diffs reconstruct the grid cell-for-cell") {
+    std::println("--- grid_emit v3 interior-split overlay ---");
+    const int W = 40, H = 12;
+    StylePool pool;
+    const std::uint16_t plain = 0;
+    const std::uint16_t red   = pool.intern(Style{}.with_fg(Color::red()));
+    const std::uint16_t bold  = pool.intern(Style{}.with_fg(Color::blue()));
+
+    // Host-side grid: packed cell per (row,col). Starts blank (all 0 = space).
+    // A run overlays len cells starting at (row,col); characters are decoded
+    // from utf8, style from the run. We don't need exact packing — we compare
+    // the host grid the SAME way against a reference built from the canvas.
+    struct HostCell { char32_t ch; std::uint16_t style; };
+    std::vector<HostCell> host(static_cast<std::size_t>(W) * H, {U' ', 0});
+    std::unordered_map<std::uint16_t, DecStyle> host_styles;
+
+    auto apply = [&](const DecFrame& f) {
+        for (const auto& st : f.styles) host_styles[st.id] = st;
+        for (const auto& r : f.runs) {
+            // Decode the run's utf8 into codepoints and overlay them.
+            std::size_t bi = 0; int col = r.col;
+            for (int k = 0; k < r.len && col < W; ++k) {
+                unsigned char lead = static_cast<unsigned char>(r.utf8[bi]);
+                int nb = (lead < 0x80) ? 1 : (lead < 0xE0) ? 2 : (lead < 0xF0) ? 3 : 4;
+                char32_t cp;
+                if (nb == 1) cp = lead;
+                else {
+                    cp = lead & (0x7F >> nb);
+                    for (int b = 1; b < nb; ++b)
+                        cp = (cp << 6) | (static_cast<unsigned char>(r.utf8[bi + b]) & 0x3F);
+                }
+                bi += nb;
+                host[static_cast<std::size_t>(r.row) * W + col] =
+                    {cp == 0 ? U' ' : cp, r.style};
+                ++col;
+            }
+        }
+    };
+
+    // Build a reference host grid directly from a canvas (the ground truth).
+    auto reference_of = [&](const Canvas& c) {
+        std::vector<HostCell> ref(static_cast<std::size_t>(W) * H, {U' ', 0});
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                Cell cc = c.get(x, y);
+                ref[static_cast<std::size_t>(y) * W + x] =
+                    {cc.character == 0 ? U' ' : cc.character, cc.style_id};
+            }
+        return ref;
+    };
+
+    StyleAckSet ack; ack.varint_runs = true;
+    std::vector<std::uint64_t> prev;  // host's prior packed cells
+    int prev_rows = 0;
+
+    // A scripted sequence that EXERCISES interior gaps: text with unchanged
+    // middles, style flips mid-row, edits that touch scattered columns.
+    auto frame = [&](int fi) {
+        Canvas c(W, H, &pool);
+        c.clear();
+        c.write_text(0, 0, "the quick brown fox jumps", plain);
+        // row 1: a word in the MIDDLE changes each frame (interior gap on
+        // both sides — the exact case suffix-emit wastes).
+        c.write_text(0, 1, "stable left ", plain);
+        c.write_text(12, 1, (fi % 2 ? "AAAA" : "BBBB"), red);
+        c.write_text(16, 1, " stable right", plain);
+        // row 2: style flip on an unchanged word.
+        c.write_text(0, 2, "mixed ", plain);
+        c.write_text(6, 2, "styled", fi % 3 ? bold : red);
+        c.write_text(12, 2, " tail", plain);
+        // a growing tail row that appends (fresh growth rows too).
+        c.write_text(0, 3 + (fi % 6), "grown line", plain);
+        return c;
+    };
+
+    for (int fi = 0; fi < 8; ++fi) {
+        Canvas c = frame(fi);
+        // Compute changed rows + first-changed cols vs the host's prior frame.
+        std::vector<int> rows, cols;
+        for (int y = 0; y < H; ++y) {
+            int fd = -1;
+            for (int x = 0; x < W; ++x) {
+                std::uint64_t pv = (y < prev_rows)
+                    ? prev[static_cast<std::size_t>(y) * W + x] : 0;
+                if (c.get_packed(x, y) != pv) { fd = x; break; }
+            }
+            if (fd >= 0) { rows.push_back(y); cols.push_back(fd); }
+        }
+        std::string wire;
+        if (!rows.empty()) {
+            emit_diff(c, pool, rows, 0, nullptr, wire, &cols, &ack,
+                      prev.empty() ? nullptr : prev.data(), W, prev_rows);
+            apply(decode(wire));
+        }
+        // Snapshot the host's new belief.
+        prev.assign(static_cast<std::size_t>(W) * H, 0);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x)
+                prev[static_cast<std::size_t>(y) * W + x] = c.get_packed(x, y);
+        prev_rows = H;
+
+        // THE INVARIANT: host grid == canvas, cell-for-cell.
+        auto ref = reference_of(c);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const auto& h = host[static_cast<std::size_t>(y) * W + x];
+                const auto& r = ref[static_cast<std::size_t>(y) * W + x];
+                if (h.ch != r.ch) {
+                    std::println("  MISMATCH frame={} ({},{}) host U+{:04X} "
+                                 "ref U+{:04X}", fi, x, y,
+                                 (std::uint32_t)h.ch, (std::uint32_t)r.ch);
+                }
+                assert(h.ch == r.ch &&
+                       "interior-split overlay must reconstruct every cell");
+            }
+    }
+    std::println("PASS (8 frames, interior gaps + style flips + growth, "
+                 "overlay exact)");
+}

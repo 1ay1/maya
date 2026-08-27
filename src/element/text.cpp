@@ -105,6 +105,34 @@ struct LineWrapper {
 
     void emit_lines(std::vector<std::string_view>& out) {
         while (pos < line.size()) {
+            // ASCII fast path: bulk-advance a run of plain printable ASCII that
+            // are neither break points (space / tab / '-') nor wrap-forcing.
+            // Each such byte is exactly one column and introduces no break, so
+            // we can add the whole run to current_width in one go — skipping
+            // the per-byte decode_utf8 + codepoint_width that dominated layout
+            // word-wrap in profiling. We stop the run BEFORE it would overflow
+            // max_width so the existing wrap logic below handles the boundary
+            // char exactly as before (identical break decisions). Bytes 0x21..
+            // 0x7E excluding '-' (0x2D): '-' is a break point, and <0x21 covers
+            // space/tab/controls which the slow path treats specially.
+            {
+                const int room = max_width - current_width;
+                if (room > 0) {
+                    std::size_t p = pos;
+                    int taken = 0;
+                    while (p < line.size() && taken < room) {
+                        unsigned char b = static_cast<unsigned char>(line[p]);
+                        if (b <= 0x20 || b >= 0x7F || b == '-') break;
+                        ++p; ++taken;
+                    }
+                    if (taken > 0) {
+                        pos += static_cast<std::size_t>(taken);
+                        current_width += taken;
+                        continue;   // re-enter loop; boundary char handled below
+                    }
+                }
+            }
+
             std::size_t char_start = pos;
             char32_t cp = decode_utf8(line, pos);
             // Use the shared codepoint_width so combining marks (é = e+U+0301,

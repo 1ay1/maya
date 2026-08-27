@@ -117,12 +117,55 @@ cell   := (glyph:varint, style_ref:varint)   // style_ref indexes the dict
 ```
 
 With a **shared style dictionary** (interned once, referenced by index
-thereafter), the token stream drops from **6.63 B/cell toward ~1.2** — a further
-~5× on top of coalescing, and the cursor-navigation tax disappears (runs carry
-their own coordinates). The scrollback-commit protocol that makes this safe
-already exists in the grid backend; only the frame *body* format changes.
+thereafter), the per-frame style table stops re-sending unchanged style
+definitions. The scrollback-commit protocol that makes this safe already exists
+in the grid backend.
 
-`B/cell → 1.2` is the north star the bench prints on every run.
+### Measured reality (this overturned the roadmap's guess)
+
+The wire bench now drives the **real grid emit path** side-by-side with ANSI
+(`stream_grid`). The result was the opposite of the assumption above:
+
+| scenario | ANSI | grid v2 | grid + dictionary |
+|----------|-----:|--------:|------------------:|
+| token (4 B) | 70.3 KB | 163.9 KB | 146.5 KB |
+| word  (8 B) | 44.7 KB | 95.7 KB  | 86.4 KB  |
+| line  (40 B)| 20.9 KB | 38.8 KB  | 36.2 KB  |
+
+**The grid backend is currently ~2× WORSE than ANSI on the wire, not better.**
+ANSI's diff emits only the actually-changed *cells* with differential SGR
+(often 0 style bytes); the grid frame emits an 8-byte fixed run header
+(`row+col+len+style`, u16×4) per run plus a per-frame style table. On streaming
+content the run-header tax dominates.
+
+**The style dictionary — SHIPPED (opt-in, byte-exact) — closes 5–12% of that
+gap** (`grid+dictionary` column), but it was never the dominant cost. It is a
+real, safe win where grid is *already* in use, and it is the correct primitive
+to have; it just isn't the thing that makes grid beat ANSI.
+
+**The real lever, now that it's measured, is the run header, not the style
+table:** varint-encode `row/col/len/style` (each fits in 1 byte for typical
+content) to cut the 8-byte header to ~4, and split runs to skip unchanged
+interior cell spans (not just the leading columns). That is the next grid
+protocol revision — targeted at the measured bottleneck rather than a guess.
+
+### The style dictionary, as shipped
+
+`include/maya/render/grid_emit.hpp` adds an opt-in `StyleAckSet`:
+
+- Pass it to `emit_diff` / `emit_full` and a style's *definition* is sent only
+  the first frame the host sees it; later frames reference it by id and omit
+  the definition (flags **bit4 `kFlagPartialStyleTable`** tells the host to
+  resolve absent ids from its cache).
+- A `Full` frame **resets** the ack set (a hard re-state invalidates the host's
+  style cache) and re-sends a complete table.
+- **Strictly opt-in:** with `ack == nullptr` (the default) the encoder is
+  **byte-identical to v2** — no deployed host is affected. A host advertises
+  support out-of-band before the caller starts passing an ack set.
+- Byte-exactness is pinned by a reference-decoder round-trip test
+  (`tests/test_grid_emit.cpp`): a simulated host-side style cache resolves
+  every run through several frames incl. a Full-frame reset, and the wire is
+  proven strictly smaller on a repeated style.
 
 ## What landed now
 
@@ -138,8 +181,10 @@ already exists in the grid backend; only the frame *body* format changes.
 
 1. ~~**Adaptive backpressure coalescing** (ASCII, every terminal)~~ — **SHIPPED.**
    The 3–5× wire win; see above.
-2. **Binary damage-run grid frame + style dictionary** (cooperating host) — the
-   further 5× and `B/cell → ~1.2`.
+2. **Grid run-header compaction** (cooperating host) — the MEASURED grid win:
+   varint `row/col/len/style` (8 B header → ~4 B) + interior-span run splitting.
+   The style dictionary (SHIPPED, 5–12%) was the safe first step; this is the
+   change that makes grid actually beat ANSI. Needs a host protocol bump.
 3. **Speculative tail echo** (mosh-grade) — predict the append-only next frames
    and paint them locally, reconcile against the authoritative frame on arrival.
    Hides the whole round-trip for the dominant streaming case. Most impressive,

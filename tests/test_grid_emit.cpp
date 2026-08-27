@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <print>
 #include <random>
@@ -417,4 +418,116 @@ TEST_CASE("grid emit: ill-formed cell code points never reach the wire") {
         for (char ch : r.utf8) assert(ch != '\0');
     }
     std::println("PASS (NUL→space, surrogate/oob→U+FFFD)");
+}
+
+// ── v3: cross-frame style dictionary (StyleAckSet) ─────────────────────
+TEST_CASE("grid emit: style dictionary omits re-sends, host resolves via cache") {
+    std::println("--- grid_emit v3 style dictionary ---");
+    StylePool pool;
+    Canvas c(24, 3, &pool);
+
+    const std::uint16_t red  = pool.intern(Style{}.with_fg(Color::red()));
+    const std::uint16_t blue = pool.intern(Style{}.with_fg(Color::blue()));
+
+    // Host-side style cache: id → definition, exactly what a cooperating host
+    // maintains. A run's style is resolved from here; a partial frame only
+    // TOPS UP the cache with styles it hasn't sent before.
+    std::unordered_map<std::uint16_t, DecStyle> host_cache;
+    auto ingest = [&](const DecFrame& f) {
+        for (const auto& st : f.styles) host_cache[st.id] = st;
+    };
+    // Assert every run references a style the host can resolve (present in the
+    // cache after ingesting this frame's partial table).
+    auto all_runs_resolvable = [&](const DecFrame& f) {
+        for (const auto& r : f.runs)
+            if (host_cache.find(r.style) == host_cache.end()) return false;
+        return true;
+    };
+
+    StyleAckSet ack;
+
+    // Frame 1: paint red "aaa" on row 0. First sight of `red` → its definition
+    // MUST be present (partial table can't omit an unacked style).
+    c.clear();
+    c.write_text(0, 0, "aaa", red);
+    std::string w1;
+    emit_diff(c, pool, {0}, 0, nullptr, w1, nullptr, &ack);
+    DecFrame f1 = decode(w1);
+    ingest(f1);
+    assert(all_runs_resolvable(f1) && "frame 1 red must be resolvable");
+    bool f1_has_red = false;
+    for (auto& st : f1.styles) if (st.id == red) f1_has_red = true;
+    assert(f1_has_red && "first sight of a style must send its definition");
+
+    // Frame 2: same red style on row 1 (append). red is ALREADY acked, so its
+    // definition MUST be omitted (partial-table bit set) — yet the run still
+    // references id `red`, which the host resolves from its cache.
+    c.write_text(0, 1, "bbb", red);
+    std::string w2;
+    emit_diff(c, pool, {1}, 0, nullptr, w2, nullptr, &ack);
+    DecFrame f2 = decode(w2);
+    assert((f2.flags & kFlagPartialStyleTable) &&
+           "re-used style must produce a PARTIAL table (bit4)");
+    bool f2_has_red = false;
+    for (auto& st : f2.styles) if (st.id == red) f2_has_red = true;
+    assert(!f2_has_red && "an acked style's definition must be omitted");
+    ingest(f2);
+    assert(all_runs_resolvable(f2) &&
+           "host must still resolve the re-used red from its cache");
+
+    // Frame 3: introduce a NEW style (blue) on row 2. blue is unacked so its
+    // definition IS sent; red (also on-screen if repainted) stays omitted.
+    c.write_text(0, 2, "ccc", blue);
+    std::string w3;
+    emit_diff(c, pool, {2}, 0, nullptr, w3, nullptr, &ack);
+    DecFrame f3 = decode(w3);
+    bool f3_has_blue = false;
+    for (auto& st : f3.styles) if (st.id == blue) f3_has_blue = true;
+    assert(f3_has_blue && "a newly-seen style must send its definition");
+    ingest(f3);
+    assert(all_runs_resolvable(f3));
+
+    // A Full frame RESETS the dictionary: the host re-states, so every style
+    // it references must be re-sent (cache is invalidated).
+    host_cache.clear();
+    std::string wf;
+    emit_full(c, pool, 0, nullptr, wf, &ack);
+    DecFrame ff = decode(wf);
+    ingest(ff);
+    assert(!(ff.flags & kFlagPartialStyleTable) &&
+           "a Full frame must send a COMPLETE style table (no partial bit)");
+    assert(all_runs_resolvable(ff) &&
+           "after a Full re-state every referenced style is present again");
+
+    std::println("PASS (def sent once, re-used styles omitted, Full resets)");
+}
+
+TEST_CASE("grid emit: style dictionary shrinks the wire on a repeated style") {
+    std::println("--- grid_emit v3 wire savings ---");
+    StylePool pool;
+    Canvas c(40, 1, &pool);
+    const std::uint16_t s = pool.intern(Style{}.with_fg(Color::red())
+                                              .with_bg(Color::blue()));
+
+    // Emit the SAME styled row many times, once WITHOUT the dictionary (v2:
+    // full style table every frame) and once WITH it (v3: definition sent on
+    // frame 1, omitted thereafter). The v3 total must be strictly smaller.
+    auto total = [&](bool use_ack) {
+        StyleAckSet ack;
+        std::size_t bytes = 0;
+        for (int frame = 0; frame < 50; ++frame) {
+            c.clear();
+            c.write_text(0, 0, "styled row content here", s);
+            std::string w;
+            emit_diff(c, pool, {0}, 0, nullptr, w, nullptr,
+                      use_ack ? &ack : nullptr);
+            bytes += w.size();
+        }
+        return bytes;
+    };
+    const std::size_t v2 = total(/*use_ack=*/false);
+    const std::size_t v3 = total(/*use_ack=*/true);
+    std::println("  v2 (full table/frame) = {} B   v3 (dictionary) = {} B "
+                 "({:.2f}x less)", v2, v3, double(v2) / double(v3));
+    assert(v3 < v2 && "the dictionary must reduce total wire on a repeated style");
 }

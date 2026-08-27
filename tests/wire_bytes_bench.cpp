@@ -28,6 +28,9 @@
 
 #include <maya/maya.hpp>
 #include <maya/render/frame.hpp>
+#include <maya/render/grid_emit.hpp>
+#include <maya/render/renderer.hpp>
+#include <maya/render/serialize.hpp>
 #include <maya/widget/markdown.hpp>
 
 #include <algorithm>
@@ -149,6 +152,92 @@ WireStats stream_wire(const std::string& doc, std::size_t chunk,
 
 struct Scenario { const char* name; int paragraphs; std::size_t chunk; };
 
+// Stream `doc` through the GRID emit path (render_tree → canvas → per-row diff
+// → emit_diff binary frame), the cooperating-host backend. Measures the same
+// bytes-on-the-wire metric as stream_wire so grid and ANSI are directly
+// comparable. Mirrors render_grid_frame's row-diff logic (changed row + first
+// changed column), minus the scrollback-commit machinery the bench doesn't
+// exercise.
+WireStats stream_grid(const std::string& doc, std::size_t chunk,
+                      int width, int height, bool use_dict = false) {
+    StylePool pool;
+    Canvas canvas(width, height, &pool);
+    StreamingMarkdown md;
+    maya::render::StyleAckSet ack;
+
+    std::vector<std::uint64_t> prev;  // packed cells of the last emitted frame
+    int prev_rows = 0;
+
+    std::vector<std::size_t> per_frame;
+    WireStats st;
+
+    std::size_t fed = 0;
+    while (fed < doc.size()) {
+        const std::size_t n = std::min(chunk, doc.size() - fed);
+        md.append(std::string_view{doc}.substr(fed, n));
+        fed += n;
+
+        canvas.clear();
+        render_tree(md.build(), canvas, pool, theme::dark,
+                    /*auto_height=*/true);
+        const int rows = std::max(1, content_height(canvas));
+
+        // Per-row diff vs the previous emitted frame (same shape as
+        // render_grid_frame's growth+diff branch).
+        std::vector<int> changed, changed_cols;
+        std::size_t changed_cell_count = 0;
+        for (int y = 0; y < rows; ++y) {
+            if (y >= prev_rows) {                    // fresh growth row
+                changed.push_back(y);
+                changed_cols.push_back(0);
+                for (int x = 0; x < width; ++x)
+                    if (canvas.get_packed(x, y) != 0) ++changed_cell_count;
+                continue;
+            }
+            const std::uint64_t* pr = &prev[static_cast<std::size_t>(y) * width];
+            int first_diff = -1;
+            for (int x = 0; x < width; ++x) {
+                if (pr[x] != canvas.get_packed(x, y)) {
+                    if (first_diff < 0) first_diff = x;
+                    ++changed_cell_count;
+                }
+            }
+            if (first_diff >= 0) {
+                changed.push_back(y);
+                changed_cols.push_back(first_diff);
+            }
+        }
+
+        std::string wire;
+        if (!changed.empty()) {
+            maya::render::emit_diff(canvas, pool, changed, /*base_row=*/0,
+                                    /*cursor=*/nullptr, wire, &changed_cols,
+                                    use_dict ? &ack : nullptr);
+        }
+
+        // Snapshot for next frame's diff.
+        prev.assign(static_cast<std::size_t>(rows) * width, 0);
+        for (int y = 0; y < rows; ++y)
+            for (int x = 0; x < width; ++x)
+                prev[static_cast<std::size_t>(y) * width + x] =
+                    canvas.get_packed(x, y);
+        prev_rows = rows;
+
+        st.total_changed_cells += changed_cell_count;
+        per_frame.push_back(wire.size());
+        st.total_bytes += wire.size();
+        ++st.frames;
+    }
+
+    st.bytes_per_frame_median = pct(per_frame, 0.5);
+    st.bytes_per_frame_p99    = pct(per_frame, 0.99);
+    st.bytes_per_changed_cell = st.total_changed_cells > 0
+        ? static_cast<double>(st.total_bytes) /
+          static_cast<double>(st.total_changed_cells)
+        : 0.0;
+    return st;
+}
+
 } // namespace
 
 TEST_CASE("wire_bytes_bench") {
@@ -250,4 +339,25 @@ TEST_CASE("wire_bytes_bench") {
               "  coalescing win eroded: 1x=%.1fKB 32x=%.1fKB ratio=%.2f (< 2)\n",
               kb1, kb32, kb1 / kb32);
     }
+
+    // ── Grid backend vs ANSI: the cooperating-host encoding ─────────────
+    // The grid backend emits a compact binary cell-run frame instead of
+    // ANSI. Same content, no cursor-navigation text, no SGR re-encode — the
+    // B/cell it achieves is the tier-2 north star (drive it toward ~1).
+    std::printf("grid backend vs ANSI — same streamed content, bytes on the wire:\n");
+    std::printf("%-28s | %8s | %8s | %11s | %9s\n",
+                "scenario", "ANSI KB", "grid KB", "grid+dict KB", "dict save");
+    std::printf("-----------------------------+----------+----------+-------------+---------\n");
+    for (const auto& s : scenarios) {
+        const std::string doc = make_answer(s.paragraphs);
+        const WireStats a  = stream_wire(doc, s.chunk, W, H);
+        const WireStats g  = stream_grid(doc, s.chunk, W, H, /*dict=*/false);
+        const WireStats gd = stream_grid(doc, s.chunk, W, H, /*dict=*/true);
+        const double akb  = static_cast<double>(a.total_bytes)  / 1024.0;
+        const double gkb  = static_cast<double>(g.total_bytes)  / 1024.0;
+        const double gdkb = static_cast<double>(gd.total_bytes) / 1024.0;
+        std::printf("%-28s | %8.1f | %8.1f | %11.1f | %6.2fx\n",
+                    s.name, akb, gkb, gdkb, gdkb > 0 ? gkb / gdkb : 1.0);
+    }
+    std::printf("\n");
 }

@@ -98,6 +98,29 @@ struct StyleTable {
             put_u16(o, pack_attrs(s));
         }
     }
+
+    // Cross-frame dictionary write: emit DEFINITIONS only for styles the host
+    // hasn't been told about yet (per `ack`); already-acked ids are omitted
+    // (the runs still reference them by id, the host resolves from its cache).
+    // Records every emitted id into `ack`. Returns true iff any definition was
+    // withheld — i.e. the table is PARTIAL and the frame must set bit4.
+    bool write_partial(const StylePool& pool, std::string& o,
+                       StyleAckSet& ack) const {
+        std::vector<std::uint16_t> fresh;
+        fresh.reserve(ids.size());
+        for (std::uint16_t id : ids)
+            if (!ack.has(id)) fresh.push_back(id);
+        put_u16(o, static_cast<std::uint16_t>(fresh.size()));
+        for (std::uint16_t id : fresh) {
+            const Style& s = pool.get(id);
+            put_u16(o, id);
+            put_color(o, s.fg);
+            put_color(o, s.bg);
+            put_u16(o, pack_attrs(s));
+            ack.note(id);
+        }
+        return fresh.size() != ids.size();   // some ids were withheld
+    }
 };
 
 // Build the run list for one row into `runs_out`, noting styles.  A run is a
@@ -194,7 +217,8 @@ void emit_cells(const Canvas& canvas, const StylePool& pool,
                 const std::vector<int>& rows, int base_row,
                 GridFrameType type, const GridCursor* cursor, std::string& out,
                 int header_rows = -1,
-                const std::vector<int>* changed_cols = nullptr) {
+                const std::vector<int>* changed_cols = nullptr,
+                StyleAckSet* ack = nullptr) {
     StyleTable table;
     std::vector<Run> runs;
     for (std::size_t i = 0; i < rows.size(); ++i) {
@@ -206,9 +230,23 @@ void emit_cells(const Canvas& canvas, const StylePool& pool,
     }
 
     std::string p;
+    // With an ack set the table may be PARTIAL: it defines only styles the
+    // host hasn't seen. Even when every style is already acked (0 fresh
+    // defs) the section is still emitted (as count=0) and bit0 stays set so
+    // the host knows to parse it — the runs reference cached ids. bit4 flags
+    // "partial" so the host resolves absent ids from its cache. Rendered to
+    // a scratch buffer first because whether bit4 is set depends on what the
+    // dictionary write withholds.
+    std::string table_bytes;
+    bool partial = false;
+    if (!table.empty()) {
+        if (ack) partial = table.write_partial(pool, table_bytes, *ack);
+        else     table.write(pool, table_bytes);
+    }
     const std::uint8_t flags =
         (table.empty() ? 0u : 1u) | (cursor ? 2u : 0u)
-        | (width_resolved_mode() ? 8u : 0u);   // bit3 = width-resolved runs
+        | (width_resolved_mode() ? 8u : 0u)   // bit3 = width-resolved runs
+        | (partial ? kFlagPartialStyleTable : 0u);  // bit4 = partial dict
     put_u8 (p, GRID_PROTO_VER);                      // ver
     put_u8 (p, static_cast<std::uint8_t>(type));
     put_u8 (p, flags);
@@ -219,7 +257,7 @@ void emit_cells(const Canvas& canvas, const StylePool& pool,
     put_u16(p, static_cast<std::uint16_t>(
                    header_rows >= 0 ? header_rows : canvas.height()));
     put_u16(p, static_cast<std::uint16_t>(base_row));
-    if (!table.empty()) table.write(pool, p);
+    p += table_bytes;
     write_runs(runs, p);
     if (cursor) {
         put_u16(p, static_cast<std::uint16_t>(cursor->row));
@@ -264,16 +302,24 @@ void emit_header_only(GridFrameType type, int cols, int rows,
 void emit_diff(const Canvas& canvas, const StylePool& pool,
                const std::vector<int>& changed_rows, int base_row,
                const GridCursor* cursor, std::string& out,
-               const std::vector<int>* changed_cols) {
+               const std::vector<int>* changed_cols,
+               StyleAckSet* ack) {
     emit_cells(canvas, pool, changed_rows, base_row, GridFrameType::Diff,
-               cursor, out, /*header_rows=*/-1, changed_cols);
+               cursor, out, /*header_rows=*/-1, changed_cols, ack);
 }
 
 void emit_full(const Canvas& canvas, const StylePool& pool,
-               int base_row, const GridCursor* cursor, std::string& out) {
+               int base_row, const GridCursor* cursor, std::string& out,
+               StyleAckSet* ack) {
     std::vector<int> all(static_cast<std::size_t>(std::max(0, canvas.height())));
     for (int i = 0; i < canvas.height(); ++i) all[static_cast<std::size_t>(i)] = i;
-    emit_cells(canvas, pool, all, base_row, GridFrameType::Full, cursor, out);
+    // A Full frame re-states the whole surface: the host's style cache is no
+    // longer trustworthy relative to it, so reset the ack set and re-send
+    // every definition (write_partial on a cleared set emits all, marks none
+    // withheld → the frame is a complete v2-shaped table again).
+    if (ack) ack->reset();
+    emit_cells(canvas, pool, all, base_row, GridFrameType::Full, cursor, out,
+               /*header_rows=*/-1, /*changed_cols=*/nullptr, ack);
 }
 
 void emit_resize(int cols, int rows, std::string& out) {

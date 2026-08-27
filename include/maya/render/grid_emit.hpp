@@ -70,6 +70,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "canvas.hpp"
@@ -97,6 +98,35 @@ struct GridCursor {
     bool visible = true;
 };
 
+// Cross-frame style dictionary (opt-in). A streaming glide re-uses the same
+// handful of styles (default face, bold, code span) every frame, but the v2
+// style table re-sends each style's FULL definition (id + fg + bg + attrs ≈
+// 9-11 B) every frame it appears — pure redundancy the host already caches by
+// id. Passing a StyleAckSet to emit_diff/emit_full makes the emitter send a
+// style's DEFINITION only the first time the host sees it; thereafter runs
+// reference it by id alone and the definition is omitted. The frame sets
+// flags bit4 (kFlagPartialStyleTable) so a cooperating host knows an id
+// referenced by a run but absent from this frame's table means "use the one
+// I sent you earlier."
+//
+// SAFETY / COMPAT: this is strictly opt-in. With ack==nullptr (the default)
+// the encoder is byte-identical to v2 — no deployed host is affected. A host
+// advertises support out-of-band before the caller starts passing an ack set;
+// until then the field stays null and every frame is self-contained.
+struct StyleAckSet {
+    std::unordered_set<std::uint16_t> acked;
+    // Reset when the host loses sync (Full/Clear/Resize re-state): the host's
+    // style cache is only valid relative to the frames it actually received,
+    // so a hard re-state must re-send definitions.
+    void reset() { acked.clear(); }
+    [[nodiscard]] bool has(std::uint16_t id) const { return acked.count(id) != 0; }
+    void note(std::uint16_t id) { acked.insert(id); }
+};
+
+// flags bit4: this frame's style table is PARTIAL — it defines only styles the
+// host hasn't been told about yet; other referenced ids come from its cache.
+inline constexpr std::uint8_t kFlagPartialStyleTable = 0x10;
+
 // Encode `canvas` rows listed in `changed_rows` (must be sorted, in-range) as a
 // DIFF frame, APC-wrapped, appended to `out`.  `base_row` is the inline scroll
 // anchor (0 in fullscreen).  When `cursor` is set it is appended.  Styles used
@@ -112,11 +142,16 @@ struct GridCursor {
 void emit_diff(const Canvas& canvas, const StylePool& pool,
                const std::vector<int>& changed_rows, int base_row,
                const GridCursor* cursor, std::string& out,
-               const std::vector<int>* changed_cols = nullptr);
+               const std::vector<int>* changed_cols = nullptr,
+               StyleAckSet* ack = nullptr);
 
 // Encode the WHOLE canvas as a FULL frame (initial paint / hard reset).
+// A Full frame re-states the surface, so it also RESETS the ack set (the
+// host's style cache is meaningless across a hard re-state) and re-sends
+// every referenced style definition.
 void emit_full(const Canvas& canvas, const StylePool& pool,
-               int base_row, const GridCursor* cursor, std::string& out);
+               int base_row, const GridCursor* cursor, std::string& out,
+               StyleAckSet* ack = nullptr);
 
 // A dimension change: cols×rows, no runs.  The host resizes its grid.
 void emit_resize(int cols, int rows, std::string& out);

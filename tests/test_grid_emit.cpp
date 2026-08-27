@@ -166,6 +166,78 @@ TEST_CASE("grid emit: diff frame only carries the changed row") {
     std::println("PASS (runs=%zu all on row 1)", f.runs.size());
 }
 
+TEST_CASE("grid emit: diff with col_lo emits only the changed suffix") {
+    std::println("--- grid_emit diff column-range ---");
+    // During the streaming glide only a row's TAIL columns change each frame.
+    // Passing per-row first-changed columns (changed_cols) must make the Diff
+    // emit runs starting at that column — the leading columns stay untouched on
+    // the host (Diff is an (row,col) overlay), so they are absent from the wire.
+    StylePool pool;
+    Canvas c(24, 1, &pool);
+    c.clear();
+    std::uint16_t s = pool.intern(Style{});
+    c.write_text(0, 0, "stable prefix TAILGREW", s);
+
+    // Only columns >= 14 ("TAILGREW") changed this frame.
+    std::string wire;
+    std::vector<int> changed{0};
+    std::vector<int> changed_cols{14};
+    emit_diff(c, pool, changed, /*base_row=*/0, /*cursor=*/nullptr, wire,
+              &changed_cols);
+    DecFrame f = decode(wire);
+
+    assert(f.type == static_cast<std::uint8_t>(GridFrameType::Diff));
+    assert(!f.runs.empty());
+    // No run may start before the changed column — the prefix is never re-sent.
+    for (const auto& r : f.runs)
+        assert(r.col >= 14 && "col_lo must clip leading columns off the wire");
+    // The first run starts exactly at the changed column, and the emitted
+    // suffix reconstructs the changed text (space-trimmed for the trailing
+    // blanks the fixed-width canvas carries).
+    assert(f.runs.front().col == 14);
+    std::string suffix = runs_text(f);
+    // "TAILGREW" begins the suffix (rest is blank fill to width 24).
+    assert(suffix.rfind("TAILGREW", 0) == 0 &&
+           "suffix must start with the changed text");
+
+    // Contrast: WITHOUT col_lo the whole row is emitted (starts at col 0).
+    std::string wire_full;
+    emit_diff(c, pool, changed, /*base_row=*/0, /*cursor=*/nullptr, wire_full);
+    DecFrame ff = decode(wire_full);
+    assert(ff.runs.front().col == 0 && "null changed_cols keeps full-row behaviour");
+    // The column-clipped frame is strictly smaller on the wire.
+    assert(wire.size() < wire_full.size() &&
+           "column-range diff must shrink the frame");
+    std::println("PASS (suffix wire %zu B < full-row %zu B)",
+                 wire.size(), wire_full.size());
+}
+
+TEST_CASE("grid emit: col_lo on a wide-glyph trailing half backs up to the lead") {
+    std::println("--- grid_emit diff col_lo wide-glyph guard ---");
+    // If the first-changed column lands on the TRAILING half of a wide glyph,
+    // the emitter must back up to the glyph's lead cell so the host never gets
+    // a dangling continuation / half a glyph.
+    StylePool pool;
+    Canvas c(10, 1, &pool);
+    c.clear();
+    std::uint16_t s = pool.intern(Style{});
+    // "AB" then a wide glyph at columns 2-3, then "CD".
+    c.write_text(0, 0, "AB\xe4\xb8\x96" "CD", s);   // U+4E16 (世) is width-2
+
+    // Pretend the change starts at column 3 = the wide glyph's TRAILING half.
+    std::string wire;
+    std::vector<int> changed{0};
+    std::vector<int> changed_cols{3};
+    emit_diff(c, pool, changed, /*base_row=*/0, /*cursor=*/nullptr, wire,
+              &changed_cols);
+    DecFrame f = decode(wire);
+    assert(!f.runs.empty());
+    // Must start at column 2 (the wide glyph's LEAD), not 3.
+    assert(f.runs.front().col == 2 &&
+           "col_lo on a wide trailing half must snap back to the lead cell");
+    std::println("PASS (snapped col_lo 3 -> lead col %u)", f.runs.front().col);
+}
+
 TEST_CASE("grid emit: cursor + resize + clear headers") {
     std::println("--- grid_emit control frames ---");
     // resize

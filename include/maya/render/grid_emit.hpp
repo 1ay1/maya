@@ -101,9 +101,18 @@ struct GridCursor {
 // DIFF frame, APC-wrapped, appended to `out`.  `base_row` is the inline scroll
 // anchor (0 in fullscreen).  When `cursor` is set it is appended.  Styles used
 // by the emitted runs are collected into the frame's style table.
+//
+// `changed_cols`, when non-null, must be index-aligned with `changed_rows`:
+// entry i is the first column of changed_rows[i] that differs from the host's
+// current frame. The Diff then emits only each row's changed SUFFIX (columns
+// >= that column) — a Diff frame is an (row,col) overlay on the host, so the
+// earlier columns keep their existing cells. This is byte-identical on screen
+// but slashes per-frame wire size during the streaming glide, where only a
+// row's tail columns change. Pass null (default) to emit whole rows.
 void emit_diff(const Canvas& canvas, const StylePool& pool,
                const std::vector<int>& changed_rows, int base_row,
-               const GridCursor* cursor, std::string& out);
+               const GridCursor* cursor, std::string& out,
+               const std::vector<int>* changed_cols = nullptr);
 
 // Encode the WHOLE canvas as a FULL frame (initial paint / hard reset).
 void emit_full(const Canvas& canvas, const StylePool& pool,

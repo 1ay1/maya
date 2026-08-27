@@ -133,10 +133,19 @@ inline bool width_resolved_mode() {
 }
 
 void build_row_runs(const Canvas& canvas, int row, std::vector<Run>& out,
-                    StyleTable& table) {
+                    StyleTable& table, int col_lo = 0) {
     const bool resolved = width_resolved_mode();
     const int w = canvas.width();
-    int x = 0;
+    // `col_lo` restricts emission to columns >= col_lo. A Diff frame is an
+    // OVERLAY keyed by (row, col) on the host, so columns before the first
+    // changed one already hold the right cells — emitting only the changed
+    // suffix is byte-identical on screen but far smaller on the wire, which is
+    // the dominant per-frame cost during the streaming glide (only a row's
+    // tail columns change each frame). col_lo=0 reproduces full-row behaviour.
+    int x = std::max(0, col_lo);
+    // If col_lo landed on the TRAILING half of a wide glyph, back up to its
+    // lead cell so we never emit a dangling continuation / half a glyph.
+    if (x > 0 && x < w && canvas.get(x, row).width == 2) --x;
     while (x < w) {
         Cell c = canvas.get(x, row);
         if (c.width == 2) { ++x; continue; }        // trailing half; folded already
@@ -177,15 +186,23 @@ void write_runs(const std::vector<Run>& runs, std::string& o) {
 }
 
 // Common frame builder for Diff/Full.
+// `changed_cols`, when non-null, is index-aligned with `rows`: entry i is the
+// first column of rows[i] that differs from the host's current frame, so a Diff
+// only emits each row's changed suffix (huge per-frame savings during the
+// streaming glide). Null / Full frames emit whole rows (col_lo = 0).
 void emit_cells(const Canvas& canvas, const StylePool& pool,
                 const std::vector<int>& rows, int base_row,
                 GridFrameType type, const GridCursor* cursor, std::string& out,
-                int header_rows = -1) {
+                int header_rows = -1,
+                const std::vector<int>* changed_cols = nullptr) {
     StyleTable table;
     std::vector<Run> runs;
-    for (int row : rows) {
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const int row = rows[i];
         if (row < 0 || row >= canvas.height()) continue;
-        build_row_runs(canvas, row, runs, table);
+        const int col_lo = (changed_cols && i < changed_cols->size())
+                               ? (*changed_cols)[i] : 0;
+        build_row_runs(canvas, row, runs, table, col_lo);
     }
 
     std::string p;
@@ -246,9 +263,10 @@ void emit_header_only(GridFrameType type, int cols, int rows,
 
 void emit_diff(const Canvas& canvas, const StylePool& pool,
                const std::vector<int>& changed_rows, int base_row,
-               const GridCursor* cursor, std::string& out) {
+               const GridCursor* cursor, std::string& out,
+               const std::vector<int>* changed_cols) {
     emit_cells(canvas, pool, changed_rows, base_row, GridFrameType::Diff,
-               cursor, out);
+               cursor, out, /*header_rows=*/-1, changed_cols);
 }
 
 void emit_full(const Canvas& canvas, const StylePool& pool,

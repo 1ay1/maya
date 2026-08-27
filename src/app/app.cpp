@@ -1484,20 +1484,34 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
             render::emit_resize(w, rows, out_);
         // DIFF: row-compare vs the snapshot, emit only changed rows.  Rows
         // beyond the snapshot (fresh growth) have no prev to compare — they
-        // are new content, always emitted.
+        // are new content, always emitted.  For each changed row we also note
+        // the FIRST differing column (`col_lo`): the Diff frame is an overlay
+        // keyed by (row,col) on the host, so we only need to emit that row's
+        // changed suffix.  During the streaming glide a row's leading columns
+        // are stable and only the tail advances, so this cuts per-frame wire
+        // bytes sharply while staying byte-identical on screen.
         std::vector<int> changed;
+        std::vector<int> changed_cols;
         for (int y = 0; y < rows; ++y) {
-            if (y >= grid_prev_rows_) { changed.push_back(view_top + y); continue; }
+            if (y >= grid_prev_rows_) {
+                changed.push_back(view_top + y);   // fresh row: whole row is new
+                changed_cols.push_back(0);
+                continue;
+            }
             const std::uint64_t* prev =
                 &grid_prev_cells_[static_cast<std::size_t>(y) * w];
-            bool same = true;
+            int first_diff = -1;
             for (int x = 0; x < w; ++x)
-                if (prev[x] != canvas_.get_packed(x, view_top + y)) { same = false; break; }
-            if (!same) changed.push_back(view_top + y);   // canvas row
+                if (prev[x] != canvas_.get_packed(x, view_top + y)) { first_diff = x; break; }
+            if (first_diff >= 0) {
+                changed.push_back(view_top + y);   // canvas row
+                changed_cols.push_back(first_diff);
+            }
         }
         if (!changed.empty()) {
             render::GridCursor cur{rows > 0 ? rows - 1 : 0, 0, false};
-            render::emit_diff(canvas_, pool_, changed, /*base_row=*/-view_top, &cur, out_);
+            render::emit_diff(canvas_, pool_, changed, /*base_row=*/-view_top,
+                              &cur, out_, &changed_cols);
         }
     }
 

@@ -24,6 +24,7 @@
 
 #include <maya/maya.hpp>
 #include <maya/render/renderer.hpp>
+#include <maya/render/serialize.hpp>   // content_height
 #include <maya/widget/agent_timeline.hpp>
 #include <maya/widget/tool_body_preview.hpp>
 
@@ -774,6 +775,63 @@ TEST_CASE("agent timeline per event hash id bounds cost") {
                      "regression (directional cache-engaged check passed)\n",
                      n10_no / n10_cached);
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// CORRECTNESS (not perf): a hash-keyed component whose height GENUINELY depends
+// on width must lay out at the RIGHT height after a terminal resize.
+//
+// The measure pass trusts a hash entry's stored height without a width check
+// (that's what makes it O(1)); the safety argument is "height is width-stable
+// for these cards + a genuine resize evicts the width-keyed cells on the paint
+// side." This test stresses the ADVERSARIAL case that argument gates on: a body
+// that wraps to MORE rows when narrower. We render wide (caches height=short),
+// then narrow, and assert the component actually occupies its TALLER wrapped
+// height on the narrow canvas — i.e. the stale wide-width height did not leak
+// into the layout and clip the content.
+TEST_CASE("hash cache: width-sensitive height is correct after resize") {
+    // A component that renders one long line, which the block layout wraps to
+    // ceil(len/width) rows — so its height is strongly width-dependent.
+    const std::string kLongLine(300, 'x');   // 300 cols of content
+    Element root = v(
+        component([kLongLine](int /*w*/, int /*h*/) -> Element {
+            return v(text(kLongLine)).build();
+        })
+        .hash_id(CacheIdBuilder{}.add(std::string_view{"width-sensitive-body"}).build())
+        .build()
+    ).build();
+
+    StylePool pool;
+
+    auto laid_out_rows = [&](int width) -> int {
+        Canvas canvas(width, 5000, &pool);
+        render_tree(root, canvas, pool, theme::dark, /*auto_height=*/true);
+        return content_height(canvas);   // rows actually occupied by content
+    };
+
+    // Independent ground truth: render each width on a FRESH cache so there's
+    // no cross-width contamination.
+    render_detail::clear_component_cache();
+    const int wide_rows   = laid_out_rows(150);   // 300/150 = 2 rows
+    render_detail::clear_component_cache();
+    const int narrow_rows = laid_out_rows(50);     // 300/50  = 6 rows
+
+    CHECK(narrow_rows > wide_rows,
+          "sanity: the long line must wrap TALLER at the narrower width");
+
+    // Now the real test: warm the cache WIDE, then render NARROW on the SAME
+    // cache (the resize path). The narrow frame must still lay the component
+    // out at its true narrow height, not the cached wide (shorter) one.
+    render_detail::clear_component_cache();
+    (void)laid_out_rows(150);                      // warm: caches height=wide
+    Canvas narrow(50, 5000, &pool);
+    render_tree(root, narrow, pool, theme::dark, /*auto_height=*/true);
+    const int after_resize_rows = content_height(narrow);
+
+    CHECK(after_resize_rows == narrow_rows,
+          "resize used a stale wide-width height: got %d rows, correct is %d "
+          "(the long line was clipped/mispositioned by the cached height)",
+          after_resize_rows, narrow_rows);
 }
 
 } // namespace

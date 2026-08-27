@@ -193,6 +193,12 @@ struct ComponentCache {
     // temporary index allocation.
     std::list<CacheId> hash_lru;
     std::uint64_t current_frame = 0;
+    // Canvas width at the last top-level render_tree. A cached height is only
+    // valid for the width it was measured at; when the terminal is resized the
+    // hash-keyed heights (trusted width-agnostically by the O(1) measure fast
+    // path) become stale, so a width change must invalidate them. -1 = never
+    // rendered. See the invalidation in render_tree's top-level block.
+    int last_canvas_width = -1;
 };
 
 inline ComponentCache& component_cache() {
@@ -648,8 +654,7 @@ std::size_t build_layout_tree(
                                 // measure O(1); if the component IS later
                                 // painted (scrolls into view) the paint
                                 // slow-path re-renders from `result` and
-                                // captures cells, and a genuine resize
-                                // evicts the width-keyed entry.
+                                // captures cells.
                                 if (it->second.height > 0) {
                                     it->second.last_frame = cache.current_frame;
                                     touch_hash_cache(cache, it->second);
@@ -1979,6 +1984,24 @@ void render_tree(
             else
                 cache.hash_lru.pop_back(); // defensive consistency repair
         }
+
+        // Terminal-resize invalidation. Hash-keyed heights are trusted
+        // width-agnostically by the O(1) measure fast path (measure width
+        // rarely equals paint width, and height is width-stable for the common
+        // card types — so a width check there would defeat the cache every
+        // frame). But a GENUINE resize changes the canvas width and can change
+        // a component's wrapped height; a stale height then clips/mispositions
+        // its content for a frame. Detect the width change ONCE here, at the
+        // top level, and drop every cached height+cells so the whole tree
+        // re-measures at the new width. A resize is rare, so the full clear is
+        // cheap relative to correctness. (Within a single frame the measure and
+        // paint widths differ but the canvas width does NOT, so this never
+        // fires mid-frame — the O(1) fast path is fully preserved.)
+        const int cur_w = canvas.width();
+        if (cache.last_canvas_width != -1 && cache.last_canvas_width != cur_w)
+            render_detail::clear_component_cache();
+        cache.last_canvas_width = cur_w;
+
         ++cache.current_frame;
     }
     struct Cleanup {

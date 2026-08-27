@@ -115,6 +115,13 @@ struct GridCursor {
 // until then the field stays null and every frame is self-contained.
 struct StyleAckSet {
     std::unordered_set<std::uint16_t> acked;
+    // Cooperating-host capability: when true the emitter also encodes run
+    // headers (row/col/len/style) as LEB128 VARINTS instead of fixed u16x4,
+    // cutting the 8-byte header to ~4 for typical (small) coordinates — the
+    // MEASURED dominant grid cost. Frame sets flags bit5 (kFlagVarintRuns) so
+    // the host decodes runs as varints. Carried here (not a separate arg) so
+    // one opt-in object gates the whole v3 cooperating-host feature set.
+    bool varint_runs = false;
     // Reset when the host loses sync (Full/Clear/Resize re-state): the host's
     // style cache is only valid relative to the frames it actually received,
     // so a hard re-state must re-send definitions.
@@ -126,6 +133,11 @@ struct StyleAckSet {
 // flags bit4: this frame's style table is PARTIAL — it defines only styles the
 // host hasn't been told about yet; other referenced ids come from its cache.
 inline constexpr std::uint8_t kFlagPartialStyleTable = 0x10;
+
+// flags bit5: this frame's run headers are LEB128 VARINTs (row, col, len,
+// style) instead of fixed little-endian u16x4. Halves the per-run header on
+// typical content. Opt-in via StyleAckSet::varint_runs.
+inline constexpr std::uint8_t kFlagVarintRuns = 0x20;
 
 // Encode `canvas` rows listed in `changed_rows` (must be sorted, in-range) as a
 // DIFF frame, APC-wrapped, appended to `out`.  `base_row` is the inline scroll

@@ -31,6 +31,19 @@ inline void put_u32(std::string& o, std::uint32_t v) {
     o.push_back(static_cast<char>((v >> 24) & 0xFF));
 }
 
+// LEB128 unsigned varint: 7 data bits per byte, high bit = continuation.
+// Values < 128 take 1 byte, < 16384 take 2. Grid run coordinates (row, col,
+// len, style-id) are almost always small, so this halves the fixed u16x4 run
+// header on typical content. Opt-in (kFlagVarintRuns) so the fixed path stays
+// byte-identical for v2 hosts.
+inline void put_varint(std::string& o, std::uint32_t v) {
+    while (v >= 0x80) {
+        o.push_back(static_cast<char>((v & 0x7F) | 0x80));
+        v >>= 7;
+    }
+    o.push_back(static_cast<char>(v));
+}
+
 // A color tagged for the host to resolve.  Named/Default carry no true RGB
 // (they follow the user's terminal/emacs theme), so we send the kind + index;
 // Indexed/Rgb carry resolvable values.
@@ -197,14 +210,25 @@ void build_row_runs(const Canvas& canvas, int row, std::vector<Run>& out,
     }
 }
 
-void write_runs(const std::vector<Run>& runs, std::string& o) {
+void write_runs(const std::vector<Run>& runs, std::string& o,
+                bool varint = false) {
     put_u16(o, static_cast<std::uint16_t>(runs.size()));
-    for (const Run& r : runs) {
-        put_u16(o, r.row);
-        put_u16(o, r.col);
-        put_u16(o, r.len);
-        put_u16(o, r.style);
-        o += r.utf8;
+    if (varint) {
+        for (const Run& r : runs) {
+            put_varint(o, r.row);
+            put_varint(o, r.col);
+            put_varint(o, r.len);
+            put_varint(o, r.style);
+            o += r.utf8;
+        }
+    } else {
+        for (const Run& r : runs) {
+            put_u16(o, r.row);
+            put_u16(o, r.col);
+            put_u16(o, r.len);
+            put_u16(o, r.style);
+            o += r.utf8;
+        }
     }
 }
 
@@ -243,10 +267,12 @@ void emit_cells(const Canvas& canvas, const StylePool& pool,
         if (ack) partial = table.write_partial(pool, table_bytes, *ack);
         else     table.write(pool, table_bytes);
     }
+    const bool varint = ack && ack->varint_runs;
     const std::uint8_t flags =
         (table.empty() ? 0u : 1u) | (cursor ? 2u : 0u)
         | (width_resolved_mode() ? 8u : 0u)   // bit3 = width-resolved runs
-        | (partial ? kFlagPartialStyleTable : 0u);  // bit4 = partial dict
+        | (partial ? kFlagPartialStyleTable : 0u)   // bit4 = partial dict
+        | (varint  ? kFlagVarintRuns : 0u);         // bit5 = varint run headers
     put_u8 (p, GRID_PROTO_VER);                      // ver
     put_u8 (p, static_cast<std::uint8_t>(type));
     put_u8 (p, flags);
@@ -258,7 +284,7 @@ void emit_cells(const Canvas& canvas, const StylePool& pool,
                    header_rows >= 0 ? header_rows : canvas.height()));
     put_u16(p, static_cast<std::uint16_t>(base_row));
     p += table_bytes;
-    write_runs(runs, p);
+    write_runs(runs, p, varint);
     if (cursor) {
         put_u16(p, static_cast<std::uint16_t>(cursor->row));
         put_u16(p, static_cast<std::uint16_t>(cursor->col));

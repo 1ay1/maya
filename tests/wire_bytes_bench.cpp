@@ -164,6 +164,7 @@ WireStats stream_grid(const std::string& doc, std::size_t chunk,
     Canvas canvas(width, height, &pool);
     StreamingMarkdown md;
     maya::render::StyleAckSet ack;
+    ack.varint_runs = use_dict;   // v3 cooperating-host: dict + varint runs
 
     std::vector<std::uint64_t> prev;  // packed cells of the last emitted frame
     int prev_rows = 0;
@@ -346,13 +347,13 @@ TEST_CASE("wire_bytes_bench") {
     // B/cell it achieves is the tier-2 north star (drive it toward ~1).
     std::printf("grid backend vs ANSI — same streamed content, bytes on the wire:\n");
     std::printf("%-28s | %8s | %8s | %11s | %9s\n",
-                "scenario", "ANSI KB", "grid KB", "grid+dict KB", "dict save");
+                "scenario", "ANSI KB", "grid KB", "grid v3 KB", "v3 save");
     std::printf("-----------------------------+----------+----------+-------------+---------\n");
     for (const auto& s : scenarios) {
         const std::string doc = make_answer(s.paragraphs);
         const WireStats a  = stream_wire(doc, s.chunk, W, H);
-        const WireStats g  = stream_grid(doc, s.chunk, W, H, /*dict=*/false);
-        const WireStats gd = stream_grid(doc, s.chunk, W, H, /*dict=*/true);
+        const WireStats g  = stream_grid(doc, s.chunk, W, H, /*v3=*/false);
+        const WireStats gd = stream_grid(doc, s.chunk, W, H, /*v3=*/true);
         const double akb  = static_cast<double>(a.total_bytes)  / 1024.0;
         const double gkb  = static_cast<double>(g.total_bytes)  / 1024.0;
         const double gdkb = static_cast<double>(gd.total_bytes) / 1024.0;

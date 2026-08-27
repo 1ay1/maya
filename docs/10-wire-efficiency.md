@@ -149,6 +149,38 @@ content) to cut the 8-byte header to ~4, and split runs to skip unchanged
 interior cell spans (not just the leading columns). That is the next grid
 protocol revision — targeted at the measured bottleneck rather than a guess.
 
+### Varint run headers — SHIPPED
+
+`StyleAckSet::varint_runs` (opt-in, flags **bit5 `kFlagVarintRuns`**) encodes
+each run header (`row/col/len/style`) as LEB128 varints instead of fixed
+u16×4. Typical coordinates are < 128, so the 8-byte header collapses to ~4.
+Combined with the dictionary (`grid v3`):
+
+| scenario | ANSI | grid v2 | grid v3 (dict+varint) |
+|----------|-----:|--------:|----------------------:|
+| token (4 B) | 70.3 KB | 163.9 KB | 134.3 KB (1.22× vs v2) |
+| word  (8 B) | 44.7 KB | 95.7 KB  | 79.2 KB  (1.21× vs v2) |
+| line  (40 B)| 20.9 KB | 38.8 KB  | 32.8 KB  (1.18× vs v2) |
+
+Byte-exactness is pinned by a reference-decoder round-trip test: varint runs
+decode to identical `(row,col,len,style,text)` tuples as the fixed encoding.
+Still strictly opt-in — v2 hosts see byte-identical fixed-u16 frames.
+
+### The honest ceiling
+
+Grid v3 is **~1.9× smaller than raw grid but still ~1.9× LARGER than ANSI** on
+streaming content. This is not a bug to fix incrementally — it's structural:
+ANSI's diff emits bare UTF-8 with **0-byte differential SGR** (the style rarely
+changes between adjacent cells) and an **implicit cursor** (no per-run
+coordinates), which is genuinely excellent for the append-heavy streaming case.
+The grid frame carries explicit `col/len/style` per run no matter how compact
+the header. Beating ANSI would need a different frame MODEL (e.g. a per-cell
+delta stream with implicit positioning), which is a research change, not an
+increment. The dictionary + varint wins are real where grid is already used
+(the Emacs host renders cells directly — no terminal to re-parse ANSI), and
+they're the correct, tested primitives; they just don't overturn ANSI's
+streaming efficiency.
+
 ### The style dictionary, as shipped
 
 `include/maya/render/grid_emit.hpp` adds an opt-in `StyleAckSet`:
@@ -181,10 +213,12 @@ protocol revision — targeted at the measured bottleneck rather than a guess.
 
 1. ~~**Adaptive backpressure coalescing** (ASCII, every terminal)~~ — **SHIPPED.**
    The 3–5× wire win; see above.
-2. **Grid run-header compaction** (cooperating host) — the MEASURED grid win:
-   varint `row/col/len/style` (8 B header → ~4 B) + interior-span run splitting.
-   The style dictionary (SHIPPED, 5–12%) was the safe first step; this is the
-   change that makes grid actually beat ANSI. Needs a host protocol bump.
+2. **Grid run-header compaction** (cooperating host) — **SHIPPED** (style
+   dictionary + varint run headers, opt-in via `StyleAckSet`; grid v3 is ~1.9×
+   smaller than raw grid). Remaining: interior-span run splitting. NOTE the
+   honest ceiling above — grid still trails ANSI on streaming by design; the
+   dictionary/varint are correct primitives for hosts that render cells
+   directly, not an ANSI-beating change.
 3. **Speculative tail echo** (mosh-grade) — predict the append-only next frames
    and paint them locally, reconcile against the authoritative frame on arrival.
    Hides the whole round-trip for the dominant streaming case. Most impressive,

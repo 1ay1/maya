@@ -42,6 +42,12 @@ struct Reader {
     std::uint8_t  u8()  { return static_cast<std::uint8_t>(s[i++]); }
     std::uint16_t u16() { std::uint16_t v = u8(); v |= std::uint16_t(u8()) << 8; return v; }
     std::uint32_t u32() { std::uint32_t v = u16(); v |= std::uint32_t(u16()) << 16; return v; }
+    std::uint32_t varint() {
+        std::uint32_t v = 0; int shift = 0; std::uint8_t b;
+        do { b = u8(); v |= std::uint32_t(b & 0x7F) << shift; shift += 7; }
+        while (b & 0x80);
+        return v;
+    }
     DecColor color() {
         DecColor c{u8(), 0, 0, 0};
         if (c.kind == 1 || c.kind == 2) c.a = u8();
@@ -78,9 +84,18 @@ DecFrame decode(const std::string& wire) {
         }
     }
     std::uint16_t nruns = r.u16();
+    const bool varint_runs = (f.flags & 0x20) != 0;   // kFlagVarintRuns
     for (int k = 0; k < nruns; ++k) {
-        DecRun run; run.row = r.u16(); run.col = r.u16();
-        run.len = r.u16(); run.style = r.u16();
+        DecRun run;
+        if (varint_runs) {
+            run.row = static_cast<std::uint16_t>(r.varint());
+            run.col = static_cast<std::uint16_t>(r.varint());
+            run.len = static_cast<std::uint16_t>(r.varint());
+            run.style = static_cast<std::uint16_t>(r.varint());
+        } else {
+            run.row = r.u16(); run.col = r.u16();
+            run.len = r.u16(); run.style = r.u16();
+        }
         // read `len` codepoints of UTF-8 (count multibyte leads)
         int cps = 0;
         while (cps < run.len) {
@@ -530,4 +545,71 @@ TEST_CASE("grid emit: style dictionary shrinks the wire on a repeated style") {
     std::println("  v2 (full table/frame) = {} B   v3 (dictionary) = {} B "
                  "({:.2f}x less)", v2, v3, double(v2) / double(v3));
     assert(v3 < v2 && "the dictionary must reduce total wire on a repeated style");
+}
+
+// ── v3: varint run headers (StyleAckSet::varint_runs) ─────────────────
+TEST_CASE("grid emit: varint run headers round-trip cell-for-cell") {
+    std::println("--- grid_emit v3 varint runs ---");
+    StylePool pool;
+    Canvas c(30, 4, &pool);
+    const std::uint16_t red = pool.intern(Style{}.with_fg(Color::red()));
+    c.clear();
+    c.write_text(2, 0, "hello", red);
+    c.write_text(0, 1, "world wide row of text", 0);
+    c.write_text(5, 3, "tail", red);
+
+    std::vector<int> rows{0, 1, 3};
+    // Fixed-header frame (v2) and varint frame (v3) of the SAME content.
+    std::string fixed, var;
+    emit_diff(c, pool, rows, 0, nullptr, fixed, nullptr, nullptr);
+    StyleAckSet ack; ack.varint_runs = true;
+    // Pre-ack the style so the two frames differ ONLY in run encoding, not in
+    // the style table (isolates the varint effect).
+    { std::string warm; emit_diff(c, pool, rows, 0, nullptr, warm, nullptr, &ack); }
+    var.clear();
+    emit_diff(c, pool, rows, 0, nullptr, var, nullptr, &ack);
+
+    DecFrame ff = decode(fixed);
+    DecFrame vf = decode(var);
+    assert(!(ff.flags & 0x20) && "fixed frame must NOT set the varint bit");
+    assert((vf.flags & 0x20) && "varint frame must set bit5");
+
+    // The runs must decode to IDENTICAL (row,col,len,style,text) tuples — the
+    // encoding differs, the content does not.
+    assert(ff.runs.size() == vf.runs.size() && "run count must match");
+    for (std::size_t k = 0; k < ff.runs.size(); ++k) {
+        assert(ff.runs[k].row  == vf.runs[k].row);
+        assert(ff.runs[k].col  == vf.runs[k].col);
+        assert(ff.runs[k].len  == vf.runs[k].len);
+        assert(ff.runs[k].style== vf.runs[k].style);
+        assert(ff.runs[k].utf8 == vf.runs[k].utf8);
+    }
+    std::println("PASS (varint runs decode identically to fixed u16 runs)");
+}
+
+TEST_CASE("grid emit: varint headers shrink the run section") {
+    std::println("--- grid_emit v3 varint savings ---");
+    StylePool pool;
+    Canvas c(80, 20, &pool);
+    // Many small runs: one styled word per row (small row/col/len/style — the
+    // regime varints win in).
+    const std::uint16_t s = pool.intern(Style{}.with_fg(Color::green()));
+    c.clear();
+    std::vector<int> rows;
+    for (int y = 0; y < 20; ++y) { c.write_text(y % 10, y, "word", s); rows.push_back(y); }
+
+    std::string fixed; emit_diff(c, pool, rows, 0, nullptr, fixed, nullptr, nullptr);
+    StyleAckSet ack; ack.varint_runs = true;
+    { std::string warm; emit_diff(c, pool, rows, 0, nullptr, warm, nullptr, &ack); }
+    std::string var; emit_diff(c, pool, rows, 0, nullptr, var, nullptr, &ack);
+
+    std::println("  fixed u16x4 = {} B   varint = {} B ({:.2f}x less)",
+                 fixed.size(), var.size(),
+                 double(fixed.size()) / double(var.size()));
+    // Varint must be strictly smaller here (all coords < 128 → 1 byte each,
+    // vs 2 bytes each fixed) AND still decode identically.
+    assert(var.size() < fixed.size() &&
+           "varint run headers must shrink the wire on small coordinates");
+    DecFrame vf = decode(var);
+    assert(!vf.runs.empty() && "word-runs must survive the varint round-trip");
 }

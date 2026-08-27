@@ -23,6 +23,7 @@
 #include <maya/widget/model_badge.hpp>
 #include <maya/widget/picker.hpp>
 #include <maya/widget/progress.hpp>
+#include <maya/widget/reasoning.hpp>
 #include <maya/widget/select.hpp>
 #include <maya/widget/spinner.hpp>
 #include <maya/widget/status_bar.hpp>
@@ -927,6 +928,65 @@ TEST_CASE("model badge never shows raw wire ids") {
         const std::string s = rendered(mb);
         MAYA_TEST_CHECK(s.find("mystery-model") != std::string::npos,
                         "no-fallback unknown id still renders something");
+    }
+    std::println("PASS");
+}
+
+TEST_CASE("reasoning stream: live vs settled chrome, and no fold") {
+    auto joined = [](const RenderResult& r) {
+        std::string s;
+        for (auto& row : r.rows) { s += row; s.push_back('\n'); }
+        return s;
+    };
+
+    const std::string body =
+        "First I inspect the FIRST_MARKER path.\n"
+        "Then I confirm the SECOND_MARKER stays visible.";
+
+    // LIVE: animated "Thinking" header, and the widget reports it's still
+    // animating (the reveal cursor walks the body over subsequent frames —
+    // exactly like normal streamed text, so we don't assert full body on the
+    // first paint).
+    {
+        maya::ReasoningStream rs;
+        rs.set_live(true);
+        rs.set_content(body);
+        const std::string s = joined(render_at(rs.build(), 44, 12));
+        MAYA_TEST_CHECK(s.find("Thinking") != std::string::npos,
+                        "live reasoning shows a 'Thinking' header");
+        MAYA_TEST_CHECK(rs.is_animating(),
+                        "live reasoning reports it is still animating");
+    }
+
+    // SETTLED: 'Reasoned' + token count, and the FULL body stays — NO fold.
+    {
+        maya::ReasoningStream rs;
+        rs.set_content(body);
+        rs.finish();
+        rs.set_live(false);
+        const std::string s = joined(render_at(rs.build(), 44, 12));
+        MAYA_TEST_CHECK(s.find("Reasoned") != std::string::npos,
+                        "settled reasoning shows a 'Reasoned' header");
+        MAYA_TEST_CHECK(s.find("token") != std::string::npos,
+                        "settled header names an approximate token count");
+        MAYA_TEST_CHECK(s.find("FIRST_MARKER") != std::string::npos,
+                        "settled reasoning keeps its first line");
+        MAYA_TEST_CHECK(s.find("SECOND_MARKER") != std::string::npos,
+                        "settled reasoning keeps ALL lines — it never folds");
+    }
+
+    // build_with_body: host supplies its own (cache-owned) body; the widget
+    // still frames it with the same chrome.
+    {
+        maya::ReasoningStream rs;
+        rs.set_live(false);
+        Element host_body = maya::markdown("HOST_OWNED_BODY line.");
+        const std::string s =
+            joined(render_at(rs.build_with_body(std::move(host_body)), 44, 12));
+        MAYA_TEST_CHECK(s.find("Reasoned") != std::string::npos,
+                        "chrome wraps a host-supplied body");
+        MAYA_TEST_CHECK(s.find("HOST_OWNED_BODY") != std::string::npos,
+                        "host-supplied body renders inside the block");
     }
     std::println("PASS");
 }

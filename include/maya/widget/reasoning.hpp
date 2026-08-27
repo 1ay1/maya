@@ -64,6 +64,12 @@ public:
         Color accent      = Color::rgb(0x8b, 0x7f, 0xd6); // muted indigo rail + sigil
         Color header_word = Color::rgb(0x9b, 0x93, 0xc4); // dim lavender header word
         bool  dim_body    = true;                         // reasoning recedes
+        // The reasoning body text COLOR. maya deliberately suppresses the SGR
+        // "dim" attribute (it made text vanish on some themes), so recession is
+        // carried by COLOR, not the dim flag — we recolor every run of the
+        // rendered markdown to this muted gray so reasoning clearly reads as a
+        // quiet aside beneath the answer.
+        Color body_fg     = Color::rgb(0x8a, 0x8a, 0x8a); // muted gray
         std::string live_word    = "Thinking";
         std::string settled_word = "Reasoned";
     };
@@ -235,14 +241,50 @@ private:
 
     [[nodiscard]] Element dim_wrap(Element body) const {
         if (!cfg_.dim_body) return body;
-        // Wrap so the whole reasoning tree recedes under the answer. A
-        // zero-inset box carrying a dim style tints its subtree without
-        // touching layout.
-        BoxElement wrap;
-        wrap.layout.direction = FlexDirection::Column;
-        wrap.style = Style{}.with_dim();
-        wrap.children.push_back(std::move(body));
-        return Element{std::move(wrap)};
+        // Recede the whole reasoning tree by COLOR (the maya dim SGR is
+        // suppressed, so a with_dim() box does nothing visible). The body is a
+        // lazy StreamingMarkdown ComponentElement, so we can't recolor it
+        // statically — wrap it in a ComponentElement that renders the inner
+        // tree at layout time and then overrides every text run's fg to the
+        // muted body color.
+        const Color fg = cfg_.body_fg;
+        ComponentElement comp;
+        comp.render = [body = std::move(body), fg](int w, int h) -> Element {
+            Element rendered = body; // copy the (cheap) wrapper node
+            recolor_fg(rendered, fg, w, h);
+            return rendered;
+        };
+        return Element{std::move(comp)};
+    }
+
+    // Recursively override the foreground color of every text run in a tree.
+    // ComponentElement children are rendered (with the given w/h) so their
+    // produced subtree is recolored too — this is what reaches the streaming
+    // markdown's lazily-built paragraphs.
+    static void recolor_fg(Element& e, Color fg, int w, int h) {
+        std::visit([&](auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, TextElement>) {
+                node.style = node.style.with_fg(fg);
+                for (auto& r : node.runs) r.style = r.style.with_fg(fg);
+            } else if constexpr (std::is_same_v<T, BoxElement>) {
+                // Leave a background (e.g. code block) intact; only steer fg.
+                for (auto& c : node.children) recolor_fg(c, fg, w, h);
+            } else if constexpr (std::is_same_v<T, ElementList>) {
+                for (auto& c : node.items) recolor_fg(c, fg, w, h);
+            } else if constexpr (std::is_same_v<T, ComponentElement>) {
+                if (node.render) {
+                    Element inner = node.render(w, h);
+                    recolor_fg(inner, fg, w, h);
+                    // Replace the lazy node with the recolored, materialized
+                    // subtree so the renderer paints the tinted version.
+                    node.render = [inner = std::move(inner)](int, int) {
+                        return inner;
+                    };
+                }
+            }
+            // ElementListRef: borrowed app-owned data — don't mutate.
+        }, e.inner);
     }
 
     // Header spinner glyph derived from the shared animation clock so the

@@ -132,6 +132,17 @@ namespace detail {
     // math accents (\hat \bar \vec) measure correctly.
     if (cp >= 0x0300 && is_zero_width(cp)) return 0;
     if (cp < 0x1100) return 1;
+    // SECOND fast path: box-drawing (U+2500..257F) + block elements
+    // (U+2580..259F) are the glyphs that fill every bordered TUI — table
+    // frames, code fences, the changes strip, progress bars. They are ALL
+    // width-1 and this whole 0x2500..0x259F block is verified to contain no
+    // Wide/Fullwidth or zero-width codepoint (the nearest wide neighbour is
+    // U+25FD). Short-circuiting here skips BOTH O(log n) binary searches for
+    // a class of glyph that recurs on essentially every rendered border row,
+    // re-measured every layout pass during the streaming glide — profiled as
+    // the dominant width-lookup cost (box glyphs were ~5.7x an ASCII char
+    // before this). (Keep the upper bound < U+25FD, the first wide entry.)
+    if (cp >= 0x2500 && cp <= 0x259F) return 1;
     if (is_zero_width(cp)) return 0;             // U+1AB0+, U+20D0+, U+FE20+ …
     if (detail::in_ranges(cp, detail::kWideRanges)) return 2;
     if (mode == WidthMode::Modern &&

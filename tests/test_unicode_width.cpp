@@ -45,6 +45,34 @@ TEST_CASE("control codes") {
     std::println("PASS");
 }
 
+TEST_CASE("box drawing and block elements are width-1 (fast path)") {
+    std::println("--- test_box_drawing_block ---");
+    // U+2500..U+259F (box-drawing + block elements) take char_width's second
+    // fast path: all width-1, no binary search. These glyphs fill every
+    // bordered TUI (tables, code fences, progress bars), so this range is
+    // hot every layout pass. Pin the whole block AND its boundaries so the
+    // fast path can never diverge from the underlying tables.
+    static_assert(W(0x2500) == 1);  // ─ first box-drawing
+    static_assert(W(0x250C) == 1);  // ┌ corner
+    static_assert(W(0x2502) == 1);  // │ vertical
+    static_assert(W(0x253C) == 1);  // ┼ cross
+    static_assert(W(0x257F) == 1);  // last box-drawing
+    static_assert(W(0x2580) == 1);  // ▀ first block element
+    static_assert(W(0x2588) == 1);  // █ full block
+    static_assert(W(0x2591) == 1);  // ░ light shade
+    static_assert(W(0x259F) == 1);  // last cell of the fast-path block
+    // Just BELOW the range still resolves via the normal path.
+    static_assert(W(0x24FF) == 1);
+    // Just ABOVE the fast path: U+25A0+ geometric shapes — the wide neighbours
+    // U+25FD/U+25FE MUST still measure as width-2 (proves the fast path stops
+    // before them and doesn't blanket the geometric block).
+    static_assert(W(0x25A0) == 1);  // ■ black square (narrow)
+    static_assert(W(0x25FC) == 1);  // narrow
+    static_assert(W(0x25FD) == 2);  // ◽ white medium-small square (WIDE)
+    static_assert(W(0x25FE) == 2);  // ◾ black medium-small square (WIDE)
+    std::println("PASS");
+}
+
 TEST_CASE("is control") {
     std::println("--- test_is_control ---");
     using maya::unicode::is_control;

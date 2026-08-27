@@ -219,7 +219,19 @@ streaming efficiency.
    honest ceiling above — grid still trails ANSI on streaming by design; the
    dictionary/varint are correct primitives for hosts that render cells
    directly, not an ANSI-beating change.
-3. **Speculative tail echo** (mosh-grade) — predict the append-only next frames
-   and paint them locally, reconcile against the authoritative frame on arrival.
-   Hides the whole round-trip for the dominant streaming case. Most impressive,
-   most involved; needs a thin cooperating shim.
+3. **Speculative tail echo** (mosh-grade) — **NOT maya's layer to build**
+   (analysed, deliberately not implemented). Mosh-style prediction hides
+   *wire round-trip* latency by echoing on the CLIENT and reconciling when the
+   server confirms. But maya runs on the SERVER (it writes to the local PTY);
+   the client is the iOS mosh app, and **mosh already provides exactly this
+   predictive layer** for the byte stream maya emits. A "speculative echo"
+   *inside* maya could only (a) duplicate mosh one layer down — no added
+   benefit, or (b) predict maya's OWN next frame to hide *compute* latency —
+   but the render audit proved per-frame compute is sub-millisecond and the
+   streaming-markdown path is already exhaustively memoized (canonical-render
+   memo, eager-slice memo, incremental table floor, version-gated hash
+   short-circuit), so there is no compute latency to hide. The realizable part
+   of this idea was already captured by tier 1: coalescing makes maya emit
+   fewer, fuller frames, which is precisely what lets mosh's own predictor work
+   cleanly (a stream of 1369 tiny frames confuses it; ~60 cumulative frames
+   don't). Building an in-maya echo would be impressive-looking and useless.

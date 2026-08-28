@@ -681,6 +681,69 @@ TEST_CASE("tool body tail line numbers") {
     std::println("  PASS\n");
 }
 
+// BashOutput distils cargo / pytest / jest summaries to a ✓/✗ verdict line,
+// gated so prose can't mis-fire. Mirrors the gtest/ctest path already shipped.
+TEST_CASE("tool body test-runner summaries") {
+    std::println("=== test_tool_body_test_summaries ===");
+
+    // get_row() maps non-ASCII glyphs (✓/✗) to '?', so we can't search for
+    // the glyph bytes — assert on the ASCII verdict TEXT the widget renders
+    // ("N/N tests passed" / "N/N tests failed"), which survives verbatim.
+    auto verdict = [](const std::string& out) -> std::string {
+        ToolBodyPreview::Config cfg;
+        cfg.kind = ToolBodyPreview::Kind::BashOutput;
+        cfg.text = out;
+        auto r = render_at(ToolBodyPreview{cfg}.build(), 80);
+        for (const auto& row : r.rows)
+            if (row.find("tests passed") != std::string::npos
+                || row.find("tests failed") != std::string::npos)
+                return row;
+        return {};
+    };
+
+    // cargo: all green.
+    {
+        auto v = verdict("running 4 tests\n....\n"
+                         "test result: ok. 4 passed; 0 failed; 0 ignored\n");
+        assert(v.find("4/4 tests passed") != std::string::npos
+               && "cargo all-pass renders a 4/4 passed verdict");
+    }
+    // cargo: with a failure.
+    {
+        auto v = verdict("test result: FAILED. 3 passed; 1 failed; 0 ignored\n");
+        assert(v.find("1/4 tests failed") != std::string::npos
+               && "cargo failure renders a 1/4 failed verdict");
+    }
+    // pytest: the ' in <time>s' duration tail is the gate.
+    {
+        auto v = verdict("===== 12 passed, 1 failed in 0.30s =====\n");
+        assert(v.find("1/13 tests failed") != std::string::npos
+               && "pytest mixed renders a 1/13 failed verdict");
+    }
+    // jest: "Tests:" marker.
+    {
+        auto v = verdict("Tests:       1 failed, 3 passed, 4 total\n");
+        assert(v.find("1/4 tests failed") != std::string::npos
+               && "jest mixed renders a 1/4 failed verdict");
+    }
+    // gtest (tier 1, unchanged): still works.
+    {
+        auto v = verdict("[==========] 4 tests passed.\n");
+        assert(v.find("4/4 tests passed") != std::string::npos
+               && "gtest all-pass still renders a 4/4 passed verdict");
+    }
+    // FALSE-POSITIVE GATE: prose with a bare 'passed'/'failed' and no
+    // runner context must NOT produce a verdict line.
+    {
+        auto v = verdict("The review passed after 2 rounds; the build "
+                         "failed once but recovered. See notes.\n");
+        assert(v.empty()
+               && "bare prose 'passed'/'failed' must not fake a test verdict");
+    }
+
+    std::println("  PASS\n");
+}
+
 // small_caps must letter-space at UTF-8 boundaries, not bytes — a
 // multi-byte label must survive intact (no mojibake / no width blowup).
 TEST_CASE("small caps utf8") {

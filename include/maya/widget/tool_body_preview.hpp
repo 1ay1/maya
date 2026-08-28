@@ -455,23 +455,48 @@ private:
 
     // ── Test-runner summary detection ─────────────────────────────────────
     //
-    // Looks for the integer that immediately precedes the literal text
-    // "tests passed" or "tests failed" anywhere in the body.  This catches
-    // the common shapes:
+    // Distils a runner's output to a one-line ✓/✗ verdict. Two tiers:
     //
-    //   gtest:  "[==========] 4 tests passed."
-    //   ctest:  "100% tests passed, 0 tests failed out of 4"
-    //   cargo:  "test result: ok. 4 passed; 0 failed; …"   (close but not exact)
-    //   jest:   "Tests:       4 passed, 4 total"
+    //   TIER 1 — the literal "N tests passed" / "N tests failed" shape
+    //     (gtest "[==========] 4 tests passed.", ctest "100% tests
+    //     passed, 0 tests failed out of 4"). Unambiguous, always trusted.
     //
-    // We strictly require the literal string "tests passed" / "tests
-    // failed" so we don't mis-fire on prose like "4 tests" in a
-    // documentation comment.  Cargo/jest use slightly different wording
-    // and aren't matched here — easy follow-up if the demand is there.
+    //   TIER 2 — bare-word runner summaries, only trusted when a runner
+    //     CONTEXT marker is present so prose like "the test passed review"
+    //     never mis-fires:
+    //       cargo:  "test result: ok. 4 passed; 1 failed; 0 ignored"
+    //       pytest: "===== 4 passed, 1 failed in 0.12s ====="
+    //       jest:   "Tests:  1 failed, 3 passed, 4 total"
+    //     The gate requires one of: "test result:" (cargo), "Tests:"
+    //     (jest), a pytest " in <time>s" tail next to the word, or both
+    //     "passed" and "failed"/"total" co-occurring on the summary.
     [[nodiscard]] std::optional<Element> try_render_test_summary() const {
         using namespace dsl;
-        const auto passed = count_before(cfg_.text, "tests passed");
-        const auto failed = count_before(cfg_.text, "tests failed");
+        std::optional<int> passed = count_before(cfg_.text, "tests passed");
+        std::optional<int> failed = count_before(cfg_.text, "tests failed");
+
+        // TIER 2: bare-word shapes, gated on a runner context marker.
+        if (!passed && !failed) {
+            const auto& b = cfg_.text;
+            const bool has_cargo  = b.find("test result:") != std::string_view::npos;
+            const bool has_jest   = b.find("Tests:") != std::string_view::npos;
+            // pytest hallmark: a "passed"/"failed" tally followed by an
+            // " in <number>s" duration tail on the summary line.
+            const bool has_pytest = b.find(" passed") != std::string_view::npos
+                                 && b.find(" in ") != std::string_view::npos;
+            auto bp = count_before_word(b, "passed");
+            auto bf = count_before_word(b, "failed");
+            // Co-occurrence gate: a lone "5 passed" with no runner marker
+            // and no companion failed/total is too weak — require context.
+            const bool companion =
+                bf.has_value()
+                || count_before_word(b, "total").has_value();
+            if ((has_cargo || has_jest || (has_pytest && bp) || (bp && companion))) {
+                passed = bp;
+                failed = bf;
+            }
+        }
+
         if (!passed && !failed) return std::nullopt;
 
         const int p = passed.value_or(0);
@@ -654,6 +679,46 @@ private:
         int n = 0;
         for (auto j = i; j < end; ++j) n = n * 10 + (body[j] - '0');
         return n;
+    }
+
+    // Like count_before, but `word` must be a WHOLE word (bounded by a
+    // non-alnum on both sides) and only whitespace may sit between the
+    // digit run and the word. Catches the bare-word runner shapes:
+    //   cargo:  "test result: ok. 12 passed; 0 failed; 3 ignored"
+    //   pytest: "===== 12 passed, 1 failed in 0.30s ====="
+    //   jest:   "Tests:  1 failed, 11 passed, 12 total"
+    // Scans ALL occurrences and takes the LAST (runner summaries live at the
+    // end of the output, after any prose that might contain the word).
+    [[nodiscard]] static std::optional<int>
+    count_before_word(std::string_view body, std::string_view word) noexcept {
+        std::optional<int> found;
+        std::size_t from = 0;
+        while (true) {
+            auto pos = body.find(word, from);
+            if (pos == std::string_view::npos) break;
+            from = pos + word.size();
+            // Whole-word: char after `word` must not be alphanumeric.
+            if (from < body.size()) {
+                char c = body[from];
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9')) continue;
+            }
+            std::size_t i = pos;
+            while (i > 0 && body[i - 1] == ' ') --i;
+            const std::size_t end = i;
+            while (i > 0 && body[i - 1] >= '0' && body[i - 1] <= '9') --i;
+            if (i == end) continue;               // no digits before the word
+            // Whole-word on the LEFT too: the char before the digits must
+            // not be alphanumeric (so "unpassed" / "x12passed" can't match).
+            if (i > 0) {
+                char c = body[i - 1];
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) continue;
+            }
+            int n = 0;
+            for (auto j = i; j < end; ++j) n = n * 10 + (body[j] - '0');
+            found = n;   // keep scanning; last match wins
+        }
+        return found;
     }
 
     // Up to `max` failing test names extracted from gtest-style markers.
@@ -1407,11 +1472,26 @@ private:
         int  old_ln = 0, new_ln = 0;
         bool have_nums = false;
         auto parse_hunk_header = [&](std::string_view h) {
-            // `@@ -<a>[,b] +<c>[,d] @@`
+            // Standard `@@ -<a>[,b] +<c>[,d] @@`, or the compact `@@ L<n> @@`
+            // anchor the replace/rewrite_structural preview bodies emit
+            // (one true line number for both sides of a single-line splice).
             old_ln = new_ln = 0;
             have_nums = false;
             std::size_t i = h.find('-');
-            if (i == std::string_view::npos) return;
+            if (i == std::string_view::npos) {
+                // Try the `@@ L<n> @@` compact form.
+                std::size_t k = h.find('L');
+                if (k == std::string_view::npos) return;
+                int n = 0; bool got = false;
+                for (++k; k < h.size() && h[k] >= '0' && h[k] <= '9'; ++k) {
+                    n = n * 10 + (h[k] - '0'); got = true;
+                }
+                if (got && n > 0) {
+                    old_ln = new_ln = n;
+                    have_nums = true;
+                }
+                return;
+            }
             for (++i; i < h.size() && h[i] >= '0' && h[i] <= '9'; ++i)
                 old_ln = old_ln * 10 + (h[i] - '0');
             std::size_t j = h.find('+', i);

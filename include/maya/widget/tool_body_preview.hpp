@@ -962,7 +962,12 @@ private:
         // the visual order is "⋯ N more above" then the tail rows.
         if (p.elided > 0) rows.push_back(elision_marker(p.elided));
 
-        int line_num = p.elided + p.hidden_above + 1;
+        // Base at cfg_.start_line so a HOST-SIDE tail slice (write_body
+        // streams only the last N lines of the content written so far)
+        // still numbers rows with their TRUE position in the file being
+        // written, not a restart at 1. Default start_line=1 keeps the
+        // classic behaviour for full bodies.
+        int line_num = cfg_.start_line + p.elided + p.hidden_above;
         for (std::size_t i = 0; i < p.lines.size(); ++i) {
             char numbuf[8];
             std::snprintf(numbuf, sizeof(numbuf), "%3d ", line_num++);
@@ -1393,11 +1398,44 @@ private:
         };
         std::string pending_from;   // `--- a/<from>` awaiting its `+++ b/<to>`
 
+        // Real line numbers, tracked from `@@ -a,b +c,d @@` hunk headers:
+        // '+' and context rows advance the NEW-file counter, '-' rows the
+        // OLD-file counter; the gutter shows the side the row belongs to.
+        // When elision drops rows mid-hunk the counters go stale, so they
+        // are invalidated at the elision boundary and resume at the next
+        // hunk header — numbers are only ever shown when they are TRUE.
+        int  old_ln = 0, new_ln = 0;
+        bool have_nums = false;
+        auto parse_hunk_header = [&](std::string_view h) {
+            // `@@ -<a>[,b] +<c>[,d] @@`
+            old_ln = new_ln = 0;
+            have_nums = false;
+            std::size_t i = h.find('-');
+            if (i == std::string_view::npos) return;
+            for (++i; i < h.size() && h[i] >= '0' && h[i] <= '9'; ++i)
+                old_ln = old_ln * 10 + (h[i] - '0');
+            std::size_t j = h.find('+', i);
+            if (j == std::string_view::npos) return;
+            for (++j; j < h.size() && h[j] >= '0' && h[j] <= '9'; ++j)
+                new_ln = new_ln * 10 + (h[j] - '0');
+            have_nums = old_ln > 0 && new_ln > 0;
+        };
+        auto num_gutter = [&](int n, char sign) -> std::string {
+            char buf[16];
+            if (have_nums)
+                std::snprintf(buf, sizeof(buf), "%4d %c ", n, sign);
+            else
+                std::snprintf(buf, sizeof(buf), " %c ", sign);
+            return buf;
+        };
+
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 1);
         for (int i = 0; i < static_cast<int>(p.lines.size()); ++i) {
-            if (i == p.elision_at && p.elided > 0)
+            if (i == p.elision_at && p.elided > 0) {
                 rows.push_back(elision_marker(p.elided));
+                have_nums = false;   // counters stale across the gap
+            }
             std::string_view ln = p.lines[std::size_t(i)];
 
             // Git plumbing we never surface — pure machine metadata that just
@@ -1446,33 +1484,48 @@ private:
             }
 
             if (ln.starts_with("@@")) {
+                parse_hunk_header(ln);
                 if (bands)
                     rows.push_back(band_row("   ", hunk_st, std::string{ln},
                                             hunk_st, hunk_bg));
                 else
                     rows.push_back(text_row("   " + std::string{ln}, hunk_st));
             } else if (!ln.empty() && ln[0] == '+') {
+                auto g = num_gutter(new_ln, '+');
+                if (have_nums) ++new_ln;
                 if (bands)
-                    rows.push_back(band_row(" + ", add_sign_st,
+                    rows.push_back(band_row(std::move(g), add_sign_st,
                                             std::string{ln.substr(1)},
                                             add_body_st, add_bg));
                 else
-                    rows.push_back(text_row(" + " + std::string{ln.substr(1)},
+                    rows.push_back(text_row(g + std::string{ln.substr(1)},
                                             add_body_st));
             } else if (!ln.empty() && ln[0] == '-') {
+                auto g = num_gutter(old_ln, '-');
+                if (have_nums) ++old_ln;
                 if (bands)
-                    rows.push_back(band_row(" - ", rem_sign_st,
+                    rows.push_back(band_row(std::move(g), rem_sign_st,
                                             std::string{ln.substr(1)},
                                             rem_body_st, rem_bg));
                 else
-                    rows.push_back(text_row(" - " + std::string{ln.substr(1)},
+                    rows.push_back(text_row(g + std::string{ln.substr(1)},
                                             rem_body_st));
             } else {
-                // Context line — unchanged code, plain dim, aligned with
-                // the band content column (3-col gutter).
+                // Context line — unchanged code, plain dim, NEW-side line
+                // number in the gutter so the eye can track position
+                // between +/− runs. Aligned with the band content column.
                 std::string_view body = ln;
                 if (!ln.empty() && ln[0] == ' ') body = ln.substr(1);
-                rows.push_back(text_row("   " + std::string{body}, ctx_st));
+                std::string g;
+                if (have_nums) {
+                    char buf[16];
+                    std::snprintf(buf, sizeof(buf), "%4d   ", new_ln);
+                    ++new_ln; ++old_ln;
+                    g = buf;
+                } else {
+                    g = "   ";
+                }
+                rows.push_back(text_row(g + std::string{body}, ctx_st));
             }
         }
         return v(rows).build();

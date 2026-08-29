@@ -43,6 +43,13 @@ struct Float {
     bool    flip  = true;     // flip to the opposite side if it would overflow
     bool    clamp = true;     // keep the float fully on screen
     int     z     = 0;        // paint order among floats (higher = on top)
+
+    // A float must OCCLUDE the flow content beneath it (z-stack overlays are
+    // painted without clearing). The backdrop fills the float's rect so the
+    // editor text doesn't bleed through transparent cells. `Color::default_color`
+    // occludes with the terminal's own background; override for a raised surface.
+    bool    occlude = true;
+    Color   bg      = Color::default_color();
 };
 
 namespace detail {
@@ -110,7 +117,11 @@ namespace detail {
         layers.push_back(Element{ComponentElement{
             .render = [f = std::move(f)](int sw, int sh) -> Element {
                 auto [x, y] = detail::resolve(f, sw, sh);
-                return detail::place_at(f.content, x, y, f.w, f.h);
+                Element content = f.content;
+                if (f.occlude && f.w > 0 && f.h > 0)
+                    content = maya::detail::box().bg(f.bg)
+                        .width(Dimension::fixed(f.w)).height(Dimension::fixed(f.h))(content);
+                return detail::place_at(std::move(content), x, y, f.w, f.h);
             },
             .measure = [](int mw) -> Size { return {Columns(mw), Rows(1)}; },
         }});

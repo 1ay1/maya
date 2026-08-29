@@ -99,6 +99,14 @@ public:
         // its own per-row colors (the faded_tail), skip the chrome's flat
         // recolor so the fade survives.
         bool  body_prestyled = false;
+        // Wrap the block in a bordered box (the left ┃ rail). A bordered box
+        // is an ATOMIC layout unit — maya can't scroll it off row-by-row, so a
+        // reasoning taller than the viewport gets CLIPPED (rows vanish) once
+        // its top passes the viewport edge. Set false to render a plain
+        // column (header + body) that flows and commits to scrollback exactly
+        // like prose — distinguished by the ✦ header + body tint instead of a
+        // rail. Hosts with unbounded reasoning should use false.
+        bool  boxed = true;
         std::string live_word    = "Thinking";
         std::string settled_word = "Reasoned";
     };
@@ -290,18 +298,23 @@ private:
         rows.push_back(build_header());
         rows.push_back(std::move(body));
 
-        // The block: a left rail (accent while live, dimmed when settled) so
-        // the whole reasoning stream reads as one quiet, distinct aside.
         BoxElement box;
         box.layout.direction = FlexDirection::Column;
-        box.layout.padding   = Edges<int>{0, 0, 0, 1}; // 1 col gap after rail
-        box.border = BorderConfig{
-            .style  = BorderStyle::Bold,                // ┃ heavier = a "rail"
-            .sides  = BorderSides{false, false, false, true}, // left only
-            .colors = BorderColors{
-                .left = live_ ? rail_color() : dim(cfg_.accent),
-            },
-        };
+        if (cfg_.boxed) {
+            // Bordered rail box (atomic — see Config::boxed). Left padding gives
+            // the rail a one-column gutter from the content.
+            box.layout.padding = Edges<int>{0, 0, 0, 1};
+            box.border = BorderConfig{
+                .style  = BorderStyle::Bold,                // ┃ heavier = a "rail"
+                .sides  = BorderSides{false, false, false, true}, // left only
+                .colors = BorderColors{
+                    .left = live_ ? rail_color() : dim(cfg_.accent),
+                },
+            };
+        }
+        // Unboxed: a plain header+body column. maya splits it row-by-row like
+        // prose, so a tall reasoning scrolls off the top / commits to
+        // scrollback instead of being clipped at the viewport edge.
         box.children = std::move(rows);
         return Element{std::move(box)};
     }

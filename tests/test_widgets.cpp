@@ -1051,6 +1051,38 @@ TEST_CASE("reasoning stream: live vs settled chrome, and no fold") {
         MAYA_TEST_CHECK(s.find("HOST_OWNED_BODY") != std::string::npos,
                         "host-supplied body renders inside the block");
     }
+
+    // Live gradient body (stream-of-consciousness fade): the gradient recolor
+    // pass must render cleanly. (Live reasoning reveals progressively, so we
+    // assert the chrome renders rather than full body on the first frame —
+    // same discipline as the live test above.)
+    {
+        maya::ReasoningStream::Config cfg;
+        cfg.gradient_body = true;
+        maya::ReasoningStream rs{cfg};
+        rs.set_live(true);
+        rs.set_content("ALPHA_LINE\n\nBETA_LINE\n\nGAMMA_LINE");
+        const auto r = render_at(rs.build(), 44, 16);
+        const std::string s = joined(r);
+        MAYA_TEST_CHECK(r.content_h > 0,
+                        "gradient live reasoning renders without dropping the block");
+        MAYA_TEST_CHECK(s.find("Thinking") != std::string::npos,
+                        "gradient live reasoning still shows the animated header");
+    }
+    // Settled gradient config falls back to the flat recolor and keeps the
+    // FULL body (the gradient is live-only, so settle is unaffected).
+    {
+        maya::ReasoningStream::Config cfg;
+        cfg.gradient_body = true;
+        maya::ReasoningStream rs{cfg};
+        rs.set_content("ALPHA_LINE\n\nGAMMA_LINE");
+        rs.finish();
+        rs.set_live(false);
+        const std::string s = joined(render_at(rs.build(), 44, 16));
+        MAYA_TEST_CHECK(s.find("ALPHA_LINE") != std::string::npos
+                        && s.find("GAMMA_LINE") != std::string::npos,
+                        "settled gradient reasoning keeps the full body");
+    }
     std::println("PASS");
 }
 

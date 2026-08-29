@@ -47,6 +47,7 @@
 #include <vector>
 
 #include "../core/anim_clock.hpp"
+#include "../core/animation.hpp"   // anim::lerp(Color,Color,t)
 #include "../element/box.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
@@ -70,6 +71,14 @@ public:
         // rendered markdown to this muted gray so reasoning clearly reads as a
         // quiet aside beneath the answer.
         Color body_fg     = Color::rgb(0x8a, 0x8a, 0x8a); // muted gray
+        // "Stream of consciousness" gradient: while LIVE, fade the body
+        // vertically from `body_fg` at the top (older thoughts, receded) to
+        // `body_fg_bright` at the bottom (the newest lines, glowing) so the
+        // eye follows the live edge as the model thinks. Settled reasoning
+        // renders flat in `body_fg` (a frozen, uniform aside). Off by
+        // default — hosts opt in per block.
+        bool  gradient_body = false;
+        Color body_fg_bright = Color::rgb(0xc9, 0xc2, 0xf0); // bright lavender (newest)
         std::string live_word    = "Thinking";
         std::string settled_word = "Reasoned";
     };
@@ -245,13 +254,20 @@ private:
         // suppressed, so a with_dim() box does nothing visible). The body is a
         // lazy StreamingMarkdown ComponentElement, so we can't recolor it
         // statically — wrap it in a ComponentElement that renders the inner
-        // tree at layout time and then overrides every text run's fg to the
-        // muted body color.
-        const Color fg = cfg_.body_fg;
+        // tree at layout time and then overrides every text run's fg.
+        //
+        // WHILE LIVE (and gradient_body), fade vertically from body_fg at the
+        // top (older thoughts) to body_fg_bright at the bottom (newest) so the
+        // eye rides the live edge — a "stream of consciousness". Settled, or
+        // gradient off, it's a flat muted recolor (a frozen, uniform aside).
+        const bool grad = cfg_.gradient_body && live_;
+        const Color fg     = cfg_.body_fg;
+        const Color bright = cfg_.body_fg_bright;
         ComponentElement comp;
-        comp.render = [body = std::move(body), fg](int w, int h) -> Element {
+        comp.render = [body = std::move(body), fg, bright, grad](int w, int h) -> Element {
             Element rendered = body; // copy the (cheap) wrapper node
-            recolor_fg(rendered, fg, w, h);
+            if (grad) recolor_fg_gradient(rendered, fg, bright, w, h);
+            else      recolor_fg(rendered, fg, w, h);
             return rendered;
         };
         return Element{std::move(comp)};
@@ -285,6 +301,72 @@ private:
             }
             // ElementListRef: borrowed app-owned data — don't mutate.
         }, e.inner);
+    }
+
+    // Materialize every lazy ComponentElement into a concrete subtree AND
+    // count the TextElement nodes, in traversal (top-to-bottom) order. The
+    // count is the number of gradient steps; materializing here means the
+    // second pass (apply_gradient) walks the exact same node set/order.
+    static int materialize_and_count(Element& e, int w, int h) {
+        int n = 0;
+        std::visit([&](auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, TextElement>) {
+                n = 1;
+            } else if constexpr (std::is_same_v<T, BoxElement>) {
+                for (auto& c : node.children) n += materialize_and_count(c, w, h);
+            } else if constexpr (std::is_same_v<T, ElementList>) {
+                for (auto& c : node.items) n += materialize_and_count(c, w, h);
+            } else if constexpr (std::is_same_v<T, ComponentElement>) {
+                if (node.render) {
+                    Element inner = node.render(w, h);
+                    n += materialize_and_count(inner, w, h);
+                    node.render = [inner = std::move(inner)](int, int) {
+                        return inner;
+                    };
+                }
+            }
+        }, e.inner);
+        return n;
+    }
+
+    // Recolor each TextElement to lerp(from,to, idx/(total-1)) in traversal
+    // order — idx 0 (top / oldest) = from, idx total-1 (bottom / newest) = to.
+    // Assumes the tree is already materialized (see materialize_and_count).
+    static void apply_gradient(Element& e, Color from, Color to,
+                               int& idx, int total, int w, int h) {
+        std::visit([&](auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, TextElement>) {
+                const double t = total <= 1 ? 1.0
+                    : static_cast<double>(idx) / static_cast<double>(total - 1);
+                const Color c = maya::anim::lerp(from, to, t);
+                node.style = node.style.with_fg(c);
+                for (auto& r : node.runs) r.style = r.style.with_fg(c);
+                ++idx;
+            } else if constexpr (std::is_same_v<T, BoxElement>) {
+                for (auto& c : node.children) apply_gradient(c, from, to, idx, total, w, h);
+            } else if constexpr (std::is_same_v<T, ElementList>) {
+                for (auto& c : node.items) apply_gradient(c, from, to, idx, total, w, h);
+            } else if constexpr (std::is_same_v<T, ComponentElement>) {
+                if (node.render) {
+                    Element inner = node.render(w, h);
+                    apply_gradient(inner, from, to, idx, total, w, h);
+                    node.render = [inner = std::move(inner)](int, int) {
+                        return inner;
+                    };
+                }
+            }
+        }, e.inner);
+    }
+
+    // Vertical fade: from (oldest, top) → to (newest, bottom). Two passes so
+    // the total step count is known before assigning per-line colors.
+    static void recolor_fg_gradient(Element& e, Color from, Color to,
+                                    int w, int h) {
+        int total = materialize_and_count(e, w, h);
+        int idx = 0;
+        apply_gradient(e, from, to, idx, total, w, h);
     }
 
     // Header spinner glyph derived from the shared animation clock so the

@@ -152,6 +152,11 @@ public:
     /// is empty on that path ("~0 tokens").
     void set_char_hint(std::size_t chars) noexcept { char_hint_ = chars; }
 
+    /// Wall-clock reasoning duration in milliseconds, shown in the header next
+    /// to the token meter ("· 3.2s"). While live, pass the RUNNING elapsed for
+    /// a ticking timer; when settled, pass the final duration. 0 hides it.
+    void set_elapsed_ms(std::int64_t ms) noexcept { elapsed_ms_ = ms; }
+
     /// True while ANYTHING is still animating (reveal glide, live caret,
     /// spinner, in-flight async parse). Hosts drive request_animation_frame
     /// off this so the block stays smooth without a wasteful always-on tick.
@@ -324,6 +329,7 @@ private:
     Spinner<SpinnerStyle::Dots> spinner_{Style{}.with_dim()};
     bool live_ = true;
     std::size_t char_hint_ = 0; // host-supplied reasoning length (0 = use md_)
+    std::int64_t elapsed_ms_ = 0; // host-supplied reasoning duration (0 = hide)
 
     // A dimmer variant of a color for the settled rail (recede once done).
     static Color dim(Color c) noexcept { return c.darken(0.45f); }
@@ -351,6 +357,24 @@ private:
         return std::to_string((toks + 500) / 1000) + "k";
     }
 
+    // Humanized reasoning duration: "0.8s" → "3.2s" → "42s" → "1m03s".
+    // Sub-10s keeps one decimal (a short think reads as "3.2s", not "3s");
+    // ≥10s rounds to whole seconds; ≥60s switches to m s.
+    [[nodiscard]] std::string duration_label() const {
+        const std::int64_t ms = elapsed_ms_;
+        if (ms >= 60000) {
+            const std::int64_t s = ms / 1000;
+            const std::int64_t mm = s / 60, ss = s % 60;
+            return std::to_string(mm) + "m" + (ss < 10 ? "0" : "") +
+                   std::to_string(ss) + "s";
+        }
+        if (ms >= 10000)
+            return std::to_string((ms + 500) / 1000) + "s";
+        const std::int64_t tenths = (ms + 50) / 100;   // round to 0.1s
+        return std::to_string(tenths / 10) + "." +
+               std::to_string(tenths % 10) + "s";
+    }
+
     [[nodiscard]] Element build_header() const {
         std::string content;
         std::vector<StyledRun> runs;
@@ -364,8 +388,15 @@ private:
         push("\xe2\x9c\xa6 ", Style{}.with_fg(live_ ? cfg_.accent
                                                     : dim(cfg_.accent)));
 
+        // The header WORD ("Thinking" / "Reasoned") renders identically in
+        // both states — same color, same weight — so the block reads as one
+        // element that simply swapped its label, not two differently-styled
+        // things. The meta (token estimate + duration) shares one muted style.
+        const Style word_style = Style{}.with_fg(cfg_.header_word).with_bold();
+        const Style meta_style = Style{}.with_fg(cfg_.header_word).with_italic();
+
         if (live_) {
-            push(cfg_.live_word, Style{}.with_fg(cfg_.header_word).with_bold());
+            push(cfg_.live_word, word_style);
             // Spinner frame off the shared clock (deterministic in tests) so
             // it breathes even without a host advance() call.
             push(" ", Style{});
@@ -374,15 +405,17 @@ private:
             // streams, so the block conveys effort/progress, not just motion.
             // Reflects the FULL source even when the body is tail-windowed.
             if (reasoning_chars() > 0)
-                push("  \xc2\xb7  " + token_estimate() + " tok",   // · N tok
-                     Style{}.with_fg(cfg_.header_word).with_dim().with_italic());
+                push("  \xc2\xb7  " + token_estimate() + " tok", meta_style); // · N tok
+            if (elapsed_ms_ > 0)
+                push("  \xc2\xb7  " + duration_label(), meta_style);          // · 3.2s
         } else {
-            push(cfg_.settled_word, Style{}.with_fg(cfg_.header_word).with_dim());
+            push(cfg_.settled_word, word_style);
             // Suppress the token meta at ~0 so a stray empty block never
             // reads "0 tokens".
             if (reasoning_chars() > 0)
-                push("  \xc2\xb7  " + token_estimate() + " tokens", // · N tokens
-                     Style{}.with_dim().with_italic());
+                push("  \xc2\xb7  " + token_estimate() + " tokens", meta_style); // · N tokens
+            if (elapsed_ms_ > 0)
+                push("  \xc2\xb7  " + duration_label(), meta_style);            // · 3.2s
         }
 
         return Element{TextElement{

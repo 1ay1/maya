@@ -1087,6 +1087,24 @@ TEST_CASE("reasoning stream: live vs settled chrome, and no fold") {
                         && s.find("GAMMA_LINE") != std::string::npos,
                         "settled gradient reasoning keeps the full body");
     }
+
+    // Structured beats: decision-marker paragraphs render as waypoints. We
+    // can't assert color via the text harness, but the render must keep the
+    // beat lines (exercises is_beat + the waypoint recolor path end to end).
+    {
+        maya::ReasoningStream::Config cfg;
+        cfg.structured = true;
+        maya::ReasoningStream rs{cfg};
+        rs.set_content("Connective filler prose here.\n\n"
+                       "Let me check the auth path.\n\n"
+                       "Actually, the token refresh is the bug.");
+        rs.finish();
+        rs.set_live(false);
+        const std::string s = joined(render_at(rs.build(), 60, 20));
+        MAYA_TEST_CHECK(s.find("Let me check") != std::string::npos
+                        && s.find("Actually") != std::string::npos,
+                        "structured reasoning keeps beat lines in the body");
+    }
     std::println("PASS");
 }
 

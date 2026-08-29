@@ -88,6 +88,13 @@ public:
         // compact and doesn't shove the composer around. 0 = show everything.
         // Settled always shows the full body.
         int   live_tail_lines = 0;
+        // STRUCTURE the reasoning into beats: paragraph-leading decision
+        // markers ("Let me…", "First", "Actually", "So," …) and markdown
+        // emphasis/headers render as bright `waypoint_fg` waypoints while the
+        // connective prose recedes — so the block reads as phases, not a gray
+        // river. Applies live AND settled. Off by default.
+        bool  structured = false;
+        Color waypoint_fg = Color::rgb(0xe4, 0xe0, 0xff); // bright lavender-white beat
         std::string live_word    = "Thinking";
         std::string settled_word = "Reasoned";
     };
@@ -287,10 +294,13 @@ private:
         const bool grad = cfg_.gradient_body && live_;
         const bool pulse = cfg_.pulse && live_;
         const int  tail  = live_ ? cfg_.live_tail_lines : 0;
+        const bool structured = cfg_.structured;
         const Color fg     = cfg_.body_fg;
         const Color bright = cfg_.body_fg_bright;
+        const Color waypoint = cfg_.waypoint_fg;
         ComponentElement comp;
-        comp.render = [body = std::move(body), fg, bright, grad, pulse, tail]
+        comp.render = [body = std::move(body), fg, bright, waypoint,
+                       grad, pulse, tail, structured]
                       (int w, int h) -> Element {
             Element rendered = body; // copy the (cheap) wrapper node
             int total = materialize_and_count(rendered, w, h);
@@ -301,19 +311,18 @@ private:
                 prune_to_tail(rendered, total - tail, pidx);
                 total = tail;
             }
+            // Gradient endpoint (breathing when pulsing); flat = fg→fg.
+            Color to = fg;
             if (grad) {
-                // Newest endpoint breathes toward `bright` and back while
-                // pulsing, so the live edge gently glows.
-                Color to = bright;
+                to = bright;
                 if (pulse) {
                     const double k = 0.62 + 0.38 * pulse01();
                     to = maya::anim::lerp(fg, bright, k);
                 }
-                int idx = 0;
-                apply_gradient(rendered, fg, to, idx, total, w, h);
-            } else {
-                recolor_fg(rendered, fg, w, h);
             }
+            int idx = 0;
+            apply_gradient(rendered, fg, to, idx, total, w, h,
+                           structured, waypoint);
             return rendered;
         };
         return Element{std::move(comp)};
@@ -383,28 +392,77 @@ private:
         return n;
     }
 
+    // Does this paragraph START a reasoning beat? True for lines that open
+    // with a decision/phase marker — the connective tissue of chain-of-
+    // thought. Case-insensitive on the first token, after trimming leading
+    // whitespace and markdown list/quote glyphs.
+    static bool is_beat(std::string_view s) {
+        std::size_t i = 0;
+        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '>'
+                || s[i] == '-' || s[i] == '*' || s[i] == '#' || s[i] == '.'
+                || (s[i] >= '0' && s[i] <= '9') || s[i] == ')'))
+            ++i;
+        s.remove_prefix(i);
+        if (s.empty()) return false;
+        char buf[20];
+        const std::size_t n = std::min<std::size_t>(s.size(), sizeof(buf) - 1);
+        for (std::size_t k = 0; k < n; ++k) {
+            char c = s[k];
+            buf[k] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c + 32) : c;
+        }
+        std::string_view p{buf, n};
+        static constexpr std::string_view kMarkers[] = {
+            "let me", "let's", "lets ", "first", "second", "third", "next",
+            "then,", "then ", "finally", "now,", "now ", "actually", "wait",
+            "hmm", "so,", "so ", "okay", "ok,", "ok ", "looking at", "i need",
+            "i'll", "i should", "i want", "i can", "the key", "the issue",
+            "the problem", "the plan", "the goal", "step ", "note:", "important",
+            "however", "but ", "instead", "alternatively", "to summar",
+            "in summary", "therefore", "because", "given ", "considering",
+            "overall", "hold on", "on second", "checking", "i'm going",
+        };
+        for (auto m : kMarkers) if (p.starts_with(m)) return true;
+        return false;
+    }
+
     // Recolor each TextElement to lerp(from,to, idx/(total-1)) in traversal
     // order — idx 0 (top / oldest) = from, idx total-1 (bottom / newest) = to.
-    // Assumes the tree is already materialized (see materialize_and_count).
+    // When `structured`, paragraphs that OPEN a beat (is_beat) and any bold
+    // run (markdown emphasis / headers) get `waypoint` + bold instead, so the
+    // reasoning reads as phases. Assumes the tree is materialized.
     static void apply_gradient(Element& e, Color from, Color to,
-                               int& idx, int total, int w, int h) {
+                               int& idx, int total, int w, int h,
+                               bool structured = false,
+                               Color waypoint = {}) {
         std::visit([&](auto& node) {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, TextElement>) {
                 const double t = total <= 1 ? 1.0
                     : static_cast<double>(idx) / static_cast<double>(total - 1);
-                const Color c = maya::anim::lerp(from, to, t);
-                node.style = node.style.with_fg(c);
-                for (auto& r : node.runs) r.style = r.style.with_fg(c);
+                const Color base = maya::anim::lerp(from, to, t);
+                const bool beat = structured && is_beat(node.content);
+                if (beat) {
+                    node.style = node.style.with_fg(waypoint).with_bold();
+                    for (auto& r : node.runs)
+                        r.style = r.style.with_fg(waypoint).with_bold();
+                } else {
+                    node.style = node.style.with_fg(base);
+                    for (auto& r : node.runs)
+                        r.style = (structured && r.style.bold)
+                            ? r.style.with_fg(waypoint)   // inline emphasis = mini-beat
+                            : r.style.with_fg(base);
+                }
                 ++idx;
             } else if constexpr (std::is_same_v<T, BoxElement>) {
-                for (auto& c : node.children) apply_gradient(c, from, to, idx, total, w, h);
+                for (auto& c : node.children)
+                    apply_gradient(c, from, to, idx, total, w, h, structured, waypoint);
             } else if constexpr (std::is_same_v<T, ElementList>) {
-                for (auto& c : node.items) apply_gradient(c, from, to, idx, total, w, h);
+                for (auto& c : node.items)
+                    apply_gradient(c, from, to, idx, total, w, h, structured, waypoint);
             } else if constexpr (std::is_same_v<T, ComponentElement>) {
                 if (node.render) {
                     Element inner = node.render(w, h);
-                    apply_gradient(inner, from, to, idx, total, w, h);
+                    apply_gradient(inner, from, to, idx, total, w, h, structured, waypoint);
                     node.render = [inner = std::move(inner)](int, int) {
                         return inner;
                     };

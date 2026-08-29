@@ -855,6 +855,50 @@ TEST_CASE("picker selected row highlight") {
     std::println("  PASS\n");
 }
 
+// A LARGE structured list (n > 3*viewport) takes the virtualized path: only
+// the visible window is built as real rows, the rest are 1-line placeholders.
+// Output must stay identical to the full path — the selected row, deep in the
+// list, still renders its real content + highlight at the right viewport slot.
+TEST_CASE("picker virtualized large list renders selection") {
+    std::println("=== test_picker_virtualized_large_list ===");
+
+    ScrollState scroll;
+    scroll.auto_dispatch = false;
+    Picker::Config cfg;
+    cfg.title = " Big ";
+    cfg.min_width = 30;
+    cfg.viewport_h = 8;                 // 200 >> 3*8 → virtualized
+    cfg.scroll = &scroll;
+    cfg.selected = 137;                 // deep in the list
+    for (int i = 0; i < 200; ++i)
+        cfg.rows.push_back(Picker::Config::Row{
+            .leading = "row" + std::to_string(i), .trailing = "t"});
+    cfg.rows[137].selected = true;
+
+    StylePool pool;
+    Canvas canvas(40, 14, &pool);
+    render_tree(Picker{std::move(cfg)}.build(), canvas, pool, theme::dark);
+
+    // The selected row (137) must be on-screen, highlighted, with its REAL
+    // leading text — proving the windowed real row was built + placed, not
+    // left a blank placeholder.
+    int hl_y = -1;
+    for (int y = 0; y < canvas.height() && hl_y < 0; ++y)
+        for (int x = 0; x < canvas.width(); ++x)
+            if (pool.get(canvas.get(x, y).style_id).bg == Color::bright_white()) {
+                hl_y = y; break;
+            }
+    assert(hl_y >= 0 && "selected row must be visible + highlighted");
+    std::string line;
+    for (int x = 0; x < canvas.width(); ++x) {
+        char32_t ch = canvas.get(x, hl_y).character;
+        if (ch && ch < 128) line.push_back(static_cast<char>(ch));
+    }
+    assert(line.find("row137") != std::string::npos
+           && "virtualized selected row must show its real content");
+    std::println("  PASS\n");
+}
+
 // Structured rows must remain exactly one row tall even when badge, leading,
 // and trailing cells all compete for a phone-sized terminal. Wrapping changes
 // row indices and makes the cursor highlight the wrong visual item.

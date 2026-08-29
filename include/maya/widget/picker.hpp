@@ -242,9 +242,36 @@ public:
         std::vector<Element> materialised;
         const std::vector<Element>* list = &cfg_.items;
         if (!cfg_.rows.empty()) {
+            const int n    = static_cast<int>(cfg_.rows.size());
+            const int cap0 = std::max(1, cfg_.viewport_h);
             materialised.reserve(cfg_.rows.size());
-            for (const auto& r : cfg_.rows)
-                materialised.push_back(build_row(r));
+            // VIRTUALIZATION. Only rows in (or just around) the visible
+            // window get a real, styled, multi-Element row; every other row
+            // is a cheap 1-line blank placeholder. The vector still holds N
+            // entries, so all downstream height / scroll / scrollbar math is
+            // byte-identical — we've only swapped the OFF-SCREEN Elements for
+            // trivial ones, turning an O(N) build+layout per frame into
+            // O(viewport). Small lists take the exact full path (no risk).
+            if (cfg_.scroll && n > 3 * cap0) {
+                const int vh0 = std::min(cap0, n);
+                // Mirror the keep-selection-in-view clamp so the window we
+                // realize matches the s.y the auto-scroll clamp lands on.
+                int y = std::clamp(cfg_.scroll->y, 0, std::max(0, n - vh0));
+                if (cfg_.selected < y)               y = cfg_.selected;
+                else if (cfg_.selected >= y + vh0)   y = cfg_.selected - vh0 + 1;
+                y = std::clamp(y, 0, std::max(0, n - vh0));
+                const int w0 = std::max(0, y - 1);          // 1 row of headroom
+                const int w1 = std::min(n, y + vh0 + 1);
+                for (int i = 0; i < n; ++i) {
+                    if (i >= w0 && i < w1)
+                        materialised.push_back(build_row(cfg_.rows[static_cast<std::size_t>(i)]));
+                    else
+                        materialised.push_back(text(std::string{" "}) | height(1));
+                }
+            } else {
+                for (const auto& r : cfg_.rows)
+                    materialised.push_back(build_row(r));
+            }
             list = &materialised;
         }
 

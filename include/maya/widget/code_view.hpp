@@ -185,6 +185,10 @@ private:
         std::string            text;
         std::vector<StyledRun> runs;
         int                    indent_cols = 0; // leading whitespace width
+        // Maps a SOURCE byte offset within the (untab-expanded) line to the
+        // corresponding byte offset in `text` (tab-expanded). carets/selections
+        // arrive in source coordinates; this remaps them onto the display.
+        std::vector<int>       src2disp;
     };
 
     // Accumulates (text, style) segments then flattens to a TextElement.
@@ -259,14 +263,15 @@ private:
     void emit_code(RowParts& p, const Line& ln, Style plain, int abs) const {
         const auto& th = cfg_.theme;
 
-        // Carets + selection ranges on this line.
+        // Carets + selection ranges on this line. Incoming columns are SOURCE
+        // byte offsets; remap onto the tab-expanded display line.
         std::vector<int> carets;
-        for (const auto& c : carets_) if (c.first == abs) carets.push_back(c.second);
+        for (const auto& c : carets_) if (c.first == abs) carets.push_back(remap_col(ln, c.second));
         std::vector<std::pair<int,int>> sels;
         for (const auto& s : sels_)
             if (abs >= s[0] && abs <= s[2]) {
-                int a = (abs == s[0]) ? s[1] : 0;
-                int b = (abs == s[2]) ? s[3] : static_cast<int>(ln.text.size());
+                int a = (abs == s[0]) ? remap_col(ln, s[1]) : 0;
+                int b = (abs == s[2]) ? remap_col(ln, s[3]) : static_cast<int>(ln.text.size());
                 sels.push_back({a, b});
             }
         if (!carets.empty() || !sels.empty()) { emit_code_cells(p, ln, carets, sels); return; }
@@ -386,11 +391,19 @@ private:
         lines_.clear();
 
         // Expand tabs up-front so byte offsets == display columns and the
-        // highlighter sees stable, terminal-safe source.
+        // highlighter sees stable, terminal-safe source. We also record, for
+        // each SOURCE byte, the display byte it maps to (g_src2disp) so that
+        // carets/selections — which arrive in source coordinates — land on the
+        // right cell even on tab-indented / CR-containing lines.
         std::string disp;
         disp.reserve(src_.size());
+        std::vector<int> g_src2disp(src_.size() + 1, 0);
+        // source line-start byte offsets, in BOTH coordinate spaces.
+        std::vector<size_t> src_line_start{0};
         int col = 0;
-        for (char c : src_) {
+        for (size_t bi = 0; bi < src_.size(); ++bi) {
+            char c = src_[bi];
+            g_src2disp[bi] = static_cast<int>(disp.size());
             if (c == '\t') {
                 int n = cfg_.tab_width - (col % cfg_.tab_width);
                 disp.append(static_cast<size_t>(n), ' ');
@@ -398,18 +411,22 @@ private:
             } else if (c == '\n') {
                 disp += '\n';
                 col = 0;
+                src_line_start.push_back(bi + 1);
             } else if (c == '\r') {
-                // drop CR
+                // drop CR (does not advance display)
             } else {
                 disp += c;
                 ++col;
             }
         }
+        g_src2disp[src_.size()] = static_cast<int>(disp.size());
 
         std::vector<syntax::Span> spans;
         syntax::highlight(disp, cfg_.lang, spans);
 
         size_t pos = 0, si = 0;
+        size_t disp_line_start = 0;
+        int line_idx = 0;
         while (pos <= disp.size()) {
             size_t nl = disp.find('\n', pos);
             size_t end = (nl == std::string::npos) ? disp.size() : nl;
@@ -419,6 +436,19 @@ private:
             while (ln.indent_cols < static_cast<int>(ln.text.size()) &&
                    ln.text[static_cast<size_t>(ln.indent_cols)] == ' ')
                 ++ln.indent_cols;
+
+            // Build this line's source-byte → display-byte map (line-local),
+            // from the global map, relative to both line starts.
+            {
+                size_t ssrc = (static_cast<size_t>(line_idx) < src_line_start.size())
+                                  ? src_line_start[static_cast<size_t>(line_idx)] : src_.size();
+                // source bytes for this line run until the next '\n' in src_.
+                size_t ssrc_end = ssrc;
+                while (ssrc_end < src_.size() && src_[ssrc_end] != '\n') ++ssrc_end;
+                ln.src2disp.resize(ssrc_end - ssrc + 1);
+                for (size_t k = ssrc; k <= ssrc_end; ++k)
+                    ln.src2disp[k - ssrc] = g_src2disp[k] - static_cast<int>(disp_line_start);
+            }
 
             while (si < spans.size() &&
                    spans[si].start + spans[si].len <= pos)
@@ -435,7 +465,18 @@ private:
 
             if (nl == std::string::npos) break;
             pos = nl + 1;
+            disp_line_start = pos;
+            ++line_idx;
         }
+    }
+
+    // Remap a source-byte caret/selection column onto the display line.
+    static int remap_col(const Line& ln, int src_col) {
+        if (src_col < 0) return 0;
+        if (src_col < static_cast<int>(ln.src2disp.size())) return ln.src2disp[static_cast<size_t>(src_col)];
+        // past the mapped range: clamp to the display line end + overflow
+        int base = ln.src2disp.empty() ? 0 : ln.src2disp.back();
+        return base + (src_col - (static_cast<int>(ln.src2disp.size()) - 1));
     }
 };
 

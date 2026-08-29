@@ -1105,6 +1105,26 @@ TEST_CASE("reasoning stream: live vs settled chrome, and no fold") {
                         && s.find("Actually") != std::string::npos,
                         "structured reasoning keeps beat lines in the body");
     }
+
+    // Fixed-height faded tail: always `height` rows tall, shows the LAST
+    // lines (newest at the bottom), older content pushed off the top.
+    {
+        std::string src;
+        for (int i = 1; i <= 40; ++i) src += "line " + std::to_string(i) + "\n";
+        maya::ReasoningStream::Config cfg;
+        cfg.body_prestyled = true;
+        maya::ReasoningStream rs{cfg};
+        rs.set_live(true);
+        auto body = maya::ReasoningStream::faded_tail(
+            src, 8, maya::Color::rgb(0x20,0x20,0x28), maya::Color::rgb(0xb0,0xb0,0xb8));
+        const auto r = render_at(rs.build_with_body(std::move(body)), 50, 40);
+        const std::string s = joined(r);
+        MAYA_TEST_CHECK(s.find("line 40") != std::string::npos,
+                        "faded tail shows the newest line at the bottom");
+        MAYA_TEST_CHECK(s.find("line 1\n") == std::string::npos
+                        && s.find("line 5 ") == std::string::npos,
+                        "faded tail drops the oldest lines (fixed window)");
+    }
     std::println("PASS");
 }
 

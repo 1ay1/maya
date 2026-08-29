@@ -95,6 +95,10 @@ public:
         // river. Applies live AND settled. Off by default.
         bool  structured = false;
         Color waypoint_fg = Color::rgb(0xe4, 0xe0, 0xff); // bright lavender-white beat
+        // When the host hands build_with_body() a body that already carries
+        // its own per-row colors (the faded_tail), skip the chrome's flat
+        // recolor so the fade survives.
+        bool  body_prestyled = false;
         std::string live_word    = "Thinking";
         std::string settled_word = "Reasoned";
     };
@@ -175,10 +179,105 @@ public:
     /// `set_content`/`feed` on this widget's own StreamingMarkdown are then
     /// unused, but is_live()/set_live() still drive the header state.
     [[nodiscard]] Element build_with_body(Element body) const {
+        // A pre-styled body (e.g. the faded fixed-height tail) owns its own
+        // per-row colors — don't flatten it with the chrome recolor.
+        if (cfg_.body_prestyled) return assemble(std::move(body));
         return assemble(dim_wrap(std::move(body)));
     }
 
+    // Build a FIXED-HEIGHT faded tail of `source`: wrap to the render width,
+    // keep the LAST `height` visual rows, and fade each row's fg smoothly
+    // from `faded` at the top (oldest — dissolving toward the background) to
+    // `full` at the bottom (newest). Always exactly `height` rows tall
+    // (blank-padded at the top when short) so the block never jumps or grows.
+    // Lazy (wraps at layout width); hand to build_with_body() with
+    // Config::body_prestyled = true so the chrome doesn't re-recolor it.
+    [[nodiscard]] static Element faded_tail(std::string source, int height,
+                                            Color faded, Color full) {
+        ComponentElement comp;
+        comp.render = [source = std::move(source), height, faded, full]
+                      (int w, int) -> Element {
+            const int width = w > 6 ? w : 48;
+            std::vector<std::string> lines = wrap_text(source, width);
+            const int H = height > 0 ? height : 1;
+            const int content = std::min<int>(static_cast<int>(lines.size()), H);
+            const int pad   = H - content;
+            const int start = static_cast<int>(lines.size()) - content;
+            std::vector<Element> rows;
+            rows.reserve(static_cast<std::size_t>(H));
+            for (int i = 0; i < H; ++i) {
+                // Visual row i (0 = top). Smoothstep fade: bottom rows full,
+                // top rows dissolve toward `faded` — a soft high-res gradient.
+                const double t = H <= 1 ? 1.0
+                    : static_cast<double>(i) / static_cast<double>(H - 1);
+                const double a = t * t * (3.0 - 2.0 * t);
+                const Color c = maya::anim::lerp(faded, full, a);
+                TextElement te;
+                if (i >= pad)
+                    te.content = lines[static_cast<std::size_t>(start + i - pad)];
+                te.style = Style{}.with_fg(c);
+                te.wrap  = TextWrap::NoWrap;   // already wrapped to width
+                rows.push_back(Element{std::move(te)});
+            }
+            BoxElement box;
+            box.layout.direction = FlexDirection::Column;
+            box.children = std::move(rows);
+            return Element{std::move(box)};
+        };
+        return Element{std::move(comp)};
+    }
+
 private:
+    // Greedy word-wrap `src` to `width` columns, splitting on newlines
+    // (blank lines preserved as empty rows). Long words are hard-split.
+    // Byte-oriented — fine for the ASCII-dominant reasoning text; a wide
+    // rune counts as its bytes, which at worst wraps a hair early.
+    static std::vector<std::string> wrap_text(std::string_view src, int width) {
+        if (width < 1) width = 1;
+        std::vector<std::string> out;
+        auto flush_para = [&](std::string_view para) {
+            if (para.empty()) { out.emplace_back(); return; }
+            std::string line;
+            std::size_t p = 0;
+            while (p < para.size()) {
+                while (p < para.size() && para[p] == ' ') ++p;
+                std::size_t we = p;
+                while (we < para.size() && para[we] != ' ') ++we;
+                std::string_view word = para.substr(p, we - p);
+                p = we;
+                if (word.empty()) break;
+                auto hard_split = [&](std::string_view& w2) {
+                    while (static_cast<int>(w2.size()) > width) {
+                        out.emplace_back(w2.substr(0, static_cast<std::size_t>(width)));
+                        w2.remove_prefix(static_cast<std::size_t>(width));
+                    }
+                };
+                if (line.empty()) {
+                    hard_split(word);
+                    line.assign(word);
+                } else if (static_cast<int>(line.size() + 1 + word.size()) <= width) {
+                    line += ' ';
+                    line.append(word);
+                } else {
+                    out.push_back(std::move(line));
+                    line.clear();
+                    hard_split(word);
+                    line.assign(word);
+                }
+            }
+            if (!line.empty()) out.push_back(std::move(line));
+            else if (out.empty() || !out.back().empty()) { /* nothing */ }
+        };
+        std::size_t i = 0;
+        while (true) {
+            std::size_t nl = src.find('\n', i);
+            if (nl == std::string_view::npos) { flush_para(src.substr(i)); break; }
+            flush_para(src.substr(i, nl - i));
+            i = nl + 1;
+        }
+        return out;
+    }
+
     [[nodiscard]] Element assemble(Element body) const {
         std::vector<Element> rows;
         rows.reserve(2);

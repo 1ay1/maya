@@ -126,6 +126,15 @@ struct RunConfig {
     Mode             mode       = Mode::Fullscreen; ///< Rendering mode
     RenderBackend    backend    = RenderBackend::Ansi; ///< Frame transport (see RenderBackend)
     Theme            theme      = theme::dark;      ///< Colour theme
+    /// Negotiate the KITTY KEYBOARD PROTOCOL (progressive enhancement,
+    /// flag 1 "disambiguate escape codes"). When the terminal supports it,
+    /// modifier chords that legacy encoding cannot express — Ctrl+/, Ctrl+Tab,
+    /// Shift+Enter, and the Esc-vs-escape-sequence ambiguity — arrive as
+    /// unambiguous CSI-u events the parser already decodes. Terminals that
+    /// don't understand it ignore the `\x1b[>1u` push (it's a private CSI),
+    /// so this is safe to leave on; disable via env MAYA_NO_KITTY_KEYBOARD=1
+    /// or by setting this false.
+    bool             enhanced_keyboard = true;
 };
 
 // ============================================================================
@@ -1033,6 +1042,11 @@ private:
     // ANY-motion reporting (mode 1003) so bare hover (no button) produces
     // move events for hover highlights. Cached so re-enable paths match.
     bool          hover_motion_       = false;
+    // RunConfig::enhanced_keyboard — true once the kitty keyboard protocol
+    // push was emitted, so cleanup()/dtor emit the matching pop on every exit
+    // path (leaving it enabled would corrupt key input for the next program
+    // sharing the terminal).
+    bool          kitty_kbd_enabled_  = false;
 
     // -- Wake signaling (background task → UI thread) -------------------------
     // The fd/handle is owned by BackgroundQueue: it must live as long as any

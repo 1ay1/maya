@@ -151,6 +151,23 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
             cfg.hover_motion ? kMouseOnHover : kMouseOn);
     }
 
+    // Negotiate the kitty keyboard protocol (progressive enhancement). The
+    // push is a private CSI that unsupported terminals silently ignore; on
+    // terminals that DO support it (kitty, ghostty, foot, WezTerm, iTerm2
+    // 3.5+, Konsole, recent xterm/Alacritty/Rio, Blink Shell on iOS, tmux
+    // 3.3+), modifier chords legacy encoding can't express — Ctrl+/, Ctrl+Tab,
+    // Shift+Enter — now arrive as unambiguous CSI-u events, and Esc stops
+    // needing the disambiguation timeout. Popped on every exit path so the
+    // next program on this terminal sees the mode it expects.
+    {
+        const char* off = std::getenv("MAYA_NO_KITTY_KEYBOARD");
+        const bool env_off = off && *off && !(off[0] == '0' && off[1] == '\0');
+        if (cfg.enhanced_keyboard && !env_off) {
+            (void)platform::io_write_all(output_h, ansi::kitty_keyboard_push);
+            rt.kitty_kbd_enabled_ = true;
+        }
+    }
+
     // Query initial terminal size.
     if (rt.alt_terminal_) {
         rt.size_ = rt.alt_terminal_->size();
@@ -1807,6 +1824,9 @@ void Runtime::suspend(const std::function<void()>& fn) {
 
     if (mouse_enabled_ && output_handle_ != platform::invalid_handle)
         (void)platform::io_write_all(output_handle_, kMouseOff);
+    // The child (pager / editor) must see the terminal's native key encoding.
+    if (kitty_kbd_enabled_ && output_handle_ != platform::invalid_handle)
+        (void)platform::io_write_all(output_handle_, ansi::kitty_keyboard_pop);
 
     // Drop O_NONBLOCK for the child — it shares the open file
     // description and pagers / bulk writers don't expect EAGAIN.
@@ -1825,6 +1845,9 @@ void Runtime::suspend(const std::function<void()>& fn) {
     if (mouse_enabled_ && output_handle_ != platform::invalid_handle)
         (void)platform::io_write_all(output_handle_,
             hover_motion_ ? kMouseOnHover : kMouseOn);
+    // Re-negotiate the kitty keyboard protocol for our own input.
+    if (kitty_kbd_enabled_ && output_handle_ != platform::invalid_handle)
+        (void)platform::io_write_all(output_handle_, ansi::kitty_keyboard_push);
 
     // ── Re-anchor rendering ──
     fs_coherence_ = coherent::Divergent{};
@@ -1861,6 +1884,12 @@ auto Runtime::cleanup() -> Status {
         (void)platform::io_write_all(output_handle_, kMouseOff);
         mouse_enabled_ = false;
     }
+    // Pop the kitty keyboard protocol so the shell / next program sees the
+    // key encoding it expects (leaving it pushed corrupts their input).
+    if (kitty_kbd_enabled_ && output_handle_ != platform::invalid_handle) {
+        (void)platform::io_write_all(output_handle_, ansi::kitty_keyboard_pop);
+        kitty_kbd_enabled_ = false;
+    }
     // Both terminal states (Terminal<AltScreen>, Terminal<Inline>) reverse
     // their own opt-ins in their destructors, so the rest of cleanup is
     // structurally guaranteed by the type system — there is no path where
@@ -1886,6 +1915,10 @@ Runtime::~Runtime() {
             "\x1b[?1007l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
         (void)platform::io_write_all(output_handle_, kMouseOff);
         mouse_enabled_ = false;
+    }
+    if (kitty_kbd_enabled_ && output_handle_ != platform::invalid_handle) {
+        (void)platform::io_write_all(output_handle_, ansi::kitty_keyboard_pop);
+        kitty_kbd_enabled_ = false;
     }
 }
 

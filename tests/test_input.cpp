@@ -173,6 +173,43 @@ TEST_CASE("input ctrl a") {
     std::println("PASS\n");
 }
 
+// ── Kitty keyboard protocol (CSI-u) — the disambiguated encoding the app
+//    enables so Ctrl+/ and Ctrl+Tab become expressible. ────────────────────
+TEST_CASE("input kitty ctrl slash") {
+    std::println("--- test_input_kitty_ctrl_slash ---");
+    InputParser p;
+    auto events = p.feed("\x1b[47;5u");   // '/'=47, mod 5 = ctrl
+    assert(!events.empty());
+    const KeyEvent& ke = get_key(events[0]);
+    const auto* ck = std::get_if<CharKey>(&ke.key);
+    assert(ck != nullptr && ck->codepoint == '/');
+    assert(ke.mods.ctrl == true);
+    std::println("PASS\n");
+}
+
+TEST_CASE("input kitty ctrl tab") {
+    std::println("--- test_input_kitty_ctrl_tab ---");
+    InputParser p;
+    auto events = p.feed("\x1b[9;5u");    // Tab=9, mod 5 = ctrl
+    assert(!events.empty());
+    const KeyEvent& ke = get_key(events[0]);
+    const auto* sk = std::get_if<SpecialKey>(&ke.key);
+    assert(sk != nullptr && *sk == SpecialKey::Tab);
+    assert(ke.mods.ctrl == true);
+    std::println("PASS\n");
+}
+
+TEST_CASE("input kitty shift tab is backtab") {
+    std::println("--- test_input_kitty_shift_tab ---");
+    InputParser p;
+    auto events = p.feed("\x1b[9;2u");    // Tab=9, mod 2 = shift
+    assert(!events.empty());
+    const KeyEvent& ke = get_key(events[0]);
+    const auto* sk = std::get_if<SpecialKey>(&ke.key);
+    assert(sk != nullptr && *sk == SpecialKey::BackTab);
+    std::println("PASS\n");
+}
+
 TEST_CASE("input utf8 two byte") {
     std::println("--- test_input_utf8_two_byte ---");
     InputParser p;

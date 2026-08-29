@@ -130,6 +130,12 @@ inline constexpr std::string_view show_cursor              = "\x1b[?25h";
 inline constexpr std::string_view hide_cursor              = "\x1b[?25l";
 inline constexpr std::string_view alt_screen_enter         = "\x1b[?1049h";
 inline constexpr std::string_view alt_screen_leave         = "\x1b[?1049l";
+// Kitty keyboard protocol (progressive enhancement). PUSH enables flag 1
+// "disambiguate escape codes" onto the terminal's key-encoding stack; POP
+// restores the previous mode on exit. Unsupported terminals ignore the push
+// (private `CSI > … u` / `CSI < u`), so it is safe to emit unconditionally.
+inline constexpr std::string_view kitty_keyboard_push      = "\x1b[>1u";
+inline constexpr std::string_view kitty_keyboard_pop       = "\x1b[<u";
 // Mouse reporting: 1000 (button press/release), 1002 (button + drag motion),
 // 1006 (SGR extended coordinates). 1002 is a superset of 1000 that also emits
 // motion events while a button is held — required for click-and-drag widgets.

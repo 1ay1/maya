@@ -603,7 +603,11 @@ void InputParser::parse_csi(std::vector<Event>& events) {
 
             std::optional<Key> key;
             switch (codepoint) {
-                case 9:   key = SpecialKey::Tab;       break;
+                // Shift+Tab must surface as BackTab (as the legacy `CSI Z`
+                // path does) so callers that special-case BackTab keep
+                // working when the kitty protocol is active.
+                case 9:   key = mods.shift ? SpecialKey::BackTab
+                                           : SpecialKey::Tab;       break;
                 case 13:  key = SpecialKey::Enter;     break;
                 case 27:  key = SpecialKey::Escape;    break;
                 case 127: key = SpecialKey::Backspace; break;

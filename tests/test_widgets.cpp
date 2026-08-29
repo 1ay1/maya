@@ -1106,11 +1106,26 @@ TEST_CASE("reasoning stream: live vs settled chrome, and no fold") {
                         "structured reasoning keeps beat lines in the body");
     }
 
-    // Fixed-height faded tail: always `height` rows tall, shows the LAST
-    // lines (newest at the bottom), older content pushed off the top.
+    // Dynamic-height faded tail: grows with short content, caps + fades when
+    // long, always showing the LAST lines (newest at the bottom).
     {
+        // Short: fits under the cap → shows ALL lines (no drop, no padding).
+        maya::ReasoningStream::Config cfg;
+        cfg.body_prestyled = true;
+        maya::ReasoningStream rs{cfg};
+        rs.set_live(true);
+        auto body = maya::ReasoningStream::faded_tail(
+            "aaa\nbbb\nccc", 8,
+            maya::Color::rgb(0x20,0x20,0x28), maya::Color::rgb(0xb0,0xb0,0xb8));
+        const std::string s = joined(render_at(rs.build_with_body(std::move(body)), 50, 20));
+        MAYA_TEST_CHECK(s.find("aaa") != std::string::npos
+                        && s.find("ccc") != std::string::npos,
+                        "short reasoning shows every line (grows, no cap)");
+    }
+    {
+        // Long: exceeds the cap → last lines only, oldest dropped.
         std::string src;
-        for (int i = 1; i <= 40; ++i) src += "line " + std::to_string(i) + "\n";
+        for (int i = 1; i <= 40; ++i) src += "line" + std::to_string(i) + "\n";
         maya::ReasoningStream::Config cfg;
         cfg.body_prestyled = true;
         maya::ReasoningStream rs{cfg};
@@ -1119,11 +1134,11 @@ TEST_CASE("reasoning stream: live vs settled chrome, and no fold") {
             src, 8, maya::Color::rgb(0x20,0x20,0x28), maya::Color::rgb(0xb0,0xb0,0xb8));
         const auto r = render_at(rs.build_with_body(std::move(body)), 50, 40);
         const std::string s = joined(r);
-        MAYA_TEST_CHECK(s.find("line 40") != std::string::npos,
-                        "faded tail shows the newest line at the bottom");
-        MAYA_TEST_CHECK(s.find("line 1\n") == std::string::npos
-                        && s.find("line 5 ") == std::string::npos,
-                        "faded tail drops the oldest lines (fixed window)");
+        MAYA_TEST_CHECK(s.find("line40") != std::string::npos,
+                        "capped tail shows the newest line at the bottom");
+        MAYA_TEST_CHECK(s.find("line1\n") == std::string::npos
+                        && s.find("line5\n") == std::string::npos,
+                        "capped tail drops the oldest lines");
     }
     std::println("PASS");
 }

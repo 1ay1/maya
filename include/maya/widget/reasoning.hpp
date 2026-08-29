@@ -185,38 +185,44 @@ public:
         return assemble(dim_wrap(std::move(body)));
     }
 
-    // Build a FIXED-HEIGHT faded tail of `source`: wrap to the render width,
-    // keep the LAST `height` visual rows, and fade each row's fg smoothly
-    // from `faded` at the top (oldest — dissolving toward the background) to
-    // `full` at the bottom (newest). Always exactly `height` rows tall
-    // (blank-padded at the top when short) so the block never jumps or grows.
+    // Build a reasoning tail with DYNAMIC height up to `cap` rows: wrap to
+    // the render width, and
+    //   * while the wrapped content fits in `cap`, show ALL of it at full
+    //     brightness (the block simply GROWS with the reasoning — no padding,
+    //     no fade, no big empty container);
+    //   * once it exceeds `cap`, pin to `cap` rows showing the LAST lines
+    //     (newest at the bottom) and fade the top rows smoothly toward
+    //     `faded` (dissolving into the background) so older thought scrolls
+    //     away in high resolution.
     // Lazy (wraps at layout width); hand to build_with_body() with
     // Config::body_prestyled = true so the chrome doesn't re-recolor it.
-    [[nodiscard]] static Element faded_tail(std::string source, int height,
+    [[nodiscard]] static Element faded_tail(std::string source, int cap,
                                             Color faded, Color full) {
         ComponentElement comp;
-        comp.render = [source = std::move(source), height, faded, full]
+        comp.render = [source = std::move(source), cap, faded, full]
                       (int w, int) -> Element {
             const int width = w > 6 ? w : 48;
             std::vector<std::string> lines = wrap_text(source, width);
-            const int H = height > 0 ? height : 1;
-            const int content = std::min<int>(static_cast<int>(lines.size()), H);
-            const int pad   = H - content;
-            const int start = static_cast<int>(lines.size()) - content;
+            const int maxh = cap > 0 ? cap : 1;
+            const int H = std::min<int>(static_cast<int>(lines.size()), maxh);
+            const int start = static_cast<int>(lines.size()) - H;
+            const bool capped = start > 0;   // content hidden above → fade top
             std::vector<Element> rows;
             rows.reserve(static_cast<std::size_t>(H));
             for (int i = 0; i < H; ++i) {
-                // Visual row i (0 = top). Smoothstep fade: bottom rows full,
-                // top rows dissolve toward `faded` — a soft high-res gradient.
-                const double t = H <= 1 ? 1.0
-                    : static_cast<double>(i) / static_cast<double>(H - 1);
-                const double a = t * t * (3.0 - 2.0 * t);
-                const Color c = maya::anim::lerp(faded, full, a);
+                Color c = full;
+                if (capped) {
+                    // Concentrate the dissolve in the TOP few rows; the rest
+                    // stay full so most of the window is readable.
+                    const double t = H <= 1 ? 1.0
+                        : static_cast<double>(i) / static_cast<double>(H - 1);
+                    const double a = t * t * (3.0 - 2.0 * t);   // smoothstep
+                    c = maya::anim::lerp(faded, full, a);
+                }
                 TextElement te;
-                if (i >= pad)
-                    te.content = lines[static_cast<std::size_t>(start + i - pad)];
-                te.style = Style{}.with_fg(c);
-                te.wrap  = TextWrap::NoWrap;   // already wrapped to width
+                te.content = lines[static_cast<std::size_t>(start + i)];
+                te.style   = Style{}.with_fg(c);
+                te.wrap    = TextWrap::NoWrap;   // already wrapped to width
                 rows.push_back(Element{std::move(te)});
             }
             BoxElement box;

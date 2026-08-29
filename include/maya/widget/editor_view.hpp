@@ -38,6 +38,7 @@ struct EditorView {
     int  sr = 0, sc = 0, er = 0, ec = 0;         // ordered selection, 0-based
     syntax::Lang  lang  = syntax::Lang::Generic;
     CodeViewTheme theme = {};
+    int tab_width = 4;
     int* scroll = nullptr;                       // persistent scroll-top (required for stable scroll)
 
     // Additional carets / selections for multi-cursor (the primary is row/col
@@ -66,7 +67,32 @@ struct EditorView {
     // resolves the same scroll the next paint will use.
     [[nodiscard]] Caret caret(int pane_h) const {
         const int top = resolve(std::max(1, pane_h));
-        return { code_prefix(pane_h) + col, row - top };
+        return { code_prefix(pane_h) + caret_display_col(), row - top };
+    }
+
+    // Display cell of the caret WITHIN its line: expands tabs to the tab stop
+    // and counts wide (CJK/emoji) glyphs as 2 cells, so a popup anchored here
+    // lands on the real screen column even past wide chars / tabs.
+    [[nodiscard]] int caret_display_col() const {
+        if (row < 0 || row >= static_cast<int>(lines.size())) return col;
+        std::string_view l{lines[static_cast<std::size_t>(row)]};
+        int cell = 0; std::size_t i = 0;
+        const int cap = std::min<int>(col, static_cast<int>(l.size()));
+        while (static_cast<int>(i) < cap) {
+            if (l[i] == '\t') { cell += tab_width - (cell % tab_width); ++i; continue; }
+            unsigned char lead = static_cast<unsigned char>(l[i]);
+            int len = (lead < 0x80) ? 1 : (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3
+                    : (lead >> 3) == 0x1E ? 4 : 1;
+            char32_t cp = lead;
+            if (len > 1) {
+                cp = lead & (0x7F >> len);
+                for (int k = 1; k < len && i + static_cast<std::size_t>(k) < l.size(); ++k)
+                    cp = (cp << 6) | (static_cast<unsigned char>(l[i + static_cast<std::size_t>(k)]) & 0x3F);
+            }
+            cell += unicode::char_width(cp, unicode::WidthMode::Modern);
+            i += static_cast<std::size_t>(len);
+        }
+        return cell;
     }
 
     // Number of leading columns CodeView draws before the code (ribbon + gutter).
@@ -101,7 +127,7 @@ private:
         std::string src;
         for (int i = lo; i < hi; ++i) { if (i > lo) src += '\n'; src += lines[static_cast<std::size_t>(i)]; }
 
-        CodeView cv{src, {.lang = lang, .theme = theme, .first_line = lo + 1}};
+        CodeView cv{src, {.lang = lang, .theme = theme, .first_line = lo + 1, .tab_width = tab_width}};
         cv.set_caret(row + 1, col);
         for (const auto& c : extra_carets) cv.add_caret(c.row + 1, c.col);
         if (sel) cv.set_selection(sr + 1, sc, er + 1, ec);

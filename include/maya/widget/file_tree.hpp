@@ -91,6 +91,9 @@ public:
     FileTree& marked(bool v = true)   { last().marked = v; return *this; }
     FileTree& active(int i)           { active_ = i; return *this; }
 
+    // Override the color theme.
+    FileTree& set_theme(FileTreeTheme t) { theme = std::move(t); return *this; }
+
     // Live filter: highlight the query's characters within each name.
     FileTree& filter(std::string q)   { filter_ = std::move(q); return *this; }
 

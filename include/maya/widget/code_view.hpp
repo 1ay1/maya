@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <string>
 #include <string_view>
@@ -83,16 +84,21 @@ public:
     CodeView& mark(int abs_line, LineMark m) { marks_[abs_line] = m; return *this; }
     CodeView& clear_marks()                  { marks_.clear(); return *this; }
 
-    // A block caret at (line, col) — col is 0-based. Also sets the active line.
+    // A block caret at (line, col) — col is 0-based. Replaces any existing carets.
     CodeView& set_caret(int line, int col) {
-        caret_line_ = line; caret_col_ = col; active_ = line; return *this;
+        carets_.clear(); carets_.push_back({line, col}); active_ = line; return *this;
     }
-    // A selection from (l0,c0) to (l1,c1), inclusive of lines, columns 0-based.
+    // Add an additional caret (multi-cursor).
+    CodeView& add_caret(int line, int col) { carets_.push_back({line, col}); return *this; }
+    // A selection from (l0,c0) to (l1,c1). Replaces any existing selections.
     CodeView& set_selection(int l0, int c0, int l1, int c1) {
-        if (l1 < l0 || (l1 == l0 && c1 < c0)) { std::swap(l0, l1); std::swap(c0, c1); }
-        sl0_ = l0; sc0_ = c0; sl1_ = l1; sc1_ = c1; sel_ = true; return *this;
+        sels_.clear(); return add_selection(l0, c0, l1, c1);
     }
-    CodeView& clear_selection() { sel_ = false; return *this; }
+    CodeView& add_selection(int l0, int c0, int l1, int c1) {
+        if (l1 < l0 || (l1 == l0 && c1 < c0)) { std::swap(l0, l1); std::swap(c0, c1); }
+        sels_.push_back({l0, c0, l1, c1}); return *this;
+    }
+    CodeView& clear_selection() { sels_.clear(); return *this; }
 
     [[nodiscard]] int line_count() const { return static_cast<int>(lines_.size()); }
 
@@ -111,7 +117,8 @@ public:
 
         for (int i = 0; i < count; ++i) {
             const int  abs = cfg_.first_line + i;
-            const bool active = (abs == active_);
+            const bool active = std::any_of(carets_.begin(), carets_.end(),
+                                            [&](const auto& c) { return c.first == abs; });
             const Style plain{}; // terminal-default fg/bg
 
             // ── git change ribbon (1 col, far left) ─────────────────────────
@@ -195,10 +202,8 @@ private:
     std::vector<Line>                 lines_;
     std::unordered_map<int, LineMark> marks_;
     int                               active_ = -1;
-    int                               caret_line_ = -1;
-    int                               caret_col_  = -1;
-    bool                              sel_ = false;
-    int                               sl0_ = 0, sc0_ = 0, sl1_ = 0, sc1_ = 0;
+    std::vector<std::pair<int,int>>   carets_;                 // (abs line, 0-based col)
+    std::vector<std::array<int,4>>    sels_;                   // (l0,c0,l1,c1), 1-based lines
 
     static int digits(int n) {
         int d = 1;
@@ -253,17 +258,17 @@ private:
     void emit_code(RowParts& p, const Line& ln, Style plain, int abs) const {
         const auto& th = cfg_.theme;
 
-        // Resolve caret + selection columns for this line.
-        const int caret = (abs == caret_line_) ? caret_col_ : -1;
-        int selc0 = -1, selc1 = -1;
-        if (sel_ && abs >= sl0_ && abs <= sl1_) {
-            selc0 = (abs == sl0_) ? sc0_ : 0;
-            selc1 = (abs == sl1_) ? sc1_ : static_cast<int>(ln.text.size());
-        }
-        if (caret >= 0 || selc0 >= 0) {
-            emit_code_cells(p, ln, caret, selc0, selc1);
-            return;
-        }
+        // Carets + selection ranges on this line.
+        std::vector<int> carets;
+        for (const auto& c : carets_) if (c.first == abs) carets.push_back(c.second);
+        std::vector<std::pair<int,int>> sels;
+        for (const auto& s : sels_)
+            if (abs >= s[0] && abs <= s[2]) {
+                int a = (abs == s[0]) ? s[1] : 0;
+                int b = (abs == s[2]) ? s[3] : static_cast<int>(ln.text.size());
+                sels.push_back({a, b});
+            }
+        if (!carets.empty() || !sels.empty()) { emit_code_cells(p, ln, carets, sels); return; }
 
         // Indent guides: a faint │ at every tab stop inside the leading run.
         if (cfg_.indent_guides && ln.indent_cols >= cfg_.tab_width) {
@@ -303,8 +308,8 @@ private:
     // selection (underline) can overlay the syntax colour. Byte == column is
     // assumed (source is tab-expanded ASCII); multibyte comments degrade
     // gracefully. No custom background — inverse uses the terminal's colours.
-    void emit_code_cells(RowParts& p, const Line& ln, int caret,
-                         int selc0, int selc1) const {
+    void emit_code_cells(RowParts& p, const Line& ln, const std::vector<int>& carets,
+                         const std::vector<std::pair<int,int>>& sels) const {
         const auto& th = cfg_.theme;
         const int n = static_cast<int>(ln.text.size());
         std::vector<Style> cs(static_cast<size_t>(n), Style{});
@@ -313,6 +318,9 @@ private:
                  b < r.byte_offset + r.byte_length && b < static_cast<size_t>(n); ++b)
                 cs[b] = r.style;
 
+        auto in_sel   = [&](int c) { for (auto& s : sels) if (c >= s.first && c < s.second) return true; return false; };
+        auto is_caret = [&](int c) { for (int cc : carets) if (c == cc) return true; return false; };
+
         for (int c = 0; c < n; ++c) {
             std::string glyph(1, ln.text[static_cast<size_t>(c)]);
             Style st = cs[static_cast<size_t>(c)];
@@ -320,12 +328,12 @@ private:
                 glyph = "\xe2\x94\x82";
                 st = Style{}.with_fg(th.indent_guide);
             }
-            if (selc0 >= 0 && c >= selc0 && c < selc1) st = st.with_underline();
-            if (c == caret) st = st.with_inverse();
+            if (in_sel(c))   st = st.with_underline();
+            if (is_caret(c)) st = st.with_inverse();
             p.push(glyph, st);
         }
-        // Caret sitting past the end of the text.
-        if (caret >= n) p.push(" ", Style{}.with_inverse());
+        // A caret sitting past the end of the text.
+        for (int cc : carets) if (cc >= n) { p.push(" ", Style{}.with_inverse()); break; }
     }
 
     // TextElement requires runs to tile the whole content with no gaps, so we

@@ -40,6 +40,13 @@ struct EditorView {
     CodeViewTheme theme = {};
     int* scroll = nullptr;                       // persistent scroll-top (required for stable scroll)
 
+    // Additional carets / selections for multi-cursor (the primary is row/col
+    // + sel above; these are the rest). row/col stays the anchor for scroll.
+    struct XCaret { int row, col; };
+    struct XSel    { int sr, sc, er, ec; };
+    std::vector<XCaret> extra_carets;
+    std::vector<XSel>   extra_sels;
+
     struct Caret { int col; int row; };          // cell within the pane
 
     operator Element() const { return build(); }
@@ -92,7 +99,9 @@ private:
 
         CodeView cv{src, {.lang = lang, .theme = theme, .first_line = lo + 1}};
         cv.set_caret(row + 1, col);
+        for (const auto& c : extra_carets) cv.add_caret(c.row + 1, c.col);
         if (sel) cv.set_selection(sr + 1, sc, er + 1, ec);
+        for (const auto& s : extra_sels) cv.add_selection(s.sr + 1, s.sc, s.er + 1, s.ec);
         return cv.build();
     }
 

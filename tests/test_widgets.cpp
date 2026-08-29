@@ -1070,6 +1070,8 @@ TEST_CASE("reasoning stream: live vs settled chrome, and no fold") {
                         "gradient+pulse+tail live reasoning renders the block");
         MAYA_TEST_CHECK(s.find("Thinking") != std::string::npos,
                         "gradient live reasoning still shows the animated header");
+        MAYA_TEST_CHECK(s.find("tok") != std::string::npos,
+                        "live header shows the ticking token meter");
     }
     // Settled gradient config falls back to the flat recolor and keeps the
     // FULL body (the gradient is live-only, so settle is unaffected).

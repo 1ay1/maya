@@ -245,6 +245,12 @@ private:
             // it breathes even without a host advance() call.
             push(" ", Style{});
             push(spinner_frame(), Style{}.with_fg(cfg_.accent).with_dim());
+            // Live thinking METER: the token estimate ticks up as reasoning
+            // streams, so the block conveys effort/progress, not just motion.
+            // Reflects the FULL source even when the body is tail-windowed.
+            if (reasoning_chars() > 0)
+                push("  \xc2\xb7  " + token_estimate() + " tok",   // · N tok
+                     Style{}.with_fg(cfg_.header_word).with_dim().with_italic());
         } else {
             push(cfg_.settled_word, Style{}.with_fg(cfg_.header_word).with_dim());
             // Suppress the token meta at ~0 so a stray empty block never

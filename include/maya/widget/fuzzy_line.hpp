@@ -91,10 +91,22 @@ struct FuzzyLine {
         const Style base  = Style{}.with_fg(theme.base);
         const Style hit   = Style{}.with_fg(theme.match).with_bold();
         size_t mi = 0;
-        for (size_t i = 0; i < text.size(); ++i) {
-            bool m = (mi < matches.size() && static_cast<int>(i) == matches[mi]);
+        // Walk by CODEPOINT so multibyte chars (accents, CJK, emoji) in the
+        // candidate stay intact — a byte-by-byte substr(i,1) would split them
+        // into invalid single bytes and render mojibake. `matches` are byte
+        // offsets; a codepoint is a match if its START offset is matched.
+        std::string_view tv{text};
+        for (size_t i = 0; i < tv.size();) {
+            unsigned char lead = static_cast<unsigned char>(tv[i]);
+            size_t len = (lead < 0x80) ? 1 : (lead >> 5) == 0x6 ? 2
+                       : (lead >> 4) == 0xE ? 3 : (lead >> 3) == 0x1E ? 4 : 1;
+            if (i + len > tv.size()) len = 1;
+            bool m = (mi < matches.size() && static_cast<size_t>(matches[mi]) == i);
             if (m) ++mi;
-            put(std::string_view{text}.substr(i, 1), m ? hit : base);
+            // consume any further match offsets that fall inside this codepoint
+            while (mi < matches.size() && static_cast<size_t>(matches[mi]) < i + len) ++mi;
+            put(tv.substr(i, len), m ? hit : base);
+            i += len;
         }
 
         Element left = Element{TextElement{

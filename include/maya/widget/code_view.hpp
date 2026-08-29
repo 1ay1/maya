@@ -31,6 +31,7 @@
 #include "../element/text.hpp"
 #include "../style/color.hpp"
 #include "../style/style.hpp"
+#include "../text/unicode_width.hpp"
 #include "markdown/highlight.hpp"
 
 namespace maya {
@@ -321,18 +322,35 @@ private:
         auto in_sel   = [&](int c) { for (auto& s : sels) if (c >= s.first && c < s.second) return true; return false; };
         auto is_caret = [&](int c) { for (int cc : carets) if (c == cc) return true; return false; };
 
-        for (int c = 0; c < n; ++c) {
-            std::string glyph(1, ln.text[static_cast<size_t>(c)]);
-            Style st = cs[static_cast<size_t>(c)];
-            if (cfg_.indent_guides && c < ln.indent_cols && (c % cfg_.tab_width == 0)) {
+        // Walk by CODEPOINT so multibyte glyphs stay intact (a byte-by-byte
+        // loop would split UTF-8 and mojibake any accented / CJK / emoji line
+        // that has a caret or selection on it). Caret/selection cols are byte
+        // offsets; we test the offset at each codepoint's START.
+        std::string_view t{ln.text};
+        size_t i = 0;
+        int indent_seen = 0;
+        while (i < t.size()) {
+            size_t start = i;
+            unsigned char lead = static_cast<unsigned char>(t[i]);
+            int len = (lead < 0x80) ? 1 : (lead >> 5) == 0x6 ? 2 : (lead >> 4) == 0xE ? 3
+                    : (lead >> 3) == 0x1E ? 4 : 1;
+            if (start + static_cast<size_t>(len) > t.size()) len = 1;
+            std::string glyph = std::string(t.substr(start, static_cast<size_t>(len)));
+            i += static_cast<size_t>(len);
+
+            Style st = cs[start];
+            // indent guide: only meaningful in the ASCII indentation region
+            if (cfg_.indent_guides && static_cast<int>(start) < ln.indent_cols &&
+                (indent_seen % cfg_.tab_width == 0) && glyph == " ") {
                 glyph = "\xe2\x94\x82";
                 st = Style{}.with_fg(th.indent_guide);
             }
-            if (in_sel(c))   st = st.with_underline();
-            if (is_caret(c)) st = st.with_inverse();
+            if (static_cast<int>(start) < ln.indent_cols) ++indent_seen;
+
+            if (in_sel(static_cast<int>(start)))   st = st.with_underline();
+            if (is_caret(static_cast<int>(start)))  st = st.with_inverse();
             p.push(glyph, st);
         }
-        // A caret sitting past the end of the text.
         for (int cc : carets) if (cc >= n) { p.push(" ", Style{}.with_inverse()); break; }
     }
 

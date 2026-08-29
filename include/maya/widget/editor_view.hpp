@@ -47,6 +47,10 @@ struct EditorView {
     std::vector<XCaret> extra_carets;
     std::vector<XSel>   extra_sels;
 
+    // Per-line change marks (0-based row → mark) painted in the far-left git
+    // ribbon. Empty by default; the host fills it from a diff.
+    std::vector<std::pair<int, LineMark>> line_marks;
+
     struct Caret { int col; int row; };          // cell within the pane
 
     operator Element() const { return build(); }
@@ -102,6 +106,8 @@ private:
         for (const auto& c : extra_carets) cv.add_caret(c.row + 1, c.col);
         if (sel) cv.set_selection(sr + 1, sc, er + 1, ec);
         for (const auto& s : extra_sels) cv.add_selection(s.sr + 1, s.sc, s.er + 1, s.ec);
+        for (const auto& [r, m] : line_marks)
+            if (r >= lo && r < hi) cv.mark(r + 1, m);
         return cv.build();
     }
 

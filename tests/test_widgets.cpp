@@ -1059,13 +1059,15 @@ TEST_CASE("reasoning stream: live vs settled chrome, and no fold") {
     {
         maya::ReasoningStream::Config cfg;
         cfg.gradient_body = true;
+        cfg.pulse = true;
+        cfg.live_tail_lines = 3;   // ticker: only the last few line-nodes
         maya::ReasoningStream rs{cfg};
         rs.set_live(true);
         rs.set_content("ALPHA_LINE\n\nBETA_LINE\n\nGAMMA_LINE");
         const auto r = render_at(rs.build(), 44, 16);
         const std::string s = joined(r);
         MAYA_TEST_CHECK(r.content_h > 0,
-                        "gradient live reasoning renders without dropping the block");
+                        "gradient+pulse+tail live reasoning renders the block");
         MAYA_TEST_CHECK(s.find("Thinking") != std::string::npos,
                         "gradient live reasoning still shows the animated header");
     }

@@ -40,6 +40,7 @@
 //   Element e = r.build();    // or `Element e = r;`
 
 #include <cstddef>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -79,6 +80,14 @@ public:
         // default — hosts opt in per block.
         bool  gradient_body = false;
         Color body_fg_bright = Color::rgb(0xc9, 0xc2, 0xf0); // bright lavender (newest)
+        // Breathe the newest lines + the rail with the animation clock while
+        // live, so the block reads as actively thinking (needs gradient_body).
+        bool  pulse = false;
+        // While live, show only the last N line-nodes of the reasoning (a
+        // scrolling "thought ticker") so a long chain-of-thought stays
+        // compact and doesn't shove the composer around. 0 = show everything.
+        // Settled always shows the full body.
+        int   live_tail_lines = 0;
         std::string live_word    = "Thinking";
         std::string settled_word = "Reasoned";
     };
@@ -178,7 +187,7 @@ private:
             .style  = BorderStyle::Bold,                // ┃ heavier = a "rail"
             .sides  = BorderSides{false, false, false, true}, // left only
             .colors = BorderColors{
-                .left = live_ ? cfg_.accent : dim(cfg_.accent),
+                .left = live_ ? rail_color() : dim(cfg_.accent),
             },
         };
         box.children = std::move(rows);
@@ -193,6 +202,15 @@ private:
 
     // A dimmer variant of a color for the settled rail (recede once done).
     static Color dim(Color c) noexcept { return c.darken(0.45f); }
+
+    // Rail hue while live: breathes between dim and full accent in lockstep
+    // with the body pulse (same pulse01 phase) so the whole block feels alive
+    // while thinking. Flat accent when pulse is off.
+    [[nodiscard]] Color rail_color() const {
+        if (!(cfg_.pulse && live_)) return cfg_.accent;
+        return maya::anim::lerp(dim(cfg_.accent), cfg_.accent,
+                                0.45 + 0.55 * pulse01());
+    }
 
     [[nodiscard]] std::size_t reasoning_chars() const noexcept {
         return char_hint_ ? char_hint_ : md_->source().size();
@@ -261,16 +279,45 @@ private:
         // eye rides the live edge — a "stream of consciousness". Settled, or
         // gradient off, it's a flat muted recolor (a frozen, uniform aside).
         const bool grad = cfg_.gradient_body && live_;
+        const bool pulse = cfg_.pulse && live_;
+        const int  tail  = live_ ? cfg_.live_tail_lines : 0;
         const Color fg     = cfg_.body_fg;
         const Color bright = cfg_.body_fg_bright;
         ComponentElement comp;
-        comp.render = [body = std::move(body), fg, bright, grad](int w, int h) -> Element {
+        comp.render = [body = std::move(body), fg, bright, grad, pulse, tail]
+                      (int w, int h) -> Element {
             Element rendered = body; // copy the (cheap) wrapper node
-            if (grad) recolor_fg_gradient(rendered, fg, bright, w, h);
-            else      recolor_fg(rendered, fg, w, h);
+            int total = materialize_and_count(rendered, w, h);
+            // Tail window: keep only the last `tail` line-nodes (a scrolling
+            // thought ticker) so long reasoning stays compact while live.
+            if (tail > 0 && total > tail) {
+                int pidx = 0;
+                prune_to_tail(rendered, total - tail, pidx);
+                total = tail;
+            }
+            if (grad) {
+                // Newest endpoint breathes toward `bright` and back while
+                // pulsing, so the live edge gently glows.
+                Color to = bright;
+                if (pulse) {
+                    const double k = 0.62 + 0.38 * pulse01();
+                    to = maya::anim::lerp(fg, bright, k);
+                }
+                int idx = 0;
+                apply_gradient(rendered, fg, to, idx, total, w, h);
+            } else {
+                recolor_fg(rendered, fg, w, h);
+            }
             return rendered;
         };
         return Element{std::move(comp)};
+    }
+
+    // Pulse phase in [0,1] from the shared animation clock (~1.4 s period),
+    // so the body glow and the rail breathe in lockstep.
+    [[nodiscard]] static double pulse01() {
+        const double ph = static_cast<double>(maya::anim_now_ms()) / 1400.0;
+        return 0.5 + 0.5 * std::sin(ph * 6.2831853);
     }
 
     // Recursively override the foreground color of every text run in a tree.
@@ -360,13 +407,43 @@ private:
         }, e.inner);
     }
 
-    // Vertical fade: from (oldest, top) → to (newest, bottom). Two passes so
-    // the total step count is known before assigning per-line colors.
-    static void recolor_fg_gradient(Element& e, Color from, Color to,
-                                    int w, int h) {
-        int total = materialize_and_count(e, w, h);
-        int idx = 0;
-        apply_gradient(e, from, to, idx, total, w, h);
+    // Tail window: keep only line-nodes whose global index >= `cutoff` (the
+    // last N), pruning earlier text and any container left empty, so a long
+    // live reasoning chain collapses to its most-recent lines. `idx` threads
+    // the running text-node counter in the SAME order as
+    // materialize_and_count. Returns whether `e` should stay in its parent.
+    static bool prune_to_tail(Element& e, int cutoff, int& idx) {
+        bool keep = true;
+        std::visit([&](auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, TextElement>) {
+                keep = (idx >= cutoff);
+                ++idx;
+            } else if constexpr (std::is_same_v<T, BoxElement>) {
+                std::vector<Element> kept;
+                kept.reserve(node.children.size());
+                for (auto& c : node.children)
+                    if (prune_to_tail(c, cutoff, idx)) kept.push_back(std::move(c));
+                node.children = std::move(kept);
+                keep = !node.children.empty();
+            } else if constexpr (std::is_same_v<T, ElementList>) {
+                std::vector<Element> kept;
+                kept.reserve(node.items.size());
+                for (auto& c : node.items)
+                    if (prune_to_tail(c, cutoff, idx)) kept.push_back(std::move(c));
+                node.items = std::move(kept);
+                keep = !node.items.empty();
+            } else if constexpr (std::is_same_v<T, ComponentElement>) {
+                if (node.render) {
+                    Element inner = node.render(0, 0);  // materialized → args ignored
+                    keep = prune_to_tail(inner, cutoff, idx);
+                    node.render = [inner = std::move(inner)](int, int) {
+                        return inner;
+                    };
+                }
+            }
+        }, e.inner);
+        return keep;
     }
 
     // Header spinner glyph derived from the shared animation clock so the

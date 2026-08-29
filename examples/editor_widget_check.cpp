@@ -12,6 +12,7 @@
 #include <maya/app/inline.hpp>
 
 #include <maya/widget/code_view.hpp>
+#include <maya/widget/editor_view.hpp>
 #include <maya/widget/minimap.hpp>
 #include <maya/widget/overview_ruler.hpp>
 #include <maya/widget/editor_tab_bar.hpp>
@@ -99,6 +100,7 @@ using namespace maya::dsl;
 // Each factory returns a freshly-built widget Element from a TEMPORARY widget.
 static std::vector<std::pair<const char*, std::function<Element()>>> factories() {
     return {
+        {"EditorView", []{ static std::vector<std::string> L={"int x;","  y();"}; static int s=0; EditorView ev; ev.lines=L; ev.row=1; ev.col=2; ev.lang=syntax::Lang::Cpp; ev.scroll=&s; return ev | grow(1); }},
         {"CodeView", []{ return CodeView{"int x = 1;\n  return x;\n", {.lang=syntax::Lang::Cpp}}
                             .set_caret(1,4); }},
         {"Minimap", []{ Minimap m{{.width=16,.lang=syntax::Lang::Cpp}}; m.set_source("a\n  b\n c\n");

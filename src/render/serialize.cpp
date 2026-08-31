@@ -860,9 +860,20 @@ compose_inline_frame_impl(const Canvas& canvas,
             out += reset_prefix;
             out += ansi::hide_cursor;
             if (synchronized_output) out += ansi::sync_end;
-        } else {
-            out += ansi::hide_cursor;
         }
+        // Ghost-caret hardening (diagnosis: davidwed) — even on a no-op
+        // frame, park the hidden cursor at column 0 and re-assert the
+        // hide OUTSIDE any sync wrapper. The resting-row invariant
+        // guarantees the cursor already sits on the frame's last wire
+        // row (see the park comment at the diff-path tail), so a bare
+        // \r — column-absolute, row-RELATIVE — moves it to the frame's
+        // bottom-left corner without assuming anything about the
+        // frame's absolute anchor. If a terminal-side DECTCEM loss
+        // (rolled-back ?2026 block, SSH reconnect, mobile soft-keyboard
+        // cursor) surfaces the cursor, it appears on border chrome at
+        // col 0 — never as a caret-lookalike block mid-content.
+        out += '\r';
+        out += ansi::hide_cursor;
         state.cursor_hidden_ = true;
         return {std::move(out), std::move(state)};
     }
@@ -1087,6 +1098,15 @@ compose_inline_frame_impl(const Canvas& canvas,
             state.ghost_rows_above_ = 0;
         }
         if (synchronized_output) out += ansi::sync_end;
+        // Ghost-caret hardening (diagnosis: davidwed) — see the park
+        // comment at the diff-path tail. \r parks the cursor at col 0
+        // of the frame's last wire row (where serialize() just left
+        // it); the second ?25l re-asserts the hide OUTSIDE the sync
+        // wrapper so a terminal that discards a timed-out ?2026 block
+        // cannot lose it. Emitted before the pathological-size bailout
+        // below so every return from this path is parked.
+        out += '\r';
+        out += ansi::hide_cursor;
         // Cache the new cell buffer for next frame's comparison.  This is
         // the one path that legitimately needs a full memcpy because
         // prev_cells is empty.  Overflow check protects against pathological
@@ -1434,6 +1454,44 @@ compose_inline_frame_impl(const Canvas& canvas,
     out += ansi::reset;   // drop residual SGR
 
     if (synchronized_output) out += ansi::sync_end;
+
+    // ── Hardware-cursor park + rollback-proof re-hide ──────────────────
+    // (Ghost-caret hardening; diagnosis credit: davidwed, maya PR #7.)
+    //
+    // Inline mode never SHOWS the hardware cursor — the composer's
+    // caret is a painted cell — but the frame's byte stream still
+    // leaves the real cursor at an arbitrary COLUMN of the frame's
+    // last wire row (x_end_emit after a diff slice, last_visible+1
+    // after a shrink re-emit, col 0 after a bare \r\n advance). Two
+    // failure modes can surface it there as a blinking block that
+    // LOOKS like a stale composer caret:
+    //   • a terminal that discards a timed-out ?2026 sync block also
+    //     discards the ?25l we emitted INSIDE it (the only hide this
+    //     frame carried);
+    //   • anything external re-shows it between frames (SSH reconnect,
+    //     sandboxed subprocess writing ?25h, a mobile terminal's soft
+    //     keyboard) — handled per-frame by the early re-hide, but the
+    //     window until the next frame is real.
+    //
+    // Defence in two strokes, both invariant-preserving:
+    //   \r    parks the cursor at column 0. The resting-row invariant
+    //         (per-row loop ends at content_rows-1; the shrink cases
+    //         above restore it) means the cursor is ALREADY on the
+    //         frame's last wire row, so a bare CR — column-absolute,
+    //         row-RELATIVE — reaches the frame's bottom-left corner
+    //         at ANY anchor. No absolute CUP: the frame may sit mid-
+    //         screen below host output (its absolute row is unknowable,
+    //         see the case-B comment), an absolute park would corrupt
+    //         the next frame's relative delta math, and a row-moving
+    //         escape is exactly what wire_row.hpp's T1 (no-ghost)
+    //         forbids issuing outside emit_move. CR moves no row, so
+    //         it is trivially T1-clean and scrollback-safe.
+    //   ?25l  re-asserts the hide OUTSIDE the sync wrapper, where no
+    //         rollback can reach it. 6 bytes, idempotent.
+    // Next-frame math is untouched: the diff path assumes only the
+    // resting ROW (prev_rows - 1); the column is explicitly arbitrary.
+    out += '\r';
+    out += ansi::hide_cursor;
 
     // ── Commit: prev_cells is already up-to-date ───────────────────────
     //

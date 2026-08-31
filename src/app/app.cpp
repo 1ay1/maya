@@ -276,10 +276,11 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     // dual-dialect send instead. Best-effort with a short deadline (same
     // discipline as the DSR above): no answer → -1 → env sniffing decides.
     {
-        const bool in_tmux = [] {
-            const char* t = std::getenv("TMUX");
-            return t && *t;
-        }();
+        // tmux ANYWHERE in the path (this host OR the ssh-local side — see
+        // ansi::tmux_in_path) answers DECRQM about itself, not the outer
+        // terminal, so the probe result would be meaningless — skip it and
+        // let the speculative tmux clipboard branch handle those cases.
+        const bool in_tmux = ansi::tmux_in_path();
         if (!in_tmux) {
             (void)platform::io_write_all(output_h, "\x1b[?5522$p");
             // Extract `CSI ? 5522 ; Ps $ y`; returns Ps, or -1 if absent.
@@ -1811,10 +1812,7 @@ void Runtime::query_clipboard() {
     // ignores the unknown OSC — and (2) ALSO send OSC 52 (likewise wrapped)
     // as the text fallback for the non-kitty case. On kitty both may reply;
     // a short dedup window (see on paste handling) drops the second.
-    const bool in_tmux = [] {
-        const char* m = std::getenv("TMUX");
-        return m && *m;
-    }();
+    const bool in_tmux = ansi::tmux_in_path();
     if (in_tmux) {
         (void)writer_->write_or_buffer(
             ansi::wrap_for_tmux(ansi::request_clipboard_image()));

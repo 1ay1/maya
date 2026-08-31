@@ -302,18 +302,40 @@ void StyleApplier::append_param(std::string& params, std::string_view p) {
            "\x1b\\";
 }
 
+// Is a tmux (or screen) ANYWHERE between us and the real terminal? Two
+// topologies, one answer:
+//   • tmux on THIS host (agentty runs inside it)      → $TMUX is set.
+//   • tmux on the LOCAL side of an ssh session        → $TMUX is NOT set
+//     (it lives in the laptop's env, which sshd doesn't forward) — but
+//     TERM survives ssh verbatim, and tmux always sets it to
+//     tmux-*/screen-*. That TERM reaching us across ssh is the tell.
+// Either way any OSC we emit passes through tmux, which swallows unknown
+// sequences unless DCS-wrapped — so both cases need the passthrough
+// envelope and the speculative dual-dialect clipboard send. (GNU screen
+// matches the TERM heuristic too; it ignores the tmux-format DCS, which
+// degrades to a harmless no-reply.)
+[[nodiscard]] bool tmux_in_path() {
+    if (const char* t = std::getenv("TMUX"); t && *t) return true;
+    if (const char* term = std::getenv("TERM"); term && *term) {
+        std::string_view tv{term};
+        if (tv.rfind("tmux", 0) == 0 || tv.rfind("screen", 0) == 0)
+            return true;
+    }
+    return false;
+}
+
 // Wrap a control sequence in tmux's passthrough envelope so tmux forwards it
 // to the OUTER terminal verbatim instead of swallowing it as unknown.  tmux's
 // format is:  ESC P tmux ; <payload, every inner ESC DOUBLED> ESC \
 // The ESC-doubling is mandatory: tmux un-doubles on the way out, so a single
 // ESC inside the payload would prematurely terminate the DCS.  Returns the
-// sequence UNCHANGED when not inside tmux (TMUX unset), so callers can wrap
-// unconditionally.  Requires `set -g allow-passthrough on` in tmux < 3.4
+// sequence UNCHANGED when no tmux is in the path (see tmux_in_path — covers
+// BOTH tmux-on-this-host and tmux-on-the-local-side-of-ssh), so callers can
+// wrap unconditionally.  Requires `set -g allow-passthrough on` in tmux < 3.4
 // (on by default since 3.4); when off, tmux drops the whole DCS and the
 // request simply gets no reply — the host already tolerates no-reply.
 [[nodiscard]] std::string wrap_for_tmux(std::string_view seq) {
-    const char* tmux = std::getenv("TMUX");
-    if (!tmux || !*tmux) return std::string{seq};
+    if (!tmux_in_path()) return std::string{seq};
     std::string out;
     out.reserve(seq.size() * 2 + 8);
     out += "\x1bPtmux;";
@@ -339,11 +361,13 @@ void StyleApplier::append_param(std::string& params, std::string_view p) {
     // Inside tmux ALL of kitty's fingerprints are erased: tmux drops
     // KITTY_WINDOW_ID and rewrites TERM to tmux-256color/screen-256color,
     // so we genuinely cannot tell whether the outer terminal is kitty from
-    // the environment.  Return true SPECULATIVELY when in tmux: the OSC 5522
-    // request is sent tmux-wrapped (wrap_for_tmux) and a non-kitty outer
-    // terminal silently ignores the unknown OSC — harmless — while the
-    // caller also sends OSC 52 as the text fallback for that case.
-    if (const char* m = std::getenv("TMUX"); m && *m) return true;
+    // the environment.  Return true SPECULATIVELY when tmux is anywhere in
+    // the path — including tmux on the LOCAL side of an ssh session, where
+    // $TMUX doesn't survive but tmux's TERM does (see tmux_in_path): the
+    // OSC 5522 request is sent tmux-wrapped (wrap_for_tmux) and a non-kitty
+    // outer terminal silently ignores the unknown OSC — harmless — while
+    // the caller also sends OSC 52 as the text fallback for that case.
+    if (tmux_in_path()) return true;
     return false;
 }
 

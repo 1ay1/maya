@@ -319,6 +319,14 @@ private:
 // `allow-passthrough on` (default since tmux 3.4).
 [[nodiscard]] std::string wrap_for_tmux(std::string_view seq);
 
+// Is a tmux/screen anywhere between us and the real terminal? Covers BOTH
+// tmux on this host ($TMUX set) AND tmux on the LOCAL side of an ssh
+// session, where $TMUX doesn't survive sshd but tmux's rewritten TERM
+// (tmux-*/screen-*) does. Any OSC emitted in either topology traverses
+// tmux and needs the DCS passthrough envelope + speculative dual-dialect
+// clipboard send.
+[[nodiscard]] bool tmux_in_path();
+
 // ============================================================================
 // Terminal capability hints
 // ============================================================================

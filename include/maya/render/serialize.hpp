@@ -330,6 +330,13 @@ public:
     [[nodiscard]] int      prev_width()       const noexcept { return prev_width_; }
     [[nodiscard]] int      prev_rows()        const noexcept { return prev_rows_; }
     [[nodiscard]] int      wire_cursor_rows() const noexcept { return wire_cursor_rows_; }
+    /// Rows ABOVE the resting row (last wire row) where the hardware-
+    /// caret epilogue left the physical cursor (0 = classic parked
+    /// position). See the epilogue in compose_inline_frame_impl.
+    [[nodiscard]] int      cursor_row_offset() const noexcept { return cursor_row_offset_; }
+    /// Whether the last frame left the hardware cursor SHOWN (DECTCEM
+    /// visible) at the caret hint, rather than parked hidden.
+    [[nodiscard]] bool     cursor_shown()      const noexcept { return cursor_shown_; }
     [[nodiscard]] uint64_t shadow_hash()      const noexcept { return shadow_hash_; }
     /// Monotonic identity stamp. Bumped by every content-advancing
     /// operation (compose, commit, reset-for-recovery). A ScrollbackMarker
@@ -359,6 +366,17 @@ public:
         s.ghost_rows_above_  = 0;
         s.wire_cursor_rows_  = 0;
         s.row_hashes_.clear();
+        // cursor_row_offset_ is deliberately PRESERVED: it describes the
+        // physical terminal cursor (rows above the last frame's resting
+        // row where the hardware-caret epilogue left it), not this
+        // state's frame bookkeeping. A reset without a HardReset wipe
+        // (e.g. committed() over-commit → "everything is scrollback")
+        // is followed by a Fresh render that paints DOWNWARD from the
+        // cursor — if the offset were dropped, that paint would start
+        // rows above the true bottom and overwrite committed scrollback.
+        // The frame-open normalization (cursor_down(offset)) needs the
+        // value to survive. The HardReset path zeroes it explicitly
+        // when its \x1b[H re-anchors the cursor.
         ++s.gen_;   // content-advancing: invalidates any outstanding marker
         return s;
     }
@@ -466,6 +484,13 @@ private:
                               InlineFrameState&&, bool,
                               std::string_view);
     friend std::optional<ShadowWitness> verify_shadow(const InlineFrameState&) noexcept;
+    // Frame-epilogue cursor bookkeeping — lives in serialize.cpp beside
+    // compose_inline_frame_impl; writes the hardware-caret wire-state
+    // fields under the same &&-move ownership discipline (only ever
+    // called on the compose-local state).
+    friend void emit_caret_epilogue(std::string&,
+                                    const std::optional<Canvas::CursorHint>&,
+                                    InlineFrameState&, int, int) noexcept;
     friend std::optional<ScrollbackProof> check_scrollback(
         const InlineFrameState&, const Canvas&, int) noexcept;
     friend class FrameBytes;
@@ -489,6 +514,26 @@ private:
     int           prev_rows_        = 0;
     bool          decawm_off_       = false;
     bool          cursor_hidden_    = false;
+    // ── Hardware-caret wire state ──────────────────────────────
+    // Where the physical terminal cursor is RIGHT NOW relative to the
+    // resting row (frame's last wire row), and whether it is shown.
+    // The classic contract was implicit — "every frame ends on the
+    // resting row, hidden"; the caret epilogue makes it explicit
+    // state so it can end a frame at the caret cell instead. Every
+    // frame prologue normalizes back to the resting row via
+    // cursor_down(cursor_row_offset_) BEFORE any delta math, so the
+    // entire body of the serializer still operates under the classic
+    // invariant unchanged. Both are row-RELATIVE quantities: no
+    // absolute coordinates, T1-clean by construction.
+    int           cursor_row_offset_ = 0;
+    // Column the epilogue left the cursor at (only meaningful when
+    // cursor_shown_). Lets an idle no-op frame prove "the cursor is
+    // already exactly at the caret cell" and emit ZERO movement bytes —
+    // moving the cursor resets the blink timer on most terminals, so an
+    // idle frame that re-positioned every tick would hold the native
+    // blink permanently solid, defeating the point of the hardware caret.
+    int           cursor_col_        = 0;
+    bool          cursor_shown_      = false;
     int           ghost_rows_above_ = 0;
     int           wire_cursor_rows_ = 0;
     uint64_t      shadow_hash_      = static_cast<uint64_t>(-1);

@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -231,6 +232,7 @@ public:
                 auto id = static_cast<uint16_t>(styles_.size());
                 styles_.push_back(s);
                 sgr_cache_.push_back(build_sgr(s));
+                if (s.caret_anchor) [[unlikely]] caret_ids_.push_back(id);
                 slot = {h, id};
                 ++size_;
                 if (size_ * 4 > capacity_ * 3) [[unlikely]] {
@@ -309,6 +311,20 @@ public:
     /// hot path to avoid syscalls.
     [[nodiscard]] bool overflowed() const noexcept { return overflow_; }
 
+    /// True if `id` was interned from a style carrying the hardware-
+    /// caret anchor meta-bit. O(k) over the (tiny — normally 0 or 1)
+    /// set of anchor-carrying ids; used by the paint path to detect
+    /// the caret cell without unpacking the Style per cell.
+    [[nodiscard]] bool is_caret_anchor(uint16_t id) const noexcept {
+        for (uint16_t c : caret_ids_) if (c == id) return true;
+        return false;
+    }
+    /// Any caret-anchor style interned at all? Lets the hot paint path
+    /// skip per-cell anchor checks entirely for frames with no caret.
+    [[nodiscard]] bool has_caret_anchor() const noexcept {
+        return !caret_ids_.empty();
+    }
+
     /// Reset the pool back to only the default style.
     void clear();
 
@@ -321,6 +337,7 @@ private:
     std::vector<Style>       styles_;
     std::vector<std::string> sgr_cache_;  // sgr_cache_[id] = pre-built "\x1b[0;...m"
     std::vector<Slot>        slots_;
+    std::vector<uint16_t>    caret_ids_;  // ids interned with caret_anchor set
     std::size_t size_     = 0;
     std::size_t capacity_ = 0;
     std::size_t mask_     = 0;
@@ -849,6 +866,35 @@ public:
     /// Reset all cells to space with the default style. Clears damage.
     void clear();
 
+    // ── Hardware-cursor hint ─────────────────────────────────────
+    // An optional (x, y) the frame's focused caret owner records at
+    // paint time. It is a HINT, not a cell: it lives outside the packed
+    // cell grid, so the diff, the shadow-of-wire hashes, the component
+    // cache and the Witness Chain never see it — identical cells still
+    // produce identical frames whether or not a hint is set. The inline
+    // serializer consumes it in the frame epilogue: hint present + row
+    // on-screen ⇒ the real terminal cursor is moved there and SHOWN
+    // (DECTCEM) instead of being parked hidden at the frame's bottom-
+    // left corner. This is what lets a composer use the terminal's OWN
+    // caret — native blink at the terminal's cadence with zero
+    // animation-frame wake-ups, IME candidate windows anchored at the
+    // true caret cell, and screen readers tracking the real cursor.
+    //
+    // Exactly one owner per frame: the LAST set_cursor_hint call wins
+    // (matches every immediate-mode precedent — ncurses leaves the
+    // cursor at the last move(), ratatui at the last set_cursor). A
+    // frame with no focused caret simply never calls it, and the
+    // serializer falls back to park-and-hide. clear()/clear_rows()
+    // reset the hint with the rest of the frame state.
+    struct CursorHint { int x = 0; int y = 0; };
+    void set_cursor_hint(int x, int y) noexcept {
+        if (in_bounds(x, y)) cursor_hint_ = CursorHint{x, y};
+    }
+    void clear_cursor_hint() noexcept { cursor_hint_.reset(); }
+    [[nodiscard]] const std::optional<CursorHint>& cursor_hint() const noexcept {
+        return cursor_hint_;
+    }
+
     /// Clear only rows [0, n). Much faster than clear() for inline mode
     /// where only a small portion of a tall canvas has content.
     void clear_rows(int n);
@@ -1063,6 +1109,10 @@ private:
     // it shares a cache line with has_clip_ / clip bounds — no
     // additional memory traffic in the hot path.
     CanvasStage stage_ = CanvasStage::Drained;
+    // Hardware-cursor hint — see the public accessor block. Optional so
+    // "no focused caret this frame" is representable; reset by clear()
+    // and clear_rows() alongside the rest of the frame state.
+    std::optional<CursorHint> cursor_hint_{};
 };
 
 } // namespace maya

@@ -146,6 +146,34 @@ public:
         // reproduce that stop itself. 0 (default) ⇒ never times out (legacy
         // always-blink) so callers that don't plumb activity are unchanged.
         std::int64_t last_edit_ms = 0;
+
+        // ── Hardware caret ─────────────────────────────────────
+        // Use the terminal's REAL cursor as the composer caret instead
+        // of the painted blinking block. The widget still inserts the
+        // caret glyph bytes (wrap geometry stays byte-identical to the
+        // painted mode — no reflow on toggle) but styles the cell
+        // conceal + caret_anchor: it paints NOTHING, and the inline
+        // serializer's frame epilogue moves the hardware cursor onto
+        // that cell and shows it (DECTCEM).
+        //
+        // What this buys over the painted caret:
+        //   • native blink at the terminal's own cadence — and ZERO
+        //     animation-frame wake-ups from maya while idle (the whole
+        //     blink/RAF/idle-timeout machinery is bypassed; the
+        //     last_edit_ms plumbing above becomes irrelevant);
+        //   • IME candidate windows (CJK, dead keys) anchor at the
+        //     true caret cell instead of wherever the hidden cursor
+        //     happened to rest;
+        //   • screen readers and terminal accessibility tools track
+        //     the real cursor position;
+        //   • the user's own cursor shape/color/blink settings apply.
+        //
+        // The blink-phase cache subtleties disappear too: with no
+        // phase in the cells, the composer is frame-invariant while
+        // idle, so the cross-frame component cache could serve it in
+        // ANY state (build() still gates on active-state for painted
+        // mode compatibility).
+        bool hardware_caret = false;
     };
 
     explicit Composer(Config c)
@@ -247,7 +275,10 @@ public:
         // only when the caret cell will actually flip (the half-period
         // boundary). One wake per visible toggle — ~4 Hz — instead of 60.
         bool blink_off = false;
-        if (!active) {
+        if (!active && !cfg_.hardware_caret) {
+            // (Hardware-caret mode skips ALL of this: the terminal owns
+            // the blink, maya schedules nothing. The painted-mode
+            // machinery below is untouched.)
             const std::int64_t now_ms = anim::default_clock().now_ms();
             // Mirror kitty's cursor_stop_blinking_after: once the user has
             // been idle (no edit) for 15 s, hold the cursor SOLID-visible
@@ -337,10 +368,15 @@ public:
                 // Stable bytes: always emit █, toggle visibility via
                 // style. Same rationale as the with-text path —
                 // changing byte length on blink reflows wrap caches.
+                // Hardware-caret mode: same bytes again (identical
+                // geometry), but conceal + caret_anchor — paint
+                // nothing, let the serializer put the REAL cursor here.
                 text("\xe2\x96\x88",
-                     blink_off
-                         ? Style{}.with_fg(muted).with_dim()
-                         : Style{}.with_fg(muted)),
+                     cfg_.hardware_caret
+                         ? Style{}.with_conceal().with_caret_anchor()
+                         : blink_off
+                             ? Style{}.with_fg(muted).with_dim()
+                             : Style{}.with_fg(muted)),
                 text(placeholder, Style{}.with_fg(muted).with_italic())
             ).build());
         } else {
@@ -361,6 +397,12 @@ public:
             // dimming to the box border color hides the glyph against
             // the box chrome reliably across themes.
             const Style cursor_hidden = Style{}.with_fg(box_color).with_dim();
+            // Hardware-caret mode: the caret cell paints NOTHING
+            // (conceal) and carries the anchor meta-bit; the inline
+            // serializer moves + shows the REAL cursor there. Same
+            // bytes as painted mode ⇒ identical wrap geometry.
+            const Style cursor_hw =
+                Style{}.with_conceal().with_caret_anchor();
             auto lines = split_lines(with_cursor);
             for (std::size_t i = 0; i < lines.size(); ++i) {
                 Element prefix = (i == 0) ? prompt_chip
@@ -401,7 +443,10 @@ public:
                     te.runs.push_back(StyledRun{
                         .byte_offset = cur_pos,
                         .byte_length = kBlock.size(),
-                        .style       = blink_off ? cursor_hidden : cursor_visible});
+                        .style       = cfg_.hardware_caret
+                                           ? cursor_hw
+                                           : blink_off ? cursor_hidden
+                                                       : cursor_visible});
                     te.runs.push_back(StyledRun{
                         .byte_offset = cur_pos + kBlock.size(),
                         .byte_length = line.size() - cur_pos - kBlock.size(),

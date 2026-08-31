@@ -153,6 +153,7 @@ void StylePool::clear() {
     pool_id_ = g_next_pool_id.fetch_add(1, std::memory_order_relaxed);
     styles_.resize(1);
     sgr_cache_.resize(1);
+    caret_ids_.clear();
     size_ = 1;
     overflow_ = false;
     std::fill(slots_.begin(), slots_.end(), Slot{});
@@ -367,6 +368,8 @@ std::size_t StylePool::hash_style(const Style& s) noexcept {
     if (s.underline)     flags |= (1 << 3);
     if (s.strikethrough) flags |= (1 << 4);
     if (s.inverse)       flags |= (1 << 5);
+    if (s.conceal)       flags |= (1 << 6);
+    if (s.caret_anchor)  flags |= (1 << 7);
     mix(flags);
 
     if (s.fg.has_value()) {
@@ -627,6 +630,7 @@ void Canvas::clear() {
     damage_ = full_rect();
     max_y_ = -1;
     stage_ = CanvasStage::Drained;
+    cursor_hint_.reset();
 }
 
 void Canvas::clear_row(int y) noexcept {
@@ -677,6 +681,7 @@ void Canvas::clear_rows(int n) {
     }
     max_y_ = new_max_y;
     stage_ = CanvasStage::Drained;
+    cursor_hint_.reset();
 }
 
 void Canvas::clear_below(int keep_top, int clear_bottom) {
@@ -740,6 +745,7 @@ void Canvas::clear_below(int keep_top, int clear_bottom) {
     damage_ = Rect{{Columns{0}, Rows{keep_top}},
                    {Columns{width_}, Rows{std::max(0, bottom - keep_top)}}};
     stage_ = CanvasStage::Drained;
+    cursor_hint_.reset();
 }
 
 void Canvas::push_clip(Rect clip) {
@@ -787,6 +793,7 @@ void Canvas::resize(int w, int h) {
     clip_stack_.clear();
     update_clip_cache();
     stage_ = CanvasStage::Drained;
+    cursor_hint_.reset();
 }
 
 void Canvas::mark_damage(Rect region) {

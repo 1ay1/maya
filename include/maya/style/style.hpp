@@ -48,6 +48,24 @@ struct Style {
     /// time (the "starts smooth then bursts" stutter).
     bool conceal       = false;
 
+    /// Hardware-caret anchor (META-attribute — never emitted as SGR).
+    /// A widget that wants the REAL terminal cursor at its caret cell
+    /// styles that one cell with caret_anchor; the renderer records the
+    /// cell's absolute canvas position into Canvas::set_cursor_hint at
+    /// paint time, and the inline serializer moves + shows the hardware
+    /// cursor there in the frame epilogue. Marking travels in the STYLE
+    /// so it survives every paint path uniformly — run splitting, word
+    /// wrap, truncation, and the component cache's packed-cell blit
+    /// (the bit lives in the interned style, and blitted cells carry
+    /// their style_id) — without any widget→layout coordinate plumbing.
+    /// Typically combined with with_conceal(): the anchor cell keeps
+    /// real glyph bytes for stable wrap geometry but paints nothing,
+    /// letting the terminal's own cursor render on top.
+    /// Participates in hashing/equality (two styles differing only in
+    /// caret_anchor must not alias in the StylePool) but build_sgr
+    /// ignores it — zero bytes on the wire.
+    bool caret_anchor  = false;
+
     // -- Fluent builder (each returns a new Style) ---------------------------
 
     /// Return a copy with the foreground color set.
@@ -114,6 +132,14 @@ struct Style {
         return s;
     }
 
+    /// Return a copy with the hardware-caret anchor set — see the
+    /// `caret_anchor` field. Layout-only; never emitted as SGR.
+    [[nodiscard]] constexpr Style with_caret_anchor(bool v = true) const noexcept {
+        Style s = *this;
+        s.caret_anchor = v;
+        return s;
+    }
+
     // -- SGR generation ------------------------------------------------------
 
     /// Build the full ANSI SGR escape sequence for this style.
@@ -169,6 +195,7 @@ struct Style {
         if (other.strikethrough) out.strikethrough = true;
         if (other.inverse)       out.inverse       = true;
         if (other.conceal)       out.conceal       = true;
+        if (other.caret_anchor)  out.caret_anchor  = true;
 
         return out;
     }
@@ -177,7 +204,7 @@ struct Style {
     [[nodiscard]] constexpr bool empty() const noexcept {
         return !fg.has_value() && !bg.has_value()
             && !bold && !dim && !italic && !underline
-            && !strikethrough && !inverse && !conceal;
+            && !strikethrough && !inverse && !conceal && !caret_anchor;
     }
 
     constexpr auto operator<=>(const Style&) const = default;

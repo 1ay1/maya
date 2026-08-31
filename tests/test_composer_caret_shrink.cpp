@@ -199,10 +199,12 @@ static constexpr const char* kBlock = "\xe2\x96\x88";
 
 // ── Render helper: composer config → painted canvas ────────────────────
 static Canvas paint_composer(StylePool& pool, const std::string& text,
-                             int cursor, int width) {
+                             int cursor, int width,
+                             bool hardware_caret = false) {
     Composer::Config cfg;
     cfg.text   = text;
     cfg.cursor = cursor;
+    cfg.hardware_caret = hardware_caret;
     Canvas canvas(width, 64, &pool);
     render_tree(Composer{cfg}.build(), canvas, pool, theme::dark,
                 /*auto_height=*/true);
@@ -475,6 +477,170 @@ int main() {
     std::println("PASS: shrink erased the wrapped row, the caret returned "
                  "to row 0, and the hardware cursor stayed parked+hidden "
                  "(rollback-proof) across fresh/diff/no-op frames.");
+
+    // ── Hardware-caret mode ─────────────────────────────────────
+    // Config::hardware_caret: the caret cell is conceal+caret_anchor
+    // (paints NOTHING — no █ on screen) and the serializer's epilogue
+    // must move the REAL cursor onto that cell and SHOW it. Checks:
+    //   H1  fresh frame: cursor SHOWN at the caret cell (not parked);
+    //   H2  no █ glyph painted anywhere (terminal owns the caret);
+    //   H3  idle no-op frame: ZERO bytes (keep-still — any motion
+    //       would reset the terminal's blink phase);
+    //   H4  wrap→shrink: cursor tracks the caret across a geometry
+    //       change and ends shown at the new caret cell;
+    //   H5  finalize returns the cursor to the resting row (host
+    //       shell resumes BELOW the frame, not mid-box).
+    {
+        auto [writer2, rfd2] = make_pipe_writer();
+        VtEmu hemu(W, 24);
+        StylePool pool2;
+
+        auto drain = [&]() {
+            std::string bytes;
+            char buf[4096];
+            ssize_t k;
+            while ((k = ::read(rfd2, buf, sizeof(buf))) > 0)
+                bytes.append(buf, static_cast<std::size_t>(k));
+            hemu.feed(bytes);
+            return bytes;
+        };
+        auto count_blocks = [&]() {
+            int n = 0;
+            for (int y = 0; y < 24; ++y) {
+                std::size_t p = hemu.screen[y].find(kBlock);
+                while (p != std::string::npos) {
+                    ++n;
+                    p = hemu.screen[y].find(kBlock, p + 1);
+                }
+            }
+            return n;
+        };
+
+        // H1: fresh render, caret mid-text (end of "AAAA").
+        std::string htext = "AAAA BBBB";
+        Canvas h1 = paint_composer(pool2, htext, 4, W, /*hardware_caret=*/true);
+        const int hrows = content_height(h1);
+        maya::inline_frame::InlineFrame<maya::inline_frame::Empty> hf0;
+        auto houtcome = std::move(hf0).seed().render(
+            h1, content_rows(h1), term_rows_for_test(24), pool2, writer2,
+            /*sync=*/true);
+        if (!std::holds_alternative<
+                maya::inline_frame::InlineFrame<maya::inline_frame::Synced>>(
+                houtcome)) {
+            std::println("FAIL: hw frame 1 did not land in Synced");
+            return 1;
+        }
+        auto hsynced =
+            std::get<maya::inline_frame::InlineFrame<maya::inline_frame::Synced>>(
+                std::move(houtcome));
+        drain();
+        dump_screen(hemu, "hw frame 1 (fresh, cursor must be SHOWN at caret)");
+        if (hemu.cursor_hidden) {
+            std::println("\nBUG(hw): cursor hidden after a hardware-caret "
+                         "frame — epilogue did not show it.");
+            return 50;
+        }
+        if (hemu.cy >= hrows - 1 || hemu.cy < 0) {
+            // Caret sits in the composer BODY (above the bottom border) —
+            // a parked cursor would rest on the border row hrows-1.
+            std::println("\nBUG(hw): cursor at row {} (frame rows {}) — "
+                         "looks parked, not at the caret.", hemu.cy, hrows);
+            return 51;
+        }
+        const int hw_row1 = hemu.cy, hw_col1 = hemu.cx;
+        std::println("hw frame 1: cursor shown at ({}, {})", hw_row1, hw_col1);
+        // H2: concealed caret — no block glyph painted anywhere.
+        if (count_blocks() != 0) {
+            std::println("\nBUG(hw): {} painted █ cell(s) — hardware mode "
+                         "must paint no caret glyph.", count_blocks());
+            return 52;
+        }
+
+        // H3: idle no-op frame — keep-still (zero bytes).
+        Canvas h2 = paint_composer(pool2, htext, 4, W, true);
+        auto wit2 = hsynced.verify();
+        auto proof2 = hsynced.check_scrollback(h2, 24);
+        if (!wit2 || !proof2) { std::println("FAIL: hw verify/proof"); return 1; }
+        auto houtcome2 = std::move(hsynced).render(
+            h2, content_rows(h2), term_rows_for_test(24), pool2, writer2,
+            std::move(*wit2), std::move(*proof2), /*sync=*/true);
+        auto hsynced2 =
+            std::get<maya::inline_frame::InlineFrame<maya::inline_frame::Synced>>(
+                std::move(houtcome2));
+        const std::string idle_bytes = drain();
+        if (!idle_bytes.empty()) {
+            std::println("\nBUG(hw): idle no-op frame emitted {} byte(s) — "
+                         "cursor motion resets the terminal blink phase; "
+                         "keep-still must emit NOTHING.", idle_bytes.size());
+            return 53;
+        }
+
+        // H4: type to wrap, then backspace to shrink — cursor tracks.
+        std::string wtext = "AAAA BBBB CCCC DDDD EEEE FFFF";
+        Canvas h3 = paint_composer(pool2, wtext,
+                                   static_cast<int>(wtext.size()), W, true);
+        auto wit3 = hsynced2.verify();
+        auto proof3 = hsynced2.check_scrollback(h3, 24);
+        if (!wit3 || !proof3) { std::println("FAIL: hw verify/proof 3"); return 1; }
+        auto houtcome3 = std::move(hsynced2).render(
+            h3, content_rows(h3), term_rows_for_test(24), pool2, writer2,
+            std::move(*wit3), std::move(*proof3), /*sync=*/true);
+        auto hsynced3 =
+            std::get<maya::inline_frame::InlineFrame<maya::inline_frame::Synced>>(
+                std::move(houtcome3));
+        drain();
+        const int wrap_row = hemu.cy, wrap_col = hemu.cx;
+        if (hemu.cursor_hidden) {
+            std::println("\nBUG(hw): cursor hidden after wrap frame.");
+            return 50;
+        }
+
+        Canvas h4 = paint_composer(pool2, text_b, cur_b, W, true);
+        auto wit4 = hsynced3.verify();
+        auto proof4 = hsynced3.check_scrollback(h4, 24);
+        if (!wit4 || !proof4) { std::println("FAIL: hw verify/proof 4"); return 1; }
+        auto houtcome4 = std::move(hsynced3).render(
+            h4, content_rows(h4), term_rows_for_test(24), pool2, writer2,
+            std::move(*wit4), std::move(*proof4), /*sync=*/true);
+        auto hsynced4 =
+            std::get<maya::inline_frame::InlineFrame<maya::inline_frame::Synced>>(
+                std::move(houtcome4));
+        drain();
+        dump_screen(hemu, "hw frame 4 (shrunk — cursor tracks the caret)");
+        if (hemu.cursor_hidden) {
+            std::println("\nBUG(hw): cursor hidden after shrink frame.");
+            return 50;
+        }
+        if (hemu.cy >= wrap_row && hemu.cx == wrap_col) {
+            std::println("\nBUG(hw): cursor did not move off the wrapped "
+                         "caret cell ({}, {}) after the shrink.",
+                         wrap_row, wrap_col);
+            return 54;
+        }
+        if (count_blocks() != 0) {
+            std::println("\nBUG(hw): painted █ appeared after shrink.");
+            return 52;
+        }
+
+        // H5: finalize — cursor returns to the resting row (below the
+        // caret), ready for the host shell.
+        const int rows4 = content_height(h4);
+        std::string fin;
+        auto sealed = std::move(hsynced4).finalize(fin);
+        (void)sealed;
+        hemu.feed(fin);
+        if (hemu.cy != rows4 - 1) {
+            std::println("\nBUG(hw): finalize left the cursor at row {} — "
+                         "must return it to the resting row {} so the host "
+                         "shell resumes below the frame.", hemu.cy, rows4 - 1);
+            return 55;
+        }
+        std::println("PASS(hw): hardware caret shown at the true cell, "
+                     "keep-still idle frames, tracks wrap/shrink, finalize "
+                     "parks below the frame.");
+        ::close(rfd2);
+    }
+
     ::close(rfd);
     return 0;
 }

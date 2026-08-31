@@ -94,11 +94,22 @@ std::optional<ShadowWitness> verify_shadow(const InlineFrameState& state) noexce
 
 FinalizeResult InlineFrameState::finalize() && noexcept {
     std::string out;
+    // Hardware-caret epilogue may have left the physical cursor ABOVE
+    // the resting row (at the caret cell). Return it to the frame's
+    // bottom-left first so the host shell resumes below the frame, not
+    // mid-box. Row-relative (CUD from a known offset) — same discipline
+    // as the epilogue itself.
+    if (cursor_row_offset_ > 0) {
+        ansi::write_cursor_down(out, cursor_row_offset_);
+        out += '\r';
+    }
     if (cursor_hidden_) out.append("\x1b[?25h");
     if (decawm_off_)    out.append("\x1b[?7h");
     InlineFrameState s{std::move(*this)};
     s.cursor_hidden_ = false;
-    s.decawm_off_    = false;
+    s.decawm_off_ = false;
+    s.cursor_row_offset_ = 0;
+    s.cursor_shown_ = false;
     return FinalizeResult{std::move(out), std::move(s)};
 }
 
@@ -686,6 +697,124 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 // inside compose where it has visibility into row-level state but no
 // way to tell whether the diff is user-input or animation.
 
+// ── Frame epilogue: hardware caret or parked hide ────────────────────
+// (Evolution of the ghost-caret park; diagnosis credit: davidwed.)
+//
+// Every compose exit ends the wire on the frame's RESTING ROW (last
+// wire row) — the per-row loop walks to content_rows-1, the shrink
+// paths restore it, the no-op path never moved. From there this
+// epilogue ends the frame in exactly one of two terminal cursor
+// states, both reached by row-RELATIVE moves only (no absolute CUP —
+// the frame's absolute anchor is unknowable in inline mode, and a
+// row-targeting escape outside emit_move is what wire_row.hpp's T1
+// forbids):
+//
+//   CARET  the canvas carries a cursor hint whose row is on-screen:
+//          \r, CUU (resting_row - caret_row), CUF caret_col, ?25h.
+//          The REAL terminal cursor becomes the composer's caret —
+//          native blink at the terminal's own cadence (zero animation
+//          wake-ups), IME candidate windows anchored at the true cell,
+//          screen readers tracking the real position. The show sits
+//          OUTSIDE the sync wrapper; the failure mode of a rolled-back
+//          show is an invisible cursor for one frame (benign,
+//          self-healing) — the exact dual of the rollback-proof hide.
+//
+//   PARK   no hint (no focused caret this frame): \r + ?25l — the
+//          davidwed ghost-caret hardening, unchanged. A terminal-side
+//          DECTCEM loss surfaces the cursor on border chrome at col 1,
+//          never mid-content.
+//
+// The cursor's end-of-frame position is recorded in
+// state.cursor_row_offset_ (rows above the resting row); the next
+// frame's prologue normalizes it back with cursor_down BEFORE any
+// delta math, so the serializer body never sees the difference.
+// Off-screen hint rows (caret scrolled past the viewport top on an
+// oversized frame) fall back to PARK — a CUU that would cross the
+// viewport top is exactly the T1 no-ghost violation, so the clamp is
+// load-bearing, not defensive.
+namespace {
+
+// Resolve the frame's caret cell, if any. Two sources, in priority:
+//   1. an explicit Canvas::set_cursor_hint (direct-canvas users who
+//      know coordinates);
+//   2. the caret_anchor style meta-bit — the widget route. A widget
+//      cannot know its absolute canvas position at build() time (it
+//      emits an Element tree; layout+paint resolve coordinates later,
+//      and the component cache can blit cached CELLS without running
+//      the widget at all), so the anchor rides in the interned style
+//      and is recovered here from the painted cells themselves.
+// The scan is gated on pool.has_caret_anchor() — an app with no
+// hardware-caret widget pays one branch — and walks BOTTOM-UP because
+// the composer overwhelmingly sits at the frame's bottom edge; "bottom-
+// most anchor wins" is also the right semantic when a stale cached
+// component above still carries an anchor cell.
+[[nodiscard]] std::optional<Canvas::CursorHint>
+resolve_caret_hint(const Canvas& canvas,
+                   const StylePool& pool,
+                   int content_rows,
+                   int term_h) noexcept {
+    if (canvas.cursor_hint()) return canvas.cursor_hint();
+    if (!pool.has_caret_anchor()) return std::nullopt;
+    const int W = canvas.width();
+    const uint64_t* cells = canvas.cells();
+    // Only the visible window can host the hardware caret: rows above
+    // the viewport top are unreachable (T1), rows past content are
+    // blank. Bottom-up within that window.
+    const int lo = std::max(0, content_rows - term_h);
+    for (int y = std::min(content_rows, canvas.height()) - 1; y >= lo; --y) {
+        const uint64_t* row = cells + static_cast<std::size_t>(y) * W;
+        for (int x = 0; x < W; ++x) {
+            const auto sid = static_cast<uint16_t>((row[x] >> 32) & 0xFFFF);
+            if (sid != 0 && pool.is_caret_anchor(sid))
+                return Canvas::CursorHint{x, y};
+        }
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+// External linkage (friend of InlineFrameState); TU-local by
+// convention — no header declaration, same policy as
+// compose_inline_frame_impl above.
+void emit_caret_epilogue(std::string& out,
+                         const std::optional<Canvas::CursorHint>& hint,
+                         InlineFrameState& state,
+                         int content_rows,
+                         int term_h) noexcept {
+    const int resting = std::min(content_rows, term_h) - 1;  // frame-local
+    // For an oversized frame the viewport shows the LAST term_h canvas
+    // rows; a hint above that window cannot be reached without crossing
+    // the viewport top.
+    const int top_row = std::max(0, content_rows - term_h);
+    if (hint && hint->y >= top_row && hint->y < content_rows) {
+        const int caret_screen_row = hint->y - top_row;      // frame-local
+        const int up = resting - caret_screen_row;
+        out += '\r';
+        if (up > 0) ansi::write_cursor_up(out, up);
+        if (hint->x > 0) {
+            // CUF: column-only move — never crosses a row boundary
+            // (DECAWM is off frame-wide; CUF clamps at the right edge
+            // by spec).
+            out += "\x1b[";
+            out += std::to_string(hint->x);
+            out += 'C';
+        }
+        out += ansi::show_cursor;
+        state.cursor_hidden_     = false;
+        state.cursor_shown_      = true;
+        state.cursor_row_offset_ = up > 0 ? up : 0;
+        state.cursor_col_        = hint->x;
+    } else {
+        out += '\r';
+        out += ansi::hide_cursor;
+        state.cursor_hidden_     = true;
+        state.cursor_shown_      = false;
+        state.cursor_row_offset_ = 0;
+        state.cursor_col_        = 0;
+    }
+}
+
 // Internal byte-emitter for the inline frame path.
 //
 // This is the actual byte-producer that walks the canvas, diffs
@@ -860,21 +989,58 @@ compose_inline_frame_impl(const Canvas& canvas,
             out += reset_prefix;
             out += ansi::hide_cursor;
             if (synchronized_output) out += ansi::sync_end;
+            state.cursor_hidden_ = true;
+            state.cursor_shown_ = false;
+            state.cursor_row_offset_ = 0;
+            state.cursor_col_ = 0;
         }
-        // Ghost-caret hardening (diagnosis: davidwed) — even on a no-op
-        // frame, park the hidden cursor at column 0 and re-assert the
-        // hide OUTSIDE any sync wrapper. The resting-row invariant
-        // guarantees the cursor already sits on the frame's last wire
-        // row (see the park comment at the diff-path tail), so a bare
-        // \r — column-absolute, row-RELATIVE — moves it to the frame's
-        // bottom-left corner without assuming anything about the
-        // frame's absolute anchor. If a terminal-side DECTCEM loss
-        // (rolled-back ?2026 block, SSH reconnect, mobile soft-keyboard
-        // cursor) surfaces the cursor, it appears on border chrome at
-        // col 0 — never as a caret-lookalike block mid-content.
-        out += '\r';
-        out += ansi::hide_cursor;
-        state.cursor_hidden_ = true;
+        // ── No-op frame cursor discipline ──────────────────────────
+        // (Ghost-caret hardening — diagnosis: davidwed — generalized to
+        // the hardware caret.)
+        //
+        // KEEP-STILL fast path: if the last frame SHOWED the cursor at
+        // the caret and this frame's hint resolves to the very same
+        // cell, emit NOTHING. Any cursor motion (even a same-cell CUP)
+        // resets the blink phase on most terminals — an idle loop that
+        // re-positioned every tick would pin the native blink solid,
+        // defeating the point of the hardware caret. The terminal is
+        // left alone to blink at its own cadence; and unlike the
+        // painted caret, an idle agentty now schedules ZERO frames for
+        // blinking.
+        //
+        // Note the deliberate trade: the parked path re-asserts ?25l
+        // every tick (external ?25h recovery), but the shown path
+        // cannot re-assert ?25h without touching the cursor — and a
+        // shown cursor is the state external agents converge on anyway
+        // (the failure mode "cursor got shown" IS our state). An
+        // externally-HIDDEN cursor self-heals on the next content
+        // frame's epilogue.
+        {
+            const int resting = std::min(content_rows, term_h) - 1;
+            const int top_row = std::max(0, content_rows - term_h);
+            const auto hint =
+                resolve_caret_hint(canvas, pool, content_rows, term_h);
+            const bool hint_visible =
+                hint && hint->y >= top_row && hint->y < content_rows;
+            const int want_up  = hint_visible ? resting - (hint->y - top_row) : 0;
+            const int want_col = hint_visible ? hint->x : 0;
+            if (hint_visible && state.cursor_shown_
+                && state.cursor_row_offset_ == want_up
+                && state.cursor_col_ == want_col) {
+                return {std::move(out), std::move(state)};   // keep still
+            }
+            // Cursor state must change (hint appeared/moved/vanished, or
+            // we were parked-hidden). Normalize to the resting row first
+            // — the epilogue emits relative to it — then run the shared
+            // epilogue. For the parked→parked case this degenerates to
+            // exactly the davidwed park: \r + ?25l, re-asserted outside
+            // any sync block, every idle tick.
+            if (state.cursor_row_offset_ > 0) {
+                ansi::write_cursor_down(out, state.cursor_row_offset_);
+                state.cursor_row_offset_ = 0;
+            }
+            emit_caret_epilogue(out, hint, state, content_rows, term_h);
+        }
         return {std::move(out), std::move(state)};
     }
 
@@ -894,6 +1060,25 @@ compose_inline_frame_impl(const Canvas& canvas,
     out += reset_prefix;
     out += ansi::hide_cursor;
     state.cursor_hidden_ = true;
+    // ── Cursor normalization (hardware-caret prologue) ───────────────
+    // The previous frame's caret epilogue may have left the physical
+    // cursor cursor_row_offset_ rows ABOVE the resting row (at the
+    // composer's caret cell). Every path below — diff delta math,
+    // case-(B) redraw, Fresh growth — assumes the classic invariant
+    // "cursor rests on the previous frame's last wire row". Restore it
+    // with one row-relative CUD (cannot clamp: caret row + offset =
+    // resting row, which is on-screen by construction) so the whole
+    // body operates under the unchanged invariant. A reset_prefix wipe
+    // re-anchored the cursor absolutely (\x1b[H) — the offset is moot,
+    // just drop it. offset 0 ≡ classic parked frames: zero bytes.
+    if (!reset_prefix.empty()) {
+        state.cursor_row_offset_ = 0;
+    } else if (state.cursor_row_offset_ > 0) {
+        ansi::write_cursor_down(out, state.cursor_row_offset_);
+        state.cursor_row_offset_ = 0;
+    }
+    state.cursor_shown_ = false;   // hide just shipped
+    state.cursor_col_   = 0;
 
     // First-ever render (prev_rows == 0). Two distinct sub-cases,
     // differentiated by `state.prev_width`:
@@ -1098,15 +1283,12 @@ compose_inline_frame_impl(const Canvas& canvas,
             state.ghost_rows_above_ = 0;
         }
         if (synchronized_output) out += ansi::sync_end;
-        // Ghost-caret hardening (diagnosis: davidwed) — see the park
-        // comment at the diff-path tail. \r parks the cursor at col 0
-        // of the frame's last wire row (where serialize() just left
-        // it); the second ?25l re-asserts the hide OUTSIDE the sync
-        // wrapper so a terminal that discards a timed-out ?2026 block
-        // cannot lose it. Emitted before the pathological-size bailout
-        // below so every return from this path is parked.
-        out += '\r';
-        out += ansi::hide_cursor;
+        // Frame epilogue (hardware caret or davidwed park) — see
+        // emit_caret_epilogue. Emitted before the pathological-size
+        // bailout below so every return from this path is disciplined.
+        emit_caret_epilogue(out,
+                            resolve_caret_hint(canvas, pool, content_rows, term_h),
+                            state, content_rows, term_h);
         // Cache the new cell buffer for next frame's comparison.  This is
         // the one path that legitimately needs a full memcpy because
         // prev_cells is empty.  Overflow check protects against pathological
@@ -1455,43 +1637,19 @@ compose_inline_frame_impl(const Canvas& canvas,
 
     if (synchronized_output) out += ansi::sync_end;
 
-    // ── Hardware-cursor park + rollback-proof re-hide ──────────────────
-    // (Ghost-caret hardening; diagnosis credit: davidwed, maya PR #7.)
-    //
-    // Inline mode never SHOWS the hardware cursor — the composer's
-    // caret is a painted cell — but the frame's byte stream still
-    // leaves the real cursor at an arbitrary COLUMN of the frame's
-    // last wire row (x_end_emit after a diff slice, last_visible+1
-    // after a shrink re-emit, col 0 after a bare \r\n advance). Two
-    // failure modes can surface it there as a blinking block that
-    // LOOKS like a stale composer caret:
-    //   • a terminal that discards a timed-out ?2026 sync block also
-    //     discards the ?25l we emitted INSIDE it (the only hide this
-    //     frame carried);
-    //   • anything external re-shows it between frames (SSH reconnect,
-    //     sandboxed subprocess writing ?25h, a mobile terminal's soft
-    //     keyboard) — handled per-frame by the early re-hide, but the
-    //     window until the next frame is real.
-    //
-    // Defence in two strokes, both invariant-preserving:
-    //   \r    parks the cursor at column 0. The resting-row invariant
-    //         (per-row loop ends at content_rows-1; the shrink cases
-    //         above restore it) means the cursor is ALREADY on the
-    //         frame's last wire row, so a bare CR — column-absolute,
-    //         row-RELATIVE — reaches the frame's bottom-left corner
-    //         at ANY anchor. No absolute CUP: the frame may sit mid-
-    //         screen below host output (its absolute row is unknowable,
-    //         see the case-B comment), an absolute park would corrupt
-    //         the next frame's relative delta math, and a row-moving
-    //         escape is exactly what wire_row.hpp's T1 (no-ghost)
-    //         forbids issuing outside emit_move. CR moves no row, so
-    //         it is trivially T1-clean and scrollback-safe.
-    //   ?25l  re-asserts the hide OUTSIDE the sync wrapper, where no
-    //         rollback can reach it. 6 bytes, idempotent.
-    // Next-frame math is untouched: the diff path assumes only the
-    // resting ROW (prev_rows - 1); the column is explicitly arbitrary.
-    out += '\r';
-    out += ansi::hide_cursor;
+    // ── Frame epilogue: hardware caret or parked hide ────────────────
+    // (Ghost-caret hardening — diagnosis credit: davidwed, maya PR #7 —
+    // generalized into emit_caret_epilogue; see its header comment for
+    // the full rationale. Short form: the frame's byte stream leaves
+    // the physical cursor at an arbitrary column of the resting row;
+    // with a canvas cursor hint we move it to the caret cell and SHOW
+    // it (the composer's caret becomes the terminal's own cursor);
+    // without one we park at col 0 + re-hide. Both outside the sync
+    // wrapper so a rollback can't eat them; both row-relative so no
+    // anchor assumption and no T1 violation.)
+    emit_caret_epilogue(out,
+                        resolve_caret_hint(canvas, pool, content_rows, term_h),
+                        state, content_rows, term_h);
 
     // ── Commit: prev_cells is already up-to-date ───────────────────────
     //

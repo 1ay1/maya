@@ -566,13 +566,17 @@ set_tests_properties(
     # unistd/termios and can't build under MSVC.
     #   • test_inline_frame — routes the Witness Chain through a pipe Writer;
     #     builds on Linux + macOS.
+    #   • test_composer_caret_shrink — wire-level repro for the ghost-caret
+    #     bug: asserts the painted caret block survives a composer shrink
+    #     exactly once (pipe Writer + compact VT emulator).
     #   • test_terminal_restore — PTY-driven; verifies maya puts the tty back
     #     (cooked termios + restore escapes) on every exit route, including
     #     SIGINT. Linux-only: it drives POSIX signal/pty surface the macOS
     #     toolchain doesn't expose cleanly from this TU, and the restore
     #     behaviour it guards is platform-identical.
     if(UNIX)
-        set(_maya_posix_tests test_inline_frame test_fresh_oversized_scrollback)
+        set(_maya_posix_tests test_inline_frame test_composer_caret_shrink
+            test_fresh_oversized_scrollback)
         if(NOT APPLE)
             list(APPEND _maya_posix_tests test_terminal_restore)
         endif()

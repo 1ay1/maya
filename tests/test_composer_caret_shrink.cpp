@@ -1,0 +1,351 @@
+// test_composer_caret_shrink.cpp — REPRO for the "ghost caret on line 2"
+// bug report: fill the composer's line to the wrap edge, type one more
+// char (composer wraps to 2 visual rows), then backspace (composer
+// shrinks back to 1 row). The user sees the painted caret block still
+// sitting at the START of the (now erased) second row.
+//
+// Harness: render the composer at frame A (wrapped) and frame B
+// (shrunk) into real Canvases, push both through the REAL inline-frame
+// chain (Fresh render → Synced diff render) into a byte pipe, and feed
+// those bytes through a compact VT emulator. The bug, if it lives in
+// the wire diff / shrink path, shows up as leftover caret cells on
+// emulator row 1 after the shrink.
+#include <maya/maya.hpp>
+#include <maya/widget/composer.hpp>
+#include <maya/render/inline_frame.hpp>
+#include <maya/render/renderer.hpp>
+#include <maya/render/serialize.hpp>
+
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <print>
+#include <string>
+#include <utility>
+#include <vector>
+
+using namespace maya;
+
+// ── Writer over a pipe (same shape as test_inline_frame.cpp) ───────────
+static std::pair<Writer, int> make_pipe_writer() {
+    int fds[2];
+    int rc = pipe(fds);
+    (void)rc;
+    int flags = fcntl(fds[1], F_GETFL, 0);
+    fcntl(fds[1], F_SETFL, flags | O_NONBLOCK);
+    int rflags = fcntl(fds[0], F_GETFL, 0);
+    fcntl(fds[0], F_SETFL, rflags | O_NONBLOCK);
+    Writer w{static_cast<platform::NativeHandle>(fds[1])};
+    return {std::move(w), fds[0]};
+}
+
+// ── Compact VT emulator: just enough for maya's inline wire ────────────
+// Handles: CUP (row;colH), CUU/CUD (A/B), CR, LF, EL (K), ED (J: 0,1,2),
+// DECAWM off/on, SGR (ignored, but parsed), printable chars, DECSCUSR
+// (ignored). We only care about GEOMETRY + text cells.
+struct VtEmu {
+    int w = 80, h = 24;
+    std::vector<std::string> screen;   // h rows of w cols
+    int cx = 0, cy = 0;
+    bool autowrap = true;              // DECAWM
+
+    explicit VtEmu(int width, int height)
+        : w(width), h(height), screen(height, std::string(width, ' ')) {}
+
+    void scroll_up_once() {
+        screen.erase(screen.begin());
+        screen.push_back(std::string(w, ' '));
+    }
+
+    void putc_plain(char c) {
+        if (cy >= h) { scroll_up_once(); cy = h - 1; }
+        if (cx >= w) {
+            if (autowrap) { cx = 0; ++cy; if (cy >= h) { scroll_up_once(); cy = h - 1; } }
+            else cx = w - 1;
+        }
+        screen[cy][cx] = c;
+        ++cx;
+    }
+
+    void feed(const std::string& s) {
+        std::size_t i = 0, n = s.size();
+        while (i < n) {
+            char c = s[i];
+            if (c == '\x1b') {
+                if (i + 1 >= n) break;
+                if (s[i + 1] == '[') {
+                    // CSI: parse params + final.
+                    std::size_t j = i + 2;
+                    std::string params;
+                    while (j < n && ((s[j] >= '0' && s[j] <= '9')
+                                  || s[j] == ';' || s[j] == '?'
+                                  || s[j] == ':' || s[j] == '<')) {
+                        params += s[j]; ++j;
+                    }
+                    if (j >= n) break;
+                    char fin = s[j];
+                    i = j + 1;
+                    auto num = [&](int def) {
+                        if (params.empty()) return def;
+                        std::string first;
+                        std::size_t k = 0;
+                        if (params[0] == '?') k = 1;
+                        while (k < params.size() && params[k] != ';')
+                            first += params[k++];
+                        if (first.empty()) return def;
+                        return std::atoi(first.c_str());
+                    };
+                    auto num_at = [&](int idx, int def) {
+                        // idx-th ;-separated field (0-based)
+                        int cur = 0; std::string field;
+                        for (char p : params) {
+                            if (p == ';') { if (cur == idx) break; ++cur; field.clear(); }
+                            else field += p;
+                        }
+                        if (field.empty()) return def;
+                        return std::atoi(field.c_str());
+                    };
+                    switch (fin) {
+                        case 'A': { int k = num(1); cy -= k; if (cy < 0) cy = 0; break; }
+                        case 'B': { int k = num(1); cy += k; if (cy > h - 1) cy = h - 1; break; }
+                        case 'C': { int k = num(1); cx += k; if (cx > w - 1) cx = w - 1; break; }
+                        case 'D': { int k = num(1); cx -= k; if (cx < 0) cx = 0; break; }
+                        case 'H': case 'f': {
+                            int r = num_at(0, 1), col = num_at(1, 1);
+                            cy = r - 1; cx = col - 1;
+                            if (cy < 0) cy = 0; if (cy > h - 1) cy = h - 1;
+                            if (cx < 0) cx = 0; if (cx > w - 1) cx = w - 1;
+                            break;
+                        }
+                        case 'K': {
+                            int m = num(0);
+                            if (m == 0)      for (int x = cx; x < w; ++x) screen[cy][x] = ' ';
+                            else if (m == 1) for (int x = 0; x <= cx && x < w; ++x) screen[cy][x] = ' ';
+                            else             screen[cy].assign(w, ' ');
+                            break;
+                        }
+                        case 'J': {
+                            int m = num(0);
+                            if (m == 0) {
+                                for (int x = cx; x < w; ++x) screen[cy][x] = ' ';
+                                for (int y = cy + 1; y < h; ++y) screen[y].assign(w, ' ');
+                            } else if (m == 1) {
+                                for (int y = 0; y < cy; ++y) screen[y].assign(w, ' ');
+                                for (int x = 0; x <= cx; ++x) screen[cy][x] = ' ';
+                            } else {
+                                for (auto& row : screen) row.assign(w, ' ');
+                            }
+                            break;
+                        }
+                        case 'h': {
+                            if (params.find("?7") != std::string::npos) autowrap = true;
+                            break;
+                        }
+                        case 'l': {
+                            if (params.find("?7") != std::string::npos) autowrap = false;
+                            break;
+                        }
+                        case 'm': break;   // SGR — cosmetic only
+                        case 'r': break;   // DECSTBM — not used by inline path
+                        default: break;    // sync, DECTCEM etc. — no geometry
+                    }
+                    continue;
+                }
+                // OSC / other escapes: skip till BEL or ST (rare on this wire)
+                if (s[i + 1] == ']' || s[i + 1] == 'P') {
+                    std::size_t j = i + 2;
+                    while (j < n && s[j] != '\x07'
+                           && !(s[j] == '\x1b' && j + 1 < n && s[j + 1] == '\\')) ++j;
+                    i = (j < n && s[j] == '\x07') ? j + 1 : j + 2;
+                    continue;
+                }
+                i += 2;  // unknown 2-byte escape
+                continue;
+            }
+            if (c == '\r') { cx = 0; ++i; continue; }
+            if (c == '\n') { ++cy; if (cy >= h) { scroll_up_once(); cy = h - 1; } ++i; continue; }
+            if (c == '\x08') { if (cx > 0) --cx; ++i; continue; }
+            putc_plain(c);
+            ++i;
+        }
+    }
+
+    std::string row(int y) const {
+        std::string r = screen[y];
+        while (!r.empty() && r.back() == ' ') r.pop_back();
+        return r;
+    }
+};
+
+// UTF-8 decode of a full block '█' for emulator cell checks.
+static constexpr const char* kBlock = "\xe2\x96\x88";
+
+// ── Render helper: composer config → painted canvas ────────────────────
+static Canvas paint_composer(StylePool& pool, const std::string& text,
+                             int cursor, int width) {
+    Composer::Config cfg;
+    cfg.text   = text;
+    cfg.cursor = cursor;
+    Canvas canvas(width, 64, &pool);
+    render_tree(Composer{cfg}.build(), canvas, pool, theme::dark,
+                /*auto_height=*/true);
+    return canvas;
+}
+
+static void dump_screen(const VtEmu& emu, const char* why) {
+    std::println("--- emulator screen after {} ---", why);
+    for (int y = 0; y < 8; ++y) {
+        std::string r = emu.row(y);
+        std::println("  {:2}|{}|", y, r);
+    }
+}
+
+int main() {
+    // Composer box: border(2) + padding(1 each side) ⇒ body = W-4.
+    // At W=20 (body=16) the wordy frame A wraps to an extra visual row;
+    // frame B (backspace removed " FFFF") fits on one row fewer.
+    const int W = 20;
+
+    std::string text_a = "AAAA BBBB CCCC DDDD EEEE FFFF";
+    const int cur_a = static_cast<int>(text_a.size());
+
+    // Frame B: backspace removed the last word+space → one visual row
+    // fewer; caret stays at end-of-buffer.
+    std::string text_b = "AAAA BBBB CCCC DDDD EEEE";
+    const int cur_b = static_cast<int>(text_b.size());
+
+    StylePool pool;
+
+    // Sanity: A wraps to ≥2 body rows, B fits in 1.
+    {
+        Canvas ca = paint_composer(pool, text_a, cur_a, W);
+        Canvas cb = paint_composer(pool, text_b, cur_b, W);
+        int ha = content_height(ca);
+        int hb = content_height(cb);
+        std::println("frame A content_rows={} frame B content_rows={}",
+                     ha, hb);
+        if (!(ha == hb + 1)) {
+            std::println("SKIP: chosen widths do not produce the wrap "
+                         "delta (A={} B={}); tune W/text and rerun.",
+                         ha, hb);
+            return 77;
+        }
+    }
+
+    auto [writer, rfd] = make_pipe_writer();
+
+    // Frame A through the real inline chain (Fresh render).
+    Canvas ca = paint_composer(pool, text_a, cur_a, W);
+    maya::inline_frame::InlineFrame<maya::inline_frame::Empty> f0;
+    auto outcome_a = std::move(f0).seed().render(
+        ca, content_rows(ca), term_rows_for_test(24), pool, writer,
+        /*sync=*/false);
+    if (!std::holds_alternative<
+            maya::inline_frame::InlineFrame<maya::inline_frame::Synced>>(
+            outcome_a)) {
+        std::println("FAIL: frame A did not land in Synced");
+        return 1;
+    }
+    auto synced =
+        std::get<maya::inline_frame::InlineFrame<maya::inline_frame::Synced>>(
+            std::move(outcome_a));
+
+    // Drain the pipe into the emulator.
+    VtEmu emu(W, 24);
+    {
+        std::string bytes;
+        char buf[4096];
+        ssize_t k;
+        while ((k = ::read(rfd, buf, sizeof(buf))) > 0) bytes.append(buf, k);
+        emu.feed(bytes);
+    }
+    dump_screen(emu, "frame A (wrapped, caret should sit at end of row 1)");
+
+    // Find the caret block on the emulator screen. Returns count.
+    auto count_carets = [&]() {
+        int n = 0;
+        for (int y = 0; y < 24; ++y) {
+            std::size_t p = emu.screen[y].find(kBlock);
+            while (p != std::string::npos) {
+                ++n;
+                p = emu.screen[y].find(kBlock, p + 1);
+            }
+        }
+        return n;
+    };
+    auto find_caret = [&](int& row, int& col) {
+        for (int y = 0; y < 24; ++y) {
+            std::size_t p = emu.screen[y].find(kBlock);
+            if (p != std::string::npos) { row = y; col = static_cast<int>(p); return true; }
+        }
+        return false;
+    };
+    int cr = -1, cc = -1;
+    if (!find_caret(cr, cc)) {
+        std::println("FAIL: caret block not found after frame A");
+        return 1;
+    }
+    std::println("frame A: caret at row {} col {} ({} block cells on screen)",
+                 cr, cc, count_carets());
+    if (count_carets() != 1) {
+        std::println("FAIL: frame A shows more than one caret block");
+        return 1;
+    }
+    const int caret_row_a = cr;
+
+    // ── Frame B: the backspace. Synced diff render. ────────────────────
+    Canvas cb = paint_composer(pool, text_b, cur_b, W);
+    auto wit = synced.verify();
+    if (!wit) { std::println("FAIL: verify() failed"); return 1; }
+    auto proof = synced.check_scrollback(cb, 24);
+    if (!proof) { std::println("FAIL: check_scrollback failed"); return 1; }
+    auto outcome_b = std::move(synced).render(
+        cb, content_rows(cb), term_rows_for_test(24), pool, writer,
+        std::move(*wit), std::move(*proof), /*sync=*/false);
+    if (!std::holds_alternative<
+            maya::inline_frame::InlineFrame<maya::inline_frame::Synced>>(
+            outcome_b)) {
+        std::println("FAIL: frame B did not land in Synced");
+        return 1;
+    }
+
+    {
+        std::string bytes;
+        char buf[4096];
+        ssize_t k;
+        while ((k = ::read(rfd, buf, sizeof(buf))) > 0) bytes.append(buf, k);
+        emu.feed(bytes);
+    }
+    dump_screen(emu, "frame B (shrunk, caret must be back on row 0)");
+
+    int br = -1, bc = -1;
+    if (!find_caret(br, bc)) {
+        std::println("FAIL: caret block gone entirely after shrink");
+        return 1;
+    }
+    std::println("frame B: caret at row {} col {} ({} block cells on screen)",
+                 br, bc, count_carets());
+
+    if (br != caret_row_a - 1) {
+        std::println("\nBUG REPRODUCED: after the shrink the painted caret "
+                     "sits on row {} but the composer lost exactly one row "
+                     "(frame-A caret row was {}).", br, caret_row_a);
+        std::println("row 0: |{}|", emu.row(0));
+        std::println("row 1: |{}|", emu.row(1));
+        std::println("row 2: |{}|", emu.row(2));
+        return 42;
+    }
+
+    // The row that used to hold the caret must now be erased or hold
+    // legitimate content — but there must be exactly ONE caret block.
+    if (count_carets() != 1) {
+        std::println("\nBUG (variant): stale caret block(s) survive the "
+                     "shrink ({} block cells on screen).", count_carets());
+        return 43;
+    }
+
+    std::println("PASS: shrink erased the wrapped row and the caret "
+                 "returned to row 0.");
+    ::close(rfd);
+    return 0;
+}

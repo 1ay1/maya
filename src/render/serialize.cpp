@@ -863,6 +863,13 @@ compose_inline_frame_impl(const Canvas& canvas,
         } else {
             out += ansi::hide_cursor;
         }
+        // Park the (hidden) cursor at the same benign anchor as content
+        // frames do — the previous frame's last wire row, col 1 — so a
+        // terminal-side DECTCEM loss during idle surfaces it BELOW the
+        // box, never mid-content. (wire_cursor_rows_ still holds the
+        // last composed frame's height here.)
+        out += "\x1b[" + std::to_string(std::max(state.wire_cursor_rows_, 1))
+             + ";1H";
         state.cursor_hidden_ = true;
         return {std::move(out), std::move(state)};
     }
@@ -1114,6 +1121,10 @@ compose_inline_frame_impl(const Canvas& canvas,
                              static_cast<std::size_t>(W), y);
             state.shadow_hash_ = combine_rows(state.row_hashes_);
         }
+        // Fresh-frame cursor parking — same rationale as the diff-path
+        // park below: never leave the hardware cursor inside the box.
+        out += "\x1b[" + std::to_string(std::max(content_rows, 1)) + ";1H";
+        out += ansi::hide_cursor;
         return {std::move(out), std::move(state)};
     }
 
@@ -1434,6 +1445,22 @@ compose_inline_frame_impl(const Canvas& canvas,
     out += ansi::reset;   // drop residual SGR
 
     if (synchronized_output) out += ansi::sync_end;
+
+    // ── Hardware-cursor parking + belt-and-braces re-hide ──────────────
+    // Inline mode never SHOWS the hardware cursor, but the frame's byte
+    // stream leaves it wherever the last glyph went — for the composer
+    // that can be any cell INSIDE the box (mid-row after a diff slice,
+    // or on an erased row after \r\n runs). If the terminal ever loses
+    // our DECTCEM (VTE rolls back a timed-out ?2026 sync block
+    // INCLUDING the hide inside it; a mobile terminal shows its own
+    // cursor; an SSH reconnect resets modes), the cursor surfaces at
+    // that arbitrary cell as a blinking block that LOOKS like a stale
+    // composer caret — the reported "ghost caret on the erased row".
+    // Park it at a benign anchor (column 1 of the LAST wire row — under
+    // the box, never inside content) and re-assert the hide OUTSIDE the
+    // sync wrapper so even a rolled-back sync cannot resurrect it.
+    out += "\x1b[" + std::to_string(std::max(content_rows, 1)) + ";1H";
+    out += ansi::hide_cursor;
 
     // ── Commit: prev_cells is already up-to-date ───────────────────────
     //

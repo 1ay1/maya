@@ -1469,6 +1469,11 @@ void dispatch_through_sub(const Sub<Msg>& sub, const Event& ev,
                 out.push_back(s.on_paste(pe->content));
             }
         },
+        [&](const typename Sub<Msg>::OnFocus& s) {
+            if (auto* fe = std::get_if<FocusEvent>(&ev)) {
+                out.push_back(s.on_focus(fe->focused));
+            }
+        },
         [&](const typename Sub<Msg>::Every&) {
             // Timer subscriptions are handled by the timer loop, not event dispatch.
         },

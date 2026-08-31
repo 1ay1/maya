@@ -371,9 +371,17 @@ public:
                 // Hardware-caret mode: same bytes again (identical
                 // geometry), but conceal + caret_anchor — paint
                 // nothing, let the serializer put the REAL cursor here.
+                // Shape/color state channel: see the with-text path.
                 text("\xe2\x96\x88",
                      cfg_.hardware_caret
-                         ? Style{}.with_conceal().with_caret_anchor()
+                         ? Style{}
+                               .with_conceal()
+                               .with_caret_anchor()
+                               .with_caret_shape(
+                                   is_awaiting ? uint8_t{2}
+                                   : active    ? uint8_t{6}
+                                               : uint8_t{5})
+                               .with_fg(box_color)
                          : blink_off
                              ? Style{}.with_fg(muted).with_dim()
                              : Style{}.with_fg(muted)),
@@ -401,8 +409,23 @@ public:
             // (conceal) and carries the anchor meta-bit; the inline
             // serializer moves + shows the REAL cursor there. Same
             // bytes as painted mode ⇒ identical wrap geometry.
-            const Style cursor_hw =
-                Style{}.with_conceal().with_caret_anchor();
+            // The DECSCUSR shape doubles as a state channel on the
+            // exact pixel the user watches (the border color already
+            // carries it peripherally):
+            //   idle            → 5 blinking bar  (ready for input)
+            //   streaming/tool  → 6 steady bar    (keystrokes queue —
+            //                     same "steady = accepted" semantics
+            //                     the painted caret used)
+            //   awaiting perm   → 2 steady block  (stop — decide above)
+            // fg = box_color: the caret picks up the phase color via
+            // OSC 12 (concealed glyph, fg is free to carry it).
+            const uint8_t hw_shape =
+                is_awaiting ? 2 : active ? 6 : 5;
+            const Style cursor_hw = Style{}
+                                        .with_conceal()
+                                        .with_caret_anchor()
+                                        .with_caret_shape(hw_shape)
+                                        .with_fg(box_color);
             auto lines = split_lines(with_cursor);
             for (std::size_t i = 0; i < lines.size(); ++i) {
                 Element prefix = (i == 0) ? prompt_chip

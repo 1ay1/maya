@@ -63,6 +63,7 @@ struct VtEmu {
     int cx = 0, cy = 0;
     bool autowrap = true;              // DECAWM
     bool cursor_hidden = false;        // DECTCEM (?25l/?25h)
+    int  cursor_shape  = 0;            // DECSCUSR (0 = terminal default)
 
     explicit VtEmu(int width, int height)
         : w(width), h(height), screen(height, std::string(width, ' ')) {}
@@ -96,6 +97,13 @@ struct VtEmu {
                                   || s[j] == ';' || s[j] == '?'
                                   || s[j] == ':' || s[j] == '<')) {
                         params += s[j]; ++j;
+                    }
+                    // Intermediate bytes (0x20-0x2F): the SP in DECSCUSR
+                    // `CSI n SP q`. Note their presence so `q` can be
+                    // disambiguated from other finals if needed.
+                    bool had_intermediate = false;
+                    while (j < n && s[j] >= 0x20 && s[j] <= 0x2F) {
+                        had_intermediate = true; ++j;
                     }
                     if (j >= n) break;
                     char fin = s[j];
@@ -163,6 +171,10 @@ struct VtEmu {
                             break;
                         }
                         case 'm': break;   // SGR — cosmetic only
+                        case 'q':
+                            // DECSCUSR (CSI n SP q) — cursor shape.
+                            if (had_intermediate) cursor_shape = num(0);
+                            break;
                         case 'r': break;   // DECSTBM — not used by inline path
                         default: break;    // sync, DECTCEM etc. — no geometry
                     }
@@ -549,6 +561,13 @@ int main() {
         }
         const int hw_row1 = hemu.cy, hw_col1 = hemu.cx;
         std::println("hw frame 1: cursor shown at ({}, {})", hw_row1, hw_col1);
+        // H2b: DECSCUSR state channel — an IDLE composer sets shape 5
+        // (blinking bar). Emitted once, with the show.
+        if (hemu.cursor_shape != 5) {
+            std::println("\nBUG(hw): cursor shape {} after idle frame — "
+                         "want 5 (blinking bar).", hemu.cursor_shape);
+            return 56;
+        }
         // H2: concealed caret — no block glyph painted anywhere.
         if (count_blocks() != 0) {
             std::println("\nBUG(hw): {} painted █ cell(s) — hardware mode "
@@ -634,6 +653,15 @@ int main() {
                          "must return it to the resting row {} so the host "
                          "shell resumes below the frame.", hemu.cy, rows4 - 1);
             return 55;
+        }
+        // H5b: finalize must restore the terminal-default shape (`0 q`)
+        // — DECSCUSR is global terminal state; leaking shape 5 would
+        // change the SHELL's cursor after exit.
+        if (hemu.cursor_shape != 0) {
+            std::println("\nBUG(hw): finalize left DECSCUSR shape {} — "
+                         "must restore 0 (terminal default).",
+                         hemu.cursor_shape);
+            return 57;
         }
         std::println("PASS(hw): hardware caret shown at the true cell, "
                      "keep-still idle frames, tracks wrap/shrink, finalize "

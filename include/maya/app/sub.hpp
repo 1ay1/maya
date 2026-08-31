@@ -74,6 +74,13 @@ public:
         std::function<Msg(std::string)> on_paste;
     };
 
+    /// Map terminal focus-in/out events into messages (?1004 focus
+    /// reporting; maya enables it in inline mode). `focused` is true
+    /// on CSI I, false on CSI O.
+    struct OnFocus {
+        std::function<Msg(bool)> on_focus;
+    };
+
     /// Emit a message at a fixed interval (for animations, polling, etc.).
     struct Every {
         std::chrono::milliseconds interval;
@@ -81,7 +88,7 @@ public:
     };
 
     using Variant = std::variant<None, Batch, OnKey, OnMouse,
-                                 OnResize, OnPaste, Every>;
+                                 OnResize, OnPaste, OnFocus, Every>;
     Variant inner;
 
     // -- Smart constructors ---------------------------------------------------
@@ -114,6 +121,13 @@ public:
         requires std::convertible_to<std::invoke_result_t<F, std::string>, Msg>
     [[nodiscard]] static auto on_paste(F&& f) -> Sub {
         return {OnPaste{std::forward<F>(f)}};
+    }
+
+    /// Subscribe to terminal focus-in/out events.
+    template <std::invocable<bool> F>
+        requires std::convertible_to<std::invoke_result_t<F, bool>, Msg>
+    [[nodiscard]] static auto on_focus(F&& f) -> Sub {
+        return {OnFocus{std::forward<F>(f)}};
     }
 
     /// Emit a message at a fixed interval.
@@ -197,6 +211,14 @@ public:
                 return Sub<B>::on_paste([on_p = std::move(on_p),
                                          mapper = std::move(mapper)](std::string txt) -> B {
                     return mapper(on_p(std::move(txt)));
+                });
+            },
+            [&](const OnFocus& s) -> Sub<B> {
+                auto on_f = s.on_focus;
+                auto mapper = f;
+                return Sub<B>::on_focus([on_f = std::move(on_f),
+                                         mapper = std::move(mapper)](bool foc) -> B {
+                    return mapper(on_f(foc));
                 });
             },
             [&](const Every& s) -> Sub<B> {

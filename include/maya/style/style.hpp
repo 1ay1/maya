@@ -66,6 +66,17 @@ struct Style {
     /// ignores it — zero bytes on the wire.
     bool caret_anchor  = false;
 
+    /// DECSCUSR cursor shape for the hardware caret (META — never SGR).
+    /// Only meaningful on a caret_anchor style; the inline serializer
+    /// emits `CSI <n> SP q` when it shows the cursor at this cell and
+    /// the shape differs from what is already on the wire. 0 = leave
+    /// the terminal's configured shape alone. Codes per DECSCUSR:
+    /// 1/2 block (blink/steady), 3/4 underline, 5/6 bar. The anchor
+    /// style's `fg` doubles as the caret COLOR (OSC 12; emitted only
+    /// for Rgb colors, reset via OSC 112 at finalize) — the glyph is
+    /// concealed anyway, so fg is free to carry it.
+    uint8_t caret_shape = 0;
+
     // -- Fluent builder (each returns a new Style) ---------------------------
 
     /// Return a copy with the foreground color set.
@@ -140,6 +151,14 @@ struct Style {
         return s;
     }
 
+    /// Return a copy with the DECSCUSR caret shape set — see the
+    /// `caret_shape` field. Layout-only; never emitted as SGR.
+    [[nodiscard]] constexpr Style with_caret_shape(uint8_t v) const noexcept {
+        Style s = *this;
+        s.caret_shape = v;
+        return s;
+    }
+
     // -- SGR generation ------------------------------------------------------
 
     /// Build the full ANSI SGR escape sequence for this style.
@@ -196,6 +215,7 @@ struct Style {
         if (other.inverse)       out.inverse       = true;
         if (other.conceal)       out.conceal       = true;
         if (other.caret_anchor)  out.caret_anchor  = true;
+        if (other.caret_shape)   out.caret_shape   = other.caret_shape;
 
         return out;
     }
@@ -204,7 +224,8 @@ struct Style {
     [[nodiscard]] constexpr bool empty() const noexcept {
         return !fg.has_value() && !bg.has_value()
             && !bold && !dim && !italic && !underline
-            && !strikethrough && !inverse && !conceal && !caret_anchor;
+            && !strikethrough && !inverse && !conceal && !caret_anchor
+            && caret_shape == 0;
     }
 
     constexpr auto operator<=>(const Style&) const = default;

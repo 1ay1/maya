@@ -105,11 +105,18 @@ FinalizeResult InlineFrameState::finalize() && noexcept {
     }
     if (cursor_hidden_) out.append("\x1b[?25h");
     if (decawm_off_)    out.append("\x1b[?7h");
+    // Hardware-caret cosmetics are GLOBAL terminal state — restore them
+    // for the next program iff this session touched them. `0 q` =
+    // terminal-default shape; OSC 112 = reset cursor color.
+    if (cursor_shape_ != 0) out.append("\x1b[0 q");
+    if (cursor_color_ != 0) out.append("\x1b]112\x1b\\");
     InlineFrameState s{std::move(*this)};
     s.cursor_hidden_ = false;
     s.decawm_off_ = false;
     s.cursor_row_offset_ = 0;
     s.cursor_shown_ = false;
+    s.cursor_shape_ = 0;
+    s.cursor_color_ = 0;
     return FinalizeResult{std::move(out), std::move(s)};
 }
 
@@ -736,24 +743,29 @@ namespace {
 
 // Resolve the frame's caret cell, if any. Two sources, in priority:
 //   1. an explicit Canvas::set_cursor_hint (direct-canvas users who
-//      know coordinates);
+//      know coordinates — no cosmetics, terminal-default shape);
 //   2. the caret_anchor style meta-bit — the widget route. A widget
 //      cannot know its absolute canvas position at build() time (it
 //      emits an Element tree; layout+paint resolve coordinates later,
 //      and the component cache can blit cached CELLS without running
 //      the widget at all), so the anchor rides in the interned style
-//      and is recovered here from the painted cells themselves.
+//      and is recovered here from the painted cells themselves —
+//      along with its DECSCUSR shape and caret color (the style's fg;
+//      the glyph is concealed, so fg is free to carry it).
 // The scan is gated on pool.has_caret_anchor() — an app with no
 // hardware-caret widget pays one branch — and walks BOTTOM-UP because
 // the composer overwhelmingly sits at the frame's bottom edge; "bottom-
 // most anchor wins" is also the right semantic when a stale cached
 // component above still carries an anchor cell.
-[[nodiscard]] std::optional<Canvas::CursorHint>
+[[nodiscard]] std::optional<ResolvedCaret>
 resolve_caret_hint(const Canvas& canvas,
                    const StylePool& pool,
                    int content_rows,
                    int term_h) noexcept {
-    if (canvas.cursor_hint()) return canvas.cursor_hint();
+    if (canvas.cursor_hint()) {
+        return ResolvedCaret{canvas.cursor_hint()->x,
+                             canvas.cursor_hint()->y, 0, 0};
+    }
     if (!pool.has_caret_anchor()) return std::nullopt;
     const int W = canvas.width();
     const uint64_t* cells = canvas.cells();
@@ -765,11 +777,44 @@ resolve_caret_hint(const Canvas& canvas,
         const uint64_t* row = cells + static_cast<std::size_t>(y) * W;
         for (int x = 0; x < W; ++x) {
             const auto sid = static_cast<uint16_t>((row[x] >> 32) & 0xFFFF);
-            if (sid != 0 && pool.is_caret_anchor(sid))
-                return Canvas::CursorHint{x, y};
+            if (sid != 0 && pool.is_caret_anchor(sid)) {
+                const Style& st = pool.get(sid);
+                uint32_t color = 0;
+                if (st.fg.has_value() && st.fg->kind() == Color::Kind::Rgb) {
+                    color = 0x01000000u
+                          | (static_cast<uint32_t>(st.fg->r()) << 16)
+                          | (static_cast<uint32_t>(st.fg->g()) << 8)
+                          |  static_cast<uint32_t>(st.fg->b());
+                }
+                return ResolvedCaret{x, y, st.caret_shape, color};
+            }
         }
     }
     return std::nullopt;
+}
+
+// Append `CSI <shape> SP q` / `OSC 12 ; #rrggbb ST` iff they differ
+// from what the wire already carries (wire state passed by ref from
+// the friend epilogue). Cosmetics ride OUTSIDE the sync wrapper with
+// the show — they only matter when the cursor is visible.
+void emit_caret_cosmetics(std::string& out,
+                          uint8_t& shape_state,
+                          uint32_t& color_state,
+                          uint8_t shape,
+                          uint32_t color) noexcept {
+    if (shape != 0 && shape != shape_state) {
+        out += "\x1b[";
+        out += static_cast<char>('0' + (shape % 10));
+        out += " q";
+        shape_state = shape;
+    }
+    if (color != 0 && color != color_state) {
+        char buf[24];
+        std::snprintf(buf, sizeof buf, "\x1b]12;#%02x%02x%02x\x1b\\",
+                      (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF);
+        out += buf;
+        color_state = color;
+    }
 }
 
 } // namespace
@@ -778,7 +823,7 @@ resolve_caret_hint(const Canvas& canvas,
 // convention — no header declaration, same policy as
 // compose_inline_frame_impl above.
 void emit_caret_epilogue(std::string& out,
-                         const std::optional<Canvas::CursorHint>& hint,
+                         const std::optional<ResolvedCaret>& hint,
                          InlineFrameState& state,
                          int content_rows,
                          int term_h) noexcept {
@@ -800,6 +845,10 @@ void emit_caret_epilogue(std::string& out,
             out += std::to_string(hint->x);
             out += 'C';
         }
+        // Cosmetics (DECSCUSR shape / OSC 12 color) — emit-on-change,
+        // before the show so the first visible frame already has them.
+        emit_caret_cosmetics(out, state.cursor_shape_, state.cursor_color_,
+                             hint->shape, hint->color);
         out += ansi::show_cursor;
         state.cursor_hidden_     = false;
         state.cursor_shown_      = true;
@@ -1027,6 +1076,14 @@ compose_inline_frame_impl(const Canvas& canvas,
             if (hint_visible && state.cursor_shown_
                 && state.cursor_row_offset_ == want_up
                 && state.cursor_col_ == want_col) {
+                // Same cell — no movement (motion resets the terminal's
+                // blink phase). Cosmetics may still change on a phase
+                // flip with identical cells (e.g. idle→awaiting flips
+                // the DECSCUSR shape): shape/color escapes move no
+                // cursor, so emitting just them preserves keep-still.
+                emit_caret_cosmetics(out, state.cursor_shape_,
+                                     state.cursor_color_,
+                                     hint->shape, hint->color);
                 return {std::move(out), std::move(state)};   // keep still
             }
             // Cursor state must change (hint appeared/moved/vanished, or

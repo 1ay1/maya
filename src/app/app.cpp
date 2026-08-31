@@ -151,6 +151,13 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
             cfg.hover_motion ? kMouseOnHover : kMouseOn);
     }
 
+    // Focus reporting (?1004): CSI I / CSI O arrive as FocusEvent and
+    // reach apps via Sub::on_focus. Cheap, universally ignored where
+    // unsupported, and the hardware-caret path wants it (hide the caret
+    // while the terminal window is unfocused). Same enable/disable
+    // discipline as mouse: on at create, off at suspend + cleanup.
+    (void)platform::io_write_all(output_h, ansi::enable_focus);
+
     // Negotiate the kitty keyboard protocol (progressive enhancement). The
     // push is a private CSI that unsupported terminals silently ignore; on
     // terminals that DO support it (kitty, ghostty, foot, WezTerm, iTerm2
@@ -1897,6 +1904,8 @@ void Runtime::suspend(const std::function<void()>& fn) {
 
     if (mouse_enabled_ && output_handle_ != platform::invalid_handle)
         (void)platform::io_write_all(output_handle_, kMouseOff);
+    if (output_handle_ != platform::invalid_handle)
+        (void)platform::io_write_all(output_handle_, ansi::disable_focus);
     // The child (pager / editor) must see the terminal's native key encoding.
     if (kitty_kbd_enabled_ && output_handle_ != platform::invalid_handle)
         (void)platform::io_write_all(output_handle_, ansi::kitty_keyboard_pop);
@@ -1918,6 +1927,8 @@ void Runtime::suspend(const std::function<void()>& fn) {
     if (mouse_enabled_ && output_handle_ != platform::invalid_handle)
         (void)platform::io_write_all(output_handle_,
             hover_motion_ ? kMouseOnHover : kMouseOn);
+    if (output_handle_ != platform::invalid_handle)
+        (void)platform::io_write_all(output_handle_, ansi::enable_focus);
     // Re-negotiate the kitty keyboard protocol for our own input.
     if (kitty_kbd_enabled_ && output_handle_ != platform::invalid_handle)
         (void)platform::io_write_all(output_handle_, ansi::kitty_keyboard_push);
@@ -1957,6 +1968,9 @@ auto Runtime::cleanup() -> Status {
         (void)platform::io_write_all(output_handle_, kMouseOff);
         mouse_enabled_ = false;
     }
+    // Focus reporting off — the shell doesn't expect CSI I/O on click.
+    if (output_handle_ != platform::invalid_handle)
+        (void)platform::io_write_all(output_handle_, ansi::disable_focus);
     // Pop the kitty keyboard protocol so the shell / next program sees the
     // key encoding it expects (leaving it pushed corrupts their input).
     if (kitty_kbd_enabled_ && output_handle_ != platform::invalid_handle) {

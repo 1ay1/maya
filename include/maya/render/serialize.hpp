@@ -160,6 +160,18 @@ void serialize(const Canvas& canvas, const StylePool& pool,
 class InlineFrameState;  // forward — defined below
 struct FinalizeResult;   // forward — returned by InlineFrameState::finalize() &&
 
+/// A resolved hardware-caret target: cell position + cosmetics read
+/// from the anchor cell's interned style. `shape` is a DECSCUSR code
+/// (0 = leave the terminal default); `color` is 0 (none) or packed
+/// 0x01RRGGBB for OSC 12. Produced by the serializer's hint resolver;
+/// consumed by the frame epilogue.
+struct ResolvedCaret {
+    int x = 0;
+    int y = 0;
+    uint8_t shape = 0;
+    uint32_t color = 0;
+};
+
 /// Opaque token representing "commit this many rows of the current
 /// frame's prev_cells to scrollback." Constructed only via
 /// `InlineFrameState::scrollback_marker(rows)`, which clamps `rows` to
@@ -489,7 +501,7 @@ private:
     // fields under the same &&-move ownership discipline (only ever
     // called on the compose-local state).
     friend void emit_caret_epilogue(std::string&,
-                                    const std::optional<Canvas::CursorHint>&,
+                                    const std::optional<ResolvedCaret>&,
                                     InlineFrameState&, int, int) noexcept;
     friend std::optional<ScrollbackProof> check_scrollback(
         const InlineFrameState&, const Canvas&, int) noexcept;
@@ -534,6 +546,13 @@ private:
     // blink permanently solid, defeating the point of the hardware caret.
     int           cursor_col_        = 0;
     bool          cursor_shown_      = false;
+    // DECSCUSR shape currently on the wire (0 = terminal default /
+    // never set) and OSC-12 caret color (0 = never set; else packed
+    // 0x01RRGGBB so "black" is distinguishable from "unset"). Both are
+    // emit-on-change: the keep-still idle path never re-sends them,
+    // and finalize() restores shape 0 + OSC 112 iff they were touched.
+    uint8_t       cursor_shape_      = 0;
+    uint32_t      cursor_color_      = 0;
     int           ghost_rows_above_ = 0;
     int           wire_cursor_rows_ = 0;
     uint64_t      shadow_hash_      = static_cast<uint64_t>(-1);

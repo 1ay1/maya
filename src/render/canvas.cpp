@@ -371,6 +371,7 @@ std::size_t StylePool::hash_style(const Style& s) noexcept {
     if (s.conceal)       flags |= (1 << 6);
     if (s.caret_anchor)  flags |= (1 << 7);
     mix(flags);
+    if (s.caret_shape) mix(0xCA00u | s.caret_shape);
 
     if (s.fg.has_value()) {
         mix(static_cast<uint64_t>(s.fg->kind()) << 24

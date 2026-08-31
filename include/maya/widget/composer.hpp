@@ -376,15 +376,17 @@ public:
                 text("\xe2\x96\x88",
                      cfg_.hardware_caret
                          ? [&] {
+                               // Block caret, always (see the with-text
+                               // path): blinking when idle, steady while
+                               // the agent is busy / awaiting a decision.
                                Style s = Style{}
                                              .with_conceal()
                                              .with_caret_anchor()
                                              .with_caret_shape(
-                                                 is_awaiting ? uint8_t{2}
-                                                 : active    ? uint8_t{6}
-                                                             : uint8_t{0});
-                               if (is_awaiting || active)
-                                   s = s.with_fg(box_color);
+                                                 (is_awaiting || active)
+                                                     ? uint8_t{2}
+                                                     : uint8_t{1})
+                                             .with_fg(box_color);
                                return s;
                            }()
                          : blink_off
@@ -414,28 +416,23 @@ public:
             // (conceal) and carries the anchor meta-bit; the inline
             // serializer moves + shows the REAL cursor there. Same
             // bytes as painted mode ⇒ identical wrap geometry.
-            // The DECSCUSR shape is a STATE channel, not a style
-            // override — agentty must RESPECT the user's configured
-            // terminal cursor (kitty block, beam, blink rate…) whenever
-            // there is nothing to signal:
-            //   idle            → 0: terminal default — the user's own
-            //                     shape/color/blink, untouched (a
-            //                     kitty configured for a block shows a
-            //                     block). Transitioning BACK to idle
-            //                     emits `0 q` + OSC 112 (cosmetics
-            //                     helper resets on 0).
-            //   streaming/tool  → 6 steady bar + phase color (visible
-            //                     only within the typing window —
-            //                     "keystrokes queue")
-            //   awaiting perm   → 2 steady block + warn color (stop —
-            //                     decide above)
-            const uint8_t hw_shape =
-                is_awaiting ? 2 : active ? 6 : 0;
+            // The DECSCUSR shape is a STATE channel on the exact pixel
+            // the user watches. A text input's caret reads as a BLOCK —
+            // unconditionally, in every terminal and under tmux, and
+            // regardless of the terminal's own configured cursor style
+            // (an editor owns its caret's shape the way vim/emacs do).
+            // Only the BLINK/steadiness carries state:
+            //   idle            → 1 blinking block (ready for input)
+            //   streaming/tool  → 2 steady block   (keystrokes queue)
+            //   awaiting perm   → 2 steady block + warn color (decide)
+            // fg = box_color: the caret picks up the phase color via
+            // OSC 12 (concealed glyph, so fg is free to carry it).
+            const uint8_t hw_shape = (is_awaiting || active) ? 2 : 1;
             Style cursor_hw = Style{}
                                   .with_conceal()
                                   .with_caret_anchor()
-                                  .with_caret_shape(hw_shape);
-            if (is_awaiting || active) cursor_hw = cursor_hw.with_fg(box_color);
+                                  .with_caret_shape(hw_shape)
+                                  .with_fg(box_color);
             auto lines = split_lines(with_cursor);
             for (std::size_t i = 0; i < lines.size(); ++i) {
                 Element prefix = (i == 0) ? prompt_chip

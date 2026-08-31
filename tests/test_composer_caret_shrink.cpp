@@ -566,14 +566,12 @@ int main() {
         }
         const int hw_row1 = hemu.cy, hw_col1 = hemu.cx;
         std::println("hw frame 1: cursor shown at ({}, {})", hw_row1, hw_col1);
-        // H2b: DECSCUSR discipline — an IDLE composer must NOT touch
-        // the shape: the user's configured terminal cursor (kitty
-        // block, beam…) is respected; shape overrides are reserved for
-        // agent states (streaming → 6, awaiting → 2).
-        if (hemu.cursor_shape != 0) {
-            std::println("\nBUG(hw): idle frame set DECSCUSR shape {} — "
-                         "idle must leave the user's cursor untouched (0).",
-                         hemu.cursor_shape);
+        // H2b: DECSCUSR discipline — a text input's caret is a BLOCK,
+        // always. Idle = 1 (BLINKING block: the terminal owns the blink,
+        // maya schedules no frames for it); busy/awaiting = 2 (steady).
+        if (hemu.cursor_shape != 1) {
+            std::println("\nBUG(hw): idle frame shape {} — want 1 "
+                         "(blinking block).", hemu.cursor_shape);
             return 56;
         }
         // H2: concealed caret — no block glyph painted anywhere.
@@ -659,11 +657,12 @@ int main() {
             std::println("\nBUG(hw): painted █ appeared after shrink.");
             return 52;
         }
-        // Back to idle — the shape must RESET to the user's default (0):
-        // the cosmetics helper emits `0 q` on the 2→0 transition.
-        if (hemu.cursor_shape != 0) {
+        // Back to idle — the shape returns to 1 (blinking block): the
+        // cosmetics helper emits `1 q` on the 2→1 transition, so the
+        // caret resumes blinking the moment the agent goes quiet.
+        if (hemu.cursor_shape != 1) {
             std::println("\nBUG(hw): idle frame after awaiting kept shape "
-                         "{} — must reset to the user's cursor (0).",
+                         "{} — must return to 1 (blinking block).",
                          hemu.cursor_shape);
             return 56;
         }

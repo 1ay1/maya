@@ -91,6 +91,22 @@ enum class Feature {
 // is a real question, not a formality.
 [[nodiscard]] bool passthrough_allowed() noexcept;
 
+// ── Clipboard READS ──────────────────────────────────────────────────
+// True when tmux will ASK THE TERMINAL for the clipboard and relay the
+// reply back to us, i.e. `get-clipboard` is request|both.
+//
+// This is THE gate on clipboard reads under tmux, and it is the one
+// most likely to be closed: `get-clipboard` DEFAULTS TO `buffer`, which
+// means tmux answers a clipboard request from its OWN paste buffer and
+// never consults the real terminal. A paste buffer holds TEXT, so an
+// image request can't be satisfied no matter what the outer terminal
+// supports — the request is intercepted before it ever leaves tmux.
+// (`off` ignores the request entirely.)
+//
+// Independent of passthrough_allowed(): passthrough governs bytes we
+// send OUT; this governs whether an answer comes BACK.
+[[nodiscard]] bool clipboard_reads_relayed() noexcept;
+
 // Wrap `seq` for tmux passthrough: `\ePtmux;` + seq with every ESC
 // DOUBLED + `\e\\`. Returns `seq` UNCHANGED when tmux is not in the
 // path, so call sites stay branch-free.

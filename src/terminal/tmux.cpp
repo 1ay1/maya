@@ -22,6 +22,7 @@ namespace {
 struct Probe {
     bool        in_tmux      = false;
     bool        passthrough  = false;
+    bool        clip_relay   = false;   // get-clipboard is request|both
     std::string features;      // raw comma list from #{client_termfeatures}
 };
 
@@ -64,7 +65,6 @@ std::string ask_tmux(const char* format) {
 // Cache-valid flags. Single-threaded by contract for the reset seam (see
 // the header): production sets them once on first use and never clears.
 bool& probe_done()  { static bool d = false; return d; }
-bool& sync_done()   { static bool d = false; return d; }
 
 Probe& probe() {
     static Probe p;
@@ -73,6 +73,17 @@ Probe& probe() {
         p = Probe{};
         p.in_tmux = detect_presence();
         if (p.in_tmux) {
+            // Test/CI seam: a fabricated tmux environment ($TMUX set by a
+            // test) must NOT reach out to the developer's REAL tmux
+            // server — that would make results depend on the machine and
+            // on whoever's config is loaded. When MAYA_TMUX_FAKE is set,
+            // the probe answers purely from env, never spawning tmux.
+            if (const char* fake = std::getenv("MAYA_TMUX_FAKE"); fake && *fake) {
+                p.features    = env_str("MAYA_TMUX_FEATURES");
+                p.passthrough = env_str("MAYA_TMUX_PASSTHROUGH") == "1";
+                p.clip_relay  = env_str("MAYA_TMUX_GET_CLIPBOARD") == "1";
+                return p;
+            }
             // Only meaningful when a server is actually reachable: the
             // ssh-local topology ($TERM says tmux, but the server lives
             // on the OTHER host) yields empty answers, which correctly
@@ -82,6 +93,14 @@ Probe& probe() {
                 ask_tmux("#{?#{==:#{allow-passthrough},on},1,"
                          "#{?#{==:#{allow-passthrough},all},1,0}}");
             p.passthrough = (pt == "1");
+            // get-clipboard: only request|both actually ask the terminal
+            // and relay its answer. The default `buffer` serves tmux's
+            // own paste buffer (text) and never consults the terminal,
+            // so an IMAGE read can never succeed under it.
+            const std::string gc =
+                ask_tmux("#{?#{==:#{get-clipboard},request},1,"
+                         "#{?#{==:#{get-clipboard},both},1,0}}");
+            p.clip_relay = (gc == "1");
         }
     }
     return p;
@@ -117,40 +136,57 @@ bool list_contains(std::string_view list, std::string_view want) {
     return false;
 }
 
-// Resolved sync markers — see the header for why "no passthrough inside
-// tmux" means NO sync rather than a raw attempt.
+// Resolved sync markers. Recomputed per call — they depend on presence
+// (live) and passthrough (memoised), and string-building three short
+// literals is nothing next to a frame. Caching them across an env change
+// was a real hazard: a test (or a re-exec into/out of tmux) would keep
+// emitting markers for the WRONG environment.
 struct SyncPair { std::string begin, end; };
 
-const SyncPair& sync_pair() {
-    static SyncPair sp;
-    if (!sync_done()) {
-        sync_done() = true;
-        sp = SyncPair{};
-        const std::string raw_begin{ansi::sync_start};
-        const std::string raw_end{ansi::sync_end};
-        if (!active()) {                       // no tmux: plain markers
-            sp.begin = raw_begin;
-            sp.end   = raw_end;
-        } else if (passthrough_allowed()) {    // tmux: must be wrapped
-            sp.begin = wrap(raw_begin);
-            sp.end   = wrap(raw_end);
-        }
-        // else — tmux without passthrough: a raw marker is swallowed by
-        // tmux (measured) and a wrapped one is dropped. Emit nothing.
+SyncPair make_sync_pair() {
+    SyncPair sp;
+    const std::string raw_begin{ansi::sync_start};
+    const std::string raw_end{ansi::sync_end};
+    if (!active()) {                       // no tmux: plain markers
+        sp.begin = raw_begin;
+        sp.end   = raw_end;
+    } else if (passthrough_allowed()) {    // tmux: must be wrapped
+        sp.begin = wrap(raw_begin);
+        sp.end   = wrap(raw_end);
     }
+    // else — tmux without passthrough: a raw marker is swallowed by tmux
+    // (measured) and a wrapped one is dropped. Emit nothing.
+    return sp;
+}
+
+// Stable storage so the string_view accessors below stay valid for the
+// caller's use (recomputed on each call; the previous value lives until
+// the next one, which is exactly the lifetime a frame needs).
+const SyncPair& sync_pair() {
+    static thread_local SyncPair sp;
+    sp = make_sync_pair();
     return sp;
 }
 
 } // namespace
 
-bool active() noexcept { return probe().in_tmux; }
+// PRESENCE IS NOT CACHED. It is two getenv() calls, and callers
+// (including tests that fabricate a tmux environment mid-run) expect it
+// to track $TMUX/$TERM live — the historical ansi::tmux_in_path()
+// behaviour. Only the EXPENSIVE server probes below are memoised.
+bool active() noexcept { return detect_presence(); }
 
-bool passthrough_allowed() noexcept { return probe().passthrough; }
+bool passthrough_allowed() noexcept {
+    return active() && probe().passthrough;
+}
+
+bool clipboard_reads_relayed() noexcept {
+    return active() && probe().clip_relay;
+}
 
 bool has_feature(Feature f) noexcept {
-    const Probe& p = probe();
-    if (!p.in_tmux) return false;
-    return list_contains(p.features, feature_name(f));
+    if (!active()) return false;
+    return list_contains(probe().features, feature_name(f));
 }
 
 std::string wrap(std::string_view seq) {
@@ -170,9 +206,6 @@ std::string_view sync_begin() noexcept { return sync_pair().begin; }
 std::string_view sync_end()   noexcept { return sync_pair().end; }
 bool sync_available() noexcept { return !sync_pair().begin.empty(); }
 
-void reset_cache_for_test() noexcept {
-    probe_done() = false;
-    sync_done()  = false;
-}
+void reset_cache_for_test() noexcept { probe_done() = false; }
 
 } // namespace maya::tmux

@@ -1,5 +1,6 @@
 // Tests for ANSI escape sequence generation and StyleApplier
 #include <maya/maya.hpp>
+#include <maya/terminal/tmux.hpp>
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
@@ -257,8 +258,16 @@ TEST_CASE("sync detect tmux") {
                               "ALACRITTY_LOG", "ALACRITTY_WINDOW_ID",
                               "GHOSTTY_RESOURCES_DIR", "WEZTERM_EXECUTABLE",
                               "WT_SESSION", "KONSOLE_VERSION", "VTE_VERSION",
-                              "TERM", "COLORTERM", "TMUX"})
+                              "TERM", "COLORTERM", "TMUX",
+                              "MAYA_TMUX_FEATURES", "MAYA_TMUX_PASSTHROUGH",
+                              "MAYA_TMUX_GET_CLIPBOARD"})
             ::unsetenv(v);
+        // Inside tmux the sync answer now comes from maya::tmux, which
+        // probes the LIVE server. Force the fabricated-env path so these
+        // cases never depend on the developer's own tmux config, and drop
+        // the memoised probe between cases.
+        ::setenv("MAYA_TMUX_FAKE", "1", 1);
+        maya::tmux::reset_cache_for_test();
     };
 
     // Modern tmux (3.4+) reporting its own version → sync supported.
@@ -267,13 +276,15 @@ TEST_CASE("sync detect tmux") {
     ::setenv("TERM", "tmux-256color", 1);
     ::setenv("TERM_PROGRAM", "tmux", 1);
     ::setenv("TERM_PROGRAM_VERSION", "3.7b", 1);
+    ::setenv("MAYA_TMUX_PASSTHROUGH", "1", 1);
+    maya::tmux::reset_cache_for_test();
     assert(ansi::env_supports_synchronized_output()
-           && "tmux 3.7 must report sync-capable");
+           && "tmux 3.7 with passthrough must report sync-capable");
 
     // tmux 3.4 exactly is the cutoff → supported.
     ::setenv("TERM_PROGRAM_VERSION", "3.4", 1);
     assert(ansi::env_supports_synchronized_output()
-           && "tmux 3.4 (cutoff) must report sync-capable");
+           && "tmux 3.4 with passthrough must report sync-capable");
 
     // Old tmux (3.2) with no truecolor signal → not supported.
     clear_env();
@@ -281,8 +292,18 @@ TEST_CASE("sync detect tmux") {
     ::setenv("TERM", "tmux-256color", 1);
     ::setenv("TERM_PROGRAM", "tmux", 1);
     ::setenv("TERM_PROGRAM_VERSION", "3.2a", 1);
+    // NEW CONTRACT: inside tmux the version is irrelevant — what matters
+    // is whether tmux will FORWARD the markers (allow-passthrough). A raw
+    // CSI ?2026 is swallowed by tmux regardless of its version, so
+    // "passthrough off" is the only correct "no sync" answer.
     assert(!ansi::env_supports_synchronized_output()
-           && "tmux 3.2 without truecolor must NOT report sync-capable");
+           && "tmux without passthrough must NOT report sync-capable");
+    ::setenv("MAYA_TMUX_PASSTHROUGH", "1", 1);
+    maya::tmux::reset_cache_for_test();
+    assert(ansi::env_supports_synchronized_output()
+           && "tmux WITH passthrough must report sync-capable");
+    ::unsetenv("MAYA_TMUX_PASSTHROUGH");
+    maya::tmux::reset_cache_for_test();
 
     // Old/unknown-version multiplexer but COLORTERM=truecolor survives
     // (modern outer terminal) → treat as supported.
@@ -290,8 +311,12 @@ TEST_CASE("sync detect tmux") {
     ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
     ::setenv("TERM", "screen-256color", 1);
     ::setenv("COLORTERM", "truecolor", 1);
+    // Under the new contract COLORTERM can't rescue a multiplexer that
+    // won't forward the markers — passthrough is the deciding fact.
+    ::setenv("MAYA_TMUX_PASSTHROUGH", "1", 1);
+    maya::tmux::reset_cache_for_test();
     assert(ansi::env_supports_synchronized_output()
-           && "multiplexer + COLORTERM=truecolor must report sync-capable");
+           && "multiplexer WITH passthrough must report sync-capable");
 
     // GNU screen, no version, no truecolor → not supported (screen never
     // forwards 2026).

@@ -853,6 +853,15 @@ public:
     // Final cleanup (show cursor, reset, newline).
     auto cleanup() -> Status;
 
+    // Emit the inline frame's owed restore bytes (cursor back to the
+    // resting row, ?25h / ?7h / DECSCUSR / OSC-112 as claimed) and seal
+    // the coherence chain. Runs in cleanup() BEFORE the Terminal dtor's
+    // teardown \r\n — the hardware-caret epilogue parks the physical
+    // cursor at the caret cell (above the frame bottom), and a \r\n
+    // issued from there would drop the shell prompt mid-frame,
+    // clobbering the remaining rows in scrollback. Idempotent.
+    void finalize_inline_frame() noexcept;
+
     // Move-only
     Runtime(Runtime&&) noexcept;
     Runtime& operator=(Runtime&&) noexcept;

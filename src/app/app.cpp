@@ -1902,6 +1902,15 @@ void Runtime::suspend(const std::function<void()>& fn) {
         }
     }
 
+    // The inline frame owes cursor-restore bytes: the hardware-caret
+    // epilogue leaves the physical cursor at the caret cell, rows ABOVE
+    // the frame bottom. The child (editor / pager) starts writing at
+    // the cursor — from mid-frame it would clobber the composer rows
+    // (same failure as the exit path). finalize seals the chain and
+    // returns the cursor to the resting row; the post-child re-anchor
+    // below already re-seeds Empty, so losing frame state here is free.
+    finalize_inline_frame();
+
     if (mouse_enabled_ && output_handle_ != platform::invalid_handle)
         (void)platform::io_write_all(output_handle_, kMouseOff);
     if (output_handle_ != platform::invalid_handle)
@@ -1955,7 +1964,47 @@ void Runtime::suspend(const std::function<void()>& fn) {
 // Runtime::cleanup — final terminal cleanup
 // ============================================================================
 
+// ============================================================================
+// Runtime::finalize_inline_frame — seal the inline chain, restore cursor
+// ============================================================================
+
+void Runtime::finalize_inline_frame() noexcept {
+    if (!inline_terminal_) return;   // alt-screen path owes nothing here
+    std::string buf;
+    in_coherence_ = inline_frame::finalize_coherence(
+        std::move(in_coherence_), buf);
+    if (!buf.empty() && output_handle_ != platform::invalid_handle) {
+        // Best effort through the writer first (keeps ordering with any
+        // residue from the last frame), raw write as fallback.
+        if (writer_) {
+            (void)writer_->write_or_buffer(buf);
+            for (int i = 0; i < 50 && writer_->has_residue(); ++i) {
+                if (auto st = writer_->try_drain_residue(); !st) break;
+                if (writer_->has_residue())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+        } else {
+            (void)platform::io_write_all(output_handle_, buf);
+        }
+    }
+}
+
 auto Runtime::cleanup() -> Status {
+    // ── Inline frame finalize ──────────────────────────────────
+    // MUST run before the Terminal<InlineMode> destructor's teardown
+    // bytes. The hardware-caret epilogue ends every frame with the
+    // physical cursor AT THE CARET CELL — cursor_row_offset_ rows ABOVE
+    // the frame's last wire row, inside the composer box. The terminal
+    // destructor emits a bare \r\n to put the shell prompt on a fresh
+    // line; issued from the caret row, that lands the prompt MID-BOX
+    // and the shell's output then overwrites the remaining composer
+    // rows in scrollback (the "agentty eats composer lines on close"
+    // report). finalize_coherence emits exactly the bytes the state
+    // knows it owes: CUD back to the resting row + \r, ?25h/?7h if
+    // claimed, and the DECSCUSR `0 q` / OSC 112 cosmetic restores.
+    // Idempotent — finalize on Sealed is a no-op, so the dtor calling
+    // this again (exception path) emits nothing twice.
+    finalize_inline_frame();
     // Disable mouse reporting if create() turned it on. The InlineMode /
     // AltScreen terminal destructors restore raw mode + screen state but
     // know nothing about mouse tracking, so without this the terminal is
@@ -1997,6 +2046,10 @@ Runtime::~Runtime() {
     // callback would skip it). Idempotent with cleanup() via the flag.
     // Runs BEFORE the terminal-state members' destructors (reverse member
     // order), so output_handle_ is still valid and raw mode is still on.
+    // Inline-frame finalize first, same ordering rationale as cleanup():
+    // the cursor must return to the resting row before the Terminal
+    // dtor's \r\n. Idempotent (finalize on Sealed emits nothing).
+    finalize_inline_frame();
     if (mouse_enabled_ && output_handle_ != platform::invalid_handle) {
         static constexpr std::string_view kMouseOff =
             "\x1b[?1007l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";

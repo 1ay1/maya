@@ -1075,6 +1075,18 @@ private:
     // learned via a cursor-position query (DSR) at create() when mouse is
     // enabled. 0 = fullscreen or unknown (query unanswered) => no offset.
     int inline_top_row_ = 0;
+    // OSC 5522 (kitty multi-format clipboard) capability, probed ONCE at
+    // create() via DECRQM `CSI ? 5522 $ p` alongside the DSR query.
+    //   +1 = terminal answered DECRPM with set/reset (mode known → the
+    //        terminal implements the 5522 family; its clipboard READ escape
+    //        is available even when the MODE is off)
+    //    0 = terminal answered "not recognized" → definitively unsupported
+    //   -1 = no answer (query swallowed — old terminal, or a multiplexer
+    //        that doesn't forward DECRQM) → fall back to env sniffing
+    // Feature DETECTION beats enumeration: a future WezTerm/Ghostty that
+    // adopts the spec is discovered by asking, not by a release adding its
+    // name to a list.
+    int osc5522_support_ = -1;
     int inline_frame_rows_ = 0;
     // Events that arrived interleaved with the DSR reply during create()'s
     // cursor-position query; delivered ahead of fresh input on the next

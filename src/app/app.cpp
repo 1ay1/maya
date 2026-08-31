@@ -263,6 +263,71 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
                 rt.startup_events_.push_back(std::move(e));
     }
 
+    // ── OSC 5522 capability probe (DECRQM) ────────────────────────────
+    // Ask the terminal ONCE whether it implements the kitty multi-format
+    // clipboard family: `CSI ? 5522 $ p` → `CSI ? 5522 ; Ps $ y` where
+    // Ps 1..4 = mode known (supported), 0 = not recognized. Terminals that
+    // implement mode 5522 (rockorager's unsolicited-paste spec) MUST also
+    // implement the OSC 5522 read escape, so a recognized mode means image
+    // clipboard reads will be answered — the only escape path that carries
+    // IMAGE bytes over an SSH pty. Skipped inside tmux: tmux answers DECRQM
+    // itself for modes IT knows, telling us about tmux rather than the outer
+    // terminal — the query_clipboard tmux branch keeps its speculative
+    // dual-dialect send instead. Best-effort with a short deadline (same
+    // discipline as the DSR above): no answer → -1 → env sniffing decides.
+    {
+        const bool in_tmux = [] {
+            const char* t = std::getenv("TMUX");
+            return t && *t;
+        }();
+        if (!in_tmux) {
+            (void)platform::io_write_all(output_h, "\x1b[?5522$p");
+            // Extract `CSI ? 5522 ; Ps $ y`; returns Ps, or -1 if absent.
+            auto take_rpm = [](std::string& buf) -> int {
+                const std::string_view pre = "\x1b[?5522;";
+                auto i = buf.find(pre);
+                if (i == std::string::npos) return -1;
+                std::size_t j = i + pre.size();
+                long ps = 0; bool digits = false;
+                for (; j < buf.size() && buf[j] >= '0' && buf[j] <= '9'; ++j) {
+                    ps = ps * 10 + (buf[j] - '0'); digits = true;
+                }
+                if (!digits || j + 1 >= buf.size()) return -1;   // incomplete
+                if (buf[j] != '$' || buf[j + 1] != 'y') return -1;
+                buf.erase(i, j - i + 2);
+                return static_cast<int>(ps);
+            };
+            const auto deadline = std::chrono::steady_clock::now()
+                                + std::chrono::milliseconds(120);
+            std::string resp2;
+            int ps = -1;
+            auto read_raw = [&]() -> std::string {
+                if (rt.inline_terminal_) {
+                    if (auto r = rt.inline_terminal_->read_raw()) return *r;
+                } else if (rt.alt_terminal_) {
+                    if (auto r = rt.alt_terminal_->read_raw()) return *r;
+                }
+                return {};
+            };
+            while (std::chrono::steady_clock::now() < deadline) {
+                auto data = read_raw();
+                if (!data.empty()) {
+                    resp2 += data;
+                    if ((ps = take_rpm(resp2)) >= 0) break;
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            }
+            if (ps >= 0)
+                rt.osc5522_support_ = (ps >= 1 && ps <= 4) ? 1 : 0;
+            // Non-DECRPM bytes that arrived during the probe (keypresses)
+            // are parsed + replayed exactly like the DSR path above.
+            if (!resp2.empty())
+                for (auto& e : rt.parser_.feed(resp2))
+                    rt.startup_events_.push_back(std::move(e));
+        }
+    }
+
     return ok(std::move(rt));
 }
 
@@ -1757,7 +1822,17 @@ void Runtime::query_clipboard() {
             ansi::wrap_for_tmux(ansi::request_clipboard()));
         return;
     }
-    (void)writer_->write_or_buffer(ansi::env_supports_osc5522()
+    // Outside tmux: the DECRQM probe from create() is authoritative in the
+    // POSITIVE direction only. +1 = the terminal implements the mode-5522
+    // family, which mandates the OSC 5522 read escape → use it, regardless
+    // of env. But 0 ("mode not recognized") does NOT imply the read escape
+    // is absent: kitty itself implemented OSC 5522 reads YEARS before the
+    // mode spec existed and reports unknown modes as 0 — disabling on 0
+    // would break image paste on the reference implementation. So on 0/-1
+    // fall back to env sniffing exactly as before the probe existed.
+    const bool use_5522 = osc5522_support_ == 1
+                       || ansi::env_supports_osc5522();
+    (void)writer_->write_or_buffer(use_5522
                                        ? ansi::request_clipboard_image()
                                        : ansi::request_clipboard());
 }

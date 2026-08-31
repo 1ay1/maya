@@ -1,4 +1,5 @@
 #include "maya/app/inline.hpp"
+#include "maya/terminal/tmux.hpp"
 
 #include <cstdio>
 
@@ -207,7 +208,7 @@ void print(const Element& root) {
     // (iTerm2, Kitty, WezTerm, Ghostty, VS Code) an unclosed block FREEZES
     // the display until a timeout, so the printed frame looks truncated /
     // "not built well". A redundant ?2026l is a harmless no-op everywhere.
-    buf += ansi::sync_end;
+    buf += tmux::sync_end();   // env-correct: DCS-wrapped inside tmux
     if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);
@@ -221,7 +222,7 @@ void print(const Element& root, int width) {
     st = detail::render_live(root, width, pool, std::move(st), /*blocking=*/true);
     buf.clear();
     std::move(st).finalize(buf);
-    buf += ansi::sync_end;   // never leave the terminal in ?2026 sync mode
+    buf += tmux::sync_end();   // never leave the terminal in ?2026 sync mode
     if (!buf.empty()) std::fwrite(buf.data(), 1, buf.size(), stdout);
     std::fputc('\n', stdout);
     std::fflush(stdout);

@@ -3,6 +3,7 @@
 #include "maya/render/diff.hpp"  // for detail::encode_utf8
 // simd::bulk_eq / find_first_diff come from canvas.hpp → core/simd.hpp
 #include "maya/terminal/ansi.hpp"
+#include "maya/terminal/tmux.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -1070,10 +1071,10 @@ compose_inline_frame_impl(const Canvas& canvas,
         // the wrapping is defensive against a future caller that
         // passes a prefix with carried state.)
         if (!reset_prefix.empty()) {
-            if (synchronized_output) out += ansi::sync_start;
+            if (synchronized_output) out += tmux::sync_begin();
             out += reset_prefix;
             out += ansi::hide_cursor;
-            if (synchronized_output) out += ansi::sync_end;
+            if (synchronized_output) out += tmux::sync_end();
             state.cursor_hidden_ = true;
             state.cursor_shown_ = false;
             state.cursor_row_offset_ = 0;
@@ -1143,7 +1144,7 @@ compose_inline_frame_impl(const Canvas& canvas,
     // hide_cursor is re-asserted here too (see the rationale at the
     // early-return above), inside the sync wrapper so it applies
     // atomically with the rest of the frame body.
-    if (synchronized_output) out += ansi::sync_start;
+    if (synchronized_output) out += tmux::sync_begin();
     // reset_prefix (e.g. HardReset's \x1b[2J\x1b[3J\x1b[H wipe) goes
     // FIRST, inside the sync wrapper, so the destructive clear and the
     // full repaint that follows are presented as a single atomic frame.
@@ -1375,7 +1376,7 @@ compose_inline_frame_impl(const Canvas& canvas,
             serialize(canvas, pool, out, content_rows);
             state.ghost_rows_above_ = 0;
         }
-        if (synchronized_output) out += ansi::sync_end;
+        if (synchronized_output) out += tmux::sync_end();
         // Frame epilogue (hardware caret or davidwed park) — see
         // emit_caret_epilogue. Emitted before the pathological-size
         // bailout below so every return from this path is disciplined.
@@ -1728,7 +1729,7 @@ compose_inline_frame_impl(const Canvas& canvas,
     // — the shrink path above already reset to 0 when needed.
     out += ansi::reset;   // drop residual SGR
 
-    if (synchronized_output) out += ansi::sync_end;
+    if (synchronized_output) out += tmux::sync_end();
 
     // ── Frame epilogue: hardware caret or parked hide ────────────────
     // (Ghost-caret hardening — diagnosis credit: davidwed, maya PR #7 —

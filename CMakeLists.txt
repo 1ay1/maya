@@ -166,6 +166,7 @@ set(MAYA_LIB_SOURCES
     src/element/builder.cpp
     src/element/text.cpp
     src/terminal/ansi.cpp
+    src/terminal/tmux.cpp
     src/terminal/input.cpp
     src/terminal/writer.cpp
     src/layout/yoga.cpp
@@ -578,7 +579,7 @@ set_tests_properties(
     #     behaviour it guards is platform-identical.
     if(UNIX)
         set(_maya_posix_tests test_inline_frame test_composer_caret_shrink
-            test_fresh_oversized_scrollback)
+            test_tmux_capabilities test_fresh_oversized_scrollback)
         if(NOT APPLE)
             list(APPEND _maya_posix_tests test_terminal_restore)
         endif()

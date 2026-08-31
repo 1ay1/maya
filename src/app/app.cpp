@@ -20,6 +20,7 @@
 #include "maya/platform/select.hpp"
 #include "maya/platform/thread.hpp"
 #include "maya/terminal/ansi.hpp"
+#include "maya/terminal/tmux.hpp"
 #include "maya/render/grid_emit.hpp"
 
 namespace maya::detail {
@@ -2351,7 +2352,7 @@ Status canvas_run_impl(
             on_paint(back, W, H);
 
             out.clear();
-            out += ansi::sync_start;
+            out += tmux::sync_begin();
             if (needs_clear) {
                 // Home cursor and overwrite every row — no \x1b[2J which
                 // causes a visible flash. serialize() appends \x1b[K per
@@ -2363,10 +2364,16 @@ Status canvas_run_impl(
                 diff(front, back, pool, out);
             }
             out += ansi::reset;
-            out += ansi::sync_end;
+            out += tmux::sync_end();
 
+            // Empty-frame threshold: the markers are env-dependent
+            // (DCS-wrapped inside tmux, empty when tmux can't sync), so
+            // measure the ACTUAL bytes rather than the raw constants —
+            // a stale constant here would misjudge "nothing changed"
+            // and skip a real frame, or paint an empty one forever.
             static const std::size_t kMinSize =
-                ansi::sync_start.size() + ansi::reset.size() + ansi::sync_end.size();
+                tmux::sync_begin().size() + ansi::reset.size()
+                + tmux::sync_end().size();
             if (out.size() == kMinSize) {
                 std::swap(front, back);
                 back.reset_damage();

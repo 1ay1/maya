@@ -9,6 +9,7 @@
 
 #include "maya/style/color.hpp"
 #include "maya/style/style.hpp"
+#include "maya/terminal/tmux.hpp"
 
 namespace maya {
 namespace ansi {
@@ -315,13 +316,10 @@ void StyleApplier::append_param(std::string& params, std::string_view p) {
 // matches the TERM heuristic too; it ignores the tmux-format DCS, which
 // degrades to a harmless no-reply.)
 [[nodiscard]] bool tmux_in_path() {
-    if (const char* t = std::getenv("TMUX"); t && *t) return true;
-    if (const char* term = std::getenv("TERM"); term && *term) {
-        std::string_view tv{term};
-        if (tv.rfind("tmux", 0) == 0 || tv.rfind("screen", 0) == 0)
-            return true;
-    }
-    return false;
+    // Single source of truth: maya::tmux owns presence detection (and the
+    // feature/passthrough probes built on it). Kept as a thin alias so the
+    // many existing call sites don't have to change.
+    return ::maya::tmux::active();
 }
 
 // Wrap a control sequence in tmux's passthrough envelope so tmux forwards it
@@ -331,20 +329,17 @@ void StyleApplier::append_param(std::string& params, std::string_view p) {
 // ESC inside the payload would prematurely terminate the DCS.  Returns the
 // sequence UNCHANGED when no tmux is in the path (see tmux_in_path — covers
 // BOTH tmux-on-this-host and tmux-on-the-local-side-of-ssh), so callers can
-// wrap unconditionally.  Requires `set -g allow-passthrough on` in tmux < 3.4
-// (on by default since 3.4); when off, tmux drops the whole DCS and the
-// request simply gets no reply — the host already tolerates no-reply.
+// wrap unconditionally.  Requires `set -g allow-passthrough on|all`:
+// contrary to a common belief that 3.4 enabled it, the option DEFAULTS TO
+// OFF (verified on tmux 3.7 with a stock `-f /dev/null` server), so a
+// caller that needs the bytes to actually ARRIVE must consult
+// maya::tmux::passthrough_allowed().  When off, tmux drops the whole DCS
+// and the request simply gets no reply — the host already tolerates that.
 [[nodiscard]] std::string wrap_for_tmux(std::string_view seq) {
-    if (!tmux_in_path()) return std::string{seq};
-    std::string out;
-    out.reserve(seq.size() * 2 + 8);
-    out += "\x1bPtmux;";
-    for (char c : seq) {
-        if (c == '\x1b') out += '\x1b';   // double every ESC
-        out += c;
-    }
-    out += "\x1b\\";
-    return out;
+    // Single implementation lives in maya::tmux::wrap (same envelope:
+    // \ePtmux; + ESC-doubled body + \e\\); this stays as the historical
+    // spelling for existing callers.
+    return ::maya::tmux::wrap(seq);
 }
 
 [[nodiscard]] bool env_supports_osc5522() {
@@ -406,6 +401,20 @@ bool contains(const std::string& s, std::string_view needle) {
         !v.empty() && v != "0" && v != "false" && v != "no") {
         return false;
     }
+
+    // ── Inside tmux, ASK tmux; don't sniff the environment ──────────
+    // tmux strips the outer terminal's fingerprints (KITTY_WINDOW_ID,
+    // TERM_PROGRAM, …) and rewrites $TERM to tmux-256color, so every
+    // heuristic below answers "unknown" and we'd disable sync for a
+    // perfectly capable terminal. Worse, a RAW `CSI ?2026h` is SWALLOWED
+    // by tmux (measured, tmux 3.7): the frame body still renders, just
+    // un-synced — i.e. tearing with none of the benefit.
+    //
+    // So inside tmux the answer is exactly "can maya::tmux produce
+    // markers that will ARRIVE": passthrough-wrapped ones when
+    // allow-passthrough is on|all, otherwise nothing at all. The
+    // renderer takes its actual bytes from maya::tmux::sync_begin/end.
+    if (::maya::tmux::active()) return ::maya::tmux::sync_available();
 
     // Explicit non-supporters first — short-circuits the positive list
     // and prevents a stray $TERM=xterm-256color from misleading us on

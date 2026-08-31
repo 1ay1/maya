@@ -212,11 +212,13 @@ static constexpr const char* kBlock = "\xe2\x96\x88";
 // ── Render helper: composer config → painted canvas ────────────────────
 static Canvas paint_composer(StylePool& pool, const std::string& text,
                              int cursor, int width,
-                             bool hardware_caret = false) {
+                             bool hardware_caret = false,
+                             Composer::State state = Composer::State::Idle) {
     Composer::Config cfg;
     cfg.text   = text;
     cfg.cursor = cursor;
     cfg.hardware_caret = hardware_caret;
+    cfg.state  = state;
     Canvas canvas(width, 64, &pool);
     render_tree(Composer{cfg}.build(), canvas, pool, theme::dark,
                 /*auto_height=*/true);
@@ -561,11 +563,14 @@ int main() {
         }
         const int hw_row1 = hemu.cy, hw_col1 = hemu.cx;
         std::println("hw frame 1: cursor shown at ({}, {})", hw_row1, hw_col1);
-        // H2b: DECSCUSR state channel — an IDLE composer sets shape 5
-        // (blinking bar). Emitted once, with the show.
-        if (hemu.cursor_shape != 5) {
-            std::println("\nBUG(hw): cursor shape {} after idle frame — "
-                         "want 5 (blinking bar).", hemu.cursor_shape);
+        // H2b: DECSCUSR discipline — an IDLE composer must NOT touch
+        // the shape: the user's configured terminal cursor (kitty
+        // block, beam…) is respected; shape overrides are reserved for
+        // agent states (streaming → 6, awaiting → 2).
+        if (hemu.cursor_shape != 0) {
+            std::println("\nBUG(hw): idle frame set DECSCUSR shape {} — "
+                         "idle must leave the user's cursor untouched (0).",
+                         hemu.cursor_shape);
             return 56;
         }
         // H2: concealed caret — no block glyph painted anywhere.
@@ -595,9 +600,14 @@ int main() {
         }
 
         // H4: type to wrap, then backspace to shrink — cursor tracks.
+        // The wrap frame is AWAITING-PERMISSION: exercises the DECSCUSR
+        // state channel (shape 2 = steady block while a decision is
+        // pending) — idle frames leave the shape untouched, so this is
+        // the only place the shape machinery can be observed.
         std::string wtext = "AAAA BBBB CCCC DDDD EEEE FFFF";
         Canvas h3 = paint_composer(pool2, wtext,
-                                   static_cast<int>(wtext.size()), W, true);
+                                   static_cast<int>(wtext.size()), W, true,
+                                   Composer::State::AwaitingPermission);
         auto wit3 = hsynced2.verify();
         auto proof3 = hsynced2.check_scrollback(h3, 24);
         if (!wit3 || !proof3) { std::println("FAIL: hw verify/proof 3"); return 1; }
@@ -612,6 +622,12 @@ int main() {
         if (hemu.cursor_hidden) {
             std::println("\nBUG(hw): cursor hidden after wrap frame.");
             return 50;
+        }
+        // Awaiting-permission frame must carry DECSCUSR 2 (steady block).
+        if (hemu.cursor_shape != 2) {
+            std::println("\nBUG(hw): awaiting frame shape {} — want 2 "
+                         "(steady block).", hemu.cursor_shape);
+            return 56;
         }
 
         Canvas h4 = paint_composer(pool2, text_b, cur_b, W, true);
@@ -639,6 +655,14 @@ int main() {
         if (count_blocks() != 0) {
             std::println("\nBUG(hw): painted █ appeared after shrink.");
             return 52;
+        }
+        // Back to idle — the shape must RESET to the user's default (0):
+        // the cosmetics helper emits `0 q` on the 2→0 transition.
+        if (hemu.cursor_shape != 0) {
+            std::println("\nBUG(hw): idle frame after awaiting kept shape "
+                         "{} — must reset to the user's cursor (0).",
+                         hemu.cursor_shape);
+            return 56;
         }
 
         // H5: finalize — cursor returns to the resting row (below the

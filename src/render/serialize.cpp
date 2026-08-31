@@ -795,24 +795,34 @@ resolve_caret_hint(const Canvas& canvas,
 
 // Append `CSI <shape> SP q` / `OSC 12 ; #rrggbb ST` iff they differ
 // from what the wire already carries (wire state passed by ref from
-// the friend epilogue). Cosmetics ride OUTSIDE the sync wrapper with
+// the friend epilogue). shape/color 0 mean "terminal default": when
+// the wire carries a non-default value and the target is 0, the RESET
+// is emitted (`0 q` / OSC 112) — so a widget that stops overriding
+// (e.g. composer returning to idle, which respects the user's own
+// terminal cursor) actually gets the user's shape back mid-session,
+// not only at finalize. Cosmetics ride OUTSIDE the sync wrapper with
 // the show — they only matter when the cursor is visible.
 void emit_caret_cosmetics(std::string& out,
                           uint8_t& shape_state,
                           uint32_t& color_state,
                           uint8_t shape,
                           uint32_t color) noexcept {
-    if (shape != 0 && shape != shape_state) {
+    if (shape != shape_state) {
         out += "\x1b[";
         out += static_cast<char>('0' + (shape % 10));
         out += " q";
         shape_state = shape;
     }
-    if (color != 0 && color != color_state) {
-        char buf[24];
-        std::snprintf(buf, sizeof buf, "\x1b]12;#%02x%02x%02x\x1b\\",
-                      (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF);
-        out += buf;
+    if (color != color_state) {
+        if (color == 0) {
+            out += "\x1b]112\x1b\\";
+        } else {
+            char buf[24];
+            std::snprintf(buf, sizeof buf, "\x1b]12;#%02x%02x%02x\x1b\\",
+                          (color >> 16) & 0xFF, (color >> 8) & 0xFF,
+                          color & 0xFF);
+            out += buf;
+        }
         color_state = color;
     }
 }

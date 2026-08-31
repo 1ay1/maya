@@ -502,7 +502,7 @@ private:
     // called on the compose-local state).
     friend void emit_caret_epilogue(std::string&,
                                     const std::optional<ResolvedCaret>&,
-                                    InlineFrameState&, int, int) noexcept;
+                                    InlineFrameState&, int, int, int) noexcept;
     friend std::optional<ScrollbackProof> check_scrollback(
         const InlineFrameState&, const Canvas&, int) noexcept;
     friend class FrameBytes;

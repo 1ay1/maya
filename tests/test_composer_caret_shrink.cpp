@@ -311,15 +311,16 @@ int main() {
     dump_screen(emu, "frame A (wrapped, caret should sit at end of row 1)");
 
     // Hardware-cursor contract after a Fresh frame: parked at column 0
-    // of the frame's last wire row (rows_a - 1), hidden, and the hide
-    // re-asserted outside the sync block. Pre-fix, the cursor rests at
-    // an arbitrary column inside the box and the only hide is inside
-    // the sync wrapper — all three checks fail.
-    if (emu.cy != rows_a - 1 || emu.cx != 0) {
+    // of the frame's last wire row (rows_a - 1), at the RIGHT margin
+    // (col W-1 — blank padding under a tmux copy-mode cursor), hidden,
+    // and the hide re-asserted outside the sync block. Pre-fix, the
+    // cursor rests at an arbitrary column inside the box and the only
+    // hide is inside the sync wrapper — all three checks fail.
+    if (emu.cy != rows_a - 1 || emu.cx != W - 1) {
         std::println("\nBUG: hardware cursor not parked after frame A — "
-                     "at ({}, {}), want ({}, 0). A DECTCEM loss would "
+                     "at ({}, {}), want ({}, {}). A DECTCEM loss would "
                      "surface it as a ghost caret mid-box.",
-                     emu.cy, emu.cx, rows_a - 1);
+                     emu.cy, emu.cx, rows_a - 1, W - 1);
         return 44;
     }
     if (!emu.cursor_hidden) {
@@ -401,9 +402,10 @@ int main() {
     // geometry — pre-fix the cursor rests where the shrink erase left
     // it, ON the erased row, so a DECTCEM loss paints the ghost caret
     // at the start of the vanished second row.
-    if (emu.cy != rows_b - 1 || emu.cx != 0) {
+    if (emu.cy != rows_b - 1 || emu.cx != W - 1) {
         std::println("\nBUG: hardware cursor not parked after the shrink — "
-                     "at ({}, {}), want ({}, 0).", emu.cy, emu.cx, rows_b - 1);
+                     "at ({}, {}), want ({}, {}).", emu.cy, emu.cx,
+                     rows_b - 1, W - 1);
         return 44;
     }
     if (!emu.cursor_hidden) {
@@ -482,9 +484,10 @@ int main() {
                      "the idle no-op frame.");
         return 45;
     }
-    if (emu.cy != rows_b - 1 || emu.cx != 0) {
+    if (emu.cy != rows_b - 1 || emu.cx != W - 1) {
         std::println("\nBUG: idle no-op frame moved the parked cursor — "
-                     "at ({}, {}), want ({}, 0).", emu.cy, emu.cx, rows_b - 1);
+                     "at ({}, {}), want ({}, {}).", emu.cy, emu.cx,
+                     rows_b - 1, W - 1);
         return 44;
     }
 

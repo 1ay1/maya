@@ -836,7 +836,8 @@ void emit_caret_epilogue(std::string& out,
                          const std::optional<ResolvedCaret>& hint,
                          InlineFrameState& state,
                          int content_rows,
-                         int term_h) noexcept {
+                         int term_h,
+                         int width) noexcept {
     const int resting = std::min(content_rows, term_h) - 1;  // frame-local
     // For an oversized frame the viewport shows the LAST term_h canvas
     // rows; a hint above that window cannot be reached without crossing
@@ -866,11 +867,36 @@ void emit_caret_epilogue(std::string& out,
         state.cursor_col_        = hint->x;
     } else {
         out += '\r';
+        // Park at the RIGHT edge of the resting row, not col 0. The
+        // parked position matters twice:
+        //   • terminal-side DECTCEM loss surfaces the cursor there —
+        //     both frame corners are border chrome, equally benign;
+        //   • tmux copy-mode draws ITS OWN cursor at the pane-cursor
+        //     screen position, independent of DECTCEM (verified by
+        //     probing: a hidden pane cursor still yields a copy-mode
+        //     cursor, and a pane-side ?25l mid-copy-mode never reaches
+        //     the outer terminal). As the user scrolls, that screen
+        //     position acquires THREAD content — at col 0 it lands on
+        //     the rail (the reported ghost); at the right margin it
+        //     overwhelmingly lands on blank padding.
+        if (width > 1) {
+            out += "\x1b[";
+            out += std::to_string(width - 1);
+            out += 'C';   // CUF clamps at the right margin by spec
+        }
+        // Cosmetics reset — hand the USER's cursor back. Without this a
+        // streaming override (bar + phase color) outlives the caret: the
+        // wire keeps DECSCUSR 6 + OSC-12 after parking, and tmux's
+        // copy-mode cursor — which re-emits the pane's latched style —
+        // renders a phase-colored bar instead of the user's own block
+        // (the reported "doesn't start out as a block").
+        emit_caret_cosmetics(out, state.cursor_shape_, state.cursor_color_,
+                             0, 0);
         out += ansi::hide_cursor;
         state.cursor_hidden_     = true;
         state.cursor_shown_      = false;
         state.cursor_row_offset_ = 0;
-        state.cursor_col_        = 0;
+        state.cursor_col_        = width > 1 ? width - 1 : 0;
     }
 }
 
@@ -1106,7 +1132,7 @@ compose_inline_frame_impl(const Canvas& canvas,
                 ansi::write_cursor_down(out, state.cursor_row_offset_);
                 state.cursor_row_offset_ = 0;
             }
-            emit_caret_epilogue(out, hint, state, content_rows, term_h);
+            emit_caret_epilogue(out, hint, state, content_rows, term_h, W);
         }
         return {std::move(out), std::move(state)};
     }
@@ -1355,7 +1381,7 @@ compose_inline_frame_impl(const Canvas& canvas,
         // bailout below so every return from this path is disciplined.
         emit_caret_epilogue(out,
                             resolve_caret_hint(canvas, pool, content_rows, term_h),
-                            state, content_rows, term_h);
+                            state, content_rows, term_h, W);
         // Cache the new cell buffer for next frame's comparison.  This is
         // the one path that legitimately needs a full memcpy because
         // prev_cells is empty.  Overflow check protects against pathological
@@ -1716,7 +1742,7 @@ compose_inline_frame_impl(const Canvas& canvas,
     // anchor assumption and no T1 violation.)
     emit_caret_epilogue(out,
                         resolve_caret_hint(canvas, pool, content_rows, term_h),
-                        state, content_rows, term_h);
+                        state, content_rows, term_h, W);
 
     // ── Commit: prev_cells is already up-to-date ───────────────────────
     //

@@ -940,8 +940,18 @@ void InputParser::parse_osc5522(std::string_view body,
         return;
     }
 
-    // ENOSYS / EPERM / EBUSY / anything unknown — abandon silently; the
-    // host already handles "terminal never replied".
+    // ENOSYS / EPERM / EBUSY / anything unknown — abandon; the host already
+    // handles "terminal never replied", and this parser is deliberately
+    // dependency-free (no logger to reach).
+    //
+    // EPERM is worth naming because it is the COMMON one, not an edge case:
+    // kitty's `clipboard_control` defaults to write-only (`write-clipboard
+    // write-primary`), so a read request from a fresh install is refused even
+    // though kitty fully implements the protocol. The user sees an image
+    // paste silently become text. Hosts that care should detect kitty
+    // independently and say so — agentty does this in its ComposerPaste arm —
+    // rather than inferring "no OSC 5522 support" from the missing reply,
+    // which sends the user to fix the wrong thing.
     abort_transfer();
 }
 

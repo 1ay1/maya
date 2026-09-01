@@ -1224,6 +1224,35 @@ public:
     /// fully-revealed frame is imperceptible).
     void snap_reveal_to_edge(int glide_ms = 0) noexcept;
 
+    /// PARTIAL resolve: force the reveal cursor to at least `cp` codepoints,
+    /// instantly resolving everything BEFORE that point while the tail past
+    /// it keeps animating normally.
+    ///
+    /// This is the scrollback-safe way to show a growing element (a tool
+    /// card) BELOW a still-revealing message without either hiding the
+    /// element or pasting the whole tail. The invariant that matters for
+    /// scrollback is not "the tail is fully revealed" but "nothing UNRESOLVED
+    /// crosses the viewport top": rows already scrolled into immutable native
+    /// scrollback can never be repainted, so a ghost-blanked / scrambled cell
+    /// stranded up there is permanent garbage. Rows still on screen are free
+    /// to keep animating.
+    ///
+    /// So the host computes how many rows must leave the viewport once the
+    /// new element is laid out, converts that to a codepoint prefix, and
+    /// calls this. Exactly the rows that were going to scroll away get
+    /// resolved (their animation was about to become invisible anyway); every
+    /// visible row keeps its typewriter. Compare snap_reveal_to_edge, which
+    /// resolves the ENTIRE tail and therefore stops the animation outright.
+    ///
+    /// Semantics mirror the internal committed_ clamp (a committed prefix is
+    /// already painted as finalized blocks, so the cursor may never lag it):
+    /// MONOTONE — a floor below the current cursor is a no-op, so repeated
+    /// per-frame calls can never rewind the reveal or re-ghost a resolved
+    /// row. Clamped to the codepoint total. live_ is untouched; the widget
+    /// keeps animating. Bumps build_dirty_ only when the cursor actually
+    /// moved, so a steady-state call every frame is free.
+    void advance_reveal_floor(std::size_t cp) noexcept;
+
     /// Opt into the animated streaming-reveal effect (gradient trail +
     /// scramble + pulsing caret). Off by default — see `reveal_fx_`.
     /// When off, streamed text appears in its final style with no

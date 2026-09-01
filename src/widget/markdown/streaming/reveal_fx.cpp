@@ -276,6 +276,58 @@ void StreamingMarkdown::snap_reveal_to_edge(int glide_ms) noexcept {
     build_dirty_ = true;
 }
 
+void StreamingMarkdown::advance_reveal_floor(std::size_t cp) noexcept {
+    // Only meaningful while a live reveal is actually clipping the tail.
+    // With reveal_fx_ off (or settled) the tail already renders in full, so
+    // there is nothing ghosted to resolve and a stray host call is a pure
+    // no-op — no dirty, no rebuild.
+    if (!live_ || !reveal_fx_) return;
+
+    // Clamp to the codepoint total so a caller's row→cp estimate that
+    // overshoots (it is deliberately rounded UP for safety) degrades to
+    // "resolve everything" instead of parking the cursor past the edge.
+    // Reuse the incremental cache when it still covers the whole buffer;
+    // otherwise recount. Do NOT fall back to source_.size() (raw BYTES)
+    // like snap_reveal_to_edge's at-edge probe does: here the value becomes
+    // the cursor POSITION, and a byte count over-counts multibyte text,
+    // which would resolve more of the tail than the caller asked for.
+    const std::size_t total_cp =
+        (cached_total_cp_at_ == source_.size())
+            ? cached_total_cp_ : utf8_cp_count(source_);
+    if (cp > total_cp) cp = total_cp;
+
+    // MONOTONE: never rewind. A floor at/below the cursor means the reveal
+    // has already passed this point, so the rows in question are resolved
+    // and the host's per-frame call costs nothing. Rewinding would re-ghost
+    // a row that may already have scrolled into scrollback — precisely the
+    // corruption this API exists to prevent.
+    const double floor_cp = static_cast<double>(cp);
+    if (!(floor_cp > reveal_cp_)) return;
+
+    reveal_cp_ = floor_cp;
+#if MAYA_REVEAL_CENTRAL_CURSOR
+    // Keep the integrator in sync, or the next tick() would integrate from
+    // its own stale (lower) position and the cursor would visibly snap BACK.
+    // advance_floor is the matching monotone primitive.
+    reveal_rate_cursor_.advance_floor(floor_cp);
+#endif
+
+    // Deliberately NOT stamped here (unlike snap_reveal_to_edge):
+    //   • reveal_ms_ / reveal_us_ — the tail past the floor is still
+    //     animating, and this is called every frame while a card is
+    //     visible. Re-stamping the µs clock each frame would zero the
+    //     per-frame dt and FREEZE the remaining reveal (the exact stall
+    //     this whole path exists to remove).
+    //   • reveal_edge_reached_ms_ — the cursor has not reached the live
+    //     edge; only advance_reveal_cursor_ may declare that, and a false
+    //     stamp would start the settle/scramble age counter early.
+    //
+    // The tail shape depends on reveal_byte_clip_ (derived from reveal_cp_),
+    // so force a rebuild to re-extract the now-shorter clipped tail. Only
+    // reached when the cursor actually moved.
+    build_dirty_ = true;
+}
+
 // Advance reveal_cp_ for this frame. Called from build() top so the
 // cursor's effect on the live overlay (scramble/gradient/caret aging) is
 // current BEFORE the cache short-circuit. Three things this fixes:

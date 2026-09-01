@@ -290,7 +290,17 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
         // let the speculative tmux clipboard branch handle those cases.
         const bool in_tmux = ansi::tmux_in_path();
         if (!in_tmux) {
-            (void)platform::io_write_all(output_h, "\x1b[?5522$p");
+            // DA1 fence: send Primary Device Attributes right behind the
+            // DECRQM. EVERY terminal answers DA1, and answers are ordered —
+            // the terminal processes the two queries in sequence — so when
+            // the DA1 reply arrives with no DECRPM reply in front of it,
+            // this terminal simply does not implement DECRQM and waiting
+            // out the deadline would burn the full 120 ms on EVERY startup
+            // (Terminal.app and most non-kitty-family terminals). With the
+            // fence, the no-support case costs one round-trip like the
+            // supported case; the deadline survives only as the safety net
+            // for a terminal that answers neither (piped/CI pty).
+            (void)platform::io_write_all(output_h, "\x1b[?5522$p\x1b[c");
             // Extract `CSI ? 5522 ; Ps $ y`; returns Ps, or -1 if absent.
             auto take_rpm = [](std::string& buf) -> int {
                 const std::string_view pre = "\x1b[?5522;";
@@ -308,6 +318,24 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
             };
             const auto deadline = std::chrono::steady_clock::now()
                                 + std::chrono::milliseconds(120);
+            // Strip a complete DA1 reply (CSI ? … c) from the buffer.
+            // Returns true when one was found — the fence has landed.
+            // A partial DECRPM ("\x1b[?5522;1$…") is never eaten: the scan
+            // stops at the first byte that is neither digit nor ';', and
+            // only a terminating 'c' matches.
+            auto take_da1 = [](std::string& buf) -> bool {
+                auto i = buf.find("\x1b[?");
+                while (i != std::string::npos) {
+                    std::size_t j = i + 3;
+                    while (j < buf.size()
+                           && (buf[j] == ';' || (buf[j] >= '0' && buf[j] <= '9')))
+                        ++j;
+                    if (j >= buf.size()) return false;   // incomplete → wait
+                    if (buf[j] == 'c') { buf.erase(i, j - i + 1); return true; }
+                    i = buf.find("\x1b[?", i + 1);
+                }
+                return false;
+            };
             std::string resp2;
             int ps = -1;
             auto read_raw = [&]() -> std::string {
@@ -323,12 +351,22 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
                 if (!data.empty()) {
                     resp2 += data;
                     if ((ps = take_rpm(resp2)) >= 0) break;
+                    // DA1 landed with no DECRPM in front of it → the
+                    // terminal doesn't speak DECRQM; stop waiting now.
+                    if (take_da1(resp2)) break;
                 } else {
                     std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 }
             }
             if (ps >= 0)
                 rt.osc5522_support_ = (ps >= 1 && ps <= 4) ? 1 : 0;
+            // The DA1 fence reply may still be in the buffer (we break on
+            // the DECRPM as soon as it lands — the fence arrives behind
+            // it). Strip it so it is never replayed as input; if it is
+            // still in flight it lands in the startup DSR/poll reads and
+            // dies in the parser as an unknown CSI, which is harmless but
+            // this path is free.
+            (void)take_da1(resp2);
             // Non-DECRPM bytes that arrived during the probe (keypresses)
             // are parsed + replayed exactly like the DSR path above.
             if (!resp2.empty())

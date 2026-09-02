@@ -304,7 +304,7 @@ struct Agent {
     // ── View helpers ─────────────────────────────────────────────────────
 
     static Element build_header(const Model& m) {
-        ModelBadge badge("claude-opus-4-6");
+        ModelBadge badge({.label = "Opus 4.6"});
 
         GitStatusWidget git;
         git.set_branch("fix/auth-bug");

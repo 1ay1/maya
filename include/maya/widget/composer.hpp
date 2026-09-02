@@ -76,6 +76,19 @@ public:
         std::size_t queued = 0;
         ProfileChip profile;
 
+        // Left slot of the hint row. When non-empty this REPLACES the
+        // built-in key hints ("↵ send · ⇧↵ newline") — the caller owns
+        // that real estate and paints whatever is more useful there
+        // (agentty puts the active model · provider). It is measured
+        // like every other fragment and sheds whole if the profile chip
+        // can't otherwise fit.
+        Element status;   // default-empty = built-in key hints
+
+        // Hide the built-in "↵ send" / "⇧↵ newline" key hints. Only
+        // meaningful when `status` is empty (a non-empty status already
+        // displaces them); set it to leave the left slot blank.
+        bool show_key_hints = true;
+
         // Ambient-counter overrides. The composer `text` the widget
         // sees is the CHIP-RENDERED display string — a long paste or
         // @file is a short caption like "[Pasted text · 412 lines ·
@@ -516,9 +529,9 @@ public:
         //
         // Both sides progressively shed segments as available width
         // shrinks. The profile chip on the right is the only must-keep
-        // anchor — everything else (newline / expand on the left;
-        // queued / words / tokens on the right) sheds in priority
-        // order once the combined natural width can't fit.
+        // anchor — everything else (newline on the left; queued /
+        // words / tokens on the right) sheds in priority order once
+        // the combined natural width can't fit.
         //
         // Every decision below measures the REAL styled fragments via
         // measure_element — there is no glyph-tally table to keep in
@@ -534,11 +547,6 @@ public:
                 out.push_back(dot());
                 out.push_back(kbd("\xe2\x87\xa7\xe2\x86\xb5 / \xe2\x8c\xa5\xe2\x86\xb5"));
                 out.push_back(lbl(" newline"));
-            }
-            if (density >= 2) {
-                out.push_back(dot());
-                out.push_back(kbd("^E"));
-                out.push_back(lbl(" expand"));
             }
             return out;
         };
@@ -571,7 +579,9 @@ public:
         };
 
         Element hint_element = component(
-            [hint_left_builder, ri, kbd, lbl, dot](int w, int /*h*/) -> Element {
+            [hint_left_builder, ri, kbd, lbl, dot,
+             status = cfg_.status, show_hints = cfg_.show_key_hints]
+            (int w, int /*h*/) -> Element {
                 using namespace dsl;
 
                 // 2-col indent + trailing space + padding(0,1) on both
@@ -595,19 +605,30 @@ public:
                 Element chip = h(std::move(chip_parts)).build();
                 const int chip_cols = width_of(chip);
 
-                // Left cluster: richest density whose MEASURED width
-                // still leaves room for the chip; "↵ send" is the floor.
+                // Left cluster. A caller-supplied `status` owns the slot
+                // outright when present (it is the more informative thing
+                // to say than a key the user already knows) and sheds
+                // whole if the profile chip would not otherwise fit.
+                // Otherwise fall back to the built-in key hints at the
+                // richest density that still leaves room for the chip.
                 std::vector<Element> left;
-                for (int density = 2; density >= 0; --density) {
-                    auto cand = hint_left_builder(density);
-                    Element probe = h(cand).build();
-                    if (density == 0
-                        || width_of(probe) + chip_cols <= avail) {
-                        left = std::move(cand);
-                        break;
+                const int status_cols = width_of(status);
+                if (status_cols > 0) {
+                    if (status_cols + chip_cols <= avail)
+                        left.push_back(status);
+                } else if (show_hints) {
+                    for (int density = 1; density >= 0; --density) {
+                        auto cand = hint_left_builder(density);
+                        Element probe = h(cand).build();
+                        if (density == 0
+                            || width_of(probe) + chip_cols <= avail) {
+                            left = std::move(cand);
+                            break;
+                        }
                     }
                 }
-                const int left_cols = width_of(h(left).build());
+                const int left_cols =
+                    left.empty() ? 0 : width_of(h(left).build());
                 const int budget = std::max(0, avail - left_cols);
 
                 // Optional right segments, measured as the real fragments.

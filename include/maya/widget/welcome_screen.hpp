@@ -36,7 +36,7 @@
 //   maya::WelcomeScreen{{
 //       .sigil_color    = Color::magenta(),
 //       .tagline        = "a calm middleware between you and the model",
-//       .model_badge    = ModelBadge{"claude-opus-4-7"}.build(),
+//       .model_badge    = ModelBadge{{.label = "Opus 4.7"}}.build(),
 //       .profile_label  = "write",
 //       .profile_color  = Color::magenta(),
 //       .hints          = {{"^K", " palette", Color::cyan()},

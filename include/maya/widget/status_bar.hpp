@@ -59,7 +59,7 @@ public:
         TitleChip::Config            breadcrumb;       // empty title = hide
         PhaseChip::Config            phase;
         TokenStreamSparkline::Config token_stream;
-        Element                      model_badge;     // default-empty
+        Element                      model_badge;     // default-empty = hide
         ContextGauge::Config         context;          // max=0 = hide
 
         // Status row — takes over the activity_row slot when present.
@@ -174,18 +174,29 @@ private:
 
                 std::vector<Element> rparts;
                 bool emitted_right = false;
+                // Separators are emitted BEFORE each segment that follows
+                // something, never trailing a segment speculatively. The
+                // old code appended "   ·   " right after the sparkline on
+                // the assumption that a badge or gauge would follow it —
+                // true while the model badge lived here, but once the badge
+                // moved to the composer footer (and any time the badge is
+                // empty) the sparkline's trailing separator collided with
+                // the gauge's leading one, painting "·   ·" with a dead
+                // gap between them.
+                auto sep = [&](const char* s) {
+                    if (emitted_right) rparts.push_back(text(s, fg_dim_(muted)));
+                };
                 if (s.stream && !cfg.token_stream.adaptive) {
                     rparts.push_back(TokenStreamSparkline{cfg.token_stream}.build());
-                    rparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));
                     emitted_right = true;
                 }
-                if (s.badge) {
+                if (s.badge && width_of(cfg.model_badge) > 0) {
+                    sep("   \xc2\xb7   ");
                     rparts.push_back(cfg.model_badge);
                     emitted_right = true;
                 }
                 if (cfg.context.max > 0 && s.gauge) {
-                    if (emitted_right)
-                        rparts.push_back(text(" \xc2\xb7 ", fg_dim_(muted)));
+                    sep("   \xc2\xb7   ");
                     rparts.push_back(ContextGauge{ctx}.build());
                     emitted_right = true;
                 }

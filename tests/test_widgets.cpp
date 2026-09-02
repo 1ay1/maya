@@ -418,7 +418,7 @@ TEST_CASE("status bar responsive") {
         cfg.phase.color        = Color::bright_cyan();
         cfg.phase.verb_width   = 10;
         cfg.phase.elapsed_secs = 12.3f;
-        cfg.model_badge        = ModelBadge{"claude-sonnet-4-5"}.build();
+        cfg.model_badge        = ModelBadge{{.label = "Sonnet 4.5"}}.build();
         cfg.context.used       = 84'000;
         cfg.context.max        = 200'000;
         cfg.context.cells      = 10;
@@ -466,11 +466,12 @@ TEST_CASE("status bar responsive") {
     };
     for (int w = 24; w <= 220; ++w) {
         auto cfg = make();
-        // A LONG raw model id (the field case: unknown family rendered by a
-        // host without fallback) + a long title — maximum squeeze pressure.
-        // The host-style " · Provider" suffix widens the badge like agentty's
-        // real status bar does.
-        cfg.model_badge = h(ModelBadge{"claude-fable-1-20260101"}.build(),
+        // A long model label + a long title — maximum squeeze pressure. The
+        // host-style " · Provider" suffix widens the badge like agentty's
+        // real status bar does. The label is passed already-decoded (the
+        // widget is presentation-only; agentty's model_name SSOT does the
+        // id → "Fable 1" decode before it reaches here).
+        cfg.model_badge = h(ModelBadge{{.label = "Fable 1"}}.build(),
                             dsl::text(" \xc2\xb7 Anthropic")).build();
         auto r = render_at(StatusBar{cfg}.build(), w);
         const std::string row = rtrim(activity_row(r.rows));
@@ -612,7 +613,7 @@ TEST_CASE("context gauge stability") {
             cfg.phase_color      = Color::cyan();
             cfg.phase.verb       = "Write";
             cfg.phase.verb_width = 6;
-            cfg.model_badge      = ModelBadge{"claude-sonnet-4-5"}.build();
+            cfg.model_badge      = ModelBadge{{.label = "Sonnet 4.5"}}.build();
             cfg.context.used     = 409'800;
             cfg.context.max      = 1'000'000;
             cfg.context.cells    = 10;
@@ -990,7 +991,7 @@ TEST_CASE("word wrap combining") {
     std::println("PASS");
 }
 
-TEST_CASE("model badge never shows raw wire ids") {
+TEST_CASE("model badge renders what the host decoded") {
     std::println("=== test_model_badge_labels ===");
     auto rendered = [](maya::ModelBadge mb) {
         auto r = render_at(mb.build(), 80);
@@ -999,43 +1000,52 @@ TEST_CASE("model badge never shows raw wire ids") {
         return joined;
     };
 
-    // Known families resolve to their word.
-    MAYA_TEST_CHECK(rendered(maya::ModelBadge{"claude-sonnet-4-5"})
+    // The widget is PRESENTATION ONLY: it renders the label the host
+    // decoded, and never parses a model id itself. (The taxonomy that used
+    // to live here — substring family matching, digit-run version scanning —
+    // now lives in the host's model_name SSOT, where it has catalog access
+    // and consteval proofs. See model_badge.hpp's header comment.)
+    MAYA_TEST_CHECK(rendered(maya::ModelBadge{{.label = "Sonnet"}})
                         .find("Sonnet") != std::string::npos,
-                    "sonnet family recognized");
+                    "label rendered verbatim");
 
-    // UNKNOWN Claude family (a line newer than the table): title-cased
-    // family word, never the raw id.
+    // A version rides after the label, dim. Crucially it is NOT dropped in
+    // any mode: the old widget returned early in compact mode before
+    // appending it, so a compact badge could not distinguish 4.5 from 4.8.
     {
-        maya::ModelBadge mb{"claude-fable-1-20260101"};
-        const std::string s = rendered(mb);
-        MAYA_TEST_CHECK(s.find("Fable") != std::string::npos,
-                        "unknown claude family shows its family word");
-        MAYA_TEST_CHECK(s.find("claude-fable-") == std::string::npos,
-                        "raw id never rendered for a claude-family model");
-        // The 8-digit date stamp must not be mistaken for a version.
-        MAYA_TEST_CHECK(s.find("20260101") == std::string::npos,
-                        "date stamp is not a version");
+        const std::string s =
+            rendered(maya::ModelBadge{{.label = "Opus", .version = "4.8"}});
+        MAYA_TEST_CHECK(s.find("Opus") != std::string::npos,
+                        "label present alongside a version");
+        MAYA_TEST_CHECK(s.find("4.8") != std::string::npos,
+                        "version is never silently dropped");
     }
 
-    // Unknown non-Claude id with a host fallback label: fallback wins.
+    // No version supplied: nothing invented.
     {
-        maya::ModelBadge mb{"some-vendor-model-7-2"};
-        mb.set_fallback_label("Vendor Model 7.2");
-        const std::string s = rendered(mb);
-        MAYA_TEST_CHECK(s.find("Vendor Model 7.2") != std::string::npos,
-                        "host fallback label used for unknown ids");
-        MAYA_TEST_CHECK(s.find("some-vendor") == std::string::npos,
-                        "raw id suppressed when a fallback exists");
+        const std::string s = rendered(maya::ModelBadge{{.label = "Haiku"}});
+        MAYA_TEST_CHECK(s.find("Haiku") != std::string::npos,
+                        "label-only badge renders");
+        // get_row() renders the canvas as ASCII, mapping U+25CF ● to '@'
+        // (see its glyph table). So the dot is asserted via that stand-in
+        // AND its POSITION — leading, ahead of the label.
+        MAYA_TEST_CHECK(s.starts_with("@ Haiku"),
+                        "dot shown by default, ahead of the label");
     }
 
-    // No fallback provided: raw id is still the last resort (never blank).
+    // The dot is suppressible for composition into a larger chip.
     {
-        maya::ModelBadge mb{"mystery-model"};
-        const std::string s = rendered(mb);
-        MAYA_TEST_CHECK(s.find("mystery-model") != std::string::npos,
-                        "no-fallback unknown id still renders something");
+        const std::string s = rendered(
+            maya::ModelBadge{{.label = "Opus", .show_dot = false}});
+        MAYA_TEST_CHECK(s.starts_with("Opus"),
+                        "show_dot=false: label leads, no dot glyph");
     }
+
+    // A raw id passed as a label is rendered as-is — the widget does not
+    // second-guess the host. Callers hand it decoded text.
+    MAYA_TEST_CHECK(rendered(maya::ModelBadge{"mystery-model"})
+                        .find("mystery-model") != std::string::npos,
+                    "label-only ctor renders its string");
     std::println("PASS");
 }
 

@@ -1668,7 +1668,7 @@ static Element status_bar(const Model& m) {
             t<"  ">,
             TokenStreamSparkline{tok_cfg},
             t<"  ">,
-            ModelBadge("claude-opus-4-7").build()
+            ModelBadge({.label = "Opus 4.7"}).build()
         ) | pad<0, 1>,
         // Bottom hint row.
         h(
@@ -1688,7 +1688,7 @@ static Element welcome_view() {
     WelcomeScreen::Config c;
     c.sigil_color    = Color::magenta();
     c.tagline        = "Real SSE-streamed agent simulation, all local.";
-    c.model_badge    = ModelBadge("claude-opus-4-7").build();
+    c.model_badge    = ModelBadge({.label = "Opus 4.7"}).build();
     c.profile_label  = "demo";
     c.starters_title = "Try one of these";
     c.starters       = starters();

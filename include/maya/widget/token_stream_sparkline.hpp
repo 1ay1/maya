@@ -72,9 +72,10 @@ public:
             // group and the right chips instead of a blank spacer.
             return Element{component([cfg = cfg_](int w, int /*h*/) -> Element {
                 using namespace dsl;
-                // Fixed overhead: "⚡ "(2) + rate(5) + " t/s "(5) = 12,
-                // plus 3 cols breathing room on the left so the chip
-                // never butts against the phase chip / breadcrumb.
+                // Fixed overhead: "⚡"(2, wide glyph) + rate(5)
+                // + " t/s "(5) = 12, plus 3 cols breathing room on the
+                // left so the chip never butts against the phase chip /
+                // breadcrumb.
                 constexpr int kOverhead = 12 + 3;
                 const int cells = std::clamp(
                     w - kOverhead, 8, std::max(8, cfg.max_spark_cells));
@@ -118,20 +119,51 @@ private:
         // point stays visible across the entire streaming range so it
         // doesn't pop in/out as the rate crosses a format boundary.
         //
+        // The width is LOAD-BEARING here, unlike the composer's ambient
+        // counters (which were tabular-padded for no reason and got
+        // un-padded). This value is spring-smoothed and updates EVERY FRAME
+        // while streaming, and a sparkline is pinned immediately to its
+        // right — so a variable-width rate would shove the spark, the · and
+        // the CTX gauge left-right on every frame of every stream. Padding
+        // to a fixed field is what keeps the row still.
+        //
+        // But the pad is RIGHT-aligned, so a 1-2 digit rate carries leading
+        // spaces that read as a gap after the ⚡. Since the trailing " t/s "
+        // already separates the number from the spark, we can spend the
+        // slack on the right instead: left-align within the same 5 columns.
+        // "0.0  " and "105.2" both occupy 5 cells, the spark still never
+        // moves, and the ⚡ sits tight against its number.
+        //
         // Two snprintf gotchas drive the threshold choices:
-        //   1. %5.1f rounds: rate ∈ [999.95, 1000.0) prints as "1000.0"
-        //      — 6 chars, overflows the 5-char slot and shifts the dot
-        //      from col 3 to col 4. So we cap %5.1f at 999.5 (pre-rounding).
-        //   2. %5.0f for the kilo range drops the dot. We avoid that by
-        //      switching to %4.1fk (e.g. " 1.0k", " 9.9k") which keeps
+        //   1. %.1f rounds: rate ∈ [999.95, 1000.0) prints as "1000.0"
+        //      — 6 chars, overflowing the 5-char slot. So we cap it at
+        //      999.5 (pre-rounding).
+        //   2. %.0f for the kilo range drops the dot. We avoid that by
+        //      switching to %.1fk (e.g. "1.0k", "9.9k") which keeps
         //      a dot through 9999.5 tok/s.
         // Above 9999.5 we accept losing the dot — rates that high are
         // off the chart for any sensible token-per-second display.
+        //
+        // The kilo forms pad AFTER the suffix, not before it: `%-4.1fk`
+        // would left-align the number inside 4 columns and strand the k
+        // ("1.0 k"). Formatting the number tight and padding the whole
+        // token keeps "1.0k " together.
         char rate_buf[16];
-        if      (rate <   999.5f) std::snprintf(rate_buf, sizeof(rate_buf), "%5.1f",  static_cast<double>(rate));
-        else if (rate <  9999.5f) std::snprintf(rate_buf, sizeof(rate_buf), "%4.1fk", static_cast<double>(rate) / 1000.0);
-        else if (rate < 99999.5f) std::snprintf(rate_buf, sizeof(rate_buf), "%4.0fk", static_cast<double>(rate) / 1000.0);
-        else                      std::snprintf(rate_buf, sizeof(rate_buf), " 100k");
+        if (rate < 999.5f) {
+            std::snprintf(rate_buf, sizeof(rate_buf), "%-5.1f",
+                          static_cast<double>(rate));
+        } else {
+            char num[16];
+            if (rate < 9999.5f)
+                std::snprintf(num, sizeof(num), "%.1fk",
+                              static_cast<double>(rate) / 1000.0);
+            else if (rate < 99999.5f)
+                std::snprintf(num, sizeof(num), "%.0fk",
+                              static_cast<double>(rate) / 1000.0);
+            else
+                std::snprintf(num, sizeof(num), "100k");
+            std::snprintf(rate_buf, sizeof(rate_buf), "%-5s", num);
+        }
 
         // Sparkline — pad on LEFT with lowest block so right edge stays
         // pinned and new samples appear on the right.
@@ -161,8 +193,17 @@ private:
         Style rate_style  = cfg.live ? Style{}.with_fg(rc).with_bold()
                                      : Style{}.with_fg(rc).with_dim();
 
+        // ⚡ carries NO trailing space: it is an East-Asian-wide glyph that
+        // already occupies 2 cells, so the terminal draws it with its own
+        // trailing half. An explicit space on top of that read as a gap
+        // between the bolt and its number.
+        //
+        // " t/s " keeps its LEADING space even though the rate field is
+        // left-aligned: at the widest rate ("105.2") the field's own pad is
+        // empty, so relying on it would jam the unit against the digits.
+        // One explicit space costs a column and holds at every width.
         return h(
-            text("\xe2\x9a\xa1 ", Style{}.with_fg(rc)),                  // ⚡
+            text("\xe2\x9a\xa1", Style{}.with_fg(rc)),                   // ⚡
             text(std::string{rate_buf}, rate_style),
             text(" t/s ", fg_dim_(muted)),
             text(std::move(spark), spark_style)

@@ -483,13 +483,16 @@ TEST_CASE("spacing: declared widths are derived, not hand-copied") {
     // derived and REAL assertions if someone reverts one to a literal int.
     MAYA_TEST_CHECK(StatusBar::kSepW == unicode::str_width(StatusBar::kSep),
                     "status bar separator width is derived");
-    // The sparkline chip opens on the rate token — the leading ⚡ was removed,
-    // so its whole fixed overhead IS that token. Deriving this (rather than
-    // restating the number) is what made dropping a segment a one-line change
-    // instead of a silently mis-sized sparkline slot.
+    // The sparkline chip's fixed overhead is its rate token PLUS the two
+    // columns the removed ⚡ used to occupy. The glyph is gone from the paint
+    // but the chip still spends its width, so that dropping a decorative
+    // icon did not reflow every segment to its right (the spark, the ·, the
+    // CTX gauge) two columns leftward. Still derived rather than hand-copied
+    // — that is what made the reservation a one-line change.
     MAYA_TEST_CHECK(
         TokenStreamSparkline::kFixedCols
-            == TokenStreamSparkline::kRateTokCols,
+            == TokenStreamSparkline::kRateTokCols
+             + TokenStreamSparkline::kBoltCols,
         "sparkline fixed overhead is derived");
     // The rate token holds the widest number, its single space, the unit,
     // and one trailing column — so the unit is never flush against either

@@ -62,7 +62,13 @@ public:
     static constexpr int kRateNumCols = 5;                  // "105.2"
     static constexpr int kRateTokCols =
         kRateNumCols + 1 + unicode::str_width(kUnit) + 1;   // + trailing gap
-    static constexpr int kFixedCols = kRateTokCols;
+    // Columns the removed ⚡ used to occupy. It is gone from the paint, but
+    // the chip still SPENDS its width — see the fixed-path build() below —
+    // so that dropping a decorative glyph did not silently reflow every
+    // segment to its right. Named rather than inlined as `+ 2` so the reason
+    // survives the next edit.
+    static constexpr int kBoltCols = 2;
+    static constexpr int kFixedCols = kRateTokCols + kBoltCols;
     struct Config {
         float              rate    = 0.0f;
         int                total   = 0;
@@ -117,7 +123,15 @@ public:
             }).grow(1.0f).basis(Dimension::fixed(0))};
         }
 
-        return render_chip_(cfg_, 16);
+        // 18, not 16: the leading ⚡ used to own two columns of this chip.
+        // Dropping the glyph without re-spending them would have SHRUNK the
+        // whole chip, and since the status bar lays the activity row out
+        // left-to-right, every segment right of here — the spark, the ·, the
+        // CTX gauge — would jump two columns left the moment the icon went
+        // away. The chip's total width is part of its contract with the row,
+        // so the freed columns go back into the sparkline (which is the part
+        // that benefits from more resolution) rather than out of the layout.
+        return render_chip_(cfg_, 16 + kBoltCols);
     }
 
 private:

@@ -128,6 +128,48 @@ int main() {
         && ansi::env_supports_synchronized_output() != tmux::sync_available())
         return fail("inside tmux, sync support must equal tmux::sync_available()");
 
+    // ── Capabilities are per-CLIENT, and the cache must know it ─────
+    // The probe is memoised for the whole process, but tmux answers
+    // #{client_termfeatures} about whichever client is ATTACHED. Detaching
+    // a desktop kitty and reattaching from a phone changes the real answer
+    // while the cache keeps the old one — that stale verdict is what made
+    // "tmux reports your outer terminal has no clipboard support" survive
+    // fixing the config, because the process never looked again.
+    //
+    // Driven entirely through the FAKE seam so it asserts the same thing on
+    // every machine, in or out of tmux.
+    {
+        setenv("TMUX", "/tmp/fake-tmux,1,0", 1);
+        setenv("MAYA_TMUX_FAKE", "1", 1);
+        setenv("MAYA_TMUX_CLIENT", "/dev/pts/9/xterm-256color", 1);
+        setenv("MAYA_TMUX_FEATURES", "focus,RGB", 1);      // no clipboard
+        tmux::reset_cache_for_test();
+
+        if (tmux::has_feature(tmux::Feature::Clipboard))
+            return fail("client A must not advertise clipboard");
+        // Same client: refreshing must be a NO-OP, or we would pay a tmux
+        // round-trip on every call that guards a capability.
+        if (tmux::refresh_if_client_changed())
+            return fail("refresh must not report a change for the same client");
+        if (tmux::has_feature(tmux::Feature::Clipboard))
+            return fail("a no-op refresh must not alter the cached answer");
+
+        // Reattach from a client that DOES advertise clipboard.
+        setenv("MAYA_TMUX_CLIENT", "/dev/pts/0/xterm-kitty", 1);
+        setenv("MAYA_TMUX_FEATURES", "focus,RGB,clipboard", 1);
+        if (!tmux::refresh_if_client_changed())
+            return fail("refresh must detect a changed client");
+        if (!tmux::has_feature(tmux::Feature::Clipboard))
+            return fail("after a client change the NEW capabilities must win");
+
+        unsetenv("MAYA_TMUX_FAKE");
+        unsetenv("MAYA_TMUX_CLIENT");
+        unsetenv("MAYA_TMUX_FEATURES");
+        unsetenv("TMUX");
+        tmux::reset_cache_for_test();
+        std::println("per-client cache: stale verdict invalidated on reattach");
+    }
+
     std::println("PASS: tmux capability layer (wrap / sync / features / aliases)");
     return 0;
 }

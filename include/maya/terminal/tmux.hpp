@@ -135,7 +135,26 @@ enum class Feature {
 // True when sync_begin()/sync_end() are non-empty AND worth using.
 [[nodiscard]] bool sync_available() noexcept;
 
-// ── Testing seam ─────────────────────────────────────────────────────
+// Re-probe if a DIFFERENT client is attached than the one the cached
+// answers describe. tmux capabilities are per-client, so the same session
+// reports a different clipboard story from a desktop kitty than from a
+// phone over mosh — and the probe is otherwise memoised for the whole
+// process, which freezes whichever client was attached at startup. Call
+// this before acting on a capability that a reattach can invalidate (the
+// clipboard read is the motivating case). Costs one display-message
+// round-trip (~8 ms) and only re-probes when the client actually changed;
+// returns true if the cache was refreshed. Safe when tmux is absent.
+bool refresh_if_client_changed() noexcept;
+
+// PID of the tmux client currently attached, or -1 when unknown / no tmux.
+// Useful for identifying the TRANSPORT behind a session: with a persistent
+// (systemd-launched) tmux server the ssh/mosh process that carries the
+// session is an ancestor of the CLIENT, never of the program running in a
+// pane — so walking your own parents cannot see it. Not cached: the answer
+// changes on every detach/reattach.
+[[nodiscard]] int client_pid() noexcept;
+
+// ── Testing seam ──────────────────────────────────────────────────
 // Reset the memoised probe results so a test can re-evaluate after
 // changing the environment. Not for production use.
 void reset_cache_for_test() noexcept;

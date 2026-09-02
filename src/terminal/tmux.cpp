@@ -5,6 +5,7 @@
 #include "maya/terminal/ansi.hpp"
 
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
@@ -24,6 +25,16 @@ struct Probe {
     bool        passthrough  = false;
     bool        clip_relay   = false;   // get-clipboard is request|both
     std::string features;      // raw comma list from #{client_termfeatures}
+    // WHICH client the answers above describe. tmux capabilities are
+    // per-CLIENT, not per-server: the same session attached from kitty on a
+    // desktop and from a phone over mosh reports different termfeatures and
+    // a different clipboard story. Caching for process lifetime therefore
+    // freezes whichever client happened to be attached at startup, and every
+    // later detach/reattach silently answers from a stale verdict — the
+    // "tmux reports your outer terminal has no clipboard support" that
+    // survives fixing the config, because the process never looks again.
+    // tty+termname is the cheap identity: one display-message round-trip.
+    std::string client_id;
 };
 
 std::string env_str(const char* k) {
@@ -93,6 +104,13 @@ Probe& probe() {
                 p.features    = env_str("MAYA_TMUX_FEATURES");
                 p.passthrough = env_str("MAYA_TMUX_PASSTHROUGH") == "1";
                 p.clip_relay  = env_str("MAYA_TMUX_GET_CLIPBOARD") == "1";
+                // Mirror the real branch: record WHICH client these
+                // fabricated answers describe, so refresh_if_client_changed
+                // can distinguish "same client" from "reattached" under the
+                // seam exactly as it does live. Without this the fake probe
+                // leaves client_id empty and every refresh reads as a
+                // change, re-probing on every call.
+                p.client_id   = env_str("MAYA_TMUX_CLIENT");
                 return p;
             }
             // Only meaningful when a server is actually reachable: the
@@ -112,9 +130,23 @@ Probe& probe() {
                 ask_tmux("#{?#{==:#{get-clipboard},request},1,"
                          "#{?#{==:#{get-clipboard},both},1,0}}");
             p.clip_relay = (gc == "1");
+            // Identity of the client these answers describe. Cheap enough to
+            // re-ask later (one round-trip) to decide whether the cached
+            // verdict is still about the terminal the user is looking at.
+            p.client_id = ask_tmux("#{client_tty}/#{client_termname}");
         }
     }
     return p;
+}
+
+// Current client identity, without disturbing the cache. Empty when there
+// is no reachable server (ssh-local topology) — which we treat as "cannot
+// tell", never as "changed", so a degraded environment doesn't re-probe on
+// every call.
+[[nodiscard]] std::string current_client_id() {
+    if (const char* fake = std::getenv("MAYA_TMUX_FAKE"); fake && *fake)
+        return env_str("MAYA_TMUX_CLIENT");
+    return ask_tmux("#{client_tty}/#{client_termname}");
 }
 
 [[nodiscard]] std::string_view feature_name(Feature f) noexcept {
@@ -218,5 +250,35 @@ std::string_view sync_end()   noexcept { return sync_pair().end; }
 bool sync_available() noexcept { return !sync_pair().begin.empty(); }
 
 void reset_cache_for_test() noexcept { probe_done() = false; }
+
+bool refresh_if_client_changed() noexcept {
+    if (!active()) return false;
+    // Force the cached probe to exist so client_id is populated, then
+    // compare against the client attached RIGHT NOW.
+    const std::string cached = probe().client_id;
+    std::string now;
+    try { now = current_client_id(); } catch (...) { return false; }
+    // Empty = no reachable server / degraded env. "Cannot tell" must not
+    // count as a change, or we'd re-probe on every keystroke.
+    if (now.empty() || now == cached) return false;
+    probe_done() = false;
+    (void)probe();          // re-probe under the new client
+    return true;
+}
+
+int client_pid() noexcept {
+    if (!active()) return -1;
+    // Not cached: the attached client changes across detach/reattach, and
+    // callers ask this exactly when they need the CURRENT one (diagnosing
+    // a transport, which is per-client by nature).
+    std::string s;
+    try { s = ask_tmux("#{client_pid}"); } catch (...) { return -1; }
+    if (s.empty()) return -1;
+    errno = 0;
+    char* end = nullptr;
+    const long v = std::strtol(s.c_str(), &end, 10);
+    if (errno != 0 || end == s.c_str() || v <= 0 || v > 0x7fffffff) return -1;
+    return static_cast<int>(v);
+}
 
 } // namespace maya::tmux

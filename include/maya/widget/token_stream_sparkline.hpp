@@ -235,15 +235,31 @@ private:
         //
         // Number and unit are built as two styled runs (the number takes the
         // live/dim rate color, the unit is muted), so the pad rides on the
-        // UNIT's tail rather than being sliced back out of a joined string.
-        std::string num_tok  = std::string{rate_buf};
+        // number's LEAD rather than being sliced back out of a joined string.
+        //
+        // The number is RIGHT-aligned in kRateNumCols, which is what pins the
+        // unit to a fixed column. Padding the token on its TAIL instead (the
+        // obvious reading of "pad the whole token") fixes the number↔unit gap
+        // but lets the pair slide: a 3-char "0.0" put "t/s" two columns left
+        // of where a 5-char "105.2" put it, so the label the eye actually
+        // rests on hopped sideways every time the rate crossed a digit
+        // boundary — the same flicker the fixed field exists to prevent,
+        // moved from the gap onto the label. Leading the pad instead makes
+        // BOTH the number↔unit gap and the unit's column invariant, and holds
+        // the decimal point still while the value ticks.
+        std::string num_tok = std::string{rate_buf};
+        if (const int nw = unicode::str_width(num_tok); nw < kRateNumCols)
+            num_tok.insert(0, static_cast<std::size_t>(kRateNumCols - nw), ' ');
         std::string unit_tok = " " + std::string{kUnit};
+        // Trailing seam, so the chip never butts against the spark. Sized
+        // from the parts rather than hardcoded: if a rate ever overflows
+        // kRateNumCols the token still gets its separating column instead of
+        // silently colliding.
         {
             const int w = unicode::str_width(num_tok)
                         + unicode::str_width(unit_tok);
-            if (w < kRateTokCols)
-                unit_tok.append(
-                    static_cast<std::size_t>(kRateTokCols - w), ' ');
+            unit_tok.append(
+                static_cast<std::size_t>(std::max(1, kRateTokCols - w)), ' ');
         }
 
         return h(

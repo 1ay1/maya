@@ -393,6 +393,8 @@ TEST_CASE("spacing: the sparkline keeps its unit tight to its number") {
     // the field's own right-pad became the number↔unit gap and grew as the
     // number shrank. Sweep the rate magnitudes, since the format switches
     // at 999.5 / 9999.5.
+    std::size_t unit_col = std::string::npos;
+    std::size_t spark_col = std::string::npos;
     for (float rate : {0.0f, 9.9f, 105.2f, 999.4f, 1500.0f, 25000.0f}) {
         TokenStreamSparkline::Config c;
         c.rate    = rate;
@@ -401,9 +403,9 @@ TEST_CASE("spacing: the sparkline keeps its unit tight to its number") {
         sweep(TokenStreamSparkline{c}.build(), "sparkline", 20, 60);
 
         // The unit belongs to its number: EXACTLY one space between them,
-        // identical at every magnitude. The field's slack is spent after
-        // the unit, so a short rate must not open a wider hole before it
-        // ("23.4  t/s") than a long one ("105.2 t/s").
+        // identical at every magnitude. The field's slack is spent as a LEAD
+        // on the number, so a short rate must not open a wider hole before
+        // the unit ("23.4  t/s") than a long one ("105.2 t/s").
         const auto rows = rows_at(TokenStreamSparkline{c}.build(), 60);
         MAYA_TEST_CHECK(!rows.empty(), "sparkline rendered");
         const std::string& r = rows.front();
@@ -413,9 +415,31 @@ TEST_CASE("spacing: the sparkline keeps its unit tight to its number") {
         MAYA_TEST_CHECK(r[u - 1] == ' ' && r[u - 2] != ' ',
             "unit is exactly one space from its number @rate="
             + std::to_string(rate) + "  |" + r + "|");
+
+        // …and the whole token must not SLIDE. A one-space gap is not enough
+        // on its own: pad the token on its tail and the gap stays correct
+        // while the number and unit drift left together as the value shrinks
+        // ("0.0 t/s" put the label two columns left of "105.2 t/s"). The rate
+        // updates every frame, so a label that moves with the digit count
+        // flickers under the reader's eye — exactly what the fixed-width
+        // field exists to prevent. Pin the ABSOLUTE column of both the unit
+        // and the spark: neither may depend on the magnitude.
+        if (unit_col == std::string::npos) {
+            unit_col  = u;
+            spark_col = r.find_first_not_of(' ', u + 3);
+        } else {
+            MAYA_TEST_CHECK(u == unit_col,
+                "unit holds its column across magnitudes (was col "
+                + std::to_string(unit_col) + ", now " + std::to_string(u)
+                + ") @rate=" + std::to_string(rate) + "  |" + r + "|");
+            MAYA_TEST_CHECK(r.find_first_not_of(' ', u + 3) == spark_col,
+                "spark holds its column across magnitudes @rate="
+                + std::to_string(rate) + "  |" + r + "|");
+        }
     }
     std::println("  clean across 6 rate magnitudes x widths 20..60");
     std::println("  unit glued one space to its number at every magnitude");
+    std::println("  unit + spark hold fixed columns as the rate ticks");
     std::println("  PASS");
 }
 

@@ -44,6 +44,16 @@ bool detect_presence() {
 // Ask the running server. Returns "" on any failure (no server, tmux not
 // on PATH, permission) — callers treat that as "unknown", never as a
 // hard error: a capability probe must not be able to break rendering.
+//
+// WINDOWS: compiled out entirely rather than aliased to _popen. tmux is a
+// POSIX terminal multiplexer with no Windows build; the probe would spawn
+// a shell on every start only to fail, and detect_presence() already
+// returns false there (no $TMUX, no tmux-*/screen-* $TERM), so this is
+// unreachable in practice. Returning "unknown" is exactly the documented
+// failure contract — no behaviour changes, one less process spawn.
+#if defined(_WIN32)
+std::string ask_tmux(const char* /*format*/) { return {}; }
+#else
 std::string ask_tmux(const char* format) {
     std::string cmd = "tmux display-message -p '";
     cmd += format;
@@ -61,6 +71,7 @@ std::string ask_tmux(const char* format) {
         out.pop_back();
     return out;
 }
+#endif
 
 // Cache-valid flags. Single-threaded by contract for the reset seam (see
 // the header): production sets them once on first use and never clears.

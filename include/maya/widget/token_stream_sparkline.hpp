@@ -3,9 +3,9 @@
 //
 // Stable-width slot used by the status bar during streaming:
 //
-//   ⚡ 23.4 t/s ▁▂▃▄▅▆▇█▇▆ 1234
+//   23.4 t/s ▁▂▃▄▅▆▇█▇▆ 1234
 //
-// 37 cells total: ⚡ ▕rate 5▏ t/s ▕spark 16▏ ▕total 5▏
+// 35 cells total: ▕rate 5▏ t/s ▕spark 16▏ ▕total 5▏
 //
 // Every segment is fixed display width so the slot occupies the same
 // cells whether rate is 0.5 or 1234, total is 0 or 12.3M — surrounding
@@ -43,9 +43,13 @@ public:
     // Derived from the literals rather than restated as an integer: the
     // adaptive slot's cell budget subtracts this, so a hand-copied number
     // that drifted from the painted text would silently mis-size the spark.
-    // ⚡ is an East-Asian-wide glyph — 2 columns — which is exactly the kind
-    // of fact a human tally gets wrong.
-    static constexpr std::string_view kBolt = "\xe2\x9a\xa1";   // ⚡ (2 cols)
+    //
+    // The chip opens on the rate token itself — no leading icon. The ⚡ that
+    // used to sit here was decoration the label already carries: "t/s" says
+    // what the number is, so the glyph spent two columns restating it in the
+    // most width-contested row of the UI. It was also the status bar's only
+    // East-Asian-wide (2-column) glyph, i.e. the one character a terminal is
+    // most likely to disagree with us about the advance of.
     // The unit, and nothing else: no padding baked into the literal. The
     // single space before it is emitted with the unit so that "23.4 t/s"
     // stays one word at every magnitude; the field's slack lands AFTER it.
@@ -58,8 +62,7 @@ public:
     static constexpr int kRateNumCols = 5;                  // "105.2"
     static constexpr int kRateTokCols =
         kRateNumCols + 1 + unicode::str_width(kUnit) + 1;   // + trailing gap
-    static constexpr int kFixedCols =
-        unicode::str_width(kBolt) + kRateTokCols;
+    static constexpr int kFixedCols = kRateTokCols;
     struct Config {
         float              rate    = 0.0f;
         int                total   = 0;
@@ -248,7 +251,6 @@ private:
         }
 
         return h(
-            text(std::string{kBolt}, Style{}.with_fg(rc)),               // ⚡
             text(std::move(num_tok), rate_style),
             text(std::move(unit_tok), fg_dim_(muted)),
             text(std::move(spark), spark_style)

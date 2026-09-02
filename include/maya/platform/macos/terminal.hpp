@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <utility>
 
 #include <sys/ioctl.h>
@@ -83,10 +84,35 @@ public:
     }
 
     [[nodiscard]] auto read_raw() -> Result<std::string> {
-        char buf[4096];   // 4KB: handles paste events in one syscall
-        auto result = io_read(in_fd_, buf, sizeof(buf));
-        if (!result) return err<std::string>(result.error());
-        return ok(std::string(buf, *result));
+        // Drain the fd, don't take one mouthful per poll. 4 KiB "handles a
+        // paste in one syscall" only for a TYPED-size paste; a clipboard
+        // image is base64 measured in megabytes, which at 4 KiB a poll is
+        // ~1.3k round-trips with no frame drawn between them. Read in
+        // 64 KiB chunks and keep going while the fd keeps filling them.
+        //
+        // Blocking-safe: another read is only attempted after one that
+        // filled the buffer, i.e. more was definitely waiting. Any short
+        // read (including the 0 io_read reports for EAGAIN/EINTR) ends the
+        // burst. kMaxBurst keeps a nonstop peer from starving the frame.
+        constexpr std::size_t kChunk    = 64u * 1024u;
+        constexpr std::size_t kMaxBurst = 4u * 1024u * 1024u;
+
+        static thread_local std::vector<char> buf(kChunk);
+
+        std::string out;
+        for (;;) {
+            auto result = io_read(in_fd_, buf.data(), buf.size());
+            if (!result) {
+                if (!out.empty()) return ok(std::move(out));
+                return err<std::string>(result.error());
+            }
+            const std::size_t n = *result;
+            if (n == 0) break;
+            out.append(buf.data(), n);
+            if (n < buf.size()) break;
+            if (out.size() >= kMaxBurst) break;
+        }
+        return ok(std::move(out));
     }
 
     [[nodiscard]] auto size() const -> Size {

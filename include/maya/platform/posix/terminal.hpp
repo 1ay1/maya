@@ -12,6 +12,7 @@
 #include <cerrno>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <utility>
 
 #include <sys/ioctl.h>
@@ -87,10 +88,49 @@ public:
     }
 
     [[nodiscard]] auto read_raw() -> Result<std::string> {
-        char buf[256];
-        auto result = io_read(in_fd_, buf, sizeof(buf));
-        if (!result) return err<std::string>(result.error());
-        return ok(std::string(buf, *result));
+        // Drain what is available, not one small mouthful.
+        //
+        // This used to read 256 bytes per call, and the caller's loop is
+        // poll -> read -> parse -> maybe render. A clipboard image arrives
+        // as base64 measured in megabytes, so 256-byte reads turned one
+        // paste into ~20k poll/read round-trips: seconds of apparent hang
+        // with no frame drawn, because no render happens until the whole
+        // OSC has been consumed. Parsing was never the cost (4 MB parses in
+        // ~20 ms); the syscall count was.
+        //
+        // 64 KiB matches the pipe/pty buffer, so a burst usually lands in
+        // one or two reads. The loop then keeps pulling while the fd has
+        // more, but stops at kMaxBurst so a peer streaming without pause
+        // cannot starve rendering and input handling.
+        //
+        // Safe on a BLOCKING fd too: we only go round again after a read
+        // that filled the buffer completely, which means more was waiting.
+        // A short read — including the 0 that io_read reports for
+        // EAGAIN/EINTR — ends the burst, so we never block for bytes that
+        // have not arrived.
+        constexpr std::size_t kChunk    = 64u * 1024u;
+        constexpr std::size_t kMaxBurst = 4u * 1024u * 1024u;
+
+        // Heap, not stack: 64 KiB is beyond a comfortable frame budget on
+        // small-stack threads, and this is reused across the whole burst.
+        static thread_local std::vector<char> buf(kChunk);
+
+        std::string out;
+        for (;;) {
+            auto result = io_read(in_fd_, buf.data(), buf.size());
+            if (!result) {
+                // A partial burst is still real input: hand back what we
+                // have and let the next poll surface the error.
+                if (!out.empty()) return ok(std::move(out));
+                return err<std::string>(result.error());
+            }
+            const std::size_t n = *result;
+            if (n == 0) break;                 // EAGAIN/EINTR/EOF: nothing more
+            out.append(buf.data(), n);
+            if (n < buf.size()) break;         // short read = fd drained
+            if (out.size() >= kMaxBurst) break;
+        }
+        return ok(std::move(out));
     }
 
     // -- Properties -----------------------------------------------------------

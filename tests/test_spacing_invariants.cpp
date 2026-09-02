@@ -358,6 +358,51 @@ TEST_CASE("spacing: the status bar never double-gaps or orphans a separator") {
         }
     }
     std::println("  clean across widths 20..200, glyph x badge x elapsed");
+
+    // The right group RIGHT-ALIGNS. The activity row is lead | rail | phase
+    // | grow-slack | right-group, so the throughput+CTX cluster sits flush
+    // against the row's right edge with the slack opening up after the phase
+    // chip. This shipped BROKEN: a fix for a tight-width collision wrapped
+    // the middle spacer in an h() but dropped its `| grow(1.0f)`, so the
+    // wrapped box measured to its one hard column and stopped distributing
+    // slack — the whole cluster floated mid-row with a growing void to its
+    // right at every width past the point things fit. The gap sweep above
+    // could not see it: nothing collided or double-gapped, the cluster was
+    // just in the wrong place. Assert the position directly.
+    //
+    // “Flush right” = at most one trailing blank column (the row keeps a
+    // one-column bleed guard on its right so a wide glyph in the last cell
+    // cannot wrap). Swept wide, where the bug is visible; a too-narrow row
+    // that sheds to nothing is skipped.
+    for (bool with_badge : {false, true}) {
+        StatusBar::Config c;
+        c.phase.verb         = "Ready";
+        c.phase.elapsed_secs = 1.9f;
+        c.context.max        = 1'000'000;
+        c.context.used       = 317'800;
+        c.token_stream.rate    = 0.0f;
+        c.token_stream.history = {1, 2, 3, 2, 4};
+        c.token_stream.live    = true;
+        if (with_badge)
+            c.model_badge =
+                ModelBadge{{.label = "Opus", .version = "4.8"}}.build();
+        for (int w = 80; w <= 200; w += 10) {
+            const auto rows = rows_at(StatusBar{c}.build(), w);
+            if (rows.empty()) continue;
+            // The activity row is the one carrying "CTX".
+            const std::string* row = nullptr;
+            for (const auto& r : rows)
+                if (r.find("CTX") != std::string::npos) { row = &r; break; }
+            if (!row) continue;
+            const auto last = row->find_last_not_of(' ');
+            const std::size_t trailing =
+                last == std::string::npos ? w : (w - 1 - last);
+            MAYA_TEST_CHECK(trailing <= 1,
+                "status bar right group is flush right @w=" + std::to_string(w)
+                + " (trailing=" + std::to_string(trailing) + ")  |" + *row + "|");
+        }
+    }
+    std::println("  right group flush-right across widths 80..200");
     std::println("  PASS");
 }
 

@@ -276,7 +276,7 @@ private:
                         ? (h(TokenStreamSparkline{cfg.token_stream}.build(),
                              text(kSep, fg_dim_(muted))) | grow(1.0f)).build()
                         : (has_right
-                            ? h(spacer(), text(" ")).build()
+                            ? (h(spacer(), text(" ")) | grow(1.0f)).build()
                             : Element{spacer().build()});
                     break;
                 }

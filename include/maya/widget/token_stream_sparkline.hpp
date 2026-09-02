@@ -39,6 +39,26 @@ namespace maya {
 
 class TokenStreamSparkline {
 public:
+    // The chip's fixed (non-sparkline) parts, and the width they occupy.
+    // Derived from the literals rather than restated as an integer: the
+    // adaptive slot's cell budget subtracts this, so a hand-copied number
+    // that drifted from the painted text would silently mis-size the spark.
+    // ⚡ is an East-Asian-wide glyph — 2 columns — which is exactly the kind
+    // of fact a human tally gets wrong.
+    static constexpr std::string_view kBolt = "\xe2\x9a\xa1";   // ⚡ (2 cols)
+    // No leading space: the rate field is left-aligned and pads to a fixed
+    // width, so its own right-pad IS the gap before the unit. A leading
+    // space here would be a second owner of the same columns — the exact
+    // shape that painted "0.0   t/s".
+    static constexpr std::string_view kUnit = "t/s ";
+    // Rate field width. SIX, not five: the longest form is "105.2" (5), and
+    // the field's right-pad is what separates the number from the unit — so
+    // sizing it to exactly the longest value leaves zero pad there and
+    // paints "105.2t/s". One extra column guarantees at least one space at
+    // every magnitude, with a single owner for that gap.
+    static constexpr int kRateCols = 6;
+    static constexpr int kFixedCols =
+        unicode::str_width(kBolt) + kRateCols + unicode::str_width(kUnit);
     struct Config {
         float              rate    = 0.0f;
         int                total   = 0;
@@ -72,11 +92,11 @@ public:
             // group and the right chips instead of a blank spacer.
             return Element{component([cfg = cfg_](int w, int /*h*/) -> Element {
                 using namespace dsl;
-                // Fixed overhead: "⚡"(2, wide glyph) + rate(5)
-                // + " t/s "(5) = 12, plus 3 cols breathing room on the
+                // kFixedCols is derived from the painted literals (see
+                // the class constants), plus 3 cols breathing room on the
                 // left so the chip never butts against the phase chip /
                 // breadcrumb.
-                constexpr int kOverhead = 12 + 3;
+                constexpr int kOverhead = kFixedCols + 3;
                 const int cells = std::clamp(
                     w - kOverhead, 8, std::max(8, cfg.max_spark_cells));
                 // Right-pin: when the slot is wider than the capped
@@ -150,8 +170,8 @@ private:
         // token keeps "1.0k " together.
         char rate_buf[16];
         if (rate < 999.5f) {
-            std::snprintf(rate_buf, sizeof(rate_buf), "%-5.1f",
-                          static_cast<double>(rate));
+            std::snprintf(rate_buf, sizeof(rate_buf), "%-*.1f",
+                          kRateCols, static_cast<double>(rate));
         } else {
             char num[16];
             if (rate < 9999.5f)
@@ -162,7 +182,7 @@ private:
                               static_cast<double>(rate) / 1000.0);
             else
                 std::snprintf(num, sizeof(num), "100k");
-            std::snprintf(rate_buf, sizeof(rate_buf), "%-5s", num);
+            std::snprintf(rate_buf, sizeof(rate_buf), "%-*s", kRateCols, num);
         }
 
         // Sparkline — pad on LEFT with lowest block so right edge stays
@@ -193,19 +213,18 @@ private:
         Style rate_style  = cfg.live ? Style{}.with_fg(rc).with_bold()
                                      : Style{}.with_fg(rc).with_dim();
 
-        // ⚡ carries NO trailing space: it is an East-Asian-wide glyph that
-        // already occupies 2 cells, so the terminal draws it with its own
-        // trailing half. An explicit space on top of that read as a gap
-        // between the bolt and its number.
+        // The rate field is padded to kRateCols and LEFT-aligned, so the
+        // slack sits between the number and the unit — that pad is the only
+        // owner of that gap, and kRateCols is sized one wider than the
+        // longest value so the pad is never empty.
         //
-        // " t/s " keeps its LEADING space even though the rate field is
-        // left-aligned: at the widest rate ("105.2") the field's own pad is
-        // empty, so relying on it would jam the unit against the digits.
-        // One explicit space costs a column and holds at every width.
+        // ⚡ likewise carries no trailing space of its own: it is an
+        // East-Asian-wide glyph (2 cols) and the rate that follows supplies
+        // its own leading space via the field.
         return h(
-            text("\xe2\x9a\xa1", Style{}.with_fg(rc)),                   // ⚡
+            text(std::string{kBolt}, Style{}.with_fg(rc)),               // ⚡
             text(std::string{rate_buf}, rate_style),
-            text(" t/s ", fg_dim_(muted)),
+            text(std::string{kUnit}, fg_dim_(muted)),
             text(std::move(spark), spark_style)
         ).build();
     }

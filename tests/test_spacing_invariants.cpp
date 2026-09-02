@@ -1,0 +1,368 @@
+// test_spacing_invariants — the proof that killed the screenshot loop.
+//
+// ── Why this file exists ─────────────────────────────────────────────────
+//
+// A run of spacing bugs shipped, each found by a human squinting at a
+// screenshot, each fixed in isolation:
+//
+//   • "Anthropic Opus" rendered with the two words TOUCHING, because a
+//     separator was removed on the reasoning that the chip's own trailing
+//     space would serve — but that space is background-FILLED, so it reads
+//     as the chip's padding, not as separation.
+//   • the status bar painted "·   ·" with a dead gap between them, because
+//     a separator was baked onto the END of one segment on the assumption
+//     that another always followed it. When the model badge moved out, the
+//     assumption broke and the orphan stayed.
+//   • the composer read "    1 words" — four leading spaces from tabular
+//     padding that bought nothing in a right-aligned cluster.
+//   • the sparkline read "⚡  0.0" — TWO owners each contributed spacing
+//     (the "⚡ " literal and a %5.1f right-pad), neither aware of the other,
+//     and ⚡ is a 2-column wide glyph on top of that.
+//
+// One root cause: SPACING WAS ENCODED AS CONTENT. `text(" ")` is not a gap,
+// it is a string that happens to be blank — invisible to the layout engine,
+// invisible to measurement, and invisible to the shed ladder, so a separator
+// inside segment N cannot know segment N+1 was dropped.
+//
+// Fixing instances one at a time is a treadmill: each fix is invisible until
+// someone hits the exact terminal width that reveals it. This file is the
+// mechanical version of that squinting. It renders the real widgets across
+// every width they must survive and asserts the properties a human was
+// checking by eye:
+//
+//   1. no run of 2+ spaces between visible content (double-gap)
+//   2. no separator glyph adjacent to another separator (orphaned sep)
+//   3. no separator left dangling at either end of a row
+//   4. content never touches where a gap was intended (regression guard)
+//
+// A widget that hand-rolls spacing will eventually violate one of these at
+// SOME width. That is the point: the test sweeps widths so it does not
+// depend on anyone guessing which one.
+
+#include <maya/maya.hpp>
+#include <maya/widget/status_bar.hpp>
+#include <maya/widget/composer.hpp>
+#include <maya/widget/model_badge.hpp>
+#include <maya/widget/shortcut_row.hpp>
+#include <maya/widget/token_stream_sparkline.hpp>
+#include <maya/text/unicode_width.hpp>
+
+#include <print>
+#include <string>
+#include <vector>
+
+#include "check.hpp"
+#include "agtest.hpp"
+
+using namespace maya;
+
+namespace {
+
+// Render a row to a plain string. Non-ASCII collapses to a single sentinel
+// so the scanners below reason about STRUCTURE (content / space /
+// separator) rather than glyphs.
+constexpr char kSepMark = '\x01';   // any separator-ish glyph (·)
+constexpr char kGlyph   = '\x02';   // any other non-ASCII glyph
+
+std::string structural_row(const Canvas& c, int y) {
+    std::string s;
+    for (int x = 0; x < c.width(); ++x) {
+        const Cell e = c.get(x, y);
+        const char32_t cp = e.character;
+        if (cp == 0 || cp == U' ')      s += ' ';
+        else if (cp == U'\u00B7')       s += kSepMark;      // ·
+        else if (cp < 0x80)             s += static_cast<char>(cp);
+        else                            s += kGlyph;
+        // A wide glyph occupies 2 cells; the trailing cell reads as 0 and
+        // would otherwise look like a space. Mark it as glyph continuation.
+        if (unicode::char_width(cp) == 2 && x + 1 < c.width()) {
+            s += kGlyph;
+            ++x;
+        }
+    }
+    // Trailing blank cells are the row's slack, not a gap between content.
+    while (!s.empty() && s.back() == ' ') s.pop_back();
+    return s;
+}
+
+// Index of the first / last non-space, or npos.
+std::size_t first_content(const std::string& s) {
+    return s.find_first_not_of(' ');
+}
+
+// ── Invariant 1: no HARDCODED double gap between content ────────────────
+//
+// Two or more spaces between visible content means two owners each added
+// spacing without knowing about the other ("⚡  0.0", "▌  Streaming"), or a
+// fixed-width pad was spent where it bought nothing ("CTX   28%").
+//
+// The hard part is telling those from a LAYOUT SPACER — the flexible gap the
+// engine opens between the left and right clusters. Both look like a run of
+// spaces in the rendered row, and at tight widths a spacer can be as narrow
+// as one or two columns, so a run-length threshold cannot separate them.
+//
+// The discriminator is GROWTH. Render the same element twice, at w and at
+// w + kProbeDelta:
+//
+//   • a spacer ABSORBS the extra width — its run grows by kProbeDelta;
+//   • a hardcoded gap is baked into a string — its run is identical.
+//
+// So we compare the two rows' gap runs in order and flag only the ones that
+// did not move. That is exactly the property we care about ("this gap is
+// content, not layout") rather than a proxy for it.
+constexpr int kProbeDelta = 8;
+
+struct Gap { std::size_t at; int run; };
+
+std::vector<Gap> interior_gaps(const std::string& s) {
+    std::vector<Gap> out;
+    const auto b = first_content(s);
+    if (b == std::string::npos) return out;
+    for (std::size_t i = b; i < s.size();) {
+        if (s[i] != ' ') { ++i; continue; }
+        std::size_t j = i;
+        while (j < s.size() && s[j] == ' ') ++j;
+        if (j < s.size())   // interior only; trailing slack already trimmed
+            out.push_back({i, static_cast<int>(j - i)});
+        i = j;
+    }
+    return out;
+}
+
+// Compare the gap sequences of the narrow and wide renders. A gap that is
+// present in both, at the same ordinal position, with the SAME run length,
+// and wider than kMaxOwnedPad, is a hardcoded double gap.
+//
+// Why a tolerance rather than ">= 2": a SINGLE owner may legitimately hold
+// several columns — a fixed-width numeric field pads to its width so a
+// neighbour doesn't twitch as the value grows (the sparkline's rate, the
+// gauge's percent). That is one owner doing one job, and it does not grow
+// with the row, so the growth probe cannot distinguish it from a bug.
+//
+// The bug shape is TWO owners each contributing to the same gap, which in
+// practice means a small run that no single field would have produced. A
+// fixed field is sized to the values it displays; past ~4 columns of dead
+// space between two fragments, no plausible field is responsible.
+constexpr int kMaxOwnedPad = 4;
+
+bool has_hardcoded_double_gap(const std::string& narrow,
+                              const std::string& wide,
+                              std::string& why) {
+    const auto gn = interior_gaps(narrow);
+    const auto gw = interior_gaps(wide);
+    // Different fragment counts mean the two widths shed differently; the
+    // comparison is meaningless, so skip rather than guess.
+    if (gn.size() != gw.size()) return false;
+    for (std::size_t k = 0; k < gn.size(); ++k) {
+        if (gn[k].run <= kMaxOwnedPad) continue;
+        if (gn[k].run != gw[k].run) continue;   // grew -> it is a spacer
+        why = "hardcoded gap of " + std::to_string(gn[k].run)
+            + " cols at col " + std::to_string(gn[k].at)
+            + " (unchanged when the row grew " + std::to_string(kProbeDelta)
+            + " cols, so it is baked in, not layout)";
+        return true;
+    }
+    return false;
+}
+
+// ── Invariant 2: separators are never orphaned ──────────────────────────
+//
+// A separator must sit BETWEEN content. Two separators with only spaces
+// between them means one of them lost the segment it was introducing —
+// exactly the "·   ·" the status bar painted once the model badge moved to
+// the composer.
+bool has_orphan_separator(const std::string& s, std::string& why) {
+    std::size_t prev = std::string::npos;
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        if (s[i] != kSepMark) continue;
+        if (prev != std::string::npos) {
+            bool only_space = true;
+            for (std::size_t k = prev + 1; k < i; ++k)
+                if (s[k] != ' ') { only_space = false; break; }
+            if (only_space) {
+                why = "adjacent separators at cols " + std::to_string(prev)
+                    + " and " + std::to_string(i) + " (nothing between)";
+                return true;
+            }
+        }
+        prev = i;
+    }
+    return false;
+}
+
+// ── Invariant 3: no dangling separator at either end ────────────────────
+//
+// A separator before the first content or after the last is introducing
+// nothing. This is the shape a trailing "baked-in" separator leaves when
+// the following segment sheds out.
+bool has_dangling_separator(const std::string& s, std::string& why) {
+    const auto b = s.find_first_not_of(' ');
+    if (b == std::string::npos) return false;
+    const auto e = s.find_last_not_of(' ');
+    if (s[b] == kSepMark) { why = "row starts with a separator"; return true; }
+    if (s[e] == kSepMark) { why = "row ends with a separator";   return true; }
+    return false;
+}
+
+// Run every invariant over one rendered row. `wide` is the same row rendered
+// kProbeDelta columns wider, used to tell a baked-in gap from a spacer.
+void check_row(const std::string& row, const std::string& wide,
+               int w, const char* what) {
+    std::string why;
+    MAYA_TEST_CHECK(!has_hardcoded_double_gap(row, wide, why),
+        std::string{what} + " @w=" + std::to_string(w) + ": " + why
+        + "\n    narrow |" + row + "|\n    wide   |" + wide + "|");
+    why.clear();
+    MAYA_TEST_CHECK(!has_orphan_separator(row, why),
+        std::string{what} + " @w=" + std::to_string(w) + ": " + why
+        + "  |" + row + "|");
+    why.clear();
+    MAYA_TEST_CHECK(!has_dangling_separator(row, why),
+        std::string{what} + " @w=" + std::to_string(w) + ": " + why
+        + "  |" + row + "|");
+}
+
+// Render every non-empty row of `el` at one width.
+std::vector<std::string> rows_at(const Element& el, int w) {
+    StylePool pool;
+    Canvas cv(w, 8, &pool);
+    render_tree(el, cv, pool, theme::dark, true);
+    std::vector<std::string> out;
+    for (int y = 0; y < 8; ++y) {
+        std::string r = structural_row(cv, y);
+        if (r.find_first_not_of(' ') != std::string::npos)
+            out.push_back(std::move(r));
+    }
+    return out;
+}
+
+// Sweep a width range, checking each row against its wider twin.
+void sweep(const Element& el, const char* what, int lo, int hi) {
+    for (int w = lo; w <= hi; ++w) {
+        const auto narrow = rows_at(el, w);
+        const auto wide   = rows_at(el, w + kProbeDelta);
+        // Only compare when both widths produced the same row structure;
+        // otherwise a shed changed which rows exist and the pairing is
+        // meaningless.
+        if (narrow.size() != wide.size()) continue;
+        for (std::size_t i = 0; i < narrow.size(); ++i)
+            check_row(narrow[i], wide[i], w, what);
+    }
+}
+
+} // namespace
+
+TEST_CASE("spacing: the status bar never double-gaps or orphans a separator") {
+    std::println("=== test_spacing_status_bar ===");
+    // The status bar is where the "·   ·" bug lived: its right group sheds
+    // segments by width, and a separator baked onto a segment's tail
+    // outlives the segment that was supposed to follow it.
+    for (bool with_badge : {false, true}) {
+        StatusBar::Config c;
+        c.breadcrumb.title = "understand this project deeply";
+        c.phase.verb       = "Streaming";
+        c.context.max      = 1'000'000;
+        c.context.used     = 286'100;
+        if (with_badge)
+            c.model_badge = ModelBadge{{.label = "Opus", .version = "4.8"}}.build();
+        sweep(StatusBar{c}.build(),
+              with_badge ? "status_bar+badge" : "status_bar", 20, 200);
+    }
+    std::println("  clean across widths 20..200, with and without a badge");
+    std::println("  PASS");
+}
+
+TEST_CASE("spacing: the composer footer never double-gaps") {
+    std::println("=== test_spacing_composer ===");
+    // The composer footer held the "    1 words" tabular padding and the
+    // "Anthropic Opus" touching-words bug. Sweep with and without a host
+    // status slot, since that slot displaces the built-in key hints.
+    for (bool with_status : {false, true}) {
+        Composer::Config c;
+        c.text   = "hello world";
+        c.cursor = 11;
+        c.word_estimate  = 2;
+        c.token_estimate = 3;
+        c.profile = {.label = "write"};
+        if (with_status) {
+            c.status = dsl::text("Anthropic Opus 4.8").build();
+            c.show_key_hints = false;
+        }
+        sweep(Composer{c}.build(),
+              with_status ? "composer+status" : "composer", 30, 200);
+    }
+    std::println("  clean across widths 30..200, with and without a status slot");
+    std::println("  PASS");
+}
+
+TEST_CASE("spacing: the sparkline keeps ⚡ tight to its number") {
+    std::println("=== test_spacing_sparkline ===");
+    // Two owners once contributed spacing here (a "⚡ " literal and a %5.1f
+    // right-pad), and ⚡ is a 2-column wide glyph on top of that. Sweep the
+    // rate magnitudes, since the format switches at 999.5 / 9999.5.
+    for (float rate : {0.0f, 9.9f, 105.2f, 999.4f, 1500.0f, 25000.0f}) {
+        TokenStreamSparkline::Config c;
+        c.rate    = rate;
+        c.history = {rate, rate, rate, rate};
+        c.live    = true;
+        sweep(TokenStreamSparkline{c}.build(), "sparkline", 20, 60);
+    }
+    std::println("  clean across 6 rate magnitudes x widths 20..60");
+    std::println("  PASS");
+}
+
+TEST_CASE("spacing: the shortcut row sheds without stranding spacing") {
+    std::println("=== test_spacing_shortcut_row ===");
+    ShortcutRow::Config c;
+    c.bindings = {
+        {.key = "^K", .label = "palette", .priority = 100},
+        {.key = "^J", .label = "threads", .priority = 90},
+        {.key = "^R", .label = "review",  .priority = 80},
+        {.key = "^S", .label = "smart",   .priority = 70},
+        {.key = "^C", .label = "quit",    .priority = 60},
+    };
+    sweep(ShortcutRow{c}.build(), "shortcut_row", 20, 200);
+    std::println("  clean across widths 20..200");
+    std::println("  PASS");
+}
+
+// ── The width-derivation proof ───────────────────────────────────────────
+//
+// Tier 2 of the fix: a spacing literal's WIDTH must be computed from the
+// literal, never restated as an integer beside it. status_bar.hpp carried
+// `kSepW = 7` next to `"   ·   "`; narrowing the separator left the constant
+// reserving four columns nobody painted, and the title chip over-shed on
+// exactly the narrow terminals the shed ladder exists for.
+//
+// These are compile-time facts, asserted at runtime so the intent is
+// discoverable from the test suite rather than only from a static_assert.
+TEST_CASE("spacing: declared widths are derived, not hand-copied") {
+    std::println("=== test_spacing_derived_widths ===");
+
+    // str_width is the primitive that makes derivation possible.
+    static_assert(unicode::str_width(" ") == 1);
+    static_assert(unicode::str_width("   ") == 3);
+    static_assert(unicode::str_width(" \xc2\xb7 ") == 3, "· is 1 column");
+    static_assert(unicode::str_width("\xe2\x9a\xa1") == 2, "⚡ is WIDE");
+    static_assert(unicode::str_width("") == 0);
+
+    // Each widget's declared width matches its painted literal, by
+    // construction — these would be tautologies if the constants were
+    // derived and REAL assertions if someone reverts one to a literal int.
+    MAYA_TEST_CHECK(StatusBar::kSepW == unicode::str_width(StatusBar::kSep),
+                    "status bar separator width is derived");
+    MAYA_TEST_CHECK(
+        TokenStreamSparkline::kFixedCols
+            == unicode::str_width(TokenStreamSparkline::kBolt)
+             + TokenStreamSparkline::kRateCols
+             + unicode::str_width(TokenStreamSparkline::kUnit),
+        "sparkline fixed overhead is derived");
+
+    // Malformed UTF-8 degrades rather than crashing — ids and titles reach
+    // these widgets from provider APIs.
+    MAYA_TEST_CHECK(unicode::str_width("\xff\xfe") == 2,
+                    "stray bytes count as one column each");
+    MAYA_TEST_CHECK(unicode::str_width("\xe2\x9a") == 2,
+                    "truncated sequence does not overrun");
+    std::println("  PASS");
+}

@@ -37,6 +37,12 @@ namespace maya {
 
 class ShortcutRow {
 public:
+    // Spacing literals. Painted below AND measured by the fit pass, so they
+    // live here once and the widths derive from them (unicode::str_width) —
+    // never restated as an integer a human keeps in sync.
+    static constexpr std::string_view kSepText  = "   ";   // between bindings
+    static constexpr std::string_view kLeadText = " ";     // row lead-in
+
     // Higher priority = kept (with its label) longer on narrow widths.
     // Numeric scale is arbitrary — only relative ordering matters.
     struct Binding {
@@ -86,8 +92,11 @@ public:
                 slots[i].priority   = b.priority;
             }
 
-            constexpr int kSep  = 3;   // "   " between bindings
-            constexpr int kLead = 1;   // leading " "
+            // Widths derived from the painted literals — see
+            // kSepText/kLeadText on the class. A hand-copied integer
+            // here is the same drift bomb status_bar.hpp had.
+            constexpr int kSep  = unicode::str_width(kSepText);
+            constexpr int kLead = unicode::str_width(kLeadText);
 
             auto measure = [&]() {
                 int total = kLead;
@@ -138,13 +147,13 @@ public:
 
             std::vector<Element> row;
             row.reserve(static_cast<std::size_t>(n) * 4 + 1);
-            row.push_back(text(" "));
+            row.push_back(text(std::string{kLeadText}));
             bool first = true;
             for (int i = 0; i < n; ++i) {
                 const auto& s = slots[static_cast<std::size_t>(i)];
                 if (!s.visible) continue;
                 const auto& b = cfg.bindings[static_cast<std::size_t>(i)];
-                if (!first) row.push_back(text("   "));
+                if (!first) row.push_back(text(std::string{kSepText}));
                 first = false;
                 row.push_back(text(b.key,
                                    Style{}.with_fg(cfg.text_color).with_bold()));

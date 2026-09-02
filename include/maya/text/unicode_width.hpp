@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <span>
+#include <string_view>
 
 #include "unicode_width_table.hpp"
 
@@ -148,6 +149,56 @@ namespace detail {
     if (mode == WidthMode::Modern &&
         detail::in_ranges(cp, detail::kEmojiPresentationRanges)) return 2;
     return 1;
+}
+
+/// Display width of a UTF-8 string, in terminal columns.
+///
+/// `consteval`-usable, and THAT is the point: a widget that lays out around a
+/// literal (a separator, a chip's padding, an icon) can compute its width
+/// FROM the literal instead of restating it as an integer beside it.
+///
+/// The hand-copied form is a drift bomb. Real instance: status_bar.hpp held
+///
+///     constexpr int kSepW = 7;   // "   ·   "
+///
+/// and narrowing the separator to " · " left the constant reserving four
+/// columns that were no longer painted — so the title chip over-shed on
+/// exactly the narrow terminals the shed ladder exists for. Nothing in the
+/// type system connected the two; a human had to remember.
+///
+///     static constexpr auto kSep  = " \xc2\xb7 ";
+///     static constexpr int  kSepW = str_width(kSep);   // cannot drift
+///
+/// Invalid UTF-8 bytes count as one column each — total, never throws, so a
+/// malformed literal degrades to a plausible width rather than a crash.
+[[nodiscard]] constexpr int str_width(
+    std::string_view s,
+    WidthMode mode = WidthMode::Modern) noexcept
+{
+    int w = 0;
+    for (std::size_t i = 0; i < s.size();) {
+        const auto b0 = static_cast<unsigned char>(s[i]);
+        char32_t cp  = 0;
+        std::size_t n = 0;
+        if      (b0 < 0x80)          { cp = b0;        n = 1; }
+        else if ((b0 & 0xE0) == 0xC0) { cp = b0 & 0x1F; n = 2; }
+        else if ((b0 & 0xF0) == 0xE0) { cp = b0 & 0x0F; n = 3; }
+        else if ((b0 & 0xF8) == 0xF0) { cp = b0 & 0x07; n = 4; }
+        else                          { ++w; ++i; continue; }   // stray byte
+
+        if (i + n > s.size()) { ++w; ++i; continue; }            // truncated
+        bool ok = true;
+        for (std::size_t k = 1; k < n; ++k) {
+            const auto bk = static_cast<unsigned char>(s[i + k]);
+            if ((bk & 0xC0) != 0x80) { ok = false; break; }
+            cp = (cp << 6) | (bk & 0x3F);
+        }
+        if (!ok) { ++w; ++i; continue; }
+
+        w += char_width(cp, mode);
+        i += n;
+    }
+    return w;
 }
 
 } // namespace maya::unicode

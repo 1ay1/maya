@@ -52,20 +52,21 @@ class StatusBar {
 public:
     // The separator between activity-row groups, and its column width.
     //
-    // ONE definition, because the width is consumed by three fit
-    // calculations (the title chip's leftover budget, the adaptive stream
-    // slot's minimum, and the right group's shed ladder) that must all agree
-    // with what is actually painted. It used to be a literal repeated at
-    // four sites plus TWO hand-maintained width mirrors (`kSepW = 7` and a
-    // bare `8 + 7`) — so narrowing the separator silently left both
-    // calculations reserving space that was no longer drawn, over-shedding
-    // the title on exactly the narrow terminals the ladder exists for.
+    // ONE definition, and the width is DERIVED from the literal rather than
+    // restated beside it. The width is consumed by three fit calculations
+    // (the title chip's leftover budget, the adaptive stream slot's minimum,
+    // and the right group's shed ladder) that must all agree with what is
+    // actually painted — and it used to be a literal repeated at four sites
+    // plus a hand-copied `kSepW = 7`. Narrowing the separator left that
+    // constant reserving four columns nobody drew, so the title over-shed on
+    // exactly the narrow terminals the ladder exists for. Now the compiler
+    // keeps them in step: edit kSep and kSepW follows.
     //
     // " · " rather than "   ·   ": the activity row is a dense ambient
     // strip, and 7 columns per join is table typography in a place that is
     // not a table.
-    static constexpr const char* kSep  = " \xc2\xb7 ";
-    static constexpr int        kSepW = 3;
+    static constexpr std::string_view kSep  = " \xc2\xb7 ";
+    static constexpr int              kSepW = unicode::str_width(kSep);
 
     struct Config {
         // Frame coloring — drives the top/bottom PhaseAccent strips
@@ -297,7 +298,12 @@ private:
                 ? Style{}.with_fg(pcolor).with_bold()
                 : Style{}.with_fg(pcolor).with_dim();
             lparts.push_back(text("\xe2\x96\x8c", rail_style));             // ▌
-            lparts.push_back(text(" "));
+            // NO space after the rail: PhaseChip already opens with its own
+            // glyph + " " pad, so adding one here made two owners contribute
+            // to the same gap and painted "▌  Streaming". Exactly the shape
+            // the ⚡ had (a literal plus a format pad) and the context gauge
+            // had ("CTX " plus the percent's leading space) — the invariant
+            // test in test_spacing_invariants.cpp is what surfaced all three.
             lparts.push_back(std::move(phase_el));
             auto left = h(std::move(lparts));
 

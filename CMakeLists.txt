@@ -482,6 +482,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_ansi.cpp
         tests/test_writer.cpp
         tests/test_widgets.cpp
+        tests/test_spacing_invariants.cpp
         tests/test_promoted.cpp
         tests/test_math.cpp
         tests/test_streaming_perf.cpp

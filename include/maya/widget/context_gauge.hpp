@@ -64,12 +64,23 @@ public:
         const Color zone = has_tokens ? threshold_color(pct) : muted;
 
         std::vector<Element> parts;
-        parts.push_back(text("CTX ", Style{}.with_fg(muted).with_bold()));
+        // "CTX" carries NO trailing space. Every following segment supplies
+        // its own LEADING space, so exactly one owner is responsible for
+        // each gap.
+        //
+        // The old form baked a trailing space into "CTX " as well, on the
+        // assumption that the bar always followed. When show_bar sheds on a
+        // narrow status bar, that space collided with the percent's own
+        // leading space AND the tabular pad inside it — painting
+        // "CTX   28%" with a 3-column hole. Same shape as the status bar's
+        // orphaned "·   ·": spacing baked onto segment N cannot know whether
+        // segment N+1 survived.
+        parts.push_back(text("CTX", Style{}.with_fg(muted).with_bold()));
 
         if (cfg_.show_bar) {
             // The raw "used/max" token counts are the most verbose part of
             // the gauge; show_tokens=false drops just those (keeping the bar
-            // + percent) for a compact "CTX \u2588\u2588\u2588\u2588\u258c\u2591\u2591\u2591\u2591\u2591 46%" that fits a
+            // + percent) for a compact "CTX ████▌░░░░░ 46%" that fits a
             // narrow / phone-width status bar.
             if (has_tokens) {
                 if (cfg_.show_tokens) {
@@ -79,10 +90,17 @@ public:
                     // it's trimmed of leading pad — otherwise a right-justified
                     // "  1.0M" shows an ugly gap after the slash
                     // ("62.9k/  1.0M"). Trimmed reads tight: "62.9k/1.0M".
-                    std::string used_str = format_tokens(cfg_.used) + "/"
+                    //
+                    // The 6-col field is right-aligned, so it already opens
+                    // with pad at small values; ltrim it and prepend exactly
+                    // one leading space, keeping the field width via the
+                    // trailing space before the bar.
+                    std::string used_str = " " + format_tokens(cfg_.used) + "/"
                                          + ltrim_(format_tokens(cfg_.max))
                                          + " ";
                     parts.push_back(text(used_str, fg_dim_(muted)));
+                } else {
+                    parts.push_back(text(" ", fg_dim_(muted)));
                 }
                 parts.push_back(bar(pct, cfg_.cells));
             } else {
@@ -91,19 +109,33 @@ public:
                 // the live layout so the right-group chips stay pinned when
                 // the first usage event lands.
                 if (cfg_.show_tokens) {
-                    std::string ph = std::string("    \xe2\x80\x94\xe2\x80\x94/")
+                    std::string ph = std::string(" ") + "    \xe2\x80\x94\xe2\x80\x94/"
                                    + ltrim_(format_tokens(cfg_.max)) + " ";
                     parts.push_back(text(ph, fg_dim_(muted)));
+                } else {
+                    parts.push_back(text(" ", fg_dim_(muted)));
                 }
                 parts.push_back(bar(0, cfg_.cells));   // dim track only
             }
         }
 
+        // The percent's gap and its stability pad are the SAME columns —
+        // one owner, not two.
+        //
+        // A fixed field keeps the bar to its left from twitching as the
+        // value grows during a turn, and that field INCLUDES the separating
+        // space: 4 columns holds " 100" at the maximum and "   0" at the
+        // minimum, so there is always exactly one owner for the gap and the
+        // total width never moves. Emitting a separator on top of a 3-col
+        // field was the two-owner bug ("████  28%", "████   0%").
+        //
+        // The dim placeholder mirrors the same 4+1 cells so the chips to
+        // the right stay pinned when the first usage event lands.
         if (has_tokens) {
-            parts.push_back(text(" " + tabular_int_(pct, 3) + "%",
+            parts.push_back(text(tabular_int_(pct, 4) + "%",
                                  Style{}.with_fg(zone).with_bold()));
         } else {
-            // " ———%" — same 5 cells as live " 100%".
+            // " ———%" — 4 cells + '%', same as live " 100%".
             parts.push_back(text(
                 " \xe2\x80\x94\xe2\x80\x94\xe2\x80\x94%",
                 Style{}.with_fg(zone).with_dim()));

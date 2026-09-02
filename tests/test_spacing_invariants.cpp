@@ -384,11 +384,15 @@ TEST_CASE("spacing: the composer footer never double-gaps") {
     std::println("  PASS");
 }
 
-TEST_CASE("spacing: the sparkline keeps ⚡ tight to its number") {
+TEST_CASE("spacing: the sparkline keeps its unit tight to its number") {
     std::println("=== test_spacing_sparkline ===");
-    // Two owners once contributed spacing here (a "⚡ " literal and a %5.1f
-    // right-pad), and ⚡ is a 2-column wide glyph on top of that. Sweep the
-    // rate magnitudes, since the format switches at 999.5 / 9999.5.
+    // This chip has twice been the spacing bug-of-record, so it is swept
+    // rather than eyeballed. First a leading "⚡ " literal and a %5.1f
+    // right-pad both contributed spacing without knowing about each other
+    // (and ⚡ was 2 columns wide on top of it); then, with the glyph gone,
+    // the field's own right-pad became the number↔unit gap and grew as the
+    // number shrank. Sweep the rate magnitudes, since the format switches
+    // at 999.5 / 9999.5.
     for (float rate : {0.0f, 9.9f, 105.2f, 999.4f, 1500.0f, 25000.0f}) {
         TokenStreamSparkline::Config c;
         c.rate    = rate;

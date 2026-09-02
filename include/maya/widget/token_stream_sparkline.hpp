@@ -160,7 +160,7 @@ private:
         // is formatted TIGHT, the unit is glued to it with exactly one
         // space, and the whole "<number> t/s" token is padded to
         // kRateTokCols. Total width is unchanged, the spark still never
-        // moves, and ⚡ stays tight against its number.
+        // moves, and the unit stays tight against its number.
         //
         // Two snprintf gotchas drive the threshold choices:
         //   1. %.1f rounds: rate ∈ [999.95, 1000.0) prints as "1000.0"
@@ -229,14 +229,10 @@ private:
         // exists to prevent, relocated rather than removed.
         //
         // Padding the WHOLE "number + unit" token instead keeps the total
-        // width identical (so the spark still never moves), keeps ⚡ tight
-        // against its number, and keeps the unit tight against it too. The
-        // pad is sized so it is never empty, so the chip cannot collide with
-        // the spark that follows.
+        // width identical (so the spark still never moves) and keeps the unit
+        // tight against its number. The pad is sized so it is never empty, so
+        // the chip cannot collide with the spark that follows.
         //
-        // ⚡ likewise carries no trailing space of its own: it is an
-        // East-Asian-wide glyph (2 cols) and the rate that follows supplies
-        // its own leading space via the field.
         // Number and unit are built as two styled runs (the number takes the
         // live/dim rate color, the unit is muted), so the pad rides on the
         // UNIT's tail rather than being sliced back out of a joined string.

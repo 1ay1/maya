@@ -50,6 +50,23 @@ namespace maya {
 
 class StatusBar {
 public:
+    // The separator between activity-row groups, and its column width.
+    //
+    // ONE definition, because the width is consumed by three fit
+    // calculations (the title chip's leftover budget, the adaptive stream
+    // slot's minimum, and the right group's shed ladder) that must all agree
+    // with what is actually painted. It used to be a literal repeated at
+    // four sites plus TWO hand-maintained width mirrors (`kSepW = 7` and a
+    // bare `8 + 7`) — so narrowing the separator silently left both
+    // calculations reserving space that was no longer drawn, over-shedding
+    // the title on exactly the narrow terminals the ladder exists for.
+    //
+    // " · " rather than "   ·   ": the activity row is a dense ambient
+    // strip, and 7 columns per join is table typography in a place that is
+    // not a table.
+    static constexpr const char* kSep  = " \xc2\xb7 ";
+    static constexpr int        kSepW = 3;
+
     struct Config {
         // Frame coloring — drives the top/bottom PhaseAccent strips
         // and the leading rail glyph next to the phase chip.
@@ -163,6 +180,10 @@ private:
             Element right, phase_el, middle;
             bool stream_on = false;
             int fixed_w = 0;
+            // Which fragments the CHOSEN rung actually kept. The title is
+            // admitted below only when the richest fragments survived — see
+            // the note there.
+            bool kept_verb = false, kept_gauge = false;
             for (const Shape& s : kLadder) {
                 PhaseChip::Config pc = cfg.phase;
                 pc.verb_width = s.verb ? 10 : 0;
@@ -183,20 +204,21 @@ private:
                 // empty) the sparkline's trailing separator collided with
                 // the gauge's leading one, painting "·   ·" with a dead
                 // gap between them.
-                auto sep = [&](const char* s) {
-                    if (emitted_right) rparts.push_back(text(s, fg_dim_(muted)));
+                auto sep = [&]() {
+                    if (emitted_right)
+                        rparts.push_back(text(kSep, fg_dim_(muted)));
                 };
                 if (s.stream && !cfg.token_stream.adaptive) {
                     rparts.push_back(TokenStreamSparkline{cfg.token_stream}.build());
                     emitted_right = true;
                 }
                 if (s.badge && width_of(cfg.model_badge) > 0) {
-                    sep("   \xc2\xb7   ");
+                    sep();
                     rparts.push_back(cfg.model_badge);
                     emitted_right = true;
                 }
                 if (cfg.context.max > 0 && s.gauge) {
-                    sep("   \xc2\xb7   ");
+                    sep();
                     rparts.push_back(ContextGauge{ctx}.build());
                     emitted_right = true;
                 }
@@ -207,7 +229,7 @@ private:
                 // The adaptive stream chip rides the middle slot and
                 // shrinks by itself — it only needs a nominal minimum.
                 const int middle_min = (s.stream && cfg.token_stream.adaptive)
-                    ? 8 + 7   // spark floor + "   ·   " separator
+                    ? 8 + kSepW   // spark floor + separator
                     : 0;
 
                 const int need = 1 /*lead sp*/ + 1 /*rail*/ + 1 /*sp*/
@@ -215,13 +237,15 @@ private:
                     + width_of(cand_right);
                 const bool last = &s == &kLadder[std::size(kLadder) - 1];
                 if (need <= w || last) {
-                    right     = std::move(cand_right);
-                    phase_el  = std::move(cand_phase);
-                    stream_on = s.stream;
-                    fixed_w   = need;
+                    right      = std::move(cand_right);
+                    phase_el   = std::move(cand_phase);
+                    stream_on  = s.stream;
+                    fixed_w    = need;
+                    kept_verb  = s.verb;
+                    kept_gauge = s.gauge && cfg.context.max > 0;
                     middle = (s.stream && cfg.token_stream.adaptive)
                         ? (h(TokenStreamSparkline{cfg.token_stream}.build(),
-                             text("   \xc2\xb7   ", fg_dim_(muted))) | grow(1.0f)).build()
+                             text(kSep, fg_dim_(muted))) | grow(1.0f)).build()
                         : Element{spacer().build()};
                     break;
                 }
@@ -240,8 +264,18 @@ private:
             //    exactly when space was tightest.
             std::vector<Element> lparts;
             lparts.push_back(text(" "));
-            if (!cfg.breadcrumb.title.empty()) {
-                constexpr int kSepW      = 7;   // "   ·   "
+            //
+            //    The title is admitted ONLY when the chosen rung kept the
+            //    phase verb and the context gauge. Fitting in the leftover
+            //    columns is necessary but NOT sufficient: the ladder sheds
+            //    by VALUE, and a title outranking the verb it sits next to
+            //    inverts that order — you would learn what the thread is
+            //    called but not whether it is running. Leftover space alone
+            //    could satisfy the width test on a rung that had already
+            //    dropped both, which is exactly what a narrower separator
+            //    made reachable.
+            const bool title_allowed = kept_verb && kept_gauge;
+            if (!cfg.breadcrumb.title.empty() && title_allowed) {
                 constexpr int kChipDecor = 2;   // ▎ + space
                 constexpr int kMinTitle  = 12;  // below this a title is noise
                 const int leftover = w - fixed_w - kSepW;
@@ -255,7 +289,7 @@ private:
                     // Proof pass: accept only if the REAL rendered chip fits.
                     if (width_of(chip) + kSepW <= w - fixed_w) {
                         lparts.push_back(std::move(chip));
-                        lparts.push_back(text("   \xc2\xb7   ", fg_dim_(muted)));   // ·
+                        lparts.push_back(text(kSep, fg_dim_(muted)));
                     }
                 }
             }

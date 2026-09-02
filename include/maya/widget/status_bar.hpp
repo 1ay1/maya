@@ -298,12 +298,13 @@ private:
                 ? Style{}.with_fg(pcolor).with_bold()
                 : Style{}.with_fg(pcolor).with_dim();
             lparts.push_back(text("\xe2\x96\x8c", rail_style));             // ▌
-            // NO space after the rail: PhaseChip already opens with its own
-            // glyph + " " pad, so adding one here made two owners contribute
-            // to the same gap and painted "▌  Streaming". Exactly the shape
-            // the ⚡ had (a literal plus a format pad) and the context gauge
-            // had ("CTX " plus the percent's leading space) — the invariant
-            // test in test_spacing_invariants.cpp is what surfaced all three.
+            // ONE space after the rail, owned here. PhaseChip's internal pad
+            // sits between its glyph and its verb, not ahead of the glyph —
+            // so dropping this made the spinner touch the rail. The chip's
+            // pad is now tied to the glyph's presence, which is what makes
+            // this space unambiguously ours: the chip contributes nothing
+            // before its own first character, whether or not it has a glyph.
+            lparts.push_back(text(" "));
             lparts.push_back(std::move(phase_el));
             auto left = h(std::move(lparts));
 

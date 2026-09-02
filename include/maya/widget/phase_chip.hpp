@@ -66,7 +66,17 @@ public:
         }
 
         std::vector<Element> parts;
-        parts.push_back(text(cfg_.glyph, glyph_style));
+        // The glyph's trailing space belongs to the GLYPH, not to the verb:
+        // emitted unconditionally it became a second owner of the gap that
+        // separates this chip from whatever precedes it, painting
+        // "▌  Streaming" whenever the glyph was empty. Tying it to the
+        // glyph's presence means the chip contributes exactly one gap when
+        // it has a glyph and none when it doesn't — so the caller's own
+        // separator is always the sole owner of the boundary.
+        if (!cfg_.glyph.empty()) {
+            parts.push_back(text(cfg_.glyph, glyph_style));
+            parts.push_back(text(" "));
+        }
 
         if (cfg_.verb_width > 0) {
             // UTF-8 + wide-char-safe truncation. The previous version
@@ -78,7 +88,6 @@ public:
             int dw = string_width(out);
             if (dw < cfg_.verb_width)
                 out.append(static_cast<std::size_t>(cfg_.verb_width - dw), ' ');
-            parts.push_back(text(" "));
             parts.push_back(text(std::move(out),
                                  Style{}.with_fg(cfg_.color).with_bold()));
         }

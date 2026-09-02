@@ -63,6 +63,7 @@ namespace {
 // separator) rather than glyphs.
 constexpr char kSepMark = '\x01';   // any separator-ish glyph (·)
 constexpr char kGlyph   = '\x02';   // any other non-ASCII glyph
+constexpr char kRailMark = '\x03';  // the structural rail (▌)
 
 std::string structural_row(const Canvas& c, int y) {
     std::string s;
@@ -71,6 +72,7 @@ std::string structural_row(const Canvas& c, int y) {
         const char32_t cp = e.character;
         if (cp == 0 || cp == U' ')      s += ' ';
         else if (cp == U'\u00B7')       s += kSepMark;      // ·
+        else if (cp == U'\u258C')       s += kRailMark;     // ▌
         else if (cp < 0x80)             s += static_cast<char>(cp);
         else                            s += kGlyph;
         // A wide glyph occupies 2 cells; the trailing cell reads as 0 and
@@ -204,6 +206,32 @@ bool has_dangling_separator(const std::string& s, std::string& why) {
     return false;
 }
 
+// ── Invariant 4: distinct fragments never TOUCH ───────────────────────
+//
+// The mirror image of the double-gap rule, and the half it kept missing:
+// invariants 1-3 all detect too MUCH space, so a fix that removes a gap
+// that was actually load-bearing sails through. That is exactly how a
+// spinner ended up flush against the rail — the double-gap fix removed the
+// rail's separator, and nothing was watching the other direction.
+//
+// A structural rail glyph (▌) introduces the group beside it, so it must
+// never be adjacent to that group's first character. Checked as a specific
+// shape rather than a general "two fragments" rule, because the renderer
+// has no notion of fragment boundaries — only the widget does, and the rail
+// is the boundary the status bar actually draws.
+bool has_touching_rail(const std::string& s, std::string& why) {
+    for (std::size_t i = 0; i + 1 < s.size(); ++i) {
+        if (s[i] != kRailMark) continue;
+        const char next = s[i + 1];
+        if (next != ' ' && next != kRailMark) {
+            why = std::string{"rail glyph touches content ('"} + next
+                + "') at col " + std::to_string(i);
+            return true;
+        }
+    }
+    return false;
+}
+
 // Run every invariant over one rendered row. `wide` is the same row rendered
 // kProbeDelta columns wider, used to tell a baked-in gap from a spacer.
 void check_row(const std::string& row, const std::string& wide,
@@ -218,6 +246,10 @@ void check_row(const std::string& row, const std::string& wide,
         + "  |" + row + "|");
     why.clear();
     MAYA_TEST_CHECK(!has_dangling_separator(row, why),
+        std::string{what} + " @w=" + std::to_string(w) + ": " + why
+        + "  |" + row + "|");
+    why.clear();
+    MAYA_TEST_CHECK(!has_touching_rail(row, why),
         std::string{what} + " @w=" + std::to_string(w) + ": " + why
         + "  |" + row + "|");
 }
@@ -257,18 +289,32 @@ TEST_CASE("spacing: the status bar never double-gaps or orphans a separator") {
     // The status bar is where the "·   ·" bug lived: its right group sheds
     // segments by width, and a separator baked onto a segment's tail
     // outlives the segment that was supposed to follow it.
-    for (bool with_badge : {false, true}) {
-        StatusBar::Config c;
-        c.breadcrumb.title = "understand this project deeply";
-        c.phase.verb       = "Streaming";
-        c.context.max      = 1'000'000;
-        c.context.used     = 286'100;
-        if (with_badge)
-            c.model_badge = ModelBadge{{.label = "Opus", .version = "4.8"}}.build();
-        sweep(StatusBar{c}.build(),
-              with_badge ? "status_bar+badge" : "status_bar", 20, 200);
+    //
+    // The phase chip is swept BOTH with and without a spinner glyph. Its
+    // internal pad sits between glyph and verb, so the two cases put a
+    // different first character against the rail's separator — and a fix
+    // that balances one can unbalance the other. Sweeping only the empty
+    // case is how "▌⠀Streaming" (spinner touching the rail) shipped after
+    // "▌  Streaming" (double gap) was fixed.
+    for (bool with_glyph : {false, true}) {
+        for (bool with_badge : {false, true}) {
+            StatusBar::Config c;
+            c.breadcrumb.title = "understand this project deeply";
+            c.phase.verb       = "Streaming";
+            c.phase.glyph      = with_glyph ? "\xe2\xa0\x8b" : "";   // ⠋
+            c.context.max      = 1'000'000;
+            c.context.used     = 286'100;
+            if (with_badge)
+                c.model_badge =
+                    ModelBadge{{.label = "Opus", .version = "4.8"}}.build();
+            sweep(StatusBar{c}.build(),
+                  with_glyph ? (with_badge ? "status_bar+glyph+badge"
+                                           : "status_bar+glyph")
+                             : (with_badge ? "status_bar+badge" : "status_bar"),
+                  20, 200);
+        }
     }
-    std::println("  clean across widths 20..200, with and without a badge");
+    std::println("  clean across widths 20..200, glyph x badge");
     std::println("  PASS");
 }
 

@@ -244,6 +244,26 @@ public:
 
     // Force the next elapsed_ms() to restart from 0.
     void remount() noexcept { started_ = false; }
+
+    // Age WITHOUT requesting a frame — for a caller that owns its own
+    // scheduling policy. Keeps the mount/remount bookkeeping identical to
+    // elapsed_ms() (so the remount-gap heuristic still works), it just
+    // doesn't arm the loop. Use when an animation's cadence is coarser
+    // than 60 fps: read the age here, then call
+    // request_animation_frame_after(step_ms) yourself. The alternative —
+    // elapsed_ms(0) — pins the whole event loop at frame rate for as long
+    // as the widget is built, which is correct for a continuous intro and
+    // wrong for anything that only steps a few times a second.
+    [[nodiscard]] std::int64_t peek_ms() const {
+        const std::int64_t now_ms = maya::anim_now_ms();
+        if (!started_
+            || static_cast<double>(now_ms - last_ms_) > kRemountGapMs) {
+            first_ms_ = now_ms;
+            started_  = true;
+        }
+        last_ms_ = now_ms;
+        return now_ms - first_ms_;
+    }
     [[nodiscard]] bool mounted() const noexcept { return started_; }
 
 private:

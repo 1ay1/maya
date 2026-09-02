@@ -276,15 +276,40 @@ private:
     // ─────────────────────────────────────────────────────────────────────
     // Animation clock — owned by the maya animation framework.
     // ─────────────────────────────────────────────────────────────────────
-    // Elapsed ms since the welcome screen mounted. anim::Mount owns the
-    // remount detection (a >500 ms gap between builds = was off-screen →
-    // restart from 0) AND the per-frame request, so this is now a one-liner
-    // instead of the hand-rolled steady_clock + statics + gap heuristic.
-    // Static Mount because the welcome screen is a process singleton and its
-    // intro should restart whenever it reappears, not per-instance.
+    // Elapsed ms since the welcome screen mounted, AND the frame-scheduling
+    // policy for it. anim::Mount owns the remount detection (a >500 ms gap
+    // between builds = was off-screen → restart from 0). Static Mount because
+    // the welcome screen is a process singleton and its intro should restart
+    // whenever it reappears, not per-instance.
+    //
+    // FRAME BUDGET — why this is not a bare elapsed_ms().
+    //
+    // anim::Mount::elapsed_ms(0) means "request a frame every frame, for as
+    // long as this widget is built". For the 500 ms-per-letter cascade that
+    // is correct: it is a continuous sub-row motion that genuinely wants
+    // 60 fps. But the welcome screen stays on screen for the WHOLE idle
+    // session, and after the cascade settles all that remains is a 2.2 s
+    // sine bob and a 3.2 s heartbeat pulse — both of which quantise to
+    // WHOLE TERMINAL ROWS / a boolean. Asking for 60 fps to drive them
+    // pinned an idle agentty at ~360 renders/sec (measured: 1067 polls in
+    // 3 s of doing nothing), and every one of those wakes re-runs the
+    // host's visual_hash walk over the entire model.
+    //
+    // So: 60 fps while the cascade is live, then a coarse cadence that
+    // still lands every visible step of the bob. kSettledFrameMs is the
+    // bob period divided by comfortably more samples than the ~3 distinct
+    // row offsets a 1.5 px amplitude can produce — the motion is identical
+    // on screen, at 1/7th the wakeups.
     static std::int64_t animation_age_ms_() noexcept {
         static anim::Mount mount;
-        return mount.elapsed_ms();   // 0 ⇒ perpetual frame requests while shown
+        // peek_ms: keep the mount/remount clock, arm nothing — we choose
+        // the cadence below.
+        const std::int64_t age = mount.peek_ms();
+        constexpr std::int64_t kCascadeMs      = 1'200;  // > longest stagger+drop
+        constexpr std::int64_t kSettledFrameMs =   110;  // ~9 fps: bob/pulse steps
+        if (age < kCascadeMs) ::maya::request_animation_frame();
+        else                  ::maya::request_animation_frame_after(kSettledFrameMs);
+        return age;
     }
 
     // ──────────────────────────────────────────────────────────────────

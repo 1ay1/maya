@@ -523,7 +523,10 @@ public:
             return text(k, Style{}.with_fg(tc).with_bold());
         };
         auto lbl = [muted](const char* l) { return text(l, fg_dim_(muted)); };
-        auto dot = [muted]() { return text("  \xc2\xb7  ", fg_dim_(muted)); };
+        // Separator between hint-row clusters. Single-spaced: the row is a
+        // dense ambient strip, and "  ·  " spent 5 columns on every join in
+        // a row that sheds fragments under width pressure.
+        auto dot = [muted]() { return text(" \xc2\xb7 ", fg_dim_(muted)); };
 
         // ── Width-adaptive hint clusters — MEASURED.
         //
@@ -632,16 +635,25 @@ public:
                 const int budget = std::max(0, avail - left_cols);
 
                 // Optional right segments, measured as the real fragments.
+                //
+                // Counts are NOT tabular-padded. Right-aligning a number to a
+                // fixed column keeps it from twitching as it grows, which is
+                // worth it for a value that changes every frame — but these
+                // sit in a right-aligned cluster whose whole width already
+                // shifts with the text, so the padding bought no stability
+                // and cost four leading spaces at typical counts ("    1
+                // words"). Separators are single-spaced for the same reason:
+                // this is an ambient readout, not a table.
                 Element queued_seg = h(
                     text("\xe2\x9d\x9a ", Style{}.with_fg(ri.highlight_color)),
-                    text(tabular_int_(ri.queued, 2) + " queued",
+                    text(std::to_string(ri.queued) + " queued",
                          Style{}.with_fg(ri.highlight_color).with_bold()),
                     dot()).build();
                 Element counters_seg = h(
-                    text(tabular_int_(ri.words, 5) + " words",
+                    text(std::to_string(ri.words) + "w",
                          fg_dim_(ri.muted_color)),
-                    text("  \xc2\xb7  ", fg_dim_(ri.muted_color)),
-                    text("~" + tabular_int_(ri.toks, 5) + " tok",
+                    text(" \xc2\xb7 ", fg_dim_(ri.muted_color)),
+                    text("~" + std::to_string(ri.toks) + " tok",
                          fg_dim_(ri.muted_color)),
                     dot()).build();
 
@@ -756,13 +768,6 @@ private:
 
     // Right-aligned fixed-width int — keeps surrounding chips pinned as
     // counters tick.
-    static std::string tabular_int_(int n, int width) {
-        std::string s = std::to_string(n);
-        if (static_cast<int>(s.size()) >= width) return s;
-        return std::string(static_cast<std::size_t>(width - static_cast<int>(s.size())), ' ')
-             + s;
-    }
-
     // Letter-spaced uppercase ("D O N E") for short labels.
     static std::string small_caps_(std::string_view s) {
         std::string out;

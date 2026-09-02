@@ -232,6 +232,37 @@ bool has_touching_rail(const std::string& s, std::string& why) {
     return false;
 }
 
+// Two ADJACENT segments must never touch: a seam with zero columns between
+// its neighbours reads as a single token. This is the "1.9sCTX" bug, where
+// the phase chip's elapsed tail butted straight against the context gauge's
+// leading label because the middle spacer (grow:1, natural width 0) was
+// squeezed to nothing at the tight width and nothing had RESERVED the gap.
+//
+// Detected as a case/kind transition that no word in the strip's vocabulary
+// contains: a lowercase letter or digit immediately followed by two or more
+// uppercase letters ("sCTX", "9CTX"). Real labels are either whole words
+// ("Streaming") or fully-capitalised tokens ("CTX", "WRITE"), so this shape
+// only ever arises where two segments have collided. Deliberately narrow:
+// it must not fire on legitimate CamelCase or on a units suffix like "9m05s".
+bool has_touching_segments(const std::string& s, std::string& why) {
+    auto lower_or_digit = [](unsigned char c) {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    };
+    auto upper = [](unsigned char c) { return c >= 'A' && c <= 'Z'; };
+
+    for (std::size_t i = 0; i + 2 < s.size(); ++i) {
+        if (!lower_or_digit(static_cast<unsigned char>(s[i]))) continue;
+        if (upper(static_cast<unsigned char>(s[i + 1]))
+            && upper(static_cast<unsigned char>(s[i + 2]))) {
+            why = "segments collide ('" + s.substr(i, 4)
+                + "') at col " + std::to_string(i)
+                + " \u2014 no gap reserved between neighbours";
+            return true;
+        }
+    }
+    return false;
+}
+
 // Run every invariant over one rendered row. `wide` is the same row rendered
 // kProbeDelta columns wider, used to tell a baked-in gap from a spacer.
 void check_row(const std::string& row, const std::string& wide,
@@ -250,6 +281,10 @@ void check_row(const std::string& row, const std::string& wide,
         + "  |" + row + "|");
     why.clear();
     MAYA_TEST_CHECK(!has_touching_rail(row, why),
+        std::string{what} + " @w=" + std::to_string(w) + ": " + why
+        + "  |" + row + "|");
+    why.clear();
+    MAYA_TEST_CHECK(!has_touching_segments(row, why),
         std::string{what} + " @w=" + std::to_string(w) + ": " + why
         + "  |" + row + "|");
 }
@@ -296,25 +331,33 @@ TEST_CASE("spacing: the status bar never double-gaps or orphans a separator") {
     // that balances one can unbalance the other. Sweeping only the empty
     // case is how "▌⠀Streaming" (spinner touching the rail) shipped after
     // "▌  Streaming" (double gap) was fixed.
+    // The elapsed tail is swept too. Without it the phase chip ends in a
+    // letter ("Streaming") and the seam against the right group never puts
+    // a digit-run against "CTX" — which is exactly how "1.9sCTX" survived
+    // this suite. The tail is the chip's rightmost fragment and the last
+    // thing to shed before the verb, so it owns the tightest seam on the row.
     for (bool with_glyph : {false, true}) {
         for (bool with_badge : {false, true}) {
-            StatusBar::Config c;
-            c.breadcrumb.title = "understand this project deeply";
-            c.phase.verb       = "Streaming";
-            c.phase.glyph      = with_glyph ? "\xe2\xa0\x8b" : "";   // ⠋
-            c.context.max      = 1'000'000;
-            c.context.used     = 286'100;
-            if (with_badge)
-                c.model_badge =
-                    ModelBadge{{.label = "Opus", .version = "4.8"}}.build();
-            sweep(StatusBar{c}.build(),
-                  with_glyph ? (with_badge ? "status_bar+glyph+badge"
-                                           : "status_bar+glyph")
-                             : (with_badge ? "status_bar+badge" : "status_bar"),
-                  20, 200);
+            for (float elapsed : {-1.0f, 1.9f, 12.3f, 234.0f, 605.0f}) {
+                StatusBar::Config c;
+                c.breadcrumb.title   = "understand this project deeply";
+                c.phase.verb         = "Streaming";
+                c.phase.glyph        = with_glyph ? "\xe2\xa0\x8b" : "";   // ⠋
+                c.phase.elapsed_secs = elapsed;
+                c.context.max        = 1'000'000;
+                c.context.used       = 286'100;
+                if (with_badge)
+                    c.model_badge =
+                        ModelBadge{{.label = "Opus", .version = "4.8"}}.build();
+                sweep(StatusBar{c}.build(),
+                      with_glyph ? (with_badge ? "status_bar+glyph+badge"
+                                               : "status_bar+glyph")
+                                 : (with_badge ? "status_bar+badge" : "status_bar"),
+                      20, 200);
+            }
         }
     }
-    std::println("  clean across widths 20..200, glyph x badge");
+    std::println("  clean across widths 20..200, glyph x badge x elapsed");
     std::println("  PASS");
 }
 

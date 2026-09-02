@@ -229,9 +229,30 @@ private:
 
                 // The adaptive stream chip rides the middle slot and
                 // shrinks by itself — it only needs a nominal minimum.
+                //
+                // When it is NOT riding, the middle is a bare spacer(), which
+                // is a grow:1 box with a natural width of ZERO. A spacer can
+                // therefore be squeezed to nothing, and the fit test used to
+                // ask only whether phase + right fit — never that anything
+                // separated them. At the exact width where `need == w` the
+                // spacer collapsed to 0 and the phase chip's elapsed tail sat
+                // flush against the gauge's leading "CTX": "1.9sCTX".
+                //
+                // Two touching segments read as one token, so the strip must
+                // reserve the gap the same way it reserves the glyphs: one
+                // column that belongs to the seam, not to either neighbour.
+                // If that column cannot be paid for, the rung is too rich and
+                // the ladder sheds — collision is never the cheaper option.
+                // Does anything actually sit to the right? ONE predicate,
+                // consumed by both the reservation below and the element
+                // built from it — if these two ever disagreed, the strip
+                // would either reserve a column it never draws (a phantom
+                // gap) or draw one it never reserved (the collision again).
+                const bool has_right = width_of(cand_right) > 0;
+
                 const int middle_min = (s.stream && cfg.token_stream.adaptive)
                     ? 8 + kSepW   // spark floor + separator
-                    : 0;
+                    : (has_right ? 1 : 0);  // seam gap
 
                 const int need = 1 /*lead sp*/ + 1 /*rail*/ + 1 /*sp*/
                     + width_of(cand_phase) + middle_min
@@ -244,10 +265,19 @@ private:
                     fixed_w    = need;
                     kept_verb  = s.verb;
                     kept_gauge = s.gauge && cfg.context.max > 0;
+                    // A grow:1 spacer distributes SLACK, so it cannot be
+                    // relied on to hold the seam open at the tight width —
+                    // pair it with one hard column that no layout pass can
+                    // squeeze out. Emitted only when something is actually to
+                    // the right, so a bare strip grows no phantom trailing
+                    // space (that would be the dangling-separator bug in
+                    // whitespace form).
                     middle = (s.stream && cfg.token_stream.adaptive)
                         ? (h(TokenStreamSparkline{cfg.token_stream}.build(),
                              text(kSep, fg_dim_(muted))) | grow(1.0f)).build()
-                        : Element{spacer().build()};
+                        : (has_right
+                            ? h(spacer(), text(" ")).build()
+                            : Element{spacer().build()});
                     break;
                 }
             }

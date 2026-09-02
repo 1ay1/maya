@@ -395,8 +395,23 @@ TEST_CASE("spacing: the sparkline keeps ⚡ tight to its number") {
         c.history = {rate, rate, rate, rate};
         c.live    = true;
         sweep(TokenStreamSparkline{c}.build(), "sparkline", 20, 60);
+
+        // The unit belongs to its number: EXACTLY one space between them,
+        // identical at every magnitude. The field's slack is spent after
+        // the unit, so a short rate must not open a wider hole before it
+        // ("23.4  t/s") than a long one ("105.2 t/s").
+        const auto rows = rows_at(TokenStreamSparkline{c}.build(), 60);
+        MAYA_TEST_CHECK(!rows.empty(), "sparkline rendered");
+        const std::string& r = rows.front();
+        const auto u = r.find("t/s");
+        MAYA_TEST_CHECK(u != std::string::npos && u >= 2,
+            "sparkline shows its unit @rate=" + std::to_string(rate));
+        MAYA_TEST_CHECK(r[u - 1] == ' ' && r[u - 2] != ' ',
+            "unit is exactly one space from its number @rate="
+            + std::to_string(rate) + "  |" + r + "|");
     }
     std::println("  clean across 6 rate magnitudes x widths 20..60");
+    std::println("  unit glued one space to its number at every magnitude");
     std::println("  PASS");
 }
 
@@ -443,9 +458,19 @@ TEST_CASE("spacing: declared widths are derived, not hand-copied") {
     MAYA_TEST_CHECK(
         TokenStreamSparkline::kFixedCols
             == unicode::str_width(TokenStreamSparkline::kBolt)
-             + TokenStreamSparkline::kRateCols
-             + unicode::str_width(TokenStreamSparkline::kUnit),
+             + TokenStreamSparkline::kRateTokCols,
         "sparkline fixed overhead is derived");
+    // The rate token holds the widest number, its single space, the unit,
+    // and one trailing column — so the unit is never flush against either
+    // the number or the spark.
+    MAYA_TEST_CHECK(
+        TokenStreamSparkline::kRateTokCols
+            == TokenStreamSparkline::kRateNumCols + 1
+             + unicode::str_width(TokenStreamSparkline::kUnit) + 1,
+        "sparkline rate token width is derived");
+    MAYA_TEST_CHECK(
+        unicode::str_width(TokenStreamSparkline::kUnit) == 3,
+        "the unit literal carries no baked-in padding");
 
     // Malformed UTF-8 degrades rather than crashing — ids and titles reach
     // these widgets from provider APIs.

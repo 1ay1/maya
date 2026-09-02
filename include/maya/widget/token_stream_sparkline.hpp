@@ -46,19 +46,20 @@ public:
     // ⚡ is an East-Asian-wide glyph — 2 columns — which is exactly the kind
     // of fact a human tally gets wrong.
     static constexpr std::string_view kBolt = "\xe2\x9a\xa1";   // ⚡ (2 cols)
-    // No leading space: the rate field is left-aligned and pads to a fixed
-    // width, so its own right-pad IS the gap before the unit. A leading
-    // space here would be a second owner of the same columns — the exact
-    // shape that painted "0.0   t/s".
-    static constexpr std::string_view kUnit = "t/s ";
-    // Rate field width. SIX, not five: the longest form is "105.2" (5), and
-    // the field's right-pad is what separates the number from the unit — so
-    // sizing it to exactly the longest value leaves zero pad there and
-    // paints "105.2t/s". One extra column guarantees at least one space at
-    // every magnitude, with a single owner for that gap.
-    static constexpr int kRateCols = 6;
+    // The unit, and nothing else: no padding baked into the literal. The
+    // single space before it is emitted with the unit so that "23.4 t/s"
+    // stays one word at every magnitude; the field's slack lands AFTER it.
+    static constexpr std::string_view kUnit = "t/s";
+    // Width of the whole "<number> t/s" token, trailing pad included.
+    // The number is at most "105.2" (5 cols; the kilo forms are shorter),
+    // then one space, then the unit — and one more column so the token is
+    // never flush against the spark that follows. Derived from the parts,
+    // not hand-tallied, so it stays honest if any of them change.
+    static constexpr int kRateNumCols = 5;                  // "105.2"
+    static constexpr int kRateTokCols =
+        kRateNumCols + 1 + unicode::str_width(kUnit) + 1;   // + trailing gap
     static constexpr int kFixedCols =
-        unicode::str_width(kBolt) + kRateCols + unicode::str_width(kUnit);
+        unicode::str_width(kBolt) + kRateTokCols;
     struct Config {
         float              rate    = 0.0f;
         int                total   = 0;
@@ -147,31 +148,30 @@ private:
         // the CTX gauge left-right on every frame of every stream. Padding
         // to a fixed field is what keeps the row still.
         //
-        // But the pad is RIGHT-aligned, so a 1-2 digit rate carries leading
-        // spaces that read as a gap after the ⚡. Since the trailing " t/s "
-        // already separates the number from the spark, we can spend the
-        // slack on the right instead: left-align within the same 5 columns.
-        // "0.0  " and "105.2" both occupy 5 cells, the spark still never
-        // moves, and the ⚡ sits tight against its number.
+        // But WHERE the slack sits matters. It used to sit between the
+        // number and the unit (the number left-aligned in a fixed field),
+        // so "23.4  t/s" showed two spaces and "105.2 t/s" one. A quantity
+        // and its unit read as a single word, and a gap that changes width
+        // inside that word is the same flicker the fixed field exists to
+        // prevent — just moved somewhere the eye rests on it. So the number
+        // is formatted TIGHT, the unit is glued to it with exactly one
+        // space, and the whole "<number> t/s" token is padded to
+        // kRateTokCols. Total width is unchanged, the spark still never
+        // moves, and ⚡ stays tight against its number.
         //
         // Two snprintf gotchas drive the threshold choices:
         //   1. %.1f rounds: rate ∈ [999.95, 1000.0) prints as "1000.0"
-        //      — 6 chars, overflowing the 5-char slot. So we cap it at
-        //      999.5 (pre-rounding).
+        //      — 6 chars, overflowing the 5-col number slot. So we cap it
+        //      at 999.5 (pre-rounding).
         //   2. %.0f for the kilo range drops the dot. We avoid that by
         //      switching to %.1fk (e.g. "1.0k", "9.9k") which keeps
         //      a dot through 9999.5 tok/s.
         // Above 9999.5 we accept losing the dot — rates that high are
         // off the chart for any sensible token-per-second display.
-        //
-        // The kilo forms pad AFTER the suffix, not before it: `%-4.1fk`
-        // would left-align the number inside 4 columns and strand the k
-        // ("1.0 k"). Formatting the number tight and padding the whole
-        // token keeps "1.0k " together.
         char rate_buf[16];
         if (rate < 999.5f) {
-            std::snprintf(rate_buf, sizeof(rate_buf), "%-*.1f",
-                          kRateCols, static_cast<double>(rate));
+            std::snprintf(rate_buf, sizeof(rate_buf), "%.1f",
+                          static_cast<double>(rate));
         } else {
             char num[16];
             if (rate < 9999.5f)
@@ -182,7 +182,7 @@ private:
                               static_cast<double>(rate) / 1000.0);
             else
                 std::snprintf(num, sizeof(num), "100k");
-            std::snprintf(rate_buf, sizeof(rate_buf), "%-*s", kRateCols, num);
+            std::snprintf(rate_buf, sizeof(rate_buf), "%s", num);
         }
 
         // Sparkline — pad on LEFT with lowest block so right edge stays
@@ -213,18 +213,44 @@ private:
         Style rate_style  = cfg.live ? Style{}.with_fg(rc).with_bold()
                                      : Style{}.with_fg(rc).with_dim();
 
-        // The rate field is padded to kRateCols and LEFT-aligned, so the
-        // slack sits between the number and the unit — that pad is the only
-        // owner of that gap, and kRateCols is sized one wider than the
-        // longest value so the pad is never empty.
+        // The rate and its unit are ONE token: "23.4 t/s", a single space
+        // between them at every magnitude. The field's slack is spent AFTER
+        // the unit, where it separates the chip from the spark.
+        //
+        // It used to be spent between the number and the unit — the number
+        // was left-aligned inside a fixed 6-column field, so a short rate
+        // printed "23.4  t/s" (two spaces) while a long one printed
+        // "105.2 t/s" (one). A quantity and its unit are read as a single
+        // word, so a gap that changes width inside that word is a seam that
+        // moves while the eye is resting on it — the flicker the fixed field
+        // exists to prevent, relocated rather than removed.
+        //
+        // Padding the WHOLE "number + unit" token instead keeps the total
+        // width identical (so the spark still never moves), keeps ⚡ tight
+        // against its number, and keeps the unit tight against it too. The
+        // pad is sized so it is never empty, so the chip cannot collide with
+        // the spark that follows.
         //
         // ⚡ likewise carries no trailing space of its own: it is an
         // East-Asian-wide glyph (2 cols) and the rate that follows supplies
         // its own leading space via the field.
+        // Number and unit are built as two styled runs (the number takes the
+        // live/dim rate color, the unit is muted), so the pad rides on the
+        // UNIT's tail rather than being sliced back out of a joined string.
+        std::string num_tok  = std::string{rate_buf};
+        std::string unit_tok = " " + std::string{kUnit};
+        {
+            const int w = unicode::str_width(num_tok)
+                        + unicode::str_width(unit_tok);
+            if (w < kRateTokCols)
+                unit_tok.append(
+                    static_cast<std::size_t>(kRateTokCols - w), ' ');
+        }
+
         return h(
             text(std::string{kBolt}, Style{}.with_fg(rc)),               // ⚡
-            text(std::string{rate_buf}, rate_style),
-            text(std::string{kUnit}, fg_dim_(muted)),
+            text(std::move(num_tok), rate_style),
+            text(std::move(unit_tok), fg_dim_(muted)),
             text(std::move(spark), spark_style)
         ).build();
     }

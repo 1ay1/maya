@@ -1,5 +1,6 @@
 #include "maya/terminal/input.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -7,6 +8,11 @@
 #include <vector>
 
 namespace maya {
+
+std::atomic<std::uint64_t>& clipboard_rx_bytes() noexcept {
+    static std::atomic<std::uint64_t> n{0};
+    return n;
+}
 
 // ============================================================================
 // InputParser public methods
@@ -930,6 +936,15 @@ void InputParser::parse_osc5522(std::string_view body,
             return;
         }
         osc5522_data_ += *chunk;
+        // Publish progress. A clipboard IMAGE is base64 PNG — hundreds of KB
+        // to megabytes — and over ssh+tmux it arrives in many chunks over
+        // well past a second. The host arms a short timer to diagnose "the
+        // terminal never answered", and without this it cannot tell silence
+        // from a transfer still streaming: it declares failure at the
+        // deadline while the bytes are mid-flight, and a big screenshot can
+        // never be pasted. Counting delivered bytes lets the host see
+        // progress and keep waiting.
+        clipboard_rx_bytes().fetch_add(chunk->size(), std::memory_order_relaxed);
         return;
     }
 

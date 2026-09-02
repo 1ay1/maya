@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <atomic>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,6 +22,17 @@
 #include "../core/types.hpp"
 
 namespace maya {
+
+// Total clipboard-reply bytes decoded since process start (OSC 5522 /
+// OSC 52 reads). Monotonic; the VALUE is meaningless, only its movement.
+//
+// A clipboard image is base64 PNG — hundreds of KB to megabytes — and over
+// ssh+tmux it streams in over well more than a second. A host that arms a
+// short timer to report "your terminal never answered" otherwise cannot
+// distinguish real silence from a transfer still in flight, and kills a
+// large paste at the deadline. Sample this before and after waiting: if it
+// moved, the terminal IS answering and the deadline should be extended.
+[[nodiscard]] std::atomic<std::uint64_t>& clipboard_rx_bytes() noexcept;
 
 // ============================================================================
 // Key - all recognized key values

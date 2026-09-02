@@ -348,13 +348,25 @@ TEST_CASE("wrap_for_tmux wraps only inside tmux, doubling ESCs") {
     std::println("--- test_wrap_for_tmux ---");
 
     // Not in tmux: sequence returned unchanged.
+    //
+    // Clearing $TMUX alone is NOT enough to be "outside tmux", and this
+    // assertion failed for anyone running the suite from inside tmux:
+    // presence is also inferred from a tmux-*/screen-* $TERM (the
+    // ssh-from-local-tmux topology), which survives unsetenv("TMUX") as
+    // "tmux-256color". The probe also memoises its answer, so a stale
+    // verdict outlives the env change. Clear BOTH signals and reset the
+    // cache so the case tests the branch it names on every host.
     ::unsetenv("TMUX");
+    ::setenv("TERM", "xterm-256color", 1);
+    ::unsetenv("MAYA_TMUX_FAKE");
+    tmux::reset_cache_for_test();
     const std::string seq = "\x1b]5522;type=read;Zm9v\x1b\\";
     assert(ansi::wrap_for_tmux(seq) == seq
            && "outside tmux wrap_for_tmux must be a no-op");
 
     // In tmux: wrapped in ESC P tmux ; … ESC \ with every inner ESC DOUBLED.
     ::setenv("TMUX", "/tmp/tmux-1000/default,1,0", 1);
+    tmux::reset_cache_for_test();
     const std::string wrapped = ansi::wrap_for_tmux(seq);
     // Must start with the DCS passthrough intro and end with ST.
     assert(wrapped.rfind("\x1bPtmux;", 0) == 0

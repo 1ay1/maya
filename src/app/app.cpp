@@ -33,7 +33,11 @@ namespace {
 inline void io_log(const char* fmt, ...) {
     static const char* path = std::getenv("MAYA_IO_LOG");
     if (!path) return;
-    static std::FILE* f = std::fopen(path, "w");
+    // APPEND, not truncate. app.hpp's loop_dbg() writes to the SAME path
+    // through its own FILE*; a "w" here truncates the file out from under
+    // it, so half the trace silently vanishes and an investigation reads
+    // "that code never ran" when it ran fine. Both handles append.
+    static std::FILE* f = std::fopen(path, "a");
     if (!f) return;
     const auto t = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();

@@ -408,6 +408,28 @@ for them directly only when hand-writing an effect the primitives can't
 express. On a host that only wired the fast hook, `keep_animating_after`
 falls back to it, so motion never silently stalls.
 
+### The purity contract
+
+maya's animation doctrine is **logical purity, not mechanical constness**.
+A `build()` / `get()` may cache, prune expired entries, and request frames
+internally (that is why several widgets carry `mutable` members), but the
+observable contract is strict and tested
+(`test_widgets.cpp: "animation purity"`):
+
+1. **Same state + same clock ⇒ the same frame, every time.** Internal
+   mutation must be invisible, idempotent housekeeping. Under
+   `maya::testing::freeze_anim_clock()` a rebuild is byte-identical.
+2. **The shared clock is the ONLY time input.** No widget owns a phase
+   accumulator, a dt integrator, or a private epoch — `Clock::now_ms()`
+   *is* `anim_now_ms()`, so every Clock, Motion, stepped primitive and
+   widget phase reads one absolute time base. Advancing that clock is the
+   one and only way animation state moves.
+
+Corollary for widget authors: never store "elapsed" or "remaining" floats
+you tick with a dt — store absolute deadlines / derive phase from the
+clock. The dt-accumulator idiom is the regression the purity test exists
+to catch.
+
 
 ---
 

@@ -142,9 +142,14 @@ inline void keep_animating_after(std::int64_t delay_ms) noexcept {
 // plus a test-only skew, see core/anim_clock.hpp) and answers two questions a
 // widget keeps asking:
 //
-//   now_ms()  — monotonic wall time in ms since the clock's epoch. Use it
+//   now_ms()  — monotonic wall time in ms on the SHARED animation clock
+//               (identical to maya::anim_now_ms(), clamped at 0). Use it
 //               for phase-driven effects (sin(now), blink buckets) that
-//               don't need a delta.
+//               don't need a delta. There is ONE time base in maya: every
+//               Clock, Motion, stepped primitive and widget phase reads
+//               the same absolute clock, so phases are in lockstep across
+//               instances and threads by construction, and a frozen test
+//               clock pins every one of them at once.
 //
 //   dt()      — seconds since the LAST dt() call on this clock instance.
 //               This is what Motion feeds to the math each frame. It:
@@ -176,11 +181,16 @@ public:
     static constexpr double kMaxStep      = 0.25;  // s — dropped-frame clamp
     static constexpr double kRemountGapMs = 500.0; // gap ⇒ treat as remount
 
-    Clock() noexcept : epoch_ms_(maya::anim_now_ms()), last_ms_(epoch_ms_) {}
+    Clock() noexcept : last_ms_(maya::anim_now_ms()) {}
 
-    // Monotonic ms since this clock's epoch. Cheap; no state mutation.
+    // Absolute ms on the shared animation clock. Cheap; no state mutation.
+    // Deliberately NOT epoch-relative: a per-instance epoch would give every
+    // Clock its own phase origin — the exact "two clocks for one visual"
+    // drift the animation system exists to prevent. dt() below is a
+    // difference, so it never needed an epoch either.
     [[nodiscard]] std::int64_t now_ms() const noexcept {
-        return maya::anim_now_ms() - epoch_ms_;
+        const std::int64_t now = maya::anim_now_ms();
+        return now < 0 ? 0 : now;
     }
 
     // Seconds since the previous frame, clamped + remount-aware. Cached per
@@ -188,7 +198,7 @@ public:
     // frame gets the same delta.
     [[nodiscard]] double dt() noexcept {
         const std::int64_t now_ms_v = maya::anim_now_ms();
-        if (now_ms_v - epoch_ms_ == cached_dt_at_ms_) return cached_dt_;
+        if (now_ms_v == cached_dt_at_ms_) return cached_dt_;
 
         const double raw_ms = static_cast<double>(now_ms_v - last_ms_);
         last_ms_ = now_ms_v;
@@ -202,7 +212,7 @@ public:
             if (dt_s < 0.0)      dt_s = 0.0;
         }
         cached_dt_       = dt_s;
-        cached_dt_at_ms_ = now_ms_v - epoch_ms_;
+        cached_dt_at_ms_ = now_ms_v;
         return dt_s;
     }
 
@@ -212,7 +222,6 @@ public:
     void begin_frame() noexcept { cached_dt_at_ms_ = -1; }
 
 private:
-    std::int64_t epoch_ms_;
     std::int64_t last_ms_;
     double       cached_dt_       = 0.0;
     std::int64_t cached_dt_at_ms_ = -1;
@@ -460,12 +469,10 @@ template <typename T>
 // keep_animating_after(). Widgets should never hand-roll `anim_now_ms()/N`
 // division + RAF bookkeeping again — that idiom is what these replace.
 //
-// Unlike the Motion/Clock layer these read the ABSOLUTE shared clock
-// (anim_now_ms), not an epoch-relative Clock: a phase has no start, so the
-// epoch subtraction adds nothing — and dropping it makes every caller in
-// the process (even across threads, where default_clock() differs) sample
-// the SAME phase, and makes a frozen test clock (freeze_anim_clock) map
-// directly to a deterministic frame.
+// These read the same absolute shared clock as everything else (anim_now_ms
+// — Clock::now_ms() is the identical value): every caller in the process,
+// even across threads, samples the SAME phase, and a frozen test clock
+// (freeze_anim_clock) maps directly to a deterministic frame.
 
 // Smooth sine wave in [0,1] over `period_ms` (0.5 + 0.5·sin). Unlike
 // pulse() this is phase-continuous across widgets sharing a period — two

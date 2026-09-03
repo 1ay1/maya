@@ -308,6 +308,60 @@ TEST_CASE("spinner") {
 }
 
 // ============================================================================
+// The animation purity contract
+// ============================================================================
+// maya's animation doctrine is LOGICAL purity, not mechanical constness:
+// build()/get() may cache, prune, and request frames internally, but the
+// rendered frame must be a pure function of (model state, shared animation
+// clock). This test enforces the contract for the clock-driven widgets:
+//
+//   1. same state + same frozen clock  ⇒ byte-identical frames, repeatedly
+//      (the internal mutation is invisible — idempotent housekeeping only);
+//   2. advancing the clock a full step  ⇒ the frame CHANGES (the clock is
+//      the only time input — nothing else is secretly driving phase).
+//
+// If a widget ever grows hidden per-instance animation state again (the
+// dt-accumulator regression this system removed), case 1 or 2 breaks.
+TEST_CASE("animation purity: frozen clock pins every widget frame") {
+    std::println("=== test_animation_purity ===");
+    maya::testing::freeze_anim_clock(5'000'000);
+
+    {   // Spinner: pure function of the clock, stable across rebuilds.
+        Spinner a, b;
+        auto r1 = render_at(a, 20);
+        auto r2 = render_at(a, 20);
+        auto r3 = render_at(b, 20);   // ANY instance — lockstep by design
+        assert(r1.rows == r2.rows && "same clock ⇒ same spinner frame");
+        assert(r1.rows == r3.rows && "all spinners step in lockstep");
+        assert(a.current_frame() == b.current_frame()
+               && "lockstep down to the glyph");
+        const auto f0 = a.frame_index();
+        const auto g0 = std::string{a.current_frame()};
+        maya::testing::advance_anim_clock_ms(1000);  // >> one 80ms step
+        assert(a.frame_index() != f0 && "clock is the only phase input");
+        assert(std::string{a.current_frame()} != g0
+               && "advancing the clock moves the glyph");
+        // (rendered rows are compared via current_frame(): the ASCII test
+        //  canvas folds all braille frames to the same '?' placeholder.)
+    }
+
+    {   // Toasts: deadline expiry against the same clock, idempotent build.
+        ToastManager toasts;
+        toasts.push("hello", ToastLevel::Info);       // 3s duration
+        auto r1 = render_at(toasts, 40);
+        auto r2 = render_at(toasts, 40);
+        assert(r1.rows == r2.rows && "frozen clock ⇒ stable toast frame");
+        assert(!toasts.empty());
+        maya::testing::advance_anim_clock_ms(10'000); // past expiry
+        (void)render_at(toasts, 40);                  // build prunes
+        assert(toasts.empty() && "toast expires on the shared clock");
+    }
+
+    maya::testing::unfreeze_anim_clock();
+    std::println("  PASS\n");
+}
+
+// ============================================================================
 // Input tests
 // ============================================================================
 TEST_CASE("input") {

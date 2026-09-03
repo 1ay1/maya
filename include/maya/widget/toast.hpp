@@ -81,11 +81,6 @@ public:
                                      cfg_.duration * 1000.0f)});
     }
 
-    /// No-op for source compat — toasts now expire against the shared
-    /// animation clock inside build(); nothing to advance.
-    [[deprecated("toasts are clock-driven; remove the advance() call")]]
-    void advance(float) noexcept {}
-
     [[nodiscard]] bool empty() const { return toasts_.empty(); }
 
     operator Element() const { return build(); }

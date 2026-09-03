@@ -50,11 +50,6 @@ public:
     void set_expanded(bool e) { expanded_ = e; }
     void toggle() { expanded_ = !expanded_; }
 
-    /// No-op for source compat — the spinner derives its frame from the
-    /// shared animation clock inside build(); nothing to advance.
-    [[deprecated("spinner is clock-driven; remove the advance() call")]]
-    void advance(float) noexcept {}
-
     void clear_tools() { nested_tools_.clear(); }
     void add_tool(Element tool) { nested_tools_.push_back(std::move(tool)); }
 

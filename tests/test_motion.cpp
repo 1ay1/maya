@@ -59,7 +59,7 @@ struct RafGuard {
 TEST_CASE("clock dt semantics") {
     std::println("--- test_clock_dt_semantics ---");
     Clock clk;
-    // First dt() is ~0 (epoch == last on construction). Subsequent reads in
+    // First dt() is ~0 (last_ == now on construction). Subsequent reads in
     // the SAME integer-ms frame return the cached value.
     double a = clk.dt();
     double b = clk.dt();

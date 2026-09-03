@@ -165,13 +165,6 @@ public:
         return live_ || md_->is_animating();
     }
 
-    /// Advance the header spinner. Kept as a no-op for source compat: the
-    /// spinner now derives its frame from the shared animation clock inside
-    /// build() (deterministic under a test clock), so there is nothing to
-    /// advance — hosts may simply stop calling this.
-    [[deprecated("spinner is clock-driven; remove the advance() call")]]
-    void advance(float) noexcept {}
-
     /// The reasoning text so far (codepoint-clean).
     [[nodiscard]] const std::string& source() const noexcept {
         return md_->source();

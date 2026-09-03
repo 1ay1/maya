@@ -146,6 +146,35 @@ inline constexpr int kEmergencySignals[] = {
 };
 
 inline void emergency_signal_handler(int sig) noexcept {
+    // RE-ENTRANCY GUARD. sa_flags carries SA_NODEFER so a re-raise can reach
+    // the prior handler, which means this signal is NOT blocked while we run
+    // — nothing else stops us being re-entered by our own raise().
+    //
+    // Without this, a crash under a host that also handles fatal signals
+    // spins forever instead of dying. Observed as thousands of
+    // "=== agentty crash ===" headers with one pid and one timestamp:
+    //
+    //   SIGSEGV -> maya handler -> restores the host's prior handler,
+    //   raise() -> host handler prints its crash report, sets SIG_DFL and
+    //   re-raises -> but the SIG_DFL it set was overwritten when we
+    //   restored the prior action, so the signal lands back HERE -> loop.
+    //
+    // Each pass also re-dumps the flight recorder, so the log fills with
+    // megabytes of duplicated frames and the real first crash scrolls away.
+    //
+    // A plain bool is enough and is async-signal-safe: sig_atomic_t written
+    // once, and a second fatal signal arriving during teardown genuinely
+    // should take the default action rather than restore the tty twice.
+    static volatile std::sig_atomic_t in_handler = 0;
+    if (in_handler) {
+        // Already unwinding a fatal signal. Take the default action now —
+        // core dump / correct exit status — instead of recursing.
+        (void)std::signal(sig, SIG_DFL);
+        (void)::raise(sig);
+        _exit(128 + sig);   // belt and braces if the default is ignored
+    }
+    in_handler = 1;
+
     emergency_emit();                       // restore tty (async-signal-safe-ish)
     auto& s = emergency_state();
     // Restore the prior disposition and re-raise, so a host's handler (crash

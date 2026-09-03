@@ -711,3 +711,55 @@ TEST_CASE("input stale csi rescued by timeout") {
     std::println("PASS\n");
 }
 
+
+TEST_CASE("input terminal reports are consumed, never typed") {
+    std::println("--- test_input_terminal_reports_consumed ---");
+    // A private-mode CSI (`CSI ? … final`) is the TERMINAL answering us:
+    // DA1, DECRPM, DECXCPR. Those replies are solicited by the startup
+    // probes, but one can arrive after its probe window closes — routinely
+    // over ssh, where a reply fragments and the tail lands late.
+    //
+    // Such a late reply used to hit the "unknown sequence" fallback, which
+    // emits a literal '?' CharKey. The user saw a composer that began with
+    // a `?` they never typed, plus a burst of junk key events that made the
+    // caret jitter. Both symptoms, one cause: input was being invented from
+    // the terminal's own answer.
+    //
+    // The contract is silence. Never fabricate a keystroke from a report.
+    const char* reports[] = {
+        "\x1b[?1;2c",          // DA1 — primary device attributes
+        "\x1b[?62;1;6c",       // DA1, another shape
+        "\x1b[?5522;1$y",      // DECRPM — kitty clipboard mode
+        "\x1b[?2026;2$y",      // DECRPM — synchronized output
+        "\x1b[?1;1R",          // DECXCPR — extended cursor position
+    };
+    for (const char* r : reports) {
+        InputParser p;
+        auto events = p.feed(r);
+        assert(events.empty() && "terminal report must produce no events");
+        assert(!p.has_pending() && "report must leave the FSM at Ground");
+        // The parser is still usable for real input right after.
+        events = p.feed("a");
+        assert(events.size() == 1);
+        const auto* ck = std::get_if<CharKey>(&get_key(events[0]).key);
+        assert(ck != nullptr && ck->codepoint == U'a');
+    }
+
+    // A report SPLIT across reads must not leak its head either.
+    {
+        InputParser p;
+        auto events = p.feed("\x1b[?1;");
+        assert(events.empty());
+        events = p.feed("2c");
+        assert(events.empty() && "a fragmented report is still a report");
+    }
+
+    // Guard the neighbours: SGR mouse uses '<', not '?', and must survive.
+    {
+        InputParser p;
+        auto events = p.feed("\x1b[<0;10;5M");
+        assert(events.size() == 1 && "SGR mouse must still parse");
+        assert(std::get_if<MouseEvent>(&events[0]) != nullptr);
+    }
+    std::println("PASS\n");
+}

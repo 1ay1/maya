@@ -492,6 +492,32 @@ void InputParser::parse_csi(std::vector<Event>& events) {
     uint8_t final_byte = static_cast<uint8_t>(seq.back());
     std::string_view params_str = seq.substr(0, seq.size() - 1);
 
+    // ── Terminal REPORTS are answers, not keystrokes ──────────────────
+    //
+    // A private-mode CSI (`CSI ? … <final>`) is something the terminal said
+    // back to us: DA1 (`CSI ? 1;2 c`), DECRPM (`CSI ? 5522;1 $ y`), DECXCPR,
+    // and friends. They are solicited during startup probing, but a reply
+    // can arrive AFTER its probe window closes — trivially so over ssh,
+    // where a reply fragments and the tail lands milliseconds late, or when
+    // the terminal is slow enough that the deadline expires first.
+    //
+    // Such a late reply used to fall through to the "unknown sequence"
+    // fallback at the bottom of this function, which emits a literal '?'
+    // CharKey. The user sees a composer that starts with a stray `?` they
+    // never typed, and — because the reply also carries the parameter bytes
+    // as further unknown input — a burst of spurious key events that make
+    // the caret jitter. Both symptoms, one cause.
+    //
+    // Reports are unconditionally CONSUMED: this parser has no consumer for
+    // them (the startup probe reads them off the fd directly, before the
+    // parser is in the loop), so the only correct thing to do with a late
+    // one is drop it. Silence is the contract — never invent input the user
+    // did not type.
+    if (!params_str.empty() && params_str.front() == '?') {
+        buf_.clear();
+        return;
+    }
+
     // Check for bracketed paste start
     if (final_byte == '~') {
         auto params = parse_params(params_str);

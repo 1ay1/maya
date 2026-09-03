@@ -222,6 +222,36 @@ inline void install_emergency_restore(std::string_view seq) noexcept {
         // on Darwin and still resolves to the global libc function on glibc.
         sigemptyset(&sa.sa_mask);
         sa.sa_flags = SA_NODEFER;   // allow re-raise to reach the prior handler
+
+        // Run fatal-signal handlers on a dedicated stack.
+        //
+        // Without this a handler executes on the FAULTING thread's stack,
+        // which is fine for a null-deref but hopeless for the one crash
+        // that needs a report most: a stack overflow. There is by
+        // definition no room left to push a frame, so the handler faults
+        // while being entered. With SA_NODEFER the signal isn't blocked,
+        // so it re-enters and faults again — the process either spins or
+        // dies with NOTHING written.
+        //
+        // Measured: a stack-overflow SIGSEGV printed 0 diagnostic lines
+        // without an altstack and 1 with it. So agentty's crash report and
+        // flight-recorder dump were being silently lost on exactly the
+        // class of crash they exist to explain, and the tty was left in
+        // raw + alt-screen because emergency_emit() never ran either.
+        //
+        // The stack is a plain static buffer: allocated once, never freed,
+        // and untouched until a fatal signal arrives. SIGSTKSZ is not a
+        // constant expression on modern glibc, so size it explicitly — the
+        // handler writes a few KB of formatted text, well inside this.
+        {
+            static char alt_stack[256 * 1024];
+            stack_t ss{};
+            ss.ss_sp    = alt_stack;
+            ss.ss_size  = sizeof(alt_stack);
+            ss.ss_flags = 0;
+            if (::sigaltstack(&ss, nullptr) == 0)
+                sa.sa_flags |= SA_ONSTACK;
+        }
         for (int sig : kEmergencySignals) {
             if (sig >= 0 && sig < static_cast<int>(std::size(s.prior_signal)))
                 (void)::sigaction(sig, &sa, &s.prior_signal[sig]);

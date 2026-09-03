@@ -635,3 +635,48 @@ TEST_CASE("reveal settle window matches defaults") {
                  p.settle_window_ms());
 }
 
+
+// ── Frame-deadline poll timeout must round UP ────────────────────────────
+//
+// The run loop caps its poll on the next RAF deadline:
+//     until = <cast>(next_frame_at - now);  poll(max(0, until))
+// With duration_cast (truncate-toward-zero) a frame due in a fraction of a
+// millisecond yields until = 0, so poll(0) returns immediately, the
+// frame-due check still reads now < next_frame_at, nothing renders, and
+// the loop recomputes 0 and polls again — a hot spin for the entire
+// sub-millisecond remainder of EVERY frame.
+//
+// Measured on an idle agentty welcome screen before the fix: 27,692 polls
+// in 8 s for 134 renders, with the logged time-to-deadline sitting at
+// 100–900 us on every spin. After (ceil): 190 polls, same render count.
+// The cost is a pinned core plus a wire kept busy under a caret the
+// terminal is blinking on its own clock — the idle flicker.
+//
+// This asserts the arithmetic property directly, which is what actually
+// broke; driving a real loop would need a PTY and would not localise it.
+TEST_CASE("frame deadline: sub-ms wait rounds up, never to zero") {
+    using namespace std::chrono;
+    const auto now = steady_clock::now();
+
+    // Any deadline strictly in the future must produce a NON-ZERO wait —
+    // that is the anti-spin property.
+    for (auto us : {1, 50, 400, 999, 1000, 1500, 16000}) {
+        const auto deadline = now + microseconds(us);
+        const auto until = ceil<milliseconds>(deadline - now);
+        assert(until.count() >= 1 && "future deadline must not poll(0)");
+        // ...and it must not overshoot the deadline by a whole frame.
+        assert(until <= milliseconds((us + 999) / 1000));
+    }
+
+    // The truncating form is what regressed: prove it produces the 0 that
+    // spins, so this test documents the difference rather than asserting a
+    // tautology about ceil.
+    const auto sub_ms = now + microseconds(400);
+    assert(duration_cast<milliseconds>(sub_ms - now).count() == 0
+           && "duration_cast truncation is the spin source");
+
+    // A deadline already in the past legitimately yields 0 (render now).
+    const auto past = now - milliseconds(5);
+    assert(ceil<milliseconds>(past - now).count() <= 0);
+    std::println("ok: frame-deadline wait rounds up (no poll(0) spin)");
+}

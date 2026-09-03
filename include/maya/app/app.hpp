@@ -1774,7 +1774,19 @@ void run(RunConfig cfg = {}) {
             && next_frame_at != std::chrono::steady_clock::time_point{})
         {
             auto now = std::chrono::steady_clock::now();
-            auto until = std::chrono::duration_cast<std::chrono::milliseconds>(
+            // CEIL, not truncate. duration_cast floors toward zero, so a
+            // frame due in 0.4 ms yields until=0 -> poll(0) returns
+            // immediately -> the frame-due check below still reads
+            // `now < next_frame_at` -> nothing renders -> the loop
+            // recomputes 0 and polls again. That is a hot spin for the
+            // sub-millisecond remainder of EVERY frame: measured on an idle
+            // welcome screen, 27.7k polls in 8 s for 134 renders, with the
+            // remaining time-to-frame logged at 100-900 us on every spin.
+            // It burns a core and keeps the wire busy under a caret the
+            // terminal is blinking on its own clock (the flicker).
+            // Rounding UP lands the wake at or after the deadline, so a
+            // frame costs one poll instead of thousands.
+            auto until = std::chrono::ceil<std::chrono::milliseconds>(
                 next_frame_at - now);
             poll_timeout = std::min(poll_timeout,
                 std::max(std::chrono::milliseconds(0), until));

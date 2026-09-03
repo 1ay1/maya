@@ -165,10 +165,12 @@ public:
         return live_ || md_->is_animating();
     }
 
-    /// Advance the header spinner. Optional — build() also derives a frame
-    /// from the shared anim clock so the block breathes even if a host never
-    /// calls this (deterministic under a test clock).
-    void advance(float dt) { spinner_.advance(dt); }
+    /// Advance the header spinner. Kept as a no-op for source compat: the
+    /// spinner now derives its frame from the shared animation clock inside
+    /// build() (deterministic under a test clock), so there is nothing to
+    /// advance — hosts may simply stop calling this.
+    [[deprecated("spinner is clock-driven; remove the advance() call")]]
+    void advance(float) noexcept {}
 
     /// The reasoning text so far (codepoint-clean).
     [[nodiscard]] const std::string& source() const noexcept {
@@ -327,7 +329,6 @@ private:
 
     Config cfg_;
     std::shared_ptr<StreamingMarkdown> md_;
-    Spinner<SpinnerStyle::Dots> spinner_{Style{}.with_dim()};
     bool live_ = true;
     std::size_t char_hint_ = 0; // host-supplied reasoning length (0 = use md_)
     std::int64_t elapsed_ms_ = 0; // host-supplied reasoning duration (0 = hide)
@@ -665,18 +666,15 @@ private:
     }
 
     // Header spinner glyph derived from the shared animation clock so the
-    // block animates in lockstep with the rest of the live chrome.
+    // block animates in lockstep with the rest of the live chrome. Frames +
+    // cadence come from the one Spinner SSOT (widget/spinner.hpp); build()
+    // re-arms via the spinner's self-pacing frame read.
     [[nodiscard]] std::string_view spinner_frame() const {
-        static constexpr std::string_view kFrames[] = {
-            "\xe2\xa0\x8b", "\xe2\xa0\x99", "\xe2\xa0\xb9", "\xe2\xa0\xb8",
-            "\xe2\xa0\xbc", "\xe2\xa0\xb4", "\xe2\xa0\xa6", "\xe2\xa0\xa7",
-            "\xe2\xa0\x87", "\xe2\xa0\x8f",
-        };
-        constexpr std::size_t n = sizeof(kFrames) / sizeof(kFrames[0]);
-        // anim::frame_index steps off the shared clock (deterministic under
-        // a test skew) and schedules exactly one wake per 90 ms step — the
-        // spinner paces ITSELF instead of relying on the host's RAF.
-        return kFrames[anim::frame_index(n, 90.0)];
+        constexpr auto f = detail::get_spinner_frames<SpinnerStyle::Dots>();
+        const auto idx = anim::frame_index(
+            static_cast<std::size_t>(f.count),
+            static_cast<double>(f.interval) * 1000.0);
+        return f.frames[idx];
     }
 };
 

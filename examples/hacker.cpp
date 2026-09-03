@@ -407,7 +407,7 @@ static void tick(float dt) {
                                       maya::ToastLevel::Success;
         toasts.push(toast_messages[static_cast<size_t>(randi(0, 9))], lvl);
     }
-    toasts.advance(dt);
+    // Toast expiry is clock-driven — nothing to advance.
 
     // Breach sequence
     if (breaching) {

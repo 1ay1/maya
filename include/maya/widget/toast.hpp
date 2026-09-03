@@ -13,8 +13,7 @@
 // Usage:
 //   ToastManager toasts;
 //   toasts.push("Response complete", ToastLevel::Success);
-//   toasts.advance(dt);
-//   auto ui = toasts.build();
+//   auto ui = toasts.build();   // expiry is clock-driven; no advance() needed
 //
 // Responsive: cards are clamped to `max_width` (default 60) and pinned to
 // the right edge — the toast convention everywhere — instead of stretching
@@ -26,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "../core/motion.hpp"   // anim::default_clock / keep_animating_after
 #include "../dsl.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
@@ -38,7 +38,7 @@ struct ToastManager {
     struct Toast {
         std::string message;
         ToastLevel level;
-        float remaining;
+        std::int64_t expires_at_ms;   // shared-clock deadline
     };
 
     struct Config {
@@ -51,7 +51,9 @@ struct ToastManager {
 
 private:
     Config cfg_;
-    std::vector<Toast> toasts_;
+    // mutable: build() prunes expired toasts lazily against the shared
+    // clock — the pruning is idempotent, order-preserving housekeeping.
+    mutable std::vector<Toast> toasts_;
 
     struct LevelInfo {
         const char* icon;
@@ -73,22 +75,44 @@ public:
     explicit ToastManager(Config cfg) : cfg_(std::move(cfg)) {}
 
     void push(std::string message, ToastLevel level = ToastLevel::Info) {
-        toasts_.push_back({std::move(message), level, cfg_.duration});
+        toasts_.push_back({std::move(message), level,
+                           anim::default_clock().now_ms()
+                               + static_cast<std::int64_t>(
+                                     cfg_.duration * 1000.0f)});
     }
 
-    void advance(float dt) {
-        for (auto& t : toasts_) t.remaining -= dt;
-        toasts_.erase(
-            std::remove_if(toasts_.begin(), toasts_.end(),
-                [](auto const& t) { return t.remaining <= 0.0f; }),
-            toasts_.end());
-    }
+    /// No-op for source compat — toasts now expire against the shared
+    /// animation clock inside build(); nothing to advance.
+    [[deprecated("toasts are clock-driven; remove the advance() call")]]
+    void advance(float) noexcept {}
 
     [[nodiscard]] bool empty() const { return toasts_.empty(); }
 
     operator Element() const { return build(); }
 
     [[nodiscard]] Element build() const {
+        // Clock-driven lifecycle: drop expired toasts, then schedule ONE
+        // wake at the nearest upcoming transition (fade start or expiry) so
+        // the stack redraws exactly when something visibly changes.
+        const std::int64_t now = anim::default_clock().now_ms();
+        toasts_.erase(
+            std::remove_if(toasts_.begin(), toasts_.end(),
+                [&](auto const& t) { return t.expires_at_ms <= now; }),
+            toasts_.end());
+
+        const std::int64_t fade_ms =
+            static_cast<std::int64_t>(cfg_.fade_time * 1000.0f);
+        std::int64_t next_change = -1;
+        for (auto const& t : toasts_) {
+            const std::int64_t until_expiry = t.expires_at_ms - now;
+            const std::int64_t until_fade   = until_expiry - fade_ms;
+            const std::int64_t u =
+                until_fade > 0 ? until_fade : until_expiry;
+            if (u > 0 && (next_change < 0 || u < next_change))
+                next_change = u;
+        }
+        if (next_change > 0) anim::keep_animating_after(next_change);
+
         std::vector<Element> cards;
 
         // Show up to max_visible, newest at bottom
@@ -99,7 +123,7 @@ public:
             auto const& toast = toasts_[static_cast<size_t>(i)];
             auto info = level_info(toast.level);
 
-            bool fading = toast.remaining < cfg_.fade_time;
+            bool fading = (toast.expires_at_ms - now) < fade_ms;
 
             // Border color tinted by severity
             Color border_color = Color::bright_black();

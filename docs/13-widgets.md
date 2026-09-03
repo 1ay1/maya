@@ -740,8 +740,7 @@ struct ToastManager {
 ```cpp
 ToastManager toasts;
 toasts.push("Response complete", ToastLevel::Success);
-toasts.advance(dt);
-auto ui = toasts.build();
+auto ui = toasts.build();   // expiry is clock-driven; no advance() needed
 ```
 
 ---
@@ -903,11 +902,12 @@ class Spinner;
 // Spinner(Style s)
 ```
 
-**Key methods:** `advance(float dt)`, `set_style(Style)`.
+**Key methods:** `set_style(Style)`. The frame derives from the shared
+animation clock — every spinner in the process steps in lockstep, and
+`build()` schedules its own wakes (one per frame step).
 
 ```cpp
 Spinner spin;
-spin.advance(dt);
 auto ui = dsl::h(spin, text(" Loading..."));
 
 Spinner<SpinnerStyle::Braille> s2;
@@ -1342,8 +1342,7 @@ class ThinkingBlock;
 ThinkingBlock thinking;
 thinking.set_active(true);
 thinking.set_content("Analyzing the request...\nReading project structure...");
-thinking.advance(dt);
-auto ui = thinking.build();
+auto ui = thinking.build();   // spinner is clock-driven
 ```
 
 ---
@@ -1587,10 +1586,9 @@ class AgentTool;
 AgentTool agent("Exploring codebase structure");
 agent.set_model("claude-sonnet-4");
 agent.set_status(AgentStatus::Running);
-agent.advance(dt);
 agent.add_tool(read_tool.build());
 agent.add_tool(grep_tool.build());
-auto ui = agent.build();
+auto ui = agent.build();   // spinner is clock-driven
 ```
 
 ---

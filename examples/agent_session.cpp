@@ -1835,7 +1835,7 @@ static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
 
         [&](Tick) -> std::pair<Model, Cmd<Msg>> {
             m.spinner_frame = (m.spinner_frame + 1) & 0xFFFF;
-            m.thinking.advance(0.05f);
+            // thinking's spinner is clock-driven — nothing to advance.
             if (m.phase != Phase::Idle && m.phase != Phase::Done)
                 m.total_elapsed += 0.05f;
             return {std::move(m), Cmd<Msg>::none()};

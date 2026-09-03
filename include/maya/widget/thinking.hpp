@@ -37,7 +37,10 @@ public:
     void set_content(std::string_view text) { content_ = std::string{text}; }
     void append(std::string_view text) { content_ += text; }
 
-    void advance(float dt) { spinner_.advance(dt); }
+    /// No-op for source compat — the spinner derives its frame from the
+    /// shared animation clock inside build(); nothing to advance.
+    [[deprecated("spinner is clock-driven; remove the advance() call")]]
+    void advance(float) noexcept {}
 
     [[nodiscard]] bool is_active() const { return active_; }
     [[nodiscard]] bool is_expanded() const { return expanded_; }

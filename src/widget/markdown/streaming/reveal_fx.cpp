@@ -812,16 +812,13 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                     anim::keep_animating();
                 } else {
                     // Fully cooled, cursor at edge: only the caret pulses.
-                    // Step at the coarse phase bucket so a non-sync terminal
-                    // doesn't tear the chrome at 60 fps for a pulse that only
-                    // changes a few times a second.
+                    // Wake exactly at the next phase-bucket boundary so a
+                    // non-sync terminal doesn't tear the chrome at 60 fps
+                    // for a pulse that only changes a few times a second.
                     static const std::int64_t kAnimPhaseMs =
                         ansi::env_supports_synchronized_output() ? 33 : 100;
-                    const std::int64_t phase = ms_total / kAnimPhaseMs;
-                    if (phase != last_anim_phase_) {
-                        last_anim_phase_ = phase;
-                        anim::keep_animating();
-                    }
+                    anim::keep_animating_after(
+                        kAnimPhaseMs - (ms_total % kAnimPhaseMs));
                 }
                 return cached_live_;
             }
@@ -1358,10 +1355,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         const bool reveal_in_motion = cursor_catching_up || tail_still_hot;
 
         if (reveal_in_motion) {
-            // Smooth reveal: one wake per animation frame. Keep the color
-            // phase counter current so the first quiescent frame doesn't
-            // see a stale bucket and fire a redundant RAF.
-            last_anim_phase_ = ms_total / kAnimPhaseMs;
+            // Smooth reveal: one wake per animation frame.
             anim::keep_animating();
         } else {
             // Reveal is settled: cursor at the edge, tail cooled. The only
@@ -1386,11 +1380,12 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             const bool caret_still_relevant =
                 cursor_advance_age_tail_ms_ <= kCaretPulseWindowMs;
             if (caret_still_relevant) {
-                const std::int64_t phase = ms_total / kAnimPhaseMs;
-                if (phase != last_anim_phase_) {
-                    last_anim_phase_ = phase;
-                    anim::keep_animating();
-                }
+                // One wake at the next phase-bucket boundary — the caret
+                // pulse cadence — instead of a fast re-arm gated on a
+                // remembered bucket (which woke a full frame early and
+                // needed mutable state to dedup).
+                anim::keep_animating_after(
+                    kAnimPhaseMs - (ms_total % kAnimPhaseMs));
             }
             // else: inert settled caret — do NOT re-arm. Idle drops to zero.
         }

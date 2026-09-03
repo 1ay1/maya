@@ -625,9 +625,8 @@ static void tick(ChatApp& app) {
         app.toasts.push("Response complete", ToastLevel::Success);
     }
 
-    // Advance animated widgets
-    app.thinking.advance(dt);
-    app.toasts.advance(dt);
+    // Animated widgets (thinking spinner, toast expiry) are clock-driven —
+    // nothing to advance.
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────

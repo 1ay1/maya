@@ -75,7 +75,11 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        const auto now_ms = anim::default_clock().now_ms();
+        // Absolute shared animation clock (clamped at 0): the tape is a
+        // pure function of it, every instance in the process scrolls in
+        // lockstep, and a frozen test clock pins the frame exactly.
+        const std::int64_t now_ms =
+            std::max<std::int64_t>(0, ::maya::anim_now_ms());
 
         const Color muted     = Color::bright_black();
         const Color highlight = cfg_.edge_color;

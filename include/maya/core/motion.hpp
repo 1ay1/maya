@@ -61,6 +61,7 @@
 // still ticks correctly off the clock — it just doesn't nudge a loop that
 // isn't there.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -458,26 +459,31 @@ template <typename T>
 // their own interval and schedule exactly one wake per visible change via
 // keep_animating_after(). Widgets should never hand-roll `anim_now_ms()/N`
 // division + RAF bookkeeping again — that idiom is what these replace.
+//
+// Unlike the Motion/Clock layer these read the ABSOLUTE shared clock
+// (anim_now_ms), not an epoch-relative Clock: a phase has no start, so the
+// epoch subtraction adds nothing — and dropping it makes every caller in
+// the process (even across threads, where default_clock() differs) sample
+// the SAME phase, and makes a frozen test clock (freeze_anim_clock) map
+// directly to a deterministic frame.
 
 // Smooth sine wave in [0,1] over `period_ms` (0.5 + 0.5·sin). Unlike
 // pulse() this is phase-continuous across widgets sharing a period — two
 // surfaces breathing at 1400 ms breathe in lockstep because both read the
 // same clock. Frame-requesting at frame rate (it's continuous motion).
-[[nodiscard]] inline double wave(double period_ms,
-                                 Clock& clk = default_clock()) noexcept {
+[[nodiscard]] inline double wave(double period_ms) noexcept {
     detail::request_frame();
     if (period_ms <= 0.0) return 0.5;
-    const double ph = static_cast<double>(clk.now_ms()) / period_ms;
+    const double ph = static_cast<double>(maya::anim_now_ms()) / period_ms;
     return 0.5 + 0.5 * std::sin(ph * 6.283185307179586);
 }
 
 // Square-wave toggle over `period_ms` (true for the first half). The caret-
 // blink primitive. Schedules ONE wake at the next half-period boundary
 // instead of 60 fps — a 530 ms blink wakes the loop ~4×/s, not 60×.
-[[nodiscard]] inline bool blink(double period_ms,
-                                Clock& clk = default_clock()) noexcept {
+[[nodiscard]] inline bool blink(double period_ms) noexcept {
     if (period_ms <= 0.0) return true;
-    const std::int64_t now  = clk.now_ms();
+    const std::int64_t now  = std::max<std::int64_t>(0, maya::anim_now_ms());
     const std::int64_t half = static_cast<std::int64_t>(period_ms / 2.0);
     if (half <= 0) return true;
     const std::int64_t until_toggle = half - (now % half);
@@ -487,15 +493,17 @@ template <typename T>
 
 // Cycling frame counter: which of `count` frames is current, stepping every
 // `step_ms`. THE spinner primitive — replaces `(anim_now_ms()/90) % n`.
-// Schedules one wake at the next step boundary, not 60 fps.
+// Schedules one wake at the next step boundary, not 60 fps. Host-paced
+// surfaces (a status bar that hashes a time bucket and owns its own render
+// cadence) pass request=false for a PURE read — same frame, no wake.
 [[nodiscard]] inline std::size_t frame_index(std::size_t count, double step_ms,
-                                             Clock& clk = default_clock()) noexcept {
+                                             bool request = true) noexcept {
     if (count == 0) return 0;
     if (step_ms <= 0.0) return 0;
-    const std::int64_t now  = clk.now_ms();
+    const std::int64_t now  = std::max<std::int64_t>(0, maya::anim_now_ms());
     const std::int64_t step = static_cast<std::int64_t>(step_ms);
-    if (step <= 0) { detail::request_frame(); return 0; }
-    detail::request_frame_after(step - (now % step));
+    if (step <= 0) { if (request) detail::request_frame(); return 0; }
+    if (request) detail::request_frame_after(step - (now % step));
     return static_cast<std::size_t>((now / step)
                                     % static_cast<std::int64_t>(count));
 }
@@ -505,9 +513,8 @@ template <typename T>
 // their sub-cadences from one position (ActivityIndicator). Cadence-owning
 // callers pass request=false and schedule their own wake.
 [[nodiscard]] inline std::int64_t ticker_ms(double step_ms,
-                                            bool request = true,
-                                            Clock& clk = default_clock()) noexcept {
-    const std::int64_t now = clk.now_ms();
+                                            bool request = true) noexcept {
+    const std::int64_t now = std::max<std::int64_t>(0, maya::anim_now_ms());
     if (step_ms <= 0.0) { if (request) detail::request_frame(); return now; }
     const std::int64_t step = static_cast<std::int64_t>(step_ms);
     if (request && step > 0) detail::request_frame_after(step - (now % step));

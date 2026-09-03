@@ -299,7 +299,9 @@ private:
     // still lands every visible step of the bob. kSettledFrameMs is the
     // bob period divided by comfortably more samples than the ~3 distinct
     // row offsets a 1.5 px amplitude can produce — the motion is identical
-    // on screen, at 1/7th the wakeups.
+    // on screen, at 1/7th the wakeups. Scheduling goes through the
+    // framework's keep_animating(_after) — widgets never call the run
+    // loop's request_animation_frame directly.
     static std::int64_t animation_age_ms_() noexcept {
         static anim::Mount mount;
         // peek_ms: keep the mount/remount clock, arm nothing — we choose
@@ -307,8 +309,8 @@ private:
         const std::int64_t age = mount.peek_ms();
         constexpr std::int64_t kCascadeMs      = 1'200;  // > longest stagger+drop
         constexpr std::int64_t kSettledFrameMs =   110;  // ~9 fps: bob/pulse steps
-        if (age < kCascadeMs) ::maya::request_animation_frame();
-        else                  ::maya::request_animation_frame_after(kSettledFrameMs);
+        if (age < kCascadeMs) anim::keep_animating();
+        else                  anim::keep_animating_after(kSettledFrameMs);
         return age;
     }
 

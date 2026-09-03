@@ -5,7 +5,8 @@
 // cached_build_ untouched. When reveal_fx is on it layers three effects on
 // the trailing edge of the live tail — scramble→resolve, a hot→cool age
 // gradient over the last ~24 codepoints, and a pulsing inline block caret —
-// driven by request_animation_frame, mutating only a shallow copy.
+// driven by the animation framework's frame requests, mutating only a
+// shallow copy.
 
 #include <algorithm>
 #include <chrono>
@@ -26,7 +27,7 @@
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
 #include "maya/widget/markdown/streaming_internal.hpp"
-#include "maya/app/app.hpp"         // request_animation_frame()
+#include "maya/core/motion.hpp"     // anim::keep_animating — frame requests
 #include "maya/core/animation.hpp"   // anim::ease::*, anim::lerp(Color)
 #include "maya/anim/text_reveal.hpp"  // anim::decorate_text_reveal / end_caret
 
@@ -264,9 +265,7 @@ void StreamingMarkdown::snap_reveal_to_edge(int glide_ms) noexcept {
     // kMaxCatchupS of stale µs-elapsed to burst-integrate if bytes arrived
     // right after a mid-stream resize snap.
     reveal_cp_ = total_cp;
-#if MAYA_REVEAL_CENTRAL_CURSOR
     reveal_rate_cursor_.set_pos(total_cp);
-#endif
     const auto now_ms2 = anim_now_ms();
     reveal_ms_ = now_ms2;
     reveal_us_ = anim_now_us();
@@ -305,12 +304,10 @@ void StreamingMarkdown::advance_reveal_floor(std::size_t cp) noexcept {
     if (!(floor_cp > reveal_cp_)) return;
 
     reveal_cp_ = floor_cp;
-#if MAYA_REVEAL_CENTRAL_CURSOR
     // Keep the integrator in sync, or the next tick() would integrate from
     // its own stale (lower) position and the cursor would visibly snap BACK.
     // advance_floor is the matching monotone primitive.
     reveal_rate_cursor_.advance_floor(floor_cp);
-#endif
 
     // Deliberately NOT stamped here (unlike snap_reveal_to_edge):
     //   • reveal_ms_ / reveal_us_ — the tail past the floor is still
@@ -498,12 +495,12 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         const bool has_backlog = reveal_cp_ < static_cast<double>(total_cp);
         reveal_us_ = has_backlog ? (reveal_us_ + consumed_us) : us_total;
         reveal_ms_ = ms_total;
-#if MAYA_REVEAL_CENTRAL_CURSOR
-        // Central integrator path. The RateCursor reproduces the inline
-        // arithmetic below bit-for-bit (test_rate_cursor_matches_reveal_fx)
-        // — floor-cps ceiling, burst drain, and the finalize-deadline ramp.
-        // Keep it in lock-step with reveal_cp_ (the public cursor) every
-        // frame: push the committed-snap + pacing in, integrate, read back.
+        // Central integrator: the RateCursor owns ALL pacing arithmetic —
+        // floor-cps ceiling, burst drain, adaptive rate smoothing and the
+        // finalize-deadline ramp (see anim::RateCursor in core/animation.hpp,
+        // covered by reveal_pacing_test). Keep it in lock-step with
+        // reveal_cp_ (the public cursor) every frame: push the
+        // committed-snap + pacing in, integrate, read back.
         reveal_rate_cursor_.set_pacing(reveal_floor_cps_, reveal_drain_secs_);
         reveal_rate_cursor_.set_adaptive(reveal_adaptive_,
                                          reveal_adapt_floor_min_,
@@ -545,42 +542,6 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         }
         reveal_cp_ = reveal_rate_cursor_.tick(
             static_cast<double>(total_cp), elapsed_s);
-#else
-        const double backlog = static_cast<double>(total_cp) - reveal_cp_;
-        if (backlog <= 0.0) {
-            reveal_cp_ = static_cast<double>(total_cp);
-        } else {
-            // Typewriter pacing. reveal_floor_cps_ is a CEILING: the
-            // cursor never walks faster than floor_cps under normal
-            // streaming, so each codepoint takes its turn even on a
-            // slow byte-by-byte feed (otherwise total_cp grows at the
-            // feed rate and a backlog-driven cps catches up instantly,
-            // making the reveal invisible). The only exceptions:
-            //   • a large backlog (> drain_secs worth at floor_cps)
-            //     accelerates to backlog/drain_secs so a burst clears
-            //     within its target window;
-            //   • the finalize ramp can exceed both, guaranteeing the
-            //     cursor reaches the edge by its deadline.
-            const double kFloorCps  = reveal_floor_cps_;
-            const double kDrainSecs = reveal_drain_secs_;
-            const double burst_cps  = backlog / kDrainSecs;
-            double cps = (burst_cps > kFloorCps) ? burst_cps : kFloorCps;
-            if (finalize_armed_) {
-                const std::int64_t remaining_ms =
-                    finalize_deadline_ms_ - ms_total;
-                if (remaining_ms <= 0) {
-                    cps = backlog / std::max(elapsed_s, 0.001);
-                } else {
-                    const double ramp_cps =
-                        backlog / (remaining_ms / 1000.0);
-                    if (ramp_cps > cps) cps = ramp_cps;
-                }
-            }
-            reveal_cp_ += cps * elapsed_s;
-            if (reveal_cp_ > static_cast<double>(total_cp))
-                reveal_cp_ = static_cast<double>(total_cp);
-        }
-#endif
         // #6: NaN/Inf guard. Every downstream consumer casts reveal_cp_ to
         // std::size_t (byte clip, overlay revealed_cp, age math); a non-
         // finite value (e.g. a 0/0 from a degenerate rate·dt) casts to an
@@ -589,9 +550,7 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         // to a sane bound before anyone reads it.
         if (!std::isfinite(reveal_cp_)) {
             reveal_cp_ = static_cast<double>(committed_cp);
-#if MAYA_REVEAL_CENTRAL_CURSOR
             reveal_rate_cursor_.set_pos(reveal_cp_);
-#endif
         }
     }
 
@@ -673,7 +632,7 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
             finalize_hard_        = false;
             finalize_armed_size_  = 0;
             live_ = false;
-            request_animation_frame();
+            anim::keep_animating();
             return true;
         }
         // Cursor is at the edge but the scramble is still resolving. Keep
@@ -681,7 +640,7 @@ bool StreamingMarkdown::advance_reveal_cursor_() const {
         // its clean settled glyphs BEFORE we drop live_. is_finalizing()
         // stays true, so the host keeps the 16 ms frame armed and re-checks
         // this gate every frame until the tail cools.
-        request_animation_frame();
+        anim::keep_animating();
     }
 
     // Age of the trailing edge that the overlay's scramble/gradient
@@ -755,7 +714,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
         //       300ms — makes the caret feel like it's leaving a
         //       trail as it moves forward.
         //
-        // All three driven by request_animation_frame so they
+        // All three driven by the framework's frame requests so they
         // continue ticking at ~60 fps. Pure visual layer: cached_build_
         // is not touched; every frame builds cached_live_ fresh from
         // a shallow copy + mutated tail-leaf TextElement.
@@ -850,7 +809,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 // kTrailCoolMs constant keeps the position glide and the FX
                 // fade on ONE cadence.
                 if (age_at_tail_ms <= kTrailCoolMs || revealed_cp < total_cp) {
-                    ::maya::request_animation_frame();
+                    anim::keep_animating();
                 } else {
                     // Fully cooled, cursor at edge: only the caret pulses.
                     // Step at the coarse phase bucket so a non-sync terminal
@@ -861,7 +820,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                     const std::int64_t phase = ms_total / kAnimPhaseMs;
                     if (phase != last_anim_phase_) {
                         last_anim_phase_ = phase;
-                        ::maya::request_animation_frame();
+                        anim::keep_animating();
                     }
                 }
                 return cached_live_;
@@ -1403,7 +1362,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // phase counter current so the first quiescent frame doesn't
             // see a stale bucket and fire a redundant RAF.
             last_anim_phase_ = ms_total / kAnimPhaseMs;
-            ::maya::request_animation_frame();
+            anim::keep_animating();
         } else {
             // Reveal is settled: cursor at the edge, tail cooled. The only
             // remaining animation is the "awaiting next byte" end-caret
@@ -1430,7 +1389,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 const std::int64_t phase = ms_total / kAnimPhaseMs;
                 if (phase != last_anim_phase_) {
                     last_anim_phase_ = phase;
-                    ::maya::request_animation_frame();
+                    anim::keep_animating();
                 }
             }
             // else: inert settled caret — do NOT re-arm. Idle drops to zero.

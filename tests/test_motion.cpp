@@ -28,15 +28,31 @@ static bool approx(double a, double b, double eps = 1e-6) {
     return std::abs(a - b) < eps;
 }
 
-// ── Frame-request observation ──────────────────────────────────────────────
-// Install a counting stub so we can prove Motion drives the loop only while
-// moving. (In a real app app.hpp installs request_animation_frame.)
+// ── Frame-request observation ───────────────────────────────────────────
+// Install counting stubs so we can prove Motion drives the loop only while
+// moving, and that the stepped primitives use the COARSE hook (one wake per
+// visible step) rather than pinning the fast one. (In a real app app.hpp
+// installs request_animation_frame / _after.)
 static int g_raf_calls = 0;
 static void counting_raf() noexcept { ++g_raf_calls; }
+static int g_raf_after_calls = 0;
+static std::int64_t g_raf_after_last_delay = -1;
+static void counting_raf_after(std::int64_t delay_ms) noexcept {
+    ++g_raf_after_calls;
+    g_raf_after_last_delay = delay_ms;
+}
 struct RafGuard {
     anim::detail::RafHook saved;
-    RafGuard() : saved(anim::detail::raf_hook) { anim::detail::raf_hook = &counting_raf; }
-    ~RafGuard() { anim::detail::raf_hook = saved; }
+    anim::detail::RafAfterHook saved_after;
+    RafGuard() : saved(anim::detail::raf_hook),
+                 saved_after(anim::detail::raf_after_hook) {
+        anim::detail::raf_hook       = &counting_raf;
+        anim::detail::raf_after_hook = &counting_raf_after;
+    }
+    ~RafGuard() {
+        anim::detail::raf_hook       = saved;
+        anim::detail::raf_after_hook = saved_after;
+    }
 };
 
 // ── Clock: dt clamps long stalls and zeroes a remount ───────────────────────
@@ -148,6 +164,62 @@ TEST_CASE("pulse loop") {
 }
 
 // ── Timeline: seekable, keyframes interpolate, parallel tracks ──────────────
+TEST_CASE("stepped primitives") {
+    std::println("--- test_stepped_primitives ---");
+    RafGuard g;
+
+    // wave: bounded, phase-continuous on the shared clock, frame-requesting
+    // via the FAST hook (continuous motion).
+    g_raf_calls = 0;
+    for (int i = 0; i < 4; ++i) {
+        const double w = wave(1400.0);
+        assert(w >= 0.0 && w <= 1.0 && "wave stays in [0,1]");
+    }
+    assert(g_raf_calls >= 1 && "wave keeps the loop awake");
+    assert(approx(wave(0.0), 0.5) && "degenerate period is the midpoint");
+
+    // blink: square wave via a Clock we can steer with the test skew is
+    // overkill here — validate the contract: bounded delay via the COARSE
+    // hook, never more than a half-period away.
+    g_raf_after_calls = 0;
+    g_raf_after_last_delay = -1;
+    (void)blink(530.0);
+    assert(g_raf_after_calls == 1 && "blink schedules exactly one wake");
+    assert(g_raf_after_last_delay >= 1 && g_raf_after_last_delay <= 265
+           && "blink wakes at the next half-period boundary");
+    assert(blink(0.0) && "degenerate period reads solid-visible");
+
+    // frame_index: cycles within [0,count), coarse-scheduled at step_ms.
+    g_raf_after_calls = 0;
+    g_raf_after_last_delay = -1;
+    const std::size_t f = frame_index(10, 90.0);
+    assert(f < 10 && "frame_index within range");
+    assert(g_raf_after_calls == 1 && "frame_index schedules one wake");
+    assert(g_raf_after_last_delay >= 1 && g_raf_after_last_delay <= 90
+           && "frame_index wakes at the next step boundary");
+    assert(frame_index(0, 90.0) == 0 && "count==0 is safe");
+
+    // frame stability: two reads in the same ms agree (same clock).
+    assert(frame_index(10, 90.0) == frame_index(10, 90.0));
+
+    // ticker_ms: monotone, coarse-scheduled; request=false arms nothing.
+    const std::int64_t t1 = ticker_ms(140.0);
+    const std::int64_t t2 = ticker_ms(140.0);
+    assert(t2 >= t1 && "ticker is monotone");
+    g_raf_calls = 0;
+    g_raf_after_calls = 0;
+    (void)ticker_ms(140.0, /*request=*/false);
+    assert(g_raf_calls == 0 && g_raf_after_calls == 0
+           && "request=false arms nothing");
+
+    // Null after-hook falls back to the fast hook (headless-host safety).
+    anim::detail::raf_after_hook = nullptr;
+    g_raf_calls = 0;
+    anim::keep_animating_after(100);
+    assert(g_raf_calls == 1 && "after-hook falls back to fast hook");
+    std::println("PASS");
+}
+
 TEST_CASE("timeline keyframes") {
     std::println("--- test_timeline_keyframes ---");
     Timeline tl;

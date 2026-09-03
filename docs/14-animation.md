@@ -371,6 +371,44 @@ auto breath_col = anim::lerp(Color::rgb(60,60,80),
 el | fg(breath_col);
 ```
 
+### Stepped primitives — cadence-correct wakes
+
+`loop_phase()` / `pulse()` re-arm the loop at frame rate: right for
+continuous motion, wasteful for anything that visibly changes only a few
+times a second. The stepped primitives step at their own interval and
+schedule **exactly one wake per visible change** through the coarse
+frame-request hook (`request_animation_frame_after` on a real host):
+
+```cpp
+double w = anim::wave(1400.0);          // sine 0..1, phase-continuous across
+                                        // widgets sharing a period (lockstep)
+bool on  = anim::blink(530.0);          // caret square wave — ~4 wakes/s, not 60
+auto  i  = anim::frame_index(10, 90.0); // spinner frame — one wake per step
+auto  t  = anim::ticker_ms(140.0);      // monotone step counter (tape scrolls);
+                                        // pass request=false to own the cadence
+```
+
+These replace the hand-rolled `anim_now_ms()/N % count` + RAF bookkeeping
+idiom — **widgets should never divide the raw clock again**. The built-in
+widgets (reasoning spinner/pulse, composer caret, activity tape) are all
+expressed in these primitives.
+
+### `keep_animating()` — the one liveness API
+
+Widgets never call the run loop's `request_animation_frame` directly (that
+lives in the 90 KB app header). Liveness is declared through the framework:
+
+```cpp
+anim::keep_animating();          // smooth ~60 fps motion continues
+anim::keep_animating_after(110); // next visible step is 110 ms away — sleep
+```
+
+Every primitive above calls these for you with the correct cadence; reach
+for them directly only when hand-writing an effect the primitives can't
+express. On a host that only wired the fast hook, `keep_animating_after`
+falls back to it, so motion never silently stalls.
+
+
 ---
 
 ## `Timeline` — multi-step choreography

@@ -62,6 +62,7 @@
 // isn't there.
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -85,17 +86,53 @@ namespace detail {
 using RafHook = void (*)() noexcept;
 inline RafHook raf_hook = nullptr;
 
+// Coarse-cadence sibling (request_animation_frame_after): "wake me no
+// sooner than delay_ms". This is what lets SLOW animations (a 530 ms caret
+// blink, a 90 ms spinner step, a 110 ms bob) live INSIDE the framework
+// instead of hand-rolling clock math to avoid pinning the loop at 60 fps.
+// Null in headless contexts; a null after-hook falls back to the fast hook
+// so motion never silently stalls under a host that only wired the basic
+// one.
+using RafAfterHook = void (*)(std::int64_t delay_ms) noexcept;
+inline RafAfterHook raf_after_hook = nullptr;
+
 inline void request_frame() noexcept {
     if (raf_hook) raf_hook();
 }
 
-// RAII installer so app.hpp can wire the hook with a one-liner at namespace
-// scope: `inline anim::detail::RafInstaller _maya_raf{&request_animation_frame};`
+inline void request_frame_after(std::int64_t delay_ms) noexcept {
+    if (raf_after_hook)  raf_after_hook(delay_ms < 0 ? 0 : delay_ms);
+    else if (raf_hook)   raf_hook();
+}
+
+// RAII installer so app.hpp can wire the hooks with a one-liner at namespace
+// scope: `inline anim::detail::RafInstaller _maya_raf{&fast, &after};`
 struct RafInstaller {
-    explicit RafInstaller(RafHook h) noexcept { raf_hook = h; }
+    explicit RafInstaller(RafHook h, RafAfterHook a = nullptr) noexcept {
+        raf_hook       = h;
+        raf_after_hook = a;
+    }
 };
 
 } // namespace detail
+
+// ── public frame-request API ─────────────────────────────────────────────
+// The ONE way a widget says "keep painting". Widgets never talk to the run
+// loop directly (request_animation_frame lives in the 90 KB app header);
+// they declare liveness through these and the host wires the hooks once.
+//
+//   keep_animating()          — smooth, frame-rate motion (a continuous
+//                               intro, a streaming reveal). ~60 fps.
+//   keep_animating_after(ms)  — stepped motion: the next VISIBLE change is
+//                               ms away, sleep until then. One wake per
+//                               visible step instead of 60/s.
+//
+// Prefer the phase primitives below (wave / blink / frame_index /
+// ticker_ms) which call these for you with the correct cadence.
+inline void keep_animating() noexcept { detail::request_frame(); }
+inline void keep_animating_after(std::int64_t delay_ms) noexcept {
+    detail::request_frame_after(delay_ms);
+}
 
 // ============================================================================
 // Clock — the one frame-time source
@@ -412,6 +449,69 @@ template <typename T>
 [[nodiscard]] inline T pulse_between(T a, T b, double period_ms,
                                      Clock& clk = default_clock()) noexcept {
     return lerp(a, b, pulse(period_ms, clk));
+}
+
+// ── stepped phase primitives ─────────────────────────────────────────
+// The cadence-correct forms of the loop primitives. loop_phase()/pulse()
+// re-arm the loop at frame rate — right for CONTINUOUS motion, wasteful for
+// anything that visibly changes only a few times a second. These step at
+// their own interval and schedule exactly one wake per visible change via
+// keep_animating_after(). Widgets should never hand-roll `anim_now_ms()/N`
+// division + RAF bookkeeping again — that idiom is what these replace.
+
+// Smooth sine wave in [0,1] over `period_ms` (0.5 + 0.5·sin). Unlike
+// pulse() this is phase-continuous across widgets sharing a period — two
+// surfaces breathing at 1400 ms breathe in lockstep because both read the
+// same clock. Frame-requesting at frame rate (it's continuous motion).
+[[nodiscard]] inline double wave(double period_ms,
+                                 Clock& clk = default_clock()) noexcept {
+    detail::request_frame();
+    if (period_ms <= 0.0) return 0.5;
+    const double ph = static_cast<double>(clk.now_ms()) / period_ms;
+    return 0.5 + 0.5 * std::sin(ph * 6.283185307179586);
+}
+
+// Square-wave toggle over `period_ms` (true for the first half). The caret-
+// blink primitive. Schedules ONE wake at the next half-period boundary
+// instead of 60 fps — a 530 ms blink wakes the loop ~4×/s, not 60×.
+[[nodiscard]] inline bool blink(double period_ms,
+                                Clock& clk = default_clock()) noexcept {
+    if (period_ms <= 0.0) return true;
+    const std::int64_t now  = clk.now_ms();
+    const std::int64_t half = static_cast<std::int64_t>(period_ms / 2.0);
+    if (half <= 0) return true;
+    const std::int64_t until_toggle = half - (now % half);
+    detail::request_frame_after(until_toggle > 0 ? until_toggle : 1);
+    return (now / half) % 2 == 0;
+}
+
+// Cycling frame counter: which of `count` frames is current, stepping every
+// `step_ms`. THE spinner primitive — replaces `(anim_now_ms()/90) % n`.
+// Schedules one wake at the next step boundary, not 60 fps.
+[[nodiscard]] inline std::size_t frame_index(std::size_t count, double step_ms,
+                                             Clock& clk = default_clock()) noexcept {
+    if (count == 0) return 0;
+    if (step_ms <= 0.0) return 0;
+    const std::int64_t now  = clk.now_ms();
+    const std::int64_t step = static_cast<std::int64_t>(step_ms);
+    if (step <= 0) { detail::request_frame(); return 0; }
+    detail::request_frame_after(step - (now % step));
+    return static_cast<std::size_t>((now / step)
+                                    % static_cast<std::int64_t>(count));
+}
+
+// Monotone step counter: how many `step_ms` intervals have elapsed on the
+// shared clock. For tape scrolls / drifting-noise effects that derive ALL
+// their sub-cadences from one position (ActivityIndicator). Cadence-owning
+// callers pass request=false and schedule their own wake.
+[[nodiscard]] inline std::int64_t ticker_ms(double step_ms,
+                                            bool request = true,
+                                            Clock& clk = default_clock()) noexcept {
+    const std::int64_t now = clk.now_ms();
+    if (step_ms <= 0.0) { if (request) detail::request_frame(); return now; }
+    const std::int64_t step = static_cast<std::int64_t>(step_ms);
+    if (request && step > 0) detail::request_frame_after(step - (now % step));
+    return step > 0 ? now / step : now;
 }
 
 // ============================================================================

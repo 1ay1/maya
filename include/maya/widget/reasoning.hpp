@@ -49,6 +49,7 @@
 
 #include "../core/anim_clock.hpp"
 #include "../core/animation.hpp"   // anim::lerp(Color,Color,t)
+#include "../core/motion.hpp"      // anim::wave / anim::frame_index (self-pacing)
 #include "../element/box.hpp"
 #include "../style/border.hpp"
 #include "../style/style.hpp"
@@ -480,10 +481,12 @@ private:
     }
 
     // Pulse phase in [0,1] from the shared animation clock (~1.4 s period),
-    // so the body glow and the rail breathe in lockstep.
+    // so the body glow and the rail breathe in lockstep. anim::wave() is
+    // phase-continuous on the shared clock AND self-pacing: calling it
+    // declares "I'm animating" to the run loop, so a live reasoning block
+    // keeps painting without the host having to poll is_animating().
     [[nodiscard]] static double pulse01() {
-        const double ph = static_cast<double>(maya::anim_now_ms()) / 1400.0;
-        return 0.5 + 0.5 * std::sin(ph * 6.2831853);
+        return anim::wave(1400.0);
     }
 
     // Recursively override the foreground color of every text run in a tree.
@@ -670,9 +673,10 @@ private:
             "\xe2\xa0\x87", "\xe2\xa0\x8f",
         };
         constexpr std::size_t n = sizeof(kFrames) / sizeof(kFrames[0]);
-        const std::size_t i =
-            static_cast<std::size_t>((maya::anim_now_ms() / 90)) % n;
-        return kFrames[i];
+        // anim::frame_index steps off the shared clock (deterministic under
+        // a test skew) and schedules exactly one wake per 90 ms step — the
+        // spinner paces ITSELF instead of relying on the host's RAF.
+        return kFrames[anim::frame_index(n, 90.0)];
     }
 };
 

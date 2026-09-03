@@ -39,8 +39,8 @@
 #include <utility>
 #include <vector>
 
-#include "../app/app.hpp"        // request_animation_frame
-#include "../core/anim_clock.hpp" // anim_now_ms (skewable in tests)
+#include "../app/app.hpp"        // Element plumbing (dsl)
+#include "../core/motion.hpp"     // anim::default_clock / keep_animating_after
 #include "../dsl.hpp"
 #include "../element/element.hpp"
 #include "../element/text.hpp"   // StyledRun, TextElement
@@ -75,8 +75,7 @@ public:
     [[nodiscard]] Element build() const {
         using namespace dsl;
 
-        const auto now_ms = anim_now_ms();
-        request_animation_frame();
+        const auto now_ms = anim::default_clock().now_ms();
 
         const Color muted     = Color::bright_black();
         const Color highlight = cfg_.edge_color;
@@ -91,6 +90,19 @@ public:
         constexpr int kLockMs   = 110;
         constexpr int kDriftMs  =  60;
         constexpr int kSweepMs  =  90;
+
+        // Every visible change steps on one of the four cadences above.
+        // Wake the loop exactly at the NEAREST upcoming step boundary
+        // instead of unconditionally at ~60 fps — the tape renders the
+        // same frames it always did, the loop just sleeps between them.
+        {
+            std::int64_t until_next = kDriftMs;   // finest cadence bound
+            for (int step : {kScrollMs, kLockMs, kDriftMs, kSweepMs}) {
+                const std::int64_t u = step - (now_ms % step);
+                if (u < until_next) until_next = u;
+            }
+            anim::keep_animating_after(until_next > 0 ? until_next : 1);
+        }
 
         // Stream position of the leftmost visible column.
         const std::int64_t scroll = now_ms / kScrollMs;

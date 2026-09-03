@@ -278,7 +278,11 @@ inline void consume_animation_request_for_test() noexcept {
 // the app gets self-driving animations for free.
 namespace detail {
 inline void raf_thunk_() noexcept { ::maya::request_animation_frame(); }
-inline const ::maya::anim::detail::RafInstaller raf_installer_{&raf_thunk_};
+inline void raf_after_thunk_(std::int64_t delay_ms) noexcept {
+    ::maya::request_animation_frame_after(delay_ms);
+}
+inline const ::maya::anim::detail::RafInstaller raf_installer_{
+    &raf_thunk_, &raf_after_thunk_};
 } // namespace detail
 
 // ============================================================================

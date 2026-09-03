@@ -2119,6 +2119,27 @@ void run(RunConfig cfg = {}) {
                 auto status = rt.render(view_root);
                 if (!status) break;
             }
+            // Clear the render request whether or not we actually painted.
+            //
+            // This used to live INSIDE the `if (!skip_render)` above, so a
+            // frame the visual-hash gate skipped left needs_render set. The
+            // next iteration then computed poll_timeout = 0 (see the top of
+            // the loop: `needs_render ? 0ms : 100ms`), polled with no
+            // timeout, found nothing, skipped again — a hot spin that only
+            // ended when some other event happened to change the hash.
+            //
+            // Measured on an idle welcome screen: 33,601 zero-timeout polls
+            // in 8 seconds (~4,200/sec) against 96 real renders, and ~3 KB/s
+            // of wire traffic on a screen where nothing was moving. The
+            // spin also starves the frame scheduler of its own sleep, so
+            // animation steps landed at irregular offsets — visible as a
+            // flickering caret.
+            //
+            // A skip means "this render request is answered: nothing visible
+            // changed". The request is CONSUMED either way. Anything that
+            // genuinely needs another paint re-sets the flag next iteration
+            // (input, a timer, a resize) or rides next_frame_at (RAF), both
+            // of which are separate from this one.
             needs_render = false;
 
             // Schedule the next frame. One clock: a frame is just
@@ -2151,16 +2172,29 @@ void run(RunConfig cfg = {}) {
                     next_frame_at = std::chrono::steady_clock::time_point{};
                 }
             } else if (next_frame_at != std::chrono::steady_clock::time_point{}) {
-                // Keep riding: advance to the next interval from now so
-                // the loop doesn't busy-spin re-detecting an already-due
-                // frame it just chose to skip. A skip can't observe a fresh
-                // delay request (build() didn't run), so use the last one
-                // still latched in next_frame_delay_ms_ (not cleared on a
-                // skip, mirroring animation_requested_).
-                const auto delay = detail::next_frame_delay_ms_ > 0
-                    ? std::chrono::milliseconds(detail::next_frame_delay_ms_)
-                    : detail::kAnimationFrameInterval;
-                next_frame_at = std::chrono::steady_clock::now() + delay;
+                // A skipped render means build() never ran, so no widget had
+                // the chance to re-request. Keep riding ONLY if one was
+                // already asking — otherwise the schedule has served its
+                // purpose and the loop must return to idle.
+                //
+                // This used to re-arm unconditionally, falling back to the
+                // 16 ms default whenever next_frame_delay_ms_ had been reset
+                // to -1 by the preceding real render. One
+                // request_animation_frame_after(110) therefore decayed into
+                // a perpetual ~16 ms self-sustaining ride that no widget was
+                // asking for: measured 96 renders in 8 s (~30 ms apart) on a
+                // fully idle welcome screen that issued exactly ONE frame
+                // request in that window. The constant repaint is what made
+                // the caret flicker, and it kept the loop and the wire busy
+                // (~3 KB/s) with nothing on screen changing.
+                if (detail::animation_requested_) {
+                    const auto delay = detail::next_frame_delay_ms_ > 0
+                        ? std::chrono::milliseconds(detail::next_frame_delay_ms_)
+                        : detail::kAnimationFrameInterval;
+                    next_frame_at = std::chrono::steady_clock::now() + delay;
+                } else {
+                    next_frame_at = std::chrono::steady_clock::time_point{};
+                }
             }
             // Same scroll-writeback re-render as the simple run() path:
             // if a ScrollState's max_* changed during this paint, the

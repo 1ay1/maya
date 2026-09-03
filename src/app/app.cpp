@@ -359,7 +359,9 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
                 }
             }
             if (ps >= 0)
-                rt.osc5522_support_ = (ps >= 1 && ps <= 4) ? 1 : 0;
+                rt.osc5522_support_ = (ps >= 1 && ps <= 4)
+                    ? detail::Runtime::Osc5522::Supported
+                    : detail::Runtime::Osc5522::Unsupported;
             // The DA1 fence reply may still be in the buffer (we break on
             // the DECRPM as soon as it lands — the fence arrives behind
             // it). Strip it so it is never replayed as input; if it is
@@ -1874,7 +1876,7 @@ void Runtime::query_clipboard() {
     // mode spec existed and reports unknown modes as 0 — disabling on 0
     // would break image paste on the reference implementation. So on 0/-1
     // fall back to env sniffing exactly as before the probe existed.
-    const bool use_5522 = osc5522_support_ == 1
+    const bool use_5522 = osc5522_support_ == Osc5522::Supported
                        || ansi::env_supports_osc5522();
     (void)writer_->write_or_buffer(use_5522
                                        ? ansi::request_clipboard_image()

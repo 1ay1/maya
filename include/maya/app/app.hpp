@@ -1086,16 +1086,24 @@ private:
     int inline_top_row_ = 0;
     // OSC 5522 (kitty multi-format clipboard) capability, probed ONCE at
     // create() via DECRQM `CSI ? 5522 $ p` alongside the DSR query.
-    //   +1 = terminal answered DECRPM with set/reset (mode known → the
-    //        terminal implements the 5522 family; its clipboard READ escape
-    //        is available even when the MODE is off)
-    //    0 = terminal answered "not recognized" → definitively unsupported
-    //   -1 = no answer (query swallowed — old terminal, or a multiplexer
-    //        that doesn't forward DECRQM) → fall back to env sniffing
-    // Feature DETECTION beats enumeration: a future WezTerm/Ghostty that
-    // adopts the spec is discovered by asking, not by a release adding its
-    // name to a list.
-    int osc5522_support_ = -1;
+    //
+    // Three genuinely different answers, so it is an enum. It was an int
+    // whose comment had to enumerate the legal values (+1/0/-1) — which is
+    // the tell that the type was never written down: nothing stopped a
+    // fourth value, and `== 1` at the use site silently meant "supported"
+    // while everything else collapsed into the fallback. Feature DETECTION
+    // beats enumeration: a future WezTerm/Ghostty that adopts the spec is
+    // discovered by asking, not by a release adding its name to a list.
+    enum class Osc5522 : std::uint8_t {
+        Unknown,      // no answer (query swallowed — old terminal, or a
+                      // multiplexer that doesn't forward DECRQM). Fall back
+                      // to env sniffing.
+        Unsupported,  // terminal answered "not recognized" — definitive.
+        Supported,    // answered DECRPM with set/reset: the terminal
+                      // implements the 5522 family, so its clipboard READ
+                      // escape is available even when the MODE is off.
+    };
+    Osc5522 osc5522_support_ = Osc5522::Unknown;
     int inline_frame_rows_ = 0;
     // Events that arrived interleaved with the DSR reply during create()'s
     // cursor-position query; delivered ahead of fresh input on the next

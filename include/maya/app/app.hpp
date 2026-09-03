@@ -230,6 +230,47 @@ inline void request_animation_frame_after(std::int64_t delay_ms) noexcept {
     if (cur < 0 || delay_ms < cur) cur = delay_ms;   // unset, or a finer delay
 }
 
+// Is a widget already driving the next frame itself?
+//
+// True when something called request_animation_frame(_after) during the last
+// build(). Those frames are guaranteed to render — the run loop's RAF
+// override bypasses the visual-hash gate for exactly this case — and the
+// loop is already scheduled to wake on the requesting widget's own cadence.
+//
+// This exists so a host's visual_hash can DEFER instead of guessing. The
+// hash's job is to describe host-paced state: model fields, and time buckets
+// for animations the host itself drives with a timer. For a widget-paced
+// (RAF) visual it must add NO time term — a host bucket is a second,
+// independent clock for one visual, and unless it exactly matches the
+// widget's interval the two beat, so renders land mid-step and smooth motion
+// turns into stutter.
+//
+// The rule a host can now express directly rather than remember:
+//
+//     if (!maya::animation_pending()) {
+//         // only bucket time for animations WE pace
+//         mix(now_ms / our_timer_period);
+//     }
+//
+// agentty hit the failure this prevents: it bucketed the RAF-driven welcome
+// screen at its own 80 ms tick while the widget asked for 110 ms, producing
+// 42 hash values for 30 requested frames and a visibly flickering idle
+// screen.
+[[nodiscard]] inline bool animation_pending() noexcept {
+    return detail::animation_requested_;
+}
+
+// Testing seam: clear a pending frame request.
+//
+// The run loop clears animation_requested_ when it actually renders, so a
+// test that calls request_animation_frame() to simulate a widget needs a way
+// to get back to "nothing pending" without running the loop. Not for
+// production use — clearing this outside the loop would strand an animation.
+inline void consume_animation_request_for_test() noexcept {
+    detail::animation_requested_ = false;
+    detail::next_frame_delay_ms_ = -1;
+}
+
 // Wire the decoupled motion-framework frame-request hook to the real run
 // loop. anim::Motion / Timeline / pulse (core/motion.hpp) wake the loop
 // WITHOUT depending on this 90 KB header by routing through
@@ -1971,6 +2012,25 @@ void run(RunConfig cfg = {}) {
             // captures — the framework can't tell whether to render,
             // and conservatively the program should include a coarse
             // time bucket in its hash for any RAF-driven visual.
+            //
+            // ── What a host must NOT do ──────────────────────────────
+            // Bucket time for a widget that already drives itself via
+            // request_animation_frame(_after). The RAF override below
+            // already guarantees those frames render — a host bucket adds
+            // a SECOND, independent clock for the same visual, and unless
+            // it happens to match the widget's interval exactly the two
+            // beat: extra renders land part-way through an animation step,
+            // so the motion stutters instead of stepping cleanly.
+            //
+            // Seen in the field: agentty bucketed the RAF-driven welcome
+            // screen at its streaming-tick period (80 ms over ssh) while
+            // welcome_screen.hpp was asking for 110 ms. 42 hash values per
+            // 30 requested frames — an idle screen that visibly flickered.
+            //
+            // The rule: a visual is EITHER host-paced (host arms a timer
+            // and buckets at that period) OR widget-paced (RAF, host adds
+            // no time term). Never both. maya::animation_pending() lets a
+            // host assert that rather than guess — see app.hpp.
             bool skip_render = false;
             if constexpr (detail::HasVisualHash<P>::value) {
                 const std::uint64_t h = P::visual_hash(model);

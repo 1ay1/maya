@@ -74,6 +74,16 @@ public:
 
         // Right-side ambient indicators
         std::size_t queued = 0;
+
+        // LOOP mode: the caller re-sends one armed message after every
+        // completed turn until the user toggles it off. When `loop` is set
+        // the composer paints a ⟳ chip (with the completed-iteration count
+        // once it has fired at least once) in the right cluster and tints
+        // the border with `loop_color`, so an app that is auto-sending on
+        // your behalf can never look like an idle one.
+        bool  loop = false;
+        int   loop_iterations = 0;
+        Color loop_color = Color::cyan();
         ProfileChip profile;
 
         // Left slot of the hint row. When non-empty this REPLACES the
@@ -239,9 +249,15 @@ public:
         const bool  active       = is_streaming || is_executing;
 
         // ── State-driven box / prompt color.
+        // LOOP outranks the idle colors but NOT the live-phase ones: while a
+        // turn is actually streaming/executing the phase color is the more
+        // urgent fact, and the ⟳ chip already says the loop is armed. When
+        // idle-but-armed the border carries the loop hue, so the gap between
+        // turns never looks like "nothing is going to happen".
         Color box_color =
             is_awaiting ? cfg_.warn_color :
             active      ? cfg_.active_color :
+            cfg_.loop   ? cfg_.loop_color :
             has_text    ? cfg_.accent_color :
                           muted;
 
@@ -544,6 +560,9 @@ public:
             int queued;
             int words;
             int toks;
+            bool loop;
+            int loop_iterations;
+            Color loop_color;
             Color highlight_color;
             Color muted_color;
             Color profile_color;
@@ -556,6 +575,9 @@ public:
                                                  : word_count(cfg_.text)) : 0,
             has_text ? (cfg_.token_estimate >= 0 ? cfg_.token_estimate
                                                  : approx_tokens(cfg_.text)) : 0,
+            cfg_.loop,
+            cfg_.loop_iterations,
+            cfg_.loop_color,
             cfg_.highlight_color,
             muted,
             cfg_.profile.color,
@@ -630,6 +652,17 @@ public:
                     text(std::to_string(ri.queued) + " queued",
                          Style{}.with_fg(ri.highlight_color).with_bold()),
                     dot()).build();
+                // LOOP chip: ⟳ LOOP (×N once it has re-fired). Highest keep
+                // priority of the optional segments — an app auto-sending on
+                // the user's behalf must never render as an idle one, so this
+                // sheds only after counters AND queued are already gone.
+                Element loop_seg = h(
+                    text("\xe2\x9f\xb3 ", Style{}.with_fg(ri.loop_color).with_bold()),
+                    text(ri.loop_iterations > 0
+                             ? "LOOP \xc3\x97" + std::to_string(ri.loop_iterations)
+                             : std::string{"LOOP"},
+                         Style{}.with_fg(ri.loop_color).with_bold()),
+                    dot()).build();
                 Element counters_seg = h(
                     text(std::to_string(ri.words) + "w",
                          fg_dim_(ri.muted_color)),
@@ -640,16 +673,21 @@ public:
 
                 // Counters need the most room so they shed first, then
                 // queued; the chip never sheds — if even the chip can't
-                // fit, the spacer eats the slack and maya clips the row,
-                // but the chip stays visible because it's on the right
-                // edge.
+                // fit the row is degenerate at that width. LOOP outranks
+                // both optional segments: it is the only one reporting that
+                // the app will act on its own.
+                const bool show_loop = ri.loop
+                    && width_of(loop_seg) + chip_cols <= budget;
+                const int loop_cols = show_loop ? width_of(loop_seg) : 0;
                 const bool show_queued   = ri.queued > 0
-                    && width_of(queued_seg) + chip_cols <= budget;
+                    && loop_cols + width_of(queued_seg) + chip_cols <= budget;
                 const bool show_counters = ri.has_text
-                    && (show_queued ? width_of(queued_seg) : 0)
+                    && loop_cols
+                        + (show_queued ? width_of(queued_seg) : 0)
                         + width_of(counters_seg) + chip_cols <= budget;
 
                 std::vector<Element> hint_right;
+                if (show_loop)     hint_right.push_back(std::move(loop_seg));
                 if (show_queued)   hint_right.push_back(std::move(queued_seg));
                 if (show_counters) hint_right.push_back(std::move(counters_seg));
                 hint_right.push_back(std::move(chip));

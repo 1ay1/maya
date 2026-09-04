@@ -84,6 +84,11 @@ public:
         bool  loop = false;
         int   loop_iterations = 0;
         Color loop_color = Color::cyan();
+        // Seconds until the loop's next auto-send, when it is waiting out a
+        // backoff after a failed turn. >0 renders the chip as a countdown
+        // (⟳ RETRY 24s) instead of a plain LOOP badge, so a paused loop is
+        // visibly WAITING rather than mistaken for a wedged one.
+        int   loop_wait_secs = 0;
 
         // Render the body text as a READ-ONLY readout: dimmed, no caret.
         // Callers set this when the buffer is showing something the user
@@ -576,6 +581,7 @@ public:
             int toks;
             bool loop;
             int loop_iterations;
+            int loop_wait_secs;
             Color loop_color;
             Color highlight_color;
             Color muted_color;
@@ -591,6 +597,7 @@ public:
                                                  : approx_tokens(cfg_.text)) : 0,
             cfg_.loop,
             cfg_.loop_iterations,
+            cfg_.loop_wait_secs,
             cfg_.loop_color,
             cfg_.highlight_color,
             muted,
@@ -672,7 +679,9 @@ public:
                 // sheds only after counters AND queued are already gone.
                 Element loop_seg = h(
                     text("\xe2\x9f\xb3 ", Style{}.with_fg(ri.loop_color).with_bold()),
-                    text(ri.loop_iterations > 0
+                    text(ri.loop_wait_secs > 0
+                             ? "RETRY " + std::to_string(ri.loop_wait_secs) + "s"
+                         : ri.loop_iterations > 0
                              ? "LOOP \xc3\x97" + std::to_string(ri.loop_iterations)
                              : std::string{"LOOP"},
                          Style{}.with_fg(ri.loop_color).with_bold()),

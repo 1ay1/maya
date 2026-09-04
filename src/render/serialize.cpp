@@ -861,7 +861,15 @@ void emit_caret_epilogue(std::string& out,
         // before the show so the first visible frame already has them.
         emit_caret_cosmetics(out, state.cursor_shape_, state.cursor_color_,
                              hint->shape, hint->color);
-        out += ansi::show_cursor;
+        // Skip the ?25h re-assert when the frame kept the caret shown at this
+        // exact cell (cursor_shown_ still true because frame-open didn't hide
+        // it). Re-issuing ?25h makes WezTerm / Windows Terminal replay the
+        // cursor fade-in — the flicker being removed. Only a hidden→shown edge
+        // or a moved caret needs the show; \r/CUU/CUF above already re-parked.
+        const bool already_shown_here =
+            state.cursor_shown_ && state.cursor_col_ == hint->x
+            && state.cursor_row_offset_ == (up > 0 ? up : 0);
+        if (!already_shown_here) out += ansi::show_cursor;
         state.cursor_hidden_     = false;
         state.cursor_shown_      = true;
         state.cursor_row_offset_ = up > 0 ? up : 0;
@@ -1152,8 +1160,29 @@ compose_inline_frame_impl(const Canvas& canvas,
     // SSH terminal drew a blank screen, then visibly painted the
     // repaint top-to-bottom as the bytes trickled in.
     out += reset_prefix;
-    out += ansi::hide_cursor;
-    state.cursor_hidden_ = true;
+    // Hardware-caret anti-flicker (WezTerm / Windows Terminal). Those two
+    // ANIMATE the cursor's appearance (fade-in / trail), so the per-frame
+    // ?25l(hide) → repaint → ?25h(show) bracket replays the show animation on
+    // EVERY frame — during a welcome-art / streaming animation (~33 ms cadence)
+    // that reads as a caret flicker. kitty / Alacritty draw the cursor solid,
+    // so they never showed it. When the caret cell + cosmetics are unchanged
+    // from last frame (the animating content is above the composer; the caret
+    // doesn't move), skip the visibility toggle entirely: leave the cursor
+    // shown, let the normalization below just re-park it on the same cell. No
+    // ?25l here + no ?25h in the epilogue = no re-animation. reset_prefix.empty
+    // gates out destructive-wipe frames (which must hide). Independent of
+    // synchronized output — it's the show-animation, not tearing, that flickers.
+    const auto open_hint = resolve_caret_hint(canvas, pool, content_rows, term_h);
+    const bool caret_kept_shown =
+        reset_prefix.empty() && state.cursor_shown_
+        && open_hint.has_value()
+        && state.cursor_col_   == open_hint->x
+        && state.cursor_shape_ == open_hint->shape
+        && state.cursor_color_ == open_hint->color;
+    if (!caret_kept_shown) {
+        out += ansi::hide_cursor;
+        state.cursor_hidden_ = true;
+    }
     // ── Cursor normalization (hardware-caret prologue) ───────────────
     // The previous frame's caret epilogue may have left the physical
     // cursor cursor_row_offset_ rows ABOVE the resting row (at the

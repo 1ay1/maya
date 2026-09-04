@@ -349,6 +349,13 @@ public:
     /// Whether the last frame left the hardware cursor SHOWN (DECTCEM
     /// visible) at the caret hint, rather than parked hidden.
     [[nodiscard]] bool     cursor_shown()      const noexcept { return cursor_shown_; }
+    /// The caret cell / cosmetics the last frame's epilogue committed — read
+    /// by the frame-open anti-flicker check to decide whether the visibility
+    /// toggle can be skipped (unchanged cell ⇒ no ?25l/?25h cycle, which
+    /// WezTerm / Windows Terminal replay as a cursor fade-in every frame).
+    [[nodiscard]] int      cursor_col()        const noexcept { return cursor_col_; }
+    [[nodiscard]] uint8_t  cursor_shape()      const noexcept { return cursor_shape_; }
+    [[nodiscard]] uint32_t cursor_color()      const noexcept { return cursor_color_; }
     [[nodiscard]] uint64_t shadow_hash()      const noexcept { return shadow_hash_; }
     /// Monotonic identity stamp. Bumped by every content-advancing
     /// operation (compose, commit, reset-for-recovery). A ScrollbackMarker

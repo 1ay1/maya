@@ -419,13 +419,20 @@ private:
         // beneath it. No edge bar, never highlighted (callers keep the cursor
         // off headers). Reads as a quiet divider — an uppercased section name
         // in its category hue with leading indent — set off from the rows.
+        // An optional `trailing` (e.g. a count) is right-pinned and dimmed so
+        // the header can carry a quiet stat without competing with the label.
         if (r.is_header) {
             Style hs = r.leading_style.with_dim(true).with_bold(true);
-            return hstack()
-                       .width(Dimension::percent(100))(
-                       text(std::string{"  "}),
-                       text(r.leading, hs) | clip,
-                       spacer())
+            std::vector<Element> cells;
+            cells.push_back(text(std::string{"  "}));
+            cells.push_back(text(r.leading, hs) | clip);
+            cells.push_back(spacer());
+            if (!r.trailing.empty()) {
+                Style ts = r.trailing_style.with_dim(true);
+                cells.push_back(text(r.trailing, ts));
+                cells.push_back(text(std::string{"  "}));
+            }
+            return hstack().width(Dimension::percent(100))(std::move(cells))
                  | height(1) | overflow(Overflow::Hidden);
         }
 

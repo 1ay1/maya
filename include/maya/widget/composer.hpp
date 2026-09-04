@@ -84,6 +84,13 @@ public:
         bool  loop = false;
         int   loop_iterations = 0;
         Color loop_color = Color::cyan();
+
+        // Render the body text as a READ-ONLY readout: dimmed, no caret.
+        // Callers set this when the buffer is showing something the user
+        // cannot currently edit (agentty: the prompt a ^B loop is re-sending)
+        // so "you can't type here right now" is legible from the text itself
+        // rather than only discoverable by pressing a key and seeing nothing.
+        bool read_only = false;
         ProfileChip profile;
 
         // Left slot of the hint row. When non-empty this REPLACES the
@@ -413,8 +420,15 @@ public:
             // — only the SGR color attribute changes — so word-wrap
             // never reflows.
             constexpr std::string_view kBlock = "\xe2\x96\x88";
-            const Style text_style    = Style{}.with_fg(cfg_.text_color);
-            const Style cursor_visible = Style{}.with_fg(cfg_.text_color);
+            // Read-only: dim the body so the buffer reads as a readout the
+            // user is watching, not a draft they are holding, and park the
+            // caret out of sight (there is nothing to type into).
+            const Style text_style    = cfg_.read_only
+                ? Style{}.with_fg(cfg_.text_color).with_dim()
+                : Style{}.with_fg(cfg_.text_color);
+            const Style cursor_visible = cfg_.read_only
+                ? Style{}.with_fg(box_color).with_dim()
+                : Style{}.with_fg(cfg_.text_color);
             // "Invisible" cursor: dim foreground in the box color so
             // the cell stays the same width but reads as empty. Using
             // box bg directly would require knowing the parent's

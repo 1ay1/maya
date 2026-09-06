@@ -421,6 +421,72 @@ std::vector<Element> Panel::render_menu(const Menu& m) const {
     if (hi >= first + view) first = hi - view + 1;
     first = std::clamp(first, 0, std::max(0, total - view));
 
+    // ONE width for the whole list, so every option's radio sits in the SAME
+    // column. Right-aligning each line independently — which is what happens
+    // when each is its own right_line — put the radios in as many columns as
+    // there were distinct label lengths, and a radio group whose radios do not
+    // line up does not read as a group at all: it reads as loose text that
+    // happens to sit near the row. Padding to the widest option turns the same
+    // lines into a rectangular block hanging under the value it replaces,
+    // which is the shape a dropdown is supposed to have.
+    //
+    // Measured over the WHOLE option set rather than the visible window, so
+    // scrolling the list does not re-flow its left edge.
+    int widest = 0;
+    for (const auto& opt : m.options)
+        widest = std::max(widest, string_width(opt));
+
+    // The frame. Without one the list has no boundary of its own — it is just
+    // more rows in a panel already made of rows, so "these four belong to that
+    // field" is left entirely to the reader.
+    //
+    // The bracket is anchored to the CHEVRON. An open Choice row collapses to
+    // a bare ▴ sitting one gap column in from the right edge (see
+    // render_control), and right_line leaves that same two-column gap — so a
+    // rule that simply spans the block ends two columns short of the chevron
+    // and the ┬ points at empty space. Padding the rules by that gap puts the
+    // corner directly beneath the ▴, which is what makes the list read as
+    // hanging FROM the control rather than merely sitting near it.
+    const int block_w = widest + 4;           // "❯ " + "◉ " columns
+    // The bottom rule is an ordinary right_line, so it shares the options'
+    // right edge and their left edge follows from the common width. Making it
+    // one wider to "match" the top rule moves its LEFT edge instead —
+    // right_line pins the right — which un-squares the very block this is
+    // meant to square.
+    const auto bottom_rule = [&] {
+        std::string s = "\xe2\x95\xb0";                       // ╰
+        for (int i = 0; i < block_w - 2; ++i) s += "\xe2\x94\x80";
+        s += "\xe2\x95\xaf";                                 // ╯
+        return right_line(Element{TextElement{
+            .content = std::move(s),
+            .style   = Style{}.with_fg(th.origin),
+            .wrap    = TextWrap::NoWrap}});
+    };
+    // The TOP rule has to reach the chevron, which sits INSIDE the two-column
+    // gap right_line() reserves — so it cannot use right_line and is built
+    // flush-right itself. That corner under the ▴ is the whole point: it is
+    // what makes the list read as hanging FROM the control rather than merely
+    // sitting near it.
+    const auto top_rule = [&] {
+        std::string s = "\xe2\x95\xad";                       // ╭
+        for (int i = 0; i < block_w - 1; ++i) s += "\xe2\x94\x80";
+        s += "\xe2\x94\xb4";                                 // ┴ under the ▴
+        std::vector<Element> cells;
+        cells.push_back(dsl::spacer());
+        cells.push_back(Element{TextElement{
+            .content = std::move(s),
+            .style   = Style{}.with_fg(th.origin),
+            .wrap    = TextWrap::NoWrap}} | dsl::shrink(1.0f));
+        // ONE trailing column, not right_line's two: the chevron occupies the
+        // first of that pair, so the corner has to land one column further
+        // right than an option line's edge.
+        cells.push_back(Element{TextElement{.content = " "}});
+        return maya::detail::hstack().width(Dimension::percent(100))
+                   (std::move(cells));
+    };
+
+    out.push_back(top_rule());
+
     for (int i = first; i < first + view && i < total; ++i) {
         const bool sel = (i == hi);
         const bool cur = (i == m.current);
@@ -443,13 +509,25 @@ std::vector<Element> Panel::render_menu(const Menu& m) const {
             Style{}.with_fg(cur ? th.on : th.off));
         put(m.options[k], sel ? Style{}.with_fg(th.title).with_bold()
                               : Style{}.with_fg(cur ? th.value : th.label));
+        // Pad to the common width so the block's right edge is straight and
+        // the highlight below covers a rectangle, not a ragged silhouette.
+        const int pad = widest - string_width(m.options[k]);
+        if (pad > 0) put(std::string(static_cast<std::size_t>(pad), ' '), Style{});
 
-        auto line = right_line(Element{TextElement{
+        // The focused option carries the same wash the cursor ROW does, so the
+        // one thing Enter will choose is unmistakable. Runs must cover the
+        // content in order and cannot overlap, so the wash is folded into each
+        // run rather than laid over the top.
+        if (sel)
+            for (auto& r : runs) r.style = r.style.with_bg(th.row_bg);
+
+        out.push_back(right_line(Element{TextElement{
             .content = std::move(s),
             .wrap    = TextWrap::TruncateEnd,
-            .runs    = std::move(runs)}});
-        out.push_back(std::move(line));
+            .runs    = std::move(runs)}}));
     }
+
+    out.push_back(bottom_rule());
 
     // The focused option's blurb, once, under the list — rather than a hint on
     // every row. Same discipline as Row::help: describe what has focus.
@@ -495,7 +573,7 @@ int Panel::menu_lines(const Menu& m) {
     if (total == 0) return 1;                         // "(no options)"
     const int hi   = std::clamp(m.highlighted, 0, total - 1);
     const int view = std::max(1, std::min(m.viewport, total));
-    int n = view;
+    int n = view + 2;                                 // + the block's two rules
     if (hi < static_cast<int>(m.hints.size())
         && !m.hints[static_cast<std::size_t>(hi)].empty()) ++n;
     if (total > view) ++n;

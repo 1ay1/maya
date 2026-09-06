@@ -313,12 +313,23 @@ struct SpacerNode {
 };
 inline constexpr SpacerNode space{};
 
+// A horizontal rule: ONE line.
+//
+// It used to be a zero-height box with `BorderSides::horizontal()`, i.e. a top
+// AND a bottom edge — so a single `sep` painted TWO rules. Most call sites
+// never noticed, because content sitting immediately below made the pair read
+// as one thick divider; it only became visible where a `sep` had space around
+// it (under a search box), and the natural "fix" at each such site was to
+// stop using `sep`. That is how a primitive gets abandoned instead of fixed.
+//
+// `{top}` only draws the one line the name promises. Callers that genuinely
+// want a boxed band still have `box().border_sides(horizontal())`.
 struct SepNode {
     operator Element() const { return build(); }
     [[nodiscard]] Element build() const {
         return maya::detail::box()
             .border(BorderStyle::Single)
-            .border_sides(BorderSides::horizontal());
+            .border_sides(BorderSides{true, false, false, false});
     }
 };
 inline constexpr SepNode sep{};

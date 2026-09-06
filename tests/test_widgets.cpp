@@ -21,7 +21,7 @@
 #include <maya/widget/markdown.hpp>
 #include <maya/widget/modal.hpp>
 #include <maya/widget/model_badge.hpp>
-#include <maya/widget/picker.hpp>
+#include <maya/widget/panel.hpp>
 #include <maya/widget/progress.hpp>
 #include <maya/widget/reasoning.hpp>
 #include <maya/widget/select.hpp>
@@ -832,7 +832,7 @@ TEST_CASE("picker multirow autoscroll") {
     std::println("=== test_picker_multirow_autoscroll ===");
 
     ScrollState scroll;
-    Picker::Config cfg;
+    Panel::Config cfg;
     cfg.title      = " Test ";
     cfg.viewport_h = 4;
     cfg.scroll     = &scroll;
@@ -846,7 +846,7 @@ TEST_CASE("picker multirow autoscroll") {
         ).build());
     }
     cfg.selected = 3;   // starts at row 9, ends at row 12
-    auto r = render_at(Picker{cfg}.build(), 50);
+    auto r = render_at(Panel{cfg}.build(), 50);
     (void)r;
     // Row-space clamp: sel_end(12) - vh(4) = 8. The old index-space
     // clamp computed y = 3 - 4 + 1 = 0 — selection entirely off-view.
@@ -856,29 +856,38 @@ TEST_CASE("picker multirow autoscroll") {
     std::println("  PASS\n");
 }
 
-// Structured picker rows use one consistent, unmistakable selection band.
-// Lock both text contrast and full-row background fill so future picker chrome
-// changes cannot regress to the old subtle edge-bar-only focus treatment.
-TEST_CASE("picker selected row highlight") {
-    std::println("=== test_picker_selected_row_highlight ===");
+// Structured panel rows use one consistent, unmistakable selection band.
+// Lock the cursor treatment so future chrome changes cannot regress it.
+//
+// This asserts PANEL's contract, not the deleted Picker's. Picker painted the
+// cursor as inverse video (bright-white bg, black fg) across the row; Panel
+// paints a subtle wash (theme.row_bg) plus an edge bar in column 0, so a
+// picker row and a form row line up and a selected row stays readable. The
+// selection must still be unmistakable and must still span the full row
+// including the slack past the text — that part of the old test was right and
+// is what is kept.
+TEST_CASE("panel selected row highlight") {
+    std::println("=== test_panel_selected_row_highlight ===");
 
     ScrollState scroll;
     scroll.auto_dispatch = false;
-    Picker::Config cfg;
+    Panel::Config cfg;
     cfg.title = " Picker ";
     cfg.min_width = 30;
     cfg.viewport_h = 2;
     cfg.scroll = &scroll;
+    // Config::selected is the ONE owner of where the cursor is; Row::selected
+    // is derived from it by the widget and ignored as an input.
     cfg.selected = 0;
     cfg.rows = {
-        Picker::Config::Row{.leading = "Selected", .trailing = "first",
-                            .selected = true},
-        Picker::Config::Row{.leading = "Unselected", .trailing = "second"},
+        Panel::Row{.leading = "Selected", .trailing = "first"},
+        Panel::Row{.leading = "Unselected", .trailing = "second"},
     };
+    const Color wash = cfg.theme.row_bg;
 
     StylePool pool;
     Canvas canvas(40, 10, &pool);
-    render_tree(Picker{std::move(cfg)}.build(), canvas, pool, theme::dark);
+    render_tree(Panel{std::move(cfg)}.build(), canvas, pool, theme::dark);
 
     int selected_y = -1;
     int selected_x = -1;
@@ -895,52 +904,85 @@ TEST_CASE("picker selected row highlight") {
 
     const Style selected = pool.get(canvas.get(selected_x, selected_y).style_id);
     const Style unselected = pool.get(canvas.get(unselected_x, unselected_y).style_id);
-    assert(selected.bg == Color::bright_white());
-    assert(selected.fg == Color::black());
-    assert(selected.bold);
-    assert(!unselected.bg.has_value());
+    assert(selected.bg == wash
+           && "the cursor row carries the theme's row wash");
+    assert(!unselected.bg.has_value()
+           && "a non-cursor row carries no background at all");
 
-    int highlighted_cells = 0;
+    // The wash must cover the row to its END, not stop at the last glyph: a
+    // band that ends with the text reads as a broken stripe. Assert the SPAN
+    // (contiguous from the first washed cell to the last) and that it reaches
+    // past the trailing text, rather than a magic cell count — the row's width
+    // depends on min_width, padding and the scrollbar column.
+    int first_wash = -1, last_wash = -1, washed = 0;
     for (int x = 0; x < canvas.width(); ++x)
-        if (pool.get(canvas.get(x, selected_y).style_id).bg
-            == Color::bright_white()) ++highlighted_cells;
-    assert(highlighted_cells >= 24
-           && "selected picker background must span the row, including slack");
+        if (pool.get(canvas.get(x, selected_y).style_id).bg == wash) {
+            if (first_wash < 0) first_wash = x;
+            last_wash = x;
+            ++washed;
+        }
+    assert(first_wash >= 0 && "the cursor row must be washed at all");
+    assert(washed == last_wash - first_wash + 1
+           && "the wash must be contiguous across the row");
+
+    // It must extend past the trailing cell's TEXT, i.e. cover the slack
+    // between the two columns and up to the row's own right edge. Bound the
+    // search to the washed span: everything right of it is frame chrome (the
+    // scrollbar column, the border) which is not part of the row and is not
+    // supposed to be washed.
+    int last_glyph = -1;
+    for (int x = first_wash; x <= last_wash; ++x) {
+        const auto ch = canvas.get(x, selected_y).character;
+        if (ch && ch != U' ') last_glyph = x;
+    }
+    assert(last_glyph >= 0 && "the cursor row must contain its text");
+    assert(last_wash >= last_glyph
+           && "selected row background must span the row, including slack");
+
+    // And the band must be WIDE — covering the gap between the leading and
+    // trailing columns, not just the two runs of text. That gap is where the
+    // wash used to break into two stripes with a hole in the middle.
+    int glyph_cells = 0;
+    for (int x = first_wash; x <= last_wash; ++x) {
+        const auto ch = canvas.get(x, selected_y).character;
+        if (ch && ch != U' ') ++glyph_cells;
+    }
+    assert(washed > glyph_cells
+           && "the wash must fill the slack between cells, not only the text");
 
     std::println("  PASS\n");
 }
 
-// A LARGE structured list (n > 3*viewport) takes the virtualized path: only
-// the visible window is built as real rows, the rest are 1-line placeholders.
-// Output must stay identical to the full path — the selected row, deep in the
-// list, still renders its real content + highlight at the right viewport slot.
-TEST_CASE("picker virtualized large list renders selection") {
-    std::println("=== test_picker_virtualized_large_list ===");
+// A LARGE list takes the virtualized path: only the rows intersecting the
+// viewport are built, the rest are reserved by spacers. Output must be
+// identical to rendering everything — the selected row, deep in the list,
+// still renders its real content and its wash at the right viewport slot.
+TEST_CASE("panel virtualized large list renders selection") {
+    std::println("=== test_panel_virtualized_large_list ===");
 
     ScrollState scroll;
     scroll.auto_dispatch = false;
-    Picker::Config cfg;
+    Panel::Config cfg;
     cfg.title = " Big ";
     cfg.min_width = 30;
-    cfg.viewport_h = 8;                 // 200 >> 3*8 → virtualized
+    cfg.viewport_h = 8;
     cfg.scroll = &scroll;
     cfg.selected = 137;                 // deep in the list
     for (int i = 0; i < 200; ++i)
-        cfg.rows.push_back(Picker::Config::Row{
+        cfg.rows.push_back(Panel::Row{
             .leading = "row" + std::to_string(i), .trailing = "t"});
-    cfg.rows[137].selected = true;
+    const Color wash = cfg.theme.row_bg;
 
     StylePool pool;
     Canvas canvas(40, 14, &pool);
-    render_tree(Picker{std::move(cfg)}.build(), canvas, pool, theme::dark);
+    render_tree(Panel{std::move(cfg)}.build(), canvas, pool, theme::dark);
 
-    // The selected row (137) must be on-screen, highlighted, with its REAL
-    // leading text — proving the windowed real row was built + placed, not
-    // left a blank placeholder.
+    // The selected row must be on-screen with its REAL leading text — proving
+    // the windowed row was built and placed, not left as a blank spacer.
     int hl_y = -1;
     for (int y = 0; y < canvas.height() && hl_y < 0; ++y)
         for (int x = 0; x < canvas.width(); ++x)
-            if (pool.get(canvas.get(x, y).style_id).bg == Color::bright_white()) {
+            if (pool.get(canvas.get(x, y).style_id).bg == wash) {
                 hl_y = y; break;
             }
     assert(hl_y >= 0 && "selected row must be visible + highlighted");
@@ -967,24 +1009,24 @@ TEST_CASE("picker rows responsive") {
             return s;
         }();
         scroll.y = 0;
-        Picker::Config cfg;
+        Panel::Config cfg;
         cfg.title = " Tool Outputs ";
         cfg.min_width = 1;
         cfg.viewport_h = 3;
         cfg.scroll = &scroll;
         cfg.selected = 0;
         cfg.rows = {
-            Picker::Config::Row{
+            Panel::Row{
                 .badge = "Git Commit", .leading = "A very long commit description",
                 .trailing = "ok · 203 KB", .selected = true},
-            Picker::Config::Row{
+            Panel::Row{
                 .badge = "Diagnostics", .leading = "cmake --build everything",
                 .trailing = "failed · 41.2s"},
-            Picker::Config::Row{
+            Panel::Row{
                 .badge = "● LIVE", .leading = "Bash gh run watch",
                 .trailing = "running · 1 MB"},
         };
-        return render_at(Picker{std::move(cfg)}.build(), width);
+        return render_at(Panel{std::move(cfg)}.build(), width);
     };
 
     const int expected_h = render(80).content_h;

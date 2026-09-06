@@ -540,10 +540,12 @@ Panel::Body Panel::measure_body() const {
         }
         b.total  = at;
         b.opaque = true;            // rendered whole; the viewport clips
-        // An EMPTY body has no cursor line. Clamping to 0 would point at a row
-        // that does not exist, and the scroll below would then "keep it in
-        // view" by pinning to the top forever.
-        if (n == 0) { b.cursor_line = 0; b.selected = -1; return b; }
+        // An EMPTY body has no cursor line, and neither does an unselected
+        // one. -1 means "nothing to keep in view": clamping to 0 instead would
+        // point at a row that may not exist and pin the view to the top.
+        if (n == 0 || cfg_.selected < 0) {
+            b.cursor_line = -1; b.selected = -1; return b;
+        }
         const int sel = std::clamp(cfg_.selected, 0, n - 1);
         b.selected    = sel;
         // offsets[i] is where item i BEGINS; offsets[i+1] where it ends.
@@ -559,6 +561,15 @@ Panel::Body Panel::measure_body() const {
     // empty match set still draws its frame and its "no matches" line).
     const int n   = static_cast<int>(cfg_.rows.size());
     const int sel = (cfg_.selected >= 0 && cfg_.selected < n) ? cfg_.selected : -1;
+
+    // "Nowhere" is a real answer, and it is NOT line 0. When nothing holds the
+    // cursor — no selection, an out-of-range one, or a `selected` pointing at
+    // a header, which can never take focus — the scroll must simply leave the
+    // view where the user put it. Defaulting cursor_line to 0 made the clamp
+    // below dutifully "keep line 0 in view" and yanked a scrolled list back to
+    // the top: navigating onto a section header snapped the palette to row one
+    // and lost the user's place.
+    b.cursor_line = -1;
 
     b.offsets.reserve(static_cast<std::size_t>(n) + 1);
     int at = 0;
@@ -710,6 +721,11 @@ Element Panel::build() const {
 
         if (content <= vh) {
             s.y = 0;                        // fits: never paint-shifted
+        } else if (body.cursor_line < 0) {
+            // Nothing holds the cursor, so there is nothing to keep in view.
+            // Leave the offset alone (the user may have scrolled here by
+            // wheel) and only re-clamp it against the current content.
+            s.y = std::clamp(s.y, 0, content - vh);
         } else {
             // Clamp the span to what actually exists before using it. A row
             // whose help + error + open menu ran past the end would otherwise

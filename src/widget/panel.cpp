@@ -266,7 +266,26 @@ std::vector<Element> Panel::render_row(const Row& r, int index) const {
                                            .wrap = TextWrap::NoWrap,
                                            .runs = std::move(runs)}};
             },
-            .measure = [](int mw) -> Size { return Size{Columns(mw), Rows(1)}; },
+            // The header FILLS its line when painted, but its NATURAL size is
+            // just the label — the rule is decoration that expands into
+            // whatever is offered, not content that demands room.
+            //
+            // Returning Columns(mw) conflated the two, and mw is not always a
+            // real terminal width: a scroll viewport measures its children
+            // against an unbounded width to discover the content extent, so
+            // the header answered "I need 2^24 columns". That became the
+            // panel's max_x, and since the value depended on the offered
+            // width, every RESIZE changed it and dirtied the scroll state —
+            // making the run loop redraw the whole overlay a second time on
+            // 25 of 31 widths. It also told the scrollbar machinery the panel
+            // was horizontally scrollable by sixteen million columns.
+            //
+            // A vertical list has no horizontal extent; measuring to the label
+            // says so, and the render lambda still paints the full rule.
+            .measure = [caps](int mw) -> Size {
+                const int natural = string_width("  " + caps + " ");
+                return Size{Columns(std::min(mw, natural)), Rows(1)};
+            },
         }});
         return out;
     }

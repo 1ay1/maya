@@ -455,6 +455,19 @@ std::vector<Element> Panel::render_menu(const Menu& m) const {
     for (const auto& opt : m.options)
         widest = std::max(widest, string_width(opt));
 
+    // Bounded, because the panel may be narrower than the longest option. The
+    // option LINES truncate gracefully (TruncateEnd puts an … on them), but the
+    // rules are plain NoWrap text: an over-wide rule is clipped from the right,
+    // which silently eats the corner and the connector that make it a bracket.
+    // The result reads as two stray lines rather than a frame — worst exactly
+    // on the narrow terminals where the grouping cue matters most.
+    //
+    // The cap is intentionally generous: this only bites when the block cannot
+    // fit, and clamping it early would narrow the block on wide terminals too.
+    // `min_width` is the floor the panel is built to, minus the frame, padding
+    // and the marker/scrollbar columns the row idiom reserves.
+    widest = std::min(widest, std::max(8, cfg_.min_width - 16));
+
     // The frame. Without one the list has no boundary of its own — it is just
     // more rows in a panel already made of rows, so "these four belong to that
     // field" is left entirely to the reader.

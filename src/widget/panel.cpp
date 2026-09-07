@@ -151,7 +151,12 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
     // Column 0 is the marker lane. The CURSOR wins over the ACTIVE marker on
     // overlap — where you are outranks where you were — and both use the same
     // bar glyph so a picker row and a form row line up exactly.
-    if (on_row)          put(kEdgeBar, Style{}.with_fg(th.cursor));
+    // While the row is being EDITED the bar takes the caret's hue: the mode
+    // is visible at the left edge, in the same colour as the value being
+    // typed and the footer hint. One hue = one mode, three places.
+    if (on_row)          put(kEdgeBar, Style{}.with_fg(panel::is_editing(r.control)
+                                                           ? th.value_edit
+                                                           : th.cursor));
     else if (r.active)   put(kEdgeBar, Style{}.with_fg(cfg_.active_color));
     else                 put(" ", Style{});
     put(" ", Style{});
@@ -721,11 +726,36 @@ Element Panel::build() const {
 
     // Fixed chrome below the body — outside the scroll region, so a validation
     // note never scrolls away from the row that needs it.
-    if (!cfg_.note.empty()) {
+    //
+    // MODE-AWARE: while a field is being edited (live caret) or a dropdown is
+    // open, the note line becomes the mode's key hint instead. This is the
+    // "where did my arrow keys go" fix at the chrome level — a mode you can
+    // see is a mode you can leave. Derived from the SAME state that renders
+    // the caret/menu, so the hint and the mode cannot disagree; hosts write
+    // only the idle note and get the mode line for free.
+    const bool menu_open = cfg_.menu.has_value();
+    const bool editing = !menu_open && [&] {
+        if (cfg_.selected < 0
+            || cfg_.selected >= static_cast<int>(cfg_.items.size()))
+            return false;
+        return panel::is_editing(
+            cfg_.items[static_cast<std::size_t>(cfg_.selected)].control);
+    }();
+    std::string note = cfg_.note;
+    Style note_style = Style{}.with_fg(cfg_.theme.help);
+    if (menu_open) {
+        note = "\xe2\x86\x91\xe2\x86\x93 choose \xc2\xb7 \xe2\x86\xb5 select \xc2\xb7 esc cancel";
+    } else if (editing) {
+        // value_edit, not help: the hint shares the caret's hue, visually
+        // pairing "this row is live" with "these keys end it".
+        note = "editing \xc2\xb7 \xe2\x86\xb5 done \xc2\xb7 \xe2\x86\x91\xe2\x86\x93 next field";
+        note_style = Style{}.with_fg(cfg_.theme.value_edit);
+    }
+    if (!note.empty()) {
         stack.push_back(Element{TextElement{}});
         stack.push_back(Element{TextElement{
-            .content = "  " + cfg_.note,
-            .style   = Style{}.with_fg(cfg_.theme.help),
+            .content = "  " + note,
+            .style   = note_style,
             .wrap    = TextWrap::NoWrap}});
     }
     for (const auto& f_row : cfg_.footer) stack.push_back(f_row);

@@ -36,6 +36,21 @@ using Control = std::variant<Label, Header, Toggle, Choice, Pick, Number,
     return std::holds_alternative<Header>(c);
 }
 
+// Is this control being EDITED right now (a live caret)? Text-like kinds
+// only — everything else answers false. Lets the panel derive mode chrome
+// (the footer hint, the row wash) from the ONE fact the host already
+// supplies, instead of every host restating "I am editing" a second way.
+[[nodiscard]] inline bool is_editing(const Control& c) noexcept {
+    return std::visit(
+        [](const auto& v) {
+            if constexpr (requires { v.caret; })
+                return v.caret != std::string::npos;
+            else
+                return false;
+        },
+        c);
+}
+
 [[nodiscard]] inline std::pair<std::string, Style>
 render(const Control& c, const ItemCtx& ctx) {
     return std::visit([&](const auto& v) { return render(v, ctx); }, c);

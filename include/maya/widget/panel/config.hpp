@@ -12,8 +12,8 @@
 #include "../../element/element.hpp"
 #include "../../style/color.hpp"
 #include "../scrollbar.hpp"
+#include "item.hpp"
 #include "menu.hpp"
-#include "row.hpp"
 #include "theme.hpp"
 
 namespace maya::panel {
@@ -22,13 +22,13 @@ struct Config {
     std::string title;        // centred on the top border
     std::string subtitle;     // status line above the body
 
-    std::vector<Row> rows;
-    // Index into `rows` (or `items`) of the cursor. <0 = no selection.
-    int              selected = -1;
+    std::vector<Item> items;
+    // Index into `items` (or `prebuilt`) of the cursor. <0 = no selection.
+    int               selected = -1;
 
-    // Pre-built rows, for callers that own their own row rendering
-    // (the thread list's virtualisation). Ignored when `rows` is set.
-    std::vector<Element> items;
+    // Pre-built Elements, for callers that own their own item rendering
+    // (the thread list's virtualisation). Ignored when `items` is set.
+    std::vector<Element> prebuilt;
 
     std::optional<Menu> menu;
     int                 menu_row = -1;
@@ -57,3 +57,7 @@ struct Config {
 };
 
 } // namespace maya::panel
+
+// NOTE: no compatibility accessors for the renamed members (rows→items,
+// items→prebuilt) — the compiler finds every stale spelling, which is the
+// point of a hard rename.

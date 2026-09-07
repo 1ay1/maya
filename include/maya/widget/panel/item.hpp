@@ -1,14 +1,17 @@
 #pragma once
-// maya::panel::Row — the ONE row type of the panel family.
+// maya::panel::Item — the ONE item type of the panel family.
 //
 // What used to distinguish a picker row from a form row is per-cell
 // decoration, not structure:
 //
 //     edge · badge · leading [· highlight] · gap · trailing [· origin]
 //
-// A picker row fills `leading`/`trailing`; a form row additionally sets
+// A list item fills `leading`/`trailing`; a settings item additionally sets
 // `control` and `origin`. Nothing about the frame, the scroll, the selection
 // or the width arithmetic differs, because there is only one of each.
+//
+// ("Item", not "Row": the help line and the error line render UNDER it, so
+// an item is 1–3 terminal rows — calling it a row was a presentation lie.)
 
 #include <string>
 #include <vector>
@@ -19,7 +22,7 @@
 
 namespace maya::panel {
 
-struct Row {
+struct Item {
     // Column 0-1: a status glyph (● active, ⚠ pending-delete, tree elbow).
     std::string badge;
     Style       badge_style{};
@@ -76,4 +79,9 @@ struct Row {
     bool trailing_secondary = false;
 };
 
+} // namespace maya::panel
+
+namespace maya::panel {
+// Compatibility spelling — the type was called Row before the rename.
+using Row = Item;
 } // namespace maya::panel

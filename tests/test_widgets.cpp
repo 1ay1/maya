@@ -839,7 +839,7 @@ TEST_CASE("picker multirow autoscroll") {
     // Four 3-row items → 12 content rows, viewport 4.
     for (int i = 0; i < 4; ++i) {
         using namespace dsl;
-        cfg.items.push_back(v(
+        cfg.prebuilt.push_back(v(
             text("item" + std::to_string(i) + "-a"),
             text("item" + std::to_string(i) + "-b"),
             text("item" + std::to_string(i) + "-c")
@@ -879,9 +879,9 @@ TEST_CASE("panel selected row highlight") {
     // Config::selected is the ONE owner of where the cursor is; Row::selected
     // is derived from it by the widget and ignored as an input.
     cfg.selected = 0;
-    cfg.rows = {
-        Panel::Row{.leading = "Selected", .trailing = "first"},
-        Panel::Row{.leading = "Unselected", .trailing = "second"},
+    cfg.items = {
+        Panel::Item{.leading = "Selected", .trailing = "first"},
+        Panel::Item{.leading = "Unselected", .trailing = "second"},
     };
     const Color wash = cfg.theme.row_bg;
 
@@ -969,7 +969,7 @@ TEST_CASE("panel virtualized large list renders selection") {
     cfg.scroll = &scroll;
     cfg.selected = 137;                 // deep in the list
     for (int i = 0; i < 200; ++i)
-        cfg.rows.push_back(Panel::Row{
+        cfg.items.push_back(Panel::Item{
             .leading = "row" + std::to_string(i), .trailing = "t"});
     const Color wash = cfg.theme.row_bg;
 
@@ -1015,14 +1015,14 @@ TEST_CASE("picker rows responsive") {
         cfg.viewport_h = 3;
         cfg.scroll = &scroll;
         cfg.selected = 0;
-        cfg.rows = {
-            Panel::Row{
+        cfg.items = {
+            Panel::Item{
                 .badge = "Git Commit", .leading = "A very long commit description",
                 .trailing = "ok · 203 KB", .selected = true},
-            Panel::Row{
+            Panel::Item{
                 .badge = "Diagnostics", .leading = "cmake --build everything",
                 .trailing = "failed · 41.2s"},
-            Panel::Row{
+            Panel::Item{
                 .badge = "● LIVE", .leading = "Bash gh run watch",
                 .trailing = "running · 1 MB"},
         };

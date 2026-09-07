@@ -46,7 +46,7 @@
 //   panel/caret.hpp    — caret splicing for line-edited items
 //   panel/item/*.hpp   — ONE WIDGET PER ITEM KIND (value struct + renderer)
 //   panel/control.hpp  — the closed variant over the item kinds
-//   panel/row.hpp      — the one Row
+//   panel/item.hpp     — the one Item
 //   panel/menu.hpp     — the inline Choice dropdown
 //   panel/config.hpp   — everything a host supplies
 //
@@ -75,10 +75,10 @@ namespace maya {
 
 class Panel {
 public:
-    // The family's types, spelled the way call sites always have. The
-    // definitions live in widget/panel/ (one file per concern); these
-    // aliases exist so the modular split is invisible to existing code.
-    using Row    = panel::Row;
+    // The family's types. `Item` is the name; `Row` is the pre-rename
+    // compatibility spelling and new code should not use it.
+    using Item   = panel::Item;
+    using Row    = panel::Item;
     using Menu   = panel::Menu;
     using Config = panel::Config;
 
@@ -150,20 +150,20 @@ private:
                                                     int last) const;
 
     // Painted line count of one row / one open menu, WITHOUT building it.
-    // These must agree with render_row / render_menu exactly: measure decides
+    // These must agree with render_item / render_menu exactly: measure decides
     // where the scroll sits and render decides what is under it, so a drift of
     // one line is a row that scrolls off its own help text. panel_test walks a
-    // matrix of row shapes asserting render_row(r).size() == row_lines(r).
-    [[nodiscard]] int row_lines(const Row& r, int index, bool on_row) const;
+    // matrix of row shapes asserting render_item(r).size() == item_lines(r).
+    [[nodiscard]] int item_lines(const Item& r, int index, bool on_row) const;
     [[nodiscard]] static int menu_lines(const Menu& m);
 
     // A zero-child box that occupies `n` rows: the skipped rows' geometry
     // without their cost.
     [[nodiscard]] static Element spacer_rows(int n);
 
-    [[nodiscard]] std::vector<Element> render_row(const Row& r, int index) const;
+    [[nodiscard]] std::vector<Element> render_item(const Item& r, int index) const;
     [[nodiscard]] std::vector<Element> render_menu(const Menu& m) const;
-    [[nodiscard]] std::pair<std::string, Style> render_control(const Row& r,
+    [[nodiscard]] std::pair<std::string, Style> render_control(const Item& r,
                                                                int index) const;
 
     // The shared row idiom: a leading cell that grows, a gap, a trailing cell.

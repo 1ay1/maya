@@ -61,7 +61,7 @@ Element Panel::right_line(Element content) {
 // ============================================================================
 
 std::pair<std::string, Style>
-Panel::render_control(const Row& r, int index) const {
+Panel::render_control(const Item& r, int index) const {
     // One widget per item kind (widget/panel/item/*.hpp). The panel's only
     // jobs here are assembling the ItemCtx — the ONLY facts an item may
     // know — and dispatching. Everything glyph-level lives with the kind.
@@ -77,7 +77,7 @@ Panel::render_control(const Row& r, int index) const {
 //  Rows
 // ============================================================================
 
-std::vector<Element> Panel::render_row(const Row& r, int index) const {
+std::vector<Element> Panel::render_item(const Item& r, int index) const {
     const auto& th = cfg_.theme;
     std::vector<Element> out;
 
@@ -428,9 +428,9 @@ std::vector<Element> Panel::render_menu(const Menu& m) const {
 //  Measure -> window -> render
 // ============================================================================
 
-// A row's painted height, decided WITHOUT painting it. Mirrors render_row's
+// A row's painted height, decided WITHOUT painting it. Mirrors render_item's
 // own control flow; the two are pinned together by a test.
-int Panel::row_lines(const Row& r, int, bool on_row) const {
+int Panel::item_lines(const Item& r, int, bool on_row) const {
     if (r.is_header) return 1;
     int n = 1;                                        // the row itself
     if (on_row && !r.help.empty()) ++n;
@@ -472,15 +472,15 @@ Panel::Body Panel::measure_body() const {
     // `items` list already hand the panel only the visible slice (the
     // code-block and tool-output pickers set scroll = nullptr and window
     // themselves), which is the same O(viewport) result by a different owner.
-    if (cfg_.rows.empty()) {
-        const int n = static_cast<int>(cfg_.items.size());
+    if (cfg_.items.empty()) {
+        const int n = static_cast<int>(cfg_.prebuilt.size());
         b.offsets.reserve(static_cast<std::size_t>(n) + 1);
         const int cap = std::max(1, cfg_.viewport_h) * 4 + 64;
         int at = 0;
         for (int i = 0; i < n; ++i) {
             if (at <= cap)
                 at += std::max(1, measure_element(
-                          cfg_.items[static_cast<std::size_t>(i)],
+                          cfg_.prebuilt[static_cast<std::size_t>(i)],
                           1 << 14).height.value);
             else
                 { at += 1; b.capped = true; }   // past the cap: a floor, not the truth
@@ -507,7 +507,7 @@ Panel::Body Panel::measure_body() const {
     // cursor on an arbitrary row: out of range means NO row is focused, which
     // is also what `selected < 0` deliberately expresses (a picker with an
     // empty match set still draws its frame and its "no matches" line).
-    const int n   = static_cast<int>(cfg_.rows.size());
+    const int n   = static_cast<int>(cfg_.items.size());
     const int sel = (cfg_.selected >= 0 && cfg_.selected < n) ? cfg_.selected : -1;
 
     // "Nowhere" is a real answer, and it is NOT line 0. When nothing holds the
@@ -522,7 +522,7 @@ Panel::Body Panel::measure_body() const {
     b.offsets.reserve(static_cast<std::size_t>(n) + 1);
     int at = 0;
     for (int i = 0; i < n; ++i) {
-        const auto& src = cfg_.rows[static_cast<std::size_t>(i)];
+        const auto& src = cfg_.items[static_cast<std::size_t>(i)];
         // `Config::selected` is the ONE owner of where the cursor is. A row's
         // own `selected` flag is derived from it, never read — having both be
         // inputs meant a caller could set them inconsistently and the widget
@@ -532,7 +532,7 @@ Panel::Body Panel::measure_body() const {
         const bool on_row = (i == sel) && !src.is_header;
         if (on_row) { b.cursor_line = at; b.selected = i; }
 
-        int h = row_lines(src, i, on_row);
+        int h = item_lines(src, i, on_row);
         // An open enum list expands directly beneath its own row, so it reads
         // as belonging to that row and needs no geometry at all. Guarded on
         // the row actually BEING a choice: a menu pinned to a toggle row would
@@ -584,16 +584,16 @@ std::vector<Element> Panel::render_range(const Body& b, int first,
         b.offsets[static_cast<std::size_t>(last)]
       - b.offsets[static_cast<std::size_t>(first)]));
 
-    if (cfg_.rows.empty()) {
+    if (cfg_.items.empty()) {
         for (int i = first; i < last; ++i)
-            lines.push_back(cfg_.items[static_cast<std::size_t>(i)]);
+            lines.push_back(cfg_.prebuilt[static_cast<std::size_t>(i)]);
         return lines;
     }
 
     for (int i = first; i < last; ++i) {
-        Row row = cfg_.rows[static_cast<std::size_t>(i)];
+        Item row = cfg_.items[static_cast<std::size_t>(i)];
         row.selected = (i == b.selected);
-        for (auto& line : render_row(row, i)) lines.push_back(std::move(line));
+        for (auto& line : render_item(row, i)) lines.push_back(std::move(line));
 
         if (cfg_.menu && cfg_.menu_row == i
             && std::holds_alternative<panel::Choice>(row.control))

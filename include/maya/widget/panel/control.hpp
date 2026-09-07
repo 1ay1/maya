@@ -17,6 +17,7 @@
 
 #include "item/action.hpp"
 #include "item/choice.hpp"
+#include "item/header.hpp"
 #include "item/label.hpp"
 #include "item/number.hpp"
 #include "item/path.hpp"
@@ -28,8 +29,12 @@
 
 namespace maya::panel {
 
-using Control = std::variant<Label, Toggle, Choice, Pick, Number, Slider,
-                             Text, Secret, Path, Action>;
+using Control = std::variant<Label, Header, Toggle, Choice, Pick, Number,
+                             Slider, Text, Secret, Path, Action>;
+
+[[nodiscard]] inline bool is_header(const Control& c) noexcept {
+    return std::holds_alternative<Header>(c);
+}
 
 [[nodiscard]] inline std::pair<std::string, Style>
 render(const Control& c, const ItemCtx& ctx) {

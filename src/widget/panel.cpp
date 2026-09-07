@@ -84,7 +84,7 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
     // A section header carries structure a row never has: upper-case and a
     // rule to the right edge. It used to be dim bold text, which is exactly
     // how a locked row renders — so "Endpoint  auto-detected" read as a title.
-    if (r.is_header) {
+    if (r.is_header()) {
         std::string caps = r.leading;
         for (auto& ch : caps)
             if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
@@ -431,7 +431,7 @@ std::vector<Element> Panel::render_menu(const Menu& m) const {
 // A row's painted height, decided WITHOUT painting it. Mirrors render_item's
 // own control flow; the two are pinned together by a test.
 int Panel::item_lines(const Item& r, int, bool on_row) const {
-    if (r.is_header) return 1;
+    if (r.is_header()) return 1;
     int n = 1;                                        // the row itself
     if (on_row && !r.help.empty()) ++n;
     if (!r.error.empty())          ++n;
@@ -529,7 +529,7 @@ Panel::Body Panel::measure_body() const {
         // would silently believe one and paint the other. A header can never
         // be the cursor: it carries no action, so landing on it is a dead
         // keypress the widget refuses to render as focus.
-        const bool on_row = (i == sel) && !src.is_header;
+        const bool on_row = (i == sel) && !src.is_header();
         if (on_row) { b.cursor_line = at; b.selected = i; }
 
         int h = item_lines(src, i, on_row);

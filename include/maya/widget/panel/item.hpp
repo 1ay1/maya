@@ -68,9 +68,12 @@ struct Item {
     std::string locked_reason;
 
     // A non-selectable SECTION HEADER: upper-cased, with a rule to the
-    // right edge. Deliberately unlike a locked row, which is what made
-    // "Endpoint (auto-detected)" read as a section title.
-    bool is_header = false;
+    // right edge. DERIVED from the control's kind — a header is what the
+    // item IS, not a flag beside an unrelated control (the bool let both be
+    // set at once, a state with no meaning).
+    [[nodiscard]] bool is_header() const noexcept {
+        return std::holds_alternative<Header>(control);
+    }
 
     // The trailing cell is secondary and yields space FIRST (a command
     // palette's description must never eat its command name). Default:

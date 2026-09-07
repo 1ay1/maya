@@ -18,15 +18,24 @@ namespace maya::panel {
 struct Secret {
     std::size_t filled = 0;
     std::size_t caret  = std::string::npos;
+    // Format hint for the EMPTY field ("sk-ant-…"). A placeholder is not
+    // secret — it exists precisely to be shown — so it is the one string
+    // this kind may carry.
+    std::string placeholder;
 };
 
 [[nodiscard]] inline std::pair<std::string, Style>
 render(const Secret& c, const ItemCtx& ctx) {
     // Capped, so the rendered width never discloses the real length.
     const bool editing = c.caret != std::string::npos;
-    if (c.filled == 0)
-        return {editing ? "\xe2\x96\x88 empty" : "not set",
-                Style{}.with_fg(editing ? ctx.theme.value_edit : ctx.theme.off)};
+    if (c.filled == 0) {
+        if (editing)
+            return {std::string{"\xe2\x96\x88"}
+                      + (c.placeholder.empty() ? " empty" : " " + c.placeholder),
+                    Style{}.with_fg(ctx.theme.value_edit)};
+        return {c.placeholder.empty() ? "not set" : c.placeholder,
+                Style{}.with_fg(ctx.theme.off)};
+    }
     std::string dots(std::min<std::size_t>(c.filled, 12), '*');
     if (editing) dots += "\xe2\x96\x88";
     return {dots, Style{}.with_fg(editing ? ctx.theme.value_edit

@@ -748,7 +748,9 @@ Element Panel::build() const {
     } else if (editing) {
         // value_edit, not help: the hint shares the caret's hue, visually
         // pairing "this row is live" with "these keys end it".
-        note = "editing \xc2\xb7 \xe2\x86\xb5 done \xc2\xb7 \xe2\x86\x91\xe2\x86\x93 next field";
+        note = cfg_.editing_note.empty()
+                   ? "editing \xc2\xb7 \xe2\x86\xb5 done \xc2\xb7 \xe2\x86\x91\xe2\x86\x93 next field"
+                   : cfg_.editing_note;
         note_style = Style{}.with_fg(cfg_.theme.value_edit);
     }
     if (!note.empty()) {

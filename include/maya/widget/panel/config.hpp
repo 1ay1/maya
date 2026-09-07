@@ -35,6 +35,11 @@ struct Config {
 
     std::vector<Element> header;   // above the body, never scrolls
     std::string          note;     // below the body
+    // Overrides the DERIVED editing hint ("editing · ↵ done · ↑↓ next
+    // field") while a field is live. For panels where Enter means
+    // something else — a single-field form whose Enter SUBMITS — the
+    // default would teach the wrong key. Empty = use the default.
+    std::string          editing_note;
     std::vector<Element> footer;   // key hints
 
     // Borrowed; must outlive the built Element. Null disables scrolling.

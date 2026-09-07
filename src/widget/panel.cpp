@@ -13,62 +13,6 @@
 
 namespace maya {
 
-namespace panel_detail {
-
-// Splice a caret into a value, WINDOWED so the caret is always visible.
-//
-// The caret is drawn IN the text rather than as a hardware cursor: it then
-// survives the scroll viewport's clipping and needs no separate positioning
-// pass. But a value longer than its column is truncated at the END, so typing
-// past the column width used to push the caret — and everything you were
-// typing — off the right edge. You could still edit; you just could not see it.
-//
-// So the value scrolls horizontally under a fixed-width window, the way every
-// single-line editor does. `budget` is the columns the cell may use; 0 means
-// "unknown", which keeps the old whole-string behaviour for callers that have
-// not measured (the flex layout will still clip it, just without the window).
-//
-// U+2039/203A single angle quotes mark a horizontal scroll — deliberately not
-// the … that TruncateEnd uses, so "there is more text this way" reads
-// differently from "this was cut off".
-[[nodiscard]] std::string with_caret(const std::string& v, std::size_t caret,
-                                     int budget = 0) {
-    if (caret == std::string::npos) return v;
-    const std::size_t at = std::min(caret, v.size());
-
-    static constexpr const char* kBar = "\xe2\x96\x88";   // █ FULL BLOCK
-    if (budget <= 2 || string_width(v) + 1 <= budget)
-        return v.substr(0, at) + kBar + v.substr(at);
-
-    // Window the value so the caret sits inside it, biased to show what comes
-    // BEFORE the caret (you are usually appending, and the text you just typed
-    // matters more than the text you have not reached).
-    const int win = budget - 2;                     // room for the markers
-    std::size_t begin = 0;
-    if (static_cast<int>(at) > win) begin = at - static_cast<std::size_t>(win);
-    // Never split a UTF-8 sequence.
-    while (begin > 0 && (static_cast<unsigned char>(v[begin]) & 0xC0u) == 0x80u) --begin;
-
-    std::size_t end = begin;
-    int used = 0;
-    while (end < v.size() && used < win) {
-        std::size_t next = end + 1;
-        while (next < v.size() && (static_cast<unsigned char>(v[next]) & 0xC0u) == 0x80u) ++next;
-        used += string_width(v.substr(end, next - end));
-        end = next;
-    }
-
-    std::string out;
-    if (begin > 0)     out += "\xe2\x80\xb9";        // ‹
-    out += v.substr(begin, at - begin);
-    out += kBar;
-    out += v.substr(at, end - at);
-    if (end < v.size()) out += "\xe2\x80\xba";       // ›
-    return out;
-}
-
-} // namespace panel_detail
-
 // ============================================================================
 //  Row layout — flex, never arithmetic
 // ============================================================================
@@ -118,121 +62,15 @@ Element Panel::right_line(Element content) {
 
 std::pair<std::string, Style>
 Panel::render_control(const Row& r, int index) const {
-    const auto& th  = cfg_.theme;
-    const Style val = Style{}.with_fg(th.value);
-
-    return std::visit([&](const auto& c) -> std::pair<std::string, Style> {
-        using T = std::decay_t<decltype(c)>;
-
-        if constexpr (std::is_same_v<T, panel::Label>) {
-            return {c.text, c.style};
-        }
-        else if constexpr (std::is_same_v<T, panel::Toggle>) {
-            return {c.on ? "\xe2\x97\x8f on" : "\xe2\x97\x8b off",
-                    Style{}.with_fg(c.on ? th.on : th.off)};
-        }
-        else if constexpr (std::is_same_v<T, panel::Choice>) {
-            // The chevron points the way the list will move: ▾ opens downward,
-            // ▴ collapses. While open the value itself is redundant — it is
-            // marked ◉ in the list right below — so the row shows only the
-            // affordance and lets the list carry the information.
-            const bool open = (cfg_.menu && cfg_.menu_row == index);
-            if (open) return {"\xe2\x96\xb4", Style{}.with_fg(th.cursor)};
-            return {c.label + "  \xe2\x96\xbe", val};
-        }
-        else if constexpr (std::is_same_v<T, panel::Pick>) {
-            // → marks "this opens a full picker", deliberately different from
-            // ▾ so an inline enum and a hand-off never read as the same thing.
-            const std::string shown = c.label.empty() ? c.placeholder : c.label;
-            return {shown + "  \xe2\x86\x92",
-                    c.label.empty() ? Style{}.with_fg(th.off) : val};
-        }
-        else if constexpr (std::is_same_v<T, panel::Number>) {
-            return {std::to_string(c.value), val};
-        }
-        else if constexpr (std::is_same_v<T, panel::Slider>) {
-            constexpr int kCells = 12;
-            const double span = (c.max > c.min) ? (c.max - c.min) : 1.0;
-            const double t    = std::clamp((c.value - c.min) / span, 0.0, 1.0);
-            const int    on   = static_cast<int>(t * kCells + 0.5);
-            std::string bar;
-            for (int i = 0; i < kCells; ++i)
-                bar += (i < on) ? "\xe2\x96\x86" : "\xe2\x96\x81";
-
-            // Fixed-decimal without <format>/<sstream>: these are bounded
-            // ratios, so integer scaling is exact and allocation-free.
-            const int dec = std::clamp(c.decimals, 0, 4);
-            int scale = 1;
-            for (int i = 0; i < dec; ++i) scale *= 10;
-            const long long scaled =
-                static_cast<long long>(c.value * scale + (c.value < 0 ? -0.5 : 0.5));
-            std::string num = std::to_string(scaled / scale);
-            if (dec > 0) {
-                long long frac = scaled % scale;
-                if (frac < 0) frac = -frac;
-                std::string fs = std::to_string(frac);
-                fs.insert(fs.begin(), static_cast<std::size_t>(dec) - fs.size(), '0');
-                num += "." + fs;
-            }
-            return {bar + "  " + num, val};
-        }
-        else if constexpr (std::is_same_v<T, panel::Text>) {
-            const bool editing = c.caret != std::string::npos;
-            if (c.value.empty() && !editing)
-                return {c.placeholder.empty() ? "\xe2\x80\x94" : c.placeholder,
-                        Style{}.with_fg(th.off)};
-            // An EMPTY field being edited is just a caret. On its own that is
-            // a lone block glyph in the value column — indistinguishable from
-            // a rendering artefact — so it keeps its placeholder beside it and
-            // reads as "type here".
-            if (c.value.empty())
-                return {std::string{"\xe2\x96\x88"}
-                          + (c.placeholder.empty() ? "" : " " + c.placeholder),
-                        Style{}.with_fg(th.value_edit)};
-            return {panel_detail::with_caret(c.value, c.caret, kEditBudget),
-                    Style{}.with_fg(th.value_edit)};
-        }
-        else if constexpr (std::is_same_v<T, panel::Secret>) {
-            // Capped, so the rendered width never discloses the real length.
-            const bool editing = c.caret != std::string::npos;
-            if (c.filled == 0)
-                return {editing ? "\xe2\x96\x88 empty" : "not set",
-                        Style{}.with_fg(editing ? th.value_edit : th.off)};
-            std::string dots(std::min<std::size_t>(c.filled, 12), '*');
-            if (editing) dots += "\xe2\x96\x88";
-            return {dots, editing ? Style{}.with_fg(th.value_edit) : val};
-        }
-        else if constexpr (std::is_same_v<T, panel::Path>) {
-            const bool editing = c.caret != std::string::npos;
-            if (c.value.empty() && !editing)
-                return {c.placeholder.empty() ? "\xe2\x80\x94" : c.placeholder,
-                        Style{}.with_fg(th.off)};
-            if (c.value.empty())
-                return {std::string{"\xe2\x96\x88"}
-                          + (c.placeholder.empty() ? "" : " " + c.placeholder),
-                        Style{}.with_fg(th.value_edit)};
-            std::string s = panel_detail::with_caret(c.value, c.caret, kEditBudget);
-            if (c.state == panel::Path::State::Missing)      s += "  \xe2\x9c\x97";
-            else if (c.state == panel::Path::State::Exists)  s += "  \xe2\x9c\x93";
-            Style st = editing ? Style{}.with_fg(th.value_edit) : val;
-            if (c.state == panel::Path::State::Missing) st = Style{}.with_fg(th.error);
-            return {std::move(s), st};
-        }
-        else if constexpr (std::is_same_v<T, panel::Action>) {
-            if (c.status.empty()) return {c.hint, Style{}.with_fg(th.off)};
-            Color tone = th.value;
-            switch (c.tone) {
-                case panel::Action::Tone::Good: tone = th.good;  break;
-                case panel::Action::Tone::Bad:  tone = th.error; break;
-                case panel::Action::Tone::Busy: tone = th.busy;  break;
-                case panel::Action::Tone::Neutral: break;
-            }
-            return {c.status, Style{}.with_fg(tone)};
-        }
-        else {
-            return {std::string{}, val};
-        }
-    }, r.control);
+    // One widget per item kind (widget/panel/item/*.hpp). The panel's only
+    // jobs here are assembling the ItemCtx — the ONLY facts an item may
+    // know — and dispatching. Everything glyph-level lives with the kind.
+    return panel::render(r.control,
+                         panel::ItemCtx{
+                             .theme       = cfg_.theme,
+                             .open        = cfg_.menu && cfg_.menu_row == index,
+                             .edit_budget = kEditBudget,
+                         });
 }
 
 // ============================================================================

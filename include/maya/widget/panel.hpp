@@ -38,6 +38,22 @@
 //    of a width the layout already knew. They drifted, values slid under the
 //    scrollbar, and "fix the reserve" became a sequence of magic numbers.
 
+// ── Modularity ──────────────────────────────────────────────────────────
+// The family lives in widget/panel/, one file per concern:
+//
+//   panel/theme.hpp    — the palette
+//   panel/context.hpp  — ItemCtx: the ONLY facts an item widget may know
+//   panel/caret.hpp    — caret splicing for line-edited items
+//   panel/item/*.hpp   — ONE WIDGET PER ITEM KIND (value struct + renderer)
+//   panel/control.hpp  — the closed variant over the item kinds
+//   panel/row.hpp      — the one Row
+//   panel/menu.hpp     — the inline Choice dropdown
+//   panel/config.hpp   — everything a host supplies
+//
+// This header is the umbrella: the Panel class (frame, viewport, scroll,
+// selection — the CONTAINER concerns) plus compatibility aliases so
+// `maya::Panel::Row` and friends keep meaning what they always did.
+
 #include <algorithm>
 #include <cstdint>
 #include <optional>
@@ -52,226 +68,19 @@
 #include "../element/text.hpp"
 #include "../style/color.hpp"
 #include "../style/style.hpp"
+#include "panel/config.hpp"
 #include "scrollbar.hpp"
 
 namespace maya {
 
-// ============================================================================
-//  Theme
-// ============================================================================
-//
-// ANSI-relative, never hex. A widget that hardcodes #181825 looks correct on
-// exactly one terminal theme and wrong everywhere else. The panel paints NO
-// background; it inherits the terminal's, and only the cursor row is tinted.
-struct PanelTheme {
-    Color title      = Color::bright_white();
-    Color label      = Color::bright_white();
-    Color help       = Color::bright_black();
-    Color value      = Color::cyan();
-    Color value_edit = Color::blue();
-    Color on         = Color::green();
-    Color off        = Color::bright_black();
-    Color origin     = Color::bright_black();
-    Color locked     = Color::bright_black();
-    Color error      = Color::red();
-    Color good       = Color::green();
-    Color busy       = Color::yellow();
-    Color cursor     = Color::blue();      // the edge bar
-    Color active     = Color::bright_magenta();
-    Color match      = Color::cyan();      // fuzzy-match highlight
-
-    // Cursor-row wash. A tint, not a reverse-video slab: ANSI bright-white is
-    // a cream/yellow tone in several popular palettes, and a full-width band
-    // of it across a wide settings panel reads as a rendering fault.
-    //
-    // Hex, not an ANSI slot, because this is the ONE place a literal is
-    // right: it must sit a hair above the terminal's background on both dark
-    // and light themes, and every ANSI slot is either invisible against one
-    // of them or loud against the other. Verified by asserting the emitted
-    // SGR code, which is what caught an earlier "invisible black".
-    Color row_bg     = Color::hex(0x232634);
-};
-
-// ============================================================================
-//  Controls — what a row's trailing cell can BE
-// ============================================================================
-namespace panel {
-
-// Plain text. A picker row's trailing cell is this.
-struct Label {
-    std::string text;
-    Style       style{};
-};
-
-struct Toggle { bool on = false; };
-
-// Pick one of a small closed set. The option list travels separately (see
-// Config::menu) and only while it is open.
-struct Choice { std::string label; };
-
-// A value owned by ANOTHER overlay: Enter hands off to a real picker rather
-// than opening an inline list.
-struct Pick {
-    std::string label;
-    std::string placeholder = "\xe2\x80\x94";
-};
-
-struct Number { std::int64_t value = 0; };
-
-struct Slider {
-    double value = 0.0, min = 0.0, max = 1.0;
-    int    decimals = 2;
-};
-
-struct Text {
-    std::string value;
-    std::size_t caret = std::string::npos;   // npos ⇒ not being edited
-    std::string placeholder;
-};
-
-// No plaintext — by construction. `filled` is a character count, so no render
-// path, present or future, can leak a credential to the screen.
-struct Secret {
-    std::size_t filled = 0;
-    std::size_t caret  = std::string::npos;
-};
-
-struct Path {
-    std::string value;
-    std::size_t caret = std::string::npos;
-    enum class State : std::uint8_t { Unknown, Exists, Missing };
-    State       state = State::Unknown;
-    std::string placeholder;
-};
-
-// A row that DOES something and reports its outcome where the action lives.
-struct Action {
-    enum class Tone : std::uint8_t { Neutral, Busy, Good, Bad };
-    std::string status;
-    std::string hint = "press Enter";
-    Tone        tone = Tone::Neutral;
-};
-
-} // namespace panel
-
-using PanelControl = std::variant<panel::Label, panel::Toggle, panel::Choice,
-                                  panel::Pick, panel::Number, panel::Slider,
-                                  panel::Text, panel::Secret, panel::Path,
-                                  panel::Action>;
-
 class Panel {
 public:
-    // ── The one row type ─────────────────────────────────────────────────
-    struct Row {
-        // Column 0-1: a status glyph (● active, ⚠ pending-delete, tree elbow).
-        std::string badge;
-        Style       badge_style{};
-
-        std::string leading;
-        Style       leading_style{};
-
-        // Optional match-highlight: byte offsets into `leading` to render in
-        // the accent hue (bold) — the characters a fuzzy query matched. Empty
-        // ⇒ leading is painted as one span. The highlight keeps its hue even
-        // on the cursor row, so "which chars matched" stays legible.
-        std::vector<int> highlight;
-        Color            highlight_fg = Color::bright_cyan();
-
-        // The trailing cell. `Label` covers every picker row; the other
-        // alternatives are the editable controls a settings row carries.
-        PanelControl control = panel::Label{};
-
-        // Convenience for the common case: a plain trailing string. Setting
-        // these is equivalent to `control = Label{text, style}`, and exists so
-        // a list row reads as a list row rather than wrapping every string in
-        // a variant alternative. `control` wins if both are set.
-        std::string trailing;
-        Style       trailing_style{};
-
-        // Dim provenance after the value ("default", "env: X", "pinned").
-        std::string origin;
-
-        // A one-line description shown ONLY while the cursor is on this row.
-        // Painting it under every row doubles a list's height — a 22-setting
-        // pane became 50-odd rows in a 14-row viewport.
-        std::string help;
-
-        // Non-empty ⇒ invalid; rendered under the row in the error tone.
-        std::string error;
-
-        // DERIVED from Config::selected, never set by a caller. It lives on
-        // the row only because the renderer needs it per-row; writing it from
-        // outside is silently ignored. One owner for "where is the cursor".
-        bool selected = false;
-        bool active   = false;   // "currently in use" — a persistent marker
-        bool locked   = false;   // visible, not editable
-        std::string locked_reason;
-
-        // A non-selectable SECTION HEADER: upper-cased, with a rule to the
-        // right edge. Deliberately unlike a locked row, which is what made
-        // "Endpoint (auto-detected)" read as a section title.
-        bool is_header = false;
-
-        // The trailing cell is secondary and yields space FIRST (a command
-        // palette's description must never eat its command name). Default:
-        // the LEADING cell yields first, so a long label truncates before it
-        // can push the value off the row.
-        bool trailing_secondary = false;
-    };
-
-    // The inline option list, present only while a Choice row is open.
-    //
-    // Enums only. There is no query field: a set large enough to need
-    // searching belongs in its own overlay, reached by a `Pick` row.
-    //
-    // TWO markers, never conflated — ◉ is the COMMITTED value, ❯ is the
-    // CURSOR. They coincide on open and diverge the moment you move.
-    struct Menu {
-        std::vector<std::string> options;
-        std::vector<std::string> hints;
-        int  highlighted = 0;
-        int  current     = -1;
-        int  scroll      = 0;
-        int  viewport    = 8;
-    };
-
-    struct Config {
-        std::string title;        // centred on the top border
-        std::string subtitle;     // status line above the body
-
-        std::vector<Row> rows;
-        // Index into `rows` (or `items`) of the cursor. <0 = no selection.
-        int              selected = -1;
-
-        // Pre-built rows, for callers that own their own row rendering
-        // (the thread list's virtualisation). Ignored when `rows` is set.
-        std::vector<Element> items;
-
-        std::optional<Menu> menu;
-        int                 menu_row = -1;
-
-        std::vector<Element> header;   // above the body, never scrolls
-        std::string          note;     // below the body
-        std::vector<Element> footer;   // key hints
-
-        // Borrowed; must outlive the built Element. Null disables scrolling.
-        ScrollState* scroll     = nullptr;
-        int          viewport_h = 14;
-
-        // The HOST clamps this to the terminal: a min-width wider than the
-        // screen is not a minimum but an overflow, and the overlay centres the
-        // panel so the excess is split off both edges and the labels vanish.
-        int   min_width = 60;
-        Color accent    = Color::blue();
-
-        // Colour of the edge bar on the ACTIVE row (the persistent "currently
-        // in use" marker, distinct from the cursor). The cursor wins on
-        // overlap — where you ARE outranks where you were.
-        Color active_color = Color::bright_magenta();
-
-        PanelTheme     theme{};
-        ScrollbarStyle scrollbar_style = ScrollbarStyle::neon();
-    };
+    // The family's types, spelled the way call sites always have. The
+    // definitions live in widget/panel/ (one file per concern); these
+    // aliases exist so the modular split is invisible to existing code.
+    using Row    = panel::Row;
+    using Menu   = panel::Menu;
+    using Config = panel::Config;
 
     explicit Panel(Config c) : cfg_(std::move(c)) {}
     operator Element() const { return build(); }

@@ -29,15 +29,20 @@ render(const Secret& c, const ItemCtx& ctx) {
     // Capped, so the rendered width never discloses the real length.
     const bool editing = c.caret != std::string::npos;
     if (c.filled == 0) {
-        if (editing)
+        if (editing) {
+            if (ctx.caret_out) *ctx.caret_out = 0;
             return {std::string{"\xe2\x96\x88"}
                       + (c.placeholder.empty() ? " empty" : " " + c.placeholder),
                     Style{}.with_fg(ctx.theme.value_edit)};
+        }
         return {c.placeholder.empty() ? "not set" : c.placeholder,
                 Style{}.with_fg(ctx.theme.off)};
     }
     std::string dots(std::min<std::size_t>(c.filled, 12), '*');
-    if (editing) dots += "\xe2\x96\x88";
+    if (editing) {
+        if (ctx.caret_out) *ctx.caret_out = dots.size();
+        dots += "\xe2\x96\x88";
+    }
     return {dots, Style{}.with_fg(editing ? ctx.theme.value_edit
                                           : ctx.theme.value)};
 }

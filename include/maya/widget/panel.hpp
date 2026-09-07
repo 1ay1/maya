@@ -91,12 +91,16 @@ public:
     static constexpr const char* kEdgeBar = "\xe2\x96\x8e";
 
     // Columns an EDITED value may occupy before it scrolls horizontally under
-    // its caret. A fixed budget rather than a measured one: the true width is
-    // only known inside the flex layout, and asking for it there is what led
-    // to the reserve-constant bugs. This is generous enough for endpoints and
-    // paths, and the layout still clips whatever exceeds it — the budget only
-    // decides WHERE the window sits, never how much space the cell gets.
-    static constexpr int kEditBudget = 34;
+    // its caret. Derived from min_width — which the HOST already clamps to
+    // the terminal — never measured inside the flex layout (asking for the
+    // true width in there is what led to the reserve-constant bugs). The
+    // floor keeps narrow panels usable; the deduction leaves room for the
+    // marker lane, label and gaps. The layout still clips whatever exceeds
+    // it — the budget only decides WHERE the window sits, never how much
+    // space the cell gets.
+    [[nodiscard]] int edit_budget() const noexcept {
+        return std::max(34, cfg_.min_width - 26);
+    }
 
 private:
     Config cfg_;
@@ -165,6 +169,11 @@ private:
     [[nodiscard]] std::vector<Element> render_menu(const Menu& m) const;
     [[nodiscard]] std::pair<std::string, Style> render_control(const Item& r,
                                                                int index) const;
+    // Same, reporting where the painted caret glyph landed (byte offset
+    // into the returned string; npos = none) so the item renderer can
+    // anchor the hardware cursor on that cell.
+    [[nodiscard]] std::pair<std::string, Style> render_control(
+        const Item& r, int index, std::size_t* caret_at) const;
 
     // The shared row idiom: a leading cell that grows, a gap, a trailing cell.
     // FLEX — the layout owns the width, so there is nothing to get wrong.

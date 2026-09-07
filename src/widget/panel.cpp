@@ -62,6 +62,11 @@ Element Panel::right_line(Element content) {
 
 std::pair<std::string, Style>
 Panel::render_control(const Item& r, int index) const {
+    return render_control(r, index, nullptr);
+}
+
+std::pair<std::string, Style>
+Panel::render_control(const Item& r, int index, std::size_t* caret_at) const {
     // One widget per item kind (widget/panel/item/*.hpp). The panel's only
     // jobs here are assembling the ItemCtx — the ONLY facts an item may
     // know — and dispatching. Everything glyph-level lives with the kind.
@@ -69,7 +74,8 @@ Panel::render_control(const Item& r, int index) const {
                          panel::ItemCtx{
                              .theme       = cfg_.theme,
                              .open        = cfg_.menu && cfg_.menu_row == index,
-                             .edit_budget = kEditBudget,
+                             .edit_budget = edit_budget(),
+                             .caret_out   = caret_at,
                          });
 }
 
@@ -200,7 +206,8 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
     // Trailing: the control, then its origin. A plain `trailing` string is
     // the same thing as a Label control — resolved here so the renderer below
     // has exactly one path.
-    auto [right, rstyle] = render_control(r, index);
+    std::size_t caret_at = std::string::npos;
+    auto [right, rstyle] = render_control(r, index, &caret_at);
     if (right.empty() && !r.trailing.empty()) {
         right  = r.trailing;
         rstyle = r.trailing_style;
@@ -217,8 +224,24 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
                              .runs    = std::move(lruns)}};
 
     std::string tail = right;
-    std::vector<StyledRun> truns{
-        {0, right.size(), tint(on_row ? rstyle.with_bold() : rstyle)}};
+    std::vector<StyledRun> truns;
+    const Style rrun = tint(on_row ? rstyle.with_bold() : rstyle);
+    if (caret_at != std::string::npos && caret_at < right.size()) {
+        // Split the control's run so the painted caret glyph carries the
+        // caret_anchor meta-bit: the serializer parks the HARDWARE cursor
+        // on that cell (terminal-native blink, IME composition at the
+        // right spot, screen readers find the edit point). The █ glyph
+        // stays — anchor is additive, and terminals without a visible
+        // hardware cursor still show the painted block.
+        constexpr std::size_t kBarLen = 3;   // █ is 3 bytes in UTF-8
+        if (caret_at > 0) truns.push_back({0, caret_at, rrun});
+        truns.push_back({caret_at, kBarLen, rrun.with_caret_anchor()});
+        if (caret_at + kBarLen < right.size())
+            truns.push_back({caret_at + kBarLen,
+                             right.size() - caret_at - kBarLen, rrun});
+    } else {
+        truns.push_back({0, right.size(), rrun});
+    }
     if (!origin.empty()) {
         tail += "  ";
         truns.push_back({tail.size(), origin.size(),

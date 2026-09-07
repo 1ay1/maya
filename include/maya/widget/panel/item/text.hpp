@@ -27,10 +27,14 @@ render(const Text& c, const ItemCtx& ctx) {
     // artefact — so it keeps its placeholder beside it and reads as
     // "type here".
     if (c.value.empty())
-        return {std::string{"\xe2\x96\x88"}
-                  + (c.placeholder.empty() ? "" : " " + c.placeholder),
+        return {[&] {
+                    if (ctx.caret_out) *ctx.caret_out = 0;
+                    return std::string{"\xe2\x96\x88"}
+                        + (c.placeholder.empty() ? "" : " " + c.placeholder);
+                }(),
                 Style{}.with_fg(ctx.theme.value_edit)};
-    return {detail::with_caret(c.value, c.caret, ctx.edit_budget),
+    return {detail::with_caret(c.value, c.caret, ctx.edit_budget,
+                               ctx.caret_out),
             Style{}.with_fg(ctx.theme.value_edit)};
 }
 

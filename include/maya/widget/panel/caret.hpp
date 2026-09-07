@@ -25,13 +25,16 @@ namespace maya::panel::detail {
 
 [[nodiscard]] inline std::string with_caret(const std::string& v,
                                             std::size_t caret,
-                                            int budget = 0) {
+                                            int budget = 0,
+                                            std::size_t* caret_at = nullptr) {
     if (caret == std::string::npos) return v;
     const std::size_t at = std::min(caret, v.size());
 
     static constexpr const char* kBar = "\xe2\x96\x88";   // █ FULL BLOCK
-    if (budget <= 2 || string_width(v) + 1 <= budget)
+    if (budget <= 2 || string_width(v) + 1 <= budget) {
+        if (caret_at) *caret_at = at;
         return v.substr(0, at) + kBar + v.substr(at);
+    }
 
     // Window the value so the caret sits inside it, biased to show what comes
     // BEFORE the caret (you are usually appending, and the text you just typed
@@ -54,6 +57,7 @@ namespace maya::panel::detail {
     std::string out;
     if (begin > 0)     out += "\xe2\x80\xb9";        // ‹
     out += v.substr(begin, at - begin);
+    if (caret_at) *caret_at = out.size();
     out += kBar;
     out += v.substr(at, end - at);
     if (end < v.size()) out += "\xe2\x80\xba";       // ›

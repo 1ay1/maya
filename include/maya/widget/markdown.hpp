@@ -283,6 +283,21 @@ private:
     // set_reveal_fx(true).
     bool reveal_fx_ = false;
 
+    // Decorative overlay toggle, meaningful only while reveal_fx_ is on.
+    // When true (default) the live reveal paints the viewport-BLIND glyph
+    // overlay — per-frame scramble→resolve, the gradient trail, and the
+    // pulsing end-caret (anim::decorate_text_reveal / decorate_end_caret).
+    // That overlay mutates the trailing row's glyphs every frame; it can
+    // only safely touch the bottom-most row because it cannot see the
+    // scroll position (reveal_fx.cpp “viewport-blind”). Under a terminal
+    // multiplexer that owns its own scroll region (tmux), those per-frame
+    // glyph rewrites desync from the mux grid and GHOST/overlap onto the
+    // rows above. Set false to keep the progressive typewriter CLIP (text
+    // still walks in at the reveal cursor's pace) but skip the decorative
+    // glyph churn — calm, ghost-free streaming on tmux. See
+    // set_reveal_decorate().
+    bool reveal_decorate_ = true;
+
     // Reveal cursor pacing. The typewriter advances at
     //   cps = max(floor_cps, backlog / drain_secs)
     // so a quiet stream still types at floor_cps, while a large
@@ -1248,6 +1263,16 @@ public:
     /// per-frame color/glyph churn (calm, flicker-free on every
     /// terminal).
     void set_reveal_fx(bool on) noexcept { reveal_fx_ = on; }
+
+    /// Toggle only the DECORATIVE reveal overlay (scramble→resolve, the
+    /// gradient trail, the pulsing end-caret) while leaving the
+    /// progressive typewriter CLIP intact. Meaningful only when
+    /// set_reveal_fx(true). Default true. Set false under a terminal
+    /// multiplexer (tmux) whose scroll region the viewport-blind overlay
+    /// can't see: text still reveals at the cursor's pace, but without the
+    /// per-frame glyph churn that ghosts/overlaps onto rows above the
+    /// live tail on a mux grid. No-op cost when reveal_fx_ is off.
+    void set_reveal_decorate(bool on) noexcept { reveal_decorate_ = on; }
 
     /// Override the reveal cursor pacing. `floor_cps` is the
     /// minimum codepoints-per-second the typewriter walks at (also

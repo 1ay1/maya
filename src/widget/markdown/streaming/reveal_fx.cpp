@@ -1143,7 +1143,7 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 rp.char_step_ms = static_cast<std::int64_t>(kCharStepMs * scale);
             }
             rp.ghost_extra           = kGhostExtra;
-            (void)anim::decorate_text_reveal(*tail, rp);
+            if (reveal_decorate_) (void)anim::decorate_text_reveal(*tail, rp);
             }
         } else if (eager_render
                    && (age_at_tail_ms <= 720
@@ -1218,7 +1218,8 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 rp.protect_structure = true;   // │/─ borders + padding stay put
                 rp.line_bounded      = true;   // only the bottom row animates
                 auto orig = comp->render;
-                comp->render = [orig, rp](int w, int h) -> Element {
+                const bool decorate = reveal_decorate_;
+                comp->render = [orig, rp, decorate](int w, int h) -> Element {
                     Element out = orig ? orig(w, h) : Element{};
                     // The eager wrapper's render hands back the block's OWN
                     // lazy renderer (another ComponentElement — the table's
@@ -1242,18 +1243,20 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                             std::get_if<ComponentElement>(&out.inner)) {
                         auto inner_render = inner->render;
                         inner->render =
-                            [inner_render, rp](int w2, int h2) -> Element {
+                            [inner_render, rp, decorate](int w2, int h2) -> Element {
                             Element mat = inner_render ? inner_render(w2, h2)
                                                        : Element{};
                             if (TextElement* leaf =
                                     rightmost_content_text_leaf(mat))
-                                (void)anim::decorate_text_reveal(*leaf, rp);
+                                if (decorate)
+                                    (void)anim::decorate_text_reveal(*leaf, rp);
                             return mat;
                         };
                         inner->hash_id = {};
                     } else if (TextElement* leaf =
                                    rightmost_content_text_leaf(out)) {
-                        (void)anim::decorate_text_reveal(*leaf, rp);
+                        if (decorate)
+                            (void)anim::decorate_text_reveal(*leaf, rp);
                     }
                     return out;
                 };
@@ -1293,7 +1296,8 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // recoloured in place (height/width-stable) so no extra row can
             // appear at the live↔settled seam.
             if (TextElement* tail = find_last_text(animated_body)) {
-                anim::decorate_end_caret(*tail, ms_total, 650);
+                if (reveal_decorate_)
+                    anim::decorate_end_caret(*tail, ms_total, 650);
             }
         } // !cursor_walking
 

@@ -750,8 +750,16 @@ Element Panel::build() const {
         if (!body.opaque && below > 0) lines.push_back(spacer_rows(below));
 
         Element scrollable = vstack()(lines) | scroll(s, vh) | grow(1.0f);
-        stack.push_back(h(std::move(scrollable),
-                          scrollbar_y(s, vh, cfg_.scrollbar_style)).build());
+        if (content > vh) {
+            // Only when something can actually scroll. A full-height thumb
+            // beside a list that FITS reads as a stray ┃ artifact hugging
+            // the border (clearest on a one-row empty-state pane), and
+            // communicates nothing — there is no hidden content to indicate.
+            stack.push_back(h(std::move(scrollable),
+                              scrollbar_y(s, vh, cfg_.scrollbar_style)).build());
+        } else {
+            stack.push_back(std::move(scrollable));
+        }
     } else {
         // No scroll state: nothing can be off-screen, so nothing is skipped.
         for (auto& line : render_range(body, 0,

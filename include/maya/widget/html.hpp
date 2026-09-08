@@ -40,6 +40,15 @@ namespace maya::html {
 [[nodiscard]] Element render(std::string_view source,
                              const Theme& theme = theme::dark);
 
+/// True when `source` would render to nothing a reader can see — no glyphs,
+/// no styled runs, no visible structural children (a lone unknown/empty tag
+/// like `<shell>`, `<div></div>`, or an HTML comment). Lets the markdown
+/// layer drop a content-less kind-6/7 HTML block so it neither takes a row
+/// nor earns the surrounding block gap. Same verdict as inspecting
+/// `render(source, theme)`, without materialising the result for the caller.
+[[nodiscard]] bool renders_empty(std::string_view source,
+                                 const Theme& theme = theme::dark);
+
 /// Widget wrapper (maya house style: pipeable Node via implicit Element).
 class Html {
 public:

@@ -488,4 +488,35 @@ Element render(std::string_view source, const Theme& theme) {
     return Renderer(theme).render_document(doc);
 }
 
+namespace {
+// Would this rendered subtree show a reader nothing at all? True only when
+// there are no glyphs, no styled runs, and no visible structural children
+// (tables/rules carry glyphs via their content strings, so they count as
+// non-empty). ComponentElement/ElementListRef render lazily and are never
+// assumed empty.
+[[nodiscard]] bool visually_empty(const Element& e) {
+    return std::visit([](const auto& n) -> bool {
+        using T = std::decay_t<decltype(n)>;
+        if constexpr (std::is_same_v<T, TextElement>) {
+            return n.content.empty() && n.runs.empty();
+        } else if constexpr (std::is_same_v<T, BoxElement>) {
+            for (const auto& c : n.children)
+                if (!visually_empty(c)) return false;
+            return true;
+        } else if constexpr (std::is_same_v<T, ElementList>) {
+            for (const auto& c : n.items)
+                if (!visually_empty(c)) return false;
+            return true;
+        } else {
+            return false;
+        }
+    }, e.inner);
+}
+} // namespace
+
+bool renders_empty(std::string_view source, const Theme& theme) {
+    detail::Node doc = detail::parse(source);
+    return visually_empty(Renderer(theme).render_document(doc));
+}
+
 } // namespace maya::html

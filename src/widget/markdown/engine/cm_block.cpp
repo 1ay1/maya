@@ -10,6 +10,7 @@
 
 #include "maya/widget/markdown/engine/cm_engine.hpp"
 #include "maya/widget/markdown/engine/cm_util.hpp"
+#include "maya/widget/html.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -1515,6 +1516,14 @@ private:
                 std::string h = blk.text;
                 // strip trailing newline run to one
                 while (!h.empty() && (h.back() == '\n')) h.pop_back();
+                // A lone/empty HTML tag (e.g. `<shell>` on its own line, a
+                // kind-7 block closed by the next blank line per CommonMark
+                // §4.6, or `<div></div>`) renders to nothing in a terminal.
+                // Emitting it as a block would still occupy a row AND earn
+                // the surrounding gap(1), punching a blank hole into the
+                // output. Drop it here so BOTH the streaming and one-shot
+                // paths see a dense block list with identical heights.
+                if (html::renders_empty(h)) break;
                 out.push_back(md::Block{md::HtmlBlock{std::move(h)}});
                 break;
             }

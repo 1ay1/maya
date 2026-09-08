@@ -63,7 +63,24 @@ option(MAYA_WERROR "Treat compiler warnings as errors (CI)." OFF)
 # portable-release path is unaffected. Default ON whenever tests are enabled.
 option(MAYA_FAST_TESTS "Build tests against a non-LTO, -O0 maya library for fast iteration." ON)
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+# ── Heavy optimization gate ────────────────────────────────────────────────
+# LTO + -O3 + Graphite/unroll/vectorize are for the SHIPPED binary. In a
+# Debug build they are pure tax: any maya source or header edit forces a
+# whole-library -O3 recompile AND a whole-program LTO relink of everything
+# downstream (the agentty binary), turning a one-line change into a multi-
+# minute wait. The `debug` preset promises "no LTO, ~1.7s incremental" — this
+# is what makes that true. Heavy opt is ON for every build type EXCEPT Debug;
+# a caller can still force it either way with -DMAYA_HEAVY_OPT=ON/OFF.
+if(NOT DEFINED MAYA_HEAVY_OPT)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(MAYA_HEAVY_OPT OFF)
+    else()
+        set(MAYA_HEAVY_OPT ON)
+    endif()
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
+   AND MAYA_HEAVY_OPT)
     # LTO across all translation units — lets GCC inline across .cpp boundaries,
     # devirtualize, and eliminate dead code globally. Respect a caller-supplied
     # value (e.g. distro packagers pass -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF
@@ -113,7 +130,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         -Wl,-z,now                   # resolve all symbols at load time (RELRO)
         -Wl,-z,relro                 # read-only relocations
     )
-elseif(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+elseif(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND MAYA_HEAVY_OPT)
     # macOS + GCC (Homebrew g++). Same intent as the Linux block — wring
     # the rendering hot paths — but Mach-O, not ELF, so the flag set is the
     # subset that's meaningful here. NO LTO (Apple ld can't consume GCC LTO
@@ -289,9 +306,9 @@ elseif(DEFINED MAYA_MACOS_CXX_FLAGS)
 else()
     target_compile_options(maya PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:
-            -O3
+            $<$<BOOL:${MAYA_HEAVY_OPT}>:-O3>
             $<$<BOOL:${MAYA_NATIVE_TUNING}>:-march=native>
-            -funroll-loops
+            $<$<BOOL:${MAYA_HEAVY_OPT}>:-funroll-loops>
             # Warnings. This code is SIMD- and pointer-heavy; -Wall -Wextra
             # is exactly the net that catches the class of bug (unaligned
             # intrinsics, sign/size mismatches) that has bitten this file

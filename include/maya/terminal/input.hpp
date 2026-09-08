@@ -297,6 +297,10 @@ private:
     bool        osc5522_locked_ = false;  // first mime chosen; skip others
     std::string osc5522_mime_;            // decoded mime of the kept type
     std::string osc5522_data_;            // decoded bytes of the kept type
+    // Incomplete trailing base64 group (0-3 chars) carried to the next
+    // DATA packet when a terminal splits the stream mid-group. Empty
+    // whenever the packet ended on padding or a 4-char boundary.
+    std::string osc5522_pending_;
 };
 
 } // namespace maya

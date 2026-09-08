@@ -383,6 +383,7 @@ void InputParser::reset() noexcept {
     osc5522_locked_ = false;
     osc5522_mime_.clear();
     osc5522_data_.clear();
+    osc5522_pending_.clear();
 }
 
 // ============================================================================
@@ -915,6 +916,7 @@ void InputParser::parse_osc5522(std::string_view body,
         osc5522_mime_.clear();
         osc5522_data_.clear();
         osc5522_data_.shrink_to_fit();
+        osc5522_pending_.clear();
     };
 
     std::string_view metadata = body;
@@ -977,43 +979,64 @@ void InputParser::parse_osc5522(std::string_view body,
             osc5522_locked_ = true;
         }
 
-        // ACCUMULATE THE BASE64 TEXT, DECODE ONCE AT DONE.
+        // CHUNK REASSEMBLY. Two terminal behaviours must both work, and
+        // they pull in opposite directions:
         //
-        // Decoding each DATA packet on its own is wrong: base64 codes 3
-        // bytes per 4 characters, so a packet whose length is not a
-        // multiple of 4 ends mid-group. decode_base64 emits only whole
-        // bytes and DROPS the leftover bits, and the next packet starts a
-        // fresh accumulator — so every unaligned seam silently loses 1-2
-        // bytes and shifts everything after it.
+        //  (a) kitty pads EVERY DATA packet independently (≤4096 raw bytes
+        //      each, its own trailing '='). Concatenating the base64 text
+        //      and decoding once then stops at the FIRST packet's padding
+        //      — a 100 KB image decodes to exactly 4096 bytes.
+        //  (b) a terminal may split the stream mid-group, so a packet ends
+        //      on a non-multiple of 4. Decoding that packet alone drops the
+        //      leftover bits, losing 1-2 bytes at every seam — which the
+        //      PNG header survives, so the image keeps its type, size and
+        //      dimensions and merely renders solid black.
         //
-        // The failure is invisible in the obvious places: the PNG header
-        // sits in the first packet and survives, so the magic bytes, the
-        // media type and the IHDR dimensions all still parse. Only the
-        // IDAT stream is shredded, and a tolerant decoder renders that as
-        // a uniformly BLACK image of exactly the right size. It is also
-        // intermittent by construction — whether it corrupts depends on
-        // the terminal's chunk length, so the same client can work all
-        // morning and fail after a kitty update changes the packet size.
+        // Handling only (b) breaks (a) and vice versa. The rule that
+        // satisfies both: a packet ENDING IN PADDING is self-contained —
+        // decode it and flush. Otherwise keep only the incomplete tail
+        // group (0-3 chars) and prepend it to the next packet, so a seam
+        // inside a group is repaired without ever crossing a '='.
         //
-        // Concatenating the TEXT and decoding once is both correct and
-        // simpler: seams stop existing rather than being handled.
-        //
-        // Bound the accumulator in base64 units. kMaxOscLen bounds the
-        // decoded payload, and 4 base64 chars carry 3 bytes, so the
-        // matching text bound is 4/3 of it (+4 to allow the final,
-        // possibly padded, group).
+        // Bound the pending buffer in base64 units: kMaxOscLen bounds the
+        // DECODED payload, 4 chars carry 3 bytes, +4 for a final group.
         constexpr std::size_t kMaxB64 = kMaxOscLen / 3 * 4 + 4;
-        // Strip the ASCII whitespace terminals insert to wrap long
-        // replies HERE rather than at decode time: it must not consume
-        // budget, and removing it keeps the accumulated text a pure
-        // base64 stream whose length is meaningful.
-        std::size_t added = 0;
+        // Strip the ASCII whitespace terminals insert to wrap long replies
+        // HERE, not at decode time: it must not consume budget, and
+        // removing it keeps the pending text a pure base64 stream whose
+        // length is meaningful for the alignment test below.
+        std::string text;
+        text.reserve(payload.size());
         for (char ch : payload) {
             if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') continue;
-            if (osc5522_data_.size() + 1 > kMaxB64) { abort_transfer(); return; }
-            osc5522_data_.push_back(ch);
-            ++added;
+            text.push_back(ch);
         }
+        if (text.empty()) return;
+
+        if (osc5522_pending_.size() + text.size() > kMaxB64) {
+            abort_transfer();
+            return;
+        }
+        osc5522_pending_ += text;
+
+        // Decode as much as is unambiguously complete. Padding closes the
+        // stream for this packet; otherwise round down to whole groups.
+        const bool padded = osc5522_pending_.back() == '=';
+        const std::size_t take =
+            padded ? osc5522_pending_.size()
+                   : osc5522_pending_.size() - (osc5522_pending_.size() % 4);
+        if (take > 0) {
+            auto decoded =
+                decode_base64(std::string_view(osc5522_pending_).substr(0, take));
+            if (!decoded) { abort_transfer(); return; }
+            if (osc5522_data_.size() + decoded->size() > kMaxOscLen) {
+                abort_transfer();
+                return;
+            }
+            osc5522_data_ += *decoded;
+            osc5522_pending_.erase(0, take);
+        }
+
         // Publish progress. A clipboard IMAGE is base64 PNG — hundreds of KB
         // to megabytes — and over ssh+tmux it arrives in many chunks over
         // well past a second. The host arms a short timer to diagnose "the
@@ -1021,19 +1044,18 @@ void InputParser::parse_osc5522(std::string_view body,
         // from a transfer still streaming: it declares failure at the
         // deadline while the bytes are mid-flight, and a big screenshot can
         // never be pasted. Counting delivered bytes lets the host see
-        // progress and keep waiting. (Base64 characters, not decoded bytes
-        // — the host only tests it for MOVEMENT, never for an exact size.)
-        clipboard_rx_bytes().fetch_add(added, std::memory_order_relaxed);
+        // progress and keep waiting.
+        clipboard_rx_bytes().fetch_add(text.size(), std::memory_order_relaxed);
         return;
     }
 
     if (status == "DONE") {
-        // One decode over the whole accumulated stream — no seams, so a
-        // packet boundary can no longer fall inside a base64 group.
-        // Malformed base64 yields nothing rather than a half-image.
+        // Flush any tail the terminal left unpadded and unaligned.
+        if (!osc5522_pending_.empty())
+            if (auto tail = decode_base64(osc5522_pending_))
+                osc5522_data_ += *tail;
         if (!osc5522_data_.empty())
-            if (auto bytes = decode_base64(osc5522_data_); bytes && !bytes->empty())
-                events.emplace_back(PasteEvent{std::move(*bytes)});
+            events.emplace_back(PasteEvent{std::move(osc5522_data_)});
         abort_transfer();
         return;
     }

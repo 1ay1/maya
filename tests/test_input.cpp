@@ -506,6 +506,41 @@ TEST_CASE("input osc5522 unaligned chunk seams") {
         const auto* pe = std::get_if<PasteEvent>(&events[0]);
         assert(pe != nullptr && pe->content == payload);
     }
+    // Style (a): kitty pads EVERY packet independently (≤4096 raw bytes
+    // each, its own trailing '='). A reassembler that concatenates the
+    // base64 and decodes once stops at the FIRST packet's padding — a
+    // 100 KB image becomes exactly 4096 bytes. This and the unaligned
+    // sweep above pull in opposite directions; both must pass.
+    {
+        std::string big(100u * 1024u, '\x01');
+        big[0] = '\x89'; big[1] = 'P'; big[2] = 'N'; big[3] = 'G';
+        auto enc = [](const std::string& raw) {
+            static const char* T =
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                "0123456789+/";
+            std::string o; int acc = 0, bits = 0;
+            for (unsigned char c : raw) {
+                acc = (acc << 8) | c; bits += 8;
+                while (bits >= 6) { bits -= 6; o.push_back(T[(acc >> bits) & 63]); }
+            }
+            if (bits) { acc <<= (6 - bits); o.push_back(T[acc & 63]); }
+            while (o.size() % 4) o.push_back('=');
+            return o;
+        };
+        InputParser p;
+        std::string s = "\x1b]5522;type=read:status=OK\x1b\\";
+        for (std::size_t off = 0; off < big.size(); off += 4096) {
+            s += "\x1b]5522;type=read:status=DATA:mime=aW1hZ2UvcG5n;";
+            s += enc(big.substr(off, 4096));   // padded per packet
+            s += "\x1b\\";
+        }
+        s += "\x1b]5522;type=read:status=DONE\x1b\\";
+        std::string got;
+        for (std::size_t off = 0; off < s.size(); off += 4096)
+            for (auto& ev : p.feed(std::string_view(s).substr(off, 4096)))
+                if (auto* pe = std::get_if<PasteEvent>(&ev)) got += pe->content;
+        assert(got == big);
+    }
     std::println("PASS\n");
 }
 

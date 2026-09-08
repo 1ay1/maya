@@ -37,36 +37,6 @@ using ::maya::md_detail::render_list;
 Element md_block_to_element(const md::Block& block) {
     return std::visit(overload{
         [](const md::Paragraph& p) -> Element {
-            // A lone recognized model pseudo-tag line (<shell>, </thinking>,
-            // …) renders as a dim labeled divider that NAMES the tag instead
-            // of leaking `<tag>` as body text. Only fires when the host has
-            // registered pseudo-tag names (set_markdown_pseudo_tags); the
-            // paragraph body must be exactly that one tag.
-            if (p.spans.size() == 1) {
-                const std::string* body = nullptr;
-                if (auto* txt = std::get_if<md::Text>(&p.spans[0].inner))
-                    body = &txt->content;
-                else if (auto* raw = std::get_if<md::RawInline>(&p.spans[0].inner))
-                    body = &raw->content;
-                if (body) {
-                    bool closing = false;
-                    std::string_view name =
-                        md_detail::pseudo_tag_line(*body, closing);
-                    if (!name.empty()) {
-                        std::string label;
-                        label.reserve(name.size() + 6);
-                        label += closing ? "\xE2\x80\xB9/" : "\xE2\x80\xB9 "; // ‹/ or ‹ 
-                        label.append(name.begin(), name.end());
-                        label += " \xE2\x80\xBA";                             // ›
-                        std::vector<StyledRun> runs;
-                        runs.push_back({0, label.size(),
-                            Style{}.with_fg(colors::pseudo_tag_fg).with_italic()});
-                        return Element{TextElement{
-                            .content = std::move(label),
-                            .runs    = std::move(runs)}};
-                    }
-                }
-            }
             return build_inline_row(p.spans);
         },
         [](const md::Heading& h) -> Element {
@@ -1177,71 +1147,6 @@ void set_markdown_palette(const MarkdownPalette& p) {
     colors::alert_important = p.alert_important;
     colors::alert_warning = p.alert_warning;
     colors::alert_caution = p.alert_caution;
-}
-
-namespace md_detail {
-
-std::vector<std::string>& pseudo_tag_registry() noexcept {
-    static std::vector<std::string> reg;   // lowercased tag names
-    return reg;
-}
-
-std::string_view pseudo_tag_line(std::string_view text, bool& closing) noexcept {
-    closing = false;
-    auto& reg = pseudo_tag_registry();
-    if (reg.empty()) return {};
-    // Trim surrounding whitespace; the whole (single-line) body must be a
-    // lone tag: '<' [ '/' ] name (ws attrs)? '>' with nothing after.
-    std::size_t a = 0, b = text.size();
-    while (a < b && (text[a] == ' ' || text[a] == '\t')) ++a;
-    while (b > a && (text[b-1] == ' ' || text[b-1] == '\t' ||
-                     text[b-1] == '\r' || text[b-1] == '\n')) --b;
-    std::string_view t = text.substr(a, b - a);
-    if (t.find('\n') != std::string_view::npos) return {};   // multi-line
-    if (t.size() < 3 || t.front() != '<' || t.back() != '>') return {};
-    std::size_t p = 1;
-    if (t[p] == '/') { closing = true; ++p; }
-    std::size_t ns = p;
-    auto lower = [](char c){ return (c >= 'A' && c <= 'Z')
-                                 ? char(c - 'A' + 'a') : c; };
-    while (p < t.size()) {
-        char c = t[p];
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == ':')
-            ++p;
-        else break;
-    }
-    if (p == ns) return {};                                   // no name
-    std::string_view name = t.substr(ns, p - ns);
-    // After the name: end '>' immediately, or whitespace then attrs then '>'.
-    std::size_t q = p;
-    if (q < t.size() - 1) {                                    // has attrs?
-        if (t[q] != ' ' && t[q] != '\t' && t[q] != '/') return {};
-    }
-    // Match the name against the registry (case-insensitive).
-    for (const auto& want : reg) {
-        if (want.size() != name.size()) continue;
-        bool eq = true;
-        for (std::size_t i = 0; i < name.size(); ++i)
-            if (lower(name[i]) != want[i]) { eq = false; break; }
-        if (eq) return name;                                  // original case
-    }
-    return {};
-}
-
-} // namespace md_detail
-
-void set_markdown_pseudo_tags(const std::vector<std::string>& names) {
-    auto& reg = md_detail::pseudo_tag_registry();
-    reg.clear();
-    reg.reserve(names.size());
-    for (const auto& n : names) {
-        std::string low;
-        low.reserve(n.size());
-        for (char c : n)
-            low += (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c;
-        if (!low.empty()) reg.push_back(std::move(low));
-    }
 }
 
 } // namespace maya

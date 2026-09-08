@@ -228,6 +228,11 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
                 if (tail == "\x1b[201~") {
                     // Emit paste content (strip the terminator)
                     auto content = buf_.substr(0, buf_.size() - 6);
+                    // Progress: see note at the OSC 52 site. The host
+                    // re-arms its no-reply timer whenever this MOVES, so a
+                    // route that never bumps it reads as terminal silence.
+                    clipboard_rx_bytes().fetch_add(content.size() + 1,
+                                                   std::memory_order_relaxed);
                     events.emplace_back(PasteEvent{std::move(content)});
                     buf_.clear();
                     state_ = State::Ground;
@@ -260,6 +265,12 @@ auto InputParser::feed(std::string_view bytes) -> std::vector<Event> {
                 }
                 std::string chunk = buf_.substr(0, buf_.size() - keep);
                 buf_.erase(0, buf_.size() - keep);
+                // Progress. THIS is the streaming site — a paste larger than
+                // the buffer arrives as many chunks over many reads, which
+                // is exactly the transfer the host must not mistake for
+                // silence while it is still running.
+                clipboard_rx_bytes().fetch_add(chunk.size() + 1,
+                                               std::memory_order_relaxed);
                 events.emplace_back(PasteEvent{std::move(chunk)});
             }
             break;
@@ -342,8 +353,11 @@ auto InputParser::flush_timeout() -> std::vector<Event> {
         // for a real (huge but healthy) paste the inactivity clock keeps
         // resetting, so this only fires when the stream truly died.
         if (elapsed >= kPasteTimeout) {
-            if (!buf_.empty())
+            if (!buf_.empty()) {
+                clipboard_rx_bytes().fetch_add(buf_.size() + 1,
+                                               std::memory_order_relaxed);
                 events.emplace_back(PasteEvent{std::move(buf_)});
+            }
             to_ground();
         }
         break;
@@ -868,8 +882,18 @@ void InputParser::parse_osc([[maybe_unused]] std::vector<Event>& events) {
     // answers with an empty or "?" payload. Nothing to deliver.
     if (b64.empty() || b64 == "?") return;
 
-    if (auto decoded = decode_base64(b64))
+    if (auto decoded = decode_base64(b64)) {
+        // Report progress like the OSC 5522 path does. The host arms a
+        // no-reply timer and re-arms it whenever this counter MOVES; a
+        // route that never bumps it is indistinguishable from a terminal
+        // that stayed silent, so a large OSC 52 reply arriving over a slow
+        // link gets diagnosed as "your terminal didn't answer" while its
+        // bytes are still landing. One bump per delivered reply is enough:
+        // the host only tests the counter for movement, never for a size.
+        clipboard_rx_bytes().fetch_add(decoded->size() + 1,
+                                       std::memory_order_relaxed);
         events.emplace_back(PasteEvent{std::move(*decoded)});
+    }
     // Malformed base64 — drop silently; a corrupt half-paste is worse
     // than no paste.
 }

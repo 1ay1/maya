@@ -509,6 +509,69 @@ TEST_CASE("input osc5522 unaligned chunk seams") {
     std::println("PASS\n");
 }
 
+TEST_CASE("input paste routes deliver fully and report progress") {
+    std::println("--- test_input_paste_routes_complete ---");
+    // Two invariants, swept over EVERY route a paste can take. Both were
+    // violated in ways that silently destroyed user data:
+    //
+    //  1. COMPLETENESS — all bytes arrive. (OSC 5522 decoded each DATA
+    //     packet separately and lost 1-2 bytes per unaligned seam.)
+    //
+    //  2. PROGRESS — the transfer reports movement. The host arms a
+    //     no-reply timer and re-arms it whenever clipboard_rx_bytes()
+    //     MOVES; a route that never bumps it is indistinguishable from a
+    //     terminal that stayed silent, so a big paste over a slow link
+    //     gets diagnosed as "your terminal didn't answer" while its bytes
+    //     are still in flight. Only the OSC 5522 path reported.
+    //
+    // 100 KB is past the streaming threshold, so the bracketed case also
+    // covers the multi-chunk flush.
+    std::string payload(100u * 1024u, '\x01');
+    payload[0] = '\x89'; payload[1] = 'P'; payload[2] = 'N'; payload[3] = 'G';
+
+    static const char kT[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    auto b64 = [](const std::string& raw) {
+        std::string o; int acc = 0, bits = 0;
+        for (unsigned char c : raw) {
+            acc = (acc << 8) | c; bits += 8;
+            while (bits >= 6) { bits -= 6; o.push_back(kT[(acc >> bits) & 63]); }
+        }
+        if (bits) { acc <<= (6 - bits); o.push_back(kT[acc & 63]); }
+        while (o.size() % 4) o.push_back('=');
+        return o;
+    };
+
+    auto check = [&](const std::string& wire) {
+        InputParser p;
+        const auto before = clipboard_rx_bytes().load();
+        std::string got;
+        // 4 KB reads: what a real tty hands us, and small enough that a
+        // 100 KB paste spans many of them.
+        for (std::size_t off = 0; off < wire.size(); off += 4096)
+            for (auto& ev : p.feed(std::string_view(wire).substr(off, 4096)))
+                if (auto* pe = std::get_if<PasteEvent>(&ev)) got += pe->content;
+        assert(got == payload);                               // completeness
+        assert(clipboard_rx_bytes().load() != before);        // progress
+    };
+
+    check("\x1b[200~" + payload + "\x1b[201~");               // bracketed
+    check("\x1b]52;c;" + b64(payload) + "\x1b\\");            // OSC 52
+    {                                                          // OSC 5522
+        const std::string enc = b64(payload);
+        std::string s = "\x1b]5522;type=read:status=OK\x1b\\";
+        // 997 is deliberately NOT a multiple of 4 — every seam is unaligned.
+        for (std::size_t off = 0; off < enc.size(); off += 997) {
+            s += "\x1b]5522;type=read:status=DATA:mime=aW1hZ2UvcG5n;";
+            s += enc.substr(off, 997);
+            s += "\x1b\\";
+        }
+        s += "\x1b]5522;type=read:status=DONE\x1b\\";
+        check(s);
+    }
+    std::println("PASS\n");
+}
+
 TEST_CASE("input osc5522 text only") {
     std::println("--- test_input_osc5522_text_only ---");
     InputParser p;

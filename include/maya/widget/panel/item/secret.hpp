@@ -43,6 +43,14 @@ render(const Secret& c, const ItemCtx& ctx) {
         if (ctx.caret_out) *ctx.caret_out = dots.size();
         dots += "\xe2\x96\x88";
     }
+    // The dots are CAPPED (width must not disclose length to a shoulder-
+    // surfer), which made a long paste look truncated — 12 stars for a
+    // 40-char code reads as "only part arrived". Appending the count gives
+    // the owner the feedback the cap withholds: you typed/pasted it, its
+    // length is not a secret from YOU, and it is the only honest answer
+    // to "did my paste land?".
+    if (c.filled > 12)
+        dots += " \xc2\xb7 " + std::to_string(c.filled) + " chars";
     return {dots, Style{}.with_fg(editing ? ctx.theme.value_edit
                                           : ctx.theme.value)};
 }

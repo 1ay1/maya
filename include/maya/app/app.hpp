@@ -1865,6 +1865,24 @@ void run(RunConfig cfg = {}) {
                     if (s && s->auto_dispatch) (void)s->handle_event(ev);
                 }
                 detail::dispatch_through_sub(current_sub, ev, pending_msgs);
+                // Re-route BETWEEN events, not just between reads: if this
+                // event produced messages, the model — and therefore the
+                // subscription that routes the NEXT event — may have
+                // changed. A fast terminal delivers "^T m o" in ONE read;
+                // without this, the ^T opens a picker but m/o are still
+                // routed by the pre-^T subscription and land in whatever
+                // owned the keyboard before (or nowhere). Keystrokes are
+                // rare and drain is cheap, so per-event drain costs nothing
+                // measurable; subscriptions_dirty stays set so the timer
+                // reconcile below still runs once for the whole batch.
+                if (!pending_msgs.empty()) {
+                    drain_pending();
+                    needs_render = true;
+                    current_sub  = get_sub();
+                    // A drained message may have quit (^C, q): stop feeding
+                    // the rest of the batch to a tearing-down app.
+                    if (!rt.is_running()) break;
+                }
             }
         }
 

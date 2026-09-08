@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -270,12 +271,38 @@ static void flatten_inlines(const std::vector<md::Inline>& spans,
     struct Open { std::string name; Style prev; };
     std::vector<Open> stack;
     Style cur = base;
+
+    // BALANCE PRE-PASS. A styling tag emits no literal text — correct for
+    // `<b>bold</b>`, catastrophic for prose that merely MENTIONS a tag:
+    // "Set <var> to 3" would render "Set  to 3", silently eating the word
+    // the sentence was about. Models talk about tags constantly (agentty's
+    // own prompts are full of <environment>, <cwd>, <output>, <summary>),
+    // and the ones that collide with real HTML phrasing/container names
+    // (var, cite, code, kbd, div, p, span, font, …) were the only ones
+    // that vanished — a data-loss bug keyed on a name collision.
+    //
+    // So: an opening tag only opens a STYLE SCOPE when a matching close
+    // exists later in the same block. Unbalanced ones fall through to the
+    // dimmed-literal passthrough and stay visible. Well-formed HTML is
+    // unaffected; a lone mention is preserved verbatim. Counting closes up
+    // front and decrementing as we pass them keeps this one linear walk.
+    std::unordered_map<std::string, int> closes_ahead;
+    for (const auto& span : spans)
+        if (const auto* r = std::get_if<md::RawInline>(&span.inner))
+            if (auto t = html::parse_tag(r->content); t && t->is_close)
+                ++closes_ahead[t->name];
+
     for (const auto& span : spans) {
         const auto* raw = std::get_if<md::RawInline>(&span.inner);
         if (!raw) { flatten_inline(span, cur, out, runs); continue; }
 
         auto tag = html::parse_tag(raw->content);
         if (tag) {
+            if (tag->is_close) {
+                if (auto it = closes_ahead.find(tag->name);
+                    it != closes_ahead.end() && it->second > 0)
+                    --it->second;
+            }
             html::Role role = html::inline_role(tag->name);
             if (role == html::Role::Break) {
                 runs.push_back({out.size(), 1, cur});
@@ -293,7 +320,18 @@ static void flatten_inlines(const std::vector<md::Inline>& spans,
                            !tag->bgcolor.empty();
             bool container = tag->name == "span" || tag->name == "font" ||
                              tag->name == "div" || tag->name == "p";
-            if (role != html::Role::None || has_css || container) {
+            // An OPEN tag must be closed later to earn its silence; a CLOSE
+            // tag must actually pop a scope this walk opened. A stray
+            // `</div>` in prose belongs to no scope, so it stays visible
+            // rather than deleting itself. Self-closing tags style nothing
+            // and so never need a partner.
+            const bool pops =
+                tag->is_close &&
+                std::any_of(stack.begin(), stack.end(),
+                            [&](const Open& o) { return o.name == tag->name; });
+            const bool balanced = pops || tag->self_closing ||
+                                  (!tag->is_close && closes_ahead[tag->name] > 0);
+            if ((role != html::Role::None || has_css || container) && balanced) {
                 if (tag->is_close) {
                     for (int k = static_cast<int>(stack.size()) - 1; k >= 0; --k)
                         if (stack[static_cast<std::size_t>(k)].name == tag->name) {

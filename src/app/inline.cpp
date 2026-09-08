@@ -229,6 +229,16 @@ void print(const Element& root, int width) {
 }
 
 std::string render_to_string(const Element& root, int width) {
+    // Normalise ONCE, at the entry: a negative width is a caller-side
+    // arithmetic accident (a nested widget subtracting chrome from a
+    // too-small parent, a terminal reporting 0 columns during a resize
+    // race), and everything downstream multiplies it into a size_t. The
+    // reserve below turned width=-80 into 18446744073709551537 and threw
+    // length_error out of a render — a hard crash for a degenerate input
+    // that should simply produce no output. Rendering degrades, never
+    // aborts.
+    if (width < 0) width = 0;
+
     StylePool pool;
     std::vector<layout::LayoutNode> layout_nodes;
     Canvas canvas{width, 500, &pool};
@@ -280,6 +290,7 @@ std::string render_to_string(const Element& root, int width) {
 // the accent hue"), which the plain variant can't. Not for production output;
 // it's a render-verification aid.
 std::string render_to_string_ansi(const Element& root, int width) {
+    if (width < 0) width = 0;   // see render_to_string — same contract
     StylePool pool;
     std::vector<layout::LayoutNode> layout_nodes;
     Canvas canvas{width, 500, &pool};

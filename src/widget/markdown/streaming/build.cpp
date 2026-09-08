@@ -669,10 +669,21 @@ const Element& StreamingMarkdown::build() const {
     // the parent's flex math sees the same number every frame, so the
     // header layout doesn't flicker between content-sized and
     // terminal-sized.
-    cached_build_ = (
-        detail::vstack().gap(1).padding(0, 0, 0, 2)
-            .align_self(Align::Stretch)(std::move(outer_children))
-    ).build();
+    // The 2-column left pad is decoration; the TEXT is the point. On an
+    // ultra-narrow surface (a 1-2 column canvas: a terminal mid-resize
+    // reporting a degenerate width, a deeply nested container whose
+    // ancestors' chrome has eaten everything) that pad consumes the entire
+    // content area and the document renders as NOTHING — silent data loss,
+    // which is the worst failure a renderer has. Drop the indent there and
+    // show the words. component() defers the decision to layout time, so
+    // the width is the REAL one this widget was given, not a guess.
+    auto padded_children = std::move(outer_children);
+    cached_build_ = detail::component(
+        [kids = std::move(padded_children)](int avail_w, int) -> Element {
+            const int pad = avail_w >= 4 ? 2 : 0;
+            return (detail::vstack().gap(1).padding(0, 0, 0, pad)
+                        .align_self(Align::Stretch)(kids)).build();
+        }).build();
     cached_tail_size_     = tail.size();
     cached_prefix_gen_    = prefix_->generation;
     cached_fold_gen_      = fold_generation_;

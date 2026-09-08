@@ -418,10 +418,19 @@ void StylePool::grow(std::size_t new_cap) {
 // ============================================================================
 
 Canvas::Canvas(int width, int height, StylePool* pool)
-    : width_(width)
-    , height_(height)
+    // Clamp at the ONE constructor every canvas goes through. A negative
+    // dimension reaching the resize below casts to a huge std::size_t and
+    // throws bad_alloc from deep inside a render — a hard crash for what is
+    // only ever a degenerate layout input (a terminal reporting 0 columns
+    // during a resize race, a nested widget whose chrome exceeds its
+    // parent's width, `render_to_string(el, -1)` in a caller's edge path).
+    // Clamping to an empty 0-cell grid makes those render NOTHING, which
+    // every consumer already handles (content_height() == 0), instead of
+    // taking the process down. Rendering must degrade, never abort.
+    : width_(width  > 0 ? width  : 0)
+    , height_(height > 0 ? height : 0)
     , style_pool_(pool)
-    , damage_{{Columns{0}, Rows{0}}, {Columns{width}, Rows{height}}}
+    , damage_{{Columns{0}, Rows{0}}, {Columns{width_}, Rows{height_}}}
 {
     cells_.resize(static_cast<std::size_t>(width_)
                       * static_cast<std::size_t>(height_),

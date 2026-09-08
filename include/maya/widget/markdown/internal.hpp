@@ -120,9 +120,33 @@ namespace colors {
     inline Color alert_important = Color::bright_magenta();
     inline Color alert_warning   = Color::bright_yellow();
     inline Color alert_caution   = Color::bright_red();
+    // Chrome for a recognized model PSEUDO-TAG line rendered as a labeled
+    // divider (see pseudo_tag_line / set_markdown_pseudo_tags). Dim so it
+    // reads as structural chrome, not body text.
+    inline Color pseudo_tag_fg   = Color::bright_black();
 }
 
 namespace md_detail {
+
+// ── model pseudo-tag registry ──────────────────────────────────────────────
+// Chat models wrap replies in angle-bracket PSEUDO-TAGS that are not HTML
+// (<shell>, <thinking>, <answer>, <system-reminder>, …). By default the
+// markdown renderer shows such a lone tag line as literal text. A host can
+// register the pseudo-tag names IT uses so the renderer instead draws them
+// as a dim labeled divider that NAMES the tag (open vs close distinguished),
+// turning leaked chrome into a legible marker without stripping content.
+//
+// The set is a process-global read by md_block_to_element on the (possibly
+// off-thread) parse path; same threading contract as set_markdown_palette:
+// register once at startup, before any StreamingMarkdown is live.
+std::vector<std::string>& pseudo_tag_registry() noexcept;
+
+// If `text` (a whole paragraph body) is EXACTLY one registered pseudo-tag
+// line — `<name>` or `</name>`, optionally with attributes, nothing else on
+// the line — return the bare tag name and set `closing`. Empty view = not a
+// pseudo-tag line (render as normal text). Case-insensitive on the name.
+[[nodiscard]] std::string_view pseudo_tag_line(std::string_view text,
+                                               bool& closing) noexcept;
 
 // ── text_transform.cpp ─────────────────────────────────────────────────────
 // Text-node post-pass: decode HTML entities, expand :emoji:, linkify bare

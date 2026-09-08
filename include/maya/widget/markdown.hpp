@@ -84,6 +84,16 @@ struct MarkdownPalette {
 /// Overwrite the active markdown palette.
 void set_markdown_palette(const MarkdownPalette& p);
 
+/// Register the model PSEUDO-TAG names (without brackets, e.g. "shell",
+/// "thinking") this app wraps its output in. A lone line that is exactly one
+/// of these tags — `<shell>` or `</shell>`, attributes allowed — then renders
+/// as a dim labeled divider NAMING the tag (open vs close distinguished)
+/// instead of leaking the raw `<tag>` as body text. Names are matched
+/// case-insensitively; passing an empty list restores the default (tags
+/// render as literal text). Same threading contract as set_markdown_palette:
+/// call once at startup, before any StreamingMarkdown goes live.
+void set_markdown_pseudo_tags(const std::vector<std::string>& names);
+
 // ============================================================================
 // StreamingMarkdown — Progressive monotonic rendering for streaming text
 // ============================================================================

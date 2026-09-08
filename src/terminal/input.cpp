@@ -953,15 +953,43 @@ void InputParser::parse_osc5522(std::string_view body,
             osc5522_locked_ = true;
         }
 
-        auto chunk = decode_base64(payload);
-        if (!chunk) { abort_transfer(); return; }
-        // Same DoS bound as the OSC buffer itself: a runaway terminal
-        // must not grow the accumulator without limit.
-        if (osc5522_data_.size() + chunk->size() > kMaxOscLen) {
-            abort_transfer();
-            return;
+        // ACCUMULATE THE BASE64 TEXT, DECODE ONCE AT DONE.
+        //
+        // Decoding each DATA packet on its own is wrong: base64 codes 3
+        // bytes per 4 characters, so a packet whose length is not a
+        // multiple of 4 ends mid-group. decode_base64 emits only whole
+        // bytes and DROPS the leftover bits, and the next packet starts a
+        // fresh accumulator — so every unaligned seam silently loses 1-2
+        // bytes and shifts everything after it.
+        //
+        // The failure is invisible in the obvious places: the PNG header
+        // sits in the first packet and survives, so the magic bytes, the
+        // media type and the IHDR dimensions all still parse. Only the
+        // IDAT stream is shredded, and a tolerant decoder renders that as
+        // a uniformly BLACK image of exactly the right size. It is also
+        // intermittent by construction — whether it corrupts depends on
+        // the terminal's chunk length, so the same client can work all
+        // morning and fail after a kitty update changes the packet size.
+        //
+        // Concatenating the TEXT and decoding once is both correct and
+        // simpler: seams stop existing rather than being handled.
+        //
+        // Bound the accumulator in base64 units. kMaxOscLen bounds the
+        // decoded payload, and 4 base64 chars carry 3 bytes, so the
+        // matching text bound is 4/3 of it (+4 to allow the final,
+        // possibly padded, group).
+        constexpr std::size_t kMaxB64 = kMaxOscLen / 3 * 4 + 4;
+        // Strip the ASCII whitespace terminals insert to wrap long
+        // replies HERE rather than at decode time: it must not consume
+        // budget, and removing it keeps the accumulated text a pure
+        // base64 stream whose length is meaningful.
+        std::size_t added = 0;
+        for (char ch : payload) {
+            if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') continue;
+            if (osc5522_data_.size() + 1 > kMaxB64) { abort_transfer(); return; }
+            osc5522_data_.push_back(ch);
+            ++added;
         }
-        osc5522_data_ += *chunk;
         // Publish progress. A clipboard IMAGE is base64 PNG — hundreds of KB
         // to megabytes — and over ssh+tmux it arrives in many chunks over
         // well past a second. The host arms a short timer to diagnose "the
@@ -969,14 +997,19 @@ void InputParser::parse_osc5522(std::string_view body,
         // from a transfer still streaming: it declares failure at the
         // deadline while the bytes are mid-flight, and a big screenshot can
         // never be pasted. Counting delivered bytes lets the host see
-        // progress and keep waiting.
-        clipboard_rx_bytes().fetch_add(chunk->size(), std::memory_order_relaxed);
+        // progress and keep waiting. (Base64 characters, not decoded bytes
+        // — the host only tests it for MOVEMENT, never for an exact size.)
+        clipboard_rx_bytes().fetch_add(added, std::memory_order_relaxed);
         return;
     }
 
     if (status == "DONE") {
+        // One decode over the whole accumulated stream — no seams, so a
+        // packet boundary can no longer fall inside a base64 group.
+        // Malformed base64 yields nothing rather than a half-image.
         if (!osc5522_data_.empty())
-            events.emplace_back(PasteEvent{std::move(osc5522_data_)});
+            if (auto bytes = decode_base64(osc5522_data_); bytes && !bytes->empty())
+                events.emplace_back(PasteEvent{std::move(*bytes)});
         abort_transfer();
         return;
     }

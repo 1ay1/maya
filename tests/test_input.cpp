@@ -433,6 +433,82 @@ TEST_CASE("input osc5522 image reassembly") {
     std::println("PASS\n");
 }
 
+TEST_CASE("input osc5522 unaligned chunk seams") {
+    std::println("--- test_input_osc5522_unaligned_chunk_seams ---");
+    // THE REGRESSION. Base64 packs 3 bytes into 4 characters, so a DATA
+    // packet whose length is not a multiple of 4 ends mid-group. When each
+    // packet was decoded on its own, the leftover bits were dropped and the
+    // next packet restarted the accumulator: every unaligned seam silently
+    // lost 1-2 bytes and shifted the remainder.
+    //
+    // It hid because the damage is invisible where anyone looks. A PNG's
+    // magic + IHDR live in the first packet and survive, so the media type
+    // and the reported dimensions stay right; only the IDAT stream is
+    // shredded, which decoders render as a uniformly BLACK image of exactly
+    // the expected size. And it is alignment-dependent, so a terminal whose
+    // packets happen to be 4-aligned works perfectly — until it changes.
+    //
+    // Every earlier case here used 4-aligned chunks ("iVBORw0K" is 8), so
+    // none of them could catch it. Sweep the seam across all four phases.
+    const std::string payload = [] {
+        std::string s;
+        for (int i = 0; i < 300; ++i) s.push_back(static_cast<char>(i & 0xFF));
+        return s;
+    }();
+
+    static const char kT[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string b64;
+    {
+        int acc = 0, bits = 0;
+        for (unsigned char c : payload) {
+            acc = (acc << 8) | c; bits += 8;
+            while (bits >= 6) { bits -= 6; b64.push_back(kT[(acc >> bits) & 63]); }
+        }
+        if (bits) { acc <<= (6 - bits); b64.push_back(kT[acc & 63]); }
+        while (b64.size() % 4) b64.push_back('=');
+    }
+
+    for (std::size_t chunk : {1u, 2u, 3u, 5u, 7u, 13u, 31u, 63u, 101u}) {
+        InputParser p;
+        std::string s = "\x1b]5522;type=read:status=OK\x1b\\";
+        for (std::size_t off = 0; off < b64.size(); off += chunk) {
+            s += "\x1b]5522;type=read:status=DATA:mime=aW1hZ2UvcG5n;";
+            s += b64.substr(off, chunk);
+            s += "\x1b\\";
+        }
+        s += "\x1b]5522;type=read:status=DONE\x1b\\";
+
+        auto events = p.feed(s);
+        assert(events.size() == 1);
+        const auto* pe = std::get_if<PasteEvent>(&events[0]);
+        assert(pe != nullptr);
+        // Byte-exact: a seam must not cost even one byte.
+        assert(pe->content.size() == payload.size());
+        assert(pe->content == payload);
+    }
+
+    // Terminals wrap long replies with ASCII whitespace. It must be
+    // skipped WITHOUT breaking group alignment — the reason stripping
+    // happens as bytes are accumulated rather than at decode time.
+    {
+        InputParser p;
+        std::string s = "\x1b]5522;type=read:status=OK\x1b\\";
+        for (std::size_t off = 0; off < b64.size(); off += 7) {
+            s += "\x1b]5522;type=read:status=DATA:mime=aW1hZ2UvcG5n;";
+            s += b64.substr(off, 7);
+            s += "\r\n";
+            s += "\x1b\\";
+        }
+        s += "\x1b]5522;type=read:status=DONE\x1b\\";
+        auto events = p.feed(s);
+        assert(events.size() == 1);
+        const auto* pe = std::get_if<PasteEvent>(&events[0]);
+        assert(pe != nullptr && pe->content == payload);
+    }
+    std::println("PASS\n");
+}
+
 TEST_CASE("input osc5522 text only") {
     std::println("--- test_input_osc5522_text_only ---");
     InputParser p;

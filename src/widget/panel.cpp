@@ -270,18 +270,20 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
 
     // Only the FOCUSED row shows its help. One setting is one row; the
     // description appears where the cursor is, which is the only row it can be
-    // describing.
+    // describing. TruncateEnd, not NoWrap: on a narrow terminal a long help
+    // line must ellipsise INSIDE the border — NoWrap let it paint straight
+    // through the panel frame (seen at width≄44).
     if (on_row && !r.help.empty())
         out.push_back(Element{TextElement{
             .content = "    " + r.help,
             .style   = Style{}.with_fg(th.help),
-            .wrap    = TextWrap::NoWrap}});
+            .wrap    = TextWrap::TruncateEnd}});
 
     if (!r.error.empty())
         out.push_back(Element{TextElement{
             .content = "      \xe2\x9a\xa0 " + r.error,
             .style   = Style{}.with_fg(th.error),
-            .wrap    = TextWrap::NoWrap}});
+            .wrap    = TextWrap::TruncateEnd}});
 
     return out;
 }

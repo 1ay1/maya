@@ -179,7 +179,8 @@ private:
     // FLEX — the layout owns the width, so there is nothing to get wrong.
     [[nodiscard]] static Element row_line(Element lead, Element trail,
                                           bool trailing_secondary,
-                                          Style gap_style);
+                                          Style gap_style,
+                                          bool value_primary = false);
     [[nodiscard]] static Element right_line(Element content);
 };
 } // namespace maya

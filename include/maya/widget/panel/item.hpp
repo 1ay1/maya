@@ -80,6 +80,13 @@ struct Item {
     // the LEADING cell yields first, so a long label truncates before it
     // can push the value off the row.
     bool trailing_secondary = false;
+
+    // The CONTROL is the row's content, not a value beside a label: it
+    // hugs the (short) leading and grows leftward-anchored instead of
+    // right-aligning. For prompt-style rows — a lone › with an input —
+    // where right-alignment reads as the value drifting away from its
+    // prompt. Rows with a real label keep the label─→value column layout.
+    bool value_primary = false;
 };
 
 } // namespace maya::panel

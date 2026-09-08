@@ -18,7 +18,8 @@ namespace maya {
 // ============================================================================
 
 Element Panel::row_line(Element lead, Element trail,
-                               bool trailing_secondary, Style gap_style) {
+                               bool trailing_secondary, Style gap_style,
+                               bool value_primary) {
     // Which side yields under width pressure. The default is that the LEADING
     // cell gives way (shrink 3×), so a long label truncates before it can push
     // the value off the row. `trailing_secondary` flips it: a command
@@ -27,9 +28,20 @@ Element Panel::row_line(Element lead, Element trail,
     const float trail_shrink = trailing_secondary ? 4.0f : 1.0f;
 
     std::vector<Element> cells;
-    cells.push_back(std::move(lead) | dsl::grow(1.0f) | dsl::shrink(lead_shrink));
-    cells.push_back(Element{TextElement{.content = "  ", .style = gap_style}});
-    cells.push_back(std::move(trail) | dsl::shrink(trail_shrink));
+    if (value_primary) {
+        // Prompt-style row (a lone › + an input): the control hugs the
+        // prompt and the SLACK goes after it, instead of the label─→value
+        // column layout that right-aligns the value a screen-width away
+        // from its two-character prompt.
+        cells.push_back(std::move(lead) | dsl::shrink(lead_shrink));
+        cells.push_back(Element{TextElement{.content = "  ", .style = gap_style}});
+        cells.push_back(std::move(trail) | dsl::shrink(trail_shrink));
+        cells.push_back(dsl::spacer().build());   // grow=1: takes the slack
+    } else {
+        cells.push_back(std::move(lead) | dsl::grow(1.0f) | dsl::shrink(lead_shrink));
+        cells.push_back(Element{TextElement{.content = "  ", .style = gap_style}});
+        cells.push_back(std::move(trail) | dsl::shrink(trail_shrink));
+    }
 
     auto row = maya::detail::hstack().width(Dimension::percent(100));
     // The cursor wash belongs to the ROW, not to its text. A text run only
@@ -254,7 +266,7 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
                               .runs    = std::move(truns)}};
 
     out.push_back(row_line(std::move(lead), std::move(trail),
-                           r.trailing_secondary, base));
+                           r.trailing_secondary, base, r.value_primary));
 
     // Only the FOCUSED row shows its help. One setting is one row; the
     // description appears where the cursor is, which is the only row it can be

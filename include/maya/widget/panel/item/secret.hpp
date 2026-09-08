@@ -38,18 +38,20 @@ render(const Secret& c, const ItemCtx& ctx) {
         return {c.placeholder.empty() ? "not set" : c.placeholder,
                 Style{}.with_fg(ctx.theme.off)};
     }
-    std::string dots(std::min<std::size_t>(c.filled, 12), '*');
+    // The mask is width-RESPONSIVE: stars up to the panel's edit budget
+    // (the same width Text values get), then ·N chars for the overflow.
+    // The cap is layout, not privacy — filled is a count the OWNER typed;
+    // the render must answer "did my whole paste land?" at a glance, and
+    // 12 fixed stars for a 40-char code read as "only part arrived".
+    const std::size_t cap = ctx.edit_budget > 8
+                                ? static_cast<std::size_t>(ctx.edit_budget - 2)
+                                : 12;
+    std::string dots(std::min<std::size_t>(c.filled, cap), '*');
     if (editing) {
         if (ctx.caret_out) *ctx.caret_out = dots.size();
         dots += "\xe2\x96\x88";
     }
-    // The dots are CAPPED (width must not disclose length to a shoulder-
-    // surfer), which made a long paste look truncated — 12 stars for a
-    // 40-char code reads as "only part arrived". Appending the count gives
-    // the owner the feedback the cap withholds: you typed/pasted it, its
-    // length is not a secret from YOU, and it is the only honest answer
-    // to "did my paste land?".
-    if (c.filled > 12)
+    if (c.filled > cap)
         dots += " \xc2\xb7 " + std::to_string(c.filled) + " chars";
     return {dots, Style{}.with_fg(editing ? ctx.theme.value_edit
                                           : ctx.theme.value)};

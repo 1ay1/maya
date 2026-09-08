@@ -1581,7 +1581,7 @@ is the top-level viewport; the rest are the parts it (or a host) assembles.
 | `TokenStream` | `widget/token_stream.hpp` | Live token-rate sparkline + stats (compact/full) |
 | `CostTracker` | `widget/cost_tracker.hpp` | Per-turn + cumulative token/cost breakdown |
 | `ApiUsage` | `widget/api_usage.hpp` | API rate-limit / request-count / latency display |
-| `ActivityIndicator` | `widget/activity_indicator.hpp` | Single-row hex-dump activity tape |
+| `ActivityIndicator` | `widget/activity_indicator.hpp` | Single-row hex-dump activity tape — decorative noise while waiting, a real hexdump of `Config::stream` (the host's live byte tail + true total) once bytes flow |
 
 ### Status Bar
 

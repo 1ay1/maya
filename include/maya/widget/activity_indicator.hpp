@@ -55,17 +55,37 @@ public:
         std::string spinner_glyph;   // unused; kept for ABI compat with hosts
         std::string label;           // unused; widget rotates its own word pool
         std::string detail;          // optional trailing token ("3.4s")
-        // Host-supplied rotating word pool. The widget rotates
-        // through them one per tape cycle, scrolling each across the
-        // visible window. Empty → pure scrolling noise, no embedded
-        // word. Entries are viewed, not owned; the host must keep
-        // them alive for the lifetime of this Config (static storage
-        // is the natural fit).
+        // Host-supplied rotating word pool. Used ONLY in the waiting
+        // state (stream empty): the widget rotates through them one per
+        // tape cycle, scrolling each across the visible window. Empty →
+        // pure scrolling noise, no embedded word. Entries are viewed,
+        // not owned; the host must keep them alive for the lifetime of
+        // this Config (static storage is the natural fit).
         std::vector<std::string_view> words;
-        // Legacy telemetry fields — retained so existing hosts compile.
-        std::size_t      stream_bytes = 0;
-        float            stream_rate  = 0.f;
-        std::string_view entropy_window;
+        // ── Live stream window (the honest tape) ──────────────────
+        // `stream` is a tail window of REAL bytes the host is receiving
+        // (model output, reasoning, a compaction summary — whatever
+        // the row is narrating), and `stream_total` is the true cumulative
+        // byte count of that stream (>= stream.size()). When non-empty,
+        // the tape stops being decorative noise and becomes a hexdump
+        // of these bytes, right-anchored on the newest byte: the offset
+        // column is the write-head odometer — the TRUE cumulative byte
+        // count, counting UP as bytes arrive — the hex column shows the
+        // actual UTF-8, and the ASCII gutter shows the printable
+        // characters — i.e. the words that surface are words the model
+        // is actually writing, moments before the reveal animation
+        // shows them as prose. Newly-arrived bytes tumble briefly
+        // before locking (same lock-in aesthetic as the waiting state)
+        // so arrival itself is visible.
+        //
+        // Empty stream → the waiting state: the classic noise tape +
+        // word pool. The contrast is deliberate signal: noise means
+        // "nothing has arrived yet" (TTFT window / between sub-turns),
+        // structure means "bytes are flowing". Lifetime contract is the
+        // same as `words`: the view must stay valid for this frame
+        // (build() copies what it needs).
+        std::string_view stream;
+        std::size_t      stream_total = 0;
     };
 
     explicit ActivityIndicator(Config c) : cfg_(std::move(c)) {}
@@ -135,13 +155,33 @@ public:
             return hold ? 0u : static_cast<std::uint8_t>(bit1 ^ bit2);
         };
 
-        // Offset pointer ticks 1 byte per visible-column scroll, so
-        // its rate is physically coupled to the tape motion.
-        constexpr int kOffsetStart = 0x7ffd;
-        const int     offset = kOffsetStart - static_cast<int>(scroll & 0xfff);
-        char offbuf[12];
-        std::snprintf(offbuf, sizeof(offbuf), "0x%04x", offset);
+        // Offset pointer. Waiting state: decorative countdown ticking 1
+        // byte per visible-column scroll, physically coupled to the tape
+        // motion. Live state: the TRUE cumulative byte count of the
+        // narrated stream — an odometer of the model writing, counting
+        // UP as bytes arrive. (The countdown was the original sin this
+        // widget was called out for: "merely a countdown and not hex
+        // values of the current" — the live path is the answer.)
+        const bool live = !cfg_.stream.empty();
+        char offbuf[20];
+        if (live) {
+            // 6 hex digits (16 MiB of stream) before the column widens —
+            // same width as the waiting state so the flip doesn't shift
+            // the byte window.
+            std::snprintf(offbuf, sizeof(offbuf), "0x%06llx",
+                          static_cast<unsigned long long>(cfg_.stream_total));
+        } else {
+            constexpr int kOffsetStart = 0x7ffd;
+            const int offset = kOffsetStart - static_cast<int>(scroll & 0xfff);
+            std::snprintf(offbuf, sizeof(offbuf), "0x%06x", offset);
+        }
         const std::string off_str = offbuf;
+
+        // Snapshot the live window into the lambda. ≤ a few hundred
+        // bytes; copying makes the component self-contained (the host's
+        // string_view only promises this frame).
+        std::string stream_tail{cfg_.stream};
+        const std::size_t stream_total = cfg_.stream_total;
 
         const std::string detail = cfg_.detail;
 
@@ -151,6 +191,7 @@ public:
         std::vector<std::string_view> words = cfg_.words;
 
         return component([=, words = std::move(words),
+                          stream_tail = std::move(stream_tail),
                           off_str = off_str](int avail_w, int /*h*/) -> Element {
             using namespace dsl;
 
@@ -335,9 +376,86 @@ public:
             };
 
             // Pre-resolve so hex + ascii agree byte-for-byte.
+            //
+            // LIVE: the window shows the newest `cols` bytes of the real
+            // stream, right-anchored on the write head. Motion comes from
+            // DATA ARRIVAL (each new byte shifts the window left), not
+            // from the wall clock — the tape speed IS the stream speed.
+            // Roles:
+            //   • hot tail (last kHotTail bytes) → tumble: the churn is a
+            //     function of time+position, so the write head visibly
+            //     runs hot; a byte settles once newer bytes displace it —
+            //     lock-in driven by arrival, no per-byte timestamps.
+            //   • current word (bytes after the last separator, capped) →
+            //     locked highlight: you watch the word the model is
+            //     writing RIGHT NOW form at the edge, the live-state
+            //     analogue of the waiting state's embedded word.
+            //   • a young stream (< cols bytes) left-pads with noise at
+            //     pre-first-byte positions — honest (those bytes never
+            //     existed) and it renders arrival as real data
+            //     progressively eating the noise from the right.
             std::vector<std::pair<std::uint8_t, int>> resolved;
             resolved.reserve(static_cast<std::size_t>(cols));
-            for (int c = 0; c < cols; ++c) resolved.push_back(resolve(c));
+            if (live) {
+                constexpr int kHotTail   = 2;   // bytes still tumbling at the head
+                constexpr int kMaxWordHl = 12;  // cap word highlight (JSON blobs)
+                const int nvis = static_cast<int>(
+                    std::min<std::size_t>(static_cast<std::size_t>(cols),
+                                          stream_tail.size()));
+                const int pad = cols - nvis;
+                // First byte of the visible window's true stream offset.
+                const std::int64_t first_off =
+                    static_cast<std::int64_t>(stream_total)
+                    - static_cast<std::int64_t>(nvis);
+                // Current word start: scan back from the head past the
+                // trailing separator run, then to the previous separator.
+                int word_from = nvis;   // index into visible bytes
+                {
+                    auto sep = [&](int i) {
+                        const unsigned char b = static_cast<unsigned char>(
+                            stream_tail[stream_tail.size()
+                                        - static_cast<std::size_t>(nvis - i)]);
+                        return b <= 0x20 || b >= 0x7f;
+                    };
+                    int i = nvis - 1;
+                    while (i >= 0 && sep(i)) --i;          // skip trailing seps
+                    const int word_end = i;
+                    while (i >= 0 && !sep(i)) --i;         // walk the word
+                    word_from = i + 1;
+                    if (word_end - word_from + 1 > kMaxWordHl)
+                        word_from = word_end - kMaxWordHl + 1;
+                }
+                for (int c = 0; c < cols; ++c) {
+                    if (c < pad) {
+                        const std::int64_t pos =
+                            first_off - static_cast<std::int64_t>(pad - c);
+                        resolved.emplace_back(static_cast<std::uint8_t>(
+                            base_byte(pos) ^ drift_byte(pos)), 0);
+                        continue;
+                    }
+                    const int vi = c - pad;   // visible-byte index
+                    const std::uint8_t b = static_cast<std::uint8_t>(
+                        stream_tail[stream_tail.size()
+                                    - static_cast<std::size_t>(nvis - vi)]);
+                    if (vi >= nvis - kHotTail) {
+                        // Write head: churn, seeded by time + true offset.
+                        std::uint64_t x = static_cast<std::uint64_t>(now_ms)
+                                            * 0x9E3779B97F4A7C15ull
+                                        ^ static_cast<std::uint64_t>(
+                                              first_off + vi)
+                                            * 0xD1B54A32D192ED03ull;
+                        x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 27;
+                        resolved.emplace_back(
+                            static_cast<std::uint8_t>(x & 0xff), 2);
+                    } else if (vi >= word_from) {
+                        resolved.emplace_back(b, 1);
+                    } else {
+                        resolved.emplace_back(b, 0);
+                    }
+                }
+            } else {
+                for (int c = 0; c < cols; ++c) resolved.push_back(resolve(c));
+            }
 
             auto style_for = [&](int c, int role) -> Style {
                 if (role == 1) return Style{}.with_fg(highlight).with_bold();

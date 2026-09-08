@@ -364,12 +364,37 @@ struct ListMarker {
     }
     // kind 7: complete open or closing tag on its own line, not pre/script/
     // style/textarea — only when NOT interrupting a paragraph.
+    //
+    // DIVERGENCE FROM STRICT COMMONMARK (deliberate): the spec's kind-7 start
+    // condition accepts ANY tag name. We additionally require the name to be
+    // a tag the HTML renderer actually knows (html::is_known_tag). Chat models
+    // constantly emit angle-bracket PSEUDO-TAGS — <shell>, <thinking>,
+    // <tool_call>, <system-reminder> — that are not HTML. Under strict kind 7
+    // a lone `<shell>` opens a raw HTML block that swallows every following
+    // line up to the next blank line; the html widget then flow-collapses that
+    // content, destroying any markdown list inside AND shrinking the block on
+    // commit (the "bullets appear while streaming, then vanish and snap up"
+    // bug). Treating unknown tags as ordinary text lets them — and the
+    // markdown beneath them — render normally. Known tags keep full HTML-block
+    // behaviour, so real inline/other tags on their own line still work.
     if (!in_paragraph) {
         auto st = strip(t);
         if (is_complete_tag_line(st)) {
             auto lcs = ascii_lower(st);
             for (auto raw : {"<script","<pre","<style","<textarea"})
                 if (lcs.rfind(raw, 0) == 0) return 0;
+            // Extract the tag name: skip '<' and an optional '/', then read
+            // the run of name characters. Reject unknown (pseudo) tags.
+            std::size_t p = 1;                       // past '<'
+            if (p < lcs.size() && lcs[p] == '/') ++p; // closing tag
+            std::size_t ns = p;
+            while (p < lcs.size()
+                   && ((lcs[p] >= 'a' && lcs[p] <= 'z')
+                       || (lcs[p] >= '0' && lcs[p] <= '9')
+                       || lcs[p] == '-'))
+                ++p;
+            std::string_view name = lcs.substr(ns, p - ns);
+            if (!html::is_known_tag(name)) return 0;
             return 7;
         }
     }

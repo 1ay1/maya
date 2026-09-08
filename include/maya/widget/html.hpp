@@ -107,6 +107,13 @@ struct Tag {
 /// unknown or block-level names.
 [[nodiscard]] Role inline_role(std::string_view name);
 
+/// True when `name` is a tag the HTML renderer recognizes (a phrasing,
+/// block, void, or raw-text element). Model pseudo-tags like `<shell>` or
+/// `<thinking>` are NOT HTML and return false — the markdown engine uses
+/// this to avoid swallowing them (and the lines under them) as raw HTML
+/// blocks, letting them render as ordinary markdown instead.
+[[nodiscard]] bool is_known_tag(std::string_view name);
+
 /// Overlay a tag's presentational + inline-CSS styling (color=, bgcolor=,
 /// style="...") onto `base`, following the CSS cascade (attributes first,
 /// then `style`). Returns `base` unchanged when the tag carries no styling.

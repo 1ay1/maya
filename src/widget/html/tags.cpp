@@ -104,4 +104,18 @@ Style tag_style(const Tag& tag, Style base) {
     return out;
 }
 
+// ── public: is this a recognized HTML element name? ──────────────────────
+// True when `name` (case-insensitive) is a tag the renderer actually knows —
+// a phrasing element (inline_role != None), a block element, a void element,
+// or a raw-text element. Model "pseudo-tags" (<shell>, <thinking>,
+// <tool_call>, …) are NOT HTML and return false, so the markdown engine can
+// let them fall through to normal paragraph/list parsing instead of eating
+// the following lines as a raw HTML block.
+bool is_known_tag(std::string_view name) {
+    return inline_role(name) != Role::None
+        || detail::is_block_element(name)
+        || detail::is_void_element(name)
+        || detail::is_raw_text_element(name);
+}
+
 } // namespace maya::html

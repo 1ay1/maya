@@ -22,6 +22,7 @@
 #include "maya/style/style.hpp"
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
+#include "maya/widget/html.hpp"
 
 #include "maya/widget/markdown/streaming_internal.hpp"
 
@@ -89,11 +90,24 @@ bool html_block_live_prefix(std::string_view line) noexcept {
         c = line[p];
     }
     if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return false;
+    std::size_t name_lo = p;
     while (p < line.size()) {
         char t = line[p];
         if ((t >= 'a' && t <= 'z') || (t >= 'A' && t <= 'Z')
             || (t >= '0' && t <= '9') || t == '-') { ++p; continue; }
         break;
+    }
+    // Only KNOWN HTML tag names start a raw HTML block (see html_block_start
+    // in cm_block.cpp — kind 7 is gated on html::is_known_tag). Unknown model
+    // pseudo-tags (<shell>, <thinking>, …) commit as ordinary VISIBLE text, so
+    // hiding them live would render 0 rows live but 1 row committed — a height
+    // mismatch that snaps / overlaps the canvas at commit. Keep the live tail
+    // in lockstep with the parser: never hide an unknown tag line. (A name
+    // still mid-stream, `p == line.size()`, stays hidden below — we don't yet
+    // know what it is, and it carries no visible content yet either way.)
+    if (p < line.size()) {
+        std::string_view name = line.substr(name_lo, p - name_lo);
+        if (!html::is_known_tag(name)) return false;
     }
     if (p >= line.size()) return true;               // tag name still growing
     char t = line[p];

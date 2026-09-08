@@ -522,25 +522,44 @@ auto Runtime::read_events() -> Result<std::vector<Event>> {
     return ok(std::move(result));
 }
 
-// Drop a clipboard-read PasteEvent that lands within a short window of a
-// previous one. In tmux we send OSC 5522 (kitty image) AND OSC 52 (text)
-// because kitty can't be identified there; a kitty outer terminal answers
-// both and we'd otherwise paste twice. The window is generous enough to
-// span the two near-simultaneous replies but far shorter than any human
-// double-paste, so genuine consecutive pastes are untouched.
+// Drop the DUPLICATE clipboard-read reply that a kitty terminal inside tmux
+// produces, without ever swallowing part of a real paste.
+//
+// In tmux we must send OSC 5522 (kitty image) AND OSC 52 (text) because kitty
+// can't be identified there; a kitty outer terminal answers BOTH, so the same
+// clipboard arrives twice and would paste twice.
+//
+// This used to drop any PasteEvent landing within 250 ms of the previous one.
+// That is not a duplicate test — it is a rate limit, and it silently ate real
+// data: the parser ships a large paste as SEVERAL PasteEvent chunks (the
+// kMaxOscLen streaming path, and one per OSC 5522 DATA burst), which arrive
+// milliseconds apart by construction. A 100 KB image came through as its
+// first 4 KB chunk and nothing else — the chip read "4 KB", the rest was
+// dropped, and because the PNG header was in that first chunk everything
+// downstream still looked like a valid (merely truncated) image.
+//
+// The two cases are distinguishable by CONTENT, not by timing: the duplicate
+// reply carries the SAME bytes, while a continuation chunk carries different
+// bytes. So dedup on content identity within the window. Two genuinely
+// identical pastes 250 ms apart are indistinguishable from the tmux double-
+// answer even in principle, and dropping one of those is the same behaviour
+// as before; a human cannot paste the same buffer twice that fast anyway.
 void Runtime::dedup_clipboard_pastes(std::vector<Event>& events) {
     constexpr auto kWindow = std::chrono::milliseconds(250);
     const auto now = std::chrono::steady_clock::now();
     std::vector<Event> kept;
     kept.reserve(events.size());
     for (auto& ev : events) {
-        if (std::holds_alternative<PasteEvent>(ev)) {
-            if (last_paste_at_.time_since_epoch().count() != 0
-                && now - last_paste_at_ < kWindow) {
-                last_paste_at_ = now;   // keep sliding so a 3rd reply also drops
-                continue;               // swallow the duplicate
+        if (auto* pe = std::get_if<PasteEvent>(&ev)) {
+            const bool in_window =
+                last_paste_at_.time_since_epoch().count() != 0
+                && now - last_paste_at_ < kWindow;
+            if (in_window && pe->content == last_paste_content_) {
+                last_paste_at_ = now;   // keep sliding so a 3rd copy also drops
+                continue;               // swallow the duplicate answer
             }
-            last_paste_at_ = now;
+            last_paste_at_      = now;
+            last_paste_content_ = pe->content;
         }
         kept.push_back(std::move(ev));
     }

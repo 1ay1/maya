@@ -1121,9 +1121,13 @@ private:
     // Dedup guard for clipboard-read paste replies. Inside tmux we send BOTH
     // OSC 5522 (kitty image) and OSC 52 (text) because kitty is undetectable
     // there; a kitty outer terminal answers both, which would otherwise
-    // surface as two paste events. Drop a PasteEvent that arrives within a
-    // short window of the previous one. Zero value = no paste seen yet.
+    // surface as two paste events. Drop a PasteEvent that repeats the
+    // PREVIOUS one's bytes within a short window. Content identity is what
+    // separates the duplicate answer from a continuation chunk of one large
+    // paste — a bare time window drops the latter too, truncating the paste
+    // to its first chunk. Zero timestamp = no paste seen yet.
     std::chrono::steady_clock::time_point last_paste_at_{};
+    std::string                           last_paste_content_;
 
     // Inline-mode mouse anchor: 1-based terminal row of the frame's top,
     // learned via a cursor-position query (DSR) at create() when mouse is

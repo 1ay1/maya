@@ -1,33 +1,37 @@
 #pragma once
 // maya::widget::ActivityIndicator — single-row hex-dump tape.
 //
-// One row that looks like a live memory window scrolling past the user.
-// An offset pointer on the left ticks downward each second (as if a
-// debugger were walking the stack backward); the middle is a row of
-// hex bytes tumbling at ~100 ms; on the right a classic xxd-style
-// ASCII gutter (|...t.h.i.n.k...|) reveals printable bytes as glyphs
-// and non-printable as dots.
+// One row that looks like a live memory window — offset pointer, hex
+// bytes, xxd-style ASCII gutter — and IS one: every byte shown comes
+// from a real stream the host is party to. Three modes, by data:
 //
-// The bytes ARE random-looking but they're not random. Each is a
-// deterministic function of (now_ms, stream_position): noise bytes
-// are a splitmix64 hash with a bit-drift overlay so values mutate
-// continuously instead of flipping randomly every frame. If the host
-// supplies Config::words, the widget places one word per tape
-// "cycle" at a fixed stream position so the word physically scrolls
-// left across the byte window, enters from the right, transits, and
-// exits. As each new word's letters appear on the right edge they
-// "lock in" one column at a time — hash-cracker cadence — with the
-// accent color so the eye can spot the hidden word forming inside
-// what otherwise looks like raw memory. A scanline highlight sweeps
-// across the row independently of the tape, like a debugger read-
-// head inspecting whichever byte it's over.
+//   WRITE  (Config::stream non-empty)  The newest bytes of an arriving
+//          stream (model output), right-anchored on the write head.
+//          Motion comes from DATA ARRIVAL — each new byte shifts the
+//          window — so tape speed IS stream speed. The offset column is
+//          the true cumulative byte count (an odometer, counting up),
+//          the last couple of bytes tumble while "settling", and the
+//          word currently being written carries the accent highlight.
 //
-//   0x7ffd  74 ef 91 b3 4f 70 75 73 04 1c 22 5f  |..O.p.u.s.".|
-//                       ^^ ^^ ^^ ^^                <- locked letters
-//                                          ↑       <- sweep column
+//   READ   (Config::context non-empty, stream empty)  A read head
+//          scanning REAL context bytes (the prompt the model is
+//          reading) at a steady cadence. The window trails the head,
+//          the offset column is the true read position within the
+//          context (counting up, looping at the end), and the word
+//          under the head lights up as it's passed — the input-side
+//          mirror of WRITE. No tumble: these bytes are settled fact.
 //
-// Content-agnostic: the word list belongs to the host. With an empty
-// Config::words the widget is pure scrolling noise.
+//   STATIC (both empty)  Channel static: deterministic splitmix noise
+//          with bit-drift, offset pinned at 0x000000. Never dressed as
+//          information — it reads as "no signal", which is the truth.
+//
+// A scanline highlight sweeps across the row independently in every
+// mode, like a debugger read-head inspecting whichever byte it's over.
+//
+//   0x0001a2  74 68 65 20 72 65 74 72  |the retr|
+//                          ^^^^^^^^^^     ^^^^    <- word being written
+//
+// Content-agnostic: the host decides which streams to narrate.
 
 #include <array>
 #include <chrono>
@@ -52,40 +56,34 @@ class ActivityIndicator {
 public:
     struct Config {
         Color       edge_color = Color::cyan();
-        std::string spinner_glyph;   // unused; kept for ABI compat with hosts
-        std::string label;           // unused; widget rotates its own word pool
         std::string detail;          // optional trailing token ("3.4s")
-        // Host-supplied rotating word pool. Used ONLY in the waiting
-        // state (stream empty): the widget rotates through them one per
-        // tape cycle, scrolling each across the visible window. Empty →
-        // pure scrolling noise, no embedded word. Entries are viewed,
-        // not owned; the host must keep them alive for the lifetime of
-        // this Config (static storage is the natural fit).
-        std::vector<std::string_view> words;
-        // ── Live stream window (the honest tape) ──────────────────
+        // ── Write mode: live output stream ────────────────────
         // `stream` is a tail window of REAL bytes the host is receiving
         // (model output, reasoning, a compaction summary — whatever
         // the row is narrating), and `stream_total` is the true cumulative
         // byte count of that stream (>= stream.size()). When non-empty,
-        // the tape stops being decorative noise and becomes a hexdump
-        // of these bytes, right-anchored on the newest byte: the offset
-        // column is the write-head odometer — the TRUE cumulative byte
-        // count, counting UP as bytes arrive — the hex column shows the
-        // actual UTF-8, and the ASCII gutter shows the printable
-        // characters — i.e. the words that surface are words the model
-        // is actually writing, moments before the reveal animation
-        // shows them as prose. Newly-arrived bytes tumble briefly
-        // before locking (same lock-in aesthetic as the waiting state)
-        // so arrival itself is visible.
-        //
-        // Empty stream → the waiting state: the classic noise tape +
-        // word pool. The contrast is deliberate signal: noise means
-        // "nothing has arrived yet" (TTFT window / between sub-turns),
-        // structure means "bytes are flowing". Lifetime contract is the
-        // same as `words`: the view must stay valid for this frame
-        // (build() copies what it needs).
+        // the tape is a hexdump of these bytes, right-anchored on the
+        // newest byte: the offset column is the write-head odometer —
+        // the TRUE cumulative byte count, counting UP as bytes arrive —
+        // the hex column shows the actual UTF-8, and the ASCII gutter
+        // shows the printable characters — i.e. the words that surface
+        // are words the model is actually writing, moments before the
+        // reveal animation shows them as prose. Newly-arrived bytes
+        // tumble briefly before locking so arrival itself is visible.
         std::string_view stream;
         std::size_t      stream_total = 0;
+        // ── Read mode: context being consumed ──────────────────
+        // Used when `stream` is empty (the TTFT window / between
+        // sub-turns): REAL input bytes the model is reading — the
+        // user's prompt. A read head advances through them at a steady
+        // cadence; the visible window trails it, the offset column is
+        // the head's true position in the context, and the word under
+        // the head carries the highlight. Both empty → STATIC (noise,
+        // offset 0x000000) — honest "no signal".
+        //
+        // Lifetime: views must stay valid for this frame (build()
+        // copies what it needs).
+        std::string_view context;
     };
 
     explicit ActivityIndicator(Config c) : cfg_(std::move(c)) {}
@@ -106,30 +104,30 @@ public:
         const Color sweep_fg  = Color::white();
 
         // ── Timing knobs.
-        //   kScrollMs  ms per 1-column leftward scroll of the tape.
-        //   kLockMs    ms per letter "locking in" once a word enters.
-        //   kDriftMs   ms per bit-flip on noise bytes (continuous mutation).
+        //   kReadMs    ms per 1-byte advance of the READ head.
+        //   kDriftMs   ms per bit-flip on static bytes (continuous mutation).
         //   kSweepMs   ms per 1-column sweep of the scanline highlight.
-        constexpr int kScrollMs = 140;
-        constexpr int kLockMs   = 110;
+        constexpr int kReadMs   = 140;
         constexpr int kDriftMs  =  60;
         constexpr int kSweepMs  =  90;
 
-        // Every visible change steps on one of the four cadences above.
+        // Every visible change steps on one of the cadences above.
         // Wake the loop exactly at the NEAREST upcoming step boundary
         // instead of unconditionally at ~60 fps — the tape renders the
         // same frames it always did, the loop just sleeps between them.
+        // (WRITE-mode frames additionally arrive with the data — the
+        // host repaints on byte arrival via its own render gating.)
         {
             std::int64_t until_next = kDriftMs;   // finest cadence bound
-            for (int step : {kScrollMs, kLockMs, kDriftMs, kSweepMs}) {
+            for (int step : {kReadMs, kDriftMs, kSweepMs}) {
                 const std::int64_t u = step - (now_ms % step);
                 if (u < until_next) until_next = u;
             }
             anim::keep_animating_after(until_next > 0 ? until_next : 1);
         }
 
-        // Stream position of the leftmost visible column.
-        const std::int64_t scroll = now_ms / kScrollMs;
+        // READ-head position on its steady cadence.
+        const std::int64_t scroll = now_ms / kReadMs;
 
         // splitmix64-ish base hash of a stream position.
         auto base_byte = [](std::int64_t pos) -> std::uint8_t {
@@ -155,51 +153,52 @@ public:
             return hold ? 0u : static_cast<std::uint8_t>(bit1 ^ bit2);
         };
 
-        // Offset pointer. Waiting state: decorative countdown ticking 1
-        // byte per visible-column scroll, physically coupled to the tape
-        // motion. Live state: the TRUE cumulative byte count of the
-        // narrated stream — an odometer of the model writing, counting
-        // UP as bytes arrive. (The countdown was the original sin this
-        // widget was called out for: "merely a countdown and not hex
-        // values of the current" — the live path is the answer.)
-        const bool live = !cfg_.stream.empty();
+        // Mode select — strictly by what data exists.
+        const bool write_mode = !cfg_.stream.empty();
+        const bool read_mode  = !write_mode && !cfg_.context.empty();
+
+        // Offset pointer — a TRUE position in every mode.
+        //   WRITE : cumulative bytes received (odometer, counts up).
+        //   READ  : the read head's position in the context, advancing
+        //           1 byte per kReadMs and looping — an honest "model
+        //           is consuming this" needle. (The old render here was
+        //           a fake countdown — the exact critique that triggered
+        //           this redesign.)
+        //   STATIC: 0x000000 — no stream, no position, no pretending.
+        // 6 hex digits in all modes so the chrome never shifts at a
+        // mode flip.
+        const std::size_t ctx_len = cfg_.context.size();
+        const std::size_t read_head =
+            read_mode ? static_cast<std::size_t>(
+                            scroll % static_cast<std::int64_t>(ctx_len))
+                      : 0;
         char offbuf[20];
-        if (live) {
-            // 6 hex digits (16 MiB of stream) before the column widens —
-            // same width as the waiting state so the flip doesn't shift
-            // the byte window.
+        if (write_mode) {
             std::snprintf(offbuf, sizeof(offbuf), "0x%06llx",
                           static_cast<unsigned long long>(cfg_.stream_total));
+        } else if (read_mode) {
+            std::snprintf(offbuf, sizeof(offbuf), "0x%06llx",
+                          static_cast<unsigned long long>(read_head));
         } else {
-            constexpr int kOffsetStart = 0x7ffd;
-            const int offset = kOffsetStart - static_cast<int>(scroll & 0xfff);
-            std::snprintf(offbuf, sizeof(offbuf), "0x%06x", offset);
+            std::snprintf(offbuf, sizeof(offbuf), "0x%06x", 0u);
         }
         const std::string off_str = offbuf;
 
-        // Snapshot the live window into the lambda. ≤ a few hundred
-        // bytes; copying makes the component self-contained (the host's
-        // string_view only promises this frame).
+        // Snapshot the narrated bytes into the lambda. ≤ a few hundred
+        // bytes (stream is a host-capped tail; context is copied whole,
+        // typically a prompt — the host caps it); copying makes the
+        // component self-contained (the host's views only promise this
+        // frame).
         std::string stream_tail{cfg_.stream};
+        std::string context{cfg_.context};
         const std::size_t stream_total = cfg_.stream_total;
 
         const std::string detail = cfg_.detail;
 
-        // Snapshot word list into the lambda. cfg_.words is
-        // host-owned static, but copying string_views is trivial and
-        // makes the capture self-contained.
-        std::vector<std::string_view> words = cfg_.words;
-
-        return component([=, words = std::move(words),
-                          stream_tail = std::move(stream_tail),
+        return component([=, stream_tail = std::move(stream_tail),
+                          context = std::move(context),
                           off_str = off_str](int avail_w, int /*h*/) -> Element {
             using namespace dsl;
-
-            // ── Longest word in the pool. The visible window must fit
-            // it whole; that's the one promise we never break.
-            int max_word_len = 0;
-            for (auto sv : words)
-                max_word_len = std::max(max_word_len, static_cast<int>(sv.size()));
 
             // ── Progressive degradation. We pick the richest variant
             // that still fits in avail_w, then size the byte window
@@ -211,9 +210,9 @@ public:
             //   NOHEX   indent + offset + gutter
             //   NOOFF   indent + gutter
             //
-            // The word lives in the gutter, so we drop hex BEFORE
-            // gutter — the active word is the row's whole point and
-            // must stay visible at every width the row can render.
+            // The words live in the gutter, so we drop hex BEFORE
+            // gutter — readable stream text is the row's whole point
+            // and must stay visible at every width the row can render.
             enum Variant { FULL, NODET, NOHEX, NOOFF };
 
             constexpr int kPerByteHex   = 4;   // "xx " + last has no space, +1 added back
@@ -249,9 +248,9 @@ public:
                 if (v == FULL || v == NODET) return kPerByteHex;  // 3 hex + 1 ascii = 4
                 return kPerByteAscii;                              // 1
             };
-            // Need enough bytes to fit the word; floor at 4 so a row
-            // never collapses to nothing.
-            const int floor_bytes = std::max(4, max_word_len);
+            // Floor at 8 bytes — enough for a readable text fragment —
+            // before degrading to a leaner variant.
+            const int floor_bytes = 8;
 
             auto cols_for = [&](Variant v) -> int {
                 const int b = avail_w - fixed_chrome(v);
@@ -267,164 +266,80 @@ public:
             if (cols > 32) cols = 32;
             // Even the leanest variant couldn't reach floor_bytes —
             // we're on a truly tiny terminal. Show what we can; the
-            // word will be partially clipped but no row will wrap.
+            // text will be partially clipped but no row will wrap.
 
-            // ── Word placement on the infinite tape.
-            //
-            // Cycle length = cols + max_word_len + kGap. Each cycle
-            // contains exactly one word, placed `kLeadIn` positions
-            // into the cycle. As `scroll` grows, the visible window
-            // [scroll, scroll+cols) slides right along the tape so
-            // the word drifts left across the screen, then a fresh
-            // word enters from the right.
-            constexpr int kLeadIn = 2;
-            constexpr int kGap    = 6;
-            const int kCycleCols = cols + max_word_len + kGap;
-            const std::int64_t scroll_pos = scroll;
-
-            auto floor_div = [&](std::int64_t a, int b) -> std::int64_t {
-                std::int64_t q = a / b;
-                if ((a % b) != 0 && ((a < 0) != (b < 0))) --q;
-                return q;
-            };
-
-            auto pick_word = [&](std::int64_t cyc) -> std::string_view {
-                if (words.empty()) return {};
-                std::uint64_t x = static_cast<std::uint64_t>(cyc + 1)
-                                  * 0x9E3779B97F4A7C15ull;
-                x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 27;
-                return words[static_cast<std::size_t>(x % words.size())];
-            };
-
-            struct Placement {
-                std::int64_t     start_pos;
-                int              len;
-                std::string_view word;
-            };
-            auto placement = [&](std::int64_t cyc) -> Placement {
-                auto w = pick_word(cyc);
-                return Placement{
-                    static_cast<std::int64_t>(cyc) * kCycleCols + kLeadIn,
-                    static_cast<int>(w.size()),
-                    w,
-                };
-            };
-
-            // At most two cycles overlap the visible window.
-            const std::int64_t cyc_l = floor_div(scroll_pos, kCycleCols);
-            const std::int64_t cyc_r =
-                floor_div(scroll_pos + cols - 1, kCycleCols);
-            const Placement plc_a = placement(cyc_l);
-            const Placement plc_b = (cyc_r == cyc_l) ? plc_a
-                                                     : placement(cyc_r);
-
-            // Returns (letter, letter_index, start_pos) if pos is
-            // inside some placed word; letter < 0 means "noise".
-            auto letter_at = [&](std::int64_t pos)
-                -> std::tuple<int, int, std::int64_t> {
-                auto check = [&](const Placement& p)
-                    -> std::tuple<int, int, std::int64_t> {
-                    if (p.len == 0) return {-1, 0, 0};
-                    if (pos < p.start_pos || pos >= p.start_pos + p.len)
-                        return {-1, 0, 0};
-                    const int li = static_cast<int>(pos - p.start_pos);
-                    return {
-                        static_cast<unsigned char>(
-                            p.word[static_cast<std::size_t>(li)]),
-                        li,
-                        p.start_pos,
-                    };
-                };
-                auto a = check(plc_a);
-                if (std::get<0>(a) >= 0) return a;
-                return check(plc_b);
-            };
-
-            // Sweeping highlight column — independent of scroll, so
+            // Sweeping highlight column — independent of the data, so
             // it visually crosses the tape rather than sliding with
             // it. Reads like a debugger read-head.
             const int sweep_col =
                 static_cast<int>((now_ms / kSweepMs) % cols);
 
-            // role: 0=plain noise, 1=locked letter, 2=tumbling letter slot
-            auto resolve = [&](int c) -> std::pair<std::uint8_t, int> {
-                const std::int64_t pos = scroll_pos + c;
-                auto [letter, li, start_pos] = letter_at(pos);
-                if (letter < 0) {
-                    return {static_cast<std::uint8_t>(
-                                base_byte(pos) ^ drift_byte(pos)), 0};
-                }
-                // Letter slot. The word's first column enters the
-                // visible window when scroll == start_pos - (cols-1).
-                // Lock-in: letter i settles kLockMs after the word's
-                // first letter has entered.
-                const std::int64_t entry_scroll = start_pos - (cols - 1);
-                const std::int64_t entry_ms = entry_scroll * kScrollMs;
-                const std::int64_t lock_ms  = entry_ms
-                    + static_cast<std::int64_t>(li) * kLockMs;
-                if (now_ms >= lock_ms) {
-                    return {static_cast<std::uint8_t>(letter), 1};
-                }
-                // Pre-lock: fast tumble on this slot so the letter
-                // visibly churns before settling.
-                std::uint64_t x = static_cast<std::uint64_t>(now_ms)
-                                    * 0x9E3779B97F4A7C15ull
-                                ^ static_cast<std::uint64_t>(pos)
-                                    * 0xD1B54A32D192ED03ull;
-                x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 27;
-                return {static_cast<std::uint8_t>(x & 0xff), 2};
+            // ── Resolve the byte window: (byte, role) per column.
+            // role: 0 = settled/plain, 1 = highlighted word, 2 = churn.
+            // Hex + ascii render from this one array so they agree
+            // byte-for-byte.
+            //
+            // Shared helper: find the word containing byte index `at`
+            // in `src` (separator = non-printable or space), capped at
+            // kMaxWordHl so a JSON blob / base64 run can't flood the
+            // row with highlight. Returns [from, to] inclusive, or
+            // from > to when `at` sits on a separator.
+            constexpr int kMaxWordHl = 12;
+            auto word_around = [&](const std::string& src, int at)
+                -> std::pair<int, int> {
+                auto sep = [&](int i) {
+                    const unsigned char b =
+                        static_cast<unsigned char>(src[
+                            static_cast<std::size_t>(i)]);
+                    return b <= 0x20 || b >= 0x7f;
+                };
+                if (at < 0 || at >= static_cast<int>(src.size()) || sep(at))
+                    return {0, -1};
+                int from = at, to = at;
+                while (from > 0 && !sep(from - 1)) --from;
+                while (to + 1 < static_cast<int>(src.size()) && !sep(to + 1))
+                    ++to;
+                if (to - from + 1 > kMaxWordHl) from = to - kMaxWordHl + 1;
+                return {from, to};
             };
 
-            // Pre-resolve so hex + ascii agree byte-for-byte.
-            //
-            // LIVE: the window shows the newest `cols` bytes of the real
-            // stream, right-anchored on the write head. Motion comes from
-            // DATA ARRIVAL (each new byte shifts the window left), not
-            // from the wall clock — the tape speed IS the stream speed.
-            // Roles:
-            //   • hot tail (last kHotTail bytes) → tumble: the churn is a
-            //     function of time+position, so the write head visibly
-            //     runs hot; a byte settles once newer bytes displace it —
-            //     lock-in driven by arrival, no per-byte timestamps.
-            //   • current word (bytes after the last separator, capped) →
-            //     locked highlight: you watch the word the model is
-            //     writing RIGHT NOW form at the edge, the live-state
-            //     analogue of the waiting state's embedded word.
-            //   • a young stream (< cols bytes) left-pads with noise at
-            //     pre-first-byte positions — honest (those bytes never
-            //     existed) and it renders arrival as real data
-            //     progressively eating the noise from the right.
             std::vector<std::pair<std::uint8_t, int>> resolved;
             resolved.reserve(static_cast<std::size_t>(cols));
-            if (live) {
-                constexpr int kHotTail   = 2;   // bytes still tumbling at the head
-                constexpr int kMaxWordHl = 12;  // cap word highlight (JSON blobs)
+
+            if (write_mode) {
+                // ── WRITE: newest bytes, right-anchored on the write
+                // head. Motion comes from DATA ARRIVAL (each new byte
+                // shifts the window left), not the wall clock — the
+                // tape speed IS the stream speed. The last kHotTail
+                // bytes churn (the write head runs hot; a byte settles
+                // once newer bytes displace it — lock-in driven by
+                // arrival, no per-byte timestamps). The word being
+                // written right now carries the highlight. A young
+                // stream (< cols bytes) left-pads with noise at
+                // pre-first-byte positions — honest (those bytes never
+                // existed) — so arrival renders as real data eating the
+                // static from the right.
+                constexpr int kHotTail = 2;
                 const int nvis = static_cast<int>(
                     std::min<std::size_t>(static_cast<std::size_t>(cols),
                                           stream_tail.size()));
                 const int pad = cols - nvis;
-                // First byte of the visible window's true stream offset.
                 const std::int64_t first_off =
                     static_cast<std::int64_t>(stream_total)
                     - static_cast<std::int64_t>(nvis);
-                // Current word start: scan back from the head past the
-                // trailing separator run, then to the previous separator.
-                int word_from = nvis;   // index into visible bytes
+                // Visible base index into stream_tail.
+                const int vbase = static_cast<int>(stream_tail.size()) - nvis;
+                // Word at the write head (skip trailing separators).
+                int head = static_cast<int>(stream_tail.size()) - 1;
                 {
                     auto sep = [&](int i) {
                         const unsigned char b = static_cast<unsigned char>(
-                            stream_tail[stream_tail.size()
-                                        - static_cast<std::size_t>(nvis - i)]);
+                            stream_tail[static_cast<std::size_t>(i)]);
                         return b <= 0x20 || b >= 0x7f;
                     };
-                    int i = nvis - 1;
-                    while (i >= 0 && sep(i)) --i;          // skip trailing seps
-                    const int word_end = i;
-                    while (i >= 0 && !sep(i)) --i;         // walk the word
-                    word_from = i + 1;
-                    if (word_end - word_from + 1 > kMaxWordHl)
-                        word_from = word_end - kMaxWordHl + 1;
+                    while (head >= 0 && sep(head)) --head;
                 }
+                const auto [wfrom, wto] = word_around(stream_tail, head);
                 for (int c = 0; c < cols; ++c) {
                     if (c < pad) {
                         const std::int64_t pos =
@@ -433,28 +348,57 @@ public:
                             base_byte(pos) ^ drift_byte(pos)), 0);
                         continue;
                     }
-                    const int vi = c - pad;   // visible-byte index
+                    const int si = vbase + (c - pad);   // index in stream_tail
                     const std::uint8_t b = static_cast<std::uint8_t>(
-                        stream_tail[stream_tail.size()
-                                    - static_cast<std::size_t>(nvis - vi)]);
-                    if (vi >= nvis - kHotTail) {
+                        stream_tail[static_cast<std::size_t>(si)]);
+                    if (c - pad >= nvis - kHotTail) {
                         // Write head: churn, seeded by time + true offset.
                         std::uint64_t x = static_cast<std::uint64_t>(now_ms)
                                             * 0x9E3779B97F4A7C15ull
                                         ^ static_cast<std::uint64_t>(
-                                              first_off + vi)
+                                              first_off + (c - pad))
                                             * 0xD1B54A32D192ED03ull;
                         x ^= x >> 30; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 27;
                         resolved.emplace_back(
                             static_cast<std::uint8_t>(x & 0xff), 2);
-                    } else if (vi >= word_from) {
+                    } else if (si >= wfrom && si <= wto) {
                         resolved.emplace_back(b, 1);
                     } else {
                         resolved.emplace_back(b, 0);
                     }
                 }
+            } else if (read_mode) {
+                // ── READ: a head scanning the REAL context bytes at
+                // kReadMs per byte, window trailing it. The word under
+                // the head lights up as it's passed — the model chewing
+                // through the prompt. Offsets loop at the context end
+                // (re-reading is what attention does anyway). Positions
+                // before the context start (young window at the top of
+                // a loop) render as static.
+                const int rh = static_cast<int>(read_head);
+                const auto [wfrom, wto] = word_around(context, rh);
+                for (int c = 0; c < cols; ++c) {
+                    // Window shows [rh - cols + 1, rh]; the head is the
+                    // rightmost column.
+                    const int ci = rh - (cols - 1) + c;
+                    if (ci < 0) {
+                        // Before the loop start — static.
+                        resolved.emplace_back(static_cast<std::uint8_t>(
+                            base_byte(ci) ^ drift_byte(ci)), 0);
+                        continue;
+                    }
+                    const std::uint8_t b = static_cast<std::uint8_t>(
+                        context[static_cast<std::size_t>(ci)]);
+                    resolved.emplace_back(
+                        b, (ci >= wfrom && ci <= wto) ? 1 : 0);
+                }
             } else {
-                for (int c = 0; c < cols; ++c) resolved.push_back(resolve(c));
+                // ── STATIC: channel noise, never dressed as data.
+                for (int c = 0; c < cols; ++c) {
+                    const std::int64_t pos = scroll + c;
+                    resolved.emplace_back(static_cast<std::uint8_t>(
+                        base_byte(pos) ^ drift_byte(pos)), 0);
+                }
             }
 
             auto style_for = [&](int c, int role) -> Style {

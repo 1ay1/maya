@@ -102,6 +102,9 @@ public:
         const Color muted     = Color::bright_black();
         const Color highlight = cfg_.edge_color;
         const Color sweep_fg  = Color::white();
+        // Real (non-head) text: brighter than the noise channel, cooler than
+        // the head-word highlight — see style_for's role 3.
+        const Color text_fg   = Color::bright_white();
 
         // ── Timing knobs.
         //   kReadMs    ms per 1-byte advance of the READ head.
@@ -168,10 +171,26 @@ public:
         // 6 hex digits in all modes so the chrome never shifts at a
         // mode flip.
         const std::size_t ctx_len = cfg_.context.size();
-        const std::size_t read_head =
-            read_mode ? static_cast<std::size_t>(
-                            scroll % static_cast<std::int64_t>(ctx_len))
-                      : 0;
+        // READ head position. The scan used to be `scroll % ctx_len`, which
+        // teleports: on reaching the last byte the head snaps back to 0 and
+        // the whole window jump-cuts to unrelated text. On a short prompt
+        // that lands every few seconds, and it reads as the indicator
+        // RESETTING mid-thought rather than working.
+        //
+        // Ping-pong instead — walk forward to the end, then back to the
+        // start, over a 2*len cycle. Every step is +-1 byte from the last,
+        // so the window always moves CONTINUOUSLY and the tape looks like
+        // something re-reading a document rather than restarting one.
+        const std::size_t read_head = [&]() -> std::size_t {
+            if (!read_mode || ctx_len == 0) return 0;
+            const std::int64_t len   = static_cast<std::int64_t>(ctx_len);
+            if (len == 1) return 0;
+            const std::int64_t cycle = 2 * len - 2;      // fwd + back, ends once
+            std::int64_t phase = scroll % cycle;
+            if (phase < 0) phase += cycle;
+            return static_cast<std::size_t>(phase < len ? phase
+                                                        : cycle - phase);
+        }();
         char offbuf[20];
         if (write_mode) {
             std::snprintf(offbuf, sizeof(offbuf), "0x%06llx",
@@ -364,7 +383,16 @@ public:
                     } else if (si >= wfrom && si <= wto) {
                         resolved.emplace_back(b, 1);
                     } else {
-                        resolved.emplace_back(b, 0);
+                        // Same reasoning as the READ arm: these are REAL
+                        // bytes off the wire, so a printable one is text and
+                        // should look like text. Rendering it identically to
+                        // the noise channel made arriving output read as
+                        // static with a single lit word in it.
+                        const unsigned char u = b;
+                        resolved.emplace_back(
+                            b, (u > 0x20 && u < 0x7f)
+                                   ? static_cast<std::uint8_t>(3)
+                                   : static_cast<std::uint8_t>(0));
                     }
                 }
             } else if (read_mode) {
@@ -389,8 +417,22 @@ public:
                     }
                     const std::uint8_t b = static_cast<std::uint8_t>(
                         context[static_cast<std::size_t>(ci)]);
-                    resolved.emplace_back(
-                        b, (ci >= wfrom && ci <= wto) ? 1 : 0);
+                    // Role 1 is the HEAD word (hottest — what's being read
+                    // right now). Role 3 is any other real word already in
+                    // the window: still the user's actual prompt, so it
+                    // reads as text rather than as noise. Previously only
+                    // the head word was ever coloured and every other real
+                    // byte rendered identically to the random channel
+                    // noise, which made a window full of genuine prompt
+                    // text look dead — one lit word adrift in static.
+                    std::uint8_t role = 0;
+                    if (ci >= wfrom && ci <= wto) {
+                        role = 1;
+                    } else {
+                        const unsigned char u = b;
+                        if (u > 0x20 && u < 0x7f) role = 3;
+                    }
+                    resolved.emplace_back(b, role);
                 }
             } else {
                 // ── STATIC: channel noise, never dressed as data.
@@ -404,6 +446,12 @@ public:
             auto style_for = [&](int c, int role) -> Style {
                 if (role == 1) return Style{}.with_fg(highlight).with_bold();
                 if (role == 2) return Style{}.with_fg(highlight).with_dim();
+                // Role 3 — REAL text that isn't the head word. Undimmed in
+                // the foreground colour: clearly readable as content, but a
+                // step below the bold highlight so the head still leads the
+                // eye. Without this tier every real byte except one word
+                // rendered exactly like the noise channel.
+                if (role == 3) return Style{}.with_fg(text_fg);
                 if (c == sweep_col) return Style{}.with_fg(sweep_fg);
                 return Style{}.with_fg(muted).with_dim();
             };

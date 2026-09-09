@@ -280,6 +280,39 @@ inline constexpr std::size_t kScrambleN =
     return s;
 }
 
+// True for the box-drawing / block-element codepoints a table or panel FRAME
+// is built from (U+2500..U+259F: ─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ ┈ and the block
+// shades). This is the NARROW "is this chrome?" test used to decide what may
+// never be ghosted. Deliberately distinct from the broad "may I scramble
+// this?" test — see the two-flag split in decorate_text_reveal.
+[[nodiscard]] inline bool is_frame_cp(char32_t c) noexcept {
+    return c >= 0x2500u && c <= 0x259Fu;
+}
+
+// Decode the first codepoint of `s` (already a single-codepoint slice).
+// Returns 0 on a malformed/truncated sequence — callers treat 0 as "not a
+// frame glyph", which fails SAFE (the cp ghosts like content).
+[[nodiscard]] inline char32_t first_cp(std::string_view s) noexcept {
+    if (s.empty()) return 0;
+    const unsigned char b0 = static_cast<unsigned char>(s[0]);
+    if (b0 < 0x80) return static_cast<char32_t>(b0);
+    const auto cont = [&](std::size_t i) -> char32_t {
+        return i < s.size()
+                   ? static_cast<char32_t>(
+                         static_cast<unsigned char>(s[i]) & 0x3Fu)
+                   : 0u;
+    };
+    if ((b0 & 0xE0u) == 0xC0u && s.size() >= 2)
+        return (static_cast<char32_t>(b0 & 0x1Fu) << 6) | cont(1);
+    if ((b0 & 0xF0u) == 0xE0u && s.size() >= 3)
+        return (static_cast<char32_t>(b0 & 0x0Fu) << 12) | (cont(1) << 6)
+             | cont(2);
+    if ((b0 & 0xF8u) == 0xF0u && s.size() >= 4)
+        return (static_cast<char32_t>(b0 & 0x07u) << 18) | (cont(1) << 12)
+             | (cont(2) << 6) | cont(3);
+    return 0;
+}
+
 } // namespace reveal_detail
 
 // ============================================================================
@@ -526,32 +559,54 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
         // the multi-byte │ / ─ box borders and any wide glyph are left byte-
         // identical so column alignment and cell separators never shift — the
         // churn morphs only the cell CONTENT, exactly like prose typing.
-        // Structure guard for protect_structure (e.g. table rows): a
-        // structural glyph — a space, a multi-byte │ / ─ box border, or any
-        // wide glyph (the table FRAME + column padding) — is never scrambled
-        // AND never ghosted/blanked. The frame stays byte-identical (height-
-        // and width-stable) while only single-byte printable-ASCII cell
-        // CONTENT animates, so the row glides in cell-by-cell with its borders
-        // fully present the whole time.
-        bool structural = false;
+        // Structure guard for protect_structure (e.g. table rows). TWO
+        // DISTINCT protections, deliberately split — they used to be one
+        // `structural` flag, and conflating them was a real rendering bug:
+        // "multi-byte ⇒ structural" is a fine proxy for "don't scramble"
+        // (borders are multi-byte) but it also caught every non-ASCII
+        // CONTENT codepoint — em-dashes, curly quotes, ellipses, arrows,
+        // accented letters, CJK, emoji. Those were then exempted from
+        // ghosting too, so they rendered in the settled base style while
+        // still BEHIND the reveal cursor: glyphs visibly popped in ahead of
+        // the glide, intermittently (only on rows containing non-ASCII).
+        //
+        //   • scramble_protected — never SWAP this glyph for a churn glyph.
+        //     BROAD on purpose: any multi-byte or non-printable cp.
+        //     Scrambling a wide glyph or a border would shift the row's
+        //     width/frame, so the conservative test is exactly right here.
+        //   • frame_protected — never GHOST this glyph. Must be NARROW: only
+        //     true chrome (box-drawing/block glyphs, and spaces = column
+        //     padding / indentation) reads as "already there". Ghosting is
+        //     byte-preserving (conceal-by-STYLE; `emitted` is still the real
+        //     cp below), so ghosting a wide content glyph carries zero
+        //     width/reflow risk — the frame stays byte-identical either way.
+        bool scramble_protected = false;
+        bool frame_protected    = false;
         if (p.protect_structure) {
             if (real_cp.size() != 1) {
-                structural = true;
+                scramble_protected = true;
+                frame_protected    = reveal_detail::is_frame_cp(
+                    reveal_detail::first_cp(real_cp));
             } else {
                 const unsigned char ch = static_cast<unsigned char>(real_cp[0]);
-                structural = !(ch >= 0x21 && ch <= 0x7e);
+                const bool printable = ch >= 0x21 && ch <= 0x7e;
+                scramble_protected = !printable;
+                frame_protected    = !printable;  // space = padding: chrome
             }
         }
-        const bool scrambleable = !structural;
+        const bool scrambleable = !scramble_protected;
         const bool scrambling  =
             in_scramble && scrambleable && age < p.scramble_ms;
 
         std::string scramble_owned;
         std::string_view emitted;
-        // Structural glyphs are never ghosted: the table frame stays fully
+        // FRAME glyphs are never ghosted: the table frame stays fully
         // present so only cell content materialises out of (concealed) space.
+        // Note this uses frame_protected, NOT scramble_protected — non-ASCII
+        // content must ghost like any other character or it paints ahead of
+        // the reveal cursor.
         const bool is_ghost =
-            p.enable_ghost && i_from_tail < unrevealed_cp && !structural;
+            p.enable_ghost && i_from_tail < unrevealed_cp && !frame_protected;
         const bool is_sweep_head =
             is_ghost && p.enable_sweep && i_from_tail == unrevealed_cp - 1;
         // Ghost cells now keep their REAL glyph and are made invisible via
@@ -607,7 +662,7 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
                     .with_bold();
             }
         } else if (i_from_tail < unrevealed_cp) {
-            // Not-yet-revealed but kept VISIBLE — a protected structural glyph
+            // Not-yet-revealed but kept VISIBLE — a frame-protected glyph
             // (│/─ table border, column padding) that ghosting skipped. Render
             // in the leaf's settled base style so the frame reads as "already
             // there" and the hot reveal front sweeps INTO it.

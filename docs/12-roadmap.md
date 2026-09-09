@@ -36,7 +36,7 @@ The following features from the original roadmap have been fully implemented:
 
 ### Tier 3 — Rich Content ✅
 
-- **Markdown Rendering** — `src/widget/markdown.cpp`: full renderer supporting headers, code blocks (fenced), ordered/unordered lists, links (OSC 8 hyperlinks), bold/italic emphasis, and tables
+- **Markdown Rendering** — `src/widget/markdown/`: full renderer supporting headers, code blocks (fenced), ordered/unordered lists, links (OSC 8 hyperlinks), bold/italic emphasis, and tables
 
 ### Tier 4 — Motion, Layering, Partial Updates & Highlighting ✅
 

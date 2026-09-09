@@ -393,7 +393,12 @@ struct ListMarker {
                        || (lcs[p] >= '0' && lcs[p] <= '9')
                        || lcs[p] == '-'))
                 ++p;
-            std::string_view name = lcs.substr(ns, p - ns);
+            // substr() on the std::string would return a TEMPORARY whose
+            // buffer dies at the end of this full-expression, leaving `name`
+            // dangling before is_known_tag() ever reads it (-Wdangling-gsl).
+            // View `lcs` first so substr() is the string_view overload: a
+            // borrow of the live local, no allocation, no temporary.
+            std::string_view name = std::string_view{lcs}.substr(ns, p - ns);
             if (!html::is_known_tag(name)) return 0;
             return 7;
         }

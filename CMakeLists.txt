@@ -197,8 +197,8 @@ set(MAYA_LIB_SOURCES
     src/render/canvas_witness.cpp
     src/render/scrollback_ledger.cpp
     src/widget/panel.cpp
-    src/widget/markdown.cpp
     # markdown widget — three modules: parser / render / streaming
+    # (component layout: src/widget/markdown/LAYOUT.md)
     src/widget/markdown/parser/parser_inline.cpp
     src/widget/markdown/parser/parser_block.cpp
     src/widget/markdown/parser/text_transform.cpp

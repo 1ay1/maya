@@ -20,6 +20,7 @@
 #include <variant>
 #include <vector>
 
+#include "maya/core/render_context.hpp"   // available_width — eager pad guard
 #include "maya/element/builder.hpp"
 #include "maya/render/cache_id.hpp"
 #include "maya/style/style.hpp"
@@ -672,33 +673,80 @@ const Element& StreamingMarkdown::build() const {
     // The 2-column left pad is decoration; the TEXT is the point. On an
     // ultra-narrow surface (a 1-2 column canvas: a terminal mid-resize
     // reporting a degenerate width, a deeply nested container whose
-    // ancestors' chrome has eaten everything) that pad consumes the entire
-    // content area and the document renders as NOTHING — silent data loss,
-    // which is the worst failure a renderer has. Drop the indent there and
-    // show the words. component() defers the decision to layout time, so
-    // the width is the REAL one this widget was given, not a guess.
-    auto padded_children = std::move(outer_children);
-    cached_build_ = detail::component(
-        [w_cell = last_paint_width_cell_,
-         kids = std::move(padded_children)](int avail_w, int) -> Element {
-            const int pad = avail_w >= 4 ? 2 : 0;
-            // Remember the CONTENT width — avail_w minus the padding applied
-            // right here — for the reveal's wrap-aware line_bounded clamp
-            // (see last_paint_width_cell_). The tail text wraps inside this
-            // padding, so the padded value is the one that reproduces the
-            // renderer's own break points; using avail_w would place the
-            // last-visual-row boundary two columns late.
-            //
-            // Capture the shared CELL, never `this`: this lambda is invoked
-            // at LAYOUT time, and the Element holding it can outlive the
-            // widget (settled_element() hands the settled tree to the host
-            // as a shared_ptr, and the renderer caches it across frames).
-            // Writing `this->last_paint_width_` here was a 4-byte write into
-            // freed memory on every layout of a settled tree.
-            *w_cell = avail_w - pad;
-            return (detail::vstack().gap(1).padding(0, 0, 0, pad)
-                        .align_self(Align::Stretch)(kids)).build();
-        }).build();
+    // ancestors' chrome has eaten everything) that pad would consume the
+    // entire content area and the document would render as NOTHING —
+    // silent data loss, which is the worst failure a renderer has. So the
+    // pad must yield on a degenerate width.
+    //
+    // ── DO NOT wrap this in a component() ────────────────────────────
+    //
+    // It was, and that single wrapper is the worst streaming regression
+    // this widget has had. A ComponentElement is a DEFERRED subtree: with
+    // no measure callback the engine auto-measures by INVOKING render()
+    // during layout, and the cross-frame cache that would absorb it is
+    // keyed on hash_id — an empty hash_id gets pointer keying, whose
+    // cross-frame hits are deliberately rejected. So an un-keyed component
+    // re-renders its whole subtree every frame, forever. Wrapping the
+    // document to decide ONE pad dragged every committed block plus the
+    // live tail into a per-frame rebuild, and the reveal cursor — a
+    // deadline system sharing this thread — started missing frames.
+    //
+    // Measured (reveal_cost_probe / reveal_smoothness_probe):
+    //   component renders/frame 3.54 -> 4.54   (+1.00: one un-cached comp)
+    //   layout 93us -> 144us, paint 60us -> 129us
+    //   streaming stall frames  18 -> 112      (6.2x)
+    //
+    // Hoisting the built tree OUT of the lambda so the builder body is
+    // O(1) does NOT fix it — measured, still 112. The deferral itself is
+    // the cost. See the COST CONTRACT block in element/builder.hpp.
+    //
+    // Resolved EAGERLY whenever the width is knowable, and deferred only
+    // when it genuinely is not.
+    //
+    // During normal streaming there is an ambient RenderContext (the app
+    // paints inside one), so available_width() is the real terminal width
+    // and the pad is decided here — no component, no per-frame rebuild.
+    // That is the hot path and it must stay free.
+    //
+    // Outside a render pass (render_to_string(el, w), a host that builds
+    // before it paints) there is no context to ask; available_width()
+    // would answer with its 80-column default and a genuinely 1-2 column
+    // surface would keep the pad and render nothing. Only THAT case takes
+    // a component — and it is not the streaming path, so the per-frame
+    // cost does not apply.
+    const bool width_known = have_render_context();
+    const int  ctx_w       = available_width();
+    const int  known_w     = width_known ? ctx_w : *last_paint_width_cell_;
+
+    if (width_known || known_w > 0) {
+        const int pad = (known_w > 0 && known_w < 4) ? 0 : 2;
+        // Feed the reveal's wrap-aware line_bounded clamp the CONTENT width
+        // (what the tail actually wraps inside), not the outer width — the
+        // outer value would place the last-visual-row boundary two columns
+        // late.
+        if (known_w > pad) *last_paint_width_cell_ = known_w - pad;
+        cached_build_ = (
+            detail::vstack().gap(1).padding(0, 0, 0, pad)
+                .align_self(Align::Stretch)(std::move(outer_children))
+        ).build();
+    } else {
+        auto padded_children = std::move(outer_children);
+        cached_build_ = detail::component(
+            [w_cell = last_paint_width_cell_,
+             kids = std::move(padded_children)](int avail_w, int) -> Element {
+                const int pad = avail_w >= 4 ? 2 : 0;
+                // Capture the shared CELL, never `this`: this lambda runs at
+                // LAYOUT time and the Element holding it can outlive the
+                // widget (settled_element() hands the settled tree to the
+                // host as a shared_ptr, and the renderer caches it across
+                // frames). Writing `this->last_paint_width_` here was a
+                // 4-byte write into freed memory on every layout of a
+                // settled tree.
+                *w_cell = avail_w - pad;
+                return (detail::vstack().gap(1).padding(0, 0, 0, pad)
+                            .align_self(Align::Stretch)(kids)).build();
+            }).build();
+    }
     cached_tail_size_     = tail.size();
     cached_prefix_gen_    = prefix_->generation;
     cached_fold_gen_      = fold_generation_;

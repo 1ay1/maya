@@ -248,6 +248,49 @@ namespace detail {
 //   component([](int w, int h) {
 //       return LineChart({.series = data, .width = w, .height = h});
 //   }).grow(1).border(BorderStyle::Round)
+//
+// ── COST CONTRACT: read this before wrapping anything big ────────────────
+//
+// A component is not free deferral — it is a PER-FRAME REBUILD of whatever
+// it wraps, unless you give it a stable hash_id.
+//
+//   1. With no `measure` callback the engine AUTO-MEASURES by literally
+//      invoking render() during layout and counting rows. So render() runs
+//      during measure AND during paint.
+//   2. The cross-frame cache that would absorb that is keyed on hash_id.
+//      An EMPTY hash_id falls back to pointer keying, and pointer-keyed
+//      cross-frame hits are deliberately REJECTED (the closure may have
+//      captured mutated state). Within one frame the measure/paint pair
+//      still share a render; across frames they do not.
+//
+// Net: an un-keyed component re-renders its ENTIRE subtree every frame,
+// forever, no matter how static its content is.
+//
+// That is fine for a leaf that costs nothing to rebuild (a divider rule, a
+// one-line status chip — most call sites here). It is a serious bug when
+// the wrapped subtree is large or when something on the same frame budget
+// is animating.
+//
+// REAL REGRESSION (maya 8e765ce, reverted): StreamingMarkdown's whole
+// document got wrapped in an un-keyed width-aware component so a 2-column
+// pad could yield on ultra-narrow surfaces. One cheap decoration dragged
+// every committed block plus the live tail into a per-frame rebuild; the
+// reveal cursor lost its frame budget and streaming stalls went 6.2x
+// (18 -> 112 zero-content frames on reveal_smoothness_probe). Cost showed
+// up as +1.00 component render()/frame on reveal_cost_probe.
+//
+// Non-obvious, and learned by measuring: hoisting the built tree OUT of
+// the lambda so the builder body is O(1) does NOT help. The deferral
+// itself is the cost, not the child construction.
+//
+// So, before adding a component() ask:
+//   • Is the wrapped subtree cheap to rebuild EVERY frame? — fine.
+//   • Does it really need the laid-out width? A value already known at
+//     build time needs no component at all.
+//   • Otherwise: give it a content-stable .hash_id(), which is what makes
+//     both the measure and the paint O(1).
+//
+// reveal_cost_probe is the regression gate for this class of mistake.
 
 class ComponentBuilder {
     ComponentElement element_{};

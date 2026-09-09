@@ -54,6 +54,16 @@ namespace detail {
 inline thread_local const RenderContext* render_ctx_ = nullptr;
 } // namespace detail
 
+/// True when a render pass is active on this thread — i.e. when
+/// available_width()/available_height() reflect a REAL surface rather
+/// than their safe defaults. Lets a widget distinguish "the surface is
+/// 80 columns" from "nobody has told me the width yet", which is the
+/// difference between resolving a width-dependent decision eagerly and
+/// having to defer it into a component().
+[[nodiscard]] inline bool have_render_context() noexcept {
+    return detail::render_ctx_ != nullptr;
+}
+
 /// Query the available width from the current render context.
 /// Returns 80 if called outside a render pass (safe default).
 [[nodiscard]] inline int available_width() noexcept {

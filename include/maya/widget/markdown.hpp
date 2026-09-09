@@ -304,7 +304,27 @@ private:
     // so a newline-only bound covers the whole wrapped paragraph and every
     // frame re-styles rows that have already settled. Recorded during build()
     // (mutable: build() is const and this is pure render bookkeeping).
-    mutable int last_paint_width_ = 0;
+    //
+    // HEAP CELL, not a plain member, and this is load-bearing. The value is
+    // written from inside the component() lambda in build.cpp, which runs at
+    // LAYOUT time — arbitrarily later than build(), and (via settled_element()
+    // / the renderer's cross-frame component cache) potentially after THIS
+    // WIDGET IS GONE: the settled tree is handed to the host as a
+    // shared_ptr<const Element> that deliberately outlives the widget. A
+    // lambda capturing `this` to assign a member therefore writes 4 bytes
+    // into freed memory every time such a tree is laid out. Valgrind names it
+    // exactly: "Invalid write of size 4 ... StreamingMarkdown::build()::
+    // {lambda(int,int)}" over a block freed by the widget's destructor — and
+    // the corrupted heap then surfaces far away, as bad_array_new_length or a
+    // SIGSEGV inside an unrelated Element copy.
+    //
+    // A shared_ptr cell lets the lambda capture the CELL by value: the write
+    // target stays alive exactly as long as some Element still references it,
+    // whether or not the widget does.
+    std::shared_ptr<int> last_paint_width_cell_ = std::make_shared<int>(0);
+    [[nodiscard]] int last_paint_width() const noexcept {
+        return *last_paint_width_cell_;
+    }
 
     // Reveal cursor pacing. The typewriter advances at
     //   cps = max(floor_cps, backlog / drain_secs)

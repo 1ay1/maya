@@ -1153,8 +1153,8 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
             // paint; the tail leaf is wrapped at that same width, so it is the
             // correct basis. A stale value after a resize costs at most one
             // frame of the old bound, self-correcting on the next paint.
-            rp.wrap_width = last_paint_width_ > 0
-                                ? static_cast<std::size_t>(last_paint_width_)
+            rp.wrap_width = last_paint_width() > 0
+                                ? static_cast<std::size_t>(last_paint_width())
                                 : 0u;
             if (reveal_decorate_) (void)anim::decorate_text_reveal(*tail, rp);
             }

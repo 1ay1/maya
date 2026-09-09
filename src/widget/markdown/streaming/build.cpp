@@ -679,15 +679,23 @@ const Element& StreamingMarkdown::build() const {
     // the width is the REAL one this widget was given, not a guess.
     auto padded_children = std::move(outer_children);
     cached_build_ = detail::component(
-        [this, kids = std::move(padded_children)](int avail_w, int) -> Element {
+        [w_cell = last_paint_width_cell_,
+         kids = std::move(padded_children)](int avail_w, int) -> Element {
             const int pad = avail_w >= 4 ? 2 : 0;
             // Remember the CONTENT width — avail_w minus the padding applied
             // right here — for the reveal's wrap-aware line_bounded clamp
-            // (see last_paint_width_). The tail text wraps inside this
+            // (see last_paint_width_cell_). The tail text wraps inside this
             // padding, so the padded value is the one that reproduces the
             // renderer's own break points; using avail_w would place the
             // last-visual-row boundary two columns late.
-            last_paint_width_ = avail_w - pad;
+            //
+            // Capture the shared CELL, never `this`: this lambda is invoked
+            // at LAYOUT time, and the Element holding it can outlive the
+            // widget (settled_element() hands the settled tree to the host
+            // as a shared_ptr, and the renderer caches it across frames).
+            // Writing `this->last_paint_width_` here was a 4-byte write into
+            // freed memory on every layout of a settled tree.
+            *w_cell = avail_w - pad;
             return (detail::vstack().gap(1).padding(0, 0, 0, pad)
                         .align_self(Align::Stretch)(kids)).build();
         }).build();

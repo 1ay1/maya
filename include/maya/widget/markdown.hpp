@@ -298,6 +298,14 @@ private:
     // set_reveal_decorate().
     bool reveal_decorate_ = true;
 
+    // Width (columns) the layout engine handed this widget on its last paint.
+    // The reveal's line_bounded clamp needs it to locate the last VISUAL row
+    // of the live tail: streaming prose is a single source line with no '\n',
+    // so a newline-only bound covers the whole wrapped paragraph and every
+    // frame re-styles rows that have already settled. Recorded during build()
+    // (mutable: build() is const and this is pure render bookkeeping).
+    mutable int last_paint_width_ = 0;
+
     // Reveal cursor pacing. The typewriter advances at
     //   cps = max(floor_cps, backlog / drain_secs)
     // so a quiet stream still types at floor_cps, while a large

@@ -1143,6 +1143,19 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 rp.char_step_ms = static_cast<std::int64_t>(kCharStepMs * scale);
             }
             rp.ghost_extra           = kGhostExtra;
+            // wrap_width lets line_bounded find the last VISUAL row. Prose is
+            // one source line with no '\n', so without it the "last line"
+            // bound degenerates to the whole paragraph and every effect
+            // re-sweeps the already-settled wrapped rows each frame (the
+            // visible "glides, goes back, glides again"), including rows that
+            // may already sit in immutable scrollback. last_paint_width_ is
+            // the width the layout engine handed this widget on the previous
+            // paint; the tail leaf is wrapped at that same width, so it is the
+            // correct basis. A stale value after a resize costs at most one
+            // frame of the old bound, self-correcting on the next paint.
+            rp.wrap_width = last_paint_width_ > 0
+                                ? static_cast<std::size_t>(last_paint_width_)
+                                : 0u;
             if (reveal_decorate_) (void)anim::decorate_text_reveal(*tail, rp);
             }
         } else if (eager_render
@@ -1220,6 +1233,17 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                 auto orig = comp->render;
                 const bool decorate = reveal_decorate_;
                 comp->render = [orig, rp, decorate](int w, int h) -> Element {
+                    // The layout engine hands the REAL width here, and only
+                    // here. line_bounded needs it: a live tail row is a single
+                    // source line with no '\n', so bounding by newline alone
+                    // leaves the window covering every WRAPPED row of the
+                    // block — each frame then re-styles rows that already
+                    // settled (visible as the tail "going back" mid-glide) and
+                    // can rewrite a row that has scrolled into immutable
+                    // scrollback, which is the corruption line_bounded exists
+                    // to prevent. Copy per call: `rp` is shared by every paint.
+                    anim::TextRevealParams rpw = rp;
+                    rpw.wrap_width = w > 0 ? static_cast<std::size_t>(w) : 0u;
                     Element out = orig ? orig(w, h) : Element{};
                     // The eager wrapper's render hands back the block's OWN
                     // lazy renderer (another ComponentElement — the table's
@@ -1243,20 +1267,20 @@ const Element& StreamingMarkdown::render_live_overlay_() const {
                             std::get_if<ComponentElement>(&out.inner)) {
                         auto inner_render = inner->render;
                         inner->render =
-                            [inner_render, rp, decorate](int w2, int h2) -> Element {
+                            [inner_render, rpw, decorate](int w2, int h2) -> Element {
                             Element mat = inner_render ? inner_render(w2, h2)
                                                        : Element{};
                             if (TextElement* leaf =
                                     rightmost_content_text_leaf(mat))
                                 if (decorate)
-                                    (void)anim::decorate_text_reveal(*leaf, rp);
+                                    (void)anim::decorate_text_reveal(*leaf, rpw);
                             return mat;
                         };
                         inner->hash_id = {};
                     } else if (TextElement* leaf =
                                    rightmost_content_text_leaf(out)) {
                         if (decorate)
-                            (void)anim::decorate_text_reveal(*leaf, rp);
+                            (void)anim::decorate_text_reveal(*leaf, rpw);
                     }
                     return out;
                 };

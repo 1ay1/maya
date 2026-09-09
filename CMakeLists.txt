@@ -560,6 +560,7 @@ set_tests_properties(
         tests/reveal_pacing_test.cpp
         tests/reveal_resume_test.cpp
         tests/reveal_smoothness_probe.cpp
+        tests/reveal_settled_rows_test.cpp
         tests/stream_md_lag_test.cpp
         tests/stream_async_freeze_test.cpp
         tests/bench_thread_scaling.cpp

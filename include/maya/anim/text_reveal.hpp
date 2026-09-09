@@ -40,6 +40,8 @@
 #include <vector>
 
 #include "../core/animation.hpp"
+// element/text.hpp also supplies word_wrap, which line_bounded's wrap-aware
+// clamp re-uses so the visual row boundary matches the renderer exactly.
 #include "../element/text.hpp"
 #include "../style/color.hpp"
 #include "../style/style.hpp"
@@ -129,9 +131,30 @@ struct TextRevealParams {
     // guarantees only the bottom — the live edge — is ever rewritten, so a
     // line that has already scrolled into native scrollback can never be
     // recoloured/ghosted from underneath (the streaming scrollback-corruption
-    // class of bug). No-op for single-line leaves (prose, one table row).
+    // class of bug).
+    //
     // Default off so prose decoration is byte-for-byte unchanged.
     bool line_bounded = false;
+
+    // Wrap width for line_bounded, in columns. 0 = don't consider wrapping.
+    //
+    // WHY THIS EXISTS. line_bounded alone bounds by the last '\n' in the
+    // SOURCE. A streaming prose paragraph is one long source line with no
+    // newline in it at all — the RENDERER wraps it across several visual
+    // rows. So rfind('\n') finds nothing, the window opens at byte 0, and
+    // every effect (gradient recolour, ghost conceal) sweeps the whole
+    // paragraph across every wrapped row, every frame. Two consequences,
+    // both observed: settled rows above the live one visibly re-render
+    // mid-glide ("it glides, goes back, glides again"), and — the reason
+    // line_bounded was introduced — an upper wrapped row that has scrolled
+    // into native scrollback still gets its style rewritten, which is
+    // exactly the corruption line_bounded was meant to prevent. The guard
+    // was a no-op for the single most common content type.
+    //
+    // Given the width, the bound becomes the last WRAP POINT rather than the
+    // last newline, so "only the bottom visual row animates" holds for
+    // unbroken prose too.
+    std::size_t wrap_width = 0;
 
     // How the not-yet-typed (ghost) cp render. The leaf must stay
     // HEIGHT/WIDTH-stable (the markdown streaming path commits rows to native
@@ -341,6 +364,27 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
         if (nl != std::string_view::npos) line_start = nl + 1;
     }
 
+    // WRAP-AWARE clamp for the EFFECT WINDOW only (see paint_start below).
+    //
+    // Deliberately kept separate from line_start: line_start also defines the
+    // region total_cp / revealed_cp are counted over, i.e. the reveal cursor's
+    // own coordinate system. Moving it to the last wrapped row would renormal-
+    // ise the reveal FRACTION onto a handful of codepoints, so one frame's
+    // advance covers a whole row and the typewriter pops blocks whole instead
+    // of gliding (caught by reveal_smoothness_probe's per-frame cell cap).
+    //
+    // The pacing math must keep seeing the entire logical line; only the
+    // rewriting is confined to the bottom visual row.
+    std::size_t paint_start = line_start;
+    if (p.line_bounded && p.wrap_width > 0) {
+        const std::string_view bounded = orig.substr(line_start);
+        const auto rows = word_wrap(bounded, static_cast<int>(p.wrap_width));
+        if (rows.size() > 1)
+            paint_start =
+                line_start
+                + static_cast<std::size_t>(rows.back().data() - bounded.data());
+    }
+
     // Resolve total / revealed codepoint counts over the bounded region.
     std::size_t total_cp = p.total_cp;
     if (total_cp == 0) {
@@ -385,8 +429,23 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
                  (p.enable_ghost ? unrevealed_cp + p.ghost_extra : 0u));
     std::size_t trail_byte_start =
         reveal_detail::utf8_step_back(orig, trail_cp_target);
-    if (p.line_bounded && trail_byte_start < line_start)
-        trail_byte_start = line_start;   // never animate past the last '\n'
+    // Clamp the window to the bottom VISUAL row — but never at the cost of
+    // the GHOST region. The ghost band is what conceals the not-yet-revealed
+    // codepoints; if the clamp cuts into it, that text renders in its final
+    // visible style immediately and the block "pops" instead of gliding (the
+    // per-frame cell cap in reveal_smoothness_probe catches exactly this).
+    //
+    // So the clamp may only ever move the START of the window forward past
+    // SETTLED text — the region left of the reveal front, which is the part
+    // that must not be restyled once it has scrolled away. Compute the first
+    // byte the ghost still needs and never clamp beyond it.
+    if (p.line_bounded && trail_byte_start < paint_start) {
+        const std::size_t ghost_floor =
+            p.enable_ghost
+                ? reveal_detail::utf8_step_back(orig, unrevealed_cp)
+                : orig.size();
+        trail_byte_start = std::min(paint_start, ghost_floor);
+    }
     const std::string_view trail_slice = orig.substr(trail_byte_start);
 
     // Codepoint boundaries within the trail slice.

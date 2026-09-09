@@ -679,8 +679,15 @@ const Element& StreamingMarkdown::build() const {
     // the width is the REAL one this widget was given, not a guess.
     auto padded_children = std::move(outer_children);
     cached_build_ = detail::component(
-        [kids = std::move(padded_children)](int avail_w, int) -> Element {
+        [this, kids = std::move(padded_children)](int avail_w, int) -> Element {
             const int pad = avail_w >= 4 ? 2 : 0;
+            // Remember the CONTENT width — avail_w minus the padding applied
+            // right here — for the reveal's wrap-aware line_bounded clamp
+            // (see last_paint_width_). The tail text wraps inside this
+            // padding, so the padded value is the one that reproduces the
+            // renderer's own break points; using avail_w would place the
+            // last-visual-row boundary two columns late.
+            last_paint_width_ = avail_w - pad;
             return (detail::vstack().gap(1).padding(0, 0, 0, pad)
                         .align_self(Align::Stretch)(kids)).build();
         }).build();

@@ -192,9 +192,66 @@ public:
                                                         : cycle - phase);
         }();
         char offbuf[20];
+        // Snapshot the narrated bytes. <= a few hundred bytes (stream is a
+        // host-capped tail; context is a prompt the host caps); copying makes
+        // the component self-contained (the host's views only promise this
+        // frame). Declared before the odometer because the WRITE offset is
+        // derived from the glided head below, not from the raw total.
+        std::string stream_tail{cfg_.stream};
+        std::string context{cfg_.context};
+        const std::size_t stream_total = cfg_.stream_total;
+
+        // WRITE-mode window anchor: which absolute stream byte sits at the
+        // right edge this frame.
+        //
+        // Anchoring hard on the newest byte makes motion purely ARRIVAL-
+        // driven, and a real SSE wire does not arrive smoothly: a fat delta
+        // lands, then several frames pass with nothing. The window sat
+        // FROZEN through those frames and then jumped a whole phrase at once
+        // — stutter, not flow ("it's not continuous"), with only the two
+        // hot-tail columns tumbling in between.
+        //
+        // NOTE (known limitation, deliberately not "fixed" here).
+        //
+        // WRITE motion is purely ARRIVAL-driven: the window is anchored on
+        // the newest byte. A real SSE wire does not arrive smoothly — a fat
+        // delta lands, then several frames pass with nothing — so the tape
+        // holds still through the quiet frames and then advances a whole
+        // phrase at once. Only the two hot-tail columns tumble in between.
+        // That is the "it's not continuous" report, and it is real.
+        //
+        // A clock-driven smoothing ramp was attempted and REVERTED. Two
+        // dead ends, both measured, recorded so they aren't retried blind:
+        //
+        //   1. anchor = min(now/rate, total) glides only while the ramp
+        //      trails the byte total — true near t=0, false in any real
+        //      session, where it degenerates to "newest byte" and freezes
+        //      exactly as before. (0 frozen frames at t0=0, 7 of 14 at
+        //      t0=5000 — a probe that only tried t0=0 called it fixed.)
+        //   2. anchor = total - (depth - phase) with phase a modulo of the
+        //      clock removes the freezes but makes the window REWIND when
+        //      the phase wraps: a sawtooth, i.e. the same teleport class
+        //      this file just removed from the READ head. Strictly worse
+        //      than stuttering.
+        //
+        // Doing this properly needs the widget to remember its own last
+        // anchor across frames (a monotonic pursuit of the head, never
+        // decreasing) rather than deriving position from the clock alone.
+        // ActivityIndicator is currently a pure function of (config, clock)
+        // and is rebuilt every frame, so that is a real design change, not
+        // a tweak — and it must keep the frozen-clock testability that
+        // makes this widget verifiable at all.
+        const std::size_t write_head = stream_total;
+
+
         if (write_mode) {
+            // The TRUE cumulative total, deliberately not the glided head.
+            // This column is the stream's odometer — a real byte count the
+            // user can trust — and it must keep counting at the wire's
+            // actual rate even while the WINDOW is still paying out a
+            // burst. Only the narrated bytes glide; the number is data.
             std::snprintf(offbuf, sizeof(offbuf), "0x%06llx",
-                          static_cast<unsigned long long>(cfg_.stream_total));
+                          static_cast<unsigned long long>(stream_total));
         } else if (read_mode) {
             std::snprintf(offbuf, sizeof(offbuf), "0x%06llx",
                           static_cast<unsigned long long>(read_head));
@@ -202,15 +259,6 @@ public:
             std::snprintf(offbuf, sizeof(offbuf), "0x%06x", 0u);
         }
         const std::string off_str = offbuf;
-
-        // Snapshot the narrated bytes into the lambda. ≤ a few hundred
-        // bytes (stream is a host-capped tail; context is copied whole,
-        // typically a prompt — the host caps it); copying makes the
-        // component self-contained (the host's views only promise this
-        // frame).
-        std::string stream_tail{cfg_.stream};
-        std::string context{cfg_.context};
-        const std::size_t stream_total = cfg_.stream_total;
 
         const std::string detail = cfg_.detail;
 
@@ -339,12 +387,13 @@ public:
                 // existed) — so arrival renders as real data eating the
                 // static from the right.
                 constexpr int kHotTail = 2;
+                const std::int64_t shown_total =
+                    static_cast<std::int64_t>(write_head);
                 const int nvis = static_cast<int>(
                     std::min<std::size_t>(static_cast<std::size_t>(cols),
                                           stream_tail.size()));
                 const int pad = cols - nvis;
-                const std::int64_t first_off =
-                    static_cast<std::int64_t>(stream_total)
+                const std::int64_t first_off = shown_total
                     - static_cast<std::int64_t>(nvis);
                 // Visible base index into stream_tail.
                 const int vbase = static_cast<int>(stream_tail.size()) - nvis;

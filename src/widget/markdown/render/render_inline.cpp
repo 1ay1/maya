@@ -284,13 +284,22 @@ static void flatten_inlines(const std::vector<md::Inline>& spans,
     // So: an opening tag only opens a STYLE SCOPE when a matching close
     // exists later in the same block. Unbalanced ones fall through to the
     // dimmed-literal passthrough and stay visible. Well-formed HTML is
-    // unaffected; a lone mention is preserved verbatim. Counting closes up
-    // front and decrementing as we pass them keeps this one linear walk.
+    // unaffected; a lone mention is preserved verbatim.
+    //
+    // Counting closes up front and decrementing as we pass them keeps this
+    // one linear walk. The map is only built when the block actually
+    // CONTAINS raw inline HTML — the overwhelmingly common case is prose
+    // with none, and paying a heap allocation per paragraph to look up an
+    // always-empty table shows up in the render loop for nothing.
     std::unordered_map<std::string, int> closes_ahead;
-    for (const auto& span : spans)
-        if (const auto* r = std::get_if<md::RawInline>(&span.inner))
-            if (auto t = html::parse_tag(r->content); t && t->is_close)
-                ++closes_ahead[t->name];
+    const bool has_raw = std::ranges::any_of(spans, [](const md::Inline& s) {
+        return std::holds_alternative<md::RawInline>(s.inner);
+    });
+    if (has_raw)
+        for (const auto& span : spans)
+            if (const auto* r = std::get_if<md::RawInline>(&span.inner))
+                if (auto t = html::parse_tag(r->content); t && t->is_close)
+                    ++closes_ahead[t->name];
 
     for (const auto& span : spans) {
         const auto* raw = std::get_if<md::RawInline>(&span.inner);

@@ -84,6 +84,30 @@ public:
         // Lifetime: views must stay valid for this frame (build()
         // copies what it needs).
         std::string_view context;
+
+        // ── Simple mode ────────────────────────────────────────
+        // The byte tape narrates the wire honestly, but it reads as
+        // noise to anyone who isn't debugging the transport: a row of
+        // hex that changes every frame looks like a fault, not like
+        // progress. Simple mode drops the tape entirely and renders
+        // ONE calm status row — spinner + verb + detail — that stays
+        // put for the whole run and only ever changes the things that
+        // actually changed (the spinner frame and the elapsed clock).
+        //
+        // It is deliberately NOT a separate widget: the host swaps a
+        // bool, and the height contract (exactly one row, always) is
+        // identical in both modes, so the mode can flip mid-run
+        // without a frame-height change.
+        //
+        // `verb` is the whole message ("thinking", "running grep").
+        // `spinner` is one pre-picked glyph — the HOST owns the
+        // animation clock so every animated surface in the frame
+        // steps in lockstep; passing a glyph rather than spinning
+        // internally keeps this widget a pure function of its config.
+        // Empty spinner renders a static bullet (no animation at all).
+        bool        simple = false;
+        std::string verb;
+        std::string spinner;
     };
 
     explicit ActivityIndicator(Config c) : cfg_(std::move(c)) {}
@@ -92,6 +116,90 @@ public:
 
     [[nodiscard]] Element build() const {
         using namespace dsl;
+
+        // ── Simple mode: one calm, responsive row. ────────────────
+        // Rendered BEFORE any tape work so none of the byte-window
+        // machinery runs (no hex buffers, no read-head arithmetic).
+        //
+        // Responsive by construction: the row is a single text run
+        // sized inside a component() so it re-fits on every resize,
+        // and it degrades by DROPPING the detail (the elapsed/rate
+        // readout) before it ever truncates the verb — at any width
+        // the answer to "what is it doing" survives; only the
+        // decoration goes. Below that it ellipsizes the verb rather
+        // than wrapping, because wrapping would make the row two
+        // rows tall and break the one-row height contract that keeps
+        // the indicator→content flip from shifting the frame.
+        if (cfg_.simple) {
+            const Color muted = Color::bright_black();
+            const Color accent = cfg_.edge_color;
+
+            // No verb and no spinner => the pure SPACER form: one empty
+            // row. The host uses this to hold the slot's height across the
+            // active->settled seam without printing anything. Note this is
+            // NOT the same as an empty tape Config, which renders STATIC
+            // mode (a row of 0x000000) — an easy and ugly mistake.
+            if (cfg_.verb.empty() && cfg_.spinner.empty())
+                return text("").build();
+
+            std::string spin  = cfg_.spinner.empty()
+                                    ? std::string{"\xe2\x80\xa2"}   // •
+                                    : cfg_.spinner;
+            std::string verb   = cfg_.verb.empty() ? std::string{"working"}
+                                                   : cfg_.verb;
+            std::string detail = cfg_.detail;
+
+            return component([=](int avail_w, int /*h*/) -> Element {
+                using namespace dsl;
+                const int indent   = 2;
+                const int spin_w   = string_width(spin) + 1;   // glyph + space
+                const int det_w    = detail.empty()
+                                       ? 0 : string_width(detail) + 3;  // " · "
+                const int verb_w   = string_width(verb);
+
+                // Widest form that fits, in order of what matters.
+                const bool with_detail =
+                    !detail.empty() && indent + spin_w + verb_w + det_w <= avail_w;
+
+                std::string s;
+                std::vector<StyledRun> runs;
+                auto put = [&](std::string_view t, Style st) {
+                    if (t.empty()) return;
+                    runs.push_back({s.size(), t.size(), st});
+                    s += t;
+                };
+
+                put("  ", Style{});
+                put(spin, Style{}.with_fg(accent));
+                put(" ", Style{});
+
+                // Ellipsize the verb only when even the bare form
+                // overflows — a 20-column terminal still says what's
+                // happening, just shorter.
+                const int room = avail_w - indent - spin_w
+                               - (with_detail ? det_w : 0);
+                if (verb_w > room && room > 1) {
+                    std::string cut = verb.substr(0, static_cast<std::size_t>(
+                        std::max(0, room - 1)));
+                    put(cut, Style{}.with_fg(muted));
+                    put("\xe2\x80\xa6", Style{}.with_fg(muted));   // …
+                } else {
+                    put(verb, Style{}.with_fg(muted));
+                }
+
+                if (with_detail) {
+                    put(" \xc2\xb7 ", Style{}.with_fg(muted).with_dim());
+                    put(detail, Style{}.with_fg(muted).with_dim());
+                }
+
+                return Element{TextElement{
+                    .content = std::move(s),
+                    .style   = Style{},
+                    .wrap    = TextWrap::NoWrap,
+                    .runs    = std::move(runs),
+                }};
+            }).build();
+        }
 
         // Absolute shared animation clock (clamped at 0): the tape is a
         // pure function of it, every instance in the process scrolls in

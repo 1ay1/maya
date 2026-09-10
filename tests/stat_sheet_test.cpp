@@ -549,6 +549,87 @@ TEST_CASE("stat sheet: a degenerate donut renders nothing") {
     CHECK(render_sheet(s, 60).rows.empty());
 }
 
+TEST_CASE("stat sheet: a histogram is columns plus a baseline and ticks") {
+    // The vertical form: one COLUMN per bucket, so the whole distribution
+    // is a shape the eye takes in at once. It costs a fixed height where
+    // Dist costs a row per bucket, which is the trade.
+    StatSheet s;
+    s.histogram({.caption = "spread",
+                 .buckets = {{"1", 1}, {"2", 5}, {"3", 3}},
+                 .rows = 4,
+                 .peak_label = "5"});
+    const auto r = render_sheet(s, 60);
+    // caption + 4 column rows + baseline + ticks.
+    REQUIRE(r.rows.size() == 7u);
+    CHECK(r.rows[0].find("spread") != std::string::npos);
+    // The baseline is a rule, not data.
+    CHECK(r.rows[5].find('?') != std::string::npos);
+    // Ticks name at least the first bucket.
+    CHECK(r.rows[6].find("1") != std::string::npos);
+}
+
+TEST_CASE("stat sheet: histogram columns are proportional") {
+    // The tallest bucket reaches the top row; a bucket a fifth its size
+    // does not. Without that the chart is a texture rather than a
+    // measurement.
+    StatSheet s;
+    s.histogram({.caption = "",
+                 .buckets = {{"a", 1}, {"b", 10}},
+                 .rows = 4});
+    const auto r = render_sheet(s, 40);
+    REQUIRE(r.rows.size() >= 5u);
+    // Top row: only the tall bucket has ink.
+    const auto& top = r.rows[0];
+    int ink_top = 0;
+    for (char c : top) if (c == '?') ++ink_top;
+    // Bottom column row: both do.
+    const auto& bottom = r.rows[3];
+    int ink_bottom = 0;
+    for (char c : bottom) if (c == '?') ++ink_bottom;
+    CHECK(ink_top > 0);
+    CHECK(ink_bottom > ink_top);
+}
+
+TEST_CASE("stat sheet: a non-zero histogram bucket is never empty") {
+    // The same rule the bars, the band segments and the filled plot all
+    // follow: "almost none" and "none" are different readings.
+    StatSheet s;
+    s.histogram({.caption = "",
+                 .buckets = {{"a", 1000}, {"b", 1}},
+                 .rows = 5});
+    const auto r = render_sheet(s, 40);
+    REQUIRE(r.rows.size() >= 5u);
+    // The bottom column row carries ink for BOTH buckets.
+    int ink = 0;
+    for (char c : r.rows[4]) if (c == '?') ++ink;
+    CHECK(ink >= 4);   // two buckets, at least two cells each
+}
+
+TEST_CASE("stat sheet: a histogram never overruns its width") {
+    // More buckets than fit: the tail is dropped rather than every bar
+    // squeezed to a single dot, because a chart of one-dot bars is a
+    // texture and not a chart.
+    StatSheet s;
+    StatHistogram h;
+    h.rows = 4;
+    h.col_width = 4;
+    h.peak_label = "100";
+    for (int i = 0; i < 40; ++i)
+        h.buckets.push_back({std::to_string(i), static_cast<double>(i + 1)});
+    s.histogram(std::move(h));
+    for (int w : {30, 50, 80, 120}) {
+        const auto r = render_sheet(s, w);
+        for (const auto& row : r.rows) CHECK(unicode::str_width(row) <= w);
+    }
+}
+
+TEST_CASE("stat sheet: a degenerate histogram renders nothing") {
+    StatSheet s;
+    s.histogram({.caption = "", .buckets = {}});
+    s.histogram({.caption = "", .buckets = {{"z", 0}}});
+    CHECK(render_sheet(s, 60).rows.empty());
+}
+
 TEST_CASE("unicode: truncate_to_width cuts on column boundaries") {
     // The trap this exists to remove: substr() slices multi-byte glyphs in
     // half, which renders as a replacement char and destroys the alignment

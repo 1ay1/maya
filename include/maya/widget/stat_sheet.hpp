@@ -275,6 +275,38 @@ struct StatDonut {
     std::string      center_sub;
 };
 
+// A VERTICAL histogram: columns rising from a baseline, with an axis.
+//
+// The distribution forms differ in what they cost and what they show. A
+// Dist section is one ROW per bucket — exact, labelled, and it scrolls
+// forever, which is right when the buckets have names worth reading. A
+// vertical histogram is one COLUMN per bucket, so the whole distribution
+// is a single shape the eye takes in at once: bimodality, skew and a long
+// tail are recognisable before a single label is read.
+//
+// Drawn in braille for the same reason the plots are: at 2x4 dots per
+// cell a column has 4x the vertical resolution of a block, so adjacent
+// buckets of similar height stay distinguishable instead of both
+// rounding to a full block.
+struct StatHistogram {
+    struct Bucket {
+        std::string label;   // axis tick, drawn under the column
+        double      value = 0;
+    };
+    std::string          caption;
+    std::vector<Bucket>  buckets;
+    int                  rows = 5;   // terminal rows of column height
+    std::optional<Color> hue;
+    // Columns narrower than this are widened by dropping buckets from the
+    // display; wider makes each bar easier to hit with the eye. 3 is the
+    // narrowest that still leaves a gap between neighbours.
+    int                  col_width = 3;
+    // Peak label on the y axis. A histogram without one shows the SHAPE
+    // but not the scale, which is fine for comparison and useless for
+    // reading a count off it.
+    std::string          peak_label;
+};
+
 // A braille line plot over the full sheet width.
 //
 // A sparkline is one row and answers "is it going up". A plot is several
@@ -306,7 +338,8 @@ struct StatPlot {
 class StatSheet {
 public:
     using Row = std::variant<StatHeading, StatBlank, StatHero, StatEntry,
-                             StatBand, StatPlot, StatBreak, StatDonut>;
+                             StatBand, StatPlot, StatBreak, StatDonut,
+                             StatHistogram>;
 
     StatSheetTheme theme{};
 
@@ -330,6 +363,10 @@ public:
     }
     StatSheet& donut(StatDonut d) {
         rows_.emplace_back(std::move(d));
+        return *this;
+    }
+    StatSheet& histogram(StatHistogram h) {
+        rows_.emplace_back(std::move(h));
         return *this;
     }
     StatSheet& plot(StatPlot p) {
@@ -602,6 +639,9 @@ private:
                     continue;
                 } else if (const auto* dn = std::get_if<StatDonut>(&r)) {
                     emit_donut(*dn, out, theme, avail, pad);
+                    continue;
+                } else if (const auto* hg = std::get_if<StatHistogram>(&r)) {
+                    emit_histogram(*hg, out, theme, avail, pad);
                     continue;
                 } else if (const auto* pl = std::get_if<StatPlot>(&r)) {
                     emit_plot(*pl, out, theme, avail, pad);
@@ -992,6 +1032,171 @@ private:
             runs.push_back(StyledRun{s.size(), lbl.size(),
                                      Style{}.with_fg(theme.label)});
             s += lbl;
+            out.push_back(Element{TextElement{
+                .content = std::move(s),
+                .wrap    = TextWrap::TruncateEnd,
+                .runs    = std::move(runs),
+            }});
+        }
+    }
+
+    // ── Vertical histogram ───────────────────────────────────────
+    //
+    // Columns of braille dots rising from a baseline rule, with alternate
+    // tick labels beneath. The whole distribution is one shape rather than
+    // a list of rows, which is what makes bimodality and skew visible
+    // before any label is read.
+    static void emit_histogram(const StatHistogram& hg,
+                               std::vector<Element>& out,
+                               const StatSheetTheme& theme, int avail,
+                               const std::string& pad) {
+        if (hg.buckets.empty() || avail <= 0) return;
+        double hi = 0;
+        for (const auto& b : hg.buckets) if (b.value > hi) hi = b.value;
+        if (hi <= 0) return;
+
+        const int rows = hg.rows < 2 ? 2 : (hg.rows > 16 ? 16 : hg.rows);
+        const int cwid = hg.col_width < 1 ? 1 : hg.col_width;
+
+        // The y-axis gutter, reserved before anything is sized — a
+        // histogram that overruns its own scale label is worse than one a
+        // few columns narrower.
+        const int lab_w  = unicode::str_width(hg.peak_label);
+        const int gutter = lab_w > 0 ? lab_w + 1 : 0;
+        const int plot_w = avail - gutter;
+        if (plot_w < cwid) return;
+
+        // How many buckets FIT. Dropping from the tail rather than
+        // squeezing every bucket to one column: a histogram whose bars are
+        // a single dot wide is a texture, not a chart, and the tail is
+        // where the least information usually is.
+        const int fit = plot_w / cwid;
+        const int n   = std::min(fit, static_cast<int>(hg.buckets.size()));
+        if (n <= 0) return;
+
+        if (!hg.caption.empty()) {
+            out.push_back(Element{TextElement{
+                .content = pad + hg.caption,
+                .style   = Style{}.with_fg(theme.detail),
+                .wrap    = TextWrap::TruncateEnd,
+            }});
+        }
+
+        const Color hue   = hg.hue.value_or(theme.bar);
+        const int   dot_h = rows * 4;
+
+        // Column heights in dots. A non-zero bucket always gets at least
+        // one dot — the same rule the bars and the band follow, because
+        // "almost none" and "none" are different readings.
+        std::vector<int> height(static_cast<std::size_t>(n), 0);
+        for (int i = 0; i < n; ++i) {
+            const double v = hg.buckets[static_cast<std::size_t>(i)].value;
+            int d = static_cast<int>(v / hi * dot_h + 0.5);
+            if (d == 0 && v > 0) d = 1;
+            height[static_cast<std::size_t>(i)] = d > dot_h ? dot_h : d;
+        }
+
+        for (int cy = 0; cy < rows; ++cy) {
+            // Dot rows this cell row covers, counting DOWN from the top.
+            const int top_dot = (rows - 1 - cy) * 4;
+            std::string s = pad;
+            std::vector<StyledRun> runs;
+
+            // The scale label rides the first row, in the gutter, so it
+            // costs no extra height.
+            if (gutter > 0) {
+                if (cy == 0 && lab_w > 0) {
+                    runs.push_back(StyledRun{s.size(), hg.peak_label.size(),
+                                             Style{}.with_fg(theme.detail)});
+                    s += hg.peak_label;
+                    s += ' ';
+                } else {
+                    s.append(static_cast<std::size_t>(gutter), ' ');
+                }
+            }
+
+            std::string line;
+            for (int i = 0; i < n; ++i) {
+                const int h = height[static_cast<std::size_t>(i)];
+                std::uint8_t bits = 0;
+                for (int dy = 0; dy < 4; ++dy) {
+                    // Dot row `top_dot + 3 - dy` measured from the bottom.
+                    const int from_bottom = top_dot + (3 - dy);
+                    if (from_bottom < h)
+                        bits |= stat_detail::kBrailleDot[dy][0]
+                              | stat_detail::kBrailleDot[dy][1];
+                }
+                const std::string glyph = stat_detail::braille(bits);
+                // The bar is SOLID across its width bar one column of air.
+                // One filled cell followed by two blanks reads as a
+                // scatter of dots rather than as a bar chart — the mass of
+                // the column is what carries the magnitude.
+                //
+                // Above the bar the cells are SPACES, not blank braille.
+                // U+2800 is a real glyph and many terminals render it a
+                // hair differently from a space, which paints a faint
+                // rectangle over the whole plot area — visible as a box
+                // around the chart that nobody asked for.
+                for (int k = 0; k < cwid - 1; ++k) {
+                    if (bits) line += glyph;
+                    else      line += ' ';
+                }
+                line += ' ';
+            }
+            runs.push_back(StyledRun{s.size(), line.size(),
+                                     Style{}.with_fg(hue)});
+            s += line;
+            out.push_back(Element{TextElement{
+                .content = std::move(s),
+                .wrap    = TextWrap::TruncateEnd,
+                .runs    = std::move(runs),
+            }});
+        }
+
+        // Baseline. A histogram floating with no axis has no zero, and
+        // "short bar" then means nothing in particular.
+        {
+            std::string s = pad;
+            if (gutter > 0) s.append(static_cast<std::size_t>(gutter), ' ');
+            std::string rule;
+            for (int i = 0; i < n * cwid; ++i) rule += "\xe2\x94\x80";   // ─
+            std::vector<StyledRun> runs{
+                StyledRun{s.size(), rule.size(), Style{}.with_fg(theme.track)}};
+            s += rule;
+            out.push_back(Element{TextElement{
+                .content = std::move(s),
+                .wrap    = TextWrap::TruncateEnd,
+                .runs    = std::move(runs),
+            }});
+        }
+
+        // Tick labels, on EVERY OTHER bucket. All of them collide at any
+        // realistic column width; every second one keeps the axis readable
+        // and still tells you which way the scale runs.
+        bool any_label = false;
+        for (int i = 0; i < n; ++i)
+            if (!hg.buckets[static_cast<std::size_t>(i)].label.empty())
+                any_label = true;
+        if (!any_label) return;
+        {
+            std::string s = pad;
+            if (gutter > 0) s.append(static_cast<std::size_t>(gutter), ' ');
+            std::vector<StyledRun> runs;
+            int col = 0;
+            for (int i = 0; i < n; i += 2) {
+                const auto& lb = hg.buckets[static_cast<std::size_t>(i)].label;
+                if (lb.empty()) continue;
+                const int want = i * cwid;
+                if (want < col) continue;          // previous label still running
+                s.append(static_cast<std::size_t>(want - col), ' ');
+                col = want;
+                const auto fit_lb =
+                    unicode::truncate_to_width(lb, 2 * cwid - 1);
+                runs.push_back(StyledRun{s.size(), fit_lb.size(),
+                                         Style{}.with_fg(theme.detail)});
+                s += fit_lb;
+                col += unicode::str_width(fit_lb);
+            }
             out.push_back(Element{TextElement{
                 .content = std::move(s),
                 .wrap    = TextWrap::TruncateEnd,

@@ -50,6 +50,25 @@ struct ItemCtx {
     // — which is what the per-kind floor below is for.
     int draw_budget = 0;
 
+    // ── The table's shared geometry ─────────────────────────────────
+    //
+    // Columns the VALUE cell occupies, as a max over every item in the
+    // panel. 0 = unmeasured.
+    //
+    // This is the one fact a row genuinely cannot know about itself, and
+    // the reason a table is not just a list of independent rows: every bar
+    // must start at the same column and every number must end at the same
+    // column, or the eye cannot compare them down the page. That is a
+    // property of the SET, so only the thing that can see the whole set can
+    // supply it — the panel, which already walks every item to measure
+    // heights for virtualisation.
+    //
+    // A control that lays itself out uses this as a flex `basis`, so rows
+    // align because they share a number rather than because each one padded
+    // a string to the same length. Alignment by arithmetic is what put a
+    // value in a different column on every row when the arithmetic drifted.
+    int value_basis = 0;
+
     // OUT: byte offset of the painted caret glyph in the returned string
     // (npos = no live caret). Written by the editable kinds; the panel
     // uses it to anchor the HARDWARE cursor on that cell — terminal-side

@@ -16,6 +16,45 @@
 
 namespace maya {
 
+namespace panel::detail {
+
+int terminal_cols() noexcept {
+    const auto sz = platform::query_terminal_size(platform::stdout_handle());
+    int term = sz.width.value;
+    // No tty (a pipe, a test harness, a render-to-canvas probe): the query
+    // returns a hardcoded fallback rather than a real width, so consult
+    // COLUMNS the way every other size lookup here does. Without this the
+    // answer is silently 80 in exactly the environments that render at
+    // other widths.
+    if (!platform::is_tty(platform::stdout_handle())) {
+        if (const char* c = std::getenv("COLUMNS")) {
+            if (const int n = std::atoi(c); n > 0) term = n;
+        }
+    }
+    return term > 0 ? term : 0;
+}
+
+} // namespace panel::detail
+
+// Columns the VALUE cell occupies, as a max over every item.
+//
+// Only the drawn kinds carry a value of their own — a text kind's trailing
+// cell is the item's `trailing` string, which the existing row idiom
+// already aligns by flex. So this measures exactly the rows that need a
+// shared column and ignores the rest.
+int Panel::value_basis() const noexcept {
+    int widest = 0;
+    for (const auto& it : cfg_.items) {
+        if (const auto* m = std::get_if<panel::Meter>(&it.control))
+            widest = std::max(widest,
+                              static_cast<int>(unicode::str_width(m->value)));
+        else if (const auto* s = std::get_if<panel::Spark>(&it.control))
+            widest = std::max(widest,
+                              static_cast<int>(unicode::str_width(s->value)));
+    }
+    return widest;
+}
+
 namespace {
 
 // The panel's min-width, clamped to something the terminal can actually
@@ -320,6 +359,36 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
                               .style   = base,
                               .wrap    = TextWrap::TruncateEnd,
                               .runs    = std::move(truns)}};
+
+    // A control that lays itself out replaces the string cell entirely.
+    //
+    // Everything above builds ONE concatenated string, which is the right
+    // answer for a word and the wrong one for a table: a string cannot hold
+    // columns, so a kind wanting them has to pad and shrink by hand, and
+    // that hand-rolled flex is where this family's sizing bugs came from.
+    // A laid-out control hands back real siblings and lets maya's engine
+    // size them.
+    //
+    // The origin note still rides along, appended as a sibling rather than
+    // concatenated — same reason.
+    if (panel::lays_itself_out(r.control)) {
+        Element cell = panel::control_element(
+            r.control,
+            panel::ItemCtx{
+                .theme       = cfg_.theme,
+                .open        = cfg_.menu && cfg_.menu_row == index,
+                .edit_budget = edit_budget(),
+                .draw_budget = draw_budget(),
+                .value_basis = value_basis(),
+            });
+        if (!origin.empty()) {
+            Element note{TextElement{.content = "  " + origin,
+                                     .style   = tint(Style{}.with_fg(th.origin)),
+                                     .wrap    = TextWrap::TruncateEnd}};
+            cell = dsl::h(std::move(cell), std::move(note)).build();
+        }
+        trail = std::move(cell);
+    }
 
     out.push_back(row_line(std::move(lead), std::move(trail),
                            r.trailing_secondary, base, r.value_primary));

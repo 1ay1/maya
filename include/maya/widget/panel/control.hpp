@@ -11,9 +11,13 @@
 // resolution, so a new kind without a renderer is a compile error inside
 // std::visit, not a silently blank cell.
 
+#include <concepts>
 #include <string>
 #include <utility>
 #include <variant>
+
+#include "../../element/element.hpp"
+#include "../../element/text.hpp"
 
 #include "item/action.hpp"
 #include "item/choice.hpp"
@@ -62,6 +66,64 @@ using Control = std::variant<Label, Header, Toggle, Choice, Pick, Number,
 [[nodiscard]] inline std::pair<std::string, Style>
 render(const Control& c, const ItemCtx& ctx) {
     return std::visit([&](const auto& v) { return render(v, ctx); }, c);
+}
+
+// ── The Element channel ────────────────────────────────────────────
+//
+// render() answers with a STRING, and a string is one cell. It cannot
+// participate in layout, so any kind that wants columns has to build them
+// by concatenation — pad to right-align, shrink a bar in a loop to fit,
+// blank-fill a strip that came up short. That hand-rolled flex is where
+// every sizing bug in this family came from, and each instance is wrong in
+// its own way because each is written separately.
+//
+// A kind can now OPT IN to laying itself out instead: define
+//
+//     Element render_element(const Kind&, const ItemCtx&);
+//
+// and the panel uses it, handing the result to maya's flex engine — which
+// already does growing, shedding, min/max clamping and alignment, and is
+// already tested. `grow(1)` gets the slack; `basis` aligns rows against a
+// shared column; a sibling's cell cannot be eaten because the engine
+// allocates before anything renders.
+//
+// Detected by expression SFINAE rather than a virtual or a flag, so:
+//   • a kind that does not define it is UNCHANGED — all thirteen existing
+//     kinds compile and render exactly as before, which is what makes this
+//     additive rather than a thirteen-file breaking change;
+//   • a kind that does define it needs no registration anywhere, so the
+//     variant stays the one list it claims to be.
+template <class T>
+concept LaysItselfOut = requires(const T& v, const ItemCtx& ctx) {
+    { render_element(v, ctx) } -> std::same_as<Element>;
+};
+
+// Does this control lay itself out? Asked by the panel before it builds a
+// string cell it may not need.
+[[nodiscard]] inline bool lays_itself_out(const Control& c) noexcept {
+    return std::visit([](const auto& v) {
+        return LaysItselfOut<std::remove_cvref_t<decltype(v)>>;
+    }, c);
+}
+
+// The laid-out cell. Only valid when lays_itself_out(c); the string path
+// is the answer otherwise.
+//
+// Named differently from the per-kind overloads on purpose. Calling this
+// `render_element` too made the visitor's `render_element(v, ctx)` resolve
+// back to THIS function — Control is implicitly constructible from any
+// alternative, so the variant overload was always viable — and the result
+// was unbounded recursion that segfaulted the moment any panel built a
+// row. Overload sets that include a converting constructor from their own
+// argument type are a trap; a distinct name is the cheap way out.
+[[nodiscard]] inline Element control_element(const Control& c,
+                                             const ItemCtx& ctx) {
+    return std::visit([&](const auto& v) -> Element {
+        if constexpr (LaysItselfOut<std::remove_cvref_t<decltype(v)>>)
+            return render_element(v, ctx);
+        else
+            return Element{TextElement{}};
+    }, c);
 }
 
 } // namespace maya::panel

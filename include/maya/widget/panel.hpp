@@ -73,6 +73,13 @@
 
 namespace maya {
 
+namespace panel::detail {
+// The terminal's width, or 0 when it cannot be known. Defined in panel.cpp
+// beside the min-width clamp that also needs it, so ONE place decides how
+// this is answered (ioctl, then COLUMNS when there is no tty).
+[[nodiscard]] int terminal_cols() noexcept;
+} // namespace panel::detail
+
 class Panel {
 public:
     // The family's types. `Item` is the name; `Row` is the pre-rename
@@ -119,9 +126,38 @@ public:
     // keeps a narrow panel drawing SOMETHING rather than nothing — the
     // per-kind clamp in ItemCtx::drawn_cells decides what that means for
     // each picture.
+    // From the TERMINAL, not from min_width. That distinction cost a
+    // debugging round and is worth stating: min_width is a FLOOR, and a
+    // panel stretches past it to fill its container — so deriving a width
+    // budget from it yields the same number on a 60-column pane and a
+    // 200-column one, which is exactly the frozen-picture bug this exists
+    // to fix. edit_budget can use min_width because it only decides WHERE
+    // a scrolling window sits inside a cell, not how big the cell is.
+    //
+    // Still never measured inside the flex layout, which is the trap the
+    // sibling's comment names: a scroll viewport measures its children
+    // against an unbounded width, so a control that asked the LAYOUT would
+    // answer 2^24 and dirty the scroll state on every resize. The terminal
+    // width is known BEFORE layout, so it cannot join that loop.
+    //
+    // The deduction is the row's other columns: chrome, the label lane,
+    // both gaps and the value cell.
     [[nodiscard]] int draw_budget() const noexcept {
-        return std::max(8, cfg_.min_width - 40);
+        const int term = panel::detail::terminal_cols();
+        const int usable = (term > 0 ? term : cfg_.min_width) - 40;
+        return usable < 8 ? 8 : usable;
     }
+
+    // Columns the VALUE cell occupies, as a max over every item.
+    //
+    // The one fact a row cannot know about itself, and the reason a table
+    // is not a list of independent rows: numbers that do not end in the
+    // same column cannot be compared down the page. Only the thing that
+    // can see every row can answer it.
+    //
+    // A MAX, so a row whose own value is longer still gets its full width
+    // — the kind takes max(basis, own) as its floor.
+    [[nodiscard]] int value_basis() const noexcept;
 
 private:
     Config cfg_;

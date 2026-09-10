@@ -20,14 +20,22 @@
 #include <utility>
 #include <vector>
 
+#include "../../../dsl.hpp"
+#include "../../../element/element.hpp"
+#include "../../../element/text.hpp"
 #include "../../../style/color.hpp"
 #include "../../../style/style.hpp"
+#include "../../../text/unicode_width.hpp"
 #include "../context.hpp"
 
 namespace maya::panel {
 
 struct Spark {
     std::vector<double> series;
+    // The number the strip annotates. Same reason as Meter::value: a
+    // control replaces the item's trailing cell rather than sitting beside
+    // it, so a row wanting both must carry both here.
+    std::string value;
     std::optional<Color> hue{};
 };
 
@@ -86,6 +94,36 @@ render(const Spark& c, const ItemCtx& ctx) {
         out += kLevels[lvl];
     }
     return {out, style};
+}
+
+// The laid-out form. A strip and its number as SIBLINGS.
+//
+// The strip declines to grow — grow(0) — which is the flex spelling of
+// "one cell per sample". A Meter beside it says grow(1) and takes the
+// slack, so the two kinds' opposite width rules are stated to the engine
+// rather than enforced by arithmetic in each file.
+[[nodiscard]] inline Element render_element(const Spark& c,
+                                            const ItemCtx& ctx) {
+    const auto [strip, style] = render(c, ctx);
+
+    Element bar{TextElement{.content = strip,
+                            .style   = style,
+                            .wrap    = TextWrap::TruncateEnd}};
+    if (c.value.empty()) return bar;
+
+    const int vw = static_cast<int>(unicode::str_width(c.value));
+    Element val{TextElement{.content = c.value,
+                            .style   = Style{}.with_fg(ctx.theme.value),
+                            .wrap    = TextWrap::TruncateEnd}};
+
+    // A spacer between them takes the slack, so the strip stays its natural
+    // width and the value still lands in the table's shared column.
+    return dsl::h(std::move(bar) | dsl::shrink(0.0f),
+                  dsl::spacer().build() | dsl::grow(1.0f),
+                  std::move(val) | dsl::width(std::max(ctx.value_basis, vw))
+                                 | dsl::shrink(0.0f)
+                                 | dsl::justify(Justify::End))
+           | dsl::gap(1);
 }
 
 } // namespace maya::panel

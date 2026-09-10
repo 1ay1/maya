@@ -17,9 +17,14 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
+#include "../../../dsl.hpp"
+#include "../../../element/element.hpp"
+#include "../../../element/text.hpp"
 #include "../../../style/color.hpp"
 #include "../../../style/style.hpp"
+#include "../../../text/unicode_width.hpp"
 #include "../context.hpp"
 
 namespace maya::panel {
@@ -29,6 +34,16 @@ struct Meter {
     // telemetry can exceed 1 on a rounding edge, and a bar that overruns
     // its own track reads as a rendering fault.
     double share = 0.0;
+
+    // The number the bar annotates, drawn beside it.
+    //
+    // Here rather than in the item's `trailing` cell because a control
+    // REPLACES that cell rather than sitting beside it — panel.cpp only
+    // falls back to `trailing` when the control rendered nothing. A row
+    // that sets both silently loses the value, which is a trap worth
+    // closing in the type: a bar without its number is a shape with no
+    // scale, so the two travel together.
+    std::string value;
 
     // The filled hue. Defaults to the theme's value colour.
     std::optional<Color> hue{};
@@ -68,6 +83,75 @@ render(const Meter& c, const ItemCtx& ctx) {
     // The single style is the FILL, so a host that ignores runs_out still
     // gets a bar in the right colour rather than a grey smear.
     return {out, fill};
+}
+
+// The laid-out form — what the panel uses when it can.
+//
+// Two SIBLINGS, not one padded string: a bar that grows into the row's
+// slack, and a value pinned to a shared width so every row's number ends in
+// the same column. maya's flex engine does the growing, the clamping and
+// the alignment, all of which this file would otherwise hand-roll.
+//
+// The difference is not stylistic. When the bar and the value were one
+// concatenated cell, growing the bar consumed the value's characters and
+// the number silently vanished — twice, in two separate attempts. As
+// siblings that is not expressible: the engine allocates both before either
+// renders, so a bar cannot take a cell that was never offered to it.
+[[nodiscard]] inline Element render_element(const Meter& c,
+                                            const ItemCtx& ctx) {
+    const double t    = std::clamp(c.share, 0.0, 1.0);
+    const Color  fill = c.hue.value_or(ctx.theme.value);
+    const Color  trk  = ctx.theme.help;
+
+    // The bar's width, from the budget Panel already sized for this row.
+    const int cells = ctx.drawn_cells(/*pref=*/24, /*floor=*/8, /*ceiling=*/40);
+
+    // The bar paints to whatever width the engine settles on. It does not
+    // decide its own size — which is the entire reason this kind needs no
+    // shed ladder, no grow arm and no clamp of its own.
+    Element bar = dsl::fill([t, fill, trk](int w, int) {
+        const int cells = w > 0 ? w : 0;
+        const int on    = static_cast<int>(t * cells + 0.5);
+        std::string s;
+        for (int i = 0; i < on; ++i)     s += "\xe2\x96\x88";   // █
+        // The unfilled remainder is DRAWN. An empty tail makes a low bar
+        // read as a MISSING bar — the row looks broken rather than small.
+        for (int i = on; i < cells; ++i) s += "\xe2\x94\x80";   // ─
+        std::vector<StyledRun> runs;
+        const std::size_t split = static_cast<std::size_t>(on) * 3;  // █ = 3 bytes
+        if (split > 0)        runs.push_back({0, split, Style{}.with_fg(fill)});
+        if (split < s.size()) runs.push_back({split, s.size() - split,
+                                              Style{}.with_fg(trk)});
+        return Element{TextElement{.content = std::move(s),
+                                   .wrap    = TextWrap::TruncateEnd,
+                                   .runs    = std::move(runs)}};
+    }).build();
+
+    if (c.value.empty()) return bar | dsl::width(cells);
+
+    // The value's cell is FIXED at the table's shared width, so every row's
+    // number ends in the same column — alignment by a shared number rather
+    // than by each row padding a string to the same length. Its own width
+    // is the floor, so a longer-than-average value is never clipped by a
+    // basis measured against shorter siblings.
+    const int vw = static_cast<int>(unicode::str_width(c.value));
+    Element val{TextElement{.content = c.value,
+                            .style   = Style{}.with_fg(ctx.theme.value),
+                            .wrap    = TextWrap::TruncateEnd}};
+
+    // The bar takes a FIXED width, not grow(1).
+    //
+    // grow() has no ceiling in this DSL, so a growing bar consumes every
+    // spare column and starves the label beside it — "Average confidence"
+    // truncated to "Avera…" while the bar ran eighty cells. The budget is
+    // already the row's fair share (Panel deducts the label lane, the gaps
+    // and the value cell before handing it over), so asking for exactly it
+    // is both simpler and correct.
+    return dsl::h(std::move(bar) | dsl::width(cells),
+                  std::move(val) | dsl::width(std::max(ctx.value_basis, vw))
+                                 | dsl::shrink(0.0f)
+                                 | dsl::justify(Justify::End))
+           | dsl::gap(2);
 }
 
 } // namespace maya::panel

@@ -340,28 +340,30 @@ TEST_CASE("stat sheet: a filled plot draws solid columns to the baseline") {
     CHECK(unicode::str_width(r.rows.back()) > 0);
 }
 
-TEST_CASE("stat sheet: filled and line plots use different primitives") {
-    // `filled` picks the PRIMITIVE, not just a fill flag. An area wants
-    // blocks (a clean top edge the eye can read as a surface); a line
-    // wants braille (2x4 dots per cell, eight times the resolution).
-    // Braille filled solid is a slab of ink where the surface disappears,
-    // which is what this distinction exists to avoid.
+TEST_CASE("stat sheet: a filled plot shades under its curve") {
+    // BOTH forms are braille — a block column has a flat top edge one
+    // eighth of a row tall, which quantises a smooth series into a
+    // staircase, so the area form keeps the 2x4 dot grid and shades the
+    // region under the line with a sparse stipple instead.
     //
-    // Assert on the CODE POINT RANGE rather than on specific glyphs: which
-    // eighth a sample rounds to is a rendering detail, but "blocks vs
-    // braille" is the decision.
-    auto families = [](const StatSheet& s) {
+    // The distinction is therefore INK, not glyph family: the filled form
+    // lights strictly more dots than the line, and the extra dots are all
+    // below the curve. Counting lit dots is the honest measure — a blank
+    // braille cell is still a code point (U+2800), so counting glyphs
+    // compares nothing.
+    auto lit = [](const StatSheet& s) {
         StylePool pool;
         Canvas canvas(30, 8, &pool);
         render_tree(s.build(), canvas, pool, theme::dark, true);
-        bool block = false, braille = false;
+        int dots = 0;
         for (int y = 0; y < 8; ++y)
             for (int x = 0; x < 30; ++x) {
                 const char32_t c = canvas.get(x, y).character;
-                if (c >= 0x2580 && c <= 0x259F) block = true;
-                if (c >= 0x2800 && c <= 0x28FF) braille = true;
+                if (c >= 0x2800 && c <= 0x28FF)
+                    for (int b = 0; b < 8; ++b)
+                        if ((c - 0x2800) & (1u << b)) ++dots;
             }
-        return std::pair{block, braille};
+        return dots;
     };
 
     StatSheet filled;
@@ -371,12 +373,12 @@ TEST_CASE("stat sheet: filled and line plots use different primitives") {
     line.plot({.caption = "", .series = {3, 5, 4, 8}, .rows = 4,
                .filled = false});
 
-    const auto [fb, fbr] = families(filled);
-    const auto [lb, lbr] = families(line);
-    CHECK(fb);      // area: blocks
-    CHECK(!fbr);    // and no braille
-    CHECK(lbr);     // line: braille
-    CHECK(!lb);     // and no blocks
+    CHECK(lit(filled) > lit(line));
+    // But not SOLID: a fully filled region is a slab where the surface —
+    // the one thing a reader is looking for — disappears into the mass.
+    // The stipple lights about a quarter of the area, so the filled form
+    // stays well under a hypothetical solid fill.
+    CHECK(lit(filled) < 30 * 4 * 8 / 2);
 }
 
 TEST_CASE("stat sheet: a filled plot keeps a non-zero sample visible") {

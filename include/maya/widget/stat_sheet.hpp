@@ -1044,42 +1044,75 @@ private:
         };
 
         if (p.filled) {
-            // Area: one block column per cell, eighths of a row each, so a
-            // `rows`-tall figure has 8*rows levels. Resampled by MAX over
-            // the samples a column covers rather than by point sampling —
-            // a spike that survives to the screen is the honest reduction
-            // when many turns share one column, and a mean would erase
-            // exactly the outlier the reader is looking for.
+            // Area, in BRAILLE with a stippled fill.
+            //
+            // The curve itself is solid dots; the region under it is filled
+            // with every other dot, so it reads as a shaded area with the
+            // line still legible on top of it. Filling solid was the first
+            // attempt and it produced a slab of ⠳⠳⠳ where the surface — the
+            // one thing a reader is looking for — disappeared into the mass.
+            //
+            // Braille rather than blocks because a block column has a flat
+            // top edge one eighth of a row tall, which quantises a smooth
+            // series into a staircase. At 2x4 dots the curve keeps its
+            // shape and the fill stays subordinate to it.
+            const int dot_w = cells * 2;
+            const int dot_h = rows  * 4;
+            std::vector<std::uint8_t> grid(
+                static_cast<std::size_t>(rows) * static_cast<std::size_t>(cells), 0);
             const std::size_t n = p.series.size();
-            const int levels = rows * 8;
-            std::vector<int> col(static_cast<std::size_t>(cells), 0);
-            for (int x = 0; x < cells; ++x) {
+            auto dot_at = [&](int x, int y) {
+                if (x < 0 || x >= dot_w || y < 0 || y >= dot_h) return;
+                grid[static_cast<std::size_t>(y / 4)
+                         * static_cast<std::size_t>(cells)
+                     + static_cast<std::size_t>(x / 2)]
+                    |= stat_detail::kBrailleDot[y % 4][x % 2];
+            };
+            auto y_at = [&](int x) {
+                // Resample by MAX over the samples this dot column covers.
+                // When 40 turns share 130 dot columns a spike that survives
+                // to the screen is the honest reduction; a mean would erase
+                // exactly the outlier the reader is looking for.
                 const std::size_t lo = n * static_cast<std::size_t>(x)
-                                     / static_cast<std::size_t>(cells);
+                                     / static_cast<std::size_t>(dot_w);
                 std::size_t hi_i = n * static_cast<std::size_t>(x + 1)
-                                 / static_cast<std::size_t>(cells);
+                                 / static_cast<std::size_t>(dot_w);
                 if (hi_i <= lo) hi_i = lo + 1;
                 double peak = 0;
                 for (std::size_t i = lo; i < hi_i && i < n; ++i)
                     if (p.series[i] > peak) peak = p.series[i];
-                int lv = static_cast<int>(peak / hi * levels + 0.5);
-                // A non-zero sample never renders as an empty column, the
-                // same rule the bars follow: "almost none" and "none" are
-                // different readings.
-                if (lv == 0 && peak > 0) lv = 1;
-                col[static_cast<std::size_t>(x)] = lv > levels ? levels : lv;
+                int y = dot_h - 1 - static_cast<int>(peak / hi * (dot_h - 1) + 0.5);
+                if (y < 0) y = 0;
+                if (y >= dot_h) y = dot_h - 1;
+                return y;
+            };
+            int prev_y = y_at(0);
+            for (int x = 0; x < dot_w; ++x) {
+                const int y = y_at(x);
+                // The curve: solid, including the vertical stroke that
+                // joins consecutive samples. Without the join a steep move
+                // leaves a gap and the eye reads two unrelated marks
+                // instead of one falling line.
+                const int lo = y < prev_y ? y : prev_y;
+                const int hi_y = y < prev_y ? prev_y : y;
+                for (int yy = lo; yy <= hi_y; ++yy) dot_at(x, yy);
+                // The fill: a sparse stipple below the curve — one dot in
+                // four, on even columns and even rows. At one-in-two the
+                // texture was dense enough to compete with the line, and
+                // the whole point of stippling rather than filling solid
+                // is that the SURFACE stays the thing you see. One in four
+                // reads as shading; the curve reads as the curve.
+                for (int yy = hi_y + 1; yy < dot_h; ++yy)
+                    if ((x % 2) == 0 && (yy % 2) == 0) dot_at(x, yy);
+                prev_y = y;
             }
             for (int cy = 0; cy < rows; ++cy) {
-                // Row cy covers levels [(rows-1-cy)*8, +8).
-                const int base = (rows - 1 - cy) * 8;
                 std::string line;
-                for (int x = 0; x < cells; ++x) {
-                    const int in_row = col[static_cast<std::size_t>(x)] - base;
-                    if (in_row <= 0)      line += ' ';
-                    else if (in_row >= 8) line += stat_detail::kEighthsUp[7];
-                    else                  line += stat_detail::kEighthsUp[
-                                              static_cast<std::size_t>(in_row - 1)];
-                }
+                for (int cx = 0; cx < cells; ++cx)
+                    line += stat_detail::braille(
+                        grid[static_cast<std::size_t>(cy)
+                             * static_cast<std::size_t>(cells)
+                             + static_cast<std::size_t>(cx)]);
                 emit_row(std::move(line), cy);
             }
             return;

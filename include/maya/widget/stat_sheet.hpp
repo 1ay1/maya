@@ -762,6 +762,11 @@ private:
         out.height  = render_slice(rows, theme, track, indent, out.surface).second;
         if (col_max <= 1) return out;
 
+        // The track one column affords, as the yardstick a split has to
+        // measure up to below.
+        const Fit base_fit = fit(rows, track, std::max(0, out.surface - indent));
+        const int  baseline_track = base_fit.any_bar ? base_fit.bar_w : 0;
+
         // MUST we? Columns relieve VERTICAL pressure. A sheet that already
         // fits the viewport gains nothing by splitting, whatever width it
         // happens to have been given -- which is the whole reason a short
@@ -792,12 +797,34 @@ private:
             // column, it is damage.
             bool ok = true;
             int tallest = 0;
+            int thinnest_track = std::numeric_limits<int>::max();
             for (const auto& sl : slices) {
-                if (!fit(sl, track, usable).ok(usable)) { ok = false; break; }
+                const Fit f = fit(sl, track, usable);
+                if (!f.ok(usable)) { ok = false; break; }
+                if (f.any_bar) thinnest_track = std::min(thinnest_track, f.bar_w);
                 tallest = std::max(
                     tallest, render_slice(sl, theme, track, indent, inner).second);
             }
             if (!ok) continue;
+
+            // Would it GUT the charts?
+            //
+            // kTrackMin is a survival floor -- the width below which a bar
+            // stops being a bar at all. Passing it is not the same as being
+            // worth having: a table whose labels are long (`git_status` is
+            // ten characters) hands the track whatever the label column
+            // does not want, so a half-width slice can leave a legal but
+            // useless 9-cell bar where one column had 24. Every row then
+            // reads as the same stub and the numbers do all the work,
+            // which is precisely the comparison the chart existed to make.
+            //
+            // So a split is also judged against the ALTERNATIVE, not just
+            // against the floor. Losing more than half the track is too
+            // much to pay for shorter columns; the reader is better served
+            // by one column with a chart they can actually read.
+            if (thinnest_track != std::numeric_limits<int>::max()
+                && baseline_track > 0
+                && thinnest_track * 2 < baseline_track) continue;
 
             // Did it HELP ENOUGH?
             //
@@ -1105,7 +1132,13 @@ private:
         if (const auto* p = std::get_if<StatPlot>(&r))
             return (p->rows < 1 ? 1 : p->rows) + (p->caption.empty() ? 0 : 1);
         if (const auto* h = std::get_if<StatHistogram>(&r)) {
+            // Bars, plus the caption, plus the BASELINE rule, plus the
+            // tick row. The baseline was missed: emit_histogram always
+            // draws an axis under the bars (a histogram floating with no
+            // zero has no scale), so every histogram was one row taller
+            // than the balance logic believed.
             int n = (h->rows < 2 ? 2 : h->rows) + (h->caption.empty() ? 0 : 1);
+            ++n;                                   // the baseline rule
             for (const auto& b : h->buckets)
                 if (!b.label.empty()) { ++n; break; }
             return n;

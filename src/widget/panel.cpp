@@ -691,7 +691,12 @@ Element Panel::build() const {
         TabStrip strip;
         for (const auto& t : cfg_.tabs) strip.tab(t);
         strip.active(cfg_.tab_active);
-        strip.theme.active = cfg_.theme.label;
+        if (cfg_.tab_mark) strip.marker(*cfg_.tab_mark);
+        // The ACTIVE tab wears the accent, not the plain label colour. With
+        // the accent only in the underline, a strip read as ordinary bold
+        // text with a stray rule under it — and with a single tab there was
+        // nothing to contrast against at all, so it looked unstyled.
+        strip.theme.active = cfg_.accent;
         strip.theme.idle   = cfg_.theme.help;
         strip.theme.accent = cfg_.accent;
         stack.push_back(strip.build());

@@ -5,6 +5,7 @@
 // Config and never touch layout — the widget owns every chrome decision:
 // border, viewport clipping, scrollbar glyphs, keep-selection-in-view.
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
@@ -15,6 +16,13 @@
 #include "item.hpp"
 #include "menu.hpp"
 #include "theme.hpp"
+
+namespace maya {
+// Forward-declared rather than pulling in tab_strip.hpp: Config is pure data
+// and this is the one field that names the strip's style. The enum has a
+// fixed underlying type, so a declaration is enough to hold one by value.
+enum class TabMark : std::uint8_t;
+}  // namespace maya
 
 namespace maya::panel {
 
@@ -63,6 +71,13 @@ struct Config {
     // a slightly wrong strip, not take down the frame.
     std::vector<std::string> tabs;
     int                      tab_active = 0;
+
+    // How the active tab is marked. Defaults to TabMark::Underline (the
+    // value 0), which is what a panel's tabs have always used; a host that
+    // wants the denser editor treatment — accent bar, " │ " dividers, lit
+    // rule segment — sets TabMark::Editor. Spelled as an optional so the
+    // default stays owned by TabStrip rather than duplicated here.
+    std::optional<TabMark>   tab_mark;
 
     // Borrowed; must outlive the built Element. Null disables scrolling.
     ScrollState* scroll     = nullptr;

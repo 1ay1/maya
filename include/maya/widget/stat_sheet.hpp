@@ -286,6 +286,15 @@ public:
     StatSheet& track(int cells) { track_ = cells; return *this; }
     // Left inset, matching the panel's own gutter.
     StatSheet& indent(int cols) { indent_ = cols; return *this; }
+    // Columns to leave free on the RIGHT.
+    //
+    // Only the full-width forms (band, plot, a `wide` entry) can collide
+    // with what a host draws at its own right edge — a scrollbar, a border,
+    // an inner pad the component was never told about. A ranked bar stops
+    // well short and never notices. So this is not a general margin: it is
+    // the amount by which "full width" is a lie on this surface, and the
+    // host is the only one who knows it.
+    StatSheet& reserve_right(int cols) { reserve_ = cols; return *this; }
 
     [[nodiscard]] bool empty() const noexcept { return rows_.empty(); }
 
@@ -293,9 +302,23 @@ public:
 
     [[nodiscard]] Element build() const {
         return detail::component([rows = rows_, theme = theme,
-                                  track = track_, indent = indent_]
+                                  track = track_, indent = indent_,
+                                  reserve = reserve_]
                                  (int avail_w, int) -> Element {
-            const int avail = avail_w > indent ? avail_w - indent : 0;
+            // The layout engine hands a component an "unconstrained"
+            // sentinel (~1<<24) during auto-height / auto-width MEASURE
+            // passes. Every full-width form here derives its geometry from
+            // this number, so without a cap a band becomes millions of
+            // columns wide, is measured as such, and then paints past the
+            // right edge of whatever contains it. 4096 is far past any
+            // real terminal while keeping the arithmetic finite.
+            //
+            // The same trap LineChart documents — which is the tell that it
+            // belongs to the engine's contract rather than to either widget.
+            constexpr int kMaxWidth = 4096;
+            if (avail_w > kMaxWidth) avail_w = kMaxWidth;
+            const int usable = avail_w - reserve;
+            const int avail  = usable > indent ? usable - indent : 0;
 
             // ── Measure once, for the whole sheet ────────────────────────
             //
@@ -452,7 +475,22 @@ public:
                 }});
             }
 
-            return dsl::v(std::move(out)).build();
+            // Fixed height, and shrink disabled. The sheet knows exactly
+            // how many rows it produced; the parent does not, and a vstack
+            // whose children have no basis is free to collapse them under
+            // shrink — which showed up as a five-row plot rendering as one
+            // row, with the other four silently dropped rather than
+            // scrolled. Stating the height is what makes the figure a
+            // figure instead of a suggestion.
+            const int n = static_cast<int>(out.size());
+            BoxElement box;
+            box.layout.direction = FlexDirection::Column;
+            box.children         = std::move(out);
+            box.layout.height     = Dimension::fixed(n);
+            box.layout.min_height = Dimension::fixed(n);
+            box.layout.basis      = Dimension::fixed(n);
+            box.layout.shrink     = 0.0f;
+            return Element{std::move(box)};
         }).build();
     }
 
@@ -663,8 +701,9 @@ private:
     }
 
     std::vector<Row> rows_;
-    int track_  = 14;
-    int indent_ = 0;
+    int track_   = 14;
+    int indent_  = 0;
+    int reserve_ = 0;
 };
 
 }  // namespace maya

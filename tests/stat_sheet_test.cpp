@@ -287,6 +287,41 @@ TEST_CASE("stat sheet: degenerate graph inputs render nothing, not garbage") {
     CHECK(r.rows.empty());
 }
 
+TEST_CASE("stat sheet: measured height matches rendered rows") {
+    // A host that vstacks the sheet asks measure_element() for its height,
+    // and measures at a HUGE width (maya's panel uses 1<<14). If the sheet
+    // reports a different row count there than it paints at the real
+    // width, the host budgets the wrong number of rows and the tail of the
+    // sheet is silently dropped — which is how a five-row plot rendered as
+    // one row with no scrollbar and no clue.
+    StatSheet s;
+    s.indent(1);
+    s.heading("Trend");
+    s.plot({.caption = "out", .series = {1, 5, 2, 8, 3, 9, 4}, .rows = 5,
+            .peak_label = "5.4k", .base_label = "0"});
+    const auto e = s.build();
+
+    // 1 heading + 1 caption + 5 plot rows.
+    const int expected = 7;
+    CHECK(render_sheet(s, 76).rows.size() == static_cast<std::size_t>(expected));
+    CHECK(measure_element(e, 76).height.value == expected);
+    CHECK(measure_element(e, 1 << 14).height.value == expected);
+}
+
+TEST_CASE("stat sheet: reserve_right keeps full-width rows off the edge") {
+    // Bands and plots are the only forms that reach the right edge, and a
+    // host's border / scrollbar / inner pad live there. The sheet is handed
+    // the OUTER width and cannot see that chrome, so the host states it.
+    StatSheet s;
+    s.reserve_right(7);
+    s.band({.caption = "", .segments = {{"a", 1, Color::green()},
+                                        {"b", 1, Color::red()}},
+            .legend = false});
+    const auto r = render_sheet(s, 76);
+    REQUIRE(!r.rows.empty());
+    CHECK(unicode::str_width(r.rows[0]) == 76 - 7);
+}
+
 TEST_CASE("unicode: truncate_to_width cuts on column boundaries") {
     // The trap this exists to remove: substr() slices multi-byte glyphs in
     // half, which renders as a replacement char and destroys the alignment

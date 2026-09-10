@@ -430,15 +430,22 @@ public:
                                  (int avail_w, int) -> Element {
             // The layout engine hands a component an "unconstrained"
             // sentinel (~1<<24) during auto-height / auto-width MEASURE
-            // passes. Every full-width form here derives its geometry from
-            // this number, so without a cap a band becomes millions of
-            // columns wide, is measured as such, and then paints past the
-            // right edge of whatever contains it. 4096 is far past any
-            // real terminal while keeping the arithmetic finite.
+            // passes, and a host that vstacks the sheet measures it at a
+            // large finite width too (maya's Panel uses 1<<14). Every
+            // full-width form here derives its geometry from this number,
+            // so without a cap a band becomes millions of columns wide,
+            // is measured as such, and then paints past the right edge of
+            // whatever contains it.
             //
-            // The same trap LineChart documents — which is the tell that it
-            // belongs to the engine's contract rather than to either widget.
-            constexpr int kMaxWidth = 4096;
+            // The cap has to be a width the sheet could PLAUSIBLY paint
+            // at, not a round number: the measured row count is what the
+            // host budgets, and a sheet that lays out for 4096 columns
+            // reports far fewer rows than it produces at 76 — which the
+            // host then reads as "this fits", so it never scrolls and the
+            // tail is simply unreachable. 200 is past any real terminal
+            // while keeping the multi-column and shed decisions the same
+            // ones a wide surface would make.
+            constexpr int kMaxWidth = 200;
             if (avail_w > kMaxWidth) avail_w = kMaxWidth;
 
             // ── Column split ────────────────────────────────────────

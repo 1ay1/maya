@@ -630,6 +630,60 @@ TEST_CASE("stat sheet: a degenerate histogram renders nothing") {
     CHECK(render_sheet(s, 60).rows.empty());
 }
 
+TEST_CASE("stat sheet: measured height equals painted rows at every width") {
+    // The bug this pins cost real content. A host budgets rows from
+    // measure_element(), and it measures at a LARGE width (maya's Panel
+    // uses 1<<14). If the sheet lays out differently there than at the
+    // width it paints at — a different column count, a different shed
+    // decision — the host budgets the wrong number of rows and the tail
+    // is silently DROPPED. Not scrolled: dropped, with no scrollbar and
+    // no clue, because the host believed everything fit.
+    //
+    // Checked across the breakpoint in both directions, because the
+    // failure only appears when measure and paint land on opposite sides
+    // of a column split.
+    auto build = [] {
+        StatSheet s;
+        s.indent(1);
+        s.reserve_right(7);
+        s.columns(46, 2);
+        s.heading("One");
+        for (int i = 0; i < 4; ++i)
+            s.entry({.label = "row" + std::to_string(i), .value = "1"});
+        s.heading("Two");
+        for (int i = 0; i < 4; ++i)
+            s.entry({.label = "item" + std::to_string(i), .value = "2"});
+        s.heading("Three");
+        s.histogram({.caption = "spread",
+                     .buckets = {{"a", 1}, {"b", 3}, {"c", 2}},
+                     .rows = 4});
+        return s;
+    };
+
+    for (int w : {40, 60, 76, 90, 100, 120, 160, 200}) {
+        const auto s  = build();
+        const auto el = s.build();
+        // Count painted rows WITHOUT the trailing-blank trim render_sheet
+        // does: a column shorter than its neighbour ends in real blank
+        // rows, and trimming them would make this compare a trimmed count
+        // against an untrimmed measurement.
+        StylePool pool;
+        Canvas canvas(w, 64, &pool);
+        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        int painted = 0;
+        for (int y = 0; y < 64; ++y)
+            for (int x = 0; x < w; ++x) {
+                const char32_t c = canvas.get(x, y).character;
+                if (c != 0 && c != U' ') { painted = y + 1; break; }
+            }
+        const int measured = measure_element(el, w).height.value;
+        // Measured is what the host budgets; it must cover everything the
+        // sheet paints, or the tail is silently dropped rather than
+        // scrolled. Equal or greater — never less.
+        CHECK_MESSAGE(measured >= painted, "width " << w);
+    }
+}
+
 TEST_CASE("unicode: truncate_to_width cuts on column boundaries") {
     // The trap this exists to remove: substr() slices multi-byte glyphs in
     // half, which renders as a replacement char and destroys the alignment

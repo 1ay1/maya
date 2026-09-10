@@ -21,6 +21,7 @@
 #include <maya/style/theme.hpp>
 #include <maya/widget/tab_strip.hpp>
 
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -179,6 +180,64 @@ TEST_CASE("tab strip: a detail participates in the width arithmetic") {
     s.active(7);
     const auto r = render(s, 30);
     CHECK(has(r, "file7"));   // the active tab still fits once details count
+}
+
+TEST_CASE("tab strip: the three marks are visibly different") {
+    // A family, not one house style — so this both PINS each mode's shape
+    // and prints them together, because "do these read as three
+    // deliberate styles" is a judgement no assertion makes for you.
+    auto build = [](TabMark m) {
+        TabStrip s;
+        s.tab("rope.cpp").tab("node.hpp").tab("notes.md");
+        s.active(1).marker(m);
+        return s;
+    };
+
+    const auto und = render(build(TabMark::Underline), 60);
+    const auto dot = render(build(TabMark::Dot), 60);
+    const auto edt = render(build(TabMark::Editor), 60);
+
+    std::printf("\n--- Underline ---\n");
+    for (const auto& r : und.rows) std::printf("|%s|\n", r.c_str());
+    std::printf("--- Dot ---\n");
+    for (const auto& r : dot.rows) std::printf("|%s|\n", r.c_str());
+    std::printf("--- Editor ---\n");
+    for (const auto& r : edt.rows) std::printf("|%s|\n", r.c_str());
+
+    CHECK(und.rows.size() == 2);   // label + rule under the active label
+    CHECK(dot.rows.size() == 1);   // one row, marker inline
+    CHECK(edt.rows.size() == 2);   // label + full-width rule
+
+    // Every mode shows every tab when they fit.
+    for (const auto* r : {&und, &dot, &edt}) {
+        CHECK(has(*r, "rope.cpp"));
+        CHECK(has(*r, "node.hpp"));
+        CHECK(has(*r, "notes.md"));
+    }
+
+    // The editor rule spans the WHOLE width — a rule that stopped where the
+    // tabs stop would leave a ragged edge reading as a broken strip.
+    CHECK(glyphs(edt.rows[1]) == 60);
+    // The underline rule covers only the active label.
+    CHECK(glyphs(und.rows[1]) == 8);   // "node.hpp"
+}
+
+TEST_CASE("tab strip: editor mode still keeps the active tab in view") {
+    // The dividers cost columns, so the scroll arithmetic has to account
+    // for them — a mode that measured gaps but rendered dividers would
+    // overflow by 1 column per tab and push the active one off the edge.
+    TabStrip s;
+    for (int i = 0; i < 10; ++i) s.tab("buffer" + std::to_string(i) + ".cpp");
+    s.marker(TabMark::Editor);
+    for (int active : {0, 4, 9}) {
+        s.active(active);
+        for (int w : {28, 40, 70}) {
+            const auto r = render(s, w);
+            CHECK_MESSAGE(has(r, "buffer" + std::to_string(active) + ".cpp"),
+                          "editor mode keeps the active tab (i=" << active
+                          << " w=" << w << ")");
+        }
+    }
 }
 
 TEST_CASE("tab strip: an out-of-range active index never crashes") {

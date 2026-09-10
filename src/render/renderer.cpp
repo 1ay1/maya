@@ -1224,6 +1224,19 @@ void paint_element(
                         std::size_t rem = (re > cb) ? (re - cb) : 1;
                         std::size_t ce = std::min(le, b + rem);
                         if (ce <= b) ce = b + 1;
+                        // Extend to the end of the codepoint that `ce` lands
+                        // inside. The run walk advances by BYTES, and the
+                        // `rem = 1` fallback above (a run that ends at or
+                        // before the cursor) is exactly one byte — so a
+                        // multi-byte glyph got cut into pieces and each
+                        // fragment was written as its own cell, which the
+                        // terminal draws as U+FFFD. Invisible on ASCII;
+                        // immediate on box-drawing or CJK, e.g. a styled
+                        // ─── rule tearing into replacement characters at
+                        // the first run boundary.
+                        while (ce < le &&
+                               (static_cast<unsigned char>(ln[ce]) & 0xC0) == 0x80)
+                            ++ce;
                         auto sv = std::string_view(ln).substr(b, ce - b);
                         canvas.write_text(xc, yy, sv, intern_bg(r.style));
                         xc += string_width(sv);
@@ -1237,10 +1250,22 @@ void paint_element(
                     return;
                 }
 
+                // Back up to a UTF-8 START byte. These paths slice `line`
+                // by BYTES to make room for the ellipsis, and a cut landing
+                // inside a multi-byte sequence emits a torn codepoint that
+                // the terminal draws as U+FFFD — a line of replacement
+                // characters where box-drawing was intended. ASCII text
+                // never noticed; any run of ─/│/CJK does immediately.
+                auto utf8_floor = [&](std::size_t pos) -> std::size_t {
+                    while (pos > 0 && (static_cast<unsigned char>(line[pos]) & 0xC0) == 0x80)
+                        --pos;
+                    return pos;
+                };
+
                 if (node.wrap == TextWrap::TruncateEnd &&
                     line.size() >= kEll.size())
                 {
-                    std::size_t plen = line.size() - kEll.size();
+                    std::size_t plen = utf8_floor(line.size() - kEll.size());
                     int xc = paint_seg(line, 0, plen, 0, ax, y);
                     canvas.write_text(xc, y, kEll, run_sid_at(plen));
                     return;

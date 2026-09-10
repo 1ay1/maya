@@ -572,7 +572,22 @@ public:
                 return Element{std::move(row)};
             }
 
-            return render_slice(rows, theme, track, indent, full).first;
+            // ── One column: don't stretch past what the content wants ────
+            //
+            // A sheet the splitter declined to divide — three rows, one
+            // ranked list — was still being laid out at the full width,
+            // which put "By model" and its number at opposite ends of a
+            // 220-column terminal with a hand's width of nothing between
+            // them. Filling the surface is not the goal; being READ is,
+            // and a measure has a length past which it stops being one.
+            //
+            // So the last act of the width decision is to decline width.
+            // Everything above answers "how do I use what I was given";
+            // this answers "how much of it did I actually want", which is
+            // the question a single-section tab was never asked.
+            const int want = natural_width(rows, track);
+            const int use  = want > 0 && want < full ? want : full;
+            return render_slice(rows, theme, track, indent, use).first;
         }).build();
     }
 
@@ -610,6 +625,15 @@ private:
     // point of a wide terminal is more COLUMNS of content, not one
     // ludicrously long bar.
     static constexpr int kTrackMax = 40;
+    // The track width a row would CHOOSE if width were free — the basis for
+    // the sheet's natural width. Comfortably readable without being the
+    // 40-cell maximum, which is a ceiling for growth, not a preference.
+    static constexpr int kTrackWant = 24;
+    // What a full-width form wants before extra columns stop helping it.
+    // A curve needs horizontal room to be a curve and a band needs its
+    // segments to be distinguishable; past these they are just wider.
+    static constexpr int kPlotWant = 64;
+    static constexpr int kBandWant = 56;
     // The gap between a sheet's own columns (label│track│value│note).
     static constexpr int kGap = 2;
 
@@ -724,12 +748,91 @@ private:
         if (f.bar_w > 0) {
             const int slack = avail - total();
             if (slack > 0) {
-                const int want = std::clamp(avail / 3, kTrackMin, kTrackMax);
+                // A third of the column, but never less than the track the
+                // sheet's own natural width was computed against — those
+                // two numbers have to agree or they fight: natural_width
+                // asks for room for a kTrackWant-cell bar, and a growth
+                // rule that then only grants avail/3 hands back a bar
+                // narrower than the width was granted for, which shows up
+                // as a sheet that got exactly what it asked for and drew
+                // it smaller anyway.
+                const int want = std::clamp(std::max(avail / 3, kTrackWant),
+                                            kTrackMin, kTrackMax);
                 if (want > f.bar_w)
                     f.bar_w = std::min(f.bar_w + slack, want);
             }
         }
         return f;
+    }
+
+    // The width this slice would use if nothing constrained it.
+    //
+    // Label, a comfortable track, the value and its note, plus the gaps
+    // between them — the point past which extra columns buy the reader
+    // nothing. Prose has the same property and typography has always
+    // known it: a line can be too long to read, and a 3-row table stretched
+    // across 220 columns makes the eye travel a hand's width from "By
+    // model" to the number it belongs to.
+    //
+    // Figures are asked what they want too, so a tab that is mostly a ring
+    // does not get clipped to the width of the little table beside it.
+    [[nodiscard]] static int natural_width(const std::vector<Row>& rows,
+                                           int track) {
+        Fit f;
+        for (const auto& r : rows) {
+            if (const auto* h = std::get_if<StatHeading>(&r)) {
+                f.text_w = std::max(f.text_w, unicode::str_width(h->text));
+                continue;
+            }
+            if (const auto* hero = std::get_if<StatHero>(&r)) {
+                int w = unicode::str_width(hero->value);
+                if (!hero->caption.empty())
+                    w += 1 + unicode::str_width(hero->caption);
+                f.text_w = std::max(f.text_w, w);
+                continue;
+            }
+            const auto* e = std::get_if<StatEntry>(&r);
+            if (!e) continue;
+            f.has_rows = true;
+            f.label_w  = std::max(f.label_w,  unicode::str_width(e->label));
+            f.value_w  = std::max(f.value_w,  unicode::str_width(e->value));
+            f.detail_w = std::max(f.detail_w, unicode::str_width(e->detail));
+            if (e->share >= 0.0 || !e->spark.empty()) f.any_bar = true;
+        }
+
+        int w = f.text_w;
+        if (f.has_rows) {
+            int t = f.label_w + f.value_w + kGap;
+            if (f.any_bar)  t += kTrackWant + kGap;
+            if (f.detail_w) t += f.detail_w + kGap;
+            w = std::max(w, t);
+        }
+
+        // A figure's own appetite. A donut is its grown ring plus a
+        // legend; a histogram is every bucket at its preferred width plus
+        // the axis gutter; a plot wants room for the curve to be a curve.
+        for (const auto& r : rows) {
+            if (const auto* d = std::get_if<StatDonut>(&r)) {
+                int lb = 0;
+                for (const auto& s : d->segments)
+                    lb = std::max(lb, unicode::str_width(s.label) + 8);
+                w = std::max(w, d->rows_max * 2 + 3 + std::max(lb, 14));
+            } else if (const auto* hg = std::get_if<StatHistogram>(&r)) {
+                int lab = 0;
+                for (const auto& l : hg->y_labels)
+                    lab = std::max(lab, unicode::str_width(l));
+                w = std::max(w, static_cast<int>(hg->buckets.size())
+                                    * hg->col_width
+                                + (lab ? lab + 1 : 0));
+            } else if (const auto* p = std::get_if<StatPlot>(&r)) {
+                const int lab = std::max(unicode::str_width(p->peak_label),
+                                         unicode::str_width(p->base_label));
+                w = std::max(w, kPlotWant + (lab ? lab + 1 : 0));
+            } else if (const auto* b = std::get_if<StatBand>(&r)) {
+                w = std::max(w, kBandWant);
+            }
+        }
+        return w;
     }
 
     // How many terminal rows one Row actually PAINTS.
@@ -852,17 +955,15 @@ private:
                 // best partition available, and visibly a mistake: the
                 // reader gets a lone number marooned in half the panel.
                 //
-                // But "lopsided" is only a reason to refuse if refusing
-                // makes things BETTER, and it does not when the sheet is
-                // one tall figure plus a couple of tables: rejecting the
-                // split there does not produce a tidy sheet, it produces a
-                // one-column sheet whose tail falls off the bottom. So the
-                // test is against what a single column would cost — the
-                // full height — rather than against a ratio in the
-                // abstract. A split that still beats scrolling is kept
-                // even when it is uneven, because the uneven layout is
-                // showing more of the content than the tidy one would.
-                if (tallest >= total && shortest * 3 < tallest) return;
+                // What a split BUYS is the height it removes from the
+                // tallest column, and for a two-way split that saving is
+                // exactly the shortest column. So "lopsided" and "bought
+                // us nothing" are the same measurement read two ways, and
+                // one test covers both: when the short column is a third
+                // of the tall one, the sheet has taken on a ragged layout
+                // to save a row or two of scrolling. Decline it and let
+                // the content run in one honest column.
+                if (shortest * 3 < tallest) return;
                 const int cost = tallest - bonus;
                 if (cost < best_cost) { best_cost = cost; best_cuts = cuts; }
                 return;

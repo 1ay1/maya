@@ -201,4 +201,62 @@ namespace detail {
     return w;
 }
 
+/// Longest PREFIX of `s` that fits in `max_cols` display columns.
+///
+/// The cut every aligned layout needs and that `substr` cannot do: bytes
+/// are not columns, so `s.substr(0, n)` both mis-measures (a 3-byte glyph
+/// is one column, a wide CJK glyph is two) and can slice a UTF-8 sequence
+/// in half — which renders as a replacement glyph and takes the row's
+/// alignment with it, the exact failure alignment code exists to prevent.
+///
+/// A wide glyph straddling the limit is DROPPED rather than half-drawn:
+/// returning a string one column narrower is a rounding error, while
+/// returning one a column wider overflows the cell it was measured for.
+///
+/// Total and never throws: malformed bytes count one column each and are
+/// copied through, matching str_width() so the two can never disagree
+/// about the same string.
+[[nodiscard]] constexpr std::string_view truncate_to_width(
+    std::string_view s,
+    int max_cols,
+    WidthMode mode = WidthMode::Modern) noexcept
+{
+    if (max_cols <= 0) return {};
+    int w = 0;
+    for (std::size_t i = 0; i < s.size();) {
+        const auto b0 = static_cast<unsigned char>(s[i]);
+        char32_t cp  = 0;
+        std::size_t n = 0;
+        if      (b0 < 0x80)          { cp = b0;        n = 1; }
+        else if ((b0 & 0xE0) == 0xC0) { cp = b0 & 0x1F; n = 2; }
+        else if ((b0 & 0xF0) == 0xE0) { cp = b0 & 0x0F; n = 3; }
+        else if ((b0 & 0xF8) == 0xF0) { cp = b0 & 0x07; n = 4; }
+        else {
+            if (w + 1 > max_cols) return s.substr(0, i);
+            ++w; ++i; continue;
+        }
+
+        if (i + n > s.size()) {
+            if (w + 1 > max_cols) return s.substr(0, i);
+            ++w; ++i; continue;
+        }
+        bool ok = true;
+        for (std::size_t k = 1; k < n; ++k) {
+            const auto bk = static_cast<unsigned char>(s[i + k]);
+            if ((bk & 0xC0) != 0x80) { ok = false; break; }
+            cp = (cp << 6) | (bk & 0x3F);
+        }
+        if (!ok) {
+            if (w + 1 > max_cols) return s.substr(0, i);
+            ++w; ++i; continue;
+        }
+
+        const int cw = char_width(cp, mode);
+        if (w + cw > max_cols) return s.substr(0, i);
+        w += cw;
+        i += n;
+    }
+    return s;
+}
+
 } // namespace maya::unicode

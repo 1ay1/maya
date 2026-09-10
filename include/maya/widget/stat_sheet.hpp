@@ -614,8 +614,24 @@ public:
             // Everything above answers "how do I use what I was given";
             // this answers "how much of it did I actually want", which is
             // the question a single-section tab was never asked.
+            //
+            // Declining is only right once there is a LOT to decline,
+            // though. natural_width is built from a fixed comfortable
+            // track, so it lands around 46 columns for a typical table --
+            // and clamping every sheet to that left a 64-column pane
+            // ending a third short of its own border, which reads as the
+            // tab being broken rather than as restraint. The waste that
+            // motivated the clamp was 120 columns of void, not 18.
+            //
+            // So the sheet only declines width when what it would decline
+            // is itself bigger than a whole comfortable table -- and even
+            // then it keeps growing with the surface, just more slowly
+            // than one-for-one. A stats table on a wide terminal should
+            // look deliberately proportioned, not pinned to the left edge.
             const int want = natural_width(rows, track);
-            const int use  = want > 0 && want < full ? want : full;
+            int use = full;
+            if (want > 0 && full > want * 2)
+                use = want + (full - want) / 2;
             return render_slice(rows, theme, track, indent, use).first;
         })
         // Report the sheet's TALLEST layout as its natural height.
@@ -658,7 +674,17 @@ public:
                 const auto one = render_slice(rows, theme, track, indent, full);
                 if (one.second > tallest) tallest = one.second;
             }
-            return Size{Columns{w}, Rows{tallest}};
+            // Report the WIDTH WE WERE ASKED ABOUT, never the probe width.
+            //
+            // This callback exists to answer a question about HEIGHT, and
+            // returning `Columns{40}` because 40 is where the tallest probe
+            // landed told the layout engine the sheet's natural width was
+            // 40 -- so it was sized to 40 columns and stayed there, on a
+            // 300-column terminal, with every bar frozen at the same 16
+            // cells. The measure pass must not smuggle a width decision
+            // into a height answer; `max_width` is the caller's number and
+            // handing it straight back is the only honest reply.
+            return Size{Columns{max_width}, Rows{tallest}};
         })
         .build();
     }

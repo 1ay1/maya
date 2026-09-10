@@ -192,6 +192,101 @@ TEST_CASE("stat sheet: an empty sheet renders nothing and does not crash") {
     CHECK(r.rows.empty());
 }
 
+TEST_CASE("stat sheet: a band's segments fill the track exactly") {
+    // A composition bar claims its parts ARE the whole, so its right edge
+    // must not wobble with the data. Rounding each segment independently
+    // leaves the total short; largest-remainder apportionment is what
+    // makes the claim true at every width.
+    for (int w : {72, 51, 40, 23}) {
+        StatSheet s;
+        s.band({.caption = "",
+                .segments = {{"read", 68000, Color::green()},
+                             {"write", 12000, Color::yellow()},
+                             {"miss", 21000, Color::red()}},
+                .legend = false});
+        const auto r = render_sheet(s, w);
+        REQUIRE(!r.rows.empty());
+        CHECK(unicode::str_width(r.rows[0]) == w);
+    }
+}
+
+TEST_CASE("stat sheet: a sliver segment still gets a column") {
+    // Same rule as the 1% bar: "a sliver" and "nothing" are different
+    // readings, and a band that drops a tiny segment silently reports a
+    // composition the session did not have.
+    StatSheet s;
+    s.band({.caption = "",
+            .segments = {{"huge", 100000, Color::green()},
+                         {"tiny", 1, Color::red()}},
+            .legend = false});
+    const auto r = render_sheet(s, 40);
+    REQUIRE(!r.rows.empty());
+    CHECK(unicode::str_width(r.rows[0]) == 40);
+}
+
+TEST_CASE("stat sheet: a band renders bar plus one legend row") {
+    StatSheet s;
+    s.band({.caption = "by origin",
+            .segments = {{"read", 3, Color::green()},
+                         {"miss", 1, Color::red()}}});
+    const auto r = render_sheet(s, 40);
+    // caption + bar + legend, and the legend is ONE row however many
+    // segments there are — a per-segment legend is a bar chart in
+    // disguise and costs the space the band form exists to save.
+    REQUIRE(r.rows.size() == 3u);
+    CHECK(r.rows[0].find("by origin") != std::string::npos);
+    CHECK(r.rows[2].find("read") != std::string::npos);
+    CHECK(r.rows[2].find("miss") != std::string::npos);
+}
+
+TEST_CASE("stat sheet: a plot occupies exactly the rows it asked for") {
+    // A figure that silently grows takes the space of the rows beneath it
+    // in a scrolling panel.
+    for (int rows : {1, 3, 5, 8}) {
+        StatSheet s;
+        s.plot({.caption = "", .series = {1, 5, 2, 8, 3}, .rows = rows});
+        const auto r = render_sheet(s, 40);
+        CHECK(static_cast<int>(r.rows.size()) == rows);
+    }
+}
+
+TEST_CASE("stat sheet: a plot's scale labels ride the first and last rows") {
+    // A curve with no peak label is a shape without units — decoration
+    // rather than a statistic.
+    StatSheet s;
+    s.plot({.caption = "", .series = {1, 9, 3, 7}, .rows = 4,
+            .peak_label = "1.5k", .base_label = "0"});
+    const auto r = render_sheet(s, 40);
+    REQUIRE(r.rows.size() == 4u);
+    CHECK(r.rows.front().find("1.5k") != std::string::npos);
+    CHECK(r.rows.back().find("0") != std::string::npos);
+    // And the plot body never overruns the gutter those labels sit in.
+    for (const auto& row : r.rows) CHECK(unicode::str_width(row) <= 40);
+}
+
+TEST_CASE("stat sheet: a plot joins consecutive samples") {
+    // A steep move must read as one falling line, not as two unrelated
+    // marks. The vertical join is what makes it a line chart rather than
+    // a scatter of dots.
+    StatSheet s;
+    s.plot({.caption = "", .series = {0, 100}, .rows = 4});
+    const auto r = render_sheet(s, 20);
+    REQUIRE(r.rows.size() == 4u);
+    // Every row carries ink: the stroke spans the full height between the
+    // two samples. Without the join only the top and bottom rows would.
+    for (const auto& row : r.rows)
+        CHECK(row.find('?') != std::string::npos);
+}
+
+TEST_CASE("stat sheet: degenerate graph inputs render nothing, not garbage") {
+    StatSheet s;
+    s.band({.caption = "", .segments = {}});             // no segments
+    s.band({.caption = "", .segments = {{"z", 0, Color::red()}}});  // all zero
+    s.plot({.caption = "", .series = {}});               // no samples
+    const auto r = render_sheet(s, 40);
+    CHECK(r.rows.empty());
+}
+
 TEST_CASE("unicode: truncate_to_width cuts on column boundaries") {
     // The trap this exists to remove: substr() slices multi-byte glyphs in
     // half, which renders as a replacement char and destroys the alignment

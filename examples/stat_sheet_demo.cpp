@@ -12,10 +12,10 @@ using namespace maya;
 
 static void dump(const StatSheet& s, int w) {
     StylePool pool;
-    Canvas canvas(w, 30, &pool);
+    Canvas canvas(w, 44, &pool);
     render_tree(s.build(), canvas, pool, theme::dark, true);
     std::printf("\n--- %d cols ---\n", w);
-    for (int y = 0; y < 30; ++y) {
+    for (int y = 0; y < 44; ++y) {
         std::string line;
         for (int x = 0; x < w; ++x) {
             const char32_t ch = canvas.get(x, y).character;
@@ -32,7 +32,7 @@ static void dump(const StatSheet& s, int w) {
             }
         }
         while (!line.empty() && line.back() == ' ') line.pop_back();
-        if (line.empty() && y > 20) break;
+        if (line.empty() && y > 34) break;
         std::printf("|%s|\n", line.c_str());
     }
 }
@@ -57,6 +57,24 @@ int main() {
     s.entry({.label = "Output rate", .value = "1.2k/s",
              .spark = {1, 4, 2, 8, 3, 7, 9, 5, 6, 8, 4, 9}});
     s.entry({.label = "Context",     .value = "62%", .share = 0.62, .wide = true});
+    s.blank();
+    s.heading("Cache");
+    s.band({.caption = "input tokens by origin",
+            .segments = {
+                {"read",   68000, Color::green()},
+                {"write",  12000, Color::yellow()},
+                {"miss",   21000, Color::red()},
+            }});
+    s.blank();
+    s.heading("Tokens per turn");
+    s.plot({.caption = "output tokens, last 40 turns",
+            .series = {120, 340, 210, 890, 450, 620, 980, 1200, 760, 540,
+                       320, 410, 880, 1500, 1320, 900, 640, 480, 700, 1100,
+                       1400, 1250, 980, 620, 340, 520, 810, 1180, 1460, 1290,
+                       960, 720, 580, 430, 690, 1020, 1310, 1180, 870, 610},
+            .rows = 5,
+            .peak_label = "1.5k",
+            .base_label = "0"});
 
     dump(s, 72);
     dump(s, 44);

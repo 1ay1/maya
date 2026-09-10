@@ -92,6 +92,34 @@ inline constexpr std::string_view kSpark[8] = {
     "\xe2\x96\x85", "\xe2\x96\x86", "\xe2\x96\x87", "\xe2\x96\x88",
 };
 
+// One braille cell is a 2×4 dot matrix, so a plot drawn in braille has
+// EIGHT times the resolution of one drawn in blocks. That is the whole
+// reason a stats panel can show a real curve in four terminal rows.
+//
+//   col0 col1
+//   0x01 0x08   row 0
+//   0x02 0x10   row 1
+//   0x04 0x20   row 2
+//   0x40 0x80   row 3
+inline constexpr std::uint8_t kBrailleDot[4][2] = {
+    {0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80},
+};
+
+inline constexpr std::string_view kFullBlock = "\xe2\x96\x88";   // █
+inline constexpr std::string_view kLegendDot = "\xe2\x96\xa0";   // ■
+
+// U+2800 + bits, as UTF-8. A blank cell is U+2800 itself (all dots
+// clear), NOT a space: a space would collapse under the trailing-space
+// trim every row does and the plot would lose its right edge.
+[[nodiscard]] inline std::string braille(std::uint8_t bits) {
+    const unsigned cp = 0x2800u + bits;
+    std::string s;
+    s += static_cast<char>(0xE0 | (cp >> 12));
+    s += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    s += static_cast<char>(0x80 | (cp & 0x3F));
+    return s;
+}
+
 // Filled prefix of a `cells`-wide track, in eighths.
 [[nodiscard]] inline std::string bar_fill(double share, int cells) {
     if (cells <= 0) return {};
@@ -187,9 +215,45 @@ struct StatBlank   {};
 struct StatHero    { std::string value; std::string caption;
                      std::optional<Color> hue; };
 
+// A COMPOSITION bar: one full-width track split into coloured segments
+// that sum to the whole, with a legend beneath.
+//
+// Different question from a ranked list of bars, which is why it is a
+// different row. Ranked bars answer "how big is each one" — you compare
+// lengths. A band answers "what is this made OF" — you see one bar and
+// read off proportions. Cache read vs write vs miss, or accepted vs
+// rejected vs pending, are band questions: the parts are a whole, and
+// showing them as three separate bars hides that they sum to one.
+struct StatBand {
+    struct Seg { std::string label; double value = 0; Color hue; };
+    std::string      caption;   // dim note above the bar
+    std::vector<Seg> segments;
+    bool             legend = true;
+};
+
+// A braille line plot over the full sheet width.
+//
+// A sparkline is one row and answers "is it going up". A plot is several
+// rows with a labelled scale and answers "by how much, and when" — at 2×4
+// dots per cell it has eight times a block chart's resolution, so a real
+// curve fits in four terminal rows. Both exist because a stats tab wants
+// the cheap one inline in a table and the detailed one as a figure.
+struct StatPlot {
+    std::string         caption;
+    std::vector<double> series;
+    int                 rows = 4;      // terminal rows, so 4× dots tall
+    std::optional<Color> hue;
+    // Right-hand scale labels. The peak is the number a reader needs to
+    // interpret every other point, and a plot without it is a shape with
+    // no units — decoration rather than a statistic.
+    std::string         peak_label;
+    std::string         base_label;
+};
+
 class StatSheet {
 public:
-    using Row = std::variant<StatHeading, StatBlank, StatHero, StatEntry>;
+    using Row = std::variant<StatHeading, StatBlank, StatHero, StatEntry,
+                             StatBand, StatPlot>;
 
     StatSheetTheme theme{};
 
@@ -205,6 +269,14 @@ public:
     }
     StatSheet& entry(StatEntry e) {
         rows_.emplace_back(std::move(e));
+        return *this;
+    }
+    StatSheet& band(StatBand b) {
+        rows_.emplace_back(std::move(b));
+        return *this;
+    }
+    StatSheet& plot(StatPlot p) {
+        rows_.emplace_back(std::move(p));
         return *this;
     }
 
@@ -294,6 +366,12 @@ public:
                         gap(1);
                         put(hero->caption, Style{}.with_fg(theme.label));
                     }
+                } else if (const auto* bd = std::get_if<StatBand>(&r)) {
+                    emit_band(*bd, out, theme, avail, pad);
+                    continue;
+                } else if (const auto* pl = std::get_if<StatPlot>(&r)) {
+                    emit_plot(*pl, out, theme, avail, pad);
+                    continue;
                 } else {
                     const auto& e = std::get<StatEntry>(r);
                     const Color hue = e.hue.value_or(theme.bar);
@@ -379,6 +457,211 @@ public:
     }
 
 private:
+    // ── Composition band ────────────────────────────────────────────────
+    //
+    // Segment widths are apportioned by LARGEST REMAINDER, not by
+    // independent rounding. Rounding each segment on its own leaves the
+    // total a column or two short of the track, so the bar's right edge
+    // wobbles between bands and the thing that is supposed to read as "a
+    // whole" visibly is not one.
+    //
+    // Every non-zero segment is guaranteed at least one column, for the
+    // same reason a 1% bar is not allowed to round to empty: "a sliver"
+    // and "nothing" are different readings.
+    static void emit_band(const StatBand& b, std::vector<Element>& out,
+                          const StatSheetTheme& theme, int avail,
+                          const std::string& pad) {
+        double total = 0;
+        for (const auto& s : b.segments) total += s.value > 0 ? s.value : 0;
+        if (b.segments.empty() || total <= 0 || avail <= 0) return;
+
+        if (!b.caption.empty()) {
+            out.push_back(Element{TextElement{
+                .content = pad + b.caption,
+                .style   = Style{}.with_fg(theme.detail),
+                .wrap    = TextWrap::TruncateEnd,
+            }});
+        }
+
+        const int track = avail;
+        std::vector<int>    cols(b.segments.size(), 0);
+        std::vector<double> rem(b.segments.size(), 0.0);
+        int used = 0;
+        for (std::size_t i = 0; i < b.segments.size(); ++i) {
+            const double v = b.segments[i].value > 0 ? b.segments[i].value : 0;
+            const double exact = v / total * track;
+            cols[i] = static_cast<int>(exact);
+            if (v > 0 && cols[i] == 0) cols[i] = 1;
+            rem[i]  = exact - static_cast<double>(static_cast<int>(exact));
+            used   += cols[i];
+        }
+        // Hand out the leftover columns to the biggest remainders first.
+        while (used < track) {
+            std::size_t best = 0;
+            double best_r = -1.0;
+            for (std::size_t i = 0; i < rem.size(); ++i)
+                if (rem[i] > best_r) { best_r = rem[i]; best = i; }
+            ++cols[best];
+            rem[best] = -1.0;
+            ++used;
+            if (best_r < 0) break;   // nothing left to give to
+        }
+        while (used > track) {
+            std::size_t best = 0;
+            int widest = -1;
+            for (std::size_t i = 0; i < cols.size(); ++i)
+                if (cols[i] > widest) { widest = cols[i]; best = i; }
+            if (widest <= 1) break;
+            --cols[best];
+            --used;
+        }
+
+        std::string s = pad;
+        std::vector<StyledRun> runs;
+        for (std::size_t i = 0; i < b.segments.size(); ++i) {
+            if (cols[i] <= 0) continue;
+            std::string seg;
+            for (int c = 0; c < cols[i]; ++c) seg += stat_detail::kFullBlock;
+            runs.push_back(StyledRun{s.size(), seg.size(),
+                                     Style{}.with_fg(b.segments[i].hue)});
+            s += seg;
+        }
+        out.push_back(Element{TextElement{
+            .content = std::move(s),
+            .wrap    = TextWrap::TruncateEnd,
+            .runs    = std::move(runs),
+        }});
+
+        if (!b.legend) return;
+        // Legend on ONE row: a band with a per-segment legend row is a
+        // ranked bar chart wearing a costume, and costs the vertical space
+        // the single-bar form exists to save.
+        std::string ls = pad;
+        std::vector<StyledRun> lruns;
+        for (std::size_t i = 0; i < b.segments.size(); ++i) {
+            if (b.segments[i].value <= 0) continue;
+            if (ls.size() > pad.size()) {
+                lruns.push_back(StyledRun{ls.size(), 3, Style{}.with_fg(theme.detail)});
+                ls += "   ";
+            }
+            const std::string dot{stat_detail::kLegendDot};
+            lruns.push_back(StyledRun{ls.size(), dot.size(),
+                                      Style{}.with_fg(b.segments[i].hue)});
+            ls += dot;
+            const std::string lbl = " " + b.segments[i].label;
+            lruns.push_back(StyledRun{ls.size(), lbl.size(),
+                                      Style{}.with_fg(theme.label)});
+            ls += lbl;
+        }
+        out.push_back(Element{TextElement{
+            .content = std::move(ls),
+            .wrap    = TextWrap::TruncateEnd,
+            .runs    = std::move(lruns),
+        }});
+    }
+
+    // ── Braille plot ────────────────────────────────────────────────────
+    static void emit_plot(const StatPlot& p, std::vector<Element>& out,
+                          const StatSheetTheme& theme, int avail,
+                          const std::string& pad) {
+        if (p.series.empty() || avail <= 0) return;
+        const int rows = p.rows < 1 ? 1 : (p.rows > 16 ? 16 : p.rows);
+
+        // Reserve the scale gutter first: a plot that overruns its labels
+        // is worse than one that is two columns narrower.
+        const int label_w = std::max(unicode::str_width(p.peak_label),
+                                     unicode::str_width(p.base_label));
+        const int gutter  = label_w > 0 ? label_w + 1 : 0;
+        const int cells   = avail - gutter;
+        if (cells <= 0) return;
+
+        if (!p.caption.empty()) {
+            out.push_back(Element{TextElement{
+                .content = pad + p.caption,
+                .style   = Style{}.with_fg(theme.detail),
+                .wrap    = TextWrap::TruncateEnd,
+            }});
+        }
+
+        const int dot_w = cells * 2;      // 2 dot columns per cell
+        const int dot_h = rows  * 4;      // 4 dot rows per cell
+
+        double hi = 0.0;
+        for (double v : p.series) if (v > hi) hi = v;
+        if (hi <= 0.0) hi = 1.0;
+
+        // Resample the series onto the dot grid. Nearest-neighbour, not
+        // interpolation: these are measured samples, and inventing points
+        // between them draws a curve the data never had.
+        //
+        // Consecutive points are then JOINED by a vertical stroke. Without
+        // it a steep move leaves a visible gap between two dots and the
+        // eye reads two unrelated marks rather than one falling line — the
+        // plot stops being a line chart and becomes a scatter of noise.
+        // The join spans dots the data does not have, which is honest:
+        // it asserts continuity between samples, not values between them.
+        std::vector<std::uint8_t> grid(
+            static_cast<std::size_t>(rows) * static_cast<std::size_t>(cells), 0);
+        const std::size_t n = p.series.size();
+        auto dot_at = [&](int x, int y) {
+            if (x < 0 || x >= dot_w || y < 0 || y >= dot_h) return;
+            grid[static_cast<std::size_t>(y / 4)
+                     * static_cast<std::size_t>(cells)
+                 + static_cast<std::size_t>(x / 2)]
+                |= stat_detail::kBrailleDot[y % 4][x % 2];
+        };
+        auto y_at = [&](int x) {
+            const std::size_t idx =
+                n == 1 ? 0
+                       : static_cast<std::size_t>(
+                             static_cast<double>(x) / (dot_w - 1) * (n - 1) + 0.5);
+            const double f = p.series[idx < n ? idx : n - 1] / hi;
+            int y = dot_h - 1 - static_cast<int>(f * (dot_h - 1) + 0.5);
+            if (y < 0) y = 0;
+            if (y >= dot_h) y = dot_h - 1;
+            return y;
+        };
+        int prev_y = y_at(0);
+        for (int x = 0; x < dot_w; ++x) {
+            const int y = y_at(x);
+            const int lo = y < prev_y ? y : prev_y;
+            const int hi_y = y < prev_y ? prev_y : y;
+            for (int yy = lo; yy <= hi_y; ++yy) dot_at(x, yy);
+            prev_y = y;
+        }
+
+        for (int cy = 0; cy < rows; ++cy) {
+            std::string s = pad;
+            std::vector<StyledRun> runs;
+            std::string line;
+            for (int cx = 0; cx < cells; ++cx)
+                line += stat_detail::braille(
+                    grid[static_cast<std::size_t>(cy)
+                         * static_cast<std::size_t>(cells)
+                         + static_cast<std::size_t>(cx)]);
+            runs.push_back(StyledRun{s.size(), line.size(),
+                                     Style{}.with_fg(p.hue.value_or(theme.bar))});
+            s += line;
+            // Scale labels ride the first and last rows, which is where a
+            // reader looks for them and costs no extra vertical space.
+            const std::string* lab = cy == 0        ? &p.peak_label
+                                   : cy == rows - 1 ? &p.base_label
+                                                    : nullptr;
+            if (gutter > 0 && lab && !lab->empty()) {
+                const int lw = unicode::str_width(*lab);
+                s.append(static_cast<std::size_t>(1 + label_w - lw), ' ');
+                runs.push_back(StyledRun{s.size(), lab->size(),
+                                         Style{}.with_fg(theme.detail)});
+                s += *lab;
+            }
+            out.push_back(Element{TextElement{
+                .content = std::move(s),
+                .wrap    = TextWrap::TruncateEnd,
+                .runs    = std::move(runs),
+            }});
+        }
+    }
+
     std::vector<Row> rows_;
     int track_  = 14;
     int indent_ = 0;

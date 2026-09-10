@@ -41,6 +41,7 @@
 //   auto ui = s.build();
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -246,6 +247,34 @@ struct StatBand {
     bool             legend = true;
 };
 
+// A DONUT: the same composition a band shows, drawn as a ring with the
+// legend beside it.
+//
+// Worth having alongside StatBand because the two fail in opposite
+// directions. A band is exact and compact — you can read "68% / 12% / 20%"
+// off the segment lengths — but a 1-column sliver in a 70-column bar is
+// easy to miss entirely. A ring puts the parts around a closed loop where
+// the eye compares ANGLES, and a thin wedge against a circle is obvious in
+// a way a thin segment against a line is not. It also earns its keep on a
+// wide surface: it fills vertical space a band leaves blank.
+//
+// Drawn on half-block pixels (2 vertical pixels per cell), with the x
+// radius doubled so the ring is round rather than an ellipse — terminal
+// cells are about twice as tall as they are wide, and a circle plotted in
+// cell units comes out squashed.
+struct StatDonut {
+    struct Seg { std::string label; double value = 0; Color hue; };
+    std::string      caption;
+    std::vector<Seg> segments;
+    // Rows the figure occupies. 7 gives a 14-pixel-tall ring, which is the
+    // smallest that still reads as a circle rather than an octagon.
+    int              rows = 7;
+    // Centre text — the headline the ring is decorating. A donut with an
+    // empty middle wastes the one place a reader is already looking.
+    std::string      center;
+    std::string      center_sub;
+};
+
 // A braille line plot over the full sheet width.
 //
 // A sparkline is one row and answers "is it going up". A plot is several
@@ -277,7 +306,7 @@ struct StatPlot {
 class StatSheet {
 public:
     using Row = std::variant<StatHeading, StatBlank, StatHero, StatEntry,
-                             StatBand, StatPlot, StatBreak>;
+                             StatBand, StatPlot, StatBreak, StatDonut>;
 
     StatSheetTheme theme{};
 
@@ -297,6 +326,10 @@ public:
     }
     StatSheet& band(StatBand b) {
         rows_.emplace_back(std::move(b));
+        return *this;
+    }
+    StatSheet& donut(StatDonut d) {
+        rows_.emplace_back(std::move(d));
         return *this;
     }
     StatSheet& plot(StatPlot p) {
@@ -567,6 +600,9 @@ private:
                 } else if (const auto* bd = std::get_if<StatBand>(&r)) {
                     emit_band(*bd, out, theme, avail, pad);
                     continue;
+                } else if (const auto* dn = std::get_if<StatDonut>(&r)) {
+                    emit_donut(*dn, out, theme, avail, pad);
+                    continue;
                 } else if (const auto* pl = std::get_if<StatPlot>(&r)) {
                     emit_plot(*pl, out, theme, avail, pad);
                     continue;
@@ -769,6 +805,177 @@ private:
             .wrap    = TextWrap::TruncateEnd,
             .runs    = std::move(lruns),
         }});
+    }
+
+    // ── Donut ───────────────────────────────────────────────────────
+    //
+    // Half-block pixels: one cell is two vertical pixels, painted as ▀ with
+    // the top colour in the foreground and the bottom in the background.
+    // That doubles the vertical resolution, which is what makes a ring of
+    // this size read as a circle instead of a staircase.
+    //
+    // The x radius is DOUBLED against the y radius because a terminal cell
+    // is about twice as tall as it is wide. A circle plotted in cell units
+    // comes out visibly squashed; correcting the aspect here rather than
+    // asking the caller for a ratio keeps the geometry one owner's problem.
+    static void emit_donut(const StatDonut& d, std::vector<Element>& out,
+                           const StatSheetTheme& theme, int avail,
+                           const std::string& pad) {
+        double total = 0;
+        for (const auto& s : d.segments) total += s.value > 0 ? s.value : 0;
+        if (d.segments.empty() || total <= 0 || avail <= 0) return;
+
+        const int rows = d.rows < 3 ? 3 : (d.rows > 16 ? 16 : d.rows);
+        const int py   = rows * 2;                  // pixel rows
+        double ry = py / 2.0;
+        double rx = ry * 2.0;                       // aspect correction
+        int    cw = static_cast<int>(rx * 2) + 1;   // cells across
+
+        // The legend is not optional — an unlabelled ring is three coloured
+        // arcs and no information. When the surface cannot hold ring plus
+        // legend, the RING gives up radius until it can, because a smaller
+        // circle still shows its angles while a missing key removes the
+        // meaning entirely. Only when even a minimal ring cannot fit does
+        // the legend go, and then the caption carries it.
+        constexpr int kLegendMin = 14;
+        while (cw + 3 + kLegendMin > avail && ry > 2.5) {
+            ry -= 0.5;
+            rx = ry * 2.0;
+            cw = static_cast<int>(rx * 2) + 1;
+        }
+        const int legend_w = avail - cw - 3;
+        const bool with_legend = legend_w >= kLegendMin;
+
+        if (!d.caption.empty()) {
+            out.push_back(Element{TextElement{
+                .content = pad + d.caption,
+                .style   = Style{}.with_fg(theme.detail),
+                .wrap    = TextWrap::TruncateEnd,
+            }});
+        }
+
+        // Cumulative angles, clockwise from 12 o'clock — the convention
+        // every pie chart uses, so a reader's first wedge is where they
+        // expect it.
+        std::vector<double> edge;
+        edge.reserve(d.segments.size() + 1);
+        double acc = 0;
+        edge.push_back(0.0);
+        for (const auto& s : d.segments) {
+            acc += (s.value > 0 ? s.value : 0) / total;
+            edge.push_back(acc);
+        }
+
+        constexpr double kPi = 3.14159265358979323846;
+        const double r_out = ry;
+        const double r_in  = ry * 0.48;   // the hole
+
+        // Which segment owns a pixel, or -1 for background.
+        auto seg_at = [&](double px, double py_) -> int {
+            const double dx = (px - rx) / 2.0;   // undo the aspect stretch
+            const double dy = py_ - ry;
+            const double r  = std::sqrt(dx * dx + dy * dy);
+            if (r > r_out || r < r_in) return -1;
+            // atan2 with y negated and rotated so 0 is straight up and the
+            // sweep runs clockwise.
+            double a = std::atan2(dx, -dy) / (2.0 * kPi);
+            if (a < 0) a += 1.0;
+            for (std::size_t i = 0; i + 1 < edge.size(); ++i)
+                if (a >= edge[i] && a < edge[i + 1]) return static_cast<int>(i);
+            return static_cast<int>(d.segments.size()) - 1;
+        };
+
+        // Centre text, laid over the hole.
+        auto centre_row = [&](int cy) -> const std::string* {
+            const int mid = static_cast<int>(ry) / 2;
+            if (cy == mid && !d.center.empty())         return &d.center;
+            if (cy == mid + 1 && !d.center_sub.empty()) return &d.center_sub;
+            return nullptr;
+        };
+
+        std::size_t legend_at = 0;
+        // The ring may have shrunk below `rows`; draw only the rows it now
+        // occupies so the figure does not carry a band of blank lines.
+        const int ring_rows = static_cast<int>(ry * 2 + 0.5) / 2;
+        const int draw_rows = ring_rows < 3 ? 3 : ring_rows;
+        for (int cy = 0; cy < draw_rows; ++cy) {
+            std::string s = pad;
+            std::vector<StyledRun> runs;
+
+            const std::string* ctr = centre_row(cy);
+            const int ctr_w = ctr ? unicode::str_width(*ctr) : 0;
+            const int ctr_x = ctr ? static_cast<int>(rx) - ctr_w / 2 : -1;
+
+            for (int cx = 0; cx < cw; ++cx) {
+                if (ctr && cx >= ctr_x && cx < ctr_x + ctr_w) {
+                    if (cx == ctr_x) {
+                        runs.push_back(StyledRun{s.size(), ctr->size(),
+                                                 Style{}.with_fg(theme.value)
+                                                        .with_bold()});
+                        s += *ctr;
+                    }
+                    continue;
+                }
+                const int top = seg_at(cx, cy * 2);
+                const int bot = seg_at(cx, cy * 2 + 1);
+                if (top < 0 && bot < 0) { s += ' '; continue; }
+                // ▀ paints the top pixel in the foreground and the bottom in
+                // the background, so one cell carries two colours.
+                Style st;
+                if (top >= 0) st = st.with_fg(d.segments[static_cast<std::size_t>(top)].hue);
+                if (bot >= 0) st = st.with_bg(d.segments[static_cast<std::size_t>(bot)].hue);
+                const std::string_view glyph = "\xe2\x96\x80";   // ▀
+                runs.push_back(StyledRun{s.size(), glyph.size(), st});
+                s += glyph;
+            }
+
+            // One legend entry per row, beside the ring. Vertical rather
+            // than the band's single line: a ring is tall, and a legend
+            // strung under it would put the key further from the wedge it
+            // names than the wedge is from its opposite.
+            if (with_legend && legend_at < d.segments.size()) {
+                const auto& sg = d.segments[legend_at];
+                s += "   ";
+                const std::string dot{stat_detail::kLegendDot};
+                runs.push_back(StyledRun{s.size(), dot.size(),
+                                         Style{}.with_fg(sg.hue)});
+                s += dot;
+                std::string lbl = " " + sg.label;
+                const auto fit = unicode::truncate_to_width(lbl, legend_w - 2);
+                runs.push_back(StyledRun{s.size(), fit.size(),
+                                         Style{}.with_fg(theme.label)});
+                s += fit;
+                ++legend_at;
+            }
+
+            out.push_back(Element{TextElement{
+                .content = std::move(s),
+                .wrap    = TextWrap::TruncateEnd,
+                .runs    = std::move(runs),
+            }});
+        }
+
+        // Any legend entries that outran the ring's height get their own
+        // rows rather than being dropped — a key that silently omits a
+        // wedge is worse than one that costs an extra line.
+        while (with_legend && legend_at < d.segments.size()) {
+            const auto& sg = d.segments[legend_at++];
+            std::string s = pad;
+            std::vector<StyledRun> runs;
+            s.append(static_cast<std::size_t>(cw) + 3, ' ');
+            const std::string dot{stat_detail::kLegendDot};
+            runs.push_back(StyledRun{s.size(), dot.size(), Style{}.with_fg(sg.hue)});
+            s += dot;
+            const std::string lbl = " " + sg.label;
+            runs.push_back(StyledRun{s.size(), lbl.size(),
+                                     Style{}.with_fg(theme.label)});
+            s += lbl;
+            out.push_back(Element{TextElement{
+                .content = std::move(s),
+                .wrap    = TextWrap::TruncateEnd,
+                .runs    = std::move(runs),
+            }});
+        }
     }
 
     // ── Braille plot ─────────────────────────────────────────────────────

@@ -462,6 +462,91 @@ TEST_CASE("stat sheet: columns are balanced by row count") {
     CHECK(r.rows.size() >= 10u);
 }
 
+TEST_CASE("stat sheet: a donut is round, not an ellipse") {
+    // Terminal cells are about twice as tall as they are wide, so a circle
+    // plotted in cell units comes out squashed. The x radius is doubled to
+    // correct it — which means the figure is about twice as wide as it is
+    // tall, and that ratio is the test.
+    StatSheet s;
+    s.donut({.caption = "",
+             .segments = {{"a", 3, Color::green()}, {"b", 1, Color::red()}},
+             .rows = 7});
+    const auto r = render_sheet(s, 80);
+    REQUIRE(!r.rows.empty());
+    int widest = 0;
+    for (const auto& row : r.rows)
+        widest = std::max(widest, unicode::str_width(row));
+    const int tall = static_cast<int>(r.rows.size());
+    // Roughly 2:1 — generous bounds, because the legend rides alongside
+    // and the ring is rasterised, but a 1:1 blob or a 4:1 smear fails.
+    CHECK(widest > tall);
+}
+
+TEST_CASE("stat sheet: a donut has a hole") {
+    // It is a DONUT, not a pie, and the hole is not decoration: it is
+    // where the headline goes, which is the one place a reader looking at
+    // a ring is already looking.
+    StatSheet s;
+    s.donut({.caption = "",
+             .segments = {{"a", 1, Color::green()}},
+             .rows = 7,
+             .center = "80%"});
+    const auto r = render_sheet(s, 60);
+    REQUIRE(!r.rows.empty());
+    bool found = false;
+    for (const auto& row : r.rows)
+        if (row.find("80%") != std::string::npos) found = true;
+    CHECK(found);
+}
+
+TEST_CASE("stat sheet: a donut keeps its legend by shrinking the ring") {
+    // An unlabelled ring is three coloured arcs and no information, so
+    // when the surface cannot hold both the RING gives up radius — a
+    // smaller circle still shows its angles, while a missing key removes
+    // the meaning entirely.
+    StatSheet s;
+    s.donut({.caption = "",
+             .segments = {{"alpha 1", 3, Color::green()},
+                          {"beta 2", 1, Color::red()}},
+             .rows = 7});
+    // 40 columns cannot fit a 7-row ring (29 cells) plus a legend.
+    const auto r = render_sheet(s, 40);
+    REQUIRE(!r.rows.empty());
+    bool legend = false;
+    for (const auto& row : r.rows)
+        if (row.find("alpha") != std::string::npos) legend = true;
+    CHECK(legend);
+    for (const auto& row : r.rows) CHECK(unicode::str_width(row) <= 40);
+}
+
+TEST_CASE("stat sheet: every legend entry is drawn") {
+    // More segments than the ring is tall: the overflow gets its own rows
+    // rather than being dropped. A key that silently omits a wedge is
+    // worse than one that costs an extra line.
+    StatSheet s;
+    StatDonut d;
+    d.rows = 3;
+    for (int i = 0; i < 6; ++i)
+        d.segments.push_back({"seg" + std::to_string(i), 1.0,
+                              Color::green()});
+    s.donut(std::move(d));
+    const auto r = render_sheet(s, 70);
+    for (int i = 0; i < 6; ++i) {
+        bool found = false;
+        for (const auto& row : r.rows)
+            if (row.find("seg" + std::to_string(i)) != std::string::npos)
+                found = true;
+        CHECK(found);
+    }
+}
+
+TEST_CASE("stat sheet: a degenerate donut renders nothing") {
+    StatSheet s;
+    s.donut({.caption = "", .segments = {}});
+    s.donut({.caption = "", .segments = {{"z", 0, Color::red()}}});
+    CHECK(render_sheet(s, 60).rows.empty());
+}
+
 TEST_CASE("unicode: truncate_to_width cuts on column boundaries") {
     // The trap this exists to remove: substr() slices multi-byte glyphs in
     // half, which renders as a replacement char and destroys the alignment

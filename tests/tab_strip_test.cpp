@@ -240,6 +240,62 @@ TEST_CASE("tab strip: editor mode still keeps the active tab in view") {
     }
 }
 
+TEST_CASE("tab strip: the underline marks the label and nothing else") {
+    // A tab can carry a status dot and a trailing detail. Underlining those
+    // too gave ONE tab three disjoint rules, which reads as three marks
+    // rather than as one selection — the opposite of the indicator's job.
+    TabStrip s;
+    s.tab("rope.cpp").dot(Color::green()).detail("+12 -3", Color::cyan());
+    s.tab("node.hpp");
+    s.active(0);
+    const auto r = render(s, 60);
+    REQUIRE(r.rows.size() >= 2);
+    CHECK(glyphs(r.rows[1]) == 8);   // exactly "rope.cpp"
+}
+
+TEST_CASE("tab strip: editor mode fills the active tab, and only it") {
+    // The background is what makes an editor strip read as physical tabs.
+    // It has to cover every piece of the active tab — padding, label,
+    // detail and the spaces between — or the fill comes out striped; and
+    // it must not leak onto a neighbour, or two tabs look selected.
+    StylePool pool;
+    Canvas canvas(52, 8, &pool);
+    TabStrip s;
+    s.tab("alpha").tab("bravo").tab("charlie");
+    s.active(1).marker(TabMark::Editor);
+    render_tree(s.build(), canvas, pool, theme::dark, /*auto_height=*/true);
+
+    // Collect the contiguous run of background cells on the label row.
+    int first = -1, last = -1, count = 0;
+    for (int x = 0; x < 52; ++x) {
+        const auto cell = canvas.get(x, 0);
+        if (pool.get(cell.style_id).bg.has_value()) {
+            if (first < 0) first = x;
+            last = x;
+            ++count;
+        }
+    }
+    REQUIRE(first >= 0);
+    CHECK(count == last - first + 1);   // ONE unbroken block, not stripes
+    // "bravo" is 5 columns; the fill adds a pad column on each side.
+    CHECK(count == 7);
+
+    // The other marks stay background-free so they can sit on any surface.
+    for (auto m : {TabMark::Underline, TabMark::Dot}) {
+        StylePool p2;
+        Canvas c2(52, 8, &p2);
+        TabStrip t;
+        t.tab("alpha").tab("bravo");
+        t.active(1).marker(m);
+        render_tree(t.build(), c2, p2, theme::dark, /*auto_height=*/true);
+        bool any_bg = false;
+        for (int y = 0; y < 2; ++y)
+            for (int x = 0; x < 52; ++x)
+                if (p2.get(c2.get(x, y).style_id).bg.has_value()) any_bg = true;
+        CHECK(!any_bg);
+    }
+}
+
 TEST_CASE("tab strip: an out-of-range active index never crashes") {
     // A panel is a VIEW: a bad index should show a slightly wrong strip,
     // not take the frame down.

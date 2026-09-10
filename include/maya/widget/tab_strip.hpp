@@ -59,6 +59,12 @@ struct TabStripTheme {
     Color detail   = Color::bright_black();   // trailing count / diffstat
     Color ellipsis = Color::bright_black();   // the "…" scrolled-past chip
     Color divider  = Color::bright_black();   // │ between tabs, and the rule
+    // Editor mode fills the ACTIVE tab's cells with this. A background is
+    // the strongest "you are here" a terminal has, and it is what makes an
+    // editor strip read as a row of physical tabs rather than as styled
+    // text. Only editor mode uses it — the other marks are deliberately
+    // background-free so they can sit over any surface.
+    Color active_bg = Color::hex(0x313244);
 };
 
 // How the selected tab is marked.
@@ -147,7 +153,7 @@ struct TabStrip {
             if (!t.dot_glyph.empty()) w += unicode::str_width(t.dot_glyph) + 1;
             if (!t.detail.empty())    w += unicode::str_width(t.detail) + 1;
             if (mark == TabMark::Dot)    w += 2;   // "◆ " / "  "
-            if (mark == TabMark::Editor) w += 2;   // "▎ " / "  "
+            if (mark == TabMark::Editor) w += 2;   // one pad column each side
             return w;
         };
 
@@ -181,6 +187,16 @@ struct TabStrip {
             // 2 columns reserved for the "… " chip once anything is hidden.
             while (start < act && span(start, act) > avail - (start > 0 ? 2 : 0))
                 ++start;
+
+            // Editor mode paints the ACTIVE tab's cells with a background,
+            // which is what makes the strip read as physical tabs rather
+            // than as styled text. Every piece of that tab has to carry it
+            // — marker, dot, label, detail and the spaces between them — or
+            // the fill comes out striped.
+            auto tab_style = [&](Style s, bool on) {
+                return (on && mark == TabMark::Editor)
+                           ? s.with_bg(theme.active_bg) : s;
+            };
 
             std::string labels;
             std::vector<StyledRun> label_runs;
@@ -231,32 +247,51 @@ struct TabStrip {
                     rule_pad(2, false);
                     col += 2;
                 } else if (mark == TabMark::Editor) {
-                    // ▎ on the active tab — the editor's "this buffer" bar.
-                    put(on ? "\xe2\x96\x8e " : "  ", Style{}.with_fg(theme.accent));
-                    rule_pad(2, on);
-                    col += 2;
+                    // A leading space INSIDE the fill. With a background
+                    // the ▎ bar is redundant — two "you are here" marks on
+                    // one tab — so the fill does the job and this is just
+                    // the padding that keeps the label off its own edge.
+                    put(" ", tab_style(Style{}, on));
+                    rule_pad(1, false);
+                    col += 1;
                 }
                 if (!t.dot_glyph.empty()) {
-                    put(t.dot_glyph, Style{}.with_fg(t.dot_color));
-                    put(" ", Style{});
+                    put(t.dot_glyph,
+                        tab_style(Style{}.with_fg(t.dot_color), on));
+                    put(" ", tab_style(Style{}, on));
                     const int w = unicode::str_width(t.dot_glyph) + 1;
-                    rule_pad(w, on);
+                    rule_pad(w, false);
                     col += w;
                 }
                 Style ls = Style{}.with_fg(on ? theme.active : theme.idle);
                 if (on) ls = ls.with_bold();
-                put(t.label, ls);
+                put(t.label, tab_style(ls, on));
+                // ONLY the label is underlined. Extending the rule under a
+                // status dot and a trailing diffstat made one tab wear three
+                // disjoint underlines — it read as three marks rather than
+                // one, which is the opposite of what a selection indicator
+                // is for.
                 rule_pad(unicode::str_width(t.label), on);
                 col += unicode::str_width(t.label);
 
                 if (!t.detail.empty()) {
-                    put(" ", Style{});
-                    put(t.detail, Style{}.with_fg(t.detail_color).with_dim());
+                    put(" ", tab_style(Style{}, on));
+                    put(t.detail,
+                        tab_style(Style{}.with_fg(t.detail_color).with_dim(), on));
                     const int w = unicode::str_width(t.detail) + 1;
-                    rule_pad(w, on);
+                    rule_pad(w, false);
                     col += w;
                 }
                 if (on) { act_col = tab_start_col; act_w = col - tab_start_col; }
+                // Close the editor fill with the same padding it opened
+                // with, so the background is a symmetric block rather than
+                // a label with a bite out of its right edge.
+                if (mark == TabMark::Editor) {
+                    put(" ", tab_style(Style{}, on));
+                    rule_pad(1, false);
+                    col += 1;
+                    if (on) act_w += 1;
+                }
             }
 
             Element label_row{TextElement{.content = std::move(labels),

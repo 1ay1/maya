@@ -141,17 +141,27 @@ render(const Donut&, const ItemCtx& ctx) {
             std::vector<StyledRun> runs;
 
             // Centre text, overlaid on the middle row of the hole.
+            //
+            // One column of air each side. Without it the label butts
+            // straight against the inner edge of the ring and the two read
+            // as one smear — "██80% hit██" rather than a headline sitting
+            // in a hole. The hole exists to give the number somewhere
+            // clean to sit, so the gap is part of the figure, not padding.
             const bool is_mid = (cyc == mid) && !center.empty();
             const int ctr_w = is_mid ? unicode::str_width(center) : 0;
             const int ctr_x = is_mid ? (cw - ctr_w) / 2 : -1;
+            const int ctr_lo = is_mid ? ctr_x - 1 : -1;
+            const int ctr_hi = is_mid ? ctr_x + ctr_w + 1 : -1;
 
             for (int cxc = 0; cxc < cw; ++cxc) {
-                if (is_mid && cxc >= ctr_x && cxc < ctr_x + ctr_w) {
+                if (is_mid && cxc >= ctr_lo && cxc < ctr_hi) {
                     if (cxc == ctr_x) {
                         const std::size_t at = s.size();
                         s += center;
                         runs.push_back({at, s.size() - at,
                                         Style{}.with_fg(val).with_bold()});
+                    } else if (cxc < ctr_x || cxc >= ctr_x + ctr_w) {
+                        s += ' ';
                     }
                     continue;
                 }

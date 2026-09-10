@@ -102,6 +102,27 @@ public:
         return std::max(34, cfg_.min_width - 26);
     }
 
+    // Columns a DRAWN control (a bar, a meter, a strip) may occupy.
+    //
+    // Same derivation as edit_budget and for the same reason, which that
+    // comment states: never measured inside the flex layout, because a
+    // scroll viewport measures children against an unbounded width and a
+    // control that asked would answer 2^24, publish it as the panel's
+    // horizontal extent, and dirty the scroll state on every resize.
+    // min_width is a fact known before layout — and the HOST already clamps
+    // it to the terminal, so it tracks the real surface without being
+    // measured against it.
+    //
+    // The deduction is larger than edit_budget's because a drawn control
+    // shares its line with a label AND a value, where an edited one has the
+    // rest of the row: label lane + both gaps + the value column. The floor
+    // keeps a narrow panel drawing SOMETHING rather than nothing — the
+    // per-kind clamp in ItemCtx::drawn_cells decides what that means for
+    // each picture.
+    [[nodiscard]] int draw_budget() const noexcept {
+        return std::max(8, cfg_.min_width - 40);
+    }
+
 private:
     Config cfg_;
 

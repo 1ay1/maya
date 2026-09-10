@@ -21,12 +21,24 @@ struct Slider {
 
 [[nodiscard]] inline std::pair<std::string, Style>
 render(const Slider& c, const ItemCtx& ctx) {
-    constexpr int kCells = 12;
+    // The bar takes the panel's drawn-control budget.
+    //
+    // It was `constexpr int kCells = 12` — the same twelve on a 40-column
+    // split pane and a 200-column terminal. A bar's whole job is to make a
+    // ratio comparable at a glance, and its resolution IS its width: at 12
+    // cells the smallest visible step is 8%, so two settings a twentieth
+    // apart draw identically. Freezing the size froze the information.
+    //
+    // 8 is the floor because below it the bar stops reading as a scale and
+    // becomes texture. 24 is the ceiling because a bounded ratio is judged
+    // by proportion, not measured — past that the eye starts counting cells
+    // and the number beside it is the better answer anyway.
+    const int cells = ctx.drawn_cells(/*pref=*/12, /*floor=*/8, /*ceiling=*/24);
     const double span = (c.max > c.min) ? (c.max - c.min) : 1.0;
     const double t    = std::clamp((c.value - c.min) / span, 0.0, 1.0);
-    const int    on   = static_cast<int>(t * kCells + 0.5);
+    const int    on   = static_cast<int>(t * cells + 0.5);
     std::string bar;
-    for (int i = 0; i < kCells; ++i)
+    for (int i = 0; i < cells; ++i)
         bar += (i < on) ? "\xe2\x96\x86" : "\xe2\x96\x81";       // ▆ / ▁
 
     // Fixed-decimal without <format>/<sstream>: these are bounded ratios,

@@ -124,6 +124,7 @@ Panel::render_control(const Item& r, int index, std::size_t* caret_at) const {
                              .theme       = cfg_.theme,
                              .open        = cfg_.menu && cfg_.menu_row == index,
                              .edit_budget = edit_budget(),
+                             .draw_budget = draw_budget(),
                              .caret_out   = caret_at,
                          });
 }

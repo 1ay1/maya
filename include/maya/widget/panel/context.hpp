@@ -6,6 +6,11 @@
 // "one item kind = one widget file" honest: a widget that could reach the
 // whole panel would grow panel logic.
 
+#include <cstddef>
+#include <vector>
+
+#include "../../element/text.hpp"   // StyledRun
+#include "../../style/style.hpp"
 #include "theme.hpp"
 
 namespace maya::panel {
@@ -51,6 +56,24 @@ struct ItemCtx {
     // blink, IME composition at the right spot, screen readers. Null when
     // the host didn't ask.
     std::size_t* caret_out = nullptr;
+
+    // OUT: per-span styling for the returned string, when one style for
+    // the whole cell is not enough.
+    //
+    // render() answers with ONE (string, Style) because that is all a word
+    // needs. A picture needs more: a bar's filled head and its unfilled
+    // track are two hues, and they are the whole point — a bar drawn in a
+    // single colour is a rectangle, not a scale.
+    //
+    // Offsets are BYTES into the returned string, matching the caret_out
+    // convention above (and StyledRun itself). Left empty, the panel paints
+    // the cell in the single returned Style exactly as before, so every
+    // existing kind is unaffected.
+    //
+    // The panel still owns placement, truncation and the cursor-row tint;
+    // this says only "these bytes are a different colour", which is the
+    // least a drawn control can say and still be drawn.
+    std::vector<StyledRun>* runs_out = nullptr;
 
     // The width a drawn control should use, given what it wants and what
     // it can survive.

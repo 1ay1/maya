@@ -195,6 +195,13 @@ private:
     // anchor the hardware cursor on that cell.
     [[nodiscard]] std::pair<std::string, Style> render_control(
         const Item& r, int index, std::size_t* caret_at) const;
+    // Same again, also collecting the control's OWN styled runs when it has
+    // more than one hue to express — a meter's filled head against its
+    // unfilled track. Empty when the kind styles itself uniformly, which is
+    // every text kind.
+    [[nodiscard]] std::pair<std::string, Style> render_control(
+        const Item& r, int index, std::size_t* caret_at,
+        std::vector<StyledRun>* runs_at) const;
 
     // The shared row idiom: a leading cell that grows, a gap, a trailing cell.
     // FLEX — the layout owns the width, so there is nothing to get wrong.

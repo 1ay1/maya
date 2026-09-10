@@ -116,6 +116,12 @@ Panel::render_control(const Item& r, int index) const {
 
 std::pair<std::string, Style>
 Panel::render_control(const Item& r, int index, std::size_t* caret_at) const {
+    return render_control(r, index, caret_at, nullptr);
+}
+
+std::pair<std::string, Style>
+Panel::render_control(const Item& r, int index, std::size_t* caret_at,
+                      std::vector<StyledRun>* runs_at) const {
     // One widget per item kind (widget/panel/item/*.hpp). The panel's only
     // jobs here are assembling the ItemCtx — the ONLY facts an item may
     // know — and dispatching. Everything glyph-level lives with the kind.
@@ -126,6 +132,7 @@ Panel::render_control(const Item& r, int index, std::size_t* caret_at) const {
                              .edit_budget = edit_budget(),
                              .draw_budget = draw_budget(),
                              .caret_out   = caret_at,
+                             .runs_out    = runs_at,
                          });
 }
 
@@ -257,7 +264,8 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
     // the same thing as a Label control — resolved here so the renderer below
     // has exactly one path.
     std::size_t caret_at = std::string::npos;
-    auto [right, rstyle] = render_control(r, index, &caret_at);
+    std::vector<StyledRun> control_runs;
+    auto [right, rstyle] = render_control(r, index, &caret_at, &control_runs);
     if (right.empty() && !r.trailing.empty()) {
         right  = r.trailing;
         rstyle = r.trailing_style;
@@ -276,7 +284,17 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
     std::string tail = right;
     std::vector<StyledRun> truns;
     const Style rrun = tint(on_row ? rstyle.with_bold() : rstyle);
-    if (caret_at != std::string::npos && caret_at < right.size()) {
+    if (!control_runs.empty()) {
+        // The control styled itself. A drawn kind (a meter's filled head
+        // against its unfilled track) needs more than one hue, and the
+        // boundary between them IS the datum.
+        //
+        // Tinted here rather than in the widget: the cursor-row wash is
+        // the panel's decision, and an item widget that knew about it
+        // would be growing panel logic.
+        for (const auto& run : control_runs)
+            truns.push_back({run.byte_offset, run.byte_length, tint(run.style)});
+    } else if (caret_at != std::string::npos && caret_at < right.size()) {
         // Split the control's run so the painted caret glyph carries the
         // caret_anchor meta-bit: the serializer parks the HARDWARE cursor
         // on that cell (terminal-native blink, IME composition at the

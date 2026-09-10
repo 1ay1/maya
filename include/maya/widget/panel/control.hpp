@@ -22,12 +22,15 @@
 #include "item/action.hpp"
 #include "item/band.hpp"
 #include "item/choice.hpp"
+#include "item/donut.hpp"
 #include "item/header.hpp"
+#include "item/hist.hpp"
 #include "item/label.hpp"
 #include "item/meter.hpp"
 #include "item/number.hpp"
 #include "item/path.hpp"
 #include "item/pick.hpp"
+#include "item/plot.hpp"
 #include "item/secret.hpp"
 #include "item/slider.hpp"
 #include "item/spark.hpp"
@@ -44,7 +47,7 @@ namespace maya::panel {
 // series with blank until it pushed the value column off the row.
 using Control = std::variant<Label, Header, Toggle, Choice, Pick, Number,
                              Slider, Text, Secret, Path, Action,
-                             Meter, Spark, Band>;
+                             Meter, Spark, Band, Plot, Hist, Donut>;
 
 [[nodiscard]] inline bool is_header(const Control& c) noexcept {
     return std::holds_alternative<Header>(c);

@@ -119,10 +119,10 @@ render(const Band& b, const ItemCtx& ctx) {
             const std::size_t at = s.size();
             s += "\xe2\x96\xa0 ";                                   // ■
             runs.push_back({at, s.size() - at, Style{}.with_fg(seg.hue)});
-            const int pct = static_cast<int>(
-                (seg.value > 0 ? seg.value : 0) / total * 100.0 + 0.5);
+            // The label is the WHOLE legend entry; callers format their
+            // own share into it.
             const std::size_t tat = s.size();
-            s += seg.label + " " + std::to_string(pct) + "%";
+            s += seg.label;
             runs.push_back({tat, s.size() - tat,
                             Style{}.with_fg(ctx.theme.help)});
         }

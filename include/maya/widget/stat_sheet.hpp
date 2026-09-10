@@ -809,15 +809,19 @@ private:
 
     // ── Donut ───────────────────────────────────────────────────────
     //
-    // Half-block pixels: one cell is two vertical pixels, painted as ▀ with
-    // the top colour in the foreground and the bottom in the background.
-    // That doubles the vertical resolution, which is what makes a ring of
-    // this size read as a circle instead of a staircase.
+    // Drawn in BRAILLE, not half-blocks, and the reason is aspect. A
+    // half-block cell is 1 dot wide and 2 tall, so a circle needs the x
+    // radius doubled to compensate — and the result is a ring built from
+    // 1x2 rectangles, each of which can carry two colours (fg for the top
+    // pixel, bg for the bottom). At the size a stats panel can afford that
+    // reads as a mosaic of coloured tiles rather than as a curve.
     //
-    // The x radius is DOUBLED against the y radius because a terminal cell
-    // is about twice as tall as it is wide. A circle plotted in cell units
-    // comes out visibly squashed; correcting the aspect here rather than
-    // asking the caller for a ratio keeps the geometry one owner's problem.
+    // A braille cell is 2 dots wide and 4 tall. Against a terminal cell's
+    // roughly 1:2 aspect that makes the dots very nearly SQUARE, so a
+    // circle in dot space is a circle on screen with no correction at all,
+    // and the ring is four times denser. Each cell carries one colour, so
+    // the shape comes from the dots and the colour from whichever segment
+    // owns most of them — which is what makes an arc read as an arc.
     static void emit_donut(const StatDonut& d, std::vector<Element>& out,
                            const StatSheetTheme& theme, int avail,
                            const std::string& pad) {
@@ -825,23 +829,20 @@ private:
         for (const auto& s : d.segments) total += s.value > 0 ? s.value : 0;
         if (d.segments.empty() || total <= 0 || avail <= 0) return;
 
-        const int rows = d.rows < 3 ? 3 : (d.rows > 16 ? 16 : d.rows);
-        const int py   = rows * 2;                  // pixel rows
-        double ry = py / 2.0;
-        double rx = ry * 2.0;                       // aspect correction
-        int    cw = static_cast<int>(rx * 2) + 1;   // cells across
+        int rows = d.rows < 3 ? 3 : (d.rows > 16 ? 16 : d.rows);
+        // Dots are square, so the radius is the same in both axes: a
+        // `rows`-tall figure is 2*rows dots in radius and therefore
+        // 2*rows CELLS across (2 dot columns per cell).
+        int cw = rows * 2;
 
-        // The legend is not optional — an unlabelled ring is three coloured
-        // arcs and no information. When the surface cannot hold ring plus
-        // legend, the RING gives up radius until it can, because a smaller
-        // circle still shows its angles while a missing key removes the
-        // meaning entirely. Only when even a minimal ring cannot fit does
-        // the legend go, and then the caption carries it.
+        // The legend is not optional — an unlabelled ring is a few coloured
+        // arcs and no information. When the surface cannot hold both, the
+        // RING gives up radius until it can: a smaller circle still shows
+        // its angles, while a missing key removes the meaning entirely.
         constexpr int kLegendMin = 14;
-        while (cw + 3 + kLegendMin > avail && ry > 2.5) {
-            ry -= 0.5;
-            rx = ry * 2.0;
-            cw = static_cast<int>(rx * 2) + 1;
+        while (cw + 3 + kLegendMin > avail && rows > 3) {
+            --rows;
+            cw = rows * 2;
         }
         const int legend_w = avail - cw - 3;
         const bool with_legend = legend_w >= kLegendMin;
@@ -867,17 +868,22 @@ private:
         }
 
         constexpr double kPi = 3.14159265358979323846;
-        const double r_out = ry;
-        const double r_in  = ry * 0.48;   // the hole
+        const int    dot_w = cw * 2;
+        const int    dot_h = rows * 4;
+        const double cx    = (dot_w - 1) / 2.0;
+        const double cy    = (dot_h - 1) / 2.0;
+        const double r_out = static_cast<double>(dot_h) / 2.0;
+        // A wide hole. The centre text has to clear the inner edge, and a
+        // thin ring drawn in dots reads as a ring; a thick one reads as a
+        // filled disc with a bite out of it.
+        const double r_in  = r_out * 0.62;
 
-        // Which segment owns a pixel, or -1 for background.
-        auto seg_at = [&](double px, double py_) -> int {
-            const double dx = (px - rx) / 2.0;   // undo the aspect stretch
-            const double dy = py_ - ry;
+        // Which segment owns a dot, or -1 for background.
+        auto seg_at = [&](int dx_i, int dy_i) -> int {
+            const double dx = dx_i - cx;
+            const double dy = dy_i - cy;
             const double r  = std::sqrt(dx * dx + dy * dy);
             if (r > r_out || r < r_in) return -1;
-            // atan2 with y negated and rotated so 0 is straight up and the
-            // sweep runs clockwise.
             double a = std::atan2(dx, -dy) / (2.0 * kPi);
             if (a < 0) a += 1.0;
             for (std::size_t i = 0; i + 1 < edge.size(); ++i)
@@ -886,46 +892,62 @@ private:
         };
 
         // Centre text, laid over the hole.
-        auto centre_row = [&](int cy) -> const std::string* {
-            const int mid = static_cast<int>(ry) / 2;
-            if (cy == mid && !d.center.empty())         return &d.center;
-            if (cy == mid + 1 && !d.center_sub.empty()) return &d.center_sub;
+        auto centre_row = [&](int r) -> const std::string* {
+            const int mid = rows / 2;
+            if (r == mid && !d.center.empty())         return &d.center;
+            if (r == mid + 1 && !d.center_sub.empty()) return &d.center_sub;
             return nullptr;
         };
 
         std::size_t legend_at = 0;
-        // The ring may have shrunk below `rows`; draw only the rows it now
-        // occupies so the figure does not carry a band of blank lines.
-        const int ring_rows = static_cast<int>(ry * 2 + 0.5) / 2;
-        const int draw_rows = ring_rows < 3 ? 3 : ring_rows;
-        for (int cy = 0; cy < draw_rows; ++cy) {
+        for (int cyc = 0; cyc < rows; ++cyc) {
             std::string s = pad;
             std::vector<StyledRun> runs;
 
-            const std::string* ctr = centre_row(cy);
+            const std::string* ctr = centre_row(cyc);
             const int ctr_w = ctr ? unicode::str_width(*ctr) : 0;
-            const int ctr_x = ctr ? static_cast<int>(rx) - ctr_w / 2 : -1;
+            const int ctr_x = ctr ? cw / 2 - ctr_w / 2 : -1;
+            // One column of air each side of the centre text. Without it
+            // the label butts straight against the inner edge of the ring
+            // and the two read as one smear — the hole exists to give the
+            // headline somewhere clean to sit.
+            const int ctr_lo = ctr ? ctr_x - 1 : -1;
+            const int ctr_hi = ctr ? ctr_x + ctr_w + 1 : -1;
 
-            for (int cx = 0; cx < cw; ++cx) {
-                if (ctr && cx >= ctr_x && cx < ctr_x + ctr_w) {
-                    if (cx == ctr_x) {
+            for (int cxc = 0; cxc < cw; ++cxc) {
+                if (ctr && cxc >= ctr_lo && cxc < ctr_hi) {
+                    if (cxc == ctr_x) {
                         runs.push_back(StyledRun{s.size(), ctr->size(),
                                                  Style{}.with_fg(theme.value)
                                                         .with_bold()});
                         s += *ctr;
+                    } else if (cxc < ctr_x || cxc >= ctr_x + ctr_w) {
+                        s += ' ';
                     }
                     continue;
                 }
-                const int top = seg_at(cx, cy * 2);
-                const int bot = seg_at(cx, cy * 2 + 1);
-                if (top < 0 && bot < 0) { s += ' '; continue; }
-                // ▀ paints the top pixel in the foreground and the bottom in
-                // the background, so one cell carries two colours.
-                Style st;
-                if (top >= 0) st = st.with_fg(d.segments[static_cast<std::size_t>(top)].hue);
-                if (bot >= 0) st = st.with_bg(d.segments[static_cast<std::size_t>(bot)].hue);
-                const std::string_view glyph = "\xe2\x96\x80";   // ▀
-                runs.push_back(StyledRun{s.size(), glyph.size(), st});
+                // Gather the cell's 8 dots and vote on its colour. One
+                // colour per cell is a braille constraint, and taking the
+                // majority is what keeps a wedge boundary from smearing
+                // into whichever segment happened to own the first dot.
+                std::uint8_t bits = 0;
+                int votes[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+                for (int dy = 0; dy < 4; ++dy)
+                    for (int dx = 0; dx < 2; ++dx) {
+                        const int seg = seg_at(cxc * 2 + dx, cyc * 4 + dy);
+                        if (seg < 0) continue;
+                        bits |= stat_detail::kBrailleDot[dy][dx];
+                        if (seg < 8) ++votes[seg];
+                    }
+                if (!bits) { s += ' '; continue; }
+                int best = 0;
+                for (int i = 1; i < 8; ++i) if (votes[i] > votes[best]) best = i;
+                const std::string glyph = stat_detail::braille(bits);
+                runs.push_back(StyledRun{
+                    s.size(), glyph.size(),
+                    Style{}.with_fg(
+                        d.segments[static_cast<std::size_t>(best)
+                                   % d.segments.size()].hue)});
                 s += glyph;
             }
 

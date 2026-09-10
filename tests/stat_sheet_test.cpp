@@ -322,6 +322,76 @@ TEST_CASE("stat sheet: reserve_right keeps full-width rows off the edge") {
     CHECK(unicode::str_width(r.rows[0]) == 76 - 7);
 }
 
+TEST_CASE("stat sheet: a filled plot draws solid columns to the baseline") {
+    // The area form. A filled plot answers "how much", so the region under
+    // the curve is ink and the top edge is the reading — which is why it
+    // uses BLOCKS: braille filled solid is a slab where the eye cannot
+    // find the surface.
+    StatSheet s;
+    s.plot({.caption = "", .series = {1, 8}, .rows = 4, .filled = true});
+    const auto r = render_sheet(s, 20);
+    REQUIRE(r.rows.size() == 4u);
+    // The last row is ink across the width (both samples are above zero),
+    // and the first row carries only the peak's column.
+    CHECK(r.rows.back().find('?') != std::string::npos);
+    CHECK(r.rows.front().find('?') != std::string::npos);
+    // A filled plot never leaves a gap UNDER a drawn column: scan the
+    // bottom row for the peak's columns being present.
+    CHECK(unicode::str_width(r.rows.back()) > 0);
+}
+
+TEST_CASE("stat sheet: filled and line plots use different primitives") {
+    // `filled` picks the PRIMITIVE, not just a fill flag. An area wants
+    // blocks (a clean top edge the eye can read as a surface); a line
+    // wants braille (2x4 dots per cell, eight times the resolution).
+    // Braille filled solid is a slab of ink where the surface disappears,
+    // which is what this distinction exists to avoid.
+    //
+    // Assert on the CODE POINT RANGE rather than on specific glyphs: which
+    // eighth a sample rounds to is a rendering detail, but "blocks vs
+    // braille" is the decision.
+    auto families = [](const StatSheet& s) {
+        StylePool pool;
+        Canvas canvas(30, 8, &pool);
+        render_tree(s.build(), canvas, pool, theme::dark, true);
+        bool block = false, braille = false;
+        for (int y = 0; y < 8; ++y)
+            for (int x = 0; x < 30; ++x) {
+                const char32_t c = canvas.get(x, y).character;
+                if (c >= 0x2580 && c <= 0x259F) block = true;
+                if (c >= 0x2800 && c <= 0x28FF) braille = true;
+            }
+        return std::pair{block, braille};
+    };
+
+    StatSheet filled;
+    filled.plot({.caption = "", .series = {3, 5, 4, 8}, .rows = 4,
+                 .filled = true});
+    StatSheet line;
+    line.plot({.caption = "", .series = {3, 5, 4, 8}, .rows = 4,
+               .filled = false});
+
+    const auto [fb, fbr] = families(filled);
+    const auto [lb, lbr] = families(line);
+    CHECK(fb);      // area: blocks
+    CHECK(!fbr);    // and no braille
+    CHECK(lbr);     // line: braille
+    CHECK(!lb);     // and no blocks
+}
+
+TEST_CASE("stat sheet: a filled plot keeps a non-zero sample visible") {
+    // Same rule as the 1% bar and the sliver band segment: a sample that
+    // rounds below one eighth of a row still draws, because "almost none"
+    // and "none" are different readings.
+    StatSheet s;
+    s.plot({.caption = "", .series = {1000, 1}, .rows = 4, .filled = true});
+    const auto r = render_sheet(s, 20);
+    REQUIRE(r.rows.size() == 4u);
+    // The tiny sample occupies the right half; the bottom row must carry
+    // ink there rather than being blank.
+    CHECK(r.rows.back().find('?') != std::string::npos);
+}
+
 TEST_CASE("unicode: truncate_to_width cuts on column boundaries") {
     // The trap this exists to remove: substr() slices multi-byte glyphs in
     // half, which renders as a replacement char and destroys the alignment

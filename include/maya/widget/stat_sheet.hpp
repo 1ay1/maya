@@ -87,10 +87,22 @@ inline constexpr std::string_view kEighths[8] = {
 };
 
 // ▁▂▃▄▅▆▇█ — one column per sample, height by magnitude.
+//
+// These are FILLED by construction: a lower block is solid from the
+// baseline up, so a run of them reads as an area chart rather than as a
+// dotted outline. That is why the inline trend uses blocks and the
+// multi-row figure has to fill explicitly — see fill_below.
 inline constexpr std::string_view kSpark[8] = {
     "\xe2\x96\x81", "\xe2\x96\x82", "\xe2\x96\x83", "\xe2\x96\x84",
     "\xe2\x96\x85", "\xe2\x96\x86", "\xe2\x96\x87", "\xe2\x96\x88",
 };
+
+// The same ramp under its structural name: eighths growing UPWARD from the
+// baseline, as against kEighths which grows rightward from the left edge.
+// One is how an area column is built, the other how a bar is; they happen
+// to be the same eight code points rotated, and conflating them is how a
+// bar ends up drawn with ▁.
+inline constexpr const std::string_view* kEighthsUp = kSpark;
 
 // One braille cell is a 2×4 dot matrix, so a plot drawn in braille has
 // EIGHT times the resolution of one drawn in blocks. That is the whole
@@ -243,6 +255,15 @@ struct StatPlot {
     std::vector<double> series;
     int                 rows = 4;      // terminal rows, so 4× dots tall
     std::optional<Color> hue;
+    // Fill the region under the curve instead of drawing a bare line.
+    //
+    // On by default, and that is a judgement about what these plots are
+    // FOR. A line says "here is the trend"; a filled area says "here is
+    // the quantity", and every series a stats panel plots — tokens per
+    // turn, prefix size, latency — is a quantity accumulating against a
+    // real zero. The fill also survives a sparse series, where a bare
+    // line at braille resolution is a scatter of disconnected pixels.
+    bool                filled = true;
     // Right-hand scale labels. The peak is the number a reader needs to
     // interpret every other point, and a plot without it is a shape with
     // no units — decoration rather than a statistic.
@@ -598,7 +619,16 @@ private:
         }});
     }
 
-    // ── Braille plot ────────────────────────────────────────────────────
+    // ── Braille plot ─────────────────────────────────────────────────────
+    //
+    // Two renderings, and the choice is about what the reader is asked to
+    // see. A LINE wants braille: 2x4 dots per cell, eight times a block
+    // chart's resolution, which is what a fine trend needs. An AREA wants
+    // blocks: braille filled solid is a slab of undifferentiated ink where
+    // the eye cannot find the surface, while a column of ▂▅█ has a clean
+    // top edge and reads as a quantity at a glance.
+    //
+    // So `filled` picks the primitive, not just a fill flag.
     static void emit_plot(const StatPlot& p, std::vector<Element>& out,
                           const StatSheetTheme& theme, int avail,
                           const std::string& pad) {
@@ -621,12 +651,83 @@ private:
             }});
         }
 
-        const int dot_w = cells * 2;      // 2 dot columns per cell
-        const int dot_h = rows  * 4;      // 4 dot rows per cell
-
         double hi = 0.0;
         for (double v : p.series) if (v > hi) hi = v;
         if (hi <= 0.0) hi = 1.0;
+
+        const Color hue = p.hue.value_or(theme.bar);
+        auto scale_label = [&](int cy) -> const std::string* {
+            if (cy == 0)        return &p.peak_label;
+            if (cy == rows - 1) return &p.base_label;
+            return nullptr;
+        };
+        auto emit_row = [&](std::string line, int cy) {
+            std::string s = pad;
+            std::vector<StyledRun> runs;
+            runs.push_back(StyledRun{s.size(), line.size(),
+                                     Style{}.with_fg(hue)});
+            s += line;
+            // Scale labels ride the first and last rows, which is where a
+            // reader looks for them and costs no extra vertical space.
+            const std::string* lab = scale_label(cy);
+            if (gutter > 0 && lab && !lab->empty()) {
+                const int lw = unicode::str_width(*lab);
+                s.append(static_cast<std::size_t>(1 + label_w - lw), ' ');
+                runs.push_back(StyledRun{s.size(), lab->size(),
+                                         Style{}.with_fg(theme.detail)});
+                s += *lab;
+            }
+            out.push_back(Element{TextElement{
+                .content = std::move(s),
+                .wrap    = TextWrap::TruncateEnd,
+                .runs    = std::move(runs),
+            }});
+        };
+
+        if (p.filled) {
+            // Area: one block column per cell, eighths of a row each, so a
+            // `rows`-tall figure has 8*rows levels. Resampled by MAX over
+            // the samples a column covers rather than by point sampling —
+            // a spike that survives to the screen is the honest reduction
+            // when many turns share one column, and a mean would erase
+            // exactly the outlier the reader is looking for.
+            const std::size_t n = p.series.size();
+            const int levels = rows * 8;
+            std::vector<int> col(static_cast<std::size_t>(cells), 0);
+            for (int x = 0; x < cells; ++x) {
+                const std::size_t lo = n * static_cast<std::size_t>(x)
+                                     / static_cast<std::size_t>(cells);
+                std::size_t hi_i = n * static_cast<std::size_t>(x + 1)
+                                 / static_cast<std::size_t>(cells);
+                if (hi_i <= lo) hi_i = lo + 1;
+                double peak = 0;
+                for (std::size_t i = lo; i < hi_i && i < n; ++i)
+                    if (p.series[i] > peak) peak = p.series[i];
+                int lv = static_cast<int>(peak / hi * levels + 0.5);
+                // A non-zero sample never renders as an empty column, the
+                // same rule the bars follow: "almost none" and "none" are
+                // different readings.
+                if (lv == 0 && peak > 0) lv = 1;
+                col[static_cast<std::size_t>(x)] = lv > levels ? levels : lv;
+            }
+            for (int cy = 0; cy < rows; ++cy) {
+                // Row cy covers levels [(rows-1-cy)*8, +8).
+                const int base = (rows - 1 - cy) * 8;
+                std::string line;
+                for (int x = 0; x < cells; ++x) {
+                    const int in_row = col[static_cast<std::size_t>(x)] - base;
+                    if (in_row <= 0)      line += ' ';
+                    else if (in_row >= 8) line += stat_detail::kEighthsUp[7];
+                    else                  line += stat_detail::kEighthsUp[
+                                              static_cast<std::size_t>(in_row - 1)];
+                }
+                emit_row(std::move(line), cy);
+            }
+            return;
+        }
+
+        const int dot_w = cells * 2;      // 2 dot columns per cell
+        const int dot_h = rows  * 4;      // 4 dot rows per cell
 
         // Resample the series onto the dot grid. Nearest-neighbour, not
         // interpolation: these are measured samples, and inventing points
@@ -669,34 +770,13 @@ private:
         }
 
         for (int cy = 0; cy < rows; ++cy) {
-            std::string s = pad;
-            std::vector<StyledRun> runs;
             std::string line;
             for (int cx = 0; cx < cells; ++cx)
                 line += stat_detail::braille(
                     grid[static_cast<std::size_t>(cy)
                          * static_cast<std::size_t>(cells)
                          + static_cast<std::size_t>(cx)]);
-            runs.push_back(StyledRun{s.size(), line.size(),
-                                     Style{}.with_fg(p.hue.value_or(theme.bar))});
-            s += line;
-            // Scale labels ride the first and last rows, which is where a
-            // reader looks for them and costs no extra vertical space.
-            const std::string* lab = cy == 0        ? &p.peak_label
-                                   : cy == rows - 1 ? &p.base_label
-                                                    : nullptr;
-            if (gutter > 0 && lab && !lab->empty()) {
-                const int lw = unicode::str_width(*lab);
-                s.append(static_cast<std::size_t>(1 + label_w - lw), ' ');
-                runs.push_back(StyledRun{s.size(), lab->size(),
-                                         Style{}.with_fg(theme.detail)});
-                s += *lab;
-            }
-            out.push_back(Element{TextElement{
-                .content = std::move(s),
-                .wrap    = TextWrap::TruncateEnd,
-                .runs    = std::move(runs),
-            }});
+            emit_row(std::move(line), cy);
         }
     }
 

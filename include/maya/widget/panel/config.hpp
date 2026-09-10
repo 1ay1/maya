@@ -42,6 +42,28 @@ struct Config {
     std::string          editing_note;
     std::vector<Element> footer;   // key hints
 
+    // ── Tabs ─────────────────────────────────────────────────────────
+    //
+    // A panel that shows SEVERAL views of one subject renders a tab strip
+    // between the subtitle and the header. Empty = no strip, which is every
+    // existing panel: this is additive, and a host that never sets `tabs`
+    // builds exactly the frame it built before.
+    //
+    // It lives in the widget rather than in the one host that needed it
+    // first, because a tab strip is CHROME. Every chrome decision in this
+    // family — border, viewport clipping, scrollbar glyphs, keeping the
+    // selection in view — belongs to the widget, and hosts supply data. A
+    // strip hand-rolled into `header` by each host would drift in padding,
+    // in the selected-tab treatment, and in how it degrades when the panel
+    // is narrower than its labels; three hosts would mean three strips that
+    // look almost alike.
+    //
+    // `tab_active` indexes `tabs`. Out of range renders every tab inactive
+    // rather than asserting: a panel is a view, and a bad index should show
+    // a slightly wrong strip, not take down the frame.
+    std::vector<std::string> tabs;
+    int                      tab_active = 0;
+
     // Borrowed; must outlive the built Element. Null disables scrolling.
     ScrollState* scroll     = nullptr;
     int          viewport_h = 14;

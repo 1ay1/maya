@@ -8,6 +8,7 @@
 // header-only.
 
 #include "maya/widget/panel.hpp"
+#include "maya/widget/tab_strip.hpp"   // the shared strip the tabs field renders
 
 #include <algorithm>
 
@@ -677,6 +678,26 @@ Element Panel::build() const {
             .wrap    = TextWrap::NoWrap}});
         stack.push_back(Element{TextElement{}});
     }
+    // The tab strip sits between the subtitle and the header: the subtitle
+    // describes the PANEL, the strip selects a view of it, and the header
+    // belongs to whichever view is selected. Reading order matches that
+    // nesting.
+    //
+    // Delegated to maya::TabStrip rather than drawn here — it is the same
+    // strip the diff reviewer's file rail needs, and the scrolling it does
+    // (keep the active tab on screen, collapse what it passed into a "…")
+    // is the part that must not be reimplemented per host.
+    if (!cfg_.tabs.empty()) {
+        TabStrip strip;
+        for (const auto& t : cfg_.tabs) strip.tab(t);
+        strip.active(cfg_.tab_active);
+        strip.theme.active = cfg_.theme.label;
+        strip.theme.idle   = cfg_.theme.help;
+        strip.theme.accent = cfg_.accent;
+        stack.push_back(strip.build());
+        stack.push_back(Element{TextElement{}});
+    }
+
     for (const auto& h_row : cfg_.header) stack.push_back(h_row);
 
     const Body body = measure_body();

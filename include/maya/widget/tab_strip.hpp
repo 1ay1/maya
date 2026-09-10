@@ -200,6 +200,27 @@ struct TabStrip {
             while (start < act && span(start, act) > avail - (start > 0 ? 2 : 0))
                 ++start;
 
+            // …then give back what was over-scrolled.
+            //
+            // The loop above only ever slides RIGHT: it stops the instant
+            // the active tab fits and never asks whether the tabs it just
+            // hid would have fitted too. Selecting the last tab therefore
+            // scrolled the strip as far as that tab's own left edge and
+            // rendered "… Stream │ Context │ Retrieval" with trailing
+            // blank — an ellipsis promising hidden content next to the
+            // room to have shown it.
+            //
+            // Walk back while the whole remaining strip still fits. The
+            // chip's 2 columns are only charged while something is still
+            // hidden, so the last step — the one that reveals the first tab
+            // — correctly gets them back.
+            while (start > 0) {
+                const int need = span(start - 1, n - 1)
+                               + (start - 1 > 0 ? 2 : 0);
+                if (need > avail) break;
+                --start;
+            }
+
             std::string labels;
             std::vector<StyledRun> label_runs;
             std::string rule;

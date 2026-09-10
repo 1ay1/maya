@@ -250,12 +250,11 @@ TEST_CASE("tab strip: the underline marks the label and nothing else") {
     CHECK(glyphs(r.rows[1]) == 8);   // exactly "rope.cpp"
 }
 
-TEST_CASE("tab strip: no mark paints a background") {
-    // Every mark is background-free, so a strip can sit over any surface.
-    // Editor mode briefly used a fill to mark the active tab; it marks by
-    // COLOUR instead — bold accent against dim neighbours, with │ dividers
-    // carrying the structure — because a fill plus dividers plus a rule is
-    // three signals for one fact.
+TEST_CASE("tab strip: no mark paints a background by default") {
+    // Every mark is background-free UNLESS the host asks for a fill, so a
+    // strip still drops onto any surface without one. The opt-in matters:
+    // a fill is the loudest mark available, and paying it by default would
+    // put three signals (fill + dividers + rule) on one fact.
     for (auto m : {TabMark::Underline, TabMark::Dot, TabMark::Editor}) {
         StylePool pool;
         Canvas canvas(52, 8, &pool);
@@ -270,6 +269,57 @@ TEST_CASE("tab strip: no mark paints a background") {
                     any_bg = true;
         CHECK(!any_bg);
     }
+}
+
+TEST_CASE("tab strip: active_bg fills the active tab and nothing else") {
+    // The chip is what a ONE-TAB strip needs: marks that work by contrast
+    // (bold against dim) say nothing with no neighbour to contrast against,
+    // and an underline under a lone tab reads as a stray rule.
+    //
+    // Two properties, and the second is the one a naive fill gets wrong:
+    // the fill covers the active label plus a column of air each side, and
+    // it covers NOTHING else — not a divider, not a neighbour.
+    for (auto m : {TabMark::Underline, TabMark::Dot, TabMark::Editor}) {
+        StylePool pool;
+        Canvas canvas(52, 8, &pool);
+        TabStrip s;
+        s.tab("alpha").tab("bravo").tab("charlie");
+        s.active(1).marker(m);
+        s.theme.active_bg = Color::magenta();
+        render_tree(s.build(), canvas, pool, theme::dark, /*auto_height=*/true);
+
+        int filled = 0;
+        std::string under_fill;
+        for (int y = 0; y < 3; ++y) {
+            for (int x = 0; x < 52; ++x) {
+                const auto cell = canvas.get(x, y);
+                if (!pool.get(cell.style_id).bg.has_value()) continue;
+                ++filled;
+                const char32_t ch = cell.character;
+                under_fill += (ch >= 0x20 && ch < 0x7F)
+                                ? static_cast<char>(ch)
+                                : ' ';
+            }
+        }
+        // "bravo" (5) plus one column of air on each side, and no more.
+        CHECK(filled == 7);
+        CHECK(under_fill == " bravo ");
+    }
+}
+
+TEST_CASE("tab strip: a filled tab drops the underline rule") {
+    // A fill and a rule beneath it are the same claim made twice — and the
+    // rule is sized to the label while the chip is two columns wider, so
+    // the two marks would not even agree on where the tab ends.
+    TabStrip s;
+    s.tab("alpha").tab("bravo");
+    s.active(1).marker(TabMark::Underline);
+    s.theme.active_bg = Color::magenta();
+
+    const auto r = render(s, 52);
+    REQUIRE(!r.rows.empty());
+    // One row only: the rule row is gone, not merely blank.
+    CHECK(r.rows.size() == 1u);
 }
 
 TEST_CASE("tab strip: an out-of-range active index never crashes") {

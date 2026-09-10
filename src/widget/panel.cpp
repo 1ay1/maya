@@ -696,7 +696,19 @@ Element Panel::build() const {
         // the accent only in the underline, a strip read as ordinary bold
         // text with a stray rule under it — and with a single tab there was
         // nothing to contrast against at all, so it looked unstyled.
-        strip.theme.active = cfg_.accent;
+        //
+        // With `tab_fill` the accent moves to the BACKGROUND and the label
+        // is painted black on it — the same treatment the status bar's
+        // model badge uses, and the one mark that still reads on a strip
+        // of a single tab. Black rather than theme.label because an accent
+        // is chosen to carry white panel text at ARM's length; with the
+        // text sitting directly on it, only the dark side has contrast.
+        if (cfg_.tab_fill) {
+            strip.theme.active_bg = cfg_.accent;
+            strip.theme.active    = Color::black();
+        } else {
+            strip.theme.active = cfg_.accent;
+        }
         strip.theme.idle   = cfg_.theme.help;
         strip.theme.accent = cfg_.accent;
         stack.push_back(strip.build());

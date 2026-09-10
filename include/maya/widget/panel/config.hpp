@@ -74,10 +74,20 @@ struct Config {
 
     // How the active tab is marked. Defaults to TabMark::Underline (the
     // value 0), which is what a panel's tabs have always used; a host that
-    // wants the denser editor treatment — accent bar, " │ " dividers, lit
-    // rule segment — sets TabMark::Editor. Spelled as an optional so the
-    // default stays owned by TabStrip rather than duplicated here.
+    // wants the denser editor treatment — " │ " dividers, no rule — sets
+    // TabMark::Editor. Spelled as an optional so the default stays owned
+    // by TabStrip rather than duplicated here.
     std::optional<TabMark>   tab_mark;
+
+    // Paint the active tab as a FILLED CHIP in the panel's accent instead
+    // of marking it with weight or a rule. Off by default.
+    //
+    // Worth its own flag rather than being folded into TabMark because it
+    // is orthogonal to the mark: it answers "how loud" where the mark
+    // answers "what shape". A one-tab strip is the case that needs it —
+    // there is no dim neighbour to contrast against, so colour alone says
+    // nothing and a lone underline reads as a stray rule.
+    bool                     tab_fill = false;
 
     // Borrowed; must outlive the built Element. Null disables scrolling.
     ScrollState* scroll     = nullptr;

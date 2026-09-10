@@ -39,6 +39,7 @@
 //   files.active(2);
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -59,6 +60,17 @@ struct TabStripTheme {
     Color detail   = Color::bright_black();   // trailing count / diffstat
     Color ellipsis = Color::bright_black();   // the "…" scrolled-past chip
     Color divider  = Color::bright_black();   // │ between tabs, and the rule
+    // Optional FILL behind the active label — the tab becomes a chip,
+    // " label " painted in this colour with `active` as its text. Unset
+    // (the default) keeps every mark background-free, so a strip still
+    // drops onto any surface.
+    //
+    // A fill is the strongest mark available and it does not need help:
+    // when it is on, the active label drops its bold and the idle labels
+    // stay plain. Weight on top of a fill is emphasis applied twice, and
+    // dimming the neighbours makes a two-tab strip read as one live tab
+    // and one disabled one.
+    std::optional<Color> active_bg;
 };
 
 // How the selected tab is marked.
@@ -74,14 +86,16 @@ enum class TabMark : std::uint8_t {
     // A leading ◆ on the active tab. One row total, for a strip that has to
     // share a line budget with content.
     Dot,
-    // The editor style: a leading ▎ accent bar on the active tab, " │ "
-    // dividers between tabs, and a full-width rule beneath whose segment
-    // under the active tab is lit.
+    // The editor style: " │ " dividers between tabs, and the active tab
+    // marked on the label itself — a filled chip when the host sets
+    // `theme.active_bg`, otherwise bold in `theme.active`. One row, no
+    // rule: the dividers already say "separate tabs", so a rule under
+    // them would be a second marker for the same fact.
     //
     // Denser than Underline and more emphatic than Dot — it says "these are
     // PEERS you switch between", which is what an open-file strip is, as
-    // against "these are views of one thing". Costs two rows, and the
-    // dividers cost columns, so it wants a wide surface.
+    // against "these are views of one thing". The dividers cost columns, so
+    // it wants a wide surface.
     Editor,
 };
 
@@ -142,11 +156,16 @@ struct TabStrip {
         // Width of one whole tab, in DISPLAY COLUMNS — dot, label and
         // detail together. Columns, not bytes: a label with any non-ASCII
         // in it would otherwise scroll and underline at the wrong place.
-        auto tab_width = [&](const Tab& t) {
+        // A filled tab is a CHIP, so it also carries a column of air on
+        // each side; that padding has to be in the arithmetic or the strip
+        // scrolls by the wrong amount and pushes the active tab off-edge.
+        const bool chip = theme.active_bg.has_value();
+        auto tab_width = [&, chip](const Tab& t, bool on) {
             int w = unicode::str_width(t.label);
             if (!t.dot_glyph.empty()) w += unicode::str_width(t.dot_glyph) + 1;
             if (!t.detail.empty())    w += unicode::str_width(t.detail) + 1;
             if (mark == TabMark::Dot)    w += 2;   // "◆ " / "  "
+            if (chip && on)              w += 2;   // " label "
             return w;
         };
 
@@ -157,7 +176,7 @@ struct TabStrip {
         const int act = active_index < 0 ? 0 : (active_index >= n ? n - 1 : active_index);
 
         return component([tabs = tabs, theme = theme, mark = mark,
-                          indent = indent, gap = gap, act, n,
+                          indent = indent, gap = gap, act, n, chip,
                           tab_width](int avail_w, int) -> Element {
             const int avail = avail_w > indent ? avail_w - indent : 0;
 
@@ -172,7 +191,7 @@ struct TabStrip {
             auto span = [&](int lo, int hi) {
                 int t = 0;
                 for (int i = lo; i <= hi; ++i)
-                    t += tab_width(tabs[static_cast<std::size_t>(i)])
+                    t += tab_width(tabs[static_cast<std::size_t>(i)], i == act)
                        + (i > lo ? sep_w : 0);
                 return t;
             };
@@ -236,7 +255,17 @@ struct TabStrip {
                     col += w;
                 }
                 Style ls = Style{}.with_fg(on ? theme.active : theme.idle);
-                if (on) ls = ls.with_bold();
+                // A fill already says "this one" as loudly as a strip can.
+                // Bold on top of it is the same claim twice, and it makes
+                // the chip's text sit a shade off the others' — so weight
+                // is only the mark when there is no fill to carry it.
+                if (on && !chip) ls = ls.with_bold();
+                if (on && chip) {
+                    ls = ls.with_bg(*theme.active_bg);
+                    put(" ", ls);
+                    rule_pad(1, false);
+                    ++col;
+                }
                 put(t.label, ls);
                 // ONLY the label is underlined. Extending the rule under a
                 // status dot and a trailing diffstat made one tab wear three
@@ -245,6 +274,11 @@ struct TabStrip {
                 // is for.
                 rule_pad(unicode::str_width(t.label), on);
                 col += unicode::str_width(t.label);
+                if (on && chip) {
+                    put(" ", ls);
+                    rule_pad(1, false);
+                    ++col;
+                }
 
                 if (!t.detail.empty()) {
                     put(" ", Style{});
@@ -258,12 +292,11 @@ struct TabStrip {
             Element label_row{TextElement{.content = std::move(labels),
                                           .wrap    = TextWrap::TruncateEnd,
                                           .runs    = std::move(label_runs)}};
-            // Dot and Editor are single-row marks. Editor distinguishes the
-            // active tab by COLOUR alone — bold in the accent, its
-            // neighbours dim — with │ dividers carrying the structure. No
-            // rule and no fill: the dividers already say "separate tabs",
-            // so a second marker on the same row is one signal too many.
-            if (mark == TabMark::Dot || mark == TabMark::Editor)
+            // Dot and Editor are single-row marks, and so is ANY strip
+            // wearing a chip: a fill plus a rule beneath it is one fact
+            // claimed twice, and the rule would sit under a chip that is
+            // two columns wider than its own label.
+            if (mark == TabMark::Dot || mark == TabMark::Editor || chip)
                 return label_row;
 
             return v(std::move(label_row),

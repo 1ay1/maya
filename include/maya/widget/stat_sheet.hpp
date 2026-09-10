@@ -44,8 +44,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
-#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -271,17 +269,6 @@ struct StatDonut {
     // Rows the figure occupies. 7 gives a 14-pixel-tall ring, which is the
     // smallest that still reads as a circle rather than an octagon.
     int              rows = 7;
-    // The ceiling `rows` may GROW to on a wide surface. `rows` is the
-    // preferred size, not the maximum — a ring that ignores a 200-column
-    // terminal wastes the room it was given.
-    //
-    // Kept close to `rows` on purpose. A donut is a CIRCLE, so growing it
-    // horizontally also grows it vertically, and vertical space is the one
-    // the panel is actually short of: every row the ring gains is a row of
-    // real content pushed below the fold, on a surface that had spare
-    // WIDTH and no spare height. Two rows is enough to stop the figure
-    // looking marooned without turning a stats tab into a poster.
-    int              rows_max = 9;
     // Centre text — the headline the ring is decorating. A donut with an
     // empty middle wastes the one place a reader is already looking.
     std::string      center;
@@ -314,10 +301,6 @@ struct StatHistogram {
     // display; wider makes each bar easier to hit with the eye. 3 is the
     // narrowest that still leaves a gap between neighbours.
     int                  col_width = 3;
-    // The ceiling `col_width` may grow to when the surface has width to
-    // spare. Same contract as StatDonut::rows_max: the declared width is a
-    // preference, and unused width is a chart declining to be read.
-    int                  col_width_max = 9;
     // Y-axis ticks, TOP ROW FIRST, one per row. Fewer than `rows` labels
     // leaves the remaining rows unlabelled, which is how a caller asks
     // for a sparser axis.
@@ -362,10 +345,6 @@ struct StatPlot {
 
 class StatSheet {
 public:
-    // The width past which a number is a layout-engine SENTINEL rather
-    // than a terminal. Shared by the render and measure paths so the two
-    // agree about what counts as "unconstrained".
-    static constexpr int kSentinel = 4096;
     using Row = std::variant<StatHeading, StatBlank, StatHero, StatEntry,
                              StatBand, StatPlot, StatBreak, StatDonut,
                              StatHistogram>;
@@ -419,62 +398,24 @@ public:
     // host is the only one who knows it.
     StatSheet& reserve_right(int cols) { reserve_ = cols; return *this; }
 
-    // Flow the sheet into up to N columns when the surface is wide enough.
+    // Flow the sheet into N columns when the surface is wide enough.
     //
     // A stats tab on a 200-column terminal is a narrow ribbon of rows with
     // two thirds of the screen blank, and the reader scrolls for content
-    // that would have fitted. The sheet splits itself — balanced by
-    // PAINTED HEIGHT so the columns end level (never by row count, which
-    // treats a 7-row donut as one row and leaves one column short, and
+    // that would have fitted. Set a minimum column width and the sheet
+    // splits itself — balanced by ROW COUNT so the columns end level,
     // never by section count, which packs one column with the long tables
-    // and leaves the other holding a heading).
+    // and leaves the other holding a heading.
     //
-    // HOW MANY columns is the sheet's decision, not the caller's. It knows
-    // its own label and value widths; a caller does not, and a caller-side
-    // minimum is a guess that goes stale the moment a row gets a longer
-    // label. The sheet searches downward from `max_columns` and takes the
-    // first split every slice of which still renders with its track and
-    // labels intact — so a wider terminal can only ever gain a column,
-    // never lose a chart to one.
-    //
-    // `min_col_width` is an optional extra FLOOR for a host that knows
-    // something the sheet cannot see (a caption it renders above the
-    // sheet, say). 0 means "no opinion" — the normal case. Pass
-    // max_columns = 1 to disable splitting entirely: a host whose rows are
-    // a single ranked list wants that, because splitting a ranked list
-    // puts rank 1 and rank 9 side by side and reading order stops meaning
-    // anything.
-    StatSheet& columns(int max_columns) {
-        col_min_w_ = 0;
-        col_max_   = max_columns;
-        return *this;
-    }
-    StatSheet& columns(int min_col_width, int max_columns) {
+    // 0 (the default) disables it: one column, whatever the width. A host
+    // whose rows are a single ranked list wants that — splitting a ranked
+    // list puts rank 1 and rank 9 side by side, and reading order stops
+    // meaning anything.
+    StatSheet& columns(int min_col_width, int max_columns = 3) {
         col_min_w_ = min_col_width;
         col_max_   = max_columns;
         return *this;
     }
-
-    // How many rows the host can show before the reader has to scroll.
-    //
-    // This is the piece the sheet was missing, and its absence is why
-    // splitting looked arbitrary. Columns are not a reward for having
-    // width -- they are a RESPONSE TO VERTICAL PRESSURE. A sheet that fits
-    // the viewport has nothing to gain by splitting: the reader can
-    // already see all of it, and the split only makes their eye travel
-    // sideways and back. Width is a CONSTRAINT on splitting (a column too
-    // narrow to draw is not a column); height is the REASON for it.
-    //
-    // Without this the sheet could only ask "can I?", so it split whenever
-    // it fit -- which is how a four-row Session tab ended up in two
-    // columns on a phone-sized pane while a tab that genuinely overflowed
-    // sat in one. With it, the question becomes "must I, and how little
-    // can I get away with", which is the same question at every width and
-    // on every tab.
-    //
-    // 0 (the default) means the host has no opinion: fall back to the old
-    // behaviour of splitting whenever the width allows.
-    StatSheet& height_budget(int rows) { budget_ = rows; return *this; }
 
     // A hard break: whatever follows starts a new column if the sheet is
     // splitting. Bands and plots are full-width forms and read as broken
@@ -493,667 +434,81 @@ public:
         return detail::component([rows = rows_, theme = theme,
                                   track = track_, indent = indent_,
                                   reserve = reserve_, col_min_w = col_min_w_,
-                                  col_max = col_max_, budget = budget_]
+                                  col_max = col_max_]
                                  (int avail_w, int) -> Element {
             // The layout engine hands a component an "unconstrained"
             // sentinel (~1<<24) during auto-height / auto-width MEASURE
             // passes, and a host that vstacks the sheet measures it at a
             // large finite width too (maya's Panel uses 1<<14). Every
             // full-width form here derives its geometry from this number,
-            // so without a guard a band becomes millions of columns wide,
+            // so without a cap a band becomes millions of columns wide,
             // is measured as such, and then paints past the right edge of
             // whatever contains it.
             //
-            // The guard is a SENTINEL TEST, not a ceiling on real widths.
-            // Clamping every width to a fixed 200 also clamped genuine
-            // ultrawide terminals, so a 300-column panel drew its border to
-            // column 296 and stopped its content at 141 — 150 columns of
-            // void inside a fully-drawn frame.
-            //
-            // For a sentinel the sheet lays out at a NARROW width on
-            // purpose. Row count is what the host budgets for scrolling,
-            // and narrow is the direction that OVER-reports: more
-            // wrapping, more rows, so the host reserves at least as many
-            // as the paint pass will produce and the tail stays reachable.
-            // Measuring wide under-reports, which is the failure that
-            // strands content below an unscrollable viewport.
-            //
-            // 40, not 80, and the difference is the whole bug. A sheet
-            // SPLITS once it is wide enough, and splitting roughly halves
-            // its height -- so 80 measured a two-column sheet at 9 rows
-            // while the 76-column paint pass, one column short of a split,
-            // painted 19. The host budgeted 9, the panel clipped at its
-            // viewport, and max_y said there was nothing to scroll to: the
-            // Cache tab's Tokens and Rates sections were simply gone.
-            //
-            // Picking a narrower number is not the fix though, because
-            // "too narrow to split" is not a property of a WIDTH -- it
-            // depends on the content, and a sheet of short labels splits
-            // happily at 32. Nor is any single width enough on its own:
-            // between 40 and 76 this sheet's height climbs from 17 to 19
-            // as rows wrap differently, so a measure taken at one width
-            // still strands rows at another.
-            //
-            // The honest answer is to report the TALLEST layout the sheet
-            // has -- one column, at the narrowest width it will ever be
-            // asked to paint. Height falls monotonically as width grows
-            // (less wrapping, then a split that halves it), so the narrow
-            // single-column case is a true ceiling for every width, and a
-            // ceiling is exactly what a scroll budget needs. Over-
-            // reserving costs a few blank rows at the bottom; under-
-            // reserving loses content with no way to reach it.
-            constexpr int kMeasureWidth = 40;     // the narrowest we support
-            const bool measuring = avail_w >= kSentinel;
-            if (measuring) avail_w = kMeasureWidth;
-            if (avail_w < 1) avail_w = 1;
+            // The cap has to be a width the sheet could PLAUSIBLY paint
+            // at, not a round number: the measured row count is what the
+            // host budgets, and a sheet that lays out for 4096 columns
+            // reports far fewer rows than it produces at 76 — which the
+            // host then reads as "this fits", so it never scrolls and the
+            // tail is simply unreachable. 200 is past any real terminal
+            // while keeping the multi-column and shed decisions the same
+            // ones a wide surface would make.
+            constexpr int kMaxWidth = 200;
+            if (avail_w > kMaxWidth) avail_w = kMaxWidth;
 
-            // ── Column split (LEVEL 2) ───────────────────────────────
+            // ── Column split ────────────────────────────────────────
             //
-            // TWO questions, and they are not the same one:
-            //
-            //   MUST I split?   a HEIGHT question. Columns exist to relieve
-            //                   vertical pressure, so a sheet that already
-            //                   fits its viewport gains nothing by splitting
-            //                   and pays for it in eye travel.
-            //   CAN I split?    a WIDTH question. A column too narrow to
-            //                   draw a track and a full label in is not a
-            //                   column, it is damage.
-            //
-            // Width was the only one being asked, which is why splitting
-            // looked arbitrary: a short Session tab split on a phone-sized
-            // pane because it COULD, while a genuinely overflowing tab sat
-            // in one column because a slice came up a few cells short.
-            //
-            // Both questions live in decide(), which the measure pass runs
-            // too -- so what gets budgeted and what gets painted cannot
-            // disagree.
+            // Decided on the FULL width, before any of the per-column
+            // measurement below, because how many columns there are
+            // changes what each column's label and value widths must be.
+            constexpr int kColGap = 3;
             const int full = avail_w - reserve;
-            auto layout = measuring
-                        ? Layout{}
-                        : decide(rows, theme, track, indent, reserve,
-                                 col_min_w, col_max, budget, avail_w);
-
-            if (layout.slices.size() > 1) {
-                const int cols = static_cast<int>(layout.slices.size());
-                const int inner = (full - kColGap * (cols - 1)) / cols;
-                std::vector<Element> els;
-                int tallest = 0;
-                for (auto& sl : layout.slices) {
-                    auto col = render_slice(sl, theme, track, indent, inner);
-                    if (col.second > tallest) tallest = col.second;
-                    els.push_back(std::move(col.first));
+            int ncols = 1;
+            if (col_min_w > 0 && full > 0) {
+                ncols = (full + kColGap) / (col_min_w + kColGap);
+                if (ncols < 1) ncols = 1;
+                if (ncols > col_max) ncols = col_max;
+            }
+            // A sheet with an explicit break wants at least two columns
+            // once it can afford them; without one it would render the
+            // break as a no-op and waste the width it was given.
+            if (ncols > 1) {
+                auto slices = split_columns(rows, ncols);
+                if (slices.size() > 1) {
+                    const int inner = (full - kColGap * (static_cast<int>(slices.size()) - 1))
+                                    / static_cast<int>(slices.size());
+                    std::vector<Element> cols;
+                    int tallest = 0;
+                    for (auto& sl : slices) {
+                        auto col = render_slice(sl, theme, track, indent, inner);
+                        if (col.second > tallest) tallest = col.second;
+                        cols.push_back(std::move(col.first));
+                    }
+                    BoxElement row;
+                    row.layout.direction = FlexDirection::Row;
+                    row.layout.gap       = kColGap;
+                    row.layout.height     = Dimension::fixed(tallest);
+                    row.layout.min_height = Dimension::fixed(tallest);
+                    row.layout.basis      = Dimension::fixed(tallest);
+                    row.layout.shrink     = 0.0f;
+                    for (auto& c : cols) {
+                        BoxElement cell;
+                        cell.layout.direction = FlexDirection::Column;
+                        cell.layout.width     = Dimension::fixed(inner);
+                        cell.layout.basis     = Dimension::fixed(inner);
+                        cell.layout.shrink    = 0.0f;
+                        cell.children.push_back(std::move(c));
+                        row.children.push_back(Element{std::move(cell)});
+                    }
+                    return Element{std::move(row)};
                 }
-                BoxElement row;
-                row.layout.direction = FlexDirection::Row;
-                row.layout.gap       = kColGap;
-                row.layout.height     = Dimension::fixed(tallest);
-                row.layout.min_height = Dimension::fixed(tallest);
-                row.layout.basis      = Dimension::fixed(tallest);
-                row.layout.shrink     = 0.0f;
-                for (auto& c : els) {
-                    BoxElement cell;
-                    cell.layout.direction = FlexDirection::Column;
-                    cell.layout.width     = Dimension::fixed(inner);
-                    cell.layout.basis     = Dimension::fixed(inner);
-                    cell.layout.shrink    = 0.0f;
-                    cell.children.push_back(std::move(c));
-                    row.children.push_back(Element{std::move(cell)});
-                }
-                return Element{std::move(row)};
             }
 
-            // One column: at the width decide() already settled on, so
-            // what was measured is what gets drawn.
-            const int use = measuring ? single_surface(rows, track, full)
-                                      : layout.surface;
-            return render_slice(rows, theme, track, indent, use).first;
-        })
-        // Report the sheet's TALLEST layout as its natural height.
-        //
-        // Without this the framework auto-measures by rendering at the
-        // host's sentinel width, and a host that measures wide gets the
-        // height of a SPLIT sheet -- roughly half the real thing. maya's
-        // Panel budgets scrolling from exactly that number, so on any
-        // width too narrow to split, the surplus rows were unreachable:
-        // the body clipped at the viewport and max_y said there was
-        // nothing to scroll to. The Cache tab lost its Tokens and Rates
-        // sections outright, with no scrollbar to suggest they existed.
-        //
-        // Height falls monotonically as width grows -- less wrapping,
-        // then a split that halves it -- so ONE COLUMN AT THE NARROWEST
-        // SUPPORTED WIDTH is a true ceiling for every width the sheet
-        // might be painted at. A scroll budget wants a ceiling: over-
-        // reserving costs a few blank rows at the bottom, while under-
-        // reserving loses content with no way to reach it.
-        .measure([rows = rows_, theme = theme, track = track_,
-                  indent = indent_, reserve = reserve_,
-                  col_min_w = col_min_w_, col_max = col_max_,
-                  budget = budget_](int max_width) -> Size {
-            constexpr int kNarrowest = 40;
-            int w = max_width;
-            if (w >= kSentinel || w <= 0) w = kNarrowest;
-
-            // The height that will actually be PAINTED.
-            //
-            // This has to run the same decision the layout pass runs,
-            // because the two now disagree in both directions if it does
-            // not. Reporting the unsplit height for a sheet that WILL
-            // split over-reserves — harmless but sloppy — while reporting
-            // a split height for a sheet that will NOT split strands the
-            // rows past the budget, which is the bug this callback was
-            // added to fix. One shared helper, one answer.
-            auto painted = [&](int surface) {
-                return laid_out_height(rows, theme, track, indent, reserve,
-                                       col_min_w, col_max, budget, surface);
-            };
-
-            // Height is not monotonic in width: it falls as wrapping
-            // eases, but a narrower sheet can also fit more on a line and
-            // so wrap less, and a split roughly halves it again. Guessing
-            // one width therefore still strands rows at another, so take
-            // the maximum over the band the sheet can be painted at.
-            //
-            // The band is only consulted for the SENTINEL, though. When a
-            // real width is on offer, that is the width the sheet will be
-            // painted at, and its layout there -- split or not -- is the
-            // only honest answer. Maxing it against a band of hypothetical
-            // narrow layouts reported the UNSPLIT height for a sheet that
-            // was about to split, so the panel reserved 39 rows for a
-            // 20-row layout and published a scrollbar for content that was
-            // entirely on screen.
-            if (max_width < kSentinel && max_width > 0)
-                return Size{Columns{max_width}, Rows{painted(max_width)}};
-
-            // At the sentinel the real width is unknown. The old answer
-            // was the worst case over a band of narrow widths, on the
-            // theory that over-reserving is always safe -- and for a sheet
-            // that cannot split, it is.
-            //
-            // Once splitting depends on a height BUDGET that changes with
-            // the width, it stops being safe and becomes actively wrong.
-            // A narrow probe cannot fit two columns, so it reports the
-            // unsplit height; the sheet then paints at the host's real
-            // width, splits, and comes out half that tall. maya's Panel
-            // takes the measured number as gospel, so it reserved 39 rows
-            // for a 20-row layout and published a scrollbar over content
-            // that was entirely on screen -- the two columns AND a
-            // scrollbar this whole chain of fixes has been chasing.
-            //
-            // So the band is capped at what the sheet would do with the
-            // room a real terminal offers. Still a worst case over widths
-            // the host might actually use, but no longer dominated by
-            // hypothetical narrow ones the sheet will never see.
-            int tallest = 1;
-            for (int probe = 40; probe <= 96; probe += 4)
-                tallest = std::max(tallest, painted(probe));
-            if (budget > 0) tallest = std::min(tallest, painted(96));
-
-            // Report the WIDTH WE WERE ASKED ABOUT, never the probe width.
-            //
-            // This callback exists to answer a question about HEIGHT, and
-            // returning the probe width told the layout engine the sheet's
-            // natural width was 40 -- so it was sized to 40 columns and
-            // stayed there on a 300-column terminal, every bar frozen at
-            // the same 16 cells. A height answer must not smuggle in a
-            // width decision.
-            return Size{Columns{max_width}, Rows{tallest}};
-        })
-        .build();
+            return render_slice(rows, theme, track, indent, full).first;
+        }).build();
     }
 
 private:
-    // ── The column decision, in ONE place ────────────────────────────────
-    //
-    // Both the paint pass and the measure pass need the answer to "how
-    // many columns, and how tall does that come out". They used to compute
-    // it separately, and separate copies of a decision drift: the measure
-    // side reported a single-column height for a sheet the paint side
-    // split, so the panel budgeted scrolling for rows that were never
-    // painted -- and, before that, the reverse, which stranded rows that
-    // WERE painted below an unscrollable viewport.
-    //
-    // Returns the chosen slices (empty = one column) and the height that
-    // choice produces.
-    struct Layout {
-        std::vector<std::vector<Row>> slices;   // empty => single column
-        int height  = 0;
-        int surface = 0;   // the width a SINGLE column is painted at
-    };
-
-    static constexpr int kColGap = 3;
-
-    // The width one column should actually use.
-    //
-    // A sheet the splitter declined to divide -- one ranked list, three
-    // rows -- laid out at the full width put "By model" and its number at
-    // opposite ends of a 220-column terminal. Filling the surface is not
-    // the goal; being READ is, and a measure has a length past which it
-    // stops being one.
-    //
-    // Only past a real surplus, though, and even then it keeps growing
-    // with the surface at half rate: clamping every sheet to its natural
-    // width left a 64-column pane ending a third short of its own border,
-    // which reads as broken rather than as restraint.
-    [[nodiscard]] static int single_surface(const std::vector<Row>& rows,
-                                            int track, int full) {
-        const int want = natural_width(rows, track);
-        if (want > 0 && full > want * 2) return want + (full - want) / 2;
-        return full;
-    }
-
-    [[nodiscard]] static Layout
-    decide(const std::vector<Row>& rows, const StatSheetTheme& theme,
-           int track, int indent, int reserve, int col_min_w, int col_max,
-           int budget, int avail_w) {
-        Layout out;
-        const int full = avail_w - reserve;
-        if (full <= 0) return out;
-
-        // One column is the baseline and the preference. Every extra
-        // column costs the reader a sideways journey, so it has to be
-        // earned by content that does not otherwise fit.
-        //
-        // Measured at the width it will actually be PAINTED at, not at the
-        // raw surface: the two differ once the sheet declines width, and a
-        // baseline measured against a different width than the one drawn
-        // is the same measure-says-one-thing-paint-does-another bug this
-        // whole helper exists to prevent.
-        out.surface = single_surface(rows, track, full);
-        out.height  = render_slice(rows, theme, track, indent, out.surface).second;
-        if (col_max <= 1) return out;
-
-        // The track one column affords, as the yardstick a split has to
-        // measure up to below.
-        const Fit base_fit = fit(rows, track, std::max(0, out.surface - indent));
-        const int  baseline_track = base_fit.any_bar ? base_fit.bar_w : 0;
-
-        // MUST we? Columns relieve VERTICAL pressure. A sheet that already
-        // fits the viewport gains nothing by splitting, whatever width it
-        // happens to have been given -- which is the whole reason a short
-        // tab used to come out in two columns on a phone-sized pane.
-        //
-        // With no budget the host has no opinion, so fall back to the old
-        // behaviour and split whenever the width allows.
-        if (budget > 0 && out.height <= budget) return out;
-
-        int cap = col_max;
-        if (col_min_w > 0) {
-            const int afford = (full + kColGap) / (col_min_w + kColGap);
-            if (afford < cap) cap = afford;
-        }
-
-        // Upward from two: the FEWEST columns that solve the problem, not
-        // the most the surface could hold.
-        for (int n = 2; n <= cap; ++n) {
-            auto slices = split_columns(rows, n);
-            if (static_cast<int>(slices.size()) < n) continue;
-            const int cols = static_cast<int>(slices.size());
-            const int inner = (full - kColGap * (cols - 1)) / cols;
-            if (inner <= indent) continue;
-            const int usable = inner - indent;
-
-            // CAN we? Every slice has to survive level 1 with its track
-            // and its labels intact; a column too narrow to draw is not a
-            // column, it is damage.
-            bool ok = true;
-            int tallest = 0;
-            int thinnest_track = std::numeric_limits<int>::max();
-            for (const auto& sl : slices) {
-                const Fit f = fit(sl, track, usable);
-                if (!f.ok(usable)) { ok = false; break; }
-                if (f.any_bar) thinnest_track = std::min(thinnest_track, f.bar_w);
-                tallest = std::max(
-                    tallest, render_slice(sl, theme, track, indent, inner).second);
-            }
-            if (!ok) continue;
-
-            // Would it GUT the charts?
-            //
-            // kTrackMin is a survival floor -- the width below which a bar
-            // stops being a bar at all. Passing it is not the same as being
-            // worth having: a table whose labels are long (`git_status` is
-            // ten characters) hands the track whatever the label column
-            // does not want, so a half-width slice can leave a legal but
-            // useless 9-cell bar where one column had 24. Every row then
-            // reads as the same stub and the numbers do all the work,
-            // which is precisely the comparison the chart existed to make.
-            //
-            // So a split is also judged against the ALTERNATIVE, not just
-            // against the floor. Losing more than half the track is too
-            // much to pay for shorter columns; the reader is better served
-            // by one column with a chart they can actually read.
-            if (thinnest_track != std::numeric_limits<int>::max()
-                && baseline_track > 0
-                && thinnest_track * 2 < baseline_track) continue;
-
-            // Did it HELP ENOUGH?
-            //
-            // Two different bars, because there are two different reasons
-            // to be splitting:
-            //
-            //  - Under a budget, the split's job is to make the content
-            //    FIT. A split that shortens 33 rows to 29 against an
-            //    18-row viewport has not done that job: the reader still
-            //    scrolls, and now their eye has to travel sideways as
-            //    well. That is strictly worse than one honest column, and
-            //    it is what put a Tools tab into two columns on a phone
-            //    while still showing a scrollbar.
-            //
-            //  - With no budget the host has no opinion about height, so
-            //    any real shortening is a win and the old bar applies.
-            //
-            // A split that cannot reach the budget is not "partial
-            // progress" -- it is the cost with none of the benefit. Skip
-            // it and let a larger `n` try; if none of them fit, the sheet
-            // stays in one column and scrolls, which is the honest
-            // rendering of content that genuinely does not fit.
-            if (tallest >= out.height) continue;
-            if (budget > 0 && tallest > budget) continue;
-
-            out.slices = std::move(slices);
-            out.height = tallest;
-            if (budget <= 0 || tallest <= budget) break;
-        }
-        return out;
-    }
-
-    // The painted height for a given surface -- the measure pass's view of
-    // exactly what the paint pass will do.
-    [[nodiscard]] static int
-    laid_out_height(const std::vector<Row>& rows, const StatSheetTheme& theme,
-                    int track, int indent, int reserve, int col_min_w,
-                    int col_max, int budget, int avail_w) {
-        return std::max(1, decide(rows, theme, track, indent, reserve,
-                                  col_min_w, col_max, budget, avail_w).height);
-    }
-
-    // ── The two levels of responsiveness ─────────────────────────────────
-    //
-    // A sheet answers TWO questions when the width changes, and they are
-    // not independent:
-    //
-    //   Level 1  given ONE column of width W, how do label / track / value
-    //            / note divide it?
-    //   Level 2  given the full width, HOW MANY columns should there be?
-    //
-    // The bug this structure exists to kill is level 2 deciding without
-    // consulting level 1. When the column count came from a caller-supplied
-    // magic minimum, a width could buy a second column that level 1 then
-    // could not afford to draw a track in — so widening the terminal DELETED
-    // the charts, and kept deleting them for a 16-column band before there
-    // was enough room again. Non-monotonic layout is not a rounding error;
-    // it reads as the program malfunctioning.
-    //
-    // So both levels call `fit()`. Level 1 calls it to render. Level 2 calls
-    // it to CHOOSE: it only takes a split whose every slice still fits with
-    // its track intact and its labels untruncated. The column count is then
-    // monotonic in width by construction — more room can never cost you a
-    // figure, because the extra column has to prove it earns itself first.
-
-    // A bar narrower than this is not a chart. At 8 cells the smallest
-    // visible difference is ~12%, which is about the floor for "these two
-    // rows differ" to be legible at a glance; below it the fill is noise
-    // and the number beside it is doing all the work.
-    static constexpr int kTrackMin = 8;
-    // And past this a bar stops reading as a proportion and becomes a rule
-    // running off toward its value. Growth is capped, not unbounded: the
-    // point of a wide terminal is more COLUMNS of content, not one
-    // ludicrously long bar.
-    static constexpr int kTrackMax = 40;
-    // The track width a row would CHOOSE if width were free — the basis for
-    // the sheet's natural width. Comfortably readable without being the
-    // 40-cell maximum, which is a ceiling for growth, not a preference.
-    static constexpr int kTrackWant = 24;
-    // What a full-width form wants before extra columns stop helping it.
-    // A curve needs horizontal room to be a curve and a band needs its
-    // segments to be distinguishable; past these they are just wider.
-    static constexpr int kPlotWant = 64;
-    static constexpr int kBandWant = 56;
-    // The gap between a sheet's own columns (label│track│value│note).
-    static constexpr int kGap = 2;
-
-    // The resolved geometry of one column, and whether it is worth having.
-    struct Fit {
-        int  label_w   = 0;
-        int  bar_w     = 0;
-        int  value_w   = 0;
-        int  detail_w  = 0;
-        int  text_w    = 0;    // widest heading / hero line
-        bool any_bar   = false;   // some row WANTS a chart
-        bool truncated = false;   // a label had to be cut to fit
-        bool has_rows  = false;   // any StatEntry at all
-
-        // The quality floor level 2 tests a candidate split against.
-        //
-        // A slice of pure figures (a donut, a plot) always passes: it has
-        // no label/track geometry to lose, and refusing to split on its
-        // account would pin whole tabs to one column.
-        [[nodiscard]] bool ok(int avail) const noexcept {
-            // Prose is measured whether or not the slice has table rows.
-            // A heading or a hero caption is a SENTENCE — "75% of 8 routed
-            // turns ran below the Strateg…" is not a smaller version of
-            // the fact, it is the fact with the answer cut off — so a
-            // split that would clip one is not a split worth having.
-            if (text_w > avail) return false;
-            if (!has_rows)          return true;
-            if (truncated)          return false;
-            if (any_bar && bar_w < kTrackMin) return false;
-            return true;
-        }
-    };
-
-    // LEVEL 1. Solve one column's geometry for `avail` usable columns.
-    //
-    // Shrinks AND grows. The shed ladder was always here; what was missing
-    // was the other arm — the track was a frozen constant, so a slice handed
-    // 250 columns laid out exactly like one handed 60 and simply padded the
-    // difference. A chart that ignores the space it was given is the same
-    // failure as one that overflows it, just quieter.
-    [[nodiscard]] static Fit
-    fit(const std::vector<Row>& rows, int track_pref, int avail) {
-        Fit f;
-        for (const auto& r : rows) {
-            // Prose first: a heading and a hero are full-width lines that
-            // owe nothing to the table geometry, but they still have to
-            // FIT, and nothing was measuring them.
-            if (const auto* h = std::get_if<StatHeading>(&r)) {
-                f.text_w = std::max(f.text_w, unicode::str_width(h->text));
-                continue;
-            }
-            if (const auto* hero = std::get_if<StatHero>(&r)) {
-                int w = unicode::str_width(hero->value);
-                if (!hero->caption.empty())
-                    w += 1 + unicode::str_width(hero->caption);
-                f.text_w = std::max(f.text_w, w);
-                continue;
-            }
-            const auto* e = std::get_if<StatEntry>(&r);
-            if (!e) continue;
-            f.has_rows = true;
-            f.label_w  = std::max(f.label_w,  unicode::str_width(e->label));
-            f.value_w  = std::max(f.value_w,  unicode::str_width(e->value));
-            f.detail_w = std::max(f.detail_w, unicode::str_width(e->detail));
-            if (e->share >= 0.0 || !e->spark.empty()) f.any_bar = true;
-        }
-        if (!f.has_rows) return f;
-
-        f.bar_w = f.any_bar ? std::max(track_pref, kTrackMin) : 0;
-
-        auto total = [&] {
-            int t = f.label_w + f.value_w;
-            if (f.bar_w)    t += f.bar_w + kGap;
-            if (f.detail_w) t += f.detail_w + kGap;
-            return t + kGap;
-        };
-
-        // ── Shed, in the order that loses the least ──────────────────────
-        //
-        // A stats row is label + chart + number + note, and they are not
-        // equally load-bearing. The NUMBER is the datum, so it is last to
-        // go; the note is redundant with it, so it goes first; the chart is
-        // a comparison aid that only pays for itself with room to be
-        // proportional, so it goes second and shrinks before it vanishes.
-        // The label is truncated rather than dropped, because a number
-        // whose subject is unknown is not a statistic.
-        if (total() > avail && f.detail_w) f.detail_w = 0;
-        while (total() > avail && f.bar_w > 4) --f.bar_w;
-        if (total() > avail && f.bar_w) f.bar_w = 0;
-        if (total() > avail) {
-            const int slack = total() - avail;
-            const int want  = f.label_w - slack;
-            f.label_w  = std::max(4, want);
-            f.truncated = true;
-        }
-
-        // ── Or grow, if there is room left over ──────────────────────────
-        //
-        // Spare columns go to the track — not to the gaps, and not to the
-        // label, which is already as wide as its widest entry. But the
-        // track takes a SHARE of the surface rather than all the slack it
-        // can reach: a bar that swallows every spare column on a 100-wide
-        // terminal is 40 cells of chart against a 5-cell number, which
-        // reads as a progress bar that forgot to stop, and it leaves the
-        // value stranded in the middle of the row with dead air past it.
-        //
-        // A third of the column is the ratio that keeps a stats row
-        // reading as label · chart · number instead of as a chart with
-        // annotations. Clamped both ways: never below the legibility floor
-        // that makes a bar a bar, never past the point where length stops
-        // encoding proportion.
-        if (f.bar_w > 0) {
-            const int slack = avail - total();
-            if (slack > 0) {
-                // A third of the column, but never less than the track the
-                // sheet's own natural width was computed against — those
-                // two numbers have to agree or they fight: natural_width
-                // asks for room for a kTrackWant-cell bar, and a growth
-                // rule that then only grants avail/3 hands back a bar
-                // narrower than the width was granted for, which shows up
-                // as a sheet that got exactly what it asked for and drew
-                // it smaller anyway.
-                const int want = std::clamp(std::max(avail / 3, kTrackWant),
-                                            kTrackMin, kTrackMax);
-                if (want > f.bar_w)
-                    f.bar_w = std::min(f.bar_w + slack, want);
-            }
-        }
-        return f;
-    }
-
-    // The width this slice would use if nothing constrained it.
-    //
-    // Label, a comfortable track, the value and its note, plus the gaps
-    // between them — the point past which extra columns buy the reader
-    // nothing. Prose has the same property and typography has always
-    // known it: a line can be too long to read, and a 3-row table stretched
-    // across 220 columns makes the eye travel a hand's width from "By
-    // model" to the number it belongs to.
-    //
-    // Figures are asked what they want too, so a tab that is mostly a ring
-    // does not get clipped to the width of the little table beside it.
-    [[nodiscard]] static int natural_width(const std::vector<Row>& rows,
-                                           int track) {
-        Fit f;
-        for (const auto& r : rows) {
-            if (const auto* h = std::get_if<StatHeading>(&r)) {
-                f.text_w = std::max(f.text_w, unicode::str_width(h->text));
-                continue;
-            }
-            if (const auto* hero = std::get_if<StatHero>(&r)) {
-                int w = unicode::str_width(hero->value);
-                if (!hero->caption.empty())
-                    w += 1 + unicode::str_width(hero->caption);
-                f.text_w = std::max(f.text_w, w);
-                continue;
-            }
-            const auto* e = std::get_if<StatEntry>(&r);
-            if (!e) continue;
-            f.has_rows = true;
-            f.label_w  = std::max(f.label_w,  unicode::str_width(e->label));
-            f.value_w  = std::max(f.value_w,  unicode::str_width(e->value));
-            f.detail_w = std::max(f.detail_w, unicode::str_width(e->detail));
-            if (e->share >= 0.0 || !e->spark.empty()) f.any_bar = true;
-        }
-
-        int w = f.text_w;
-        if (f.has_rows) {
-            int t = f.label_w + f.value_w + kGap;
-            if (f.any_bar)  t += kTrackWant + kGap;
-            if (f.detail_w) t += f.detail_w + kGap;
-            w = std::max(w, t);
-        }
-
-        // A figure's own appetite. A donut is its grown ring plus a
-        // legend; a histogram is every bucket at its preferred width plus
-        // the axis gutter; a plot wants room for the curve to be a curve.
-        for (const auto& r : rows) {
-            if (const auto* d = std::get_if<StatDonut>(&r)) {
-                int lb = 0;
-                for (const auto& s : d->segments)
-                    lb = std::max(lb, unicode::str_width(s.label) + 8);
-                w = std::max(w, d->rows_max * 2 + 3 + std::max(lb, 14));
-            } else if (const auto* hg = std::get_if<StatHistogram>(&r)) {
-                int lab = 0;
-                for (const auto& l : hg->y_labels)
-                    lab = std::max(lab, unicode::str_width(l));
-                w = std::max(w, static_cast<int>(hg->buckets.size())
-                                    * hg->col_width
-                                + (lab ? lab + 1 : 0));
-            } else if (const auto* p = std::get_if<StatPlot>(&r)) {
-                const int lab = std::max(unicode::str_width(p->peak_label),
-                                         unicode::str_width(p->base_label));
-                w = std::max(w, kPlotWant + (lab ? lab + 1 : 0));
-            } else if (const auto* b = std::get_if<StatBand>(&r)) {
-                w = std::max(w, kBandWant);
-            }
-        }
-        return w;
-    }
-
-    // How many terminal rows one Row actually PAINTS.
-    //
-    // The split used to count every variant as 1, but a donut is 7 rows, a
-    // plot is 4 and a histogram is its bars plus an axis. Counting a figure
-    // as one row meant a column holding two of them measured "short" and
-    // kept being handed more content, which is why a split tab came out
-    // with one column ending halfway up the panel and the other running to
-    // the bottom. Balance the thing the reader sees — height — not the
-    // number of entries in a vector.
-    [[nodiscard]] static int row_height(const Row& r) {
-        if (const auto* d = std::get_if<StatDonut>(&r)) {
-            // rows_max, not rows. `rows` is the caller's PREFERENCE and
-            // emit_donut grows past it when the surface allows, so
-            // counting the preference under-reports every wide layout by
-            // the difference -- and an under-reported height is a split
-            // the search believes fits when it does not.
-            const int base = d->rows < 3 ? 3 : d->rows;
-            return std::max(base, d->rows_max) + (d->caption.empty() ? 0 : 1);
-        }
-        if (const auto* p = std::get_if<StatPlot>(&r))
-            return (p->rows < 1 ? 1 : p->rows) + (p->caption.empty() ? 0 : 1);
-        if (const auto* h = std::get_if<StatHistogram>(&r)) {
-            // Bars, plus the caption, plus the BASELINE rule, plus the
-            // tick row. The baseline was missed: emit_histogram always
-            // draws an axis under the bars (a histogram floating with no
-            // zero has no scale), so every histogram was one row taller
-            // than the balance logic believed.
-            int n = (h->rows < 2 ? 2 : h->rows) + (h->caption.empty() ? 0 : 1);
-            ++n;                                   // the baseline rule
-            for (const auto& b : h->buckets)
-                if (!b.label.empty()) { ++n; break; }
-            return n;
-        }
-        if (const auto* b = std::get_if<StatBand>(&r)) {
-            int n = 1 + (b->caption.empty() ? 0 : 1);
-            if (b->legend) ++n;
-            return n;
-        }
-        if (const auto* hero = std::get_if<StatHero>(&r))
-            return 1 + (hero->caption.empty() ? 0 : 1);
-        if (std::holds_alternative<StatBreak>(r)) return 0;
-        return 1;
-    }
-
     // Split the row list into `ncols` slices of roughly equal HEIGHT.
     //
     // By row count, never by section count: sections differ wildly in
@@ -1178,113 +533,34 @@ private:
         if (starts.size() < 2) return {rows};
         starts.push_back(rows.size());
 
-        int total = 0;
-        for (const auto& r : rows) total += row_height(r);
-        if (total <= 0) return {rows};
-
-        // ── Choose the boundaries, rather than stumbling into them ──────
-        //
-        // The sections are a sequence and their order is meaning, so a
-        // column split is a LINEAR PARTITION: pick ncols-1 cut points that
-        // minimise the tallest resulting column. A single greedy pass
-        // cannot do this — it commits to a cut before it has seen the
-        // sections that cut has to pay for, which is why a tab whose last
-        // section was tall came out with one column ending halfway up the
-        // panel and the other running past the fold.
-        //
-        // There are a handful of sections on the widest tab, so the exact
-        // answer is affordable: walk every combination of cut points and
-        // keep the best. No heuristic to be wrong at the edges.
-        const int nsec = static_cast<int>(starts.size()) - 1;
-        if (nsec < ncols) ncols = nsec;
-        if (ncols < 2) return {rows};
-
-        std::vector<int> sec_h(static_cast<std::size_t>(nsec), 0);
-        for (int s = 0; s < nsec; ++s)
-            for (std::size_t i = starts[static_cast<std::size_t>(s)];
-                 i < starts[static_cast<std::size_t>(s) + 1]; ++i)
-                sec_h[static_cast<std::size_t>(s)] += row_height(rows[i]);
-
-        // cuts[k] = index of the first SECTION in column k+1.
-        std::vector<int> cuts(static_cast<std::size_t>(ncols - 1), 0);
-        std::vector<int> best_cuts;
-        int best_cost = std::numeric_limits<int>::max();
-
-        // A section marked with an explicit break WANTS to start a column;
-        // honouring it is worth a little imbalance, but not an empty
-        // column, so it is priced as a bonus rather than a constraint.
-        std::vector<char> wants_break(static_cast<std::size_t>(nsec), 0);
-        for (int s = 0; s < nsec; ++s)
-            wants_break[static_cast<std::size_t>(s)] =
-                std::holds_alternative<StatBreak>(
-                    rows[starts[static_cast<std::size_t>(s)]]) ? 1 : 0;
-
-        const std::function<void(int, int)> search = [&](int k, int from) {
-            if (k == ncols - 1) {
-                int tallest = 0, shortest = std::numeric_limits<int>::max();
-                int prev = 0, bonus = 0;
-                for (int c = 0; c < ncols; ++c) {
-                    const int end = c + 1 < ncols
-                                  ? cuts[static_cast<std::size_t>(c)] : nsec;
-                    int h = 0;
-                    for (int s = prev; s < end; ++s)
-                        h += sec_h[static_cast<std::size_t>(s)];
-                    if (h <= 0) return;          // never an empty column
-                    if (h > tallest)  tallest  = h;
-                    if (h < shortest) shortest = h;
-                    if (c > 0 && wants_break[static_cast<std::size_t>(prev)])
-                        ++bonus;
-                    prev = end;
-                }
-                // A column has to be worth the eye's trip across the gap.
-                //
-                // Minimising the tallest column alone is satisfied by a
-                // one-row column beside an eight-row one — formally the
-                // best partition available, and visibly a mistake: the
-                // reader gets a lone number marooned in half the panel.
-                //
-                // What a split BUYS is the height it removes from the
-                // tallest column, and for a two-way split that saving is
-                // exactly the shortest column. So "lopsided" and "bought
-                // us nothing" are the same measurement read two ways, and
-                // one test covers both: when the short column is a third
-                // of the tall one, the sheet has taken on a ragged layout
-                // to save a row or two of scrolling. Decline it and let
-                // the content run in one honest column.
-                if (shortest * 3 < tallest) return;
-                const int cost = tallest - bonus;
-                if (cost < best_cost) { best_cost = cost; best_cuts = cuts; }
-                return;
-            }
-            for (int s = from; s <= nsec - (ncols - 1 - k); ++s) {
-                cuts[static_cast<std::size_t>(k)] = s;
-                search(k + 1, s + 1);
-            }
-        };
-        search(0, 1);
-        if (best_cuts.empty()) return {rows};
+        const int total = static_cast<int>(rows.size());
+        const int target = (total + ncols - 1) / ncols;
 
         std::vector<std::vector<Row>> out;
-        int prev = 0;
-        for (int c = 0; c < ncols; ++c) {
-            const int end = c + 1 < ncols
-                          ? best_cuts[static_cast<std::size_t>(c)] : nsec;
-            std::vector<Row> cur;
-            for (int s = prev; s < end; ++s) {
-                for (std::size_t i = starts[static_cast<std::size_t>(s)];
-                     i < starts[static_cast<std::size_t>(s) + 1]; ++i) {
-                    // A break is a marker, not content, and a leading blank
-                    // in a fresh column is the same stray whitespace the
-                    // sheet already refuses at the top.
-                    if (std::holds_alternative<StatBreak>(rows[i])) continue;
-                    if (cur.empty()
-                        && std::holds_alternative<StatBlank>(rows[i])) continue;
-                    cur.push_back(rows[i]);
-                }
+        std::vector<Row> cur;
+        for (std::size_t s = 0; s + 1 < starts.size(); ++s) {
+            const bool hard = std::holds_alternative<StatBreak>(rows[starts[s]]);
+            const int seg = static_cast<int>(starts[s + 1] - starts[s]);
+            // Break BEFORE appending when this section would overshoot,
+            // unless the column is still empty (a section taller than the
+            // target must go somewhere).
+            if (!cur.empty()
+                && (hard || (static_cast<int>(cur.size()) + seg > target
+                             && static_cast<int>(out.size()) + 1 < ncols))) {
+                out.push_back(std::move(cur));
+                cur.clear();
             }
-            if (!cur.empty()) out.push_back(std::move(cur));
-            prev = end;
+            for (std::size_t i = starts[s]; i < starts[s + 1]; ++i) {
+                // A break is a marker, not content, and a leading blank in
+                // a fresh column is the same stray whitespace the sheet
+                // already refuses at the top.
+                if (std::holds_alternative<StatBreak>(rows[i])) continue;
+                if (cur.empty() && std::holds_alternative<StatBlank>(rows[i]))
+                    continue;
+                cur.push_back(rows[i]);
+            }
         }
+        if (!cur.empty()) out.push_back(std::move(cur));
         return out;
     }
 
@@ -1297,38 +573,46 @@ private:
             const int usable = avail_w;
             const int avail  = usable > indent ? usable - indent : 0;
 
-            // ── Geometry, from the shared solver (LEVEL 1) ─────────────
+            // ── Measure once, for the whole sheet ────────────────────────
             //
-            // The same call level 2 used to VET this slice's width now
-            // resolves it for painting. One solver, so what the column
-            // count was chosen on and what actually gets drawn can never
-            // disagree — which is exactly how the dead band got in when
-            // they were two separate ladders.
-            const Fit g = fit(rows, track, avail);
-            int label_w  = g.label_w;
-            int value_w  = g.value_w;
-            int detail_w = g.detail_w;
-            int bar_w    = g.bar_w;
+            // This is the widget's reason to exist. Every column below is a
+            // max over ALL entries, so a row is painted against the sheet's
+            // geometry rather than its own.
+            int label_w = 0, value_w = 0, detail_w = 0;
+            bool any_bar = false;
+            for (const auto& r : rows) {
+                const auto* e = std::get_if<StatEntry>(&r);
+                if (!e) continue;
+                label_w  = std::max(label_w,  unicode::str_width(e->label));
+                value_w  = std::max(value_w,  unicode::str_width(e->value));
+                detail_w = std::max(detail_w, unicode::str_width(e->detail));
+                if (e->share >= 0.0 || !e->spark.empty()) any_bar = true;
+            }
 
-            // How much a figure in this slice may grow.
+            // ── Degrade in the order that loses the least ────────────────
             //
-            // Growth costs ROWS as well as columns for anything round, and
-            // rows are what the panel is short of. A slice that is already
-            // most of a screen tall cannot afford a bigger ring — the
-            // rows it gains come straight out of the sections below it,
-            // which is how a narrow Cache tab traded its Tokens and Rates
-            // tables for a slightly larger circle.
-            //
-            // So the allowance is what is LEFT of a screen after the
-            // slice's other content, and a crowded slice gets none: its
-            // figures render at exactly the size the caller asked for,
-            // which is the size that fits.
-            constexpr int kScreen = 24;
-            int fixed_h = 0;
-            for (const auto& r : rows)
-                if (!std::holds_alternative<StatDonut>(r))
-                    fixed_h += row_height(r);
-            const int grow_max = std::max(0, kScreen - fixed_h);
+            // A stats row is label + chart + number + note, and they are not
+            // equally load-bearing. The NUMBER is the datum, so it is last
+            // to go; the note is redundant with it, so it goes first; the
+            // chart is a comparison aid that only pays for itself with room
+            // to be proportional, so it goes second and shrinks before it
+            // vanishes. The label is truncated rather than dropped, because
+            // a number whose subject is unknown is not a statistic.
+            int bar_w = any_bar ? track : 0;
+            const int kGap = 2;
+            auto total = [&] {
+                int t = label_w + value_w;
+                if (bar_w)    t += bar_w + kGap;
+                if (detail_w) t += detail_w + kGap;
+                return t + kGap;
+            };
+            if (total() > avail && detail_w) detail_w = 0;
+            while (total() > avail && bar_w > 4) --bar_w;
+            if (total() > avail && bar_w) bar_w = 0;
+            if (total() > avail) {
+                const int slack = total() - avail;
+                label_w = std::max(4, label_w - slack);
+            }
 
             std::vector<Element> out;
             out.reserve(rows.size());
@@ -1369,7 +653,7 @@ private:
                     emit_band(*bd, out, theme, avail, pad);
                     continue;
                 } else if (const auto* dn = std::get_if<StatDonut>(&r)) {
-                    emit_donut(*dn, out, theme, avail, pad, grow_max);
+                    emit_donut(*dn, out, theme, avail, pad);
                     continue;
                 } else if (const auto* hg = std::get_if<StatHistogram>(&r)) {
                     emit_histogram(*hg, out, theme, avail, pad);
@@ -1464,24 +748,7 @@ private:
             // row, with the other four silently dropped rather than
             // scrolled. Stating the height is what makes the figure a
             // figure instead of a suggestion.
-            // The height this slice PAINTS.
-            //
-            // Not out.size(). Every row emitted here is one terminal line
-            // EXCEPT the figures: a donut is a single element that paints
-            // thirteen rows, a plot four, a histogram its bars plus an
-            // axis. Counting elements told the column search that a slice
-            // holding two figures was four rows tall when it was thirty,
-            // so the search happily "fitted" a split into a budget it blew
-            // by a factor of three -- and the reader got two columns AND a
-            // scrollbar, which is the cost of splitting with none of the
-            // benefit.
-            //
-            // row_height() already knows each variant's painted height for
-            // the balance logic; the count has to use the same number or
-            // the two disagree about what they are balancing.
-            int n = 0;
-            for (const auto& r : rows) n += row_height(r);
-            if (n < static_cast<int>(out.size())) n = static_cast<int>(out.size());
+            const int n = static_cast<int>(out.size());
             BoxElement box;
             box.layout.direction = FlexDirection::Column;
             box.children         = std::move(out);
@@ -1612,7 +879,7 @@ private:
     // owns most of them — which is what makes an arc read as an arc.
     static void emit_donut(const StatDonut& d, std::vector<Element>& out,
                            const StatSheetTheme& theme, int avail,
-                           const std::string& pad, int grow_max = 0) {
+                           const std::string& pad) {
         double total = 0;
         for (const auto& s : d.segments) total += s.value > 0 ? s.value : 0;
         if (d.segments.empty() || total <= 0 || avail <= 0) return;
@@ -1632,34 +899,6 @@ private:
             --rows;
             cw = rows * 2;
         }
-
-        // …and it GROWS when there is room, for the same reason the bar
-        // track does. `rows` is a caller's preference, not a maximum: a
-        // ring frozen at its 76-column size on a 200-column surface is a
-        // small circle adrift in a large void, and the empty space is the
-        // widget declining to answer the question it was given room for.
-        //
-        // The legend keeps its full share throughout — the ring may only
-        // grow into space the key does not want, so growing the figure can
-        // never cost it its labels.
-        //
-        // And it may only grow into space the SHEET does not want either.
-        // A donut is the one form whose width and height are the same
-        // number, so widening it is also lengthening it, and a ring that
-        // takes every column on offer takes rows from the tables below it
-        // at the same time — which on a narrow surface is how the Cache
-        // tab lost its Tokens and Rates sections entirely. `grow_max` is
-        // the ceiling the layout imposes from outside; the caller's
-        // rows_max is the ceiling the figure imposes on itself, and the
-        // smaller of the two wins.
-        const int ceiling = std::min(d.rows_max, grow_max > 0 ? grow_max : d.rows_max);
-        constexpr int kLegendWant = 22;
-        while (rows < ceiling
-               && (rows + 1) * 2 + 3 + kLegendWant <= avail) {
-            ++rows;
-            cw = rows * 2;
-        }
-
         const int legend_w = avail - cw - 3;
         const bool with_legend = legend_w >= kLegendMin;
 
@@ -1722,15 +961,7 @@ private:
 
             const std::string* ctr = centre_row(cyc);
             const int ctr_w = ctr ? unicode::str_width(*ctr) : 0;
-            // Centre the text against the RING, in one division.
-            //
-            // `cw / 2 - ctr_w / 2` truncates twice and both truncations
-            // push the same way, so an odd-width label sat a cell right of
-            // the hole it is supposed to be centred in — two columns of air
-            // on its left, one on its right, which reads as the ring being
-            // lopsided rather than the text being off. `(cw - ctr_w) / 2`
-            // is the same intent with one rounding step instead of two.
-            const int ctr_x = ctr ? (cw - ctr_w) / 2 : -1;
+            const int ctr_x = ctr ? cw / 2 - ctr_w / 2 : -1;
             // One column of air each side of the centre text. Without it
             // the label butts straight against the inner edge of the ring
             // and the two read as one smear — the hole exists to give the
@@ -1868,13 +1099,6 @@ private:
         if (want > 0) {
             const int afford = plot_w / want;
             if (afford < cwid) cwid = afford;
-            // Spare width goes into the BARS, not into trailing blank.
-            // `col_width` is a preference like every other figure
-            // dimension here; a distribution drawn at 4 columns per bucket
-            // on a surface that could afford 9 is throwing away the
-            // resolution that makes a shape readable. Capped so a
-            // three-bucket histogram does not become three fat slabs.
-            else if (afford > cwid) cwid = std::min(afford, hg.col_width_max);
         }
         if (cwid < 1) cwid = 1;
         const int n = std::min(plot_w / cwid, want);
@@ -2230,10 +1454,7 @@ private:
     int indent_    = 0;
     int reserve_   = 0;
     int col_min_w_ = 0;
-    int budget_    = 0;
-    // One column unless a host opts in. Splitting changes reading order,
-    // so it is a decision a host makes, never a default it inherits.
-    int col_max_   = 1;
+    int col_max_   = 3;
 };
 
 }  // namespace maya

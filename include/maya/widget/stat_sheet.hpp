@@ -221,6 +221,9 @@ struct StatEntry {
 
 struct StatHeading { std::string text; };
 struct StatBlank   {};
+// A column boundary. Inert in single-column mode; in multi-column mode
+// everything after it starts a fresh column.
+struct StatBreak   {};
 // The headline: one figure and the sentence it answers. A stats tab that
 // opens with a table makes the reader derive the answer; a tab that opens
 // with the answer and then shows its working does not.
@@ -274,7 +277,7 @@ struct StatPlot {
 class StatSheet {
 public:
     using Row = std::variant<StatHeading, StatBlank, StatHero, StatEntry,
-                             StatBand, StatPlot>;
+                             StatBand, StatPlot, StatBreak>;
 
     StatSheetTheme theme{};
 
@@ -317,6 +320,34 @@ public:
     // host is the only one who knows it.
     StatSheet& reserve_right(int cols) { reserve_ = cols; return *this; }
 
+    // Flow the sheet into N columns when the surface is wide enough.
+    //
+    // A stats tab on a 200-column terminal is a narrow ribbon of rows with
+    // two thirds of the screen blank, and the reader scrolls for content
+    // that would have fitted. Set a minimum column width and the sheet
+    // splits itself — balanced by ROW COUNT so the columns end level,
+    // never by section count, which packs one column with the long tables
+    // and leaves the other holding a heading.
+    //
+    // 0 (the default) disables it: one column, whatever the width. A host
+    // whose rows are a single ranked list wants that — splitting a ranked
+    // list puts rank 1 and rank 9 side by side, and reading order stops
+    // meaning anything.
+    StatSheet& columns(int min_col_width, int max_columns = 3) {
+        col_min_w_ = min_col_width;
+        col_max_   = max_columns;
+        return *this;
+    }
+
+    // A hard break: whatever follows starts a new column if the sheet is
+    // splitting. Bands and plots are full-width forms and read as broken
+    // when they land in a half-width column, so the panel puts them after
+    // every column break.
+    StatSheet& column_break() {
+        rows_.emplace_back(StatBreak{});
+        return *this;
+    }
+
     [[nodiscard]] bool empty() const noexcept { return rows_.empty(); }
 
     operator Element() const { return build(); }
@@ -324,7 +355,8 @@ public:
     [[nodiscard]] Element build() const {
         return detail::component([rows = rows_, theme = theme,
                                   track = track_, indent = indent_,
-                                  reserve = reserve_]
+                                  reserve = reserve_, col_min_w = col_min_w_,
+                                  col_max = col_max_]
                                  (int avail_w, int) -> Element {
             // The layout engine hands a component an "unconstrained"
             // sentinel (~1<<24) during auto-height / auto-width MEASURE
@@ -338,7 +370,122 @@ public:
             // belongs to the engine's contract rather than to either widget.
             constexpr int kMaxWidth = 4096;
             if (avail_w > kMaxWidth) avail_w = kMaxWidth;
-            const int usable = avail_w - reserve;
+
+            // ── Column split ────────────────────────────────────────
+            //
+            // Decided on the FULL width, before any of the per-column
+            // measurement below, because how many columns there are
+            // changes what each column's label and value widths must be.
+            constexpr int kColGap = 3;
+            const int full = avail_w - reserve;
+            int ncols = 1;
+            if (col_min_w > 0 && full > 0) {
+                ncols = (full + kColGap) / (col_min_w + kColGap);
+                if (ncols < 1) ncols = 1;
+                if (ncols > col_max) ncols = col_max;
+            }
+            // A sheet with an explicit break wants at least two columns
+            // once it can afford them; without one it would render the
+            // break as a no-op and waste the width it was given.
+            if (ncols > 1) {
+                auto slices = split_columns(rows, ncols);
+                if (slices.size() > 1) {
+                    const int inner = (full - kColGap * (static_cast<int>(slices.size()) - 1))
+                                    / static_cast<int>(slices.size());
+                    std::vector<Element> cols;
+                    int tallest = 0;
+                    for (auto& sl : slices) {
+                        auto col = render_slice(sl, theme, track, indent, inner);
+                        if (col.second > tallest) tallest = col.second;
+                        cols.push_back(std::move(col.first));
+                    }
+                    BoxElement row;
+                    row.layout.direction = FlexDirection::Row;
+                    row.layout.gap       = kColGap;
+                    row.layout.height     = Dimension::fixed(tallest);
+                    row.layout.min_height = Dimension::fixed(tallest);
+                    row.layout.basis      = Dimension::fixed(tallest);
+                    row.layout.shrink     = 0.0f;
+                    for (auto& c : cols) {
+                        BoxElement cell;
+                        cell.layout.direction = FlexDirection::Column;
+                        cell.layout.width     = Dimension::fixed(inner);
+                        cell.layout.basis     = Dimension::fixed(inner);
+                        cell.layout.shrink    = 0.0f;
+                        cell.children.push_back(std::move(c));
+                        row.children.push_back(Element{std::move(cell)});
+                    }
+                    return Element{std::move(row)};
+                }
+            }
+
+            return render_slice(rows, theme, track, indent, full).first;
+        }).build();
+    }
+
+private:
+    // Split the row list into `ncols` slices of roughly equal HEIGHT.
+    //
+    // By row count, never by section count: sections differ wildly in
+    // length (a two-row Time table against a nine-bucket distribution),
+    // and splitting on section boundaries alone leaves one column twice
+    // the height of the other — which looks like a layout bug rather than
+    // a choice.
+    //
+    // Breaks only ever land on a section boundary though, because a
+    // heading orphaned from its rows is worse than an uneven column. So
+    // the target is height and the boundaries are structural: walk the
+    // sections, start a new column when the current one has passed its
+    // share.
+    [[nodiscard]] static std::vector<std::vector<Row>>
+    split_columns(const std::vector<Row>& rows, int ncols) {
+        // Section boundaries: a heading, or an explicit break.
+        std::vector<std::size_t> starts{0};
+        for (std::size_t i = 1; i < rows.size(); ++i)
+            if (std::holds_alternative<StatHeading>(rows[i])
+                || std::holds_alternative<StatBreak>(rows[i]))
+                starts.push_back(i);
+        if (starts.size() < 2) return {rows};
+        starts.push_back(rows.size());
+
+        const int total = static_cast<int>(rows.size());
+        const int target = (total + ncols - 1) / ncols;
+
+        std::vector<std::vector<Row>> out;
+        std::vector<Row> cur;
+        for (std::size_t s = 0; s + 1 < starts.size(); ++s) {
+            const bool hard = std::holds_alternative<StatBreak>(rows[starts[s]]);
+            const int seg = static_cast<int>(starts[s + 1] - starts[s]);
+            // Break BEFORE appending when this section would overshoot,
+            // unless the column is still empty (a section taller than the
+            // target must go somewhere).
+            if (!cur.empty()
+                && (hard || (static_cast<int>(cur.size()) + seg > target
+                             && static_cast<int>(out.size()) + 1 < ncols))) {
+                out.push_back(std::move(cur));
+                cur.clear();
+            }
+            for (std::size_t i = starts[s]; i < starts[s + 1]; ++i) {
+                // A break is a marker, not content, and a leading blank in
+                // a fresh column is the same stray whitespace the sheet
+                // already refuses at the top.
+                if (std::holds_alternative<StatBreak>(rows[i])) continue;
+                if (cur.empty() && std::holds_alternative<StatBlank>(rows[i]))
+                    continue;
+                cur.push_back(rows[i]);
+            }
+        }
+        if (!cur.empty()) out.push_back(std::move(cur));
+        return out;
+    }
+
+    // Render one slice at `avail_w`. Returns the element and its row count,
+    // so a multi-column layout can size the containing row to the tallest.
+    [[nodiscard]] static std::pair<Element, int>
+    render_slice(const std::vector<Row>& rows, const StatSheetTheme& theme,
+                 int track, int indent, int avail_w) {
+        {
+            const int usable = avail_w;
             const int avail  = usable > indent ? usable - indent : 0;
 
             // ── Measure once, for the whole sheet ────────────────────────
@@ -403,6 +550,13 @@ public:
                     put(h->text, Style{}.with_fg(theme.heading).with_bold());
                 } else if (std::holds_alternative<StatBlank>(r)) {
                     // A blank row is a blank row; no styling, no runs.
+                } else if (std::holds_alternative<StatBreak>(r)) {
+                    // A column marker, not content. In single-column mode
+                    // it draws nothing at all — emitting even a blank row
+                    // would make a sheet's height depend on whether it
+                    // happened to split, which is a layout that shifts
+                    // when the terminal is resized past a breakpoint.
+                    continue;
                 } else if (const auto* hero = std::get_if<StatHero>(&r)) {
                     put(hero->value,
                         Style{}.with_fg(hero->hue.value_or(theme.hero)).with_bold());
@@ -511,11 +665,9 @@ public:
             box.layout.min_height = Dimension::fixed(n);
             box.layout.basis      = Dimension::fixed(n);
             box.layout.shrink     = 0.0f;
-            return Element{std::move(box)};
-        }).build();
+            return std::pair<Element, int>{Element{std::move(box)}, n};
+        }
     }
-
-private:
     // ── Composition band ────────────────────────────────────────────────
     //
     // Segment widths are apportioned by LARGEST REMAINDER, not by
@@ -781,9 +933,11 @@ private:
     }
 
     std::vector<Row> rows_;
-    int track_   = 14;
-    int indent_  = 0;
-    int reserve_ = 0;
+    int track_     = 14;
+    int indent_    = 0;
+    int reserve_   = 0;
+    int col_min_w_ = 0;
+    int col_max_   = 3;
 };
 
 }  // namespace maya

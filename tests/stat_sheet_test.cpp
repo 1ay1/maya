@@ -392,6 +392,76 @@ TEST_CASE("stat sheet: a filled plot keeps a non-zero sample visible") {
     CHECK(r.rows.back().find('?') != std::string::npos);
 }
 
+TEST_CASE("stat sheet: columns() splits only when the width allows") {
+    // A stats tab on a 200-column terminal is a narrow ribbon with two
+    // thirds of the screen blank; on an 80-column one a second column
+    // would squeeze every label to nothing. The threshold is a minimum
+    // column WIDTH rather than a terminal-size breakpoint, because that
+    // says what a column needs instead of guessing which terminals exist.
+    auto sheet = [] {
+        StatSheet s;
+        s.columns(34, 2);
+        s.heading("A");
+        s.entry({.label = "a1", .value = "1"});
+        s.entry({.label = "a2", .value = "2"});
+        s.heading("B");
+        s.entry({.label = "b1", .value = "3"});
+        s.entry({.label = "b2", .value = "4"});
+        return s;
+    };
+    // 60 cols: one column of 34 fits, two do not (34+3+34 = 71).
+    const auto narrow = render_sheet(sheet(), 60);
+    // 100 cols: two fit.
+    const auto wide = render_sheet(sheet(), 100);
+    CHECK(narrow.rows.size() > wide.rows.size());
+    // Both headings survive the split — a column boundary must not eat a
+    // section.
+    bool a = false, b = false;
+    for (const auto& r : wide.rows) {
+        if (r.find("A") != std::string::npos) a = true;
+        if (r.find("B") != std::string::npos) b = true;
+    }
+    CHECK(a);
+    CHECK(b);
+}
+
+TEST_CASE("stat sheet: a column break is inert in one column") {
+    // The break is a marker, not content. If it emitted even a blank row
+    // the sheet's height would depend on whether it happened to split — a
+    // layout that jumps when the terminal crosses a breakpoint.
+    StatSheet with_break;
+    with_break.entry({.label = "a", .value = "1"});
+    with_break.column_break();
+    with_break.entry({.label = "b", .value = "2"});
+
+    StatSheet without;
+    without.entry({.label = "a", .value = "1"});
+    without.entry({.label = "b", .value = "2"});
+
+    CHECK(render_sheet(with_break, 60).rows.size()
+          == render_sheet(without, 60).rows.size());
+}
+
+TEST_CASE("stat sheet: columns are balanced by row count") {
+    // By height, never by section count: sections differ wildly in length
+    // (a two-row table against a nine-bucket distribution), and splitting
+    // on section count alone leaves one column twice the height of the
+    // other — which reads as a layout bug rather than as a choice.
+    StatSheet s;
+    s.columns(20, 2);
+    s.heading("short");
+    s.entry({.label = "x", .value = "1"});
+    s.heading("long");
+    for (int i = 0; i < 10; ++i)
+        s.entry({.label = "row" + std::to_string(i), .value = "9"});
+
+    const auto r = render_sheet(s, 80);
+    // The tall section did NOT get crammed in beside the short one: the
+    // rendered height is close to the taller half, not to the whole.
+    CHECK(r.rows.size() < 13u);
+    CHECK(r.rows.size() >= 10u);
+}
+
 TEST_CASE("unicode: truncate_to_width cuts on column boundaries") {
     // The trap this exists to remove: substr() slices multi-byte glyphs in
     // half, which renders as a replacement char and destroys the alignment

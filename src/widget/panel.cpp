@@ -712,6 +712,21 @@ Element Panel::build() const {
         strip.theme.idle   = cfg_.theme.help;
         strip.theme.accent = cfg_.accent;
         stack.push_back(strip.build());
+        // A rule under the strip. The tabs are chrome and what follows is
+        // content, and without a boundary the first content row reads as a
+        // fourth tab that happens to be on its own line — which is exactly
+        // what a headingless section does look like. Dim, and full width:
+        // the strip's own marks carry the selection, so this line's only
+        // job is to say "the chrome ends here".
+        stack.push_back(component([help = cfg_.theme.help](int w, int) {
+            constexpr int kMaxWidth = 4096;   // measure-pass sentinel guard
+            const int n = w > kMaxWidth ? kMaxWidth : (w < 0 ? 0 : w);
+            std::string rule;
+            for (int i = 0; i < n; ++i) rule += "\xe2\x94\x80";   // ─
+            return Element{TextElement{.content = std::move(rule),
+                                       .style   = Style{}.with_fg(help),
+                                       .wrap    = TextWrap::TruncateEnd}};
+        }).build());
         stack.push_back(Element{TextElement{}});
     }
 

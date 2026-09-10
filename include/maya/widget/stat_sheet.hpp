@@ -769,9 +769,29 @@ private:
             }
             if (!ok) continue;
 
-            // Did it HELP? A split that does not shorten the sheet has
-            // bought nothing and charged for it.
+            // Did it HELP ENOUGH?
+            //
+            // Two different bars, because there are two different reasons
+            // to be splitting:
+            //
+            //  - Under a budget, the split's job is to make the content
+            //    FIT. A split that shortens 33 rows to 29 against an
+            //    18-row viewport has not done that job: the reader still
+            //    scrolls, and now their eye has to travel sideways as
+            //    well. That is strictly worse than one honest column, and
+            //    it is what put a Tools tab into two columns on a phone
+            //    while still showing a scrollbar.
+            //
+            //  - With no budget the host has no opinion about height, so
+            //    any real shortening is a win and the old bar applies.
+            //
+            // A split that cannot reach the budget is not "partial
+            // progress" -- it is the cost with none of the benefit. Skip
+            // it and let a larger `n` try; if none of them fit, the sheet
+            // stays in one column and scrolls, which is the honest
+            // rendering of content that genuinely does not fit.
             if (tallest >= out.height) continue;
+            if (budget > 0 && tallest > budget) continue;
 
             out.slices = std::move(slices);
             out.height = tallest;

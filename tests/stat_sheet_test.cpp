@@ -605,21 +605,35 @@ TEST_CASE("stat sheet: a non-zero histogram bucket is never empty") {
     CHECK(ink >= 4);   // two buckets, at least two cells each
 }
 
-TEST_CASE("stat sheet: a histogram never overruns its width") {
-    // More buckets than fit: the tail is dropped rather than every bar
-    // squeezed to a single dot, because a chart of one-dot bars is a
-    // texture and not a chart.
+TEST_CASE("stat sheet: a histogram narrows its bars rather than dropping data") {
+    // Resolution follows the WIDTH. Dropping buckets to keep a fixed bar
+    // width loses the tail, and the tail of a latency distribution is
+    // exactly where the interesting outliers are — a chart that silently
+    // omits its slowest bucket answers the wrong question.
+    //
+    // So the bar width degrades instead: requested width, then narrower
+    // bars, then bars with no gap, and only a surface too narrow for one
+    // column per bucket drops anything at all.
     StatSheet s;
     StatHistogram h;
     h.rows = 4;
     h.col_width = 4;
-    h.peak_label = "100";
-    for (int i = 0; i < 40; ++i)
+    for (int i = 0; i < 12; ++i)
         h.buckets.push_back({std::to_string(i), static_cast<double>(i + 1)});
     s.histogram(std::move(h));
-    for (int w : {30, 50, 80, 120}) {
+
+    for (int w : {20, 30, 50, 80, 120}) {
         const auto r = render_sheet(s, w);
+        REQUIRE(!r.rows.empty());
         for (const auto& row : r.rows) CHECK(unicode::str_width(row) <= w);
+        // The LAST bucket is the tallest here, so if the tail were being
+        // dropped the bottom column row would lose its rightmost ink.
+        // Count how many cells carry ink on the baseline-adjacent row:
+        // every one of the 12 buckets is non-zero, so all must appear.
+        const auto& lowest = r.rows[static_cast<std::size_t>(h.rows) - 1];
+        int ink = 0;
+        for (char c : lowest) if (c == '?') ++ink;
+        CHECK_MESSAGE(ink >= 12, "width " << w);
     }
 }
 

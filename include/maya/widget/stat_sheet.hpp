@@ -1063,7 +1063,6 @@ private:
         if (hi <= 0) return;
 
         const int rows = hg.rows < 2 ? 2 : (hg.rows > 16 ? 16 : hg.rows);
-        const int cwid = hg.col_width < 1 ? 1 : hg.col_width;
 
         // The y-axis gutter, reserved before anything is sized — a
         // histogram that overruns its own scale label is worse than one a
@@ -1071,15 +1070,31 @@ private:
         const int lab_w  = unicode::str_width(hg.peak_label);
         const int gutter = lab_w > 0 ? lab_w + 1 : 0;
         const int plot_w = avail - gutter;
-        if (plot_w < cwid) return;
+        if (plot_w < 1) return;
 
-        // How many buckets FIT. Dropping from the tail rather than
-        // squeezing every bucket to one column: a histogram whose bars are
-        // a single dot wide is a texture, not a chart, and the tail is
-        // where the least information usually is.
-        const int fit = plot_w / cwid;
-        const int n   = std::min(fit, static_cast<int>(hg.buckets.size()));
+        // EVERY bucket is shown. The bar width adapts to the space
+        // instead — dropping the tail loses data, and the tail of a
+        // latency distribution is exactly where the interesting outliers
+        // are. A chart that silently omits its slowest bucket is a chart
+        // that answers the wrong question.
+        //
+        // Widths degrade in order: the requested width, then narrower
+        // bars, then bars with no gap between them, and only if even one
+        // column per bucket will not fit does it drop from the tail — at
+        // which point the surface is too narrow for a chart at all.
+        const int want = static_cast<int>(hg.buckets.size());
+        int cwid = hg.col_width < 1 ? 1 : hg.col_width;
+        if (want > 0) {
+            const int afford = plot_w / want;
+            if (afford < cwid) cwid = afford;
+        }
+        if (cwid < 1) cwid = 1;
+        const int n = std::min(plot_w / cwid, want);
         if (n <= 0) return;
+        // Bars keep a gap only while there is width to spare for one. At
+        // two columns per bucket the gap is half the chart, so below that
+        // the bars run together and the tick labels carry the boundaries.
+        const int bar_w = cwid >= 3 ? cwid - 1 : cwid;
 
         if (!hg.caption.empty()) {
             out.push_back(Element{TextElement{
@@ -1144,11 +1159,11 @@ private:
                 // hair differently from a space, which paints a faint
                 // rectangle over the whole plot area — visible as a box
                 // around the chart that nobody asked for.
-                for (int k = 0; k < cwid - 1; ++k) {
+                for (int k = 0; k < bar_w; ++k) {
                     if (bits) line += glyph;
                     else      line += ' ';
                 }
-                line += ' ';
+                for (int k = bar_w; k < cwid; ++k) line += ' ';
             }
             runs.push_back(StyledRun{s.size(), line.size(),
                                      Style{}.with_fg(hue)});
@@ -1177,20 +1192,30 @@ private:
             }});
         }
 
-        // Tick labels, on EVERY OTHER bucket. All of them collide at any
-        // realistic column width; every second one keeps the axis readable
-        // and still tells you which way the scale runs.
+        // Tick labels. Stride is chosen so consecutive labels cannot
+        // collide: a label needs its own width plus a space, and at
+        // narrow bar widths that means naming every third or fourth
+        // bucket rather than every second. Computing it from the widest
+        // label — rather than hard-coding "every other one" — is what
+        // keeps the axis readable when the bars shrink to fit.
         bool any_label = false;
-        for (int i = 0; i < n; ++i)
-            if (!hg.buckets[static_cast<std::size_t>(i)].label.empty())
+        int  widest_lb = 0;
+        for (int i = 0; i < n; ++i) {
+            const auto& lb = hg.buckets[static_cast<std::size_t>(i)].label;
+            if (!lb.empty()) {
                 any_label = true;
+                widest_lb = std::max(widest_lb, unicode::str_width(lb));
+            }
+        }
         if (!any_label) return;
         {
+            int stride = 1;
+            while (stride * cwid < widest_lb + 1 && stride < n) ++stride;
             std::string s = pad;
             if (gutter > 0) s.append(static_cast<std::size_t>(gutter), ' ');
             std::vector<StyledRun> runs;
             int col = 0;
-            for (int i = 0; i < n; i += 2) {
+            for (int i = 0; i < n; i += stride) {
                 const auto& lb = hg.buckets[static_cast<std::size_t>(i)].label;
                 if (lb.empty()) continue;
                 const int want = i * cwid;
@@ -1198,7 +1223,7 @@ private:
                 s.append(static_cast<std::size_t>(want - col), ' ');
                 col = want;
                 const auto fit_lb =
-                    unicode::truncate_to_width(lb, 2 * cwid - 1);
+                    unicode::truncate_to_width(lb, stride * cwid - 1);
                 runs.push_back(StyledRun{s.size(), fit_lb.size(),
                                          Style{}.with_fg(theme.detail)});
                 s += fit_lb;

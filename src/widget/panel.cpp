@@ -164,15 +164,27 @@ Panel::render_control(const Item& r, int index, std::size_t* caret_at,
     // One widget per item kind (widget/panel/item/*.hpp). The panel's only
     // jobs here are assembling the ItemCtx — the ONLY facts an item may
     // know — and dispatching. Everything glyph-level lives with the kind.
-    return panel::render(r.control,
-                         panel::ItemCtx{
-                             .theme       = cfg_.theme,
-                             .open        = cfg_.menu && cfg_.menu_row == index,
-                             .edit_budget = edit_budget(),
-                             .draw_budget = draw_budget(),
-                             .caret_out   = caret_at,
-                             .runs_out    = runs_at,
-                         });
+    auto ctx = item_ctx(index);
+    ctx.caret_out = caret_at;
+    ctx.runs_out  = runs_at;
+    return panel::render(r.control, ctx);
+}
+
+// The facts an item may know, in ONE place.
+//
+// Built by both the measure pass and the render pass, which is the point:
+// item_lines() decides a row's height without painting it, and if the two
+// assembled different contexts they could disagree about how tall a
+// control is — a row measured at one height and painted at another is the
+// scroll-accounting bug this family has already had once.
+panel::ItemCtx Panel::item_ctx(int index) const {
+    return panel::ItemCtx{
+        .theme       = cfg_.theme,
+        .open        = cfg_.menu && cfg_.menu_row == index,
+        .edit_budget = edit_budget(),
+        .draw_budget = draw_budget(),
+        .value_basis = value_basis(),
+    };
 }
 
 // ============================================================================
@@ -372,15 +384,21 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
     // The origin note still rides along, appended as a sibling rather than
     // concatenated — same reason.
     if (panel::lays_itself_out(r.control)) {
-        Element cell = panel::control_element(
-            r.control,
-            panel::ItemCtx{
-                .theme       = cfg_.theme,
-                .open        = cfg_.menu && cfg_.menu_row == index,
-                .edit_budget = edit_budget(),
-                .draw_budget = draw_budget(),
-                .value_basis = value_basis(),
-            });
+        Element cell = panel::control_element(r.control, item_ctx(index));
+
+        // A PICTURE takes the whole row.
+        //
+        // The shared row idiom is label · gap · trailing, which is right for
+        // a value that annotates a name. A ring or a curve annotates
+        // nothing — it IS the content — and squeezing it into the trailing
+        // cell would leave it half the width beside an empty label lane.
+        // Its heading is the item ABOVE it, which is how a section already
+        // reads.
+        if (panel::owns_full_row(r.control, item_ctx(index))) {
+            out.push_back(std::move(cell));
+            return out;
+        }
+
         if (!origin.empty()) {
             Element note{TextElement{.content = "  " + origin,
                                      .style   = tint(Style{}.with_fg(th.origin)),
@@ -597,9 +615,11 @@ std::vector<Element> Panel::render_menu(const Menu& m) const {
 
 // A row's painted height, decided WITHOUT painting it. Mirrors render_item's
 // own control flow; the two are pinned together by a test.
-int Panel::item_lines(const Item& r, int, bool on_row) const {
+int Panel::item_lines(const Item& r, int index, bool on_row) const {
     if (r.is_header()) return 1;
-    int n = 1;                                        // the row itself
+    // A control that paints a picture states its own height. Everything
+    // else is one line, which is what every text kind is.
+    int n = panel::control_rows(r.control, item_ctx(index));
     if (on_row && !r.help.empty()) ++n;
     if (!r.error.empty())          ++n;
     return n;

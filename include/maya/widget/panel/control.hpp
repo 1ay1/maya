@@ -126,6 +126,46 @@ concept LaysItselfOut = requires(const T& v, const ItemCtx& ctx) {
     }, c);
 }
 
+// Does this kind paint MORE than one row, and how many?
+//
+// A drawn control is usually a strip on one line: a bar, a meter, a
+// sparkline. Some are pictures — a ring, a curve, a histogram — and a
+// picture squeezed onto one line is not a smaller picture, it is nothing.
+//
+// A kind opts in by defining
+//
+//     int rows_of(const Kind&, const ItemCtx&);
+//
+// and the panel then measures it as that many lines and hands it the whole
+// row rather than a trailing cell beside a label. Detected the same way as
+// render_element — by expression SFINAE, so a kind that does not define it
+// is unchanged and needs no registration.
+//
+// This is the fact `item_lines` was missing. It decides a row's painted
+// height WITHOUT painting it (the two are pinned together by a test), and
+// with no way to ask a control, every control had to be one line. That is
+// why the figures could not live in the panel's own vocabulary and stayed
+// behind in a separate sheet.
+template <class T>
+concept HasOwnHeight = requires(const T& v, const ItemCtx& ctx) {
+    { rows_of(v, ctx) } -> std::same_as<int>;
+};
+
+[[nodiscard]] inline int control_rows(const Control& c, const ItemCtx& ctx) {
+    return std::visit([&](const auto& v) -> int {
+        if constexpr (HasOwnHeight<std::remove_cvref_t<decltype(v)>>)
+            return rows_of(v, ctx) < 1 ? 1 : rows_of(v, ctx);
+        else
+            return 1;
+    }, c);
+}
+
+// A control that owns the FULL row: no label lane, no trailing cell.
+// True exactly of the multi-row kinds — a picture has no room to share.
+[[nodiscard]] inline bool owns_full_row(const Control& c, const ItemCtx& ctx) {
+    return control_rows(c, ctx) > 1;
+}
+
 } // namespace maya::panel
 
 namespace maya {

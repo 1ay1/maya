@@ -239,6 +239,10 @@ private:
         const Item& r, int index, std::size_t* caret_at,
         std::vector<StyledRun>* runs_at) const;
 
+    // The facts an item may know. Built by BOTH the measure pass and the
+    // render pass so the two cannot disagree about how tall a control is.
+    [[nodiscard]] panel::ItemCtx item_ctx(int index) const;
+
     // The shared row idiom: a leading cell that grows, a gap, a trailing cell.
     // FLEX — the layout owns the width, so there is nothing to get wrong.
     [[nodiscard]] static Element row_line(Element lead, Element trail,

@@ -362,6 +362,10 @@ struct StatPlot {
 
 class StatSheet {
 public:
+    // The width past which a number is a layout-engine SENTINEL rather
+    // than a terminal. Shared by the render and measure paths so the two
+    // agree about what counts as "unconstrained".
+    static constexpr int kSentinel = 4096;
     using Row = std::variant<StatHeading, StatBlank, StatHero, StatEntry,
                              StatBand, StatPlot, StatBreak, StatDonut,
                              StatHistogram>;
@@ -487,14 +491,39 @@ public:
             //
             // For a sentinel the sheet lays out at a NARROW width on
             // purpose. Row count is what the host budgets for scrolling,
-            // and narrow is the direction that OVER-reports: more wrapping,
-            // more rows, so the host reserves at least as many as the paint
-            // pass will produce and the tail stays reachable. Measuring
-            // wide under-reports, which is the failure that strands
-            // content below an unscrollable viewport.
-            constexpr int kSentinel     = 4096;   // past any real terminal
-            constexpr int kMeasureWidth = 80;     // conservative: most rows
-            if (avail_w >= kSentinel) avail_w = kMeasureWidth;
+            // and narrow is the direction that OVER-reports: more
+            // wrapping, more rows, so the host reserves at least as many
+            // as the paint pass will produce and the tail stays reachable.
+            // Measuring wide under-reports, which is the failure that
+            // strands content below an unscrollable viewport.
+            //
+            // 40, not 80, and the difference is the whole bug. A sheet
+            // SPLITS once it is wide enough, and splitting roughly halves
+            // its height -- so 80 measured a two-column sheet at 9 rows
+            // while the 76-column paint pass, one column short of a split,
+            // painted 19. The host budgeted 9, the panel clipped at its
+            // viewport, and max_y said there was nothing to scroll to: the
+            // Cache tab's Tokens and Rates sections were simply gone.
+            //
+            // Picking a narrower number is not the fix though, because
+            // "too narrow to split" is not a property of a WIDTH -- it
+            // depends on the content, and a sheet of short labels splits
+            // happily at 32. Nor is any single width enough on its own:
+            // between 40 and 76 this sheet's height climbs from 17 to 19
+            // as rows wrap differently, so a measure taken at one width
+            // still strands rows at another.
+            //
+            // The honest answer is to report the TALLEST layout the sheet
+            // has -- one column, at the narrowest width it will ever be
+            // asked to paint. Height falls monotonically as width grows
+            // (less wrapping, then a split that halves it), so the narrow
+            // single-column case is a true ceiling for every width, and a
+            // ceiling is exactly what a scroll budget needs. Over-
+            // reserving costs a few blank rows at the bottom; under-
+            // reserving loses content with no way to reach it.
+            constexpr int kMeasureWidth = 40;     // the narrowest we support
+            const bool measuring = avail_w >= kSentinel;
+            if (measuring) avail_w = kMeasureWidth;
             if (avail_w < 1) avail_w = 1;
 
             // ── Column split (LEVEL 2) ───────────────────────────────
@@ -519,7 +548,7 @@ public:
 
             int ncols = 1;
             std::vector<std::vector<Row>> chosen;
-            if (full > 0 && col_max > 1) {
+            if (!measuring && full > 0 && col_max > 1) {
                 int cap = col_max;
                 if (col_min_w > 0) {
                     const int afford = (full + kColGap) / (col_min_w + kColGap);
@@ -588,7 +617,50 @@ public:
             const int want = natural_width(rows, track);
             const int use  = want > 0 && want < full ? want : full;
             return render_slice(rows, theme, track, indent, use).first;
-        }).build();
+        })
+        // Report the sheet's TALLEST layout as its natural height.
+        //
+        // Without this the framework auto-measures by rendering at the
+        // host's sentinel width, and a host that measures wide gets the
+        // height of a SPLIT sheet -- roughly half the real thing. maya's
+        // Panel budgets scrolling from exactly that number, so on any
+        // width too narrow to split, the surplus rows were unreachable:
+        // the body clipped at the viewport and max_y said there was
+        // nothing to scroll to. The Cache tab lost its Tokens and Rates
+        // sections outright, with no scrollbar to suggest they existed.
+        //
+        // Height falls monotonically as width grows -- less wrapping,
+        // then a split that halves it -- so ONE COLUMN AT THE NARROWEST
+        // SUPPORTED WIDTH is a true ceiling for every width the sheet
+        // might be painted at. A scroll budget wants a ceiling: over-
+        // reserving costs a few blank rows at the bottom, while under-
+        // reserving loses content with no way to reach it.
+        .measure([rows = rows_, theme = theme, track = track_,
+                  indent = indent_, reserve = reserve_](int max_width) -> Size {
+            constexpr int kNarrowest = 40;
+            int w = max_width;
+            if (w >= kSentinel || w <= 0) w = kNarrowest;
+            // Height is NOT monotonic in width the way one would hope: it
+            // falls as wrapping eases, but a narrower sheet can also fit
+            // MORE on a line and so wrap less. Measured on a real tab it
+            // runs 17 rows at 40 columns and 19 at 51..77. Guessing one
+            // width therefore still strands rows at another.
+            //
+            // So take the maximum over the single-column band -- the only
+            // widths where the sheet is at its tallest, since a split
+            // roughly halves it. A handful of layout passes on a few dozen
+            // rows, once per frame, against the alternative of content the
+            // user cannot reach.
+            int tallest = 1;
+            for (int probe = 40; probe <= 96; probe += 4) {
+                const int full = probe - reserve;
+                if (full <= indent) continue;
+                const auto one = render_slice(rows, theme, track, indent, full);
+                if (one.second > tallest) tallest = one.second;
+            }
+            return Size{Columns{w}, Rows{tallest}};
+        })
+        .build();
     }
 
 private:
@@ -1022,6 +1094,26 @@ private:
             int detail_w = g.detail_w;
             int bar_w    = g.bar_w;
 
+            // How much a figure in this slice may grow.
+            //
+            // Growth costs ROWS as well as columns for anything round, and
+            // rows are what the panel is short of. A slice that is already
+            // most of a screen tall cannot afford a bigger ring — the
+            // rows it gains come straight out of the sections below it,
+            // which is how a narrow Cache tab traded its Tokens and Rates
+            // tables for a slightly larger circle.
+            //
+            // So the allowance is what is LEFT of a screen after the
+            // slice's other content, and a crowded slice gets none: its
+            // figures render at exactly the size the caller asked for,
+            // which is the size that fits.
+            constexpr int kScreen = 24;
+            int fixed_h = 0;
+            for (const auto& r : rows)
+                if (!std::holds_alternative<StatDonut>(r))
+                    fixed_h += row_height(r);
+            const int grow_max = std::max(0, kScreen - fixed_h);
+
             std::vector<Element> out;
             out.reserve(rows.size());
             const std::string pad(static_cast<std::size_t>(indent), ' ');
@@ -1061,7 +1153,7 @@ private:
                     emit_band(*bd, out, theme, avail, pad);
                     continue;
                 } else if (const auto* dn = std::get_if<StatDonut>(&r)) {
-                    emit_donut(*dn, out, theme, avail, pad);
+                    emit_donut(*dn, out, theme, avail, pad, grow_max);
                     continue;
                 } else if (const auto* hg = std::get_if<StatHistogram>(&r)) {
                     emit_histogram(*hg, out, theme, avail, pad);
@@ -1287,7 +1379,7 @@ private:
     // owns most of them — which is what makes an arc read as an arc.
     static void emit_donut(const StatDonut& d, std::vector<Element>& out,
                            const StatSheetTheme& theme, int avail,
-                           const std::string& pad) {
+                           const std::string& pad, int grow_max = 0) {
         double total = 0;
         for (const auto& s : d.segments) total += s.value > 0 ? s.value : 0;
         if (d.segments.empty() || total <= 0 || avail <= 0) return;
@@ -1317,8 +1409,19 @@ private:
         // The legend keeps its full share throughout — the ring may only
         // grow into space the key does not want, so growing the figure can
         // never cost it its labels.
+        //
+        // And it may only grow into space the SHEET does not want either.
+        // A donut is the one form whose width and height are the same
+        // number, so widening it is also lengthening it, and a ring that
+        // takes every column on offer takes rows from the tables below it
+        // at the same time — which on a narrow surface is how the Cache
+        // tab lost its Tokens and Rates sections entirely. `grow_max` is
+        // the ceiling the layout imposes from outside; the caller's
+        // rows_max is the ceiling the figure imposes on itself, and the
+        // smaller of the two wins.
+        const int ceiling = std::min(d.rows_max, grow_max > 0 ? grow_max : d.rows_max);
         constexpr int kLegendWant = 22;
-        while (rows < d.rows_max
+        while (rows < ceiling
                && (rows + 1) * 2 + 3 + kLegendWant <= avail) {
             ++rows;
             cw = rows * 2;

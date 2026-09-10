@@ -97,6 +97,47 @@ struct Config {
     // screen is not a minimum but an overflow, and the overlay centres the
     // panel so the excess is split off both edges and the labels vanish.
     int   min_width = 60;
+
+    // ── What the frame costs, as ONE fact ────────────────────────────────
+    //
+    // Panel wraps its body in `.padding(1, 2).border(Round)`: one border
+    // column and two pad columns on each side. Content laid out at the
+    // panel's OUTER width is therefore six columns too wide, and a Canvas
+    // clips rather than spills — so the excess does not paint past the
+    // frame, it paints OVER the frame's own right border and stops. The
+    // visible damage is a row that simply has no right edge.
+    //
+    // This was a number every caller had to know and none was told. The
+    // one caller that noticed hand-counted it (agentty's stats panel:
+    // `sheet.reserve_right(7)`, derived by measuring at three widths), and
+    // a hand-counted constant describing someone else's internals goes
+    // stale the moment the padding changes — silently, because nothing
+    // references anything. A probe across all 14 agentty panels found 13
+    // losing their border below 60 columns.
+    //
+    // So the widget states its own cost. content_width() below is the
+    // width a caller may actually paint in, and it is derived from these
+    // rather than repeated.
+    static constexpr int kBorderCols  = 2;   // one each side
+    static constexpr int kPaddingCols = 4;   // two each side
+    // The vertical scrollbar rides in the right pad when the body
+    // overflows. Charged UNCONDITIONALLY: it appears exactly when content
+    // crosses the viewport, and a body whose width changes at that moment
+    // is a layout that shifts under the reader for a reason they cannot
+    // see. It is also the only way to break the circularity — whether the
+    // bar exists depends on the viewport, which depends on the width the
+    // bar's presence would determine.
+    static constexpr int kScrollbarCols = 1;
+    static constexpr int kChromeCols =
+        kBorderCols + kPaddingCols + kScrollbarCols;
+
+    // The width content may paint in, given the panel's OUTER width.
+    // Never negative; a panel narrower than its own chrome has no body.
+    [[nodiscard]] static constexpr int content_width(int outer) noexcept {
+        const int inner = outer - kChromeCols;
+        return inner > 0 ? inner : 0;
+    }
+
     Color accent    = Color::blue();
 
     // Colour of the edge bar on the ACTIVE row (the persistent "currently

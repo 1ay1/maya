@@ -9,10 +9,46 @@
 
 #include "maya/widget/panel.hpp"
 #include "maya/widget/tab_strip.hpp"   // the shared strip the tabs field renders
+#include "maya/platform/io.hpp"       // query_terminal_size, for the width clamp
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace maya {
+
+namespace {
+
+// The panel's min-width, clamped to something the terminal can actually
+// show.
+//
+// A floor wider than the screen is not a minimum, it is an overflow: the
+// overlay is centred, so the excess is split off BOTH edges and the frame's
+// own border is the first thing clipped. Every row then renders without a
+// right edge, which is the "content overflows the frame" report.
+//
+// kChromeCols is subtracted so the clamp leaves room for the border, the
+// padding and the scrollbar gutter rather than for the body alone — the
+// whole point is that the FRAME fits, and the frame is what the chrome is.
+[[nodiscard]] int clamped_min_width_for(int requested) {
+    const auto sz = platform::query_terminal_size(platform::stdout_handle());
+    int term = sz.width.value;
+    // No tty (a pipe, a test harness, a render-to-canvas probe): the query
+    // returns a hardcoded fallback rather than a real width, so consult
+    // COLUMNS the way every other size lookup here does. Without this the
+    // clamp silently uses 80 in exactly the environments that render at
+    // other widths.
+    if (!platform::is_tty(platform::stdout_handle())) {
+        if (const char* c = std::getenv("COLUMNS")) {
+            if (const int n = std::atoi(c); n > 0) term = n;
+        }
+    }
+    if (term <= 0) return std::max(20, requested);
+
+    const int usable = term - Panel::Config::kChromeCols;
+    return std::max(20, std::min(requested, std::max(20, usable)));
+}
+
+} // namespace
 
 // ============================================================================
 //  Row layout — flex, never arithmetic
@@ -720,7 +756,19 @@ Element Panel::build() const {
         // job is to say "the chrome ends here".
         stack.push_back(component([help = cfg_.theme.help](int w, int) {
             constexpr int kMaxWidth = 4096;   // measure-pass sentinel guard
-            const int n = w > kMaxWidth ? kMaxWidth : (w < 0 ? 0 : w);
+            int n = w > kMaxWidth ? kMaxWidth : (w < 0 ? 0 : w);
+            // Pay the scrollbar gutter the BODY pays.
+            //
+            // This rule sits outside the scrollable, so it is handed the
+            // full content width while every row beneath it is one column
+            // narrower — the gutter is reserved unconditionally now. Drawn
+            // at `w` the rule runs one column long, and since a Canvas
+            // clips rather than spills it lands on the frame's own right
+            // border and erases it. The reported symptom ("content
+            // overflows the frame") is this single row on the narrowest
+            // panes, and it is the last one left after the width clamp.
+            n -= Config::kScrollbarCols;
+            if (n < 0) n = 0;
             std::string rule;
             for (int i = 0; i < n; ++i) rule += "\xe2\x94\x80";   // ─
             return Element{TextElement{.content = std::move(rule),
@@ -805,16 +853,32 @@ Element Panel::build() const {
         if (!body.opaque && below > 0) lines.push_back(spacer_rows(below));
 
         Element scrollable = vstack()(lines) | scroll(s, vh) | grow(1.0f);
-        if (content > vh) {
-            // Only when something can actually scroll. A full-height thumb
-            // beside a list that FITS reads as a stray ┃ artifact hugging
-            // the border (clearest on a one-row empty-state pane), and
-            // communicates nothing — there is no hidden content to indicate.
-            stack.push_back(h(std::move(scrollable),
-                              scrollbar_y(s, vh, cfg_.scrollbar_style)).build());
-        } else {
-            stack.push_back(std::move(scrollable));
-        }
+        // The scrollbar's column is reserved WHETHER OR NOT a bar is drawn.
+        //
+        // It used to be appended only when `content > vh`, which made the
+        // body one column wider in the fits case than in the overflows
+        // case. Two costs, both real:
+        //
+        //   • The body reflows the instant content crosses the viewport —
+        //     a layout that shifts under the reader with no visible cause.
+        //
+        //   • It is circular, and that is why callers could not compensate
+        //     for it correctly. Whether the bar exists depends on `vh`;
+        //     `vh` depends on the width; the width is what the bar's
+        //     presence would decide. agentty's stats panel hand-counted a
+        //     reserve for exactly this and got a number that is right at
+        //     some widths and wrong at others — not because the count was
+        //     careless, but because no single count can be right.
+        //
+        // A one-column gutter costs one column. Reflowing costs the
+        // reader's place on the page.
+        Element gutter = content > vh
+            ? scrollbar_y(s, vh, cfg_.scrollbar_style)
+            // Same width, no ink. A full-height thumb beside a list that
+            // FITS reads as a stray ┃ hugging the border and communicates
+            // nothing — there is no hidden content to indicate.
+            : (spacer_rows(vh) | width(1));
+        stack.push_back(h(std::move(scrollable), std::move(gutter)).build());
     } else {
         // No scroll state: nothing can be off-screen, so nothing is skipped.
         for (auto& line : render_range(body, 0,
@@ -856,17 +920,45 @@ Element Panel::build() const {
         stack.push_back(Element{TextElement{
             .content = "  " + note,
             .style   = note_style,
-            .wrap    = TextWrap::NoWrap}});
+            // TruncateEnd, not NoWrap.
+            //
+            // The note is a caller-supplied key hint ("tab switch view · ↑↓
+            // scroll · esc close") sized for a comfortable terminal, and
+            // NoWrap on a string the widget does not control is a promise
+            // it cannot keep. A Canvas clips rather than spills, so on a
+            // phone-sized pane the overrun did not run off the screen — it
+            // ran over the frame's own right border and erased it, leaving
+            // one row of the panel with no edge.
+            //
+            // Wrapping is wrong here (a hint that reflows to two rows
+            // shifts everything below it), but truncating is not: an
+            // ellipsised hint still reads, and the frame stays a frame.
+            .wrap    = TextWrap::TruncateEnd}});
     }
     for (const auto& f_row : cfg_.footer) stack.push_back(f_row);
 
     return maya::detail::vstack()
         .padding(1, 2)
         // A min-width below a usable floor makes the panel narrower than its
-        // own title, and the border text then overflows the frame. The HOST
-        // clamps this DOWN to the terminal (see ui::form_config); the floor
-        // here catches the other direction.
-        .min_width(Dimension::fixed(std::max(20, cfg_.min_width)))
+        // own title, and the border text then overflows the frame.
+        //
+        // And a min-width ABOVE the terminal is not a minimum at all — it is
+        // an overflow. The panel is centred, so the excess is split off both
+        // edges: the frame's right border is clipped away and every row
+        // inside it loses its own edge. That is what a "broken frame" looks
+        // like on a phone-sized pane, and a probe across agentty's panels
+        // found 13 of 14 doing it below 60 columns.
+        //
+        // This used to be the CALLER's job, stated in prose ("the caller
+        // clamps it down anyway") and honoured by exactly one of twelve —
+        // form_common.cpp caps at max_width - 6; the other eleven assign
+        // kPanelStandard raw and overflow the moment the terminal is
+        // narrower than the floor they picked. An obligation delegated to
+        // every caller is an obligation nobody owns.
+        //
+        // The widget knows the terminal and knows its own chrome, so it
+        // clamps itself. A floor that cannot be honoured is not a floor.
+        .min_width(Dimension::fixed(clamped_min_width_for(cfg_.min_width)))
         .border(BorderStyle::Round)
         .border_color(cfg_.accent)
         .border_text(cfg_.title, BorderTextPos::Top, BorderTextAlign::Center)

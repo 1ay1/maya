@@ -557,7 +557,7 @@ TEST_CASE("stat sheet: a histogram is columns plus a baseline and ticks") {
     s.histogram({.caption = "spread",
                  .buckets = {{"1", 1}, {"2", 5}, {"3", 3}},
                  .rows = 4,
-                 .peak_label = "5"});
+                 .y_labels = {"5", "4", "3", "1"}});
     const auto r = render_sheet(s, 60);
     // caption + 4 column rows + baseline + ticks.
     REQUIRE(r.rows.size() == 7u);
@@ -635,6 +635,63 @@ TEST_CASE("stat sheet: a histogram narrows its bars rather than dropping data") 
         for (char c : lowest) if (c == '?') ++ink;
         CHECK_MESSAGE(ink >= 12, "width " << w);
     }
+}
+
+TEST_CASE("stat sheet: a histogram labels every y-axis row") {
+    // One peak label tells you the ceiling and nothing else, so reading
+    // any other bar means estimating its fraction of a number at the far
+    // end of the figure. A tick per row turns that estimate into a
+    // lookup.
+    StatSheet s;
+    s.histogram({.caption = "",
+                 .buckets = {{"a", 4}, {"b", 2}},
+                 .rows = 4,
+                 .y_labels = {"40", "30", "20", "10"}});
+    const auto r = render_sheet(s, 40);
+    REQUIRE(r.rows.size() >= 4u);
+    CHECK(r.rows[0].find("40") != std::string::npos);
+    CHECK(r.rows[1].find("30") != std::string::npos);
+    CHECK(r.rows[2].find("20") != std::string::npos);
+    CHECK(r.rows[3].find("10") != std::string::npos);
+}
+
+TEST_CASE("stat sheet: y-axis ticks right-align on their last digit") {
+    // The gutter is sized to the WIDEST tick and every label is padded
+    // into it, so the numbers line up on their last digit and the axis
+    // reads as a scale. A ragged gutter reads as a second, meaningless
+    // column of text.
+    StatSheet s;
+    s.histogram({.caption = "",
+                 .buckets = {{"a", 1}},
+                 .rows = 3,
+                 .y_labels = {"100", "50", "1"}});
+    const auto r = render_sheet(s, 30);
+    REQUIRE(r.rows.size() >= 3u);
+    // "100" starts at column 0; "50" is pushed one right; "1" two.
+    CHECK(r.rows[0].find("100") == 0u);
+    CHECK(r.rows[1].find("50")  == 1u);
+    CHECK(r.rows[2].find("1")   == 2u);
+}
+
+TEST_CASE("stat sheet: a histogram tolerates a short or absent y axis") {
+    // Fewer labels than rows leaves the rest unlabelled — that is how a
+    // caller asks for a sparser axis, and how the panel says "this tick
+    // would repeat the one above it".
+    StatSheet few;
+    few.histogram({.caption = "",
+                   .buckets = {{"a", 3}, {"b", 1}},
+                   .rows = 4,
+                   .y_labels = {"3", "", "1"}});
+    CHECK(render_sheet(few, 30).rows.size() >= 4u);
+
+    StatSheet none;
+    none.histogram({.caption = "",
+                    .buckets = {{"a", 3}, {"b", 1}},
+                    .rows = 4});
+    const auto r = render_sheet(none, 30);
+    REQUIRE(r.rows.size() >= 4u);
+    // No gutter at all: the first column carries chart, not padding.
+    CHECK(r.rows[3].find('?') != std::string::npos);
 }
 
 TEST_CASE("stat sheet: a degenerate histogram renders nothing") {

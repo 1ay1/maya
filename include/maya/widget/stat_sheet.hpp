@@ -301,10 +301,18 @@ struct StatHistogram {
     // display; wider makes each bar easier to hit with the eye. 3 is the
     // narrowest that still leaves a gap between neighbours.
     int                  col_width = 3;
-    // Peak label on the y axis. A histogram without one shows the SHAPE
-    // but not the scale, which is fine for comparison and useless for
-    // reading a count off it.
-    std::string          peak_label;
+    // Y-axis ticks, TOP ROW FIRST, one per row. Fewer than `rows` labels
+    // leaves the remaining rows unlabelled, which is how a caller asks
+    // for a sparser axis.
+    //
+    // A vector rather than a single peak: one number at the top tells you
+    // the ceiling and nothing else, so reading any bar means estimating
+    // its fraction of a value at the other end of the figure. A tick per
+    // row turns that estimate into a lookup.
+    //
+    // Pre-formatted, like every other number the sheet takes — the widget
+    // does not know whether these are milliseconds, bytes or counts.
+    std::vector<std::string> y_labels;
 };
 
 // A braille line plot over the full sheet width.
@@ -1066,8 +1074,12 @@ private:
 
         // The y-axis gutter, reserved before anything is sized — a
         // histogram that overruns its own scale label is worse than one a
-        // few columns narrower.
-        const int lab_w  = unicode::str_width(hg.peak_label);
+        // few columns narrower. Sized to the WIDEST tick so every label
+        // right-aligns against the axis; a ragged gutter reads as a
+        // second, meaningless column of text.
+        int lab_w = 0;
+        for (const auto& l : hg.y_labels)
+            lab_w = std::max(lab_w, unicode::str_width(l));
         const int gutter = lab_w > 0 ? lab_w + 1 : 0;
         const int plot_w = avail - gutter;
         if (plot_w < 1) return;
@@ -1124,13 +1136,19 @@ private:
             std::string s = pad;
             std::vector<StyledRun> runs;
 
-            // The scale label rides the first row, in the gutter, so it
-            // costs no extra height.
+            // Y-axis tick for this row, right-aligned in the gutter so
+            // the numbers line up on their last digit and the axis reads
+            // as a scale rather than as ragged prose.
             if (gutter > 0) {
-                if (cy == 0 && lab_w > 0) {
-                    runs.push_back(StyledRun{s.size(), hg.peak_label.size(),
+                const auto* tick =
+                    cy < static_cast<int>(hg.y_labels.size())
+                        ? &hg.y_labels[static_cast<std::size_t>(cy)] : nullptr;
+                if (tick && !tick->empty()) {
+                    const int tw = unicode::str_width(*tick);
+                    s.append(static_cast<std::size_t>(lab_w - tw), ' ');
+                    runs.push_back(StyledRun{s.size(), tick->size(),
                                              Style{}.with_fg(theme.detail)});
-                    s += hg.peak_label;
+                    s += *tick;
                     s += ' ';
                 } else {
                     s.append(static_cast<std::size_t>(gutter), ' ');

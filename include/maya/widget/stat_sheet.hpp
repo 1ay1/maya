@@ -535,7 +535,7 @@ public:
                     const int usable = inner - indent;
                     bool all_ok = true;
                     for (const auto& sl : slices)
-                        if (!fit(sl, track, usable).ok()) { all_ok = false; break; }
+                        if (!fit(sl, track, usable).ok(usable)) { all_ok = false; break; }
                     if (!all_ok) continue;
                     ncols  = static_cast<int>(slices.size());
                     chosen = std::move(slices);
@@ -619,6 +619,7 @@ private:
         int  bar_w     = 0;
         int  value_w   = 0;
         int  detail_w  = 0;
+        int  text_w    = 0;    // widest heading / hero line
         bool any_bar   = false;   // some row WANTS a chart
         bool truncated = false;   // a label had to be cut to fit
         bool has_rows  = false;   // any StatEntry at all
@@ -628,7 +629,13 @@ private:
         // A slice of pure figures (a donut, a plot) always passes: it has
         // no label/track geometry to lose, and refusing to split on its
         // account would pin whole tabs to one column.
-        [[nodiscard]] bool ok() const noexcept {
+        [[nodiscard]] bool ok(int avail) const noexcept {
+            // Prose is measured whether or not the slice has table rows.
+            // A heading or a hero caption is a SENTENCE — "75% of 8 routed
+            // turns ran below the Strateg…" is not a smaller version of
+            // the fact, it is the fact with the answer cut off — so a
+            // split that would clip one is not a split worth having.
+            if (text_w > avail) return false;
             if (!has_rows)          return true;
             if (truncated)          return false;
             if (any_bar && bar_w < kTrackMin) return false;
@@ -647,6 +654,20 @@ private:
     fit(const std::vector<Row>& rows, int track_pref, int avail) {
         Fit f;
         for (const auto& r : rows) {
+            // Prose first: a heading and a hero are full-width lines that
+            // owe nothing to the table geometry, but they still have to
+            // FIT, and nothing was measuring them.
+            if (const auto* h = std::get_if<StatHeading>(&r)) {
+                f.text_w = std::max(f.text_w, unicode::str_width(h->text));
+                continue;
+            }
+            if (const auto* hero = std::get_if<StatHero>(&r)) {
+                int w = unicode::str_width(hero->value);
+                if (!hero->caption.empty())
+                    w += 1 + unicode::str_width(hero->caption);
+                f.text_w = std::max(f.text_w, w);
+                continue;
+            }
             const auto* e = std::get_if<StatEntry>(&r);
             if (!e) continue;
             f.has_rows = true;
@@ -809,7 +830,8 @@ private:
 
         const std::function<void(int, int)> search = [&](int k, int from) {
             if (k == ncols - 1) {
-                int tallest = 0, prev = 0, bonus = 0;
+                int tallest = 0, shortest = std::numeric_limits<int>::max();
+                int prev = 0, bonus = 0;
                 for (int c = 0; c < ncols; ++c) {
                     const int end = c + 1 < ncols
                                   ? cuts[static_cast<std::size_t>(c)] : nsec;
@@ -817,11 +839,30 @@ private:
                     for (int s = prev; s < end; ++s)
                         h += sec_h[static_cast<std::size_t>(s)];
                     if (h <= 0) return;          // never an empty column
-                    if (h > tallest) tallest = h;
+                    if (h > tallest)  tallest  = h;
+                    if (h < shortest) shortest = h;
                     if (c > 0 && wants_break[static_cast<std::size_t>(prev)])
                         ++bonus;
                     prev = end;
                 }
+                // A column has to be worth the eye's trip across the gap.
+                //
+                // Minimising the tallest column alone is satisfied by a
+                // one-row column beside an eight-row one — formally the
+                // best partition available, and visibly a mistake: the
+                // reader gets a lone number marooned in half the panel.
+                //
+                // But "lopsided" is only a reason to refuse if refusing
+                // makes things BETTER, and it does not when the sheet is
+                // one tall figure plus a couple of tables: rejecting the
+                // split there does not produce a tidy sheet, it produces a
+                // one-column sheet whose tail falls off the bottom. So the
+                // test is against what a single column would cost — the
+                // full height — rather than against a ratio in the
+                // abstract. A split that still beats scrolling is kept
+                // even when it is uneven, because the uneven layout is
+                // showing more of the content than the tidy one would.
+                if (tallest >= total && shortest * 3 < tallest) return;
                 const int cost = tallest - bonus;
                 if (cost < best_cost) { best_cost = cost; best_cuts = cuts; }
                 return;
@@ -1244,7 +1285,15 @@ private:
 
             const std::string* ctr = centre_row(cyc);
             const int ctr_w = ctr ? unicode::str_width(*ctr) : 0;
-            const int ctr_x = ctr ? cw / 2 - ctr_w / 2 : -1;
+            // Centre the text against the RING, in one division.
+            //
+            // `cw / 2 - ctr_w / 2` truncates twice and both truncations
+            // push the same way, so an odd-width label sat a cell right of
+            // the hole it is supposed to be centred in — two columns of air
+            // on its left, one on its right, which reads as the ring being
+            // lopsided rather than the text being off. `(cw - ctr_w) / 2`
+            // is the same intent with one rounding step instead of two.
+            const int ctr_x = ctr ? (cw - ctr_w) / 2 : -1;
             // One column of air each side of the centre text. Without it
             // the label butts straight against the inner edge of the ring
             // and the two read as one smear — the hole exists to give the

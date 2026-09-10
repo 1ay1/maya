@@ -59,12 +59,6 @@ struct TabStripTheme {
     Color detail   = Color::bright_black();   // trailing count / diffstat
     Color ellipsis = Color::bright_black();   // the "…" scrolled-past chip
     Color divider  = Color::bright_black();   // │ between tabs, and the rule
-    // Editor mode fills the ACTIVE tab's cells with this. A background is
-    // the strongest "you are here" a terminal has, and it is what makes an
-    // editor strip read as a row of physical tabs rather than as styled
-    // text. Only editor mode uses it — the other marks are deliberately
-    // background-free so they can sit over any surface.
-    Color active_bg = Color::hex(0x313244);
 };
 
 // How the selected tab is marked.
@@ -153,7 +147,6 @@ struct TabStrip {
             if (!t.dot_glyph.empty()) w += unicode::str_width(t.dot_glyph) + 1;
             if (!t.detail.empty())    w += unicode::str_width(t.detail) + 1;
             if (mark == TabMark::Dot)    w += 2;   // "◆ " / "  "
-            if (mark == TabMark::Editor) w += 2;   // one pad column each side
             return w;
         };
 
@@ -175,7 +168,7 @@ struct TabStrip {
             // whitespace: its tabs are PEERS, and a rule between them reads
             // as "another one of the same kind" where a gap reads as "a
             // different thing".
-            const int sep_w = mark == TabMark::Editor ? 3 : gap;
+            const int sep_w = mark == TabMark::Editor ? 5 : gap;
             auto span = [&](int lo, int hi) {
                 int t = 0;
                 for (int i = lo; i <= hi; ++i)
@@ -188,21 +181,11 @@ struct TabStrip {
             while (start < act && span(start, act) > avail - (start > 0 ? 2 : 0))
                 ++start;
 
-            // Editor mode paints the ACTIVE tab's cells with a background,
-            // which is what makes the strip read as physical tabs rather
-            // than as styled text. Every piece of that tab has to carry it
-            // — marker, dot, label, detail and the spaces between them — or
-            // the fill comes out striped.
-            auto tab_style = [&](Style s, bool on) {
-                return (on && mark == TabMark::Editor)
-                           ? s.with_bg(theme.active_bg) : s;
-            };
-
             std::string labels;
             std::vector<StyledRun> label_runs;
             std::string rule;
-            // Column cursor + the active tab's span, for the editor rule.
-            int col = 0, act_col = 0, act_w = 0;
+            // Column cursor, so each piece advances the underline in step.
+            int col = 0;
             auto put = [&](std::string_view s, Style st) {
                 if (s.empty()) return;
                 label_runs.push_back({labels.size(), s.size(), st});
@@ -226,46 +209,35 @@ struct TabStrip {
                 const bool on = (i == act);
                 if (i > start) {
                     if (mark == TabMark::Editor) {
-                        // "  │" — the divider needs a column of air on each
-                        // side or it collides with the neighbouring tab's
-                        // marker slot and the two read as one smear. The
-                        // trailing air is the following tab's own marker
-                        // column, which is blank when that tab is inactive.
+                        // "  │  " — symmetric air around the divider. The
+                        // separator has to read as a boundary BETWEEN two
+                        // labels, and padding it on one side only makes it
+                        // look attached to the tab on that side.
                         put("  ", Style{});
                         put("\xe2\x94\x82", Style{}.with_fg(theme.divider));
+                        put("  ", Style{});
                     } else {
                         put(std::string(static_cast<std::size_t>(gap), ' '), Style{});
                     }
                     rule_pad(sep_w, false);
                     col += sep_w;
                 }
-                // The tab's own span starts here (after its separator).
-                const int tab_start_col = col;
 
                 if (mark == TabMark::Dot) {
                     put(on ? "\xe2\x97\x86 " : "  ", Style{}.with_fg(theme.accent));
                     rule_pad(2, false);
                     col += 2;
-                } else if (mark == TabMark::Editor) {
-                    // A leading space INSIDE the fill. With a background
-                    // the ▎ bar is redundant — two "you are here" marks on
-                    // one tab — so the fill does the job and this is just
-                    // the padding that keeps the label off its own edge.
-                    put(" ", tab_style(Style{}, on));
-                    rule_pad(1, false);
-                    col += 1;
                 }
                 if (!t.dot_glyph.empty()) {
-                    put(t.dot_glyph,
-                        tab_style(Style{}.with_fg(t.dot_color), on));
-                    put(" ", tab_style(Style{}, on));
+                    put(t.dot_glyph, Style{}.with_fg(t.dot_color));
+                    put(" ", Style{});
                     const int w = unicode::str_width(t.dot_glyph) + 1;
                     rule_pad(w, false);
                     col += w;
                 }
                 Style ls = Style{}.with_fg(on ? theme.active : theme.idle);
                 if (on) ls = ls.with_bold();
-                put(t.label, tab_style(ls, on));
+                put(t.label, ls);
                 // ONLY the label is underlined. Extending the rule under a
                 // status dot and a trailing diffstat made one tab wear three
                 // disjoint underlines — it read as three marks rather than
@@ -275,67 +247,30 @@ struct TabStrip {
                 col += unicode::str_width(t.label);
 
                 if (!t.detail.empty()) {
-                    put(" ", tab_style(Style{}, on));
-                    put(t.detail,
-                        tab_style(Style{}.with_fg(t.detail_color).with_dim(), on));
+                    put(" ", Style{});
+                    put(t.detail, Style{}.with_fg(t.detail_color).with_dim());
                     const int w = unicode::str_width(t.detail) + 1;
                     rule_pad(w, false);
                     col += w;
-                }
-                if (on) { act_col = tab_start_col; act_w = col - tab_start_col; }
-                // Close the editor fill with the same padding it opened
-                // with, so the background is a symmetric block rather than
-                // a label with a bite out of its right edge.
-                if (mark == TabMark::Editor) {
-                    put(" ", tab_style(Style{}, on));
-                    rule_pad(1, false);
-                    col += 1;
-                    if (on) act_w += 1;
                 }
             }
 
             Element label_row{TextElement{.content = std::move(labels),
                                           .wrap    = TextWrap::TruncateEnd,
                                           .runs    = std::move(label_runs)}};
-            if (mark == TabMark::Dot) return label_row;
-
-            // Editor mode's rule runs the FULL width in the divider colour,
-            // with only the active tab's segment lit in the accent. A rule
-            // that stops where the tabs stop leaves a ragged edge that reads
-            // as "the strip is broken here"; a full-width one reads as the
-            // boundary between the strip and the content below.
-            //
-            // Built from the lit SPAN rather than by transcoding `rule`
-            // glyph-by-glyph: that walk conflated byte length with column
-            // count and ran past the width, emitting a torn line of
-            // replacement characters. A span is two numbers and cannot tear.
-            if (mark == TabMark::Editor) {
-                std::string full;
-                full.reserve(static_cast<std::size_t>(avail_w) * 3);
-                std::vector<StyledRun> rule_runs;
-                std::size_t lit_start = std::string::npos;
-                std::size_t lit_bytes = 0;
-                for (int c = 0; c < avail_w; ++c) {
-                    const bool lit = c >= act_col && c < act_col + act_w;
-                    if (lit && lit_start == std::string::npos)
-                        lit_start = full.size();
-                    full += "\xe2\x94\x80";
-                    if (lit) lit_bytes += 3;
-                }
-                if (lit_start != std::string::npos)
-                    rule_runs.push_back({lit_start, lit_bytes,
-                                         Style{}.with_fg(theme.accent)});
-                return v(std::move(label_row),
-                         Element{TextElement{.content = std::move(full),
-                                             .style   = Style{}.with_fg(theme.divider),
-                                             .wrap    = TextWrap::TruncateEnd,
-                                             .runs    = std::move(rule_runs)}}).build();
-            }
+            // Dot and Editor are single-row marks. Editor distinguishes the
+            // active tab by COLOUR alone — bold in the accent, its
+            // neighbours dim — with │ dividers carrying the structure. No
+            // rule and no fill: the dividers already say "separate tabs",
+            // so a second marker on the same row is one signal too many.
+            if (mark == TabMark::Dot || mark == TabMark::Editor)
+                return label_row;
 
             return v(std::move(label_row),
                      Element{TextElement{.content = std::move(rule),
                                          .style   = Style{}.with_fg(theme.accent),
                                          .wrap    = TextWrap::TruncateEnd}}).build();
+
         }).build();
     }
 };

@@ -206,7 +206,7 @@ TEST_CASE("tab strip: the three marks are visibly different") {
 
     CHECK(und.rows.size() == 2);   // label + rule under the active label
     CHECK(dot.rows.size() == 1);   // one row, marker inline
-    CHECK(edt.rows.size() == 2);   // label + full-width rule
+    CHECK(edt.rows.size() == 1);   // one row, dividers + colour only
 
     // Every mode shows every tab when they fit.
     for (const auto* r : {&und, &dot, &edt}) {
@@ -215,9 +215,6 @@ TEST_CASE("tab strip: the three marks are visibly different") {
         CHECK(has(*r, "notes.md"));
     }
 
-    // The editor rule spans the WHOLE width — a rule that stopped where the
-    // tabs stop would leave a ragged edge reading as a broken strip.
-    CHECK(glyphs(edt.rows[1]) == 60);
     // The underline rule covers only the active label.
     CHECK(glyphs(und.rows[1]) == 8);   // "node.hpp"
 }
@@ -253,45 +250,24 @@ TEST_CASE("tab strip: the underline marks the label and nothing else") {
     CHECK(glyphs(r.rows[1]) == 8);   // exactly "rope.cpp"
 }
 
-TEST_CASE("tab strip: editor mode fills the active tab, and only it") {
-    // The background is what makes an editor strip read as physical tabs.
-    // It has to cover every piece of the active tab — padding, label,
-    // detail and the spaces between — or the fill comes out striped; and
-    // it must not leak onto a neighbour, or two tabs look selected.
-    StylePool pool;
-    Canvas canvas(52, 8, &pool);
-    TabStrip s;
-    s.tab("alpha").tab("bravo").tab("charlie");
-    s.active(1).marker(TabMark::Editor);
-    render_tree(s.build(), canvas, pool, theme::dark, /*auto_height=*/true);
-
-    // Collect the contiguous run of background cells on the label row.
-    int first = -1, last = -1, count = 0;
-    for (int x = 0; x < 52; ++x) {
-        const auto cell = canvas.get(x, 0);
-        if (pool.get(cell.style_id).bg.has_value()) {
-            if (first < 0) first = x;
-            last = x;
-            ++count;
-        }
-    }
-    REQUIRE(first >= 0);
-    CHECK(count == last - first + 1);   // ONE unbroken block, not stripes
-    // "bravo" is 5 columns; the fill adds a pad column on each side.
-    CHECK(count == 7);
-
-    // The other marks stay background-free so they can sit on any surface.
-    for (auto m : {TabMark::Underline, TabMark::Dot}) {
-        StylePool p2;
-        Canvas c2(52, 8, &p2);
-        TabStrip t;
-        t.tab("alpha").tab("bravo");
-        t.active(1).marker(m);
-        render_tree(t.build(), c2, p2, theme::dark, /*auto_height=*/true);
+TEST_CASE("tab strip: no mark paints a background") {
+    // Every mark is background-free, so a strip can sit over any surface.
+    // Editor mode briefly used a fill to mark the active tab; it marks by
+    // COLOUR instead — bold accent against dim neighbours, with │ dividers
+    // carrying the structure — because a fill plus dividers plus a rule is
+    // three signals for one fact.
+    for (auto m : {TabMark::Underline, TabMark::Dot, TabMark::Editor}) {
+        StylePool pool;
+        Canvas canvas(52, 8, &pool);
+        TabStrip s;
+        s.tab("alpha").tab("bravo").tab("charlie");
+        s.active(1).marker(m);
+        render_tree(s.build(), canvas, pool, theme::dark, /*auto_height=*/true);
         bool any_bg = false;
-        for (int y = 0; y < 2; ++y)
+        for (int y = 0; y < 3; ++y)
             for (int x = 0; x < 52; ++x)
-                if (p2.get(c2.get(x, y).style_id).bg.has_value()) any_bg = true;
+                if (pool.get(canvas.get(x, y).style_id).bg.has_value())
+                    any_bg = true;
         CHECK(!any_bg);
     }
 }

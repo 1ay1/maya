@@ -652,11 +652,41 @@ public:
             // so wrap less, and a split roughly halves it again. Guessing
             // one width therefore still strands rows at another, so take
             // the maximum over the band the sheet can be painted at.
+            //
+            // The band is only consulted for the SENTINEL, though. When a
+            // real width is on offer, that is the width the sheet will be
+            // painted at, and its layout there -- split or not -- is the
+            // only honest answer. Maxing it against a band of hypothetical
+            // narrow layouts reported the UNSPLIT height for a sheet that
+            // was about to split, so the panel reserved 39 rows for a
+            // 20-row layout and published a scrollbar for content that was
+            // entirely on screen.
+            if (max_width < kSentinel && max_width > 0)
+                return Size{Columns{max_width}, Rows{painted(max_width)}};
+
+            // At the sentinel the real width is unknown. The old answer
+            // was the worst case over a band of narrow widths, on the
+            // theory that over-reserving is always safe -- and for a sheet
+            // that cannot split, it is.
+            //
+            // Once splitting depends on a height BUDGET that changes with
+            // the width, it stops being safe and becomes actively wrong.
+            // A narrow probe cannot fit two columns, so it reports the
+            // unsplit height; the sheet then paints at the host's real
+            // width, splits, and comes out half that tall. maya's Panel
+            // takes the measured number as gospel, so it reserved 39 rows
+            // for a 20-row layout and published a scrollbar over content
+            // that was entirely on screen -- the two columns AND a
+            // scrollbar this whole chain of fixes has been chasing.
+            //
+            // So the band is capped at what the sheet would do with the
+            // room a real terminal offers. Still a worst case over widths
+            // the host might actually use, but no longer dominated by
+            // hypothetical narrow ones the sheet will never see.
             int tallest = 1;
             for (int probe = 40; probe <= 96; probe += 4)
                 tallest = std::max(tallest, painted(probe));
-            if (max_width < kSentinel && max_width > 0)
-                tallest = std::max(tallest, painted(max_width));
+            if (budget > 0) tallest = std::min(tallest, painted(96));
 
             // Report the WIDTH WE WERE ASKED ABOUT, never the probe width.
             //
@@ -1063,8 +1093,15 @@ private:
     // the bottom. Balance the thing the reader sees — height — not the
     // number of entries in a vector.
     [[nodiscard]] static int row_height(const Row& r) {
-        if (const auto* d = std::get_if<StatDonut>(&r))
-            return (d->rows < 3 ? 3 : d->rows) + (d->caption.empty() ? 0 : 1);
+        if (const auto* d = std::get_if<StatDonut>(&r)) {
+            // rows_max, not rows. `rows` is the caller's PREFERENCE and
+            // emit_donut grows past it when the surface allows, so
+            // counting the preference under-reports every wide layout by
+            // the difference -- and an under-reported height is a split
+            // the search believes fits when it does not.
+            const int base = d->rows < 3 ? 3 : d->rows;
+            return std::max(base, d->rows_max) + (d->caption.empty() ? 0 : 1);
+        }
         if (const auto* p = std::get_if<StatPlot>(&r))
             return (p->rows < 1 ? 1 : p->rows) + (p->caption.empty() ? 0 : 1);
         if (const auto* h = std::get_if<StatHistogram>(&r)) {
@@ -1394,7 +1431,24 @@ private:
             // row, with the other four silently dropped rather than
             // scrolled. Stating the height is what makes the figure a
             // figure instead of a suggestion.
-            const int n = static_cast<int>(out.size());
+            // The height this slice PAINTS.
+            //
+            // Not out.size(). Every row emitted here is one terminal line
+            // EXCEPT the figures: a donut is a single element that paints
+            // thirteen rows, a plot four, a histogram its bars plus an
+            // axis. Counting elements told the column search that a slice
+            // holding two figures was four rows tall when it was thirty,
+            // so the search happily "fitted" a split into a budget it blew
+            // by a factor of three -- and the reader got two columns AND a
+            // scrollbar, which is the cost of splitting with none of the
+            // benefit.
+            //
+            // row_height() already knows each variant's painted height for
+            // the balance logic; the count has to use the same number or
+            // the two disagree about what they are balancing.
+            int n = 0;
+            for (const auto& r : rows) n += row_height(r);
+            if (n < static_cast<int>(out.size())) n = static_cast<int>(out.size());
             BoxElement box;
             box.layout.direction = FlexDirection::Column;
             box.children         = std::move(out);

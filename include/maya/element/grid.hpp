@@ -388,6 +388,14 @@ struct ColumnsOpts {
             // row sees no pressure, never truncates, and its tail runs off
             // the end. That is a VALUE silently disappearing, which is worse
             // than any truncated label.
+            //
+            // But it must still YIELD. A fixed width with the default
+            // shrink of 1 is a preference; the same width with shrink(0) is
+            // a demand, and a demand overflows the moment a sibling takes a
+            // column — a scrollbar gutter does exactly that, one column at a
+            // time, and the overflow comes off the row's tail. Leaving
+            // shrink alone is what lets the column be 33 when it can and 32
+            // when the gutter is there, rather than 33 or broken.
             vb.width(Dimension::fixed(w));
             vb.max_width(Dimension::fixed(w));
             return vb(std::move(cells));

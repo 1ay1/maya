@@ -856,17 +856,50 @@ std::optional<Element> Panel::flowed_body() const {
     // not be broken: a heading stranded at the foot of a column with its
     // rows at the head of the next is worse than an uneven split, and it is
     // the only structural boundary the panel has.
+    //
+    // The column width, computed BEFORE the sections so they can be built
+    // to it. See the note on `columns(...width)` below for the derivation.
+    const int frame = panel::detail::terminal_cols() > 0
+                          ? panel::detail::terminal_cols()
+                          : cfg_.min_width;
+    const int bound = std::max(1, Config::content_width(frame)
+                                      - Config::kScrollbarCols);
+
+    // A section is a stack that STRETCHES to its column, never one that
+    // measures itself — and never one pinned to a number either.
+    //
+    // A plain vstack takes the width of its widest child, and one of those
+    // children is deliberately narrow: a section header reports only its
+    // LABEL width so that a vertical list has no horizontal extent (a
+    // component that asked for its full rule inside a scroll viewport is
+    // how this family once published 2^24 as its width). That is right for
+    // a flex parent which stretches its children — and wrong here, because
+    // columns() sizes a column from its cells: the header's fourteen
+    // columns become the section's width, every row is squeezed into it,
+    // and a squeezed row loses its tail, which is the VALUE.
+    //
+    // grow(1) is the fix rather than a fixed width. A pin says "I am
+    // exactly N" and cannot answer what happens when the column turns out
+    // to be N-1; grow says "take whatever the column has", which is the
+    // only true statement available here and needs no number kept in step
+    // with the one columns() computes.
+    auto section = [](std::vector<Element> rows) {
+        auto vb = dsl::vstack();
+        vb.grow(1.0f);
+        return vb(std::move(rows));
+    };
+
     std::vector<Element> cells;
     std::vector<Element> cur;
     for (int i = 0; i < n; ++i) {
         const auto& it = cfg_.items[static_cast<std::size_t>(i)];
         if (it.is_header() && !cur.empty()) {
-            cells.push_back(dsl::vstack()(std::move(cur)));
+            cells.push_back(section(std::move(cur)));
             cur.clear();
         }
         for (auto& line : render_item(it, i)) cur.push_back(std::move(line));
     }
-    if (!cur.empty()) cells.push_back(dsl::vstack()(std::move(cur)));
+    if (!cur.empty()) cells.push_back(section(std::move(cur)));
     if (cells.empty()) return std::nullopt;
 
     // Everything geometric belongs to columns(): the count the ceiling
@@ -894,10 +927,18 @@ std::optional<Element> Panel::flowed_body() const {
     //
     // ONE SECTION still goes through columns(): it cannot split, but the
     // ceiling must still decide.
-    const int frame = panel::detail::terminal_cols() > 0
-                          ? panel::detail::terminal_cols()
-                          : cfg_.min_width;
-    const int bound = std::max(1, Config::content_width(frame));
+    //
+    // The gutter comes off TWICE on purpose, and it is not a mistake being
+    // papered over. content_width() removes it once as part of the frame's
+    // chrome — that is the body's share of the panel. But build() then puts
+    // this element and the scrollbar side by side in an h(), and a
+    // component is measured BEFORE flex subtracts its sibling, so the slot
+    // this body is offered still has the gutter's column in it. Laid out
+    // for 33 and handed 32, the row loses exactly one cell off its tail:
+    // the value "40ms" painted as "40m".
+    //
+    // One column, one character, and nothing else in the frame looks wrong
+    // — which is why this survived several rounds of looking at it.
     return columns(std::move(cells),
                    ColumnsOpts{.max_width = cfg_.col_max_width,
                                .min_width = cfg_.col_min_width,

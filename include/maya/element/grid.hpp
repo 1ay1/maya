@@ -243,6 +243,18 @@ struct ColumnsOpts {
     // Ceiling on the count, for slots wide enough to split further than the
     // content deserves. 0 = as many as the width implies.
     int max_cols = 0;
+    // The narrowest a column may be. A CEILING alone cannot express "do not
+    // split below what a row needs": at max_width 64 a 76-column slot splits
+    // into two columns of 36, and a label─→value row that wanted 40 starts
+    // truncating its labels. That trades one unreadable layout for another.
+    //
+    // So the two bounds do different jobs and both are needed. max_width is
+    // about READING (how long a line may get); min_width is about FITTING
+    // (how short a column may get before its content stops working). A split
+    // happens only where both are satisfied; where they conflict, min wins,
+    // because a too-wide line is awkward while a truncated one has lost
+    // information.
+    int min_width = 0;
     // Blank columns between neighbours. Two: one reads as a wrapped line
     // rather than a gutter once the cells have ragged right edges.
     int gap = 2;
@@ -303,6 +315,13 @@ struct ColumnsOpts {
             const int span = w - gap * (cols - 1);
             if (span <= 0) break;
             if ((span + cols - 1) / cols <= most) break;   // ceil <= most
+            // Would the NEXT column take us below the floor? Then stop here
+            // — splitting further would satisfy the ceiling by breaking the
+            // content, which is not an improvement.
+            if (opts.min_width > 0) {
+                const int next = w - gap * cols;
+                if (next / (cols + 1) < opts.min_width) break;
+            }
             ++cols;
         }
         cols = std::clamp(cols, 1, n);
@@ -311,9 +330,30 @@ struct ColumnsOpts {
         // One column: hand back the plain stack. Not an optimisation — it is
         // the guarantee that enabling flow cannot disturb a narrow layout,
         // because at k == 1 there is no wrapper here to disturb it.
+        //
+        // Unless the slot is WIDER than the ceiling and we simply had
+        // nothing to split (one cell, or max_cols == 1). Then the ceiling
+        // still has to bind: a row stretched across 200 columns puts its
+        // label at one edge and its value at the other, which is a different
+        // way of being unreadable, not an acceptable one. Bounding the
+        // content is what a ceiling MEANS; splitting is only how it is
+        // honoured when there is material to split.
         if (cols == 1) {
             auto vb = detail::vstack();
-            return vb(std::move(cells));
+            if (w <= most) return vb(std::move(cells));
+
+            // Wider than the ceiling with nothing to split. A fixed width on
+            // the stack alone does not hold here — a lone Column box in a
+            // Column parent is STRETCHED by the parent's cross-axis rule, so
+            // the child grows right back to the slot. Putting it in a row
+            // beside a spacer gives the slack somewhere to go, which is what
+            // actually pins the content to the ceiling.
+            vb.width(Dimension::fixed(most));
+            auto rb = detail::hstack();
+            std::vector<Element> pair;
+            pair.push_back(vb(std::move(cells)));
+            pair.push_back(Element{BoxElement{.layout = {.grow = 1.0f}}});
+            return rb(std::move(pair));
         }
 
         // Divide the slot EXACTLY: base + largest-remainder spread. The

@@ -184,6 +184,30 @@ TEST_CASE("columns: no cell is clipped at any width") {
     }
 }
 
+// ── The ceiling binds even unsplit ─────────────────────────────────────
+//
+// A single cell cannot be split, but a ceiling that stops applying when
+// there is nothing to split is not a ceiling. Content must still be bounded
+// — a row stretched across 200 columns puts its label at one edge and its
+// value at the other, which is unreadable in a different way than a clipped
+// value rather than an acceptable one.
+TEST_CASE("columns: one cell is still bounded by max_width") {
+    std::vector<Element> one;
+    {
+        using namespace dsl;
+        std::vector<Element> parts;
+        parts.push_back(text("only").build());
+        parts.push_back(separator().build());   // grows to whatever it is given
+        one.push_back(v(std::move(parts)).build());
+    }
+    auto rows = paint(columns(std::move(one), 40).build(), 200);
+
+    int right = 0;
+    for (const auto& r : rows) right = std::max(right, cols_of(r));
+    CHECK_MESSAGE(right == 40,
+                  "an unsplittable body must still honour the ceiling");
+}
+
 // ── Balance ──────────────────────────────────────────────────────────
 //
 // Splitting on COUNT rather than height is what looks like a layout bug: one

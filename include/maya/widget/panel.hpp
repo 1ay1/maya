@@ -144,7 +144,18 @@ public:
     // both gaps and the value cell.
     [[nodiscard]] int draw_budget() const noexcept {
         const int term = panel::detail::terminal_cols();
-        const int usable = (term > 0 ? term : cfg_.min_width) - 40;
+        // FLOWED: a drawn control lives in a column, not across the body, so
+        // the ceiling its column was built to IS its budget. Without this a
+        // meter sizes to the whole terminal while the layout resolves it at
+        // a third of that — the picture then paints past its column and the
+        // clip takes the difference off the end, which is the exact defect
+        // column flow exists to remove. The ceiling is used rather than the
+        // resolved column width because it is known before layout and is
+        // never wider than the real column.
+        const int avail = cfg_.col_max_width > 0
+                              ? cfg_.col_max_width
+                              : (term > 0 ? term : cfg_.min_width);
+        const int usable = avail - 40;
         return usable < 8 ? 8 : usable;
     }
 
@@ -201,6 +212,18 @@ private:
     };
 
     [[nodiscard]] Body measure_body() const;
+
+    // The items grouped into sections and flowed into columns — ONE Element,
+    // so it scrolls as a unit and every column moves together. Empty unless
+    // cfg_.col_max_width says to flow and the panel is a document.
+    //
+    // Flow breaks the one-screen-row-per-entry invariant this header opens
+    // with: across two columns item k is no longer on line k, so a cursor
+    // index and a scroll offset stop being the same unit. A flowed body is
+    // therefore rendered whole and OPAQUE — exactly what `prebuilt` already
+    // does — and is refused for any panel that has a cursor or an open menu,
+    // where per-item line positions still have to mean something.
+    [[nodiscard]] std::optional<Element> flowed_body() const;
 
     // Half-open row range [first, last) covering absolute lines [y, y + vh).
     [[nodiscard]] static std::pair<int, int> visible_rows(const Body& b, int y,

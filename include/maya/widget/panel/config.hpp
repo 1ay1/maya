@@ -138,6 +138,37 @@ struct Config {
         return inner > 0 ? inner : 0;
     }
 
+    // ── Column flow ──────────────────────────────────────────────────────
+    //
+    // The widest a column of items may get before the body flows into
+    // another column. 0 (the default) disables it: one column, whatever the
+    // width, which is what a picker wants — splitting a ranked list puts
+    // rank 1 beside rank 9 and reading order stops meaning anything.
+    //
+    // A DOCUMENT wants the opposite. On a 200-column terminal a single
+    // column of rows is a narrow ribbon with two thirds of the screen blank
+    // and the reader scrolling for content that would have fitted.
+    //
+    // The panel supplies only the two facts it alone owns — the body width
+    // (it owns the border, the padding and the scrollbar gutter) and where
+    // the section boundaries are. Everything geometric is maya::columns():
+    // how many columns the ceiling implies, dividing the slot exactly so no
+    // strip is left over, and balancing by measured height. That split is
+    // deliberate; a host that computed its own column width had to guess
+    // the body width, and the guess was wrong by exactly the amount that
+    // clipped a stats value mid-string.
+    int col_max_width = 0;
+
+    // The narrowest a column may be. A ceiling alone cannot say "do not
+    // split below what a row needs" — at a 64 ceiling a 76-column body
+    // splits into two columns of 36 and label─→value rows begin truncating
+    // their labels, which trades one unreadable layout for another. The two
+    // bounds do different jobs: max is about reading, min is about fitting.
+    int col_min_width = 0;
+
+    // Blank columns between neighbouring columns.
+    int col_gap = 2;
+
     Color accent    = Color::blue();
 
     // Colour of the edge bar on the ACTIVE row (the persistent "currently

@@ -659,6 +659,21 @@ Panel::Body Panel::measure_body() const {
     // `items` list already hand the panel only the visible slice (the
     // code-block and tool-output pickers set scroll = nullptr and window
     // themselves), which is the same O(viewport) result by a different owner.
+    // A FLOWED body is one Element covering every item, so it measures and
+    // scrolls exactly like a prebuilt one: whole, opaque, clipped by the
+    // viewport. That is the entire reason flow returns a SINGLE Element — a
+    // second scroll topology would have to be kept in agreement with this
+    // one forever, and "agrees today" is not a property that survives.
+    if (const auto flowed = flowed_body()) {
+        const int h = std::max(1, measure_element(*flowed, 1 << 14).height.value);
+        b.offsets     = {0, h};
+        b.total       = h;
+        b.opaque      = true;
+        b.cursor_line = -1;        // a document has no cursor to keep in view
+        b.cursor_span = 0;
+        return b;
+    }
+
     if (cfg_.items.empty()) {
         const int n = static_cast<int>(cfg_.prebuilt.size());
         b.offsets.reserve(static_cast<std::size_t>(n) + 1);
@@ -771,6 +786,15 @@ std::vector<Element> Panel::render_range(const Body& b, int first,
         b.offsets[static_cast<std::size_t>(last)]
       - b.offsets[static_cast<std::size_t>(first)]));
 
+    // Flowed: one entry, one Element, already carrying every item. Built
+    // here rather than cached on Body so that measure and render go through
+    // the SAME function — the two disagreeing about a body's height is the
+    // bug class this panel has had once already.
+    if (const auto flowed = flowed_body()) {
+        lines.push_back(*flowed);
+        return lines;
+    }
+
     if (cfg_.items.empty()) {
         for (int i = first; i < last; ++i)
             lines.push_back(cfg_.prebuilt[static_cast<std::size_t>(i)]);
@@ -788,6 +812,61 @@ std::vector<Element> Panel::render_range(const Body& b, int first,
                 lines.push_back(std::move(line));
     }
     return lines;
+}
+
+// ============================================================================
+//  Column flow
+// ============================================================================
+
+std::optional<Element> Panel::flowed_body() const {
+    if (cfg_.col_max_width <= 0) return std::nullopt;   // off: the default
+
+    // Refuse rather than assert. Flow makes item k stop being on line k, so
+    // anything that reads a per-item line position has to be excluded: a
+    // cursor to keep in view, a dropdown anchored to its row. A caller that
+    // sets col_max_width on a picker gets the ordinary single column, which
+    // is correct-but-unflowed rather than subtly mis-scrolled.
+    if (cfg_.selected >= 0)     return std::nullopt;
+    if (cfg_.menu)              return std::nullopt;
+    if (cfg_.items.empty())     return std::nullopt;
+
+    const int n = static_cast<int>(cfg_.items.size());
+
+    // Group into sections on HEADER boundaries, and hand columns() one cell
+    // per section rather than one per item. A section is the unit that must
+    // not be broken: a heading stranded at the foot of a column with its
+    // rows at the head of the next is worse than an uneven split, and it is
+    // the only structural boundary the panel has.
+    std::vector<Element> cells;
+    std::vector<Element> cur;
+    for (int i = 0; i < n; ++i) {
+        const auto& it = cfg_.items[static_cast<std::size_t>(i)];
+        if (it.is_header() && !cur.empty()) {
+            cells.push_back(dsl::vstack()(std::move(cur)));
+            cur.clear();
+        }
+        for (auto& line : render_item(it, i)) cur.push_back(std::move(line));
+    }
+    if (!cur.empty()) cells.push_back(dsl::vstack()(std::move(cur)));
+    if (cells.empty()) return std::nullopt;
+
+    // Everything geometric belongs to columns(): the count the ceiling
+    // implies, dividing the slot exactly, balancing by measured height. The
+    // panel contributes only the ceiling and the gap. Note it is NOT given a
+    // width — columns() takes the real slot from adapt() at layout time,
+    // which is the whole reason this cannot drift from what gets painted.
+    //
+    // ONE SECTION still goes through columns(). It cannot split (there is
+    // nothing to split) but the ceiling must still BIND, or a single-section
+    // tab stretches its rows across a 200-column terminal with the label at
+    // one edge and the value at the other — unreadable in a different way
+    // than a clipped value, but unreadable. columns() returns the plain
+    // stack in that case, so the cost is nothing.
+    return columns(std::move(cells),
+                   ColumnsOpts{.max_width = cfg_.col_max_width,
+                               .min_width = cfg_.col_min_width,
+                               .gap       = cfg_.col_gap})
+        .build();
 }
 
 // A box with no children and a fixed height. `height` alone is not enough:

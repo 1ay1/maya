@@ -480,5 +480,233 @@ struct ColumnsOpts {
     return columns(std::move(cells), ColumnsOpts{.max_width = max_width});
 }
 
+// ============================================================================
+// viewport() — count-split responsive columns
+// ============================================================================
+//
+//   viewport({a, b, c, d, e, f}, 30);
+//
+// The count comes from a column CEILING, exactly like columns(): a slot at
+// or under max_width is one column, over max_width is two, over 2×max_width
+// is three, and so on. But where columns() flows DOWN a column until it has
+// had its share of the HEIGHT (newspaper reading order, balanced by measured
+// height), viewport() fills HORIZONTALLY first: cells go left-to-right across
+// the columns, then wrap to the next row — a real grid. Six cells over two
+// columns are rows [0,1] [2,3] [4,5]; four over three are [0,1,2] [3]. Each
+// row is a horizontal band whose height is its tallest cell, so a cell that
+// wraps to a new row starts at a clean, aligned baseline rather than stacking
+// under the first column with a ragged gap. Every column that exists holds
+// ceil(n/cols) or floor(n/cols) cells — differing by at most one.
+//
+// When there are FEWER cells than the width affords, the columns are held at
+// max_width (not stretched to fill), so a lone card stays its natural size
+// and two cards sit as two evenly-spaced cards rather than two half-screen
+// ones — the surplus width is left empty on the right.
+//
+// Everything inside stays responsive to the COLUMN width, not the screen:
+// each column is a fixed-width box whose cross-axis Stretch hands its content
+// the full column width, so an adapt()/grid()/table/meter re-solves against
+// the column it landed in. Shrink the terminal and the columns collapse
+// 3 → 2 → 1, and at every count the children reflow to the new column width.
+//
+// Use viewport() when the cells are peers of similar size and you want a
+// predictable even split (a card grid, a settings sheet); use columns() when
+// the cells vary wildly in height and you want the columns to end level.
+
+// Fill order for viewport(): how cells map onto the chosen columns.
+enum class Flow {
+    Row,     // left-to-right, then wrap to the next row (a grid, aligned rows)
+    Column,  // top-to-bottom down each column, then across (independent columns)
+};
+
+struct ViewportOpts {
+    // The WIDEST a column may get before another column is added. The count
+    // is chosen first (smallest k whose columns fit under this), then the
+    // whole slot is divided among exactly that many — no leftover strip.
+    int max_width = 40;
+    // Ceiling on the column count. 0 = as many as the width implies.
+    int max_cols = 0;
+    // The narrowest a column may be. A split that would push a column below
+    // this is not taken — a too-wide line is awkward, a truncated one has
+    // lost information, so fitting wins over reading. 0 = no floor.
+    int min_width = 0;
+    // Blank columns between neighbours.
+    int gap = 2;
+    // Vertical gap between stacked cells inside a column.
+    int gap_y = 0;
+    // A BOUND on the offered width (not an override): min(offer, width) is
+    // laid out, so a not-yet-subtracted sibling (a scrollbar gutter) can
+    // never pin the body wider than the space it will actually be painted
+    // in. 0 = trust the offered width.
+    int width = 0;
+    // Fill order once the column count is chosen. Row (default) fills
+    // left-to-right then wraps to the next row — a real grid with aligned
+    // rows. Column fills top-to-bottom down column 0, then column 1, … —
+    // independent columns, order runs down then across.
+    Flow flow = Flow::Row;
+    // Make every cell in a Row-flow row the SAME height as its tallest
+    // sibling, so the grid reads as a clean matrix instead of scattered
+    // boxes of different heights. The cell is stretched on the cross axis
+    // and told to grow, so a bordered card fills the row band. No effect in
+    // Flow::Column (columns are independent by design). Default off so the
+    // primitive stays purely additive.
+    bool equal_rows = false;
+};
+
+/// Cells split EVENLY BY COUNT into 1/2/3/… columns chosen from a width
+/// ceiling, round-robin so reading order is preserved, every column stays
+/// responsive to its own width.
+[[nodiscard]] inline auto viewport(std::vector<Element> cells, ViewportOpts opts)
+    -> ComponentBuilder
+{
+    return detail::adapt([cells = std::move(cells), opts](int offered) -> Element {
+        const int w = opts.width > 0 ? std::min(offered, opts.width) : offered;
+        const int n = static_cast<int>(cells.size());
+        if (n == 0) return Element{ElementList{}};
+
+        const int gap  = std::max(0, opts.gap);
+        const int most = std::max(1, opts.max_width);
+
+        // How many columns the WIDTH alone affords — the ceiling rule, run
+        // WITHOUT reference to how many cells we have. This is the number of
+        // column SLOTS the viewport is wide enough for; a slot is at most
+        // max_width. Counted up from 1 so it is exact.
+        int slots = 1;
+        while (true) {
+            const int span = w - gap * (slots - 1);
+            if (span <= 0) break;
+            if ((span + slots - 1) / slots <= most) break;   // ceil(span/slots) <= most
+            if (opts.min_width > 0) {
+                const int next = w - gap * slots;
+                if (next / (slots + 1) < opts.min_width) break;
+            }
+            ++slots;
+        }
+        if (opts.max_cols > 0) slots = std::min(slots, opts.max_cols);
+        slots = std::max(1, slots);
+
+        // Never more columns than cells: an empty column is not "even". With
+        // FEWER cells than slots the count drops to n, and — crucially — each
+        // column is then held at the SLOT width (≤ max_width) rather than
+        // stretched to fill the viewport, so two cards read as two evenly
+        // spaced cards, not two half-screen-wide ones.
+        const int cols = std::clamp(slots, 1, n);
+        const bool underfull = (n < slots);   // fewer cells than the width affords
+
+        // One column, FULL cells: hand back the plain stack at the full slot
+        // width, so enabling the flow cannot disturb a narrow layout. (Only
+        // when the width truly affords one column — a lone card in a wide
+        // viewport is the underfull case below, not this one.)
+        if (cols == 1 && !underfull) {
+            auto vb = detail::vstack();
+            if (opts.gap_y > 0) vb.gap(opts.gap_y);
+            vb.width(Dimension::fixed(w));
+            vb.max_width(Dimension::fixed(w));
+            return vb(std::move(cells));
+        }
+
+        // Column widths. Normally divide the slot EXACTLY (base +
+        // largest-remainder) so the columns sum to the full width and the
+        // last ends flush. But when UNDERFULL — fewer cells than the width
+        // affords — hold every column at the slot width (≤ max_width) so the
+        // cards stay their natural size and sit evenly, rather than each
+        // stretching to swallow the surplus.
+        std::vector<int> cw(static_cast<std::size_t>(cols));
+        if (underfull) {
+            const int slot = std::min(most, (w - gap * (slots - 1)) / slots);
+            for (int i = 0; i < cols; ++i)
+                cw[static_cast<std::size_t>(i)] = std::max(1, slot);
+        } else {
+            const int span = std::max(cols, w - gap * (cols - 1));
+            const int base = span / cols;
+            const int rem  = span % cols;
+            for (int i = 0; i < cols; ++i)
+                cw[static_cast<std::size_t>(i)] = base + (i < rem ? 1 : 0);
+        }
+
+        if (opts.flow == Flow::Row) {
+            // Fill HORIZONTALLY first: cells go left-to-right across the
+            // columns, then wrap to the next row — a real grid, not
+            // independent columns. Four cells over three columns are
+            // row0 = [0,1,2], row1 = [3]; the fourth cell starts a fresh row
+            // aligned to the top, instead of stacking under the first with a
+            // ragged gap. Every row is an hstack of fixed-width cells, and
+            // the rows stack vertically, so cells in a row share a baseline
+            // (the tallest cell sets the row height).
+            std::vector<Element> row_els;
+            row_els.reserve(static_cast<std::size_t>((n + cols - 1) / cols));
+            for (int start = 0; start < n; start += cols) {
+                std::vector<Element> cells_in_row;
+                const int end = std::min(n, start + cols);
+                for (int i = start; i < end; ++i) {
+                    Element cell_el = std::move(cells[static_cast<std::size_t>(i)]);
+                    const int this_w = cw[static_cast<std::size_t>(i - start)];
+                    if (opts.equal_rows) {
+                        // No wrapper: set the fixed width on the card itself
+                        // and let the row's align_items:Stretch size its
+                        // HEIGHT to the tallest card in the row. A bordered
+                        // box stretched on the cross axis grows its border to
+                        // the row band, so the grid reads as a clean matrix.
+                        if (auto* bx = as_box(cell_el)) {
+                            bx->layout.width      = Dimension::fixed(this_w);
+                            bx->layout.align_self = Align::Stretch;
+                        }
+                        cells_in_row.push_back(std::move(cell_el));
+                    } else {
+                        auto cb = detail::vstack();
+                        cb.width(Dimension::fixed(this_w));
+                        cells_in_row.push_back(cb(std::move(cell_el)));
+                    }
+                }
+                auto rb = detail::hstack();
+                if (gap > 0) rb.gap(gap);
+                if (opts.equal_rows) rb.align_items(Align::Stretch);
+                row_els.push_back(rb(std::move(cells_in_row)));
+            }
+
+            auto colb = detail::vstack();
+            if (opts.gap_y > 0) colb.gap(opts.gap_y);
+            return colb(std::move(row_els));
+        }
+
+        // Flow::Column — fill VERTICALLY first: fill column 0 top-to-bottom,
+        // then column 1, and so on. Each column holds a CONTIGUOUS run of
+        // cells, so reading order is down-then-across. The columns are
+        // independent vstacks (no shared row baseline); every column gets
+        // ceil(n/cols) or floor(n/cols) cells, differing by at most one, with
+        // the taller columns first.
+        const int per      = n / cols;
+        const int tall_cnt = n % cols;   // first `tall_cnt` columns get one extra
+        std::vector<std::vector<Element>> col_cells(static_cast<std::size_t>(cols));
+        int idx = 0;
+        for (int c = 0; c < cols; ++c) {
+            const int take = per + (c < tall_cnt ? 1 : 0);
+            for (int k = 0; k < take; ++k)
+                col_cells[static_cast<std::size_t>(c)]
+                    .push_back(std::move(cells[static_cast<std::size_t>(idx++)]));
+        }
+
+        std::vector<Element> col_els;
+        col_els.reserve(static_cast<std::size_t>(cols));
+        for (int c = 0; c < cols; ++c) {
+            auto cb = detail::vstack();
+            if (opts.gap_y > 0) cb.gap(opts.gap_y);
+            cb.width(Dimension::fixed(cw[static_cast<std::size_t>(c)]));
+            col_els.push_back(cb(std::move(col_cells[static_cast<std::size_t>(c)])));
+        }
+
+        auto rb = detail::hstack();
+        if (gap > 0) rb.gap(gap);
+        return rb(std::move(col_els));
+    });
+}
+
+/// Sugar: `viewport(cells, 30)` — "a column is about 30 wide; split evenly".
+[[nodiscard]] inline auto viewport(std::vector<Element> cells, int max_width)
+    -> ComponentBuilder
+{
+    return viewport(std::move(cells), ViewportOpts{.max_width = max_width});
+}
+
 } // namespace maya
 

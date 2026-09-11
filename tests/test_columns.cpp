@@ -224,3 +224,259 @@ TEST_CASE("columns: balanced by height, not by cell count") {
     CHECK_MESSAGE(inked(rows) <= 9,
                   "split by count, leaving one column twice the other");
 }
+
+// ── viewport(): even count-split, responsive columns ──────────────────
+//
+// viewport() shares columns()' width CEILING (count chosen so no column
+// exceeds max_width) but fills HORIZONTALLY first — cells go left-to-right
+// across the columns, then wrap to the next row (a real grid) — instead of
+// balancing by height. These tests pin that contract.
+
+namespace {
+
+// The column (0-based visual x) a single-line tag starts at, or -1 if the
+// tag never appears. Used to prove WHICH column a cell landed in.
+int tag_col(const std::vector<std::string>& rows, const std::string& tag) {
+    for (const auto& r : rows) {
+        auto pos = r.find(tag);
+        if (pos == std::string::npos) continue;
+        // Byte offset == column here: tags are ASCII and left-padding is
+        // spaces, both one column per byte up to the tag.
+        return static_cast<int>(unicode::str_width(r.substr(0, pos)));
+    }
+    return -1;
+}
+
+// Distinct set of start-columns across the given tags = the column count
+// those cells were spread over.
+int distinct_cols(const std::vector<std::string>& rows,
+                  std::initializer_list<const char*> tags) {
+    std::vector<int> xs;
+    for (auto* t : tags) {
+        int c = tag_col(rows, std::string(t) + "0");
+        if (c >= 0 && std::find(xs.begin(), xs.end(), c) == xs.end())
+            xs.push_back(c);
+    }
+    return static_cast<int>(xs.size());
+}
+
+} // namespace
+
+TEST_CASE("viewport: the ceiling picks the column count") {
+    // Six one-line cells, ceiling 30, no gap so the transitions are the
+    // clean multiples: <=30 one col, <=60 two, <=90 three.
+    auto cells = [] {
+        return make({{"a",1},{"b",1},{"c",1},{"d",1},{"e",1},{"f",1}});
+    };
+    auto opt = [](int w) {
+        return ViewportOpts{.max_width = 30, .gap = 0};
+    };
+
+    auto r1 = paint(viewport(cells(), opt(0)).build(), 28);
+    CHECK_MESSAGE(distinct_cols(r1, {"a","b","c","d","e","f"}) == 1,
+                  "at/under the ceiling: one column");
+
+    auto r2 = paint(viewport(cells(), opt(0)).build(), 60);
+    CHECK_MESSAGE(distinct_cols(r2, {"a","b","c","d","e","f"}) == 2,
+                  "over one ceiling: two columns");
+
+    auto r3 = paint(viewport(cells(), opt(0)).build(), 90);
+    CHECK_MESSAGE(distinct_cols(r3, {"a","b","c","d","e","f"}) == 3,
+                  "over twice the ceiling: three columns");
+}
+
+TEST_CASE("viewport: fills horizontally first, columns stay aligned") {
+    // Horizontal-first over two columns: rows [a,b] [c,d] [e,f]. So a,c,e
+    // land in the left column x and b,d,f in the right — same column
+    // membership a round-robin would give, but reached by filling rows.
+    auto rows = paint(
+        viewport(make({{"a",1},{"b",1},{"c",1},{"d",1},{"e",1},{"f",1}}),
+                 ViewportOpts{.max_width = 30, .gap = 0}).build(), 60);
+
+    const int la = tag_col(rows, "a0");
+    const int lb = tag_col(rows, "b0");
+    CHECK(la >= 0);
+    CHECK(lb > la);                                // right column is further right
+    CHECK_MESSAGE(tag_col(rows, "c0") == la, "c is under a, column 0");
+    CHECK_MESSAGE(tag_col(rows, "e0") == la, "e is under c, column 0");
+    CHECK_MESSAGE(tag_col(rows, "d0") == lb, "d is under b, column 1");
+    CHECK_MESSAGE(tag_col(rows, "f0") == lb, "f is under d, column 1");
+}
+
+TEST_CASE("viewport: a wrapped cell starts a fresh aligned row") {
+    // The defining difference from round-robin columns: with a TALL first
+    // cell, the cell that wraps to the next row must sit BELOW that whole
+    // row (grid band), not stacked directly under the tall cell in its
+    // column. Four cells over two columns: row0 = [tall(3), b(1)],
+    // row1 = [c(1), d(1)]. c must begin at or after the tall cell's bottom.
+    auto rows = paint(
+        viewport(make({{"tall",3},{"b",1},{"c",1},{"d",1}}),
+                 ViewportOpts{.max_width = 30, .gap = 0, .gap_y = 0}).build(), 60);
+
+    // Row of a tag = index of the row whose text contains it.
+    auto row_of = [&](const std::string& t) {
+        for (int i = 0; i < static_cast<int>(rows.size()); ++i)
+            if (rows[static_cast<std::size_t>(i)].find(t) != std::string::npos) return i;
+        return -1;
+    };
+    const int tall_last = row_of("tall2");   // last line of the 3-line cell
+    const int c_first   = row_of("c0");      // first line of the wrapped cell
+    CHECK(tall_last >= 0);
+    CHECK(c_first > tall_last);
+    CHECK_MESSAGE(c_first > tall_last,
+                  "wrapped cell starts a new row below the tall cell, not beside it");
+}
+
+TEST_CASE("viewport: equal_rows makes a row's cells the same height") {
+    // Two bordered cards of different natural heights in one row. With
+    // equal_rows the shorter card is stretched to the taller one, so both
+    // borders close on the SAME row — a clean grid, not ragged boxes.
+    using namespace dsl;
+    auto boxed = [](const char* tag, int lines) {
+        std::vector<Element> ls;
+        for (int i = 0; i < lines; ++i)
+            ls.push_back(text(std::string(tag) + std::to_string(i)).build());
+        return (v(std::move(ls)) | border_<Round>).build();
+    };
+
+    std::vector<Element> cells;
+    cells.push_back(boxed("a", 2));   // short
+    cells.push_back(boxed("b", 6));   // tall
+    auto rows = paint(
+        viewport(std::move(cells),
+                 ViewportOpts{.max_width = 40, .gap = 2, .equal_rows = true}).build(),
+        90);
+
+    // Each card's left border sits one column left of its text. The card's
+    // bottom is the LAST row that inks anything at that column. With
+    // equal_rows both cards must bottom out on the same row.
+    const int xa = std::max(0, tag_col(rows, "a0") - 1);
+    const int xb = std::max(0, tag_col(rows, "b0") - 1);
+    auto bottom_at = [&](int x) {
+        int last = -1;
+        for (int y = 0; y < static_cast<int>(rows.size()); ++y) {
+            const std::string& r = rows[static_cast<std::size_t>(y)];
+            if (x < static_cast<int>(r.size()) && r[static_cast<std::size_t>(x)] != ' ')
+                last = y;
+        }
+        return last;
+    };
+    const int ba = bottom_at(xa);
+    const int bb = bottom_at(xb);
+    CHECK(ba > 0);
+    CHECK(xb > xa);
+    CHECK_MESSAGE(ba == bb, "both cards' bottom borders sit on the same row");
+}
+
+TEST_CASE("viewport: Flow::Column fills top-to-bottom, contiguous columns") {
+    // Same six cells, two columns, but column-major: column 0 gets the first
+    // contiguous run [a,b,c] top-to-bottom, column 1 gets [d,e,f]. So a,b,c
+    // share the LEFT column x and d,e,f the RIGHT — the transpose of the
+    // row-major layout.
+    auto rows = paint(
+        viewport(make({{"a",1},{"b",1},{"c",1},{"d",1},{"e",1},{"f",1}}),
+                 ViewportOpts{.max_width = 30, .gap = 0, .flow = Flow::Column}).build(),
+        60);
+
+    const int la = tag_col(rows, "a0");
+    const int ld = tag_col(rows, "d0");
+    CHECK(la >= 0);
+    CHECK(ld > la);                                // second column is further right
+    CHECK_MESSAGE(tag_col(rows, "b0") == la, "b runs down column 0 under a");
+    CHECK_MESSAGE(tag_col(rows, "c0") == la, "c runs down column 0 under b");
+    CHECK_MESSAGE(tag_col(rows, "e0") == ld, "e runs down column 1 under d");
+    CHECK_MESSAGE(tag_col(rows, "f0") == ld, "f runs down column 1 under e");
+
+    // And it IS the transpose of Row: in row-major, a and d share NO column.
+    auto rrows = paint(
+        viewport(make({{"a",1},{"b",1},{"c",1},{"d",1},{"e",1},{"f",1}}),
+                 ViewportOpts{.max_width = 30, .gap = 0, .flow = Flow::Row}).build(),
+        60);
+    CHECK_MESSAGE(tag_col(rrows, "b0") != tag_col(rrows, "a0"),
+                  "row-major puts b in the OTHER column from a");
+}
+
+TEST_CASE("viewport: columns differ by at most one cell") {
+    // Five cells over three columns: 2 | 2 | 1, never 3 | 1 | 1.
+    // ceiling 30 at width 90: k=3 is the smallest with ceil(90/k) <= 30.
+    auto rows = paint(
+        viewport(make({{"a",1},{"b",1},{"c",1},{"d",1},{"e",1}}),
+                 ViewportOpts{.max_width = 30, .gap = 0}).build(), 90);
+
+    // Group the five tags by their start column, count per column.
+    std::vector<std::pair<int,int>> per;   // (x, count)
+    for (const char* t : {"a","b","c","d","e"}) {
+        int x = tag_col(rows, std::string(t) + "0");
+        REQUIRE(x >= 0);
+        auto it = std::find_if(per.begin(), per.end(),
+                               [&](auto& p){ return p.first == x; });
+        if (it == per.end()) per.push_back({x, 1});
+        else ++it->second;
+    }
+    REQUIRE_MESSAGE(per.size() == 3, "exactly three columns");
+    int lo = 99, hi = 0;
+    for (auto& [x, c] : per) { lo = std::min(lo, c); hi = std::max(hi, c); }
+    CHECK_MESSAGE(hi - lo <= 1, "evenly split: no column holds two more than another");
+}
+
+TEST_CASE("viewport: exact fill, nothing clipped") {
+    // Sweep every width; the widest inked row must equal the slot (no
+    // unclaimed strip) and every tag must survive (no clipped tail).
+    for (int w = 40; w <= 200; ++w) {
+        auto rows = paint(
+            viewport(make({{"aaaa",1},{"bbbb",1},{"cccc",1},{"dddd",1}}),
+                     ViewportOpts{.max_width = 30, .gap = 2}).build(), w);
+        for (const char* t : {"aaaa0","bbbb0","cccc0","dddd0"})
+            CHECK_MESSAGE(has(rows, t),
+                          "cell " << t << " survived at width " << w);
+    }
+}
+
+TEST_CASE("viewport: fewer cells than the width affords spread evenly") {
+    // Width 66, ceiling 20 => the viewport is wide enough for 3 columns.
+    // With only TWO cells they must sit as two capped, evenly-spaced
+    // columns — NOT two half-screen cells each stretched to ~33 wide.
+    auto rows = paint(
+        viewport(make({{"aa",1},{"bb",1}}),
+                 ViewportOpts{.max_width = 20, .gap = 2}).build(), 66);
+
+    // Both cells present, in different columns.
+    const int la = tag_col(rows, "aa0");
+    const int lb = tag_col(rows, "bb0");
+    CHECK(la >= 0);
+    CHECK(lb > la);
+
+    // Neither column is stretched past the ceiling: the widest inked row is
+    // at most 2*max_width + gap = 42, well under the 66-wide slot. A
+    // stretch-to-fill layout would ink the full 66.
+    int widest = 0;
+    for (const auto& r : rows) widest = std::max(widest, cols_of(r));
+    CHECK_MESSAGE(widest <= 2 * 20 + 2,
+                  "two cards stay capped at max_width, not stretched to fill");
+    CHECK_MESSAGE(widest < 66,
+                  "trailing space is left empty, not swallowed by the cards");
+}
+
+TEST_CASE("viewport: a lone cell keeps its width, is not blown up") {
+    // One cell in a wide viewport: a single capped column, not one cell
+    // stretched across the whole slot.
+    auto rows = paint(
+        viewport(make({{"solo",1}}),
+                 ViewportOpts{.max_width = 18, .gap = 2}).build(), 90);
+    int widest = 0;
+    for (const auto& r : rows) widest = std::max(widest, cols_of(r));
+    CHECK_MESSAGE(widest <= 18,
+                  "a lone card is at most max_width, never the full slot");
+}
+
+TEST_CASE("viewport: one column is the plain stack") {
+    // Below the split threshold the flow must be inert: byte-identical to a
+    // plain vstack, so adopting it can never disturb a narrow layout.
+    auto cells = make({{"x",2},{"y",2},{"z",2}});
+    auto other = make({{"x",2},{"y",2},{"z",2}});
+
+    auto vp    = paint(viewport(std::move(cells), ViewportOpts{.max_width = 80}).build(), 40);
+    auto plain = paint(dsl::v(std::move(other)).build(), 40);
+    CHECK_MESSAGE(vp == plain, "one-column viewport == plain stack, byte for byte");
+}
+

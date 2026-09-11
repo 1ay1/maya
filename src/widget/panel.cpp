@@ -179,12 +179,19 @@ Element Panel::annotated(Element control, const std::string& note,
     box.layout.max_width = Dimension::fixed(cap);
     box.layout.shrink    = kNoteShrink;
     box.children.push_back(Element{TextElement{
-        .content = note + "  ",
+        .content = "  " + note,
         .style   = note_style,
         .wrap    = TextWrap::TruncateEnd}});
 
-    return dsl::h(Element{std::move(box)},
-                  std::move(control) | dsl::shrink(0.0f)).build();
+    // The note goes AFTER the control, not before it.
+    //
+    // Before, it sits between the label and the picture — so a row that
+    // has one starts its bar further right than a row that does not, and
+    // a column of bars stops sharing the baseline that makes them
+    // comparable. The note is a gloss on the number; it belongs past it,
+    // where a varying width costs nothing.
+    return dsl::h(std::move(control) | dsl::shrink(0.0f),
+                  Element{std::move(box)}).build();
 }
 
 Element Panel::right_line(Element content) {
@@ -255,17 +262,27 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
     // A section header carries structure a row never has: upper-case and a
     // rule to the right edge. It used to be dim bold text, which is exactly
     // how a locked row renders — so "Endpoint  auto-detected" read as a title.
+    //
+    // The rule is drawn only when the panel asks for it. A settings pane is
+    // a long single column of interchangeable rows, and a full-width rule is
+    // what stops one section running into the next. A stats tab is not: its
+    // sections are already separated by blank rows and by the column split,
+    // and a rule across every heading turns a page of figures into a form.
+    // Worse at width — in two columns each rule runs to its own column edge,
+    // so the eye reads four horizontal lines where there are two groups.
     if (r.is_header()) {
         std::string caps = r.leading;
         for (auto& ch : caps)
             if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
 
+        const bool ruled = cfg_.header_rule;
         out.push_back(Element{ComponentElement{
-            .render = [caps, th](int w, int) -> Element {
+            .render = [caps, th, ruled](int w, int) -> Element {
                 std::string s = "  " + caps + " ";
                 std::vector<StyledRun> runs{
-                    {0, s.size(), Style{}.with_fg(th.help).with_bold()}};
-                const int rule = std::max(0, w - string_width(s) - 2);
+                    {0, s.size(), Style{}.with_fg(ruled ? th.help : th.active)
+                                         .with_bold()}};
+                const int rule = ruled ? std::max(0, w - string_width(s) - 2) : 0;
                 if (rule > 0) {
                     const std::size_t at = s.size();
                     for (int i = 0; i < rule; ++i) s += "\xe2\x94\x80";

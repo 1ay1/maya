@@ -169,6 +169,16 @@ struct Config {
     // Blank columns between neighbouring columns.
     int col_gap = 2;
 
+    // Draw the rule that runs from a section header to the right edge.
+    //
+    // On by default because a settings pane needs it: a long single column
+    // of interchangeable rows has nothing else marking where one section
+    // ends. A panel whose sections are already separated — by blank rows,
+    // by a column split, by figures that are visibly different objects —
+    // turns off, because a rule across every heading reads as a form
+    // rather than as a page of statistics.
+    bool header_rule = true;
+
     // Keep the body at `viewport_h` rows even when the content is shorter.
     //
     // The default (false) shrink-wraps: a picker showing three matches is

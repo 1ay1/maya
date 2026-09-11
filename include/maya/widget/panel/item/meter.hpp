@@ -53,9 +53,17 @@ struct Meter {
 render(const Meter& c, const ItemCtx& ctx) {
     // 24 preferred, because a meter's resolution IS its width and a stats
     // row can afford more than a settings row's control cell. 8 is the
-    // floor below which a bar stops reading as a scale; 40 the ceiling past
-    // which the eye starts measuring cells instead of comparing lengths.
-    const int cells = ctx.drawn_cells(/*pref=*/24, /*floor=*/8, /*ceiling=*/40);
+    // floor below which a bar stops reading as a scale; 28 the ceiling.
+    //
+    // The ceiling is the interesting number. A meter that grows without
+    // bound looks like it is using the space well and is not: at 40 cells
+    // on a wide pane the bar detaches from its label, the eye has to
+    // travel the width of the pane to pair a name with its length, and
+    // comparing two rows means comparing two lines that no longer share a
+    // visual edge. Past roughly 28 cells the extra resolution answers a
+    // question nobody asked — a bar is a COMPARISON, not a measurement,
+    // and 1% of difference was never going to be read off it.
+    const int cells = ctx.drawn_cells(/*pref=*/24, /*floor=*/8, /*ceiling=*/28);
 
     const double t = std::clamp(c.share, 0.0, 1.0);
     const int on = static_cast<int>(t * cells + 0.5);
@@ -119,7 +127,7 @@ render(const Meter& c, const ItemCtx& ctx) {
     // narrow row now gives up bar cells rather than giving up the number.
     static constexpr int kValueGap = 2;
     const int cells = std::max(1, ctx.drawn_cells(/*pref=*/24, /*floor=*/8,
-                                                  /*ceiling=*/40) - kValueGap);
+                                                  /*ceiling=*/28) - kValueGap);
 
     // The bar paints to whatever width the engine settles on. It does not
     // decide its own size — which is the entire reason this kind needs no

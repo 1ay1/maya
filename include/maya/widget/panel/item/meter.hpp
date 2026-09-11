@@ -139,7 +139,7 @@ render(const Meter& c, const ItemCtx& ctx) {
                             .style   = Style{}.with_fg(ctx.theme.value),
                             .wrap    = TextWrap::TruncateEnd}};
 
-    // The bar takes a FIXED width, not grow(1).
+    // The bar takes a FIXED width, not grow(1) — but it SHRINKS.
     //
     // grow() has no ceiling in this DSL, so a growing bar consumes every
     // spare column and starves the label beside it — "Average confidence"
@@ -147,7 +147,20 @@ render(const Meter& c, const ItemCtx& ctx) {
     // already the row's fair share (Panel deducts the label lane, the gaps
     // and the value cell before handing it over), so asking for exactly it
     // is both simpler and correct.
-    return dsl::h(std::move(bar) | dsl::width(cells),
+    //
+    // Shrink is the other half of that bargain, and it was missing. On a
+    // narrow terminal the row cannot hold label + bar + value, so something
+    // has to yield; with the bar refusing and the value pinned at
+    // shrink(0), the overflow came off the END of the row and the number
+    // was simply not drawn. A bar that is a few cells shorter still reads
+    // as a proportion. A number that is absent reads as nothing at all, and
+    // the reader cannot even tell it is missing.
+    //
+    // So the order of sacrifice is now stated rather than emergent: the
+    // LABEL truncates first (row_line weights it 3x), then the BAR gives
+    // cells, and the VALUE is last — which is the order row_line's own
+    // comment already claimed and only two thirds of the row honoured.
+    return dsl::h(std::move(bar) | dsl::width(cells) | dsl::shrink(1.0f),
                   std::move(val) | dsl::width(std::max(ctx.value_basis, vw))
                                  | dsl::shrink(0.0f)
                                  | dsl::justify(Justify::End))

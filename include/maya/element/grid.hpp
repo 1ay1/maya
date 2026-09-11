@@ -55,6 +55,7 @@
 //     hiding) is what adapt()/responsive() are for. The grid stays simple.
 
 #include "builder.hpp"
+#include "../core/render_context.hpp"
 
 #include <algorithm>
 #include <utility>
@@ -260,16 +261,22 @@ struct ColumnsOpts {
     int gap = 2;
     // Balance the column HEIGHTS rather than packing strictly in sequence.
     bool balance = true;
-    // Lay out for THIS width instead of the one adapt() reports. 0 = ask.
+    // Width to assume when the offered one cannot be trusted. 0 = always
+    // use what adapt() reports.
     //
-    // Needed when the slot a caller will actually get is not the slot the
-    // component is offered. A scrollbar is the case that forced it: the
-    // body and the bar are siblings in a row, and a component measures
-    // itself BEFORE flex subtracts its sibling — so the body is offered the
-    // full width, sizes its last column to the frame edge, and that column
-    // paints underneath the bar. The caller knows the gutter; adapt() never
-    // can. Stating the width is honest about that, where a spacer sibling
-    // only appears to fix it.
+    // A FALLBACK, not an override, and the distinction is the whole point.
+    // At PAINT the offered width is the real slot and is authoritative —
+    // overriding it lays the body out for a width it does not have, which
+    // leaves a constant strip of slack down the right edge no matter how
+    // wide the terminal gets (the "one column is not responsive" report:
+    // 5 columns short at 76, 90 and 120 alike).
+    //
+    // But a MEASURE pass outside any render context is clamped by the
+    // renderer to an 80-column default, and a layout that picks its own
+    // shape from that answers a different question than paint will. So the
+    // caller's number is used only when the offered one is that fallback —
+    // enough to keep measure and paint agreeing, without ever contradicting
+    // a width the layout actually has.
     int width = 0;
 };
 
@@ -309,7 +316,13 @@ struct ColumnsOpts {
     -> ComponentBuilder
 {
     return detail::adapt([cells = std::move(cells), opts](int offered) -> Element {
-        const int w = opts.width > 0 ? opts.width : offered;
+        // The offered width wins whenever it is real. It is only replaced
+        // when it is the renderer's no-context measure fallback, which is a
+        // stand-in for "nobody has told me a width yet" rather than a
+        // measurement of anything.
+        const int w = (opts.width > 0 && offered == kNoContextWidth)
+                          ? opts.width
+                          : offered;
         const int n = static_cast<int>(cells.size());
         if (n == 0) return Element{ElementList{}};
 

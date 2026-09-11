@@ -64,10 +64,20 @@ inline thread_local const RenderContext* render_ctx_ = nullptr;
     return detail::render_ctx_ != nullptr;
 }
 
+/// The width reported when there is no render context.
+///
+/// Not a measurement — a stand-in for "nobody has told me a width yet",
+/// returned to keep measure-outside-a-pass from dividing by nothing. Named
+/// because layouts that pick their SHAPE from a width (columns(), grid())
+/// need to tell it apart from a real slot: choosing a column count from this
+/// number answers a different question than paint will, and the two then
+/// disagree about how tall the result is.
+inline constexpr int kNoContextWidth = 80;
+
 /// Query the available width from the current render context.
-/// Returns 80 if called outside a render pass (safe default).
+/// Returns kNoContextWidth if called outside a render pass (safe default).
 [[nodiscard]] inline int available_width() noexcept {
-    return detail::render_ctx_ ? detail::render_ctx_->width : 80;
+    return detail::render_ctx_ ? detail::render_ctx_->width : kNoContextWidth;
 }
 
 /// Query the available height from the current render context.

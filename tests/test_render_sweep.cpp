@@ -145,18 +145,37 @@ TEST_CASE("panel rows keep their values at every width") {
 // The harness has already done most of the work. It isolated in one run
 // what an hour of hand probing did not — the value vanished only when
 // column flow AND scroll were both on, which named the mechanism — and
-// three fixes fell out of that: the unsplit budget must equal the unflowed
-// one exactly, the flowed body must be bounded by the panel's chrome, and
-// a single bounded column must constrain its rows rather than let them
-// overflow. Those took it from failing at every width to failing at one.
+// four fixes fell out of that: the unsplit budget must equal the unflowed
+// one exactly, the flowed body must be bounded by the panel's chrome, a
+// single bounded column must constrain its rows, and the scrollbar gutter
+// comes off TWICE because it is both frame chrome and a flex sibling.
+// Those took it from failing at every width to failing at one.
 //
-// What is left is a genuine narrow-terminal question, not a measurement
-// bug: at 40 columns a label + meter + value does not fit, so something
-// must give. Unflowed, row_line's shrink weights make the LABEL give way
-// (3x against 1x) and the value survives — "A reaso…  #---  40ms". Flowed,
-// the label truncates less and the value is what goes instead, which is
-// the wrong trade: a truncated label still says what the row is about, a
-// missing number does not.
+// WHAT IS LEFT, and what has been ruled out. The signature is exact and
+// reproducible — each additional SECTION costs the row two more columns:
+//
+//     sections=1  →  ####---  40ms
+//     sections=2  →  ####---  40
+//     sections=3  →  ####---
+//
+// Two is col_gap, which makes it look obvious, and it is not. Measured
+// and excluded, each with a probe:
+//
+//   * the width inputs — offered, bound and used are IDENTICAL at every
+//     section count (33/40, 32, 32), as is draw_budget (8)
+//   * the count arithmetic — the loop picks 1 column with span 32 for
+//     n = 1, 2 and 3 alike, so the gap is never charged
+//   * the section wrapper — plain vstack, percent(100), fixed(bound) and
+//     grow(1) all produce the same output
+//   * scroll pressure — a viewport too tall to overflow changes nothing
+//   * columns() itself — fed hand-built sections WITH headers at 1, 2 and
+//     3 cells, it keeps the value every time
+//
+// So every input that can be measured is the same and the output is not,
+// which means the difference is inside a layout pass rather than in what
+// is handed to it. That is a much sharper question than "the value
+// vanishes", and it is where the next attempt should start: instrument
+// the flex solver for this subtree, not the widths going into it.
 //
 // Left red on purpose. A skipped test is a bug nobody is looking at; a
 // failing one with the width in the message is a bug with a next step.

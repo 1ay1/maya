@@ -598,8 +598,20 @@ private:
             // to be proportional, so it goes second and shrinks before it
             // vanishes. The label is truncated rather than dropped, because
             // a number whose subject is unknown is not a statistic.
+            // The bar track is a MINIMUM too, not a fixed size. A 14-cell
+            // track on a 200-column sheet leaves the comparison the bars
+            // exist for harder than the width allows — so spare columns,
+            // after every other column has taken what it needs, go to the
+            // track. Capped: past a point a longer bar stops helping and
+            // just pushes the value away from its label.
             int bar_w = any_bar ? track : 0;
             const int kGap = 2;
+            if (bar_w) {
+                constexpr int kMaxTrack = 34;
+                const int spare = avail - label_w - value_w - kGap * 2
+                                - (detail_w ? detail_w + kGap : 0);
+                if (spare > bar_w) bar_w = std::min(spare, kMaxTrack);
+            }
             auto total = [&] {
                 int t = label_w + value_w;
                 if (bar_w)    t += bar_w + kGap;
@@ -1084,21 +1096,30 @@ private:
         const int plot_w = avail - gutter;
         if (plot_w < 1) return;
 
-        // EVERY bucket is shown. The bar width adapts to the space
-        // instead — dropping the tail loses data, and the tail of a
-        // latency distribution is exactly where the interesting outliers
-        // are. A chart that silently omits its slowest bucket is a chart
-        // that answers the wrong question.
+        // EVERY bucket is shown, and the bar width follows the SPACE in
+        // both directions.
         //
-        // Widths degrade in order: the requested width, then narrower
-        // bars, then bars with no gap between them, and only if even one
+        // Shrinking matters because dropping the tail loses data, and the
+        // tail of a latency distribution is exactly where the interesting
+        // outliers are. Growing matters for the same reason in reverse: a
+        // chart pinned to its requested width leaves half a wide terminal
+        // blank and makes every bar harder to compare than it needs to be.
+        //
+        // So `col_width` is a MINIMUM, not a fixed size. Widths degrade
+        // to narrower bars, then to bars with no gap, and only if even one
         // column per bucket will not fit does it drop from the tail — at
         // which point the surface is too narrow for a chart at all.
         const int want = static_cast<int>(hg.buckets.size());
         int cwid = hg.col_width < 1 ? 1 : hg.col_width;
         if (want > 0) {
             const int afford = plot_w / want;
-            if (afford < cwid) cwid = afford;
+            // Grow as well as shrink. Capped so a three-bucket histogram
+            // on a 200-column terminal does not become three enormous
+            // slabs — past a point extra width stops aiding comparison
+            // and just spreads the data out.
+            constexpr int kMaxCol = 8;
+            cwid = std::clamp(afford, 1, kMaxCol);
+            if (cwid < 1) cwid = 1;
         }
         if (cwid < 1) cwid = 1;
         const int n = std::min(plot_w / cwid, want);

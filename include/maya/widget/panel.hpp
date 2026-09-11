@@ -162,8 +162,26 @@ public:
         // than approximating with "body > ceiling".
         const int inner  = Config::content_width(screen);
         const int second = (inner - cfg_.col_gap) / 2;
+        // Both bounds AND something to divide. columns() caps the count at
+        // the number of cells it was given — it will not make a column it
+        // cannot fill — and the panel's cells are its SECTIONS, one per
+        // header. A single-section tab therefore never splits however wide
+        // the terminal is, and a budget that assumed otherwise sized the
+        // bar for a 64-column column while the row was painted at 145:
+        // a 22-cell bar stranded against the right edge with a dead
+        // expanse after the label, which is what the Tokens tab looked
+        // like on a wide pane.
+        //
+        // Counting headers here rather than asking columns() because the
+        // budget must be known BEFORE layout, which is the same reason the
+        // rest of this test is a restatement rather than a call.
+        int sections = 0;
+        for (const auto& it : cfg_.items) if (it.is_header()) ++sections;
+        if (sections == 0 && !cfg_.items.empty()) sections = 1;
+
         const bool split = inner > cfg_.col_max_width
-                        && second >= cfg_.col_min_width;
+                        && second >= cfg_.col_min_width
+                        && sections >= 2;
 
         // SPLIT: the row is one column wide, so the ceiling IS the row and
         // the picture must be sized to it or it paints past its column.

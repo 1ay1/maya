@@ -743,6 +743,47 @@ is not a single hand-computed breakpoint or row budget in it.
 
 ---
 
+## Debugging: when a layout is wrong and you cannot see why
+
+A terminal renderer loses information **silently**. Content that does not fit
+its slot is clipped, the discarded cells are simply never drawn, and the frame
+that reaches the reader looks finished. The end of a line is where values live
+— a number beside a bar, the tail of a path, the right half of a figure — so
+what is lost is usually the part that carried the meaning, and nothing on
+screen says so.
+
+That is what makes width bugs expensive. They survive test suites that check
+the painted output, because a painted frame cannot show you the text that was
+never painted.
+
+Set `MAYA_STRICT_CLIP=1` and every canvas in the process reports what it threw
+away:
+
+```console
+$ MAYA_STRICT_CLIP=1 ./my-app 2>clip.log
+[maya] clipped at (0,0): wanted 21 cols, edge 20, text 'this line is far too '
+```
+
+Each line names the position, the width the content asked for, the edge that
+cut it, and the text itself — which usually identifies the widget immediately.
+Off by default; when off it costs one predictable branch per write.
+
+### What it does not catch
+
+Clipping is one of **two** ways a renderer copes with content that does not
+fit. The other is wrapping, and wrapping discards nothing — so no report is
+emitted, while the layout is just as wrong: a value meant to sit beside its
+label now sits underneath it.
+
+The signal there is height. A layout that gets **taller as its slot gets wider**
+has reflowed something that was built for a width it did not get. Getting
+shorter as the slot widens is normal; that is what reflow is for.
+
+Both checks are available as assertions for tests — see `Canvas::on_clip_overflow`
+in [Canvas API](08-canvas-api.md), which is what the env var installs for you.
+
+---
+
 ## See also
 
 - [Layout](04-layout.md) — the flexbox model these primitives build on

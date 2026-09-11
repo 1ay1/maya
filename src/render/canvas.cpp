@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <string_view>
@@ -437,6 +438,39 @@ Canvas::Canvas(int width, int height, StylePool* pool)
                   default_cell());
     last_col_.assign(static_cast<std::size_t>(height_), -1);
     row_epoch_.assign(static_cast<std::size_t>(height_), 0);
+
+    // MAYA_STRICT_CLIP=1 — name every write the renderer throws away.
+    //
+    // The hook below is normally installed by a test, which is fine for
+    // layouts a test happens to cover and useless for the one a user is
+    // actually looking at. Clipping is silent by nature: the reader sees a
+    // frame that looks tidy and is missing information, and cannot tell.
+    // So the person who CAN see the broken frame needs a way to make it
+    // speak without rebuilding anything.
+    //
+    //     MAYA_STRICT_CLIP=1 agentty 2>clip.log
+    //
+    // Every canvas in the process then reports to stderr, which turns
+    // "the stats panel looks wrong at this size" into a line naming the
+    // text, the column it started at, the width it wanted and the edge
+    // that cut it. Installed here because this is the ONE constructor
+    // every canvas goes through — including the ones the app rebuilds on
+    // every resize, which is exactly when width bugs appear.
+    //
+    // Read once per process; off by default and zero-cost when off.
+    static const bool strict = [] {
+        const char* v = std::getenv("MAYA_STRICT_CLIP");
+        return v != nullptr && *v != '\0' && *v != '0';
+    }();
+    if (__builtin_expect(strict, 0)) {
+        clip_report_ = [](const ClipOverflow& o) {
+            std::fprintf(stderr,
+                         "[maya] clipped at (%d,%d): wanted %d cols, edge %d, "
+                         "text '%.*s'\n",
+                         o.x, o.y, o.wanted, o.edge,
+                         static_cast<int>(o.text.size()), o.text.data());
+        };
+    }
 }
 
 std::uint64_t Canvas::next_canvas_uid() noexcept {

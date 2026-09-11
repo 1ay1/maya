@@ -665,7 +665,26 @@ Panel::Body Panel::measure_body() const {
     // second scroll topology would have to be kept in agreement with this
     // one forever, and "agrees today" is not a property that survives.
     if (const auto flowed = flowed_body()) {
-        const int h = std::max(1, measure_element(*flowed, 1 << 14).height.value);
+        // Measure at the width it will be PAINTED at, not at 1<<14.
+        //
+        // An unbounded probe is right for content whose height does not
+        // depend on its width, and wrong for everything else. columns()
+        // CHOOSES ITS COLUMN COUNT from the width it is handed, so an
+        // unbounded measure asks it the layout question with the wrong
+        // input: the renderer clamps the probe to a no-context fallback of
+        // 80 columns, columns() answers "one column" and reports that
+        // height, and paint then lays out two columns at the real width.
+        // The viewport is sized for a body twice as tall as the one drawn,
+        // which is the dead strip below the content AND the rows running
+        // under the scrollbar — one disagreement, two symptoms.
+        //
+        // content_width() is the same derivation build() uses for the body,
+        // so measure and paint now ask the identical question.
+        const int body_w = std::max(1, Config::content_width(
+                                           panel::detail::terminal_cols() > 0
+                                               ? panel::detail::terminal_cols()
+                                               : cfg_.min_width));
+        const int h = std::max(1, measure_element(*flowed, body_w).height.value);
         b.offsets     = {0, h};
         b.total       = h;
         b.opaque      = true;
@@ -852,20 +871,31 @@ std::optional<Element> Panel::flowed_body() const {
 
     // Everything geometric belongs to columns(): the count the ceiling
     // implies, dividing the slot exactly, balancing by measured height. The
-    // panel contributes only the ceiling and the gap. Note it is NOT given a
-    // width — columns() takes the real slot from adapt() at layout time,
-    // which is the whole reason this cannot drift from what gets painted.
+    // panel contributes only the ceiling, the gap — and the WIDTH.
     //
-    // ONE SECTION still goes through columns(). It cannot split (there is
-    // nothing to split) but the ceiling must still BIND, or a single-section
-    // tab stretches its rows across a 200-column terminal with the label at
-    // one edge and the value at the other — unreadable in a different way
-    // than a clipped value, but unreadable. columns() returns the plain
-    // stack in that case, so the cost is nothing.
+    // The width has to be stated because adapt() cannot discover it. build()
+    // puts this body and the scrollbar side by side in an h(), and a
+    // component measures itself BEFORE flex subtracts its sibling: columns()
+    // is offered the full frame, sizes its last column to the frame edge,
+    // and that column then paints underneath the scrollbar. Nor is the
+    // offered width the body width in the first place — the border and the
+    // padding come off too.
+    //
+    // content_width() is the same derivation build() uses, so measure and
+    // paint now ask the identical question of the identical number. That is
+    // the invariant this whole feature rests on: one width, one answer.
+    const int body_w = std::max(1, Config::content_width(
+                                       panel::detail::terminal_cols() > 0
+                                           ? panel::detail::terminal_cols()
+                                           : cfg_.min_width));
+
+    // ONE SECTION still goes through columns(): it cannot split, but the
+    // ceiling must still decide, and the width still has to be honoured.
     return columns(std::move(cells),
                    ColumnsOpts{.max_width = cfg_.col_max_width,
                                .min_width = cfg_.col_min_width,
-                               .gap       = cfg_.col_gap})
+                               .gap       = cfg_.col_gap,
+                               .width     = body_w})
         .build();
 }
 

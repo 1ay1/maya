@@ -260,6 +260,17 @@ struct ColumnsOpts {
     int gap = 2;
     // Balance the column HEIGHTS rather than packing strictly in sequence.
     bool balance = true;
+    // Lay out for THIS width instead of the one adapt() reports. 0 = ask.
+    //
+    // Needed when the slot a caller will actually get is not the slot the
+    // component is offered. A scrollbar is the case that forced it: the
+    // body and the bar are siblings in a row, and a component measures
+    // itself BEFORE flex subtracts its sibling — so the body is offered the
+    // full width, sizes its last column to the frame edge, and that column
+    // paints underneath the bar. The caller knows the gutter; adapt() never
+    // can. Stating the width is honest about that, where a spacer sibling
+    // only appears to fix it.
+    int width = 0;
 };
 
 /// Cells flowed top-to-bottom into columns, each no wider than `max_width`.
@@ -297,7 +308,8 @@ struct ColumnsOpts {
 [[nodiscard]] inline auto columns(std::vector<Element> cells, ColumnsOpts opts)
     -> ComponentBuilder
 {
-    return detail::adapt([cells = std::move(cells), opts](int w) -> Element {
+    return detail::adapt([cells = std::move(cells), opts](int offered) -> Element {
+        const int w = opts.width > 0 ? opts.width : offered;
         const int n = static_cast<int>(cells.size());
         if (n == 0) return Element{ElementList{}};
 
@@ -347,6 +359,15 @@ struct ColumnsOpts {
         // ceiling.
         if (cols == 1) {
             auto vb = detail::vstack();
+            // Claim the slot EXPLICITLY rather than trusting the stack to
+            // stretch into it. Inside adapt() the component reports the size
+            // it measures, and a stack of rows measures to its NATURAL width
+            // — the longest row — not to the slot it was offered. The body
+            // then reports 67 on an 83-column slot and the 16 columns nobody
+            // claimed show up as dead space down the right edge, which is
+            // the same "strip belonging to nobody" this primitive exists to
+            // prevent, one level up from where it was fixed before.
+            vb.width(Dimension::fixed(w));
             return vb(std::move(cells));
         }
 

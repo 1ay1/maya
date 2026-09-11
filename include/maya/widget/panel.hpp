@@ -144,20 +144,61 @@ public:
     // both gaps and the value cell.
     [[nodiscard]] int draw_budget() const noexcept {
         const int term = panel::detail::terminal_cols();
-        // FLOWED: a drawn control lives in a column, not across the body, so
-        // the ceiling its column was built to IS its budget. Without this a
-        // meter sizes to the whole terminal while the layout resolves it at
-        // a third of that — the picture then paints past its column and the
-        // clip takes the difference off the end, which is the exact defect
-        // column flow exists to remove. The ceiling is used rather than the
-        // resolved column width because it is known before layout and is
-        // never wider than the real column.
-        const int avail = cfg_.col_max_width > 0
-                              ? cfg_.col_max_width
-                              : (term > 0 ? term : cfg_.min_width);
-        const int usable = avail - 40;
+        const int screen = term > 0 ? term : cfg_.min_width;
+
+        // NOT flowing: the established answer, byte for byte. Every panel
+        // that does not opt into column flow must be unaffected by it, and
+        // the cheapest way to guarantee that is to not touch this path.
+        if (cfg_.col_max_width <= 0) {
+            const int usable = screen - kDrawnRowChrome;
+            return usable < 8 ? 8 : usable;
+        }
+
+        // Flowing. A split happens only where BOTH bounds agree: the body
+        // exceeds the ceiling AND a second column would still clear the
+        // floor. That is columns()' own rule, restated because the budget
+        // must be known before layout while columns() decides during it —
+        // the two must not disagree, so this mirrors it literally rather
+        // than approximating with "body > ceiling".
+        //
+        // Both branches then answer in the SAME unit: the width of the row
+        // the control is painted into. Mixing units (an outer terminal
+        // width against an inner column ceiling) oversizes the picture by
+        // the chrome and crowds the label beside it into truncating — a
+        // clipped label in place of a clipped bar.
+        const int inner  = Config::content_width(screen);
+        const int second = (inner - cfg_.col_gap) / 2;
+        const bool split = inner > cfg_.col_max_width
+                        && second >= cfg_.col_min_width;
+        // Split: the row is one column wide. Unsplit: the row is the whole
+        // body, whatever the ceiling says — there is no second column for
+        // reclaimed width to go to, so withholding it only stunts the bar.
+        const int row = split ? cfg_.col_max_width : inner;
+
+        // Spare width past the ceiling goes to the LABEL, not the bar.
+        //
+        // A meter's own ceiling is 40 cells (past that the eye measures
+        // cells instead of comparing lengths), so handing it a bigger budget
+        // does not make a better bar — it makes the same bar with less room
+        // beside it, and the label truncates. That is this file's own
+        // documented failure ("a growing bar consumes every spare column and
+        // starves the label"), reached from the other direction.
+        //
+        // So the budget is capped at what a row of the CEILING width would
+        // have got. Wider rows keep their extra columns in the label lane,
+        // where a long model name or metric name actually needs them.
+        const int ceiling_row = cfg_.col_max_width;
+        const int budget_row  = row < ceiling_row ? row : ceiling_row;
+        const int usable = budget_row - kDrawnRowChrome;
         return usable < 8 ? 8 : usable;
     }
+
+    // What a drawn row spends on everything that is not the picture: the
+    // marker lane, the label, both gaps and the value cell. Unchanged from
+    // when this was a literal 40 — named, not retuned. Retuning it would
+    // move every meter in every panel, which is a separate decision from
+    // fixing which WIDTH it is deducted from.
+    static constexpr int kDrawnRowChrome = 40;
 
     // Columns the VALUE cell occupies, as a max over every item.
     //

@@ -331,23 +331,51 @@ struct ColumnsOpts {
         // the guarantee that enabling flow cannot disturb a narrow layout,
         // because at k == 1 there is no wrapper here to disturb it.
         //
-        // Unless the slot is WIDER than the ceiling and we simply had
-        // nothing to split (one cell, or max_cols == 1). Then the ceiling
-        // still has to bind: a row stretched across 200 columns puts its
-        // label at one edge and its value at the other, which is a different
-        // way of being unreadable, not an acceptable one. Bounding the
-        // content is what a ceiling MEANS; splitting is only how it is
-        // honoured when there is material to split.
+        // And it keeps the SLOT. An earlier version pinned this column to
+        // max_width whenever the slot was wider, which reads well in a
+        // pathological case (one cell on a 200-column terminal) and badly in
+        // the ordinary one: at a 64 ceiling a 100-column body stopped at 66
+        // and left 32 columns dead, with the value stranded mid-row instead
+        // of at the right edge.
+        //
+        // The ceiling's job is to decide HOW MANY columns there are. Once
+        // that answer is one, capping buys nothing — there is no second
+        // column for the reclaimed width to go to, so the cap is pure waste.
+        // A bound that costs width without buying a split is not a ceiling,
+        // it is a margin, and this primitive does not do margins.
+        //
+        // The one case where it still binds is a slot so wide that it WOULD
+        // have split but the floor refused (max_cols == 1, or a single
+        // cell). There the reader really is facing a 200-column line, and
+        // the cap is the only thing standing between them and a label at one
+        // edge with its value at the other.
         if (cols == 1) {
             auto vb = detail::vstack();
+
+            // Within the ceiling: nothing to decide.
             if (w <= most) return vb(std::move(cells));
 
-            // Wider than the ceiling with nothing to split. A fixed width on
-            // the stack alone does not hold here — a lone Column box in a
-            // Column parent is STRETCHED by the parent's cross-axis rule, so
-            // the child grows right back to the slot. Putting it in a row
-            // beside a spacer gives the slack somewhere to go, which is what
-            // actually pins the content to the ceiling.
+            // Wider than the ceiling, so something stopped the split. WHICH
+            // thing decides whether capping is right:
+            //
+            //   the FLOOR stopped it  -> the content declared how narrow it
+            //       may get and a second column would breach that. There is
+            //       no split to buy, so capping only strands the value
+            //       mid-row. Keep the slot.
+            //
+            //   there was NOTHING to split (one cell, or max_cols == 1)
+            //       -> the reader really is facing one very long line, and
+            //       the cap is all that stops a label at one edge with its
+            //       value at the other. Bind it.
+            const bool could_ever_split =
+                n > 1 && (opts.max_cols == 0 || opts.max_cols > 1);
+            if (could_ever_split) return vb(std::move(cells));
+
+            // A fixed width on the stack alone does not hold here — a lone
+            // Column box in a Column parent is STRETCHED by the parent's
+            // cross-axis rule, so the child grows right back to the slot.
+            // Putting it in a row beside a spacer gives the slack somewhere
+            // to go, which is what actually pins the content to the ceiling.
             vb.width(Dimension::fixed(most));
             auto rb = detail::hstack();
             std::vector<Element> pair;

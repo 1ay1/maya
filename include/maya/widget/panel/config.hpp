@@ -179,6 +179,20 @@ struct Config {
     // rather than as a page of statistics.
     bool header_rule = true;
 
+    // How many leading items sit ABOVE the column split, full width.
+    //
+    // A banner is not a section. The column flow balances cells by height,
+    // so a two-line headline is the cheapest thing to move — and it gets
+    // moved, landing at the foot of the left column or the top of the
+    // right, which is exactly where a reader does not look for the tab's
+    // answer. Reading order in a two-column layout is a property of the
+    // layout, not of the content, so the content cannot express "me
+    // first" any other way.
+    //
+    // 0 (the default) flows everything, which is right for a body that is
+    // all of one kind.
+    int lead_items = 0;
+
     // Keep the body at `viewport_h` rows even when the content is shorter.
     //
     // The default (false) shrink-wraps: a picker showing three matches is

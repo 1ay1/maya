@@ -960,9 +960,19 @@ std::optional<Element> Panel::flowed_body() const {
         return vb(std::move(rows));
     };
 
+    // The banner, if any: rendered full width ABOVE the flow rather than
+    // handed to columns() as a cell. See Config::lead_items — a headline
+    // is the cheapest cell to move when balancing by height, so left in
+    // the flow it reliably lands where nobody looks for it.
+    std::vector<Element> lead;
+    const int lead_n = std::clamp(cfg_.lead_items, 0, n);
+    for (int i = 0; i < lead_n; ++i)
+        for (auto& line : render_item(cfg_.items[static_cast<std::size_t>(i)], i))
+            lead.push_back(std::move(line));
+
     std::vector<Element> cells;
     std::vector<Element> cur;
-    for (int i = 0; i < n; ++i) {
+    for (int i = lead_n; i < n; ++i) {
         const auto& it = cfg_.items[static_cast<std::size_t>(i)];
         if (it.is_header() && !cur.empty()) {
             cells.push_back(section(std::move(cur)));
@@ -971,7 +981,7 @@ std::optional<Element> Panel::flowed_body() const {
         for (auto& line : render_item(it, i)) cur.push_back(std::move(line));
     }
     if (!cur.empty()) cells.push_back(section(std::move(cur)));
-    if (cells.empty()) return std::nullopt;
+    if (cells.empty() && lead.empty()) return std::nullopt;
 
     // Everything geometric belongs to columns(): the count the ceiling
     // implies, dividing the slot exactly, balancing by measured height. The
@@ -1020,6 +1030,7 @@ std::optional<Element> Panel::flowed_body() const {
     // difference off the end of every row. Capping the element makes the
     // report and the layout agree, which is the invariant this whole
     // feature rests on.
+    const bool cells_empty = cells.empty();
     auto flowed = columns(std::move(cells),
                           ColumnsOpts{.max_width = cfg_.col_max_width,
                                       .min_width = cfg_.col_min_width,
@@ -1029,7 +1040,11 @@ std::optional<Element> Panel::flowed_body() const {
     BoxElement cap;
     cap.layout.direction = FlexDirection::Column;
     cap.layout.max_width = Dimension::fixed(bound);
-    cap.children.push_back(std::move(flowed));
+    // The banner first, then the columns. Both are children of the same
+    // vertical box, so the banner gets the FULL width while everything
+    // after it flows — which is the whole point of holding it out.
+    for (auto& l : lead) cap.children.push_back(std::move(l));
+    if (!cells_empty) cap.children.push_back(std::move(flowed));
     return Element{std::move(cap)};
 }
 

@@ -24,6 +24,15 @@
 // slot narrows. col() stacks cells, each stretched to the full width.
 // Everything fills automatically; nothing needs a hand-computed width.
 //
+//   columns({sec1, sec2, sec3, …}, 34);
+//
+// The OTHER flow: newspaper columns. grid() wraps left-to-right (cell 2 sits
+// beside cell 1); columns() runs top-to-bottom (cell 2 sits BELOW cell 1,
+// and the sequence moves to column 2 only when column 1 has had its share of
+// the height). Reading order is down-then-across, which is what a document
+// wants and what a dashboard does not. One number again: how wide a column
+// needs to be before splitting is worth it.
+//
 // Compose them and you have a full three-shape dashboard in two lines:
 //
 //   sidebar(grid({cpu, mem, net, disk}, 24), table, {.width = 42});
@@ -215,4 +224,176 @@ struct SidebarOpts {
     return vb(std::move(cells));
 }
 
+// ============================================================================
+// columns() — newspaper flow
+// ============================================================================
+
+struct ColumnsOpts {
+    // The WIDEST a column may get before splitting again. Not a minimum:
+    // the question a document asks is "how long may a line be before it is
+    // tiring to read", and the answer forces the count — a 200-column slot
+    // with max 60 gives three columns because two would be 99 wide.
+    //
+    // Stating the CEILING rather than the floor is what makes the result
+    // exact. A minimum leaves a remainder nobody owns (fit as many as pay
+    // for themselves, then live with the slack); a maximum picks the count
+    // first and then divides the WHOLE slot among them, so every cell of
+    // the width is claimed by construction.
+    int max_width = 60;
+    // Ceiling on the count, for slots wide enough to split further than the
+    // content deserves. 0 = as many as the width implies.
+    int max_cols = 0;
+    // Blank columns between neighbours. Two: one reads as a wrapped line
+    // rather than a gutter once the cells have ragged right edges.
+    int gap = 2;
+    // Balance the column HEIGHTS rather than packing strictly in sequence.
+    bool balance = true;
+};
+
+/// Cells flowed top-to-bottom into columns, each no wider than `max_width`.
+///
+/// The sibling of grid(): grid wraps ACROSS (cell 2 beside cell 1), columns
+/// runs DOWN (cell 2 below cell 1, moving right only when the column has had
+/// its share of the height). Reading order is down-then-across — a document,
+/// not a dashboard.
+///
+/// Two properties, both load-bearing:
+///
+///   * NO SLACK. The count is the smallest k whose columns fit under
+///     max_width, and the slot is then divided among exactly those k with a
+///     largest-remainder spread. The columns plus gaps sum to the slot
+///     WIDTH, not to something near it — there is no strip left over,
+///     because no step ever rounds a width down and keeps the change.
+///
+///   * RESPONSIVE INSIDE. Each column is a fixed-width box whose cross-axis
+///     Stretch hands its content that full width, so a cell laid out with
+///     adapt()/grid()/a meter re-solves against the COLUMN — not against
+///     the screen. Nesting columns() inside a column therefore works, and a
+///     figure sized to the screen inside a third of it is impossible.
+///
+/// Balanced by MEASURED HEIGHT, never by cell count: cells differ wildly in
+/// length (a two-row table against a nine-bucket chart), and splitting on
+/// count leaves one column twice the height of its neighbour, which reads as
+/// a layout bug rather than as a choice.
+///
+/// Like grid(), this measures the REAL slot width via adapt() — so the count
+/// is re-decided on every resize and no caller has to know what a frame, a
+/// padding or a scrollbar gutter cost. A caller that computes its own column
+/// width against a guessed "usable" figure is the bug this replaces: the
+/// cell measures one width, flex resolves another, and the difference comes
+/// off the end of the string.
+[[nodiscard]] inline auto columns(std::vector<Element> cells, ColumnsOpts opts)
+    -> ComponentBuilder
+{
+    return detail::adapt([cells = std::move(cells), opts](int w) -> Element {
+        const int n = static_cast<int>(cells.size());
+        if (n == 0) return Element{ElementList{}};
+
+        const int gap  = std::max(0, opts.gap);
+        const int most = std::max(1, opts.max_width);
+
+        // The smallest k whose columns come in at or under max_width.
+        //
+        // k columns leave w - gap*(k-1) to divide, so the widest column is
+        // ceil((w - gap*(k-1)) / k). Solving that for "<= most" directly is
+        // fiddly and easy to get wrong by one; counting up from 1 is exact,
+        // obviously right, and bounded by n.
+        int cols = 1;
+        while (cols < n) {
+            const int span = w - gap * (cols - 1);
+            if (span <= 0) break;
+            if ((span + cols - 1) / cols <= most) break;   // ceil <= most
+            ++cols;
+        }
+        cols = std::clamp(cols, 1, n);
+        if (opts.max_cols > 0) cols = std::min(cols, opts.max_cols);
+
+        // One column: hand back the plain stack. Not an optimisation — it is
+        // the guarantee that enabling flow cannot disturb a narrow layout,
+        // because at k == 1 there is no wrapper here to disturb it.
+        if (cols == 1) {
+            auto vb = detail::vstack();
+            return vb(std::move(cells));
+        }
+
+        // Divide the slot EXACTLY: base + largest-remainder spread. The
+        // first `rem` columns take one extra cell, so the widths sum to the
+        // full span and the last column ends flush with the slot edge.
+        const int span = std::max(cols, w - gap * (cols - 1));
+        const int base = span / cols;
+        const int rem  = span % cols;
+        std::vector<int> cw(static_cast<std::size_t>(cols));
+        for (int i = 0; i < cols; ++i)
+            cw[static_cast<std::size_t>(i)] = base + (i < rem ? 1 : 0);
+
+        // Measure every cell at the NARROWEST column. A cell's height must
+        // not depend on which column it lands in, or the balance below would
+        // be computed from heights the layout then contradicts.
+        std::vector<int> h(static_cast<std::size_t>(n), 1);
+        int total = 0;
+        for (int i = 0; i < n; ++i) {
+            const int m = measure_element(cells[static_cast<std::size_t>(i)],
+                                          std::max(1, base)).height.value;
+            h[static_cast<std::size_t>(i)] = std::max(1, m);
+            total += h[static_cast<std::size_t>(i)];
+        }
+
+        // Fill column by column, re-deriving the target from what is LEFT.
+        //
+        // A fixed target of total/cols does not survive contact with atomic
+        // cells: once one column overshoots (it must, unless the heights
+        // divide evenly) every later column inherits the error, and the last
+        // one collects it. Recomputing rem_total/rem_cols after each column
+        // spreads that error instead of accumulating it.
+        //
+        // The `(n - i) > (rem_cols - 1)` guard reserves one cell for each
+        // column still to come, so a tall early cell can never starve the
+        // right-hand columns into being empty.
+        std::vector<std::vector<Element>> col_cells(static_cast<std::size_t>(cols));
+        int i = 0, rem_total = total;
+        for (int c = 0; c < cols; ++c) {
+            const int rem_cols = cols - c;
+            const int target   = (rem_total + rem_cols - 1) / rem_cols;
+            // The LAST column takes everything that is left, unconditionally.
+            // Deriving its contents from the same target arithmetic would
+            // make "every cell is placed" a property of the rounding rather
+            // than of the loop, and a cell silently dropped by a layout is
+            // the worst failure this file could have.
+            const bool last = (c == cols - 1);
+            int used = 0;
+            while (i < n && (last || (n - i) > (rem_cols - 1))) {
+                if (!last && opts.balance && used > 0 && used >= target) break;
+                col_cells[static_cast<std::size_t>(c)]
+                    .push_back(std::move(cells[static_cast<std::size_t>(i)]));
+                used      += h[static_cast<std::size_t>(i)];
+                rem_total -= h[static_cast<std::size_t>(i)];
+                ++i;
+            }
+        }
+
+        // A Column-direction box with a fixed width: the default cross-axis
+        // Stretch hands the content the FULL column width, which is what
+        // makes a cell inside re-solve against its column.
+        std::vector<Element> col_els;
+        col_els.reserve(static_cast<std::size_t>(cols));
+        for (int i = 0; i < cols; ++i) {
+            auto cb = detail::vstack();
+            cb.width(Dimension::fixed(cw[static_cast<std::size_t>(i)]));
+            col_els.push_back(cb(std::move(col_cells[static_cast<std::size_t>(i)])));
+        }
+
+        auto rb = detail::hstack();
+        if (gap > 0) rb.gap(gap);
+        return rb(std::move(col_els));
+    });
+}
+
+/// Sugar: `columns(cells, 60)` — "no column wider than 60".
+[[nodiscard]] inline auto columns(std::vector<Element> cells, int max_width)
+    -> ComponentBuilder
+{
+    return columns(std::move(cells), ColumnsOpts{.max_width = max_width});
+}
+
 } // namespace maya
+

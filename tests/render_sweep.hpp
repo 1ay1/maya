@@ -286,12 +286,48 @@ public:
     // a scroll viewport or a deliberately ellipsised label: both clip by
     // design, and an assertion that fires on correct behaviour gets
     // switched off, which is worse than not having it.
+    //
+    // KNOWN GAP, worth stating because it is easy to over-trust this: it
+    // catches overflow that is CLIPPED, not overflow that WRAPS. Text too
+    // wide for its slot may reflow onto another line instead of losing
+    // cells — no write is ever discarded, so nothing is reported, and the
+    // layout is still wrong. That is what stable_height() is for.
     void loses_nothing() const {
         for (const auto& f : frames_)
             for (const auto& d : f.dropped)
                 REQUIRE_MESSAGE(d.empty(),
                                 "width " << f.slot << " silently dropped '"
                                 << d << "' at a clip edge");
+    }
+
+    // ── stable_height ──────────────────────────────────────────────
+    //
+    // The frame does not get TALLER as the slot gets WIDER.
+    //
+    // The other half of loses_nothing, and it catches the failure that one
+    // is blind to. When content does not fit, a renderer has two ways to
+    // cope: drop the overflow (clipping, which the tripwire sees) or push
+    // it onto another line (wrapping, which loses nothing and so is
+    // reported as clean). A wrapped row is still a broken layout — a label
+    // that was meant to sit beside its value now sits under it — and the
+    // only evidence is that the frame grew a line it should not have.
+    //
+    // Height falling as width rises is normal and expected: that is what
+    // reflow is for. Height RISING as width rises is not, and means
+    // something was laid out for a slot it did not get.
+    void stable_height() const {
+        int prev = 0, prev_slot = 0;
+        for (const auto& f : frames_) {
+            const int h = f.inked_rows();
+            if (prev > 0)
+                REQUIRE_MESSAGE(h <= prev,
+                                "width " << f.slot << " needs " << h
+                                << " rows but the NARROWER width " << prev_slot
+                                << " needed only " << prev
+                                << " — content wrapped instead of fitting");
+            prev = h;
+            prev_slot = f.slot;
+        }
     }
 
     // Print every frame. Not an assertion — the thing you reach for the

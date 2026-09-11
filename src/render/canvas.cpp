@@ -492,7 +492,19 @@ void Canvas::write_text(int x, int y, std::string_view text, uint16_t style_id) 
     // looks wrong, and a gate CI can run with.
     if (__builtin_expect(clip_report_ != nullptr, 0)) {
         const int want = static_cast<int>(unicode::str_width(text));
-        if (want > 0 && x + want > x_max)
+        // BOTH edges. The right is the obvious one — a row that is too long
+        // loses its tail. The left is the one that produced a screenshot
+        // nobody could explain: content CENTRED in a slot narrower than
+        // itself spills equally in both directions, so the first thing lost
+        // is the start of the line, and what remains looks like a figure
+        // with a bite taken out of its left side. Watching only x_max would
+        // have reported that frame as clean.
+        if (want > 0 && x < x_min)
+            clip_report_(ClipOverflow{.x = x, .y = y,
+                                      .wanted = want,
+                                      .edge = x_min,
+                                      .text = text});
+        else if (want > 0 && x + want > x_max)
             clip_report_(ClipOverflow{.x = x, .y = y,
                                       .wanted = want,
                                       .edge = x_max,

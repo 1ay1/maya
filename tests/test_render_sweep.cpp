@@ -242,6 +242,32 @@ TEST_CASE("a panel drops nothing at a clip edge") {
     flowed.loses_nothing();
 }
 
+// ── A wider panel never needs MORE rows ─────────────────────────────
+//
+// The blind spot in the check above, closed. A renderer facing content
+// that does not fit can drop the overflow or WRAP it, and only the first
+// is visible to the clip tripwire — wrapping discards nothing, so it is
+// reported as clean while the layout is just as wrong: a value meant to
+// sit beside its label now sits underneath it.
+//
+// A probe made the gap concrete. A 36-column string centred in a
+// 20-column slot produced ZERO clip reports and silently reflowed onto a
+// second line. The only trace left was the extra row.
+//
+// Getting SHORTER as the slot widens is the whole point of reflow. Getting
+// TALLER means something was laid out for a width it did not get.
+TEST_CASE("a wider panel never needs more rows") {
+    sweep::Sweep plain{[](int w) {
+        return Element{Panel{readout(w, false)}.build()};
+    }};
+    plain.stable_height();
+
+    sweep::Sweep flowed{[](int w) {
+        return Element{Panel{readout(w, true)}.build()};
+    }};
+    flowed.stable_height();
+}
+
 // ── The harness itself ──────────────────────────────────────────────────
 //
 // A property test that cannot fail is worth nothing, so prove each
@@ -271,6 +297,33 @@ TEST_CASE("render_sweep: the clip tripwire actually fires") {
     CHECK_MESSAGE(!dropped.empty(),
                   "the clip reporter never fired on text that does not fit — "
                   "loses_nothing() would pass vacuously");
+}
+
+TEST_CASE("render_sweep: stable_height sees what the tripwire cannot") {
+    // The exact shape that defeats loses_nothing(): a string far wider than
+    // its slot, CENTRED, so it reflows instead of being clipped. A probe of
+    // this at 20 columns produced zero clip reports — nothing was discarded,
+    // so there was nothing for the renderer to complain about — while the
+    // text quietly moved onto a second line.
+    sweep::Sweep wrapping{[](int) -> Element {
+        std::vector<Element> kids;
+        kids.push_back(
+            dsl::text("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij").build());
+        auto row = maya::detail::hstack().justify(Justify::Center);
+        return row(std::move(kids));
+    }};
+
+    // Invisible to the clip tripwire — that is the point of the case.
+    wrapping.loses_nothing();
+
+    // But plainly visible as height: it needs more rows when narrow than
+    // when wide. That difference is the signal stable_height() reads, and
+    // if this ever stops holding the assertion has gone blind.
+    const int narrow = wrapping.frames().front().inked_rows();
+    const int wide   = wrapping.frames().back().inked_rows();
+    CHECK_MESSAGE(narrow > wide,
+                  "the wrapping fixture no longer wraps — stable_height() "
+                  "would now pass vacuously on it");
 }
 
 TEST_CASE("render_sweep measures display columns, not bytes") {

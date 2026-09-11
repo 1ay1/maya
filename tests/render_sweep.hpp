@@ -74,6 +74,16 @@ struct Frame {
     std::vector<std::string> rows;
     int slot = 0;
 
+    // Text the renderer DROPPED because it ran past a clip edge.
+    //
+    // Not the same thing as a row being too long — fits() catches that by
+    // measuring what landed. This catches the cells that never landed at
+    // all, which is the failure mode a painted-output check is blind to by
+    // construction: you cannot see what was not drawn. A meter whose value
+    // was clipped away leaves a frame that looks tidy and is missing a
+    // number, and every assertion about the pixels still passes.
+    std::vector<std::string> dropped;
+
     // Display COLUMNS, never bytes.
     //
     // The glyphs these widgets are made of — box-drawing rules, block
@@ -122,9 +132,20 @@ struct Frame {
     StylePool pool;
     Canvas canvas(w, h, &pool);
     canvas.clear();
+
+    // Record anything the renderer throws away. See Frame::dropped: a
+    // painted-output check cannot see cells that were never painted, so
+    // this is the one fact about a frame that has to come from the
+    // renderer rather than from the canvas afterwards.
+    std::vector<std::string> dropped;
+    canvas.on_clip_overflow([&dropped](const Canvas::ClipOverflow& o) {
+        dropped.emplace_back(o.text);
+    });
+
     render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
     Frame f;
     f.slot = w;
+    f.dropped = std::move(dropped);
     for (int y = 0; y < h; ++y) {
         std::string line;
         for (int x = 0; x < w; ++x) {
@@ -248,6 +269,29 @@ public:
                             "width " << f.slot << " left " << (f.slot - w)
                             << " columns unclaimed (slack " << slack << ")");
         }
+    }
+
+    // ── loses_nothing ──────────────────────────────────────────────
+    //
+    // Nothing was DROPPED at a clip edge.
+    //
+    // The strongest of the assertions, and the only one that does not work
+    // by looking at the result. fits(), keeps() and monotonic() all examine
+    // what landed on the canvas, and are therefore blind to the cells that
+    // never landed — a frame missing its numbers looks tidy, and every
+    // pixel-level check still passes. This asks the renderer instead, at
+    // the moment it discards them.
+    //
+    // Use it on layouts that claim to fit their content. Do NOT use it on
+    // a scroll viewport or a deliberately ellipsised label: both clip by
+    // design, and an assertion that fires on correct behaviour gets
+    // switched off, which is worse than not having it.
+    void loses_nothing() const {
+        for (const auto& f : frames_)
+            for (const auto& d : f.dropped)
+                REQUIRE_MESSAGE(d.empty(),
+                                "width " << f.slot << " silently dropped '"
+                                << d << "' at a clip edge");
     }
 
     // Print every frame. Not an assertion — the thing you reach for the

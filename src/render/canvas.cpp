@@ -461,6 +461,44 @@ void Canvas::write_text(int x, int y, std::string_view text, uint16_t style_id) 
     const int x_min = has_clip_ ? std::max(0, clip_x0_) : 0;
     const int x_max = has_clip_ ? std::min(width_, clip_x1_) : width_;
 
+    // ── The overflow tripwire ──────────────────────────────────────────
+    //
+    // THIS is where a layout bug becomes invisible. The loop below drops
+    // every cell past x_max without a word, and in a terminal the dropped
+    // end is where values live — a meter's number, a table's count, the
+    // right half of a figure. The reader sees a bar with nothing beside it
+    // and cannot tell that anything is missing.
+    //
+    // Every width in this system is produced by subtraction, by a different
+    // party, in a different file: terminal → border → padding → gutter →
+    // label lane → gap → picture. Each step is locally reasonable and none
+    // can be checked where it happens, so a wrong one is only discoverable
+    // by looking at pixels and counting. That is how eight separate width
+    // bugs shipped through a green suite in a single week; each "fix" was
+    // global reasoning validated by eye, which is why fixing one width
+    // broke another.
+    //
+    // Reporting here converts all of them into a message naming the text
+    // that was cut and the column it was cut at, at the moment it happens.
+    // It is the cheapest possible version of the real fix (widths that
+    // cannot be fabricated, slots that divide rather than request) and it
+    // subsumes most of the benefit: in a renderer that clips silently, the
+    // absence of an error is not evidence of correctness.
+    //
+    // Off unless MAYA_STRICT_CLIP is set. Clipping is a legitimate, common
+    // operation — a scroll viewport clips by design, and a deliberately
+    // truncated label has already chosen its ellipsis — so this cannot be
+    // an unconditional assert. It is a tool you switch on when a frame
+    // looks wrong, and a gate CI can run with.
+    if (__builtin_expect(clip_report_ != nullptr, 0)) {
+        const int want = static_cast<int>(unicode::str_width(text));
+        if (want > 0 && x + want > x_max)
+            clip_report_(ClipOverflow{.x = x, .y = y,
+                                      .wanted = want,
+                                      .edge = x_max,
+                                      .text = text});
+    }
+
     int cx = x;
     std::size_t pos = 0;
     const std::size_t len = text.size();

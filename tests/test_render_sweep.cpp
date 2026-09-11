@@ -216,12 +216,63 @@ TEST_CASE("a panel frame reaches both its edges") {
     plain.fills(/*slack=*/0);
 }
 
+// ── Nothing is dropped at a clip edge ───────────────────────────────
+//
+// The assertion the others cannot make. Every check above reads the
+// painted canvas, and a canvas cannot show you what was never drawn: a
+// row whose value was clipped away leaves a frame that looks tidy and is
+// missing a number. This one asks the RENDERER, at the moment it throws
+// the cells away.
+//
+// That distinction is the whole lesson of the width bugs this file was
+// written for. Each was found by a human counting columns in a
+// screenshot, because clipping is silent and "it looks fine at 90" was
+// being treated as a passing test. In a renderer that clips without
+// complaint, the absence of an error is not evidence of correctness — so
+// the renderer has to be made to complain.
+TEST_CASE("a panel drops nothing at a clip edge") {
+    sweep::Sweep plain{[](int w) {
+        return Element{Panel{readout(w, false)}.build()};
+    }};
+    plain.loses_nothing();
+
+    sweep::Sweep flowed{[](int w) {
+        return Element{Panel{readout(w, true)}.build()};
+    }};
+    flowed.loses_nothing();
+}
+
 // ── The harness itself ──────────────────────────────────────────────────
 //
 // A property test that cannot fail is worth nothing, so prove each
 // assertion actually bites. Cheap insurance against the harness quietly
 // measuring the wrong thing — which it did once, by counting bytes instead
 // of display columns and reporting a 21-column strip as 63.
+//
+// loses_nothing() needs this most of all, because a reporter that is never
+// invoked passes every test in the file. A hook that silently stops firing
+// is indistinguishable from a codebase with no bugs, and the second is
+// much rarer than the first.
+TEST_CASE("render_sweep: the clip tripwire actually fires") {
+    StylePool pool;
+    Canvas canvas(20, 4, &pool);
+    canvas.clear();
+
+    std::vector<std::string> dropped;
+    canvas.on_clip_overflow([&dropped](const Canvas::ClipOverflow& o) {
+        dropped.emplace_back(o.text);
+    });
+
+    // Deliberately wider than the canvas: the renderer must report the
+    // cells it throws away rather than dropping them in silence.
+    render_tree(dsl::text("this line is far too long for twenty columns").build(),
+                canvas, pool, theme::dark, /*auto_height=*/true);
+
+    CHECK_MESSAGE(!dropped.empty(),
+                  "the clip reporter never fired on text that does not fit — "
+                  "loses_nothing() would pass vacuously");
+}
+
 TEST_CASE("render_sweep measures display columns, not bytes") {
     // A rule of box-drawing glyphs: 3 bytes each, 1 column each.
     sweep::Sweep rules{[](int w) {

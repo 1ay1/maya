@@ -16,6 +16,7 @@
 #include <cstring>
 #include <new>
 #include <optional>
+#include <functional>
 #include <string_view>
 #include <vector>
 
@@ -853,6 +854,36 @@ private:
 
 public:
 
+    // -- Overflow reporting ---------------------------------------------------
+
+    /// A write that did not fit the clip rect, reported at the moment the
+    /// cells were dropped.
+    struct ClipOverflow {
+        int x = 0;             ///< where the write started
+        int y = 0;             ///< the row
+        int wanted = 0;        ///< display columns the text asked for
+        int edge = 0;          ///< the column past which cells were discarded
+        std::string_view text; ///< what was being written
+    };
+
+    /// Report writes that run past the clip edge.
+    ///
+    /// Clipping is how a terminal renderer loses information: cells past
+    /// the edge are dropped without a word, and the dropped END is where
+    /// values live — a number beside a bar, the tail of a path, the right
+    /// half of a figure. The reader gets a plausible-looking frame and no
+    /// way to know something is missing, which is exactly the condition
+    /// under which width bugs survive a green test suite.
+    ///
+    /// Installing a reporter turns that silence into a message naming the
+    /// text and the column. It is opt-in because clipping is also
+    /// legitimate and routine — a scroll viewport clips by design, an
+    /// ellipsised label has already made its choice — so this is a
+    /// debugging instrument and a CI gate, not an invariant.
+    void on_clip_overflow(std::function<void(const ClipOverflow&)> fn) {
+        clip_report_ = std::move(fn);
+    }
+
     // -- Text rendering -------------------------------------------------------
 
     /// Write a UTF-8 string starting at (x, y).
@@ -1104,6 +1135,9 @@ private:
     // Cached clip bounds — avoids vector back() on every set() call.
     bool has_clip_ = false;
     int clip_x0_ = 0, clip_y0_ = 0, clip_x1_ = 0, clip_y1_ = 0;
+    // Overflow reporter. Null in every normal frame, so the hot path pays
+    // one predictable null check and nothing else.
+    std::function<void(const ClipOverflow&)> clip_report_;
     // A2 lifecycle stage. Mutators flip to Painted; clear/clear_rows/
     // resize flip back to Drained. Lives next to other small flags so
     // it shares a cache line with has_clip_ / clip bounds — no

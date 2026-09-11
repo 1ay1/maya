@@ -174,22 +174,7 @@ public:
         // body, whatever the ceiling says — there is no second column for
         // reclaimed width to go to, so withholding it only stunts the bar.
         const int row = split ? cfg_.col_max_width : inner;
-
-        // Spare width past the ceiling goes to the LABEL, not the bar.
-        //
-        // A meter's own ceiling is 40 cells (past that the eye measures
-        // cells instead of comparing lengths), so handing it a bigger budget
-        // does not make a better bar — it makes the same bar with less room
-        // beside it, and the label truncates. That is this file's own
-        // documented failure ("a growing bar consumes every spare column and
-        // starves the label"), reached from the other direction.
-        //
-        // So the budget is capped at what a row of the CEILING width would
-        // have got. Wider rows keep their extra columns in the label lane,
-        // where a long model name or metric name actually needs them.
-        const int ceiling_row = cfg_.col_max_width;
-        const int budget_row  = row < ceiling_row ? row : ceiling_row;
-        const int usable = budget_row - kDrawnRowChrome;
+        const int usable = row - kDrawnRowChrome;
         return usable < 8 ? 8 : usable;
     }
 

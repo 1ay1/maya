@@ -184,14 +184,19 @@ TEST_CASE("columns: no cell is clipped at any width") {
     }
 }
 
-// ── The ceiling binds even unsplit ─────────────────────────────────────
+// ── The ceiling never costs width ────────────────────────────────────
 //
-// A single cell cannot be split, but a ceiling that stops applying when
-// there is nothing to split is not a ceiling. Content must still be bounded
-// — a row stretched across 200 columns puts its label at one edge and its
-// value at the other, which is unreadable in a different way than a clipped
-// value rather than an acceptable one.
-TEST_CASE("columns: one cell is still bounded by max_width") {
+// max_width decides HOW MANY columns there are. It is not a margin. When a
+// body cannot split — one cell, or max_cols == 1 — there is no second column
+// for withheld width to go to, so capping would leave a strip of the slot
+// belonging to nobody: the same defect this primitive exists to prevent,
+// arriving from the other side.
+//
+// This is the regression guard for a real bug: capping an unsplittable body
+// cost a one-section stats tab 19 columns at width 90 — the row stopped at
+// 65 with its value stranded mid-row, AND its label truncated, because the
+// lane it shared had been shrunk to a width the slot never asked for.
+TEST_CASE("columns: an unsplittable body still gets the whole slot") {
     std::vector<Element> one;
     {
         using namespace dsl;
@@ -204,8 +209,8 @@ TEST_CASE("columns: one cell is still bounded by max_width") {
 
     int right = 0;
     for (const auto& r : rows) right = std::max(right, cols_of(r));
-    CHECK_MESSAGE(right == 40,
-                  "an unsplittable body must still honour the ceiling");
+    CHECK_MESSAGE(right == 200,
+                  "a ceiling that cannot buy a split must not cost width");
 }
 
 // ── Balance ──────────────────────────────────────────────────────────

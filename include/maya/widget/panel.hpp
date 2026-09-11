@@ -160,21 +160,29 @@ public:
         // must be known before layout while columns() decides during it —
         // the two must not disagree, so this mirrors it literally rather
         // than approximating with "body > ceiling".
-        //
-        // Both branches then answer in the SAME unit: the width of the row
-        // the control is painted into. Mixing units (an outer terminal
-        // width against an inner column ceiling) oversizes the picture by
-        // the chrome and crowds the label beside it into truncating — a
-        // clipped label in place of a clipped bar.
         const int inner  = Config::content_width(screen);
         const int second = (inner - cfg_.col_gap) / 2;
         const bool split = inner > cfg_.col_max_width
                         && second >= cfg_.col_min_width;
-        // Split: the row is one column wide. Unsplit: the row is the whole
-        // body, whatever the ceiling says — there is no second column for
-        // reclaimed width to go to, so withholding it only stunts the bar.
-        const int row = split ? cfg_.col_max_width : inner;
-        const int usable = row - kDrawnRowChrome;
+
+        // SPLIT: the row is one column wide, so the ceiling IS the row and
+        // the picture must be sized to it or it paints past its column.
+        //
+        // UNSPLIT: the row is the body, and the answer must be the one the
+        // branch above gives — byte for byte, from `screen`. Deriving it
+        // from `inner` instead looks more principled and is wrong by
+        // exactly the chrome: 43 where the unflowed path gives 50. The
+        // meter divides the row it is handed (bar, gap, value) against that
+        // number, so seven missing columns came off the tail, and the tail
+        // is the VALUE — a bar running the full width of the row with no
+        // track and no number beside it.
+        //
+        // A flowed panel that has not split must be INDISTINGUISHABLE from
+        // an unflowed one, because it is one. That is the invariant; the
+        // unit-matching argument this comment used to make was a different,
+        // plausible-sounding rule that quietly broke it.
+        const int avail = split ? cfg_.col_max_width : screen;
+        const int usable = avail - kDrawnRowChrome;
         return usable < 8 ? 8 : usable;
     }
 

@@ -261,22 +261,25 @@ struct ColumnsOpts {
     int gap = 2;
     // Balance the column HEIGHTS rather than packing strictly in sequence.
     bool balance = true;
-    // Width to assume when the offered one cannot be trusted. 0 = always
-    // use what adapt() reports.
+    // The widest slot the caller can actually be given. 0 = trust the
+    // offered width completely.
     //
-    // A FALLBACK, not an override, and the distinction is the whole point.
-    // At PAINT the offered width is the real slot and is authoritative —
-    // overriding it lays the body out for a width it does not have, which
-    // leaves a constant strip of slack down the right edge no matter how
-    // wide the terminal gets (the "one column is not responsive" report:
-    // 5 columns short at 76, 90 and 120 alike).
+    // A BOUND, not an override, and the distinction is the whole point.
+    // adapt() reports the slot a component is MEASURED in, which is not
+    // always the slot it is PAINTED in: a sibling that flex has not
+    // subtracted yet (a scrollbar gutter) is invisible at measure time, so
+    // the offer can be a column or two generous. Laying out for it puts the
+    // tail of every row — which is where a value sits — under whatever that
+    // sibling draws.
     //
-    // But a MEASURE pass outside any render context is clamped by the
-    // renderer to an 80-column default, and a layout that picks its own
-    // shape from that answers a different question than paint will. So the
-    // caller's number is used only when the offered one is that fallback —
-    // enough to keep measure and paint agreeing, without ever contradicting
-    // a width the layout actually has.
+    // Taking the MINIMUM of the two is what makes it safe in both
+    // directions: it can hand back an over-generous offer, but it can never
+    // pin the body narrower than the width it really has. Replacing the
+    // offer outright was tried and left a constant strip of dead space down
+    // the right edge at every terminal size.
+    //
+    // It also covers the measure-outside-a-render-pass case for free: the
+    // renderer's no-context fallback is just another over-generous offer.
     int width = 0;
 };
 
@@ -316,13 +319,10 @@ struct ColumnsOpts {
     -> ComponentBuilder
 {
     return detail::adapt([cells = std::move(cells), opts](int offered) -> Element {
-        // The offered width wins whenever it is real. It is only replaced
-        // when it is the renderer's no-context measure fallback, which is a
-        // stand-in for "nobody has told me a width yet" rather than a
-        // measurement of anything.
-        const int w = (opts.width > 0 && offered == kNoContextWidth)
-                          ? opts.width
-                          : offered;
+        // The offer bounds us and so does the caller's width; take the
+        // smaller. Never lay out wider than the slot we will be painted in,
+        // never narrower than the width we actually have.
+        const int w = opts.width > 0 ? std::min(offered, opts.width) : offered;
         const int n = static_cast<int>(cells.size());
         if (n == 0) return Element{ElementList{}};
 
@@ -380,7 +380,16 @@ struct ColumnsOpts {
             // claimed show up as dead space down the right edge, which is
             // the same "strip belonging to nobody" this primitive exists to
             // prevent, one level up from where it was fixed before.
+            //
+            // max_width bounds it as well as the offer does. A row whose
+            // cells shrink under pressure (a label that truncates so a value
+            // survives) only does so when the width it is given is the width
+            // it actually has — handed the parent's larger slot instead, the
+            // row sees no pressure, never truncates, and its tail runs off
+            // the end. That is a VALUE silently disappearing, which is worse
+            // than any truncated label.
             vb.width(Dimension::fixed(w));
+            vb.max_width(Dimension::fixed(w));
             return vb(std::move(cells));
         }
 

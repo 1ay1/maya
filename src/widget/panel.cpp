@@ -871,31 +871,38 @@ std::optional<Element> Panel::flowed_body() const {
 
     // Everything geometric belongs to columns(): the count the ceiling
     // implies, dividing the slot exactly, balancing by measured height. The
-    // panel contributes only the ceiling, the gap — and the WIDTH.
+    // panel contributes the ceiling, the gap, and a BOUND on the width.
     //
-    // The width has to be stated because adapt() cannot discover it. build()
-    // puts this body and the scrollbar side by side in an h(), and a
-    // component measures itself BEFORE flex subtracts its sibling: columns()
-    // is offered the full frame, sizes its last column to the frame edge,
-    // and that column then paints underneath the scrollbar. Nor is the
-    // offered width the body width in the first place — the border and the
-    // padding come off too.
+    // The bound exists because of ONE fact adapt() cannot see. build() puts
+    // this body and the scrollbar gutter side by side in an h(), and a
+    // component is measured BEFORE flex subtracts its sibling — so the body
+    // is offered a slot one column wider than it will be painted in. Its
+    // last column then sizes to the frame edge and the row's tail, which is
+    // the VALUE, lands under the scrollbar and is gone.
     //
-    // content_width() is the same derivation build() uses, so measure and
-    // paint now ask the identical question of the identical number. That is
-    // the invariant this whole feature rests on: one width, one answer.
-    const int body_w = std::max(1, Config::content_width(
-                                       panel::detail::terminal_cols() > 0
-                                           ? panel::detail::terminal_cols()
-                                           : cfg_.min_width));
-
+    // It is the FULL chrome, not just the gutter. The offer this component
+    // receives is the frame width, not the padded interior — measured
+    // before the border, the padding and the gutter have each taken their
+    // share — so all three have to come off. Reserving only the gutter
+    // still left the body six columns too wide at 40 columns: the label
+    // stopped shrinking under pressure and the value fell off the end.
+    //
+    // And it is a MINIMUM against the offer rather than a replacement for
+    // it: a bound can only ever take back width the body does not have,
+    // never pin it narrower than the width it does. Overriding instead was
+    // what left a constant strip of dead space down the right edge.
+    //
     // ONE SECTION still goes through columns(): it cannot split, but the
-    // ceiling must still decide, and the width still has to be honoured.
+    // ceiling must still decide.
+    const int frame = panel::detail::terminal_cols() > 0
+                          ? panel::detail::terminal_cols()
+                          : cfg_.min_width;
+    const int bound = std::max(1, Config::content_width(frame));
     return columns(std::move(cells),
                    ColumnsOpts{.max_width = cfg_.col_max_width,
                                .min_width = cfg_.col_min_width,
                                .gap       = cfg_.col_gap,
-                               .width     = body_w})
+                               .width     = bound})
         .build();
 }
 

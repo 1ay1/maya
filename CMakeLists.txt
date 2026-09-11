@@ -488,6 +488,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_diff.cpp
         tests/test_grid_emit.cpp
         tests/test_columns.cpp
+        tests/test_render_sweep.cpp
         tests/test_framebuffer.cpp
         tests/test_input.cpp
         tests/test_signal.cpp

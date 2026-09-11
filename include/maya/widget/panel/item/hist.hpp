@@ -106,7 +106,18 @@ render(const Hist&, const ItemCtx& ctx) {
         if (plot_w < 1) return Element{TextElement{}};
 
         const int n = static_cast<int>(buckets.size());
-        int cw = std::min(want_w, std::max(1, plot_w / std::max(1, n)));
+        // The bar width follows the SPACE, in both directions.
+        //
+        // `col_width` is a MINIMUM, not a fixed size. Taking min() alone
+        // only ever narrowed it, so a nine-bucket spread drew the same
+        // 2-cell bars on a 150-column pane that it draws on a 60 — the
+        // comparison the chart exists for, made harder than the width
+        // requires. Capped so a three-bucket histogram on a very wide
+        // terminal does not become three slabs: past a point extra width
+        // stops aiding comparison and just spreads the data out.
+        constexpr int kMaxCol = 8;
+        const int afford = std::max(1, plot_w / std::max(1, n));
+        int cw = std::clamp(afford, 1, std::max(want_w, kMaxCol));
         // Bars keep a gap only while there is width to spare for one. At
         // two columns per bucket the gap is half the chart, so below that
         // the bars run together and the ticks carry the boundaries.

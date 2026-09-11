@@ -39,6 +39,15 @@ struct Plot {
     std::string         peak_label;
     std::string         base_label;
     std::optional<Color> hue{};
+    // Shade the region under the curve.
+    //
+    // On by default, and that is a judgement about what these plots are
+    // FOR. A line says "here is the trend"; a filled area says "here is
+    // the quantity", and every series a stats panel plots — tokens per
+    // turn, prefix size, thinking time — is a quantity accumulating
+    // against a real zero. The fill also survives a sparse series, where
+    // a bare line at braille resolution is a scatter of pixels.
+    bool                filled = true;
 };
 
 [[nodiscard]] inline int rows_of(const Plot& p, const ItemCtx&) {
@@ -88,7 +97,8 @@ render(const Plot&, const ItemCtx& ctx) {
     const std::string base = p.base_label;
     const Color help = ctx.theme.help;
 
-    lines.push_back(dsl::fill([series, rows, hue, gutter, peak, base, help]
+    lines.push_back(dsl::fill([series, rows, hue, gutter, peak, base, help,
+                               filled = p.filled]
                               (int w, int) {
         const int cells = std::max(0, w - gutter);
         if (cells <= 0) return Element{TextElement{}};
@@ -120,18 +130,42 @@ render(const Plot&, const ItemCtx& ctx) {
         const std::size_t n = series.size();
         int prev_y = -1;
         for (int x = 0; x < dot_w; ++x) {
-            const std::size_t idx = std::min(
-                n - 1, static_cast<std::size_t>(
-                           static_cast<double>(x) / dot_w * n));
-            const double t = std::clamp(series[idx] / hi, 0.0, 1.0);
+            // MAX over the samples this dot column covers, not a point
+            // sample. When 400 turns share 120 dot columns, a spike that
+            // survives to the screen is the honest reduction — point
+            // sampling drops whichever samples fall between the picks,
+            // and the one it drops is as likely as not the outlier the
+            // reader opened the tab to find.
+            const std::size_t lo = n * static_cast<std::size_t>(x)
+                                 / static_cast<std::size_t>(dot_w);
+            std::size_t hi_i = n * static_cast<std::size_t>(x + 1)
+                             / static_cast<std::size_t>(dot_w);
+            if (hi_i <= lo) hi_i = lo + 1;
+            double peak_v = 0;
+            for (std::size_t i = lo; i < hi_i && i < n; ++i)
+                peak_v = std::max(peak_v, series[i]);
+
+            const double t = std::clamp(peak_v / hi, 0.0, 1.0);
             const int y = dot_h - 1 - static_cast<int>(t * (dot_h - 1) + 0.5);
             plot_dot(x, y);
             // Join to the previous sample so the line is continuous. A
             // curve drawn as isolated dots reads as scatter, and the
             // question a trend answers is about direction.
-            if (prev_y >= 0)
-                for (int yy = std::min(prev_y, y); yy <= std::max(prev_y, y); ++yy)
-                    plot_dot(x, yy);
+            int lo_y = y, hi_y = y;
+            if (prev_y >= 0) {
+                lo_y = std::min(prev_y, y);
+                hi_y = std::max(prev_y, y);
+                for (int yy = lo_y; yy <= hi_y; ++yy) plot_dot(x, yy);
+            }
+            // The fill: a sparse stipple below the curve, one dot in four.
+            // Solid was the first attempt and it produced a slab where the
+            // SURFACE — the one thing a reader is looking for — vanished
+            // into the mass; at one-in-two the texture still competed with
+            // the line. One in four reads as shading and lets the curve
+            // read as the curve.
+            if (filled)
+                for (int yy = hi_y + 1; yy < dot_h; ++yy)
+                    if ((x % 2) == 0 && (yy % 2) == 0) plot_dot(x, yy);
             prev_y = y;
         }
 

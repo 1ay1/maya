@@ -130,6 +130,63 @@ Element Panel::row_line(Element lead, Element trail,
     return row(std::move(cells));
 }
 
+// A drawn control with a note beside it, in the row's slack.
+//
+// THE SHAPE OF THE PROBLEM. A row is three things on one line, and they
+// are not equally important:
+//
+//     the LABEL   says which row this is    — must survive
+//     the CONTROL carries the number        — must survive, IN ITS COLUMN
+//     the NOTE    explains the row          — yields first
+//
+// The column matters as much as the survival. Values in a section are
+// read against each other, so they share one right-aligned column, and a
+// single annotated row that pushes its value out of that column costs
+// the whole section its comparability. That is the bug this exists to
+// prevent, and the reason the note goes BEFORE the control rather than
+// after it: appended after, it extends a right-aligned cell rightward
+// and the flex box shoves the whole cell left to make room — "2.5k"
+// landing mid-row while 1h, 2h and 5 stay flush right above it.
+//
+// In front, it occupies the gap between the label and the control, which
+// is space that belonged to nobody, and nothing else moves.
+//
+// WHY BOTH BOUNDS, since either alone looks sufficient and is not:
+//
+//   shrink decides who gives ground once the row is over-subscribed. By
+//   then the label has already been asked to truncate, so a note that
+//   merely yields slowly still drags "Measured turns" down to "Measu…".
+//
+//   the cap decides how much the note may ASK for in the first place.
+//   Under it the label is not competing with the note at all.
+//
+// Together: the note cannot ask for more than the row's natural slack,
+// and if the row tightens anyway it is the first thing to give.
+//
+// fit_row() reads like the right primitive here and is not. It drops by
+// priority, which is the right policy, but sizes the row to its natural
+// width — abandoning the shared column this whole arrangement exists to
+// protect. Measured: values scattered and labels truncated at every
+// width below 140.
+Element Panel::annotated(Element control, const std::string& note,
+                         Style note_style) const {
+    // About a row's natural slack. Floored so a narrow pane still shows a
+    // word or two rather than an ellipsis standing on its own.
+    const int cap = std::max(kMinNoteCols, draw_budget() / kNoteShare);
+
+    BoxElement box;
+    box.layout.direction = FlexDirection::Row;
+    box.layout.max_width = Dimension::fixed(cap);
+    box.layout.shrink    = kNoteShrink;
+    box.children.push_back(Element{TextElement{
+        .content = note + "  ",
+        .style   = note_style,
+        .wrap    = TextWrap::TruncateEnd}});
+
+    return dsl::h(Element{std::move(box)},
+                  std::move(control) | dsl::shrink(0.0f)).build();
+}
+
 Element Panel::right_line(Element content) {
     std::vector<Element> cells;
     cells.push_back(dsl::spacer());
@@ -399,48 +456,9 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
             return out;
         }
 
-        if (!origin.empty()) {
-            // The note goes BEFORE the control, not after it.
-            //
-            // Appended after, it extended the trailing cell to the right,
-            // and since that cell is right-aligned the flex box pushed the
-            // whole thing left to make room — so "2.5k" landed mid-row
-            // while 1h, 2h and 5 stayed flush right above it. One row with
-            // a note in it broke the column for the whole section.
-            //
-            // Placed first, the note consumes the SLACK between the label
-            // and the control, which is empty space that belongs to nobody.
-            // The control keeps its width, the value keeps its column, and
-            // the note ellipsises into whatever room is left — which is the
-            // right thing to sacrifice, being prose about the row rather
-            // than the row's number.
-            //
-            // shrink(12) is why the LABEL survives. The note lives in the
-            // trailing cell, which competes with the leading one for the
-            // row, so a note that gave ground slowly dragged the label down
-            // with it — "Measured turns" arriving as "Measu…" on a narrow
-            // pane. Weighted this heavily the note collapses first and
-            // almost entirely, which is correct: a row identified by its
-            // label and its number can lose its footnote and still be read.
-            //
-            // The max_width is the other half, and the necessary half: a
-            // shrink weight only decides who gives ground once the row is
-            // over-subscribed, and by then the label has already been
-            // asked to truncate. Capping the note at a third of the row
-            // means it can never ASK for more than the slack a row
-            // normally has, so the label is not competing with it at all.
-            const int note_cap = std::max(8, draw_budget() / 3);
-            BoxElement note_box;
-            note_box.layout.direction = FlexDirection::Row;
-            note_box.layout.max_width = Dimension::fixed(note_cap);
-            note_box.layout.shrink    = 12.0f;
-            note_box.children.push_back(Element{TextElement{
-                .content = origin + "  ",
-                .style   = tint(Style{}.with_fg(th.origin)),
-                .wrap    = TextWrap::TruncateEnd}});
-            cell = dsl::h(Element{std::move(note_box)},
-                          std::move(cell) | dsl::shrink(0.0f)).build();
-        }
+        if (!origin.empty())
+            cell = annotated(std::move(cell), origin,
+                             tint(Style{}.with_fg(th.origin)));
         trail = std::move(cell);
     }
 

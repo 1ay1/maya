@@ -307,5 +307,25 @@ private:
                                           Style gap_style,
                                           bool value_primary = false);
     [[nodiscard]] static Element right_line(Element content);
+
+    // A drawn control with a note beside it. See the definition for why
+    // the note goes in FRONT of the control and why it takes two bounds.
+    [[nodiscard]] Element annotated(Element control, const std::string& note,
+                                    Style note_style) const;
+
+    // What a row's note may cost, as a share of the picture's budget.
+    //
+    // A third is about the slack a label→value row has between its two
+    // ends, so a note that stays under it never makes the label compete.
+    static constexpr int kNoteShare = 3;
+
+    // Floor for the above, so a narrow pane shows a word or two of the
+    // note rather than an ellipsis standing on its own.
+    static constexpr int kMinNoteCols = 8;
+
+    // How readily the note gives ground once the row is over-subscribed.
+    // Weighted far above the other cells because it is the only one the
+    // row can lose and still be read.
+    static constexpr float kNoteShrink = 12.0f;
 };
 } // namespace maya

@@ -399,13 +399,44 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
             return out;
         }
 
-        if (!origin.empty()) {
-            Element note{TextElement{.content = "  " + origin,
-                                     .style   = tint(Style{}.with_fg(th.origin)),
-                                     .wrap    = TextWrap::TruncateEnd}};
-            cell = dsl::h(std::move(cell), std::move(note)).build();
-        }
+        // The note goes on its own ROW, below the control.
+        //
+        // It used to sit beside it -- h(cell, note) -- and that breaks two
+        // things at once. The note steals width from a cell that was
+        // already sized to the row's fair share, so the VALUE gets pushed
+        // out of the right-aligned column every other row in the section
+        // uses; and the note itself, being last, is what the clip takes
+        // when the row runs short ("older turns predate teleme").
+        //
+        // A row of a table is a label and a number in known columns. Prose
+        // explaining that row is a different kind of thing and belongs
+        // under it, indented past the label lane so it reads as a footnote
+        // to the row above rather than as another row.
+        //
+        // item_lines() counts this, so measure and paint agree about how
+        // tall the row is.
         trail = std::move(cell);
+        out.push_back(row_line(std::move(lead), std::move(trail),
+                               r.trailing_secondary, base, r.value_primary));
+        if (!origin.empty())
+            out.push_back(Element{TextElement{
+                .content = "      " + origin,
+                .style   = tint(Style{}.with_fg(th.origin)),
+                .wrap    = TextWrap::TruncateEnd}});
+
+        if (on_row && !r.help.empty())
+            out.push_back(Element{TextElement{
+                .content = "    " + r.help,
+                .style   = Style{}.with_fg(th.help),
+                .wrap    = TextWrap::TruncateEnd}});
+
+        if (!r.error.empty())
+            out.push_back(Element{TextElement{
+                .content = "      \xe2\x9a\xa0 " + r.error,
+                .style   = Style{}.with_fg(th.error),
+                .wrap    = TextWrap::TruncateEnd}});
+
+        return out;
     }
 
     out.push_back(row_line(std::move(lead), std::move(trail),
@@ -620,6 +651,15 @@ int Panel::item_lines(const Item& r, int index, bool on_row) const {
     // A control that paints a picture states its own height. Everything
     // else is one line, which is what every text kind is.
     int n = panel::control_rows(r.control, item_ctx(index));
+    // A drawn control's note is a row of its own — see render_item, where
+    // it moved out from beside the cell so it could stop stealing width
+    // from the value. Text rows keep theirs inline in the trailing cell,
+    // which is why this is conditional rather than universal.
+    const std::string origin =
+        r.locked && !r.locked_reason.empty() ? r.locked_reason : r.origin;
+    if (panel::lays_itself_out(r.control)
+        && !panel::owns_full_row(r.control, item_ctx(index))
+        && !origin.empty()) ++n;
     if (on_row && !r.help.empty()) ++n;
     if (!r.error.empty())          ++n;
     return n;

@@ -62,9 +62,19 @@ render(const Band& b, const ItemCtx& ctx) {
         return Element{TextElement{}};
 
     std::vector<Element> lines;
+    // Two columns of indent, because every TEXT row has them.
+    //
+    // A row's leading cell opens with the marker lane -- one cell for the
+    // cursor bar and one space after it -- so labels begin at column 2. A
+    // picture that starts at column 0 sits two columns left of everything
+    // around it, and on a tab that mixes figures with tables the result is
+    // visibly ragged. The lane is empty here (a figure has no cursor to
+    // mark) but the SPACE it occupies is what makes a column a column.
+    static constexpr const char* kLane = "  ";
+
     if (!b.caption.empty())
         lines.push_back(Element{TextElement{
-            .content = b.caption,
+            .content = kLane + b.caption,
             .style   = Style{}.with_fg(ctx.theme.help),
             .wrap    = TextWrap::TruncateEnd}});
 
@@ -97,7 +107,7 @@ render(const Band& b, const ItemCtx& ctx) {
             ++cols[best]; rem[best] = -1.0; ++used;
         }
 
-        std::string s;
+        std::string s = "  ";
         std::vector<StyledRun> runs;
         for (std::size_t i = 0; i < segs.size(); ++i) {
             if (cols[i] <= 0) continue;
@@ -112,7 +122,7 @@ render(const Band& b, const ItemCtx& ctx) {
 
     // The legend: a swatch, a name and a share, per segment.
     {
-        std::string s;
+        std::string s = "  ";
         std::vector<StyledRun> runs;
         for (const auto& seg : b.segments) {
             if (!s.empty()) s += "   ";

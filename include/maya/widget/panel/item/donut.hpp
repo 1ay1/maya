@@ -67,9 +67,21 @@ render(const Donut&, const ItemCtx& ctx) {
     const Color val  = ctx.theme.value;
 
     std::vector<Element> lines;
+
+    // Two columns of indent, because every TEXT row has them.
+    //
+    // A row's leading cell opens with the marker lane -- one cell for the
+    // cursor bar and one space after it -- so labels begin at column 2.
+    // A picture that starts at column 0 therefore sits two columns left of
+    // everything around it, and on a tab that mixes a figure with tables
+    // the ring and its caption visibly fail to line up with the rows above
+    // and below. The lane is empty here (a figure has no cursor to mark)
+    // but the SPACE it occupies is what makes a column a column.
+    static constexpr const char* kLane = "  ";
+
     if (!d.caption.empty())
         lines.push_back(Element{TextElement{
-            .content = d.caption,
+            .content = kLane + d.caption,
             .style   = Style{}.with_fg(help),
             .wrap    = TextWrap::TruncateEnd}});
 
@@ -137,7 +149,9 @@ render(const Donut&, const ItemCtx& ctx) {
         const int mid = ring_rows / 2;
         std::vector<Element> out;
         for (int cyc = 0; cyc < ring_rows; ++cyc) {
-            std::string s;
+            // The same two-column marker lane the caption uses, so the ring
+            // sits in the same column as every text row on the tab.
+            std::string s = "  ";
             std::vector<StyledRun> runs;
 
             // Centre text, overlaid on the middle row of the hole.

@@ -61,9 +61,19 @@ render(const Plot&, const ItemCtx& ctx) {
     const Color hue = p.hue.value_or(ctx.theme.value);
 
     std::vector<Element> lines;
+    // Two columns of indent, because every TEXT row has them.
+    //
+    // A row's leading cell opens with the marker lane -- one cell for the
+    // cursor bar and one space after it -- so labels begin at column 2. A
+    // picture that starts at column 0 sits two columns left of everything
+    // around it, and on a tab that mixes figures with tables the result is
+    // visibly ragged. The lane is empty here (a figure has no cursor to
+    // mark) but the SPACE it occupies is what makes a column a column.
+    static constexpr const char* kLane = "  ";
+
     if (!p.caption.empty())
         lines.push_back(Element{TextElement{
-            .content = p.caption,
+            .content = kLane + p.caption,
             .style   = Style{}.with_fg(ctx.theme.help),
             .wrap    = TextWrap::TruncateEnd}});
 
@@ -127,7 +137,7 @@ render(const Plot&, const ItemCtx& ctx) {
 
         std::vector<Element> rowels;
         for (int cy = 0; cy < rows; ++cy) {
-            std::string line;
+            std::string line = "  ";
             // The gutter's tick, right-aligned so the numbers line up on
             // their last digit.
             std::string tick;

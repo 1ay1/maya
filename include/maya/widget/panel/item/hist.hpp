@@ -44,6 +44,16 @@ struct Hist {
 [[nodiscard]] inline int rows_of(const Hist& h, const ItemCtx&) {
     if (h.buckets.empty()) return 1;
     int n = std::clamp(h.rows, 2, 16);
+    // Two columns of indent, because every TEXT row has them.
+    //
+    // A row's leading cell opens with the marker lane -- one cell for the
+    // cursor bar and one space after it -- so labels begin at column 2. A
+    // picture that starts at column 0 sits two columns left of everything
+    // around it, and on a tab that mixes figures with tables the result is
+    // visibly ragged. The lane is empty here (a figure has no cursor to
+    // mark) but the SPACE it occupies is what makes a column a column.
+    static constexpr const char* kLane = "  ";
+
     if (!h.caption.empty()) ++n;
     ++n;                                   // the baseline rule
     for (const auto& b : h.buckets)
@@ -67,9 +77,16 @@ render(const Hist&, const ItemCtx& ctx) {
     const Color help = ctx.theme.help;
 
     std::vector<Element> lines;
+
+    // Two columns of indent, because every TEXT row has them. A row's
+    // leading cell opens with the marker lane -- one cell for the cursor
+    // bar and one space after it -- so labels begin at column 2. A picture
+    // starting at column 0 sits two columns left of everything around it.
+    static constexpr const char* kLane = "  ";
+
     if (!h.caption.empty())
         lines.push_back(Element{TextElement{
-            .content = h.caption,
+            .content = kLane + h.caption,
             .style   = Style{}.with_fg(help),
             .wrap    = TextWrap::TruncateEnd}});
 
@@ -97,7 +114,7 @@ render(const Hist&, const ItemCtx& ctx) {
 
         std::vector<Element> out;
         for (int cy = 0; cy < rows; ++cy) {
-            std::string s;
+            std::string s = "  ";
             std::vector<StyledRun> runs;
             if (gutter > 0) {
                 const std::string tick =

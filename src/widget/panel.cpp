@@ -999,10 +999,21 @@ Element Panel::build() const {
         // A STATUS line, set in the same plain text as the rows it summarises.
         // It was dim italic — this family's styling for help prose — which
         // made a factual line look like a hint.
+        //
+        // TruncateEnd, not NoWrap. Both refuse to wrap; the difference is
+        // what happens to the part that does not fit. NoWrap lets the clip
+        // take it, so on a narrow terminal the line simply STOPS — "how
+        // much of the prefix was served from cache" became "how much of the
+        // prefix was serv", with nothing to say a word had been cut. An
+        // ellipsis is the difference between a sentence the reader knows is
+        // abbreviated and one they have no reason to doubt.
+        //
+        // Found by Canvas::on_clip_overflow, which reported nine of these
+        // at 40 columns that the golden hash had been happily pinning.
         stack.push_back(Element{TextElement{
             .content = "  " + cfg_.subtitle,
             .style   = Style{}.with_fg(cfg_.theme.label),
-            .wrap    = TextWrap::NoWrap}});
+            .wrap    = TextWrap::TruncateEnd}});
         stack.push_back(Element{TextElement{}});
     }
     // The tab strip sits between the subtitle and the header: the subtitle

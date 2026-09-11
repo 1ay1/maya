@@ -1084,7 +1084,24 @@ Element Panel::build() const {
 
     const Body body = measure_body();
     const int content = body.total;
-    const int vh = std::max(1, std::min(cfg_.viewport_h, content));
+    // Shrink-wrap to the content, UNLESS the caller asked for a fixed body.
+    //
+    // min() is right for a picker: a list of three matches should be three
+    // rows tall, not a fourteen-row box with eleven empty ones under it.
+    // The panel is sized to what it holds and the frame follows.
+    //
+    // It is wrong for a DOCUMENT with tabs, and visibly so. The stats
+    // viewer's tabs differ in length, so min() made the frame resize every
+    // time the reader switched view — measured at 13 rows on one tab and 30
+    // on another, the whole box jumping as they pressed tab. A reader
+    // navigating a document is entitled to have the document stay still;
+    // the thing that changes should be what is written in it.
+    //
+    // fixed_viewport says which of the two this panel is. Default false
+    // keeps every picker exactly as it was.
+    const int vh = cfg_.fixed_viewport
+                       ? std::max(1, cfg_.viewport_h)
+                       : std::max(1, std::min(cfg_.viewport_h, content));
 
     // Keep the cursor's WHOLE span in view. ONE owner: only the panel knows
     // both the painted row count and the viewport.

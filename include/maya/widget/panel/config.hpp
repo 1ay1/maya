@@ -169,6 +169,20 @@ struct Config {
     // Blank columns between neighbouring columns.
     int col_gap = 2;
 
+    // Keep the body at `viewport_h` rows even when the content is shorter.
+    //
+    // The default (false) shrink-wraps: a picker showing three matches is
+    // three rows tall, which is what a list of alternatives should be.
+    //
+    // A DOCUMENT wants the opposite, and the difference is visible. Tabs
+    // whose contents differ in length make a shrink-wrapping frame resize
+    // every time the reader switches view — the stats viewer measured 13
+    // rows on one tab and 30 on another, the whole box jumping under the
+    // cursor. A reader navigating a document is entitled to have the
+    // document hold still; what changes should be what is written in it,
+    // not the shape of the thing holding it.
+    bool fixed_viewport = false;
+
     Color accent    = Color::blue();
 
     // Colour of the edge bar on the ACTIVE row (the persistent "currently

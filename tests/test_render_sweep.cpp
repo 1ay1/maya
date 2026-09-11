@@ -140,45 +140,26 @@ TEST_CASE("panel rows keep their values at every width") {
 // respect. Flow changes how many columns there are; it does not license
 // dropping content.
 //
-// STILL FAILS AT WIDTH 40 ONLY, and is landed that way deliberately.
+// This was RED for several rounds and is the case the harness earned its
+// keep on. It failed at every width, then at one, then not at all — each
+// step a bug the sweep named and a probe confirmed:
 //
-// The harness has already done most of the work. It isolated in one run
-// what an hour of hand probing did not — the value vanished only when
-// column flow AND scroll were both on, which named the mechanism — and
-// four fixes fell out of that: the unsplit budget must equal the unflowed
-// one exactly, the flowed body must be bounded by the panel's chrome, a
-// single bounded column must constrain its rows, and the scrollbar gutter
-// comes off TWICE because it is both frame chrome and a flex sibling.
-// Those took it from failing at every width to failing at one.
+//   * the unsplit budget must equal the unflowed one exactly
+//   * the flowed body must be bounded by the panel's chrome
+//   * a single bounded column must constrain its rows
+//   * the scrollbar gutter comes off TWICE — it is both frame chrome and
+//     a flex sibling
+//   * the flowed component must REPORT the width it was bounded to, not
+//     the width adapt() offered it; flex sizes a child from its report
+//   * spacer_rows() set `basis`, which is the MAIN-AXIS size — height in
+//     a column, WIDTH in a row. As build()'s scrollbar gutter it made a
+//     one-column spacer claim `vh` columns, and being shrink(0) it took
+//     the difference out of the body: two columns per viewport row, off
+//     the end of every line.
 //
-// WHAT IS LEFT, and what has been ruled out. The signature is exact and
-// reproducible — each additional SECTION costs the row two more columns:
-//
-//     sections=1  →  ####---  40ms
-//     sections=2  →  ####---  40
-//     sections=3  →  ####---
-//
-// Two is col_gap, which makes it look obvious, and it is not. Measured
-// and excluded, each with a probe:
-//
-//   * the width inputs — offered, bound and used are IDENTICAL at every
-//     section count (33/40, 32, 32), as is draw_budget (8)
-//   * the count arithmetic — the loop picks 1 column with span 32 for
-//     n = 1, 2 and 3 alike, so the gap is never charged
-//   * the section wrapper — plain vstack, percent(100), fixed(bound) and
-//     grow(1) all produce the same output
-//   * scroll pressure — a viewport too tall to overflow changes nothing
-//   * columns() itself — fed hand-built sections WITH headers at 1, 2 and
-//     3 cells, it keeps the value every time
-//
-// So every input that can be measured is the same and the output is not,
-// which means the difference is inside a layout pass rather than in what
-// is handed to it. That is a much sharper question than "the value
-// vanishes", and it is where the next attempt should start: instrument
-// the flex solver for this subtree, not the widths going into it.
-//
-// Left red on purpose. A skipped test is a bug nobody is looking at; a
-// failing one with the width in the message is a bug with a next step.
+// The last one is why this looked like "each section costs two columns".
+// It was never about sections; more sections meant a taller viewport,
+// and the gutter's width was the viewport's height.
 TEST_CASE("panel rows keep their values when flowed") {
     sweep::Sweep flowed{[](int w) {
         return Element{Panel{readout(w, /*flow=*/true)}.build()};

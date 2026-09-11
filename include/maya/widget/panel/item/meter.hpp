@@ -103,8 +103,23 @@ render(const Meter& c, const ItemCtx& ctx) {
     const Color  fill = c.hue.value_or(ctx.theme.value);
     const Color  trk  = ctx.theme.help;
 
-    // The bar's width, from the budget Panel already sized for this row.
-    const int cells = ctx.drawn_cells(/*pref=*/24, /*floor=*/8, /*ceiling=*/40);
+    // The bar's width, from the budget Panel already sized for this row —
+    // MINUS the gap the row below asks for.
+    //
+    // drawn_cells() answers "how many cells may the picture use", and the
+    // row then requests that many PLUS a two-column gap PLUS the value. At
+    // the floor that is 8 + 2 + 4 = 14 asked of a 13-column cell, over by
+    // exactly one — and because the value is pinned at shrink(0) so it
+    // cannot be squeezed, the one column comes off its END. "40ms" painted
+    // as "40m", then "40", then nothing, losing two more columns for every
+    // section that tightened the row further. The flex trace shows it
+    // plainly: avail=13 hypo=12 gap=2 free=-1.
+    //
+    // Deducting the gap here keeps the promise drawn_cells() makes. A very
+    // narrow row now gives up bar cells rather than giving up the number.
+    static constexpr int kValueGap = 2;
+    const int cells = std::max(1, ctx.drawn_cells(/*pref=*/24, /*floor=*/8,
+                                                  /*ceiling=*/40) - kValueGap);
 
     // The bar paints to whatever width the engine settles on. It does not
     // decide its own size — which is the entire reason this kind needs no

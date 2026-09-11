@@ -939,23 +939,49 @@ std::optional<Element> Panel::flowed_body() const {
     //
     // One column, one character, and nothing else in the frame looks wrong
     // — which is why this survived several rounds of looking at it.
-    return columns(std::move(cells),
-                   ColumnsOpts{.max_width = cfg_.col_max_width,
-                               .min_width = cfg_.col_min_width,
-                               .gap       = cfg_.col_gap,
-                               .width     = bound})
-        .build();
+    //
+    // max_width on the result is the other half. The bound above governs
+    // what columns() lays out INSIDE itself; it does not change what the
+    // component reports UPWARD, and flex sizes a child from that report.
+    // The body kept answering 40 — the frame width adapt() was offered —
+    // inside a 34-column slot that also had to hold a 2-column gutter, so
+    // the solver saw hypo=42 against avail=34 and took the 8-column
+    // difference off the end of every row. Capping the element makes the
+    // report and the layout agree, which is the invariant this whole
+    // feature rests on.
+    auto flowed = columns(std::move(cells),
+                          ColumnsOpts{.max_width = cfg_.col_max_width,
+                                      .min_width = cfg_.col_min_width,
+                                      .gap       = cfg_.col_gap,
+                                      .width     = bound})
+                      .build();
+    BoxElement cap;
+    cap.layout.direction = FlexDirection::Column;
+    cap.layout.max_width = Dimension::fixed(bound);
+    cap.children.push_back(std::move(flowed));
+    return Element{std::move(cap)};
 }
 
 // A box with no children and a fixed height. `height` alone is not enough:
 // the parent vstack's default align_items is Stretch, and a zero-child box
 // with no basis can still be collapsed by shrink — which would silently give
 // back the very rows this exists to reserve.
+//
+// min_height rather than basis does the reserving, and the distinction is
+// load-bearing. `basis` is the MAIN-AXIS size, and which axis that is
+// depends on the parent: in a Column it means height (what this wants), but
+// in a Row it means WIDTH. build() puts one of these in a row as the
+// scrollbar gutter — `spacer_rows(vh) | width(1)` — where basis=vh made a
+// one-column gutter report vh columns wide. The solver then charged the row
+// for a 4-column gutter beside a 32-column body in a 34-column slot, and
+// since the gutter is shrink(0) the whole overflow came off the body: two
+// columns for every extra viewport row, taken from the end of every line.
+//
+// min_height says the same thing in an axis that cannot be reinterpreted.
 Element Panel::spacer_rows(int n) {
     BoxElement box;
     box.layout.height     = Dimension::fixed(n);
     box.layout.min_height = Dimension::fixed(n);
-    box.layout.basis      = Dimension::fixed(n);
     box.layout.shrink     = 0.0f;
     return Element{std::move(box)};
 }

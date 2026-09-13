@@ -58,10 +58,7 @@ panel::Config readout(int width, bool flow) {
         for (int i = 0; i < 3; ++i) {
             panel::Item row;
             row.leading = "A reasonably long label";
-            panel::Meter m;
-            m.value = "4" + std::to_string(i) + "ms";
-            m.share = 0.25 * (i + 1);
-            row.control = m;
+            row.control = panel::Label{"4" + std::to_string(i) + "ms"};
             cfg.items.push_back(std::move(row));
         }
     }
@@ -90,10 +87,7 @@ panel::Config bare_row(int width, bool flow, const char* value = "40ms") {
     }
     panel::Item row;
     row.leading = "You asked";
-    panel::Meter m;
-    m.value = value;
-    m.share = 0.5;
-    row.control = m;
+    row.control = panel::Label{value};
     cfg.items.push_back(std::move(row));
     return cfg;
 }

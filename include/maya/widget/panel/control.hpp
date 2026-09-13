@@ -23,26 +23,22 @@
 #include "item/choice.hpp"
 #include "item/header.hpp"
 #include "item/label.hpp"
-#include "item/meter.hpp"
 #include "item/number.hpp"
 #include "item/path.hpp"
 #include "item/pick.hpp"
 #include "item/secret.hpp"
 #include "item/slider.hpp"
-#include "item/spark.hpp"
 #include "item/text.hpp"
 #include "item/toggle.hpp"
 
 namespace maya::panel {
 
-// Meter and Spark are the READ-ONLY drawn kinds — a proportion and a
-// series. They are two kinds rather than one because their width rules are
-// opposites: a meter fills its budget, a spark is one cell per sample and
-// treats the budget as a window. Sharing a width is what once padded a
-// series with blank until it pushed the value column off the row.
+// The drawn READ-ONLY figures (a meter bar, a sparkline strip, a ring, a
+// histogram) are standalone maya:: widgets now — build one and drop it into
+// an item's `prebuilt` cell. The panel's own control kinds are the
+// interactive / text ones below.
 using Control = std::variant<Label, Header, Toggle, Choice, Pick, Number,
-                             Slider, Text, Secret, Path, Action,
-                             Meter, Spark>;
+                             Slider, Text, Secret, Path, Action>;
 
 [[nodiscard]] inline bool is_header(const Control& c) noexcept {
     return std::holds_alternative<Header>(c);

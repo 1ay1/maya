@@ -43,16 +43,11 @@ int terminal_cols() noexcept {
 // already aligns by flex. So this measures exactly the rows that need a
 // shared column and ignores the rest.
 int Panel::value_basis() const noexcept {
-    int widest = 0;
-    for (const auto& it : cfg_.items) {
-        if (const auto* m = std::get_if<panel::Meter>(&it.control))
-            widest = std::max(widest,
-                              static_cast<int>(unicode::str_width(m->value)));
-        else if (const auto* s = std::get_if<panel::Spark>(&it.control))
-            widest = std::max(widest,
-                              static_cast<int>(unicode::str_width(s->value)));
-    }
-    return widest;
+    // The drawn value kinds (Meter/Spark) that owned a right-aligned value
+    // column are standalone widgets now, dropped into an item's prebuilt
+    // cell rather than laid out by the panel. Nothing left to align on, so
+    // there is no shared value column.
+    return 0;
 }
 
 namespace {

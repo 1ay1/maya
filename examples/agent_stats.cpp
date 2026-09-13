@@ -28,6 +28,7 @@
 #include <maya/element/grid.hpp>
 #include <maya/widget/bar_chart.hpp>
 #include <maya/widget/context_gauge.hpp>
+#include <maya/widget/empty_state.hpp>
 #include <maya/widget/gauge.hpp>
 #include <maya/widget/heatmap.hpp>
 #include <maya/widget/line_chart.hpp>
@@ -496,23 +497,36 @@ struct AgentStats {
         strip.active(m.tab);
         strip.theme.accent = kTabHue[m.tab];
 
-        // Body: this tab's cards, laid out by viewport().
-        auto cards = tab_cards(m.tab, m.stats);
-        Element grid = viewport(std::move(cards),
-                                ViewportOpts{.max_width = m.ceiling,
-                                             .gap = 2, .gap_y = 1,
-                                             .width = grid_w(m),
-                                             .flow = m.flow,
-                                             .equal_rows = true});
-
+        // Body: this tab's cards, laid out by viewport(). A tab with no data
+        // (viewport() renders nothing for an empty set) gets a friendly
+        // empty state instead of a blank void.
         const int vh = viewport_h(m);
-        auto& sc = m.scroll;
-        auto sb = hstack();
-        sb.gap(1);
-        Element scroller = sb(
-            std::move(grid) | scroll(sc, grid_w(m), vh),
-            scrollbar_y(m.scroll, vh, ScrollbarStyle::block())
-        );
+        auto cards = tab_cards(m.tab, m.stats);
+
+        Element body;
+        if (cards.empty()) {
+            body = (EmptyState{}
+                        .glyph("◇")
+                        .title(std::string(kTabNames[m.tab]) + " — no data yet")
+                        .hint("Stats appear here once the agent produces them.")
+                        .action("Tab", "next tab")
+                        .action("q", "quit")
+                    | grow(1)).build();
+        } else {
+            Element grid = viewport(std::move(cards),
+                                    ViewportOpts{.max_width = m.ceiling,
+                                                 .gap = 2, .gap_y = 1,
+                                                 .width = grid_w(m),
+                                                 .flow = m.flow,
+                                                 .equal_rows = true});
+            auto& sc = m.scroll;
+            auto sb = hstack();
+            sb.gap(1);
+            body = sb(
+                std::move(grid) | scroll(sc, grid_w(m), vh),
+                scrollbar_y(m.scroll, vh, ScrollbarStyle::block())
+            );
+        }
 
         std::string status =
             std::string("flow=") + (m.flow == Flow::Row ? "row" : "col") +
@@ -531,7 +545,7 @@ struct AgentStats {
             ).build(),
             strip.build(),
             blank(),
-            std::move(scroller),
+            std::move(body),
             (text(status, Style{}.with_dim()) | nowrap)
         );
     }

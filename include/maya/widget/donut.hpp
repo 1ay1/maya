@@ -103,11 +103,24 @@ public:
             int ring_rows = rows;
             auto ring_w = [&] { return ring_rows * 2; };
 
-            const int horiz_need = ring_w() + 3 + legend_min;
-            const bool horizontal = horiz_need <= w;
+            // Stay HORIZONTAL only when the column is wide enough for a
+            // GENEROUS ring AND the legend side by side. A small ring
+            // crammed next to the labels reads worse than a big ring stacked
+            // over them, so unless there is room for a comfortably large ring
+            // (≈ rows+2 tall) plus the legend and a gap, flow VERTICAL.
+            const int horiz_ring_w = (rows + 2) * 2;
+            const int horiz_need   = horiz_ring_w + 4 + legend_min;
+            const bool horizontal  = horiz_need <= w;
 
             bool with_ring = true;
-            if (!horizontal) {
+            if (horizontal) {
+                // Use the room the horizontal test reserved: grow the ring to
+                // fill the space left of the legend, so it isn't a tiny hoop
+                // beside big labels.
+                const int cap = std::max(rows + 2, rows);
+                while ((ring_rows + 1) * 2 + 4 + legend_min <= w && ring_rows < cap)
+                    ++ring_rows;
+            } else {
                 // VERTICAL: the ring has the whole width to itself, so GROW
                 // it to fill the column (a ring cell is 2 wide, so the radius
                 // rises one row per two columns), capped so a tall terminal

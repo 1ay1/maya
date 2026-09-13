@@ -28,9 +28,11 @@
 #include <maya/element/grid.hpp>
 #include <maya/widget/bar_chart.hpp>
 #include <maya/widget/context_gauge.hpp>
+#include <maya/widget/donut.hpp>
 #include <maya/widget/empty_state.hpp>
 #include <maya/widget/gauge.hpp>
 #include <maya/widget/heatmap.hpp>
+#include <maya/widget/histogram.hpp>
 #include <maya/widget/line_chart.hpp>
 #include <maya/widget/model_badge.hpp>
 #include <maya/widget/progress_ring.hpp>
@@ -159,12 +161,12 @@ struct Stats {
 
 // ── small card helpers ─────────────────────────────────────────────────────
 
-// A titled, bordered card. `accent` colours the frame + title.
+// A titled section — NO border box, just the accent title over the content.
+// viewport() spaces the sections into columns; the title carries the colour.
 Element card(std::string title, Color accent, std::vector<Element> body) {
     auto b = vstack();
     b.gap(0);
-    b.padding(1);
-    b.border(BorderStyle::Round, accent);
+    b.padding(0, 1);
     std::vector<Element> kids;
     kids.push_back(text(std::move(title), Style{}.with_fg(accent).with_bold()));
     kids.push_back(blank());
@@ -305,6 +307,16 @@ std::vector<Element> tab_cards(int tab, const Stats& s) {
             blank(),
             Gauge(std::clamp(s.ttft.back() / 800.f, 0.f, 1.f), "ttft").build(),
         }));
+        cards.push_back(card("Gen-time distribution", hue::violet, {
+            Histogram{}
+                .bucket("<1s",  wobble(s.t, 6, 4, 0.5f, 0))
+                .bucket("1-2s", wobble(s.t, 14, 6, 0.5f, 1))
+                .bucket("2-3s", wobble(s.t, 9, 5, 0.5f, 2))
+                .bucket("3-4s", wobble(s.t, 4, 3, 0.5f, 3))
+                .bucket(">4s",  wobble(s.t, 2, 2, 0.5f, 4))
+                .rows(6).caption("turns per bucket")
+                .bar_color(hue::violet).label_color(hue::muted).build(),
+        }));
         break;
     }
 
@@ -349,6 +361,14 @@ std::vector<Element> tab_cards(int tab, const Stats& s) {
             share.push_back({mnames[i], s.model_share[i], mhue[i]});
         cards.push_back(card("Traffic share", hue::blue, {
             BarChart(share, 1.0f).build(),
+            blank(),
+            Donut{}
+                .segment(mnames[0], s.model_share[0], mhue[0])
+                .segment(mnames[1], s.model_share[1], mhue[1])
+                .segment(mnames[2], s.model_share[2], mhue[2])
+                .segment(mnames[3], s.model_share[3], mhue[3])
+                .center("4").caption("by request").rows(6)
+                .label_color(hue::muted).build(),
         }));
 
         Heatmap hm(s.activity);
@@ -515,10 +535,9 @@ struct AgentStats {
         } else {
             Element grid = viewport(std::move(cards),
                                     ViewportOpts{.max_width = m.ceiling,
-                                                 .gap = 2, .gap_y = 1,
+                                                 .gap = 3, .gap_y = 2,
                                                  .width = grid_w(m),
-                                                 .flow = m.flow,
-                                                 .equal_rows = true});
+                                                 .flow = m.flow});
             auto& sc = m.scroll;
             auto sb = hstack();
             sb.gap(1);

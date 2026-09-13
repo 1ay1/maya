@@ -20,17 +20,13 @@
 #include "../../element/text.hpp"
 
 #include "item/action.hpp"
-#include "item/band.hpp"
 #include "item/choice.hpp"
-#include "item/donut.hpp"
 #include "item/header.hpp"
-#include "item/hist.hpp"
 #include "item/label.hpp"
 #include "item/meter.hpp"
 #include "item/number.hpp"
 #include "item/path.hpp"
 #include "item/pick.hpp"
-#include "item/plot.hpp"
 #include "item/secret.hpp"
 #include "item/slider.hpp"
 #include "item/spark.hpp"
@@ -39,15 +35,14 @@
 
 namespace maya::panel {
 
-// Band is the first PICTURE kind: it owns its row and paints two lines
-// (bar + legend). Meter and Spark are the READ-ONLY drawn kinds — a proportion and a
+// Meter and Spark are the READ-ONLY drawn kinds — a proportion and a
 // series. They are two kinds rather than one because their width rules are
 // opposites: a meter fills its budget, a spark is one cell per sample and
 // treats the budget as a window. Sharing a width is what once padded a
 // series with blank until it pushed the value column off the row.
 using Control = std::variant<Label, Header, Toggle, Choice, Pick, Number,
                              Slider, Text, Secret, Path, Action,
-                             Meter, Spark, Band, Plot, Hist, Donut>;
+                             Meter, Spark>;
 
 [[nodiscard]] inline bool is_header(const Control& c) noexcept {
     return std::holds_alternative<Header>(c);

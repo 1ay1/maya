@@ -229,7 +229,7 @@ std::vector<Element> tab_cards(int tab, const Stats& s) {
         }));
         cards.push_back(card("Context window", hue::violet, {
             ContextGauge({.used = static_cast<int>(s.ctx_used.back()),
-                          .max = 200000, .cells = 16, .show_tokens = false}).build(),
+                          .max = 200000, .cells = 10, .show_tokens = false}).build(),
             blank(),
             stat(fmt1(s.ctx_used.back() / 1000.f) + "k / 200k", "context used", hue::violet),
             blank(),
@@ -272,7 +272,7 @@ std::vector<Element> tab_cards(int tab, const Stats& s) {
             line(s.ctx_used, hue::violet, 6),
             blank(),
             ContextGauge({.used = static_cast<int>(s.ctx_used.back()),
-                          .max = 200000, .cells = 18, .show_tokens = false}).build(),
+                          .max = 200000, .cells = 10, .show_tokens = false}).build(),
             blank(),
             stat(fmt1(s.ctx_used.back() / 1000.f) + "k / 200k", "context used", hue::violet),
         }));
@@ -319,9 +319,9 @@ std::vector<Element> tab_cards(int tab, const Stats& s) {
             BarChart(bars, mx).build(),
         }));
 
-        Table tbl({{"tool", 0, ColumnAlign::Left, kKeepAlways},
-                   {"calls", 7, ColumnAlign::Right},
-                   {"avg ms", 8, ColumnAlign::Right}},
+        Table tbl({{"tool", 8, ColumnAlign::Left, kKeepAlways},
+                   {"calls", 6, ColumnAlign::Right, kKeepAlways},
+                   {"ms", 5, ColumnAlign::Right, kKeepAlways}},
                   TableConfig{.stripe_rows = true, .show_header = true});
         for (int i = 0; i < 6; ++i)
             tbl.add_row({names[i], fmt_int(static_cast<long>(s.tool_calls[i])),
@@ -381,7 +381,7 @@ std::vector<Element> tab_cards(int tab, const Stats& s) {
         }));
         cards.push_back(card("Budget", hue::amber, {
             ContextGauge({.used = static_cast<int>(s.cost_total * 100),
-                          .max = 5000, .cells = 18, .show_tokens = false}).build(),
+                          .max = 5000, .cells = 10, .show_tokens = false}).build(),
             blank(),
             stat("$" + fmt2(s.cost_total) + " / $50.00", "monthly cap", hue::amber),
         }));

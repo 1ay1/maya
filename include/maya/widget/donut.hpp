@@ -113,7 +113,7 @@ public:
                 // rises one row per two columns), capped so a tall terminal
                 // doesn't get a giant circle. Then shrink back if somehow
                 // still too wide, and drop below a legible minimum.
-                const int cap = std::max(rows, 14);
+                const int cap = std::max(rows, 9);
                 while (ring_w() + 2 <= w && ring_rows < cap) ++ring_rows;
                 while (ring_w() > w && ring_rows > 3) --ring_rows;
                 with_ring = (ring_w() <= w && ring_rows >= 3);
@@ -137,7 +137,18 @@ public:
             const double cx = (dot_w - 1) / 2.0;
             const double cy = (dot_h - 1) / 2.0;
             const double r_out = static_cast<double>(dot_h) / 2.0;
-            const double r_in = r_out * 0.62;
+            // A constant-ISH band thickness rather than a constant ratio: a
+            // fixed 0.62 ratio makes the hole grow with the ring, so a large
+            // ring is mostly empty. Instead take a generous fraction of the
+            // radius as the band and keep the hole just big enough for the
+            // centre text — clamp the inner radius so the ring stays a fat
+            // annulus at any size.
+            const double ctr_need = center.empty()
+                ? 0.0
+                : (unicode::str_width(center) + 2) * 2.0;   // dots to fit text
+            double r_in = r_out * 0.45;                      // thick band
+            r_in = std::max(r_in, ctr_need / 2.0);           // but fit the label
+            r_in = std::min(r_in, r_out - 2.0);              // never a hairline
 
             auto seg_at = [&](int dx, int dy) -> int {
                 const double x = dx - cx, y = dy - cy;

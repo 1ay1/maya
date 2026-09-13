@@ -106,9 +106,15 @@ public:
             const int horiz_need = ring_w() + 3 + legend_min;
             const bool horizontal = horiz_need <= w;
 
-            // Vertical stack only needs the WIDER of ring-width or legend.
             bool with_ring = true;
             if (!horizontal) {
+                // VERTICAL: the ring has the whole width to itself, so GROW
+                // it to fill the column (a ring cell is 2 wide, so the radius
+                // rises one row per two columns), capped so a tall terminal
+                // doesn't get a giant circle. Then shrink back if somehow
+                // still too wide, and drop below a legible minimum.
+                const int cap = std::max(rows, 14);
+                while (ring_w() + 2 <= w && ring_rows < cap) ++ring_rows;
                 while (ring_w() > w && ring_rows > 3) --ring_rows;
                 with_ring = (ring_w() <= w && ring_rows >= 3);
                 if (!with_ring) { ring_rows = 0; }

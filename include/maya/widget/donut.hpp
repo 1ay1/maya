@@ -89,29 +89,33 @@ public:
         const std::string center = center_;
         const int nseg = static_cast<int>(segs.size());
 
-        lines.push_back(dsl::fill([segs, total, rows, center, help, val, nseg](int w, int) {
-            int ring_rows = rows;
-            int cw = ring_rows * 2;
-
-            // The legend always shows EVERY segment. When the surface can't
-            // hold both a legible ring and the labels, the RING gives up
-            // radius; below 3 rows a ring is an unreadable smudge, so past
-            // that we drop the ring ENTIRELY and keep the legend — the data
-            // always survives, nothing is truncated.
-            int legend_min = 10;
+        lines.push_back(detail::adapt([segs, total, rows, center, help, val, nseg](int w) {
+            // Layout picks itself from the width, in three tiers:
+            //   HORIZONTAL  full ring beside the legend            (wide)
+            //   VERTICAL    full ring on top, legend stacked below  (narrow)
+            //   LEGEND-ONLY just the labels                        (tiny)
+            // The ring only shrinks radius when even the vertical stack's
+            // width can't hold it; it never cramps beside the legend.
+            int legend_min = 0;
             for (const auto& s : segs)
-                legend_min = std::max(legend_min, unicode::str_width(s.label) + 6);
-            while (cw + 3 + legend_min > w && ring_rows > 3) {
-                --ring_rows;
-                cw = ring_rows * 2;
+                legend_min = std::max(legend_min, unicode::str_width(s.label) + 4);
+
+            int ring_rows = rows;
+            auto ring_w = [&] { return ring_rows * 2; };
+
+            const int horiz_need = ring_w() + 3 + legend_min;
+            const bool horizontal = horiz_need <= w;
+
+            // Vertical stack only needs the WIDER of ring-width or legend.
+            bool with_ring = true;
+            if (!horizontal) {
+                while (ring_w() > w && ring_rows > 3) --ring_rows;
+                with_ring = (ring_w() <= w && ring_rows >= 3);
+                if (!with_ring) { ring_rows = 0; }
             }
-            const bool with_ring = (cw + 3 + legend_min <= w);
-            if (!with_ring) { ring_rows = 0; cw = 0; }
+            const int cw = ring_w();
 
-            // As tall as the taller of ring vs legend, so no segment row is
-            // ever cut for want of a ring row to sit on.
-            const int total_rows = std::max(with_ring ? ring_rows : 0, nseg);
-
+            // Cumulative segment edges as fractions of the circle.
             std::vector<double> edge;
             edge.reserve(segs.size() + 1);
             double acc = 0;
@@ -143,21 +147,15 @@ public:
             static constexpr std::uint8_t kDot[4][2] = {
                 {0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80},
             };
-
             const int mid = with_ring ? ring_rows / 2 : -1;
-            std::vector<Element> out;
-            for (int cyc = 0; cyc < total_rows; ++cyc) {
-                std::string s;
-                std::vector<StyledRun> runs;
 
-                const bool draw_ring_row = with_ring && cyc < ring_rows;
-                const bool is_mid = draw_ring_row && (cyc == mid) && !center.empty();
+            // One ring row (cyc in [0, ring_rows)) as text + runs.
+            auto ring_row = [&](int cyc, std::string& s, std::vector<StyledRun>& runs) {
+                const bool is_mid = (cyc == mid) && !center.empty();
                 const int ctr_w = is_mid ? unicode::str_width(center) : 0;
                 const int ctr_x = is_mid ? (cw - ctr_w) / 2 : -1;
                 const int ctr_lo = is_mid ? ctr_x - 1 : -1;
                 const int ctr_hi = is_mid ? ctr_x + ctr_w + 1 : -1;
-
-                if (draw_ring_row)
                 for (int cxc = 0; cxc < cw; ++cxc) {
                     if (is_mid && cxc >= ctr_lo && cxc < ctr_hi) {
                         if (cxc == ctr_x) {
@@ -191,30 +189,59 @@ public:
                                     Style{}.with_fg(segs[static_cast<std::size_t>(best)
                                                          % segs.size()].hue)});
                 }
+            };
 
-                // Legend row — EVERY segment, one per line. When a ring is
-                // present, pad to the ring gutter so labels align even on the
-                // rows the ring left blank (and past the ring's height).
-                if (cyc < nseg) {
-                    if (with_ring) {
+            // One legend row (■ + label) appended to s.
+            auto legend_row = [&](int i, std::string& s, std::vector<StyledRun>& runs) {
+                const auto& sg = segs[static_cast<std::size_t>(i)];
+                const std::size_t at = s.size();
+                s += "\xe2\x96\xa0 ";                                  // ■
+                runs.push_back({at, s.size() - at, Style{}.with_fg(sg.hue)});
+                const std::size_t tat = s.size();
+                s += sg.label;
+                runs.push_back({tat, s.size() - tat, Style{}.with_fg(help)});
+            };
+
+            auto emit = [](std::string s, std::vector<StyledRun> runs) {
+                return Element{TextElement{.content = std::move(s),
+                                           .wrap    = TextWrap::TruncateEnd,
+                                           .runs    = std::move(runs)}};
+            };
+
+            std::vector<Element> out;
+
+            if (horizontal) {
+                // Ring beside legend, each on the same row, legend column
+                // padded to the ring gutter so it aligns.
+                const int total_rows = std::max(ring_rows, nseg);
+                for (int cyc = 0; cyc < total_rows; ++cyc) {
+                    std::string s; std::vector<StyledRun> runs;
+                    if (with_ring && cyc < ring_rows) ring_row(cyc, s, runs);
+                    if (cyc < nseg) {
                         while (static_cast<int>(unicode::str_width(s)) < cw) s += ' ';
                         s += "  ";
+                        legend_row(cyc, s, runs);
                     }
-                    const auto& sg = segs[static_cast<std::size_t>(cyc)];
-                    const std::size_t at = s.size();
-                    s += "\xe2\x96\xa0 ";                                  // ■
-                    runs.push_back({at, s.size() - at, Style{}.with_fg(sg.hue)});
-                    const std::size_t tat = s.size();
-                    s += sg.label;
-                    runs.push_back({tat, s.size() - tat, Style{}.with_fg(help)});
+                    out.push_back(emit(std::move(s), std::move(runs)));
                 }
-
-                out.push_back(Element{TextElement{.content = std::move(s),
-                                                  .wrap    = TextWrap::TruncateEnd,
-                                                  .runs    = std::move(runs)}});
+            } else {
+                // VERTICAL: ring block on top (centred), then the legend
+                // rows beneath it. Nothing is cramped side by side.
+                if (with_ring) {
+                    for (int cyc = 0; cyc < ring_rows; ++cyc) {
+                        std::string s; std::vector<StyledRun> runs;
+                        ring_row(cyc, s, runs);
+                        out.push_back(emit(std::move(s), std::move(runs)));
+                    }
+                }
+                for (int i = 0; i < nseg; ++i) {
+                    std::string s; std::vector<StyledRun> runs;
+                    legend_row(i, s, runs);
+                    out.push_back(emit(std::move(s), std::move(runs)));
+                }
             }
             return dsl::v(std::move(out)).build();
-        }).height(Dimension::fixed(std::max(rows, nseg))).build());
+        }).build());
 
         return dsl::v(std::move(lines)).build();
     }

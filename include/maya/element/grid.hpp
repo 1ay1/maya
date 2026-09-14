@@ -655,6 +655,13 @@ struct ViewportOpts {
                     } else {
                         auto cb = detail::vstack();
                         cb.width(Dimension::fixed(this_w));
+                        // max_width as well as width: a fixed width sizes the
+                        // BOX, but a fill()/adapt() child is measured against
+                        // whatever the parent chain offers — which, under a
+                        // scroll or a prebuilt body, is an unbounded probe.
+                        // The ceiling is what that child's measure actually
+                        // clamps to, so the column width reaches it.
+                        cb.max_width(Dimension::fixed(this_w));
                         cells_in_row.push_back(cb(std::move(cell_el)));
                     }
                 }

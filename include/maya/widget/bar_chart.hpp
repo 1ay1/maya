@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <vector>
@@ -107,8 +108,18 @@ private:
             max_label = std::max(max_label, b.label.size());
         }
 
-        // Value suffix width: "  123.4"
-        constexpr int value_suffix_width = 8;
+        // Value suffix width. Measure the WIDEST value actually formatted
+        // rather than assuming 8: a guessed reserve is how a bar ended up a
+        // cell or two past the slot edge, and the block at the end of the
+        // longest row was what got clipped.
+        int value_suffix_width = 0;
+        for (const auto& b : bars_) {
+            char vb[32];
+            std::snprintf(vb, sizeof(vb), "  %.1f", static_cast<double>(b.value));
+            value_suffix_width =
+                std::max(value_suffix_width, static_cast<int>(std::strlen(vb)));
+        }
+        if (value_suffix_width < 4) value_suffix_width = 4;
         constexpr int label_gap = 2;  // gap between label and bar
         constexpr int min_bar = 4;
 
@@ -125,7 +136,13 @@ private:
             max_label = static_cast<std::size_t>(label_cap);
 
         int bar_width = width - static_cast<int>(max_label) - label_gap - value_suffix_width;
-        if (bar_width < min_bar) bar_width = min_bar;
+        // If even the floor does not fit, the row must still not overrun:
+        // a 4-cell bar forced into a column that has 2 left is how a block
+        // ended up painted past the edge. Give the bar whatever remains —
+        // possibly nothing — and let the label and value carry the row.
+        if (bar_width < min_bar)
+            bar_width = std::max(0, width - static_cast<int>(max_label)
+                                        - label_gap - value_suffix_width);
 
         std::vector<Element> rows;
         rows.reserve(bars_.size());

@@ -187,7 +187,7 @@ double frame_us(const std::vector<Element>& frozen) {
     constexpr int kReps = 20;
     auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < kReps; ++i) {
-        render_tree(root, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(root, canvas, pool, theme::native, /*auto_height=*/true);
         volatile int ch = content_height(canvas);
         (void)ch;
     }

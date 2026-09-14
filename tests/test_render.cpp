@@ -41,7 +41,7 @@ TEST_CASE("bare text") {
     std::println("--- test_bare_text ---");
     StylePool pool;
     Canvas canvas(30, 3, &pool);
-    render_tree(text("hello"), canvas, pool, theme::dark);
+    render_tree(text("hello"), canvas, pool, theme::native);
     dump(canvas);
     assert(get_row(canvas, 0).starts_with("hello"));
     std::println("PASS\n");
@@ -58,7 +58,7 @@ TEST_CASE("column padding") {
         box().direction(Column).padding(1)(
             text("AAA"),
             text("BBB")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas);
     // padding=1 → content starts at (1,1)
     assert(get_row(canvas, 0).empty()); // top padding row
@@ -78,7 +78,7 @@ TEST_CASE("row layout") {
         box().direction(Row)(
             text("LEFT"),
             text("RIGHT")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas);
     std::string r = get_row(canvas, 0);
     auto lpos = r.find("LEFT");
@@ -103,7 +103,7 @@ TEST_CASE("spacer") {
             text("TOP"),
             spacer(),
             text("BOT")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas);
     assert(get_row(canvas, 0).find("TOP") != std::string::npos);
     assert(get_row(canvas, 9).find("BOT") != std::string::npos);
@@ -120,7 +120,7 @@ TEST_CASE("border") {
     render_tree(
         box().direction(Column).border(BorderStyle::Single)(
             text("hi")
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas);
     Cell tl = canvas.get(0, 0);
     std::println("  corner U+{:04X}", (uint32_t)tl.character);
@@ -144,7 +144,7 @@ TEST_CASE("nested") {
                 text("A"),
                 text("B")
             )
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 5);
     assert(get_row(canvas, 1).find("title") != std::string::npos);
     std::string r2 = get_row(canvas, 2);
@@ -164,7 +164,7 @@ TEST_CASE("counter tree") {
         box().direction(Column).padding(1)(
             text("Counter: 0", bold_style),
             text("[+/-] change  [q] quit", dim_style)
-        ), canvas, pool, theme::dark);
+        ), canvas, pool, theme::native);
     dump(canvas, 5);
     assert(get_row(canvas, 1).find("Counter: 0") != std::string::npos);
     assert(get_row(canvas, 2).find("[+/-]") != std::string::npos);
@@ -181,8 +181,8 @@ TEST_CASE("diff") {
     Canvas new_canvas(20, 3, &pool);
 
     // Write different content to each
-    render_tree(text("before"), old_canvas, pool, theme::dark);
-    render_tree(text("after"), new_canvas, pool, theme::dark);
+    render_tree(text("before"), old_canvas, pool, theme::native);
+    render_tree(text("after"), new_canvas, pool, theme::native);
 
     // Verify cells are actually different
     std::println("  old[0]={:c} new[0]={:c}",
@@ -210,16 +210,16 @@ TEST_CASE("framebuffer") {
     FrameBuffer fb(30, 5);
 
     // First frame: full repaint
-    const auto& out1 = fb.render(text("frame1"), theme::dark);
+    const auto& out1 = fb.render(text("frame1"), theme::native);
     std::println("  frame1 bytes: {}", out1.size());
     assert(!out1.empty());
 
     // Second frame: same content → should produce fewer bytes
-    const auto& out2 = fb.render(text("frame1"), theme::dark);
+    const auto& out2 = fb.render(text("frame1"), theme::native);
     std::println("  frame2 (same) bytes: {}", out2.size());
 
     // Third frame: different content → should produce output
-    const auto& out3 = fb.render(text("frame2"), theme::dark);
+    const auto& out3 = fb.render(text("frame2"), theme::native);
     std::println("  frame3 (changed) bytes: {}", out3.size());
     assert(!out3.empty());
     std::println("PASS\n");
@@ -385,7 +385,7 @@ TEST_CASE("ambient bg inheritance") {
                                .wrap = TextWrap::NoWrap,
                                .runs = std::move(runs)}};
     render_tree((h(text("hi"), std::move(styled)) | bgc(strip)).build(),
-                canvas, pool, theme::dark);
+                canvas, pool, theme::native);
     dump(canvas, 1);
 
     auto bg_at = [&](int x) -> std::optional<Color> {
@@ -405,7 +405,7 @@ TEST_CASE("ambient bg inheritance") {
                     "box fill missing outside the text span");
     // And text OUTSIDE any bg box must stay default-bg.
     Canvas c2(10, 1, &pool);
-    render_tree(text("zz"), c2, pool, theme::dark);
+    render_tree(text("zz"), c2, pool, theme::native);
     MAYA_TEST_CHECK(!pool.get(c2.get(0, 0).style_id).bg.has_value(),
                     "ambient bg leaked outside its box scope");
 
@@ -422,10 +422,10 @@ TEST_CASE("ambient bg inheritance") {
         return Element{std::move(ce)};
     };
     Canvas c3(10, 1, &pool);
-    render_tree(make_comp(), c3, pool, theme::dark);          // capture, no ambient
-    render_tree(make_comp(), c3, pool, theme::dark);          // warm blit path
+    render_tree(make_comp(), c3, pool, theme::native);          // capture, no ambient
+    render_tree(make_comp(), c3, pool, theme::native);          // warm blit path
     Canvas c4(10, 1, &pool);
-    render_tree((h(make_comp()) | bgc(strip)).build(), c4, pool, theme::dark);
+    render_tree((h(make_comp()) | bgc(strip)).build(), c4, pool, theme::native);
     MAYA_TEST_CHECK(pool.get(c4.get(0, 0).style_id).bg == strip,
                     "cached component cells blitted under a DIFFERENT ambient "
                     "(stale default-bg cells punched through the strip)");
@@ -456,7 +456,7 @@ TEST_CASE("hit regions") {
                 v(text("row")) | hit(kRow)
             ) | width(10) | hit(kRight))
         ).build(),
-        canvas, pool, theme::dark);
+        canvas, pool, theme::native);
 
     // Left box owns columns 0-9.
     MAYA_TEST_CHECK(hit_test(0, 0) == std::optional<HitId>{kLeft},
@@ -481,7 +481,7 @@ TEST_CASE("hit regions") {
                     "hit_rect must report the painted rect");
 
     // A new frame WITHOUT the targets clears them.
-    render_tree(text("empty"), canvas, pool, theme::dark);
+    render_tree(text("empty"), canvas, pool, theme::native);
     MAYA_TEST_CHECK(!hit_test(0, 0).has_value(),
                     "registry must reset on the next render");
     std::println("PASS\n");

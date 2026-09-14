@@ -136,7 +136,7 @@ Element build_frame(const std::vector<std::shared_ptr<Element>>& bodies,
 
 double render_us(const Element& root, Canvas& canvas, StylePool& pool) {
     auto t0 = std::chrono::steady_clock::now();
-    render_tree(root, canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(root, canvas, pool, theme::native, /*auto_height=*/true);
     return std::chrono::duration<double, std::micro>(
         std::chrono::steady_clock::now() - t0).count();
 }
@@ -705,12 +705,12 @@ TEST_CASE("agent timeline per event hash id bounds cost") {
 
         // Warm-up frame populates the cache.
         canvas.clear();
-        render_tree(root, canvas, pool, theme::dark, layout_nodes, true);
+        render_tree(root, canvas, pool, theme::native, layout_nodes, true);
 
         auto t0 = std::chrono::steady_clock::now();
         for (int f = 0; f < kFrames; ++f) {
             canvas.clear();
-            render_tree(root, canvas, pool, theme::dark, layout_nodes, true);
+            render_tree(root, canvas, pool, theme::native, layout_nodes, true);
         }
         auto t1 = std::chrono::steady_clock::now();
         return std::chrono::duration<double, std::micro>(t1 - t0).count() / kFrames;
@@ -805,7 +805,7 @@ TEST_CASE("hash cache: width-sensitive height is correct after resize") {
 
     auto laid_out_rows = [&](int width) -> int {
         Canvas canvas(width, 5000, &pool);
-        render_tree(root, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(root, canvas, pool, theme::native, /*auto_height=*/true);
         return content_height(canvas);   // rows actually occupied by content
     };
 
@@ -825,7 +825,7 @@ TEST_CASE("hash cache: width-sensitive height is correct after resize") {
     render_detail::clear_component_cache();
     (void)laid_out_rows(150);                      // warm: caches height=wide
     Canvas narrow(50, 5000, &pool);
-    render_tree(root, narrow, pool, theme::dark, /*auto_height=*/true);
+    render_tree(root, narrow, pool, theme::native, /*auto_height=*/true);
     const int after_resize_rows = content_height(narrow);
 
     CHECK(after_resize_rows == narrow_rows,

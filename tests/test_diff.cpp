@@ -14,8 +14,8 @@ TEST_CASE("diff identical canvases empty output") {
     StylePool pool;
     Canvas old_c(20, 3, &pool);
     Canvas new_c(20, 3, &pool);
-    render_tree(text("same content"), old_c, pool, theme::dark);
-    render_tree(text("same content"), new_c, pool, theme::dark);
+    render_tree(text("same content"), old_c, pool, theme::native);
+    render_tree(text("same content"), new_c, pool, theme::native);
 
     std::string result;
     diff(old_c, new_c, pool, result);
@@ -41,8 +41,8 @@ TEST_CASE("diff changed cell nonempty") {
     StylePool pool;
     Canvas old_c(20, 3, &pool);
     Canvas new_c(20, 3, &pool);
-    render_tree(text("before"), old_c, pool, theme::dark);
-    render_tree(text("after "), new_c, pool, theme::dark);
+    render_tree(text("before"), old_c, pool, theme::native);
+    render_tree(text("after "), new_c, pool, theme::native);
 
     std::string result;
     diff(old_c, new_c, pool, result);
@@ -57,8 +57,8 @@ TEST_CASE("diff single cell change") {
     Canvas old_c(10, 3, &pool);
     Canvas new_c(10, 3, &pool);
     // Start with identical canvases
-    render_tree(text("hello"), old_c, pool, theme::dark);
-    render_tree(text("hello"), new_c, pool, theme::dark);
+    render_tree(text("hello"), old_c, pool, theme::native);
+    render_tree(text("hello"), new_c, pool, theme::native);
 
     // Mutate one cell in new canvas
     new_c.set(0, 0, U'H', 0);
@@ -78,8 +78,8 @@ TEST_CASE("diff size mismatch full repaint") {
     StylePool pool;
     Canvas old_c(20, 5, &pool);
     Canvas new_c(10, 3, &pool);
-    render_tree(text("hello"), old_c, pool, theme::dark);
-    render_tree(text("hello"), new_c, pool, theme::dark);
+    render_tree(text("hello"), old_c, pool, theme::native);
+    render_tree(text("hello"), new_c, pool, theme::native);
 
     std::string result;
     diff(old_c, new_c, pool, result);

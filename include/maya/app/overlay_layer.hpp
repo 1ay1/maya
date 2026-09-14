@@ -132,7 +132,7 @@ public:
     // overlay in ascending z (stable for equal z), measuring + positioning by
     // anchor. The canvas dimensions define the screen rect. No clear.
     void composite(Canvas& canvas, StylePool& pool,
-                   const Theme& theme = theme::dark) const {
+                   const Theme& theme = theme::native) const {
         if (layers_.empty()) return;
         const int sw = canvas.width();
         const int sh = canvas.height();

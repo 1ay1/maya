@@ -142,7 +142,7 @@ struct Frame {
         dropped.emplace_back(o.text);
     });
 
-    render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
     Frame f;
     f.slot = w;
     f.dropped = std::move(dropped);

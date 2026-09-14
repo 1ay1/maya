@@ -340,7 +340,7 @@ static int render_height(std::string_view src) {
     Element el = markdown(src);
     StylePool pool;
     Canvas canvas(80, /*h=*/2000, &pool);
-    render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
     return content_height(canvas);
 }
 

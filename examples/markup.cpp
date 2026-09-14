@@ -142,7 +142,7 @@ constexpr std::string_view kHtmlDoc = R"(
 )";
 
 // The html widget is fully themable; tweak a couple of slots for panel 4.
-constexpr Theme accent = Theme::derive(theme::dark, [](Theme& t) {
+constexpr Theme accent = Theme::derive(theme::native, [](Theme& t) {
     t.primary = Color::hex(0x9ECE6A);  // green h1
     t.link    = Color::hex(0xE0AF68);  // amber links
 });
@@ -166,7 +166,7 @@ std::vector<Element> flatten_to_lines(const Element& root, int width) {
     if (width < 1) return lines;
     StylePool pool;
     Canvas canvas{width, 16000, &pool};
-    render_tree(root, canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(root, canvas, pool, theme::native, /*auto_height=*/true);
     int rows = content_height(canvas);
     lines.reserve(static_cast<std::size_t>(rows) + 1);
     for (int y = 0; y <= rows; ++y) {
@@ -219,7 +219,7 @@ void dump() {
     int width = dump_width();
     StylePool pool;
     Canvas canvas{width, 16000, &pool};
-    render_tree(build_doc(), canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(build_doc(), canvas, pool, theme::native, /*auto_height=*/true);
     int rows = content_height(canvas);
     if (rows < 0) return;
     std::string out;

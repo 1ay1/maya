@@ -293,7 +293,7 @@ void check_row(const std::string& row, const std::string& wide,
 std::vector<std::string> rows_at(const Element& el, int w) {
     StylePool pool;
     Canvas cv(w, 8, &pool);
-    render_tree(el, cv, pool, theme::dark, true);
+    render_tree(el, cv, pool, theme::native, true);
     std::vector<std::string> out;
     for (int y = 0; y < 8; ++y) {
         std::string r = structural_row(cv, y);

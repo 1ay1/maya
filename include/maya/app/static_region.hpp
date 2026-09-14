@@ -29,7 +29,7 @@ class StaticRegion {
 public:
     /// Freeze an Element: render it once, queue ANSI output for the next frame.
     void freeze(const Element& elem, int width, StylePool& pool,
-                const Theme& theme = theme::dark) {
+                const Theme& theme = theme::native) {
         // Render into a temporary canvas
         Canvas canvas(width, 500, &pool);
         canvas.clear();
@@ -120,7 +120,7 @@ public:
     /// Returns the number of rows frozen by THIS call (0 if it would leave no
     /// active row, or the element is empty).
     int freeze(const Element& elem, int width, StylePool& pool,
-               std::string& out, const Theme& theme = theme::dark) {
+               std::string& out, const Theme& theme = theme::native) {
         if (!armed_ || width <= 0) return 0;
 
         // Measure natural height.
@@ -160,7 +160,7 @@ public:
     /// content from a taller previous frame is erased), then stamps the
     /// element clipped to the band. Frozen rows are untouched.
     void draw_active(const Element& elem, int width, StylePool& pool,
-                     std::string& out, const Theme& theme = theme::dark) {
+                     std::string& out, const Theme& theme = theme::native) {
         if (!armed_ || width <= 0) return;
         const int top    = frozen_ + 1;          // 1-based first active row
         const int height = screen_h_ - frozen_;  // active band height

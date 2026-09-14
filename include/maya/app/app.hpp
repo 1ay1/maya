@@ -125,7 +125,7 @@ struct RunConfig {
                                                     ///< move events and some terminals handle it oddly.
     Mode             mode       = Mode::Fullscreen; ///< Rendering mode
     RenderBackend    backend    = RenderBackend::Ansi; ///< Frame transport (see RenderBackend)
-    Theme            theme      = theme::dark;      ///< Colour theme
+    Theme            theme      = theme::native;      ///< Colour theme
     /// Negotiate the KITTY KEYBOARD PROTOCOL (progressive enhancement,
     /// flag 1 "disambiguate escape codes"). When the terminal supports it,
     /// modifier chords that legacy encoding cannot express — Ctrl+/, Ctrl+Tab,
@@ -987,7 +987,7 @@ private:
     inline_frame::InlineCoherence   in_coherence_ = inline_frame::InlineFrame<inline_frame::Empty>{};
 
     // -- Configuration --------------------------------------------------------
-    Theme         theme_              = theme::dark;
+    Theme         theme_              = theme::native;
     Size          size_{};
     RenderContext render_ctx_;
     uint32_t      resize_generation_  = 0;

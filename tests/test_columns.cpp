@@ -49,7 +49,7 @@ std::vector<std::string> paint(const Element& el, int w) {
     // harness instead of the layout.
     Canvas canvas(w, 200, &pool);
     canvas.clear();
-    render_tree(el, canvas, pool, theme::dark);
+    render_tree(el, canvas, pool, theme::native);
 
     std::vector<std::string> rows;
     for (int y = 0; y < 200; ++y) {

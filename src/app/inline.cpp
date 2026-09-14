@@ -98,7 +98,7 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
     // cell the current paint doesn't explicitly write stays blank.
     st.canvas_.clear();
 
-    render_tree(root, st.canvas_, pool, theme::dark, st.layout_nodes_,
+    render_tree(root, st.canvas_, pool, theme::native, st.layout_nodes_,
                 /*auto_height=*/true);
 
     int ch = content_height(st.canvas_);
@@ -112,7 +112,7 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
         if (needed > st.canvas_.height()) {
             st.canvas_.resize(width, needed + 8);
             st.canvas_.clear();
-            render_tree(root, st.canvas_, pool, theme::dark,
+            render_tree(root, st.canvas_, pool, theme::native,
                         st.layout_nodes_, /*auto_height=*/true);
             ch = content_height(st.canvas_);
         }
@@ -242,7 +242,7 @@ std::string render_to_string(const Element& root, int width) {
     StylePool pool;
     std::vector<layout::LayoutNode> layout_nodes;
     Canvas canvas{width, 500, &pool};
-    render_tree(root, canvas, pool, theme::dark, layout_nodes, /*auto_height=*/true);
+    render_tree(root, canvas, pool, theme::native, layout_nodes, /*auto_height=*/true);
 
     int rows = content_height(canvas);
 
@@ -254,7 +254,7 @@ std::string render_to_string(const Element& root, int width) {
         if (needed > canvas.height()) {
             canvas.resize(width, needed + 8);
             canvas.clear();
-            render_tree(root, canvas, pool, theme::dark, layout_nodes,
+            render_tree(root, canvas, pool, theme::native, layout_nodes,
                         /*auto_height=*/true);
             rows = content_height(canvas);
         }
@@ -294,14 +294,14 @@ std::string render_to_string_ansi(const Element& root, int width) {
     StylePool pool;
     std::vector<layout::LayoutNode> layout_nodes;
     Canvas canvas{width, 500, &pool};
-    render_tree(root, canvas, pool, theme::dark, layout_nodes, /*auto_height=*/true);
+    render_tree(root, canvas, pool, theme::native, layout_nodes, /*auto_height=*/true);
     int rows = content_height(canvas);
     if (!layout_nodes.empty()) {
         int needed = layout_nodes[0].computed.size.height.raw();
         if (needed > canvas.height()) {
             canvas.resize(width, needed + 8);
             canvas.clear();
-            render_tree(root, canvas, pool, theme::dark, layout_nodes, /*auto_height=*/true);
+            render_tree(root, canvas, pool, theme::native, layout_nodes, /*auto_height=*/true);
             rows = content_height(canvas);
         }
     }

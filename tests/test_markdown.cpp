@@ -83,7 +83,7 @@ static void render_md(std::string_view src) {
     for (int w : {40, 80, 160}) {
         StylePool pool;
         Canvas canvas(w, /*h=*/4000, &pool);
-        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
         volatile int ch = content_height(canvas);
         (void)ch;
     }
@@ -95,7 +95,7 @@ static void render_stream(const StreamingMarkdown& md) {
     Element el = md.build();
     StylePool pool;
     Canvas canvas(80, /*h=*/4000, &pool);
-    render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
     volatile int ch = content_height(canvas);
     (void)ch;
 }
@@ -1144,7 +1144,7 @@ static void st_incremental_settle() {
     auto render_cells = [](const Element& el, int& out_h) {
         StylePool pool;
         Canvas canvas(80, /*h=*/4000, &pool);
-        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
         out_h = content_height(canvas);
         const std::uint64_t* c = canvas.cells();
         const std::size_t n =
@@ -1303,7 +1303,7 @@ static int stream_height(const StreamingMarkdown& md) {
     Element el = md.build();
     StylePool pool;
     Canvas canvas(80, /*h=*/4000, &pool);
-    render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
     return content_height(canvas);
 }
 static void st_eager_hrule() {
@@ -1349,7 +1349,7 @@ static void st_eager_closing_fence() {
         Element el = md.build();
         StylePool pool;
         Canvas canvas(80, /*h=*/4000, &pool);
-        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
         out_h = content_height(canvas);
         std::vector<std::uint64_t> cells;
         const std::uint64_t* c = canvas.cells();
@@ -1750,7 +1750,7 @@ static void st_committed_cells_stable() {
         Element el = md.build();
         StylePool pool;
         Canvas canvas(80, /*h=*/4000, &pool);
-        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
         out_h = content_height(canvas);
         const std::uint64_t* c = canvas.cells();
         std::size_t n = static_cast<std::size_t>(canvas.width()) * out_h;
@@ -1848,7 +1848,7 @@ static void st_list_then_heading_no_blank_stable() {
         Element el = md.build();
         StylePool pool;
         Canvas canvas(80, /*h=*/4000, &pool);
-        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
         out_h = content_height(canvas);
         const std::uint64_t* c = canvas.cells();
         std::size_t n = static_cast<std::size_t>(canvas.width()) * out_h;
@@ -2225,7 +2225,7 @@ static void st_reveal_fx_table_animates() {
         // each frame's render heavy enough that the 400-iteration sampling
         // loop below blew the watchdog on slower hosts.
         Canvas canvas(80, /*h=*/128, &pool);
-        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
         int h = content_height(canvas);
         const std::uint64_t* c = canvas.cells();
         int best = -1;
@@ -2337,7 +2337,7 @@ static void st_reveal_fx_table_no_border_corruption() {
         -> std::vector<std::u32string> {
         Element el = md.build();
         Canvas canvas(80, /*h=*/128, &pool);
-        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
         int h = content_height(canvas);
         const std::uint64_t* c = canvas.cells();
         std::vector<std::u32string> out;
@@ -2453,7 +2453,7 @@ static void st_reveal_fx_height_monotonic_streaming() {
         Element el = md.build();
         StylePool pool;
         Canvas canvas(80, /*h=*/256, &pool);
-        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
         return content_height(canvas);
     };
 

@@ -33,7 +33,7 @@ TEST_CASE("base only") {
     StylePool pool;
     Canvas canvas(40, 10, &pool);
     canvas.clear();
-    render_tree(text("BASE"), canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(text("BASE"), canvas, pool, theme::native, /*auto_height=*/true);
 
     OverlayStack stack;
     assert(stack.empty());
@@ -48,7 +48,7 @@ TEST_CASE("anchor top right") {
     StylePool pool;
     Canvas canvas(40, 10, &pool);
     canvas.clear();
-    render_tree(text("flow"), canvas, pool, theme::dark, true);
+    render_tree(text("flow"), canvas, pool, theme::native, true);
 
     OverlayStack stack;
     stack += (Element(text("HI")) |
@@ -160,7 +160,7 @@ TEST_CASE("float over flow") {
                     text("line-one-content"),
                     text("line-two-content"),
                     text("line-three-xxxx")),
-                canvas, pool, theme::dark, true);
+                canvas, pool, theme::native, true);
 
     OverlayStack stack;
     stack += overlay_at(text("[TIP]"), /*x=*/20, /*y=*/1);

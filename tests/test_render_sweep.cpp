@@ -286,7 +286,7 @@ TEST_CASE("render_sweep: the clip tripwire actually fires") {
     // Deliberately wider than the canvas: the renderer must report the
     // cells it throws away rather than dropping them in silence.
     render_tree(dsl::text("this line is far too long for twenty columns").build(),
-                canvas, pool, theme::dark, /*auto_height=*/true);
+                canvas, pool, theme::native, /*auto_height=*/true);
 
     CHECK_MESSAGE(!dropped.empty(),
                   "the clip reporter never fired on text that does not fit — "

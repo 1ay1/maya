@@ -201,7 +201,7 @@ static void render_timeline(const AgentTimeline::Config& cfg,
     Element root = tl.build();
     std::vector<layout::LayoutNode> layout_nodes;
     canvas.clear();
-    render_tree(root, canvas, pool, theme::dark, layout_nodes,
+    render_tree(root, canvas, pool, theme::native, layout_nodes,
                 /*auto_height=*/true);
 }
 
@@ -383,7 +383,7 @@ void test_two_stacked_card_panels_borders_independent() {
         Element root = vstack()(card_a(), card_b()).build();
         std::vector<layout::LayoutNode> layout_nodes;
         canvas.clear();
-        render_tree(root, canvas, pool, theme::dark, layout_nodes,
+        render_tree(root, canvas, pool, theme::native, layout_nodes,
                     /*auto_height=*/true);
 
         // Find BOTH cards. Walk column 0; a card starts at ╭ and ends
@@ -467,7 +467,7 @@ void test_card_border_survives_layout_shift_above() {
 
         std::vector<layout::LayoutNode> layout_nodes;
         canvas.clear();
-        render_tree(root, canvas, pool, theme::dark, layout_nodes,
+        render_tree(root, canvas, pool, theme::native, layout_nodes,
                     /*auto_height=*/true);
 
         auto [top, bot] = find_card_rows(canvas);

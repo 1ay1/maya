@@ -124,7 +124,7 @@ WireStats stream_wire(const std::string& doc, std::size_t chunk,
         if (++pending < coalesce && fed < doc.size()) continue;
         pending = 0;
 
-        const std::string& wire = fb.render(md.build(), theme::dark);
+        const std::string& wire = fb.render(md.build(), theme::native);
 
         const std::size_t changed = changed_cells(shadow, fb.back().canvas);
         st.total_changed_cells += changed;
@@ -180,7 +180,7 @@ WireStats stream_grid(const std::string& doc, std::size_t chunk,
         fed += n;
 
         canvas.clear();
-        render_tree(md.build(), canvas, pool, theme::dark,
+        render_tree(md.build(), canvas, pool, theme::native,
                     /*auto_height=*/true);
         const int rows = std::max(1, content_height(canvas));
 

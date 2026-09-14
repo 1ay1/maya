@@ -84,7 +84,7 @@ int settled_row_rewrites(const std::string& doc, int chunk) {
         RenderContextGuard guard(ctx);
         Canvas c(kWidth, 4000, &pool);
         c.clear();
-        render_tree(md.build(), c, pool, theme::dark, nodes, true);
+        render_tree(md.build(), c, pool, theme::native, nodes, true);
         return c;
     };
 

@@ -38,7 +38,7 @@ namespace maya::html {
 /// Parse `source` as HTML and render it to a (block-level) Element, coloured
 /// from `theme`. Never throws; malformed input degrades to best-effort text.
 [[nodiscard]] Element render(std::string_view source,
-                             const Theme& theme = theme::dark);
+                             const Theme& theme = theme::native);
 
 /// True when `source` would render to nothing a reader can see — no glyphs,
 /// no styled runs, no visible structural children (a lone unknown/empty tag
@@ -47,12 +47,12 @@ namespace maya::html {
 /// nor earns the surrounding block gap. Same verdict as inspecting
 /// `render(source, theme)`, without materialising the result for the caller.
 [[nodiscard]] bool renders_empty(std::string_view source,
-                                 const Theme& theme = theme::dark);
+                                 const Theme& theme = theme::native);
 
 /// Widget wrapper (maya house style: pipeable Node via implicit Element).
 class Html {
 public:
-    explicit Html(std::string source, Theme theme = theme::dark)
+    explicit Html(std::string source, Theme theme = theme::native)
         : source_(std::move(source)), theme_(theme) {}
 
     operator Element() const { return build(); }

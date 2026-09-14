@@ -13,7 +13,7 @@ using namespace maya;
 static void dump(const StatSheet& s, int w) {
     StylePool pool;
     Canvas canvas(w, 44, &pool);
-    render_tree(s.build(), canvas, pool, theme::dark, true);
+    render_tree(s.build(), canvas, pool, theme::native, true);
     std::printf("\n--- %d cols ---\n", w);
     for (int y = 0; y < 44; ++y) {
         std::string line;

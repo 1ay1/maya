@@ -51,7 +51,7 @@ std::string row_text(const Canvas& c, int y, int width) {
 Rendered render(const TabStrip& s, int width) {
     StylePool pool;
     Canvas canvas(width, 16, &pool);
-    render_tree(s.build(), canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(s.build(), canvas, pool, theme::native, /*auto_height=*/true);
     Rendered out;
     for (int y = 0; y < 16; ++y) {
         auto r = row_text(canvas, y, width);
@@ -261,7 +261,7 @@ TEST_CASE("tab strip: no mark paints a background by default") {
         TabStrip s;
         s.tab("alpha").tab("bravo").tab("charlie");
         s.active(1).marker(m);
-        render_tree(s.build(), canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(s.build(), canvas, pool, theme::native, /*auto_height=*/true);
         bool any_bg = false;
         for (int y = 0; y < 3; ++y)
             for (int x = 0; x < 52; ++x)
@@ -286,7 +286,7 @@ TEST_CASE("tab strip: active_bg fills the active tab and nothing else") {
         s.tab("alpha").tab("bravo").tab("charlie");
         s.active(1).marker(m);
         s.theme.active_bg = Color::magenta();
-        render_tree(s.build(), canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(s.build(), canvas, pool, theme::native, /*auto_height=*/true);
 
         int filled = 0;
         std::string under_fill;

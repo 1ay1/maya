@@ -69,7 +69,7 @@ static std::uint64_t render_frame(StreamingMarkdown& md, Canvas& canvas,
                                   StylePool& pool) {
     const std::uint64_t before = render_detail::component_render_calls();
     canvas.clear();
-    render_tree(md.build(), canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(md.build(), canvas, pool, theme::native, /*auto_height=*/true);
     return render_detail::component_render_calls() - before;
 }
 

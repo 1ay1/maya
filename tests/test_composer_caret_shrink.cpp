@@ -220,7 +220,7 @@ static Canvas paint_composer(StylePool& pool, const std::string& text,
     cfg.hardware_caret = hardware_caret;
     cfg.state  = state;
     Canvas canvas(width, 64, &pool);
-    render_tree(Composer{cfg}.build(), canvas, pool, theme::dark,
+    render_tree(Composer{cfg}.build(), canvas, pool, theme::native,
                 /*auto_height=*/true);
     return canvas;
 }

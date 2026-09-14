@@ -124,7 +124,7 @@ int main() {
     auto paint = [&]() {
         RenderContext ctx{kWidth, kTermH, render_generation(), /*auto_height=*/true};
         RenderContextGuard guard(ctx);
-        render_tree(md.build(), canvas, pool, theme::dark, nodes, /*auto_height=*/true);
+        render_tree(md.build(), canvas, pool, theme::native, nodes, /*auto_height=*/true);
     };
 
     std::vector<Sample> samples;

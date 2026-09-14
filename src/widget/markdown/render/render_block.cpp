@@ -1078,7 +1078,7 @@ Element md_block_to_element(const md::Block& block) {
             // themed, so map the markdown palette onto a Theme once so embedded
             // HTML matches the surrounding markdown's look.
             static const Theme md_theme = [] {
-                Theme t = theme::dark;
+                Theme t = theme::native;
                 t.text         = colors::text;
                 t.primary      = colors::heading1;
                 t.accent       = colors::heading2;

@@ -42,7 +42,7 @@ std::string row_text(const Canvas& c, int y, int width) {
 Rendered render_sheet(const StatSheet& s, int width) {
     StylePool pool;
     Canvas canvas(width, 24, &pool);
-    render_tree(s.build(), canvas, pool, theme::dark, /*auto_height=*/true);
+    render_tree(s.build(), canvas, pool, theme::native, /*auto_height=*/true);
     Rendered out;
     for (int y = 0; y < 24; ++y) out.rows.push_back(row_text(canvas, y, width));
     while (!out.rows.empty() && out.rows.back().empty()) out.rows.pop_back();
@@ -354,7 +354,7 @@ TEST_CASE("stat sheet: a filled plot shades under its curve") {
     auto lit = [](const StatSheet& s) {
         StylePool pool;
         Canvas canvas(30, 8, &pool);
-        render_tree(s.build(), canvas, pool, theme::dark, true);
+        render_tree(s.build(), canvas, pool, theme::native, true);
         int dots = 0;
         for (int y = 0; y < 8; ++y)
             for (int x = 0; x < 30; ++x) {
@@ -740,7 +740,7 @@ TEST_CASE("stat sheet: measured height equals painted rows at every width") {
         // against an untrimmed measurement.
         StylePool pool;
         Canvas canvas(w, 64, &pool);
-        render_tree(el, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(el, canvas, pool, theme::native, /*auto_height=*/true);
         int painted = 0;
         for (int y = 0; y < 64; ++y)
             for (int x = 0; x < w; ++x) {

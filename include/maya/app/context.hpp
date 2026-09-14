@@ -28,7 +28,7 @@ namespace maya {
 //
 // Usage:
 //   ContextMap ctx;
-//   ctx.set<Theme>(theme::dark);
+//   ctx.set<Theme>(theme::native);
 //   const Theme* t = ctx.get<Theme>();   // non-null if set
 
 template <typename T>

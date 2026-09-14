@@ -72,7 +72,7 @@ RenderResult render_at(const Element& elem, int width, int height = 500,
                        bool auto_h = true) {
     StylePool pool;
     Canvas canvas(width, height, &pool);
-    render_tree(elem, canvas, pool, theme::dark, auto_h);
+    render_tree(elem, canvas, pool, theme::native, auto_h);
     int ch = content_height(canvas);
     std::vector<std::string> rows;
     for (int y = 0; y < ch; ++y)
@@ -155,7 +155,7 @@ TEST_CASE("table") {
 
         StylePool pool;
         Canvas canvas(40, 8, &pool);
-        render_tree(t.build(), canvas, pool, theme::dark, true);
+        render_tree(t.build(), canvas, pool, theme::native, true);
 
         // Find the x of the first non-space glyph on the emoji-edge row (1)
         // and the plain-edge row (2). After the fix they must match: the
@@ -887,7 +887,7 @@ TEST_CASE("panel selected row highlight") {
 
     StylePool pool;
     Canvas canvas(40, 10, &pool);
-    render_tree(Panel{std::move(cfg)}.build(), canvas, pool, theme::dark);
+    render_tree(Panel{std::move(cfg)}.build(), canvas, pool, theme::native);
 
     int selected_y = -1;
     int selected_x = -1;
@@ -975,7 +975,7 @@ TEST_CASE("panel virtualized large list renders selection") {
 
     StylePool pool;
     Canvas canvas(40, 14, &pool);
-    render_tree(Panel{std::move(cfg)}.build(), canvas, pool, theme::dark);
+    render_tree(Panel{std::move(cfg)}.build(), canvas, pool, theme::native);
 
     // The selected row must be on-screen with its REAL leading text — proving
     // the windowed row was built and placed, not left as a blank spacer.

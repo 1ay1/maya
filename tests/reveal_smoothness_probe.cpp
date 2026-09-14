@@ -133,7 +133,7 @@ int main() {
         RenderContextGuard guard(ctx);
         Canvas c(kWidth, 4000, &pool);
         c.clear();
-        render_tree(md.build(), c, pool, theme::dark, nodes, /*auto_height=*/true);
+        render_tree(md.build(), c, pool, theme::native, nodes, /*auto_height=*/true);
         return c;
     };
 

@@ -90,7 +90,7 @@ StreamResult stream_doc(const std::string& doc, std::size_t chunk) {
         auto t0 = std::chrono::steady_clock::now();
         md.append(std::string_view(doc).substr(fed, n));
         Element root = md.build();
-        render_tree(root, canvas, pool, theme::dark, /*auto_height=*/true);
+        render_tree(root, canvas, pool, theme::native, /*auto_height=*/true);
         auto t1 = std::chrono::steady_clock::now();
         frame_ms.push_back(
             std::chrono::duration<double, std::milli>(t1 - t0).count());
@@ -98,7 +98,7 @@ StreamResult stream_doc(const std::string& doc, std::size_t chunk) {
     }
     md.finish();
     (void)md.build();  // absorb the finish() rebuild
-    render_tree(md.build(), canvas, pool, theme::dark, true);
+    render_tree(md.build(), canvas, pool, theme::native, true);
 
     const std::size_t N = frame_ms.size();
     std::vector<double> q1(frame_ms.begin(), frame_ms.begin() + N / 4);
@@ -109,7 +109,7 @@ StreamResult stream_doc(const std::string& doc, std::size_t chunk) {
         auto t0 = std::chrono::steady_clock::now();
         Element root = md.build();
         auto tb = std::chrono::steady_clock::now();
-        render_tree(root, canvas, pool, theme::dark, true);
+        render_tree(root, canvas, pool, theme::native, true);
         auto t1 = std::chrono::steady_clock::now();
         idle.push_back(
             std::chrono::duration<double, std::milli>(t1 - t0).count());

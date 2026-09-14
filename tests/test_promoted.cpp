@@ -54,7 +54,7 @@ RR render_elem(const Element& elem, int w, int h = 500,
     StylePool pool;
     Canvas canvas(std::max(1, w - 1), h, &pool);
     canvas.clear();
-    render_tree(elem, canvas, pool, theme::dark, auto_h);
+    render_tree(elem, canvas, pool, theme::native, auto_h);
     int ch = content_height(canvas);
     std::vector<std::string> rows;
     for (int y = 0; y < ch; ++y)

@@ -322,7 +322,7 @@ TEST_CASE("renderer vertical scroll") {
     {
         Canvas canvas(20, 8, &pool);
         ScrollState s;
-        render_tree(build(s), canvas, pool, theme::dark);
+        render_tree(build(s), canvas, pool, theme::native);
         dump(canvas);
         assert(get_row(canvas, 0).find("row00") != std::string::npos);
         assert(get_row(canvas, 7).find("row07") != std::string::npos);
@@ -332,7 +332,7 @@ TEST_CASE("renderer vertical scroll") {
         Canvas canvas(20, 8, &pool);
         ScrollState s;
         s.y = 5;
-        render_tree(build(s), canvas, pool, theme::dark);
+        render_tree(build(s), canvas, pool, theme::native);
         dump(canvas);
         assert(get_row(canvas, 0).find("row05") != std::string::npos);
         assert(get_row(canvas, 7).find("row12") != std::string::npos);
@@ -342,7 +342,7 @@ TEST_CASE("renderer vertical scroll") {
         Canvas canvas(20, 8, &pool);
         ScrollState s;
         s.y = 22;
-        render_tree(build(s), canvas, pool, theme::dark);
+        render_tree(build(s), canvas, pool, theme::native);
         dump(canvas);
         assert(get_row(canvas, 0).find("row22") != std::string::npos);
         assert(get_row(canvas, 7).find("row29") != std::string::npos);
@@ -379,7 +379,7 @@ TEST_CASE("renderer horizontal scroll") {
         Canvas canvas(10, 1, &pool);
         ScrollState s;
         Element ui = (h(wide_row()) | scrollx(s, /*w=*/10)).build();
-        render_tree(ui, canvas, pool, theme::dark);
+        render_tree(ui, canvas, pool, theme::native);
         std::string row = get_row(canvas, 0);
         std::println("  x=0  row[0]='{}'", row);
         assert(row.starts_with("0123456789"));
@@ -391,7 +391,7 @@ TEST_CASE("renderer horizontal scroll") {
         ScrollState s;
         s.x = 5;
         Element ui = (h(wide_row()) | scrollx(s, /*w=*/10)).build();
-        render_tree(ui, canvas, pool, theme::dark);
+        render_tree(ui, canvas, pool, theme::native);
         std::string row = get_row(canvas, 0);
         std::println("  x=5  row[0]='{}'", row);
         assert(row.starts_with("5678901234"));
@@ -403,7 +403,7 @@ TEST_CASE("renderer horizontal scroll") {
         ScrollState s;
         s.x = 20;
         Element ui = (h(wide_row()) | scrollx(s, /*w=*/10)).build();
-        render_tree(ui, canvas, pool, theme::dark);
+        render_tree(ui, canvas, pool, theme::native);
         std::string row = get_row(canvas, 0);
         std::println("  x=20 row[0]='{}'", row);
         assert(row.starts_with("0123456789"));
@@ -445,7 +445,7 @@ TEST_CASE("renderer 2d scroll") {
     s.y = 2;       // skip 2 rows
 
     Element ui = (v(make_grid(/*rows=*/10, /*cols=*/15)) | scroll(s, /*w=*/8, /*h=*/4)).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
     dump(canvas);
 
     // Debug: dump canvas without trimming so we can see every cell.
@@ -486,7 +486,7 @@ TEST_CASE("max offset writeback") {
         ScrollState s;
         Canvas canvas(20, 8, &pool);
         Element ui = (v(make_rows(30)) | scroll(s, /*h=*/8)).build();
-        render_tree(ui, canvas, pool, theme::dark);
+        render_tree(ui, canvas, pool, theme::native);
         std::println("  vertical:   max_y={} (expected 22)", s.max_y);
         assert(s.max_y == 22);   // 30 rows - 8 viewport
         assert(s.max_x == 0);
@@ -500,7 +500,7 @@ TEST_CASE("max offset writeback") {
         for (int i = 0; i < 30; ++i)
             cells.push_back(text(std::string(1, 'X')));
         Element ui = (h(std::move(cells)) | scrollx(s, /*w=*/10)).build();
-        render_tree(ui, canvas, pool, theme::dark);
+        render_tree(ui, canvas, pool, theme::native);
         std::println("  horizontal: max_x={} (expected 20)", s.max_x);
         assert(s.max_x == 20);
     }
@@ -518,7 +518,7 @@ TEST_CASE("stale offset clamps") {
     s.y = 9999;       // ridiculously past content end
     Canvas canvas(20, 8, &pool);
     Element ui = (v(make_rows(30)) | scroll(s, /*h=*/8)).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
     std::println("  y after render: {} (expected <= 22)", s.y);
     assert(s.y == 22);   // clamped to max_y
     std::println("PASS\n");
@@ -541,7 +541,7 @@ TEST_CASE("scrollbar y") {
     {
         Canvas canvas(1, 10, &pool);
         s.y = 0;
-        render_tree(scrollbar_y(s, 10), canvas, pool, theme::dark);
+        render_tree(scrollbar_y(s, 10), canvas, pool, theme::native);
         dump(canvas);
         std::string col;
         for (int y = 0; y < 10; ++y) col += get_row(canvas, y).empty() ? '.' : '#';
@@ -562,7 +562,7 @@ TEST_CASE("scrollbar y") {
         Canvas canvas(1, 10, &pool);
         s.y = 30;   // at the bottom
         Element bar = scrollbar_y(s, 10);
-        render_tree(bar, canvas, pool, theme::dark);
+        render_tree(bar, canvas, pool, theme::native);
         dump(canvas);
         // The element is a vbox with up to 3 children: top track, thumb,
         // bottom track. With thumb_pos = 8 and thumb_size = 2, we expect
@@ -645,7 +645,7 @@ TEST_CASE("scrollable widget compat") {
     view.scroll_down(5);
 
     Canvas canvas(20, 8, &pool);
-    render_tree(view.build(), canvas, pool, theme::dark);
+    render_tree(view.build(), canvas, pool, theme::native);
     dump(canvas);
     assert(get_row(canvas, 0).find("row05") != std::string::npos);
     assert(view.offset() == 5);
@@ -683,7 +683,7 @@ TEST_CASE("hover over hbar") {
         v(wide_rows()) | scroll(state, /*w=*/20, /*h=*/5),
         scrollbar_x(state, /*w=*/20)
     ).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
 
     std::println("  max_x={}  max_y={}", state.max_x, state.max_y);
     std::println("  bar_h_bounds: x={} y={} w={} h={}",
@@ -739,7 +739,7 @@ TEST_CASE("click drag h bar") {
         v(wide_rows()) | scroll(state, /*w=*/20, /*h=*/5),
         scrollbar_x(state, /*w=*/20)
     ).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
 
     std::println("  bar_h_bounds: x={} y={} w={} h={}",
                  state.bar_h_bounds.x, state.bar_h_bounds.y,
@@ -792,7 +792,7 @@ TEST_CASE("click drag v bar") {
         v(make_rows(30)) | scroll(state, /*h=*/8),
         scrollbar_y(state, /*h=*/8)
     ).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
 
     std::println("  bar_v_bounds: x={} y={} w={} h={}",
                  state.bar_v_bounds.x, state.bar_v_bounds.y,
@@ -848,7 +848,7 @@ TEST_CASE("drag is lag free") {
         v(wide_rows()) | scroll(state, /*w=*/40, /*h=*/5),
         scrollbar_x(state, /*w=*/40)
     ).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
 
     assert(state.bar_h_bounds.w == 40);
     assert(state.max_x > 0);
@@ -929,7 +929,7 @@ TEST_CASE("stretched bar uses natural extent") {
         v(wide_rows()) | scroll(state, /*w=*/12, /*h=*/6),
         scrollbar_x(state, /*w=*/12)
     ).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
 
     std::println("  bar.w={} (expect 12)  max_x={}", state.bar_h_bounds.w, state.max_x);
     assert(state.bar_h_bounds.w == 12);
@@ -966,7 +966,7 @@ TEST_CASE("multiple bars one state") {
         scrollbar_x(state, /*w=*/40),   // bar 1
         scrollbar_x(state, /*w=*/40)    // bar 2
     ).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
 
     std::println("  bars_h.size()={}  max_x={}", state.bars_h.size(), state.max_x);
     assert(state.bars_h.size() == 3);
@@ -1012,7 +1012,7 @@ TEST_CASE("drag right release does not cancel") {
         v(wide_rows()) | scroll(state, /*w=*/20, /*h=*/5),
         scrollbar_x(state, /*w=*/20)
     ).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
 
     const int bar_x = state.bar_h_bounds.x;
     const int bar_y = state.bar_h_bounds.y;
@@ -1050,7 +1050,7 @@ TEST_CASE("drag skipped when no scroll room") {
         v(text("short")) | scroll(state, /*w=*/20, /*h=*/5),
         scrollbar_x(state, /*w=*/20)
     ).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
 
     std::println("  max_x={}  bar_h_bounds.w={}", state.max_x, state.bar_h_bounds.w);
     assert(state.max_x == 0);
@@ -1087,7 +1087,7 @@ TEST_CASE("drag axis switch does not dual flag") {
         ),
         scrollbar_x(state, /*w=*/20)
     ).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
 
     assert(state.max_x > 0 && state.max_y > 0);
 
@@ -1130,7 +1130,7 @@ TEST_CASE("end drag recovers from lost release") {
         v(wide_rows()) | scroll(state, /*w=*/20, /*h=*/5),
         scrollbar_x(state, /*w=*/20)
     ).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
 
     // Start drag, no release ever arrives.
     assert(state.handle(click_at(state.bar_h_bounds.x, state.bar_h_bounds.y)));
@@ -1158,7 +1158,7 @@ TEST_CASE("content fits viewport") {
     // 3 rows of content in a 10-row viewport — content fits completely.
     Canvas canvas(20, 10, &pool);
     Element ui = (v(make_rows(3)) | scroll(s, /*h=*/10)).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
     std::println("  max_y after render: {} (expected 0)", s.max_y);
     assert(s.max_y == 0);
 
@@ -1181,7 +1181,7 @@ TEST_CASE("empty content") {
     ScrollState s;
     Canvas canvas(10, 5, &pool);
     Element ui = (v() | scroll(s, /*h=*/5)).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
     assert(s.max_y == 0);
     assert(s.max_x == 0);
     // Scrollbar over zero-content should still produce a valid Element
@@ -1204,7 +1204,7 @@ TEST_CASE("stale state far past max") {
     s.x = 1'000'000;
     Canvas canvas(20, 8, &pool);
     Element ui = (v(make_rows(30)) | scroll(s, /*h=*/8)).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
     // After writeback + clamp, y must be == max_y (and x == max_x = 0).
     assert(s.y == s.max_y);
     assert(s.x == 0);
@@ -1237,7 +1237,7 @@ TEST_CASE("large content") {
     ScrollState s;
     Canvas canvas(20, 10, &pool);
     Element ui = (v(make_rows(10'000)) | scroll(s, /*h=*/10)).build();
-    render_tree(ui, canvas, pool, theme::dark);
+    render_tree(ui, canvas, pool, theme::native);
     std::println("  max_y: {} (expected 9990)", s.max_y);
     assert(s.max_y == 9990);
     // Jumping to end should land at max_y exactly.
@@ -1263,20 +1263,20 @@ TEST_CASE("writeback dirty flag") {
     // First render with 30 rows — max_y goes 0 → 22, dirty fires.
     Canvas canvas(20, 8, &pool);
     Element ui1 = (v(make_rows(30)) | scroll(s, /*h=*/8)).build();
-    render_tree(ui1, canvas, pool, theme::dark);
+    render_tree(ui1, canvas, pool, theme::native);
     assert(s.max_y == 22);
     assert(detail::scroll_writeback_dirty == true);
 
     // Re-render with same content — max stays at 22, dirty should NOT fire.
     detail::scroll_writeback_dirty = false;
     Element ui2 = (v(make_rows(30)) | scroll(s, /*h=*/8)).build();
-    render_tree(ui2, canvas, pool, theme::dark);
+    render_tree(ui2, canvas, pool, theme::native);
     assert(s.max_y == 22);
     assert(detail::scroll_writeback_dirty == false);
 
     // Render with different content size — max changes, dirty fires.
     Element ui3 = (v(make_rows(50)) | scroll(s, /*h=*/8)).build();
-    render_tree(ui3, canvas, pool, theme::dark);
+    render_tree(ui3, canvas, pool, theme::native);
     assert(s.max_y == 42);
     assert(detail::scroll_writeback_dirty == true);
 

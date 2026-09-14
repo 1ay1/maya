@@ -142,7 +142,25 @@ private:
             std::vector<uint8_t>(static_cast<size_t>(chart_cols), 0)
         );
 
-        // Plot: for each grid-x, find grid-y and set the dot
+        // Plot: for each grid-x, find grid-y and draw a SEGMENT from the
+        // previous point.
+        //
+        // Setting one dot per column draws the samples, not the line: where
+        // consecutive values differ by more than a dot the marks stop
+        // touching, and a spiky series (tokens per turn) renders as a field
+        // of specks with no shape to read. Filling the span between the
+        // previous y and this one is what makes it a LINE chart — and it
+        // costs nothing, since the dots are already there to be set.
+        auto dot_at = [&](int gx, int gy) {
+            const int cell_col = gx / 2;
+            const int dot_col  = gx % 2;
+            const int cell_row = gy / 4;
+            const int dot_row  = gy % 4;
+            grid[static_cast<size_t>(cell_row)][static_cast<size_t>(cell_col)]
+                |= braille_dots[dot_row][dot_col];
+        };
+
+        int prev_gy = -1;
         for (int gx = 0; gx < grid_w; ++gx) {
             float val = sample(gx);
             float norm = (val - min_val) / (max_val - min_val);
@@ -152,13 +170,12 @@ private:
             int gy = grid_h - 1 - static_cast<int>(std::round(norm * static_cast<float>(grid_h - 1)));
             gy = std::clamp(gy, 0, grid_h - 1);
 
-            int cell_col = gx / 2;
-            int dot_col = gx % 2;
-            int cell_row = gy / 4;
-            int dot_row = gy % 4;
-
-            grid[static_cast<size_t>(cell_row)][static_cast<size_t>(cell_col)]
-                |= braille_dots[dot_row][dot_col];
+            if (prev_gy >= 0 && prev_gy != gy) {
+                const int step = prev_gy < gy ? 1 : -1;
+                for (int y = prev_gy + step; y != gy; y += step) dot_at(gx, y);
+            }
+            dot_at(gx, gy);
+            prev_gy = gy;
         }
 
         // Render rows

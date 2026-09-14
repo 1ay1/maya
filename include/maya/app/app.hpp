@@ -82,6 +82,10 @@
 
 namespace maya {
 
+/// Swap the running app's palette. No-op before run<>() starts.
+inline void app_set_theme(const Theme& t);   // defined below Runtime
+
+
 // ============================================================================
 // Ctx — render context passed to simple run() render functions
 // ============================================================================
@@ -497,6 +501,32 @@ public:
     [[nodiscard]] bool is_running() const noexcept { return running_; }
     [[nodiscard]] Size size() const noexcept { return size_; }
     [[nodiscard]] const Theme& theme() const noexcept { return theme_; }
+
+    /// Swap the palette mid-run.
+    ///
+    /// A theme picked from a settings screen has to take effect on the NEXT
+    /// frame, not the next launch: a user judges a theme by looking at it,
+    /// and a restart between choosing and seeing makes that impossible.
+    /// The theme is only read during render, so replacing it between frames
+    /// is safe — and every frame is a pure function of model + theme, so
+    /// nothing caches a colour across the swap.
+    void set_theme(const Theme& t) noexcept { theme_ = t; }
+
+    /// Publish this runtime's theme slot to app_set_theme().
+    void publish_theme_slot() noexcept { live_theme() = &theme_; }
+
+    /// The theme the CURRENT run paints with, for hosts whose update path is
+    /// pure and so cannot hold a reference to the runtime.
+    ///
+    /// An Elm-shaped host keeps update() free of the runtime on purpose, but
+    /// a theme swap still has to reach the renderer. Rather than thread a
+    /// mutable runtime through every reducer — which would hand every one of
+    /// them the ability to repaint — the swap goes through this one named
+    /// seam, so the places that can change the palette stay greppable.
+    static Theme*& live_theme() noexcept {
+        static Theme* t = nullptr;
+        return t;
+    }
     [[nodiscard]] bool is_inline() const noexcept { return inline_terminal_.has_value(); }
 
     // Row offset for translating absolute SGR mouse coordinates into
@@ -2544,6 +2574,13 @@ template <CanvasResizeFn ResizeFn, CanvasEventFn EventFn, CanvasPaintFn PaintFn>
         std::forward<ResizeFn>(on_resize),
         std::forward<EventFn>(on_event),
         std::forward<PaintFn>(on_paint));
+}
+
+// Swap the running app's palette. A no-op before run<>() has published its
+// slot, so a host that sets a theme during startup is simply ignored rather
+// than writing through a null.
+inline void app_set_theme(const Theme& t) {
+    if (Theme* slot = detail::Runtime::live_theme()) *slot = t;
 }
 
 } // namespace maya

@@ -95,6 +95,10 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     rt.event_source_    = std::move(event_source);
     rt.writer_          = std::make_unique<Writer>(output_h);
     rt.theme_           = cfg.theme;
+    // Publish the slot so app_set_theme() can reach it. Done here, at the
+    // one point a runtime is built, so the seam is live for exactly as long
+    // as there is a runtime to paint with.
+    rt.publish_theme_slot();
     // Grid backend: emit binary cell frames for a cooperating host instead of
     // ANSI.  The host paints cells directly — so we also suppress the ANSI-
     // only chrome (the DEC-2026 sync wrapper below) that would otherwise

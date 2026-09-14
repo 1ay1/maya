@@ -59,6 +59,22 @@ public:
             .render = [self = *this](int w, int h) -> Element {
                 return self.build_chart(w, h);
             },
+            // Without a measure callback the engine auto-measures by running
+            // render at whatever width it probes with, and then pins the
+            // component to whatever that produced — so the curve sat at a
+            // fraction of its column with dead space beside it, while the
+            // histogram under it filled the same card. Report the OFFER, so
+            // the chart takes the column it is given; fall back to a nominal
+            // width for the unbounded probe, which must not be taken
+            // literally.
+            .measure = [self = *this](int max_width) -> Size {
+                constexpr int kProbe = 4096;
+                constexpr int kNominal = 48;
+                const int w = (max_width > 0 && max_width < kProbe) ? max_width
+                                                                    : kNominal;
+                return Size{Columns{std::max(1, w)},
+                            Rows{std::max(1, self.height_)}};
+            },
             .layout = {},
         }};
     }

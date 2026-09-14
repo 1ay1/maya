@@ -116,8 +116,19 @@ public:
                     ? 0 : static_cast<int>(unicode::str_width(self.label_)) + 2;
                 const int pts = static_cast<int>(self.data_.size());
                 const int suffix = (self.cfg_.show_last || self.cfg_.show_min_max) ? 10 : 0;
+                // Report the OFFER, not the sample count. A spark stretches
+                // to fill its slot now, so pinning the natural width to the
+                // number of points left a nine-point trace nine cells wide in
+                // a column three times that. Still bounded, so an unbounded
+                // probe cannot be taken literally.
                 const int natural = lbl + std::min(pts, 64) + suffix;
-                const int w = max_width > 0 ? std::min(max_width, natural) : natural;
+                // Take the OFFER when it is a real width, so the trace
+                // fills whatever column it lands in; fall back to the sample
+                // count only for the unbounded measure probe, which must not
+                // be taken literally.
+                constexpr int kProbe = 4096;
+                const int w = (max_width > 0 && max_width < kProbe) ? max_width
+                                                                   : natural;
                 return Size{Columns{std::max(1, w)}, Rows{1}};
             },
             .layout = {},
@@ -151,20 +162,40 @@ private:
         int room = avail - lbl_cells - suffix_cells;
         if (room < 1) room = 1;
 
-        // Window to the MOST RECENT `room` samples.
+        // Fill the room, in whichever direction the data needs.
+        //
+        // More samples than cells: window to the MOST RECENT `room`, which
+        // is the part of a live series a reader wants.
+        //
+        // FEWER samples than cells: stretch, drawing each sample across
+        // several columns. Without this a nine-turn history drew nine cells
+        // and stopped, so the trace sat as a stub in the corner of a column
+        // three times its width while the histogram beside it filled the
+        // same space — the two charts of one card disagreeing about how wide
+        // the card was.
         std::size_t begin = 0;
         if (data_.size() > static_cast<std::size_t>(room))
             begin = data_.size() - static_cast<std::size_t>(room);
+        const std::size_t shown = data_.size() - begin;
+        // Spread the room across the samples EXACTLY: base cells each, with
+        // the remainder handed out one at a time. Integer division alone
+        // wasted the remainder — eleven cells over nine samples is one each
+        // and two columns of nothing, so the trace still fell short of its
+        // column by the part that did not divide.
+        const int base = shown > 0 ? room / static_cast<int>(shown) : 1;
+        const int extra = shown > 0 ? room % static_cast<int>(shown) : 0;
 
         // Build the spark characters
         std::string spark;
-        spark.reserve((data_.size() - begin) * 3);  // each block is 3 bytes UTF-8
+        spark.reserve(static_cast<std::size_t>(room + 8) * 3);
         for (std::size_t i = begin; i < data_.size(); ++i) {
             float norm = (data_[i] - data_min) / range;
             norm = std::clamp(norm, 0.0f, 1.0f);
             int level = static_cast<int>(norm * 7.0f + 0.5f);
             level = std::clamp(level, 0, 7);
-            spark += blocks[level];
+            const int n = std::max(1, base)
+                        + ((static_cast<int>(i - begin) < extra) ? 1 : 0);
+            for (int r = 0; r < n; ++r) spark += blocks[level];
         }
 
         // Compose the full line with runs

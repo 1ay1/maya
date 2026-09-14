@@ -38,6 +38,20 @@ struct Bar {
 // BarChart — non-interactive horizontal bar chart
 // ============================================================================
 
+// Format a bar's value: no decimal when the number is whole.
+//
+// "%.1f" on a tally of 5 calls prints "5.0", which invites the reader to
+// wonder what the tenth of a call was. A fraction still shows one place.
+inline std::string bar_value_text(float v) {
+    char buf[32];
+    const double d = static_cast<double>(v);
+    if (d == static_cast<double>(static_cast<long long>(d)))
+        std::snprintf(buf, sizeof(buf), "  %lld", static_cast<long long>(d));
+    else
+        std::snprintf(buf, sizeof(buf), "  %.1f", d);
+    return buf;
+}
+
 class BarChart {
     std::vector<Bar> bars_;
     float max_value_ = 0.0f;  // 0 = auto-detect from data
@@ -114,10 +128,9 @@ private:
         // longest row was what got clipped.
         int value_suffix_width = 0;
         for (const auto& b : bars_) {
-            char vb[32];
-            std::snprintf(vb, sizeof(vb), "  %.1f", static_cast<double>(b.value));
             value_suffix_width =
-                std::max(value_suffix_width, static_cast<int>(std::strlen(vb)));
+                std::max(value_suffix_width,
+                         static_cast<int>(bar_value_text(b.value).size()));
         }
         if (value_suffix_width < 4) value_suffix_width = 4;
         constexpr int label_gap = 2;  // gap between label and bar
@@ -206,9 +219,7 @@ private:
             }
 
             // Value suffix
-            char val_buf[16];
-            std::snprintf(val_buf, sizeof(val_buf), "  %.1f", static_cast<double>(b.value));
-            std::string val_str = val_buf;
+            std::string val_str = bar_value_text(b.value);
             runs.push_back(StyledRun{
                 content.size(), val_str.size(),
                 Style{}.with_dim(),

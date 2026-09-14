@@ -112,12 +112,18 @@ public:
             // only ever narrowed it, so a nine-bucket spread drew the same
             // 2-cell bars on a 150-column pane that it draws on a 60 — the
             // comparison the chart exists for, made harder than the width
-            // requires. Capped so a three-bucket histogram on a very wide
-            // terminal does not become three slabs: past a point extra width
-            // stops aiding comparison and just spreads the data out.
-            constexpr int kMaxCol = 8;
+            // requires.
+            //
+            // And no fixed ceiling: an 8-cell cap stopped a nine-bucket
+            // chart at 72 columns, so in a wider card the bars and the axis
+            // ended mid-slot with dead space to their right while the trace
+            // above them reached the edge. The chart fills what it is given;
+            // FEW buckets are what needs the guard, since three slabs across
+            // a wide pane is a shape rather than a distribution — so the cap
+            // scales with the bucket count instead of being a constant.
+            const int max_col = std::max(8, 96 / std::max(1, n));
             const int afford = std::max(1, plot_w / std::max(1, n));
-            int cw = std::clamp(afford, 1, std::max(want_w, kMaxCol));
+            int cw = std::clamp(afford, 1, std::max(want_w, max_col));
             // Bars keep a gap only while there is width to spare for one. At
             // two columns per bucket the gap is half the chart, so below that
             // the bars run together and the ticks carry the boundaries.

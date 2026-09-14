@@ -129,6 +129,18 @@ public:
             // the bars run together and the ticks carry the boundaries.
             const int bar_w = cw >= 3 ? cw - 1 : cw;
 
+            // Hand the REMAINDER out, one column at a time.
+            //
+            // cw is plot_w / n, so whatever does not divide is simply lost:
+            // a nine-bucket chart in a 48-column card drew 42 and left six
+            // blank, and the axis — which is exactly the bars' span — stopped
+            // there too, short of the trace above it. Spreading the leftover
+            // across the first buckets makes the chart end flush with its
+            // card, the same largest-remainder rule the column solver uses.
+            const int span  = n * cw;
+            const int slack = (span > 0 && plot_w > span) ? plot_w - span : 0;
+            auto cw_of = [cw, slack](int i) { return cw + (i < slack ? 1 : 0); };
+
             std::vector<Element> out;
             for (int cy = 0; cy < rows; ++cy) {
                 std::string s;
@@ -148,8 +160,10 @@ public:
                     // share of the peak. Top row first, so row 0 is the peak.
                     const double need = static_cast<double>(rows - cy) / rows;
                     const bool on = buckets[static_cast<std::size_t>(i)].value / hi >= need;
-                    for (int c = 0; c < bar_w; ++c) s += on ? "\xe2\x96\x88" : " ";
-                    for (int c = bar_w; c < cw; ++c) s += ' ';
+                    const int wide = cw_of(i);
+                    const int bw   = wide >= 3 ? wide - 1 : wide;
+                    for (int c = 0; c < bw; ++c)    s += on ? "\xe2\x96\x88" : " ";
+                    for (int c = bw; c < wide; ++c) s += ' ';
                 }
                 runs.push_back({bars_at, s.size() - bars_at, Style{}.with_fg(hue)});
                 out.push_back(Element{TextElement{.content = std::move(s),
@@ -162,7 +176,7 @@ public:
             {
                 std::string s(static_cast<std::size_t>(gutter), ' ');
                 const std::size_t at = s.size();
-                for (int i = 0; i < n * cw; ++i) s += "\xe2\x94\x80";   // ─
+                for (int i = 0; i < span + slack; ++i) s += "\xe2\x94\x80";   // ─
                 out.push_back(Element{TextElement{
                     .content = std::move(s),
                     .wrap    = TextWrap::TruncateEnd,

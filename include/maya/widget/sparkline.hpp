@@ -35,6 +35,18 @@ struct SparklineConfig {
     Style value_style     = Style{}.with_dim();
     bool show_min_max     = false;
     bool show_last        = false;
+    // Colour for the part of the column the value did NOT fill.
+    //
+    // A block glyph draws the value from the bottom and leaves the rest as
+    // background, so a series that is a SHARE of something (a cache hit
+    // rate) shows only the hit half and the miss half is invisible. Setting
+    // this paints the cell's background, so each column reads as the two
+    // parts of the whole rather than as a bar floating in space.
+    //
+    // Unset by default: for a series that is not a share of anything (a
+    // latency trend) there is no "other half" to colour, and a background
+    // behind every cell would just be a box around the trend.
+    std::optional<Color> rest_color{};
 };
 
 // ============================================================================
@@ -167,11 +179,14 @@ private:
             runs.push_back(StyledRun{lbl_start, label_.size(), cfg_.label_style});
         }
 
-        // Spark data
+        // Spark data. The block draws the value from the bottom in `color`;
+        // when `rest_color` is set the cell BACKGROUND carries the part the
+        // value did not reach, so a share reads as two parts of a whole.
         size_t spark_start = content.size();
         content += spark;
-        runs.push_back(StyledRun{spark_start, spark.size(),
-                                  Style{}.with_fg(cfg_.color)});
+        Style spark_style = Style{}.with_fg(cfg_.color);
+        if (cfg_.rest_color) spark_style = spark_style.with_bg(*cfg_.rest_color);
+        runs.push_back(StyledRun{spark_start, spark.size(), spark_style});
 
         // Min/max/last values — composed above so the window could reserve
         // its exact width.

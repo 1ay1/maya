@@ -60,6 +60,28 @@ public:
             .render = [self = *this](int w, int /*h*/) -> Element {
                 return self.build_chart(w);
             },
+            // WITHOUT a measure callback the engine auto-measures by running
+            // render() at whatever it probes with — and a scroll/prebuilt
+            // body probes with an UNBOUNDED width (1<<14). This widget fills
+            // its slot, so it answered "sixteen thousand columns wide", and
+            // when it was then painted in the real ~36-column body the value
+            // suffix at the far end fell off the edge.
+            //
+            // So state a bounded NATURAL width: what the chart wants is its
+            // longest label, the gap, a bar worth looking at, and the value.
+            // It still FILLS a wider slot (render uses the allocated w) —
+            // this only stops an unbounded probe from being taken literally.
+            .measure = [self = *this](int max_width) -> Size {
+                std::size_t longest = 0;
+                for (const auto& b : self.bars_)
+                    longest = std::max(longest, b.label.size());
+                constexpr int kGap = 2, kValue = 8, kNiceBar = 24;
+                const int natural =
+                    static_cast<int>(longest) + kGap + kNiceBar + kValue;
+                const int w = max_width > 0 ? std::min(max_width, natural) : natural;
+                return Size{Columns{w},
+                            Rows{static_cast<int>(self.bars_.size())}};
+            },
             .layout = {},
         }};
     }
@@ -88,9 +110,22 @@ private:
         // Value suffix width: "  123.4"
         constexpr int value_suffix_width = 8;
         constexpr int label_gap = 2;  // gap between label and bar
+        constexpr int min_bar = 4;
+
+        // The label column must YIELD so the row fits. Flooring bar_width at
+        // 4 without also capping the label let
+        //     label + gap + 4 + value
+        // exceed `width` whenever the label was long (a model id is ~17
+        // cells), and the value suffix — the number the chart exists to
+        // report — was what fell off the right edge. Cap the label to what
+        // is left after the bar and the value, and truncate into it.
+        const int budget = width - label_gap - min_bar - value_suffix_width;
+        const int label_cap = std::max(0, budget);
+        if (static_cast<int>(max_label) > label_cap)
+            max_label = static_cast<std::size_t>(label_cap);
 
         int bar_width = width - static_cast<int>(max_label) - label_gap - value_suffix_width;
-        if (bar_width < 4) bar_width = 4;
+        if (bar_width < min_bar) bar_width = min_bar;
 
         std::vector<Element> rows;
         rows.reserve(bars_.size());
@@ -100,9 +135,19 @@ private:
             float ratio = std::clamp(b.value / max_val, 0.0f, 1.0f);
             int filled = static_cast<int>(std::round(ratio * static_cast<float>(bar_width)));
 
-            // Right-align label
-            std::string padded_label(max_label - b.label.size(), ' ');
-            padded_label += b.label;
+            // Right-align label, truncating to the capped column so a long
+            // name can never push the value off the row.
+            std::string lbl = b.label;
+            if (lbl.size() > max_label) {
+                // Truncate on a UTF-8 boundary, leaving room for an ellipsis.
+                std::size_t cut = max_label > 1 ? max_label - 1 : 0;
+                while (cut > 0 && (static_cast<unsigned char>(lbl[cut]) & 0xC0) == 0x80) --cut;
+                lbl = lbl.substr(0, cut);
+                if (max_label > 0) lbl += "\xe2\x80\xa6";   // …
+            }
+            const std::size_t lbl_cells = lbl.size() > max_label ? max_label : lbl.size();
+            std::string padded_label(max_label - std::min(max_label, lbl_cells), ' ');
+            padded_label += lbl;
 
             // Build the line: "  label  ████████────  value"
             std::string content;

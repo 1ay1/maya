@@ -87,18 +87,57 @@ public:
                 .style = cfg_.value_style,
             }};
         }
+        // A spark is ONE CELL PER SAMPLE, so a long series is a very long
+        // line — a 250-point history asked for 258 columns and the tail was
+        // clipped by whatever slot it landed in. Make it width-aware: render
+        // against the allocated width and show the most RECENT samples that
+        // fit, which is the window a reader of a live series wants anyway.
+        return Element{ComponentElement{
+            .render = [self = *this](int w, int /*h*/) -> Element {
+                return self.build_line(w);
+            },
+            .measure = [self = *this](int max_width) -> Size {
+                // Natural width: the label, the gap, the samples and any
+                // suffix — but never more than offered, and bounded so an
+                // unbounded probe cannot be taken literally.
+                const int lbl = self.label_.empty()
+                    ? 0 : static_cast<int>(unicode::str_width(self.label_)) + 2;
+                const int pts = static_cast<int>(self.data_.size());
+                const int suffix = (self.cfg_.show_last || self.cfg_.show_min_max) ? 10 : 0;
+                const int natural = lbl + std::min(pts, 64) + suffix;
+                const int w = max_width > 0 ? std::min(max_width, natural) : natural;
+                return Size{Columns{std::max(1, w)}, Rows{1}};
+            },
+            .layout = {},
+        }};
+    }
 
+private:
+    [[nodiscard]] Element build_line(int avail) const {
         // Compute range
         float data_min = min_override_.value_or(*std::min_element(data_.begin(), data_.end()));
         float data_max = max_override_.value_or(*std::max_element(data_.begin(), data_.end()));
         float range = data_max - data_min;
         if (range < std::numeric_limits<float>::epsilon()) range = 1.0f;
 
+        // Reserve the label and the suffix first; whatever is left is how
+        // many samples we can actually draw.
+        const int lbl_cells = label_.empty()
+            ? 0 : static_cast<int>(unicode::str_width(label_)) + 2;
+        const int suffix_cells = (cfg_.show_last || cfg_.show_min_max) ? 10 : 0;
+        int room = avail - lbl_cells - suffix_cells;
+        if (room < 1) room = 1;
+
+        // Window to the MOST RECENT `room` samples.
+        std::size_t begin = 0;
+        if (data_.size() > static_cast<std::size_t>(room))
+            begin = data_.size() - static_cast<std::size_t>(room);
+
         // Build the spark characters
         std::string spark;
-        spark.reserve(data_.size() * 3);  // each block is 3 bytes UTF-8
-        for (float v : data_) {
-            float norm = (v - data_min) / range;
+        spark.reserve((data_.size() - begin) * 3);  // each block is 3 bytes UTF-8
+        for (std::size_t i = begin; i < data_.size(); ++i) {
+            float norm = (data_[i] - data_min) / range;
             norm = std::clamp(norm, 0.0f, 1.0f);
             int level = static_cast<int>(norm * 7.0f + 0.5f);
             level = std::clamp(level, 0, 7);

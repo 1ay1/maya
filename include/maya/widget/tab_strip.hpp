@@ -160,7 +160,15 @@ struct TabStrip {
         // each side; that padding has to be in the arithmetic or the strip
         // scrolls by the wrong amount and pushes the active tab off-edge.
         const bool chip = theme.active_bg.has_value();
-        auto tab_width = [&, chip](const Tab& t, bool on) {
+        // Capture BY VALUE. This lambda is copied into the component closure
+        // below, which outlives build() — and `mark` is a member of the
+        // TabStrip, so a [&] capture left it reading a reference to an
+        // object that is gone by the time the component renders. That is
+        // undefined behaviour and it behaved like one: the strip computed a
+        // different scroll window between renders of identical input, so the
+        // same tab row came out starting at "Models" on one frame and
+        // "Smart" on the next.
+        auto tab_width = [chip, mark = mark](const Tab& t, bool on) {
             int w = unicode::str_width(t.label);
             if (!t.dot_glyph.empty()) w += unicode::str_width(t.dot_glyph) + 1;
             if (!t.detail.empty())    w += unicode::str_width(t.detail) + 1;
@@ -178,6 +186,24 @@ struct TabStrip {
         return component([tabs = tabs, theme = theme, mark = mark,
                           indent = indent, gap = gap, act, n, chip,
                           tab_width](int avail_w, int) -> Element {
+            // Clamp the MEASURE-PASS sentinel before it reaches the scroll
+            // window.
+            //
+            // A component with no measure callback is auto-measured by
+            // invoking render at whatever width the layout probes with, and
+            // a scroll viewport or a prebuilt body probes with an unbounded
+            // one (1<<14). The scroll loop below turns `avail` into a
+            // starting INDEX, so an absurd probe answers "everything fits,
+            // start at zero" while the real paint answers "scroll" — and the
+            // strip then renders differently between the two passes. The
+            // symptom is a strip that shows "Session | Models | …" on one
+            // render and "… Models | Smart | …" on the next, from identical
+            // input; the panel's rule row already guards the same sentinel
+            // one line below this in panel.cpp.
+            if (std::getenv("STRIP_DBG")) if(true){std::string j; for(const auto&t:tabs) j+=t.label+","; std::fprintf(stderr,"STRIP w=%d act=%d n=%d [%s]\n",avail_w,act,n,j.c_str());}
+            constexpr int kMaxWidth = 4096;
+            if (avail_w > kMaxWidth) avail_w = kMaxWidth;
+            if (avail_w < 0)         avail_w = 0;
             const int avail = avail_w > indent ? avail_w - indent : 0;
 
             // Slide the window right until the ACTIVE tab's right edge fits.

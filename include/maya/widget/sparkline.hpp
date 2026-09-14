@@ -121,10 +121,21 @@ private:
         if (range < std::numeric_limits<float>::epsilon()) range = 1.0f;
 
         // Reserve the label and the suffix first; whatever is left is how
-        // many samples we can actually draw.
+        // many samples we can actually draw. Both are measured EXACTLY (the
+        // suffix is composed up-front) — a guessed reserve is how a block
+        // ended up one cell past the edge.
         const int lbl_cells = label_.empty()
             ? 0 : static_cast<int>(unicode::str_width(label_)) + 2;
-        const int suffix_cells = (cfg_.show_last || cfg_.show_min_max) ? 10 : 0;
+
+        std::string suffix;
+        if (cfg_.show_min_max)
+            suffix += "  " + format_float(data_min) + " / " + format_float(data_max);
+        if (cfg_.show_last) {
+            suffix += "  ";
+            suffix += format_float(data_.back());
+        }
+        const int suffix_cells = static_cast<int>(unicode::str_width(suffix));
+
         int room = avail - lbl_cells - suffix_cells;
         if (room < 1) room = 1;
 
@@ -162,17 +173,8 @@ private:
         runs.push_back(StyledRun{spark_start, spark.size(),
                                   Style{}.with_fg(cfg_.color)});
 
-        // Min/max/last values
-        std::string suffix;
-        if (cfg_.show_min_max) {
-            suffix += "  " + format_float(data_min) + " / " + format_float(data_max);
-        }
-        if (cfg_.show_last) {
-            float last = data_.back();
-            if (!suffix.empty()) suffix += "  ";
-            else suffix += "  ";
-            suffix += format_float(last);
-        }
+        // Min/max/last values — composed above so the window could reserve
+        // its exact width.
         if (!suffix.empty()) {
             size_t suffix_start = content.size();
             content += suffix;

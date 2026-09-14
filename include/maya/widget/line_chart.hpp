@@ -31,6 +31,7 @@ class LineChart {
     int height_ = 8;
     std::string label_;
     Color color_ = Color::blue();
+    std::optional<float> floor_{};
 
 public:
     LineChart() = default;
@@ -42,6 +43,14 @@ public:
     void set_height(int h) { height_ = h; }
     void set_label(std::string_view l) { label_ = std::string{l}; }
     void set_color(Color c) { color_ = c; }
+    // Pin the bottom of the axis.
+    //
+    // The range is the data's own min..max, which is right for a series
+    // whose SHAPE is the question and wrong for one whose LEVEL is: a
+    // context window sitting at 2400 tokens drew an axis of 2400..2401 and
+    // a flat line through the middle of it, all noise and no magnitude.
+    // Pinning the floor at zero makes the height mean the quantity.
+    void set_floor(float v) { floor_ = v; }
 
     operator Element() const { return build(); }
 
@@ -90,6 +99,7 @@ private:
         // Find data range
         float min_val = *std::min_element(data_.begin(), data_.end());
         float max_val = *std::max_element(data_.begin(), data_.end());
+        if (floor_) min_val = std::min(*floor_, min_val);
         if (max_val == min_val) {
             max_val = min_val + 1.0f;
         }

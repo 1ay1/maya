@@ -32,6 +32,7 @@ class LineChart {
     std::string label_;
     Color color_ = Color::blue();
     std::optional<float> floor_{};
+    bool fill_ = false;
 
 public:
     LineChart() = default;
@@ -51,6 +52,13 @@ public:
     // a flat line through the middle of it, all noise and no magnitude.
     // Pinning the floor at zero makes the height mean the quantity.
     void set_floor(float v) { floor_ = v; }
+    // Shade the area under the curve.
+    //
+    // A single trace across a tall plot is mostly empty space, and the eye
+    // reads the EMPTINESS as the data. Filling underneath turns the same
+    // series into an area chart, where the quantity is the mass and the
+    // plot is full at the scale it is drawn.
+    void set_fill(bool on) { fill_ = on; }
 
     operator Element() const { return build(); }
 
@@ -186,6 +194,7 @@ private:
                 |= braille_dots[dot_row][dot_col];
         };
 
+        const bool self_fill = fill_;
         int prev_gy = -1;
         for (int gx = 0; gx < grid_w; ++gx) {
             float val = sample(gx);
@@ -201,6 +210,8 @@ private:
                 for (int y = prev_gy + step; y != gy; y += step) dot_at(gx, y);
             }
             dot_at(gx, gy);
+            // Area fill: every dot from the curve down to the baseline.
+            if (self_fill) for (int y = gy + 1; y < grid_h; ++y) dot_at(gx, y);
             prev_gy = gy;
         }
 

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include "maya/style/theme.hpp"
 
 #if defined(__GNUC__) || defined(__clang__)
 #  define MAYA_PREFETCH_R(addr) __builtin_prefetch((addr), 0, 1)
@@ -256,10 +257,25 @@ void diff(
                 if (cursor_x != el_col || cursor_y != y) {
                     detail::write_cup(out, el_col + 1, y + 1);
                 }
-                // EL uses the current background — reset to default first.
+                // EL erases with the CURRENT background, so clear the
+                // attributes but re-assert the theme's bg — otherwise the
+                // trail is wiped to the TERMINAL's colour and leaves a
+                // ragged un-themed stripe to the right edge on every
+                // repainted row. Under `native` there is no bg to assert
+                // and this stays a plain reset, which is correct: the
+                // terminal is meant to show through.
                 if (current_style != 0) {
                     out.append(pool.sgr(0));
                     current_style = 0;
+                }
+                if (const Theme& th = theme::live(); theme::owns_canvas(th)) {
+                    out += "\x1b[";
+                    th.background.degrade(terminal_color_level())
+                                 .append_bg_sgr(out);
+                    out += "m";
+                    // Emitted outside the pool, so force the next run to
+                    // re-state its style rather than assume style 0.
+                    current_style = UINT16_MAX;
                 }
                 out += "\x1b[K";
                 cursor_x = el_col;

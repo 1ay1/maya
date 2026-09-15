@@ -1275,7 +1275,8 @@ private:
 // element is returned untouched — no allocation, no wrap, nothing added to
 // the tree. Only a theme that actually owns a canvas pays for the wrapper,
 // and then it is a single Box around an existing root, not a per-cell walk.
-[[nodiscard]] inline Element apply_theme_canvas(Element root, const Theme& t) {
+[[nodiscard]] inline Element apply_theme_canvas(Element root, const Theme& t,
+                                               int term_width) {
     if (!theme::owns_canvas(t)) return root;
     // Built directly rather than via the `| bgc()` pipe: app.hpp sits below
     // dsl.hpp in the include order, and a runtime seam should not drag the
@@ -1283,10 +1284,19 @@ private:
     BoxElement box;
     box.style = Style{}.with_bg(t.background);
     box.layout.direction = FlexDirection::Column;
-    // Fill the width the frame was given. Height stays content-sized — in
-    // Mode::Inline the rows below the content belong to scrollback, and
-    // growing into them would repaint the user's history.
-    box.layout.width = Dimension::percent(100);
+    // The TERMINAL's width, in cells — not percent(100).
+    //
+    // A percentage resolves against the parent's content box, and this box
+    // IS the root: it has no parent to take a percentage of, so it ends up
+    // sized to its own child. agentty's layout is content-sized (81 columns
+    // of chrome in a 100-column window), which left a 19-column unpainted
+    // stripe down the right of every row — the hard edge where the fill
+    // visibly stopped. Stating the real width is the only thing that makes
+    // the fill reach the edge the user can see.
+    if (term_width > 0) box.layout.width = Dimension::fixed(term_width);
+    // Height stays content-sized — in Mode::Inline the rows below the
+    // content belong to scrollback, and growing into them would repaint
+    // the user's history.
     box.children.push_back(std::move(root));
     return Element{std::move(box)};
 }
@@ -2280,7 +2290,8 @@ void run(RunConfig cfg = {}) {
                 // theme, stop typing) that frame never comes.
                 Element built = P::view(model);
                 Element view_root =
-                    detail::apply_theme_canvas(std::move(built), rt.theme());
+                    detail::apply_theme_canvas(std::move(built), rt.theme(),
+                                               rt.size().width.value);
                 // Optional one-shot warmup: if the program flagged the
                 // current model as needing a cache pre-warm (e.g. a
                 // heavy thread just rehydrated), paint the same view
@@ -2608,7 +2619,8 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
                     return render_fn();
                 }
             }();
-            root = detail::apply_theme_canvas(root, rt.theme());
+            root = detail::apply_theme_canvas(root, rt.theme(),
+                                              rt.size().width.value);
             auto status = rt.render(root);
             if (!status) break;
             last_root = root;

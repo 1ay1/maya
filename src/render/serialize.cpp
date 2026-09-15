@@ -10,6 +10,7 @@
 #include <cstdio>    // gate/generation diagnostics (getenv-gated fprintf)
 #include <cstdlib>   // std::getenv / std::abort for the invariant tripwires
 #include <cstring>
+#include "maya/style/theme.hpp"
 
 namespace maya {
 
@@ -623,14 +624,35 @@ void serialize(const Canvas& canvas, const StylePool& pool,
         // EL 0 cleans up any stale content from a prior frame whose row
         // was wider than the current one. Reset SGR first so the erased
         // cells don't inherit attributes from the last emitted cell —
-        // particularly underline / inverse / bg-color, which most
-        // modern terminals (alacritty, kitty, vte-based, iTerm 3.5+)
-        // apply to EL'd cells per the spec. Without this, a row whose
-        // last cell is styled (e.g. a [link](url) at row end) would
-        // visually extend its underline to end-of-row.
+        // particularly underline / inverse, which most modern terminals
+        // (alacritty, kitty, vte-based, iTerm 3.5+) apply to EL'd cells
+        // per the spec. Without this, a row whose last cell is styled
+        // (e.g. a [link](url) at row end) would visually extend its
+        // underline to end-of-row.
+        //
+        // BUT the background must survive that reset when the theme owns
+        // the canvas. EL fills with the CURRENT background, so a bare
+        // SGR 0 here erases to the TERMINAL's colour and every row ends in
+        // a ragged stripe of un-themed cells running to the right edge —
+        // the "hard edges where the fill stops" artifact. Re-assert the
+        // theme background after clearing attributes so the erase lands in
+        // the theme's own colour.
+        //
+        // Under `native` there is no background to re-assert (owns_canvas
+        // is false), so this stays a plain reset and the terminal shows
+        // through exactly as it should.
         if (current_style != 0) {
             out.append(pool.sgr(0));
             current_style = 0;
+        }
+        const Theme& th = theme::live();
+        const bool themed_canvas = theme::owns_canvas(th);
+        if (themed_canvas) {
+            // Degraded the same way painted cells are, so the erase colour
+            // cannot drift from the fill it is continuing.
+            out += "\x1b[";
+            th.background.degrade(terminal_color_level()).append_bg_sgr(out);
+            out += "m";
         }
         // Skip EL when the row filled through col W-1: DECAWM-off leaves
         // the cursor AT col W-1 (no advance past the right edge,
@@ -641,6 +663,10 @@ void serialize(const Canvas& canvas, const StylePool& pool,
         if (last_col < W - 1) {
             out += "\x1b[K";
         }
+        // Leave the style bookkeeping honest: we emitted a bg outside the
+        // pool, so the next row must re-emit its style rather than assume
+        // style 0 is still in force.
+        if (themed_canvas) current_style = UINT16_MAX;
     }
 
     out += "\x1b[?7h";   // re-enable auto-wrap

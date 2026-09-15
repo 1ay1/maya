@@ -1190,6 +1190,65 @@ private:
     std::vector<Event> startup_events_;
 };
 
+// ============================================================================
+// apply_theme_canvas — the one place a theme's background becomes pixels
+// ============================================================================
+//
+// A theme is only half-applied if its foregrounds paint but its background
+// does not: every hue in a scheme was contrast-checked against THAT canvas,
+// so Dracula's inks over someone's white terminal is not "Dracula", it is a
+// legibility bug wearing Dracula's name. So the runtime fills the frame with
+// `theme.background` — centrally, here, rather than asking each host to
+// remember to wrap its own root.
+//
+// The decision is DATA, not a name or a table index: `owns_canvas(t)` is
+// true exactly when the theme states a real background. `theme::native`
+// states `default_color()` — "whatever the user's terminal already is" — so
+// nothing is painted and the terminal shows through untouched. That is not a
+// fallback, it is the feature: a fill would destroy terminal transparency,
+// blur and background images, which is the single most-reported complaint
+// against TUIs that hardcode a background.
+//
+// ── Why this is safe in Mode::Inline ───────────────────────────────────
+//
+// Fullscreen owns the screen, so a background fill is trivially sound there.
+// Inline does NOT: the frame is a window onto live scrollback, and painting
+// a row the frame does not own means recolouring the user's history.
+//
+// Two properties make it sound, and both are asserted in test_style.cpp:
+//
+//   1. The fill reaches the right edge. A bg-painted blank is `visible` to
+//      Canvas::set (style_id != 0), so it advances that row's last-content
+//      column to the full width. Without this the diff's erase-to-EOL would
+//      trim the trail and you would get a ragged tear with the terminal's
+//      own background showing through the gaps — the classic themed-inline
+//      artifact.
+//   2. The fill stops at the content. The element wraps the root's measured
+//      box, so rows below max_content_row are never touched and scrollback
+//      is left exactly as the user's terminal drew it.
+//
+// ── Cost ──────────────────────────────────────────────────────────
+//
+// On native (the default) this is one predicate on a Color kind and the
+// element is returned untouched — no allocation, no wrap, nothing added to
+// the tree. Only a theme that actually owns a canvas pays for the wrapper,
+// and then it is a single Box around an existing root, not a per-cell walk.
+[[nodiscard]] inline Element apply_theme_canvas(Element root, const Theme& t) {
+    if (!theme::owns_canvas(t)) return root;
+    // Built directly rather than via the `| bgc()` pipe: app.hpp sits below
+    // dsl.hpp in the include order, and a runtime seam should not drag the
+    // whole DSL in to set one field.
+    BoxElement box;
+    box.style = Style{}.with_bg(t.background);
+    box.layout.direction = FlexDirection::Column;
+    // Fill the width the frame was given. Height stays content-sized — in
+    // Mode::Inline the rows below the content belong to scrollback, and
+    // growing into them would repaint the user's history.
+    box.layout.width = Dimension::percent(100);
+    box.children.push_back(std::move(root));
+    return Element{std::move(box)};
+}
+
 } // namespace detail
 
 // ============================================================================
@@ -2163,7 +2222,8 @@ void run(RunConfig cfg = {}) {
 
             if (!skip_render) {
                 // Pure: view(model) → Element → render to terminal
-                Element view_root = P::view(model);
+                Element view_root = detail::apply_theme_canvas(
+                    P::view(model), rt.theme());
                 // Optional one-shot warmup: if the program flagged the
                 // current model as needing a cache pre-warm (e.g. a
                 // heavy thread just rehydrated), paint the same view
@@ -2488,6 +2548,7 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
                     return render_fn();
                 }
             }();
+            root = detail::apply_theme_canvas(root, rt.theme());
             auto status = rt.render(root);
             if (!status) break;
             last_root = root;

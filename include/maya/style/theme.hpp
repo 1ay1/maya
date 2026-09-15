@@ -167,6 +167,35 @@ inline constexpr Theme native {
 };
 
 // ============================================================================
+// Does this theme own the canvas?
+// ============================================================================
+//
+// The one question that separates `native` from every RGB scheme, and it is
+// answered by DATA rather than by a name or a table index: a theme owns the
+// canvas exactly when it states a real background.
+//
+// `native` sets `.background = default_color()`, meaning "whatever the user's
+// terminal already is". There is nothing to paint, and painting anything
+// would be a guess — the bug native exists to avoid. So the app fills
+// nothing and the terminal shows through, including its own transparency
+// and background image.
+//
+// A scheme like Dracula states `#282A36`. Half-applying it — Dracula's
+// foregrounds over the user's own background — is what makes a "theme"
+// feel broken: the hues were contrast-checked against THAT canvas, not
+// against whatever is behind them. So a theme that names a background
+// means it, and the host fills the frame with it.
+//
+// Hosts use this to decide whether to wrap their root element in a bgc():
+//
+//     Element root = build();
+//     if (theme::owns_canvas(t)) root = std::move(root) | bgc(t.background);
+//
+[[nodiscard]] constexpr bool owns_canvas(const Theme& t) noexcept {
+    return t.background.kind() != Color::Kind::Default;
+}
+
+// ============================================================================
 // Capability detection
 // ============================================================================
 //

@@ -175,6 +175,71 @@ TEST_CASE("style predefined fg colors") {
     std::println("PASS\n");
 }
 
+TEST_CASE("theme owns_canvas: native defers, a scheme claims") {
+    std::println("--- test_theme_owns_canvas ---");
+    // The whole native/scheme split, decided by data rather than by name:
+    // a theme owns the canvas exactly when it states a real background.
+    assert(!theme::owns_canvas(theme::native));
+    assert(theme::native.background.kind() == Color::Kind::Default);
+
+    Theme scheme = theme::native;
+    scheme.background = Color::rgb(0x28, 0x2A, 0x36);
+    assert(theme::owns_canvas(scheme));
+    std::println("PASS\n");
+}
+
+TEST_CASE("theme canvas fill is inline-safe") {
+    std::println("--- test_theme_canvas_fill_inline_safe ---");
+    // A host in Mode::Inline paints a window onto live scrollback, not the
+    // whole screen. apply_theme_canvas() is only sound if the fill (a)
+    // reaches the right edge, so there is no ragged tear where the
+    // terminal's own background shows through the gaps, and (b) stops at
+    // the content, so it never repaints rows that belong to the user's
+    // history. Both are asserted because both are invisible in review and
+    // only show up as someone's recoloured scrollback.
+    using namespace maya::dsl;
+
+    auto tree = [] { return v(text("hello"), text("a longer line")); };
+
+    auto paint = [&](const Theme& t, auto&& fn) {
+        StylePool pool;
+        Canvas c{40, 6, &pool};
+        render_tree(detail::apply_theme_canvas(Element{tree()}.build(), t),
+                    c, pool, theme::native, /*auto_height=*/true);
+        fn(c, pool);
+    };
+
+    auto has_bg = [](const Canvas& c, const StylePool& pool, int x, int y) {
+        const Style& st = pool.get(c.get(x, y).style_id);
+        return st.bg.has_value() && st.bg->kind() != Color::Kind::Default;
+    };
+
+    // native: the seam is a no-op. Nothing is filled, so the terminal's own
+    // background — including transparency and wallpaper — survives.
+    paint(theme::native, [&](const Canvas& c, const StylePool& pool) {
+        for (int y = 0; y < c.height(); ++y)
+            for (int x = 0; x < c.width(); ++x)
+                assert(!has_bg(c, pool, x, y));
+    });
+
+    Theme scheme = theme::native;
+    scheme.background = Color::rgb(0x28, 0x2A, 0x36);
+    paint(scheme, [&](const Canvas& c, const StylePool& pool) {
+        const int last = c.max_content_row();
+        assert(last == 1);
+        // (a) full width on every content row, including past the text.
+        for (int y = 0; y <= last; ++y)
+            for (int x = 0; x < c.width(); ++x)
+                assert(has_bg(c, pool, x, y));
+        // (b) nothing below the content — that is scrollback.
+        for (int y = last + 1; y < c.height(); ++y)
+            for (int x = 0; x < c.width(); ++x)
+                assert(!has_bg(c, pool, x, y));
+    });
+
+    std::println("PASS\n");
+}
+
 TEST_CASE("style equality") {
     std::println("--- test_style_equality ---");
     Style a = Style{}.with_bold().with_fg(Color::red());

@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <cstdlib>
 
+#include "maya/style/theme.hpp"
+
 namespace maya {
 
 namespace panel::detail {
@@ -1339,6 +1341,19 @@ Element Panel::build() const {
 
     return maya::detail::vstack()
         .padding(1, 2)
+        // The panel sits ON the canvas, so it carries the canvas colour.
+        //
+        // Without this the frame box states no background at all, and every
+        // cell it owns — the border glyphs, the padding ring, the gaps
+        // between rows — falls back to the TERMINAL's colour. On a themed
+        // canvas that reads as a rectangular hole punched through the frame:
+        // the chrome above and below the panel is painted, the panel is not.
+        //
+        // Background, not Surface: a picker is not a raised card, it is the
+        // same plane with a border drawn on it. Under `native` this resolves
+        // to default_color() and nothing is stated, which is the behaviour
+        // this replaces.
+        .bg(maya::theme::live().background)
         // A min-width below a usable floor makes the panel narrower than its
         // own title, and the border text then overflows the frame.
         //

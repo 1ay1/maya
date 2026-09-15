@@ -205,7 +205,8 @@ TEST_CASE("theme canvas fill is inline-safe") {
     auto paint = [&](const Theme& t, auto&& fn) {
         StylePool pool;
         Canvas c{40, 6, &pool};
-        render_tree(detail::apply_theme_canvas(Element{tree()}.build(), t),
+        render_tree(detail::apply_theme_canvas(Element{tree()}.build(), t,
+                                               /*term_width=*/40),
                     c, pool, theme::native, /*auto_height=*/true);
         fn(c, pool);
     };

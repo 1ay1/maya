@@ -67,10 +67,21 @@ public:
         // bleed through. (Width percent(100) + default align_items=Stretch
         // means a caller's natural sizing genuinely stretches to the wrapper
         // content width; explicit fixed widths still override.)
+        //
+        // The fill is the THEME's background, not `default_color()`. An
+        // overlay's job is to occlude what is under it, and occluding with
+        // "the terminal's own colour" punches a hole straight through a
+        // themed canvas — the panel lands as a rectangle of the user's
+        // terminal background sitting inside an otherwise themed frame,
+        // with the chrome above and below it painted and the panel not.
+        //
+        // Under `native` the theme's background IS default_color(), so this
+        // is byte-for-byte the old behaviour: nothing is stated, and the
+        // terminal shows through exactly as it should.
         auto floated = detail::vstack()
             .width(Dimension::percent(100))
             .padding(0, 2)
-            .bg(Color::default_color())(cfg_.overlay);
+            .bg(theme::live().background)(cfg_.overlay);
 
         // Outer alignment wrapper. The inset lives HERE — outside the
         // bg-filled box — so it nudges the float without painting bg over

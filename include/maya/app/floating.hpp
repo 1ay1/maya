@@ -46,10 +46,16 @@ struct Float {
 
     // A float must OCCLUDE the flow content beneath it (z-stack overlays are
     // painted without clearing). The backdrop fills the float's rect so the
-    // editor text doesn't bleed through transparent cells. `Color::default_color`
-    // occludes with the terminal's own background; override for a raised surface.
+    // editor text doesn't bleed through transparent cells.
+    //
+    // Defaults to the THEME's background rather than a literal
+    // `default_color()`: occluding with "the terminal's own colour" punches a
+    // hole through a themed canvas, so the float lands as a rectangle of the
+    // user's terminal background inside an otherwise themed frame. Under
+    // `native` the theme's background IS default_color(), so the default
+    // behaviour is unchanged. Override for a raised surface.
     bool    occlude = true;
-    Color   bg      = Color::default_color();
+    Color   bg      = Color::slot(ThemeSlot::Background);
 };
 
 namespace detail {

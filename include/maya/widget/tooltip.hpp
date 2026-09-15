@@ -19,9 +19,9 @@
 namespace maya {
 
 struct TooltipTheme {
-    Color border   = Color::hex(0x45475A);
-    Color text     = Color::hex(0xE6EDF3);
-    Color shortcut = Color::hex(0x6C7086);
+    Color border   = Color::slot(ThemeSlot::Border);
+    Color text     = Color::slot(ThemeSlot::Text);
+    Color shortcut = Color::slot(ThemeSlot::Muted);
 };
 
 struct Tooltip {

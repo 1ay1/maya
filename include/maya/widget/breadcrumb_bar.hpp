@@ -30,9 +30,9 @@
 namespace maya {
 
 struct BreadcrumbTheme {
-    Color current   = Color::hex(0xF5F5F7); // last (active) crumb name
-    Color name      = Color::hex(0x9399B2); // other crumb names
-    Color separator = Color::hex(0x585B70); // › chevron
+    Color current   = Color::slot(ThemeSlot::Text); // last (active) crumb name
+    Color name      = Color::slot(ThemeSlot::Muted); // other crumb names
+    Color separator = Color::slot(ThemeSlot::Muted); // › chevron
 };
 
 struct Breadcrumb {

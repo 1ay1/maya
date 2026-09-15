@@ -28,10 +28,10 @@
 namespace maya {
 
 struct FuzzyLineTheme {
-    Color base  = Color::hex(0xBAC2DE); // unmatched text
-    Color match = Color::hex(0xF9E2AF); // matched characters
-    Color icon  = Color::hex(0x89B4FA); // leading glyph
-    Color hint  = Color::hex(0x585B70); // trailing hint
+    Color base  = Color::slot(ThemeSlot::Secondary); // unmatched text
+    Color match = Color::slot(ThemeSlot::Warning); // matched characters
+    Color icon  = Color::slot(ThemeSlot::Primary); // leading glyph
+    Color hint  = Color::slot(ThemeSlot::Muted); // trailing hint
 };
 
 struct FuzzyLine {

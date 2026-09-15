@@ -22,12 +22,12 @@
 namespace maya {
 
 struct KeybindingCaptureTheme {
-    Color border   = Color::hex(0x45475A);
-    Color recording = Color::hex(0xF38BA8);
-    Color prompt    = Color::hex(0x585B70);
-    Color cap        = Color::hex(0xE6EDF3);
-    Color edge        = Color::hex(0x45475A);
-    Color plus         = Color::hex(0x585B70);
+    Color border   = Color::slot(ThemeSlot::Border);
+    Color recording = Color::slot(ThemeSlot::Error);
+    Color prompt    = Color::slot(ThemeSlot::Muted);
+    Color cap        = Color::slot(ThemeSlot::Text);
+    Color edge        = Color::slot(ThemeSlot::Border);
+    Color plus         = Color::slot(ThemeSlot::Muted);
 };
 
 struct KeybindingCapture {

@@ -39,11 +39,11 @@ class GitGraph {
 
     // Branch palette: terminal-defined named ANSI colors
     static constexpr Color branch_colors_[] = {
-        Color::blue(),
-        Color::magenta(),
-        Color::green(),
-        Color::cyan(),
-        Color::yellow(),
+        Color::slot(ThemeSlot::Primary),
+        Color::slot(ThemeSlot::Accent),
+        Color::slot(ThemeSlot::Success),
+        Color::slot(ThemeSlot::Info),
+        Color::slot(ThemeSlot::Warning),
     };
 
     [[nodiscard]] Color branch_color(int col) const {

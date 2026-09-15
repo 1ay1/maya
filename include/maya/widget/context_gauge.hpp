@@ -194,9 +194,9 @@ private:
     }
 
     static Color threshold_color(int pct) {
-        if (pct < 60)  return Color::green();
-        if (pct <= 80) return Color::yellow();
-        return Color::red();
+        if (pct < 60)  return Color::slot(ThemeSlot::Success);
+        if (pct <= 80) return Color::slot(ThemeSlot::Warning);
+        return Color::slot(ThemeSlot::Error);
     }
 
     // Constant 6-char token field: " 999.9" / " 99.9k" / "  9.9M".

@@ -45,22 +45,22 @@ namespace maya {
 enum class GitState : uint8_t { None, Modified, Added, Untracked, Deleted, Ignored };
 
 struct FileTreeTheme {
-    Color folder    = Color::hex(0x89B4FA); // folder name
-    Color file      = Color::hex(0xBAC2DE); // file name
-    Color guide     = Color::hex(0x45475A); // tree connectors
-    Color accent    = Color::hex(0x89B4FA); // active-row left bar
-    Color active    = Color::hex(0x232634); // active-row wash
-    Color hidden    = Color::hex(0x585B70); // dotfiles / ignored
-    Color link      = Color::hex(0x94E2D5); // symlink arrow + target
-    Color count     = Color::hex(0x585B70); // collapsed child count
-    Color match     = Color::hex(0xF9E2AF); // filter match highlight
-    Color mark      = Color::hex(0xCBA6F7); // marked-file indicator
-    Color err       = Color::hex(0xF38BA8); // ● error badge
-    Color warn      = Color::hex(0xE2B341); // ● warning badge
-    Color modified  = Color::hex(0xE2B341); // M
-    Color added     = Color::hex(0xA6E3A1); // A
-    Color untracked = Color::hex(0x94E2D5); // U
-    Color deleted   = Color::hex(0xF38BA8); // D
+    Color folder    = Color::slot(ThemeSlot::Primary); // folder name
+    Color file      = Color::slot(ThemeSlot::Secondary); // file name
+    Color guide     = Color::slot(ThemeSlot::Border); // tree connectors
+    Color accent    = Color::slot(ThemeSlot::Primary); // active-row left bar
+    Color active    = Color::slot(ThemeSlot::Surface); // active-row wash
+    Color hidden    = Color::slot(ThemeSlot::Muted); // dotfiles / ignored
+    Color link      = Color::slot(ThemeSlot::Link); // symlink arrow + target
+    Color count     = Color::slot(ThemeSlot::Muted); // collapsed child count
+    Color match     = Color::slot(ThemeSlot::Warning); // filter match highlight
+    Color mark      = Color::slot(ThemeSlot::Accent); // marked-file indicator
+    Color err       = Color::slot(ThemeSlot::Error); // ● error badge
+    Color warn      = Color::slot(ThemeSlot::Warning); // ● warning badge
+    Color modified  = Color::slot(ThemeSlot::Warning); // M
+    Color added     = Color::slot(ThemeSlot::Success); // A
+    Color untracked = Color::slot(ThemeSlot::Link); // U
+    Color deleted   = Color::slot(ThemeSlot::Error); // D
 };
 
 class FileTree {
@@ -375,9 +375,9 @@ private:
         if (ends(".ts"))   return Color::hex(0x3178C6);
         if (ends(".js"))   return Color::hex(0xF7DF1E);
         if (ends(".json")) return Color::hex(0xCBCB41);
-        if (ends(".md"))   return Color::hex(0x89B4FA);
+        if (ends(".md"))   return Color::slot(ThemeSlot::Primary);
         if (ends(".toml") || ends(".yaml") || ends(".yml")) return Color::hex(0xCB9B6A);
-        return Color::hex(0x9399B2);
+        return Color::slot(ThemeSlot::Muted);
     }
 };
 

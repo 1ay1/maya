@@ -194,7 +194,7 @@ private:
             for (int i = 0; i < kIndent; ++i) line += ' ';
             for (int i = kIndent; i < w; ++i) line += "\xe2\x94\x80"; // ─
             return text(std::move(line),
-                        Style{}.with_fg(Color::bright_black()).with_dim()).build();
+                        Style{}.with_fg(Color::slot(ThemeSlot::Muted)).with_dim()).build();
         })
         .hash_id(CacheIdBuilder{}
             .add(std::string_view{"maya.conversation.divider"})

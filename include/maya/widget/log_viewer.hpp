@@ -79,9 +79,9 @@ class LogViewer {
     [[nodiscard]] static Style level_style(LogLevel lv) {
         switch (lv) {
             case LogLevel::Debug: return Style{}.with_dim();
-            case LogLevel::Info:  return Style{}.with_fg(Color::blue());
-            case LogLevel::Warn:  return Style{}.with_fg(Color::yellow());
-            case LogLevel::Error: return Style{}.with_fg(Color::red()).with_bold();
+            case LogLevel::Info:  return Style{}.with_fg(Color::slot(ThemeSlot::Primary));
+            case LogLevel::Warn:  return Style{}.with_fg(Color::slot(ThemeSlot::Warning));
+            case LogLevel::Error: return Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_bold();
         }
         return Style{}.with_dim();
     }

@@ -37,7 +37,7 @@ struct EditorStatusLine {
     };
 
     struct Config {
-        Color divider = Color::hex(0x585B70); // dim separator glyph
+        Color divider = Color::slot(ThemeSlot::Muted); // dim separator glyph
     };
 
     Config           config{};
@@ -52,29 +52,29 @@ struct EditorStatusLine {
 
     // ── Ready-made segment presets ──────────────────────────────────────────
     static Seg mode(std::string_view m) {
-        Color accent = Color::hex(0x89B4FA);
-        if (m == "INSERT") accent = Color::hex(0xA6E3A1);
-        else if (m == "VISUAL") accent = Color::hex(0xF9E2AF);
-        else if (m == "REPLACE" || m == "COMMAND") accent = Color::hex(0xF38BA8);
+        Color accent = Color::slot(ThemeSlot::Primary);
+        if (m == "INSERT") accent = Color::slot(ThemeSlot::Success);
+        else if (m == "VISUAL") accent = Color::slot(ThemeSlot::Warning);
+        else if (m == "REPLACE" || m == "COMMAND") accent = Color::slot(ThemeSlot::Error);
         return Seg{"\xef\x84\xa0 " + std::string(m), accent, true}; //  circle
     }
     static Seg branch(std::string_view name) {
-        return Seg{"\xee\x82\xa0 " + std::string(name), Color::hex(0xA6E3A1)}; //  git
+        return Seg{"\xee\x82\xa0 " + std::string(name), Color::slot(ThemeSlot::Success)}; //  git
     }
     static Seg file(std::string_view path, bool dirty = false) {
-        return Seg{std::string(path) + (dirty ? " \xe2\x97\x8f" : ""), Color::hex(0xCDD6F4)};
+        return Seg{std::string(path) + (dirty ? " \xe2\x97\x8f" : ""), Color::slot(ThemeSlot::Text)};
     }
     static Seg lang(std::string_view l) {
-        return Seg{std::string(l), Color::hex(0xCBA6F7)};
+        return Seg{std::string(l), Color::slot(ThemeSlot::Accent)};
     }
     static Seg pos(int line, int col, int total) {
         char buf[64];
         int pct = total > 0 ? (line * 100) / total : 0;
         std::snprintf(buf, sizeof buf, "\xef\x82\x9b %d:%d  %d%%", line, col, pct); // 
-        return Seg{buf, Color::hex(0x89B4FA), true};
+        return Seg{buf, Color::slot(ThemeSlot::Primary), true};
     }
     static Seg info(std::string_view text) {
-        return Seg{std::string(text), Color::hex(0xBAC2DE)};
+        return Seg{std::string(text), Color::slot(ThemeSlot::Secondary)};
     }
 
     operator Element() const { return build(); }

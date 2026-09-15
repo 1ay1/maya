@@ -22,10 +22,10 @@
 namespace maya {
 
 struct CodeLensTheme {
-    Color info   = Color::hex(0x6C7086);
-    Color action = Color::hex(0x89B4FA);
-    Color sep    = Color::hex(0x45475A);
-    Color indent  = Color::hex(0x45475A);
+    Color info   = Color::slot(ThemeSlot::Muted);
+    Color action = Color::slot(ThemeSlot::Primary);
+    Color sep    = Color::slot(ThemeSlot::Border);
+    Color indent  = Color::slot(ThemeSlot::Border);
 };
 
 struct CodeLens {

@@ -22,12 +22,12 @@
 namespace maya {
 
 struct TagInputTheme {
-    Color chip   = Color::hex(0xCDD6F4);
-    Color edge   = Color::hex(0x45475A);
-    Color remove = Color::hex(0x6C7086);
-    Color input  = Color::hex(0xE6EDF3);
-    Color prompt  = Color::hex(0x585B70);
-    Color caret    = Color::hex(0x89B4FA);
+    Color chip   = Color::slot(ThemeSlot::Text);
+    Color edge   = Color::slot(ThemeSlot::Border);
+    Color remove = Color::slot(ThemeSlot::Muted);
+    Color input  = Color::slot(ThemeSlot::Text);
+    Color prompt  = Color::slot(ThemeSlot::Muted);
+    Color caret    = Color::slot(ThemeSlot::Primary);
 };
 
 struct TagInput {

@@ -159,9 +159,9 @@ private:
     [[nodiscard]] MarkInfo item_mark(TodoItemStatus s) const {
         switch (s) {
             case TodoItemStatus::Completed:
-                return {"\xe2\x9c\x93", Style{}.with_fg(Color::green())};   // ✓
+                return {"\xe2\x9c\x93", Style{}.with_fg(Color::slot(ThemeSlot::Success))};   // ✓
             case TodoItemStatus::InProgress:
-                return {"\xe2\x97\x8f", Style{}.with_fg(Color::yellow())};  // ●
+                return {"\xe2\x97\x8f", Style{}.with_fg(Color::slot(ThemeSlot::Warning))};  // ●
             case TodoItemStatus::Pending:
                 return {"\xe2\x97\x8b", Style{}.with_dim()};                // ○
         }
@@ -184,12 +184,12 @@ private:
 
     [[nodiscard]] IconInfo status_icon() const {
         if (status_ == TodoListStatus::Failed)
-            return {"\xe2\x9c\x97", Color::red()};                         // ✗
+            return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};                         // ✗
         if (!items_.empty() && all_completed())
-            return {"\xe2\x9c\x93", Color::green()};                       // ✓
+            return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};                       // ✓
         if (any_in_progress() || status_ == TodoListStatus::Running)
-            return {"\xe2\x97\x8f", Color::yellow()};                      // ●
-        return {"\xe2\x97\x8b", Color::bright_black()};                    // ○
+            return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Warning)};                      // ●
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};                    // ○
     }
 
     [[nodiscard]] std::string format_elapsed() const {

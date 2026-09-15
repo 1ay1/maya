@@ -24,12 +24,12 @@
 namespace maya {
 
 struct DebugToolbarTheme {
-    Color control  = Color::hex(0xCDD6F4);
-    Color idle     = Color::hex(0x494D64);
-    Color go       = Color::hex(0xA6E3A1); // continue
-    Color stop      = Color::hex(0xF38BA8);
-    Color restart   = Color::hex(0xE2B341);
-    Color label      = Color::hex(0x9399B2);
+    Color control  = Color::slot(ThemeSlot::Text);
+    Color idle     = Color::slot(ThemeSlot::Border);
+    Color go       = Color::slot(ThemeSlot::Success); // continue
+    Color stop      = Color::slot(ThemeSlot::Error);
+    Color restart   = Color::slot(ThemeSlot::Warning);
+    Color label      = Color::slot(ThemeSlot::Muted);
 };
 
 struct DebugToolbar {
@@ -72,7 +72,7 @@ struct DebugToolbar {
         Element rowE{TextElement{ .content = std::move(s), .style = Style{},
                                   .wrap = TextWrap::NoWrap, .runs = std::move(r) }};
         return maya::detail::box()
-            .border(BorderStyle::Round).border_color(Color::hex(0x313244))
+            .border(BorderStyle::Round).border_color(Color::slot(ThemeSlot::Surface))
             (rowE);
     }
 };

@@ -152,15 +152,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case AgentStatus::Pending:
-                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
+                return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};   // ○
             case AgentStatus::Running:
-                return {"\xe2\x97\x8f", Color::magenta()};        // ●
+                return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Accent)};        // ●
             case AgentStatus::Completed:
-                return {"\xe2\x9c\x93", Color::green()};          // ✓
+                return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};          // ✓
             case AgentStatus::Failed:
-                return {"\xe2\x9c\x97", Color::red()};            // ✗
+                return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::bright_black()};
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

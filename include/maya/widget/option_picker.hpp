@@ -23,11 +23,11 @@
 namespace maya {
 
 struct OptionPickerTheme {
-    Color selected = Color::hex(0x89B4FA);
-    Color label    = Color::hex(0xCDD6F4);
-    Color desc     = Color::hex(0x7F849C);
-    Color radio_off = Color::hex(0x585B70);
-    Color active     = Color::hex(0x232634);
+    Color selected = Color::slot(ThemeSlot::Primary);
+    Color label    = Color::slot(ThemeSlot::Text);
+    Color desc     = Color::slot(ThemeSlot::Muted);
+    Color radio_off = Color::slot(ThemeSlot::Muted);
+    Color active     = Color::slot(ThemeSlot::Surface);
 };
 
 class OptionPicker {

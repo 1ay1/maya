@@ -117,11 +117,11 @@ public:
         switch (variant_) {
             case ButtonVariant::Ghost:  return build_ghost(focused);
             case ButtonVariant::Primary: return build_filled(focused,
-                Color::blue(),   // blue bg
-                Color::white()); // white text
+                Color::slot(ThemeSlot::Primary),   // blue bg
+                Color::slot(ThemeSlot::Text)); // white text
             case ButtonVariant::Danger: return build_filled(focused,
-                Color::red(),    // red bg
-                Color::white()); // white text
+                Color::slot(ThemeSlot::Error),    // red bg
+                Color::slot(ThemeSlot::Text)); // white text
             case ButtonVariant::Default:
             default: return build_default(focused);
         }
@@ -134,8 +134,8 @@ private:
 
     [[nodiscard]] Element build_default(bool focused) const {
         auto border_color = focused
-            ? Color::blue()           // blue
-            : Color::bright_black();  // dim border
+            ? Color::slot(ThemeSlot::Primary)           // blue
+            : Color::slot(ThemeSlot::Muted);  // dim border
 
         auto text_style = focused
             ? Style{}.with_bold()
@@ -157,7 +157,7 @@ private:
         auto text_style = Style{}.with_fg(text_color).with_bold();
         auto bg_style = focused
             ? bg_color
-            : Color::bright_black();  // dim when not focused
+            : Color::slot(ThemeSlot::Muted);  // dim when not focused
 
         auto inner = Element{TextElement{
             .content = label_,
@@ -165,7 +165,7 @@ private:
             .wrap = TextWrap::NoWrap,
         }};
 
-        auto border_color = focused ? bg_color : Color::bright_black();
+        auto border_color = focused ? bg_color : Color::slot(ThemeSlot::Muted);
 
         return (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round)
@@ -176,7 +176,7 @@ private:
 
     [[nodiscard]] Element build_ghost(bool focused) const {
         auto text_style = focused
-            ? Style{}.with_fg(Color::blue()).with_underline()
+            ? Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_underline()
             : Style{}.with_dim();
 
         return Element{TextElement{

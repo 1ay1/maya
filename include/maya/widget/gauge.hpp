@@ -123,7 +123,7 @@ private:
                 if (!empty_str.empty()) {
                     runs.push_back(StyledRun{
                         content.size(), empty_str.size(),
-                        Style{}.with_fg(Color::bright_black()),
+                        Style{}.with_fg(Color::slot(ThemeSlot::Muted)),
                     });
                     content += empty_str;
                 }
@@ -146,7 +146,7 @@ private:
 
         return (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round)
-            | dsl::bcolor(Color::bright_black())
+            | dsl::bcolor(Color::slot(ThemeSlot::Muted))
             | dsl::padding(0, 1)).build();
     }
 

@@ -34,7 +34,7 @@ namespace maya {
 struct SelectConfig {
     std::string indicator       = "\xe2\x9d\xaf ";   // "❯ " — Zed-style chevron
     std::string inactive_prefix = "  ";   // shown next to inactive items
-    Style active_style   = Style{}.with_bold().with_fg(Color::blue());
+    Style active_style   = Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Primary));
     Style inactive_style = Style{}.with_dim();
     int visible_count    = 0;  // 0 = show all items
 };

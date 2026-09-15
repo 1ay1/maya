@@ -163,10 +163,10 @@ public:
         auto weekday_style = Style{}.with_dim();
         auto day_style = Style{};
         auto weekend_style = Style{}.with_dim();
-        auto today_style = Style{}.with_fg(Color::blue()).with_bold();
+        auto today_style = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
         auto selected_style = focused
             ? Style{}.with_inverse().with_bold()
-            : Style{}.with_bold().with_fg(Color::blue());
+            : Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Primary));
 
         std::vector<Element> rows;
 

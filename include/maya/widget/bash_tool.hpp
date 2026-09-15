@@ -95,7 +95,7 @@ public:
             std::snprintf(buf, sizeof(buf), "exit code %d", exit_code_);
             rows.push_back(Element{TextElement{
                 .content = buf,
-                .style = Style{}.with_fg(Color::red()).with_dim(),
+                .style = Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_dim(),
             }});
         }
 
@@ -188,7 +188,7 @@ private:
 
         std::vector<StyledRun> runs;
         runs.push_back(StyledRun{0, kPromptBytes,
-            Style{}.with_bold().with_fg(Color::green())});
+            Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Success))});
         if (!shown_cmd.empty()) {
             runs.push_back(StyledRun{cmd_off, shown_cmd.size(), Style{}});
         }
@@ -208,15 +208,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case BashStatus::Pending:
-                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
+                return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};   // ○
             case BashStatus::Running:
-                return {"\xe2\x97\x8f", Color::yellow()};         // ●
+                return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Warning)};         // ●
             case BashStatus::Success:
-                return {"\xe2\x9c\x93", Color::green()};          // ✓
+                return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};          // ✓
             case BashStatus::Failed:
-                return {"\xe2\x9c\x97", Color::red()};            // ✗
+                return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::bright_black()};
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

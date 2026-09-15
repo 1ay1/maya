@@ -26,14 +26,14 @@
 namespace maya {
 
 struct SettingsEditorTheme {
-    Color prompt = Color::hex(0x89B4FA);
-    Color title  = Color::hex(0xCDD6F4);
-    Color id     = Color::hex(0x585B70);
-    Color desc   = Color::hex(0x7F849C);
-    Color on      = Color::hex(0xA6E3A1);
-    Color off      = Color::hex(0x6C7086);
-    Color value     = Color::hex(0xF9E2AF);
-    Color active     = Color::hex(0x232634);
+    Color prompt = Color::slot(ThemeSlot::Primary);
+    Color title  = Color::slot(ThemeSlot::Text);
+    Color id     = Color::slot(ThemeSlot::Muted);
+    Color desc   = Color::slot(ThemeSlot::Muted);
+    Color on      = Color::slot(ThemeSlot::Success);
+    Color off      = Color::slot(ThemeSlot::Muted);
+    Color value     = Color::slot(ThemeSlot::Warning);
+    Color active     = Color::slot(ThemeSlot::Surface);
 };
 
 class SettingsEditor {

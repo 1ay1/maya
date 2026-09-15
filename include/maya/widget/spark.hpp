@@ -127,8 +127,8 @@ private:
     std::vector<double> series_;
     std::string         value_;               // the number the strip annotates
     int                 width_ = 24;          // window width (clamped 4..40)
-    Color               line_color_  = Color::hex(0xCDD6F4);
-    Color               value_color_ = Color::hex(0xCDD6F4);
+    Color               line_color_  = Color::slot(ThemeSlot::Text);
+    Color               value_color_ = Color::slot(ThemeSlot::Text);
 };
 
 } // namespace maya

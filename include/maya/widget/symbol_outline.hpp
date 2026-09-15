@@ -32,11 +32,11 @@
 namespace maya {
 
 struct SymbolOutlineTheme {
-    Color name        = Color::hex(0xBAC2DE); // symbol name
-    Color active_name = Color::hex(0xF5F5F7); // current symbol name
-    Color active_mark = Color::hex(0x89B4FA); // ▸ current-symbol pointer
-    Color detail      = Color::hex(0x585B70); // dim signature/type
-    Color guide       = Color::hex(0x313244); // tree guides
+    Color name        = Color::slot(ThemeSlot::Secondary); // symbol name
+    Color active_name = Color::slot(ThemeSlot::Text); // current symbol name
+    Color active_mark = Color::slot(ThemeSlot::Primary); // ▸ current-symbol pointer
+    Color detail      = Color::slot(ThemeSlot::Muted); // dim signature/type
+    Color guide       = Color::slot(ThemeSlot::Surface); // tree guides
 };
 
 struct SymbolOutline {

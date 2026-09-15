@@ -23,9 +23,9 @@
 namespace maya {
 
 struct PeekViewTheme {
-    Color border   = Color::hex(0x89B4FA);
-    Color title    = Color::hex(0xE6EDF3);
-    Color location = Color::hex(0x89B4FA);
+    Color border   = Color::slot(ThemeSlot::Primary);
+    Color title    = Color::slot(ThemeSlot::Text);
+    Color location = Color::slot(ThemeSlot::Primary);
 };
 
 struct PeekView {

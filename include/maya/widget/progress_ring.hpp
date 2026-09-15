@@ -22,9 +22,9 @@
 namespace maya {
 
 struct ProgressRingTheme {
-    Color ring  = Color::hex(0x89B4FA);
-    Color label = Color::hex(0xBAC2DE);
-    Color pct    = Color::hex(0x9399B2);
+    Color ring  = Color::slot(ThemeSlot::Primary);
+    Color label = Color::slot(ThemeSlot::Secondary);
+    Color pct    = Color::slot(ThemeSlot::Muted);
 };
 
 struct ProgressRing {

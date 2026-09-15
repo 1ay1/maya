@@ -22,8 +22,8 @@ namespace maya {
 struct ColorSwatch {
     struct Row { std::string name; uint32_t hex; };
     std::vector<Row> rows;
-    Color            name_col = Color::hex(0xBAC2DE);
-    Color            hex_col  = Color::hex(0x585B70);
+    Color            name_col = Color::slot(ThemeSlot::Secondary);
+    Color            hex_col  = Color::slot(ThemeSlot::Muted);
 
     ColorSwatch& color(std::string name, uint32_t hex) {
         rows.push_back({std::move(name), hex}); return *this;

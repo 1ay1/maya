@@ -30,12 +30,12 @@ class SystemBanner {
 
     [[nodiscard]] Color level_color() const {
         switch (level_) {
-            case BannerLevel::Info:    return Color::blue();
-            case BannerLevel::Success: return Color::green();
-            case BannerLevel::Warning: return Color::yellow();
-            case BannerLevel::Error:   return Color::red();
+            case BannerLevel::Info:    return Color::slot(ThemeSlot::Primary);
+            case BannerLevel::Success: return Color::slot(ThemeSlot::Success);
+            case BannerLevel::Warning: return Color::slot(ThemeSlot::Warning);
+            case BannerLevel::Error:   return Color::slot(ThemeSlot::Error);
         }
-        return Color::blue();
+        return Color::slot(ThemeSlot::Primary);
     }
 
     [[nodiscard]] const char* level_icon() const {

@@ -38,12 +38,12 @@ class FlameChart {
 
     // Warm → cool by depth
     static constexpr Color depth_colors[] = {
-        Color::red(),
-        Color::bright_red(),
-        Color::yellow(),
-        Color::green(),
-        Color::blue(),
-        Color::magenta(),
+        Color::slot(ThemeSlot::Error),
+        Color::slot(ThemeSlot::Error),
+        Color::slot(ThemeSlot::Warning),
+        Color::slot(ThemeSlot::Success),
+        Color::slot(ThemeSlot::Primary),
+        Color::slot(ThemeSlot::Accent),
     };
     static constexpr int depth_n = 6;
 

@@ -105,7 +105,7 @@ public:
         int cur = active_();
 
         auto active_style = Style{}.with_bold().with_underline()
-                                   .with_fg(Color::blue());
+                                   .with_fg(Color::slot(ThemeSlot::Primary));
         auto inactive_style = Style{}.with_dim();
         auto sep_style = Style{}.with_dim();
 
@@ -166,7 +166,7 @@ public:
                 for (int i = 0; i < w; ++i) line += "\xe2\x94\x80"; // "─"
                 return Element{TextElement{
                     .content = std::move(line),
-                    .style = Style{}.with_fg(Color::bright_black()),
+                    .style = Style{}.with_fg(Color::slot(ThemeSlot::Muted)),
                 }};
             },
             .layout = {},

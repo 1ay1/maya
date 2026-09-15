@@ -32,15 +32,15 @@
 namespace maya {
 
 struct CompletionMenuTheme {
-    Color border   = Color::hex(0x313244);
-    Color label    = Color::hex(0xBAC2DE); // item label
-    Color sel_label = Color::hex(0xF5F5F7); // selected label
-    Color match     = Color::hex(0xF9E2AF); // fuzzy-matched chars
-    Color detail    = Color::hex(0x585B70); // type / signature
-    Color pointer   = Color::hex(0x89B4FA); // ▸ selection pointer
-    Color sel_shade  = Color::hex(0x313244); // subtle wash on the selected row
-    Color scroll     = Color::hex(0x585B70); // scroll hint
-    Color doc        = Color::hex(0x9399B2); // doc string
+    Color border   = Color::slot(ThemeSlot::Surface);
+    Color label    = Color::slot(ThemeSlot::Secondary); // item label
+    Color sel_label = Color::slot(ThemeSlot::Text); // selected label
+    Color match     = Color::slot(ThemeSlot::Warning); // fuzzy-matched chars
+    Color detail    = Color::slot(ThemeSlot::Muted); // type / signature
+    Color pointer   = Color::slot(ThemeSlot::Primary); // ▸ selection pointer
+    Color sel_shade  = Color::slot(ThemeSlot::Surface); // subtle wash on the selected row
+    Color scroll     = Color::slot(ThemeSlot::Muted); // scroll hint
+    Color doc        = Color::slot(ThemeSlot::Muted); // doc string
 };
 
 struct CompletionMenu {

@@ -158,9 +158,9 @@ private:
         auto name_style    = Style{};
         auto desc_style    = Style{}.with_dim();
         auto sc_style      = Style{}.with_dim();
-        auto active_name   = Style{}.with_fg(Color::blue()).with_bold();
-        auto active_desc   = Style{}.with_fg(Color::blue());
-        auto match_style   = Style{}.with_fg(Color::yellow()).with_bold();
+        auto active_name   = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
+        auto active_desc   = Style{}.with_fg(Color::slot(ThemeSlot::Primary));
+        auto match_style   = Style{}.with_fg(Color::slot(ThemeSlot::Warning)).with_bold();
 
         const auto& query = search_.value()();
 
@@ -260,8 +260,8 @@ private:
 
         // Wrap search + results in a bordered box
         auto border_color = focused
-            ? Color::blue()
-            : Color::bright_black();
+            ? Color::slot(ThemeSlot::Primary)
+            : Color::slot(ThemeSlot::Muted);
 
         return (dsl::v(
                 search_.build(),
@@ -271,7 +271,7 @@ private:
                         for (int i = 0; i < w; ++i) line += "\xe2\x94\x80"; // "─"
                         return Element{TextElement{
                             .content = std::move(line),
-                            .style = Style{}.with_fg(Color::bright_black()),
+                            .style = Style{}.with_fg(Color::slot(ThemeSlot::Muted)),
                         }};
                     },
                     .layout = {},

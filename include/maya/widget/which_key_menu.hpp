@@ -27,11 +27,11 @@
 namespace maya {
 
 struct WhichKeyTheme {
-    Color title  = Color::hex(0xCBA6F7);
-    Color key    = Color::hex(0xF9E2AF);
-    Color arrow  = Color::hex(0x585B70);
-    Color action = Color::hex(0xBAC2DE);
-    Color group   = Color::hex(0x89B4FA); // entries that open a submenu
+    Color title  = Color::slot(ThemeSlot::Accent);
+    Color key    = Color::slot(ThemeSlot::Warning);
+    Color arrow  = Color::slot(ThemeSlot::Muted);
+    Color action = Color::slot(ThemeSlot::Secondary);
+    Color group   = Color::slot(ThemeSlot::Primary); // entries that open a submenu
 };
 
 struct WhichKeyMenu {
@@ -77,7 +77,7 @@ struct WhichKeyMenu {
 
         return maya::detail::box()
             .border(BorderStyle::Round)
-            .border_color(Color::hex(0x313244))
+            .border_color(Color::slot(ThemeSlot::Surface))
             .padding(0, 1, 0, 1)
             (dsl::v(std::move(body)).build());
     }

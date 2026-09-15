@@ -112,10 +112,10 @@ private:
 
         auto normal_style   = Style{};
         auto shortcut_style = Style{}.with_dim();
-        auto active_style   = Style{}.with_fg(Color::blue()).with_bold();
-        auto active_sc      = Style{}.with_fg(Color::blue());
+        auto active_style   = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
+        auto active_sc      = Style{}.with_fg(Color::slot(ThemeSlot::Primary));
         auto disabled_style = Style{}.with_dim();
-        auto sep_style      = Style{}.with_fg(Color::bright_black());
+        auto sep_style      = Style{}.with_fg(Color::slot(ThemeSlot::Muted));
 
         // Whether a shortcut still fits beside its label at this width.
         auto sc_fits = [avail](const std::string& base, const std::string& sc) {

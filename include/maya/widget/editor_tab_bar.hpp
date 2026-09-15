@@ -35,17 +35,17 @@ namespace maya {
 enum class TabDiag : uint8_t { None, Error, Warning, Info };
 
 struct EditorTabBarTheme {
-    Color active   = Color::hex(0xF5F5F7); // active tab name
-    Color inactive = Color::hex(0x6C7086); // idle tab name
-    Color accent   = Color::hex(0x89B4FA); // active bar + underline
-    Color modified = Color::hex(0xF9E2AF); // ● dirty dot
-    Color close    = Color::hex(0x9399B2); // × close glyph
-    Color divider  = Color::hex(0x313244); // │ between tabs
-    Color chevron  = Color::hex(0x585B70); // ‹N / N› overflow hints
-    Color pin       = Color::hex(0x94E2D5); //  pinned glyph
-    Color err       = Color::hex(0xF38BA8);
-    Color warn      = Color::hex(0xF9E2AF);
-    Color info       = Color::hex(0x89B4FA);
+    Color active   = Color::slot(ThemeSlot::Text); // active tab name
+    Color inactive = Color::slot(ThemeSlot::Muted); // idle tab name
+    Color accent   = Color::slot(ThemeSlot::Primary); // active bar + underline
+    Color modified = Color::slot(ThemeSlot::Warning); // ● dirty dot
+    Color close    = Color::slot(ThemeSlot::Muted); // × close glyph
+    Color divider  = Color::slot(ThemeSlot::Surface); // │ between tabs
+    Color chevron  = Color::slot(ThemeSlot::Muted); // ‹N / N› overflow hints
+    Color pin       = Color::slot(ThemeSlot::Link); //  pinned glyph
+    Color err       = Color::slot(ThemeSlot::Error);
+    Color warn      = Color::slot(ThemeSlot::Warning);
+    Color info       = Color::slot(ThemeSlot::Primary);
 };
 
 struct EditorTabBarConfig {
@@ -255,8 +255,8 @@ private:
         if (ends(".ts"))   return Color::hex(0x3178C6); // TS
         if (ends(".js"))   return Color::hex(0xF7DF1E); // JS
         if (ends(".json")) return Color::hex(0xCBCB41);
-        if (ends(".md"))   return Color::hex(0x89B4FA);
-        return Color::hex(0x89B4FA);
+        if (ends(".md"))   return Color::slot(ThemeSlot::Primary);
+        return Color::slot(ThemeSlot::Primary);
     }
 };
 

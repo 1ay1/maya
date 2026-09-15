@@ -111,9 +111,9 @@ public:
         double used_pct = static_cast<double>(total_used) / max_tok * 100.0;
 
         // Color coding: green <50%, yellow 50-80%, red >80%
-        Color pct_color = used_pct > 80.0 ? Color::red()
-                        : used_pct > 50.0 ? Color::yellow()
-                        :                    Color::green();
+        Color pct_color = used_pct > 80.0 ? Color::slot(ThemeSlot::Error)
+                        : used_pct > 50.0 ? Color::slot(ThemeSlot::Warning)
+                        :                    Color::slot(ThemeSlot::Success);
 
         auto muted = Style{}.with_dim();
         auto dim   = Style{}.with_dim();
@@ -193,11 +193,11 @@ public:
                 int suffix_cols = static_cast<int>(suffix.size());
                 int dot_count = std::max(2, w - label_cols - suffix_cols - 1);
 
-                auto green = Style{}.with_fg(Color::green());
+                auto green = Style{}.with_fg(Color::slot(ThemeSlot::Success));
                 rows.push_back(h(
                     text("  Available", green),
                     text(" " + make_dots(dot_count) + " ", dim),
-                    text(std::move(suffix), Style{}.with_fg(Color::green()).with_dim())
+                    text(std::move(suffix), Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_dim())
                 ).build());
             }
         }

@@ -27,14 +27,14 @@
 namespace maya {
 
 struct TerminalPaneTheme {
-    Color prompt  = Color::hex(0xA6E3A1); // ❯
-    Color cwd     = Color::hex(0x89B4FA); // path
-    Color command = Color::hex(0xE6EDF3); // typed command
-    Color out      = Color::hex(0x9399B2); // stdout
-    Color err       = Color::hex(0xF38BA8); // stderr
-    Color info      = Color::hex(0x89DCEB); // info
-    Color ok        = Color::hex(0xA6E3A1); // success
-    Color caret     = Color::hex(0xF5F5F7); // block caret
+    Color prompt  = Color::slot(ThemeSlot::Success); // ❯
+    Color cwd     = Color::slot(ThemeSlot::Primary); // path
+    Color command = Color::slot(ThemeSlot::Text); // typed command
+    Color out      = Color::slot(ThemeSlot::Muted); // stdout
+    Color err       = Color::slot(ThemeSlot::Error); // stderr
+    Color info      = Color::slot(ThemeSlot::Link); // info
+    Color ok        = Color::slot(ThemeSlot::Success); // success
+    Color caret     = Color::slot(ThemeSlot::Text); // block caret
 };
 
 class TerminalPane {

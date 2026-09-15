@@ -140,10 +140,10 @@ public:
                 }};
             };
 
-            auto remove_style = Style{}.with_fg(Color::red());
-            auto add_style = Style{}.with_fg(Color::green());
-            auto bg_remove = Style{}.with_fg(Color::red()).with_dim();
-            auto bg_add = Style{}.with_fg(Color::green()).with_dim();
+            auto remove_style = Style{}.with_fg(Color::slot(ThemeSlot::Error));
+            auto add_style = Style{}.with_fg(Color::slot(ThemeSlot::Success));
+            auto bg_remove = Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_dim();
+            auto bg_add = Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_dim();
 
             auto push_lines = [&](std::string_view sv, char marker, Style mark_style, Style text_style) {
                 while (!sv.empty()) {
@@ -196,15 +196,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case EditStatus::Pending:
-                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
+                return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};   // ○
             case EditStatus::Applying:
-                return {"\xe2\x97\x8f", Color::yellow()};         // ●
+                return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Warning)};         // ●
             case EditStatus::Applied:
-                return {"\xe2\x9c\x93", Color::green()};          // ✓
+                return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};          // ✓
             case EditStatus::Failed:
-                return {"\xe2\x9c\x97", Color::red()};            // ✗
+                return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::bright_black()};
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

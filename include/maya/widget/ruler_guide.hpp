@@ -21,9 +21,9 @@
 namespace maya {
 
 struct RulerGuideTheme {
-    Color code  = Color::hex(0xC9D1D9);
-    Color guide = Color::hex(0x313244);
-    Color over  = Color::hex(0xF38BA8); // code past the ruler column
+    Color code  = Color::slot(ThemeSlot::Text);
+    Color guide = Color::slot(ThemeSlot::Surface);
+    Color over  = Color::slot(ThemeSlot::Error); // code past the ruler column
 };
 
 struct RulerGuide {

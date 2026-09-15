@@ -109,7 +109,7 @@ public:
         // Helper: build a column from a subset of groups.
         auto make_column = [key_w, this](const std::vector<std::string>& col_grps) -> Element {
             auto group_style = Style{}.with_bold();
-            auto k_style     = Style{}.with_bold().with_fg(Color::blue());
+            auto k_style     = Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Primary));
             auto desc_style  = Style{};
 
             std::vector<Element> rows;
@@ -150,7 +150,7 @@ public:
         auto wrap_border = [this](Element inner) -> Element {
             auto node = dsl::v(std::move(inner))
                 | dsl::border(BorderStyle::Round)
-                | dsl::bcolor(Color::bright_black())
+                | dsl::bcolor(Color::slot(ThemeSlot::Muted))
                 | dsl::padding(0, 1, 0, 1);
             if (!title_.empty()) {
                 node = std::move(node) | dsl::btext(" " + title_ + " ",

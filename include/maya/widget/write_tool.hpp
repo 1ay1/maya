@@ -89,7 +89,7 @@ public:
             std::string content = file_path_.empty() ? std::string{"(no path)"} : file_path_;
             std::vector<StyledRun> runs;
             runs.push_back(StyledRun{0, content.size(),
-                Style{}.with_fg(Color::cyan())});
+                Style{}.with_fg(Color::slot(ThemeSlot::Info))});
 
             if (elapsed_ > 0.0f) {
                 std::string ts = "  " + format_elapsed();
@@ -120,8 +120,8 @@ public:
                 .layout = {},
             }});
 
-            auto add_prefix_style = Style{}.with_fg(Color::green()).with_dim();
-            auto code_style = Style{}.with_fg(Color::green());
+            auto add_prefix_style = Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_dim();
+            auto code_style = Style{}.with_fg(Color::slot(ThemeSlot::Success));
 
             std::string_view sv = content_;
             int shown = 0;
@@ -253,15 +253,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case WriteStatus::Pending:
-                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
+                return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};   // ○
             case WriteStatus::Writing:
-                return {"\xe2\x97\x8f", Color::yellow()};         // ●
+                return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Warning)};         // ●
             case WriteStatus::Written:
-                return {"\xe2\x9c\x93", Color::green()};          // ✓
+                return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};          // ✓
             case WriteStatus::Failed:
-                return {"\xe2\x9c\x97", Color::red()};            // ✗
+                return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::bright_black()};
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

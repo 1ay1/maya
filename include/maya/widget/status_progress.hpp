@@ -23,10 +23,10 @@
 namespace maya {
 
 struct StatusProgressTheme {
-    Color label = Color::hex(0xBAC2DE);
-    Color fill  = Color::hex(0x89B4FA);
-    Color track = Color::hex(0x45475A);
-    Color pct    = Color::hex(0x9399B2);
+    Color label = Color::slot(ThemeSlot::Secondary);
+    Color fill  = Color::slot(ThemeSlot::Primary);
+    Color track = Color::slot(ThemeSlot::Border);
+    Color pct    = Color::slot(ThemeSlot::Muted);
 };
 
 struct StatusProgress {

@@ -38,7 +38,7 @@ namespace maya {
 struct RadioConfig {
     std::string selected_indicator   = "\xe2\x97\x8f ";  // "● "
     std::string unselected_indicator = "\xe2\x97\x8b ";  // "○ "
-    Style selected_style   = Style{}.with_bold().with_fg(Color::blue());
+    Style selected_style   = Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Primary));
     Style unselected_style = Style{}.with_dim();
     int visible_count      = 0;  // 0 = show all
 };
@@ -160,7 +160,7 @@ public:
 
             Style indicator_style;
             if (is_selected) {
-                indicator_style = Style{}.with_fg(Color::blue()).with_bold();
+                indicator_style = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
             } else {
                 indicator_style = Style{}.with_dim();
             }

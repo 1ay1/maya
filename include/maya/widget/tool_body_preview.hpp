@@ -58,7 +58,7 @@ public:
     enum class Kind : std::uint8_t {
         None,         // empty body
         CodeBlock,    // generic head+tail preview, dim'd in `text_color`
-        Failure,      // same shape as CodeBlock but in `Color::red()`
+        Failure,      // same shape as CodeBlock but in `Color::slot(ThemeSlot::Error)`
         EditDiff,     // multi-hunk edit preview (per-hunk header + −/+ lines)
         GitDiff,      // unified diff with per-line +/-/@@ coloring
         TodoList,     // checkbox list with status icons
@@ -216,12 +216,12 @@ private:
     // subordinate to bright_white prose but never collapsing below the
     // readable floor the way bright_black (ANSI 8, ~#5C5C5C on dark
     // themes) does on low-contrast terminals.
-    static constexpr Color muted()   { return Color::white(); }
-    static constexpr Color success() { return Color::green(); }
-    static constexpr Color danger()  { return Color::red(); }
-    static constexpr Color info()    { return Color::blue(); }
-    static constexpr Color accent()  { return Color::cyan(); }
-    static constexpr Color number()  { return Color::yellow(); }
+    static constexpr Color muted()   { return Color::slot(ThemeSlot::Text); }
+    static constexpr Color success() { return Color::slot(ThemeSlot::Success); }
+    static constexpr Color danger()  { return Color::slot(ThemeSlot::Error); }
+    static constexpr Color info()    { return Color::slot(ThemeSlot::Primary); }
+    static constexpr Color accent()  { return Color::slot(ThemeSlot::Info); }
+    static constexpr Color number()  { return Color::slot(ThemeSlot::Warning); }
 
     // ── Line-level helpers ────────────────────────────────────────────────
 
@@ -1014,10 +1014,10 @@ private:
         const bool  bands   = diff_bands_ok();
         const Style num_st  = bands
             ? Style{}.with_fg(num_fg).with_bg(add_bg)
-            : Style{}.with_fg(Color::green()).with_dim();
+            : Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_dim();
         const Style code_st = bands
             ? Style{}.with_fg(add_fg_br).with_bg(add_bg)
-            : Style{}.with_fg(Color::green());
+            : Style{}.with_fg(Color::slot(ThemeSlot::Success));
 
         std::vector<Element> rows;
         rows.reserve(p.lines.size() + 2);
@@ -1203,7 +1203,7 @@ private:
                     Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
             } else {
                 rows.push_back(text_row("   " + header,
-                    Style{}.with_fg(Color::blue()).with_bold()));
+                    Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold()));
             }
 
             push_diff_side(rows, h.old_text, '-', danger());
@@ -1291,7 +1291,7 @@ private:
                 Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
         else
             rows.push_back(text_row("   " + header,
-                Style{}.with_fg(Color::blue()).with_bold()));
+                Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold()));
         for (auto& e : body) rows.push_back(std::move(e));
         return v(rows).build();
     }
@@ -1346,10 +1346,10 @@ private:
 
         const Style sign_st = bands
             ? Style{}.with_fg(fg_br).with_bg(rail_bg).with_bold()
-            : Style{}.with_fg(is_add ? Color::green() : Color::red()).with_bold();
+            : Style{}.with_fg(is_add ? Color::slot(ThemeSlot::Success) : Color::slot(ThemeSlot::Error)).with_bold();
         const Style body_st = bands
             ? Style{}.with_fg(fg_br).with_bg(bg)
-            : Style{}.with_fg(is_add ? Color::green() : Color::red());
+            : Style{}.with_fg(is_add ? Color::slot(ThemeSlot::Success) : Color::slot(ThemeSlot::Error));
 
         std::string gutter = " ";
         gutter += marker;
@@ -1438,19 +1438,19 @@ private:
         const bool bands = diff_bands_ok();
         const Style add_sign_st = bands
             ? Style{}.with_fg(add_fg_br).with_bg(add_rail).with_bold()
-            : Style{}.with_fg(Color::green()).with_bold();
+            : Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_bold();
         const Style add_body_st = bands
             ? Style{}.with_fg(add_fg_br).with_bg(add_bg)
-            : Style{}.with_fg(Color::green());
+            : Style{}.with_fg(Color::slot(ThemeSlot::Success));
         const Style rem_sign_st = bands
             ? Style{}.with_fg(rem_fg_br).with_bg(rem_rail).with_bold()
-            : Style{}.with_fg(Color::red()).with_bold();
+            : Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_bold();
         const Style rem_body_st = bands
             ? Style{}.with_fg(rem_fg_br).with_bg(rem_bg)
-            : Style{}.with_fg(Color::red());
+            : Style{}.with_fg(Color::slot(ThemeSlot::Error));
         const Style hunk_st     = bands
             ? Style{}.with_fg(hunk_fg).with_bg(hunk_bg).with_bold()
-            : Style{}.with_fg(Color::blue()).with_bold();
+            : Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
         const Style file_st     = Style{}.with_fg(accent()).with_bold();
         const Style ctx_st      = Style{}.with_fg(cfg_.text_color);
 

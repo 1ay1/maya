@@ -25,13 +25,13 @@
 namespace maya {
 
 struct SignatureHelpTheme {
-    Color name    = Color::hex(0x89B4FA); // function name
-    Color param   = Color::hex(0x9399B2); // inactive parameters
-    Color active   = Color::hex(0xF9E2AF); // active parameter
-    Color punct    = Color::hex(0x6C7086); // ( , ) -> punctuation
-    Color ret       = Color::hex(0x94E2D5); // return type
-    Color counter   = Color::hex(0x585B70); // overload counter
-    Color doc        = Color::hex(0x9399B2); // doc string
+    Color name    = Color::slot(ThemeSlot::Primary); // function name
+    Color param   = Color::slot(ThemeSlot::Muted); // inactive parameters
+    Color active   = Color::slot(ThemeSlot::Warning); // active parameter
+    Color punct    = Color::slot(ThemeSlot::Muted); // ( , ) -> punctuation
+    Color ret       = Color::slot(ThemeSlot::Link); // return type
+    Color counter   = Color::slot(ThemeSlot::Muted); // overload counter
+    Color doc        = Color::slot(ThemeSlot::Muted); // doc string
 };
 
 struct SignatureHelp {
@@ -99,7 +99,7 @@ struct SignatureHelp {
 
         return maya::detail::box()
             .border(BorderStyle::Round)
-            .border_color(Color::hex(0x313244))
+            .border_color(Color::slot(ThemeSlot::Surface))
             .padding(0, 1, 0, 1)
             (dsl::v(std::move(col)).build());
     }

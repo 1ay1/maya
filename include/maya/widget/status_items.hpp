@@ -26,7 +26,7 @@ namespace maya {
 struct StatusItems {
     struct Item { std::string icon, text; Color color; };
     std::vector<Item> items;
-    Color             def = Color::hex(0x9399B2);
+    Color             def = Color::slot(ThemeSlot::Muted);
 
     StatusItems& item(std::string icon, std::string text) {
         items.push_back({std::move(icon), std::move(text), def}); return *this;

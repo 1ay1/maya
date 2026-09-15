@@ -283,7 +283,7 @@ private:
             text(f.glyph + " ", Style{}.with_fg(f.color).with_bold()),
             text(small_caps(f.text), Style{}.with_fg(f.color).with_bold()),
             text("   "),
-            text(f.summary, Style{}.with_fg(Color::white()))
+            text(f.summary, Style{}.with_fg(Color::slot(ThemeSlot::Text)))
         ).build();
     }
 
@@ -479,9 +479,9 @@ private:
 
     static Style name_style(AgentEventStatus s, Color cat, bool is_active) {
         if (s == AgentEventStatus::Failed)
-            return Style{}.with_fg(Color::red()).with_bold();
+            return Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_bold();
         if (s == AgentEventStatus::Rejected)
-            return Style{}.with_fg(Color::yellow()).with_bold();
+            return Style{}.with_fg(Color::slot(ThemeSlot::Warning)).with_bold();
         return is_active ? Style{}.with_fg(cat).with_bold()
                          : Style{}.with_fg(cat).with_dim();
     }
@@ -526,27 +526,27 @@ private:
             case AgentEventStatus::Running:
                 if (frame < 0)
                     return dsl::text(std::string_view{"\xe2\x97\x8f"},   // ●
-                                     Style{}.with_fg(Color::bright_cyan()).with_bold());
+                                     Style{}.with_fg(Color::slot(ThemeSlot::Link)).with_bold());
                 return dsl::text(std::string_view{spin(frame)},
-                                 Style{}.with_fg(Color::bright_cyan()).with_bold());
+                                 Style{}.with_fg(Color::slot(ThemeSlot::Link)).with_bold());
             case AgentEventStatus::Pending:
                 if (frame < 0)
                     return dsl::text(std::string_view{"\xe2\x97\x8f"},   // ● (same as Running)
-                                     Style{}.with_fg(Color::bright_cyan()).with_bold());
+                                     Style{}.with_fg(Color::slot(ThemeSlot::Link)).with_bold());
                 return dsl::text(std::string_view{spin(frame)},
-                                 Style{}.with_fg(Color::bright_yellow()).with_bold());
+                                 Style{}.with_fg(Color::slot(ThemeSlot::Warning)).with_bold());
             case AgentEventStatus::Done:
                 return dsl::text(std::string_view{"\xe2\x9c\x93"},
-                                 Style{}.with_fg(Color::bright_green()).with_bold());
+                                 Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_bold());
             case AgentEventStatus::Failed:
                 return dsl::text(std::string_view{"\xe2\x9c\x97"},
-                                 Style{}.with_fg(Color::bright_red()).with_bold());
+                                 Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_bold());
             case AgentEventStatus::Rejected:
                 return dsl::text(std::string_view{"\xe2\x8a\x98"},
-                                 Style{}.with_fg(Color::bright_yellow()).with_bold());
+                                 Style{}.with_fg(Color::slot(ThemeSlot::Warning)).with_bold());
         }
         return dsl::text(std::string_view{"\xe2\x97\x8b"},
-                         Style{}.with_fg(Color::bright_black()));
+                         Style{}.with_fg(Color::slot(ThemeSlot::Muted)));
     }
 
     static std::string_view tree_glyph(std::size_t idx, std::size_t total) {
@@ -586,21 +586,21 @@ private:
     }
 
     static Color duration_color(float secs) {
-        if (secs < 0.25f) return Color::green();
-        if (secs < 2.0f)  return Color::bright_black();
-        if (secs < 15.0f) return Color::yellow();
-        return Color::red();
+        if (secs < 0.25f) return Color::slot(ThemeSlot::Success);
+        if (secs < 2.0f)  return Color::slot(ThemeSlot::Muted);
+        if (secs < 15.0f) return Color::slot(ThemeSlot::Warning);
+        return Color::slot(ThemeSlot::Error);
     }
 
     static Color event_connector_color(AgentEventStatus s) {
         switch (s) {
-            case AgentEventStatus::Failed:   return Color::red();
-            case AgentEventStatus::Rejected: return Color::yellow();
-            case AgentEventStatus::Running:  return Color::blue();
+            case AgentEventStatus::Failed:   return Color::slot(ThemeSlot::Error);
+            case AgentEventStatus::Rejected: return Color::slot(ThemeSlot::Warning);
+            case AgentEventStatus::Running:  return Color::slot(ThemeSlot::Primary);
             case AgentEventStatus::Pending:
-            case AgentEventStatus::Done:     return Color::bright_black();
+            case AgentEventStatus::Done:     return Color::slot(ThemeSlot::Muted);
         }
-        return Color::bright_black();
+        return Color::slot(ThemeSlot::Muted);
     }
 
     static std::string small_caps(std::string_view s) {

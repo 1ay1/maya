@@ -109,9 +109,9 @@ private:
     double      share_ = 0.0;
     std::string value_;               // the number the bar annotates
     int         width_ = 24;          // preferred cells (clamped 8..28)
-    Color       fill_color_  = Color::hex(0xCDD6F4);
+    Color       fill_color_  = Color::slot(ThemeSlot::Text);
     Color       track_color_ = Color::slot(ThemeSlot::Muted);
-    Color       value_color_ = Color::hex(0xCDD6F4);
+    Color       value_color_ = Color::slot(ThemeSlot::Text);
 };
 
 } // namespace maya

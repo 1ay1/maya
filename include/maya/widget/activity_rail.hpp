@@ -26,10 +26,10 @@
 namespace maya {
 
 struct ActivityBarTheme {
-    Color active   = Color::hex(0xF5F5F7); // active glyph
-    Color idle     = Color::hex(0x6C7086); // inactive glyph
-    Color accent   = Color::hex(0x89B4FA); // active left bar
-    Color badge     = Color::hex(0xF38BA8); // count badge
+    Color active   = Color::slot(ThemeSlot::Text); // active glyph
+    Color idle     = Color::slot(ThemeSlot::Muted); // inactive glyph
+    Color accent   = Color::slot(ThemeSlot::Primary); // active left bar
+    Color badge     = Color::slot(ThemeSlot::Error); // count badge
 };
 
 class ActivityBar {

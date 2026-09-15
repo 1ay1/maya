@@ -26,16 +26,16 @@
 namespace maya {
 
 struct ExtensionsListTheme {
-    Color name    = Color::hex(0xCDD6F4);
-    Color version = Color::hex(0x585B70);
-    Color author  = Color::hex(0x7F849C);
-    Color desc    = Color::hex(0x9399B2);
-    Color star     = Color::hex(0xF9E2AF);
-    Color installed = Color::hex(0xA6E3A1);
-    Color disabled  = Color::hex(0x6C7086);
-    Color install    = Color::hex(0x89B4FA);
-    Color active      = Color::hex(0x232634);
-    Color icon         = Color::hex(0x89B4FA);
+    Color name    = Color::slot(ThemeSlot::Text);
+    Color version = Color::slot(ThemeSlot::Muted);
+    Color author  = Color::slot(ThemeSlot::Muted);
+    Color desc    = Color::slot(ThemeSlot::Muted);
+    Color star     = Color::slot(ThemeSlot::Warning);
+    Color installed = Color::slot(ThemeSlot::Success);
+    Color disabled  = Color::slot(ThemeSlot::Muted);
+    Color install    = Color::slot(ThemeSlot::Primary);
+    Color active      = Color::slot(ThemeSlot::Surface);
+    Color icon         = Color::slot(ThemeSlot::Primary);
 };
 
 class ExtensionsList {

@@ -29,16 +29,16 @@
 namespace maya {
 
 struct ProblemsPanelTheme {
-    Color file    = Color::hex(0xCDD6F4);
-    Color guide   = Color::hex(0x45475A);
-    Color message = Color::hex(0xBAC2DE);
-    Color code     = Color::hex(0x585B70); // rule code (E0001)
-    Color loc       = Color::hex(0x585B70); // Ln:Col
-    Color error     = Color::hex(0xF38BA8);
-    Color warning   = Color::hex(0xE2B341);
-    Color info       = Color::hex(0x89B4FA);
-    Color hint        = Color::hex(0x94E2D5);
-    Color active      = Color::hex(0x232634); // active-row wash
+    Color file    = Color::slot(ThemeSlot::Text);
+    Color guide   = Color::slot(ThemeSlot::Border);
+    Color message = Color::slot(ThemeSlot::Secondary);
+    Color code     = Color::slot(ThemeSlot::Muted); // rule code (E0001)
+    Color loc       = Color::slot(ThemeSlot::Muted); // Ln:Col
+    Color error     = Color::slot(ThemeSlot::Error);
+    Color warning   = Color::slot(ThemeSlot::Warning);
+    Color info       = Color::slot(ThemeSlot::Primary);
+    Color hint        = Color::slot(ThemeSlot::Link);
+    Color active      = Color::slot(ThemeSlot::Surface); // active-row wash
 };
 
 class ProblemsPanel {

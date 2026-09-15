@@ -21,11 +21,11 @@
 namespace maya {
 
 struct SegmentedControlTheme {
-    Color active   = Color::hex(0xF5F5F7);
-    Color idle     = Color::hex(0x6C7086);
-    Color shade    = Color::hex(0x313244);
-    Color divider  = Color::hex(0x313244);
-    Color border    = Color::hex(0x313244);
+    Color active   = Color::slot(ThemeSlot::Text);
+    Color idle     = Color::slot(ThemeSlot::Muted);
+    Color shade    = Color::slot(ThemeSlot::Surface);
+    Color divider  = Color::slot(ThemeSlot::Surface);
+    Color border    = Color::slot(ThemeSlot::Surface);
 };
 
 struct SegmentedControl {

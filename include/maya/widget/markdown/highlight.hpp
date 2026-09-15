@@ -109,21 +109,21 @@ namespace themes {
 inline constexpr HighlightTheme terminal = [] {
     HighlightTheme t{};
     using S = Style;
-    t.styles[capture_index(Capture::None)]        = S{}.with_fg(Color::white());
-    t.styles[capture_index(Capture::Keyword)]     = S{}.with_fg(Color::magenta());
-    t.styles[capture_index(Capture::KeywordCtrl)] = S{}.with_fg(Color::magenta()).with_bold();
-    t.styles[capture_index(Capture::Type)]        = S{}.with_fg(Color::cyan());
-    t.styles[capture_index(Capture::Function)]    = S{}.with_fg(Color::blue());
-    t.styles[capture_index(Capture::String)]      = S{}.with_fg(Color::green());
-    t.styles[capture_index(Capture::Number)]      = S{}.with_fg(Color::bright_yellow());
-    t.styles[capture_index(Capture::Comment)]     = S{}.with_fg(Color::bright_black()).with_italic();
-    t.styles[capture_index(Capture::Constant)]    = S{}.with_fg(Color::bright_yellow());
-    t.styles[capture_index(Capture::Operator)]    = S{}.with_fg(Color::red());
-    t.styles[capture_index(Capture::Punctuation)] = S{}.with_fg(Color::bright_black());
-    t.styles[capture_index(Capture::Preproc)]     = S{}.with_fg(Color::yellow());
-    t.styles[capture_index(Capture::Attribute)]   = S{}.with_fg(Color::yellow());
-    t.styles[capture_index(Capture::Variable)]    = S{}.with_fg(Color::bright_cyan());
-    t.styles[capture_index(Capture::Property)]    = S{}.with_fg(Color::white());
+    t.styles[capture_index(Capture::None)]        = S{}.with_fg(Color::slot(ThemeSlot::Text));
+    t.styles[capture_index(Capture::Keyword)]     = S{}.with_fg(Color::slot(ThemeSlot::Accent));
+    t.styles[capture_index(Capture::KeywordCtrl)] = S{}.with_fg(Color::slot(ThemeSlot::Accent)).with_bold();
+    t.styles[capture_index(Capture::Type)]        = S{}.with_fg(Color::slot(ThemeSlot::Info));
+    t.styles[capture_index(Capture::Function)]    = S{}.with_fg(Color::slot(ThemeSlot::Primary));
+    t.styles[capture_index(Capture::String)]      = S{}.with_fg(Color::slot(ThemeSlot::Success));
+    t.styles[capture_index(Capture::Number)]      = S{}.with_fg(Color::slot(ThemeSlot::Warning));
+    t.styles[capture_index(Capture::Comment)]     = S{}.with_fg(Color::slot(ThemeSlot::Muted)).with_italic();
+    t.styles[capture_index(Capture::Constant)]    = S{}.with_fg(Color::slot(ThemeSlot::Warning));
+    t.styles[capture_index(Capture::Operator)]    = S{}.with_fg(Color::slot(ThemeSlot::Error));
+    t.styles[capture_index(Capture::Punctuation)] = S{}.with_fg(Color::slot(ThemeSlot::Muted));
+    t.styles[capture_index(Capture::Preproc)]     = S{}.with_fg(Color::slot(ThemeSlot::Warning));
+    t.styles[capture_index(Capture::Attribute)]   = S{}.with_fg(Color::slot(ThemeSlot::Warning));
+    t.styles[capture_index(Capture::Variable)]    = S{}.with_fg(Color::slot(ThemeSlot::Link));
+    t.styles[capture_index(Capture::Property)]    = S{}.with_fg(Color::slot(ThemeSlot::Text));
     return t;
 }();
 
@@ -153,7 +153,7 @@ inline constexpr HighlightTheme monokai = [] {
 inline constexpr HighlightTheme github_dark = [] {
     HighlightTheme t{};
     using S = Style;
-    t.styles[capture_index(Capture::None)]        = S{}.with_fg(Color::hex(0xC9D1D9));
+    t.styles[capture_index(Capture::None)]        = S{}.with_fg(Color::slot(ThemeSlot::Text));
     t.styles[capture_index(Capture::Keyword)]     = S{}.with_fg(Color::hex(0xFF7B72));
     t.styles[capture_index(Capture::KeywordCtrl)] = S{}.with_fg(Color::hex(0xFF7B72));
     t.styles[capture_index(Capture::Type)]        = S{}.with_fg(Color::hex(0xFFA657));
@@ -163,10 +163,10 @@ inline constexpr HighlightTheme github_dark = [] {
     t.styles[capture_index(Capture::Comment)]     = S{}.with_fg(Color::hex(0x8B949E)).with_italic();
     t.styles[capture_index(Capture::Constant)]    = S{}.with_fg(Color::hex(0x79C0FF));
     t.styles[capture_index(Capture::Operator)]    = S{}.with_fg(Color::hex(0xFF7B72));
-    t.styles[capture_index(Capture::Punctuation)] = S{}.with_fg(Color::hex(0xC9D1D9));
+    t.styles[capture_index(Capture::Punctuation)] = S{}.with_fg(Color::slot(ThemeSlot::Text));
     t.styles[capture_index(Capture::Preproc)]     = S{}.with_fg(Color::hex(0xFF7B72));
     t.styles[capture_index(Capture::Attribute)]   = S{}.with_fg(Color::hex(0xD2A8FF));
-    t.styles[capture_index(Capture::Variable)]    = S{}.with_fg(Color::hex(0xC9D1D9));
+    t.styles[capture_index(Capture::Variable)]    = S{}.with_fg(Color::slot(ThemeSlot::Text));
     t.styles[capture_index(Capture::Property)]    = S{}.with_fg(Color::hex(0x79C0FF));
     return t;
 }();

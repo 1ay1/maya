@@ -17,9 +17,9 @@
 namespace maya {
 
 struct KeyCapsTheme {
-    Color cap  = Color::hex(0xE6EDF3); // key label
-    Color edge = Color::hex(0x45475A); // bracket
-    Color plus = Color::hex(0x585B70); // + separator
+    Color cap  = Color::slot(ThemeSlot::Text); // key label
+    Color edge = Color::slot(ThemeSlot::Border); // bracket
+    Color plus = Color::slot(ThemeSlot::Muted); // + separator
 };
 
 struct KeyCaps {

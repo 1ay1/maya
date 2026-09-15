@@ -23,9 +23,9 @@ namespace maya {
 enum class Change : uint8_t { None, Added, Modified, Deleted };
 
 struct ChangeBarTheme {
-    Color added    = Color::hex(0x3FB950);
-    Color modified = Color::hex(0xD29922);
-    Color deleted  = Color::hex(0xF85149);
+    Color added    = Color::slot(ThemeSlot::Success);
+    Color modified = Color::slot(ThemeSlot::Warning);
+    Color deleted  = Color::slot(ThemeSlot::Error);
 };
 
 class ChangeBar {

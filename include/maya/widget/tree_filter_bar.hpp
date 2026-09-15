@@ -22,13 +22,13 @@
 namespace maya {
 
 struct TreeFilterBarTheme {
-    Color icon   = Color::hex(0x585B70);
-    Color query  = Color::hex(0xCDD6F4);
-    Color prompt  = Color::hex(0x585B70);
-    Color count    = Color::hex(0xBAC2DE);
-    Color no_match  = Color::hex(0xF38BA8);
-    Color on         = Color::hex(0x89B4FA);
-    Color off         = Color::hex(0x45475A);
+    Color icon   = Color::slot(ThemeSlot::Muted);
+    Color query  = Color::slot(ThemeSlot::Text);
+    Color prompt  = Color::slot(ThemeSlot::Muted);
+    Color count    = Color::slot(ThemeSlot::Secondary);
+    Color no_match  = Color::slot(ThemeSlot::Error);
+    Color on         = Color::slot(ThemeSlot::Primary);
+    Color off         = Color::slot(ThemeSlot::Border);
 };
 
 struct TreeFilterBar {

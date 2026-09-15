@@ -25,11 +25,11 @@
 namespace maya {
 
 struct CallStackTheme {
-    Color current  = Color::hex(0xF9E2AF);
-    Color name     = Color::hex(0xBAC2DE);
-    Color loc      = Color::hex(0x585B70);
-    Color external = Color::hex(0x494D64);
-    Color marker    = Color::hex(0xF9E2AF);
+    Color current  = Color::slot(ThemeSlot::Warning);
+    Color name     = Color::slot(ThemeSlot::Secondary);
+    Color loc      = Color::slot(ThemeSlot::Muted);
+    Color external = Color::slot(ThemeSlot::Border);
+    Color marker    = Color::slot(ThemeSlot::Warning);
 };
 
 class CallStack {

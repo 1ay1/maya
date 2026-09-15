@@ -30,15 +30,15 @@
 namespace maya {
 
 struct CommandPaletteTheme {
-    Color border   = Color::hex(0x313244);
-    Color prompt   = Color::hex(0x89B4FA); // > and query caret
-    Color query    = Color::hex(0xCDD6F4);
-    Color title     = Color::hex(0xBAC2DE);
-    Color sel_title  = Color::hex(0xF5F5F7);
-    Color match      = Color::hex(0xF9E2AF);
-    Color category   = Color::hex(0x585B70);
-    Color keybind    = Color::hex(0x9399B2);
-    Color sel_shade  = Color::hex(0x313244);
+    Color border   = Color::slot(ThemeSlot::Surface);
+    Color prompt   = Color::slot(ThemeSlot::Primary); // > and query caret
+    Color query    = Color::slot(ThemeSlot::Text);
+    Color title     = Color::slot(ThemeSlot::Secondary);
+    Color sel_title  = Color::slot(ThemeSlot::Text);
+    Color match      = Color::slot(ThemeSlot::Warning);
+    Color category   = Color::slot(ThemeSlot::Muted);
+    Color keybind    = Color::slot(ThemeSlot::Muted);
+    Color sel_shade  = Color::slot(ThemeSlot::Surface);
 };
 
 struct CommandPalette {

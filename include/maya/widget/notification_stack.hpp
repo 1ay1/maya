@@ -56,11 +56,11 @@ struct NotificationStack {
 private:
     Color kind_color(Kind k) const {
         switch (k) {
-            case Success:  return Color::hex(0xA6E3A1);
-            case Warning:  return Color::hex(0xF9E2AF);
-            case Error:    return Color::hex(0xF38BA8);
-            case Progress: return Color::hex(0xCBA6F7);
-            default:       return Color::hex(0x89B4FA);
+            case Success:  return Color::slot(ThemeSlot::Success);
+            case Warning:  return Color::slot(ThemeSlot::Warning);
+            case Error:    return Color::slot(ThemeSlot::Error);
+            case Progress: return Color::slot(ThemeSlot::Accent);
+            default:       return Color::slot(ThemeSlot::Primary);
         }
     }
     const char* kind_glyph(Kind k) const {
@@ -85,7 +85,7 @@ private:
             };
             put("\xe2\x96\x8e ", Style{}.with_fg(c)); // ▎
             put(std::string(kind_glyph(it.kind)) + "  ", Style{}.with_fg(c));
-            put(it.title, Style{}.with_fg(Color::hex(0xE6EDF3)).with_bold());
+            put(it.title, Style{}.with_fg(Color::slot(ThemeSlot::Text)).with_bold());
             rows.push_back(Element{TextElement{ .content = std::move(s), .style = Style{},
                                                 .wrap = TextWrap::NoWrap, .runs = std::move(r) }});
         }
@@ -93,7 +93,7 @@ private:
         if (!it.body.empty())
             rows.push_back(Element{TextElement{
                 .content = "  " + it.body,
-                .style = Style{}.with_fg(Color::hex(0x9399B2)), .wrap = TextWrap::Wrap }});
+                .style = Style{}.with_fg(Color::slot(ThemeSlot::Muted)), .wrap = TextWrap::Wrap }});
 
         if (it.progress >= 0.0f) {
             const int filled = std::clamp(static_cast<int>(it.progress * bar_width + 0.5f),
@@ -104,7 +104,7 @@ private:
             for (int i = 0; i < filled; ++i) on += "\xe2\x94\x81";        // ━
             for (int i = filled; i < bar_width; ++i) off += "\xe2\x94\x80"; // ─
             r.push_back({s.size(), on.size(), Style{}.with_fg(c)}); s += on;
-            r.push_back({s.size(), off.size(), Style{}.with_fg(Color::hex(0x45475A))}); s += off;
+            r.push_back({s.size(), off.size(), Style{}.with_fg(Color::slot(ThemeSlot::Border))}); s += off;
             std::string pct = "  " + std::to_string(static_cast<int>(it.progress * 100)) + "%";
             r.push_back({s.size(), pct.size(), Style{}.with_fg(c)}); s += pct;
             rows.push_back(Element{TextElement{ .content = std::move(s), .style = Style{},

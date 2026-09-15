@@ -22,8 +22,8 @@ struct NotificationBadge {
     std::string icon_;
     std::string label_;
     int         count_ = 0;
-    Color       label_color = Color::hex(0xBAC2DE);
-    Color       icon_color  = Color::hex(0x89B4FA);
+    Color       label_color = Color::slot(ThemeSlot::Secondary);
+    Color       icon_color  = Color::slot(ThemeSlot::Primary);
     bool        error = false;
 
     NotificationBadge& icon(std::string s)  { icon_ = std::move(s); return *this; }

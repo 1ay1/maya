@@ -34,10 +34,10 @@
 namespace maya {
 
 struct MinimapTheme {
-    Color ink_idle = Color::hex(0x4C566A); // code, outside viewport
-    Color ink_view = Color::hex(0x88C0D0); // code, inside viewport
-    Color active   = Color::hex(0xEBCB8B); // active line glow
-    Color slider   = Color::hex(0x5E81AC); // viewport slider on the left edge
+    Color ink_idle = Color::slot(ThemeSlot::Muted); // code, outside viewport
+    Color ink_view = Color::slot(ThemeSlot::Link); // code, inside viewport
+    Color active   = Color::slot(ThemeSlot::Warning); // active line glow
+    Color slider   = Color::slot(ThemeSlot::Primary); // viewport slider on the left edge
 };
 
 struct MinimapConfig {

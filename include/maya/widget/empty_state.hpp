@@ -23,11 +23,11 @@
 namespace maya {
 
 struct EmptyStateTheme {
-    Color glyph  = Color::hex(0x45475A);
-    Color title  = Color::hex(0xBAC2DE);
-    Color hint   = Color::hex(0x585B70);
-    Color key    = Color::hex(0xF9E2AF);
-    Color action = Color::hex(0x9399B2);
+    Color glyph  = Color::slot(ThemeSlot::Border);
+    Color title  = Color::slot(ThemeSlot::Secondary);
+    Color hint   = Color::slot(ThemeSlot::Muted);
+    Color key    = Color::slot(ThemeSlot::Warning);
+    Color action = Color::slot(ThemeSlot::Muted);
 };
 
 struct EmptyState {

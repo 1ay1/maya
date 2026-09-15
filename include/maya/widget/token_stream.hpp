@@ -46,9 +46,9 @@ class TokenStream {
     }
 
     static Color rate_color(float rate) {
-        if (rate > 50.f) return Color::green();
-        if (rate >= 20.f) return Color::yellow();
-        return Color::red();
+        if (rate > 50.f) return Color::slot(ThemeSlot::Success);
+        if (rate >= 20.f) return Color::slot(ThemeSlot::Warning);
+        return Color::slot(ThemeSlot::Error);
     }
 
     [[nodiscard]] std::string build_sparkline(size_t width) const {

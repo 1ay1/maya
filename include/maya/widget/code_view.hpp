@@ -43,18 +43,18 @@ enum class LineMark : uint8_t { None, Added, Modified, Deleted, Warning, Error }
 struct CodeViewTheme {
     syntax::HighlightTheme syntax = syntax::themes::github_dark;
 
-    Color gutter_fg     = Color::hex(0x484F58); // idle line numbers
-    Color gutter_active = Color::hex(0xE6EDF3); // current line number
-    Color active_accent = Color::hex(0x89B4FA); // current-line gutter rule
-    Color gutter_rule   = Color::hex(0x21262D); // idle vertical gutter rule
-    Color indent_guide  = Color::hex(0x30363D); // faint │ at each tab stop
-    Color active_shade  = Color::hex(0x232634); // subtle current-line wash
+    Color gutter_fg     = Color::slot(ThemeSlot::Muted); // idle line numbers
+    Color gutter_active = Color::slot(ThemeSlot::Text); // current line number
+    Color active_accent = Color::slot(ThemeSlot::Primary); // current-line gutter rule
+    Color gutter_rule   = Color::slot(ThemeSlot::Surface); // idle vertical gutter rule
+    Color indent_guide  = Color::slot(ThemeSlot::Border); // faint │ at each tab stop
+    Color active_shade  = Color::slot(ThemeSlot::Surface); // subtle current-line wash
 
-    Color mark_added    = Color::hex(0x3FB950); // green ribbon
-    Color mark_modified = Color::hex(0xD29922); // amber ribbon
-    Color mark_deleted  = Color::hex(0xF85149); // red ribbon
-    Color mark_warning  = Color::hex(0xD29922);
-    Color mark_error    = Color::hex(0xF85149);
+    Color mark_added    = Color::slot(ThemeSlot::Success); // green ribbon
+    Color mark_modified = Color::slot(ThemeSlot::Warning); // amber ribbon
+    Color mark_deleted  = Color::slot(ThemeSlot::Error); // red ribbon
+    Color mark_warning  = Color::slot(ThemeSlot::Warning);
+    Color mark_error    = Color::slot(ThemeSlot::Error);
 };
 
 struct CodeViewConfig {

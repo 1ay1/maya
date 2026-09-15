@@ -28,12 +28,12 @@ class TurnDivider {
 
     [[nodiscard]] Color role_color() const {
         switch (role_) {
-            case TurnRole::User:      return Color::blue();
-            case TurnRole::Assistant: return Color::magenta();
-            case TurnRole::System:    return Color::yellow();
-            case TurnRole::Tool:      return Color::cyan();
+            case TurnRole::User:      return Color::slot(ThemeSlot::Primary);
+            case TurnRole::Assistant: return Color::slot(ThemeSlot::Accent);
+            case TurnRole::System:    return Color::slot(ThemeSlot::Warning);
+            case TurnRole::Tool:      return Color::slot(ThemeSlot::Info);
         }
-        return Color::bright_black();
+        return Color::slot(ThemeSlot::Muted);
     }
 
     [[nodiscard]] const char* role_label() const {

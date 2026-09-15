@@ -62,12 +62,12 @@ private:
 
     static LevelInfo level_info(ToastLevel level) {
         switch (level) {
-        case ToastLevel::Info:    return {"\xe2\x84\xb9", Color::blue()};    // ℹ
-        case ToastLevel::Success: return {"\xe2\x9c\x93", Color::green()};   // ✓
-        case ToastLevel::Warning: return {"\xe2\x9a\xa0", Color::yellow()};  // ⚠
-        case ToastLevel::Error:   return {"\xe2\x9c\x97", Color::red()};     // ✗
+        case ToastLevel::Info:    return {"\xe2\x84\xb9", Color::slot(ThemeSlot::Primary)};    // ℹ
+        case ToastLevel::Success: return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};   // ✓
+        case ToastLevel::Warning: return {"\xe2\x9a\xa0", Color::slot(ThemeSlot::Warning)};  // ⚠
+        case ToastLevel::Error:   return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};     // ✗
         }
-        return {"\xe2\x84\xb9", Color::blue()};
+        return {"\xe2\x84\xb9", Color::slot(ThemeSlot::Primary)};
     }
 
 public:
@@ -143,7 +143,7 @@ public:
                         .style = msg_style,
                     }})
                 | dsl::border(BorderStyle::Round)
-                | dsl::bcolor(fading ? Color::bright_black() : border_color)
+                | dsl::bcolor(fading ? Color::slot(ThemeSlot::Muted) : border_color)
                 | dsl::btext(border_label, BorderTextPos::Top, BorderTextAlign::Start)
                 | dsl::padding(0, 1, 0, 1)).build();
 

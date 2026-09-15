@@ -34,7 +34,7 @@ public:
 
     [[nodiscard]] Element build() const {
         using namespace dsl;
-        const Style chrome = Style{}.with_fg(Color::bright_black()).with_dim();
+        const Style chrome = Style{}.with_fg(Color::slot(ThemeSlot::Muted)).with_dim();
         return h(
             text("\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80 ", chrome),       // ───
             text("[",                                     chrome),

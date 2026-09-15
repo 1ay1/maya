@@ -28,11 +28,11 @@ enum class Marker : uint8_t {
 };
 
 struct MarkerGutterTheme {
-    Color breakpoint = Color::hex(0xF85149);
-    Color disabled   = Color::hex(0x6C7086);
-    Color conditional = Color::hex(0xE2B341);
-    Color bookmark    = Color::hex(0x89B4FA);
-    Color execution   = Color::hex(0xF9E2AF);
+    Color breakpoint = Color::slot(ThemeSlot::Error);
+    Color disabled   = Color::slot(ThemeSlot::Muted);
+    Color conditional = Color::slot(ThemeSlot::Warning);
+    Color bookmark    = Color::slot(ThemeSlot::Primary);
+    Color execution   = Color::slot(ThemeSlot::Warning);
 };
 
 class MarkerGutter {

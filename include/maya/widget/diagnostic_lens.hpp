@@ -85,12 +85,12 @@ struct DiagnosticLens {
 private:
     Color color() const {
         switch (severity) {
-            case Severity::Error:   return Color::hex(0xF38BA8);
-            case Severity::Warning: return Color::hex(0xF9E2AF);
-            case Severity::Info:    return Color::hex(0x89B4FA);
-            case Severity::Hint:    return Color::hex(0x94E2D5);
+            case Severity::Error:   return Color::slot(ThemeSlot::Error);
+            case Severity::Warning: return Color::slot(ThemeSlot::Warning);
+            case Severity::Info:    return Color::slot(ThemeSlot::Primary);
+            case Severity::Hint:    return Color::slot(ThemeSlot::Link);
         }
-        return Color::hex(0xF38BA8);
+        return Color::slot(ThemeSlot::Error);
     }
     const char* glyph() const {
         switch (severity) {

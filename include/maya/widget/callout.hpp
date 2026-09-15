@@ -127,13 +127,13 @@ private:
     [[nodiscard]] static constexpr SeverityProps severity_props(Severity sev) noexcept {
         switch (sev) {
             case Severity::Info:
-                return {"\u2139", Color::blue()};    // ℹ blue
+                return {"\u2139", Color::slot(ThemeSlot::Primary)};    // ℹ blue
             case Severity::Success:
-                return {"\u2713", Color::green()};   // ✓ green
+                return {"\u2713", Color::slot(ThemeSlot::Success)};   // ✓ green
             case Severity::Warning:
-                return {"\u26A0", Color::yellow()};  // ⚠ yellow
+                return {"\u26A0", Color::slot(ThemeSlot::Warning)};  // ⚠ yellow
             case Severity::Error:
-                return {"\u2717", Color::red()};     // ✗ red
+                return {"\u2717", Color::slot(ThemeSlot::Error)};     // ✗ red
         }
         __builtin_unreachable();
     }

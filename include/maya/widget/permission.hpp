@@ -83,8 +83,8 @@ public:
             std::string content;
             std::vector<StyledRun> runs;
             auto dim = Style{}.with_dim();
-            auto allow_key = Style{}.with_bold().with_fg(Color::green());
-            auto deny_key = Style{}.with_bold().with_fg(Color::red());
+            auto allow_key = Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Success));
+            auto deny_key = Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Error));
 
             auto add_hint = [&](const char* key, const char* label, Style ks) {
                 std::size_t off = content.size();
@@ -113,7 +113,7 @@ public:
         // Wrap in Zed-style bordered card with warning tint
         return (dsl::v(std::move(rows))
             | dsl::border(BorderStyle::Round)
-            | dsl::bcolor(Color::yellow())
+            | dsl::bcolor(Color::slot(ThemeSlot::Warning))
             | dsl::btext(" \xe2\x9a\xa0 Permission Required ",
                          BorderTextPos::Top, BorderTextAlign::Start)
             | dsl::padding(0, 1, 0, 1)).build();

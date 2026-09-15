@@ -59,8 +59,8 @@ public:
         auto val   = Style{};
 
         Color branch_color = is_clean()
-            ? Color::green()   // green = clean
-            : Color::yellow(); // yellow = dirty
+            ? Color::slot(ThemeSlot::Success)   // green = clean
+            : Color::slot(ThemeSlot::Warning); // yellow = dirty
 
         // ── Compact: single line for status bar ──────────────────────
         if (compact_) {
@@ -74,11 +74,11 @@ public:
             // Ahead/behind
             if (ahead_ > 0) {
                 parts.push_back(text(" \xe2\x86\x91" + std::to_string(ahead_), // ↑
-                    Style{}.with_fg(Color::green())));
+                    Style{}.with_fg(Color::slot(ThemeSlot::Success))));
             }
             if (behind_ > 0) {
                 parts.push_back(text(" \xe2\x86\x93" + std::to_string(behind_), // ↓
-                    Style{}.with_fg(Color::red())));
+                    Style{}.with_fg(Color::slot(ThemeSlot::Error))));
             }
 
             // Dirty indicators
@@ -90,7 +90,7 @@ public:
                 if (untracked_ > 0) dirty += " ?" + std::to_string(untracked_);
                 if (conflicts_ > 0) dirty += " !" + std::to_string(conflicts_);
                 parts.push_back(text(dirty,
-                    Style{}.with_fg(Color::yellow())));
+                    Style{}.with_fg(Color::slot(ThemeSlot::Warning))));
             }
 
             return h(std::move(parts)).build();
@@ -112,10 +112,10 @@ public:
             ab.push_back(text("  "));
             if (ahead_ > 0)
                 ab.push_back(text("\xe2\x86\x91" + std::to_string(ahead_) + " ahead ",
-                    Style{}.with_fg(Color::green())));
+                    Style{}.with_fg(Color::slot(ThemeSlot::Success))));
             if (behind_ > 0)
                 ab.push_back(text("\xe2\x86\x93" + std::to_string(behind_) + " behind",
-                    Style{}.with_fg(Color::red())));
+                    Style{}.with_fg(Color::slot(ThemeSlot::Error))));
             rows.push_back(h(std::move(ab)).build());
         }
 
@@ -125,19 +125,19 @@ public:
                 rows.push_back(h(
                     text("  ", lbl),
                     text(std::to_string(staged_) + " staged",
-                         Style{}.with_fg(Color::green()))
+                         Style{}.with_fg(Color::slot(ThemeSlot::Success)))
                 ).build());
             if (modified_ > 0)
                 rows.push_back(h(
                     text("  ", lbl),
                     text(std::to_string(modified_) + " modified",
-                         Style{}.with_fg(Color::yellow()))
+                         Style{}.with_fg(Color::slot(ThemeSlot::Warning)))
                 ).build());
             if (deleted_ > 0)
                 rows.push_back(h(
                     text("  ", lbl),
                     text(std::to_string(deleted_) + " deleted",
-                         Style{}.with_fg(Color::red()))
+                         Style{}.with_fg(Color::slot(ThemeSlot::Error)))
                 ).build());
             if (untracked_ > 0)
                 rows.push_back(h(
@@ -149,11 +149,11 @@ public:
                 rows.push_back(h(
                     text("  ", lbl),
                     text(std::to_string(conflicts_) + " conflicts",
-                         Style{}.with_fg(Color::red()).with_bold())
+                         Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_bold())
                 ).build());
         } else {
             rows.push_back(text("  Working tree clean",
-                Style{}.with_fg(Color::green()).with_dim()));
+                Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_dim()));
         }
 
         // Changed files list

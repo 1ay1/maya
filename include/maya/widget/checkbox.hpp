@@ -98,13 +98,13 @@ public:
         // Checkbox indicator
         std::string indicator = is_checked ? "[x]" : "[ ]";
         auto indicator_style = is_checked
-            ? Style{}.with_fg(Color::green()).with_bold()  // green
+            ? Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_bold()  // green
             : Style{}.with_dim();                          // dim
 
         if (focused) {
             indicator_style = is_checked
-                ? Style{}.with_fg(Color::green()).with_bold()
-                : Style{}.with_fg(Color::blue());  // blue when focused
+                ? Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_bold()
+                : Style{}.with_fg(Color::slot(ThemeSlot::Primary));  // blue when focused
         }
 
         runs.push_back(StyledRun{content.size(), indicator.size(), indicator_style});
@@ -201,8 +201,8 @@ public:
             // ━━━●
             std::string track = "\xe2\x94\x81\xe2\x94\x81\xe2\x94\x81";  // ━━━
             std::string knob  = "\xe2\x97\x8f";                            // ●
-            auto track_style = Style{}.with_fg(Color::green()); // green
-            auto knob_style  = Style{}.with_fg(Color::green()).with_bold();
+            auto track_style = Style{}.with_fg(Color::slot(ThemeSlot::Success)); // green
+            auto knob_style  = Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_bold();
             runs.push_back(StyledRun{content.size(), track.size(), track_style});
             content += track;
             runs.push_back(StyledRun{content.size(), knob.size(), knob_style});

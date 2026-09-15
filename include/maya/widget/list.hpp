@@ -50,11 +50,11 @@ struct ListItem {
 struct ListConfig {
     std::string indicator      = "\xe2\x96\xb8 ";  // "▸ "
     std::string inactive_prefix = "  ";
-    Style active_style   = Style{}.with_bold().with_fg(Color::blue());
+    Style active_style   = Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Primary));
     Style inactive_style = Style{};
     Style desc_style     = Style{}.with_dim();
     Style dim_style      = Style{}.with_dim();
-    Style filter_style   = Style{}.with_fg(Color::yellow());
+    Style filter_style   = Style{}.with_fg(Color::slot(ThemeSlot::Warning));
     int visible_count    = 10;
     bool filterable      = false;
 };

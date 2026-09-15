@@ -25,10 +25,10 @@
 namespace maya {
 
 struct CommitGraphTheme {
-    Color hash    = Color::hex(0xE2B341);
-    Color subject = Color::hex(0xBAC2DE);
-    Color ref     = Color::hex(0xA6E3A1);
-    Color head    = Color::hex(0xF9E2AF);
+    Color hash    = Color::slot(ThemeSlot::Warning);
+    Color subject = Color::slot(ThemeSlot::Secondary);
+    Color ref     = Color::slot(ThemeSlot::Success);
+    Color head    = Color::slot(ThemeSlot::Warning);
 };
 
 class CommitGraph {

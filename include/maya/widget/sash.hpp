@@ -19,9 +19,9 @@
 namespace maya {
 
 struct SashTheme {
-    Color rail   = Color::hex(0x313244);
-    Color grip   = Color::hex(0x585B70);
-    Color active = Color::hex(0x89B4FA);
+    Color rail   = Color::slot(ThemeSlot::Surface);
+    Color grip   = Color::slot(ThemeSlot::Muted);
+    Color active = Color::slot(ThemeSlot::Primary);
 };
 
 struct Sash {

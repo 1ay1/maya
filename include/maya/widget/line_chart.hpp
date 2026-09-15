@@ -246,7 +246,7 @@ private:
             std::string sep = " \xe2\x94\x82";  // " │"
             runs.push_back(StyledRun{
                 content.size(), sep.size(),
-                Style{}.with_fg(Color::bright_black()),
+                Style{}.with_fg(Color::slot(ThemeSlot::Muted)),
             });
             content += sep;
 

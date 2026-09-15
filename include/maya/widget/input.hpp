@@ -210,15 +210,15 @@ public:
 
         // Zed style: wrap in a bordered box with prompt indicator
         auto border_color = is_focused
-            ? Color::blue()           // blue when focused
-            : Color::bright_black();  // muted when blurred
+            ? Color::slot(ThemeSlot::Primary)           // blue when focused
+            : Color::slot(ThemeSlot::Muted);  // muted when blurred
 
         return (dsl::v(
                 dsl::h(
                     Element{TextElement{
                         .content = "\xe2\x9d\xaf ",  // "❯ "
                         .style = is_focused
-                            ? Style{}.with_fg(Color::blue())
+                            ? Style{}.with_fg(Color::slot(ThemeSlot::Primary))
                             : Style{}.with_dim(),
                     }},
                     std::move(inner)

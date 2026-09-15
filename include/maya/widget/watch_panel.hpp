@@ -27,16 +27,16 @@
 namespace maya {
 
 struct WatchPanelTheme {
-    Color expr   = Color::hex(0xBAC2DE);
-    Color eq     = Color::hex(0x585B70);
-    Color number = Color::hex(0xFAB387);
-    Color string = Color::hex(0xA6E3A1);
-    Color boolean = Color::hex(0xCBA6F7);
-    Color null    = Color::hex(0x6C7086);
-    Color pointer = Color::hex(0x89DCEB);
-    Color error    = Color::hex(0xF38BA8);
-    Color add       = Color::hex(0x585B70);
-    Color active     = Color::hex(0x232634);
+    Color expr   = Color::slot(ThemeSlot::Secondary);
+    Color eq     = Color::slot(ThemeSlot::Muted);
+    Color number = Color::slot(ThemeSlot::Warning);
+    Color string = Color::slot(ThemeSlot::Success);
+    Color boolean = Color::slot(ThemeSlot::Accent);
+    Color null    = Color::slot(ThemeSlot::Muted);
+    Color pointer = Color::slot(ThemeSlot::Link);
+    Color error    = Color::slot(ThemeSlot::Error);
+    Color add       = Color::slot(ThemeSlot::Muted);
+    Color active     = Color::slot(ThemeSlot::Surface);
 };
 
 class WatchPanel {

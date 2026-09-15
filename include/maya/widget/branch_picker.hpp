@@ -26,13 +26,13 @@
 namespace maya {
 
 struct BranchPickerTheme {
-    Color current = Color::hex(0xA6E3A1);
-    Color name    = Color::hex(0xBAC2DE);
-    Color ahead   = Color::hex(0xA6E3A1);
-    Color behind  = Color::hex(0xF38BA8);
-    Color hint     = Color::hex(0x585B70);
-    Color remote    = Color::hex(0x89B4FA);
-    Color active     = Color::hex(0x232634);
+    Color current = Color::slot(ThemeSlot::Success);
+    Color name    = Color::slot(ThemeSlot::Secondary);
+    Color ahead   = Color::slot(ThemeSlot::Success);
+    Color behind  = Color::slot(ThemeSlot::Error);
+    Color hint     = Color::slot(ThemeSlot::Muted);
+    Color remote    = Color::slot(ThemeSlot::Primary);
+    Color active     = Color::slot(ThemeSlot::Surface);
 };
 
 class BranchPicker {

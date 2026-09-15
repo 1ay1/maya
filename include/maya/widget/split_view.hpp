@@ -25,10 +25,10 @@
 namespace maya {
 
 struct SplitViewTheme {
-    Color divider       = Color::hex(0x313244);
-    Color title         = Color::hex(0x6C7086); // idle pane title
-    Color title_focused = Color::hex(0xE6EDF3); // focused pane title
-    Color accent        = Color::hex(0x89B4FA); // focused pane underline
+    Color divider       = Color::slot(ThemeSlot::Surface);
+    Color title         = Color::slot(ThemeSlot::Muted); // idle pane title
+    Color title_focused = Color::slot(ThemeSlot::Text); // focused pane title
+    Color accent        = Color::slot(ThemeSlot::Primary); // focused pane underline
 };
 
 class SplitView {

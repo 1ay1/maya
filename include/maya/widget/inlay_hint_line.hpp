@@ -26,9 +26,9 @@ namespace maya {
 
 struct InlayHintTheme {
     syntax::HighlightTheme syntax = syntax::themes::github_dark;
-    Color code = Color::hex(0xC9D1D9);
-    Color hint = Color::hex(0x6C7086); // inlay chip text
-    Color edge = Color::hex(0x3A3F4B);
+    Color code = Color::slot(ThemeSlot::Text);
+    Color hint = Color::slot(ThemeSlot::Muted); // inlay chip text
+    Color edge = Color::slot(ThemeSlot::Border);
 };
 
 struct InlayHintLine {

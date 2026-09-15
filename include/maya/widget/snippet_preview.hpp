@@ -24,9 +24,9 @@
 namespace maya {
 
 struct SnippetPreviewTheme {
-    Color literal     = Color::hex(0xC9D1D9);
-    Color placeholder = Color::hex(0x89B4FA);
-    Color final_stop  = Color::hex(0xA6E3A1); // $0
+    Color literal     = Color::slot(ThemeSlot::Text);
+    Color placeholder = Color::slot(ThemeSlot::Primary);
+    Color final_stop  = Color::slot(ThemeSlot::Success); // $0
 };
 
 struct SnippetPreview {

@@ -23,10 +23,10 @@
 namespace maya {
 
 struct MergeConflictTheme {
-    Color ours    = Color::hex(0xA6E3A1); // current change
-    Color theirs  = Color::hex(0x89B4FA); // incoming change
-    Color banner  = Color::hex(0x585B70);
-    Color code     = Color::hex(0xBAC2DE);
+    Color ours    = Color::slot(ThemeSlot::Success); // current change
+    Color theirs  = Color::slot(ThemeSlot::Primary); // incoming change
+    Color banner  = Color::slot(ThemeSlot::Muted);
+    Color code     = Color::slot(ThemeSlot::Secondary);
 };
 
 struct MergeConflict {

@@ -24,8 +24,8 @@ struct FileRef {
     struct Config {
         Config() = default;
         Style path_style   = Style{}.with_dim();
-        Style name_style   = Style{}.with_fg(Color::blue()).with_underline();
-        Style lineno_style = Style{}.with_fg(Color::magenta());
+        Style name_style   = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_underline();
+        Style lineno_style = Style{}.with_fg(Color::slot(ThemeSlot::Accent));
         std::string icon   = "\xf0\x9f\x93\x84 "; // 📄 + space
         bool show_icon     = true;
     };

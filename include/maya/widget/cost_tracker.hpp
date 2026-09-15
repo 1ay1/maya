@@ -80,9 +80,9 @@ public:
 
         auto lbl   = Style{}.with_dim();
         auto val   = Style{};
-        auto accent = Style{}.with_fg(Color::blue());
+        auto accent = Style{}.with_fg(Color::slot(ThemeSlot::Primary));
         auto dim   = Style{}.with_dim();
-        auto green = Style{}.with_fg(Color::green());
+        auto green = Style{}.with_fg(Color::slot(ThemeSlot::Success));
 
         int ti = total_input(), to = total_output();
         int total_cache_r = 0, total_cache_w = 0;
@@ -98,7 +98,7 @@ public:
             return h(
                 text("\xe2\x86\x91", accent), text(fmt_tokens(ti) + " ", val), // ↑
                 text("\xe2\x86\x93", green), text(fmt_tokens(to) + " ", val),  // ↓
-                text(fmt_cost(total_cost()) + " ", Style{}.with_fg(Color::yellow())),
+                text(fmt_cost(total_cost()) + " ", Style{}.with_fg(Color::slot(ThemeSlot::Warning))),
                 text(std::to_string(turns_.size()) + " turns", lbl)
             ).build();
         }
@@ -132,7 +132,7 @@ public:
         // Cost + turns
         rows.push_back(h(
             text("  Cost  ", lbl),
-            text(fmt_cost(total_cost()), Style{}.with_fg(Color::yellow()).with_bold()),
+            text(fmt_cost(total_cost()), Style{}.with_fg(Color::slot(ThemeSlot::Warning)).with_bold()),
             text("  Turns  ", lbl),
             text(std::to_string(turns_.size()), val),
             text("  Avg latency  ", lbl),
@@ -157,7 +157,7 @@ public:
                     text(std::string(buf), dim),
                     text("\xe2\x86\x91", accent), text(fmt_tokens(t.input_tokens) + " ", val),
                     text("\xe2\x86\x93", green), text(fmt_tokens(t.output_tokens) + " ", val),
-                    text(fmt_cost(t.cost_usd), Style{}.with_fg(Color::yellow()))
+                    text(fmt_cost(t.cost_usd), Style{}.with_fg(Color::slot(ThemeSlot::Warning)))
                 ).build());
             }
         }

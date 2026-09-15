@@ -53,7 +53,7 @@ public:
         std::vector<Element> elems;
         elems.push_back(std::move(header));
 
-        auto gutter_style = Style{}.with_fg(Color::bright_black());
+        auto gutter_style = Style{}.with_fg(Color::slot(ThemeSlot::Muted));
         auto text_style = Style{}.with_italic().with_dim();
 
         std::string_view sv = content_;

@@ -28,9 +28,9 @@
 namespace maya {
 
 struct IndentScopeTheme {
-    Color code   = Color::hex(0xC9D1D9);
-    Color guide  = Color::hex(0x2A2F3A);
-    Color active = Color::hex(0x89B4FA);
+    Color code   = Color::slot(ThemeSlot::Text);
+    Color guide  = Color::slot(ThemeSlot::Surface);
+    Color active = Color::slot(ThemeSlot::Primary);
     int   width  = 4; // columns per indent level
 };
 

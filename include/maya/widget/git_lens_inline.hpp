@@ -19,8 +19,8 @@
 namespace maya {
 
 struct GitLensTheme {
-    Color code  = Color::hex(0xC9D1D9);
-    Color blame = Color::hex(0x585B70);
+    Color code  = Color::slot(ThemeSlot::Text);
+    Color blame = Color::slot(ThemeSlot::Muted);
 };
 
 struct GitLensInline {

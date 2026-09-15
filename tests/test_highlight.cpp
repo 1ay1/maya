@@ -30,8 +30,12 @@ TEST_CASE("theme constexpr") {
     // The theme table is fully constexpr.
     static_assert(themes::monokai.style_for(Capture::Keyword).fg->kind()
                   == Color::Kind::Rgb);
+    // The DEFAULT deck names theme slots rather than literals, so a code
+    // block follows the user's scheme. The named decks (monokai above) stay
+    // literal on purpose — a deck IS a palette, and resolving one through
+    // the theme would make every deck identical.
     static_assert(themes::terminal.style_for(Capture::String).fg->kind()
-                  == Color::Kind::Named);
+                  == Color::Kind::Slot);
     // `with()` builder is constexpr and overrides one capture.
     constexpr HighlightTheme custom =
         themes::terminal.with(Capture::Comment, Style{}.with_fg(Color::red()));

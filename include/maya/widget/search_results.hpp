@@ -28,13 +28,13 @@
 namespace maya {
 
 struct SearchResultsTheme {
-    Color file    = Color::hex(0xCDD6F4);
-    Color count   = Color::hex(0x585B70);
-    Color guide   = Color::hex(0x45475A);
-    Color lineno   = Color::hex(0x585B70);
-    Color text     = Color::hex(0x9399B2);
-    Color match     = Color::hex(0xF9E2AF); // highlighted hit
-    Color active    = Color::hex(0x232634);
+    Color file    = Color::slot(ThemeSlot::Text);
+    Color count   = Color::slot(ThemeSlot::Muted);
+    Color guide   = Color::slot(ThemeSlot::Border);
+    Color lineno   = Color::slot(ThemeSlot::Muted);
+    Color text     = Color::slot(ThemeSlot::Muted);
+    Color match     = Color::slot(ThemeSlot::Warning); // highlighted hit
+    Color active    = Color::slot(ThemeSlot::Surface);
 };
 
 class SearchResults {
@@ -77,7 +77,7 @@ private:
         auto put = [&](std::string_view t, Style st){ if(t.empty())return;
             r.push_back({s.size(), t.size(), st}); s += t; };
         put("\xef\x84\x87 ", Style{}.with_fg(theme.guide));  //  chevron-down
-        put("\xef\x85\x9b ", Style{}.with_fg(Color::hex(0x89B4FA))); //  file
+        put("\xef\x85\x9b ", Style{}.with_fg(Color::slot(ThemeSlot::Primary))); //  file
         put(g.name, Style{}.with_fg(theme.file).with_bold());
         put("  " + std::to_string(g.count), Style{}.with_fg(theme.count));
         return Element{TextElement{ .content = std::move(s), .style = Style{},

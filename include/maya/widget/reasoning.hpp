@@ -64,15 +64,15 @@ public:
     // competing with status colors (blue=info, magenta=agent). Hosts may
     // override to match a theme.
     struct Config {
-        Color accent      = Color::rgb(0x8b, 0x7f, 0xd6); // muted indigo rail + sigil
-        Color header_word = Color::rgb(0x9b, 0x93, 0xc4); // dim lavender header word
+        Color accent      = Color::slot(ThemeSlot::Accent); // muted indigo rail + sigil
+        Color header_word = Color::slot(ThemeSlot::Secondary); // dim lavender header word
         bool  dim_body    = true;                         // reasoning recedes
         // The reasoning body text COLOR. maya deliberately suppresses the SGR
         // "dim" attribute (it made text vanish on some themes), so recession is
         // carried by COLOR, not the dim flag — we recolor every run of the
         // rendered markdown to this muted gray so reasoning clearly reads as a
         // quiet aside beneath the answer.
-        Color body_fg     = Color::rgb(0x8a, 0x8a, 0x8a); // muted gray
+        Color body_fg     = Color::slot(ThemeSlot::Muted); // muted gray
         // "Stream of consciousness" gradient: while LIVE, fade the body
         // vertically from `body_fg` at the top (older thoughts, receded) to
         // `body_fg_bright` at the bottom (the newest lines, glowing) so the
@@ -80,7 +80,7 @@ public:
         // renders flat in `body_fg` (a frozen, uniform aside). Off by
         // default — hosts opt in per block.
         bool  gradient_body = false;
-        Color body_fg_bright = Color::rgb(0xc9, 0xc2, 0xf0); // bright lavender (newest)
+        Color body_fg_bright = Color::slot(ThemeSlot::Text); // bright lavender (newest)
         // Breathe the newest lines + the rail with the animation clock while
         // live, so the block reads as actively thinking (needs gradient_body).
         bool  pulse = false;
@@ -95,7 +95,7 @@ public:
         // connective prose recedes — so the block reads as phases, not a gray
         // river. Applies live AND settled. Off by default.
         bool  structured = false;
-        Color waypoint_fg = Color::rgb(0xe4, 0xe0, 0xff); // bright lavender-white beat
+        Color waypoint_fg = Color::slot(ThemeSlot::Text); // bright lavender-white beat
         // When the host hands build_with_body() a body that already carries
         // its own per-row colors (the faded_tail), skip the chrome's flat
         // recolor so the fade survives.

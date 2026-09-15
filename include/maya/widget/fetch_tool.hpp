@@ -71,7 +71,7 @@ public:
         {
             std::string content = url_;
             std::vector<StyledRun> runs;
-            auto url_style = Style{}.with_fg(Color::blue()).with_underline();
+            auto url_style = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_underline();
             runs.push_back(StyledRun{0, url_.size(), url_style});
 
             if (elapsed_ > 0.0f) {
@@ -101,11 +101,11 @@ public:
 
                 Style code_style;
                 if (status_code_ >= 200 && status_code_ < 300)
-                    code_style = Style{}.with_fg(Color::green()).with_bold();
+                    code_style = Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_bold();
                 else if (status_code_ >= 300 && status_code_ < 400)
-                    code_style = Style{}.with_fg(Color::yellow()).with_bold();
+                    code_style = Style{}.with_fg(Color::slot(ThemeSlot::Warning)).with_bold();
                 else
-                    code_style = Style{}.with_fg(Color::red()).with_bold();
+                    code_style = Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_bold();
 
                 runs.push_back(StyledRun{content.size(), full.size(), code_style});
                 content += full;
@@ -183,15 +183,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case FetchStatus::Pending:
-                return {"\xe2\x97\x8b", Color::bright_black()};   // ○
+                return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};   // ○
             case FetchStatus::Fetching:
-                return {"\xe2\x97\x8f", Color::yellow()};         // ●
+                return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Warning)};         // ●
             case FetchStatus::Done:
-                return {"\xe2\x9c\x93", Color::green()};          // ✓
+                return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};          // ✓
             case FetchStatus::Failed:
-                return {"\xe2\x9c\x97", Color::red()};            // ✗
+                return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};            // ✗
         }
-        return {"\xe2\x97\x8b", Color::bright_black()};
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};
     }
 
     [[nodiscard]] static std::string http_reason(int code) {

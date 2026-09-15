@@ -41,8 +41,8 @@ public:
 
     PixelCanvas(int width, int height)
         : width_(width), height_(height),
-          top_pixels_(static_cast<size_t>(width * height), Color::black()),
-          bottom_pixels_(static_cast<size_t>(width * height), Color::black()) {}
+          top_pixels_(static_cast<size_t>(width * height), Color::slot(ThemeSlot::InverseText)),
+          bottom_pixels_(static_cast<size_t>(width * height), Color::slot(ThemeSlot::InverseText)) {}
 
     // -- Accessors --
     [[nodiscard]] int width()        const noexcept { return width_; }

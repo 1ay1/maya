@@ -105,7 +105,7 @@ private:
             std::string content;
             std::vector<StyledRun> runs;
 
-            auto pattern_style = Style{}.with_fg(Color::yellow());
+            auto pattern_style = Style{}.with_fg(Color::slot(ThemeSlot::Warning));
             auto summary_style = Style{}.with_dim();
 
             if (!pattern_.empty()) {
@@ -148,15 +148,15 @@ private:
                     for (int i = 0; i < w; ++i) line += "\xe2\x94\x88";  // ┈
                     return Element{TextElement{
                         .content = std::move(line),
-                        .style = Style{}.with_dim().with_fg(Color::bright_black()),
+                        .style = Style{}.with_dim().with_fg(Color::slot(ThemeSlot::Muted)),
                     }};
                 },
                 .layout = {},
             }});
 
-            auto file_style = Style{}.with_fg(Color::blue()).with_bold();
+            auto file_style = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
             auto lineno_style = Style{}.with_dim();
-            auto pipe_style = Style{}.with_fg(Color::bright_black());
+            auto pipe_style = Style{}.with_fg(Color::slot(ThemeSlot::Muted));
             auto match_style = Style{};
 
             for (auto const& group : groups_) {
@@ -231,15 +231,15 @@ private:
     [[nodiscard]] IconInfo status_icon() const {
         switch (status_) {
             case SearchStatus::Pending:
-                return {"\xe2\x97\x8b", Color::bright_black()};       // ○
+                return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};       // ○
             case SearchStatus::Searching:
-                return {"\xe2\x97\x8f", Color::yellow()};             // ●
+                return {"\xe2\x97\x8f", Color::slot(ThemeSlot::Warning)};             // ●
             case SearchStatus::Done:
-                return {"\xe2\x9c\x93", Color::green()};              // ✓
+                return {"\xe2\x9c\x93", Color::slot(ThemeSlot::Success)};              // ✓
             case SearchStatus::Failed:
-                return {"\xe2\x9c\x97", Color::red()};                // ✗
+                return {"\xe2\x9c\x97", Color::slot(ThemeSlot::Error)};                // ✗
         }
-        return {"\xe2\x97\x8b", Color::bright_black()};
+        return {"\xe2\x97\x8b", Color::slot(ThemeSlot::Muted)};
     }
 
     [[nodiscard]] std::string format_elapsed() const {

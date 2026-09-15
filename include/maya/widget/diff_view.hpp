@@ -25,11 +25,11 @@ namespace maya {
 
 struct DiffView {
     struct Config {
-        Style add_style    = Style{}.with_fg(Color::green());
-        Style remove_style = Style{}.with_fg(Color::red());
+        Style add_style    = Style{}.with_fg(Color::slot(ThemeSlot::Success));
+        Style remove_style = Style{}.with_fg(Color::slot(ThemeSlot::Error));
         Style context_style= Style{}.with_dim();
-        Style hunk_style   = Style{}.with_fg(Color::blue()).with_dim();
-        Style header_style = Style{}.with_fg(Color::blue()).with_bold();
+        Style hunk_style   = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_dim();
+        Style header_style = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
         Style lineno_style = Style{}.with_dim();
         Color border_color = Color::slot(ThemeSlot::Muted);
         bool show_border = true;

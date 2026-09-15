@@ -221,7 +221,7 @@ private:
     int                      col_width_ = 4;
     std::string              caption_;
     std::vector<std::string> y_labels_;   // top row first, one per row
-    Color                    bar_color_   = Color::hex(0xCDD6F4);
+    Color                    bar_color_   = Color::slot(ThemeSlot::Text);
     Color                    label_color_ = Color::slot(ThemeSlot::Muted);
 };
 

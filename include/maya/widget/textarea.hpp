@@ -168,7 +168,7 @@ public:
         auto text_style    = Style{};
         auto dim_style     = Style{}.with_dim();
         auto cursor_style  = Style{}.with_inverse();
-        auto gutter_sep    = Style{}.with_fg(Color::bright_black());
+        auto gutter_sep    = Style{}.with_fg(Color::slot(ThemeSlot::Muted));
 
         // Empty state
         if (val.empty() && !placeholder_.empty() && !focused) {
@@ -268,8 +268,8 @@ public:
 
         auto inner = dsl::v(std::move(rows)).build();
         auto border_color = focused
-            ? Color::blue()
-            : Color::bright_black();
+            ? Color::slot(ThemeSlot::Primary)
+            : Color::slot(ThemeSlot::Muted);
 
         return (dsl::v(std::move(inner))
             | dsl::border(BorderStyle::Round) | dsl::bcolor(border_color)

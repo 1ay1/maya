@@ -31,13 +31,13 @@ namespace maya {
 enum class RulerMark : uint8_t { Error, Warning, Info, Search, Change };
 
 struct OverviewRulerTheme {
-    Color thumb  = Color::hex(0x45475A); // viewport thumb bar
-    Color cursor = Color::hex(0x89B4FA); // cursor position
-    Color error  = Color::hex(0xF38BA8);
-    Color warn   = Color::hex(0xF9E2AF);
-    Color info   = Color::hex(0x89B4FA);
-    Color search = Color::hex(0xF9E2AF);
-    Color change = Color::hex(0xA6E3A1);
+    Color thumb  = Color::slot(ThemeSlot::Border); // viewport thumb bar
+    Color cursor = Color::slot(ThemeSlot::Primary); // cursor position
+    Color error  = Color::slot(ThemeSlot::Error);
+    Color warn   = Color::slot(ThemeSlot::Warning);
+    Color info   = Color::slot(ThemeSlot::Primary);
+    Color search = Color::slot(ThemeSlot::Warning);
+    Color change = Color::slot(ThemeSlot::Success);
 };
 
 struct OverviewRulerConfig {

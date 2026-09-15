@@ -274,8 +274,8 @@ private:
 
         // ── Optional error banner under body.
         auto error_row = h(
-            text("\xe2\x9a\xa0  ", Style{}.with_fg(Color::red()).with_bold()),    // ⚠
-            text(cfg.error, Style{}.with_fg(Color::red()).with_dim().with_italic())
+            text("\xe2\x9a\xa0  ", Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_bold()),    // ⚠
+            text(cfg.error, Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_dim().with_italic())
         );
 
         // Optional error row (zero-row when absent). when()'s default

@@ -213,7 +213,7 @@ private:
                     track += "\xe2\x94\x80";  // ─
                 runs.push_back(StyledRun{
                     content.size(), track.size(),
-                    Style{}.with_fg(Color::bright_black()),
+                    Style{}.with_fg(Color::slot(ThemeSlot::Muted)),
                 });
                 content += track;
             }

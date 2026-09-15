@@ -35,7 +35,7 @@ struct Theme {
     // and light themes, and every ANSI slot is either invisible against one
     // of them or loud against the other. Verified by asserting the emitted
     // SGR code, which is what caught an earlier "invisible black".
-    Color row_bg     = Color::hex(0x232634);
+    Color row_bg     = Color::slot(ThemeSlot::Surface);
 };
 
 } // namespace maya::panel

@@ -197,7 +197,7 @@ struct TableConfig {
     Style header_style    = Style{}.with_bold();
     Style row_style       = Style{};
     Style alt_row_style   = Style{}.with_dim();
-    Style separator_style = Style{}.with_fg(Color::bright_black());
+    Style separator_style = Style{}.with_fg(Color::slot(ThemeSlot::Muted));
     bool stripe_rows      = true;
     int cell_padding      = 1;
     bool show_border      = false;
@@ -221,7 +221,7 @@ struct TableConfig {
     // ── Sort indicator (host owns the actual sort) ──
     int  sort_col  = -1;                        // -1 = none
     bool sort_desc = true;                      // ▾ vs ▴
-    Style sort_header_style = Style{}.with_bold().with_fg(Color::blue());
+    Style sort_header_style = Style{}.with_bold().with_fg(Color::slot(ThemeSlot::Primary));
 
     // ── Chrome ──
     bool show_header    = true;   // off = host renders its own strip

@@ -19,11 +19,11 @@
 namespace maya {
 
 struct FoldedRegionTheme {
-    Color chevron = Color::hex(0x89B4FA);
-    Color header  = Color::hex(0xC9D1D9);
-    Color ellipsis = Color::hex(0x585B70);
-    Color count     = Color::hex(0x6C7086);
-    Color edge       = Color::hex(0x45475A);
+    Color chevron = Color::slot(ThemeSlot::Primary);
+    Color header  = Color::slot(ThemeSlot::Text);
+    Color ellipsis = Color::slot(ThemeSlot::Muted);
+    Color count     = Color::slot(ThemeSlot::Muted);
+    Color edge       = Color::slot(ThemeSlot::Border);
 };
 
 struct FoldedRegion {

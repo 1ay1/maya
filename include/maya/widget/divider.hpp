@@ -17,7 +17,7 @@ namespace maya {
 
 struct DividerConfig {
     BorderStyle line    = BorderStyle::Single;
-    Style line_style    = Style{}.with_fg(Color::bright_black());
+    Style line_style    = Style{}.with_fg(Color::slot(ThemeSlot::Muted));
     Style label_style   = Style{}.with_dim();
 };
 

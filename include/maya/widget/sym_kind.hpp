@@ -38,21 +38,21 @@ enum class SymKind : uint8_t {
 [[nodiscard]] inline Color sym_color(SymKind k) {
     switch (k) {
         case SymKind::Folder:
-        case SymKind::File:      return Color::hex(0x89B4FA); // blue
+        case SymKind::File:      return Color::slot(ThemeSlot::Primary); // blue
         case SymKind::Module:
-        case SymKind::Namespace: return Color::hex(0xF9E2AF); // yellow
+        case SymKind::Namespace: return Color::slot(ThemeSlot::Warning); // yellow
         case SymKind::Class:
         case SymKind::Struct:
-        case SymKind::Interface: return Color::hex(0xFAB387); // orange
-        case SymKind::Enum:      return Color::hex(0xF9E2AF);
+        case SymKind::Interface: return Color::slot(ThemeSlot::Warning); // orange
+        case SymKind::Enum:      return Color::slot(ThemeSlot::Warning);
         case SymKind::Function:
-        case SymKind::Method:    return Color::hex(0xCBA6F7); // mauve
+        case SymKind::Method:    return Color::slot(ThemeSlot::Accent); // mauve
         case SymKind::Property:
-        case SymKind::Field:     return Color::hex(0x94E2D5); // teal
+        case SymKind::Field:     return Color::slot(ThemeSlot::Link); // teal
         case SymKind::Variable:
-        case SymKind::Constant:  return Color::hex(0x89DCEB); // sky
+        case SymKind::Constant:  return Color::slot(ThemeSlot::Link); // sky
     }
-    return Color::hex(0x9399B2);
+    return Color::slot(ThemeSlot::Muted);
 }
 
 } // namespace maya

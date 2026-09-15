@@ -110,7 +110,7 @@ namespace colors {
     inline Color footnote_fg  = Color::slot(ThemeSlot::Muted);
     inline Color table_border = Color::slot(ThemeSlot::Muted);
     inline Color table_header = Color::slot(ThemeSlot::Link);
-    inline Color highlight_bg = Color::slot(ThemeSlot::Warning);
+    inline Color highlight_bg = Color::slot(ThemeSlot::Highlight);
     inline Color highlight_fg = Color::slot(ThemeSlot::Surface);
     inline Color mention_fg   = Color::slot(ThemeSlot::Link);
     inline Color kbd_fg       = Color::slot(ThemeSlot::Text);

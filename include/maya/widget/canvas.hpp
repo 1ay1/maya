@@ -30,7 +30,7 @@ class PixelCanvas {
     int height_ = 0;  // cell height (pixel height = height_ * 2)
     std::vector<Color> top_pixels_;     // top half of each cell
     std::vector<Color> bottom_pixels_;  // bottom half of each cell
-    Color bg_ = Color::slot(ThemeSlot::InverseText);   // default background / clear color
+    Color bg_ = Color::slot(ThemeSlot::Background);   // default background / clear color
 
     [[nodiscard]] size_t idx(int x, int y_cell) const {
         return static_cast<size_t>(y_cell * width_ + x);
@@ -41,8 +41,8 @@ public:
 
     PixelCanvas(int width, int height)
         : width_(width), height_(height),
-          top_pixels_(static_cast<size_t>(width * height), Color::slot(ThemeSlot::InverseText)),
-          bottom_pixels_(static_cast<size_t>(width * height), Color::slot(ThemeSlot::InverseText)) {}
+          top_pixels_(static_cast<size_t>(width * height), Color::slot(ThemeSlot::Background)),
+          bottom_pixels_(static_cast<size_t>(width * height), Color::slot(ThemeSlot::Background)) {}
 
     // -- Accessors --
     [[nodiscard]] int width()        const noexcept { return width_; }

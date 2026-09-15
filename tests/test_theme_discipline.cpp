@@ -69,6 +69,17 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
     std::vector<std::string> offenders;
     int scanned = 0;
 
+    // A slot in a BACKGROUND position must be a surface slot.
+    //
+    // Ink slots (text, accents) move opposite to the canvas when a theme
+    // flips polarity, so using one as a fill inverts: a tint that reads as a
+    // subtle wash on a dark theme becomes a near-black slab on a light one.
+    // The bulk conversion introduced five of these and none were visible in
+    // review — both sides look deliberate in the diff.
+    const std::regex ink_as_bg{
+        R"((with_bg|_bg|\bbg\b|bgc)\s*[=(][^;]*ThemeSlot::)"
+        R"((Text|Secondary|Muted|Primary|Accent|Info|Link|Success|Warning|Error|Placeholder|Cursor)\b)"};
+
     for (const auto& e : fs::recursive_directory_iterator(root)) {
         if (!e.is_regular_file() || e.path().extension() != ".hpp") continue;
         const std::string path = e.path().string();
@@ -88,6 +99,10 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
             if (std::regex_search(line, lit))
                 offenders.push_back(e.path().filename().string() + ":"
                                     + std::to_string(n) + "  " + line);
+            if (std::regex_search(line, ink_as_bg))
+                offenders.push_back(e.path().filename().string() + ":"
+                                    + std::to_string(n)
+                                    + "  (ink slot as background)  " + line);
         }
     }
 

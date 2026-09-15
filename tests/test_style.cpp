@@ -1,6 +1,7 @@
 // Tests for maya style system: Style attributes, SGR generation, merge, operator|
 #include <maya/maya.hpp>
 #include <maya/widget/markdown.hpp>   // markdown_palette_from
+#include <maya/style/schemes.hpp>       // theme::schemes
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
@@ -337,6 +338,62 @@ TEST_CASE("theme slots resolve, and literals do not") {
            == theme::native.muted);
 
     std::println("PASS\n");
+}
+
+TEST_CASE("theme discipline: ink slots are never backgrounds") {
+    std::println("--- test_theme_slot_axis ---");
+    // A slot belongs to one of two AXES, and the axes move in opposite
+    // directions when a theme flips polarity:
+    //
+    //   INK      — text and accents. Dark on a light theme, light on a dark
+    //               one, because it must contrast the canvas.
+    //   SURFACE  — fills and tints. Light on a light theme, dark on a dark
+    //               one, because it IS (a step off) the canvas.
+    //
+    // Using an ink slot as a background inverts on the opposite polarity: a
+    // "dark grey" fill written against a dark theme becomes a near-black bar
+    // on a light one. That is invisible in review — both sides look
+    // deliberate — and only shows up as a dark slab across someone's light
+    // terminal. The bulk slot conversion introduced five of exactly this.
+    //
+    // So the rule is checked against the theme DATA, which is the only place
+    // it can be checked honestly: for a light theme and a dark theme, every
+    // surface slot must sit on the same side as its background, and every
+    // ink slot on the opposite side.
+    auto lum = [](Color c) {
+        return 0.2126 * c.r() + 0.7152 * c.g() + 0.0722 * c.b();
+    };
+
+    int checked = 0;
+    for (const auto& s : theme::schemes) {
+        const Theme& t = *s.theme;
+        if (t.background.kind() != Color::Kind::Rgb) continue;
+        const bool light_bg = lum(t.background) > 128.0;
+        ++checked;
+
+        // Surface slots sit on the canvas's side. `shadow` is exempt: it is
+        // meant to be darker than the canvas on BOTH polarities.
+        for (const auto& [name, c] : {
+                 std::pair{"surface", t.surface},
+                 std::pair{"overlay", t.overlay},
+                 std::pair{"inverse_text", t.inverse_text},
+                 std::pair{"diff_added", t.diff_added},
+                 std::pair{"diff_removed", t.diff_removed},
+                 std::pair{"diff_changed", t.diff_changed}}) {
+            if (c.kind() != Color::Kind::Rgb) continue;
+            CHECK_MESSAGE((lum(c) > 128.0) == light_bg,
+                          s.name << ": " << name
+                                 << " is on the wrong side of the canvas");
+        }
+
+        // Text must contrast the canvas — the one guarantee legibility rests
+        // on, and the thing a mis-assigned slot destroys.
+        if (t.text.kind() == Color::Kind::Rgb)
+            CHECK_MESSAGE((lum(t.text) > 128.0) != light_bg,
+                          s.name << ": text does not contrast the background");
+    }
+    CHECK(checked > 0);
+    std::println("PASS ({} schemes checked)\n", checked);
 }
 
 TEST_CASE("style equality") {

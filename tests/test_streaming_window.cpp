@@ -27,6 +27,7 @@
 static int g_failed = 0;
 
 #include "maya/widget/markdown.hpp"
+#include "maya/core/render_context.hpp"
 #include "maya/render/renderer.hpp"
 #include "maya/render/canvas.hpp"
 #include "maya/style/style.hpp"
@@ -69,6 +70,23 @@ static std::uint64_t render_frame(StreamingMarkdown& md, Canvas& canvas,
                                   StylePool& pool) {
     const std::uint64_t before = render_detail::component_render_calls();
     canvas.clear();
+    // build() UNDER a sized RenderContext, which is what the streaming path
+    // always has (the app paints inside one).
+    //
+    // Without it, have_render_context() is false and StreamingMarkdown takes
+    // its documented fallback: it cannot know the width, so it defers the
+    // outer pad decision into a component() with NO hash_id. A component
+    // with an empty hash_id gets pointer keying, whose cross-frame hits are
+    // deliberately rejected, so it re-renders its subtree every single frame
+    // — forever. That is exactly one un-cached component per frame, which is
+    // the `worst == 1` this test was failing on: a fixture artifact, not a
+    // windowing regression. The fallback is correct and deliberate (see the
+    // DO NOT wrap this in a component() block in streaming/build.cpp); it is
+    // simply not the path the product runs, so asserting cache behaviour
+    // through it measures the wrong thing.
+    RenderContext ctx{canvas.width(), 24, render_generation(),
+                      /*auto_height=*/true};
+    RenderContextGuard guard(ctx);
     render_tree(md.build(), canvas, pool, theme::native, /*auto_height=*/true);
     return render_detail::component_render_calls() - before;
 }

@@ -246,6 +246,40 @@ inline constexpr Theme native {
     return t.background.kind() != Color::Kind::Default;
 }
 
+// ── Categorical series colour ───────────────────────────────────────
+//
+// The hue for the i-th slice of a chart whose slices are NAMED THINGS
+// rather than states — tools by call count, providers by spend, files by
+// churn.
+//
+// This is a genuinely different question from "what colour is an error",
+// and conflating the two is why hosts kept growing private RGB ramps: a
+// status palette says green=good / red=bad, which is a lie when the slices
+// are "read" and "write". But a private ramp is a palette the theme cannot
+// see, so it stops following the user the moment they pick a scheme.
+//
+// Both concerns are satisfied by deriving the ramp FROM the theme's own
+// role slots, in an order that alternates across the spectrum so adjacent
+// slices contrast instead of walking through two neighbouring blues. The
+// slots reused here (link/primary/warning/success/accent/info/error/
+// secondary) are the eight the schemes keep maximally distinct, because
+// they are the ones that must stay distinguishable as UI roles.
+//
+// `i` wraps, so a caller never has to bound it.
+[[nodiscard]] constexpr Color series(const Theme& t, std::size_t i) noexcept {
+    const Color ramp[] = {
+        t.link, t.primary, t.warning, t.success,
+        t.accent, t.info, t.error, t.secondary,
+    };
+    return ramp[i % (sizeof(ramp) / sizeof(ramp[0]))];
+}
+
+// The "none of the above" slice. A catch-all is the ABSENCE of a category,
+// so giving it a category's colour makes it read as one more of them.
+[[nodiscard]] constexpr Color series_other(const Theme& t) noexcept {
+    return t.muted;
+}
+
 // ── live theme slot (declared above; defined here, now that native exists)
 namespace detail {
 inline std::atomic<const Theme*>& live_slot() noexcept {

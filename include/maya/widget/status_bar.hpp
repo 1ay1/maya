@@ -45,6 +45,7 @@
 #include "status_banner.hpp"
 #include "title_chip.hpp"
 #include "token_stream_sparkline.hpp"
+#include "../style/theme.hpp"
 
 namespace maya {
 
@@ -350,9 +351,7 @@ private:
     }
 
     static Style fg_dim_(Color c) {
-        const bool already_muted =
-            c.kind() == Color::Kind::Named
-            && c.index() == static_cast<uint8_t>(AnsiColor::BrightBlack);
+        const bool already_muted = theme::is_muted(c);
         return already_muted
             ? Style{}.with_fg(c)
             : Style{}.with_fg(c).with_dim();

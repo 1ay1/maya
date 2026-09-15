@@ -443,6 +443,18 @@ public:
             }
             case Kind::Default:
                 return Color::rgb(255, 255, 255);
+            case Kind::Slot:
+                // A slot has no channels of its own — its enum lives in the
+                // red byte, so falling through would read the slot NUMBER as
+                // an ANSI index and return a plausible, wrong colour. It
+                // cannot be resolved here either: color.hpp sits below
+                // theme.hpp, and a constexpr accessor has no live theme.
+                //
+                // White is the same answer Default gives — "I don't know,
+                // assume light ink" — and callers that need the real hue
+                // must resolve() before asking for channels. The
+                // theme-discipline test enforces that.
+                return Color::rgb(255, 255, 255);
         }
         return *this;
     }

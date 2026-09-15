@@ -60,6 +60,7 @@
 #include "../style/border.hpp"
 #include "../style/color.hpp"
 #include "../style/style.hpp"
+#include "../style/theme.hpp"
 
 namespace maya {
 
@@ -661,6 +662,12 @@ private:
                 return 3 | (static_cast<std::uint64_t>(c.r()) << 8)
                          | (static_cast<std::uint64_t>(c.g()) << 16)
                          | (static_cast<std::uint64_t>(c.b()) << 24);
+            case Color::Kind::Slot:
+                // Fold the slot ENUM, not its channels. Falling through to
+                // the `return 0` below made every slot hash identically, so
+                // two different slots shared a cache entry and the sigil
+                // kept whichever colour was captured first.
+                return 4 | (static_cast<std::uint64_t>(c.theme_slot()) << 8);
         }
         return 0;
     }
@@ -744,7 +751,19 @@ private:
     // Coarse equality on Color: enough to spot "both halves are the same
     // shade so render █ instead of ▀ with redundant bg" — saves SGR
     // bytes on the diff stream and reads cleaner in screenshots.
-    static bool color_eq_(const Color& a, const Color& b) noexcept {
+    //
+    // RESOLVED first, because two colours are the same shade if they PAINT
+    // the same, not if they were spelled the same way. Comparing raw kinds
+    // meant a slot never equalled anything — Kind::Slot fell through to
+    // `false` — so two identical halves took the mixed branch and emitted
+    // ▀ with fg AND bg set. On a light theme that bg is the `text` slot,
+    // i.e. near-black, and the sigil painted a dark slab instead of
+    // letterforms. The comparison has to happen on the far side of the
+    // theme, which is exactly what resolve() is for.
+    static bool color_eq_(const Color& a_in, const Color& b_in) noexcept {
+        const Theme& th = theme::live();
+        const Color a = th.resolve(a_in);
+        const Color b = th.resolve(b_in);
         if (a.kind() != b.kind()) return false;
         switch (a.kind()) {
             case Color::Kind::Default: return true;
@@ -752,6 +771,11 @@ private:
             case Color::Kind::Indexed: return a.index() == b.index();
             case Color::Kind::Rgb:
                 return a.r() == b.r() && a.g() == b.g() && a.b() == b.b();
+            case Color::Kind::Slot:
+                // Unreachable: resolve() above turns a slot into a literal.
+                // Listed so a future slot kind cannot silently fall through
+                // to `false` the way this one did.
+                return a.theme_slot() == b.theme_slot();
         }
         return false;
     }
@@ -773,9 +797,7 @@ private:
     }
 
     static Style fg_dim_(Color c) {
-        const bool is_already_muted =
-            c.kind() == Color::Kind::Named
-            && c.index() == static_cast<uint8_t>(AnsiColor::BrightBlack);
+        const bool is_already_muted = theme::is_muted(c);
         return is_already_muted
             ? Style{}.with_fg(c)
             : Style{}.with_fg(c).with_dim();

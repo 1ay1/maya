@@ -296,6 +296,29 @@ inline void set_live(const Theme& t) noexcept {
     detail::live_slot().store(&t, std::memory_order_relaxed);
 }
 
+// ── Is this colour already the muted ink? ───────────────────────────────
+//
+// Several widgets dim a colour to recede it, but must NOT dim one that is
+// already the muted tone — double-dimming sinks it into the background.
+// Six of them had grown the same private check against literal
+// bright_black, which stopped being true the moment configs carried the
+// Muted slot instead. One definition, asked on the far side of the theme.
+[[nodiscard]] inline bool is_muted(const Color& c) noexcept {
+    if (c.kind() == Color::Kind::Slot)
+        return c.theme_slot() == ThemeSlot::Muted;
+    const Color m = live().muted;
+    if (c.kind() != m.kind()) return false;
+    switch (c.kind()) {
+        case Color::Kind::Named:
+        case Color::Kind::Indexed: return c.index() == m.index();
+        case Color::Kind::Rgb:
+            return c.r() == m.r() && c.g() == m.g() && c.b() == m.b();
+        case Color::Kind::Default: return true;
+        case Color::Kind::Slot:    return false;  // handled above
+    }
+    return false;
+}
+
 // ============================================================================
 // Capability detection
 // ============================================================================

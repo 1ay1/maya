@@ -36,6 +36,7 @@
 #include "../style/style.hpp"
 
 #include "divider.hpp"
+#include "../style/theme.hpp"
 
 namespace maya {
 
@@ -843,9 +844,7 @@ private:
     // SGR `dim` on top can collapse below readability on some themes,
     // so suppress dim when the color is already bright_black.
     static Style fg_dim_(Color c) {
-        const bool is_already_muted =
-            c.kind() == Color::Kind::Named
-            && c.index() == static_cast<uint8_t>(AnsiColor::BrightBlack);
+        const bool is_already_muted = theme::is_muted(c);
         return is_already_muted
             ? Style{}.with_fg(c)
             : Style{}.with_fg(c).with_dim();

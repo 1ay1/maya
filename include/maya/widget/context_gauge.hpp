@@ -25,6 +25,7 @@
 #include "../element/text.hpp"
 #include "../style/color.hpp"
 #include "../style/style.hpp"
+#include "../style/theme.hpp"
 
 namespace maya {
 
@@ -241,9 +242,7 @@ private:
     }
 
     static Style fg_dim_(Color c) {
-        const bool is_already_muted =
-            c.kind() == Color::Kind::Named
-            && c.index() == static_cast<uint8_t>(AnsiColor::BrightBlack);
+        const bool is_already_muted = theme::is_muted(c);
         return is_already_muted
             ? Style{}.with_fg(c)
             : Style{}.with_fg(c).with_dim();

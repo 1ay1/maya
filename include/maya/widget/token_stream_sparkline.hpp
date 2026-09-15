@@ -34,6 +34,7 @@
 #include "../element/element.hpp"
 #include "../style/color.hpp"
 #include "../style/style.hpp"
+#include "../style/theme.hpp"
 
 namespace maya {
 
@@ -305,11 +306,7 @@ private:
         // bright_black AND for the Muted slot, which is what a themed
         // config now carries. Missing the slot case would double-dim the
         // muted colour and sink it into the background.
-        const bool already_muted =
-            (c.kind() == Color::Kind::Named
-             && c.index() == static_cast<uint8_t>(AnsiColor::BrightBlack))
-            || (c.kind() == Color::Kind::Slot
-                && c.theme_slot() == ThemeSlot::Muted);
+        const bool already_muted = theme::is_muted(c);
         return already_muted
             ? Style{}.with_fg(c)
             : Style{}.with_fg(c).with_dim();

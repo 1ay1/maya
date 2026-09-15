@@ -25,7 +25,10 @@ namespace detail {
 // Linear RGB blend between two colors at parameter t∈[0,1]. Both stops are
 // resolved to true channels first so named/indexed stops interpolate too.
 [[nodiscard]] inline Color lerp_color(Color from, Color to, float t) noexcept {
-    Color a = from.to_rgb(), b = to.to_rgb();
+    // Resolve slots FIRST: to_rgb() cannot (color.hpp sits below theme.hpp),
+    // so an unresolved slot would interpolate from white and wash the ramp.
+    const Theme& th = theme::live();
+    Color a = th.resolve(from).to_rgb(), b = th.resolve(to).to_rgb();
     auto mix = [t](std::uint8_t x, std::uint8_t y) -> std::uint8_t {
         float v = static_cast<float>(x) + (static_cast<float>(y) - x) * t;
         return static_cast<std::uint8_t>(v + 0.5f);

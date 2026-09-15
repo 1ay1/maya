@@ -80,6 +80,23 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
         R"((with_bg|_bg|\bbg\b|bgc)\s*[=(][^;]*ThemeSlot::)"
         R"((Text|Secondary|Muted|Primary|Accent|Info|Link|Success|Warning|Error|Placeholder|Cursor)\b)"};
 
+    // Reading a Color's CHANNELS without resolving it first.
+    //
+    // A slot carries its enum in the red byte, so to_rgb() on an unresolved
+    // slot reads the slot NUMBER as an ANSI index and returns a plausible,
+    // wrong colour — never a diagnostic. Anything built on those bytes
+    // (equality, luminance, interpolation, hashing) quietly answers nonsense.
+    //
+    // This is the second-order hazard of slots and it bit four times: the
+    // sigil's colour comparison (every half-block took the mixed branch and
+    // painted a dark slab on light themes), its cache key (all slots hashed
+    // alike), the gradient ramp, and the grid backend's wire encoder. All
+    // four were invisible until a light theme made them obvious.
+    //
+    // Matches `.to_rgb()` on a line that does not also resolve — the one
+    // call that silently fabricates channels.
+    const std::regex unresolved_to_rgb{R"(\.to_rgb\(\))"};
+
     for (const auto& e : fs::recursive_directory_iterator(root)) {
         if (!e.is_regular_file() || e.path().extension() != ".hpp") continue;
         const std::string path = e.path().string();
@@ -103,6 +120,11 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
                 offenders.push_back(e.path().filename().string() + ":"
                                     + std::to_string(n)
                                     + "  (ink slot as background)  " + line);
+            if (std::regex_search(line, unresolved_to_rgb)
+                && line.find("resolve") == std::string::npos)
+                offenders.push_back(e.path().filename().string() + ":"
+                                    + std::to_string(n)
+                                    + "  (to_rgb without resolve)  " + line);
         }
     }
 

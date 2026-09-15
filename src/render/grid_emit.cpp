@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include <unordered_map>
+#include "maya/style/theme.hpp"
 
 namespace maya::render {
 
@@ -47,14 +48,26 @@ inline void put_varint(std::string& o, std::uint32_t v) {
 // A color tagged for the host to resolve.  Named/Default carry no true RGB
 // (they follow the user's terminal/emacs theme), so we send the kind + index;
 // Indexed/Rgb carry resolvable values.
-inline void put_color(std::string& o, const std::optional<Color>& c) {
-    if (!c) { put_u8(o, 0); return; }                 // 0 = Default/inherit
-    switch (c->kind()) {
+inline void put_color(std::string& o, const std::optional<Color>& c_in) {
+    if (!c_in) { put_u8(o, 0); return; }              // 0 = Default/inherit
+    // Resolve a semantic slot into a literal before it hits the wire. The
+    // grid protocol carries CONCRETE colours — a host painting cells has no
+    // theme table and no way to ask — and a slot reaching this switch would
+    // fall through every case and emit nothing at all, desynchronising the
+    // stream. Resolving here is also correct rather than merely safe: the
+    // host should receive whatever the ANSI path would have painted.
+    const Color c = theme::live().resolve(*c_in);
+    switch (c.kind()) {
         case Color::Kind::Default: put_u8(o, 0); break;
-        case Color::Kind::Named:   put_u8(o, 1); put_u8(o, c->index()); break;
-        case Color::Kind::Indexed: put_u8(o, 2); put_u8(o, c->index()); break;
+        case Color::Kind::Named:   put_u8(o, 1); put_u8(o, c.index()); break;
+        case Color::Kind::Indexed: put_u8(o, 2); put_u8(o, c.index()); break;
         case Color::Kind::Rgb:
-            put_u8(o, 3); put_u8(o, c->r()); put_u8(o, c->g()); put_u8(o, c->b());
+            put_u8(o, 3); put_u8(o, c.r()); put_u8(o, c.g()); put_u8(o, c.b());
+            break;
+        case Color::Kind::Slot:
+            // Unreachable after resolve(); treated as inherit rather than
+            // silently emitting zero bytes and shifting every later field.
+            put_u8(o, 0);
             break;
     }
 }

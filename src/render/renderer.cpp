@@ -1930,7 +1930,7 @@ void render_tree(
     const Element& root,
     Canvas& canvas,
     StylePool& pool,
-    [[maybe_unused]] const Theme& theme,
+    const Theme& theme,
     std::vector<layout::LayoutNode>& layout_nodes,
     bool auto_height)
 {
@@ -2051,6 +2051,31 @@ void render_tree(
     const auto t_layout1 = std::chrono::steady_clock::now();
 
     // Phase 4: Paint to canvas.
+    //
+    // A themed canvas is AMBIENT for the entire tree, not just for the
+    // subtree of whichever box happens to declare a bg.
+    //
+    // The terminal cell model does not composite: a style with no bg emits
+    // an SGR that resets the cell to the TERMINAL default. So every glyph
+    // painted outside a bg-declaring box punched a hole straight through
+    // the canvas fill — separator rules, the composer frame, status-bar
+    // chrome, anything sitting directly under AppLayout rather than inside
+    // a filled container. That is the "holes in the theme" artifact, and
+    // chasing it widget-by-widget is endless because the default is wrong
+    // rather than any one widget being wrong.
+    //
+    // Seeding the ambient here makes the canvas colour the DEFAULT that
+    // descendants inherit, exactly as the box-level AmbientBgScope already
+    // does one level down. A run with an explicit bg still wins, including
+    // Color::Kind::Default as the deliberate "I want the terminal's own
+    // background" opt-out.
+    //
+    // Under `native` the theme states no background, so the scope does not
+    // engage and nothing changes: the terminal shows through, which is the
+    // entire point of native.
+    render_detail::AmbientBgScope canvas_ambient(
+        theme::owns_canvas(theme) ? std::optional<Color>{theme.background}
+                                  : std::nullopt);
     render_detail::paint_element(
         root, canvas, pool, layout_nodes, root_idx,
         /*offset_x=*/0, /*offset_y=*/0);

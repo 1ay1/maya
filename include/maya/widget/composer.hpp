@@ -749,7 +749,18 @@ public:
 
         auto box = v(inner, std::move(rule), std::move(hint_element))
                    | border(BorderStyle::Round)
-                   | bcolor(box_color);
+                   | bcolor(box_color)
+                   // The box sits ON the canvas, so it carries the canvas
+                   // colour. Without this it states a border and a border
+                   // colour but no background, so every cell the box owns —
+                   // the frame glyphs, the padding ring, the gap around the
+                   // rule — falls back to the TERMINAL's colour. On a themed
+                   // canvas that is the composer reading as a rectangular
+                   // hole with the chrome above and below it painted.
+                   //
+                   // Under `native` this resolves to default_color() and
+                   // nothing is stated, which is exactly what it replaces.
+                   | bgc(theme::live().background);
 
         if (line_count > 1) {
             box = std::move(box) | btext(

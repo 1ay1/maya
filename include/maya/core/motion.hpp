@@ -62,6 +62,7 @@
 // isn't there.
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -474,11 +475,49 @@ template <typename T>
 // even across threads, samples the SAME phase, and a frozen test clock
 // (freeze_anim_clock) maps directly to a deterministic frame.
 
+// ── reduce motion ────────────────────────────────────────────────────
+//
+// One switch that stops every stepped animation in the process.
+//
+// This lives HERE, at the bottom of the animation stack, rather than in
+// each widget, because "nothing may move" has to be TRUE — not true of the
+// widgets someone remembered to gate. Every spinner, blink and stepped
+// frame counter in maya funnels through the primitives below, so gating
+// them at the source covers widgets that do not know this setting exists,
+// including ones written later.
+//
+// It is an accessibility switch before it is a preference: vestibular
+// disorders make a typewriter reveal genuinely unpleasant, and "mostly
+// stopped" is not an accommodation.
+//
+// The gate also suppresses the FRAME REQUEST, which is the part that
+// matters beyond aesthetics: a paused animation that still asks to be
+// repainted 11×/s keeps the render loop hot and the laptop warm for a
+// glyph that never changes. Stopping means stopping the wakeups too.
+namespace detail {
+inline std::atomic<bool>& reduce_motion_slot() noexcept {
+    static std::atomic<bool> s{false};
+    return s;
+}
+}  // namespace detail
+
+// Freeze (or unfreeze) every stepped animation process-wide.
+inline void set_reduce_motion(bool on) noexcept {
+    detail::reduce_motion_slot().store(on, std::memory_order_relaxed);
+}
+[[nodiscard]] inline bool reduce_motion() noexcept {
+    return detail::reduce_motion_slot().load(std::memory_order_relaxed);
+}
+
 // Smooth sine wave in [0,1] over `period_ms` (0.5 + 0.5·sin). Unlike
 // pulse() this is phase-continuous across widgets sharing a period — two
 // surfaces breathing at 1400 ms breathe in lockstep because both read the
 // same clock. Frame-requesting at frame rate (it's continuous motion).
 [[nodiscard]] inline double wave(double period_ms) noexcept {
+    // Mid-value, not 0: a "breathing" highlight frozen at its trough reads
+    // as a rendering bug. Held at the middle it reads as a steady state,
+    // which is what it now is.
+    if (reduce_motion()) return 0.5;
     detail::request_frame();
     if (period_ms <= 0.0) return 0.5;
     const double ph = static_cast<double>(maya::anim_now_ms()) / period_ms;
@@ -489,6 +528,9 @@ template <typename T>
 // blink primitive. Schedules ONE wake at the next half-period boundary
 // instead of 60 fps — a 530 ms blink wakes the loop ~4×/s, not 60×.
 [[nodiscard]] inline bool blink(double period_ms) noexcept {
+    // A caret held ON. The alternative — a caret stuck OFF — loses the
+    // cursor entirely, which is a worse outcome than not blinking.
+    if (reduce_motion()) return true;
     if (period_ms <= 0.0) return true;
     const std::int64_t now  = std::max<std::int64_t>(0, maya::anim_now_ms());
     const std::int64_t half = static_cast<std::int64_t>(period_ms / 2.0);
@@ -507,6 +549,10 @@ template <typename T>
                                              bool request = true) noexcept {
     if (count == 0) return 0;
     if (step_ms <= 0.0) return 0;
+    // Frame 0 is the resting glyph of every frame set maya ships, so a
+    // frozen spinner shows a stable mark rather than whichever glyph the
+    // clock happened to be on when motion was switched off.
+    if (reduce_motion()) return 0;
     const std::int64_t now  = std::max<std::int64_t>(0, maya::anim_now_ms());
     const std::int64_t step = static_cast<std::int64_t>(step_ms);
     if (step <= 0) { if (request) detail::request_frame(); return 0; }

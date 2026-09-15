@@ -446,6 +446,69 @@ TEST_CASE("theme: a style with no background means THE CANVAS") {
     std::println("PASS\n");
 }
 
+TEST_CASE("theme: markdown tables and code blocks carry the canvas") {
+    std::println("--- test_theme_markdown_render ---");
+    // Table rules and code-block frames are styled fg-only — with_fg(border)
+    // and nothing else — because a border has no reason to name a
+    // background. Under the old default that made every one of them a hole
+    // in a themed canvas, which is what "even in md" looked like: a light
+    // panel with the terminal showing through every rule and frame.
+    //
+    // This renders the two worst offenders through the real markdown
+    // pipeline rather than a stand-in, because the bug was never in the
+    // widgets — it was in what a bg-less style MEANT.
+    Theme t   = theme::native;
+    t.background = Color::rgb(0xEA, 0xEA, 0xEA);
+    t.text       = Color::rgb(0x23, 0x23, 0x22);
+    t.border     = Color::rgb(0xBE, 0xBE, 0xBE);
+    t.surface    = Color::rgb(0xDE, 0xDE, 0xDE);
+    t.info       = Color::rgb(0x0E, 0x71, 0x7C);
+    theme::set_live(t);
+    set_markdown_palette(markdown_palette_from(t));
+
+    StylePool pool;
+    Canvas c{60, 20, &pool};
+    pool.retheme();
+
+    StreamingMarkdown md;
+    md.feed("| col | val |\n|---|---|\n| a | 1 |\n\n```cpp\nint x = 1;\n```\n");
+    md.finish();
+    render_tree(md.build(), c, pool, t, /*auto_height=*/true);
+
+    std::string out;
+    serialize(c, pool, out);
+
+    // Walk the emitted bytes tracking background state; every glyph must
+    // land on a stated background, never the terminal's.
+    int holes = 0, painted = 0;
+    bool def = true;
+    for (std::size_t i = 0; i < out.size();) {
+        if (out[i] == '\x1b') {
+            const std::size_t j = out.find('m', i);
+            if (j != std::string::npos && i + 1 < out.size() && out[i + 1] == '[') {
+                const std::string ps = out.substr(i + 2, j - i - 2);
+                if (ps.find("48;2") != std::string::npos) def = false;
+                else if (ps.empty() || ps == "0"
+                         || ps.find("49") != std::string::npos) def = true;
+                i = j + 1;
+                continue;
+            }
+            i += 2;
+            continue;
+        }
+        if (out[i] != '\n' && out[i] != '\r' && out[i] != ' ') {
+            if (def) ++holes; else ++painted;
+        }
+        ++i;
+    }
+    assert(painted > 0);
+    assert(holes == 0);
+
+    set_markdown_palette(markdown_palette_from(theme::native));
+    theme::set_live(theme::native);
+    std::println("PASS\n");
+}
+
 TEST_CASE("style equality") {
     std::println("--- test_style_equality ---");
     Style a = Style{}.with_bold().with_fg(Color::red());

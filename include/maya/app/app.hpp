@@ -1027,6 +1027,11 @@ private:
     // uses), so grid and ANSI never share mutable diff state.
     bool                            grid_mode_        = false;
     bool                            grid_need_full_   = true;   // full frame next
+    // Set when StylePool::retheme() reports an actual theme swap; consumed by
+    // the inline Synced arm to force a repaint. A theme change is invisible
+    // to both wire diffs (they compare style IDS, which do not change) so it
+    // has to be carried as an explicit signal rather than detected.
+    bool                            retheme_repaint_  = false;
     int                             grid_prev_w_      = 0;
     int                             grid_prev_rows_   = 0;
     // Scrollback: rows the app has committed to history since the last grid

@@ -154,19 +154,26 @@ StylePool::StylePool() {
     size_ = 1;
 }
 
-void StylePool::retheme() {
+bool StylePool::retheme() {
     // Re-derive every cached SGR string under the theme now in force.
     //
     // build_sgr() bakes the canvas background into any style that does not
     // name one, so the cached bytes are theme-specific. Styles themselves
     // are unchanged — only their rendering is — so ids stay valid and no
-    // cell needs rewriting: this is a string refresh, not an invalidation.
-    // That matters because ids are embedded in canvas cells and in the
-    // inline frame's previous-cell buffer; dropping them would tear the
-    // diff.
-    const void* now = &theme::live();
-    if (sgr_theme_ == now) return;
+    // canvas cell needs rewriting.
+    //
+    // But "no cell needs rewriting" is true of the CANVAS and false of the
+    // WIRE. Both inline emitters diff packed (glyph, style_id) cells against
+    // a shadow of the last frame; a retheme leaves every one of those pairs
+    // identical while changing what the ids render as. The row compares
+    // equal, nothing is emitted, and the terminal keeps showing the old
+    // colours — worst on the background, because a bg-less style is exactly
+    // the kind whose bytes this function rewrites. Hence the bool: callers
+    // that own a wire shadow must drop it when this returns true.
+    const Theme& now = theme::live();
+    if (sgr_theme_valid_ && sgr_theme_ == now) return false;
     sgr_theme_ = now;
+    sgr_theme_valid_ = true;
     for (std::size_t i = 0; i < styles_.size(); ++i)
         sgr_cache_[i] = build_sgr(styles_[i]);
     // Bump pool_id_ so thread_local intern_const slots re-resolve.
@@ -178,6 +185,7 @@ void StylePool::retheme() {
     // theme's bytes. Invalidating is cheaper to reason about than auditing
     // every call site, and it costs one re-intern per site per theme swap.
     pool_id_ = g_next_pool_id.fetch_add(1, std::memory_order_relaxed);
+    return true;
 }
 
 void StylePool::clear() {

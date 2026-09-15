@@ -907,8 +907,22 @@ auto Runtime::render(const Element& root) -> Status {
         // pool keeps whatever it interned before the host published a theme
         // — and inline is the mode agentty actually runs in.
         //
-        // A pointer compare on every frame but the one after a swap.
-        pool_.retheme();
+        // A value compare on every frame but the one after a swap.
+        //
+        // When it DOES fire, both inline wire shadows are silently stale:
+        // they diff packed (glyph, style_id) cells, and a retheme changes
+        // neither while changing what those ids render as. Every row would
+        // compare equal and nothing would be emitted — the terminal keeps
+        // the old background. So a swap invalidates both shadows: the grid
+        // re-states every row, and the ANSI frame is re-seeded to Empty,
+        // which is the same non-destructive "no prior state is trustworthy"
+        // path used after a child process scribbles on the terminal.
+        if (pool_.retheme()) {
+            grid_need_full_ = true;
+            retheme_repaint_ = true;
+            render_detail::clear_component_cache();
+            canvas_.clear();
+        }
         render_tree(root, canvas_, pool_, theme_, layout_nodes_,
                     /*auto_height=*/true);
         double rt_ms = since(t_rt0);
@@ -1257,6 +1271,34 @@ auto Runtime::render(const Element& root) -> Status {
                         auto marker = arm.scrollback_marker(overflow);
                         auto committed = std::move(arm).commit(marker);
                         return std::move(committed).demote_to_stale();
+                    }
+
+                    // A theme swap invalidates the shadow's MEANING without
+                    // changing a single packed cell: prev_cells holds
+                    // (glyph, style_id) pairs and a retheme rewrites what
+                    // those ids render as, so verify() still passes and the
+                    // per-row diff still finds every row equal. Nothing gets
+                    // emitted and the terminal keeps the old colours — most
+                    // visibly the background, since a bg-less style is
+                    // exactly what build_sgr() re-derives.
+                    //
+                    // Take the same NON-destructive route the poisoned-shadow
+                    // branch below uses: commit whatever has already scrolled
+                    // off (those rows are real scrollback and must not be
+                    // rewritten), then demote to Stale so the next render
+                    // re-states the live viewport in the new palette. Not
+                    // Empty — that re-anchors at the cursor and would print
+                    // the transcript a second time.
+                    if (retheme_repaint_) {
+                        retheme_repaint_ = false;
+                        const int prev_rows = arm.rows();
+                        if (prev_rows > term_h.value()) {
+                            const int overflow = prev_rows - term_h.value();
+                            auto marker = arm.scrollback_marker(overflow);
+                            auto committed = std::move(arm).commit(marker);
+                            return std::move(committed).demote_to_stale();
+                        }
+                        return std::move(arm).demote_to_stale();
                     }
 
                     auto wit = arm.verify();
@@ -2159,6 +2201,7 @@ Runtime::Runtime(Runtime&& o) noexcept
     , layout_nodes_(std::move(o.layout_nodes_))
     , grid_mode_(o.grid_mode_)
     , grid_need_full_(o.grid_need_full_)
+    , retheme_repaint_(o.retheme_repaint_)
     , grid_prev_w_(o.grid_prev_w_)
     , grid_prev_rows_(o.grid_prev_rows_)
     , grid_committed_rows_(o.grid_committed_rows_)
@@ -2195,6 +2238,7 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         layout_nodes_      = std::move(o.layout_nodes_);
         grid_mode_         = o.grid_mode_;
         grid_need_full_    = o.grid_need_full_;
+        retheme_repaint_   = o.retheme_repaint_;
         grid_prev_w_       = o.grid_prev_w_;
         grid_prev_rows_    = o.grid_prev_rows_;
         grid_committed_rows_ = o.grid_committed_rows_;

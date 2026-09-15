@@ -203,18 +203,36 @@ TEST_CASE("theme canvas fill is inline-safe") {
 
     auto tree = [] { return v(text("hello"), text("a longer line")); };
 
+    // Paint under the theme actually PUBLISHED as live.
+    //
+    // The fill is not a property of the style structs — a bg-less style is
+    // the normal, correct output of most widgets. It is a property of the
+    // BYTES: build_sgr() renders the live canvas background for any style
+    // that does not name one. So the assertion has to read the emitted SGR,
+    // and the theme has to be live while it is read, or the pool's cached
+    // strings were built under a different canvas than the one under test.
     auto paint = [&](const Theme& t, auto&& fn) {
-        StylePool pool;
-        Canvas c{40, 6, &pool};
-        render_tree(detail::apply_theme_canvas(Element{tree()}.build(), t,
-                                               /*term_width=*/40),
-                    c, pool, theme::native, /*auto_height=*/true);
-        fn(c, pool);
+        const Theme* saved = &theme::live();
+        theme::set_live(t);
+        {
+            StylePool pool;
+            Canvas c{40, 6, &pool};
+            render_tree(detail::apply_theme_canvas(Element{tree()}.build(), t,
+                                                   /*term_width=*/40),
+                        c, pool, t, /*auto_height=*/true);
+            pool.retheme();
+            fn(c, pool);
+        }
+        theme::set_live(*saved);
     };
 
+    // Does the cell's emitted SGR set a REAL background? That is the
+    // question the terminal answers, and the only one that matters here.
+    // `49` (default background) is explicitly not a fill: it is the code
+    // that hands the cell back to the terminal's own colour.
     auto has_bg = [](const Canvas& c, const StylePool& pool, int x, int y) {
-        const Style& st = pool.get(c.get(x, y).style_id);
-        return st.bg.has_value() && st.bg->kind() != Color::Kind::Default;
+        const std::string_view sgr = pool.sgr(c.get(x, y).style_id);
+        return sgr.find("48;") != std::string_view::npos;
     };
 
     // native: the seam is a no-op. Nothing is filled, so the terminal's own
@@ -235,9 +253,17 @@ TEST_CASE("theme canvas fill is inline-safe") {
             for (int x = 0; x < c.width(); ++x)
                 assert(has_bg(c, pool, x, y));
         // (b) nothing below the content — that is scrollback.
-        for (int y = last + 1; y < c.height(); ++y)
-            for (int x = 0; x < c.width(); ++x)
-                assert(!has_bg(c, pool, x, y));
+        //
+        // Asserted as the EMITTER'S BOUND, not as a property of the cells
+        // down there. Style 0 means two different things on a canvas —
+        // "unpainted" and "painted with no opinion" — and since a style
+        // with no opinion now renders the canvas colour (that is what makes
+        // the gaps in (a) fill), the bytes for an untouched cell are
+        // indistinguishable from a legitimately themed one. What keeps
+        // those rows out of the user's scrollback is that nothing ever asks
+        // for them: max_content_row() is the last row the emitter walks.
+        assert(last < c.height() - 1);   // there ARE rows below
+        assert(c.max_content_row() == last);
     });
 
     std::println("PASS\n");
@@ -441,6 +467,83 @@ TEST_CASE("theme: a style with no background means THE CANVAS") {
     const std::string nat = emit_for(theme::native);
     assert(nat.find("48;2") == std::string::npos);
     assert(nat.find("48;5") == std::string::npos);
+
+    theme::set_live(theme::native);
+    std::println("PASS\n");
+}
+
+TEST_CASE("theme: a swap re-derives cached SGR, and says that it did") {
+    std::println("--- test_theme_retheme_detects_swap ---");
+    // The "I picked a new scheme and the background stayed the old colour"
+    // bug, at both of the layers that produced it.
+    //
+    // (1) DETECTION. retheme() used to compare `&theme::live()` against the
+    //     pointer it cached last time, on the stated premise that the live
+    //     slot is re-seated rather than mutated. It is not: app_set_theme()
+    //     assigns THROUGH the slot, so the address is fixed for the life of
+    //     the runtime. The pointer matched on every frame after the first
+    //     and retheme() became a permanent no-op — every cached SGR string
+    //     kept the first theme's background forever. Comparing by VALUE is
+    //     what makes a swap observable at all.
+    //
+    // (2) REPORTING. A retheme changes no Style and no canvas cell — only
+    //     what the ids RENDER as. Both inline emitters diff packed
+    //     (glyph, style_id) cells against a shadow of the last wire frame,
+    //     so after a swap every row compares equal, nothing is emitted, and
+    //     the terminal keeps the old paint. The bool return is the signal
+    //     those emitters use to drop their shadow; without it the fix in
+    //     (1) refreshes a cache nobody ever transmits.
+    using namespace maya::dsl;
+
+    Theme a = theme::native;
+    a.background = Color::rgb(0x10, 0x20, 0x30);
+    Theme b = theme::native;
+    b.background = Color::rgb(0xEE, 0xDD, 0xCC);
+
+    // THE SLOT. A host owns exactly one Theme object (Runtime::theme_) and
+    // publishes its address once; app_set_theme() then assigns THROUGH it
+    // (`*slot = t`) on every change. Modelling it as one mutated object is
+    // what makes this test reproduce the real bug — with two distinct Theme
+    // locals the addresses differ and even the broken pointer compare
+    // "works", which is exactly why this shipped.
+    Theme slot = a;
+    theme::set_live(slot);
+
+    StylePool pool;
+    Canvas c{20, 3, &pool};
+    pool.retheme();
+    // Rendered against `native` on purpose: native names no background, so
+    // no element interns an EXPLICIT one and every background byte in the
+    // output can only have come from build_sgr()'s canvas fallback — which
+    // reads the LIVE theme. That isolates the thing under test. A style that
+    // names its own colour (a selection strip, a diff tint) is not
+    // theme-derived and is deliberately left alone by retheme().
+    render_tree(v(text("hello")).build(), c, pool, theme::native,
+                /*auto_height=*/true);
+
+    std::string first;
+    serialize(c, pool, first);
+    assert(first.find("48;2;16;32;48") != std::string::npos);
+
+    // Idempotent: nothing changed, so nothing is re-derived and no caller
+    // is told to repaint. This is the every-frame case and it must stay
+    // cheap and quiet.
+    assert(pool.retheme() == false);
+
+    // Swap the live theme exactly as app_set_theme() does: assign through
+    // the published slot. The address does not move, so a pointer compare
+    // sees nothing and every cached SGR string keeps the old background
+    // forever. Only a VALUE compare can observe this.
+    slot = b;
+    assert(&theme::live() == &slot);   // same address, different theme
+    assert(pool.retheme() == true);
+
+    // The same cells, unchanged and un-repainted, now serialize in the new
+    // canvas colour — the old one must be gone entirely.
+    std::string second;
+    serialize(c, pool, second);
+    assert(second.find("48;2;238;221;204") != std::string::npos);
+    assert(second.find("48;2;16;32;48") == std::string::npos);
 
     theme::set_live(theme::native);
     std::println("PASS\n");

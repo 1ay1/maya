@@ -906,8 +906,18 @@ TEST_CASE("panel selected row highlight") {
     const Style unselected = pool.get(canvas.get(unselected_x, unselected_y).style_id);
     assert(selected.bg == wash
            && "the cursor row carries the theme's row wash");
-    assert(!unselected.bg.has_value()
-           && "a non-cursor row carries no background at all");
+    // A non-cursor row must not carry THE WASH. Deliberately not "carries no
+    // background at all": row_bg is Color::slot(Surface), and under native
+    // that slot resolves to Default — SGR 49, the terminal's own background.
+    // So an unwashed row can legitimately hold a bg whose VALUE is "defer to
+    // the terminal", which is the same pixels as holding none. What would
+    // actually be a bug is the two rows becoming indistinguishable, so that
+    // is what is asserted.
+    assert(unselected.bg != wash
+           && "a non-cursor row must not carry the cursor wash");
+    assert((!unselected.bg.has_value()
+            || unselected.bg->kind() == Color::Kind::Default)
+           && "a non-cursor row states no colour of its own");
 
     // The wash must cover the row to its END, not stop at the last glyph: a
     // band that ends with the text reads as a broken stripe. Assert the SPAN

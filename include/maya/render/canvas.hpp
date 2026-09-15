@@ -23,6 +23,7 @@
 #include "../core/types.hpp"
 #include "../core/simd.hpp"  // also brings in platform/detect.hpp for MAYA_FORCEINLINE
 #include "../style/style.hpp"
+#include "../style/theme.hpp"  // Theme, held by value in StylePool::sgr_theme_
 #include "../element/text.hpp"
 
 namespace maya {
@@ -341,7 +342,10 @@ public:
     /// Called automatically by intern()/sgr() when the live theme differs
     /// from the one the cache was built under, so no caller has to
     /// remember: the pool notices for itself.
-    void retheme();
+    // Re-derive cached SGR under the live theme. Returns true iff the theme
+    // actually changed (and the cache was rebuilt), so callers that hold a
+    // wire-level shadow can invalidate it — see the comment on sgr_theme_.
+    bool retheme();
 
 private:
     struct Slot {
@@ -351,11 +355,20 @@ private:
 
     std::vector<Style>       styles_;
     std::vector<std::string> sgr_cache_;  // sgr_cache_[id] = pre-built "\x1b[0;...m"
-    // The theme the cached SGR strings were built under. Compared by
-    // POINTER: every Theme lives in a table with static storage and the
-    // live slot is re-seated rather than mutated, so identity is the
-    // cheapest correct test — one load and one compare on the hot path.
-    const void*              sgr_theme_ = nullptr;
+    // The theme the cached SGR strings were built under, held BY VALUE and
+    // compared BY VALUE.
+    //
+    // This used to be a `const void*` identity test, on the stated premise
+    // that "the live slot is re-seated rather than mutated". That premise is
+    // false: app_set_theme() assigns THROUGH the slot (`*slot = t`), so the
+    // address of theme::live() is fixed for the life of the Runtime. The
+    // pointer therefore matched on every frame after the first and retheme()
+    // was a permanent no-op — every swap kept the previous theme's SGR bytes,
+    // which is precisely the "background stays the old colour" bug. A Theme
+    // is ~25 Colors; comparing it once per frame is trivially cheap next to
+    // painting one, and unlike identity it cannot be silently wrong.
+    Theme                    sgr_theme_{};
+    bool                     sgr_theme_valid_ = false;
     std::vector<Slot>        slots_;
     std::vector<uint16_t>    caret_ids_;  // ids interned with caret_anchor set
     std::size_t size_     = 0;

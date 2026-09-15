@@ -123,7 +123,14 @@ public:
         // after a swap — the pool notices for itself, once, at the only
         // point where a frame can begin. It is a no-op pointer compare on
         // every frame but the one after a theme actually changes.
-        pool_.retheme();
+        //
+        // The bool return ("the theme really did change") is deliberately
+        // discarded: it exists for the INLINE emitters, which diff against a
+        // shadow of the last wire frame and would otherwise find every row
+        // unchanged. Fullscreen has no such shadow at this layer — clear()
+        // has already zeroed the canvas and the frame is repainted whole —
+        // so there is nothing here to invalidate.
+        (void)pool_.retheme();
         return {back_, pool_, theme_, out_};
     }
 

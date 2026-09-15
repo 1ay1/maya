@@ -54,12 +54,12 @@
 namespace maya {
 
 struct TabStripTheme {
-    Color active   = Color::bright_white();   // the selected label
-    Color idle     = Color::bright_black();   // every other label
-    Color accent   = Color::cyan();           // the underline / marker
-    Color detail   = Color::bright_black();   // trailing count / diffstat
-    Color ellipsis = Color::bright_black();   // the "…" scrolled-past chip
-    Color divider  = Color::bright_black();   // │ between tabs, and the rule
+    Color active   = Color::slot(ThemeSlot::Text);   // the selected label
+    Color idle     = Color::slot(ThemeSlot::Muted);   // every other label
+    Color accent   = Color::slot(ThemeSlot::Info);           // the underline / marker
+    Color detail   = Color::slot(ThemeSlot::Muted);   // trailing count / diffstat
+    Color ellipsis = Color::slot(ThemeSlot::Muted);   // the "…" scrolled-past chip
+    Color divider  = Color::slot(ThemeSlot::Muted);   // │ between tabs, and the rule
     // Optional FILL behind the active label — the tab becomes a chip,
     // " label " painted in this colour with `active` as its text. Unset
     // (the default) keeps every mark background-free, so a strip still
@@ -106,12 +106,12 @@ struct TabStrip {
         // the signal; the glyph is a knob so a host can use ● / ○ / ✓ to
         // stay legible without colour.
         std::string dot_glyph;
-        Color       dot_color = Color::bright_black();
+        Color       dot_color = Color::slot(ThemeSlot::Muted);
         // Optional trailing detail: a diffstat, a count, a size. Rendered
         // dim after the label and INCLUDED in the width arithmetic, which
         // is the part a host doing this itself gets wrong.
         std::string detail;
-        Color       detail_color = Color::bright_black();
+        Color       detail_color = Color::slot(ThemeSlot::Muted);
     };
 
     std::vector<Tab> tabs;

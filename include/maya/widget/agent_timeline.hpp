@@ -10,17 +10,17 @@
 //
 //   maya::AgentTimeline{{
 //       .title        = " ACTIONS  ·  3/5  ·  Bash ",
-//       .border_color = Color::cyan(),
+//       .border_color = Color::slot(ThemeSlot::Info),
 //       .frame        = spinner_frame,
 //       .stats        = {{"INSPECT", 3, Color::blue()},
 //                        {"MUTATE",  2, Color::magenta()}},
 //       .events       = {{.name="Bash", .detail="npm test  ·  exit 0",
 //                         .elapsed_seconds=1.2f,
-//                         .category_color=Color::green(),
+//                         .category_color=Color::slot(ThemeSlot::Success),
 //                         .status=AgentEventStatus::Done,
 //                         .body=preview_block_element}},
 //       .footer       = {{.glyph="\xe2\x9c\x93", .text="done",
-//                         .color=Color::green(), .summary="3 actions   1.4s"}},
+//                         .color=Color::slot(ThemeSlot::Success), .summary="3 actions   1.4s"}},
 //   }}.build();
 
 #include <cstdint>
@@ -57,7 +57,7 @@ struct AgentTimelineEvent {
     std::string             name;                 // Display name e.g. "Bash"
     std::string             detail;               // One-line summary
     float                   elapsed_seconds = 0.0f;
-    Color                   category_color  = Color::blue();
+    Color                   category_color  = Color::slot(ThemeSlot::Primary);
     AgentEventStatus        status          = AgentEventStatus::Pending;
     ToolBodyPreview::Config body;                 // empty by default; rendered under `│` stripe
 
@@ -109,13 +109,13 @@ struct AgentTimelineEvent {
 struct AgentTimelineStat {
     std::string label;                        // raw — widget small-caps's it
     int         count = 0;
-    Color       color = Color::blue();
+    Color       color = Color::slot(ThemeSlot::Primary);
 };
 
 struct AgentTimelineFooter {
     std::string glyph;
     std::string text;
-    Color       color = Color::green();
+    Color       color = Color::slot(ThemeSlot::Success);
     std::string summary;
 };
 
@@ -129,7 +129,7 @@ public:
         // single `title` string alone is start-aligned and can't express
         // that split.
         std::string                          title_end;
-        Color                                border_color = Color::bright_black();
+        Color                                border_color = Color::slot(ThemeSlot::Muted);
         int                                  frame        = 0;
         std::vector<AgentTimelineStat>       stats;
         std::vector<AgentTimelineEvent>      events;
@@ -255,8 +255,8 @@ private:
     //    terminal themes.
     [[nodiscard]] Element stats_row() const {
         using namespace dsl;
-        const Color sep_color   = Color::bright_black();   // ornamental dots
-        const Color count_color = Color::white();          // legible mid-gray
+        const Color sep_color   = Color::slot(ThemeSlot::Muted);   // ornamental dots
+        const Color count_color = Color::slot(ThemeSlot::Text);          // legible mid-gray
 
         std::vector<Element> parts;
         parts.reserve(cfg_.stats.size() * 3);

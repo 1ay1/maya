@@ -52,7 +52,7 @@ public:
         auto header = build_header();
 
         // Content with a left-border indent (│ style) like Zed
-        auto indent_color = Color::bright_black();
+        auto indent_color = Color::slot(ThemeSlot::Muted);
         auto bordered_content = dsl::h(
             Element{TextElement{
                 .content = "\xe2\x94\x82 ",  // "│ "

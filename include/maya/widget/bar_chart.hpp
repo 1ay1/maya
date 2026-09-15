@@ -55,7 +55,7 @@ inline std::string bar_value_text(float v) {
 class BarChart {
     std::vector<Bar> bars_;
     float max_value_ = 0.0f;  // 0 = auto-detect from data
-    Color default_color_ = Color::blue();
+    Color default_color_ = Color::slot(ThemeSlot::Primary);
 
 public:
     BarChart() = default;

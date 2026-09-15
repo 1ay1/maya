@@ -62,11 +62,11 @@ public:
         auto [icon, icon_color] = status_icon();
         std::string border_label = " " + icon + " Agent ";
 
-        auto border_color = Color::bright_black();
+        auto border_color = Color::slot(ThemeSlot::Muted);
         if (status_ == AgentStatus::Failed)
-            border_color = Color::red();
+            border_color = Color::slot(ThemeSlot::Error);
         else if (status_ == AgentStatus::Running)
-            border_color = Color::magenta();
+            border_color = Color::slot(ThemeSlot::Accent);
 
         std::vector<Element> rows;
 

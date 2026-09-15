@@ -45,7 +45,7 @@ public:
 
     [[nodiscard]] Element build() const {
         using namespace dsl;
-        const Color muted = Color::bright_black();
+        const Color muted = Color::slot(ThemeSlot::Muted);
 
         if (cfg_.max <= 0) return blank().build();
 
@@ -155,7 +155,7 @@ private:
             "", "\xe2\x96\x8f", "\xe2\x96\x8e", "\xe2\x96\x8d",
             "\xe2\x96\x8c", "\xe2\x96\x8b", "\xe2\x96\x8a", "\xe2\x96\x89",
         };
-        const Color muted = Color::bright_black();
+        const Color muted = Color::slot(ThemeSlot::Muted);
 
         pct = std::clamp(pct, 0, 100);
         int total_eighths = pct * cells * 8 / 100;
@@ -176,9 +176,9 @@ private:
             float cell_t = static_cast<float>(i + 1) / static_cast<float>(cells);
             Color cc;
             if      (filled == 0)    cc = muted;
-            else if (cell_t <= 0.6f) cc = Color::green();
-            else if (cell_t <= 0.8f) cc = Color::yellow();
-            else                     cc = Color::red();
+            else if (cell_t <= 0.6f) cc = Color::slot(ThemeSlot::Success);
+            else if (cell_t <= 0.8f) cc = Color::slot(ThemeSlot::Warning);
+            else                     cc = Color::slot(ThemeSlot::Error);
 
             std::size_t off = content.size();
             content.append(ch);

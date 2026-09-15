@@ -19,7 +19,7 @@
 //   maya::Turn{{
 //       .glyph      = "\xe2\x9c\xa6",                      // ✦
 //       .label      = "Opus 4.7",
-//       .rail_color = Color::magenta(),
+//       .rail_color = Color::slot(ThemeSlot::Accent),
 //       .meta       = "12:34  \xc2\xb7  4.2s  \xc2\xb7  turn 3",
 //       .body       = {
 //           Turn::MarkdownText{ msg.text },                // markdown body
@@ -67,7 +67,7 @@ public:
     // ── Body slot kinds ──────────────────────────────────────────────────
     struct PlainText {
         std::string content;
-        Color       color = Color::bright_white();
+        Color       color = Color::slot(ThemeSlot::Text);
     };
 
     struct MarkdownText {
@@ -93,7 +93,7 @@ public:
     struct Config {
         std::string           glyph;
         std::string           label;
-        Color                 rail_color = Color::cyan();
+        Color                 rail_color = Color::slot(ThemeSlot::Info);
         std::string           meta;
         // Optional pre-built, right-aligned meta strip. When set (non-null),
         // it REPLACES the plain dim `meta` string in the header — letting a
@@ -108,7 +108,7 @@ public:
         std::string           error;        // empty = no error banner
         bool                  checkpoint_above = false;
         std::string           checkpoint_label = "Restore checkpoint";
-        Color                 checkpoint_color = Color::yellow();
+        Color                 checkpoint_color = Color::slot(ThemeSlot::Warning);
 
         // Set to true on the 2nd+ turn within a same-speaker run. The
         // header row (glyph + label + meta) is suppressed and the
@@ -182,7 +182,7 @@ private:
 
     [[nodiscard]] static Element build_inner(const Config& cfg) {
         using namespace dsl;
-        const Color muted = Color::bright_black();
+        const Color muted = Color::slot(ThemeSlot::Muted);
 
         // ── BARE mode: body vstack only, no header / rail / divider.
         //    Used as a cacheable, row-transparent sub-body container

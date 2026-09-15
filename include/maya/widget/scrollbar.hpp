@@ -61,8 +61,8 @@ struct ScrollbarStyle {
     std::string_view track_glyph_h = "\xe2\x94\x80"; // ─  U+2500 LIGHT HORIZONTAL
     std::string_view thumb_glyph_h = "\xe2\x94\x81"; // ━  U+2501 HEAVY HORIZONTAL
 
-    Color track_color = Color::bright_black();
-    Color thumb_color = Color::bright_black();
+    Color track_color = Color::slot(ThemeSlot::Muted);
+    Color thumb_color = Color::slot(ThemeSlot::Muted);
 
     // -- Presets ------------------------------------------------------------
 
@@ -76,8 +76,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x96\x88",                 // █  U+2588 FULL BLOCK
             .track_glyph_h = " ",
             .thumb_glyph_h = "\xe2\x96\x88",
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::white(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Text),
         };
     }
 
@@ -88,8 +88,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x96\x8c",                 // ▌  U+258C LEFT HALF BLOCK
             .track_glyph_h = "\xe2\x96\x81",               // ▁  U+2581 LOWER ONE EIGHTH BLOCK
             .thumb_glyph_h = "\xe2\x96\x84",               // ▄  U+2584 LOWER HALF BLOCK
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::bright_black(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Muted),
         };
     }
 
@@ -100,8 +100,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x96\x88",                 // █  U+2588 FULL BLOCK
             .track_glyph_h = "\xe2\x94\x81",               // ━  U+2501 HEAVY HORIZONTAL
             .thumb_glyph_h = "\xe2\x96\x88",               // █
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::white(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Text),
         };
     }
 
@@ -112,8 +112,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x96\x88",                 // █
             .track_glyph_h = "\xe2\x95\x90",               // ═  U+2550 DOUBLE HORIZONTAL
             .thumb_glyph_h = "\xe2\x96\x88",               // █
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::white(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Text),
         };
     }
 
@@ -124,8 +124,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x94\x83",                 // ┃
             .track_glyph_h = "\xe2\x94\x88",               // ┈  U+2508 LIGHT QUADRUPLE DASH HORIZONTAL
             .thumb_glyph_h = "\xe2\x94\x81",               // ━
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::white(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Text),
         };
     }
 
@@ -136,8 +136,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x94\x83",                 // ┃
             .track_glyph_h = "\xe2\x95\x8c",               // ╌  U+254C LIGHT DOUBLE DASH HORIZONTAL
             .thumb_glyph_h = "\xe2\x94\x81",               // ━
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::white(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Text),
         };
     }
 
@@ -148,8 +148,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\xa1\x87",                 // ⡇  U+2847 LEFT 4 DOTS BRAILLE
             .track_glyph_h = "\xe2\xa3\x80",               // ⣀  U+28C0 BOTTOM BRAILLE DOTS
             .thumb_glyph_h = "\xe2\xa3\xbf",               // ⣿  U+28FF FULL BRAILLE BLOCK
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::white(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Text),
         };
     }
 
@@ -160,8 +160,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "#",
             .track_glyph_h = "-",
             .thumb_glyph_h = "=",
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::white(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Text),
         };
     }
 
@@ -172,8 +172,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x96\x93",                 // ▓  U+2593 DARK SHADE
             .track_glyph_h = "\xe2\x96\x91",               // ░
             .thumb_glyph_h = "\xe2\x96\x93",               // ▓
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::white(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Text),
         };
     }
 
@@ -184,8 +184,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x96\x8e",                 // ▎  U+258E LEFT ONE QUARTER BLOCK
             .track_glyph_h = " ",
             .thumb_glyph_h = "\xe2\x96\x82",               // ▂  U+2582 LOWER ONE QUARTER BLOCK
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::bright_black(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Muted),
         };
     }
 
@@ -196,8 +196,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x94\x83",                 // ┃
             .track_glyph_h = "\xe2\x94\x80",               // ─
             .thumb_glyph_h = "\xe2\x94\x81",               // ━
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::bright_cyan(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Link),
         };
     }
 
@@ -208,8 +208,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x96\x88",                 // █
             .track_glyph_h = " ",
             .thumb_glyph_h = "\xe2\x96\x88",               // █
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::bright_green(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Success),
         };
     }
 
@@ -221,8 +221,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x96\x88",                 // █
             .track_glyph_h = "\xe2\x94\x80",               // ─
             .thumb_glyph_h = "\xe2\x96\x88",               // █
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::bright_red(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Error),
         };
     }
 
@@ -233,8 +233,8 @@ struct ScrollbarStyle {
             .thumb_glyph = "\xe2\x96\x88",                 // █
             .track_glyph_h = "\xe2\x96\x80",               // ▀
             .thumb_glyph_h = "\xe2\x96\x88",               // █
-            .track_color = Color::bright_black(),
-            .thumb_color = Color::bright_magenta(),
+            .track_color = Color::slot(ThemeSlot::Muted),
+            .thumb_color = Color::slot(ThemeSlot::Accent),
         };
     }
 };

@@ -200,7 +200,7 @@ private:
     std::string         base_label_;  // scale tick against the bottom row
     bool                filled_ = true;
     Color               line_color_  = Color::hex(0xCDD6F4);
-    Color               label_color_ = Color::bright_black();
+    Color               label_color_ = Color::slot(ThemeSlot::Muted);
 };
 
 } // namespace maya

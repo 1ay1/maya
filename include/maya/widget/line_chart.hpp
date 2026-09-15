@@ -30,7 +30,7 @@ class LineChart {
     std::vector<float> data_;
     int height_ = 8;
     std::string label_;
-    Color color_ = Color::blue();
+    Color color_ = Color::slot(ThemeSlot::Primary);
     std::optional<float> floor_{};
     bool fill_ = false;
 

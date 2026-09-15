@@ -9,7 +9,7 @@
 //
 //   maya::ChangesStrip{{
 //       .changes      = file_change_vector,
-//       .border_color = Color::yellow(),
+//       .border_color = Color::slot(ThemeSlot::Warning),
 //   }}.build();
 
 #include <string>
@@ -31,10 +31,10 @@ public:
         std::vector<FileChange> changes;
 
         // Brand palette
-        Color border_color  = Color::yellow();
-        Color text_color    = Color::bright_white();
-        Color accept_color  = Color::green();
-        Color reject_color  = Color::red();
+        Color border_color  = Color::slot(ThemeSlot::Warning);
+        Color text_color    = Color::slot(ThemeSlot::Text);
+        Color accept_color  = Color::slot(ThemeSlot::Success);
+        Color reject_color  = Color::slot(ThemeSlot::Error);
     };
 
     explicit ChangesStrip(Config c) : cfg_(std::move(c)) {}
@@ -46,7 +46,7 @@ public:
 
         if (cfg_.changes.empty()) return text("");
 
-        const Color muted = Color::bright_black();
+        const Color muted = Color::slot(ThemeSlot::Muted);
 
         // Header is a fit_row: the "Changes (N files)" label and the grow
         // spacer are essential; the key hints shed lowest-keep first

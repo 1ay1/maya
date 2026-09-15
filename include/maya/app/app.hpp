@@ -549,6 +549,11 @@ public:
     }
 
     static void on_theme_changed(const Theme& t) {
+        // Re-seat the style layer's view of the theme. Slot-kind colours
+        // (every themed widget Config default) resolve against this at
+        // SGR-emit time, which is below the app layer and cannot reach a
+        // Runtime — so it gets its own pointer to the same object.
+        theme::set_live(t);
         // Drop every cross-frame cached component.
         //
         // The renderer blits a cached subtree's PIXELS — colours already

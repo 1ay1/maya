@@ -121,13 +121,13 @@ public:
             bool fading = (toast.expires_at_ms - now) < fade_ms;
 
             // Border color tinted by severity
-            Color border_color = Color::bright_black();
+            Color border_color = Color::slot(ThemeSlot::Muted);
             if (toast.level == ToastLevel::Error)
-                border_color = Color::red();
+                border_color = Color::slot(ThemeSlot::Error);
             else if (toast.level == ToastLevel::Warning)
-                border_color = Color::yellow();
+                border_color = Color::slot(ThemeSlot::Warning);
             else if (toast.level == ToastLevel::Success)
-                border_color = Color::green();
+                border_color = Color::slot(ThemeSlot::Success);
 
             // Border label with icon
             std::string border_label = " ";

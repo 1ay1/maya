@@ -86,7 +86,7 @@ public:
         // CodeBlock / Failure / GitDiff / BashOutput / FileRead / FileWrite /
         // Json / GrepMatches: free-text body
         std::string text;
-        Color       text_color = Color::bright_white();
+        Color       text_color = Color::slot(ThemeSlot::Text);
 
         // Color used for the BODY CHROME (line-number gutter, pipe
         // separator `│`, the trailing "⋯ N more" elision marker). Host
@@ -94,7 +94,7 @@ public:
         // chrome reads cyan, an Edit body's chrome reads magenta, etc.
         // — visually framing the dim body content in the category hue.
         // Defaults to ANSI 7 white (legible mid-gray).
-        Color       chrome_color = Color::white();
+        Color       chrome_color = Color::slot(ThemeSlot::Text);
 
         // EditDiff
         std::vector<EditHunk> hunks;

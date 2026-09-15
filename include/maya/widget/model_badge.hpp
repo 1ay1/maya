@@ -25,7 +25,7 @@
 // id once (agentty: `domain/model_name.hpp`) and passes the result in.
 //
 //   ModelBadge{{ .label = "Opus", .version = "4.8",
-//                .color = Color::bright_magenta() }}
+//                .color = Color::slot(ThemeSlot::Accent) }}
 
 #include <string>
 #include <utility>
@@ -49,7 +49,7 @@ public:
         // Family/identity hue. The caller owns colour POLICY (which family
         // is which hue, and which hues are reserved for status); the widget
         // just paints what it is given.
-        Color color = Color::white();
+        Color color = Color::slot(ThemeSlot::Text);
 
         // Leading "● ". Off when the badge is composed into a larger chip
         // that places its own marker, or sits beside a filled provider tab

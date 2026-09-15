@@ -8,7 +8,7 @@
 //
 //   maya::CheckpointDivider{{
 //       .label = "Restore checkpoint",
-//       .color = Color::yellow(),
+//       .color = Color::slot(ThemeSlot::Warning),
 //   }}.build();
 
 #include <string>
@@ -25,7 +25,7 @@ class CheckpointDivider {
 public:
     struct Config {
         std::string label = "Restore checkpoint";
-        Color       color = Color::yellow();
+        Color       color = Color::slot(ThemeSlot::Warning);
     };
 
     explicit CheckpointDivider(Config c) : cfg_(std::move(c)) {}

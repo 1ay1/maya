@@ -18,7 +18,7 @@
 //       .rate    = 23.4f,
 //       .total   = 1234,
 //       .history = rate_history_vec,
-//       .color   = Color::cyan(),
+//       .color   = Color::slot(ThemeSlot::Info),
 //       .live    = is_streaming,
 //   }}.build();
 
@@ -73,7 +73,7 @@ public:
         float              rate    = 0.0f;
         int                total   = 0;
         std::vector<float> history;
-        Color              color   = Color::cyan();
+        Color              color   = Color::slot(ThemeSlot::Info);
         bool               live    = false;     // false = dim (frozen)
 
         // Adaptive width. When true, build() returns a grow-tagged
@@ -140,7 +140,7 @@ private:
     [[nodiscard]] static Element render_chip_(const Config& cfg,
                                               int spark_cells) {
         using namespace dsl;
-        const Color muted = Color::bright_black();
+        const Color muted = Color::slot(ThemeSlot::Muted);
 
         static constexpr const char* kBlocks[8] = {
             "\xe2\x96\x81", "\xe2\x96\x82", "\xe2\x96\x83", "\xe2\x96\x84",
@@ -149,9 +149,9 @@ private:
         const int kSparkCells = std::max(1, spark_cells);
 
         float rate = std::max(0.0f, cfg.rate);
-        Color rc = (rate > 50.0f)  ? Color::green()
-                 : (rate >= 20.0f) ? Color::yellow()
-                                   : Color::red();
+        Color rc = (rate > 50.0f)  ? Color::slot(ThemeSlot::Success)
+                 : (rate >= 20.0f) ? Color::slot(ThemeSlot::Warning)
+                                   : Color::slot(ThemeSlot::Error);
 
         // Rate field — always exactly 5 display columns. The decimal
         // point stays visible across the entire streaming range so it
@@ -301,9 +301,15 @@ private:
     }
 
     static Style fg_dim_(Color c) {
+        // "Is this already the muted ink?" — true for the literal
+        // bright_black AND for the Muted slot, which is what a themed
+        // config now carries. Missing the slot case would double-dim the
+        // muted colour and sink it into the background.
         const bool already_muted =
-            c.kind() == Color::Kind::Named
-            && c.index() == static_cast<uint8_t>(AnsiColor::BrightBlack);
+            (c.kind() == Color::Kind::Named
+             && c.index() == static_cast<uint8_t>(AnsiColor::BrightBlack))
+            || (c.kind() == Color::Kind::Slot
+                && c.theme_slot() == ThemeSlot::Muted);
         return already_muted
             ? Style{}.with_fg(c)
             : Style{}.with_fg(c).with_dim();

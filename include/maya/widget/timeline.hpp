@@ -37,9 +37,9 @@ class Timeline {
     int  frame_          = 0;
     int  track_width_    = 40;
 
-    static constexpr Color pending_color    = Color::bright_black();
-    static constexpr Color inprogress_color = Color::blue();
-    static constexpr Color completed_color  = Color::green();
+    static constexpr Color pending_color    = Color::slot(ThemeSlot::Muted);
+    static constexpr Color inprogress_color = Color::slot(ThemeSlot::Primary);
+    static constexpr Color completed_color  = Color::slot(ThemeSlot::Success);
 
     static Color status_color(TaskStatus s) {
         switch (s) {

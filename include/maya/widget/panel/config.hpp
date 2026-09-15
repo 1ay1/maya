@@ -207,12 +207,12 @@ struct Config {
     // not the shape of the thing holding it.
     bool fixed_viewport = false;
 
-    Color accent    = Color::blue();
+    Color accent    = Color::slot(ThemeSlot::Primary);
 
     // Colour of the edge bar on the ACTIVE row (the persistent "currently
     // in use" marker, distinct from the cursor). The cursor wins on
     // overlap — where you ARE outranks where you were.
-    Color active_color = Color::bright_magenta();
+    Color active_color = Color::slot(ThemeSlot::Accent);
 
     Theme          theme{};
     ScrollbarStyle scrollbar_style = ScrollbarStyle::neon();

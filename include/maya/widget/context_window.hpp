@@ -26,7 +26,7 @@ namespace maya {
 struct ContextSegment {
     std::string label;
     int         tokens = 0;
-    Color       color  = Color::blue();
+    Color       color  = Color::slot(ThemeSlot::Primary);
 };
 
 class ContextWindow {
@@ -88,7 +88,7 @@ public:
     void set_show_labels(bool b) { show_labels_ = b; }
     void set_show_percent(bool b) { show_percent_ = b; }
 
-    void add_segment(std::string label, int tokens, Color color = Color::blue()) {
+    void add_segment(std::string label, int tokens, Color color = Color::slot(ThemeSlot::Primary)) {
         segments_.push_back({std::move(label), tokens, color});
     }
 

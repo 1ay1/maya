@@ -34,11 +34,11 @@
 // perpetual CPU).
 //
 //   maya::WelcomeScreen{{
-//       .sigil_color    = Color::magenta(),
+//       .sigil_color    = Color::slot(ThemeSlot::Accent),
 //       .tagline        = "a calm middleware between you and the model",
 //       .model_badge    = ModelBadge{{.label = "Opus 4.7"}}.build(),
 //       .profile_label  = "write",
-//       .profile_color  = Color::magenta(),
+//       .profile_color  = Color::slot(ThemeSlot::Accent),
 //       .hints          = {{"^K", " palette", Color::cyan()},
 //                          {"^J", " threads", Color::cyan()}},
 //   }}.build();
@@ -68,7 +68,7 @@ public:
     struct Hint {
         std::string key;        // e.g. "^K"
         std::string label;      // e.g. " palette" — caller controls leading space
-        Color       key_color = Color::cyan();
+        Color       key_color = Color::slot(ThemeSlot::Info);
     };
 
     struct Config {
@@ -76,14 +76,14 @@ public:
         // dots at the spiral's drawing tip flash bright_white, and old
         // dots fade to bright_black — giving a comet-tail look without
         // leaving the named-ANSI palette.
-        Color                    sigil_color = Color::magenta();
+        Color                    sigil_color = Color::slot(ThemeSlot::Accent);
 
         std::string              tagline;
 
         // Center chip row: caller-built model badge sits beside a profile chip
         Element                  model_badge;       // default-empty
         std::string              profile_label;   // raw — widget renders verbatim
-        Color                    profile_color = Color::magenta();
+        Color                    profile_color = Color::slot(ThemeSlot::Accent);
 
         // Starters card
         std::string              starters_title = "Try";
@@ -93,8 +93,8 @@ public:
         std::string              hint_intro = "type to begin";
         std::vector<Hint>        hints;
 
-        Color                    accent_color = Color::magenta();
-        Color                    text_color   = Color::bright_white();
+        Color                    accent_color = Color::slot(ThemeSlot::Accent);
+        Color                    text_color   = Color::slot(ThemeSlot::Text);
 
         // Sigil intro: total draw-in time in ms. Set to 0 to render the
         // completed spiral statically from frame 1 (skip the intro).
@@ -136,7 +136,7 @@ private:
     [[nodiscard]] Element build_at(int slot_w, int slot_h) const {
         using namespace dsl;
 
-        const Color muted = Color::bright_black();
+        const Color muted = Color::slot(ThemeSlot::Muted);
 
         auto centered = [](Element e) {
             return h(spacer(), std::move(e), spacer()).build();
@@ -677,8 +677,11 @@ private:
         std::vector<std::optional<Color>> px(
             static_cast<std::size_t>(PW * kGridRows));
 
+        // The pulse flash. A slot, not bright_white: on a light scheme a
+        // literal white flash is a flash of nothing, and the whole point of
+        // the pulse is that you see it.
         const Color pixel_color = st.in_pulse
-            ? Color::bright_white()
+            ? Color::slot(ThemeSlot::Text)
             : cfg_.sigil_color;
 
         for (std::size_t li = 0; li < kSigilText.size(); ++li) {

@@ -60,10 +60,10 @@ public:
         auto [icon, icon_color] = status_icon();
         std::string border_label = " " + icon + " Read ";
 
-        auto border_color = Color::bright_black();
+        auto border_color = Color::slot(ThemeSlot::Muted);
         auto border_style = BorderStyle::Round;
         if (status_ == ReadStatus::Failed) {
-            border_color = Color::red();
+            border_color = Color::slot(ThemeSlot::Error);
             border_style = BorderStyle::Dashed;
         }
 

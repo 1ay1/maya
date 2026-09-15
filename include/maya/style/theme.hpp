@@ -29,6 +29,7 @@
 // point of choosing one: the user has said "paint it like this" and maya
 // then owns the whole surface. They are never a default.
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
@@ -100,9 +101,59 @@ struct Theme {
     }
 
     constexpr bool operator==(const Theme&) const = default;
+
+    /// Resolve a slot-kind Color against this theme. Literals pass through
+    /// untouched, so a host override always wins over a widget default.
+    [[nodiscard]] constexpr Color resolve(Color c) const noexcept {
+        if (c.kind() != Color::Kind::Slot) return c;
+        switch (c.theme_slot()) {
+            case ThemeSlot::Primary:     return primary;
+            case ThemeSlot::Secondary:   return secondary;
+            case ThemeSlot::Accent:      return accent;
+            case ThemeSlot::Success:     return success;
+            case ThemeSlot::Error:       return error;
+            case ThemeSlot::Warning:     return warning;
+            case ThemeSlot::Info:        return info;
+            case ThemeSlot::Text:        return text;
+            case ThemeSlot::InverseText: return inverse_text;
+            case ThemeSlot::Muted:       return muted;
+            case ThemeSlot::Surface:     return surface;
+            case ThemeSlot::Background:  return background;
+            case ThemeSlot::Border:      return border;
+            case ThemeSlot::DiffAdded:   return diff_added;
+            case ThemeSlot::DiffRemoved: return diff_removed;
+            case ThemeSlot::DiffChanged: return diff_changed;
+            case ThemeSlot::Highlight:   return highlight;
+            case ThemeSlot::Selection:   return selection;
+            case ThemeSlot::Cursor:      return cursor;
+            case ThemeSlot::Link:        return link;
+            case ThemeSlot::Placeholder: return placeholder;
+            case ThemeSlot::Shadow:      return shadow;
+            case ThemeSlot::Overlay:     return overlay;
+        }
+        return text;
+    }
 };
 
 namespace theme {
+
+// The theme in force, readable from anywhere that paints.
+//
+// Slot-kind colours are resolved against this at SGR-emit time, which is the
+// only moment a widget Config default (written at static-init, with no theme
+// in scope) can become a real hue. It is a POINTER into a table of themes
+// with static storage, so a read is one relaxed atomic load rather than a
+// copy of 24 Colors per span.
+//
+// The runtime re-seats it on every theme swap; before that it is `native`,
+// which resolves every slot to the terminal's own palette — the safe answer
+// for a unit test or a one-shot print that never starts a runtime.
+namespace detail {
+inline std::atomic<const Theme*>& live_slot() noexcept;
+}
+
+[[nodiscard]] inline const Theme& live() noexcept;
+inline void set_live(const Theme& t) noexcept;
 
 // ============================================================================
 // native — the default. The terminal's own colors, and nothing else.
@@ -193,6 +244,22 @@ inline constexpr Theme native {
 //
 [[nodiscard]] constexpr bool owns_canvas(const Theme& t) noexcept {
     return t.background.kind() != Color::Kind::Default;
+}
+
+// ── live theme slot (declared above; defined here, now that native exists)
+namespace detail {
+inline std::atomic<const Theme*>& live_slot() noexcept {
+    static std::atomic<const Theme*> t{&native};
+    return t;
+}
+}  // namespace detail
+
+[[nodiscard]] inline const Theme& live() noexcept {
+    return *detail::live_slot().load(std::memory_order_relaxed);
+}
+
+inline void set_live(const Theme& t) noexcept {
+    detail::live_slot().store(&t, std::memory_order_relaxed);
 }
 
 // ============================================================================

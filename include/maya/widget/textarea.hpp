@@ -176,7 +176,7 @@ public:
                 .content = placeholder_,
                 .style = dim_style,
             }};
-            auto border_color = Color::bright_black();
+            auto border_color = Color::slot(ThemeSlot::Muted);
             return (dsl::v(std::move(inner))
                 | dsl::border(BorderStyle::Round) | dsl::bcolor(border_color)
                 | dsl::padding(0, 1, 0, 1)).build();

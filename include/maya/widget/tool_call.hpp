@@ -76,13 +76,13 @@ public:
         auto [icon, icon_style] = status_icon();
         std::string border_label = " " + icon + " " + cfg_.tool_name + " ";
 
-        auto border_color = Color::bright_black();   // themed gray; user's terminal palette
+        auto border_color = Color::slot(ThemeSlot::Muted);   // themed gray; user's terminal palette
         auto border_style = BorderStyle::Round;
         if (status_ == ToolCallStatus::Failed) {
-            border_color = Color::red();
+            border_color = Color::slot(ThemeSlot::Error);
             border_style = BorderStyle::Dashed;
         } else if (status_ == ToolCallStatus::Confirmation) {
-            border_color = Color::yellow();
+            border_color = Color::slot(ThemeSlot::Warning);
         }
 
         if (expanded_ && content_) {

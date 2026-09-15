@@ -6,7 +6,7 @@
 // rather than a hard line — modern app vibe, and the color carries
 // app-state info without extra chrome characters.
 //
-//   maya::PhaseAccent{{ .color=Color::cyan(), .position=Position::Top }}.build();
+//   maya::PhaseAccent{{ .color=Color::slot(ThemeSlot::Info), .position=Position::Top }}.build();
 
 #include <cstdint>
 #include <string>
@@ -23,7 +23,7 @@ public:
     enum class Position : std::uint8_t { Top, Bottom };
 
     struct Config {
-        Color    color    = Color::cyan();
+        Color    color    = Color::slot(ThemeSlot::Info);
         Position position = Position::Top;
     };
 

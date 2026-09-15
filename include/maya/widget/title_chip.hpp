@@ -12,7 +12,7 @@
 //   maya::TitleChip{{
 //       .title       = m.d.current.title,
 //       .edge_color  = phase_color(m.s.phase),
-//       .text_color  = Color::bright_white(),
+//       .text_color  = Color::slot(ThemeSlot::Text),
 //       .max_chars   = 28,
 //   }}.build();
 
@@ -32,8 +32,8 @@ class TitleChip {
 public:
     struct Config {
         std::string title;                          // empty = blank
-        Color       edge_color = Color::cyan();
-        Color       text_color = Color::bright_white();
+        Color       edge_color = Color::slot(ThemeSlot::Info);
+        Color       text_color = Color::slot(ThemeSlot::Text);
         std::size_t max_chars  = 28;
     };
 

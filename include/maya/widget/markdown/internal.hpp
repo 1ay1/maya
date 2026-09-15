@@ -82,44 +82,44 @@ namespace colors {
     // (markdown.hpp) overwrites these once at startup; the render path reads
     // them live. Defaults below preserve the original look.
     inline Color text         = Color::default_color();
-    inline Color heading1     = Color::bright_cyan();
-    inline Color heading2     = Color::cyan();
-    inline Color heading3     = Color::bright_blue();
-    inline Color heading_dim  = Color::blue();
-    inline Color heading_rule = Color::bright_black();
-    inline Color bold_fg      = Color::bright_white();
+    inline Color heading1     = Color::slot(ThemeSlot::Link);
+    inline Color heading2     = Color::slot(ThemeSlot::Info);
+    inline Color heading3     = Color::slot(ThemeSlot::Primary);
+    inline Color heading_dim  = Color::slot(ThemeSlot::Primary);
+    inline Color heading_rule = Color::slot(ThemeSlot::Muted);
+    inline Color bold_fg      = Color::slot(ThemeSlot::Text);
     // Italics shift to the muted gray slot so they read as soft
     // commentary against the default-fg body, instead of looking
     // identical to plain prose with a (terminal-dependent, often
     // invisible) italic flag.
-    inline Color italic_fg    = Color::bright_black();
-    inline Color code_fg      = Color::bright_cyan();
-    inline Color code_bg      = Color::black();
-    inline Color link_fg      = Color::bright_blue();
-    inline Color image_fg     = Color::bright_magenta();
-    inline Color strike_fg    = Color::bright_black();
-    inline Color quote_bar    = Color::bright_yellow();
+    inline Color italic_fg    = Color::slot(ThemeSlot::Muted);
+    inline Color code_fg      = Color::slot(ThemeSlot::Link);
+    inline Color code_bg      = Color::slot(ThemeSlot::Surface);
+    inline Color link_fg      = Color::slot(ThemeSlot::Primary);
+    inline Color image_fg     = Color::slot(ThemeSlot::Accent);
+    inline Color strike_fg    = Color::slot(ThemeSlot::Muted);
+    inline Color quote_bar    = Color::slot(ThemeSlot::Warning);
     inline Color quote_text   = Color::default_color();
-    inline Color list_bullet  = Color::bright_blue();
-    inline Color list_num     = Color::bright_blue();
-    inline Color checkbox_fg  = Color::bright_green();
-    inline Color checkbox_off = Color::bright_black();
-    inline Color code_border  = Color::bright_black();
-    inline Color code_lang    = Color::bright_black();
-    inline Color hrule_fg     = Color::bright_black();
-    inline Color footnote_fg  = Color::bright_black();
-    inline Color table_border = Color::bright_black();
-    inline Color table_header = Color::bright_cyan();
-    inline Color highlight_bg = Color::yellow();
-    inline Color highlight_fg = Color::black();
-    inline Color mention_fg   = Color::bright_cyan();
-    inline Color kbd_fg       = Color::bright_white();
-    inline Color kbd_border   = Color::bright_black();
-    inline Color alert_note      = Color::bright_blue();
-    inline Color alert_tip       = Color::bright_green();
-    inline Color alert_important = Color::bright_magenta();
-    inline Color alert_warning   = Color::bright_yellow();
-    inline Color alert_caution   = Color::bright_red();
+    inline Color list_bullet  = Color::slot(ThemeSlot::Primary);
+    inline Color list_num     = Color::slot(ThemeSlot::Primary);
+    inline Color checkbox_fg  = Color::slot(ThemeSlot::Success);
+    inline Color checkbox_off = Color::slot(ThemeSlot::Muted);
+    inline Color code_border  = Color::slot(ThemeSlot::Muted);
+    inline Color code_lang    = Color::slot(ThemeSlot::Muted);
+    inline Color hrule_fg     = Color::slot(ThemeSlot::Muted);
+    inline Color footnote_fg  = Color::slot(ThemeSlot::Muted);
+    inline Color table_border = Color::slot(ThemeSlot::Muted);
+    inline Color table_header = Color::slot(ThemeSlot::Link);
+    inline Color highlight_bg = Color::slot(ThemeSlot::Warning);
+    inline Color highlight_fg = Color::slot(ThemeSlot::Surface);
+    inline Color mention_fg   = Color::slot(ThemeSlot::Link);
+    inline Color kbd_fg       = Color::slot(ThemeSlot::Text);
+    inline Color kbd_border   = Color::slot(ThemeSlot::Muted);
+    inline Color alert_note      = Color::slot(ThemeSlot::Primary);
+    inline Color alert_tip       = Color::slot(ThemeSlot::Success);
+    inline Color alert_important = Color::slot(ThemeSlot::Accent);
+    inline Color alert_warning   = Color::slot(ThemeSlot::Warning);
+    inline Color alert_caution   = Color::slot(ThemeSlot::Error);
 }
 
 namespace md_detail {

@@ -53,7 +53,7 @@ public:
 
     struct ProfileChip {
         std::string label;     // raw — widget small-caps's it
-        Color       color = Color::magenta();
+        Color       color = Color::slot(ThemeSlot::Accent);
     };
 
     struct Config {
@@ -64,13 +64,13 @@ public:
         // The color used for the border / prompt while the agent is
         // active (Streaming / ExecutingTool). Caller picks based on the
         // current phase so the composer matches the status bar.
-        Color active_color  = Color::cyan();
+        Color active_color  = Color::slot(ThemeSlot::Info);
 
         // Brand palette
-        Color text_color      = Color::bright_white();
-        Color accent_color    = Color::magenta();   // "primed" border, idle + text
-        Color warn_color      = Color::yellow();    // awaiting-permission border
-        Color highlight_color = Color::cyan();      // queue-depth chip
+        Color text_color      = Color::slot(ThemeSlot::Text);
+        Color accent_color    = Color::slot(ThemeSlot::Accent);   // "primed" border, idle + text
+        Color warn_color      = Color::slot(ThemeSlot::Warning);    // awaiting-permission border
+        Color highlight_color = Color::slot(ThemeSlot::Info);      // queue-depth chip
 
         // Right-side ambient indicators
         std::size_t queued = 0;
@@ -83,7 +83,7 @@ public:
         // your behalf can never look like an idle one.
         bool  loop = false;
         int   loop_iterations = 0;
-        Color loop_color = Color::cyan();
+        Color loop_color = Color::slot(ThemeSlot::Info);
         // Seconds until the loop's next auto-send, when it is waiting out a
         // backoff after a failed turn. >0 renders the chip as a countdown
         // (⟳ RETRY 24s) instead of a plain LOOP badge, so a paused loop is
@@ -253,7 +253,7 @@ public:
         // the historical `cfg_.` syntax (member is cfg_sp_ below).
         const Config& cfg_ = *cfg_sp_;
 
-        const Color muted = Color::bright_black();
+        const Color muted = Color::slot(ThemeSlot::Muted);
         const bool  has_text     = !cfg_.text.empty();
         const bool  is_awaiting  = (cfg_.state == State::AwaitingPermission);
         const bool  is_streaming = (cfg_.state == State::Streaming);

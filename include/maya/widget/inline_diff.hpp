@@ -21,13 +21,13 @@
 namespace maya {
 
 struct InlineDiffConfig {
-    Color add_fg      = Color::green();
-    Color del_fg      = Color::red();
-    Color add_bg      = Color::green();    // word-level highlight
-    Color del_bg      = Color::red();      // word-level highlight
-    Color add_line_bg = Color::black();    // subtle whole-line tint
-    Color del_line_bg = Color::black();    // subtle whole-line tint
-    Color same_fg     = Color::white();
+    Color add_fg      = Color::slot(ThemeSlot::Success);
+    Color del_fg      = Color::slot(ThemeSlot::Error);
+    Color add_bg      = Color::slot(ThemeSlot::Success);    // word-level highlight
+    Color del_bg      = Color::slot(ThemeSlot::Error);      // word-level highlight
+    Color add_line_bg = Color::slot(ThemeSlot::InverseText);    // subtle whole-line tint
+    Color del_line_bg = Color::slot(ThemeSlot::InverseText);    // subtle whole-line tint
+    Color same_fg     = Color::slot(ThemeSlot::Text);
     bool  show_header = true;
 };
 

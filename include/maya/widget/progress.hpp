@@ -31,8 +31,8 @@ namespace maya {
 
 struct ProgressConfig {
     int   width      = 0;       // bar width in columns; 0 = fill available width
-    Color fill_color = Color::blue();
-    Color bg_color   = Color::bright_black();
+    Color fill_color = Color::slot(ThemeSlot::Primary);
+    Color bg_color   = Color::slot(ThemeSlot::Muted);
     bool  show_track = true;
     bool  show_percentage = true;
 };

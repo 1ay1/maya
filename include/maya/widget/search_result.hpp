@@ -91,10 +91,10 @@ private:
         std::string tool_name = (kind_ == SearchKind::Grep) ? "Grep" : "Glob";
         std::string border_label = " " + icon + " " + tool_name + " ";
 
-        auto border_color = Color::bright_black();
+        auto border_color = Color::slot(ThemeSlot::Muted);
         auto border_style = BorderStyle::Round;
         if (status_ == SearchStatus::Failed) {
-            border_color = Color::red();
+            border_color = Color::slot(ThemeSlot::Error);
             border_style = BorderStyle::Dashed;
         }
 

@@ -71,7 +71,7 @@ public:
     struct Config {
         // Frame coloring — drives the top/bottom PhaseAccent strips
         // and the leading rail glyph next to the phase chip.
-        Color phase_color = Color::cyan();
+        Color phase_color = Color::slot(ThemeSlot::Info);
 
         // Activity row sub-widget configs.
         TitleChip::Config            breadcrumb;       // empty title = hide
@@ -142,7 +142,7 @@ private:
             using namespace dsl;
             if (w <= 0) return blank().build();
 
-            const Color muted = Color::bright_black();
+            const Color muted = Color::slot(ThemeSlot::Muted);
             const Color pcolor = cfg.phase_color;
             const bool  active = cfg.phase.breathing;
 

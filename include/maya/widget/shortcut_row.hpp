@@ -20,7 +20,7 @@
 //       .bindings = {
 //           {.key="^K", .label="palette", .priority=10},
 //           {.key="^J", .label="threads", .priority=9},
-//           {.key="^C", .label="quit",    .priority=10, .key_color=Color::red()},
+//           {.key="^C", .label="quit",    .priority=10, .key_color=Color::slot(ThemeSlot::Error)},
 //       },
 //   }}.build();
 
@@ -48,13 +48,13 @@ public:
     struct Binding {
         std::string key;
         std::string label;
-        Color       key_color = Color::cyan();
+        Color       key_color = Color::slot(ThemeSlot::Info);
         int         priority  = 0;
     };
 
     struct Config {
         std::vector<Binding> bindings;
-        Color                text_color = Color::bright_white();
+        Color                text_color = Color::slot(ThemeSlot::Text);
     };
 
     explicit ShortcutRow(Config c) : cfg_(std::move(c)) {}
@@ -67,7 +67,7 @@ public:
             using namespace dsl;
             if (w <= 0 || cfg.bindings.empty()) return blank().build();
 
-            const Color muted = Color::bright_black();
+            const Color muted = Color::slot(ThemeSlot::Muted);
 
             // Keys and labels in this widget are ASCII (^K, S-Tab, palette,
             // …), so byte length equals display width — no Unicode width

@@ -65,17 +65,17 @@ public:
 
         switch (style_) {
             case PopupStyle::Info:
-                border_color = Color::blue();
+                border_color = Color::slot(ThemeSlot::Primary);
                 text_style   = Style{};
                 icon = "\xe2\x84\xb9 ";  // ℹ
                 break;
             case PopupStyle::Warning:
-                border_color = Color::yellow();
+                border_color = Color::slot(ThemeSlot::Warning);
                 text_style   = Style{}.with_fg(Color::yellow());
                 icon = "\xe2\x9a\xa0 ";  // ⚠
                 break;
             case PopupStyle::Error:
-                border_color = Color::red();
+                border_color = Color::slot(ThemeSlot::Error);
                 text_style   = Style{}.with_fg(Color::red());
                 icon = "\xe2\x9c\x98 ";  // ✘
                 break;

@@ -308,6 +308,36 @@ TEST_CASE("theme slot survives the runtime move") {
     std::println("PASS\n");
 }
 
+TEST_CASE("theme slots resolve, and literals do not") {
+    std::println("--- test_theme_slot_resolution ---");
+    // A widget Config default is written once, at static-init, with no theme
+    // in scope. Color::slot() lets it name a ROLE instead of a hue and be
+    // answered at paint time — which is what stops ~250 such defaults from
+    // pinning the UI to whatever palette it was compiled with.
+    Theme t = theme::native;
+    t.accent  = Color::rgb(0xBD, 0x93, 0xF9);
+    t.muted   = Color::rgb(0x62, 0x72, 0xA4);
+    t.error   = Color::rgb(0xFF, 0x55, 0x55);
+
+    assert(t.resolve(Color::slot(ThemeSlot::Accent)) == t.accent);
+    assert(t.resolve(Color::slot(ThemeSlot::Muted))  == t.muted);
+    assert(t.resolve(Color::slot(ThemeSlot::Error))  == t.error);
+
+    // A literal is an explicit host override and must survive untouched —
+    // otherwise a caller could never escape the theme.
+    const Color lit = Color::rgb(1, 2, 3);
+    assert(t.resolve(lit) == lit);
+    assert(t.resolve(Color::red()) == Color::red());
+    assert(t.resolve(Color::default_color()) == Color::default_color());
+
+    // Under native every slot lands on the terminal's own palette, so the
+    // default look is unchanged by all of this.
+    assert(theme::native.resolve(Color::slot(ThemeSlot::Muted))
+           == theme::native.muted);
+
+    std::println("PASS\n");
+}
+
 TEST_CASE("style equality") {
     std::println("--- test_style_equality ---");
     Style a = Style{}.with_bold().with_fg(Color::red());

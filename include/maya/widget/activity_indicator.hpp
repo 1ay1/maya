@@ -51,7 +51,7 @@ namespace maya {
 class ActivityIndicator {
 public:
     struct Config {
-        Color       edge_color = Color::cyan();
+        Color       edge_color = Color::slot(ThemeSlot::Info);
         std::string spinner_glyph;   // unused; kept for ABI compat with hosts
         std::string label;           // unused; widget rotates its own word pool
         std::string detail;          // optional trailing token ("3.4s")
@@ -81,9 +81,9 @@ public:
         const std::int64_t now_ms =
             std::max<std::int64_t>(0, ::maya::anim_now_ms());
 
-        const Color muted     = Color::bright_black();
+        const Color muted     = Color::slot(ThemeSlot::Muted);
         const Color highlight = cfg_.edge_color;
-        const Color sweep_fg  = Color::white();
+        const Color sweep_fg  = Color::slot(ThemeSlot::Text);
 
         // ── Timing knobs.
         //   kScrollMs  ms per 1-column leftward scroll of the tape.

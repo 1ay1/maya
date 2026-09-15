@@ -50,9 +50,9 @@ public:
         std::string text;                 // empty = blank slot
         Kind        kind     = Kind::Info;
         bool        is_error = false;     // legacy: true overrides kind → Error
-        Color       muted_color = Color::bright_black();
-        Color       warn_color  = Color::yellow();
-        Color       error_color = Color::red();
+        Color       muted_color = Color::slot(ThemeSlot::Muted);
+        Color       warn_color  = Color::slot(ThemeSlot::Warning);
+        Color       error_color = Color::slot(ThemeSlot::Error);
 
         // Resolves the legacy `is_error` flag against the explicit
         // `kind` so widgets only have to reason about one axis.

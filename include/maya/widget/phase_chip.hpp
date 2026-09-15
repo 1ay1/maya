@@ -17,7 +17,7 @@
 //   maya::PhaseChip{{
 //       .glyph        = "\xe2\xa0\x8b",   // ⠋ spinner frame
 //       .verb         = "Streaming",
-//       .color        = Color::cyan(),
+//       .color        = Color::slot(ThemeSlot::Info),
 //       .breathing    = true,
 //       .frame        = spinner.frame_index(),
 //       .verb_width   = 10,
@@ -41,7 +41,7 @@ public:
     struct Config {
         std::string glyph;
         std::string verb;
-        Color       color        = Color::cyan();
+        Color       color        = Color::slot(ThemeSlot::Info);
         bool        breathing    = false;
         int         frame        = 0;
         int         verb_width   = 10;     // 0 = drop verb

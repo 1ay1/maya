@@ -72,13 +72,13 @@ public:
         }
         border_label += " ";
 
-        auto border_color = Color::bright_black();
+        auto border_color = Color::slot(ThemeSlot::Muted);
         auto border_style = BorderStyle::Round;
         if (status_ == TodoListStatus::Failed) {
-            border_color = Color::red();
+            border_color = Color::slot(ThemeSlot::Error);
             border_style = BorderStyle::Dashed;
         } else if (status_ == TodoListStatus::Done && all_completed()) {
-            border_color = Color::green();
+            border_color = Color::slot(ThemeSlot::Success);
         }
 
         std::vector<Element> rows;

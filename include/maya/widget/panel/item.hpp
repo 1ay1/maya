@@ -35,7 +35,7 @@ struct Item {
     // ⇒ leading is painted as one span. The highlight keeps its hue even
     // on the cursor row, so "which chars matched" stays legible.
     std::vector<int> highlight;
-    Color            highlight_fg = Color::bright_cyan();
+    Color            highlight_fg = Color::slot(ThemeSlot::Link);
 
     // The trailing cell. `Label` covers every picker row; the other
     // alternatives are the editable controls a settings row carries.

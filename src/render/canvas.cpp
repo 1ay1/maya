@@ -186,6 +186,19 @@ char* StylePool::write_uint_sgr(char* p, unsigned n) noexcept {
 char* StylePool::append_color_sgr(char* p, const Color& in, bool is_fg) noexcept {
     const int level = active_color_level();
 
+    // Resolve a semantic slot against the theme in force.
+    //
+    // This is THE point where a widget's `Color::slot(ThemeSlot::Accent)`
+    // default becomes a real hue, and it is deliberately the last possible
+    // moment: a Config default is written once, at static-init, with no
+    // theme in scope, while this runs per span with the live theme
+    // available. That is what lets ~540 widget defaults follow the user's
+    // theme without any of them being rewritten per swap.
+    //
+    // Literals pass straight through, so an explicit host override always
+    // beats a slot default.
+    const Color themed = theme::live().resolve(in);
+
     // Level 0 is MONOCHROME — NO_COLOR, TERM=dumb, or an explicit
     // MAYA_COLOR=none. Emit the default-colour SGR (39/49) rather than
     // nothing at all: "nothing" would let whatever colour the previous span
@@ -197,7 +210,7 @@ char* StylePool::append_color_sgr(char* p, const Color& in, bool is_fg) noexcept
 
     // Downgrade RGB / 256-color to what the terminal can render before
     // emitting (macOS Terminal.app is 256-only and drops 38;2 truecolor).
-    const Color c = in.degrade(level);
+    const Color c = themed.degrade(level);
     switch (c.kind()) {
         case Color::Kind::Named: {
             int base = is_fg ? 30 : 40;

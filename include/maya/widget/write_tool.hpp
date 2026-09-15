@@ -66,15 +66,15 @@ public:
         }
         border_label += " ";
 
-        auto border_color = Color::bright_black();
+        auto border_color = Color::slot(ThemeSlot::Muted);
         auto border_style = BorderStyle::Round;
         if (status_ == WriteStatus::Failed) {
-            border_color = Color::red();
+            border_color = Color::slot(ThemeSlot::Error);
             border_style = BorderStyle::Dashed;
         } else if (status_ == WriteStatus::Written) {
-            border_color = Color::green();
+            border_color = Color::slot(ThemeSlot::Success);
         } else if (status_ == WriteStatus::Writing) {
-            border_color = Color::yellow();
+            border_color = Color::slot(ThemeSlot::Warning);
         }
 
         // Pre-compute byte / line stats so we can show a live counter even
@@ -207,19 +207,19 @@ private:
     // verb appropriate to status + a live "L lines · B" counter.
     [[nodiscard]] Element progress_row(std::size_t bytes, int lines) const {
         const char* verb = nullptr;
-        Color verb_color = Color::bright_black();
+        Color verb_color = Color::slot(ThemeSlot::Muted);
         switch (status_) {
             case WriteStatus::Pending:  verb = "queued";        break;
             case WriteStatus::Writing:  verb = bytes == 0
                                               ? "awaiting content stream\xe2\x80\xa6"
                                               : "streaming\xe2\x80\xa6";
-                                        verb_color = Color::yellow();
+                                        verb_color = Color::slot(ThemeSlot::Warning);
                                         break;
             case WriteStatus::Written:  verb = "wrote";
-                                        verb_color = Color::green();
+                                        verb_color = Color::slot(ThemeSlot::Success);
                                         break;
             case WriteStatus::Failed:   verb = "failed";
-                                        verb_color = Color::red();
+                                        verb_color = Color::slot(ThemeSlot::Error);
                                         break;
         }
 

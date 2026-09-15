@@ -10,21 +10,21 @@
 namespace maya::panel {
 
 struct Theme {
-    Color title      = Color::bright_white();
-    Color label      = Color::bright_white();
-    Color help       = Color::bright_black();
-    Color value      = Color::cyan();
-    Color value_edit = Color::blue();
-    Color on         = Color::green();
-    Color off        = Color::bright_black();
-    Color origin     = Color::bright_black();
-    Color locked     = Color::bright_black();
-    Color error      = Color::red();
-    Color good       = Color::green();
-    Color busy       = Color::yellow();
-    Color cursor     = Color::blue();      // the edge bar
-    Color active     = Color::bright_magenta();
-    Color match      = Color::cyan();      // fuzzy-match highlight
+    Color title      = Color::slot(ThemeSlot::Text);
+    Color label      = Color::slot(ThemeSlot::Text);
+    Color help       = Color::slot(ThemeSlot::Muted);
+    Color value      = Color::slot(ThemeSlot::Info);
+    Color value_edit = Color::slot(ThemeSlot::Primary);
+    Color on         = Color::slot(ThemeSlot::Success);
+    Color off        = Color::slot(ThemeSlot::Muted);
+    Color origin     = Color::slot(ThemeSlot::Muted);
+    Color locked     = Color::slot(ThemeSlot::Muted);
+    Color error      = Color::slot(ThemeSlot::Error);
+    Color good       = Color::slot(ThemeSlot::Success);
+    Color busy       = Color::slot(ThemeSlot::Warning);
+    Color cursor     = Color::slot(ThemeSlot::Primary);      // the edge bar
+    Color active     = Color::slot(ThemeSlot::Accent);
+    Color match      = Color::slot(ThemeSlot::Info);      // fuzzy-match highlight
 
     // Cursor-row wash. A tint, not a reverse-video slab: ANSI bright-white is
     // a cream/yellow tone in several popular palettes, and a full-width band

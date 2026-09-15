@@ -103,9 +103,42 @@ struct Rgb3 { int r, g, b; };
 
 } // namespace detail
 
+// ── Theme slots, as a colour ────────────────────────────────────────────────
+//
+// A Color can name a SEMANTIC SLOT instead of a literal hue — "accent",
+// "muted", "error" — and be resolved against the theme in force when it is
+// painted rather than when it is written.
+//
+// This is what lets a widget's Config carry a sensible default that still
+// follows the user's theme. Before this, a field like
+//
+//     Color accent_color = Color::magenta();
+//
+// pinned that widget to magenta for the life of the process: it is a default
+// on a struct, evaluated once, with no theme in scope to consult. Multiply by
+// the ~540 such defaults across maya's widgets and "pick a theme" repainted
+// only the handful of colours a host happened to pass explicitly — which is
+// exactly the "some things change, most don't" symptom.
+//
+// Writing it as
+//
+//     Color accent_color = Color::slot(ThemeSlot::Accent);
+//
+// keeps the default meaningful, keeps it constexpr, and makes it a question
+// answered at paint time. Hosts that pass an explicit colour still win — an
+// override is a literal and literals are left alone.
+enum class ThemeSlot : uint8_t {
+    Primary, Secondary, Accent,
+    Success, Error, Warning, Info,
+    Text, InverseText, Muted,
+    Surface, Background, Border,
+    DiffAdded, DiffRemoved, DiffChanged,
+    Highlight, Selection, Cursor, Link, Placeholder, Shadow, Overlay,
+};
+
 class Color {
 public:
-    enum class Kind : uint8_t { Named, Indexed, Rgb, Default };
+    enum class Kind : uint8_t { Named, Indexed, Rgb, Default, Slot };
 
 private:
     Kind    kind_;
@@ -154,6 +187,20 @@ public:
         c.kind_ = Kind::Indexed;
         c.r_ = index;
         return c;
+    }
+
+    /// A semantic theme slot, resolved at PAINT time against the theme in
+    /// force. See ThemeSlot above for why widget Config defaults use this
+    /// instead of a literal.
+    static constexpr Color slot(ThemeSlot s) noexcept {
+        Color c;
+        c.kind_ = Kind::Slot;
+        c.r_ = static_cast<uint8_t>(s);
+        return c;
+    }
+
+    [[nodiscard]] constexpr ThemeSlot theme_slot() const noexcept {
+        return static_cast<ThemeSlot>(r_);
     }
 
     // 24-bit truecolor

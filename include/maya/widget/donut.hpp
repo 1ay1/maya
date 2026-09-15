@@ -281,7 +281,7 @@ private:
     int              rows_ = 7;
     std::string      caption_;
     std::string      center_;
-    Color            label_color_  = Color::bright_black();
+    Color            label_color_  = Color::slot(ThemeSlot::Muted);
     Color            center_color_ = Color::hex(0xCDD6F4);
 };
 

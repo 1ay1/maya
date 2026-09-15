@@ -154,6 +154,32 @@ StylePool::StylePool() {
     size_ = 1;
 }
 
+void StylePool::retheme() {
+    // Re-derive every cached SGR string under the theme now in force.
+    //
+    // build_sgr() bakes the canvas background into any style that does not
+    // name one, so the cached bytes are theme-specific. Styles themselves
+    // are unchanged — only their rendering is — so ids stay valid and no
+    // cell needs rewriting: this is a string refresh, not an invalidation.
+    // That matters because ids are embedded in canvas cells and in the
+    // inline frame's previous-cell buffer; dropping them would tear the
+    // diff.
+    const void* now = &theme::live();
+    if (sgr_theme_ == now) return;
+    sgr_theme_ = now;
+    for (std::size_t i = 0; i < styles_.size(); ++i)
+        sgr_cache_[i] = build_sgr(styles_[i]);
+    // Bump pool_id_ so thread_local intern_const slots re-resolve.
+    //
+    // intern_const caches a style id per call site, keyed on pool_id_, and
+    // skips the pool entirely on a hit. The id is still VALID here — the
+    // style did not change — but the caller may have captured more than the
+    // id: chrome built through that path kept rendering with the previous
+    // theme's bytes. Invalidating is cheaper to reason about than auditing
+    // every call site, and it costs one re-intern per site per theme swap.
+    pool_id_ = g_next_pool_id.fetch_add(1, std::memory_order_relaxed);
+}
+
 void StylePool::clear() {
     // Bump pool_id_ so any thread_local intern_const cache that
     // recorded the old id sees a mismatch on next lookup and
@@ -326,8 +352,24 @@ void StylePool::write_transition_sgr(uint16_t prev_id, uint16_t new_id,
         }
     }
 
-    const Color* from_bg = effective_fg(from.bg);
-    const Color* to_bg   = effective_fg(to.bg);
+    // Background follows the same rule as build_sgr: a style with no bg
+    // means "the canvas", not "reset to the terminal". Resolving it HERE
+    // as well is what keeps the differential path honest — it is the other
+    // half of the emit funnel, and a rule enforced in only one of the two
+    // is a rule that holds until the diff picks the other branch.
+    //
+    // Kind::Default still means the deliberate terminal-background opt-out
+    // and still emits 49, so transparency survives on both paths.
+    const Theme& th = theme::live();
+    const bool themed = theme::owns_canvas(th);
+    auto effective_bg = [&](const std::optional<Color>& c) -> const Color* {
+        if (c.has_value()) {
+            return c->kind() != Color::Kind::Default ? &*c : nullptr;
+        }
+        return themed ? &th.background : nullptr;
+    };
+    const Color* from_bg = effective_bg(from.bg);
+    const Color* to_bg   = effective_bg(to.bg);
     if ((from_bg == nullptr) != (to_bg == nullptr)
         || (from_bg && to_bg && !(*from_bg == *to_bg)))
     {
@@ -379,8 +421,39 @@ std::string StylePool::build_sgr(const Style& s) {
     if (s.fg.has_value() && s.fg->kind() != Color::Kind::Default) {
         *p++ = ';'; p = append_color_sgr(p, *s.fg, true);
     }
-    if (s.bg.has_value() && s.bg->kind() != Color::Kind::Default) {
-        *p++ = ';'; p = append_color_sgr(p, *s.bg, false);
+    // ── Background: the theme's canvas is the DEFAULT, not an opt-in ────
+    //
+    // THE structural fix for "some frame lines still show the terminal
+    // through". Every styled cell in maya becomes bytes here and nowhere
+    // else, so this is the one place the rule can be made unbreakable.
+    //
+    // A Style with no bg used to emit no background SGR, which a terminal
+    // reads as "reset to MY default". On a themed canvas that is a hole.
+    // Widgets produce bg-less styles constantly and legitimately — a border
+    // glyph, a divider rule, a label — so the holes appeared wherever a
+    // widget had no reason to name a colour. Fixing them one widget at a
+    // time is endless, because the DEFAULT was wrong rather than any one
+    // widget being wrong: the next bg-less style anyone writes brings the
+    // bug straight back.
+    //
+    // Inverting the default ends the whole class. "No opinion" now means
+    // "the canvas", which is what every one of those widgets meant. The two
+    // ways to say something else both still work and both still win:
+    //
+    //   * an explicit colour   — selection strips, diff tints, chips
+    //   * Color::Kind::Default — the deliberate "I want the terminal's own
+    //                            background", which is how transparency
+    //                            and background images survive
+    //
+    // Under `native` the theme states no background (owns_canvas is false),
+    // so nothing is emitted and every cell falls through to the terminal —
+    // byte-for-byte the old behaviour, which is the entire point of native.
+    if (s.bg.has_value()) {
+        if (s.bg->kind() != Color::Kind::Default) {
+            *p++ = ';'; p = append_color_sgr(p, *s.bg, false);
+        }
+    } else if (const Theme& th = theme::live(); theme::owns_canvas(th)) {
+        *p++ = ';'; p = append_color_sgr(p, th.background, false);
     }
 
     *p++ = 'm';

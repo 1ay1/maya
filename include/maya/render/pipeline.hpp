@@ -115,6 +115,15 @@ public:
     [[nodiscard]] RenderPipeline<stage::Cleared>
     clear() && requires std::same_as<S, stage::Idle> {
         back_.clear();
+        // Refresh theme-derived SGR before anything is interned this frame.
+        //
+        // A bg-less style renders the canvas background (build_sgr), so its
+        // cached bytes belong to a specific theme. Doing this at the frame
+        // boundary means no caller anywhere has to remember to invalidate
+        // after a swap — the pool notices for itself, once, at the only
+        // point where a frame can begin. It is a no-op pointer compare on
+        // every frame but the one after a theme actually changes.
+        pool_.retheme();
         return {back_, pool_, theme_, out_};
     }
 

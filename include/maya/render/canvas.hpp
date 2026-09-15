@@ -329,6 +329,20 @@ public:
     /// Reset the pool back to only the default style.
     void clear();
 
+    /// Re-derive cached SGR for the theme now in force.
+    ///
+    /// build_sgr() bakes the theme's background into every style that does
+    /// not name one (see canvas.cpp), and the result is cached per style id
+    /// at intern time. A theme swap therefore invalidates every cached
+    /// string — without this, bg-less styles would keep emitting the
+    /// PREVIOUS canvas colour for the rest of the process, which is the
+    /// stale-bytes half of the same bug the default fixes.
+    ///
+    /// Called automatically by intern()/sgr() when the live theme differs
+    /// from the one the cache was built under, so no caller has to
+    /// remember: the pool notices for itself.
+    void retheme();
+
 private:
     struct Slot {
         std::size_t hash = 0;  // 0 = empty sentinel
@@ -337,6 +351,11 @@ private:
 
     std::vector<Style>       styles_;
     std::vector<std::string> sgr_cache_;  // sgr_cache_[id] = pre-built "\x1b[0;...m"
+    // The theme the cached SGR strings were built under. Compared by
+    // POINTER: every Theme lives in a table with static storage and the
+    // live slot is re-seated rather than mutated, so identity is the
+    // cheapest correct test — one load and one compare on the hot path.
+    const void*              sgr_theme_ = nullptr;
     std::vector<Slot>        slots_;
     std::vector<uint16_t>    caret_ids_;  // ids interned with caret_anchor set
     std::size_t size_     = 0;

@@ -396,6 +396,56 @@ TEST_CASE("theme discipline: ink slots are never backgrounds") {
     std::println("PASS ({} schemes checked)\n", checked);
 }
 
+TEST_CASE("theme: a style with no background means THE CANVAS") {
+    std::println("--- test_theme_bg_default ---");
+    // The structural end of "some frame lines still show the terminal
+    // through".
+    //
+    // Widgets produce bg-less styles constantly and legitimately — a border
+    // glyph, a divider rule, a bare label. Those styles used to emit no
+    // background SGR, which a terminal reads as "reset to MY default", so
+    // every one of them punched a hole in a themed canvas. Fixing them
+    // widget-by-widget never converged, because the DEFAULT was wrong
+    // rather than any one widget: the next bg-less style anyone wrote
+    // brought the bug straight back.
+    //
+    // Inverting the default ends the class. build_sgr and
+    // write_transition_sgr are the ONLY two places a cell becomes bytes,
+    // and both now render "no opinion" as the canvas colour. A widget can
+    // no longer forget, because there is nothing left to remember.
+    using namespace maya::dsl;
+
+    auto emit_for = [](const Theme& t) {
+        theme::set_live(t);
+        StylePool pool;
+        Canvas c{40, 4, &pool};
+        pool.retheme();
+        render_tree(v(text("header"), sep, text("row")).build(),
+                    c, pool, t, /*auto_height=*/true);
+        std::string out;
+        serialize(c, pool, out);
+        return out;
+    };
+
+    // A themed canvas: every row carries it, including the separator's
+    // border glyphs and the blank tail past the text.
+    Theme light = theme::native;
+    light.background = Color::rgb(0xEA, 0xEA, 0xEA);
+    const std::string themed = emit_for(light);
+    assert(themed.find("48;2;234;234;234") != std::string::npos);
+
+    // native states no background, so nothing is emitted and the terminal
+    // shows through — transparency, background image and all. This is the
+    // case an unconditional fill would have destroyed, and it is the whole
+    // reason the rule is keyed on owns_canvas rather than applied always.
+    const std::string nat = emit_for(theme::native);
+    assert(nat.find("48;2") == std::string::npos);
+    assert(nat.find("48;5") == std::string::npos);
+
+    theme::set_live(theme::native);
+    std::println("PASS\n");
+}
+
 TEST_CASE("style equality") {
     std::println("--- test_style_equality ---");
     Style a = Style{}.with_bold().with_fg(Color::red());

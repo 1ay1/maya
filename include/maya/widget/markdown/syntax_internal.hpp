@@ -58,30 +58,45 @@ struct LangFeatures {
 
 } // namespace syntax_detail
 
-// ── Token style palette ──────────────────────────────────────────────────────
-// Static const Styles constructed once, returned by reference. Used by both
-// the diff highlighter and the language tokeniser.
+// ── Token style palette ─────────────────────────────────────────────
+// Used by both the diff highlighter and the language tokeniser.
+//
+// These were `static const`, which meant they were constructed on first use
+// and then frozen for the life of the process — so code blocks kept their
+// launch-time colours no matter what theme you picked afterwards. In a chat
+// TUI code blocks are a large share of what is on screen, which is most of
+// why a theme change looked like it "barely did anything".
+//
+// They are now derived from the live markdown palette, which the runtime
+// re-projects from the Theme on every swap. Each accessor is a cheap struct
+// copy off values that only change when the theme does — the tokeniser calls
+// these per token, so they must not allocate or lock, and they don't.
+//
+// The MAPPING is semantic, not literal: keyword=accent, string=success,
+// number/constant=warning, comment/punct=muted, and so on. That keeps the
+// familiar terminal look under `native` (whose slots are the named ANSI
+// colours) while letting a scheme recolour code in its own hues.
 namespace syntax {
-    inline const Style& kw()       { static const Style s = Style{}.with_fg(Color::magenta()); return s; }
-    inline const Style& ctrl()     { static const Style s = Style{}.with_fg(Color::magenta()); return s; }
-    inline const Style& type()     { static const Style s = Style{}.with_fg(Color::cyan()); return s; }
-    inline const Style& fn()       { static const Style s = Style{}.with_fg(Color::blue()); return s; }
-    inline const Style& str()      { static const Style s = Style{}.with_fg(Color::green()); return s; }
-    inline const Style& num()      { static const Style s = Style{}.with_fg(Color::bright_yellow()); return s; }
-    inline const Style& comment()  { static const Style s = Style{}.with_fg(Color::bright_black()).with_italic(); return s; }
-    inline const Style& constant() { static const Style s = Style{}.with_fg(Color::bright_yellow()); return s; }
-    inline const Style& preproc()  { static const Style s = Style{}.with_fg(Color::yellow()); return s; }
-    inline const Style& attr()     { static const Style s = Style{}.with_fg(Color::yellow()); return s; }
-    inline const Style& op()       { static const Style s = Style{}.with_fg(Color::red()); return s; }
-    inline const Style& punct()    { static const Style s = Style{}.with_fg(Color::bright_black()); return s; }
-    inline const Style& plain()    { static const Style s = Style{}.with_fg(Color::white()); return s; }
-    inline const Style& shellvar() { static const Style s = Style{}.with_fg(Color::bright_cyan()); return s; }
-    inline const Style& gutter()   { static const Style s = Style{}.with_fg(Color::bright_black()).with_dim(); return s; }
+    inline Style kw()       { return Style{}.with_fg(colors::heading3); }
+    inline Style ctrl()     { return Style{}.with_fg(colors::heading3).with_bold(); }
+    inline Style type()     { return Style{}.with_fg(colors::code_fg); }
+    inline Style fn()       { return Style{}.with_fg(colors::heading1); }
+    inline Style str()      { return Style{}.with_fg(colors::checkbox_fg); }
+    inline Style num()      { return Style{}.with_fg(colors::quote_bar); }
+    inline Style comment()  { return Style{}.with_fg(colors::code_lang).with_italic(); }
+    inline Style constant() { return Style{}.with_fg(colors::quote_bar); }
+    inline Style preproc()  { return Style{}.with_fg(colors::alert_warning); }
+    inline Style attr()     { return Style{}.with_fg(colors::alert_warning); }
+    inline Style op()       { return Style{}.with_fg(colors::alert_caution); }
+    inline Style punct()    { return Style{}.with_fg(colors::code_lang); }
+    inline Style plain()    { return Style{}.with_fg(colors::text); }
+    inline Style shellvar() { return Style{}.with_fg(colors::mention_fg); }
+    inline Style gutter()   { return Style{}.with_fg(colors::code_lang).with_dim(); }
 
-    inline const Style& diff_add()  { static const Style s = Style{}.with_fg(Color::green()); return s; }
-    inline const Style& diff_del()  { static const Style s = Style{}.with_fg(Color::red()); return s; }
-    inline const Style& diff_hunk() { static const Style s = Style{}.with_fg(Color::cyan()); return s; }
-    inline const Style& diff_meta() { static const Style s = Style{}.with_fg(Color::bright_black()).with_bold(); return s; }
+    inline Style diff_add()  { return Style{}.with_fg(colors::checkbox_fg); }
+    inline Style diff_del()  { return Style{}.with_fg(colors::alert_caution); }
+    inline Style diff_hunk() { return Style{}.with_fg(colors::code_fg); }
+    inline Style diff_meta() { return Style{}.with_fg(colors::code_lang).with_bold(); }
 }
 
 } // namespace maya

@@ -510,7 +510,7 @@ public:
     /// The theme is only read during render, so replacing it between frames
     /// is safe — and every frame is a pure function of model + theme, so
     /// nothing caches a colour across the swap.
-    void set_theme(const Theme& t) noexcept { theme_ = t; }
+    void set_theme(const Theme& t) noexcept { theme_ = t; on_theme_changed(theme_); }
 
     /// Publish this runtime's theme slot to app_set_theme().
     void publish_theme_slot() noexcept { live_theme() = &theme_; }
@@ -526,6 +526,30 @@ public:
     static Theme*& live_theme() noexcept {
         static Theme* t = nullptr;
         return t;
+    }
+
+    /// Subscribers notified whenever the live theme is replaced.
+    ///
+    /// Most of maya's colour is resolved per-frame straight from the Theme,
+    /// so it needs no notification. A few subsystems instead keep a
+    /// PROJECTED palette — markdown's ~35 `colors::` globals are the main
+    /// one — because their render path is hot and reads a flat struct
+    /// rather than walking a Theme. Those have to be re-derived when the
+    /// theme changes, or a scheme repaints the chrome while the prose,
+    /// code spans and tables stay on the old palette. That half-themed
+    /// result is exactly what makes a theme picker feel broken.
+    ///
+    /// A hook rather than a direct call because those subsystems live
+    /// ABOVE this header (markdown.hpp is opt-in; app.hpp must not drag it
+    /// in). Each registers itself once; the runtime does not know who they
+    /// are, only that they must be told.
+    static std::vector<void (*)(const Theme&)>& theme_subscribers() {
+        static std::vector<void (*)(const Theme&)> subs;
+        return subs;
+    }
+
+    static void on_theme_changed(const Theme& t) {
+        for (auto* fn : theme_subscribers()) fn(t);
     }
     [[nodiscard]] bool is_inline() const noexcept { return inline_terminal_.has_value(); }
 
@@ -2641,7 +2665,27 @@ template <CanvasResizeFn ResizeFn, CanvasEventFn EventFn, CanvasPaintFn PaintFn>
 // slot, so a host that sets a theme during startup is simply ignored rather
 // than writing through a null.
 inline void app_set_theme(const Theme& t) {
-    if (Theme* slot = detail::Runtime::live_theme()) *slot = t;
+    if (Theme* slot = detail::Runtime::live_theme()) {
+        *slot = t;
+        // Same notification as Runtime::set_theme — this is the path hosts
+        // actually use (they have no Runtime&), so a projected palette that
+        // only re-derived on set_theme would never update in practice.
+        detail::Runtime::on_theme_changed(*slot);
+    }
+}
+
+/// Register a callback invoked whenever the live theme is replaced.
+///
+/// For subsystems that keep a palette PROJECTED from the theme rather than
+/// reading it per-frame (markdown's flat colour globals being the main one).
+/// Without this they stay on the palette they were built with, and picking a
+/// scheme repaints the chrome while prose, code and tables keep the old
+/// colours — the half-themed look that makes a picker feel broken.
+///
+/// Call once, before the UI loop. The callback runs on the thread that
+/// swapped the theme.
+inline void on_theme_changed(void (*fn)(const Theme&)) {
+    detail::Runtime::theme_subscribers().push_back(fn);
 }
 
 } // namespace maya

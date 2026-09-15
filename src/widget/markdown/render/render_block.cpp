@@ -1114,6 +1114,67 @@ MarkdownPalette default_markdown_palette() {
     };
 }
 
+// Project a Theme onto the markdown palette.
+//
+// Markdown is where most of the text in a TUI actually lives, so a theme
+// that stops at the chrome is a theme you can barely see. Every slot below
+// resolves through a SEMANTIC theme field rather than a literal, which is
+// what makes the mapping work for both kinds of theme at once:
+//
+//   - `native`'s slots ARE the named ANSI colours, so it reproduces the
+//     historical terminal look exactly — nothing regresses by default.
+//   - an RGB scheme's slots are its own hues, so the whole document
+//     repaints in that scheme rather than only its borders.
+//
+// Where a slot has no direct semantic twin, it is DERIVED rather than
+// invented: chrome (rules, borders, footnotes) is the muted slot, and the
+// code-block background is the surface slot, so it sits a step off the
+// canvas on any polarity instead of being a hardcoded black that turns
+// into a hole on a light scheme.
+MarkdownPalette markdown_palette_from(const Theme& t) {
+    MarkdownPalette p{};
+    p.text         = t.text;
+    p.heading1     = t.primary;
+    p.heading2     = t.secondary;
+    p.heading3     = t.accent;
+    p.heading_dim  = t.muted;
+    p.heading_rule = t.border;
+    p.bold_fg      = t.text;
+    // Italic keeps its muted step: it reads as soft commentary against the
+    // body rather than relying on an italic flag many terminals drop.
+    p.italic_fg    = t.muted;
+    p.code_fg      = t.info;
+    // Surface, not black: a literal black background is a hole punched in
+    // a light scheme. Surface is defined as "one step off the canvas".
+    p.code_bg      = t.surface;
+    p.link_fg      = t.link;
+    p.image_fg     = t.accent;
+    p.strike_fg    = t.muted;
+    p.quote_bar    = t.warning;
+    p.quote_text   = t.text;
+    p.list_bullet  = t.primary;
+    p.list_num     = t.primary;
+    p.checkbox_fg  = t.success;
+    p.checkbox_off = t.muted;
+    p.code_border  = t.border;
+    p.code_lang    = t.muted;
+    p.hrule_fg     = t.border;
+    p.footnote_fg  = t.muted;
+    p.table_border = t.border;
+    p.table_header = t.primary;
+    p.highlight_bg = t.highlight;
+    p.highlight_fg = t.inverse_text;
+    p.mention_fg   = t.info;
+    p.kbd_fg       = t.text;
+    p.kbd_border   = t.border;
+    p.alert_note      = t.info;
+    p.alert_tip       = t.success;
+    p.alert_important = t.accent;
+    p.alert_warning   = t.warning;
+    p.alert_caution   = t.error;
+    return p;
+}
+
 // Overwrites the ~35 mutable colors:: globals the render path reads live.
 //
 // THREADING CONTRACT: the async streaming worker (spawn_async_worker_)

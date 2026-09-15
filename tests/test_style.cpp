@@ -1,5 +1,6 @@
 // Tests for maya style system: Style attributes, SGR generation, merge, operator|
 #include <maya/maya.hpp>
+#include <maya/widget/markdown.hpp>   // markdown_palette_from
 // NDEBUG guard: CMake builds tests in Release (-O3 -DNDEBUG), which strips
 // assert(). Undefine it here so this file's runtime asserts actually fire.
 #undef NDEBUG
@@ -236,6 +237,39 @@ TEST_CASE("theme canvas fill is inline-safe") {
             for (int x = 0; x < c.width(); ++x)
                 assert(!has_bg(c, pool, x, y));
     });
+
+    std::println("PASS\n");
+}
+
+TEST_CASE("theme reaches markdown, not just the chrome") {
+    std::println("--- test_theme_markdown_projection ---");
+    // Markdown is most of what is on screen in a chat TUI — prose, code
+    // spans, tables. A theme that repaints the borders but leaves the body
+    // on its launch-time palette is the "it barely changed anything" bug,
+    // so this asserts the projection actually moves.
+
+    const MarkdownPalette nat = markdown_palette_from(theme::native);
+    // native must stay terminal-native: body prose is the terminal's own
+    // foreground, and the code background is whatever the terminal is.
+    // Anything literal here would defeat the point of native.
+    assert(nat.text.kind() == Color::Kind::Default);
+    assert(nat.code_bg.kind() == Color::Kind::Default);
+
+    Theme scheme = theme::native;
+    scheme.text       = Color::rgb(0xF8, 0xF8, 0xF2);
+    scheme.surface    = Color::rgb(0x34, 0x36, 0x41);
+    scheme.border     = Color::rgb(0x56, 0x57, 0x5F);
+    scheme.info       = Color::rgb(0x8B, 0xE9, 0xFD);
+    scheme.background = Color::rgb(0x28, 0x2A, 0x36);
+
+    const MarkdownPalette p = markdown_palette_from(scheme);
+    assert(p.text == scheme.text);
+    assert(p.code_fg == scheme.info);
+    assert(p.table_border == scheme.border);
+    // The code background is the SURFACE slot, never a literal black: a
+    // hardcoded black is a hole punched through a light scheme.
+    assert(p.code_bg == scheme.surface);
+    assert(p.code_bg != Color::black());
 
     std::println("PASS\n");
 }

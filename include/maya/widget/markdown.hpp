@@ -35,6 +35,7 @@
 #include "../core/tracked.hpp"
 #include "../core/animation.hpp"   // anim::RateCursor (reveal typewriter)
 #include "../element/builder.hpp"
+#include "../style/theme.hpp"       // Theme (markdown_palette_from)
 #include "../text/stream_sink.hpp"
 #include "markdown/ast.hpp"
 
@@ -83,6 +84,21 @@ struct MarkdownPalette {
 [[nodiscard]] MarkdownPalette default_markdown_palette();
 /// Overwrite the active markdown palette.
 void set_markdown_palette(const MarkdownPalette& p);
+
+/// Project a Theme onto the markdown palette.
+///
+/// Markdown is where most of a TUI's text actually lives — prose, code
+/// spans, tables, quotes — so a theme that does not reach it is a theme you
+/// can barely see working. This is the mapping that makes "pick Dracula"
+/// change the body copy and not just the chrome.
+///
+/// Every slot resolves through a SEMANTIC theme field rather than a literal,
+/// so `native` keeps the exact terminal-default look it has always had (its
+/// own slots are the named ANSI colours) while an RGB scheme repaints the
+/// whole document. The renderer reads the palette live, so hosts call
+/// set_markdown_palette(markdown_palette_from(theme)) when the theme changes;
+/// maya's runtime does it for you on every frame the theme is swapped.
+[[nodiscard]] MarkdownPalette markdown_palette_from(const Theme& t);
 
 // ============================================================================
 // StreamingMarkdown — Progressive monotonic rendering for streaming text

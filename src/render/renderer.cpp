@@ -2079,6 +2079,50 @@ void render_tree(
     render_detail::paint_element(
         root, canvas, pool, layout_nodes, root_idx,
         /*offset_x=*/0, /*offset_y=*/0);
+
+    // Extend the canvas colour across the rest of each PAINTED row.
+    //
+    // A text run paints the columns it occupies and no more, so a 20-column
+    // label on a 90-column row leaves 70 cells never written — and a
+    // terminal renders a never-written cell as ITS background. On a themed
+    // canvas that is a ragged hole beside every short row.
+    //
+    // Doing it HERE rather than with a filled box around the root is what
+    // keeps it bounded. A box paints its whole rect, and that rect comes
+    // from the host's min_height, which can exceed what the host actually
+    // drew — so it colours rows BELOW the content. max_content_row is the
+    // real painted extent, captured before this loop so the fill cannot
+    // extend it: every cell touched here is inside the frame by
+    // construction.
+    //
+    // Cells already written keep their own style; only the untouched tail
+    // of a row is filled. Under `native` the theme states no background, so
+    // nothing is filled and the terminal shows through — the entire point
+    // of native.
+    if (theme::owns_canvas(theme)) {
+        const int last = canvas.max_content_row();
+        const int w    = canvas.width();
+        if (last >= 0 && w > 0) {
+            const uint16_t canvas_sid =
+                pool.intern(Style{}.with_bg(theme.background));
+            for (int y = 0; y <= last; ++y) {
+                // Fill every UNSTYLED cell in the row, not just the tail
+                // past the last glyph. A row is rarely one contiguous run:
+                // centred text, a right-aligned meter, chips separated by
+                // gaps all leave untouched cells BETWEEN painted ones, and
+                // each of those is a hole the terminal fills with its own
+                // background. Walking the row catches them all; cells that
+                // already carry a style are left exactly as painted.
+                for (int x = 0; x < w; ++x) {
+                    const Cell c = canvas.get(x, y);
+                    if (c.style_id != 0) continue;          // already styled
+                    if (c.character != U' ' && c.character != 0) continue;
+                    canvas.set(x, y, c.character == 0 ? U' ' : c.character,
+                               canvas_sid);
+                }
+            }
+        }
+    }
     const auto t_paint1 = std::chrono::steady_clock::now();
     if (top_level) {
         using namespace render_detail;

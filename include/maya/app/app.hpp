@@ -1282,7 +1282,6 @@ private:
     // dsl.hpp in the include order, and a runtime seam should not drag the
     // whole DSL in to set one field.
     BoxElement box;
-    box.style = Style{}.with_bg(t.background);
     box.layout.direction = FlexDirection::Column;
     // The TERMINAL's width, in cells — not percent(100).
     //
@@ -1294,9 +1293,18 @@ private:
     // visibly stopped. Stating the real width is the only thing that makes
     // the fill reach the edge the user can see.
     if (term_width > 0) box.layout.width = Dimension::fixed(term_width);
-    // Height stays content-sized — in Mode::Inline the rows below the
-    // content belong to scrollback, and growing into them would repaint
-    // the user's history.
+    // NO fill on this box, and no height either.
+    //
+    // A box paints its whole RECT, and this wrapper's rect comes from its
+    // child — whose min_height can exceed what the host actually drew. The
+    // difference got painted in the canvas colour: themed rows BELOW the
+    // status bar, an inline frame colouring terminal it does not own.
+    //
+    // The background reaches cells two other ways, both bounded by real
+    // content: build_sgr renders the canvas colour for any style that names
+    // no background, and render_tree fills each PAINTED row's tail after
+    // paint (where max_content_row is known). This wrapper only states the
+    // frame's width.
     box.children.push_back(std::move(root));
     return Element{std::move(box)};
 }

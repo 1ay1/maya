@@ -898,6 +898,17 @@ auto Runtime::render(const Element& root) -> Status {
         }
 
         auto t_rt0 = std::chrono::steady_clock::now();
+        // Refresh theme-derived SGR before anything is interned this frame.
+        //
+        // A bg-less style renders the CANVAS background (build_sgr), so its
+        // cached bytes belong to a specific theme. The fullscreen path gets
+        // this from RenderPipeline's clear() stage; inline composes its own
+        // frame and never touches that pipeline, so without this call the
+        // pool keeps whatever it interned before the host published a theme
+        // — and inline is the mode agentty actually runs in.
+        //
+        // A pointer compare on every frame but the one after a swap.
+        pool_.retheme();
         render_tree(root, canvas_, pool_, theme_, layout_nodes_,
                     /*auto_height=*/true);
         double rt_ms = since(t_rt0);

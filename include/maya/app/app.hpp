@@ -1731,6 +1731,11 @@ void run(RunConfig cfg = {}) {
         return;
     }
     auto rt = std::move(*result);
+    // Publish the theme slot HERE, not in create(): this is the first `rt`
+    // whose address survives to the render loop. create() builds a local and
+    // moves it out twice, so a slot published there points at dead storage
+    // and every app_set_theme() is a silent write into freed memory.
+    rt.publish_theme_slot();
 
     // Background task queue — tasks spawned by Cmd::task run on worker
     // threads and deliver messages here. The queue OWNS its wake
@@ -2436,6 +2441,9 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         return;
     }
     auto rt = std::move(*result);
+    // Same reason as the Program overload above: create()'s runtime is a
+    // local that is moved out twice, so the slot must name THIS object.
+    rt.publish_theme_slot();
     detail::quit_requested = false;
     detail::mouse_request = -1;
 

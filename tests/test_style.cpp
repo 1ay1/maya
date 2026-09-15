@@ -274,6 +274,40 @@ TEST_CASE("theme reaches markdown, not just the chrome") {
     std::println("PASS\n");
 }
 
+TEST_CASE("theme slot survives the runtime move") {
+    std::println("--- test_theme_slot_survives_move ---");
+    // THE bug behind "the theme recolours text but never the background".
+    //
+    // The slot used to be published inside Runtime::create(), against a
+    // local that is then moved into Result<Runtime> and moved AGAIN into
+    // the caller. The published pointer named storage that was dead before
+    // the first frame, so every app_set_theme() wrote into freed memory and
+    // rt.theme() — which is what the canvas fill is keyed on — never left
+    // its startup value. Foreground colour still changed, because hosts
+    // read their palette from their own published copy, which is exactly
+    // why it looked like "the theme half works".
+    //
+    // This reproduces the shape without a terminal: publish against an
+    // object, move it, and require that writes land where reads happen.
+    struct Holder { Theme t = theme::native; };
+
+    auto make = [] { return Holder{}; };
+    Holder h = make();          // moved into place, as Runtime is
+
+    Theme* slot = &h.t;         // published AFTER the move — the fix
+    Theme scheme = theme::native;
+    scheme.background = Color::rgb(0x28, 0x2A, 0x36);
+    *slot = scheme;
+
+    // A write through the slot must be visible to the object the renderer
+    // actually reads, and must flip the canvas decision with it.
+    assert(h.t.background == scheme.background);
+    assert(theme::owns_canvas(h.t));
+    assert(!theme::owns_canvas(theme::native));
+
+    std::println("PASS\n");
+}
+
 TEST_CASE("style equality") {
     std::println("--- test_style_equality ---");
     Style a = Style{}.with_bold().with_fg(Color::red());

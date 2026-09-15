@@ -95,10 +95,14 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
     rt.event_source_    = std::move(event_source);
     rt.writer_          = std::make_unique<Writer>(output_h);
     rt.theme_           = cfg.theme;
-    // Publish the slot so app_set_theme() can reach it. Done here, at the
-    // one point a runtime is built, so the seam is live for exactly as long
-    // as there is a runtime to paint with.
-    rt.publish_theme_slot();
+    // NOTE: the theme slot is NOT published here. This `rt` is a local that
+    // gets moved into Result<Runtime>, then moved AGAIN into the caller's
+    // variable, so a pointer taken now names storage that is dead before
+    // the first frame. Publishing happens in run<>(), against the object
+    // that actually lives for the session. (This was the bug behind "the
+    // theme changes the text but never the background": app_set_theme()
+    // wrote through the stale pointer, so rt.theme() — which is what the
+    // canvas fill is keyed on — never left its startup value.)
     // Grid backend: emit binary cell frames for a cooperating host instead of
     // ANSI.  The host paints cells directly — so we also suppress the ANSI-
     // only chrome (the DEC-2026 sync wrapper below) that would otherwise

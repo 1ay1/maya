@@ -376,12 +376,98 @@ static void test_finalize_to_sealed() {
     close(rfd);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// 6. A theme swap reaches the wire
+// ─────────────────────────────────────────────────────────────────────────
+//
+// The end-to-end shape of "I picked a new scheme and the background stayed
+// the old colour", asserted on the BYTES a terminal would actually receive.
+//
+// A settled frame is the hostile case. Render the same canvas twice and the
+// second render emits ~nothing — that is the whole point of the shadow. Now
+// swap the theme between them: not one packed (glyph, style_id) cell has
+// changed, because a retheme rewrites what the ids RENDER as and touches
+// neither the glyph nor the id. So the diff still finds every row equal and
+// still emits nothing, while the screen is now wrong. The row-level diff
+// cannot see this bug by construction; something has to tell it.
+//
+// Asserting on emitted bytes rather than on any internal flag is deliberate:
+// the flag is the mechanism, and the mechanism is what was wrong twice.
+static void test_theme_swap_reaches_the_wire() {
+    std::println("--- test_theme_swap_reaches_the_wire ---");
+
+    Theme dark = theme::native;
+    dark.background = Color::rgb(0x11, 0x22, 0x33);
+    Theme light = theme::native;
+    light.background = Color::rgb(0xFA, 0xFB, 0xFC);
+
+    // One slot, mutated in place — exactly how a host publishes a theme.
+    Theme slot = dark;
+    theme::set_live(slot);
+
+    StylePool pool;
+    auto [writer, rfd] = make_pipe_writer();
+
+    auto sip = [&](std::string& into) {
+        char buf[8192];
+        ssize_t n;
+        while ((n = read(rfd, buf, sizeof(buf))) > 0)
+            into.append(buf, static_cast<std::size_t>(n));
+    };
+
+    Canvas c1 = labeled_canvas(80, 3, pool);
+    pool.retheme();
+    InlineFrame<Synced> s = std::visit([](auto&& arm) -> InlineFrame<Synced> {
+        using T = std::decay_t<decltype(arm)>;
+        if constexpr (std::is_same_v<T, InlineFrame<Synced>>) return std::move(arm);
+        else std::abort();
+    }, InlineFrame<Empty>{}.seed().render(
+        c1, content_rows(c1), term_rows_for_test(24), pool, writer, false));
+
+    std::string first;
+    sip(first);
+    CHECK(first.find("48;2;17;34;51") != std::string::npos);
+
+    // Swap through the published slot and refresh the cache, as the runtime
+    // does at the top of a frame. retheme() must SEE it (value compare) and
+    // must SAY so (the bool), or there is nothing to act on.
+    slot = light;
+    CHECK(pool.retheme() == true);
+
+    // The signal in hand, take the documented non-destructive repaint route:
+    // demote to Stale, which re-states the live viewport instead of trusting
+    // a shadow whose meaning just changed.
+    InlineFrame<Stale> stale = std::move(s).demote_to_stale();
+    Canvas c2 = labeled_canvas(80, 3, pool);
+    auto outcome = std::move(stale).render(
+        c2, content_rows(c2), term_rows_for_test(24), pool, writer, false);
+
+    bool recovered = std::visit([](auto&& arm) {
+        using T = std::decay_t<decltype(arm)>;
+        return std::is_same_v<T, InlineFrame<Synced>>;
+    }, std::move(outcome));
+    CHECK(recovered);
+
+    std::string second;
+    sip(second);
+
+    // The payoff: the new canvas colour is on the wire, and the old one is
+    // not anywhere in that frame. Before the fix `second` carried neither —
+    // the frame was empty and the terminal kept painting 0x112233.
+    CHECK(second.find("48;2;250;251;252") != std::string::npos);
+    CHECK(second.find("48;2;17;34;51") == std::string::npos);
+
+    close(rfd);
+    theme::set_live(theme::native);
+}
+
 int main() {
     test_empty_to_fresh_to_synced();
     test_synced_verify_render();
     test_demote_then_recover();
     test_scrollback_marker_monotone();
     test_finalize_to_sealed();
+    test_theme_swap_reaches_the_wire();
     std::println("ALL INLINE-FRAME TESTS PASSED");
     return 0;
 }

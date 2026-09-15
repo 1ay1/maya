@@ -2259,8 +2259,18 @@ void run(RunConfig cfg = {}) {
 
             if (!skip_render) {
                 // Pure: view(model) → Element → render to terminal
-                Element view_root = detail::apply_theme_canvas(
-                    P::view(model), rt.theme());
+                //
+                // SEQUENCING, not style: view() is what calls app_set_theme()
+                // (a host resolves its theme while building the frame), and
+                // function arguments are UNSEQUENCED relative to each other.
+                // Written as one call, the compiler is free to read
+                // rt.theme() BEFORE view() runs, so the canvas would be
+                // painted with the previous frame's theme — the swap lands
+                // one frame late, and on a single-swap-then-idle app (pick a
+                // theme, stop typing) that frame never comes.
+                Element built = P::view(model);
+                Element view_root =
+                    detail::apply_theme_canvas(std::move(built), rt.theme());
                 // Optional one-shot warmup: if the program flagged the
                 // current model as needing a cache pre-warm (e.g. a
                 // heavy thread just rehydrated), paint the same view

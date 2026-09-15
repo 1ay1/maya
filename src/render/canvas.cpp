@@ -8,31 +8,39 @@
 #include <string_view>
 
 #include "maya/app/environment.hpp"
+#include "maya/style/theme.hpp"
 
 namespace maya {
 
 namespace {
 
 // Terminal color capability used to downgrade RGB / 256-color values to what
-// the terminal can actually show (3 = truecolor, 2 = 256, 1 = 16). Detected
-// once from the environment — see maya::env::color_level() (COLORTERM / TERM /
-// NO_COLOR) — and overridable with MAYA_COLOR=truecolor|256|16|auto for
-// terminals we can't sniff (e.g. truecolor passthrough inside tmux) or for
-// deterministic tests. A terminal whose capability is unknown (non-TTY pipe)
-// keeps truecolor so piped/captured output is unchanged.
+// the terminal can actually show (3 = truecolor, 2 = 256, 1 = 16, 0 = mono).
+// Detected once, on first use.
+//
+// ONE detector, not two. This used to be its own env-sniffing routine that
+// disagreed with theme::detect_tier() — the one the settings UI reports and
+// the one that decides whether a named RGB scheme is usable. A UI that says
+// "detected: truecolor" while the emit path quantises to 16 colours is worse
+// than either answer alone, so both now ask the same function.
+//
+// MAYA_COLOR=truecolor|256|16|none|auto overrides it (handled inside
+// detect_tier) for terminals we cannot sniff — truecolor passthrough inside
+// tmux being the usual one — and for deterministic tests.
 int detect_color_level() noexcept {
-    if (const char* forced = std::getenv("MAYA_COLOR")) {
-        std::string_view s{forced};
-        if (s == "truecolor" || s == "24bit" || s == "3") return 3;
-        if (s == "256" || s == "2")                        return 2;
-        if (s == "16" || s == "basic" || s == "1")         return 1;
-        // "auto" or anything unrecognized falls through to detection.
-    }
-    switch (env::color_level()) {
-        case env::ColorLevel::TrueColor: return 3;
-        case env::ColorLevel::Ansi256:   return 2;
-        case env::ColorLevel::Basic:     return 1;
-        case env::ColorLevel::None:      return 3;  // unknown/non-TTY: don't degrade
+    // Non-TTY keeps truecolor rather than degrading: piped/captured output
+    // is someone else's to interpret, and dropping to 16 colours would
+    // silently rewrite bytes a test or a recorder is capturing verbatim.
+    // (theme::detect_tier answers Mono for a pipe, which is the right
+    // answer for "should I paint?" but not for "how precise are the bytes
+    // if I do?" — the two questions differ only here.)
+    if (!env::is_tty()) return 3;
+
+    switch (theme::detect_tier(/*tty=*/true)) {
+        case theme::ColorTier::TrueColor: return 3;
+        case theme::ColorTier::Ansi256:   return 2;
+        case theme::ColorTier::Ansi16:    return 1;
+        case theme::ColorTier::Mono:      return 0;
     }
     return 3;
 }
@@ -176,9 +184,20 @@ char* StylePool::write_uint_sgr(char* p, unsigned n) noexcept {
 }
 
 char* StylePool::append_color_sgr(char* p, const Color& in, bool is_fg) noexcept {
+    const int level = active_color_level();
+
+    // Level 0 is MONOCHROME — NO_COLOR, TERM=dumb, or an explicit
+    // MAYA_COLOR=none. Emit the default-colour SGR (39/49) rather than
+    // nothing at all: "nothing" would let whatever colour the previous span
+    // set bleed into this one, so a monochrome request would still paint
+    // colour. 39/49 is the terminal's own ink on its own background, which
+    // is exactly what "no colour" has to mean for a user who asked for a
+    // black-and-white terminal.
+    if (level <= 0) return write_uint_sgr(p, is_fg ? 39u : 49u);
+
     // Downgrade RGB / 256-color to what the terminal can render before
     // emitting (macOS Terminal.app is 256-only and drops 38;2 truecolor).
-    const Color c = in.degrade(active_color_level());
+    const Color c = in.degrade(level);
     switch (c.kind()) {
         case Color::Kind::Named: {
             int base = is_fg ? 30 : 40;

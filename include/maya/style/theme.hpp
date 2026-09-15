@@ -226,6 +226,36 @@ namespace detail {
     return h.find(n) != std::string_view::npos;
 }
 
+[[nodiscard]] inline bool starts_with(std::string_view h, std::string_view n) {
+    return h.size() >= n.size() && h.substr(0, n.size()) == n;
+}
+
+// Terminals that ARE truecolor but only say so via COLORTERM — which ssh
+// does not forward (it is not in most sshd AcceptEnv lists) while TERM is.
+// Over ssh the escape bytes are interpreted by the LOCAL terminal, so when
+// TERM names one of these, emitting 38;2 is always right. Without this a
+// remote session silently drops to 16 colours and vivid RGB row bands
+// quantise into garish solid blocks.
+inline constexpr std::string_view kTrueColorTerms[] = {
+    "kitty", "ghostty", "wezterm", "alacritty", "foot",
+    "iterm",  "konsole", "contour", "rio",
+};
+
+// Host applications that set their own marker instead of COLORTERM.
+// Checked only as a LAST resort before the TERM heuristics, because a
+// program name is weaker evidence than a capability claim.
+[[nodiscard]] inline bool truecolor_host() {
+    // Windows Terminal and ConEmu both do 24-bit and neither reliably
+    // sets COLORTERM.
+    if (env_set("WT_SESSION")) return true;
+    if (env_or("ConEmuANSI") == "ON") return true;
+    const std::string_view tp = env_or("TERM_PROGRAM");
+    // Apple Terminal is deliberately ABSENT: it is 256-colour only, and
+    // claiming truecolor there produces visibly wrong hues.
+    return tp == "iTerm.app" || tp == "WezTerm" || tp == "ghostty"
+        || tp == "vscode"    || tp == "Hyper"   || tp == "rio";
+}
+
 }  // namespace detail
 
 // Detect what the terminal can render.
@@ -236,11 +266,29 @@ namespace detail {
 [[nodiscard]] inline ColorTier detect_tier(bool tty) {
     using namespace detail;
 
-    // 1. NO_COLOR, at any value, wins over everything. (no-color.org)
+    // ── 0. Explicit override ────────────────────────────────────────
+    // Above even NO_COLOR, because it is the escape hatch for the case
+    // detection cannot win: truecolor passthrough inside tmux, a terminal
+    // nobody has heard of, or a test that needs a fixed answer.
+    const std::string_view forced_tier = env_or("MAYA_COLOR");
+    if (forced_tier == "truecolor" || forced_tier == "24bit"
+        || forced_tier == "3")                    return ColorTier::TrueColor;
+    if (forced_tier == "256" || forced_tier == "2") return ColorTier::Ansi256;
+    if (forced_tier == "16" || forced_tier == "basic"
+        || forced_tier == "1")                    return ColorTier::Ansi16;
+    if (forced_tier == "none" || forced_tier == "mono"
+        || forced_tier == "0")                    return ColorTier::Mono;
+    // "auto" or anything unrecognised falls through to detection.
+
+    // ── 1. NO_COLOR ─────────────────────────────────────────────
+    // Any non-empty value disables colour (no-color.org). An EMPTY value is
+    // treated as unset, which the standard is explicit about — `NO_COLOR= cmd`
+    // must still be colourful. env_set() already encodes that.
     if (env_set("NO_COLOR")) return ColorTier::Mono;
 
-    // 2. CLICOLOR_FORCE overrides the tty test — that is its whole purpose,
-    //    so a CI log or a pager can keep color.
+    // ── 2. CLICOLOR_FORCE / the tty test ──────────────────────────────
+    // A redirect gets Mono so a piped log is text, not escape soup;
+    // CLICOLOR_FORCE exists precisely to override that for CI and pagers.
     const bool forced = env_set("CLICOLOR_FORCE")
                         && env_or("CLICOLOR_FORCE") != "0";
 
@@ -248,17 +296,38 @@ namespace detail {
     if (term == "dumb") return ColorTier::Mono;
     if (!tty && !forced) return ColorTier::Mono;
 
-    // 3. COLORTERM is the truecolor signal, set by the terminal itself.
+    // ── 3. COLORTERM ── the terminal's own capability claim ───────────────
     const std::string_view ct = env_or("COLORTERM");
     if (ct == "truecolor" || ct == "24bit") return ColorTier::TrueColor;
 
-    // 4. TERM conventions, most specific first.
-    if (contains(term, "direct"))    return ColorTier::TrueColor;
-    if (contains(term, "256color"))  return ColorTier::Ansi256;
-    if (term.empty())                return ColorTier::Mono;
+    // ── 4. TERM conventions, most specific first ───────────────────────
+    if (contains(term, "direct")) return ColorTier::TrueColor;
 
-    // 5. Anything that looks like a terminal gets the sixteen colors every
-    //    terminal has had since the VT100's descendants.
+    // Named truecolor terminals. This is the ssh case: COLORTERM does not
+    // survive the hop, TERM does, and the bytes are drawn by the local
+    // terminal either way.
+    for (const std::string_view name : kTrueColorTerms)
+        if (contains(term, name)) return ColorTier::TrueColor;
+
+    // ── 5. Host-application markers ─────────────────────────────────
+    // Weaker evidence than a capability claim, so it sits below both.
+    if (truecolor_host()) return ColorTier::TrueColor;
+
+    if (contains(term, "256color")) return ColorTier::Ansi256;
+    if (term.empty())              return ColorTier::Mono;
+
+    // ── 6. The xterm/screen/tmux family ───────────────────────────────
+    // Real xterm has done 256 colours for two decades, and screen and tmux
+    // both pass 38;5 through. Calling these Ansi16 was the harmful default:
+    // indexed SGR is universally safe here, and quantising to sixteen makes
+    // tuned greys and dark tints collapse into primaries.
+    if (starts_with(term, "xterm") || starts_with(term, "screen")
+        || starts_with(term, "tmux")  || starts_with(term, "rxvt")
+        || starts_with(term, "vte")   || starts_with(term, "linux"))
+        return ColorTier::Ansi256;
+
+    // 7. Anything else that looks like a terminal gets the sixteen colours
+    //    every terminal has had since the VT100's descendants.
     return ColorTier::Ansi16;
 }
 

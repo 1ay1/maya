@@ -339,12 +339,21 @@ public:
     /// PREVIOUS canvas colour for the rest of the process, which is the
     /// stale-bytes half of the same bug the default fixes.
     ///
-    /// Called automatically by intern()/sgr() when the live theme differs
-    /// from the one the cache was built under, so no caller has to
-    /// remember: the pool notices for itself.
-    // Re-derive cached SGR under the live theme. Returns true iff the theme
-    // actually changed (and the cache was rebuilt), so callers that hold a
-    // wire-level shadow can invalidate it — see the comment on sgr_theme_.
+    /// MUST BE CALLED at the top of every frame, before anything is
+    /// interned or emitted. It is NOT automatic: sgr() is a const noexcept
+    /// hot-path accessor and intern() is MAYA_ALWAYS_INLINE, so neither can
+    /// afford — or is allowed — to mutate the cache behind the caller's
+    /// back. (An earlier version of this comment claimed they did. They
+    /// never have.) Both frame drivers do it for you: RenderPipeline's
+    /// clear() stage and Runtime's inline compose. A host that hand-rolls a
+    /// frame owns the call.
+    ///
+    /// Returns true iff the theme actually changed and the cache was
+    /// rebuilt. That matters to anyone holding a WIRE-LEVEL SHADOW: a
+    /// retheme rewrites what a style id renders as while changing neither
+    /// the glyph nor the id, so a cell-diffing emitter sees an identical
+    /// frame and sends nothing. Such a caller must invalidate its shadow
+    /// when this returns true — see the comment on sgr_theme_.
     bool retheme();
 
 private:

@@ -125,11 +125,22 @@ public:
         // every frame but the one after a theme actually changes.
         //
         // The bool return ("the theme really did change") is deliberately
-        // discarded: it exists for the INLINE emitters, which diff against a
-        // shadow of the last wire frame and would otherwise find every row
-        // unchanged. Fullscreen has no such shadow at this layer — clear()
-        // has already zeroed the canvas and the frame is repainted whole —
-        // so there is nothing here to invalidate.
+        // discarded, but NOT because there is no shadow here — write_diff()
+        // compares the back canvas against the presented front one, which is
+        // exactly the kind of cell-level shadow that hides a retheme on the
+        // inline path.
+        //
+        // It is safe for a different reason: clear() has just zeroed every
+        // back cell to style 0, so the frame is repainted from nothing and
+        // each cell is re-interned under the new theme. A cell whose content
+        // is unchanged still differs from front in the only way diff() looks
+        // at, so it is re-emitted with the new background. Verified by
+        // probe: an identical tree rendered across a swap emits the new
+        // canvas colour and none of the old.
+        //
+        // If this stage ever stops clearing (an incremental fullscreen
+        // repaint), that reasoning dies with it and this call must start
+        // honouring its return value the way the inline path does.
         (void)pool_.retheme();
         return {back_, pool_, theme_, out_};
     }

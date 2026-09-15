@@ -913,10 +913,11 @@ auto Runtime::render(const Element& root) -> Status {
         // they diff packed (glyph, style_id) cells, and a retheme changes
         // neither while changing what those ids render as. Every row would
         // compare equal and nothing would be emitted — the terminal keeps
-        // the old background. So a swap invalidates both shadows: the grid
-        // re-states every row, and the ANSI frame is re-seeded to Empty,
-        // which is the same non-destructive "no prior state is trustworthy"
-        // path used after a child process scribbles on the terminal.
+        // the old background. So a swap invalidates both: the grid re-states
+        // every row, and the ANSI frame raises retheme_repaint_, which the
+        // Synced arm below consumes by committing whatever already scrolled
+        // off and demoting to Stale (a repaint of the live viewport, not a
+        // re-anchor — re-seeding to Empty would print the transcript twice).
         if (pool_.retheme()) {
             grid_need_full_ = true;
             retheme_repaint_ = true;
@@ -1290,7 +1291,6 @@ auto Runtime::render(const Element& root) -> Status {
                     // Empty — that re-anchors at the cursor and would print
                     // the transcript a second time.
                     if (retheme_repaint_) {
-                        retheme_repaint_ = false;
                         const int prev_rows = arm.rows();
                         if (prev_rows > term_h.value()) {
                             const int overflow = prev_rows - term_h.value();
@@ -1345,6 +1345,19 @@ auto Runtime::render(const Element& root) -> Status {
                     return std::move(arm);   // sealed: no-op
                 }
             }, std::move(in_coherence_));
+
+        // The repaint request is consumed by THIS frame, whichever arm ran.
+        //
+        // Only the Synced arm acts on it — every other arm is already doing a
+        // full-viewport repaint, so a swap needs nothing extra from them. But
+        // clearing it only inside that arm leaks: a theme change landing on a
+        // Fresh/Stale/HardReset frame would leave the flag raised, and the
+        // next Synced frame (possibly many frames later, mid-stream) would
+        // demote for a swap that had already been painted — a gratuitous
+        // repaint attributed to the wrong keystroke. One unconditional clear
+        // at the end of the frame is the whole invariant: the flag means
+        // "a swap happened during THIS frame", never "...at some point".
+        retheme_repaint_ = false;
 
         double cf_ms = since(t_cf0);
         if (prof) {

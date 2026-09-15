@@ -549,6 +549,56 @@ TEST_CASE("theme: a swap re-derives cached SGR, and says that it did") {
     std::println("PASS\n");
 }
 
+TEST_CASE("theme: a swap survives the fullscreen double-buffer too") {
+    std::println("--- test_theme_swap_fullscreen ---");
+    // The inline path needs retheme()'s bool because its wire shadow diffs
+    // packed (glyph, style_id) cells and a swap changes neither. Fullscreen
+    // discards that bool — and the reason has to be checked, not assumed,
+    // because write_diff() compares the back canvas against the presented
+    // front one, which is the same shape of shadow.
+    //
+    // It is safe because clear() zeroes every back cell to style 0 first, so
+    // the frame is re-interned from nothing under the new theme and an
+    // unchanged cell still differs from front in the only way diff() looks
+    // at. This test pins that: if an incremental fullscreen repaint ever
+    // stops clearing, the reasoning dies and this goes red rather than
+    // someone rediscovering it as "my theme only half-applies".
+    using namespace maya::dsl;
+
+    Theme a = theme::native;
+    a.background = Color::rgb(0x11, 0x22, 0x33);
+    Theme b = theme::native;
+    b.background = Color::rgb(0xFA, 0xFB, 0xFC);
+
+    Theme slot = a;                 // one slot, mutated in place
+    theme::set_live(slot);
+
+    StylePool pool;
+    Canvas front{40, 4, &pool};
+    Canvas back{40, 4, &pool};
+    auto tree = [] { return v(text("hello"), text("world")); };
+
+    std::string out1;
+    RenderPipeline<stage::Idle>::start(back, pool, slot, out1)
+        .clear().paint(Element{tree()}.build())
+        .open_frame(false).write_diff(front);
+    assert(out1.find("48;2;17;34;51") != std::string::npos);
+
+    std::swap(front, back);         // present
+    slot = b;                       // swap through the published slot
+
+    // The SAME tree, so every glyph and every style id is identical.
+    std::string out2;
+    RenderPipeline<stage::Idle>::start(back, pool, slot, out2)
+        .clear().paint(Element{tree()}.build())
+        .open_frame(false).write_diff(front);
+    assert(out2.find("48;2;250;251;252") != std::string::npos);
+    assert(out2.find("48;2;17;34;51") == std::string::npos);
+
+    theme::set_live(theme::native);
+    std::println("PASS\n");
+}
+
 TEST_CASE("theme: markdown tables and code blocks carry the canvas") {
     std::println("--- test_theme_markdown_render ---");
     // Table rules and code-block frames are styled fg-only — with_fg(border)

@@ -549,6 +549,19 @@ public:
     }
 
     static void on_theme_changed(const Theme& t) {
+        // Drop every cross-frame cached component.
+        //
+        // The renderer blits a cached subtree's PIXELS — colours already
+        // resolved — keyed on a content hash. A theme swap changes none of
+        // that content, so without this every cached turn, panel and row
+        // keeps painting the old palette until its content happens to
+        // change. That is the difference between "the new frame is themed"
+        // and "the screen is themed", and it is why a theme change looked
+        // like it only touched whatever was being redrawn anyway.
+        //
+        // Cost is one repaint of visible content on a swap, which is
+        // exactly what the user asked for by picking a theme.
+        render_detail::clear_component_cache();
         for (auto* fn : theme_subscribers()) fn(t);
     }
     [[nodiscard]] bool is_inline() const noexcept { return inline_terminal_.has_value(); }
@@ -2666,6 +2679,17 @@ template <CanvasResizeFn ResizeFn, CanvasEventFn EventFn, CanvasPaintFn PaintFn>
 // than writing through a null.
 inline void app_set_theme(const Theme& t) {
     if (Theme* slot = detail::Runtime::live_theme()) {
+        // NO-OP IF UNCHANGED. Hosts resolve their theme per frame (that is
+        // how `auto` follows a tmux detach or an ssh hop), so this is called
+        // on every single frame with the same value almost always. A swap
+        // invalidates the render cache and re-derives projected palettes, so
+        // doing that unconditionally would throw away every cached component
+        // 60 times a second and turn the cache into a pure cost.
+        //
+        // The guard lives HERE rather than in each host because it is a
+        // property of what a swap costs, which is maya's knowledge, not the
+        // caller's.
+        if (*slot == t) return;
         *slot = t;
         // Same notification as Runtime::set_theme — this is the path hosts
         // actually use (they have no Runtime&), so a projected palette that

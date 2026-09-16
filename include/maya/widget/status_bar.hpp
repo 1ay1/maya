@@ -84,6 +84,28 @@ public:
         // Status row — takes over the activity_row slot when present.
         StatusBanner::Config         status_banner;
 
+        // Identity of everything above, for the cross-frame component cache.
+        //
+        // The activity row is a measured degradation ladder (see below): it
+        // builds each sub-widget as a real styled fragment and MEASURES it,
+        // up to eight times, to find the richest shape that fits. That is
+        // the right way to lay it out and a poor thing to redo 30 times a
+        // second — profiling a streaming session put activity_row at 53% of
+        // all render time, because the row is rebuilt every frame even when
+        // nothing in it changed.
+        //
+        // When this is non-zero the built row is cached under it, so the
+        // ladder runs only when the key moves. Leave it 0 (the default) and
+        // nothing changes — every frame rebuilds, exactly as before.
+        //
+        // OPT-IN, and deliberately so. A key that misses an input paints a
+        // stale status bar, which is worse than the cost of rebuilding: the
+        // row would silently stop tracking the thing it exists to report.
+        // So the host states the identity, because the host is what knows
+        // when `model_badge` — an opaque Element this widget cannot hash —
+        // actually changed.
+        std::uint64_t content_key = 0;
+
         // NO width thresholds. The activity row is a measured
         // degradation ladder: every piece is built as its real styled
         // fragment and the row sheds detail step by step — breadcrumb
@@ -139,7 +161,7 @@ private:
 
     [[nodiscard]] Element activity_row() const {
         using namespace dsl;
-        return component([cfg = cfg_](int w, int /*h*/) -> Element {
+        Element el = component([cfg = cfg_](int w, int /*h*/) -> Element {
             using namespace dsl;
             if (w <= 0) return blank().build();
 
@@ -348,6 +370,20 @@ private:
             return (h(left, std::move(middle), std::move(right))
                     | overflow(Overflow::Hidden)).build();
         });
+        // Hand the renderer a stable identity so the ladder above is run
+        // once per distinct row rather than once per frame. The key is
+        // MIXED with a tag rather than used raw: cache ids are global, and
+        // a bare host counter could collide with an unrelated component
+        // that happened to pick the same number.
+        if (cfg_.content_key != 0) {
+            if (auto* comp = std::get_if<ComponentElement>(&el.inner)) {
+                comp->hash_id = CacheIdBuilder{}
+                                    .add(std::string_view{"maya.status_bar.activity"})
+                                    .add(cfg_.content_key)
+                                    .build();
+            }
+        }
+        return el;
     }
 
     static Style fg_dim_(Color c) {

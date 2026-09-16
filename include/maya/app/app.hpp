@@ -1173,7 +1173,16 @@ private:
     // modes are no-ops where unsupported — emitting costs ~12 bytes/frame
     // and never corrupts. The render paths read this to decide whether to
     // append sync_start/sync_end.
-    bool          emit_sync_wrapper_  = true;
+    //
+    // The exception is TERM=dumb, and it is the DEFAULT that has to know:
+    // Runtime::create() refines this flag, but the inline path a host like
+    // agentty uses never runs create(), so a default of plain `true` meant
+    // the wrapper was emitted no matter what TERM said. "Unknown modes are
+    // no-ops" assumes a DEC private-mode parser; a dumb terminal has none,
+    // so the bytes print as garbage. That is issue #37's "doesn't respect
+    // TERM", and initialising from the shared predicate fixes every entry
+    // point at once rather than the one that happened to be audited.
+    bool          emit_sync_wrapper_  = !theme::terminal_is_dumb();
 
     // The HONEST env-heuristic answer to "does this terminal support mode
     // 2026". Cached at create() so we don't re-query env every frame; this

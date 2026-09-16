@@ -124,9 +124,16 @@ auto Runtime::create(RunConfig cfg) -> Result<Runtime> {
         const std::string_view ns = no_sync ? no_sync : "";
         const bool disabled = !ns.empty()
             && ns != "0" && ns != "false" && ns != "no";
+        // TERM=dumb is the one case the "harmless no-op" argument above does
+        // not cover. It does not mean "a terminal that might not know this
+        // mode" — it means NO escape sequences, which is a promise a user
+        // makes deliberately (and issue #37 is someone noticing we broke it).
+        // A dumb terminal has no DEC private-mode parser to ignore the
+        // bytes with, so "silently ignored" becomes "printed as garbage".
+        const bool dumb = theme::terminal_is_dumb();
         // Emit the wrapper unless explicitly disabled — harmless no-op
         // where unsupported, atomic frames where supported.
-        rt.emit_sync_wrapper_ = !disabled;
+        rt.emit_sync_wrapper_ = !disabled && !dumb;
         // The HONEST support answer, for tick-rate gating. MAYA_NO_SYNC
         // forces it false; otherwise consult the env heuristic so apps
         // on Apple Terminal / ish / unconfigured tmux slow their

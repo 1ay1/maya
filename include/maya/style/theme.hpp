@@ -561,6 +561,22 @@ inline constexpr std::string_view kTrueColorTerms[] = {
 //   `tty` is whether stdout is a terminal; a redirect gets Mono so a piped
 //   log is plain text rather than escape soup. The caller supplies it
 //   because maya's platform layer owns that question.
+// ── Is this terminal incapable of ANSI at all? ─────────────────────────
+//
+// `TERM=dumb` is the one value with a precise, non-negotiable meaning: no
+// escape sequences. Not "no colour" — no cursor addressing, no DEC private
+// modes, nothing. It is what a user sets when they want plain text, and
+// what a CI log or a `TERM=dumb make` invocation reports.
+//
+// Checked in ONE place, because it used to be checked in exactly one place
+// and that place was the COLOUR tier — so agentty honoured it for colour
+// and then emitted cursor hides and mode switches anyway (issue #37: "I
+// found agentty doesn't respect TERM"). A capability question needs one
+// answer every layer can ask, not a per-layer opinion.
+[[nodiscard]] inline bool terminal_is_dumb() {
+    return detail::env_or("TERM") == "dumb";
+}
+
 [[nodiscard]] inline ColorTier detect_tier(bool tty) {
     using namespace detail;
 
@@ -591,7 +607,7 @@ inline constexpr std::string_view kTrueColorTerms[] = {
                         && env_or("CLICOLOR_FORCE") != "0";
 
     const std::string_view term = env_or("TERM");
-    if (term == "dumb") return ColorTier::Mono;
+    if (term == "dumb") return ColorTier::Mono;   // see terminal_is_dumb()
     if (!tty && !forced) return ColorTier::Mono;
 
     // ── 3. COLORTERM ── the terminal's own capability claim ───────────────

@@ -394,6 +394,12 @@ bool contains(const std::string& s, std::string_view needle) {
 } // namespace
 
 [[nodiscard]] bool env_supports_synchronized_output() {
+    // TERM=dumb means NO escape sequences, so it cannot mean "supports a DEC
+    // private mode". Checked before the force override, because a stale
+    // MAYA_FORCE_SYNC in the environment must not resurrect escape output
+    // for a user who has explicitly asked for plain text.
+    if (::maya::theme::terminal_is_dumb()) return false;
+
     // Explicit override — for users on terminals not in the positive
     // list below (custom builds, niche ones, or behind ssh / tmux
     // without identification env passthrough).  Modern terminals

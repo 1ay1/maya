@@ -382,21 +382,6 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
         }
     }
 
-    // Colour sample. Two blocks per entry so a hue reads as a patch rather
-    // than a sliver, separated from the label by a single space.
-    //
-    // Painted as runs on the SAME string as the label, not as a sibling
-    // Element: the row's geometry (truncation, the cursor tint, the flex
-    // split between leading and trailing) is all driven off that one text
-    // node, and a second node would have to re-derive every one of those
-    // rules to stay aligned with it.
-    if (!r.swatch.empty()) {
-        put(" ", tint(label_style));
-        for (const Color& c : r.swatch)
-            put("\xe2\x96\x88\xe2\x96\x88",            // ██
-                tint(Style{}.with_fg(c)));
-    }
-
     // Trailing: the control, then its origin. A plain `trailing` string is
     // the same thing as a Label control — resolved here so the renderer below
     // has exactly one path.
@@ -406,6 +391,30 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
     if (right.empty() && !r.trailing.empty()) {
         right  = r.trailing;
         rstyle = r.trailing_style;
+    }
+    // Colour sample, on the TRAILING side.
+    //
+    // It belongs here rather than after the label because the trailing cell
+    // is the panel's value column: it is right-aligned, so every row's
+    // sample starts at the same x no matter how long the name is. Hung off
+    // the label instead, the swatches staircase with name length — which is
+    // exactly what makes a list of colours hard to compare, and comparing
+    // them is the only reason to show them.
+    //
+    // Two blocks per colour so a hue reads as a patch, not a sliver.
+    if (!r.swatch.empty()) {
+        const std::size_t swatch_at = right.size();
+        if (!right.empty()) right += "  ";
+        for (std::size_t i = 0; i < r.swatch.size(); ++i) {
+            control_runs.push_back({right.size(), 6,          // ██ = 2x3 bytes
+                                    Style{}.with_fg(r.swatch[i])});
+            right += "\xe2\x96\x88\xe2\x96\x88";
+        }
+        // Anything the control already emitted keeps its own styling; the
+        // swatch runs above cover only the bytes they appended.
+        if (swatch_at > 0 && control_runs.size() == r.swatch.size())
+            control_runs.insert(control_runs.begin(),
+                                {0, swatch_at, rstyle});
     }
     if (r.locked) rstyle = Style{}.with_fg(th.locked);
     const std::string origin =

@@ -730,10 +730,10 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
 inline void decorate_end_caret(TextElement& leaf, std::int64_t ms_total,
                                std::int64_t period_ms = 650) {
     const double pp = reveal_detail::pulse01(ms_total, period_ms);
-    const Color fg = lerp(Color::rgb(220, 80, 200), Color::rgb(100, 230, 255), pp);
+    const LitColor fg = lerp(Color::rgb(220, 80, 200), Color::rgb(100, 230, 255), pp);
     const Style caret = Style{}
-        .with_fg(Color::rgb(fg.r(), fg.g(), fg.b()))
-        .with_bg(Color::rgb(fg.r() / 4, fg.g() / 4, fg.b() / 4))
+        .with_fg(fg)
+        .with_bg(LitColor::rgb(fg.r() / 4, fg.g() / 4, fg.b() / 4))
         .with_bold();
 
     if (!leaf.content.empty()) {

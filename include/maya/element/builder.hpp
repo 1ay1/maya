@@ -17,6 +17,7 @@
 #include "element.hpp"
 #include "../layout/columns.hpp"   // kKeepAlways (shared with solve_columns)
 #include "../style/gradient.hpp"   // Gradient (shared with gradient()/gradient_rule())
+#include "../style/theme.hpp"      // theme::live(), to resolve slots at the gradient boundary
 
 #include <concepts>
 #include <algorithm>
@@ -796,9 +797,14 @@ template <typename StyleAt>
 }
 
 /// Two-color gradient text: from (left) → to (right).
+///
+/// Takes Color so a caller may pass a theme slot, and resolves here — the
+/// boundary between "what the author wrote" and "what gets blended". Gradient
+/// itself holds LitColor, because interpolation needs channels.
 [[nodiscard]] inline Element gradient(std::string text, Color from, Color to,
                                       Style base = {}) {
-    return gradient(std::move(text), Gradient::two(from, to), base);
+    const Theme& th = theme::live();
+    return gradient(std::move(text), Gradient::two(th.resolve(from), th.resolve(to)), base);
 }
 
 /// Full-spectrum rainbow text (HSL hue sweep across the width).
@@ -841,7 +847,8 @@ namespace detail {
 [[nodiscard]] inline auto gradient_rule(Color from, Color to, char32_t glyph = U'─')
     -> ComponentBuilder
 {
-    return gradient_rule(Gradient::two(from, to), glyph);
+    const Theme& th = theme::live();
+    return gradient_rule(Gradient::two(th.resolve(from), th.resolve(to)), glyph);
 }
 
 } // namespace detail

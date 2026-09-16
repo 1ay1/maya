@@ -13,6 +13,22 @@
 
 namespace maya {
 
+// The live theme's resolver, as a function pointer.
+//
+// style.hpp sits BELOW theme.hpp and must not include it, but to_sgr() has to
+// turn a slot into something paintable. So the dependency is inverted: this
+// hook is declared here, defined in theme.hpp, and installed at static-init.
+// Until then it is null and to_sgr() treats a slot as "terminal default",
+// which is the honest answer for a colour whose theme has not loaded yet.
+//
+// Only to_sgr() uses it — the hot path (StylePool) calls theme::live()
+// directly, because it is above the layering line and can.
+using ColorResolver = LitColor (*)(Color) noexcept;
+inline ColorResolver& live_color_resolver() noexcept {
+    static ColorResolver r = nullptr;
+    return r;
+}
+
 // ============================================================================
 // Style - Immutable, composable text style descriptor
 // ============================================================================
@@ -163,7 +179,15 @@ struct Style {
 
     /// Build the full ANSI SGR escape sequence for this style.
     /// Returns an empty string when no properties are set (no-op style).
-    [[nodiscard]] std::string to_sgr() const {
+    ///
+    /// `resolve` maps a Color to the LitColor it paints as — explicit, because
+    /// a caller emitting SGR bytes has to say which theme they are in. The
+    /// zero-argument overload below uses the live theme.
+    ///
+    /// The hot path does not come through here (StylePool pre-builds and
+    /// caches SGR runs); this is for tests, logs and one-shot prints.
+    template <class Resolve>
+    [[nodiscard]] std::string to_sgr(Resolve&& resolve) const {
         std::string params;
 
         auto append = [&](const std::string& code) {
@@ -184,11 +208,22 @@ struct Style {
         // could double-hide on terminals that honour it.
         if (strikethrough) append("9");
 
-        if (fg.has_value()) append(fg->fg_sgr());
-        if (bg.has_value()) append(bg->bg_sgr());
+        if (fg.has_value()) append(resolve(*fg).fg_sgr());
+        if (bg.has_value()) append(resolve(*bg).bg_sgr());
 
         if (params.empty()) return {};
         return "\x1b[" + params + "m";
+    }
+
+    /// As above, resolving against the live theme.
+    [[nodiscard]] std::string to_sgr() const {
+        return to_sgr([](Color c) noexcept -> LitColor {
+            if (const auto r = live_color_resolver()) return r(c);
+            // No theme installed yet. A literal still paints correctly; a
+            // slot has no meaning without a theme, so it reads as the
+            // terminal's own ink rather than an invented colour.
+            return LitColor::try_literal(c).value_or(LitColor::default_color());
+        });
     }
 
     /// The universal SGR reset sequence.

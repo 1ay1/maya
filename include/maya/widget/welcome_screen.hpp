@@ -652,17 +652,22 @@ private:
     }
 
     // Fold a Color into a hashable key (kind + payload).
+    //
+    // Over the AUTHORED value, not the painted one — this keys a per-colour
+    // render cache, so two distinct slots must not collide even while they
+    // happen to resolve alike. raw_* is the index-independent spelling that
+    // reads the payload bytes without pretending they are channels.
     [[nodiscard]] static std::uint64_t color_key_(const Color& c) noexcept {
         switch (c.kind()) {
-            case Color::Kind::Default: return 1;
-            case Color::Kind::Named:
-            case Color::Kind::Indexed:
-                return 2 | (static_cast<std::uint64_t>(c.index()) << 8);
-            case Color::Kind::Rgb:
-                return 3 | (static_cast<std::uint64_t>(c.r()) << 8)
-                         | (static_cast<std::uint64_t>(c.g()) << 16)
-                         | (static_cast<std::uint64_t>(c.b()) << 24);
-            case Color::Kind::Slot:
+            case ColorKind::Default: return 1;
+            case ColorKind::Named:
+            case ColorKind::Indexed:
+                return 2 | (static_cast<std::uint64_t>(c.raw_r()) << 8);
+            case ColorKind::Rgb:
+                return 3 | (static_cast<std::uint64_t>(c.raw_r()) << 8)
+                         | (static_cast<std::uint64_t>(c.raw_g()) << 16)
+                         | (static_cast<std::uint64_t>(c.raw_b()) << 24);
+            case ColorKind::Slot:
                 // Fold the slot ENUM, not its channels. Falling through to
                 // the `return 0` below made every slot hash identically, so
                 // two different slots shared a cache entry and the sigil
@@ -760,24 +765,14 @@ private:
     // i.e. near-black, and the sigil painted a dark slab instead of
     // letterforms. The comparison has to happen on the far side of the
     // theme, which is exactly what resolve() is for.
+    //
+    // The kind-by-kind ladder that used to live here is gone: resolve()
+    // returns LitColor, and two LitColors compare as values. The bug is now
+    // unwritable rather than merely fixed — comparing BEFORE resolving does
+    // not compile, because Color has no channels to compare.
     static bool color_eq_(const Color& a_in, const Color& b_in) noexcept {
         const Theme& th = theme::live();
-        const Color a = th.resolve(a_in);
-        const Color b = th.resolve(b_in);
-        if (a.kind() != b.kind()) return false;
-        switch (a.kind()) {
-            case Color::Kind::Default: return true;
-            case Color::Kind::Named:
-            case Color::Kind::Indexed: return a.index() == b.index();
-            case Color::Kind::Rgb:
-                return a.r() == b.r() && a.g() == b.g() && a.b() == b.b();
-            case Color::Kind::Slot:
-                // Unreachable: resolve() above turns a slot into a literal.
-                // Listed so a future slot kind cannot silently fall through
-                // to `false` the way this one did.
-                return a.theme_slot() == b.theme_slot();
-        }
-        return false;
+        return th.resolve(a_in) == th.resolve(b_in);
     }
 
     static std::string small_caps_(std::string_view s) {

@@ -1075,22 +1075,30 @@ Element md_block_to_element(const md::Block& block) {
         [](const md::HtmlBlock& h) -> Element {
             // Delegate raw HTML blocks to the maya::html widget, which parses
             // and renders them as styled terminal Elements. The HTML widget is
-            // themed, so map the markdown palette onto a Theme once so embedded
+            // themed, so map the markdown palette onto a Theme so embedded
             // HTML matches the surrounding markdown's look.
-            static const Theme md_theme = [] {
-                Theme t = theme::native;
-                t.text         = colors::text;
-                t.primary      = colors::heading1;
-                t.accent       = colors::heading2;
-                t.info         = colors::heading3;
-                t.muted        = colors::footnote_fg;
-                t.link         = colors::link_fg;
-                t.surface      = colors::code_bg;
-                t.border       = colors::table_border;
-                t.highlight    = colors::highlight_bg;
-                t.inverse_text = colors::highlight_fg;
-                return t;
-            }();
+            //
+            // NOT `static`. This used to be built once on first use from the
+            // mutable colors:: globals, which froze embedded HTML into
+            // whatever palette happened to be live at that moment — a theme
+            // swap afterwards repainted the markdown around it and left the
+            // HTML on the old colours. The type system found this: the
+            // palette entries are Colors (they may be slots) and a Theme
+            // holds LitColor, so the assignment does not compile without a
+            // resolve, and resolving means naming a theme, and naming one
+            // means saying WHEN — which is now, every time.
+            const Theme& live = theme::live();
+            Theme md_theme = live;
+            md_theme.text         = live.resolve(colors::text);
+            md_theme.primary      = live.resolve(colors::heading1);
+            md_theme.accent       = live.resolve(colors::heading2);
+            md_theme.info         = live.resolve(colors::heading3);
+            md_theme.muted        = live.resolve(colors::footnote_fg);
+            md_theme.link         = live.resolve(colors::link_fg);
+            md_theme.surface      = live.resolve(colors::code_bg);
+            md_theme.border       = live.resolve(colors::table_border);
+            md_theme.highlight    = live.resolve(colors::highlight_bg);
+            md_theme.inverse_text = live.resolve(colors::highlight_fg);
             return html::render(h.content, md_theme);
         },
     }, block.inner);

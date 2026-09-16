@@ -133,13 +133,15 @@ TEST_CASE("motion no visual jump on retarget") {
 TEST_CASE("motion color") {
     std::println("--- test_motion_color ---");
     Clock clk;
-    Motion<Color> c{Color::rgb(0, 0, 0), 0.25};
-    Color v = c.peek();
+    // LitColor: a Motion interpolates channels, so it animates painted
+    // colours. A slot has no channels to travel between.
+    Motion<LitColor> c{Color::rgb(0, 0, 0), 0.25};
+    LitColor v = c.peek();
     assert(v.r() == 0 && v.g() == 0 && v.b() == 0);
     c.to(Color::rgb(255, 128, 64));
     assert(c.moving());
     c.snap(Color::rgb(10, 20, 30));
-    Color s = c.get_on(clk);
+    LitColor s = c.get_on(clk);
     assert(s.r() == 10 && s.g() == 20 && s.b() == 30);
     std::println("PASS");
 }

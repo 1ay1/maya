@@ -125,7 +125,9 @@ TEST_CASE("style merge second wins fg") {
     Style merged = a.merge(b);
     // Second wins for fg color
     assert(merged.fg.has_value());
-    assert(merged.fg->fg_sgr() == "34"); // blue
+    // Resolve before asking for bytes: Style::fg is a Color (it may hold a
+    // slot), and only a resolved colour has an SGR spelling.
+    assert(theme::live().resolve(*merged.fg).fg_sgr() == "34"); // blue
     std::println("PASS\n");
 }
 
@@ -136,7 +138,7 @@ TEST_CASE("style operator pipe") {
     Style combined = a | b;
     assert(combined.bold == true);
     assert(combined.fg.has_value());
-    assert(combined.fg->fg_sgr() == "35"); // magenta
+    assert(theme::live().resolve(*combined.fg).fg_sgr() == "35"); // magenta
     std::println("PASS\n");
 }
 
@@ -172,8 +174,8 @@ TEST_CASE("style predefined dim") {
 
 TEST_CASE("style predefined fg colors") {
     std::println("--- test_style_predefined_fg_colors ---");
-    assert(fg_red.fg.has_value()   && fg_red.fg->fg_sgr()   == "31");
-    assert(fg_green.fg.has_value() && fg_green.fg->fg_sgr() == "32");
+    assert(fg_red.fg.has_value()   && theme::live().resolve(*fg_red.fg).fg_sgr()   == "31");
+    assert(fg_green.fg.has_value() && theme::live().resolve(*fg_green.fg).fg_sgr() == "32");
     std::println("PASS\n");
 }
 
@@ -386,8 +388,11 @@ TEST_CASE("theme discipline: ink slots are never backgrounds") {
     // it can be checked honestly: for a light theme and a dark theme, every
     // surface slot must sit on the same side as its background, and every
     // ink slot on the opposite side.
-    auto lum = [](Color c) {
-        return 0.2126 * c.r() + 0.7152 * c.g() + 0.0722 * c.b();
+    // LitColor: a Theme's slots are resolved by construction, so luminance
+    // is a fair question to ask of them directly.
+    auto lum = [](LitColor c) {
+        const LitColor rgb = c.to_rgb();
+        return 0.2126 * rgb.r() + 0.7152 * rgb.g() + 0.0722 * rgb.b();
     };
 
     int checked = 0;

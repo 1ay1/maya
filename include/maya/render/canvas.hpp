@@ -388,7 +388,11 @@ private:
 
     // ── SGR cache builder ────────────────────────────────────────────────
     static char* write_uint_sgr(char* p, unsigned n) noexcept;
+    // Resolve a Color against the live theme, then emit. The two halves are
+    // separate so a caller holding an already-resolved LitColor can skip the
+    // first without the second having to guess whether it still needs doing.
     static char* append_color_sgr(char* p, const Color& c, bool is_fg) noexcept;
+    static char* append_resolved_sgr(char* p, const LitColor& c, bool is_fg) noexcept;
     static std::string build_sgr(const Style& s);
 
     /// FNV-1a hash over the style's packed representation.

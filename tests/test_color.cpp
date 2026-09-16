@@ -166,8 +166,11 @@ TEST_CASE("color default is white") {
     std::println("--- test_color_default_is_white ---");
     // Default Color() is white (AnsiColor::White = 7)
     Color c;
-    assert(c.kind() == Color::Kind::Named);
-    assert(c.fg_sgr() == "37"); // white fg
+    assert(c.kind() == ColorKind::Named);
+    // Resolve before asking for bytes: only a resolved colour has an SGR
+    // spelling. A default-constructed Color is already literal, so this is
+    // the identity -- but saying so is what keeps the rule uniform.
+    assert(theme::live().resolve(c).fg_sgr() == "37"); // white fg
     std::println("PASS\n");
 }
 

@@ -169,29 +169,30 @@ TEST_CASE("animated spring mode") {
 // ── Colour interpolation ────────────────────────────────────────────────────
 TEST_CASE("color lerp") {
     std::println("--- test_color_lerp ---");
-    Color a = Color::rgb(0, 0, 0);
-    Color b = Color::rgb(255, 255, 255);
-    Color mid = anim::lerp(a, b, 0.5);
+    // LitColor: lerp reads channels, and only a resolved colour has them.
+    LitColor a = Color::rgb(0, 0, 0);
+    LitColor b = Color::rgb(255, 255, 255);
+    LitColor mid = anim::lerp(a, b, 0.5);
     assert(mid.r() == 128 && mid.g() == 128 && mid.b() == 128);
     assert(anim::lerp(a, b, 0.0).r() == 0);
     assert(anim::lerp(a, b, 1.0).r() == 255);
 
     // Colour tween endpoints.
-    auto t = Tween<Color>(Color::rgb(0, 0, 0), Color::rgb(100, 200, 50), 1.0,
-                          ease::linear);
+    auto t = Tween<LitColor>(Color::rgb(0, 0, 0), Color::rgb(100, 200, 50), 1.0,
+                             ease::linear);
     t.tick(1.0);
-    Color end = t.value();
+    LitColor end = t.value();
     assert(end.r() == 100 && end.g() == 200 && end.b() == 50);
     std::println("PASS\n");
 }
 
 TEST_CASE("color spring") {
     std::println("--- test_color_spring ---");
-    auto s = Spring<Color>(Color::rgb(0, 0, 0), spring_presets::snappy);
+    auto s = Spring<LitColor>(Color::rgb(0, 0, 0), spring_presets::snappy);
     s.set_target(Color::rgb(200, 100, 50));
     for (int i = 0; i < 240 && !s.done(); ++i) s.tick(1.0 / 60.0);
     assert(s.done());
-    Color v = s.value();
+    LitColor v = s.value();
     assert(std::abs(int(v.r()) - 200) <= 2);
     assert(std::abs(int(v.g()) - 100) <= 2);
     assert(std::abs(int(v.b()) - 50) <= 2);

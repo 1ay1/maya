@@ -206,7 +206,7 @@ public:
     // Lazy (wraps at layout width); hand to build_with_body() with
     // Config::body_prestyled = true so the chrome doesn't re-recolor it.
     [[nodiscard]] static Element faded_tail(std::string source, int cap,
-                                            Color faded, Color full) {
+                                            LitColor faded, LitColor full) {
         ComponentElement comp;
         comp.render = [source = std::move(source), cap, faded, full]
                       (int w, int) -> Element {
@@ -219,7 +219,7 @@ public:
             std::vector<Element> rows;
             rows.reserve(static_cast<std::size_t>(H));
             for (int i = 0; i < H; ++i) {
-                Color c = full;
+                LitColor c = full;
                 if (capped) {
                     // Concentrate the dissolve in the TOP few rows; the rest
                     // stay full so most of the window is readable.
@@ -309,7 +309,8 @@ private:
                 .style  = BorderStyle::Bold,                // ┃ heavier = a "rail"
                 .sides  = BorderSides{false, false, false, true}, // left only
                 .colors = BorderColors{
-                    .left = live_ ? rail_color() : dim(cfg_.accent),
+                    .left = live_ ? rail_color()
+                                  : dim(theme::live().resolve(cfg_.accent)),
                 },
             };
         }
@@ -327,14 +328,15 @@ private:
     std::int64_t elapsed_ms_ = 0; // host-supplied reasoning duration (0 = hide)
 
     // A dimmer variant of a color for the settled rail (recede once done).
-    static Color dim(Color c) noexcept { return c.darken(0.45f); }
+    static LitColor dim(LitColor c) noexcept { return c.darken(0.45f); }
 
     // Rail hue while live: breathes between dim and full accent in lockstep
     // with the body pulse (same pulse01 phase) so the whole block feels alive
     // while thinking. Flat accent when pulse is off.
-    [[nodiscard]] Color rail_color() const {
-        if (!(cfg_.pulse && live_)) return cfg_.accent;
-        return maya::anim::lerp(dim(cfg_.accent), cfg_.accent,
+    [[nodiscard]] LitColor rail_color() const {
+        const LitColor accent = theme::live().resolve(cfg_.accent);
+        if (!(cfg_.pulse && live_)) return accent;
+        return maya::anim::lerp(dim(accent), accent,
                                 0.45 + 0.55 * pulse01());
     }
 
@@ -380,8 +382,10 @@ private:
         };
 
         // ✦ sigil in the accent hue.
-        push("\xe2\x9c\xa6 ", Style{}.with_fg(live_ ? cfg_.accent
-                                                    : dim(cfg_.accent)));
+        {
+            const LitColor accent = theme::live().resolve(cfg_.accent);
+            push("\xe2\x9c\xa6 ", Style{}.with_fg(live_ ? accent : dim(accent)));
+        }
 
         // The header WORD ("Thinking" / "Reasoned") renders identically in
         // both states — same color, same weight — so the block reads as one
@@ -441,9 +445,13 @@ private:
         const bool pulse = cfg_.pulse && live_;
         const int  tail  = live_ ? cfg_.live_tail_lines : 0;
         const bool structured = cfg_.structured;
-        const Color fg     = cfg_.body_fg;
-        const Color bright = cfg_.body_fg_bright;
-        const Color waypoint = cfg_.waypoint_fg;
+        // Resolved up front: everything below BLENDS these (lerp, darken), and
+        // blending needs channels. cfg_ holds Color so a host may configure a
+        // theme slot; this is the boundary where it becomes a painted colour.
+        const Theme& th_    = theme::live();
+        const LitColor fg     = th_.resolve(cfg_.body_fg);
+        const LitColor bright = th_.resolve(cfg_.body_fg_bright);
+        const LitColor waypoint = th_.resolve(cfg_.waypoint_fg);
         ComponentElement comp;
         comp.render = [body = std::move(body), fg, bright, waypoint,
                        grad, pulse, tail, structured]
@@ -458,7 +466,7 @@ private:
                 total = tail;
             }
             // Gradient endpoint (breathing when pulsing); flat = fg→fg.
-            Color to = fg;
+            LitColor to = fg;
             if (grad) {
                 to = bright;
                 if (pulse) {
@@ -578,7 +586,7 @@ private:
     // When `structured`, paragraphs that OPEN a beat (is_beat) and any bold
     // run (markdown emphasis / headers) get `waypoint` + bold instead, so the
     // reasoning reads as phases. Assumes the tree is materialized.
-    static void apply_gradient(Element& e, Color from, Color to,
+    static void apply_gradient(Element& e, LitColor from, LitColor to,
                                int& idx, int total, int w, int h,
                                bool structured = false,
                                Color waypoint = {}) {
@@ -587,7 +595,7 @@ private:
             if constexpr (std::is_same_v<T, TextElement>) {
                 const double t = total <= 1 ? 1.0
                     : static_cast<double>(idx) / static_cast<double>(total - 1);
-                const Color base = maya::anim::lerp(from, to, t);
+                const LitColor base = maya::anim::lerp(from, to, t);
                 const bool beat = structured && is_beat(node.content);
                 if (beat) {
                     node.style = node.style.with_fg(waypoint).with_bold();

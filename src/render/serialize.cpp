@@ -807,11 +807,17 @@ resolve_caret_hint(const Canvas& canvas,
             if (sid != 0 && pool.is_caret_anchor(sid)) {
                 const Style& st = pool.get(sid);
                 uint32_t color = 0;
-                if (st.fg.has_value() && st.fg->kind() == Color::Kind::Rgb) {
-                    color = 0x01000000u
-                          | (static_cast<uint32_t>(st.fg->r()) << 16)
-                          | (static_cast<uint32_t>(st.fg->g()) << 8)
-                          |  static_cast<uint32_t>(st.fg->b());
+                if (st.fg.has_value()) {
+                    // Resolve first: a caret styled with a theme slot used to
+                    // fail the Rgb test and report "no colour", so a themed
+                    // caret silently lost its tint.
+                    const LitColor c = theme::live().resolve(*st.fg);
+                    if (c.kind() == ColorKind::Rgb) {
+                        color = 0x01000000u
+                              | (static_cast<uint32_t>(c.r()) << 16)
+                              | (static_cast<uint32_t>(c.g()) << 8)
+                              |  static_cast<uint32_t>(c.b());
+                    }
                 }
                 return ResolvedCaret{x, y, st.caret_shape, color};
             }

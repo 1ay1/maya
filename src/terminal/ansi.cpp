@@ -9,6 +9,7 @@
 
 #include "maya/style/color.hpp"
 #include "maya/style/style.hpp"
+#include "maya/style/theme.hpp"   // theme::live(), to resolve slots before emitting
 #include "maya/terminal/tmux.hpp"
 
 namespace maya {
@@ -110,12 +111,15 @@ void erase_lines(int n, std::string& out) {
 // Color SGR sequences
 // ============================================================================
 
+// These take a Color (a host may hand us a slot) and resolve against the live
+// theme before emitting. Without the resolve a slot's enum would be written
+// out as a palette index.
 [[nodiscard]] std::string fg(const Color& c) {
-    return std::format("\x1b[{}m", c.fg_sgr());
+    return std::format("\x1b[{}m", theme::live().resolve(c).fg_sgr());
 }
 
 [[nodiscard]] std::string bg(const Color& c) {
-    return std::format("\x1b[{}m", c.bg_sgr());
+    return std::format("\x1b[{}m", theme::live().resolve(c).bg_sgr());
 }
 
 // ============================================================================
@@ -134,8 +138,10 @@ std::string StyleApplier::apply(const Style& s) {
         }
     }
 
-    if (s.fg) append_param(params, s.fg->fg_sgr());
-    if (s.bg) append_param(params, s.bg->bg_sgr());
+    // Resolve before emitting: a Style may carry a theme slot, whose enum
+    // would otherwise be written out as a palette index.
+    if (s.fg) append_param(params, theme::live().resolve(*s.fg).fg_sgr());
+    if (s.bg) append_param(params, theme::live().resolve(*s.bg).bg_sgr());
 
     if (!params.empty()) {
         out += "\x1b[";
@@ -172,8 +178,8 @@ std::string StyleApplier::transition(const Style& prev, const Style& next) {
                 append_param(params, std::string_view(&code, 1));
             }
         }
-        if (next.fg) append_param(params, next.fg->fg_sgr());
-        if (next.bg) append_param(params, next.bg->bg_sgr());
+        if (next.fg) append_param(params, theme::live().resolve(*next.fg).fg_sgr());
+        if (next.bg) append_param(params, theme::live().resolve(*next.bg).bg_sgr());
 
         if (!params.empty()) {
             out += "\x1b[";
@@ -193,10 +199,10 @@ std::string StyleApplier::transition(const Style& prev, const Style& next) {
     }
 
     if (next.fg != prev.fg && next.fg) {
-        append_param(params, next.fg->fg_sgr());
+        append_param(params, theme::live().resolve(*next.fg).fg_sgr());
     }
     if (next.bg != prev.bg && next.bg) {
-        append_param(params, next.bg->bg_sgr());
+        append_param(params, theme::live().resolve(*next.bg).bg_sgr());
     }
 
     if (params.empty()) return {};
@@ -219,8 +225,8 @@ void StyleApplier::apply_to(const Style& s, std::string& out) {
         if (s.*flag) { sep(); out += code; }
     }
 
-    if (s.fg) { sep(); s.fg->append_fg_sgr(out); }
-    if (s.bg) { sep(); s.bg->append_bg_sgr(out); }
+    if (s.fg) { sep(); theme::live().resolve(*s.fg).append_fg_sgr(out); }
+    if (s.bg) { sep(); theme::live().resolve(*s.bg).append_bg_sgr(out); }
     out += 'm';
 }
 
@@ -251,8 +257,8 @@ void StyleApplier::transition_to(const Style& prev, const Style& next, std::stri
     for (const auto& [flag, code] : sgr_attrs) {
         if (next.*flag && !(prev.*flag)) { mark(); out += code; }
     }
-    if (next.fg && next.fg != prev.fg) { mark(); next.fg->append_fg_sgr(out); }
-    if (next.bg && next.bg != prev.bg) { mark(); next.bg->append_bg_sgr(out); }
+    if (next.fg && next.fg != prev.fg) { mark(); theme::live().resolve(*next.fg).append_fg_sgr(out); }
+    if (next.bg && next.bg != prev.bg) { mark(); theme::live().resolve(*next.bg).append_bg_sgr(out); }
 
     if (any) out += 'm';
 }

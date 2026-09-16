@@ -218,8 +218,6 @@ char* StylePool::write_uint_sgr(char* p, unsigned n) noexcept {
 }
 
 char* StylePool::append_color_sgr(char* p, const Color& in, bool is_fg) noexcept {
-    const int level = active_color_level();
-
     // Resolve a semantic slot against the theme in force.
     //
     // This is THE point where a widget's `Color::slot(ThemeSlot::Accent)`
@@ -231,7 +229,16 @@ char* StylePool::append_color_sgr(char* p, const Color& in, bool is_fg) noexcept
     //
     // Literals pass straight through, so an explicit host override always
     // beats a slot default.
-    const Color themed = theme::live().resolve(in);
+    return append_resolved_sgr(p, theme::live().resolve(in), is_fg);
+}
+
+// Emit one already-resolved colour as SGR parameters.
+//
+// Split from append_color_sgr so a caller that has ALREADY resolved (the
+// background diff below) does not resolve twice, and so the emit half states
+// in its signature that resolution is somebody else's finished business.
+char* StylePool::append_resolved_sgr(char* p, const LitColor& themed, bool is_fg) noexcept {
+    const int level = active_color_level();
 
     // Level 0 is MONOCHROME — NO_COLOR, TERM=dumb, or an explicit
     // MAYA_COLOR=none. Emit the default-colour SGR (39/49) rather than
@@ -244,29 +251,34 @@ char* StylePool::append_color_sgr(char* p, const Color& in, bool is_fg) noexcept
 
     // Downgrade RGB / 256-color to what the terminal can render before
     // emitting (macOS Terminal.app is 256-only and drops 38;2 truecolor).
-    const Color c = themed.degrade(level);
+    const LitColor c = themed.degrade(level);
     switch (c.kind()) {
-        case Color::Kind::Named: {
+        case ColorKind::Named: {
             int base = is_fg ? 30 : 40;
             int code = c.r() < 8 ? base + c.r() : (base + 60) + (c.r() - 8);
             return write_uint_sgr(p, static_cast<unsigned>(code));
         }
-        case Color::Kind::Indexed:
+        case ColorKind::Indexed:
             if (is_fg) { *p++='3'; *p++='8'; } else { *p++='4'; *p++='8'; }
             *p++ = ';'; *p++ = '5'; *p++ = ';';
             return write_uint_sgr(p, c.r());
-        case Color::Kind::Rgb:
+        case ColorKind::Rgb:
             if (is_fg) { *p++='3'; *p++='8'; } else { *p++='4'; *p++='8'; }
             *p++ = ';'; *p++ = '2'; *p++ = ';';
             p = write_uint_sgr(p, c.r()); *p++ = ';';
             p = write_uint_sgr(p, c.g()); *p++ = ';';
             return write_uint_sgr(p, c.b());
-        case Color::Kind::Default:
-            // Terminal default fg/bg. Both call sites currently filter Default
-            // out before calling, so this is defensive: emit the ANSI reset
+        case ColorKind::Default:
+            // Terminal default fg/bg. Most call sites filter Default out
+            // before calling, so this is defensive: emit the ANSI reset
             // (39 = default fg, 49 = default bg) rather than fall through to
             // UB if that invariant ever changes.
             return write_uint_sgr(p, is_fg ? 39u : 49u);
+        case ColorKind::Slot:
+            // Unreachable: `c` is a LitColor, so the compiler knows no slot
+            // can be here. Listed so the switch stays exhaustive under
+            // -Wswitch rather than relying on a default: label.
+            break;
     }
     __builtin_unreachable();
 }
@@ -370,20 +382,24 @@ void StylePool::write_transition_sgr(uint16_t prev_id, uint16_t new_id,
     // and still emits 49, so transparency survives on both paths.
     const Theme& th = theme::live();
     const bool themed = theme::owns_canvas(th);
-    auto effective_bg = [&](const std::optional<Color>& c) -> const Color* {
+    // Resolved, because the COMPARISON has to happen on the far side of the
+    // theme: two slots that differ as written may paint identically, and a
+    // slot and a literal that look different may be the same colour. nullopt
+    // means "terminal default" (emit 49).
+    auto effective_bg = [&](const std::optional<Color>& c) -> std::optional<LitColor> {
         if (c.has_value()) {
-            return c->kind() != Color::Kind::Default ? &*c : nullptr;
+            const LitColor lit = th.resolve(*c);
+            if (lit.kind() == ColorKind::Default) return std::nullopt;
+            return lit;
         }
-        return themed ? &th.background : nullptr;
+        return themed ? std::optional<LitColor>{th.background} : std::nullopt;
     };
-    const Color* from_bg = effective_bg(from.bg);
-    const Color* to_bg   = effective_bg(to.bg);
-    if ((from_bg == nullptr) != (to_bg == nullptr)
-        || (from_bg && to_bg && !(*from_bg == *to_bg)))
-    {
+    const std::optional<LitColor> from_bg = effective_bg(from.bg);
+    const std::optional<LitColor> to_bg   = effective_bg(to.bg);
+    if (from_bg != to_bg) {
         sep();
         if (to_bg) {
-            p = append_color_sgr(p, *to_bg, /*is_fg=*/false);
+            p = append_resolved_sgr(p, *to_bg, /*is_fg=*/false);
         } else {
             *p++ = '4'; *p++ = '9';
         }
@@ -487,20 +503,24 @@ std::size_t StylePool::hash_style(const Style& s) noexcept {
     mix(flags);
     if (s.caret_shape) mix(0xCA00u | s.caret_shape);
 
+    // Hash the AUTHORED value, not the painted one. A slot and the literal it
+    // currently resolves to are different styles that must not share a cache
+    // entry — they diverge the moment the theme changes. raw_* is the
+    // index-independent spelling for exactly this.
     if (s.fg.has_value()) {
         mix(static_cast<uint64_t>(s.fg->kind()) << 24
-          | static_cast<uint64_t>(s.fg->r()) << 16
-          | static_cast<uint64_t>(s.fg->g()) << 8
-          | static_cast<uint64_t>(s.fg->b()));
+          | static_cast<uint64_t>(s.fg->raw_r()) << 16
+          | static_cast<uint64_t>(s.fg->raw_g()) << 8
+          | static_cast<uint64_t>(s.fg->raw_b()));
     } else {
         mix(0xDEAD);
     }
 
     if (s.bg.has_value()) {
         mix(static_cast<uint64_t>(s.bg->kind()) << 24
-          | static_cast<uint64_t>(s.bg->r()) << 16
-          | static_cast<uint64_t>(s.bg->g()) << 8
-          | static_cast<uint64_t>(s.bg->b()));
+          | static_cast<uint64_t>(s.bg->raw_r()) << 16
+          | static_cast<uint64_t>(s.bg->raw_g()) << 8
+          | static_cast<uint64_t>(s.bg->raw_b()));
     } else {
         mix(0xBEEF);
     }

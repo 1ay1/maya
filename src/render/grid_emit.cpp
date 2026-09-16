@@ -52,22 +52,21 @@ inline void put_color(std::string& o, const std::optional<Color>& c_in) {
     if (!c_in) { put_u8(o, 0); return; }              // 0 = Default/inherit
     // Resolve a semantic slot into a literal before it hits the wire. The
     // grid protocol carries CONCRETE colours — a host painting cells has no
-    // theme table and no way to ask — and a slot reaching this switch would
-    // fall through every case and emit nothing at all, desynchronising the
-    // stream. Resolving here is also correct rather than merely safe: the
-    // host should receive whatever the ANSI path would have painted.
-    const Color c = theme::live().resolve(*c_in);
+    // theme table and no way to ask. Resolving here is also correct rather
+    // than merely safe: the host should receive whatever the ANSI path would
+    // have painted.
+    const LitColor c = theme::live().resolve(*c_in);
     switch (c.kind()) {
-        case Color::Kind::Default: put_u8(o, 0); break;
-        case Color::Kind::Named:   put_u8(o, 1); put_u8(o, c.index()); break;
-        case Color::Kind::Indexed: put_u8(o, 2); put_u8(o, c.index()); break;
-        case Color::Kind::Rgb:
+        case ColorKind::Default: put_u8(o, 0); break;
+        case ColorKind::Named:   put_u8(o, 1); put_u8(o, c.index()); break;
+        case ColorKind::Indexed: put_u8(o, 2); put_u8(o, c.index()); break;
+        case ColorKind::Rgb:
             put_u8(o, 3); put_u8(o, c.r()); put_u8(o, c.g()); put_u8(o, c.b());
             break;
-        case Color::Kind::Slot:
-            // Unreachable after resolve(); treated as inherit rather than
-            // silently emitting zero bytes and shifting every later field.
-            put_u8(o, 0);
+        case ColorKind::Slot:
+            // Unreachable, and now provably so: `c` is a LitColor. This used
+            // to be a live hazard — a slot arriving here emitted ZERO bytes
+            // and shifted every later field, desynchronising the stream.
             break;
     }
 }

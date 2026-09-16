@@ -198,39 +198,38 @@ TEST_CASE("html") {
 
     // ── inline CSS styling (state-of-the-art span/style support) ──────
     // color: named
+    //
+    // Compared as VALUES rather than channel-by-channel: `.r()` reads the
+    // payload byte, which only means "red" for an Rgb colour, and the parser
+    // is free to hand back any kind. Equality states the whole expectation
+    // (kind included) in one term.
     MAYA_TEST_CHECK(styled("<span style=\"color:red\">r</span>", "r",
                            [](const Style& s) {
-                               return s.fg && s.fg->kind() == Color::Kind::Rgb &&
-                                      s.fg->r() == 0xFF && s.fg->g() == 0 &&
-                                      s.fg->b() == 0;
+                               return s.fg && *s.fg == Color::rgb(0xFF, 0, 0);
                            }),
                     "<span style=color:red> is truecolor red");
     // color: #rrggbb hex
     MAYA_TEST_CHECK(styled("<span style=\"color:#00ff80\">h</span>", "h",
                            [](const Style& s) {
-                               return s.fg && s.fg->r() == 0x00 &&
-                                      s.fg->g() == 0xFF && s.fg->b() == 0x80;
+                               return s.fg && *s.fg == Color::rgb(0x00, 0xFF, 0x80);
                            }),
                     "<span style=color:#00ff80> parses hex");
     // color: #rgb short hex expands
     MAYA_TEST_CHECK(styled("<span style=\"color:#0f8\">h</span>", "h",
                            [](const Style& s) {
-                               return s.fg && s.fg->r() == 0x00 &&
-                                      s.fg->g() == 0xFF && s.fg->b() == 0x88;
+                               return s.fg && *s.fg == Color::rgb(0x00, 0xFF, 0x88);
                            }),
                     "#rgb short hex expands to #rrggbb");
     // color: rgb() functional
     MAYA_TEST_CHECK(styled("<span style=\"color: rgb(10, 20, 30)\">h</span>", "h",
                            [](const Style& s) {
-                               return s.fg && s.fg->r() == 10 &&
-                                      s.fg->g() == 20 && s.fg->b() == 30;
+                               return s.fg && *s.fg == Color::rgb(10, 20, 30);
                            }),
                     "rgb() functional color parses");
     // background-color
     MAYA_TEST_CHECK(styled("<span style=\"background-color:#112233\">h</span>", "h",
                            [](const Style& s) {
-                               return s.bg && s.bg->r() == 0x11 &&
-                                      s.bg->g() == 0x22 && s.bg->b() == 0x33;
+                               return s.bg && *s.bg == Color::rgb(0x11, 0x22, 0x33);
                            }),
                     "background-color sets bg");
     // font-weight:bold
@@ -252,20 +251,20 @@ TEST_CASE("html") {
     MAYA_TEST_CHECK(styled(
             "<span style=\"color:#ff0000;font-weight:bold;font-style:italic\">h</span>",
             "h", [](const Style& s) {
-                return s.bold && s.italic && s.fg && s.fg->r() == 0xFF;
+                return s.bold && s.italic && s.fg && *s.fg == Color::rgb(0xFF, 0, 0);
             }),
         "multiple ; declarations compose");
     // presentational color= and <font color=>
     MAYA_TEST_CHECK(styled("<font color=\"#00ff00\">g</font>", "g",
                            [](const Style& s) {
-                               return s.fg && s.fg->g() == 0xFF &&
-                                      s.fg->r() == 0 && s.fg->b() == 0;
+                               return s.fg && *s.fg == Color::rgb(0, 0xFF, 0);
                            }),
                     "<font color=...> presentational attr");
     // style= overrides role (bold tag recoloured)
     MAYA_TEST_CHECK(styled("<b style=\"color:#123456\">h</b>", "h",
                            [](const Style& s) {
-                               return s.bold && s.fg && s.fg->r() == 0x12;
+                               return s.bold && s.fg
+                                   && *s.fg == Color::rgb(0x12, 0x34, 0x56);
                            }),
                     "style= overrides role color but keeps bold");
     // the literal tag text must never leak
@@ -281,8 +280,7 @@ TEST_CASE("html") {
             "pre <span style=\"color:#ff0000\">redword</span> post");
         MAYA_TEST_CHECK(styled(e, "redword",
                                [](const Style& s) {
-                                   return s.fg && s.fg->r() == 0xFF &&
-                                          s.fg->g() == 0 && s.fg->b() == 0;
+                                   return s.fg && *s.fg == Color::rgb(0xFF, 0, 0);
                                }),
                         "markdown: <span style=color> colours inline text");
         std::string s; flatten(e, s);
@@ -295,8 +293,8 @@ TEST_CASE("html") {
             "a <span style=\"font-weight:bold;color:#00aaff\">bluebold</span> b");
         MAYA_TEST_CHECK(styled(e, "bluebold",
                                [](const Style& s) {
-                                   return s.bold && s.fg && s.fg->b() == 0xFF &&
-                                          s.fg->g() == 0xAA;
+                                   return s.bold && s.fg
+                                       && *s.fg == Color::rgb(0x00, 0xAA, 0xFF);
                                }),
                         "markdown: span composes bold + color");
     }

@@ -755,7 +755,8 @@ struct Style {
 
     Style merge(const Style& other) const;
     bool  empty() const;
-    std::string to_sgr() const;
+    std::string to_sgr() const;              // resolves via the live theme
+    template <class R> std::string to_sgr(R&& resolve) const;  // explicit theme
 };
 
 Style operator|(const Style& lhs, const Style& rhs);  // Merge
@@ -1209,13 +1210,13 @@ Multi-color "pretty" primitives. Full treatment in
 #include <maya/maya.hpp>          // or <maya/style/gradient.hpp> standalone
 
 struct Gradient {
-    std::vector<Color> stops;
+    std::vector<LitColor> stops;
 
-    Gradient(std::initializer_list<Color> stops);
-    static Gradient two(Color from, Color to);
+    Gradient(std::initializer_list<LitColor> stops);
+    static Gradient two(LitColor from, LitColor to);
 
     // Sample at t ∈ [0,1] (clamped): linear RGB blend across the two nearest
-    // stops. Named/Indexed stops resolve via Color::to_rgb() first.
+    // stops. Named/Indexed stops project via to_rgb() first.
     Color at(float t) const;
 };
 ```

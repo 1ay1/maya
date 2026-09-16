@@ -35,14 +35,20 @@ TEST_CASE("theme constexpr") {
     // literal on purpose — a deck IS a palette, and resolving one through
     // the theme would make every deck identical.
     static_assert(themes::terminal.style_for(Capture::String).fg->kind()
-                  == Color::Kind::Slot);
+                  == ColorKind::Slot);
     // `with()` builder is constexpr and overrides one capture.
     constexpr HighlightTheme custom =
         themes::terminal.with(Capture::Comment, Style{}.with_fg(Color::red()));
-    static_assert(custom.style_for(Capture::Comment).fg->r() == Color::red().r());
+    // Compare colours as VALUES. These used to compare `.r()` on both sides,
+    // which reads the payload byte -- a palette index for a literal and the
+    // ThemeSlot enum for a slot. That made the second assertion a comparison
+    // of two slot ENUMS that happened to hold, and would have kept holding if
+    // the deck had swapped one slot for an unrelated literal of the same
+    // index. Equality asks the question the test means to ask.
+    static_assert(*custom.style_for(Capture::Comment).fg == Color::red());
     // Unmodified captures pass through.
-    static_assert(custom.style_for(Capture::Keyword).fg->r()
-                  == themes::terminal.style_for(Capture::Keyword).fg->r());
+    static_assert(*custom.style_for(Capture::Keyword).fg
+                  == *themes::terminal.style_for(Capture::Keyword).fg);
     std::println("PASS\n");
 }
 

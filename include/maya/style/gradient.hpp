@@ -16,11 +16,20 @@
 //                     Color::hex(0xE74C3C) }}; // red
 //   Color c = health.at(load /* 0..1 */);
 //
-// Stops of ANY Color::Kind work — Named / Indexed are resolved to true RGB
-// via Color::to_rgb() before blending, so the interpolation is always
-// perceptually sensible (the raw r()/g()/b() accessors would mix a palette
-// index as if it were a red channel). Pure arithmetic, constexpr-friendly,
-// no dependencies beyond the color type.
+// Stops of any colour KIND work — Named / Indexed project to true RGB via
+// to_rgb() before blending, so interpolation is always perceptually sensible
+// (the raw r()/g()/b() accessors would mix a palette index as if it were a
+// red channel). Pure arithmetic, constexpr-friendly, no dependencies beyond
+// the color type.
+//
+// Stops are LitColor, not Color: blending needs channels, and a theme slot
+// has none until it is resolved. Handing this a slot used to yield white
+// silently — now it does not compile, and the caller resolves first. A
+// themed gradient is therefore spelled
+//
+//     Gradient{ th.resolve(cfg.from), th.resolve(cfg.to) }
+//
+// which is one call longer and cannot be wrong.
 
 #include "color.hpp"
 
@@ -31,14 +40,14 @@
 namespace maya {
 
 struct Gradient {
-    std::vector<Color> stops;
+    std::vector<LitColor> stops;
 
     Gradient() = default;
-    Gradient(std::initializer_list<Color> s) : stops(s) {}
-    explicit Gradient(std::vector<Color> s) : stops(std::move(s)) {}
+    Gradient(std::initializer_list<LitColor> s) : stops(s) {}
+    explicit Gradient(std::vector<LitColor> s) : stops(std::move(s)) {}
 
     /// Two-stop convenience factory: from → to.
-    [[nodiscard]] static Gradient two(Color from, Color to) {
+    [[nodiscard]] static Gradient two(LitColor from, LitColor to) {
         return Gradient{from, to};
     }
 
@@ -47,8 +56,8 @@ struct Gradient {
 
     /// Sample the gradient at t ∈ [0, 1] (clamped). Blends the two nearest
     /// stops in RGB space. Empty → white; single stop → that stop.
-    [[nodiscard]] Color at(float t) const noexcept {
-        if (stops.empty()) return Color::rgb(255, 255, 255);
+    [[nodiscard]] LitColor at(float t) const noexcept {
+        if (stops.empty()) return LitColor::rgb(255, 255, 255);
         if (stops.size() == 1) return stops.front().to_rgb();
 
         t = std::clamp(t, 0.0f, 1.0f);
@@ -57,14 +66,14 @@ struct Gradient {
         if (i >= stops.size() - 1) return stops.back().to_rgb();
         const float frac = scaled - static_cast<float>(i);
 
-        const Color a = stops[i].to_rgb();
-        const Color b = stops[i + 1].to_rgb();
+        const LitColor a = stops[i].to_rgb();
+        const LitColor b = stops[i + 1].to_rgb();
         auto mix = [frac](uint8_t x, uint8_t y) -> uint8_t {
             const float v = static_cast<float>(x) +
                             (static_cast<float>(y) - static_cast<float>(x)) * frac;
             return static_cast<uint8_t>(std::clamp(v, 0.0f, 255.0f) + 0.5f);
         };
-        return Color::rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()));
+        return LitColor::rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()));
     }
 };
 

@@ -173,13 +173,13 @@ template <typename T>
 // maya truecolor — componentwise lerp on the RGB channels. Rounds to nearest.
 // Only meaningful for Rgb-kind colours; named/indexed degrade to their RGB
 // projection via the accessors, which is adequate for UI fades.
-[[nodiscard]] inline Color lerp(Color a, Color b, double t) noexcept {
+[[nodiscard]] inline LitColor lerp(LitColor a, LitColor b, double t) noexcept {
     auto mix = [t](uint8_t x, uint8_t y) -> uint8_t {
         const double v = static_cast<double>(x) +
                          (static_cast<double>(y) - static_cast<double>(x)) * t;
         return static_cast<uint8_t>(std::clamp(v + 0.5, 0.0, 255.0));
     };
-    return Color::rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()));
+    return LitColor::rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()));
 }
 
 // ============================================================================
@@ -377,9 +377,11 @@ private:
 };
 
 // Colour-specialised scalar_span (max channel delta) lives as an overload so
-// momentum reprojection on Color stays continuous.
+// momentum reprojection on a colour stays continuous. LitColor, because it
+// reads channels — a spring animates between painted colours, and a slot has
+// no channels to travel between.
 template <>
-inline constexpr double Spring<Color>::scalar_span(Color a, Color b) noexcept {
+inline constexpr double Spring<LitColor>::scalar_span(LitColor a, LitColor b) noexcept {
     // Use the constexpr-safe cmath::c_abs (std::abs(int) is not guaranteed
     // constexpr, and MSVC rejects the whole function as never-constant).
     const double dr = cmath::c_abs(double(int(a.r()) - int(b.r())));

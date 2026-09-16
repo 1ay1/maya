@@ -231,20 +231,48 @@ Resize the terminal and the rule re-tiles — no width to compute, ever.
 
 ## Themes
 
-A `Theme` is a struct of 24 named color slots. Using themes keeps your app
+A `Theme` is a struct of 23 named color slots. Using themes keeps your app
 visually consistent and lets users switch palettes:
 
 ```cpp
 struct Theme {
-    Color primary, secondary, accent;
-    Color success, error, warning, info;
-    Color text, inverse_text, muted;
-    Color surface, background, border;
-    Color diff_added, diff_removed, diff_changed;
-    Color highlight, selection, cursor, link;
-    Color placeholder, shadow, overlay;
+    LitColor primary, secondary, accent;
+    LitColor success, error, warning, info;
+    LitColor text, inverse_text, muted;
+    LitColor surface, background, border;
+    LitColor diff_added, diff_removed, diff_changed;
+    LitColor highlight, selection, cursor, link;
+    LitColor placeholder, shadow, overlay;
 };
 ```
+
+### Symbolic vs. literal colour
+
+A colour is indexed by whether a theme slot can still be hiding inside it:
+
+| Type | Alias for | Can hold a slot? | Use it for |
+|------|-----------|------------------|------------|
+| `Color` | `BasicColor<Res::Sym>` | yes | widget `Config` defaults, host overrides, anything *authored* |
+| `LitColor` | `BasicColor<Res::Lit>` | no | `Theme` fields, gradients, anything *painted* |
+
+`Color::slot(...)` exists only on `Color`; the channel accessors (`r()`,
+`to_rgb()`, `degrade()`, `append_fg_sgr()`) exist only on `LitColor`. A
+literal converts to symbolic implicitly — so `Color::rgb(1,2,3)` drops into
+either — but the only way back down is `Theme::resolve()`:
+
+```cpp
+Color    authored = Color::slot(ThemeSlot::Accent);  // what the widget wrote
+LitColor painted  = theme::live().resolve(authored); // what the terminal gets
+
+authored.r();        // compile error: a slot has no red channel
+painted.r();         // fine
+```
+
+That is why `resolve()` is total: `Theme` holds `LitColor`, so a slot cannot
+resolve to another slot, and no consumer has to handle a case it has no
+answer for. If you need the raw payload bytes for a **cache key** rather than
+a colour, use `raw_r()` / `raw_g()` / `raw_b()` — they read the authored value
+without pretending a slot enum is a channel.
 
 ### Built-in Themes
 

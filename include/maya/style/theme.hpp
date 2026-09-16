@@ -36,51 +36,58 @@
 #include <utility>
 
 #include "color.hpp"
+#include "style.hpp"   // Style + live_color_resolver(), installed at the bottom
 
 namespace maya {
 
 // ============================================================================
 // Theme - named color slots for semantic UI coloring
 // ============================================================================
-// 24 named slots covering general UI chrome, status colors, and diff
-// highlighting. Every field has a sensible default so partial overrides
-// via derive() are safe.
+// 23 named slots covering general UI chrome, status colors, and diff
+// highlighting.
+//
+// Every field is a LitColor, and that is load-bearing rather than cosmetic.
+// A slot resolving to another slot made resolve() a PARTIAL function that
+// advertised itself as total: `t.primary = Color::slot(Accent)` used to make
+// resolve() hand back Kind::Slot, and the slot's enum then travelled onward
+// as a red channel. LitColor cannot hold a slot, so the cycle is
+// unrepresentable and resolve() is total because its codomain says so.
 
 struct Theme {
     // --- Primary palette ---
-    Color primary;
-    Color secondary;
-    Color accent;
+    LitColor primary;
+    LitColor secondary;
+    LitColor accent;
 
     // --- Status ---
-    Color success;
-    Color error;
-    Color warning;
-    Color info;
+    LitColor success;
+    LitColor error;
+    LitColor warning;
+    LitColor info;
 
     // --- Text ---
-    Color text;
-    Color inverse_text;
-    Color muted;
+    LitColor text;
+    LitColor inverse_text;
+    LitColor muted;
 
     // --- Surfaces ---
-    Color surface;
-    Color background;
-    Color border;
+    LitColor surface;
+    LitColor background;
+    LitColor border;
 
     // --- Diff ---
-    Color diff_added;
-    Color diff_removed;
-    Color diff_changed;
+    LitColor diff_added;
+    LitColor diff_removed;
+    LitColor diff_changed;
 
     // --- Extras ---
-    Color highlight;
-    Color selection;
-    Color cursor;
-    Color link;
-    Color placeholder;
-    Color shadow;
-    Color overlay;
+    LitColor highlight;
+    LitColor selection;
+    LitColor cursor;
+    LitColor link;
+    LitColor placeholder;
+    LitColor shadow;
+    LitColor overlay;
 
     // ========================================================================
     // derive - create a new theme from a base with compile-time overrides
@@ -102,10 +109,15 @@ struct Theme {
 
     constexpr bool operator==(const Theme&) const = default;
 
-    /// Resolve a slot-kind Color against this theme. Literals pass through
-    /// untouched, so a host override always wins over a widget default.
-    [[nodiscard]] constexpr Color resolve(Color c) const noexcept {
-        if (c.kind() != Color::Kind::Slot) return c;
+    /// Substitute for a slot. Literals pass through untouched, so a host
+    /// override always wins over a widget default.
+    ///
+    /// TOTAL: Sym in, Lit out, no case unhandled and no fallthrough that can
+    /// silently ship a slot onward. The `return text` below is unreachable
+    /// (every enumerator is covered) and exists only to satisfy the compiler
+    /// on a value cast in from outside the enum's range.
+    [[nodiscard]] constexpr LitColor resolve(Color c) const noexcept {
+        if (auto lit = LitColor::try_literal(c)) return *lit;
         switch (c.theme_slot()) {
             case ThemeSlot::Primary:     return primary;
             case ThemeSlot::Secondary:   return secondary;
@@ -303,20 +315,14 @@ inline void set_live(const Theme& t) noexcept {
 // Six of them had grown the same private check against literal
 // bright_black, which stopped being true the moment configs carried the
 // Muted slot instead. One definition, asked on the far side of the theme.
+//
+// The kind-by-kind comparison this used to do is gone: resolve() maps both
+// sides into LitColor, where equality is just equality. That is the shape of
+// the welcome-screen bug too (comparing before resolving), and it cannot be
+// written here any more — Color has no channels to compare.
 [[nodiscard]] inline bool is_muted(const Color& c) noexcept {
-    if (c.kind() == Color::Kind::Slot)
-        return c.theme_slot() == ThemeSlot::Muted;
-    const Color m = live().muted;
-    if (c.kind() != m.kind()) return false;
-    switch (c.kind()) {
-        case Color::Kind::Named:
-        case Color::Kind::Indexed: return c.index() == m.index();
-        case Color::Kind::Rgb:
-            return c.r() == m.r() && c.g() == m.g() && c.b() == m.b();
-        case Color::Kind::Default: return true;
-        case Color::Kind::Slot:    return false;  // handled above
-    }
-    return false;
+    const Theme& t = live();
+    return t.resolve(c) == t.muted;
 }
 
 // ============================================================================
@@ -491,4 +497,22 @@ enum class Polarity : std::uint8_t { Unknown, Dark, Light };
 }
 
 }  // namespace theme
+
+// ============================================================================
+// Install the live resolver into the style layer
+// ============================================================================
+// style.hpp declares live_color_resolver() and cannot fill it: it sits BELOW
+// this header and has never heard of a Theme. Here the live theme is
+// reachable, so the hook is installed at static-init — the dependency is
+// inverted rather than the layering broken, and Style::to_sgr() keeps its
+// convenient zero-argument spelling without style.hpp learning about themes.
+namespace detail {
+inline const bool kResolverInstalled = [] {
+    live_color_resolver() = [](Color c) noexcept -> LitColor {
+        return theme::live().resolve(c);
+    };
+    return true;
+}();
+}  // namespace detail
+
 }  // namespace maya

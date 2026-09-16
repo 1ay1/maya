@@ -314,7 +314,7 @@ TEST_CASE("style pool get roundtrip") {
     Style got = pool.get(id);
     assert(got.bold == true);
     assert(got.fg.has_value());
-    assert(got.fg->fg_sgr() == "31");
+    assert(theme::live().resolve(*got.fg).fg_sgr() == "31");
     std::println("PASS\n");
 }
 

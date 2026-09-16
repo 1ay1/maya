@@ -303,6 +303,14 @@ private:
     // on screen, at 1/7th the wakeups. Scheduling goes through the
     // framework's keep_animating(_after) — widgets never call the run
     // loop's request_animation_frame directly.
+    // When the sigil stops moving and the widget stops asking for frames.
+    //
+    // Shared by animation_age_ms_ (which schedules) and sigil_state_ (which
+    // draws), because they have to agree: if the draw kept bobbing past the
+    // point the scheduler went quiet, the last painted frame would freeze
+    // the letters mid-bounce and a pulse half-lit.
+    static constexpr std::int64_t kSettleAnimMs = 6'000;
+
     static std::int64_t animation_age_ms_() noexcept {
         static anim::Mount mount;
         // peek_ms: keep the mount/remount clock, arm nothing — we choose
@@ -310,8 +318,31 @@ private:
         const std::int64_t age = mount.peek_ms();
         constexpr std::int64_t kCascadeMs      = 1'200;  // > longest stagger+drop
         constexpr std::int64_t kSettledFrameMs =   110;  // ~9 fps: bob/pulse steps
-        if (age < kCascadeMs) anim::keep_animating();
-        else                  anim::keep_animating_after(kSettledFrameMs);
+        // How long the idle bob/heartbeat runs before the sigil goes STATIC.
+        //
+        // It used to run forever, and that is the whole idle cost of an
+        // empty agentty: every one of those ~9 wakes per second rebuilds
+        // the entire Element tree (the welcome screen owns the viewport),
+        // so a window sitting on the welcome screen burned ~6% of a core
+        // and wrote ~5 KB/s to the tty indefinitely — measured, not
+        // theorised. A conversation window, which does not build this
+        // widget, sits at exactly 0%.
+        //
+        // A 1.5 px bob and an 80 ms heartbeat are an ENTRANCE flourish.
+        // Nobody watches a splash screen breathe for an hour; they read
+        // it, then type. So it plays, then settles — same reasoning as
+        // the composer caret's blink-stop, which holds the cursor solid
+        // after 15 s of no input rather than blinking into eternity.
+        //
+        // After this the widget requests NOTHING, so the run loop drops
+        // to its idle poll and the process goes quiet until real input
+        // arrives. Dismissing and re-entering remounts the clock, so the
+        // animation replays when a user would actually see it begin.
+        constexpr std::int64_t kSettleAfterMs  = kSettleAnimMs;
+        if (age < kCascadeMs)          anim::keep_animating();
+        else if (age < kSettleAfterMs) anim::keep_animating_after(kSettledFrameMs);
+        // else: static. No frame request — the screen stops changing and
+        // the loop is free to sleep.
         return age;
     }
 
@@ -615,8 +646,11 @@ private:
 
         SigilState st;
         // Heartbeat — only fires after Phase 1 settles so the cascade
-        // entry doesn't get strobed.
+        // entry doesn't get strobed, and stops once the widget goes
+        // static (kSettleAnimMs) so the final frame is never a half-lit
+        // pulse frozen in place.
         st.in_pulse = age_ms > kPhase1EndMs
+            && age_ms < kSettleAnimMs
             && ((age_ms - kPhase1EndMs) % kPulsePeriod) < kPulseWidth;
 
         // Per-letter Y offset. Combines cascade drop (Phase 1) and
@@ -639,10 +673,21 @@ private:
                 off = kOff * (1.0f - eased);
             } else {
                 // Phase 2 — per-letter sine bob with phase offset.
-                const float t = static_cast<float>(age_ms - drop_end);
-                const float phase = 2.0f * 3.14159265f * t / kBobPeriodMs
-                                  + static_cast<float>(li) * kBobLetterPhase;
-                off = std::sin(phase) * kBobAmp;
+                //
+                // Past kSettleAnimMs the widget stops requesting frames
+                // (see animation_age_ms_), so whatever this returns is the
+                // LAST thing painted and stays on screen. Land it at rest
+                // rather than wherever the sine happened to be: freezing
+                // mid-bob leaves letters parked a pixel off their home row,
+                // which reads as a rendering glitch rather than a design.
+                if (age_ms >= kSettleAnimMs) {
+                    off = 0.0f;
+                } else {
+                    const float t = static_cast<float>(age_ms - drop_end);
+                    const float phase = 2.0f * 3.14159265f * t / kBobPeriodMs
+                                      + static_cast<float>(li) * kBobLetterPhase;
+                    off = std::sin(phase) * kBobAmp;
+                }
             }
             // Snap to integer pixel offset — terminal pixels are
             // integer-grid, anti-aliased bob would just create flicker.

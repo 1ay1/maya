@@ -82,7 +82,8 @@
 
 namespace maya {
 
-/// Swap the running app's palette. No-op before run<>() starts.
+/// Swap the running app's palette. Also valid before run<>() starts — the
+/// theme is held until a Runtime adopts it, rather than dropped.
 inline void app_set_theme(const Theme& t);   // defined below Runtime
 
 
@@ -513,7 +514,18 @@ public:
     void set_theme(const Theme& t) noexcept { theme_ = t; on_theme_changed(theme_); }
 
     /// Publish this runtime's theme slot to app_set_theme().
-    void publish_theme_slot() noexcept { live_theme() = &theme_; }
+    ///
+    /// Carries over whatever the live theme already is. app_set_theme() is
+    /// valid before any Runtime exists (it parks the theme in its own
+    /// storage), so by the time a Runtime adopts the slot the user's scheme
+    /// may already be set — and re-seating the pointer to this Runtime's own
+    /// `theme_` would silently revert to whatever it was constructed with.
+    /// Adoption must not lose a swap that already happened.
+    void publish_theme_slot() noexcept {
+        theme_ = theme::live();
+        live_theme() = &theme_;
+        on_theme_changed(theme_);
+    }
 
     /// The theme the CURRENT run paints with, for hosts whose update path is
     /// pure and so cannot hold a reference to the runtime.
@@ -2722,28 +2734,47 @@ template <CanvasResizeFn ResizeFn, CanvasEventFn EventFn, CanvasPaintFn PaintFn>
         std::forward<PaintFn>(on_paint));
 }
 
-// Swap the running app's palette. A no-op before run<>() has published its
-// slot, so a host that sets a theme during startup is simply ignored rather
-// than writing through a null.
+// Swap the running app's palette.
+//
+// Works BEFORE run<>() has published its slot, and without a Runtime at all.
+// It used to no-op in that window — "a host that sets a theme during startup
+// is simply ignored rather than writing through a null" — which quietly threw
+// the theme away: theme::live() stayed native, and so did every palette
+// PROJECTED from it (markdown's flat colours above all). Anything that built
+// an Element outside a frame — startup, a headless render, a unit test — got
+// the wrong palette with no indication why, and "set the theme, then start
+// the UI" is the obvious order to write.
+//
+// The reason for routing through the Runtime's slot is LIFETIME, not
+// gatekeeping: theme::set_live() stores a POINTER, so it needs storage that
+// outlives the call, and the Runtime owns a Theme by value. When there is no
+// Runtime we own one here instead, seeded to native so the first comparison
+// matches theme::live()'s actual initial state.
 inline void app_set_theme(const Theme& t) {
-    if (Theme* slot = detail::Runtime::live_theme()) {
-        // NO-OP IF UNCHANGED. Hosts resolve their theme per frame (that is
-        // how `auto` follows a tmux detach or an ssh hop), so this is called
-        // on every single frame with the same value almost always. A swap
-        // invalidates the render cache and re-derives projected palettes, so
-        // doing that unconditionally would throw away every cached component
-        // 60 times a second and turn the cache into a pure cost.
-        //
-        // The guard lives HERE rather than in each host because it is a
-        // property of what a swap costs, which is maya's knowledge, not the
-        // caller's.
-        if (*slot == t) return;
-        *slot = t;
-        // Same notification as Runtime::set_theme — this is the path hosts
-        // actually use (they have no Runtime&), so a projected palette that
-        // only re-derived on set_theme would never update in practice.
-        detail::Runtime::on_theme_changed(*slot);
+    Theme* slot = detail::Runtime::live_theme();
+    if (slot == nullptr) {
+        // Pre-runtime storage. Static so the pointer theme::set_live() keeps
+        // stays valid; seeded to native so "set native before startup" is
+        // correctly a no-op rather than a spurious swap.
+        static Theme pre_runtime = theme::native;
+        slot = &pre_runtime;
     }
+    // NO-OP IF UNCHANGED. Hosts resolve their theme per frame (that is
+    // how `auto` follows a tmux detach or an ssh hop), so this is called
+    // on every single frame with the same value almost always. A swap
+    // invalidates the render cache and re-derives projected palettes, so
+    // doing that unconditionally would throw away every cached component
+    // 60 times a second and turn the cache into a pure cost.
+    //
+    // The guard lives HERE rather than in each host because it is a
+    // property of what a swap costs, which is maya's knowledge, not the
+    // caller's.
+    if (*slot == t) return;
+    *slot = t;
+    // Same notification as Runtime::set_theme — this is the path hosts
+    // actually use (they have no Runtime&), so a projected palette that
+    // only re-derived on set_theme would never update in practice.
+    detail::Runtime::on_theme_changed(*slot);
 }
 
 /// Register a callback invoked whenever the live theme is replaced.

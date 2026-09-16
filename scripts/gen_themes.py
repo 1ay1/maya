@@ -327,6 +327,9 @@ def main() -> int:
 
 #include "theme.hpp"
 
+#include <cstddef>
+#include <string_view>
+
 namespace maya::theme {{
 
 {"".join(out)}
@@ -336,6 +339,43 @@ struct NamedTheme {{ const char* name; const Theme* theme; }};
 inline constexpr NamedTheme schemes[] = {{
 {idx}
 }};
+
+// ── Invariants, checked at compile time ────────────────────────────────
+//
+// Emitted by the GENERATOR rather than hand-written into this file, because
+// this file is overwritten on every regeneration — a previous round's
+// asserts were added here by hand and silently vanished the next time
+// gen_themes.py ran. An invariant that a build step can delete is not an
+// invariant.
+
+// 1. SORTED BY NAME. find_scheme() binary-searches this table; an unsorted
+//    entry would make the search miss a scheme that is present, which
+//    surfaces as "unknown scheme — using native" for a theme the user can
+//    see in the picker.
+static_assert([] {{
+    for (std::size_t i = 1; i < std::size(schemes); ++i) {{
+        if (!(std::string_view{{schemes[i - 1].name}}
+              < std::string_view{{schemes[i].name}})) return false;
+    }}
+    return true;
+}}(), "schemes[] must be sorted by name: find_scheme() binary-searches it.");
+
+// 2. TOTAL. A Theme is an aggregate, so adding a slot leaves every
+//    initializer below still legal — each silently value-initializing the
+//    new field to Unset. Well-formed code, unreadable output, invisible to
+//    every test that does not look for it.
+static_assert([] {{
+    for (const auto& s : schemes)
+        if (!s.theme->complete()) return false;
+    return true;
+}}(), "a scheme leaves a theme slot unstated — every entry must give a "
+     "colour for every slot in MAYA_THEME_SLOTS (regenerate with "
+     "scripts/gen_themes.py).");
+
+// 3. native is the fallback for a low colour tier and an unknown name
+//    alike, so it especially cannot have a hole.
+static_assert(native.complete(),
+              "theme::native must state every slot.");
 
 }}  // namespace maya::theme
 """

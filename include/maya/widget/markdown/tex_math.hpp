@@ -942,8 +942,10 @@ struct Parser {
         skip_ws();
         if (peek() == '\\') { ++i; std::string_view w = read_ctrl();
             if (w == ".") return '\0';
-            if (w == "{") return '{'; if (w == "}") return '}';
-            if (w == "langle") return '<'; if (w == "rangle") return '>';
+            if (w == "{") return '{';
+            if (w == "}") return '}';
+            if (w == "langle") return '<';
+            if (w == "rangle") return '>';
             if (w == "|" || w == "Vert" || w == "lVert" || w == "rVert")
                 return '|';
             if (w == "lvert" || w == "rvert" || w == "vert") return '|';

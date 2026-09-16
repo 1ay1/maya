@@ -330,7 +330,7 @@ void StyleApplier::append_param(std::string& params, std::string_view p) {
 
 // Wrap a control sequence in tmux's passthrough envelope so tmux forwards it
 // to the OUTER terminal verbatim instead of swallowing it as unknown.  tmux's
-// format is:  ESC P tmux ; <payload, every inner ESC DOUBLED> ESC \
+// format is:  ESC P tmux ; <payload, every inner ESC DOUBLED>, then ESC-backslash
 // The ESC-doubling is mandatory: tmux un-doubles on the way out, so a single
 // ESC inside the payload would prematurely terminate the DCS.  Returns the
 // sequence UNCHANGED when no tmux is in the path (see tmux_in_path — covers

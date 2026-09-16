@@ -639,7 +639,7 @@ struct ViewportOpts {
                 std::vector<Element> cells_in_row;
                 const int end = std::min(n, start + cols);
                 for (int i = start; i < end; ++i) {
-                    Element cell_el = std::move(cells[static_cast<std::size_t>(i)]);
+                    Element cell_el = cells[static_cast<std::size_t>(i)];
                     const int this_w = cw[static_cast<std::size_t>(i - start)];
                     if (opts.equal_rows) {
                         // No wrapper: set the fixed width on the card itself

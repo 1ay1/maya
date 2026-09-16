@@ -21,7 +21,7 @@
 //
 // Wire envelope (v2):
 //
-//   ESC _ G  <u32 payload_len LE>  <payload>  ESC \
+//   ESC _ G  <u32 payload_len LE>  <payload>  ESC-backslash
 //
 // The payload is RAW BINARY and may contain any byte, INCLUDING the terminator
 // pair ESC \ (0x1b 0x5c) and NUL.  The frame is therefore LENGTH-PREFIXED, not

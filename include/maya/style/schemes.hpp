@@ -1508,4 +1508,30 @@ inline constexpr NamedTheme schemes[] = {
     {"iTerm2 Solarized Light", &iterm2_solarized_light},
 };
 
+// ── Every scheme states every slot ─────────────────────────────────────
+//
+// Checked HERE, at compile time, because this is the file that breaks: a
+// Theme is an aggregate, so adding a slot to MAYA_THEME_SLOTS leaves all 57
+// designated initializers below still legal — each silently value-
+// initializing the new field. That is well-formed code producing an unstated
+// colour, which no test would catch and which a user would meet as one
+// unreadable element on one theme.
+//
+// The loop is constexpr, so "someone added a slot and did not fill it in"
+// is a BUILD failure naming the scheme, not a bug report with a screenshot.
+static_assert([] {
+    for (const auto& s : schemes)
+        if (!s.theme->complete()) return false;
+    return true;
+}(), "a built-in scheme leaves a theme slot unstated — every entry in "
+     "schemes[] must give a colour for every slot in MAYA_THEME_SLOTS. "
+     "If you just added a slot, fill it in for each scheme below (or "
+     "regenerate with scripts/gen_themes.py).");
+
+// native is the fallback for every unresolvable case, so it especially
+// cannot have a hole.
+static_assert(native.complete(),
+              "theme::native must state every slot: it is what a low colour "
+              "tier and an unknown scheme name both fall back to.");
+
 }  // namespace maya::theme

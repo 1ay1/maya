@@ -290,12 +290,21 @@ TEST_CASE("theme reaches markdown, not just the chrome") {
     scheme.surface    = Color::rgb(0x34, 0x36, 0x41);
     scheme.border     = Color::rgb(0x56, 0x57, 0x5F);
     scheme.info       = Color::rgb(0x8B, 0xE9, 0xFD);
+    scheme.link       = Color::rgb(0x6C, 0xB6, 0xFF);
+    scheme.muted      = Color::rgb(0x6E, 0x73, 0x81);
     scheme.background = Color::rgb(0x28, 0x2A, 0x36);
 
+    // The mapping is authored ONCE, in MAYA_MD_PALETTE. It used to be
+    // written twice — the internal.hpp defaults and markdown_palette_from()
+    // — disagreeing on nine of the thirty-seven roles, and this test pinned
+    // the projection's half of the disagreement (code_fg=info,
+    // table_border=border) while markdown actually RENDERED with the other
+    // (code_fg=link, table_border=muted) until the first theme swap. Assert
+    // the single mapping now, so the test cannot drift from what paints.
     const MarkdownPalette p = markdown_palette_from(scheme);
     assert(p.text == scheme.text);
-    assert(p.code_fg == scheme.info);
-    assert(p.table_border == scheme.border);
+    assert(p.code_fg == scheme.link);
+    assert(p.table_border == scheme.muted);
     // The code background is the SURFACE slot, never a literal black: a
     // hardcoded black is a hole punched through a light scheme.
     assert(p.code_bg == scheme.surface);

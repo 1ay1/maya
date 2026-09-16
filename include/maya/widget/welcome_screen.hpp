@@ -659,6 +659,7 @@ private:
     // reads the payload bytes without pretending they are channels.
     [[nodiscard]] static std::uint64_t color_key_(const Color& c) noexcept {
         switch (c.kind()) {
+            case ColorKind::Unset:   return 0;
             case ColorKind::Default: return 1;
             case ColorKind::Named:
             case ColorKind::Indexed:

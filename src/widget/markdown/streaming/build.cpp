@@ -366,7 +366,7 @@ const Element& StreamingMarkdown::build() const {
                     }
                     kids.push_back(Element{TextElement{
                         .content = std::string{buf},
-                        .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+                        .style   = Style{}.with_fg(colors::strike_fg()).with_dim(),
                     }});
                 } else {
                     kids.push_back(*p->blocks[i]);

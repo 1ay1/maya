@@ -52,42 +52,82 @@ namespace maya {
 // resolve() hand back Kind::Slot, and the slot's enum then travelled onward
 // as a red channel. LitColor cannot hold a slot, so the cycle is
 // unrepresentable and resolve() is total because its codomain says so.
+//
+// ── One list ─────────────────────────────────────────────────────────
+//
+// MAYA_THEME_SLOTS below is the single authored statement of what a slot
+// IS. The ThemeSlot enum, the struct's fields, resolve()'s switch, the
+// field-name table and the completeness check are all generated from it.
+//
+// A slot used to be four separate edits — enum, field, switch arm, and every
+// scheme — and missing any one of them failed differently: a missing switch
+// arm is a -Wswitch warning (only fatal under MAYA_WERROR, which is CI-only),
+// while a missing FIELD in the 57 designated-initializer schemes was silent
+// and became ColorKind::Unset. Now the first three cannot disagree because
+// they are one statement, and the fourth is caught by complete() below.
+//
+// The struct stays a plain aggregate: `Theme{.primary = ..., ...}` is exactly
+// as before, which is what keeps all 57 schemes and every derive() call site
+// untouched.
+
+#define MAYA_THEME_SLOTS(X)                                                   \
+    /* --- Primary palette --- */                                             \
+    X(primary,      Primary)                                                  \
+    X(secondary,    Secondary)                                                \
+    X(accent,       Accent)                                                   \
+    /* --- Status --- */                                                      \
+    X(success,      Success)                                                  \
+    X(error,        Error)                                                    \
+    X(warning,      Warning)                                                  \
+    X(info,         Info)                                                     \
+    /* --- Text --- */                                                        \
+    X(text,         Text)                                                     \
+    X(inverse_text, InverseText)                                              \
+    X(muted,        Muted)                                                    \
+    /* --- Surfaces --- */                                                    \
+    X(surface,      Surface)                                                  \
+    X(background,   Background)                                               \
+    X(border,       Border)                                                   \
+    /* --- Diff --- */                                                        \
+    X(diff_added,   DiffAdded)                                                \
+    X(diff_removed, DiffRemoved)                                              \
+    X(diff_changed, DiffChanged)                                              \
+    /* --- Extras --- */                                                      \
+    X(highlight,    Highlight)                                                \
+    X(selection,    Selection)                                                \
+    X(cursor,       Cursor)                                                   \
+    X(link,         Link)                                                     \
+    X(placeholder,  Placeholder)                                              \
+    X(shadow,       Shadow)                                                   \
+    X(overlay,      Overlay)
+
+// The slot count, from the list rather than a hand-kept number.
+inline constexpr std::size_t kThemeSlotCount = [] {
+    std::size_t n = 0;
+#define X(f, E) ++n;
+    MAYA_THEME_SLOTS(X)
+#undef X
+    return n;
+}();
+
+static_assert(kThemeSlotCount == static_cast<std::size_t>(ThemeSlot::Overlay) + 1,
+              "MAYA_THEME_SLOTS and the ThemeSlot enum disagree: color.hpp "
+              "declares the enum, this list must name every enumerator.");
+
+/// The struct-field name of a slot, for diagnostics and settings UI.
+[[nodiscard]] constexpr std::string_view slot_field_name(ThemeSlot s) noexcept {
+    switch (s) {
+#define X(f, E) case ThemeSlot::E: return #f;
+        MAYA_THEME_SLOTS(X)
+#undef X
+    }
+    return "?";
+}
 
 struct Theme {
-    // --- Primary palette ---
-    LitColor primary;
-    LitColor secondary;
-    LitColor accent;
-
-    // --- Status ---
-    LitColor success;
-    LitColor error;
-    LitColor warning;
-    LitColor info;
-
-    // --- Text ---
-    LitColor text;
-    LitColor inverse_text;
-    LitColor muted;
-
-    // --- Surfaces ---
-    LitColor surface;
-    LitColor background;
-    LitColor border;
-
-    // --- Diff ---
-    LitColor diff_added;
-    LitColor diff_removed;
-    LitColor diff_changed;
-
-    // --- Extras ---
-    LitColor highlight;
-    LitColor selection;
-    LitColor cursor;
-    LitColor link;
-    LitColor placeholder;
-    LitColor shadow;
-    LitColor overlay;
+#define X(f, E) LitColor f;
+    MAYA_THEME_SLOTS(X)
+#undef X
 
     // ========================================================================
     // derive - create a new theme from a base with compile-time overrides
@@ -109,6 +149,33 @@ struct Theme {
 
     constexpr bool operator==(const Theme&) const = default;
 
+    // ========================================================================
+    // Completeness — every slot was actually stated
+    // ========================================================================
+    // A Theme is an aggregate, so a designated initializer that omits a field
+    // is legal and value-initializes it. That is the trap this guards: add a
+    // slot to MAYA_THEME_SLOTS and all 57 schemes below silently acquire an
+    // unstated colour for it, well-formed and invisible to every test.
+    //
+    // Unset (ColorKind's default) is what makes the omission detectable — it
+    // is a state no deliberate choice can produce, unlike the white a
+    // default-constructed Color used to be.
+
+    /// The first slot nobody stated, or nullopt when the theme is total.
+    /// Returns the SLOT rather than a bool so a failing static_assert can be
+    /// chased with slot_field_name(*t.first_unset()).
+    [[nodiscard]] constexpr std::optional<ThemeSlot> first_unset() const noexcept {
+#define X(f, E) if (!f.is_set()) return ThemeSlot::E;
+        MAYA_THEME_SLOTS(X)
+#undef X
+        return std::nullopt;
+    }
+
+    /// Did this theme state every slot?
+    [[nodiscard]] constexpr bool complete() const noexcept {
+        return !first_unset().has_value();
+    }
+
     /// Substitute for a slot. Literals pass through untouched, so a host
     /// override always wins over a widget default.
     ///
@@ -119,29 +186,9 @@ struct Theme {
     [[nodiscard]] constexpr LitColor resolve(Color c) const noexcept {
         if (auto lit = LitColor::try_literal(c)) return *lit;
         switch (c.theme_slot()) {
-            case ThemeSlot::Primary:     return primary;
-            case ThemeSlot::Secondary:   return secondary;
-            case ThemeSlot::Accent:      return accent;
-            case ThemeSlot::Success:     return success;
-            case ThemeSlot::Error:       return error;
-            case ThemeSlot::Warning:     return warning;
-            case ThemeSlot::Info:        return info;
-            case ThemeSlot::Text:        return text;
-            case ThemeSlot::InverseText: return inverse_text;
-            case ThemeSlot::Muted:       return muted;
-            case ThemeSlot::Surface:     return surface;
-            case ThemeSlot::Background:  return background;
-            case ThemeSlot::Border:      return border;
-            case ThemeSlot::DiffAdded:   return diff_added;
-            case ThemeSlot::DiffRemoved: return diff_removed;
-            case ThemeSlot::DiffChanged: return diff_changed;
-            case ThemeSlot::Highlight:   return highlight;
-            case ThemeSlot::Selection:   return selection;
-            case ThemeSlot::Cursor:      return cursor;
-            case ThemeSlot::Link:        return link;
-            case ThemeSlot::Placeholder: return placeholder;
-            case ThemeSlot::Shadow:      return shadow;
-            case ThemeSlot::Overlay:     return overlay;
+#define X(f, E) case ThemeSlot::E: return f;
+            MAYA_THEME_SLOTS(X)
+#undef X
         }
         return text;
     }

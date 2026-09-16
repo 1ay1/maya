@@ -57,6 +57,7 @@ inline void put_color(std::string& o, const std::optional<Color>& c_in) {
     // have painted.
     const LitColor c = theme::live().resolve(*c_in);
     switch (c.kind()) {
+        case ColorKind::Unset:
         case ColorKind::Default: put_u8(o, 0); break;
         case ColorKind::Named:   put_u8(o, 1); put_u8(o, c.index()); break;
         case ColorKind::Indexed: put_u8(o, 2); put_u8(o, c.index()); break;

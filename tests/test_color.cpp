@@ -162,15 +162,24 @@ TEST_CASE("color kind variants") {
     std::println("PASS\n");
 }
 
-TEST_CASE("color default is white") {
-    std::println("--- test_color_default_is_white ---");
-    // Default Color() is white (AnsiColor::White = 7)
+TEST_CASE("color default is unset") {
+    std::println("--- test_color_default_is_unset ---");
+    // A default-constructed Color used to be Named(7) — white. That made a
+    // FORGOTTEN Theme field and a deliberate white the same bits, so adding
+    // a slot to MAYA_THEME_SLOTS silently gave all 57 schemes a hardcoded
+    // white for it: well-formed, invisible to tests, unreadable on a light
+    // scheme. The default is now a distinct Unset state, which is what lets
+    // Theme::complete() reject a partial scheme at compile time.
     Color c;
-    assert(c.kind() == ColorKind::Named);
-    // Resolve before asking for bytes: only a resolved colour has an SGR
-    // spelling. A default-constructed Color is already literal, so this is
-    // the identity -- but saying so is what keeps the rule uniform.
-    assert(theme::live().resolve(c).fg_sgr() == "37"); // white fg
+    assert(c.kind() == ColorKind::Unset);
+    assert(!c.is_set());
+    // It paints as inherit — the terminal's own ink — so the failure mode is
+    // "looks unstyled", never a colour maya invented.
+    assert(theme::live().resolve(c).fg_sgr() == "39");
+    // An explicit white is still an explicit white, and is NOT the default.
+    assert(Color::white().kind() == ColorKind::Named);
+    assert(theme::live().resolve(Color::white()).fg_sgr() == "37");
+    assert(!(c == Color::white()));
     std::println("PASS\n");
 }
 

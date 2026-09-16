@@ -43,8 +43,8 @@ namespace {
     pal.normal = inherited;
     pal.op     = inherited.with_bold();
     pal.num    = inherited;
-    pal.rule   = inherited.with_fg(colors::strike_fg);
-    pal.delim  = inherited.with_fg(colors::link_fg);
+    pal.rule   = inherited.with_fg(colors::strike_fg());
+    pal.delim  = inherited.with_fg(colors::link_fg());
     pal.text   = inherited;
     return pal;
 }
@@ -68,15 +68,15 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             out += t.content;
         },
         [&](const md::Bold& b) {
-            auto sty = fold_style(inherited, Style{}.with_bold().with_fg(colors::bold_fg));
+            auto sty = fold_style(inherited, Style{}.with_bold().with_fg(colors::bold_fg()));
             for (auto& child : b.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::Italic& it) {
-            auto sty = fold_style(inherited, Style{}.with_italic().with_fg(colors::italic_fg));
+            auto sty = fold_style(inherited, Style{}.with_italic().with_fg(colors::italic_fg()));
             for (auto& child : it.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::BoldItalic& bi) {
-            auto sty = fold_style(inherited, Style{}.with_bold().with_italic().with_fg(colors::bold_fg));
+            auto sty = fold_style(inherited, Style{}.with_bold().with_italic().with_fg(colors::bold_fg()));
             for (auto& child : bi.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::Code& c) {
@@ -90,13 +90,13 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             // "chip with spaces" wrap bug doesn't reappear. On terminals
             // without true-color the ANSI black slot still produces a
             // visible step against default bg.
-            auto sty = Style{}.with_fg(colors::code_fg)
-                              .with_bg(colors::code_bg);
+            auto sty = Style{}.with_fg(colors::code_fg())
+                              .with_bg(colors::code_bg());
             runs.push_back({out.size(), c.content.size(), sty});
             out += c.content;
         },
         [&](const md::Link& l) {
-            auto sty = Style{}.with_fg(colors::link_fg).with_underline();
+            auto sty = Style{}.with_fg(colors::link_fg()).with_underline();
             runs.push_back({out.size(), l.text.size(), sty});
             out += l.text;
         },
@@ -128,22 +128,22 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             if (label.empty()) label = "image";
 
             std::string display = "\xf0\x9f\x96\xbc " + label;
-            auto sty = Style{}.with_fg(colors::image_fg).with_italic();
+            auto sty = Style{}.with_fg(colors::image_fg()).with_italic();
             runs.push_back({out.size(), display.size(), sty});
             out += display;
         },
         [&](const md::Strike& s) {
-            auto sty = fold_style(inherited, Style{}.with_strikethrough().with_fg(colors::strike_fg));
+            auto sty = fold_style(inherited, Style{}.with_strikethrough().with_fg(colors::strike_fg()));
             for (auto& child : s.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::Highlight& h) {
             auto sty = fold_style(inherited,
-                Style{}.with_bg(colors::highlight_bg).with_fg(colors::highlight_fg));
+                Style{}.with_bg(colors::highlight_bg()).with_fg(colors::highlight_fg()));
             for (auto& child : h.children) flatten_inline(child, sty, out, runs);
         },
         [&](const md::Sub& sb) {
             size_t start = out.size();
-            auto sty = fold_style(inherited, Style{}.with_fg(colors::strike_fg));
+            auto sty = fold_style(inherited, Style{}.with_fg(colors::strike_fg()));
             out += "_{";
             for (auto& child : sb.children) flatten_inline(child, sty, out, runs);
             out += "}";
@@ -152,7 +152,7 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
         },
         [&](const md::Sup& sp) {
             size_t start = out.size();
-            auto sty = fold_style(inherited, Style{}.with_fg(colors::strike_fg));
+            auto sty = fold_style(inherited, Style{}.with_fg(colors::strike_fg()));
             out += "^{";
             for (auto& child : sp.children) flatten_inline(child, sty, out, runs);
             out += "}";
@@ -173,9 +173,9 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             // dimmed so the chip outline is visible without
             // out-competing the key glyphs themselves.
             auto bracket_sty =
-                Style{}.with_fg(colors::kbd_border).with_dim();
+                Style{}.with_fg(colors::kbd_border()).with_dim();
             auto inner_sty = fold_style(inherited,
-                Style{}.with_bold().with_fg(colors::kbd_fg));
+                Style{}.with_bold().with_fg(colors::kbd_fg()));
             static constexpr std::string_view kOpen  = "\xe2\x95\xb6 "; // ╶ + space
             static constexpr std::string_view kClose = " \xe2\x95\xb4"; // space + ╴
             runs.push_back({out.size(), kOpen.size(), bracket_sty});
@@ -189,19 +189,19 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
             for (auto& child : a.children) flatten_inline(child, sty, out, runs);
             if (!a.title.empty()) {
                 std::string suffix = " (" + a.title + ")";
-                auto suf_sty = Style{}.with_fg(colors::footnote_fg).with_italic();
+                auto suf_sty = Style{}.with_fg(colors::footnote_fg()).with_italic();
                 runs.push_back({out.size(), suffix.size(), suf_sty});
                 out += suffix;
             }
         },
         [&](const md::Mention& m) {
-            auto sty = Style{}.with_fg(colors::mention_fg);
+            auto sty = Style{}.with_fg(colors::mention_fg());
             runs.push_back({out.size(), m.display.size(), sty});
             out += m.display;
         },
         [&](const md::FootnoteRef& f) {
             auto content = "[" + f.label + "]";
-            auto sty = Style{}.with_fg(colors::footnote_fg).with_italic();
+            auto sty = Style{}.with_fg(colors::footnote_fg()).with_italic();
             runs.push_back({out.size(), content.size(), sty});
             out += content;
         },
@@ -219,7 +219,7 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
         [&](const md::RawInline& r) {
             // Verbatim inline HTML / passthrough — show the literal text
             // dimmed so it's visibly "raw" without dominating prose.
-            auto sty = fold_style(inherited, Style{}.with_fg(colors::footnote_fg));
+            auto sty = fold_style(inherited, Style{}.with_fg(colors::footnote_fg()));
             runs.push_back({out.size(), r.content.size(), sty});
             out += r.content;
         },
@@ -242,18 +242,18 @@ static void flatten_inline(const md::Inline& span, const Style& inherited,
 [[nodiscard]] static Style html_role_style(html::Role r, Style cur) {
     using R = html::Role;
     switch (r) {
-        case R::Bold:      return cur.with_bold().with_fg(colors::bold_fg);
-        case R::Italic:    return cur.with_italic().with_fg(colors::italic_fg);
+        case R::Bold:      return cur.with_bold().with_fg(colors::bold_fg());
+        case R::Italic:    return cur.with_italic().with_fg(colors::italic_fg());
         case R::Underline: return cur.with_underline();
-        case R::Strike:    return cur.with_strikethrough().with_fg(colors::strike_fg);
-        case R::Code:      return cur.with_fg(colors::code_fg).with_bg(colors::code_bg);
-        case R::KeyCap:    return cur.with_bold().with_fg(colors::kbd_fg);
-        case R::Mark:      return cur.with_bg(colors::highlight_bg)
-                                     .with_fg(colors::highlight_fg);
+        case R::Strike:    return cur.with_strikethrough().with_fg(colors::strike_fg());
+        case R::Code:      return cur.with_fg(colors::code_fg()).with_bg(colors::code_bg());
+        case R::KeyCap:    return cur.with_bold().with_fg(colors::kbd_fg());
+        case R::Mark:      return cur.with_bg(colors::highlight_bg())
+                                     .with_fg(colors::highlight_fg());
         case R::Small:     return cur.with_dim();
         case R::Sub:
-        case R::Sup:       return cur.with_fg(colors::strike_fg);
-        case R::Link:      return cur.with_fg(colors::link_fg).with_underline();
+        case R::Sup:       return cur.with_fg(colors::strike_fg());
+        case R::Link:      return cur.with_fg(colors::link_fg()).with_underline();
         case R::None:
         case R::Break:     break;
     }
@@ -368,13 +368,13 @@ static void flatten_inlines(const std::vector<md::Inline>& spans,
 Element md_inline_to_element(const md::Inline& span) {
     std::string content;
     std::vector<StyledRun> runs;
-    flatten_inline(span, Style{}.with_fg(colors::text), content, runs);
+    flatten_inline(span, Style{}.with_fg(colors::text()), content, runs);
     if (runs.size() <= 1 && !runs.empty()) {
         return Element{TextElement{.content = std::move(content), .style = runs[0].style}};
     }
     return Element{TextElement{
         .content = std::move(content),
-        .style = Style{}.with_fg(colors::text),
+        .style = Style{}.with_fg(colors::text()),
         .runs = std::move(runs),
     }};
 }
@@ -383,7 +383,7 @@ Element md_inline_to_element(const md::Inline& span) {
 static int measure_inline_width(const std::vector<md::Inline>& spans) {
     std::string content;
     std::vector<StyledRun> runs;
-    Style base = Style{}.with_fg(colors::text);
+    Style base = Style{}.with_fg(colors::text());
     flatten_inlines(spans, base, content, runs);
     return string_width(content);
 }
@@ -394,7 +394,7 @@ static Element build_inline_row(const std::vector<md::Inline>& spans) {
 
     std::string content;
     std::vector<StyledRun> runs;
-    Style base = Style{}.with_fg(colors::text);
+    Style base = Style{}.with_fg(colors::text());
 
     flatten_inlines(spans, base, content, runs);
 
@@ -427,14 +427,14 @@ static Element render_list(const md::List& l, int depth) {
             // Zed style: ✓/○ for task lists
             if (*item.checked) {
                 prefix = "  \xe2\x9c\x93 ";  // "  ✓ "
-                prefix_style = Style{}.with_fg(colors::checkbox_fg);
+                prefix_style = Style{}.with_fg(colors::checkbox_fg());
             } else {
                 prefix = "  \xe2\x97\x8b ";  // "  ○ "
-                prefix_style = Style{}.with_fg(colors::checkbox_off);
+                prefix_style = Style{}.with_fg(colors::checkbox_off());
             }
         } else if (l.ordered) {
             prefix = "  " + std::to_string(num++) + ". ";
-            prefix_style = Style{}.with_fg(colors::list_num);
+            prefix_style = Style{}.with_fg(colors::list_num());
         } else if (depth == 0) {
             // ▸ (U+25B8, black right-pointing small triangle) reads as
             // a directional "item start" cue — heavier than • (which
@@ -442,13 +442,13 @@ static Element render_list(const md::List& l, int depth) {
             // unambiguously punctuation, not stray text. Bold + bullet
             // color so it's the visual anchor for each list item.
             prefix = "  \xe2\x96\xb8 ";  // "  ▸ "
-            prefix_style = Style{}.with_fg(colors::list_bullet).with_bold();
+            prefix_style = Style{}.with_fg(colors::list_bullet()).with_bold();
         } else {
             // Nested items step down in visual weight: hollow ◦
             // signals "sub-item" without competing with the parent
             // ▸. Extra two-space indent reinforces the hierarchy.
             prefix = "    \xe2\x97\xa6 ";  // "    ◦ "
-            prefix_style = Style{}.with_fg(colors::list_bullet);
+            prefix_style = Style{}.with_fg(colors::list_bullet());
         }
 
         // Hanging-indent layout: render the bullet/number marker as its own
@@ -463,7 +463,7 @@ static Element render_list(const md::List& l, int depth) {
 
         std::string body;
         std::vector<StyledRun> body_runs;
-        Style base = Style{}.with_fg(colors::text);
+        Style base = Style{}.with_fg(colors::text());
         flatten_inlines(item.spans, base, body, body_runs);
         Element body_elem = (body_runs.size() == 1)
             ? Element{TextElement{

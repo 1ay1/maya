@@ -170,7 +170,20 @@ enum class Res : bool { Sym, Lit };
 // kind is a property of the COLOUR, not of its resolution state, and nesting
 // it would give Color::Kind::Rgb and LitColor::Kind::Rgb as two unrelated
 // types that will not compare.
-enum class ColorKind : uint8_t { Named, Indexed, Rgb, Default, Slot };
+//
+// `Unset` is the DEFAULT, and it is what a value-initialized colour is. It
+// exists so "nobody filled this in" is a state the type can tell you about,
+// instead of a state that looks exactly like a deliberate choice.
+//
+// Before it, BasicColor() was Named(7) — white. That is a real colour a
+// scheme might mean, so a FORGOTTEN Theme field and an intentional white
+// were the same bits, and nothing could distinguish them. Add a slot to
+// Theme and all 57 designated-initializer schemes silently acquire a
+// hardcoded white for it: unreadable on a light scheme, and invisible to
+// every test, because the value is well-formed. Unset makes that
+// omission nameable, which is what lets Theme::complete() reject it at
+// compile time.
+enum class ColorKind : uint8_t { Unset, Named, Indexed, Rgb, Default, Slot };
 
 template <Res R> class BasicColor;
 using Color    = BasicColor<Res::Sym>;
@@ -193,7 +206,17 @@ private:
 
 public:
     // Constructors - all constexpr
-    constexpr BasicColor() noexcept : kind_(Kind::Named), r_(7), g_(0), b_(0) {} // default white
+    //
+    // Value-initializes to UNSET, not to white. See ColorKind::Unset: a
+    // default-constructed colour is "nobody said", and saying so is what
+    // makes a forgotten Theme slot a compile error rather than a plausible
+    // wrong colour. Anything that paints treats Unset as the terminal's own
+    // ink (the same answer Default gives), so the failure mode is inherit,
+    // never a colour maya invented.
+    constexpr BasicColor() noexcept : kind_(Kind::Unset), r_(0), g_(0), b_(0) {}
+
+    /// Was this colour ever given a value?
+    [[nodiscard]] constexpr bool is_set() const noexcept { return kind_ != Kind::Unset; }
 
     constexpr explicit BasicColor(AnsiColor c) noexcept
         : kind_(Kind::Named), r_(static_cast<uint8_t>(c)), g_(0), b_(0) {}
@@ -272,6 +295,10 @@ public:
     /// Named `try_` because the failure is a real case, not a contract
     /// violation: asking a variable for its value is a fair question with the
     /// honest answer "not yet".
+    ///
+    /// Unset narrows fine, and deliberately: "nobody stated a colour" IS a
+    /// paintable answer (inherit, SGR 39/49), unlike a slot, which is a
+    /// question the theme has to answer first.
     static constexpr std::optional<LitColor> try_literal(Color c) noexcept
         requires (R == Res::Lit)
     {
@@ -380,6 +407,7 @@ public:
     {
         if (level >= 3) return *this;
         switch (kind_) {
+            case Kind::Unset:
             case Kind::Default:
             case Kind::Named:
                 return *this;
@@ -412,6 +440,9 @@ public:
             case Kind::Rgb:
                 return "38;2;" + std::to_string(r_) + ";" +
                        std::to_string(g_) + ";" + std::to_string(b_);
+            // Unset paints as inherit: nobody stated a colour, so the
+            // terminal's own ink is the only honest answer.
+            case Kind::Unset:
             case Kind::Default:
                 return "39";
             case Kind::Slot:
@@ -432,6 +463,7 @@ public:
             case Kind::Rgb:
                 return "48;2;" + std::to_string(r_) + ";" +
                        std::to_string(g_) + ";" + std::to_string(b_);
+            case Kind::Unset:
             case Kind::Default:
                 return "49";
             case Kind::Slot:
@@ -470,6 +502,7 @@ public:
                 out.append(buf, p3);
                 break;
             }
+            case Kind::Unset:
             case Kind::Default:
                 out += "39";
                 break;
@@ -501,6 +534,7 @@ public:
                 out.append(buf, p3);
                 break;
             }
+            case Kind::Unset:
             case Kind::Default:
                 out += "49";
                 break;
@@ -561,6 +595,7 @@ public:
                                        static_cast<uint8_t>(c.g),
                                        static_cast<uint8_t>(c.b));
             }
+            case Kind::Unset:
             case Kind::Default:
                 return BasicColor::rgb(255, 255, 255);
             case Kind::Slot:

@@ -794,7 +794,7 @@ Element StreamingMarkdown::render_committed_block_(std::size_t i) const {
             [stub = std::move(stub)](int, int) -> Element {
                 return Element{TextElement{
                     .content = stub,
-                    .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+                    .style   = Style{}.with_fg(colors::strike_fg()).with_dim(),
                 }};
             };
     } else {

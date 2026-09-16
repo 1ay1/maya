@@ -8,8 +8,10 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -17,6 +19,7 @@
 
 #include "maya/element/builder.hpp"
 #include "maya/style/style.hpp"
+#include "maya/style/theme.hpp"   // Theme + slots, for the palette projection
 #include "maya/widget/markdown.hpp"
 
 namespace maya {
@@ -66,61 +69,170 @@ namespace maya {
 //                   as a heading-of-the-table.
 //   alert_*       — kept on their semantic ANSI slot.
 // ============================================================================
+// ============================================================================
+// The markdown palette — ONE authored mapping, published atomically
+// ============================================================================
+// MAYA_MD_PALETTE below is the single statement of "which theme slot does
+// each markdown role use". The MarkdownPalette struct, the projection from a
+// Theme, and the defaults are all generated from it.
+//
+// It used to be authored TWICE — these defaults, and markdown_palette_from()
+// in render_block.cpp — and the two disagreed on NINE of thirty-seven roles
+// (heading1/2/3, table_header, highlight_fg, code_border, hrule_fg, code_fg,
+// mention_fg). So markdown rendered under mapping A until the first theme
+// swap and mapping B forever after: headings, code spans and links visibly
+// shifted colour on a swap that changed nothing else, and swapping to the
+// SAME theme still moved them. Two hand-written 37-field lists cannot be
+// kept in agreement by review; one list cannot disagree with itself.
+//
+// ── Why a snapshot behind an atomic ────────────────────────────────────
+//
+// These were 35 plain mutable globals, written by the UI thread in
+// set_markdown_palette() and read by the markdown render path — which
+// includes a DETACHED std::thread doing the streaming re-parse (see
+// streaming/async.cpp), across ~124 reads in render_block/render_inline/
+// render_tail. That is a data race by construction, and the appearance
+// panel has no streaming gate, so live-previewing a theme mid-response is
+// exactly the interaction that triggers it.
+//
+// Now the palette is an IMMUTABLE value published by pointer swap: readers
+// take one acquire load and then read a frozen object that no one will ever
+// mutate. The race is gone structurally rather than by locking the hot path.
+
+#define MAYA_MD_PALETTE(X)                                                    \
+    /* field            theme slot        */                                  \
+    X(text,             Text)                                                 \
+    X(heading1,         Link)                                                 \
+    X(heading2,         Info)                                                 \
+    X(heading3,         Primary)                                              \
+    X(heading_dim,      Primary)                                              \
+    X(heading_rule,     Muted)                                                \
+    X(bold_fg,          Text)                                                 \
+    /* Italic keeps its muted step: it reads as soft commentary against the */\
+    /* body rather than relying on an italic flag many terminals drop.      */\
+    X(italic_fg,        Muted)                                                \
+    X(code_fg,          Link)                                                 \
+    /* Surface, not black: a literal black background is a hole punched in  */\
+    /* a light scheme. Surface is defined as "one step off the canvas".     */\
+    X(code_bg,          Surface)                                              \
+    X(link_fg,          Primary)                                              \
+    X(image_fg,         Accent)                                               \
+    X(strike_fg,        Muted)                                                \
+    X(quote_bar,        Warning)                                              \
+    X(quote_text,       Text)                                                 \
+    X(list_bullet,      Primary)                                              \
+    X(list_num,         Primary)                                              \
+    X(checkbox_fg,      Success)                                              \
+    X(checkbox_off,     Muted)                                                \
+    X(code_border,      Muted)                                                \
+    X(code_lang,        Muted)                                                \
+    X(hrule_fg,         Muted)                                                \
+    X(footnote_fg,      Muted)                                                \
+    X(table_border,     Muted)                                                \
+    X(table_header,     Link)                                                 \
+    X(highlight_bg,     Highlight)                                            \
+    X(highlight_fg,     Surface)                                              \
+    X(mention_fg,       Link)                                                 \
+    X(kbd_fg,           Text)                                                 \
+    X(kbd_border,       Muted)                                                \
+    X(alert_note,       Primary)                                              \
+    X(alert_tip,        Success)                                              \
+    X(alert_important,  Accent)                                               \
+    X(alert_warning,    Warning)                                              \
+    X(alert_caution,    Error)
+
 namespace colors {
-    // Body prose uses the terminal's DEFAULT foreground rather than
-    // an explicit ANSI 7. Two wins from this one change:
-    //   1. The body adopts the user's carefully-tuned theme color
-    //      (typically a soft warm/cool gray on dark themes, a near
-    //      black on light), so prose feels native instead of
-    //      maxed-out white that fights the chrome.
-    //   2. There's now a clear typographic step between body
-    //      (default) and emphasis (bright_white / bright_cyan / etc.),
-    //      so **bold** and `code` actually POP. Previously body was
-    //      ANSI 7 and bold was ANSI 15 — on many themes these render
-    //      indistinguishably and emphasis silently disappeared.
-    // Mutable so the markdown renderer is themable: set_markdown_palette()
-    // (markdown.hpp) overwrites these once at startup; the render path reads
-    // them live. Defaults below preserve the original look.
-    inline Color text         = Color::default_color();
-    inline Color heading1     = Color::slot(ThemeSlot::Link);
-    inline Color heading2     = Color::slot(ThemeSlot::Info);
-    inline Color heading3     = Color::slot(ThemeSlot::Primary);
-    inline Color heading_dim  = Color::slot(ThemeSlot::Primary);
-    inline Color heading_rule = Color::slot(ThemeSlot::Muted);
-    inline Color bold_fg      = Color::slot(ThemeSlot::Text);
-    // Italics shift to the muted gray slot so they read as soft
-    // commentary against the default-fg body, instead of looking
-    // identical to plain prose with a (terminal-dependent, often
-    // invisible) italic flag.
-    inline Color italic_fg    = Color::slot(ThemeSlot::Muted);
-    inline Color code_fg      = Color::slot(ThemeSlot::Link);
-    inline Color code_bg      = Color::slot(ThemeSlot::Surface);
-    inline Color link_fg      = Color::slot(ThemeSlot::Primary);
-    inline Color image_fg     = Color::slot(ThemeSlot::Accent);
-    inline Color strike_fg    = Color::slot(ThemeSlot::Muted);
-    inline Color quote_bar    = Color::slot(ThemeSlot::Warning);
-    inline Color quote_text   = Color::default_color();
-    inline Color list_bullet  = Color::slot(ThemeSlot::Primary);
-    inline Color list_num     = Color::slot(ThemeSlot::Primary);
-    inline Color checkbox_fg  = Color::slot(ThemeSlot::Success);
-    inline Color checkbox_off = Color::slot(ThemeSlot::Muted);
-    inline Color code_border  = Color::slot(ThemeSlot::Muted);
-    inline Color code_lang    = Color::slot(ThemeSlot::Muted);
-    inline Color hrule_fg     = Color::slot(ThemeSlot::Muted);
-    inline Color footnote_fg  = Color::slot(ThemeSlot::Muted);
-    inline Color table_border = Color::slot(ThemeSlot::Muted);
-    inline Color table_header = Color::slot(ThemeSlot::Link);
-    inline Color highlight_bg = Color::slot(ThemeSlot::Highlight);
-    inline Color highlight_fg = Color::slot(ThemeSlot::Surface);
-    inline Color mention_fg   = Color::slot(ThemeSlot::Link);
-    inline Color kbd_fg       = Color::slot(ThemeSlot::Text);
-    inline Color kbd_border   = Color::slot(ThemeSlot::Muted);
-    inline Color alert_note      = Color::slot(ThemeSlot::Primary);
-    inline Color alert_tip       = Color::slot(ThemeSlot::Success);
-    inline Color alert_important = Color::slot(ThemeSlot::Accent);
-    inline Color alert_warning   = Color::slot(ThemeSlot::Warning);
-    inline Color alert_caution   = Color::slot(ThemeSlot::Error);
+
+// The palette as a value. Immutable once published.
+//
+// LitColor, not Color: this is the PAINTED palette, projected from a theme
+// that has already resolved its slots. A renderer reading `colors::text`
+// gets something it can emit, with no "did anyone resolve this" question
+// left — and the parse worker, which cannot reach a Theme, does not need to.
+struct Palette {
+#define X(f, SLOT) LitColor f;
+    MAYA_MD_PALETTE(X)
+#undef X
+    // Publishing compares before appending, so re-publishing the palette
+    // already in force costs a compare rather than a snapshot per frame.
+    constexpr bool operator==(const Palette&) const = default;
+};
+
+// Project a theme through the one mapping above.
+[[nodiscard]] constexpr Palette project(const Theme& t) noexcept {
+    Palette p{};
+#define X(f, SLOT) p.f = t.resolve(Color::slot(ThemeSlot::SLOT));
+    MAYA_MD_PALETTE(X)
+#undef X
+    return p;
 }
+
+// Published snapshots, append-only and NEVER freed.
+//
+// A two-buffer flip is not enough, and the test caught it: with slots A and
+// B, the third publish overwrites A — which a reader that loaded A and was
+// descheduled is still reading. It observes half of one theme and half of
+// another, which is exactly the tearing this design exists to remove. (151
+// torn reads out of 929, with four readers and 57 themes cycling.)
+//
+// So a publish never reuses storage: it leaks a new immutable snapshot and
+// retires the old pointer. A reader's pointer therefore stays valid and
+// UNWRITTEN forever, which is what lets readers run with no epoch, no hazard
+// pointer and no lock.
+//
+// "Leak" is meant literally, and it has to be. An earlier attempt kept the
+// snapshots in a deque and let it own them; TSan still flagged a race,
+// because a container that ever FREES a node hands that memory back to the
+// allocator, which reuses it for the NEXT snapshot — and the allocator's
+// write into it races the reader still holding the old pointer. The address
+// is what must be immortal, not merely the object.
+//
+// The cost is bounded by how many times a human picks a theme in one
+// session: each snapshot is ~35 * 4 bytes, so a pathological 10,000 swaps
+// is under 1.5 MB and the realistic figure is a few hundred bytes.
+// Reclaiming them safely would need epochs or RCU to know when the last
+// reader is done — a large amount of machinery to buy back nothing that
+// matters at this scale.
+namespace detail {
+inline std::mutex& publish_mu() {
+    static std::mutex m;
+    return m;
+}
+inline std::atomic<const Palette*>& live_slot() noexcept {
+    // Seeded with native's projection so the boot palette IS the projection
+    // — the divergence that made the first theme swap repaint prose that
+    // nothing had actually restyled.
+    static std::atomic<const Palette*> p{new Palette{project(theme::native)}};
+    return p;
+}
+}  // namespace detail
+
+/// The palette in force. One acquire load; the result is frozen and stays
+/// valid for as long as the caller holds it.
+[[nodiscard]] inline const Palette& live() noexcept {
+    return *detail::live_slot().load(std::memory_order_acquire);
+}
+
+/// Publish a new palette. Readers never block and never see a partial one.
+inline void publish(const Palette& p) {
+    // Serialises publishers against each other only; readers take the
+    // atomic load and never touch this.
+    std::lock_guard lk(detail::publish_mu());
+    // No-op when nothing moved. Hosts re-publish every frame so `auto` can
+    // follow a tmux detach, and without this that would leak a snapshot per
+    // frame rather than one per actual theme change.
+    if (live() == p) return;
+    detail::live_slot().store(new Palette{p}, std::memory_order_release);
+}
+
+// Field accessors, so ~124 existing `colors::text` reads keep working
+// unchanged while going through the atomic. Functions rather than
+// references because the target moves on publish.
+#define X(f, SLOT) [[nodiscard]] inline LitColor f() noexcept { return live().f; }
+MAYA_MD_PALETTE(X)
+#undef X
+
+}  // namespace colors
 
 namespace md_detail {
 

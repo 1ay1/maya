@@ -163,6 +163,75 @@ TEST_CASE("colour: raw_* reads payload without pretending it is colour") {
     std::println("PASS\n");
 }
 
+TEST_CASE("theme: an unstated slot is a nameable state, not a plausible colour") {
+    std::println("--- test_color_resolution_unset ---");
+    // A Theme is an aggregate, so a designated initializer that omits a field
+    // is legal and value-initializes it. Add a slot to MAYA_THEME_SLOTS and
+    // all 57 schemes silently acquire an unstated colour for it.
+    //
+    // That used to be indistinguishable from a deliberate choice, because a
+    // default-constructed Color was Named(7) — white. Well-formed, invisible
+    // to every test, and unreadable on a light scheme. ColorKind::Unset makes
+    // the omission a state the type can report.
+    constexpr Color fresh{};
+    static_assert(!fresh.is_set());
+    static_assert(fresh.kind() == ColorKind::Unset);
+    // Crucially NOT equal to any colour someone might have meant.
+    static_assert(!(fresh == Color::white()));
+    static_assert(!(fresh == Color::default_color()));
+
+    // It paints as inherit — the terminal's own ink — so the failure mode is
+    // "looks unstyled", never "maya invented a colour".
+    CHECK(LitColor{}.fg_sgr() == "39");
+    CHECK(LitColor{}.bg_sgr() == "49");
+    std::println("PASS\n");
+}
+
+TEST_CASE("theme: a partial theme is rejected, and it names the slot") {
+    std::println("--- test_color_resolution_completeness ---");
+    // This is what every scheme looks like the moment someone adds a slot
+    // and does not fill it in.
+    constexpr Theme partial{ .primary = Color::rgb(1, 2, 3) };
+    static_assert(!partial.complete());
+    static_assert(partial.first_unset().has_value());
+    // Reporting the SLOT rather than a bool is what makes the build failure
+    // actionable instead of a puzzle.
+    CHECK(slot_field_name(*partial.first_unset()) == "secondary");
+
+    // And every built-in scheme is total. schemes.hpp static_asserts this
+    // too — asserted here as well so the guarantee is visible from the test
+    // suite, not only as a build error in a header nobody opens.
+    int checked = 0;
+    for (const auto& s : theme::schemes) {
+        CHECK(s.theme->complete());
+        ++checked;
+    }
+    CHECK(checked > 50);
+    CHECK(theme::native.complete());
+    std::println("PASS ({} schemes total)\n", checked);
+}
+
+TEST_CASE("theme: slot metadata is generated from the one list") {
+    std::println("--- test_color_resolution_slot_list ---");
+    // The enum, the struct fields, resolve()'s switch and this name table all
+    // come from MAYA_THEME_SLOTS. If they could drift, adding a slot would
+    // fail in three different ways; because they cannot, this just confirms
+    // the generated view lines up with the enum.
+    static_assert(kThemeSlotCount == 23);
+    CHECK(slot_field_name(ThemeSlot::Primary) == "primary");
+    CHECK(slot_field_name(ThemeSlot::InverseText) == "inverse_text");
+    CHECK(slot_field_name(ThemeSlot::Overlay) == "overlay");
+
+    // Every enumerator has a name and resolves to a set colour under a
+    // complete theme — no gaps anywhere in the range.
+    for (std::uint8_t i = 0; i < kThemeSlotCount; ++i) {
+        const auto s = static_cast<ThemeSlot>(i);
+        CHECK(slot_field_name(s) != "?");
+        CHECK(theme::native.resolve(Color::slot(s)).is_set());
+    }
+    std::println("PASS\n");
+}
+
 TEST_CASE("colour: is_muted asks on the far side of the theme") {
     std::println("--- test_color_resolution_is_muted ---");
     // Six widgets had each grown a private check against literal

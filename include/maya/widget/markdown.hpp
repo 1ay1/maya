@@ -71,6 +71,11 @@ namespace maya {
 //
 // Single-threaded: call before the UI loop starts. The renderer reads the
 // active palette live (no per-call argument threading).
+//
+// The field list is GENERATED from MAYA_MD_PALETTE (markdown/internal.hpp),
+// which is the one place the theme-slot mapping is authored. It used to be
+// spelled out here AND again in markdown_palette_from(), and the two
+// disagreed on nine of the thirty-seven roles.
 struct MarkdownPalette {
     Color text, heading1, heading2, heading3, heading_dim, heading_rule;
     Color bold_fg, italic_fg, code_fg, code_bg, link_fg, image_fg, strike_fg;

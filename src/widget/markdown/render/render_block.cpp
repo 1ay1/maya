@@ -42,10 +42,10 @@ Element md_block_to_element(const md::Block& block) {
         [](const md::Heading& h) -> Element {
             Style sty = Style{}.with_bold();
             switch (h.level) {
-                case 1: sty = sty.with_fg(colors::heading1); break;
-                case 2: sty = sty.with_fg(colors::heading2); break;
-                case 3: sty = sty.with_fg(colors::heading3); break;
-                default: sty = sty.with_fg(colors::heading3).with_dim(); break;
+                case 1: sty = sty.with_fg(colors::heading1()); break;
+                case 2: sty = sty.with_fg(colors::heading2()); break;
+                case 3: sty = sty.with_fg(colors::heading3()); break;
+                default: sty = sty.with_fg(colors::heading3()).with_dim(); break;
             }
 
             // h4 / h5 / h6 carry no underline rule and reuse the h3
@@ -89,7 +89,7 @@ Element md_block_to_element(const md::Block& block) {
 
             if (!marker.empty()) {
                 runs.push_back({content.size(), marker.size(),
-                                Style{}.with_fg(colors::list_bullet).with_bold()});
+                                Style{}.with_fg(colors::list_bullet()).with_bold()});
                 content.append(marker);
             }
             flatten_inlines(h.spans, sty, content, runs);
@@ -118,7 +118,7 @@ Element md_block_to_element(const md::Block& block) {
                     (h.level == 1) ? "\xe2\x95\x90"   // ═ U+2550
                                    : "\xe2\x94\x80"; // ─ U+2500
                 const Style rule_style =
-                    Style{}.with_fg(colors::heading_rule).with_dim();
+                    Style{}.with_fg(colors::heading_rule()).with_dim();
                 Element rule = Element{ComponentElement{
                     .render = [rule_glyph, rule_style]
                               (int w, int /*h*/) -> Element {
@@ -157,7 +157,7 @@ Element md_block_to_element(const md::Block& block) {
                     : std::string{"\xe2\x97\x8b "} + c.lang + " (empty)";
                 return Element{TextElement{
                     .content = std::move(label),
-                    .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+                    .style   = Style{}.with_fg(colors::strike_fg()).with_dim(),
                 }};
             }
 
@@ -169,19 +169,19 @@ Element md_block_to_element(const md::Block& block) {
             // is linearised separately in render_inline.cpp.
             if (c.lang == "math" || c.lang == "latex") {
                 texmath::MathPalette pal;
-                auto body = Style{}.with_fg(colors::text);
+                auto body = Style{}.with_fg(colors::text());
                 pal.normal = body;
                 pal.op     = body.with_bold();
                 pal.num    = body;
-                pal.rule   = Style{}.with_fg(colors::code_border);
-                pal.delim  = Style{}.with_fg(colors::link_fg);
+                pal.rule   = Style{}.with_fg(colors::code_border());
+                pal.delim  = Style{}.with_fg(colors::link_fg());
                 pal.text   = body;
                 Element formula =
                     texmath::render_math(c.content, pal, /*display=*/true);
                 return detail::vstack()
                     .align_self(Align::Stretch)
                     .border(BorderStyle::Round)
-                    .border_color(colors::code_border)
+                    .border_color(colors::code_border())
                     .padding(0, 1, 0, 1)
                     .border_text(" math ", BorderTextPos::Top,
                                  BorderTextAlign::Start)(
@@ -200,7 +200,7 @@ Element md_block_to_element(const md::Block& block) {
             auto builder = detail::vstack()
                 .align_self(Align::Stretch)
                 .border(BorderStyle::Round)
-                .border_color(colors::code_border)
+                .border_color(colors::code_border())
                 .padding(0, 1, 0, 1)
                 // NoWrap inside (syntax.cpp) means long lines extend
                 // past the available width; clip them at the right
@@ -232,8 +232,8 @@ Element md_block_to_element(const md::Block& block) {
             // Zed style: thin │ gutter, muted italic text
             std::vector<Element> rows;
             rows.reserve(bq.children.size());
-            auto bar_style = Style{}.with_fg(colors::quote_bar);
-            auto text_style = Style{}.with_italic().with_fg(colors::quote_text);
+            auto bar_style = Style{}.with_fg(colors::quote_bar());
+            auto text_style = Style{}.with_italic().with_fg(colors::quote_text());
 
             for (auto& child : bq.children) {
                 auto child_elem = md_block_to_element(child);
@@ -261,7 +261,7 @@ Element md_block_to_element(const md::Block& block) {
                     for (int k = 0; k < w; ++k) rule += "\xe2\x94\x80"; // ─
                     return Element{TextElement{
                         .content = std::move(rule),
-                        .style = Style{}.with_fg(colors::hrule_fg),
+                        .style = Style{}.with_fg(colors::hrule_fg()),
                     }};
                 },
                 .layout = {},
@@ -281,7 +281,7 @@ Element md_block_to_element(const md::Block& block) {
 
             std::vector<FlatCell> header_flat;
             header_flat.reserve(static_cast<size_t>(ncols));
-            auto header_base = Style{}.with_bold().with_fg(colors::table_header);
+            auto header_base = Style{}.with_bold().with_fg(colors::table_header());
             for (int c = 0; c < ncols; ++c) {
                 FlatCell f;
                 flatten_inlines(tbl.header.cells[static_cast<size_t>(c)].spans,
@@ -291,7 +291,7 @@ Element md_block_to_element(const md::Block& block) {
 
             std::vector<std::vector<FlatCell>> rows_flat;
             rows_flat.reserve(tbl.rows.size());
-            auto cell_base = Style{}.with_fg(colors::text);
+            auto cell_base = Style{}.with_fg(colors::text());
             for (auto& row : tbl.rows) {
                 std::vector<FlatCell> rf;
                 rf.reserve(static_cast<size_t>(ncols));
@@ -719,7 +719,7 @@ Element md_block_to_element(const md::Block& block) {
                             max_lines = std::max(max_lines,
                                 static_cast<int>(wrapped[static_cast<size_t>(c)].size()));
                         }
-                        auto sep_style = Style{}.with_fg(colors::table_border);
+                        auto sep_style = Style{}.with_fg(colors::table_border());
                         const std::string sep = "\xe2\x94\x82";   // │
 
                         std::vector<Element> visuals;
@@ -822,7 +822,7 @@ Element md_block_to_element(const md::Block& block) {
                         line += right[type];
                         return Element{TextElement{
                             .content = std::move(line),
-                            .style = Style{}.with_fg(colors::table_border),
+                            .style = Style{}.with_fg(colors::table_border()),
                         }};
                     };
 
@@ -844,7 +844,7 @@ Element md_block_to_element(const md::Block& block) {
                         line += "\xe2\x94\xa4";          // ┤
                         return Element{TextElement{
                             .content = std::move(line),
-                            .style = Style{}.with_fg(colors::table_border).with_dim(),
+                            .style = Style{}.with_fg(colors::table_border()).with_dim(),
                         }};
                     };
 
@@ -903,7 +903,7 @@ Element md_block_to_element(const md::Block& block) {
             // and how GitHub renders them in Markdown.
             std::string label_str = "[" + fn.label + "] ";
             auto label_style =
-                Style{}.with_fg(colors::footnote_fg).with_bold();
+                Style{}.with_fg(colors::footnote_fg()).with_bold();
             Element label_elem{TextElement{
                 .content = label_str,
                 .style = label_style,
@@ -944,23 +944,23 @@ Element md_block_to_element(const md::Block& block) {
             // indented under a single solid bar in the kind color.
             const char* label = "NOTE";
             const char* icon  = "\xe2\x84\xb9";  // ℹ
-            Color bar = colors::alert_note;
+            Color bar = colors::alert_note();
             switch (a.kind) {
                 case md::Alert::Kind::Note:
                     label = "NOTE";  icon = "\xe2\x84\xb9";  // ℹ
-                    bar = colors::alert_note; break;
+                    bar = colors::alert_note(); break;
                 case md::Alert::Kind::Tip:
                     label = "TIP";   icon = "\xf0\x9f\x92\xa1"; // 💡
-                    bar = colors::alert_tip; break;
+                    bar = colors::alert_tip(); break;
                 case md::Alert::Kind::Important:
                     label = "IMPORTANT"; icon = "\xe2\x97\x86";  // ◆
-                    bar = colors::alert_important; break;
+                    bar = colors::alert_important(); break;
                 case md::Alert::Kind::Warning:
                     label = "WARNING";   icon = "\xe2\x9a\xa0";  // ⚠
-                    bar = colors::alert_warning; break;
+                    bar = colors::alert_warning(); break;
                 case md::Alert::Kind::Caution:
                     label = "CAUTION";   icon = "\xe2\x9b\x94";  // ⛔
-                    bar = colors::alert_caution; break;
+                    bar = colors::alert_caution(); break;
             }
 
             auto bar_style = Style{}.with_fg(bar).with_bold();
@@ -1000,7 +1000,7 @@ Element md_block_to_element(const md::Block& block) {
                 // Term: bolded
                 std::string term_text;
                 std::vector<StyledRun> runs;
-                Style base = Style{}.with_bold().with_fg(colors::bold_fg);
+                Style base = Style{}.with_bold().with_fg(colors::bold_fg());
                 flatten_inlines(item.term, base, term_text, runs);
                 items.push_back(Element{TextElement{
                     .content = std::move(term_text),
@@ -1019,7 +1019,7 @@ Element md_block_to_element(const md::Block& block) {
                     items.push_back(detail::hstack()(
                         Element{TextElement{
                             .content = "  : ",
-                            .style = Style{}.with_fg(colors::list_bullet),
+                            .style = Style{}.with_fg(colors::list_bullet()),
                         }},
                         std::move(def_body)
                     ));
@@ -1039,9 +1039,9 @@ Element md_block_to_element(const md::Block& block) {
             static constexpr std::string_view kPrefix = "\xe2\x96\xb8 "; // "▸ "
             std::string summary_text;
             std::vector<StyledRun> runs;
-            Style base = Style{}.with_bold().with_fg(colors::bold_fg);
+            Style base = Style{}.with_bold().with_fg(colors::bold_fg());
             runs.push_back({0, kPrefix.size(),
-                            Style{}.with_fg(colors::list_bullet)});
+                            Style{}.with_fg(colors::list_bullet())});
             summary_text.append(kPrefix);
             flatten_inlines(d.summary, base, summary_text, runs);
             Element header{TextElement{
@@ -1089,16 +1089,16 @@ Element md_block_to_element(const md::Block& block) {
             // means saying WHEN — which is now, every time.
             const Theme& live = theme::live();
             Theme md_theme = live;
-            md_theme.text         = live.resolve(colors::text);
-            md_theme.primary      = live.resolve(colors::heading1);
-            md_theme.accent       = live.resolve(colors::heading2);
-            md_theme.info         = live.resolve(colors::heading3);
-            md_theme.muted        = live.resolve(colors::footnote_fg);
-            md_theme.link         = live.resolve(colors::link_fg);
-            md_theme.surface      = live.resolve(colors::code_bg);
-            md_theme.border       = live.resolve(colors::table_border);
-            md_theme.highlight    = live.resolve(colors::highlight_bg);
-            md_theme.inverse_text = live.resolve(colors::highlight_fg);
+            md_theme.text         = live.resolve(colors::text());
+            md_theme.primary      = live.resolve(colors::heading1());
+            md_theme.accent       = live.resolve(colors::heading2());
+            md_theme.info         = live.resolve(colors::heading3());
+            md_theme.muted        = live.resolve(colors::footnote_fg());
+            md_theme.link         = live.resolve(colors::link_fg());
+            md_theme.surface      = live.resolve(colors::code_bg());
+            md_theme.border       = live.resolve(colors::table_border());
+            md_theme.highlight    = live.resolve(colors::highlight_bg());
+            md_theme.inverse_text = live.resolve(colors::highlight_fg());
             return html::render(h.content, md_theme);
         },
     }, block.inner);
@@ -1107,18 +1107,18 @@ Element md_block_to_element(const md::Block& block) {
 // ── themable palette ────────────────────────────────────────────────────────
 MarkdownPalette default_markdown_palette() {
     return MarkdownPalette{
-        colors::text, colors::heading1, colors::heading2, colors::heading3,
-        colors::heading_dim, colors::heading_rule,
-        colors::bold_fg, colors::italic_fg, colors::code_fg, colors::code_bg,
-        colors::link_fg, colors::image_fg, colors::strike_fg,
-        colors::quote_bar, colors::quote_text, colors::list_bullet,
-        colors::list_num, colors::checkbox_fg, colors::checkbox_off,
-        colors::code_border, colors::code_lang, colors::hrule_fg,
-        colors::footnote_fg, colors::table_border, colors::table_header,
-        colors::highlight_bg, colors::highlight_fg, colors::mention_fg,
-        colors::kbd_fg, colors::kbd_border,
-        colors::alert_note, colors::alert_tip, colors::alert_important,
-        colors::alert_warning, colors::alert_caution,
+        colors::text(), colors::heading1(), colors::heading2(), colors::heading3(),
+        colors::heading_dim(), colors::heading_rule(),
+        colors::bold_fg(), colors::italic_fg(), colors::code_fg(), colors::code_bg(),
+        colors::link_fg(), colors::image_fg(), colors::strike_fg(),
+        colors::quote_bar(), colors::quote_text(), colors::list_bullet(),
+        colors::list_num(), colors::checkbox_fg(), colors::checkbox_off(),
+        colors::code_border(), colors::code_lang(), colors::hrule_fg(),
+        colors::footnote_fg(), colors::table_border(), colors::table_header(),
+        colors::highlight_bg(), colors::highlight_fg(), colors::mention_fg(),
+        colors::kbd_fg(), colors::kbd_border(),
+        colors::alert_note(), colors::alert_tip(), colors::alert_important(),
+        colors::alert_warning(), colors::alert_caution(),
     };
 }
 
@@ -1140,82 +1140,60 @@ MarkdownPalette default_markdown_palette() {
 // canvas on any polarity instead of being a hardcoded black that turns
 // into a hole on a light scheme.
 MarkdownPalette markdown_palette_from(const Theme& t) {
-    MarkdownPalette p{};
-    p.text         = t.text;
-    p.heading1     = t.primary;
-    p.heading2     = t.secondary;
-    p.heading3     = t.accent;
-    p.heading_dim  = t.muted;
-    p.heading_rule = t.border;
-    p.bold_fg      = t.text;
-    // Italic keeps its muted step: it reads as soft commentary against the
-    // body rather than relying on an italic flag many terminals drop.
-    p.italic_fg    = t.muted;
-    p.code_fg      = t.info;
-    // Surface, not black: a literal black background is a hole punched in
-    // a light scheme. Surface is defined as "one step off the canvas".
-    p.code_bg      = t.surface;
-    p.link_fg      = t.link;
-    p.image_fg     = t.accent;
-    p.strike_fg    = t.muted;
-    p.quote_bar    = t.warning;
-    p.quote_text   = t.text;
-    p.list_bullet  = t.primary;
-    p.list_num     = t.primary;
-    p.checkbox_fg  = t.success;
-    p.checkbox_off = t.muted;
-    p.code_border  = t.border;
-    p.code_lang    = t.muted;
-    p.hrule_fg     = t.border;
-    p.footnote_fg  = t.muted;
-    p.table_border = t.border;
-    p.table_header = t.primary;
-    p.highlight_bg = t.highlight;
-    p.highlight_fg = t.inverse_text;
-    p.mention_fg   = t.info;
-    p.kbd_fg       = t.text;
-    p.kbd_border   = t.border;
-    p.alert_note      = t.info;
-    p.alert_tip       = t.success;
-    p.alert_important = t.accent;
-    p.alert_warning   = t.warning;
-    p.alert_caution   = t.error;
-    return p;
+    // Projected through the ONE authored mapping (MAYA_MD_PALETTE in
+    // markdown/internal.hpp). This function used to restate all 37 roles by
+    // hand, and disagreed with the defaults on nine of them — markdown
+    // rendered under one mapping until the first theme swap and the other
+    // forever after, so headings, code spans and links visibly shifted on a
+    // swap that changed nothing else.
+    const colors::Palette p = colors::project(t);
+    MarkdownPalette out{};
+#define X(f, SLOT) out.f = p.f;
+    MAYA_MD_PALETTE(X)
+#undef X
+    return out;
 }
 
-// Overwrites the ~35 mutable colors:: globals the render path reads live.
+// Publishes a new immutable palette snapshot; the render path picks it up on
+// its next acquire load.
 //
-// THREADING CONTRACT: the async streaming worker (spawn_async_worker_)
-// parses off-thread and reaches md_block_to_element, which reads these
-// globals directly. Overwriting them here concurrently with a running
-// worker is a data race. Call this ONLY before any StreamingMarkdown is
-// live (e.g. once at startup / theme init), or with all streaming widgets
-// quiesced. Each Color is a 4-byte trivially-copyable value, so an
-// individual read never tears, but the palette as a whole is not published
-// atomically — a worker mid-parse could observe a mix of old and new
-// colours for one frame. (agentty does not call this at all; the defaults
-// stand. A future atomic-publish-behind-a-pointer refactor would lift the
-// contract if live re-theming during a stream is ever required.)
+// This used to overwrite ~35 mutable globals in place, with a THREADING
+// CONTRACT in the comment asking callers to only do it while no
+// StreamingMarkdown was live: the async worker (spawn_async_worker_) parses
+// on a DETACHED thread and reaches md_block_to_element, which reads the
+// palette directly across ~165 sites. That contract could not be honoured by
+// the one caller that matters — agentty's theme picker previews live, and the
+// appearance panel has no streaming gate — so re-theming mid-response was a
+// genuine race, and the best case was a worker observing a mix of old and new
+// colours for one frame.
+//
+// The palette is now a VALUE published by pointer swap (colors::publish).
+// Readers take one acquire load and then read a frozen object nobody will
+// mutate, so there is no contract left to break and no lock on the hot path.
 void set_markdown_palette(const MarkdownPalette& p) {
-    colors::text = p.text;                 colors::heading1 = p.heading1;
-    colors::heading2 = p.heading2;         colors::heading3 = p.heading3;
-    colors::heading_dim = p.heading_dim;   colors::heading_rule = p.heading_rule;
-    colors::bold_fg = p.bold_fg;           colors::italic_fg = p.italic_fg;
-    colors::code_fg = p.code_fg;           colors::code_bg = p.code_bg;
-    colors::link_fg = p.link_fg;           colors::image_fg = p.image_fg;
-    colors::strike_fg = p.strike_fg;       colors::quote_bar = p.quote_bar;
-    colors::quote_text = p.quote_text;     colors::list_bullet = p.list_bullet;
-    colors::list_num = p.list_num;         colors::checkbox_fg = p.checkbox_fg;
-    colors::checkbox_off = p.checkbox_off; colors::code_border = p.code_border;
-    colors::code_lang = p.code_lang;       colors::hrule_fg = p.hrule_fg;
-    colors::footnote_fg = p.footnote_fg;   colors::table_border = p.table_border;
-    colors::table_header = p.table_header; colors::highlight_bg = p.highlight_bg;
-    colors::highlight_fg = p.highlight_fg; colors::mention_fg = p.mention_fg;
-    colors::kbd_fg = p.kbd_fg;             colors::kbd_border = p.kbd_border;
-    colors::alert_note = p.alert_note;     colors::alert_tip = p.alert_tip;
-    colors::alert_important = p.alert_important;
-    colors::alert_warning = p.alert_warning;
-    colors::alert_caution = p.alert_caution;
+    colors::Palette next{};
+    // try_literal, NOT theme::live().resolve().
+    //
+    // A MarkdownPalette is the PUBLIC type, so its fields are Color and a
+    // host may hand us either literals (the normal case — markdown_palette_
+    // from() has already resolved them) or a slot it wants resolved.
+    //
+    // Resolving against theme::live() was wrong for the case that matters:
+    // "project theme T, then publish it" is the obvious call order, and a
+    // host that has not ALSO made T live yet would get its literals passed
+    // through (fine) but any slot resolved against the OUTGOING theme. The
+    // caller already said which theme it meant by projecting through it;
+    // second-guessing that with ambient state is how the two halves
+    // disagree.
+    //
+    // So: a literal is taken as given, and a slot — which only a host
+    // writing a palette by hand can produce — resolves against the live
+    // theme, because that is the only theme it could have meant.
+#define X(f, SLOT) next.f = LitColor::try_literal(p.f)                        \
+                                .value_or(theme::live().resolve(p.f));
+    MAYA_MD_PALETTE(X)
+#undef X
+    colors::publish(next);
 }
 
 } // namespace maya

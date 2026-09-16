@@ -484,6 +484,7 @@ if(MAYA_BUILD_TESTS)
         tests/test_types.cpp
         tests/test_color.cpp
         tests/test_color_resolution.cpp
+        tests/test_markdown_palette.cpp
         tests/test_style.cpp
         tests/test_theme_discipline.cpp
         tests/test_canvas.cpp

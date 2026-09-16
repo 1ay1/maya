@@ -268,11 +268,14 @@ char* StylePool::append_resolved_sgr(char* p, const LitColor& themed, bool is_fg
             p = write_uint_sgr(p, c.r()); *p++ = ';';
             p = write_uint_sgr(p, c.g()); *p++ = ';';
             return write_uint_sgr(p, c.b());
+        case ColorKind::Unset:
         case ColorKind::Default:
-            // Terminal default fg/bg. Most call sites filter Default out
-            // before calling, so this is defensive: emit the ANSI reset
-            // (39 = default fg, 49 = default bg) rather than fall through to
-            // UB if that invariant ever changes.
+            // Terminal default fg/bg — and the same answer for a colour
+            // nobody set, which is the only honest one: inherit rather than
+            // invent. Most call sites filter Default out before calling, so
+            // this is defensive: emit the ANSI reset (39 = default fg,
+            // 49 = default bg) rather than fall through to UB if that
+            // invariant ever changes.
             return write_uint_sgr(p, is_fg ? 39u : 49u);
         case ColorKind::Slot:
             // Unreachable: `c` is a LitColor, so the compiler knows no slot

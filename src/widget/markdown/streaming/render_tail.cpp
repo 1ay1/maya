@@ -1722,7 +1722,7 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                     auto spans = parse_inlines(ll);
                     std::string content;
                     std::vector<StyledRun> runs;
-                    const Style base = Style{}.with_fg(colors::text);
+                    const Style base = Style{}.with_fg(colors::text());
                     for (const auto& sp : spans)
                         flatten_inline(sp, base, content, runs);
                     if (!runs.empty()) {
@@ -1732,7 +1732,7 @@ Element StreamingMarkdown::render_tail(std::string_view tail) const {
                         else
                             rendered.push_back(Element{TextElement{
                                 .content = std::move(content),
-                                .style   = Style{}.with_fg(colors::text),
+                                .style   = Style{}.with_fg(colors::text()),
                                 .runs    = std::move(runs)}});
                     }
                 }
@@ -1788,7 +1788,7 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
         // mode keeps height monotonic in byte count.
         return Element{TextElement{
             .content = std::string{body},
-            .style   = Style{}.with_fg(colors::code_fg),
+            .style   = Style{}.with_fg(colors::code_fg()),
             .wrap    = TextWrap::Wrap,
         }};
     }
@@ -1853,13 +1853,13 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
                 : std::string{"\xe2\x97\x8b "} + lang + " (empty)";
             return Element{TextElement{
                 .content = std::move(label),
-                .style   = Style{}.with_fg(colors::strike_fg).with_dim(),
+                .style   = Style{}.with_fg(colors::strike_fg()).with_dim(),
             }};
         }
         auto builder = detail::vstack()
             .align_self(Align::Stretch)
             .border(BorderStyle::Round)
-            .border_color(colors::code_border)
+            .border_color(colors::code_border())
             .padding(0, 1, 0, 1);
         if (!lang.empty()) {
             std::string label = " " + lang + " ";
@@ -2177,7 +2177,7 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
                 auto live_spans = parse_inlines(live_row);
                 std::string content;
                 std::vector<StyledRun> runs;
-                const Style base = Style{}.with_fg(colors::text);
+                const Style base = Style{}.with_fg(colors::text());
                 for (const auto& s : live_spans) {
                     flatten_inline(s, base, content, runs);
                 }
@@ -2192,7 +2192,7 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
                 } else {
                     live_el = Element{TextElement{
                         .content = std::move(content),
-                        .style   = Style{}.with_fg(colors::text),
+                        .style   = Style{}.with_fg(colors::text()),
                         .runs    = std::move(runs),
                     }};
                 }
@@ -2311,7 +2311,7 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
                         std::string content;
                         std::vector<StyledRun> runs;
                         const Style base =
-                            Style{}.with_fg(colors::text);
+                            Style{}.with_fg(colors::text());
                         for (const auto& s : live_spans) {
                             flatten_inline(s, base, content, runs);
                         }
@@ -2326,7 +2326,7 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
                         } else {
                             live_el = Element{TextElement{
                                 .content = std::move(content),
-                                .style   = Style{}.with_fg(colors::text),
+                                .style   = Style{}.with_fg(colors::text()),
                                 .runs    = std::move(runs),
                             }};
                         }
@@ -2379,7 +2379,7 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
             tail_inline_cache_runs_.clear();
             if (!stable_prefix.empty()) {
                 auto prefix_spans = parse_inlines(stable_prefix);
-                const Style base = Style{}.with_fg(colors::text);
+                const Style base = Style{}.with_fg(colors::text());
                 for (const auto& s : prefix_spans) {
                     flatten_inline(s, base, tail_inline_cache_content_,
                                    tail_inline_cache_runs_);
@@ -2399,7 +2399,7 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
     std::vector<StyledRun> runs          = tail_inline_cache_runs_;
     if (!live_line.empty()) {
         auto live_spans = parse_inlines(live_line);
-        const Style base = Style{}.with_fg(colors::text);
+        const Style base = Style{}.with_fg(colors::text());
         for (const auto& s : live_spans) {
             flatten_inline(s, base, content, runs);
         }
@@ -2414,7 +2414,7 @@ Element StreamingMarkdown::render_tail_inner(std::string_view tail) const {
     }
     return Element{TextElement{
         .content = std::move(content),
-        .style   = Style{}.with_fg(colors::text),
+        .style   = Style{}.with_fg(colors::text()),
         .runs    = std::move(runs),
     }};
 }

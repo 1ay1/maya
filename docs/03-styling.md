@@ -274,6 +274,38 @@ answer for. If you need the raw payload bytes for a **cache key** rather than
 a colour, use `raw_r()` / `raw_g()` / `raw_b()` — they read the authored value
 without pretending a slot enum is a channel.
 
+### Adding a slot
+
+Slots are declared once, in `MAYA_THEME_SLOTS` (`style/theme.hpp`). That one
+list generates the `ThemeSlot` enum, `Theme`'s fields, `resolve()`'s switch
+and `slot_field_name()`, so those four can never disagree:
+
+```cpp
+#define MAYA_THEME_SLOTS(X)     \
+    X(primary,   Primary)       \
+    X(secondary, Secondary)     \
+    /* … */
+```
+
+`Theme` stays a plain aggregate, so `Theme{.primary = …}` and `derive()` are
+unchanged. What the list cannot generate is the 57 built-in schemes, and a
+designated initializer that omits a field is legal C++ — it value-initializes
+it. So a default-constructed `Color` is `ColorKind::Unset`, a state no
+deliberate choice produces:
+
+```cpp
+Color c;                       // Unset — "nobody said", not white
+c.is_set();                    // false
+theme.complete();              // did every slot get a colour?
+*theme.first_unset();          // …and if not, which one
+```
+
+`schemes.hpp` `static_assert`s that every scheme is complete, so adding a slot
+and forgetting to fill it in is a **build failure naming the field**, not an
+unreadable element someone reports months later. An `Unset` colour paints as
+inherit (SGR 39/49), so even if one escaped, the failure mode is "looks
+unstyled", never a colour maya invented.
+
 ### Built-in Themes
 
 ```cpp

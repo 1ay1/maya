@@ -77,26 +77,26 @@ struct LangFeatures {
 // familiar terminal look under `native` (whose slots are the named ANSI
 // colours) while letting a scheme recolour code in its own hues.
 namespace syntax {
-    inline Style kw()       { return Style{}.with_fg(colors::heading3); }
-    inline Style ctrl()     { return Style{}.with_fg(colors::heading3).with_bold(); }
-    inline Style type()     { return Style{}.with_fg(colors::code_fg); }
-    inline Style fn()       { return Style{}.with_fg(colors::heading1); }
-    inline Style str()      { return Style{}.with_fg(colors::checkbox_fg); }
-    inline Style num()      { return Style{}.with_fg(colors::quote_bar); }
-    inline Style comment()  { return Style{}.with_fg(colors::code_lang).with_italic(); }
-    inline Style constant() { return Style{}.with_fg(colors::quote_bar); }
-    inline Style preproc()  { return Style{}.with_fg(colors::alert_warning); }
-    inline Style attr()     { return Style{}.with_fg(colors::alert_warning); }
-    inline Style op()       { return Style{}.with_fg(colors::alert_caution); }
-    inline Style punct()    { return Style{}.with_fg(colors::code_lang); }
-    inline Style plain()    { return Style{}.with_fg(colors::text); }
-    inline Style shellvar() { return Style{}.with_fg(colors::mention_fg); }
-    inline Style gutter()   { return Style{}.with_fg(colors::code_lang).with_dim(); }
+    inline Style kw()       { return Style{}.with_fg(colors::heading3()); }
+    inline Style ctrl()     { return Style{}.with_fg(colors::heading3()).with_bold(); }
+    inline Style type()     { return Style{}.with_fg(colors::code_fg()); }
+    inline Style fn()       { return Style{}.with_fg(colors::heading1()); }
+    inline Style str()      { return Style{}.with_fg(colors::checkbox_fg()); }
+    inline Style num()      { return Style{}.with_fg(colors::quote_bar()); }
+    inline Style comment()  { return Style{}.with_fg(colors::code_lang()).with_italic(); }
+    inline Style constant() { return Style{}.with_fg(colors::quote_bar()); }
+    inline Style preproc()  { return Style{}.with_fg(colors::alert_warning()); }
+    inline Style attr()     { return Style{}.with_fg(colors::alert_warning()); }
+    inline Style op()       { return Style{}.with_fg(colors::alert_caution()); }
+    inline Style punct()    { return Style{}.with_fg(colors::code_lang()); }
+    inline Style plain()    { return Style{}.with_fg(colors::text()); }
+    inline Style shellvar() { return Style{}.with_fg(colors::mention_fg()); }
+    inline Style gutter()   { return Style{}.with_fg(colors::code_lang()).with_dim(); }
 
-    inline Style diff_add()  { return Style{}.with_fg(colors::checkbox_fg); }
-    inline Style diff_del()  { return Style{}.with_fg(colors::alert_caution); }
-    inline Style diff_hunk() { return Style{}.with_fg(colors::code_fg); }
-    inline Style diff_meta() { return Style{}.with_fg(colors::code_lang).with_bold(); }
+    inline Style diff_add()  { return Style{}.with_fg(colors::checkbox_fg()); }
+    inline Style diff_del()  { return Style{}.with_fg(colors::alert_caution()); }
+    inline Style diff_hunk() { return Style{}.with_fg(colors::code_fg()); }
+    inline Style diff_meta() { return Style{}.with_fg(colors::code_lang()).with_bold(); }
 }
 
 } // namespace maya

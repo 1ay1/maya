@@ -401,20 +401,45 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
     // exactly what makes a list of colours hard to compare, and comparing
     // them is the only reason to show them.
     //
-    // Two blocks per colour so a hue reads as a patch, not a sliver.
+    // A colour strip is RESPONSIVE: it sheds samples rather than clipping.
+    //
+    // Truncation is the right failure for text — an ellipsised name is still
+    // a name — but half a swatch is not half a palette, it is a lie about
+    // which colours the scheme has. So the strip is sized to what the row
+    // can actually spare and drops whole entries from the RIGHT, keeping the
+    // leading ones (primary, accent, info), which are the hues you see most.
+    //
+    // Sized HERE rather than inside a component, because the trailing cell's
+    // width is what the flex split negotiates against: a component measures
+    // as flexible, so it swallowed the row and truncated the scheme NAME —
+    // the one thing the row exists to show — while the strip drifted left.
+    // The panel's own width is the honest budget, and the label keeps first
+    // claim on it.
     if (!r.swatch.empty()) {
-        const std::size_t swatch_at = right.size();
-        if (!right.empty()) right += "  ";
-        for (std::size_t i = 0; i < r.swatch.size(); ++i) {
-            control_runs.push_back({right.size(), 6,          // ██ = 2x3 bytes
-                                    Style{}.with_fg(r.swatch[i])});
-            right += "\xe2\x96\x88\xe2\x96\x88";
+        const int panel_w  = cfg_.min_width > 0 ? cfg_.min_width : 48;
+        const std::string right_prefix = right;
+        const int prefix_w = string_width(right_prefix);
+        // Chrome: edge bar, indents, the two-space gap, the border.
+        constexpr int kChrome = 12;
+        // Leave the longest name room to breathe before the strip starts.
+        const int reserved  = std::max(16, panel_w / 3);
+        int room = panel_w - kChrome - prefix_w - reserved;
+        int keep = std::clamp(room / 2, 0, static_cast<int>(r.swatch.size()));
+
+        std::string s = right_prefix;
+        std::vector<StyledRun> runs;
+        if (keep > 0) {
+            if (!s.empty()) { runs.push_back({0, s.size(), rstyle}); s += "  "; }
+            for (int i = 0; i < keep; ++i) {
+                runs.push_back({s.size(), 6,        // ██ = 2 x 3 bytes
+                                Style{}.with_fg(r.swatch[static_cast<std::size_t>(i)])});
+                s += "\xe2\x96\x88\xe2\x96\x88";
+            }
+        } else if (!s.empty()) {
+            runs.push_back({0, s.size(), rstyle});
         }
-        // Anything the control already emitted keeps its own styling; the
-        // swatch runs above cover only the bytes they appended.
-        if (swatch_at > 0 && control_runs.size() == r.swatch.size())
-            control_runs.insert(control_runs.begin(),
-                                {0, swatch_at, rstyle});
+        right        = std::move(s);
+        control_runs = std::move(runs);
     }
     if (r.locked) rstyle = Style{}.with_fg(th.locked);
     const std::string origin =

@@ -19,15 +19,18 @@ static constexpr int BROWS = 8, BPW = 4, BPH = 2, PADDLE_W0 = 6;
 static constexpr int TRAIL_LEN = 8, MAX_PARTS = 64, MAX_PWR = 4;
 static constexpr float SPEED0 = 0.38f, PAD_SPD = 1.4f;
 
-static constexpr Color ROW_CLR[] = {
+// LitColor, not Color: these ARE literal rgb values, and the channel
+// accessors below exist only on the literal side -- a Color may be a
+// theme slot, which has no channels until the theme resolves it.
+static constexpr LitColor ROW_CLR[] = {
     Color::rgb(255,60,60),   Color::rgb(255,140,30), Color::rgb(255,220,40),
     Color::rgb(50,220,80),   Color::rgb(40,210,230), Color::rgb(70,100,255),
     Color::rgb(160,80,220),  Color::rgb(230,70,200),
 };
 static constexpr int ROW_PTS[] = {80,70,60,50,40,30,20,10};
-static Color dimclr(Color c) { return Color::rgb(c.r()/2, c.g()/2, c.b()/2); }
+static LitColor dimclr(LitColor c) { return LitColor::rgb(c.r()/2, c.g()/2, c.b()/2); }
 
-struct Particle { float x,y,vx,vy; int life; Color color; };
+struct Particle { float x,y,vx,vy; int life; LitColor color; };
 enum class Pwr { Wide, Multi, Slow };
 struct PowerUp { float x,y; Pwr kind; bool on; };
 
@@ -55,7 +58,7 @@ static uint16_t s_bg, s_bar, s_bardim, s_accent, s_heart;
 static uint16_t s_pad, s_ball, s_brick[BROWS][2], s_trail[TRAIL_LEN], s_pwr[3];
 
 // -- Helpers -----------------------------------------------------------------
-static void spawn_particles(float px, float py, Color c) {
+static void spawn_particles(float px, float py, LitColor c) {
     std::uniform_real_distribution<float> v(-0.6f,0.6f);
     int n=0;
     for(auto& p:g_parts) if(p.life<=0&&n<4) { p={px,py,v(g_rng),v(g_rng)-0.3f,12,c}; ++n; }
@@ -225,7 +228,7 @@ static void paint(Canvas& canvas, int w, int h) {
     // particles
     for(auto& p:g_parts){ if(p.life<=0)continue; float br=(float)p.life/12.0f;
         uint16_t ps=canvas.style_pool()->intern(Style{}.with_bg(
-            Color::rgb((uint8_t)(p.color.r()*br),(uint8_t)(p.color.g()*br),(uint8_t)(p.color.b()*br))));
+            LitColor::rgb((uint8_t)(p.color.r()*br),(uint8_t)(p.color.g()*br),(uint8_t)(p.color.b()*br))));
         set_pixel(canvas,(int)p.x,(int)p.y,ps);
     }
     // power-ups

@@ -39,18 +39,20 @@ static uint16_t s_particle[PARTICLE_LIFE], s_trail[TRAIL_LIFE];
 static uint16_t s_bar_bg, s_bar_dim, s_bar_accent, s_bar_score;
 static uint16_t s_gameover, s_gameover_dim;
 
-static Color lerp_color(Color a, Color b, float t) {
+// LitColor: this reads CHANNELS, which only the literal side has -- a Color
+// may be an unresolved theme slot with no rgb to interpolate.
+static LitColor lerp_color(LitColor a, LitColor b, float t) {
     auto ar = a.r(), ag = a.g(), ab = a.b();
     auto br = b.r(), bg = b.g(), bb = b.b();
-    return Color::rgb(
+    return LitColor::rgb(
         uint8_t(ar + (br - ar) * t),
         uint8_t(ag + (bg - ag) * t),
         uint8_t(ab + (bb - ab) * t));
 }
 
-static Color snake_gradient(int i) {
+static LitColor snake_gradient(int i) {
     // green -> cyan -> blue -> purple  (4-stop gradient)
-    static constexpr Color stops[] = {
+    static constexpr LitColor stops[] = {
         Color::rgb(57, 255, 20),   // neon green
         Color::rgb(0, 255, 200),   // cyan
         Color::rgb(30, 100, 255),  // blue
@@ -74,7 +76,7 @@ static void spawn_food() {
     g_food.kind = (k < 6) ? FoodKind::Normal : (k < 9) ? FoodKind::Speed : FoodKind::Mega;
 }
 
-static void spawn_particles(int x, int y, Color base) {
+static void spawn_particles(int x, int y, LitColor base) {
     std::uniform_real_distribution<float> angle(0.0f, 6.2832f);
     std::uniform_real_distribution<float> speed(0.5f, 2.5f);
     int n = 8 + int(g_rng() % 9);

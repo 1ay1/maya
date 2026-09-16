@@ -39,7 +39,9 @@ struct Showcase {
         bool slider_on = false;
 
         // 2. A colour that eases between palette stops on demand.
-        anim::Motion<Color> tint{Color::rgb(120, 200, 255), 0.4};
+        // LitColor: anim::lerp interpolates CHANNELS, which only the literal
+        // side has -- a Color may be an unresolved theme slot.
+        anim::Motion<LitColor> tint{LitColor::rgb(120, 200, 255), 0.4};
         int tint_idx = 0;
 
         // 3. A multi-step intro timeline (replayable). Built lazily on first
@@ -93,8 +95,8 @@ struct Showcase {
 
     static Model init() { return {}; }
 
-    static Color palette(int i) {
-        static const Color stops[] = {
+    static LitColor palette(int i) {
+        static const LitColor stops[] = {
             Color::rgb(120, 200, 255),  // sky
             Color::rgb(255, 120, 200),  // magenta
             Color::rgb(140, 255, 170),  // mint
@@ -177,7 +179,7 @@ struct Showcase {
         );
 
         // ── 2. Eased colour Motion ────────────────────────────────────────
-        const Color tint = m.tint.get();                   // ticks + auto-RAF
+        const LitColor tint = m.tint.get();                   // ticks + auto-RAF
         auto color_row = h(
             text("color tween   ", Style{}.with_dim()),
             text("\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88\xe2\x96\x88",
@@ -209,7 +211,7 @@ struct Showcase {
             double angle = orbit_phase + i * (2.0 * 3.14159265 / 3.0);
             int x = (kOrbitW / 2) + static_cast<int>(std::sin(angle) * (kOrbitW / 2 - 1));
             double brightness = (std::cos(angle) + 1.0) / 2.0;  // depth illusion
-            Color c = anim::lerp(Color::rgb(40, 40, 60), palette(i),
+            LitColor c = anim::lerp(LitColor::rgb(40, 40, 60), palette(i),
                                  static_cast<float>(brightness));
             placed.push_back({x, text(orbit_dots[i],
                               Style{}.with_fg(c).with_bold())});
@@ -269,7 +271,7 @@ struct Showcase {
             double phase = wave_t * 6.0 - i * 0.5;
             double y_off = std::sin(phase) * 0.5 + 0.5;  // 0..1
             // Color cycles through palette based on position + time
-            Color c = anim::lerp(palette(4), palette(1),
+            LitColor c = anim::lerp(palette(4), palette(1),
                                  static_cast<float>(y_off));
             // We can't actually offset Y in inline, but we can show with
             // brightness + color cycling

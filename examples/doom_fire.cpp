@@ -56,10 +56,10 @@ static uint16_t g_bar_accent;
 struct Palette {
     const char* name;
     // Returns color for a heat level 0..MAX_HEAT
-    Color (*color_fn)(int h);
+    LitColor (*color_fn)(int h);
 };
 
-static Color classic_color(int h) {
+static LitColor classic_color(int h) {
     h = std::clamp(h, 0, MAX_HEAT);
     float t = static_cast<float>(h) / MAX_HEAT;
     if (t < 0.15f) {
@@ -78,7 +78,7 @@ static Color classic_color(int h) {
     return Color::rgb(255, 255, static_cast<uint8_t>(u * 255));
 }
 
-static Color inferno_color(int h) {
+static LitColor inferno_color(int h) {
     h = std::clamp(h, 0, MAX_HEAT);
     float t = static_cast<float>(h) / MAX_HEAT;
     // Black → deep purple → magenta → orange → white
@@ -99,7 +99,7 @@ static Color inferno_color(int h) {
     return Color::rgb(255, static_cast<uint8_t>(140 + u * 115), static_cast<uint8_t>(u * 200));
 }
 
-static Color toxic_color(int h) {
+static LitColor toxic_color(int h) {
     h = std::clamp(h, 0, MAX_HEAT);
     float t = static_cast<float>(h) / MAX_HEAT;
     // Black → dark green → bright green → yellow → white
@@ -267,8 +267,8 @@ static void paint(Canvas& canvas, int w, int h) {
             int heat_top = g_fire[static_cast<size_t>(py_top * w + cx)];
             int heat_bot = g_fire[static_cast<size_t>(py_bot * w + cx)];
 
-            Color c_top = color_fn(heat_top);
-            Color c_bot = color_fn(heat_bot);
+            LitColor c_top = color_fn(heat_top);
+            LitColor c_bot = color_fn(heat_bot);
 
             int fi = to_idx(c_top.r(), c_top.g(), c_top.b());
             int bi = to_idx(c_bot.r(), c_bot.g(), c_bot.b());
@@ -281,7 +281,7 @@ static void paint(Canvas& canvas, int w, int h) {
         int ex = static_cast<int>(e.x);
         int ey = static_cast<int>(e.y);
         if (ex >= 0 && ex < w && ey >= 0 && ey < canvas_h) {
-            Color c = color_fn(e.heat);
+            LitColor c = color_fn(e.heat);
             int fi = to_idx(c.r(), c.g(), c.b());
             // Ember appears as a bright dot using the upper half-block
             canvas.set(ex, ey, U'\u2580', g_fire_styles[fi][fi]);

@@ -109,6 +109,79 @@ TEST_CASE("markdown palette: every role resolves to a painted colour") {
     std::println("PASS\n");
 }
 
+TEST_CASE("markdown palette: a theme change alone refreshes it") {
+    std::println("--- test_md_palette_epoch_pull ---");
+    // THE forgotten-subscriber regression.
+    //
+    // A projected palette has to be re-derived when the theme moves. That
+    // used to be a push — on_theme_changed(fn), registered once per
+    // subsystem — and markdown was the subsystem that forgot. The failure is
+    // invisible by construction: a projection that never re-derives looks
+    // exactly like a projection whose theme never changed, so it surfaced
+    // only as a user reporting that picking a scheme repainted the chrome
+    // while prose, code spans and tables kept the old colours.
+    //
+    // Deriving is the read path now, so this test registers NOTHING and
+    // publishes NOTHING. It only changes the theme. If someone reintroduces
+    // a push-based design, this fails.
+    const Theme* rose = scheme_named("Rose Pine Dawn");
+    const Theme* drac = scheme_named("Dracula");
+    REQUIRE(rose != nullptr);
+    REQUIRE(drac != nullptr);
+
+    theme::set_live(*rose);
+    CHECK(divergences(colors::live(), colors::project(*rose)) == 0);
+
+    // A second change, to catch a palette that refreshes once and then
+    // latches — which is what a stale epoch would do.
+    theme::set_live(*drac);
+    CHECK(divergences(colors::live(), colors::project(*drac)) == 0);
+
+    // Every scheme, so no ordering or caching quirk hides.
+    int checked = 0;
+    for (const auto& s : theme::schemes) {
+        theme::set_live(*s.theme);
+        CHECK(divergences(colors::live(), colors::project(*s.theme)) == 0);
+        ++checked;
+    }
+    CHECK(checked > 50);
+
+    // The epoch is what makes it work, and it must actually move — a
+    // pointer compare could not see this, because the live theme slot is
+    // assigned THROUGH and its address never changes.
+    const unsigned before = theme::live_epoch();
+    theme::set_live(theme::native);
+    CHECK(theme::live_epoch() > before);
+    CHECK(divergences(colors::live(), colors::project(theme::native)) == 0);
+    std::println("PASS ({} schemes tracked with no subscriber)\n", checked);
+}
+
+TEST_CASE("markdown palette: an explicit override stands, then yields") {
+    std::println("--- test_md_palette_override ---");
+    // set_markdown_palette() is the host escape hatch: an explicit palette
+    // rather than a derived one. It has to WIN over the projection...
+    const Theme* rose = scheme_named("Rose Pine Dawn");
+    REQUIRE(rose != nullptr);
+    theme::set_live(*rose);
+
+    MarkdownPalette custom = markdown_palette_from(*rose);
+    custom.heading1 = Color::rgb(1, 2, 3);
+    set_markdown_palette(custom);
+    CHECK(colors::live().heading1 == Color::rgb(1, 2, 3));
+
+    // ...but only until the theme changes, because the theme is the source
+    // of truth and an override is a deliberate exception to it. Anything
+    // else would be the old bug wearing a different hat: a palette pinned
+    // to a scheme the user has already left.
+    const Theme* drac = scheme_named("Dracula");
+    REQUIRE(drac != nullptr);
+    theme::set_live(*drac);
+    CHECK(divergences(colors::live(), colors::project(*drac)) == 0);
+
+    theme::set_live(theme::native);
+    std::println("PASS\n");
+}
+
 TEST_CASE("markdown palette: readers never observe a torn palette") {
     std::println("--- test_md_palette_snapshot ---");
     // The concurrency shape of the real thing: the UI thread previewing

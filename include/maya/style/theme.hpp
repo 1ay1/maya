@@ -30,8 +30,10 @@
 // then owns the whole surface. They are never a default.
 
 #include <atomic>
+#include <concepts>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string_view>
 #include <utility>
 
@@ -345,14 +347,133 @@ inline std::atomic<const Theme*>& live_slot() noexcept {
     static std::atomic<const Theme*> t{&native};
     return t;
 }
+// Bumped by every set_live(). See live_epoch() / projected<P>().
+inline std::atomic<unsigned>& epoch_slot() noexcept {
+    static std::atomic<unsigned> e{0};
+    return e;
+}
 }  // namespace detail
 
 [[nodiscard]] inline const Theme& live() noexcept {
-    return *detail::live_slot().load(std::memory_order_relaxed);
+    return *detail::live_slot().load(std::memory_order_acquire);
+}
+
+/// How many times the live theme has been replaced.
+///
+/// The version a PROJECTED palette compares against to notice it is stale.
+/// A counter rather than a pointer because the theme slot is assigned
+/// THROUGH (`*slot = t`), so its address never moves and identity cannot
+/// detect a swap — the bug that made StylePool's cache a permanent no-op.
+[[nodiscard]] inline unsigned live_epoch() noexcept {
+    return detail::epoch_slot().load(std::memory_order_acquire);
 }
 
 inline void set_live(const Theme& t) noexcept {
-    detail::live_slot().store(&t, std::memory_order_relaxed);
+    // Theme first, THEN the epoch, with release ordering. That order is the
+    // contract projected<P>() relies on: a reader that observes epoch N+1 is
+    // guaranteed to see the theme that produced it, so it can never cache an
+    // OLD projection under a NEW epoch and go permanently stale. The reverse
+    // race — observing the new theme under the old epoch — costs one
+    // redundant re-derive and converges.
+    detail::live_slot().store(&t, std::memory_order_release);
+    detail::epoch_slot().fetch_add(1, std::memory_order_release);
+}
+
+// ============================================================================
+// projected<P> — a palette DERIVED from the theme, never pushed to
+// ============================================================================
+// Some subsystems cannot read the Theme per-use: markdown keeps a flat
+// palette because its render path is hot and its parse worker runs
+// off-thread with no way to reach a Theme. Those projections have to be
+// re-derived when the theme changes.
+//
+// The old answer was a push: on_theme_changed(fn), with each subsystem
+// registering once. That works only if everyone remembers — and the one
+// that forgot (markdown) was invisible until a user reported half-themed
+// output, because a projection that never re-derives looks exactly like a
+// projection whose theme never changed.
+//
+// So the dependency is inverted: deriving IS the read path. A projection
+// states how to compute itself, and asking for it checks the epoch first.
+// A subsystem that "forgets to subscribe" is not expressible, because there
+// is no subscription — the only way to read is the way that refreshes.
+//
+//     struct MyPalette {
+//         using type = MyColors;
+//         static type project(const Theme& t) { return {...}; }
+//     };
+//     const MyColors& c = theme::projected<MyPalette>();
+//
+// Cost in the steady state is one acquire load and one integer compare.
+template <class P>
+concept Projection = requires (const Theme& t) {
+    typename P::type;
+    { P::project(t) } -> std::same_as<typename P::type>;
+    requires std::equality_comparable<typename P::type>;
+};
+
+namespace detail {
+
+// Per-projection state. Snapshots are append-only and NEVER freed: a reader
+// holding the previous pointer must keep reading a valid, UNWRITTEN object,
+// and any container that frees hands the memory back to the allocator, whose
+// write into it races that reader. (Measured — a deque-backed version was
+// still flagged by TSan for exactly this.) The cost is bounded by how many
+// times a human changes theme in one session.
+template <Projection P>
+struct ProjectionState {
+    static std::mutex& mu() { static std::mutex m; return m; }
+    static std::atomic<const typename P::type*>& slot() {
+        static std::atomic<const typename P::type*> s{
+            new typename P::type{P::project(live())}};
+        return s;
+    }
+    static std::atomic<unsigned>& seen() {
+        static std::atomic<unsigned> e{live_epoch()};
+        return e;
+    }
+};
+
+}  // namespace detail
+
+/// The projection of the live theme. Re-derives itself if the theme moved.
+template <Projection P>
+[[nodiscard]] const typename P::type& projected() {
+    using S = detail::ProjectionState<P>;
+    auto& slot = S::slot();          // forces init before the epoch compare
+    const unsigned now = live_epoch();
+    if (S::seen().load(std::memory_order_acquire) != now) {
+        // Serialises re-derivers against each other. Readers in the common
+        // case never reach here.
+        std::lock_guard lk(S::mu());
+        if (S::seen().load(std::memory_order_relaxed) != now) {
+            auto next = P::project(live());
+            // Only publish a new snapshot when the VALUE actually moved.
+            // Hosts re-publish the same theme every frame (that is how
+            // `auto` follows a tmux detach), and two different themes can
+            // project to the same palette; neither should leak a snapshot.
+            if (!(*slot.load(std::memory_order_relaxed) == next))
+                slot.store(new typename P::type{std::move(next)},
+                           std::memory_order_release);
+            S::seen().store(now, std::memory_order_release);
+        }
+    }
+    return *slot.load(std::memory_order_acquire);
+}
+
+/// Force a projection to a value the theme did not produce.
+///
+/// For a host that wants an explicit palette rather than a derived one. It
+/// stands until the next theme change, which re-derives — the theme is the
+/// source of truth, and an override is a deliberate exception to it.
+template <Projection P>
+void override_projection(const typename P::type& v) {
+    using S = detail::ProjectionState<P>;
+    auto& slot = S::slot();
+    std::lock_guard lk(S::mu());
+    if (!(*slot.load(std::memory_order_relaxed) == v))
+        slot.store(new typename P::type{v}, std::memory_order_release);
+    S::seen().store(live_epoch(), std::memory_order_release);
 }
 
 // ── Is this colour already the muted ink? ───────────────────────────────

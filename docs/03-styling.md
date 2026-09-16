@@ -306,6 +306,42 @@ unreadable element someone reports months later. An `Unset` colour paints as
 inherit (SGR 39/49), so even if one escaped, the failure mode is "looks
 unstyled", never a colour maya invented.
 
+### Projected palettes
+
+Most code should read the theme directly — `Color::slot(...)` resolved at
+paint time is the whole design. But a few subsystems genuinely cannot:
+markdown keeps a flat palette because its render path is hot and its parse
+worker runs off-thread with no way to reach a `Theme`.
+
+A derived palette has to be refreshed when the theme moves. Declare *how* to
+compute it and maya owns the rest:
+
+```cpp
+struct MyPalette {
+    using type = MyColors;
+    static type project(const Theme& t) {
+        return { .body = t.text, .rule = t.border, /* … */ };
+    }
+};
+
+const MyColors& c = theme::projected<MyPalette>();   // always current
+```
+
+This is a **pull, not a push**, and that is the point. The old design was
+`on_theme_changed(fn)` with each subsystem registering once — and a
+subsystem that forgot was invisible, because a palette that never re-derives
+looks exactly like a palette whose theme never changed. Here, deriving *is*
+the read path: there is no registration to omit.
+
+Cost in the steady state is an acquire load and an integer compare against
+`theme::live_epoch()`. Each snapshot is immutable and published by pointer
+swap, so an off-thread reader gets a frozen object with no lock — and a
+reader holding an older snapshot keeps reading valid memory.
+
+`theme::override_projection<P>(v)` forces an explicit value; it stands until
+the next theme change, which re-derives. The theme is the source of truth and
+an override is a deliberate exception to it.
+
 ### Built-in Themes
 
 ```cpp

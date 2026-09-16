@@ -159,7 +159,7 @@ struct Palette {
 };
 
 // Project a theme through the one mapping above.
-[[nodiscard]] constexpr Palette project(const Theme& t) noexcept {
+[[nodiscard]] constexpr Palette project_from(const Theme& t) noexcept {
     Palette p{};
 #define X(f, SLOT) p.f = t.resolve(Color::slot(ThemeSlot::SLOT));
     MAYA_MD_PALETTE(X)
@@ -167,62 +167,41 @@ struct Palette {
     return p;
 }
 
-// Published snapshots, append-only and NEVER freed.
+// The projection, stated as a type so theme::projected<> can own it.
 //
-// A two-buffer flip is not enough, and the test caught it: with slots A and
-// B, the third publish overwrites A — which a reader that loaded A and was
-// descheduled is still reading. It observes half of one theme and half of
-// another, which is exactly the tearing this design exists to remove. (151
-// torn reads out of 929, with four readers and 57 themes cycling.)
+// This replaces a private atomic + mutex + "remember to call
+// on_theme_changed" subscription. Registering was the whole problem:
+// markdown was the subsystem that FORGOT, and a projection that never
+// re-derives is indistinguishable from one whose theme never changed — so
+// the bug was invisible until a user reported half-themed output.
 //
-// So a publish never reuses storage: it leaks a new immutable snapshot and
-// retires the old pointer. A reader's pointer therefore stays valid and
-// UNWRITTEN forever, which is what lets readers run with no epoch, no hazard
-// pointer and no lock.
-//
-// "Leak" is meant literally, and it has to be. An earlier attempt kept the
-// snapshots in a deque and let it own them; TSan still flagged a race,
-// because a container that ever FREES a node hands that memory back to the
-// allocator, which reuses it for the NEXT snapshot — and the allocator's
-// write into it races the reader still holding the old pointer. The address
-// is what must be immortal, not merely the object.
-//
-// The cost is bounded by how many times a human picks a theme in one
-// session: each snapshot is ~35 * 4 bytes, so a pathological 10,000 swaps
-// is under 1.5 MB and the realistic figure is a few hundred bytes.
-// Reclaiming them safely would need epochs or RCU to know when the last
-// reader is done — a large amount of machinery to buy back nothing that
-// matters at this scale.
-namespace detail {
-inline std::mutex& publish_mu() {
-    static std::mutex m;
-    return m;
-}
-inline std::atomic<const Palette*>& live_slot() noexcept {
-    // Seeded with native's projection so the boot palette IS the projection
-    // — the divergence that made the first theme swap repaint prose that
-    // nothing had actually restyled.
-    static std::atomic<const Palette*> p{new Palette{project(theme::native)}};
-    return p;
-}
-}  // namespace detail
+// Now deriving IS the read path (see theme::projected). There is no
+// subscription to omit.
+struct PaletteProjection {
+    using type = Palette;
+    [[nodiscard]] static type project(const Theme& t) noexcept {
+        return project_from(t);
+    }
+};
 
-/// The palette in force. One acquire load; the result is frozen and stays
-/// valid for as long as the caller holds it.
+// Kept as the spelling the tests and older call sites use.
+[[nodiscard]] inline Palette project(const Theme& t) noexcept {
+    return project_from(t);
+}
+
+/// The palette in force. Re-derives itself if the theme moved; one acquire
+/// load and an integer compare in the steady state. The result is frozen and
+/// stays valid for as long as the caller holds it.
 [[nodiscard]] inline const Palette& live() noexcept {
-    return *detail::live_slot().load(std::memory_order_acquire);
+    return theme::projected<PaletteProjection>();
 }
 
-/// Publish a new palette. Readers never block and never see a partial one.
+/// Force the palette to something the theme did not produce.
+///
+/// Only set_markdown_palette() needs this — a host handing over an explicit
+/// palette. It stands until the next theme change, which re-derives.
 inline void publish(const Palette& p) {
-    // Serialises publishers against each other only; readers take the
-    // atomic load and never touch this.
-    std::lock_guard lk(detail::publish_mu());
-    // No-op when nothing moved. Hosts re-publish every frame so `auto` can
-    // follow a tmux detach, and without this that would leak a snapshot per
-    // frame rather than one per actual theme change.
-    if (live() == p) return;
-    detail::live_slot().store(new Palette{p}, std::memory_order_release);
+    theme::override_projection<PaletteProjection>(p);
 }
 
 // Field accessors, so ~124 existing `colors::text` reads keep working

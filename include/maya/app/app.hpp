@@ -565,6 +565,11 @@ public:
         // (every themed widget Config default) resolve against this at
         // SGR-emit time, which is below the app layer and cannot reach a
         // Runtime — so it gets its own pointer to the same object.
+        //
+        // This also bumps the theme EPOCH, which is what refreshes every
+        // theme::projected<P> palette. Those used to need a subscriber each
+        // (see below); now deriving is their read path, so a projection that
+        // "forgets to register" is not expressible.
         theme::set_live(t);
         // Drop every cross-frame cached component.
         //

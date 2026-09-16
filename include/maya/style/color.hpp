@@ -237,34 +237,47 @@ public:
     // whichever index they are named through — `Color::red()` still works and
     // still widens for free. That is what keeps ~1000 existing call sites
     // compiling untouched while the renderer gets a type it can trust.
-    static constexpr LitColor black()          noexcept { return LitColor{AnsiColor::Black}; }
-    static constexpr LitColor red()            noexcept { return LitColor{AnsiColor::Red}; }
-    static constexpr LitColor green()          noexcept { return LitColor{AnsiColor::Green}; }
-    static constexpr LitColor yellow()         noexcept { return LitColor{AnsiColor::Yellow}; }
-    static constexpr LitColor blue()           noexcept { return LitColor{AnsiColor::Blue}; }
-    static constexpr LitColor magenta()        noexcept { return LitColor{AnsiColor::Magenta}; }
-    static constexpr LitColor cyan()           noexcept { return LitColor{AnsiColor::Cyan}; }
-    static constexpr LitColor white()          noexcept { return LitColor{AnsiColor::White}; }
-    static constexpr LitColor bright_black()   noexcept { return LitColor{AnsiColor::BrightBlack}; }
-    static constexpr LitColor bright_red()     noexcept { return LitColor{AnsiColor::BrightRed}; }
-    static constexpr LitColor bright_green()   noexcept { return LitColor{AnsiColor::BrightGreen}; }
-    static constexpr LitColor bright_yellow()  noexcept { return LitColor{AnsiColor::BrightYellow}; }
-    static constexpr LitColor bright_blue()    noexcept { return LitColor{AnsiColor::BrightBlue}; }
-    static constexpr LitColor bright_magenta() noexcept { return LitColor{AnsiColor::BrightMagenta}; }
-    static constexpr LitColor bright_cyan()    noexcept { return LitColor{AnsiColor::BrightCyan}; }
-    static constexpr LitColor bright_white()   noexcept { return LitColor{AnsiColor::BrightWhite}; }
-    static constexpr LitColor gray()           noexcept { return bright_black(); }
-    static constexpr LitColor grey()           noexcept { return bright_black(); }
+    //
+    // `auto`, NOT `LitColor`, and that is load-bearing rather than style.
+    // LitColor IS BasicColor<Res::Lit>, so naming it in a signature inside
+    // BasicColor's own definition asks for the type to be complete while it
+    // is still being defined — which is exactly what it is not, when R is
+    // Lit. GCC and Clang accept it; MSVC rejects it, and did:
+    //
+    //   error C7637: maya::BasicColor<maya::Res::Lit>: you cannot implicitly
+    //   instantiate a class template while it is being defined
+    //
+    // A deduced return type is resolved at INSTANTIATION, by which point the
+    // class is complete, so the self-reference never arises. Same type, same
+    // constexpr-ness, no forward-declaration dance.
+    static constexpr auto black()          noexcept { return LitColor{AnsiColor::Black}; }
+    static constexpr auto red()            noexcept { return LitColor{AnsiColor::Red}; }
+    static constexpr auto green()          noexcept { return LitColor{AnsiColor::Green}; }
+    static constexpr auto yellow()         noexcept { return LitColor{AnsiColor::Yellow}; }
+    static constexpr auto blue()           noexcept { return LitColor{AnsiColor::Blue}; }
+    static constexpr auto magenta()        noexcept { return LitColor{AnsiColor::Magenta}; }
+    static constexpr auto cyan()           noexcept { return LitColor{AnsiColor::Cyan}; }
+    static constexpr auto white()          noexcept { return LitColor{AnsiColor::White}; }
+    static constexpr auto bright_black()   noexcept { return LitColor{AnsiColor::BrightBlack}; }
+    static constexpr auto bright_red()     noexcept { return LitColor{AnsiColor::BrightRed}; }
+    static constexpr auto bright_green()   noexcept { return LitColor{AnsiColor::BrightGreen}; }
+    static constexpr auto bright_yellow()  noexcept { return LitColor{AnsiColor::BrightYellow}; }
+    static constexpr auto bright_blue()    noexcept { return LitColor{AnsiColor::BrightBlue}; }
+    static constexpr auto bright_magenta() noexcept { return LitColor{AnsiColor::BrightMagenta}; }
+    static constexpr auto bright_cyan()    noexcept { return LitColor{AnsiColor::BrightCyan}; }
+    static constexpr auto bright_white()   noexcept { return LitColor{AnsiColor::BrightWhite}; }
+    static constexpr auto gray()           noexcept { return bright_black(); }
+    static constexpr auto grey()           noexcept { return bright_black(); }
 
     /// Terminal-default color (SGR 39 fg / 49 bg). Use this when you want a
     /// container to occlude underlying cells in a zstack while still showing
     /// the user's terminal theme background.
-    static constexpr LitColor default_color() noexcept {
+    static constexpr auto default_color() noexcept {
         return LitColor{LitColor::Kind::Default, 0, 0, 0};
     }
 
     // 256-color palette
-    static constexpr LitColor indexed(uint8_t index) noexcept {
+    static constexpr auto indexed(uint8_t index) noexcept {
         return LitColor{LitColor::Kind::Indexed, index, 0, 0};
     }
 
@@ -275,7 +288,7 @@ public:
     /// Sym-only. A LitColor is by definition one no slot can hide inside, so
     /// `LitColor::slot(...)` is a compile error rather than a colour that
     /// silently paints as white somewhere downstream.
-    static constexpr Color slot(ThemeSlot s) noexcept requires (R == Res::Sym) {
+    static constexpr auto slot(ThemeSlot s) noexcept requires (R == Res::Sym) {
         return Color{Color::Kind::Slot, static_cast<uint8_t>(s), 0, 0};
     }
 
@@ -307,7 +320,7 @@ public:
     }
 
     // 24-bit truecolor
-    static constexpr LitColor rgb(uint8_t r, uint8_t g, uint8_t b) noexcept {
+    static constexpr auto rgb(uint8_t r, uint8_t g, uint8_t b) noexcept {
         return LitColor{LitColor::Kind::Rgb, r, g, b};
     }
 
@@ -322,7 +335,7 @@ public:
     }
 
     // HSL to RGB conversion (constexpr)
-    static constexpr LitColor hsl(float h, float s, float l) noexcept {
+    static constexpr auto hsl(float h, float s, float l) noexcept {
         // Normalize h to [0, 360)
         while (h < 0) h += 360;
         while (h >= 360) h -= 360;

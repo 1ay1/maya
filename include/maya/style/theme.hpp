@@ -37,6 +37,25 @@
 #include <string_view>
 #include <utility>
 
+// LSan's interface, when we are built under it. Used by immortal_snapshot()
+// below to mark the deliberately-never-freed projection snapshots as reachable
+// -- see the comment there for why they cannot be freed.
+#if defined(__SANITIZE_ADDRESS__)
+#  define MAYA_HAS_LSAN 1
+#elif defined(__has_feature)
+// Nested #if, not `defined(__has_feature) && __has_feature(...)`: MSVC has no
+// __has_feature and errors on the call syntax even when the defined() guard is
+// false, because it does not short-circuit the call form.
+#  if __has_feature(address_sanitizer)
+#    define MAYA_HAS_LSAN 1
+#  endif
+#endif
+#if defined(MAYA_HAS_LSAN) && __has_include(<sanitizer/lsan_interface.h>)
+#  include <sanitizer/lsan_interface.h>
+#else
+#  undef MAYA_HAS_LSAN
+#endif
+
 #include "color.hpp"
 #include "style.hpp"   // Style + live_color_resolver(), installed at the bottom
 
@@ -414,6 +433,32 @@ concept Projection = requires (const Theme& t) {
 
 namespace detail {
 
+// Allocate a projection snapshot that is meant to outlive the program.
+//
+// The leak is the DESIGN, stated once here so the three call sites below
+// cannot each re-argue it: a reader holding the previous pointer must keep
+// reading a valid, unwritten object, and anything that frees hands the memory
+// back to the allocator, whose next write into it races that reader. Measured
+// -- a deque-backed version was still flagged by TSan for exactly this.
+//
+// But LSan cannot tell a deliberate immortal from a bug, and it was right to
+// complain: every theme change left a snapshot unreachable at exit, so maya's
+// sanitizer job reported 615 leaked allocations and had been red since the
+// projection cache landed. A red CI that is red on purpose stops being read,
+// which is the real cost -- it hid the MSVC break for six commits.
+//
+// __lsan_ignore_object() says "this one is intentional" at the allocation
+// site, so a snapshot is exempt while an actual leak anywhere else still
+// fails the build. Compiled out entirely when not under ASan.
+template <class T, class... Args>
+[[nodiscard]] T* immortal_snapshot(Args&&... args) {
+    T* p = new T{std::forward<Args>(args)...};
+#if defined(MAYA_HAS_LSAN)
+    __lsan_ignore_object(p);
+#endif
+    return p;
+}
+
 // Per-projection state. Snapshots are append-only and NEVER freed: a reader
 // holding the previous pointer must keep reading a valid, UNWRITTEN object,
 // and any container that frees hands the memory back to the allocator, whose
@@ -425,7 +470,7 @@ struct ProjectionState {
     static std::mutex& mu() { static std::mutex m; return m; }
     static std::atomic<const typename P::type*>& slot() {
         static std::atomic<const typename P::type*> s{
-            new typename P::type{P::project(live())}};
+            immortal_snapshot<typename P::type>(P::project(live()))};
         return s;
     }
     static std::atomic<unsigned>& seen() {
@@ -453,7 +498,7 @@ template <Projection P>
             // `auto` follows a tmux detach), and two different themes can
             // project to the same palette; neither should leak a snapshot.
             if (!(*slot.load(std::memory_order_relaxed) == next))
-                slot.store(new typename P::type{std::move(next)},
+                slot.store(detail::immortal_snapshot<typename P::type>(std::move(next)),
                            std::memory_order_release);
             S::seen().store(now, std::memory_order_release);
         }
@@ -472,7 +517,8 @@ void override_projection(const typename P::type& v) {
     auto& slot = S::slot();
     std::lock_guard lk(S::mu());
     if (!(*slot.load(std::memory_order_relaxed) == v))
-        slot.store(new typename P::type{v}, std::memory_order_release);
+        slot.store(detail::immortal_snapshot<typename P::type>(v),
+                   std::memory_order_release);
     S::seen().store(live_epoch(), std::memory_order_release);
 }
 

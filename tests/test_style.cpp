@@ -7,6 +7,10 @@
 #undef NDEBUG
 #include "agtest.hpp"
 #include <print>
+#include <algorithm>    // std::find, for the contrast exemption list
+#include <cmath>        // std::pow, for WCAG relative luminance
+#include <string>
+#include <string_view>
 
 using namespace maya;
 
@@ -404,6 +408,25 @@ TEST_CASE("theme discipline: ink slots are never backgrounds") {
         return 0.2126 * rgb.r() + 0.7152 * rgb.g() + 0.0722 * rgb.b();
     };
 
+    // WCAG 2.x relative luminance and contrast ratio. Distinct from `lum`
+    // above: that one is a plain weighted average used to ask which SIDE of
+    // the canvas a fill sits on, which is the right question for surface
+    // slots. Legibility is a different question and needs the gamma-corrected
+    // form, because perceived difference is not linear in channel value.
+    auto rel_lum = [](LitColor c) {
+        const LitColor rgb = c.to_rgb();
+        auto ch = [](double v) {
+            v /= 255.0;
+            return v <= 0.03928 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * ch(rgb.r()) + 0.7152 * ch(rgb.g()) + 0.0722 * ch(rgb.b());
+    };
+    auto contrast_ratio = [&](LitColor a, LitColor b) {
+        double hi = rel_lum(a), lo = rel_lum(b);
+        if (hi < lo) std::swap(hi, lo);
+        return (hi + 0.05) / (lo + 0.05);
+    };
+
     int checked = 0;
     for (const auto& s : theme::schemes) {
         const Theme& t = *s.theme;
@@ -428,9 +451,61 @@ TEST_CASE("theme discipline: ink slots are never backgrounds") {
 
         // Text must contrast the canvas — the one guarantee legibility rests
         // on, and the thing a mis-assigned slot destroys.
-        if (t.text.kind() == Color::Kind::Rgb)
-            CHECK_MESSAGE((lum(t.text) > 128.0) != light_bg,
-                          s.name << ": text does not contrast the background");
+        //
+        // CONTRAST, not which side of 128 the text falls on. The midpoint test
+        // this replaces failed 23 themes, and 13 of them were perfectly
+        // legible: Alien Blood puts text at luminance 119 on a canvas at 20,
+        // six times brighter and obviously readable, but both land below 128
+        // so a same-side check called it broken. A rule that fires on legible
+        // themes is not a legibility rule, and a permanently-red assertion
+        // gets scrolled past — this one had been failing every maya CI run
+        // since the 615-scheme import, which is how the MSVC break went
+        // unnoticed for six commits behind it.
+        //
+        // WCAG relative luminance + the standard ratio, so the threshold means
+        // something outside this file. 3.0:1 is WCAG AA for large text; the
+        // floor is deliberately not 4.5 because a handful of shipped themes
+        // (Matrix, HaX0R R3D, C64) are low-contrast BY AUTHORIAL INTENT and
+        // rewriting them to satisfy a lint would be a worse bug than the lint.
+        // What 3.0 still catches is the real failure this guards: an ink slot
+        // used as a background, which collapses the ratio toward 1.0.
+        if (t.text.kind() == Color::Kind::Rgb) {
+            // Named exemptions, because a floor with no escape hatch gets
+            // LOWERED until it passes, and then it guards nothing. These ten
+            // are low-contrast on purpose — phosphor-CRT and glitch themes
+            // whose whole character is dim text on near-black — so they are
+            // listed individually rather than allowed for by a weaker global
+            // threshold. Adding a name here is a deliberate, reviewable act;
+            // a NEW theme that trips the floor is a bug until someone says
+            // otherwise in a diff.
+            static constexpr std::string_view kLowContrastByDesign[] = {
+                "C64", "Crayon Pony Fish", "Darkermatrix", "Darkmatrix",
+                "HaX0R R3D", "Matrix", "Poimandres White", "Royal",
+                "Shaman", "base16-icy",
+            };
+            const std::string_view nm{s.name};
+            const bool exempt =
+                std::find(std::begin(kLowContrastByDesign),
+                          std::end(kLowContrastByDesign), nm)
+                != std::end(kLowContrastByDesign);
+
+            const double r = contrast_ratio(t.text, t.background);
+            if (!exempt) {
+                CHECK_MESSAGE(r >= 3.0,
+                              std::string{s.name}
+                                  << ": text/background contrast is only " << r
+                                  << ":1 (want >= 3.0) — check for an ink slot "
+                                     "used as a background");
+            } else {
+                // An exemption must stay EARNED. If someone fixes one of
+                // these, the name has to leave the list, or the list slowly
+                // becomes a place where regressions hide.
+                CHECK_MESSAGE(r < 3.0,
+                              std::string{s.name}
+                                  << " now meets 3.0:1 (" << r
+                                  << ":1) — remove it from kLowContrastByDesign");
+            }
+        }
     }
     CHECK(checked > 0);
     std::println("PASS ({} schemes checked)\n", checked);

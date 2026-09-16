@@ -312,11 +312,19 @@ public:
     /// Unset narrows fine, and deliberately: "nobody stated a colour" IS a
     /// paintable answer (inherit, SGR 39/49), unlike a slot, which is a
     /// question the theme has to answer first.
-    static constexpr std::optional<LitColor> try_literal(Color c) noexcept
+    ///
+    /// `auto` for the same reason as the factories above, and this one is the
+    /// harder case: `std::optional<LitColor>` does not merely NAME the
+    /// incomplete type, it instantiates a template over it, so MSVC needs the
+    /// full definition to compute optional's storage and triviality traits.
+    /// That is why the earlier pass over the factories was not enough -- it
+    /// removed the mentions that were easy to see and left the two that
+    /// actually reach into <optional> and <xsmf_control>.
+    static constexpr auto try_literal(Color c) noexcept
         requires (R == Res::Lit)
     {
-        if (c.kind_ == ColorKind::Slot) return std::nullopt;
-        return LitColor{c.kind_, c.r_, c.g_, c.b_};
+        if (c.kind_ == ColorKind::Slot) return std::optional<LitColor>{};
+        return std::optional<LitColor>{LitColor{c.kind_, c.r_, c.g_, c.b_}};
     }
 
     // 24-bit truecolor
@@ -325,7 +333,9 @@ public:
     }
 
     // From hex literal: Color::hex(0xFF00FF)
-    static consteval LitColor hex(uint32_t rgb) {
+    //
+    // `auto` rather than LitColor: same self-reference as above.
+    static consteval auto hex(uint32_t rgb) {
         if (rgb > 0xFFFFFF) throw "Color::hex: value exceeds 0xFFFFFF";
         return BasicColor::rgb(
             static_cast<uint8_t>((rgb >> 16) & 0xFF),

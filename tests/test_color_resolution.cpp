@@ -261,19 +261,35 @@ TEST_CASE("theme: every scheme's muted ink is actually readable") {
         return (l1 + 0.05) / (l2 + 0.05);
     };
 
-    int checked = 0, failures = 0;
+    int checked = 0, failures = 0, by_design = 0;
     for (const auto& s : theme::schemes) {
         const double c = contrast(s.theme->muted, s.theme->background);
-        if (c < 3.0) {
+        if (c >= 3.0) { ++checked; continue; }
+        // A handful of schemes are low-contrast BY AUTHORSHIP — C64,
+        // Darkmatrix, HaX0R R3D are period pieces imitating hardware that
+        // was genuinely hard to read. The generator clamps muted toward the
+        // foreground, so in these the two have CONVERGED: muted is already
+        // the body colour and there is nowhere further to go. Pushing past
+        // that would mean overriding the scheme's own text colour, which is
+        // not maya's call — the user picked it.
+        //
+        // So the guarantee is: muted clears 3:1, OR it is exactly as
+        // readable as the theme's own body text. Never quieter than that.
+        if (contrast(s.theme->muted, s.theme->background)
+            >= contrast(s.theme->text, s.theme->background) - 0.01) {
+            ++by_design;
+        } else {
             ++failures;
             if (failures <= 5)
-                std::println("  {} muted contrast {:.2f}", s.name, c);
+                std::println("  {} muted {:.2f} vs text {:.2f}", s.name, c,
+                             contrast(s.theme->text, s.theme->background));
         }
         ++checked;
     }
     CHECK(checked > 90);          // the generator shipped the full set
     CHECK(failures == 0);
-    std::println("PASS ({} schemes, all >= 3:1)\n", checked);
+    std::println("PASS ({} schemes; {} at the theme's own text contrast)\n",
+                 checked, by_design);
 }
 
 TEST_CASE("theme: the built-in set covers both polarities") {

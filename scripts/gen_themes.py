@@ -97,11 +97,31 @@ def parse(text: str) -> dict:
     return out
 
 
-def ident(name: str) -> str:
-    """A scheme name as a C++ identifier: 'Tokyo Night' -> tokyo_night."""
+def ident(name: str, taken: set[str] | None = None) -> str:
+    """A scheme name as a C++ identifier: 'Tokyo Night' -> tokyo_night.
+
+    Upstream names are display strings, and two of them can differ only in
+    case: the repo ships both "Dracula" and "dracula". Lowercasing collapses
+    those onto one identifier, which is a REDEFINITION — the whole header
+    fails to compile, not just the offending pair. With --all that is one
+    collision in 615, i.e. exactly the kind of thing that works on the
+    curated set and breaks the moment someone asks for everything.
+
+    So uniqueness is enforced rather than assumed: a taken identifier gets a
+    numeric suffix. The scheme's DISPLAY name is unaffected — that comes
+    from the index table, not from here — so a user still sees "dracula"
+    and "Dracula" spelled the way upstream spells them.
+    """
     s = re.sub(r"[^0-9A-Za-z]+", "_", name).strip("_").lower()
     if not s or s[0].isdigit():
         s = "s_" + s
+    if taken is None:
+        return s
+    base, n = s, 2
+    while s in taken:
+        s = f"{base}_{n}"
+        n += 1
+    taken.add(s)
     return s
 
 
@@ -224,12 +244,18 @@ SLOTS = ["primary", "secondary", "accent", "success", "error", "warning",
          "selection", "cursor", "link", "placeholder", "shadow", "overlay"]
 
 
-def emit(name: str, t: dict) -> str:
+def emit(cpp_ident: str, t: dict) -> str:
+    """One `inline constexpr Theme <ident> { ... };`.
+
+    Takes the RESOLVED identifier rather than the display name, because
+    uniqueness is decided by the caller (see ident()'s `taken` set) and
+    re-deriving it here would throw away the disambiguating suffix.
+    """
     w = max(len(s) for s in SLOTS)
     body = "\n".join(
         f"    .{s:<{w}} = Color::hex(0x{t[s]:06X}),"
         for s in SLOTS)
-    return f"inline constexpr Theme {ident(name)} {{\n{body}\n}};\n"
+    return f"inline constexpr Theme {cpp_ident} {{\n{body}\n}};\n"
 
 
 def main() -> int:
@@ -246,6 +272,7 @@ def main() -> int:
         names = CURATED
 
     out, made, failed = [], [], []
+    taken: set[str] = set()
     for n in sorted(names):
         try:
             p = parse(fetch(RAW + urllib.parse.quote(n)))
@@ -253,8 +280,9 @@ def main() -> int:
                 print(f"  skip {n}: incomplete", file=sys.stderr)
                 failed.append((n, "incomplete palette"))
                 continue
-            out.append(emit(n, theme_of(p)))
-            made.append((n, ident(n)))
+            ident_n = ident(n, taken)
+            out.append(emit(ident_n, theme_of(p)))
+            made.append((n, ident_n))
             print(f"  {n}", file=sys.stderr)
         except Exception as e:                       # noqa: BLE001
             print(f"  skip {n}: {e}", file=sys.stderr)

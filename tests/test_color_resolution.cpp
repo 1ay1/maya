@@ -25,7 +25,9 @@
 #include <maya/style/schemes.hpp>
 
 #include <print>
-#include <string>
+#include <cmath>
+#include <print>
+#include <string_view>
 #include <type_traits>
 
 using namespace maya;
@@ -230,6 +232,66 @@ TEST_CASE("theme: slot metadata is generated from the one list") {
         CHECK(theme::native.resolve(Color::slot(s)).is_set());
     }
     std::println("PASS\n");
+}
+
+TEST_CASE("theme: every scheme's muted ink is actually readable") {
+    std::println("--- test_color_resolution_muted_contrast ---");
+    // `muted` is the tier agentty uses for timestamps, hints, origins —
+    // everything that should recede but still be LEGIBLE. Upstream palettes
+    // set color8 ("bright black") for their own purposes and a lot of them
+    // make it nearly invisible: before the generator floored it, 35 of 57
+    // shipped schemes were under 3:1 and several under 2:1, which is
+    // decorative rather than dim.
+    //
+    // 3:1 deliberately, not 4.5: this text is SUPPOSED to be quiet, and
+    // pushing it to body-text contrast would erase the distinction between
+    // muted and text that the slot exists to express.
+    auto rel_lum = [](maya::LitColor c) {
+        const maya::LitColor rgb = c.to_rgb();
+        auto ch = [](int v) {
+            const double s = v / 255.0;
+            return s <= 0.03928 ? s / 12.92
+                                : std::pow((s + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * ch(rgb.r()) + 0.7152 * ch(rgb.g()) + 0.0722 * ch(rgb.b());
+    };
+    auto contrast = [&](maya::LitColor a, maya::LitColor b) {
+        double l1 = rel_lum(a), l2 = rel_lum(b);
+        if (l1 < l2) std::swap(l1, l2);
+        return (l1 + 0.05) / (l2 + 0.05);
+    };
+
+    int checked = 0, failures = 0;
+    for (const auto& s : theme::schemes) {
+        const double c = contrast(s.theme->muted, s.theme->background);
+        if (c < 3.0) {
+            ++failures;
+            if (failures <= 5)
+                std::println("  {} muted contrast {:.2f}", s.name, c);
+        }
+        ++checked;
+    }
+    CHECK(checked > 90);          // the generator shipped the full set
+    CHECK(failures == 0);
+    std::println("PASS ({} schemes, all >= 3:1)\n", checked);
+}
+
+TEST_CASE("theme: the built-in set covers both polarities") {
+    std::println("--- test_color_resolution_polarity_spread ---");
+    // Issue #37 is a light-terminal report. A catalogue that is 95% dark
+    // schemes technically "supports" light and practically does not, so the
+    // spread is worth asserting rather than assuming.
+    auto is_light = [](const maya::Theme& t) {
+        const maya::LitColor bg = t.background.to_rgb();
+        return (0.2126 * bg.r() + 0.7152 * bg.g() + 0.0722 * bg.b()) / 255.0 > 0.5;
+    };
+    int light = 0, dark = 0;
+    for (const auto& s : theme::schemes)
+        (is_light(*s.theme) ? light : dark)++;
+
+    CHECK(light >= 15);           // a real choice, not a token one
+    CHECK(dark  >= 15);
+    std::println("PASS ({} dark, {} light)\n", dark, light);
 }
 
 TEST_CASE("colour: is_muted asks on the far side of the theme") {

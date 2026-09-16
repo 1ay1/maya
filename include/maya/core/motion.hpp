@@ -135,6 +135,14 @@ struct RafInstaller {
 // frame-request gate needs it and sits above that section.
 [[nodiscard]] inline bool reduce_motion() noexcept;
 
+// Thin self-driven animation to one frame in N without stopping it. 1 =
+// every frame (default). Set by the host; see keep_animating() below for
+// why this is separate from reduce_motion().
+[[nodiscard]] inline int frame_divisor() noexcept;
+
+// One frame at ~60 fps, in ms. The unit the divisor multiplies.
+inline constexpr std::int64_t kFrameMs = 16;
+
 // ── reduce_motion gates BOTH of these ────────────────────────────────
 //
 // It used to gate only the phase PRIMITIVES (blink, wave, frame_index), so
@@ -155,10 +163,22 @@ struct RafInstaller {
 // off self-driven animation, not the UI.
 inline void keep_animating() noexcept {
     if (reduce_motion()) return;
+    // Smooth motion is a ~60 fps request. Under a frame divisor it becomes a
+    // STEPPED request at 1/Nth the rate — the same visible motion, fewer
+    // repaints. This is bandwidth policy, not accessibility policy: over a
+    // high-latency link (mosh) what costs you is the number of frames that
+    // change, so a host can thin the stream without stopping it. Divisor 1
+    // (the default) keeps the original behaviour exactly.
+    if (const int d = frame_divisor(); d > 1) {
+        detail::request_frame_after(kFrameMs * d);
+        return;
+    }
     detail::request_frame();
 }
 inline void keep_animating_after(std::int64_t delay_ms) noexcept {
     if (reduce_motion()) return;
+    // Already stepped: stretch the step rather than adding one.
+    if (const int d = frame_divisor(); d > 1) delay_ms *= d;
     detail::request_frame_after(delay_ms);
 }
 
@@ -533,6 +553,35 @@ inline void set_reduce_motion(bool on) noexcept {
 }
 [[nodiscard]] inline bool reduce_motion() noexcept {
     return detail::reduce_motion_slot().load(std::memory_order_relaxed);
+}
+
+// ── Frame thinning: a THIRD state between full motion and none ───────
+//
+// reduce_motion is a boolean, which forces a binary choice on a user whose
+// problem is bandwidth rather than vestibular: full repaint churn, or no
+// animation at all. On a high-latency link the cost is the NUMBER OF FRAMES
+// that change — measured on a recorded stream, a reveal at full rate
+// changed 1753 frames where the same content with animation off changed 98.
+//
+// The divisor lets a host keep the motion and thin the stream: same walk-in,
+// one frame in N. Separate from reduce_motion because the two answer
+// different questions and a user can want either without the other.
+namespace detail {
+inline std::atomic<int>& frame_divisor_slot() noexcept {
+    static std::atomic<int> s{1};
+    return s;
+}
+}  // namespace detail
+
+// Thin self-driven animation to one frame in N. Clamped to [1, 60]; 1
+// restores the default every-frame behaviour.
+inline void set_frame_divisor(int n) noexcept {
+    if (n < 1) n = 1;
+    if (n > 60) n = 60;
+    detail::frame_divisor_slot().store(n, std::memory_order_relaxed);
+}
+[[nodiscard]] inline int frame_divisor() noexcept {
+    return detail::frame_divisor_slot().load(std::memory_order_relaxed);
 }
 
 // Smooth sine wave in [0,1] over `period_ms` (0.5 + 0.5·sin). Unlike

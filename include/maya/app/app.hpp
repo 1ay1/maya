@@ -206,6 +206,54 @@ inline void loop_dbg(std::string_view s) {
                  static_cast<int>(s.size()), s.data());
     std::fflush(f);
 }
+// ── Per-key frame fidelity ────────────────────────────────────────────
+//
+// A fast terminal delivers a whole key-repeat run in ONE read(), and the
+// loop below reduces every event but paints ONCE for the batch. For most
+// input that is exactly right: the intermediate states are not interesting
+// and painting them is wasted work.
+//
+// For NAVIGATION it is wrong, and it is what users report as "I hold Down,
+// one press does nothing, then the next moves two rows". Nothing was
+// dropped — the row was computed and overwritten before it reached the
+// terminal. With two arrows per read the visible sequence is 2 → 4 → 6
+// where the user pressed 1 2 3 4 5 6, so half the rows they steered
+// through never existed on screen.
+//
+// The cursor position IS the feedback for an arrow key, so it has to be
+// shown. This predicate marks the events whose intermediate frames are
+// worth painting: plain arrows, Home/End, PageUp/PageDown, Tab. Everything
+// else (typing, mouse motion, paste, resize) keeps batching, because there
+// the end state is the only state anyone wants.
+//
+// Deliberately NOT "render every event": a paste arrives as hundreds of
+// CharKeys and painting each one would turn a paste into a visible crawl.
+[[nodiscard]] inline bool is_navigation_key(const Event& ev) noexcept {
+    const auto* ke = std::get_if<KeyEvent>(&ev);
+    if (!ke) return false;
+    // A modified arrow is usually a different verb (word-jump, resize pane),
+    // but it is still navigation and still wants its own frame. Ctrl/Alt
+    // combos that are NOT arrows fall through to the default batching.
+    if (const auto* sk = std::get_if<SpecialKey>(&ke->key)) {
+        switch (*sk) {
+            case SpecialKey::Up:
+            case SpecialKey::Down:
+            case SpecialKey::Left:
+            case SpecialKey::Right:
+            case SpecialKey::Home:
+            case SpecialKey::End:
+            case SpecialKey::PageUp:
+            case SpecialKey::PageDown:
+            case SpecialKey::Tab:
+            case SpecialKey::BackTab:
+                return true;
+            default:
+                return false;
+        }
+    }
+    return false;
+}
+
 }  // namespace detail
 
 inline void request_animation_frame() noexcept {
@@ -650,6 +698,32 @@ public:
 
     // Read terminal input, parse into events.
     auto read_events() -> Result<std::vector<Event>>;
+
+    // Return unconsumed events to the front of the input stream, to be
+    // delivered before any fresh bytes on the next read_events().
+    //
+    // The run loop uses this to end an input batch early after a navigation
+    // key, so the frame that follows shows the row the user actually steered
+    // to instead of only the last one in the read. Ordering is FIFO and
+    // ahead of new input, which is what makes the deferral invisible: the
+    // events run in the order they were typed, just one frame later.
+    void push_back_events(std::vector<Event> evs) {
+        if (evs.empty()) return;
+        if (startup_events_.empty()) {
+            startup_events_ = std::move(evs);
+            return;
+        }
+        // Anything already queued was typed EARLIER, so it stays in front.
+        startup_events_.insert(startup_events_.end(),
+                               std::make_move_iterator(evs.begin()),
+                               std::make_move_iterator(evs.end()));
+    }
+
+    // Are there events waiting from a batch that ended early? The run loop
+    // must not block in poll() while input it already holds is undelivered.
+    [[nodiscard]] bool has_deferred_events() const noexcept {
+        return !startup_events_.empty();
+    }
 
     // Drop a duplicate clipboard-read PasteEvent (the tmux OSC 5522 + OSC 52
     // double-reply case). Mutates `events` in place.
@@ -2008,8 +2082,21 @@ void run(RunConfig cfg = {}) {
         }
 
         // Wait for events
+        // Deferred input from a batch that ended early after a navigation
+        // key must not wait on the OS: those events are already in hand and
+        // the frame for the previous one has just been painted. Poll with a
+        // zero timeout so the loop turns straight around.
+        if (rt.has_deferred_events())
+            poll_timeout = std::chrono::milliseconds(0);
+
         auto poll_result = rt.poll(poll_timeout);
         if (!poll_result) break;
+
+        // read_events() delivers deferred events even when the OS reports no
+        // new bytes, so the input branch has to run on that basis too —
+        // otherwise the tail of an early-ended batch would sit unread until
+        // the user happened to press another key.
+        const bool have_input = poll_result->input || rt.has_deferred_events();
 
         // Handle resize — coalesce rapid events (e.g. window drag)
         if (poll_result->resize) {
@@ -2035,10 +2122,17 @@ void run(RunConfig cfg = {}) {
         }
 
         // Read and dispatch terminal input
-        if (poll_result->input) {
+        if (have_input) {
             auto events = rt.read_events();
             if (!events) break;
+            // A navigation key gets its own frame (see is_navigation_key):
+            // its whole point is to show WHERE the cursor went, and a batch
+            // that reduces six arrows and paints once shows only the sixth.
+            // Events after the first navigation key in a read are deferred
+            // to the next loop iteration, which paints in between.
+            std::size_t consumed = 0;
             for (auto& ev : *events) {
+                ++consumed;
                 if (const int dy = rt.inline_mouse_dy(); dy > 0) {
                     if (auto* me = std::get_if<MouseEvent>(&ev)) {
                         const int fr = me->y.value - dy;
@@ -2071,6 +2165,16 @@ void run(RunConfig cfg = {}) {
                     // A drained message may have quit (^C, q): stop feeding
                     // the rest of the batch to a tearing-down app.
                     if (!rt.is_running()) break;
+                    // Navigation: stop here so the frame below shows THIS
+                    // row before the next arrow moves off it. The remaining
+                    // events are pushed back and handled next iteration.
+                    if (detail::is_navigation_key(ev)
+                        && consumed < events->size()) {
+                        rt.push_back_events(
+                            std::vector<Event>(events->begin() + consumed,
+                                               events->end()));
+                        break;
+                    }
                 }
             }
         }

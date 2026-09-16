@@ -400,10 +400,40 @@ template <FlexDirection Dir, BoxCfg Cfg, typename... Children>
 struct BoxNode {
     std::tuple<Children...> children;
 
-    operator Element() const { return build(); }
+    operator Element() const& { return build(); }
+    // Same reasoning as build(): `Element e = v(rows);` materialises from a
+    // temporary, so it should steal the children rather than duplicate them.
+    operator Element() && { return std::move(*this).build(); }
 
-    [[nodiscard]] Element build() const {
-        return std::apply([](const auto&... cs) {
+    [[nodiscard]] Element build() const& {
+        return build_impl_(children);
+    }
+
+    /// Move-out overload for a TEMPORARY node.
+    ///
+    /// `v(rows).build()` — the overwhelmingly common spelling — produces an
+    /// rvalue that dies on the next line, so the const& path's
+    /// `Element{item}` deep-copies every child of a tree that is about to
+    /// be discarded. On a 60-row column (one screen of transcript) that is
+    /// 256 allocations and 135 KB per build, against 61 and 23 KB when the
+    /// children are moved: ~4x the allocator traffic of the whole frame,
+    /// spent duplicating something nobody will read again.
+    ///
+    /// The const& overload stays for a NAMED node that is built more than
+    /// once; overload resolution picks this one only when the node is
+    /// expiring, so no existing caller changes behaviour.
+    [[nodiscard]] Element build() && {
+        return build_impl_(std::move(children));
+    }
+
+private:
+    // One implementation, instantiated for const& and && children. The
+    // forwarding is what lets the rvalue path move each child out while the
+    // lvalue path still copies — the two cannot drift apart because there
+    // is only one body.
+    template <class Tup>
+    [[nodiscard]] static Element build_impl_(Tup&& tup) {
+        return std::apply([](auto&&... cs) {
             auto b = maya::detail::box().direction(Dir);
             if constexpr (Cfg.pad_t || Cfg.pad_r || Cfg.pad_b || Cfg.pad_l)
                 b = std::move(b).padding(Cfg.pad_t, Cfg.pad_r, Cfg.pad_b, Cfg.pad_l);
@@ -426,23 +456,29 @@ struct BoxNode {
 
             // Fast path: all children are Nodes (compile-time known)
             if constexpr ((Node<std::remove_cvref_t<decltype(cs)>> && ...)) {
-                return b(cs.build()...);
+                return b(std::forward<decltype(cs)>(cs).build()...);
             } else {
                 // Mixed path: some children may be ElementRanges (vector<Element>, etc.)
                 std::vector<Element> elems;
-                auto collect = [&elems](const auto& c) {
+                auto collect = [&elems](auto&& c) {
                     using T = std::remove_cvref_t<decltype(c)>;
                     if constexpr (Node<T>) {
-                        elems.push_back(c.build());
+                        elems.push_back(std::forward<decltype(c)>(c).build());
+                    } else if constexpr (std::is_rvalue_reference_v<decltype(c)&&>
+                                         && !std::is_const_v<std::remove_reference_t<decltype(c)>>) {
+                        // The range itself is expiring: steal each Element
+                        // rather than duplicating it.
+                        for (auto& item : c)
+                            elems.push_back(std::move(item));
                     } else {
                         for (const auto& item : c)
                             elems.push_back(Element{item});
                     }
                 };
-                (collect(cs), ...);
+                (collect(std::forward<decltype(cs)>(cs)), ...);
                 return b(std::move(elems));
             }
-        }, children);
+        }, std::forward<Tup>(tup));
     }
 };
 
@@ -630,9 +666,15 @@ inline constexpr TextNode<S> t{};
 /// VStack: v(child1, child2, ...)
 /// Accepts any mix of compile-time nodes, runtime Elements, and
 /// ranges of Elements (e.g. std::vector<Element>).
+///
+/// Children are taken BY VALUE (so `v(std::move(rows))` moves into the
+/// parameter) and then MOVED into the node. The `{cs...}` copy this
+/// replaced was the first of two full duplications of every child — one
+/// here, one in build() — which together cost ~4x the allocator traffic of
+/// an entire frame on a one-screen column.
 template <DslChild... Cs>
 constexpr auto v(Cs... cs) {
-    return BoxNode<FlexDirection::Column, BoxCfg{}, Cs...>{{cs...}};
+    return BoxNode<FlexDirection::Column, BoxCfg{}, Cs...>{{std::move(cs)...}};
 }
 
 /// HStack: h(child1, child2, ...)
@@ -640,7 +682,7 @@ constexpr auto v(Cs... cs) {
 /// ranges of Elements (e.g. std::vector<Element>).
 template <DslChild... Cs>
 constexpr auto h(Cs... cs) {
-    return BoxNode<FlexDirection::Row, BoxCfg{}, Cs...>{{cs...}};
+    return BoxNode<FlexDirection::Row, BoxCfg{}, Cs...>{{std::move(cs)...}};
 }
 
 // ── BorderStyle aliases ─────────────────────────────────────────────────────

@@ -382,6 +382,21 @@ std::vector<Element> Panel::render_item(const Item& r, int index) const {
         }
     }
 
+    // Colour sample. Two blocks per entry so a hue reads as a patch rather
+    // than a sliver, separated from the label by a single space.
+    //
+    // Painted as runs on the SAME string as the label, not as a sibling
+    // Element: the row's geometry (truncation, the cursor tint, the flex
+    // split between leading and trailing) is all driven off that one text
+    // node, and a second node would have to re-derive every one of those
+    // rules to stay aligned with it.
+    if (!r.swatch.empty()) {
+        put(" ", tint(label_style));
+        for (const Color& c : r.swatch)
+            put("\xe2\x96\x88\xe2\x96\x88",            // ██
+                tint(Style{}.with_fg(c)));
+    }
+
     // Trailing: the control, then its origin. A plain `trailing` string is
     // the same thing as a Label control — resolved here so the renderer below
     // has exactly one path.

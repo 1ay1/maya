@@ -37,6 +37,22 @@ struct Item {
     std::vector<int> highlight;
     Color            highlight_fg = Color::slot(ThemeSlot::Link);
 
+    // Optional colour sample, painted as solid blocks between the leading
+    // text and the trailing cell.
+    //
+    // For a row that IS a set of colours — a theme in the scheme browser —
+    // where the name is the least informative thing about it. "Rose Pine
+    // Dawn" tells you nothing; six blocks of its actual palette tell you
+    // whether it is light, whether the accent is warm, and whether the
+    // whole thing is muted, at a glance and without selecting it.
+    //
+    // A vector of colours rather than a pre-built Element because Item is a
+    // DESCRIPTION the panel renders — giving it a child Element would let a
+    // caller smuggle in arbitrary layout and break the row geometry every
+    // other field is careful to keep uniform. Empty (the default) renders
+    // nothing at all, so no existing row changes.
+    std::vector<Color> swatch;
+
     // The trailing cell. `Label` covers every picker row; the other
     // alternatives are the editable controls a settings row carries.
     Control control = Label{};

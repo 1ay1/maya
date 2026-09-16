@@ -90,6 +90,23 @@ struct MarkdownPalette {
 /// Overwrite the active markdown palette.
 void set_markdown_palette(const MarkdownPalette& p);
 
+// ── Syntax highlighting, on or off ──────────────────────────────────
+//
+// When off, a fenced code block renders in ONE colour (the palette's code
+// foreground) instead of being tokenised. The block, its fence, its language
+// tag and its layout are unchanged — this is about colour inside the code,
+// not about whether code is shown.
+//
+// Exists because a host cannot otherwise express it: agentty has carried a
+// "Syntax highlighting" toggle in its Appearance pane that was persisted,
+// hashed into the render key, and read by nothing, because maya had no
+// switch for it to reach. A setting with no consumer is worse than a missing
+// one — the user concludes the thing they want is impossible.
+//
+// Single-threaded, like set_markdown_palette: call it from the UI thread.
+void set_syntax_highlighting(bool on) noexcept;
+[[nodiscard]] bool syntax_highlighting() noexcept;
+
 /// Project a Theme onto the markdown palette.
 ///
 /// Markdown is where most of a TUI's text actually lives — prose, code

@@ -131,8 +131,34 @@ struct RafInstaller {
 //
 // Prefer the phase primitives below (wave / blink / frame_index /
 // ticker_ms) which call these for you with the correct cadence.
-inline void keep_animating() noexcept { detail::request_frame(); }
+// Declared here, defined below with the rest of the motion policy: the
+// frame-request gate needs it and sits above that section.
+[[nodiscard]] inline bool reduce_motion() noexcept;
+
+// ── reduce_motion gates BOTH of these ────────────────────────────────
+//
+// It used to gate only the phase PRIMITIVES (blink, wave, frame_index), so
+// "motion off" stopped a caret blinking and a spinner spinning — and nothing
+// else. Every widget that drives itself by asking for frames directly kept
+// running: the welcome cascade and its perpetual bob, the streaming
+// typewriter reveal, the reasoning rail's breathing, the markdown cursor.
+// Five subsystems, none of which consulted the setting, so the row promised
+// something it did not deliver.
+//
+// Gating the REQUEST rather than each caller is what makes the promise
+// total. A widget that asks for a frame is asking to move; if the user has
+// said no movement, the honest answer is not to schedule it — and then the
+// widget's own next build() renders whatever its final/settled state is,
+// which is exactly what a reduced-motion user wants to see.
+//
+// The run loop still repaints on INPUT, a message, or a resize. This turns
+// off self-driven animation, not the UI.
+inline void keep_animating() noexcept {
+    if (reduce_motion()) return;
+    detail::request_frame();
+}
 inline void keep_animating_after(std::int64_t delay_ms) noexcept {
+    if (reduce_motion()) return;
     detail::request_frame_after(delay_ms);
 }
 

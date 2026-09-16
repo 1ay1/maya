@@ -6,6 +6,7 @@
 // (lang_tag, code)). Pulls its language tables from syntax_lang.cpp via
 // syntax_internal.hpp; calls find_eol from the parser module.
 
+#include <atomic>
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -20,6 +21,8 @@
 #include "maya/style/style.hpp"
 #include "maya/widget/markdown.hpp"
 #include "maya/widget/markdown/internal.hpp"
+
+#include <atomic>
 #include "maya/widget/markdown/spec_chars.hpp"
 #include "maya/widget/markdown/syntax_internal.hpp"
 
@@ -724,7 +727,35 @@ static Element highlight_code_from(const std::string& code,
 // FNV-1a hash of `code` with a hash of `lang_tag`; the cached Element
 // is returned by copy, which for the typical TextElement case is a
 // string + runs vector — cheap relative to running the highlighter.
+namespace {
+// The host's on/off switch. Read on the render path, written from the UI
+// thread — same ownership model as the markdown palette.
+std::atomic<bool>& syntax_on_slot() noexcept {
+    static std::atomic<bool> on{true};
+    return on;
+}
+}  // namespace
+
+void set_syntax_highlighting(bool on) noexcept {
+    syntax_on_slot().store(on, std::memory_order_relaxed);
+}
+
+bool syntax_highlighting() noexcept {
+    return syntax_on_slot().load(std::memory_order_relaxed);
+}
+
 static Element highlight_code(const std::string& code, const std::string& lang_tag) {
+    // Off: one flat colour for the whole body. The fence, the language tag
+    // and the layout are untouched — only the tokenised colour inside the
+    // block goes away, which is exactly what the setting says.
+    //
+    // Checked before the cache, not inside it, because the cache is keyed on
+    // (code, lang) and would otherwise serve a highlighted body after the
+    // switch flipped.
+    if (!syntax_highlighting()) {
+        return Element{TextElement{.content = code,
+                                   .style   = Style{}.with_fg(colors::code_fg())}};
+    }
     struct CacheEntry {
         uint64_t key;
         Element  elem;

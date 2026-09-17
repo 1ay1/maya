@@ -529,6 +529,17 @@ if(MAYA_BUILD_TESTS)
     add_executable(maya_tests tests/test_main.cpp ${MAYA_CONSOLIDATED_TESTS})
     target_link_libraries(maya_tests PRIVATE ${MAYA_TEST_LIB} doctest::doctest)
     target_compile_definitions(maya_tests PRIVATE MAYA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    # The Themed gate in test_theme_discipline.cpp is checked by COMPILING
+    # tiny probe TUs — "does this fail to compile" is not a question a
+    # static_assert can answer, because the gate is a consteval throw and a
+    # throw is well-formed until evaluated. That needs the compiler's path,
+    # and a flag saying whether it speaks -fsyntax-only (GCC/Clang) so the
+    # probes can be skipped rather than mis-run on MSVC.
+    target_compile_definitions(maya_tests PRIVATE
+        MAYA_CXX_COMPILER="${CMAKE_CXX_COMPILER}")
+    if(NOT MSVC)
+        target_compile_definitions(maya_tests PRIVATE MAYA_CXX_GNULIKE=1)
+    endif()
     target_compile_options(maya_tests PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:${MAYA_TEST_OPT}>)
     include(${doctest_SOURCE_DIR}/scripts/cmake/doctest.cmake)

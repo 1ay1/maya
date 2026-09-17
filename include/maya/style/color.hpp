@@ -781,6 +781,36 @@ static_assert(CanEmitSgr<LitColor>);
 template <class T>
 struct is_theme_token : std::false_type {};
 
+// Does `T` convert to a colour during CONSTANT EVALUATION?
+//
+// This is the decidable half of "is a real theme token". A token reaches
+// the live theme through a runtime indirection, so a constant-expression
+// conversion of one is not a constant expression and this is false. A
+// struct holding a baked-in literal folds to a fixed colour and this is
+// true — which is exactly the impostor the token opt-in must not admit.
+//
+// The probe has to be a template the compiler substitutes into: naming a
+// constrained static member of a concrete type is not a SFINAE context
+// (GCC hard-errors instead of yielding false), the same reason the
+// CanNameSlot family above is written against a dependent `T`.
+//
+// `static_cast<Color>` rather than a braced conversion so an explicit
+// operator counts too — a token that spelled its conversion explicit would
+// otherwise slip through as "does not fold" for the wrong reason.
+template <class T>
+concept ConstantFoldsToColor = requires {
+    typename std::bool_constant<(static_cast<void>(static_cast<Color>(T{})), true)>;
+};
+
+// The gate is per-VALUE for a bare Color and per-TYPE for a host token, so
+// both halves get a probe. A slot-valued Color is not constant-foldable to
+// a FIXED colour in the sense that matters here — it folds, but to a slot,
+// which resolve() later substitutes — so this concept is deliberately only
+// asked about host tokens, never about Color itself.
+static_assert(ConstantFoldsToColor<LitColor>,
+              "a literal colour must be constant-foldable, or the impostor "
+              "check below is vacuous and admits everything.");
+
 class Themed {
     Color c_;
 
@@ -852,11 +882,46 @@ public:
     /// reopening the hole this type closes.
     ///
     /// Opting in is therefore explicit and per-type: a host specialises
-    /// maya::is_theme_token for its token, which is a one-line assertion
-    /// that the type reads the theme. A literal can never satisfy it,
-    /// because the specialisation names a type, not a value.
+    /// maya::is_theme_token for its token.
+    ///
+    /// WHAT THE OPT-IN IS WORTH. The specialisation alone is only the
+    /// host's word. It names a type, and nothing about naming a type says
+    /// its conversion operator reads the live theme; a struct holding a
+    /// baked-in literal could be specialised just as easily, and would walk
+    /// a hardcoded colour straight through the gate that exists to stop it.
+    /// This comment used to call the specialisation "a one-line assertion
+    /// that the type reads the theme", which overclaimed: it asserts that
+    /// the host SAID so.
+    ///
+    /// The second requirement below is the part that is actually checked.
+    /// No trait can prove a type reads one particular global — but the
+    /// property that matters is weaker and IS decidable: a real token
+    /// cannot be constant-folded to a colour. It reaches the live theme
+    /// through a runtime indirection (a function pointer, in every token
+    /// written so far), so converting one in a constant-expression context
+    /// does not compile. An impostor holding a literal folds fine, because
+    /// a literal is exactly what constant folding is for.
+    ///
+    /// So `!ConstantFoldsToColor<Token>` rejects the impostor by the same
+    /// mechanism the consteval constructors above use on a bare Color, and
+    /// leaves genuine tokens untouched. Concretely: without it, an
+    /// impostor's token constructor WINS overload resolution (it is an
+    /// exact match, and `is_theme_token` said yes), so the literal never
+    /// meets the consteval gate at all — verified by A/B'ing the
+    /// constraint. With it, that overload is not viable, the conversion
+    /// falls to `Themed(Color)`, and the literal throws there with the
+    /// usual "a widget must not name a literal colour" diagnostic.
+    ///
+    /// It does not prove the token reads THE THEME rather than some other
+    /// runtime state — that residue is the host's to own, and it is what
+    /// test_style's "a theme token tracks a swap" case pins down
+    /// behaviourally. Note a `requires`-expression cannot stand in for
+    /// either check: it asks whether an expression is WELL-FORMED, and a
+    /// consteval throw is well-formed until it is evaluated. The probes
+    /// for this gate are therefore compile-fail tests, not static_asserts.
     template <class Token>
         requires is_theme_token<Token>::value
+              && (!ConstantFoldsToColor<Token>)
     constexpr Themed(const Token& t) noexcept : c_(static_cast<Color>(t)) {}
 
     /// The colour, for the paint path. Still symbolic: resolving is the
@@ -910,6 +975,92 @@ static_assert(Themed::brand(Color::hex(0xCE422B), "Rust brand orange")
 static_assert(!std::is_nothrow_constructible_v<Themed, Color>,
               "the Color constructor must stay consteval-and-throwing — if "
               "it ever becomes noexcept, the literal gate has been removed");
+
+// ── WHERE Themed BELONGS, and where it does not ──────────────────────────
+//
+// Themed gates CONSTANT colours. Its whole mechanism is a consteval
+// constructor, so it can only judge a colour the compiler can already see:
+// a Config field's default initialiser, a constexpr palette entry, a
+// namespace-scope token. That is a real and useful population — it is where
+// a hardcoded colour actually gets written, and agentty #45 was exactly
+// such a default.
+//
+// It CANNOT gate a runtime colour, and the attempt was made and reverted
+// (commit 4b78928, "revert the Themed migration in maya's own widgets").
+// A blind migration of 533 Config fields broke 22 files in three shapes,
+// all the same root cause — the value is not a constant expression:
+//
+//     void set_color(Color c) { color_ = c; }        // a caller's runtime value
+//     cond ? Color::red() : themed_field             // ambiguous, both convert
+//     examples/ naming literals directly             // what examples are FOR
+//
+// So the rule is not "Themed everywhere", it is: Themed where the colour is
+// NAMED (a default, a palette, a token), Color where it is PASSED. maya's
+// own widget internals are almost entirely the second kind, which is why
+// this header has no Themed fields and the three widget files that mention
+// it do so in comments explaining why they use Color instead.
+//
+// maya therefore ships Themed for HOSTS. agentty's palette.hpp is the
+// intended shape: semantic tokens at namespace scope, a Themed-typed
+// Config, and the gate catching a literal at the one place a literal would
+// be written. The type earning its keep outside this repo is the design,
+// not an adoption gap to close — and the static_assert below is what keeps
+// a future reader from "fixing" that by re-running the migration.
+//
+// The two properties any re-migration would have to break:
+//
+//   1. The gate is consteval. A runtime Color must NOT be Themed-
+//      constructible, or the gate has been widened into something that
+//      accepts what it cannot judge — which is how it would silently start
+//      passing everything.
+//   2. A slot-valued constant must still pass, or the type has stopped
+//      admitting the thing it exists to admit.
+//
+// If both of these hold, Themed still means what this comment says.
+namespace themed_scope {
+
+// A runtime Color is not a constant expression, so it cannot reach the
+// consteval gate. `std::is_constructible_v` answers the WELL-FORMEDNESS
+// question (true — the constructor exists and would be selected), which is
+// deliberately not what we assert: a consteval constructor called on a
+// runtime value is ill-formed at the CALL, and the honest instrument for
+// that is a compile-fail probe, not a trait. See the probes in
+// tests/test_theme_discipline.cpp.
+//
+// What IS assertable here is the shape the gate depends on.
+static_assert(!std::is_nothrow_constructible_v<Themed, Color>,
+              "Themed(Color) must stay consteval-and-throwing: it is the "
+              "whole literal gate. If this fires, someone widened Themed to "
+              "accept runtime colours — see commit 4b78928 for why that "
+              "migration was tried and reverted.");
+
+static_assert(ConvertsToThemed<decltype(Color::slot(ThemeSlot::Accent))>,
+              "a slot-valued colour must remain Themed-constructible, or the "
+              "type has stopped admitting what it exists to admit.");
+
+// And the escape hatch must keep costing a sentence. brand() taking its
+// reason as a runtime argument is what makes an exemption greppable prose
+// at the site instead of a path in an allowlist somewhere else.
+//
+// Written against a dependent `C` for the reason the CanNameSlot family
+// above is: a requires-expression naming a member of a CONCRETE type is not
+// a SFINAE context, so `requires { Themed::brand(lit); }` hard-errors
+// instead of yielding false. Substituting into a template makes it a
+// deduction failure, which is the answer we want.
+template <class C>
+concept BrandNeedsNoReason = requires (C c) { Themed::brand(c); };
+template <class C>
+concept BrandTakesReason   = requires (C c) { Themed::brand(c, "a reason"); };
+
+static_assert(BrandTakesReason<Color>,
+              "brand() must keep admitting a literal WITH a reason — it is "
+              "the sanctioned way to name a non-role colour.");
+
+static_assert(!BrandNeedsNoReason<Color>,
+              "brand() must keep REQUIRING the reason — an exemption that "
+              "costs nothing to write is one nobody justifies.");
+
+}  // namespace themed_scope
 
 // ── Ink for a filled band ──────────────────────────────────────────
 //

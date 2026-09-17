@@ -13,6 +13,7 @@
 #include "agtest.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <print>
@@ -43,6 +44,7 @@ namespace {
 // and states its reason where the next reader is already looking.
 const std::vector<std::string> kAllowed = {
     "widget/markdown/highlight.hpp",
+    "widget/markdown/render/highlight.cpp",
     "widget/file_tree.hpp",
     "widget/editor_tab_bar.hpp",
 };
@@ -282,8 +284,21 @@ TEST_CASE("theme discipline: the guard tracker is block-scoped") {
 TEST_CASE("theme discipline: widgets name roles, not colours") {
     std::println("--- test_theme_discipline ---");
 
-    const fs::path root = fs::path{MAYA_SOURCE_DIR} / "include" / "maya" / "widget";
-    REQUIRE(fs::exists(root));
+    // Every file that IMPLEMENTS a widget, not just the ones that declare
+    // it. This used to be `include/maya/widget` and `.hpp` only, which left
+    // the whole of src/widget unscanned — panel.cpp is 71K, and
+    // markdown/render/ builds palettes, so a literal there is both likely
+    // and completely unenforced. It was clean when this was widened, which
+    // is the good case: the rule now HOLDS that, rather than hoping.
+    //
+    // include/maya/style is deliberately NOT here. It is where literals are
+    // DEFINED (schemes.hpp is 57 themes of nothing but hex), so scanning it
+    // would be a rule against the thing that file exists to do.
+    const std::vector<fs::path> roots = {
+        fs::path{MAYA_SOURCE_DIR} / "include" / "maya" / "widget",
+        fs::path{MAYA_SOURCE_DIR} / "src" / "widget",
+    };
+    for (const auto& r : roots) REQUIRE(fs::exists(r));
 
     // A bare named/hex/indexed colour, anywhere it is USED rather than
     // described. Color::slot(), Color::default_color() and computed
@@ -334,8 +349,11 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
     // call that silently fabricates channels.
     const std::regex unresolved_to_rgb{R"(\.to_rgb\(\))"};
 
+    for (const auto& root : roots)
     for (const auto& e : fs::recursive_directory_iterator(root)) {
-        if (!e.is_regular_file() || e.path().extension() != ".hpp") continue;
+        if (!e.is_regular_file()) continue;
+        const auto ext = e.path().extension();
+        if (ext != ".hpp" && ext != ".cpp") continue;
         const std::string path = e.path().string();
         if (allowed(path)) continue;
         ++scanned;
@@ -369,8 +387,10 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
     }
 
     // Guard the guard: if the walk found nothing to scan, the test is
-    // passing for the wrong reason.
-    assert(scanned > 20);
+    // passing for the wrong reason. The floor tracks the widget count
+    // loosely — high enough that a broken root or a bad extension filter
+    // trips it, low enough not to churn when a widget is added or removed.
+    assert(scanned > 200);
 
     // An exemption that matches nothing is a rule that has quietly switched
     // itself off. The file it named was renamed, moved, or deleted, and the
@@ -519,4 +539,152 @@ TEST_CASE("theme discipline: no unguarded channel arithmetic anywhere") {
     assert(offenders.empty());
 
     std::println("PASS ({} files scanned)\n", scanned);
+}
+
+// ── The Themed gate, checked by COMPILING ────────────────────────────────
+//
+// Every other rule in this file is a source scan. This one is different
+// because the property is "does this fail to compile", and no scan and no
+// static_assert can answer it:
+//
+//   - a `requires`-expression asks whether an expression is WELL-FORMED,
+//     and Themed's literal gate is a consteval THROW. A throw is perfectly
+//     well-formed right up until it is evaluated, so requires{} answers
+//     true for exactly the case the gate rejects.
+//   - the scanners above find literals by SPELLING. They cannot see whether
+//     the type system would have caught one.
+//
+// So the instrument is a compiler. Each probe is a tiny TU that must
+// compile, or must not, and the test asserts which.
+//
+// These are the executable half of the "WHERE Themed BELONGS" comment in
+// style/color.hpp: that comment states the scope, the static_asserts there
+// pin the type's shape, and these prove the behaviour at the boundary.
+TEST_CASE("theme discipline: the Themed gate admits and refuses correctly") {
+    std::println("--- test_themed_gate ---");
+
+#if !defined(MAYA_CXX_COMPILER) || !defined(MAYA_CXX_GNULIKE)
+    // Needs a GCC/Clang-style driver (-fsyntax-only, -I, exit code as the
+    // answer). Skipped rather than faked: a probe that cannot run must not
+    // report that the gate holds.
+    std::println("SKIP (needs a gnu-like driver; MSVC spells these flags "
+                 "differently)\n");
+#else
+    const fs::path cxx = MAYA_CXX_COMPILER;
+    const fs::path inc = fs::path{MAYA_SOURCE_DIR} / "include";
+    const fs::path tu  = fs::temp_directory_path() / "maya_themed_probe.cpp";
+
+    // A host token shaped exactly like agentty's ui::Slot: it reaches the
+    // live theme through a function pointer, so it is not constant-foldable.
+    // And an impostor that opts IN to the same trait while pinning a
+    // literal — the case the opt-in alone cannot distinguish.
+    const std::string preamble = R"(
+#include <maya/style/schemes.hpp>
+#include <maya/style/theme.hpp>
+using namespace maya;
+
+struct RealToken {
+    LitColor (*read)() noexcept;
+    operator LitColor() const noexcept { return read(); }
+    operator Color()   const noexcept { return read(); }
+};
+inline constexpr RealToken tok{
+    +[]() noexcept -> LitColor { return theme::live().accent; }};
+
+struct Impostor {
+    constexpr operator Color() const noexcept { return Color::hex(0xDEADBE); }
+};
+
+template <> struct maya::is_theme_token<RealToken> : std::true_type {};
+template <> struct maya::is_theme_token<Impostor>  : std::true_type {};
+
+Color runtime_colour();
+)";
+
+    struct Probe {
+        const char* name;
+        bool        should_compile;
+        const char* body;
+    };
+
+    const Probe probes[] = {
+        // The type admits what it exists to admit.
+        {"a slot-valued colour is accepted", true,
+         "Themed t = Color::slot(ThemeSlot::Accent);"},
+
+        // ...and refuses the thing agentty #45 was.
+        {"a hex literal is refused", false,
+         "Themed t = Color::hex(0x112233);"},
+        {"a named literal is refused", false,
+         "Themed t = Color::red();"},
+
+        // The sanctioned exit, and its price.
+        {"brand() admits a literal with a reason", true,
+         R"(Themed t = Themed::brand(Color::hex(0xCE422B), "Rust brand orange");)"},
+        {"brand() refuses a literal without one", false,
+         "Themed t = Themed::brand(Color::hex(0xCE422B));"},
+
+        // SCOPE (issue #2). The gate is consteval, so a runtime colour
+        // cannot reach it. This is the property the reverted migration
+        // (4b78928) ran into 22 files deep, and the reason maya's own
+        // widget internals stay on Color. If this probe ever flips to
+        // compiling, Themed has been widened into something that accepts
+        // what it cannot judge.
+        {"a RUNTIME colour cannot be Themed", false,
+         "Themed t = runtime_colour();"},
+
+        // TOKENS (issue #3). A genuine token passes; an impostor that
+        // specialised the same trait but pins a literal does not.
+        {"a genuine theme token is accepted", true,
+         "Themed t = tok;"},
+        {"an impostor token is refused", false,
+         "Themed t = Impostor{};"},
+    };
+
+    int checked = 0;
+    std::vector<std::string> wrong;
+
+    for (const auto& p : probes) {
+        {
+            std::ofstream out{tu};
+            REQUIRE(out.good());
+            out << preamble << "\n" << p.body << "\n";
+        }
+
+        // -fsyntax-only: we are asking a question about the type system,
+        // so there is no reason to pay for codegen.
+        const std::string cmd = "\"" + cxx.string() + "\" -std=c++26 "
+                              + "-fsyntax-only -I \"" + inc.string() + "\" \""
+                              + tu.string() + "\" 2>/dev/null";
+        const bool compiled = std::system(cmd.c_str()) == 0;
+        ++checked;
+
+        if (compiled != p.should_compile)
+            wrong.push_back(std::string{p.name} + "  (expected "
+                            + (p.should_compile ? "accept" : "REFUSE")
+                            + ", got "
+                            + (compiled ? "accept" : "REFUSE") + ")");
+    }
+
+    std::error_code ec;
+    fs::remove(tu, ec);
+
+    if (!wrong.empty()) {
+        std::println("{} Themed gate probe(s) behaved wrongly:", wrong.size());
+        for (const auto& w : wrong) std::println("   {}", w);
+        std::println("\nThe gate is the compile-time half of theme discipline.");
+        std::println("See the 'WHERE Themed BELONGS' comment in style/color.hpp");
+        std::println("and commit 4b78928 before changing what it accepts.");
+    }
+    assert(wrong.empty());
+
+    // A probe that never ran is not a passing probe. This also catches a
+    // compiler path that exists but cannot build maya's headers at all —
+    // in which case every probe would "REFUSE" and the refusal-expecting
+    // ones would pass for entirely the wrong reason. The accept-expecting
+    // probes are what make that impossible to miss.
+    assert(checked == static_cast<int>(std::size(probes)));
+
+    std::println("PASS ({} gate probes)\n", checked);
+#endif
 }

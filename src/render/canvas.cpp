@@ -255,13 +255,14 @@ char* StylePool::append_resolved_sgr(char* p, const LitColor& themed, bool is_fg
     switch (c.kind()) {
         case ColorKind::Named: {
             int base = is_fg ? 30 : 40;
-            int code = c.r() < 8 ? base + c.r() : (base + 60) + (c.r() - 8);
+            int code = c.index() < 8 ? base + c.index()
+                                     : (base + 60) + (c.index() - 8);
             return write_uint_sgr(p, static_cast<unsigned>(code));
         }
         case ColorKind::Indexed:
             if (is_fg) { *p++='3'; *p++='8'; } else { *p++='4'; *p++='8'; }
             *p++ = ';'; *p++ = '5'; *p++ = ';';
-            return write_uint_sgr(p, c.r());
+            return write_uint_sgr(p, c.index());
         case ColorKind::Rgb:
             if (is_fg) { *p++='3'; *p++='8'; } else { *p++='4'; *p++='8'; }
             *p++ = ';'; *p++ = '2'; *p++ = ';';

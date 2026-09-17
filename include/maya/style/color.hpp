@@ -388,10 +388,36 @@ public:
     /// them is how a slot index used to reach a terminal as a red channel.
     /// Resolve first and the question is well-posed; until then it is not a
     /// question this type can answer, so it does not offer to.
+    ///
+    /// RESOLVING IS NOT ENOUGH. A LitColor is paintable, not necessarily
+    /// NUMERIC: on Named/Indexed these bytes are still a palette index, and
+    /// on Default/Unset they are nothing at all. `theme::native` states its
+    /// slots as Named and Default precisely so the user's own palette shows
+    /// through — so under native, every one of these reads is a lie:
+    ///
+    ///     bright_black -> Named(8) -> r()=8, g()=0, b()=0 -> rgb(8,0,0)
+    ///
+    /// which is the invisible-reasoning-block bug (agentty #45): a palette
+    /// index painted as a near-black truecolor triple. Ask has_channels()
+    /// before doing ARITHMETIC on these, or go through to_rgb(), which maps
+    /// the palette properly. Reading them to EMIT a palette index is fine
+    /// and correct — that is what index() is for; prefer it there so the
+    /// two meanings are never spelled the same way.
     [[nodiscard]] constexpr uint8_t r() const noexcept requires (R == Res::Lit) { return r_; }
     [[nodiscard]] constexpr uint8_t g() const noexcept requires (R == Res::Lit) { return g_; }
     [[nodiscard]] constexpr uint8_t b() const noexcept requires (R == Res::Lit) { return b_; }
     [[nodiscard]] constexpr uint8_t index() const noexcept requires (R == Res::Lit) { return r_; }
+
+    /// True when r()/g()/b() are CHANNELS rather than a palette index or
+    /// nothing — i.e. when arithmetic on this colour is meaningful.
+    ///
+    /// This is the guard every blend must apply. darken()/lighten() have
+    /// always had it inline (`if (kind_ != Kind::Rgb) return *this`); naming
+    /// it is what let lerp(), the springs and the gradients adopt the same
+    /// rule instead of each reinventing the hazard.
+    [[nodiscard]] constexpr bool has_channels() const noexcept {
+        return kind_ == Kind::Rgb;
+    }
 
     /// Raw payload bytes, index-independent.
     ///

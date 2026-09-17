@@ -56,18 +56,27 @@ struct Gradient {
 
     /// Sample the gradient at t ∈ [0, 1] (clamped). Blends the two nearest
     /// stops in RGB space. Empty → white; single stop → that stop.
+    ///
+    /// A stop with no channels (Named/Indexed/Default — what theme::native
+    /// states) is NOT projected and blended: to_rgb() would substitute our
+    /// idea of the palette for the user's, and on Default it guesses white,
+    /// which is the grey-on-grey failure on a light terminal. Such a pair
+    /// snaps to the nearer stop instead — same rule as anim::lerp.
     [[nodiscard]] LitColor at(float t) const noexcept {
         if (stops.empty()) return LitColor::rgb(255, 255, 255);
-        if (stops.size() == 1) return stops.front().to_rgb();
+        if (stops.size() == 1) return stops.front();
 
         t = std::clamp(t, 0.0f, 1.0f);
         const float scaled = t * static_cast<float>(stops.size() - 1);
         auto  i = static_cast<std::size_t>(scaled);
-        if (i >= stops.size() - 1) return stops.back().to_rgb();
+        if (i >= stops.size() - 1) return stops.back();
         const float frac = scaled - static_cast<float>(i);
 
-        const LitColor a = stops[i].to_rgb();
-        const LitColor b = stops[i + 1].to_rgb();
+        if (!stops[i].has_channels() || !stops[i + 1].has_channels())
+            return frac < 0.5f ? stops[i] : stops[i + 1];
+
+        const LitColor a = stops[i];
+        const LitColor b = stops[i + 1];
         auto mix = [frac](uint8_t x, uint8_t y) -> uint8_t {
             const float v = static_cast<float>(x) +
                             (static_cast<float>(y) - static_cast<float>(x)) * frac;

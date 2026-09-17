@@ -22,13 +22,21 @@ namespace maya {
 
 namespace detail {
 
-// Linear RGB blend between two colors at parameter t∈[0,1]. Both stops are
-// resolved to true channels first so named/indexed stops interpolate too.
+// Linear RGB blend between two colors at parameter t∈[0,1].
+//
+// Slots are resolved FIRST (to_rgb() cannot: color.hpp sits below
+// theme.hpp, so an unresolved slot would interpolate from white and wash
+// the ramp). After resolving, a stop may still have no channels — Named,
+// Indexed or Default, which is exactly what theme::native states — and
+// those are snapped to, not projected: to_rgb() on Default guesses white,
+// and on Named it substitutes the standard xterm table for whatever the
+// user actually remapped their palette to. A flat ramp in the user's own
+// colour beats a smooth one in a colour they never chose.
 [[nodiscard]] inline Color lerp_color(Color from, Color to, float t) noexcept {
-    // Resolve slots FIRST: to_rgb() cannot (color.hpp sits below theme.hpp),
-    // so an unresolved slot would interpolate from white and wash the ramp.
     const Theme& th = theme::live();
-    Color a = th.resolve(from).to_rgb(), b = th.resolve(to).to_rgb();
+    const LitColor a = th.resolve(from), b = th.resolve(to);
+    if (!a.has_channels() || !b.has_channels())
+        return t < 0.5f ? Color{a} : Color{b};
     auto mix = [t](std::uint8_t x, std::uint8_t y) -> std::uint8_t {
         float v = static_cast<float>(x) + (static_cast<float>(y) - x) * t;
         return static_cast<std::uint8_t>(v + 0.5f);

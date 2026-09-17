@@ -171,9 +171,33 @@ template <typename T>
 }
 
 // maya truecolor — componentwise lerp on the RGB channels. Rounds to nearest.
-// Only meaningful for Rgb-kind colours; named/indexed degrade to their RGB
-// projection via the accessors, which is adequate for UI fades.
+//
+// ── Why this checks has_channels() ──────────────────────────────────────
+//
+// This used to claim that "named/indexed degrade to their RGB projection
+// via the accessors". They do not. The accessors PROJECT NOTHING: on a
+// Named colour r() is the palette index and g()/b() are zero, so mixing
+// them produced a truecolor triple built out of an index —
+//
+//     bright_black -> Named(8) -> rgb(8, 0, 0) -> "38;2;8;0;0"
+//
+// near-black, invisible on a dark terminal, and emitted for EVERY line of
+// every reasoning block under theme::native (agentty #45). Default was
+// worse: rgb(0,0,0), literal black.
+//
+// The fix is not to project. `native` states Named and Default slots on
+// PURPOSE — that is how the user's own palette, and their own contrast
+// choices, reach the screen. Projecting bright_black through the standard
+// xterm table would paint OUR idea of grey over THEIR remapped one, and
+// projecting Default is not even well-defined (to_rgb() guesses white).
+//
+// So a blend against a channel-less endpoint degrades to NO BLEND: snap to
+// whichever endpoint the parameter is nearer. The effect is lost; the
+// colour stays honest, stays the user's, and stays visible. An effect that
+// cannot be computed must become no effect, never a computed wrong answer.
 [[nodiscard]] inline LitColor lerp(LitColor a, LitColor b, double t) noexcept {
+    if (!a.has_channels() || !b.has_channels())
+        return t < 0.5 ? a : b;
     auto mix = [t](uint8_t x, uint8_t y) -> uint8_t {
         const double v = static_cast<double>(x) +
                          (static_cast<double>(y) - static_cast<double>(x)) * t;
@@ -380,8 +404,17 @@ private:
 // momentum reprojection on a colour stays continuous. LitColor, because it
 // reads channels — a spring animates between painted colours, and a slot has
 // no channels to travel between.
+//
+// Neither does a Named/Indexed/Default colour: those bytes are a palette
+// index or nothing (see BasicColor::has_channels). Differencing them yields
+// a distance in index-space, which is not a distance at all — under
+// theme::native it makes a spring report a large span between two colours
+// that are visually adjacent, or none between two that are not. A span of
+// zero is the honest answer: with no channels there is nothing to travel
+// through, and lerp() will snap rather than blend anyway.
 template <>
 inline constexpr double Spring<LitColor>::scalar_span(LitColor a, LitColor b) noexcept {
+    if (!a.has_channels() || !b.has_channels()) return 0.0;
     // Use the constexpr-safe cmath::c_abs (std::abs(int) is not guaranteed
     // constexpr, and MSVC rejects the whole function as never-constant).
     const double dr = cmath::c_abs(double(int(a.r()) - int(b.r())));

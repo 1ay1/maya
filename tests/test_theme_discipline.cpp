@@ -97,6 +97,28 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
     // call that silently fabricates channels.
     const std::regex unresolved_to_rgb{R"(\.to_rgb\(\))"};
 
+    // Doing ARITHMETIC on a colour's channel bytes.
+    //
+    // The hazard above, one level deeper. Resolving a slot gets you a
+    // LitColor, which is PAINTABLE but not necessarily NUMERIC: only
+    // Kind::Rgb has channels. Named and Indexed keep a PALETTE INDEX in the
+    // r_ byte with g_/b_ zero, and Default has nothing at all — and
+    // theme::native states every one of its slots as Named or Default, on
+    // purpose, so the user's own palette reaches the screen.
+    //
+    // So `r() / 4`, `(r() + x) / 2`, `r() - other.r()` and friends are
+    // reading a palette index as a colour channel. That is agentty #45:
+    // bright_black (Named 8) blended to rgb(8,0,0), a near-black truecolor
+    // triple painted over every line of every reasoning block, invisible on
+    // a dark terminal and undetectable to anyone running a scheme.
+    //
+    // Legitimate uses of these bytes are EMISSION (writing the palette
+    // index into an SGR sequence), which spells itself index(), and
+    // arithmetic guarded by has_channels(). This matches a channel read
+    // adjacent to an operator, so emission and comparison stay clean.
+    const std::regex channel_arithmetic{
+        R"(\.[rgb]\(\)\s*[-+*/]|[-+*/]\s*\w*\.[rgb]\(\))"};
+
     for (const auto& e : fs::recursive_directory_iterator(root)) {
         if (!e.is_regular_file() || e.path().extension() != ".hpp") continue;
         const std::string path = e.path().string();
@@ -125,6 +147,11 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
                 offenders.push_back(e.path().filename().string() + ":"
                                     + std::to_string(n)
                                     + "  (to_rgb without resolve)  " + line);
+            if (std::regex_search(line, channel_arithmetic)
+                && line.find("has_channels") == std::string::npos)
+                offenders.push_back(e.path().filename().string() + ":"
+                                    + std::to_string(n)
+                                    + "  (channel arithmetic, unguarded)  " + line);
         }
     }
 

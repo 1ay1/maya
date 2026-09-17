@@ -49,7 +49,112 @@ const std::vector<std::string> kAllowed = {
     return false;
 }
 
+// ── Is this channel read guarded? ───────────────────────────────────────
+//
+// has_channels() establishes a fact about a colour that holds for the REST
+// OF THE ENCLOSING BLOCK, not for one line. Checking a single line forces
+// the marker onto the arithmetic itself, which is unreadable and fails open
+// on the natural spelling:
+//
+//     if (!c.has_channels()) return c;
+//     return LitColor::rgb(c.r() / 2, ...);   // correct, but flagged
+//
+// So track brace depth: a guard seen at depth d covers every line until the
+// depth drops back below d, which is the scope where the fact still holds.
+//
+// A heuristic, not a parser — braces inside strings or comments skew the
+// depth. Deliberately biased toward FALSE POSITIVES (a skew expires the
+// guard early and flags a safe line): a nuisance failure costs a minute,
+// a missed one ships #45 again.
+class GuardScope {
+public:
+    void observe(const std::string& line) {
+        if (line.find("has_channels") != std::string::npos)
+            guarded_depth_ = depth_;
+        for (char c : line) {
+            if (c == '{') ++depth_;
+            else if (c == '}') {
+                --depth_;
+                if (guarded_depth_ >= 0 && depth_ < guarded_depth_)
+                    guarded_depth_ = -1;
+            }
+        }
+    }
+    [[nodiscard]] bool guarded() const noexcept { return guarded_depth_ >= 0; }
+private:
+    int depth_ = 0;
+    int guarded_depth_ = -1;
+};
+
 }  // namespace
+
+// The scanner's own unit test.
+//
+// A source-grep guard is itself code, and a guard that silently stops
+// guarding is worse than none — it reads as green forever. The line-scoped
+// version of this check failed exactly that way: it accepted only a marker
+// on the arithmetic line, so every correctly-written guard was a false
+// positive and the obvious fix ("add // has_channels to the line") taught
+// the wrong model of the predicate. Pin the scope rules directly.
+TEST_CASE("theme discipline: the guard tracker is block-scoped") {
+    auto scan = [](std::initializer_list<const char*> lines) {
+        GuardScope s;
+        std::vector<bool> guarded;
+        for (const char* l : lines) {
+            const std::string line{l};
+            s.observe(line);
+            guarded.push_back(s.guarded());
+        }
+        return guarded;
+    };
+
+    // A guard covers the rest of its block — the case that forced the ugly
+    // inline marker in ui_theme.hpp.
+    {
+        const auto g = scan({
+            "bool f(LitColor c) {",              // 0: no guard yet
+            "    if (!c.has_channels()) return false;", // 1: guard established
+            "    return c.r() + c.g() > 10;",    // 2: STILL guarded
+            "}",                                 // 3: block closed
+        });
+        CHECK(!g[0], "no guard before has_channels is seen");
+        CHECK(g[1],  "the guard line itself counts");
+        CHECK(g[2],  "the guard must survive to the next line — this is the "
+                     "whole point of tracking scope rather than lines");
+        CHECK(!g[3], "the guard expires when its block closes");
+    }
+
+    // A guard inside a NESTED block does not leak out of it.
+    {
+        const auto g = scan({
+            "void f() {",                        // 0
+            "    if (x) {",                      // 1
+            "        if (c.has_channels()) {}",  // 2: guarded at depth 2
+            "    }",                             // 3: depth 1 — expired
+            "    return c.r() * 2;",             // 4: unguarded again
+            "}",                                 // 5
+        });
+        CHECK(g[2],  "guarded inside the nested block");
+        CHECK(!g[3], "leaving the block drops the guard");
+        CHECK(!g[4], "a sibling statement is NOT covered by it");
+    }
+
+    // Two functions in a row: the first one's guard must not cover the
+    // second. This is the fail-open case that would hide a real bug.
+    {
+        const auto g = scan({
+            "int a(LitColor c) {",
+            "    if (!c.has_channels()) return 0;",
+            "    return c.r() / 2;",
+            "}",
+            "int b(LitColor c) {",
+            "    return c.r() / 2;",             // 5: MUST be flagged
+            "}",
+        });
+        CHECK(g[2],  "the first function is guarded");
+        CHECK(!g[5], "the next function must NOT inherit the guard");
+    }
+}
 
 TEST_CASE("theme discipline: widgets name roles, not colours") {
     std::println("--- test_theme_discipline ---");
@@ -114,8 +219,9 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
     //
     // Legitimate uses of these bytes are EMISSION (writing the palette
     // index into an SGR sequence), which spells itself index(), and
-    // arithmetic guarded by has_channels(). This matches a channel read
-    // adjacent to an operator, so emission and comparison stay clean.
+    // arithmetic guarded by has_channels() — tracked across the enclosing
+    // block by GuardScope above. This matches a channel read adjacent to an
+    // operator, so emission and comparison stay clean.
     const std::regex channel_arithmetic{
         R"(\.[rgb]\(\)\s*[-+*/]|[-+*/]\s*\w*\.[rgb]\(\))"};
 
@@ -128,8 +234,10 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
         std::ifstream in{e.path()};
         std::string line;
         int n = 0;
+        GuardScope scope;
         while (std::getline(in, line)) {
             ++n;
+            scope.observe(line);
             // Skip comments — examples in docs are not code.
             const auto first = line.find_first_not_of(" \t");
             if (first != std::string::npos
@@ -147,8 +255,7 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
                 offenders.push_back(e.path().filename().string() + ":"
                                     + std::to_string(n)
                                     + "  (to_rgb without resolve)  " + line);
-            if (std::regex_search(line, channel_arithmetic)
-                && line.find("has_channels") == std::string::npos)
+            if (std::regex_search(line, channel_arithmetic) && !scope.guarded())
                 offenders.push_back(e.path().filename().string() + ":"
                                     + std::to_string(n)
                                     + "  (channel arithmetic, unguarded)  " + line);

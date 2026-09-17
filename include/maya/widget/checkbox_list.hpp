@@ -22,12 +22,12 @@
 namespace maya {
 
 struct CheckboxListTheme {
-    Themed checked   = ThemeSlot::Success;
-    Themed box       = ThemeSlot::Muted;
+    Color checked   = Color::slot(ThemeSlot::Success);
+    Color box       = Color::slot(ThemeSlot::Muted);
     Color label     = Color::slot(ThemeSlot::Text);
-    Themed label_off = ThemeSlot::Muted;
-    Themed hint      = ThemeSlot::Muted;
-    Themed active     = ThemeSlot::Surface;
+    Color label_off = Color::slot(ThemeSlot::Muted);
+    Color hint      = Color::slot(ThemeSlot::Muted);
+    Color active     = Color::slot(ThemeSlot::Surface);
 };
 
 class CheckboxList {

@@ -35,7 +35,7 @@ struct Item {
     // ⇒ leading is painted as one span. The highlight keeps its hue even
     // on the cursor row, so "which chars matched" stays legible.
     std::vector<int> highlight;
-    Themed            highlight_fg = ThemeSlot::Link;
+    Color            highlight_fg = Color::slot(ThemeSlot::Link);
 
     // Optional colour sample, painted as solid blocks between the leading
     // text and the trailing cell.

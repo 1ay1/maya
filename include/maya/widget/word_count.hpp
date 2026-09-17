@@ -21,9 +21,9 @@
 namespace maya {
 
 struct WordCountTheme {
-    Themed num   = ThemeSlot::Text;
+    Color num   = Color::slot(ThemeSlot::Text);
     Color label = Color::slot(ThemeSlot::Muted);
-    Themed sep    = ThemeSlot::Border;
+    Color sep    = Color::slot(ThemeSlot::Border);
 };
 
 struct WordCount {

@@ -28,11 +28,11 @@ enum class Marker : uint8_t {
 };
 
 struct MarkerGutterTheme {
-    Themed breakpoint = ThemeSlot::Error;
-    Themed disabled   = ThemeSlot::Muted;
-    Themed conditional = ThemeSlot::Warning;
-    Themed bookmark    = ThemeSlot::Primary;
-    Themed execution   = ThemeSlot::Warning;
+    Color breakpoint = Color::slot(ThemeSlot::Error);
+    Color disabled   = Color::slot(ThemeSlot::Muted);
+    Color conditional = Color::slot(ThemeSlot::Warning);
+    Color bookmark    = Color::slot(ThemeSlot::Primary);
+    Color execution   = Color::slot(ThemeSlot::Warning);
 };
 
 class MarkerGutter {

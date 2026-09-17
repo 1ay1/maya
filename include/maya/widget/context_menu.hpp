@@ -31,14 +31,14 @@
 namespace maya {
 
 struct ContextMenuTheme {
-    Themed border   = ThemeSlot::Surface;
+    Color border   = Color::slot(ThemeSlot::Surface);
     Color label    = Color::slot(ThemeSlot::Text);
-    Themed icon     = ThemeSlot::Primary;
-    Themed shortcut = ThemeSlot::Muted;
-    Themed disabled = ThemeSlot::Border;
-    Themed check     = ThemeSlot::Success;
-    Themed shade      = ThemeSlot::Surface;
-    Themed sep         = ThemeSlot::Surface;
+    Color icon     = Color::slot(ThemeSlot::Primary);
+    Color shortcut = Color::slot(ThemeSlot::Muted);
+    Color disabled = Color::slot(ThemeSlot::Border);
+    Color check     = Color::slot(ThemeSlot::Success);
+    Color shade      = Color::slot(ThemeSlot::Surface);
+    Color sep         = Color::slot(ThemeSlot::Surface);
 };
 
 struct ContextMenu {

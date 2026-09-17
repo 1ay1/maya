@@ -30,7 +30,7 @@ class Image {
     int width_  = 0;  // pixel width
     int height_ = 0;  // pixel height
     std::vector<bool> pixels_;
-    Themed color_ = ThemeSlot::Text;
+    Color color_ = Color::slot(ThemeSlot::Text);
 
     // Braille dot positions within a 2x4 cell:
     //   (0,0)=0x01  (1,0)=0x08

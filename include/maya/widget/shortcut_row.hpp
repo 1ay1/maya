@@ -49,13 +49,13 @@ public:
     struct Binding {
         std::string key;
         std::string label;
-        Themed       key_color = ThemeSlot::Info;
+        Color       key_color = Color::slot(ThemeSlot::Info);
         int         priority  = 0;
     };
 
     struct Config {
         std::vector<Binding> bindings;
-        Themed                text_color = ThemeSlot::Text;
+        Color                text_color = Color::slot(ThemeSlot::Text);
     };
 
     explicit ShortcutRow(Config c) : cfg_(std::move(c)) {}

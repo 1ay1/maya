@@ -28,14 +28,14 @@ namespace maya {
 enum class TestStatus : uint8_t { Passed, Failed, Skipped, Running };
 
 struct TestExplorerTheme {
-    Themed suite = ThemeSlot::Text;
-    Themed name  = ThemeSlot::Secondary;
-    Themed guide = ThemeSlot::Border;
-    Themed dur    = ThemeSlot::Muted;
-    Themed passed  = ThemeSlot::Success;
-    Themed failed  = ThemeSlot::Error;
-    Themed skipped = ThemeSlot::Muted;
-    Themed running = ThemeSlot::Warning;
+    Color suite = Color::slot(ThemeSlot::Text);
+    Color name  = Color::slot(ThemeSlot::Secondary);
+    Color guide = Color::slot(ThemeSlot::Border);
+    Color dur    = Color::slot(ThemeSlot::Muted);
+    Color passed  = Color::slot(ThemeSlot::Success);
+    Color failed  = Color::slot(ThemeSlot::Error);
+    Color skipped = Color::slot(ThemeSlot::Muted);
+    Color running = Color::slot(ThemeSlot::Warning);
 };
 
 class TestExplorer {

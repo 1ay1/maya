@@ -33,7 +33,7 @@ public:
     struct Config {
         std::string title;                          // empty = blank
         Color       edge_color = Color::slot(ThemeSlot::Info);
-        Themed       text_color = ThemeSlot::Text;
+        Color       text_color = Color::slot(ThemeSlot::Text);
         std::size_t max_chars  = 28;
     };
 

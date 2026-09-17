@@ -36,7 +36,7 @@
 namespace maya {
 
 struct WorkbenchTheme {
-    Themed divider = ThemeSlot::Background;
+    Color divider = Color::slot(ThemeSlot::Background);
 };
 
 class Workbench {

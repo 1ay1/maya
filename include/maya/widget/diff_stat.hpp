@@ -25,11 +25,11 @@
 namespace maya {
 
 struct DiffStatTheme {
-    Themed name  = ThemeSlot::Secondary;
-    Themed added = ThemeSlot::Success;
-    Themed removed = ThemeSlot::Error;
-    Themed muted   = ThemeSlot::Border;
-    Themed count    = ThemeSlot::Muted;
+    Color name  = Color::slot(ThemeSlot::Secondary);
+    Color added = Color::slot(ThemeSlot::Success);
+    Color removed = Color::slot(ThemeSlot::Error);
+    Color muted   = Color::slot(ThemeSlot::Border);
+    Color count    = Color::slot(ThemeSlot::Muted);
 };
 
 class DiffStat {

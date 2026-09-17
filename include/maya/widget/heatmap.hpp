@@ -33,8 +33,8 @@ class Heatmap {
     std::vector<std::vector<float>> data_;
     std::vector<std::string> x_labels_;
     std::vector<std::string> y_labels_;
-    Themed low_color_  = ThemeSlot::Muted;
-    Themed high_color_ = ThemeSlot::Success;
+    Color low_color_  = Color::slot(ThemeSlot::Muted);
+    Color high_color_ = Color::slot(ThemeSlot::Success);
 
 public:
     Heatmap() = default;

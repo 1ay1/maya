@@ -32,15 +32,15 @@
 namespace maya {
 
 struct CompletionMenuTheme {
-    Themed border   = ThemeSlot::Surface;
+    Color border   = Color::slot(ThemeSlot::Surface);
     Color label    = Color::slot(ThemeSlot::Secondary); // item label
-    Themed sel_label = ThemeSlot::Text; // selected label
-    Themed match     = ThemeSlot::Warning; // fuzzy-matched chars
-    Themed detail    = ThemeSlot::Muted; // type / signature
-    Themed pointer   = ThemeSlot::Primary; // ▸ selection pointer
-    Themed sel_shade  = ThemeSlot::Surface; // subtle wash on the selected row
-    Themed scroll     = ThemeSlot::Muted; // scroll hint
-    Themed doc        = ThemeSlot::Muted; // doc string
+    Color sel_label = Color::slot(ThemeSlot::Text); // selected label
+    Color match     = Color::slot(ThemeSlot::Warning); // fuzzy-matched chars
+    Color detail    = Color::slot(ThemeSlot::Muted); // type / signature
+    Color pointer   = Color::slot(ThemeSlot::Primary); // ▸ selection pointer
+    Color sel_shade  = Color::slot(ThemeSlot::Surface); // subtle wash on the selected row
+    Color scroll     = Color::slot(ThemeSlot::Muted); // scroll hint
+    Color doc        = Color::slot(ThemeSlot::Muted); // doc string
 };
 
 struct CompletionMenu {

@@ -88,7 +88,7 @@ public:
         // CodeBlock / Failure / GitDiff / BashOutput / FileRead / FileWrite /
         // Json / GrepMatches: free-text body
         std::string text;
-        Themed       text_color = ThemeSlot::Text;
+        Color       text_color = Color::slot(ThemeSlot::Text);
 
         // Color used for the BODY CHROME (line-number gutter, pipe
         // separator `│`, the trailing "⋯ N more" elision marker). Host

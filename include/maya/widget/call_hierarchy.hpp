@@ -25,11 +25,11 @@
 namespace maya {
 
 struct CallHierarchyTheme {
-    Themed root   = ThemeSlot::Text;
-    Themed name   = ThemeSlot::Secondary;
-    Themed guide  = ThemeSlot::Border;
-    Themed loc     = ThemeSlot::Muted;
-    Themed arrow    = ThemeSlot::Primary;
+    Color root   = Color::slot(ThemeSlot::Text);
+    Color name   = Color::slot(ThemeSlot::Secondary);
+    Color guide  = Color::slot(ThemeSlot::Border);
+    Color loc     = Color::slot(ThemeSlot::Muted);
+    Color arrow    = Color::slot(ThemeSlot::Primary);
 };
 
 class CallHierarchy {

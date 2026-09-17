@@ -19,8 +19,8 @@
 namespace maya {
 
 struct GitLensTheme {
-    Themed code  = ThemeSlot::Text;
-    Themed blame = ThemeSlot::Muted;
+    Color code  = Color::slot(ThemeSlot::Text);
+    Color blame = Color::slot(ThemeSlot::Muted);
 };
 
 struct GitLensInline {

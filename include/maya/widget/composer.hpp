@@ -68,10 +68,10 @@ public:
         Color active_color  = Color::slot(ThemeSlot::Info);
 
         // Brand palette
-        Themed text_color      = ThemeSlot::Text;
+        Color text_color      = Color::slot(ThemeSlot::Text);
         Color accent_color    = Color::slot(ThemeSlot::Accent);   // "primed" border, idle + text
         Color warn_color      = Color::slot(ThemeSlot::Warning);    // awaiting-permission border
-        Themed highlight_color = ThemeSlot::Info;      // queue-depth chip
+        Color highlight_color = Color::slot(ThemeSlot::Info);      // queue-depth chip
 
         // Right-side ambient indicators
         std::size_t queued = 0;

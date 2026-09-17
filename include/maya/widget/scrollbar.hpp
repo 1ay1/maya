@@ -61,8 +61,8 @@ struct ScrollbarStyle {
     std::string_view track_glyph_h = "\xe2\x94\x80"; // ─  U+2500 LIGHT HORIZONTAL
     std::string_view thumb_glyph_h = "\xe2\x94\x81"; // ━  U+2501 HEAVY HORIZONTAL
 
-    Themed track_color = ThemeSlot::Muted;
-    Themed thumb_color = ThemeSlot::Muted;
+    Color track_color = Color::slot(ThemeSlot::Muted);
+    Color thumb_color = Color::slot(ThemeSlot::Muted);
 
     // -- Presets ------------------------------------------------------------
 

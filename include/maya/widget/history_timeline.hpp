@@ -27,14 +27,14 @@ namespace maya {
 enum class TimelineKind : uint8_t { Commit, Save, Edit, Branch, Tag };
 
 struct HistoryTimelineTheme {
-    Themed rail   = ThemeSlot::Border;
-    Themed title  = ThemeSlot::Secondary;
-    Themed time   = ThemeSlot::Muted;
-    Themed hash   = ThemeSlot::Warning;
-    Themed commit  = ThemeSlot::Primary;
-    Themed save     = ThemeSlot::Success;
-    Themed edit      = ThemeSlot::Muted;
-    Themed branch     = ThemeSlot::Accent;
+    Color rail   = Color::slot(ThemeSlot::Border);
+    Color title  = Color::slot(ThemeSlot::Secondary);
+    Color time   = Color::slot(ThemeSlot::Muted);
+    Color hash   = Color::slot(ThemeSlot::Warning);
+    Color commit  = Color::slot(ThemeSlot::Primary);
+    Color save     = Color::slot(ThemeSlot::Success);
+    Color edit      = Color::slot(ThemeSlot::Muted);
+    Color branch     = Color::slot(ThemeSlot::Accent);
 };
 
 class HistoryTimeline {

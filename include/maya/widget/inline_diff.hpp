@@ -26,13 +26,13 @@ struct InlineDiffConfig {
     // These were Success-on-DiffAdded and Error-on-DiffRemoved, which
     // collapse onto the SAME ansi colour under theme::native: green text
     // on a green band.
-    Themed add_fg      = Themed::brand(diff_palette::add_fg, "diff palette");
-    Themed del_fg      = Themed::brand(diff_palette::rem_fg, "diff palette");
-    Themed add_bg      = Themed::brand(diff_palette::add_rail, "diff palette");
-    Themed del_bg      = Themed::brand(diff_palette::rem_rail, "diff palette");
-    Themed add_line_bg = Themed::brand(diff_palette::add_bg, "diff palette");
-    Themed del_line_bg = Themed::brand(diff_palette::rem_bg, "diff palette");
-    Themed same_fg     = ThemeSlot::Text;
+    Color add_fg      = diff_palette::add_fg;
+    Color del_fg      = diff_palette::rem_fg;
+    Color add_bg      = diff_palette::add_rail;
+    Color del_bg      = diff_palette::rem_rail;
+    Color add_line_bg = diff_palette::add_bg;
+    Color del_line_bg = diff_palette::rem_bg;
+    Color same_fg     = Color::slot(ThemeSlot::Text);
     bool  show_header = true;
 };
 

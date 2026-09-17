@@ -24,11 +24,11 @@
 namespace maya {
 
 struct DebugToolbarTheme {
-    Themed control  = ThemeSlot::Text;
-    Themed idle     = ThemeSlot::Border;
-    Themed go       = ThemeSlot::Success; // continue
-    Themed stop      = ThemeSlot::Error;
-    Themed restart   = ThemeSlot::Warning;
+    Color control  = Color::slot(ThemeSlot::Text);
+    Color idle     = Color::slot(ThemeSlot::Border);
+    Color go       = Color::slot(ThemeSlot::Success); // continue
+    Color stop      = Color::slot(ThemeSlot::Error);
+    Color restart   = Color::slot(ThemeSlot::Warning);
     Color label      = Color::slot(ThemeSlot::Muted);
 };
 

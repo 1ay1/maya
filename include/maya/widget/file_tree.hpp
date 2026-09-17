@@ -45,22 +45,22 @@ namespace maya {
 enum class GitState : uint8_t { None, Modified, Added, Untracked, Deleted, Ignored };
 
 struct FileTreeTheme {
-    Themed folder    = ThemeSlot::Primary; // folder name
-    Themed file      = ThemeSlot::Secondary; // file name
-    Themed guide     = ThemeSlot::Border; // tree connectors
-    Themed accent    = ThemeSlot::Primary; // active-row left bar
-    Themed active    = ThemeSlot::Surface; // active-row wash
-    Themed hidden    = ThemeSlot::Muted; // dotfiles / ignored
-    Themed link      = ThemeSlot::Link; // symlink arrow + target
-    Themed count     = ThemeSlot::Muted; // collapsed child count
-    Themed match     = ThemeSlot::Warning; // filter match highlight
-    Themed mark      = ThemeSlot::Accent; // marked-file indicator
-    Themed err       = ThemeSlot::Error; // ● error badge
-    Themed warn      = ThemeSlot::Warning; // ● warning badge
-    Themed modified  = ThemeSlot::Warning; // M
-    Themed added     = ThemeSlot::Success; // A
-    Themed untracked = ThemeSlot::Link; // U
-    Themed deleted   = ThemeSlot::Error; // D
+    Color folder    = Color::slot(ThemeSlot::Primary); // folder name
+    Color file      = Color::slot(ThemeSlot::Secondary); // file name
+    Color guide     = Color::slot(ThemeSlot::Border); // tree connectors
+    Color accent    = Color::slot(ThemeSlot::Primary); // active-row left bar
+    Color active    = Color::slot(ThemeSlot::Surface); // active-row wash
+    Color hidden    = Color::slot(ThemeSlot::Muted); // dotfiles / ignored
+    Color link      = Color::slot(ThemeSlot::Link); // symlink arrow + target
+    Color count     = Color::slot(ThemeSlot::Muted); // collapsed child count
+    Color match     = Color::slot(ThemeSlot::Warning); // filter match highlight
+    Color mark      = Color::slot(ThemeSlot::Accent); // marked-file indicator
+    Color err       = Color::slot(ThemeSlot::Error); // ● error badge
+    Color warn      = Color::slot(ThemeSlot::Warning); // ● warning badge
+    Color modified  = Color::slot(ThemeSlot::Warning); // M
+    Color added     = Color::slot(ThemeSlot::Success); // A
+    Color untracked = Color::slot(ThemeSlot::Link); // U
+    Color deleted   = Color::slot(ThemeSlot::Error); // D
 };
 
 class FileTree {

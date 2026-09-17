@@ -26,11 +26,11 @@
 namespace maya {
 
 struct HoverCardTheme {
-    Themed border    = ThemeSlot::Surface;
-    Themed signature = ThemeSlot::Accent; // header
-    Themed divider   = ThemeSlot::Surface;
-    Themed doc        = ThemeSlot::Secondary; // body
-    Themed note       = ThemeSlot::Muted; // footnotes
+    Color border    = Color::slot(ThemeSlot::Surface);
+    Color signature = Color::slot(ThemeSlot::Accent); // header
+    Color divider   = Color::slot(ThemeSlot::Surface);
+    Color doc        = Color::slot(ThemeSlot::Secondary); // body
+    Color note       = Color::slot(ThemeSlot::Muted); // footnotes
 };
 
 struct HoverCard {

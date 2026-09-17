@@ -25,10 +25,10 @@
 namespace maya {
 
 struct GridSplitTheme {
-    Themed divider       = ThemeSlot::Background;
-    Themed title         = ThemeSlot::Muted;
-    Themed title_focused = ThemeSlot::Text;
-    Themed accent        = ThemeSlot::Primary;
+    Color divider       = Color::slot(ThemeSlot::Background);
+    Color title         = Color::slot(ThemeSlot::Muted);
+    Color title_focused = Color::slot(ThemeSlot::Text);
+    Color accent        = Color::slot(ThemeSlot::Primary);
 };
 
 class GridSplit {

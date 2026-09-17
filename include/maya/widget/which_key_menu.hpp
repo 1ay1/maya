@@ -27,11 +27,11 @@
 namespace maya {
 
 struct WhichKeyTheme {
-    Themed title  = ThemeSlot::Accent;
-    Themed key    = ThemeSlot::Warning;
-    Themed arrow  = ThemeSlot::Muted;
-    Themed action = ThemeSlot::Secondary;
-    Themed group   = ThemeSlot::Primary; // entries that open a submenu
+    Color title  = Color::slot(ThemeSlot::Accent);
+    Color key    = Color::slot(ThemeSlot::Warning);
+    Color arrow  = Color::slot(ThemeSlot::Muted);
+    Color action = Color::slot(ThemeSlot::Secondary);
+    Color group   = Color::slot(ThemeSlot::Primary); // entries that open a submenu
 };
 
 struct WhichKeyMenu {

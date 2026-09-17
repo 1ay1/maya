@@ -31,7 +31,7 @@ struct DiffView {
         Style hunk_style   = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_dim();
         Style header_style = Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold();
         Style lineno_style = Style{}.with_dim();
-        Themed border_color = ThemeSlot::Muted;
+        Color border_color = Color::slot(ThemeSlot::Muted);
         bool show_border = true;
         bool show_line_numbers = true;
     };

@@ -82,7 +82,7 @@ public:
 
         if (!active_) return text("");
 
-        Themed accent = ThemeSlot::Accent; // purple
+        Color accent = Color::slot(ThemeSlot::Accent); // purple
         auto dim = Style{}.with_dim();
 
         std::vector<Element> parts;

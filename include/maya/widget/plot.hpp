@@ -199,8 +199,8 @@ private:
     std::string         peak_label_;  // scale tick against the top row
     std::string         base_label_;  // scale tick against the bottom row
     bool                filled_ = true;
-    Themed               line_color_  = ThemeSlot::Text;
-    Themed               label_color_ = ThemeSlot::Muted;
+    Color               line_color_  = Color::slot(ThemeSlot::Text);
+    Color               label_color_ = Color::slot(ThemeSlot::Muted);
 };
 
 } // namespace maya

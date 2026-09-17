@@ -32,11 +32,11 @@
 namespace maya {
 
 struct SymbolOutlineTheme {
-    Themed name        = ThemeSlot::Secondary; // symbol name
-    Themed active_name = ThemeSlot::Text; // current symbol name
-    Themed active_mark = ThemeSlot::Primary; // ▸ current-symbol pointer
-    Themed detail      = ThemeSlot::Muted; // dim signature/type
-    Themed guide       = ThemeSlot::Surface; // tree guides
+    Color name        = Color::slot(ThemeSlot::Secondary); // symbol name
+    Color active_name = Color::slot(ThemeSlot::Text); // current symbol name
+    Color active_mark = Color::slot(ThemeSlot::Primary); // ▸ current-symbol pointer
+    Color detail      = Color::slot(ThemeSlot::Muted); // dim signature/type
+    Color guide       = Color::slot(ThemeSlot::Surface); // tree guides
 };
 
 struct SymbolOutline {

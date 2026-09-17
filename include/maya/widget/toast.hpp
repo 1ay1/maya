@@ -121,7 +121,7 @@ public:
             bool fading = (toast.expires_at_ms - now) < fade_ms;
 
             // Border color tinted by severity
-            Themed border_color = ThemeSlot::Muted;
+            Color border_color = Color::slot(ThemeSlot::Muted);
             if (toast.level == ToastLevel::Error)
                 border_color = Color::slot(ThemeSlot::Error);
             else if (toast.level == ToastLevel::Warning)

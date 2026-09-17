@@ -18,9 +18,9 @@
 namespace maya {
 
 struct SelectionInfoTheme {
-    Themed num   = ThemeSlot::Text;
+    Color num   = Color::slot(ThemeSlot::Text);
     Color label = Color::slot(ThemeSlot::Muted);
-    Themed sel    = ThemeSlot::Warning;
+    Color sel    = Color::slot(ThemeSlot::Warning);
 };
 
 struct SelectionInfo {

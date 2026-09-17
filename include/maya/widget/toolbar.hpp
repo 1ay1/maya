@@ -24,11 +24,11 @@
 namespace maya {
 
 struct ToolbarTheme {
-    Themed icon     = ThemeSlot::Secondary;
+    Color icon     = Color::slot(ThemeSlot::Secondary);
     Color label    = Color::slot(ThemeSlot::Muted);
-    Themed active   = ThemeSlot::Primary;
-    Themed disabled = ThemeSlot::Border;
-    Themed sep       = ThemeSlot::Surface;
+    Color active   = Color::slot(ThemeSlot::Primary);
+    Color disabled = Color::slot(ThemeSlot::Border);
+    Color sep       = Color::slot(ThemeSlot::Surface);
 };
 
 struct Toolbar {

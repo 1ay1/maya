@@ -34,10 +34,10 @@
 namespace maya {
 
 struct MinimapTheme {
-    Themed ink_idle = ThemeSlot::Muted; // code, outside viewport
-    Themed ink_view = ThemeSlot::Link; // code, inside viewport
-    Themed active   = ThemeSlot::Warning; // active line glow
-    Themed slider   = ThemeSlot::Primary; // viewport slider on the left edge
+    Color ink_idle = Color::slot(ThemeSlot::Muted); // code, outside viewport
+    Color ink_view = Color::slot(ThemeSlot::Link); // code, inside viewport
+    Color active   = Color::slot(ThemeSlot::Warning); // active line glow
+    Color slider   = Color::slot(ThemeSlot::Primary); // viewport slider on the left edge
 };
 
 struct MinimapConfig {

@@ -265,7 +265,7 @@ Color    authored = Color::slot(ThemeSlot::Accent);  // what the widget wrote
 LitColor painted  = theme::live().resolve(authored); // what the terminal gets
 
 authored.r();        // compile error: a slot has no red channel
-painted.r();         // fine
+painted.r();         // compiles — but see below
 ```
 
 That is why `resolve()` is total: `Theme` holds `LitColor`, so a slot cannot
@@ -273,6 +273,44 @@ resolve to another slot, and no consumer has to handle a case it has no
 answer for. If you need the raw payload bytes for a **cache key** rather than
 a colour, use `raw_r()` / `raw_g()` / `raw_b()` — they read the authored value
 without pretending a slot enum is a channel.
+
+### Paintable is not numeric
+
+Resolving buys you a colour the terminal can render. It does **not** buy you
+a colour you can do arithmetic on, and conflating those is agentty #45:
+
+| Kind | `r()` / `g()` / `b()` hold |
+|------|---------------------------|
+| `Rgb` | real channels |
+| `Named` | a **palette index** in `r_`; `g_`/`b_` are zero |
+| `Indexed` | a **palette index** in `r_`; `g_`/`b_` are zero |
+| `Default` | nothing — it means SGR 39/49 |
+
+So `bright_black` is `Named(8)`, and blending it read 8 as a red channel:
+`rgb(8,0,0)`, near-black, invisible on a dark terminal and undetectable to
+anyone running a scheme instead of `theme::native`.
+
+Ask **`has_channels()`** before arithmetic, and make the failure case *no
+effect* rather than a computed wrong answer:
+
+```cpp
+LitColor lerp(LitColor a, LitColor b, double t) {
+    if (!a.has_channels() || !b.has_channels())
+        return t < 0.5 ? a : b;          // snap; never invent a triple
+    /* … mix channels … */
+}
+```
+
+Do **not** reach for `to_rgb()` to "fix" it. That substitutes the standard
+xterm table for whatever the user actually remapped, and on `Default` it
+guesses white — which is the grey-on-grey failure on a light terminal.
+
+The same asymmetry decides what ink goes on a filled band. For a truecolor
+band you can measure it (`ink_for()`); for a palette band you cannot, because
+the terminal owns those 16 entries and will not say what they are. Use
+`on_band()`, which measures the first case and falls back to **reverse video**
+(SGR 7) for the second — letting the terminal swap its own pair is strictly
+better than guessing at a palette you cannot read.
 
 ### Adding a slot
 
@@ -288,7 +326,7 @@ and `slot_field_name()`, so those four can never disagree:
 ```
 
 `Theme` stays a plain aggregate, so `Theme{.primary = …}` and `derive()` are
-unchanged. What the list cannot generate is the 57 built-in schemes, and a
+unchanged. What the list cannot generate is the 615 built-in schemes, and a
 designated initializer that omits a field is legal C++ — it value-initializes
 it. So a default-constructed `Color` is `ColorKind::Unset`, a state no
 deliberate choice produces:

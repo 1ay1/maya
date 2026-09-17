@@ -431,30 +431,18 @@ private:
         // to the ANSI red/yellow/cyan every terminal has meant since the
         // seventies.
         //
-        // But a FILLED band needs a canvas to fill, and theme::native has
-        // none — it states Default for background/surface so the user's own
-        // terminal shows through. Its inverse_text is Default too (there is
-        // no second canvas to invert against), so a band there paints the
-        // terminal's ordinary foreground onto an ANSI-red block: legible by
-        // luck, and nothing like the white-on-crimson it is meant to be.
-        //
-        // So when the theme owns no canvas, drop the band and colour the
-        // TEXT instead — red/amber/cyan on the user's own background, which
-        // is how a status line has always read on a plain terminal. Same
-        // rule the diff bands use, for the same reason.
+        // The band stays on every theme; the INK comes from on_band(),
+        // which measures a real RGB band but uses REVERSE VIDEO for a
+        // palette one. Under native these are ANSI red/yellow/cyan, whose
+        // actual values only the terminal knows — measuring the standard
+        // table picked white ink and the toast came out unreadable on a
+        // remapped palette.
         const Theme& th = theme::live();
-        const bool owns_canvas =
-            th.resolve(Color::slot(ThemeSlot::Background)).kind() != ColorKind::Default;
 
         const Color state = (kind == Kind::Error) ? Color::slot(ThemeSlot::Error)
                           : (kind == Kind::Warn)  ? Color::slot(ThemeSlot::Warning)
                                                   : Color::slot(ThemeSlot::Info);
-
-        struct Palette { Color bg; Color fg; Color rail; };
-        const Palette p =
-            owns_canvas
-                ? Palette{ state, Color::slot(ThemeSlot::InverseText), state }
-                : Palette{ Color::slot(ThemeSlot::Background), state, state };
+        const Style band = on_band(th.resolve(state));
 
         const std::string& msg = cfg_.status_banner.text;
         const char* glyph =
@@ -466,7 +454,7 @@ private:
         // then the body in `fg`-on-`bg`. The rail is painted on the
         // same bg so it reads as a brighter accent stripe inside the
         // band rather than an external chip floating on the panel.
-        return component([p, msg, glyph](int w, int /*h*/) -> Element {
+        return component([band, msg, glyph](int w, int /*h*/) -> Element {
             using namespace dsl;
             if (w <= 0) return blank().build();
 
@@ -513,13 +501,16 @@ private:
             if (used < total_after_rail)
                 body.append(static_cast<std::size_t>(total_after_rail - used), ' ');
 
-            // Two elements composed horizontally: the rail and the body.
-            // Rail uses fg=rail-color on the band bg; body uses fg on bg.
+            // Two elements composed horizontally: the rail and the body,
+            // both on the same band style, both BOLD. A toast is an
+            // interruption — it should read at a glance without the user
+            // hunting for it, and bold is the one emphasis that survives
+            // reverse video (where we cannot pick a brighter ink because
+            // the terminal owns both colours).
             auto rail_el = (rail_w > 0)
-                ? text(rail_g, Style{}.with_fg(p.rail).with_bg(p.bg)).build()
+                ? text(rail_g, band.with_bold()).build()
                 : blank().build();
-            auto body_el = text(std::move(body),
-                                Style{}.with_fg(p.fg).with_bg(p.bg)).build();
+            auto body_el = text(std::move(body), band.with_bold()).build();
             (void)pre_w;   // reserved for future right-aligned timestamp slot
             return h(std::move(rail_el), std::move(body_el)).build();
         });

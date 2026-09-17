@@ -357,4 +357,42 @@ inline constexpr Style dim       = dim_style;
 inline constexpr Style italic    = italic_style;
 inline constexpr Style underline = underline_style;
 
+// ── A filled band, with ink that is actually readable on it ────────────
+//
+// Use this for ANY element that paints text on a coloured background — a
+// chip, a status banner, a diff row, an active tab. It picks the ink by a
+// different rule depending on what the band actually is, because only one
+// of the two cases is knowable:
+//
+//   Rgb    we chose the colour and can read its channels, so measure the
+//          luminance and use black or white.
+//
+//   Named  the terminal owns those 16 entries and will not tell us what
+//   Indexed  they are. theme::native's diff green is ANSI 2, whose STANDARD
+//          value is dark (#008000) but which a Catppuccin-style palette
+//          remaps to #a6d189 — light. Measuring the standard table picks
+//          white ink and the text vanishes on the user's actual green.
+//          So don't guess: SGR 7 asks the TERMINAL to swap its own
+//          foreground and background, which is the one party that knows.
+//
+//   Default  no band at all; leave the style alone.
+//
+// Reverse video also degrades correctly — it is older than colour itself,
+// so it survives 16-colour terminals, monochrome ones, and `TERM=dumb`,
+// where a hardcoded black-on-green would have nothing to fall back to.
+[[nodiscard]] inline Style on_band(LitColor band) noexcept {
+    switch (band.kind()) {
+        case ColorKind::Rgb:
+            return Style{}.with_bg(band).with_fg(ink_for(band));
+        case ColorKind::Named:
+        case ColorKind::Indexed:
+            // fg = the band colour, then reverse: the terminal paints that
+            // colour as the BACKGROUND and its own background as the ink.
+            // Same rectangle, and the contrast is the terminal's own.
+            return Style{}.with_fg(band).with_inverse();
+        default:
+            return Style{};
+    }
+}
+
 } // namespace maya

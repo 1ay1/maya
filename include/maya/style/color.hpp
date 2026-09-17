@@ -911,4 +911,121 @@ static_assert(!std::is_nothrow_constructible_v<Themed, Color>,
               "the Color constructor must stay consteval-and-throwing — if "
               "it ever becomes noexcept, the literal gate has been removed");
 
+// ── Ink for a filled band ──────────────────────────────────────────
+//
+// "What text reads on top of THIS colour?"
+//
+// ── Why this cannot just measure ────────────────────────────────────
+//
+// For a real RGB band the answer is arithmetic: take the luminance, pick
+// black or white. For a PALETTE band it is unknowable, and pretending
+// otherwise is how the diff bands ended up unreadable.
+//
+// theme::native states its diff slots as ANSI green and red. The standard
+// values for those are (0,128,0) and (128,0,0) — luminance 91 and 38, both
+// dark, so measuring says "use white ink". But the standard values are not
+// what the user sees. A Catppuccin-style palette maps green to #a6d189,
+// luminance 194: light. White ink on it is invisible, which is exactly the
+// bug this function was added to fix and then reproduced.
+//
+// We cannot query the palette. The terminal owns those 16 entries and does
+// not tell us. So for a palette colour the honest answer is: don't answer.
+// Ask the terminal to swap its own foreground and background instead —
+// that is SGR 7, reverse video, and it has been in every terminal since
+// the seventies precisely because only the terminal knows its own colours.
+//
+// ── The two answers ─────────────────────────────────────────────────
+//
+//   Rgb          measure it. We chose the colour, we know its channels.
+//   Named/Indexed  reverse video. The terminal knows; we do not.
+//   Default      no band at all, so nothing to do.
+//
+// on_band() returns a Style rather than a Color because the second answer
+// is an ATTRIBUTE, not a colour — there is no LitColor that means "swap
+// whatever you are about to paint".
+
+// Luminance of a colour on 0..255, or -1 when it carries no channels we
+// can trust. Named/Indexed deliberately return -1: the standard table is
+// not what a remapped terminal will show.
+[[nodiscard]] inline int band_luminance(LitColor c) noexcept {
+    if (c.kind() != ColorKind::Rgb) return -1;
+    return (2126 * c.r() + 7152 * c.g() + 722 * c.b()) / 10000;
+}
+
+// Ink for a band whose channels we KNOW. Only valid on Kind::Rgb — callers
+// that may hand a palette colour want on_band() instead.
+[[nodiscard]] inline LitColor ink_for(LitColor band) noexcept {
+    const int l = band_luminance(band);
+    if (l < 0) return LitColor::default_color();
+    // Threshold at the midpoint. Note "bright" in ANSI means SATURATED,
+    // not light — bright_blue (0,0,255) has luminance 18 — so this has to
+    // measure rather than infer from the index.
+    return l >= 128 ? LitColor::black() : LitColor::white();
+}
+
+// ── The other direction: a band the theme's OWN text reads on ──────────
+//
+// ink_for() asks "given this band, what text works". This asks the
+// question a chip actually has: "I want to keep the theme's normal text
+// colour — tint this hue until that text reads on it".
+//
+// That is the better shape for a label. Ink that changes colour per chip
+// is a second thing to look at; ink that stays the prose colour makes the
+// chip read as text that happens to sit on a tint, which is what a badge
+// should be.
+//
+// The move is a blend toward the CANVAS rather than toward black or white.
+// Blending toward the canvas keeps the hue recognisably itself (a magenta
+// chip stays magenta) while pulling it to the side of the scale the text
+// is not on — so the contrast comes from distance, not from a colour the
+// theme never chose.
+//
+// Returns the band unchanged when it cannot measure: a palette colour is
+// the terminal's to define, and inventing a tint for it is the guess this
+// whole area keeps getting punished for.
+[[nodiscard]] inline LitColor band_for(LitColor hue, LitColor ink,
+                                       LitColor canvas) noexcept {
+    // A PALETTE hue stays exactly as the user set it.
+    //
+    // Projecting it through the standard table and toning THAT was tried
+    // and is worse: it throws away the colour the user actually chose (a
+    // Catppuccin bright_magenta is #f2a4db, the standard one is #FF00FF)
+    // and emits truecolor under a theme whose entire purpose is not to.
+    //
+    // Under native the right pair is the user's own: their palette entry as
+    // the band, their own foreground as the ink. Both sides are theirs and
+    // were chosen together, which is a better guarantee than anything we
+    // can compute without being able to read the palette.
+    if (hue.kind() != ColorKind::Rgb) return hue;
+
+    const int li = band_luminance(ink);
+    const int lc = band_luminance(canvas);
+    if (li < 0) return hue;   // unmeasurable ink: nothing to tone against
+
+    // Where the canvas sits decides which way to pull. With no canvas to
+    // read, the ink tells us: light text implies a dark surface.
+    const bool dark_ui = lc >= 0 ? (lc < 128) : (li >= 128);
+    const LitColor toward = dark_ui ? LitColor::rgb(0, 0, 0)
+                                    : LitColor::rgb(255, 255, 255);
+
+    // Blend until the ink clears a comfortable margin. 96 on a 0..255
+    // luminance scale is roughly a 4.5:1 contrast ratio for mid tones —
+    // WCAG AA — without the cost of a full gamma-correct solve per frame.
+    constexpr int kMargin = 96;
+    LitColor out = hue;
+    for (int step = 0; step < 8; ++step) {
+        const int lo = band_luminance(out);
+        if (lo < 0) return hue;
+        const int gap = lo > li ? lo - li : li - lo;
+        if (gap >= kMargin) break;
+        // 25% toward the target per step: enough to converge inside the
+        // loop bound, gentle enough that the hue survives.
+        out = LitColor::rgb(
+            static_cast<uint8_t>(out.r() + (toward.r() - out.r()) / 4),
+            static_cast<uint8_t>(out.g() + (toward.g() - out.g()) / 4),
+            static_cast<uint8_t>(out.b() + (toward.b() - out.b()) / 4));
+    }
+    return out;
+}
+
 } // namespace maya

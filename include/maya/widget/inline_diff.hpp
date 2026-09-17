@@ -21,12 +21,17 @@
 namespace maya {
 
 struct InlineDiffConfig {
-    Themed add_fg      = ThemeSlot::Success;
-    Themed del_fg      = ThemeSlot::Error;
-    Themed add_bg      = ThemeSlot::DiffAdded;    // word-level highlight
-    Themed del_bg      = ThemeSlot::DiffRemoved;      // word-level highlight
-    Themed add_line_bg = ThemeSlot::DiffAdded;    // subtle whole-line tint
-    Themed del_line_bg = ThemeSlot::DiffRemoved;    // subtle whole-line tint
+    // The fixed diff palette, not theme slots — see diff_palette in
+    // tool_body_preview.hpp for why a diff owns both sides of its pair.
+    // These were Success-on-DiffAdded and Error-on-DiffRemoved, which
+    // collapse onto the SAME ansi colour under theme::native: green text
+    // on a green band.
+    Themed add_fg      = Themed::brand(diff_palette::add_fg, "diff palette");
+    Themed del_fg      = Themed::brand(diff_palette::rem_fg, "diff palette");
+    Themed add_bg      = Themed::brand(diff_palette::add_rail, "diff palette");
+    Themed del_bg      = Themed::brand(diff_palette::rem_rail, "diff palette");
+    Themed add_line_bg = Themed::brand(diff_palette::add_bg, "diff palette");
+    Themed del_line_bg = Themed::brand(diff_palette::rem_bg, "diff palette");
     Themed same_fg     = ThemeSlot::Text;
     bool  show_header = true;
 };

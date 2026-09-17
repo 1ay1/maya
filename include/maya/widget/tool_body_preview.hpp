@@ -54,6 +54,7 @@ namespace maya {
 // render/canvas.hpp) to keep this widget header light.
 [[nodiscard]] int terminal_color_level() noexcept;
 
+
 class ToolBodyPreview {
 public:
     enum class Kind : std::uint8_t {
@@ -1011,9 +1012,9 @@ private:
         // of whatever they had chosen. Every scheme already carries a
         // contrast-checked diff_added, and native maps it to the plain
         // green every terminal has meant for forty years.
-        const Color add_bg    = Color::slot(ThemeSlot::DiffAdded);
-        const Color add_fg_br = Color::slot(ThemeSlot::Success);
-        const Color num_fg    = Color::slot(ThemeSlot::Muted);
+        const Color add_bg    = diff_palette::add_bg;
+        const Color add_fg_br = diff_palette::add_fg_hi;
+        const Color num_fg    = diff_palette::add_fg;
 
         // Line-number gutter rides the same green band as the code so the
         // whole row is one solid rectangle (no dim stripe cutting through);
@@ -1021,10 +1022,10 @@ private:
         // 16-color fallback: plain green fg, no band (see diff_bands_ok).
         const bool  bands   = diff_bands_ok();
         const Style num_st  = bands
-            ? Style{}.with_fg(num_fg).with_bg(add_bg)
+            ? Style{}.with_bg(add_bg).with_fg(diff_palette::add_fg)
             : Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_dim();
         const Style code_st = bands
-            ? Style{}.with_fg(add_fg_br).with_bg(add_bg)
+            ? Style{}.with_bg(add_bg).with_fg(diff_palette::add_fg_hi).with_bold()
             : Style{}.with_fg(Color::slot(ThemeSlot::Success));
 
         std::vector<Element> rows;
@@ -1091,37 +1092,22 @@ private:
     // classic fg-colored diff (green/red +/- text, blue @@ headers) —
     // exactly what `git diff` itself looks like on such terminals.
     //
-    // The THEME can fail the same way, and for the same reason. A band is a
-    // background wash, and theme::native has no background to wash — it
-    // states Default for surface/background so the user's own terminal
-    // shows through, which is the whole point of it. Its diff slots are
-    // therefore plain ANSI green/red, the same colours as success/error,
-    // so a "band" under native paints green text on a green block and red
-    // on red. Invisible, and invisible in a way the truecolor sweep cannot
-    // see: SGR 32 on SGR 32 is two perfectly legitimate palette colours.
-    //
-    // So ask the theme, not just the terminal. If diff_added has no more
-    // colour than the ink that sits on it, there is no band to draw and we
-    // fall back to the same fg-only diff a 16-colour terminal gets.
+    // This is a TERMINAL question only. It briefly also asked the theme and
+    // turned the bands off under native — the wrong fix for a real bug. The
+    // bug was the INK: native's diff_added resolves to the same ANSI green
+    // as success, so the band painted green text on a green block. The band
+    // was never the problem, and dropping it threw away the whole visual
+    // language of a diff. Both sides of every band are now stated together
+    // in diff_palette, which is the only way to guarantee the pair.
 public:
-    // Test hook: the band gate is the whole reason a native diff renders
-    // as coloured text instead of blocks, so a test needs to be able to
-    // tell "the fix worked" from "the band never drew".
+    // Test hook: a test needs to tell "the colours are right" from "no band
+    // ever drew", and those look identical from the outside.
     [[nodiscard]] static bool diff_bands_ok_for_test() noexcept {
         return diff_bands_ok();
     }
 private:
     [[nodiscard]] static bool diff_bands_ok() noexcept {
-        if (terminal_color_level() < 2) return false;
-        const Theme& th = theme::live();
-        // A band needs a background DISTINCT from the text that goes on it.
-        // Compare what actually reaches the terminal, not the slot names:
-        // under native several slots collapse onto one ANSI colour.
-        const auto added   = th.resolve(Color::slot(ThemeSlot::DiffAdded)).fg_sgr();
-        const auto removed = th.resolve(Color::slot(ThemeSlot::DiffRemoved)).fg_sgr();
-        const auto ink_ok  = th.resolve(Color::slot(ThemeSlot::Success)).fg_sgr();
-        const auto ink_no  = th.resolve(Color::slot(ThemeSlot::Error)).fg_sgr();
-        return added != ink_ok && removed != ink_no;
+        return terminal_color_level() >= 2;
     }
 
     // Helper: build a styled-text row with NoWrap so AgentTimeline's per-
@@ -1235,11 +1221,11 @@ private:
             // blue text, no band (see push_diff_side).
             if (diff_bands_ok()) {
                 // Slots, not literals: see the diff-band note above.
-                const Color hdr_bg = Color::slot(ThemeSlot::DiffChanged);
-                const Color hdr_fg = Color::slot(ThemeSlot::Info);
-                rows.push_back(band_row("   ", Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
+                const Color hdr_bg = diff_palette::hunk_bg;
+                const Color hdr_fg = diff_palette::hunk_fg;
+                rows.push_back(band_row("   ", Style{}.with_bg(hdr_bg).with_fg(diff_palette::hunk_fg),
                     std::move(header),
-                    Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
+                    Style{}.with_bg(hdr_bg).with_fg(diff_palette::hunk_fg).with_bold(), hdr_bg));
             } else {
                 rows.push_back(text_row("   " + header,
                     Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold()));
@@ -1295,8 +1281,8 @@ private:
         header += "\xe2\x88\x92" + std::to_string(count_lines(last.old_text))
                + " / +" + std::to_string(count_lines(last.new_text));
         // Slots, not literals: see the diff-band note above.
-        const Color hdr_bg = Color::slot(ThemeSlot::DiffChanged);
-        const Color hdr_fg = Color::slot(ThemeSlot::Info);
+        const Color hdr_bg = diff_palette::hunk_bg;
+        const Color hdr_fg = diff_palette::hunk_fg;
         const bool  bands  = diff_bands_ok();
 
         // Find the earliest hunk that can still contribute to the last-K
@@ -1326,9 +1312,9 @@ private:
         rows.reserve(body.size() + 1);
         if (bands)
             rows.push_back(band_row("   ",
-                Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
+                Style{}.with_bg(hdr_bg).with_fg(diff_palette::hunk_fg),
                 std::move(header),
-                Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
+                Style{}.with_bg(hdr_bg).with_fg(diff_palette::hunk_fg).with_bold(), hdr_bg));
         else
             rows.push_back(text_row("   " + header,
                 Style{}.with_fg(Color::slot(ThemeSlot::Primary)).with_bold()));
@@ -1383,18 +1369,17 @@ private:
         // Slots, not literals — the Edit path, missed when the git_diff and
         // Write paths were done because Themed only gates Config FIELDS and
         // these are locals. This is the band in agentty #45's screenshots.
-        const Color bg      = is_add ? Color::slot(ThemeSlot::DiffAdded)
-                                     : Color::slot(ThemeSlot::DiffRemoved);
-        const Color rail_bg = bg;   // rail separates by BOLD, not a second hue
-        const Color fg_br   = is_add ? Color::slot(ThemeSlot::Success)
-                                     : Color::slot(ThemeSlot::Error);
+        const Color bg      = is_add ? diff_palette::add_bg   : diff_palette::rem_bg;
+        const Color rail_bg = is_add ? diff_palette::add_rail : diff_palette::rem_rail;
+        const Color fg_br   = is_add ? diff_palette::add_fg   : diff_palette::rem_fg;
+        const Color fg_hi   = is_add ? diff_palette::add_fg_hi: diff_palette::rem_fg_hi;
         (void)c;   // c was the legacy fg; kept in signature for callers
 
         const Style sign_st = bands
-            ? Style{}.with_fg(fg_br).with_bg(rail_bg).with_bold()
+            ? Style{}.with_bg(rail_bg).with_fg(fg_hi).with_bold()
             : Style{}.with_fg(is_add ? Color::slot(ThemeSlot::Success) : Color::slot(ThemeSlot::Error)).with_bold();
         const Style body_st = bands
-            ? Style{}.with_fg(fg_br).with_bg(bg)
+            ? Style{}.with_bg(bg).with_fg(fg_br)
             : Style{}.with_fg(is_add ? Color::slot(ThemeSlot::Success) : Color::slot(ThemeSlot::Error));
 
         std::string gutter = " ";
@@ -1468,14 +1453,14 @@ private:
         // and body band share a slot; the rail separates by BOLD rather
         // than by a second invented hue, which also survives a 16-colour
         // terminal where two shades of the same green are one colour.
-        const Color add_bg     = Color::slot(ThemeSlot::DiffAdded);
-        const Color rem_bg     = Color::slot(ThemeSlot::DiffRemoved);
-        const Color hunk_bg    = Color::slot(ThemeSlot::DiffChanged);
-        const Color add_rail   = Color::slot(ThemeSlot::DiffAdded);
-        const Color rem_rail   = Color::slot(ThemeSlot::DiffRemoved);
-        const Color add_fg_br  = Color::slot(ThemeSlot::Success);
-        const Color rem_fg_br  = Color::slot(ThemeSlot::Error);
-        const Color hunk_fg    = Color::slot(ThemeSlot::Info);
+        const Color add_bg     = diff_palette::add_bg;
+        const Color rem_bg     = diff_palette::rem_bg;
+        const Color hunk_bg    = diff_palette::hunk_bg;
+        const Color add_rail   = diff_palette::add_rail;
+        const Color rem_rail   = diff_palette::rem_rail;
+        const Color add_fg_br  = diff_palette::add_fg;
+        const Color rem_fg_br  = diff_palette::rem_fg;
+        const Color hunk_fg    = diff_palette::hunk_fg;
 
         // Bands (full-width solid rectangles) for the lines that carry the
         // diff signal: + adds, - removes, @@ hunk headers. Git plumbing
@@ -1490,16 +1475,16 @@ private:
         // otherwise render full bright-color blocks per row.
         const bool bands = diff_bands_ok();
         const Style add_sign_st = bands
-            ? Style{}.with_fg(add_fg_br).with_bg(add_rail).with_bold()
+            ? Style{}.with_bg(add_rail).with_fg(diff_palette::add_fg_hi).with_bold()
             : Style{}.with_fg(Color::slot(ThemeSlot::Success)).with_bold();
         const Style add_body_st = bands
-            ? Style{}.with_fg(add_fg_br).with_bg(add_bg)
+            ? Style{}.with_bg(add_bg).with_fg(diff_palette::add_fg)
             : Style{}.with_fg(Color::slot(ThemeSlot::Success));
         const Style rem_sign_st = bands
-            ? Style{}.with_fg(rem_fg_br).with_bg(rem_rail).with_bold()
+            ? Style{}.with_bg(rem_rail).with_fg(diff_palette::rem_fg_hi).with_bold()
             : Style{}.with_fg(Color::slot(ThemeSlot::Error)).with_bold();
         const Style rem_body_st = bands
-            ? Style{}.with_fg(rem_fg_br).with_bg(rem_bg)
+            ? Style{}.with_bg(rem_bg).with_fg(diff_palette::rem_fg)
             : Style{}.with_fg(Color::slot(ThemeSlot::Error));
         const Style hunk_st     = bands
             ? Style{}.with_fg(hunk_fg).with_bg(hunk_bg).with_bold()

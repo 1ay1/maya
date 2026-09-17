@@ -745,4 +745,52 @@ inline const bool kResolverInstalled = [] {
 }();
 }  // namespace detail
 
+// ── The diff palette ───────────────────────────────────────────────
+//
+// The ONE place in the program that states colour literals on purpose,
+// and the reasoning is worth keeping because it is the exact opposite of
+// the rule everywhere else (agentty #45: a widget must name a role, not a
+// colour).
+//
+// A diff is not themed chrome. Green-means-added and red-means-removed is
+// forty years of muscle memory, the same in `git diff`, GitHub, every
+// review tool anyone has used. It is CONTENT, not decoration — closer to
+// syntax highlighting (which is also exempt) than to a button.
+//
+// And unlike chrome, both sides of the pair have to be right TOGETHER.
+// Taking the band from a theme slot and the ink from anywhere else is
+// what broke: under theme::native the diff slots resolve to plain ANSI
+// green/red, whose real values only the terminal knows, so every attempt
+// to compute readable ink for them was guessing at a palette we cannot
+// read. Stating both sides is the only way to guarantee the pair.
+//
+// Contrast measured (WCAG 2.1, AAA needs 7:1 for body text):
+//
+//   add  band  10.29:1     rail  7.06:1
+//   rem  band  11.42:1     rail  8.92:1
+//   hunk band  10.40:1
+//
+// Dark, saturated bands with pale same-hue ink. Dark because the band has
+// to sit UNDER text without competing with it, saturated because on a
+// low-gamma screen it is channel separation rather than lightness that
+// carries hue — a greyish dark green reads as grey.
+//
+// Truecolor values, only used when the terminal has 256+ colours (see
+// ToolBodyPreview::diff_bands_ok). Below that the bands are dropped for
+// fg-only diff: there is no 16-colour background that reads as a band.
+namespace diff_palette {
+inline constexpr Color add_bg    = Color::hex(0x0A3D1C);
+inline constexpr Color add_rail  = Color::hex(0x11602A);
+inline constexpr Color add_fg    = Color::hex(0xC8F5D4);
+inline constexpr Color add_fg_hi = Color::hex(0xE4FBEA);
+
+inline constexpr Color rem_bg    = Color::hex(0x4A0E16);
+inline constexpr Color rem_rail  = Color::hex(0x7A1C24);
+inline constexpr Color rem_fg    = Color::hex(0xFCD4DC);
+inline constexpr Color rem_fg_hi = Color::hex(0xFFE8EC);
+
+inline constexpr Color hunk_bg   = Color::hex(0x1E2555);
+inline constexpr Color hunk_fg   = Color::hex(0xCEDAFF);
+}  // namespace diff_palette
+
 }  // namespace maya

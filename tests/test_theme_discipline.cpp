@@ -49,6 +49,28 @@ const std::vector<std::string> kAllowed = {
     return false;
 }
 
+// ── Prefilters ───────────────────────────────────────────────────────
+//
+// libstdc++'s std::regex is an interpreted backtracker with no literal
+// prefix optimisation: it walks every position of every line even when the
+// line cannot possibly match. Over a whole-tree sweep that is seconds, in
+// the debug build these tests run in. A cheap find() first turns the
+// common case (no match) into one memchr-backed scan.
+//
+// CORRECTNESS RULE: a prefilter must be strictly WEAKER than its regex —
+// it may admit lines the regex rejects, NEVER the reverse. One that
+// rejects a real hit silently switches the rule off and the suite stays
+// green forever, which is the exact failure this file exists to catch.
+[[nodiscard]] inline bool may_read_channel(const std::string& l) noexcept {
+    return l.find(".r()") != std::string::npos
+        || l.find(".g()") != std::string::npos
+        || l.find(".b()") != std::string::npos;
+}
+
+[[nodiscard]] inline bool may_to_rgb(const std::string& l) noexcept {
+    return l.find(".to_rgb()") != std::string::npos;
+}
+
 // ── Is this channel read guarded? ───────────────────────────────────────
 //
 // has_channels() establishes a fact about a colour that holds for the REST
@@ -289,7 +311,8 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
                 offenders.push_back(e.path().filename().string() + ":"
                                     + std::to_string(n)
                                     + "  (ink slot as background)  " + line);
-            if (std::regex_search(line, unresolved_to_rgb)
+            if (may_to_rgb(line)
+                && std::regex_search(line, unresolved_to_rgb)
                 && line.find("resolve") == std::string::npos)
                 offenders.push_back(e.path().filename().string() + ":"
                                     + std::to_string(n)
@@ -400,8 +423,8 @@ TEST_CASE("theme discipline: no unguarded channel arithmetic anywhere") {
                     && (line.compare(first, 2, "//") == 0
                         || line.compare(first, 1, "*") == 0))
                     continue;
-                if (std::regex_search(line, channel_read)
-                    && !scope.guarded())
+                if (may_read_channel(line) && !scope.guarded()
+                    && std::regex_search(line, channel_read))
                     offenders.push_back(
                         fs::relative(e.path(), MAYA_SOURCE_DIR).string() + ":"
                         + std::to_string(n) + "  " + line);

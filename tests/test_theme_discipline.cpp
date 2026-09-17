@@ -250,9 +250,18 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
     // described. Color::slot(), Color::default_color() and computed
     // Color::rgb(expr) are all fine — the first is the point, the second is
     // "the terminal's own", and the third is arithmetic (gradients, hashes).
+    // NOTE the rgb/hsl arms. This pattern used to list hex( and indexed(
+    // but NOT rgb(, which is the spelling most widgets actually reach for
+    // — so tool_body_preview's diff greens and status_bar's crimson rail
+    // sat here unflagged through every run of this test. A rule that names
+    // the constructors by hand has to name ALL of them; the omission is
+    // invisible precisely because the test still passes.
     const std::regex lit{
         R"(Color::(black|red|green|yellow|blue|magenta|cyan|white|bright_\w+)\(\))"
         R"(|Color::hex\(0x)"
+        R"(|Color::rgb\(\s*[0-9])"
+        R"(|Color::rgb\(\s*0x)"
+        R"(|Color::hsl\(\s*[0-9])"
         R"(|Color::indexed\()"};
 
     std::vector<std::string> offenders;

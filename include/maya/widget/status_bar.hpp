@@ -419,19 +419,31 @@ private:
         //   error: #b91c1c on #ffffff → 7.6:1  (AAA)
         //   warn : #f59e0b on #0b0b0b → 9.4:1  (AAA)
         //   info : #3b4a6b on #ffffff → 8.9:1  (AAA)
+        // THEME SLOTS. The contrast ratios noted above were measured
+        // against ONE canvas, which is the tell: they hold on the terminal
+        // they were sampled on and nowhere else. Under theme::native — all
+        // Named/Default, so the user's own palette reaches the screen — a
+        // hardcoded crimson-on-white banner overrode colours they had
+        // already contrast-checked for themselves.
+        //
+        // error/warning/info are the slots that MEAN these three states,
+        // every scheme ships them contrast-checked, and on native they map
+        // to the ANSI red/yellow/cyan every terminal has meant since the
+        // seventies. inverse_text on the band keeps the banner readable
+        // whichever way the scheme's polarity runs.
         struct Palette { Color bg; Color fg; Color rail; };
         const Palette p =
             (kind == Kind::Error)
-                ? Palette{ Color::rgb(185,  28,  28),   // crimson
-                           Color::rgb(255, 255, 255),
-                           Color::rgb(255, 220, 220) }  // pale-red rail
+                ? Palette{ Color::slot(ThemeSlot::Error),
+                           Color::slot(ThemeSlot::InverseText),
+                           Color::slot(ThemeSlot::Error) }
           : (kind == Kind::Warn)
-                ? Palette{ Color::rgb(245, 158,  11),   // amber
-                           Color::rgb( 17,  17,  17),
-                           Color::rgb( 60,  40,   0) }  // dark-brown rail
-                : Palette{ Color::rgb( 59,  74, 107),   // indigo-slate
-                           Color::rgb(255, 255, 255),
-                           Color::rgb(140, 180, 255) }; // sky rail
+                ? Palette{ Color::slot(ThemeSlot::Warning),
+                           Color::slot(ThemeSlot::InverseText),
+                           Color::slot(ThemeSlot::Warning) }
+                : Palette{ Color::slot(ThemeSlot::Info),
+                           Color::slot(ThemeSlot::InverseText),
+                           Color::slot(ThemeSlot::Info) };
 
         const std::string& msg = cfg_.status_banner.text;
         const char* glyph =

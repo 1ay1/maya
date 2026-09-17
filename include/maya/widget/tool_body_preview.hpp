@@ -1004,9 +1004,16 @@ private:
         // screen it's channel separation, not lightness, that carries hue, so
         // a dark-but-greyish band reads grey while a dark-but-vivid one reads
         // green.
-        const Color add_bg    = Color::rgb(12, 80, 38);
-        const Color add_fg_br = Color::rgb(170, 244, 190);
-        const Color num_fg    = Color::rgb(120, 196, 148);   // medium green gutter
+        // The band is the THEME's diff_added, not a literal. A hardcoded
+        // green here is the widget stating its own palette over the user's:
+        // under theme::native (Named/Default only, so the terminal's own
+        // colours reach the screen) this painted GitHub-dark greens on top
+        // of whatever they had chosen. Every scheme already carries a
+        // contrast-checked diff_added, and native maps it to the plain
+        // green every terminal has meant for forty years.
+        const Color add_bg    = Color::slot(ThemeSlot::DiffAdded);
+        const Color add_fg_br = Color::slot(ThemeSlot::Success);
+        const Color num_fg    = Color::slot(ThemeSlot::Muted);
 
         // Line-number gutter rides the same green band as the code so the
         // whole row is one solid rectangle (no dim stripe cutting through);
@@ -1416,14 +1423,21 @@ private:
         // green/red. The +/- gutter gets a brighter, even more saturated rail
         // than the body band so the change marker pops. Context + file metadata
         // get NO band (plain text).
-        const Color add_bg     = Color::rgb(12, 80, 38);      // dark vivid green band
-        const Color rem_bg     = Color::rgb(92, 18, 26);     // dark vivid coral band
-        const Color hunk_bg    = Color::rgb(44, 54, 122);    // dark vivid indigo for @@
-        const Color add_rail   = Color::rgb(26, 116, 44);     // brighter +-gutter rail
-        const Color rem_rail   = Color::rgb(140, 36, 44);     // brighter --gutter rail
-        const Color add_fg_br  = Color::rgb(170, 244, 190);  // bright green text
-        const Color rem_fg_br  = Color::rgb(252, 180, 188);  // bright coral text
-        const Color hunk_fg    = Color::rgb(188, 202, 252);  // bright periwinkle text
+        // THEME SLOTS, not literals — see the note on the Write path above.
+        // A widget that states its own RGB paints over the user's palette,
+        // and under theme::native (which states no RGB precisely so their
+        // terminal's colours reach the screen) it wins every time. The rail
+        // and body band share a slot; the rail separates by BOLD rather
+        // than by a second invented hue, which also survives a 16-colour
+        // terminal where two shades of the same green are one colour.
+        const Color add_bg     = Color::slot(ThemeSlot::DiffAdded);
+        const Color rem_bg     = Color::slot(ThemeSlot::DiffRemoved);
+        const Color hunk_bg    = Color::slot(ThemeSlot::DiffChanged);
+        const Color add_rail   = Color::slot(ThemeSlot::DiffAdded);
+        const Color rem_rail   = Color::slot(ThemeSlot::DiffRemoved);
+        const Color add_fg_br  = Color::slot(ThemeSlot::Success);
+        const Color rem_fg_br  = Color::slot(ThemeSlot::Error);
+        const Color hunk_fg    = Color::slot(ThemeSlot::Info);
 
         // Bands (full-width solid rectangles) for the lines that carry the
         // diff signal: + adds, - removes, @@ hunk headers. Git plumbing

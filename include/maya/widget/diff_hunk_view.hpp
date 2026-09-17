@@ -28,13 +28,13 @@
 namespace maya {
 
 struct DiffHunkTheme {
-    Color gutter = Color::slot(ThemeSlot::Muted); // line numbers
-    Color hunk   = Color::slot(ThemeSlot::Link); // @@ header
-    Color add     = Color::slot(ThemeSlot::Success); // + lines
-    Color del     = Color::slot(ThemeSlot::Error); // - lines
-    Color context = Color::slot(ThemeSlot::Muted); // unchanged lines
-    Color add_mk   = Color::slot(ThemeSlot::Success); // + marker
-    Color del_mk   = Color::slot(ThemeSlot::Error); // - marker
+    Themed gutter = ThemeSlot::Muted; // line numbers
+    Themed hunk   = ThemeSlot::Link; // @@ header
+    Themed add     = ThemeSlot::Success; // + lines
+    Themed del     = ThemeSlot::Error; // - lines
+    Themed context = ThemeSlot::Muted; // unchanged lines
+    Themed add_mk   = ThemeSlot::Success; // + marker
+    Themed del_mk   = ThemeSlot::Error; // - marker
 };
 
 struct DiffHunkView {

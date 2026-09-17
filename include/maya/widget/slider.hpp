@@ -40,8 +40,8 @@ struct SliderConfig {
     float max  = 1.0f;
     float step = 0.01f;
     int   width = 0;       // track width in columns; 0 = fill available width
-    Color fill_color   = Color::slot(ThemeSlot::Primary);
-    Color track_color  = Color::slot(ThemeSlot::Muted);
+    Themed fill_color   = ThemeSlot::Primary;
+    Themed track_color  = ThemeSlot::Muted;
     bool  show_percent = true;
 };
 

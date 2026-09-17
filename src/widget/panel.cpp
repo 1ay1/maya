@@ -1175,7 +1175,12 @@ Element Panel::build() const {
         // text sitting directly on it, only the dark side has contrast.
         if (cfg_.tab_fill) {
             strip.theme.active_bg = cfg_.accent;
-            strip.theme.active    = Color::black();
+            // inverse_text, not a literal black: the slot that MEANS "ink
+            // that reads on top of a filled accent". A hardcoded black is
+            // right only while the accent stays light, and on a light
+            // scheme (or theme::native's own palette) it is the reverse of
+            // what the user needs. Caught by Themed's consteval gate.
+            strip.theme.active    = Color::slot(ThemeSlot::InverseText);
         } else {
             strip.theme.active = cfg_.accent;
         }

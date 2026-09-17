@@ -69,7 +69,7 @@ public:
     struct Hint {
         std::string key;        // e.g. "^K"
         std::string label;      // e.g. " palette" — caller controls leading space
-        Color       key_color = Color::slot(ThemeSlot::Info);
+        Themed       key_color = ThemeSlot::Info;
     };
 
     struct Config {
@@ -77,7 +77,7 @@ public:
         // dots at the spiral's drawing tip flash bright_white, and old
         // dots fade to bright_black — giving a comet-tail look without
         // leaving the named-ANSI palette.
-        Color                    sigil_color = Color::slot(ThemeSlot::Accent);
+        Themed                    sigil_color = ThemeSlot::Accent;
 
         std::string              tagline;
 
@@ -95,7 +95,7 @@ public:
         std::vector<Hint>        hints;
 
         Color                    accent_color = Color::slot(ThemeSlot::Accent);
-        Color                    text_color   = Color::slot(ThemeSlot::Text);
+        Themed                    text_color   = ThemeSlot::Text;
 
         // Sigil intro: total draw-in time in ms. Set to 0 to render the
         // completed spiral statically from frame 1 (skip the intro).
@@ -740,7 +740,7 @@ private:
         // the pulse is that you see it.
         const Color pixel_color = st.in_pulse
             ? Color::slot(ThemeSlot::Text)
-            : cfg_.sigil_color;
+            : cfg_.sigil_color.color();
 
         for (std::size_t li = 0; li < kSigilText.size(); ++li) {
             const Glyph& g      = glyph_for_(kSigilText[li]);

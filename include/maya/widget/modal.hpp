@@ -121,8 +121,8 @@ public:
             bool active = (i == cur) && focused;
 
             // Determine button colors
-            Color fg_color = Color::slot(ThemeSlot::Text);
-            Color border_color = Color::slot(ThemeSlot::Muted);
+            Themed fg_color = ThemeSlot::Text;
+            Themed border_color = ThemeSlot::Muted;
 
             switch (btn.variant) {
                 case ModalButton::Primary:

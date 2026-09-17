@@ -24,9 +24,9 @@ namespace maya {
 
 struct StatusProgressTheme {
     Color label = Color::slot(ThemeSlot::Secondary);
-    Color fill  = Color::slot(ThemeSlot::Primary);
-    Color track = Color::slot(ThemeSlot::Border);
-    Color pct    = Color::slot(ThemeSlot::Muted);
+    Themed fill  = ThemeSlot::Primary;
+    Themed track = ThemeSlot::Border;
+    Themed pct    = ThemeSlot::Muted;
 };
 
 struct StatusProgress {

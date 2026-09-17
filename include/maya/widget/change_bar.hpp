@@ -23,9 +23,9 @@ namespace maya {
 enum class Change : uint8_t { None, Added, Modified, Deleted };
 
 struct ChangeBarTheme {
-    Color added    = Color::slot(ThemeSlot::Success);
-    Color modified = Color::slot(ThemeSlot::Warning);
-    Color deleted  = Color::slot(ThemeSlot::Error);
+    Themed added    = ThemeSlot::Success;
+    Themed modified = ThemeSlot::Warning;
+    Themed deleted  = ThemeSlot::Error;
 };
 
 class ChangeBar {

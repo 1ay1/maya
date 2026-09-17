@@ -28,13 +28,13 @@
 namespace maya {
 
 struct SearchResultsTheme {
-    Color file    = Color::slot(ThemeSlot::Text);
-    Color count   = Color::slot(ThemeSlot::Muted);
-    Color guide   = Color::slot(ThemeSlot::Border);
-    Color lineno   = Color::slot(ThemeSlot::Muted);
-    Color text     = Color::slot(ThemeSlot::Muted);
-    Color match     = Color::slot(ThemeSlot::Warning); // highlighted hit
-    Color active    = Color::slot(ThemeSlot::Surface);
+    Themed file    = ThemeSlot::Text;
+    Themed count   = ThemeSlot::Muted;
+    Themed guide   = ThemeSlot::Border;
+    Themed lineno   = ThemeSlot::Muted;
+    Themed text     = ThemeSlot::Muted;
+    Themed match     = ThemeSlot::Warning; // highlighted hit
+    Themed active    = ThemeSlot::Surface;
 };
 
 class SearchResults {

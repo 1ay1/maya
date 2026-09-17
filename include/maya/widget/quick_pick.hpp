@@ -27,13 +27,13 @@
 namespace maya {
 
 struct QuickPickTheme {
-    Color border  = Color::slot(ThemeSlot::Surface);
-    Color prompt  = Color::slot(ThemeSlot::Primary);
+    Themed border  = ThemeSlot::Surface;
+    Themed prompt  = ThemeSlot::Primary;
     Color label   = Color::slot(ThemeSlot::Secondary);
-    Color match   = Color::slot(ThemeSlot::Warning);
-    Color detail   = Color::slot(ThemeSlot::Muted);
-    Color preview   = Color::slot(ThemeSlot::Muted);
-    Color shade      = Color::slot(ThemeSlot::Surface);
+    Themed match   = ThemeSlot::Warning;
+    Themed detail   = ThemeSlot::Muted;
+    Themed preview   = ThemeSlot::Muted;
+    Themed shade      = ThemeSlot::Surface;
 };
 
 struct QuickPick {

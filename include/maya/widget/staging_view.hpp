@@ -25,14 +25,14 @@
 namespace maya {
 
 struct StagingTheme {
-    Color header = Color::slot(ThemeSlot::Muted);
-    Color path   = Color::slot(ThemeSlot::Secondary);
-    Color modified = Color::slot(ThemeSlot::Warning);
-    Color added    = Color::slot(ThemeSlot::Success);
-    Color deleted  = Color::slot(ThemeSlot::Error);
-    Color untracked= Color::slot(ThemeSlot::Link);
-    Color active    = Color::slot(ThemeSlot::Surface);
-    Color action    = Color::slot(ThemeSlot::Muted);
+    Themed header = ThemeSlot::Muted;
+    Themed path   = ThemeSlot::Secondary;
+    Themed modified = ThemeSlot::Warning;
+    Themed added    = ThemeSlot::Success;
+    Themed deleted  = ThemeSlot::Error;
+    Themed untracked= ThemeSlot::Link;
+    Themed active    = ThemeSlot::Surface;
+    Themed action    = ThemeSlot::Muted;
 };
 
 class StagingView {

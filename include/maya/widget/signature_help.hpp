@@ -25,13 +25,13 @@
 namespace maya {
 
 struct SignatureHelpTheme {
-    Color name    = Color::slot(ThemeSlot::Primary); // function name
-    Color param   = Color::slot(ThemeSlot::Muted); // inactive parameters
-    Color active   = Color::slot(ThemeSlot::Warning); // active parameter
-    Color punct    = Color::slot(ThemeSlot::Muted); // ( , ) -> punctuation
-    Color ret       = Color::slot(ThemeSlot::Link); // return type
-    Color counter   = Color::slot(ThemeSlot::Muted); // overload counter
-    Color doc        = Color::slot(ThemeSlot::Muted); // doc string
+    Themed name    = ThemeSlot::Primary; // function name
+    Themed param   = ThemeSlot::Muted; // inactive parameters
+    Themed active   = ThemeSlot::Warning; // active parameter
+    Themed punct    = ThemeSlot::Muted; // ( , ) -> punctuation
+    Themed ret       = ThemeSlot::Link; // return type
+    Themed counter   = ThemeSlot::Muted; // overload counter
+    Themed doc        = ThemeSlot::Muted; // doc string
 };
 
 struct SignatureHelp {

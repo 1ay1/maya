@@ -26,8 +26,8 @@ struct ColorPickerGrid {
     std::vector<uint32_t> colors;
     int                   cols = 8;
     int                   selected_ = 0;
-    Color                 frame = Color::slot(ThemeSlot::Primary);
-    Color                 hex_col = Color::slot(ThemeSlot::Muted);
+    Themed                 frame = ThemeSlot::Primary;
+    Themed                 hex_col = ThemeSlot::Muted;
 
     ColorPickerGrid& color(uint32_t hex) { colors.push_back(hex); return *this; }
     ColorPickerGrid& columns(int c) { cols = c; return *this; }

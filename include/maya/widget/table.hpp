@@ -202,7 +202,7 @@ struct TableConfig {
     int cell_padding      = 1;
     bool show_border      = false;
     std::string title;            // shown in border text when bordered
-    Color border_color    = Color::slot(ThemeSlot::Muted);
+    Themed border_color    = ThemeSlot::Muted;
     // Fill behind the whole bordered box — carries under the frame
     // glyphs (paint_border interns the box style, so the ╭─╮ cells get
     // this bg instead of resetting to the terminal default). Unset =
@@ -212,7 +212,7 @@ struct TableConfig {
     // ── Selection (the htop half) ──
     bool selectable        = false;             // cursor + keyboard nav
     Style selected_style   = Style{}.with_bold();
-    Color cursor_bar_color = Color::slot(ThemeSlot::Primary);     // the ▎ edge bar
+    Themed cursor_bar_color = ThemeSlot::Primary;     // the ▎ edge bar
     std::string cursor_glyph = "\xe2\x96\x8e";  // ▎
     // Full-band strip behind the cursor row (box ambient bg — carries
     // under every glyph that doesn't set its own bg).
@@ -240,8 +240,8 @@ struct TableConfig {
     // table centers the window on its cursor. Hosts with sticky
     // scroll-margins in their model pass their own top here.
     int  window_top     = -1;
-    Color scrollbar_thumb_color = Color::slot(ThemeSlot::Muted);
-    Color scrollbar_track_color = Color::slot(ThemeSlot::Muted);
+    Themed scrollbar_thumb_color = ThemeSlot::Muted;
+    Themed scrollbar_track_color = ThemeSlot::Muted;
 
     // ── Mouse (hit registry) ──
     // 0 = off. Rows register hit_id(row_hit_kind, data_row_index);

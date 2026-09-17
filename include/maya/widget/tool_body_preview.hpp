@@ -87,7 +87,7 @@ public:
         // CodeBlock / Failure / GitDiff / BashOutput / FileRead / FileWrite /
         // Json / GrepMatches: free-text body
         std::string text;
-        Color       text_color = Color::slot(ThemeSlot::Text);
+        Themed       text_color = ThemeSlot::Text;
 
         // Color used for the BODY CHROME (line-number gutter, pipe
         // separator `│`, the trailing "⋯ N more" elision marker). Host
@@ -1204,8 +1204,9 @@ private:
             // as the −/+ sides below it. 16-color fallback: plain dim
             // blue text, no band (see push_diff_side).
             if (diff_bands_ok()) {
-                const Color hdr_bg = Color::rgb(44, 54, 122);
-                const Color hdr_fg = Color::rgb(188, 202, 252);
+                // Slots, not literals: see the diff-band note above.
+                const Color hdr_bg = Color::slot(ThemeSlot::DiffChanged);
+                const Color hdr_fg = Color::slot(ThemeSlot::Info);
                 rows.push_back(band_row("   ", Style{}.with_fg(hdr_fg).with_bg(hdr_bg),
                     std::move(header),
                     Style{}.with_fg(hdr_fg).with_bg(hdr_bg).with_bold(), hdr_bg));
@@ -1263,8 +1264,9 @@ private:
                    + "  \xc2\xb7  ";
         header += "\xe2\x88\x92" + std::to_string(count_lines(last.old_text))
                + " / +" + std::to_string(count_lines(last.new_text));
-        const Color hdr_bg = Color::rgb(44, 54, 122);
-        const Color hdr_fg = Color::rgb(188, 202, 252);
+        // Slots, not literals: see the diff-band note above.
+        const Color hdr_bg = Color::slot(ThemeSlot::DiffChanged);
+        const Color hdr_fg = Color::slot(ThemeSlot::Info);
         const bool  bands  = diff_bands_ok();
 
         // Find the earliest hunk that can still contribute to the last-K

@@ -140,7 +140,7 @@ public:
 private:
     std::vector<Seg> segments_;
     std::string      caption_;    // a dim note above the bar; empty = none
-    Color            label_color_ = Color::slot(ThemeSlot::Muted);
+    Themed            label_color_ = ThemeSlot::Muted;
 };
 
 } // namespace maya

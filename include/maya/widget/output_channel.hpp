@@ -24,14 +24,14 @@
 namespace maya {
 
 struct OutputChannelTheme {
-    Color header = Color::slot(ThemeSlot::Secondary);
-    Color chevron = Color::slot(ThemeSlot::Muted);
-    Color time    = Color::slot(ThemeSlot::Border);
-    Color info    = Color::slot(ThemeSlot::Muted);
-    Color warn    = Color::slot(ThemeSlot::Warning);
-    Color error   = Color::slot(ThemeSlot::Error);
-    Color debug   = Color::slot(ThemeSlot::Muted);
-    Color trace    = Color::slot(ThemeSlot::Muted);
+    Themed header = ThemeSlot::Secondary;
+    Themed chevron = ThemeSlot::Muted;
+    Themed time    = ThemeSlot::Border;
+    Themed info    = ThemeSlot::Muted;
+    Themed warn    = ThemeSlot::Warning;
+    Themed error   = ThemeSlot::Error;
+    Themed debug   = ThemeSlot::Muted;
+    Themed trace    = ThemeSlot::Muted;
 };
 
 class OutputChannel {

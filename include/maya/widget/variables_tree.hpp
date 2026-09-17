@@ -29,16 +29,16 @@ namespace maya {
 enum class VarKind : uint8_t { Number, String, Bool, Null, Pointer, Other };
 
 struct VariablesTreeTheme {
-    Color scope  = Color::slot(ThemeSlot::Muted);
-    Color name   = Color::slot(ThemeSlot::Secondary);
-    Color guide  = Color::slot(ThemeSlot::Border);
-    Color number = Color::slot(ThemeSlot::Warning);
-    Color string = Color::slot(ThemeSlot::Success);
-    Color boolean = Color::slot(ThemeSlot::Accent);
-    Color null    = Color::slot(ThemeSlot::Muted);
-    Color pointer = Color::slot(ThemeSlot::Link);
-    Color changed = Color::slot(ThemeSlot::Warning);
-    Color eq       = Color::slot(ThemeSlot::Muted);
+    Themed scope  = ThemeSlot::Muted;
+    Themed name   = ThemeSlot::Secondary;
+    Themed guide  = ThemeSlot::Border;
+    Themed number = ThemeSlot::Warning;
+    Themed string = ThemeSlot::Success;
+    Themed boolean = ThemeSlot::Accent;
+    Themed null    = ThemeSlot::Muted;
+    Themed pointer = ThemeSlot::Link;
+    Themed changed = ThemeSlot::Warning;
+    Themed eq       = ThemeSlot::Muted;
 };
 
 class VariablesTree {

@@ -26,10 +26,10 @@
 namespace maya {
 
 struct CommentBlockTheme {
-    Color body  = Color::slot(ThemeSlot::Success); // muted comment green
-    Color tag   = Color::slot(ThemeSlot::Accent); // @param, @return
-    Color param = Color::slot(ThemeSlot::Warning); // the param name
-    Color code  = Color::slot(ThemeSlot::Link); // `inline code`
+    Themed body  = ThemeSlot::Success; // muted comment green
+    Themed tag   = ThemeSlot::Accent; // @param, @return
+    Themed param = ThemeSlot::Warning; // the param name
+    Themed code  = ThemeSlot::Link; // `inline code`
 };
 
 struct CommentBlock {

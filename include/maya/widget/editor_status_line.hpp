@@ -37,7 +37,7 @@ struct EditorStatusLine {
     };
 
     struct Config {
-        Color divider = Color::slot(ThemeSlot::Muted); // dim separator glyph
+        Themed divider = ThemeSlot::Muted; // dim separator glyph
     };
 
     Config           config{};
@@ -52,7 +52,7 @@ struct EditorStatusLine {
 
     // ── Ready-made segment presets ──────────────────────────────────────────
     static Seg mode(std::string_view m) {
-        Color accent = Color::slot(ThemeSlot::Primary);
+        Themed accent = ThemeSlot::Primary;
         if (m == "INSERT") accent = Color::slot(ThemeSlot::Success);
         else if (m == "VISUAL") accent = Color::slot(ThemeSlot::Warning);
         else if (m == "REPLACE" || m == "COMMAND") accent = Color::slot(ThemeSlot::Error);

@@ -29,11 +29,11 @@
 namespace maya {
 
 struct GitBlameTheme {
-    Color author      = Color::slot(ThemeSlot::Muted); // committer name
-    Color when        = Color::slot(ThemeSlot::Muted); // relative time
-    Color hash        = Color::slot(ThemeSlot::Border); // short sha
-    Color uncommitted = Color::slot(ThemeSlot::Primary); // local, uncommitted line
-    Color active      = Color::slot(ThemeSlot::Muted); // brighten the current line
+    Themed author      = ThemeSlot::Muted; // committer name
+    Themed when        = ThemeSlot::Muted; // relative time
+    Themed hash        = ThemeSlot::Border; // short sha
+    Themed uncommitted = ThemeSlot::Primary; // local, uncommitted line
+    Themed active      = ThemeSlot::Muted; // brighten the current line
 };
 
 struct GitBlameConfig {

@@ -108,7 +108,7 @@ public:
         std::string           error;        // empty = no error banner
         bool                  checkpoint_above = false;
         std::string           checkpoint_label = "Restore checkpoint";
-        Color                 checkpoint_color = Color::slot(ThemeSlot::Warning);
+        Themed                 checkpoint_color = ThemeSlot::Warning;
 
         // Set to true on the 2nd+ turn within a same-speaker run. The
         // header row (glyph + label + meta) is suppressed and the

@@ -725,4 +725,190 @@ static_assert(CanProjectRgb<LitColor>);
 static_assert(CanDegrade<LitColor>);
 static_assert(CanEmitSgr<LitColor>);
 
+// ============================================================================
+// Themed — a colour a WIDGET is allowed to name
+// ============================================================================
+//
+// The Res::Sym/Res::Lit split above makes one bug unrepresentable: painting
+// an unresolved slot. This type makes the OTHER one unrepresentable:
+// a widget stating its own palette.
+//
+// ── Why a second type ───────────────────────────────────────────────
+//
+// These are genuinely different failures and the guards for one are blind
+// to the other:
+//
+//   CHANNEL bug   r()/g()/b() on a Named/Default colour. bright_black is
+//                 Named(8), so the index lands in r_ and a blend paints
+//                 rgb(8,0,0). Guarded by has_channels().
+//
+//   PALETTE bug   Color::rgb(12, 80, 38) as a diff band. That is a
+//                 perfectly valid colour and a perfectly legal blend —
+//                 has_channels() has nothing to say about it. It is wrong
+//                 only because the THEME should have chosen it.
+//
+// agentty #45 was the first; the second then recurred three times in a
+// row, in the reveal animation, the diff bands and the status banner,
+// each found only after someone looked. Every occurrence is invisible to
+// its author because developers run a scheme — under a scheme a literal
+// looks fine, and only theme::native (which states Named/Default so the
+// user's own palette reaches the screen) exposes it.
+//
+// ── The rule ───────────────────────────────────────────────────────
+//
+// A widget names a ROLE. Themed converts implicitly from ThemeSlot, so the
+// common case reads as it always did:
+//
+//     Themed accent = ThemeSlot::Accent;      // fine
+//
+// and a literal is a COMPILE ERROR rather than a code review someone has
+// to remember to do:
+//
+//     Themed accent = Color::rgb(12, 80, 38); // does not compile
+//
+// ── The escape hatch ─────────────────────────────────────────────
+//
+// Some literals are RIGHT. A language brand colour (Rust orange), a named
+// syntax deck, a colour PICKER showing raw swatches — these identify
+// something that is not a UI role, and resolving them through the theme
+// would be the bug. brand() admits them, but it takes the reason as an
+// argument, so the exemption is a sentence in the source rather than a
+// silent call. It is also trivially greppable, which an allowlist of file
+// paths in a test is not.
+// Opt-in trait for a HOST's semantic colour token (see Themed's converting
+// constructor). Specialise to std::true_type for a type that reads the live
+// theme; everything else stays unconvertible, which is the point.
+template <class T>
+struct is_theme_token : std::false_type {};
+
+class Themed {
+    Color c_;
+
+    // Unchecked construction, for the factories below that have already
+    // justified their colour. A tag type rather than `explicit`, because
+    // an explicit Themed(Color) would collide with the consteval gate.
+    struct Unchecked {};
+    constexpr Themed(Color c, Unchecked) noexcept : c_(c) {}
+
+public:
+    /// The normal path: name a role, get the theme's answer for it.
+    constexpr Themed(ThemeSlot s) noexcept : c_(Color::slot(s)) {}
+
+    /// A Color that is ALREADY a slot — `Color::slot(ThemeSlot::X)`, the
+    /// spelling 500-odd existing sites use, and what internal helpers pass
+    /// positionally into aggregates.
+    ///
+    /// consteval is what makes this safe: the argument must be a constant
+    /// expression, so the kind is known at COMPILE time and a literal is
+    /// rejected right here, in the constructor, with the message below.
+    /// A runtime Color cannot reach it at all.
+    consteval Themed(Color c) : c_(c) {
+        if (c.kind() != ColorKind::Slot && c.kind() != ColorKind::Default)
+            throw "a widget must not name a literal colour — use "
+                  "Color::slot(ThemeSlot::X), or Themed::brand(c, \"why\") "
+                  "if it is genuinely not a UI role (a language brand "
+                  "colour, a syntax deck, a raw swatch). See agentty #45.";
+    }
+
+    /// Same gate for an already-resolved colour. `Color::default_color()`
+    /// returns LitColor, and LitColor widens to Color implicitly, so
+    /// without this overload the widening happens BEFORE the consteval
+    /// context and the terminal default is rejected along with the
+    /// literals it is not.
+    consteval Themed(LitColor c) : c_(c) {
+        if (c.kind() != ColorKind::Default)
+            throw "a widget must not name a literal colour — use "
+                  "Color::slot(ThemeSlot::X), or Themed::brand(c, \"why\") "
+                  "if it is genuinely not a UI role (a language brand "
+                  "colour, a syntax deck, a raw swatch). See agentty #45.";
+    }
+
+    /// The terminal's own ink/canvas (SGR 39/49). Always legitimate: it is
+    /// the absence of a colour, not a choice of one.
+    [[nodiscard]] static constexpr Themed terminal_default() noexcept {
+        return Themed{Color::default_color(), Unchecked{}};
+    }
+
+    /// A literal that is NOT a UI role — a language brand colour, a syntax
+    /// deck, a raw swatch in a colour picker. `why` is required and must be
+    /// a string literal, so the exemption states itself:
+    ///
+    ///     Themed::brand(Color::hex(0xCE422B), "Rust brand orange")
+    template <std::size_t N>
+    [[nodiscard]] static constexpr Themed brand(Color c,
+                                                const char (&why)[N]) noexcept {
+        static_assert(N > 1, "brand() needs a reason, not an empty string");
+        (void)why;
+        return Themed{c, Unchecked{}};
+    }
+
+    /// A host's own semantic token — a type that READS the live theme
+    /// rather than stating a colour (agentty's ui::fg, ui::muted, ...).
+    ///
+    /// Such a token is theme-correct by construction: it is a named field
+    /// of the Theme, resolved on every read, so it tracks a theme switch.
+    /// But it hands back an already-resolved LitColor, which is shaped
+    /// exactly like a literal — so it cannot convert implicitly without
+    /// reopening the hole this type closes.
+    ///
+    /// Opting in is therefore explicit and per-type: a host specialises
+    /// maya::is_theme_token for its token, which is a one-line assertion
+    /// that the type reads the theme. A literal can never satisfy it,
+    /// because the specialisation names a type, not a value.
+    template <class Token>
+        requires is_theme_token<Token>::value
+    constexpr Themed(const Token& t) noexcept : c_(static_cast<Color>(t)) {}
+
+    /// The colour, for the paint path. Still symbolic: resolving is the
+    /// theme's job and happens at paint time, as before.
+    [[nodiscard]] constexpr Color color() const noexcept { return c_; }
+    constexpr operator Color() const noexcept { return c_; }
+
+    [[nodiscard]] constexpr bool operator==(const Themed&) const = default;
+};
+
+// The contract, checked here rather than in a test because a test can be
+// deleted and a header cannot be forgotten.
+//
+// Note what is and is not asserted. `Color` DOES convert — it must, because
+// `Color::slot(ThemeSlot::X)` is the spelling 500-odd sites already use.
+// The gate is not the type, it is the consteval constructor: a slot-valued
+// Color passes, a literal one throws during constant evaluation, and a
+// runtime Color cannot reach it at all. So the interesting property is
+// per-VALUE, and the compiler checks it at every call site.
+template <class T>
+concept ConvertsToThemed = requires { Themed{std::declval<T>()}; };
+
+static_assert(ConvertsToThemed<ThemeSlot>,
+              "naming a role must be the path of least resistance");
+
+// A slot-valued Color is accepted...
+static_assert(Themed{Color::slot(ThemeSlot::Accent)}.color().kind()
+                  == ColorKind::Slot);
+static_assert(Themed{Color::default_color()}.color().kind()
+                  == ColorKind::Default);
+
+// ...and the escape hatch keeps working for colours that are genuinely not
+// a UI role.
+static_assert(Themed::brand(Color::hex(0xCE422B), "Rust brand orange")
+                  .color().kind() == ColorKind::Rgb);
+
+// A LITERAL is rejected — but per VALUE, not per type, and the difference
+// matters. LitColor widens to Color implicitly (every literal IS a valid
+// symbolic colour), so `ConvertsToThemed<LitColor>` is true at the type
+// level and cannot be the check. The consteval constructor is: it sees the
+// KIND at compile time and throws for anything that is not a slot or the
+// terminal default.
+//
+// So the guarantee reads: `Themed x = Color::rgb(12, 80, 38);` does not
+// compile — a compile error, not a code review someone has to remember to
+// do. That is the palette bug (agentty #45 and its three recurrences) made
+// unrepresentable. It cannot be asserted here, because a static_assert
+// cannot require that an expression be ill-formed; it is pinned in
+// tests/test_theme_discipline.cpp, which compiles the bad spelling in a
+// requires-expression and asserts it fails to substitute.
+static_assert(!std::is_nothrow_constructible_v<Themed, Color>,
+              "the Color constructor must stay consteval-and-throwing — if "
+              "it ever becomes noexcept, the literal gate has been removed");
+
 } // namespace maya

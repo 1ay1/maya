@@ -34,8 +34,8 @@ struct ScrollConfig {
     int  width           = 0;      ///< Visible viewport width in cols (0 = use parent width)
     int  scroll_amount   = 1;      ///< Rows per scroll step (vertical)
     bool show_indicator  = true;   ///< Show scroll position indicator (y axis only, for compat)
-    Color indicator_color  = Color::slot(ThemeSlot::Muted);
-    Color indicator_active = Color::slot(ThemeSlot::Muted);
+    Themed indicator_color  = ThemeSlot::Muted;
+    Themed indicator_active = ThemeSlot::Muted;
 };
 
 class Scrollable {

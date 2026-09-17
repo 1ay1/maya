@@ -53,13 +53,17 @@
 
 namespace maya {
 
+// Color, not Themed, throughout: a HOST assigns these at runtime (Panel
+// pushes its own cfg_.accent in), and Themed's literal gate is consteval.
+// The defaults are still slots, and the compile-time guarantee lives at
+// whatever Config the host's colour was named in.
 struct TabStripTheme {
     Color active   = Color::slot(ThemeSlot::Text);   // the selected label
-    Color idle     = Color::slot(ThemeSlot::Muted);   // every other label
-    Color accent   = Color::slot(ThemeSlot::Info);           // the underline / marker
-    Color detail   = Color::slot(ThemeSlot::Muted);   // trailing count / diffstat
-    Color ellipsis = Color::slot(ThemeSlot::Muted);   // the "…" scrolled-past chip
-    Color divider  = Color::slot(ThemeSlot::Muted);   // │ between tabs, and the rule
+    Color idle     = Color::slot(ThemeSlot::Muted);  // every other label
+    Color accent   = Color::slot(ThemeSlot::Info);   // the underline / marker
+    Color detail   = Color::slot(ThemeSlot::Muted);  // trailing count / diffstat
+    Color ellipsis = Color::slot(ThemeSlot::Muted);  // the "…" scrolled-past chip
+    Color divider  = Color::slot(ThemeSlot::Muted);  // │ between tabs, and the rule
     // Optional FILL behind the active label — the tab becomes a chip,
     // " label " painted in this colour with `active` as its text. Unset
     // (the default) keeps every mark background-free, so a strip still
@@ -106,12 +110,16 @@ struct TabStrip {
         // the signal; the glyph is a knob so a host can use ● / ○ / ✓ to
         // stay legible without colour.
         std::string dot_glyph;
-        Color       dot_color = Color::slot(ThemeSlot::Muted);
+        // RUNTIME data, not a Config default: dot()/detail() take a colour
+        // from the caller, so this cannot be Themed (whose gate is
+        // consteval). The caller's colour still comes from a slot in
+        // practice; the compile-time guarantee lives at their Config.
+        Color        dot_color = Color::slot(ThemeSlot::Muted);
         // Optional trailing detail: a diffstat, a count, a size. Rendered
         // dim after the label and INCLUDED in the width arithmetic, which
         // is the part a host doing this itself gets wrong.
         std::string detail;
-        Color       detail_color = Color::slot(ThemeSlot::Muted);
+        Color        detail_color = Color::slot(ThemeSlot::Muted);
     };
 
     std::vector<Tab> tabs;

@@ -26,14 +26,14 @@
 namespace maya {
 
 struct SettingsEditorTheme {
-    Color prompt = Color::slot(ThemeSlot::Primary);
-    Color title  = Color::slot(ThemeSlot::Text);
-    Color id     = Color::slot(ThemeSlot::Muted);
-    Color desc   = Color::slot(ThemeSlot::Muted);
-    Color on      = Color::slot(ThemeSlot::Success);
-    Color off      = Color::slot(ThemeSlot::Muted);
-    Color value     = Color::slot(ThemeSlot::Warning);
-    Color active     = Color::slot(ThemeSlot::Surface);
+    Themed prompt = ThemeSlot::Primary;
+    Themed title  = ThemeSlot::Text;
+    Themed id     = ThemeSlot::Muted;
+    Themed desc   = ThemeSlot::Muted;
+    Themed on      = ThemeSlot::Success;
+    Themed off      = ThemeSlot::Muted;
+    Themed value     = ThemeSlot::Warning;
+    Themed active     = ThemeSlot::Surface;
 };
 
 class SettingsEditor {

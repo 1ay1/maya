@@ -29,7 +29,7 @@ class TokenStream {
     float peak_rate_      = 0.f;
     float elapsed_secs_   = 0.f;
     std::vector<float> rate_history_;
-    Color color_   = Color::slot(ThemeSlot::Primary);
+    Themed color_   = ThemeSlot::Primary;
     bool  compact_ = false;
 
     static std::string format_with_commas(int n) {

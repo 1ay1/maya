@@ -61,12 +61,12 @@ namespace maya {
 
 struct StatSheetTheme {
     Color label   = Color::slot(ThemeSlot::Text);   // the row's name
-    Color value   = Color::slot(ThemeSlot::Text);   // the number itself
-    Color detail  = Color::slot(ThemeSlot::Muted);   // trailing note / share
-    Color heading = Color::slot(ThemeSlot::Info);           // section title
-    Color bar     = Color::slot(ThemeSlot::Info);           // filled portion of a track
-    Color track   = Color::slot(ThemeSlot::Muted);   // the unfilled remainder
-    Color hero    = Color::slot(ThemeSlot::Info);           // the headline figure
+    Themed value   = ThemeSlot::Text;   // the number itself
+    Themed detail  = ThemeSlot::Muted;   // trailing note / share
+    Themed heading = ThemeSlot::Info;           // section title
+    Themed bar     = ThemeSlot::Info;           // filled portion of a track
+    Themed track   = ThemeSlot::Muted;   // the unfilled remainder
+    Themed hero    = ThemeSlot::Info;           // the headline figure
 };
 
 // Eighth-block ramp. A share of 3% in a 12-cell track is a third of one

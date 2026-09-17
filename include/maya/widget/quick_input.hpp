@@ -24,14 +24,14 @@
 namespace maya {
 
 struct QuickInputTheme {
-    Color border      = Color::slot(ThemeSlot::Surface);
-    Color border_err  = Color::slot(ThemeSlot::Error);
+    Themed border      = ThemeSlot::Surface;
+    Themed border_err  = ThemeSlot::Error;
     Color label       = Color::slot(ThemeSlot::Primary);
-    Color value       = Color::slot(ThemeSlot::Text);
-    Color placeholder = Color::slot(ThemeSlot::Muted);
-    Color caret       = Color::slot(ThemeSlot::Text);
-    Color hint         = Color::slot(ThemeSlot::Muted);
-    Color error         = Color::slot(ThemeSlot::Error);
+    Themed value       = ThemeSlot::Text;
+    Themed placeholder = ThemeSlot::Muted;
+    Themed caret       = ThemeSlot::Text;
+    Themed hint         = ThemeSlot::Muted;
+    Themed error         = ThemeSlot::Error;
 };
 
 struct QuickInput {

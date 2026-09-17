@@ -35,17 +35,17 @@ namespace maya {
 enum class TabDiag : uint8_t { None, Error, Warning, Info };
 
 struct EditorTabBarTheme {
-    Color active   = Color::slot(ThemeSlot::Text); // active tab name
-    Color inactive = Color::slot(ThemeSlot::Muted); // idle tab name
-    Color accent   = Color::slot(ThemeSlot::Primary); // active bar + underline
-    Color modified = Color::slot(ThemeSlot::Warning); // ● dirty dot
-    Color close    = Color::slot(ThemeSlot::Muted); // × close glyph
-    Color divider  = Color::slot(ThemeSlot::Surface); // │ between tabs
-    Color chevron  = Color::slot(ThemeSlot::Muted); // ‹N / N› overflow hints
-    Color pin       = Color::slot(ThemeSlot::Link); //  pinned glyph
-    Color err       = Color::slot(ThemeSlot::Error);
-    Color warn      = Color::slot(ThemeSlot::Warning);
-    Color info       = Color::slot(ThemeSlot::Primary);
+    Themed active   = ThemeSlot::Text; // active tab name
+    Themed inactive = ThemeSlot::Muted; // idle tab name
+    Themed accent   = ThemeSlot::Primary; // active bar + underline
+    Themed modified = ThemeSlot::Warning; // ● dirty dot
+    Themed close    = ThemeSlot::Muted; // × close glyph
+    Themed divider  = ThemeSlot::Surface; // │ between tabs
+    Themed chevron  = ThemeSlot::Muted; // ‹N / N› overflow hints
+    Themed pin       = ThemeSlot::Link; //  pinned glyph
+    Themed err       = ThemeSlot::Error;
+    Themed warn      = ThemeSlot::Warning;
+    Themed info       = ThemeSlot::Primary;
 };
 
 struct EditorTabBarConfig {

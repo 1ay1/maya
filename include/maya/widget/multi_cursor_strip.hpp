@@ -19,10 +19,10 @@
 namespace maya {
 
 struct MultiCursorTheme {
-    Color icon  = Color::slot(ThemeSlot::Accent);
-    Color count = Color::slot(ThemeSlot::Text);
+    Themed icon  = ThemeSlot::Accent;
+    Themed count = ThemeSlot::Text;
     Color label = Color::slot(ThemeSlot::Muted);
-    Color sep    = Color::slot(ThemeSlot::Border);
+    Themed sep    = ThemeSlot::Border;
 };
 
 struct MultiCursorStrip {

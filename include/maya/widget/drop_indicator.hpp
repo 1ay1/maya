@@ -20,7 +20,7 @@ namespace maya {
 
 struct DropIndicator {
     std::string label_;
-    Color       accent = Color::slot(ThemeSlot::Primary);
+    Themed       accent = ThemeSlot::Primary;
 
     DropIndicator& label(std::string s) { label_ = std::move(s); return *this; }
 

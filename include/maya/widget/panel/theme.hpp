@@ -10,21 +10,21 @@
 namespace maya::panel {
 
 struct Theme {
-    Color title      = Color::slot(ThemeSlot::Text);
-    Color label      = Color::slot(ThemeSlot::Text);
-    Color help       = Color::slot(ThemeSlot::Muted);
-    Color value      = Color::slot(ThemeSlot::Info);
-    Color value_edit = Color::slot(ThemeSlot::Primary);
-    Color on         = Color::slot(ThemeSlot::Success);
-    Color off        = Color::slot(ThemeSlot::Muted);
-    Color origin     = Color::slot(ThemeSlot::Muted);
-    Color locked     = Color::slot(ThemeSlot::Muted);
-    Color error      = Color::slot(ThemeSlot::Error);
-    Color good       = Color::slot(ThemeSlot::Success);
-    Color busy       = Color::slot(ThemeSlot::Warning);
-    Color cursor     = Color::slot(ThemeSlot::Primary);      // the edge bar
-    Color active     = Color::slot(ThemeSlot::Accent);
-    Color match      = Color::slot(ThemeSlot::Info);      // fuzzy-match highlight
+    Themed title      = ThemeSlot::Text;
+    Themed label      = ThemeSlot::Text;
+    Themed help       = ThemeSlot::Muted;
+    Themed value      = ThemeSlot::Info;
+    Themed value_edit = ThemeSlot::Primary;
+    Themed on         = ThemeSlot::Success;
+    Themed off        = ThemeSlot::Muted;
+    Themed origin     = ThemeSlot::Muted;
+    Themed locked     = ThemeSlot::Muted;
+    Themed error      = ThemeSlot::Error;
+    Themed good       = ThemeSlot::Success;
+    Themed busy       = ThemeSlot::Warning;
+    Themed cursor     = ThemeSlot::Primary;      // the edge bar
+    Themed active     = ThemeSlot::Accent;
+    Themed match      = ThemeSlot::Info;      // fuzzy-match highlight
 
     // Cursor-row wash. A tint, not a reverse-video slab: ANSI bright-white is
     // a cream/yellow tone in several popular palettes, and a full-width band
@@ -35,7 +35,7 @@ struct Theme {
     // and light themes, and every ANSI slot is either invisible against one
     // of them or loud against the other. Verified by asserting the emitted
     // SGR code, which is what caught an earlier "invisible black".
-    Color row_bg     = Color::slot(ThemeSlot::Surface);
+    Themed row_bg     = ThemeSlot::Surface;
 };
 
 } // namespace maya::panel

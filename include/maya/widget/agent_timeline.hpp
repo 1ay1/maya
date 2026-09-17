@@ -129,7 +129,7 @@ public:
         // single `title` string alone is start-aligned and can't express
         // that split.
         std::string                          title_end;
-        Color                                border_color = Color::slot(ThemeSlot::Muted);
+        Themed                                border_color = ThemeSlot::Muted;
         int                                  frame        = 0;
         std::vector<AgentTimelineStat>       stats;
         std::vector<AgentTimelineEvent>      events;

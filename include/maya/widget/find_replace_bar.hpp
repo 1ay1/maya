@@ -29,14 +29,14 @@
 namespace maya {
 
 struct FindReplaceTheme {
-    Color border   = Color::slot(ThemeSlot::Surface);
+    Themed border   = ThemeSlot::Surface;
     Color label    = Color::slot(ThemeSlot::Muted); // field text
-    Color prompt   = Color::slot(ThemeSlot::Muted); // placeholder / icons
-    Color count     = Color::slot(ThemeSlot::Secondary); // x/y match count
-    Color no_match  = Color::slot(ThemeSlot::Error); // count when 0 results
-    Color toggle_on = Color::slot(ThemeSlot::Primary); // active toggle
-    Color toggle_off= Color::slot(ThemeSlot::Border); // inactive toggle
-    Color action    = Color::slot(ThemeSlot::Success); // Replace / All buttons
+    Themed prompt   = ThemeSlot::Muted; // placeholder / icons
+    Themed count     = ThemeSlot::Secondary; // x/y match count
+    Themed no_match  = ThemeSlot::Error; // count when 0 results
+    Themed toggle_on = ThemeSlot::Primary; // active toggle
+    Themed toggle_off= ThemeSlot::Border; // inactive toggle
+    Themed action    = ThemeSlot::Success; // Replace / All buttons
 };
 
 struct FindReplaceBar {

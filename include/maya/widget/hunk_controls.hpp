@@ -20,11 +20,11 @@
 namespace maya {
 
 struct HunkControlsTheme {
-    Color range  = Color::slot(ThemeSlot::Link);
-    Color nav    = Color::slot(ThemeSlot::Muted);
-    Color stage  = Color::slot(ThemeSlot::Success);
-    Color revert  = Color::slot(ThemeSlot::Error);
-    Color sep      = Color::slot(ThemeSlot::Border);
+    Themed range  = ThemeSlot::Link;
+    Themed nav    = ThemeSlot::Muted;
+    Themed stage  = ThemeSlot::Success;
+    Themed revert  = ThemeSlot::Error;
+    Themed sep      = ThemeSlot::Border;
 };
 
 struct HunkControls {

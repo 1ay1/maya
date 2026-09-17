@@ -31,10 +31,10 @@ public:
         std::vector<FileChange> changes;
 
         // Brand palette
-        Color border_color  = Color::slot(ThemeSlot::Warning);
-        Color text_color    = Color::slot(ThemeSlot::Text);
-        Color accept_color  = Color::slot(ThemeSlot::Success);
-        Color reject_color  = Color::slot(ThemeSlot::Error);
+        Themed border_color  = ThemeSlot::Warning;
+        Themed text_color    = ThemeSlot::Text;
+        Themed accept_color  = ThemeSlot::Success;
+        Themed reject_color  = ThemeSlot::Error;
     };
 
     explicit ChangesStrip(Config c) : cfg_(std::move(c)) {}

@@ -207,7 +207,7 @@ private:
     // verb appropriate to status + a live "L lines · B" counter.
     [[nodiscard]] Element progress_row(std::size_t bytes, int lines) const {
         const char* verb = nullptr;
-        Color verb_color = Color::slot(ThemeSlot::Muted);
+        Themed verb_color = ThemeSlot::Muted;
         switch (status_) {
             case WriteStatus::Pending:  verb = "queued";        break;
             case WriteStatus::Writing:  verb = bytes == 0

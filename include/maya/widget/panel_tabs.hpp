@@ -24,10 +24,10 @@
 namespace maya {
 
 struct PanelTabsTheme {
-    Color active   = Color::slot(ThemeSlot::Text);
-    Color idle     = Color::slot(ThemeSlot::Muted);
-    Color accent   = Color::slot(ThemeSlot::Primary);
-    Color badge     = Color::slot(ThemeSlot::Error);
+    Themed active   = ThemeSlot::Text;
+    Themed idle     = ThemeSlot::Muted;
+    Themed accent   = ThemeSlot::Primary;
+    Themed badge     = ThemeSlot::Error;
 };
 
 struct PanelTabs {

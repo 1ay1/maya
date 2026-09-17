@@ -257,21 +257,37 @@ inline constexpr std::size_t kScrambleN =
 
 // Age-banded hot→cool trail colour via the central anim::lerp(Color) so the
 // channel math matches the rest of the UI. Returns nullopt past the trail.
+//
+// The bands are THEME SLOTS, not literals. A hardcoded ramp is the reveal
+// stating its own palette over the user's, which under theme::native (all
+// Named/Default, so the terminal's own colours show through) meant a
+// freshly-streamed line arrived in pink-to-grey regardless of what the
+// user picked — and a blend of two literals is still a literal, so the
+// #45 channel guard could not see it.
+//
+// accent -> info -> muted reads as the same hot-to-cool fade in any theme,
+// because that is what those roles MEAN. On a channel-less theme lerp()
+// degrades to an endpoint, so the fade becomes three honest steps instead
+// of a computed wrong colour.
 [[nodiscard]] inline std::optional<Style> trail_style(std::int64_t age_ms) {
     if (age_ms >= 700) return std::nullopt;
+    const Theme& th = theme::live();
+    const LitColor hot  = th.resolve(Color::slot(ThemeSlot::Accent));
+    const LitColor warm = th.resolve(Color::slot(ThemeSlot::Info));
+    const LitColor cool = th.resolve(Color::slot(ThemeSlot::Muted));
     Color col;
     bool bold = false, dim = false;
     if (age_ms < 120) {
         const double t = ease::smoothstep(age_ms / 120.0);
-        col  = lerp(Color::rgb(255, 90, 200), Color::rgb(120, 230, 255), t);
+        col  = lerp(hot, warm, t);
         bold = true;
     } else if (age_ms < 320) {
         const double t = ease::smoothstep((age_ms - 120) / 200.0);
-        col  = lerp(Color::rgb(120, 230, 255), Color::rgb(140, 180, 220), t);
+        col  = lerp(warm, cool, t);
         bold = t < 0.5;
     } else {
         const double t = ease::smoothstep((age_ms - 320) / 380.0);
-        col  = lerp(Color::rgb(140, 180, 220), Color::rgb(200, 200, 200), t);
+        col  = lerp(cool, th.resolve(Color::slot(ThemeSlot::Text)), t);
         dim  = true;
     }
     Style s = Style{}.with_fg(col);
@@ -639,11 +655,20 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
         if (out_len == 0) continue;  // zero-width emit contributes no run
 
         // Style priority: scramble > ghost(+sweep) > gradient > base.
+        //
+        // The literals below were the reveal's own palette, invented before
+        // the theme existed. Under theme::native — which states no RGB so
+        // the user's own colours reach the screen — they painted amber on
+        // brown over whatever the user had actually chosen, and a blend of
+        // two literals is still a literal, so the #45 guard could not catch
+        // them. Slots make the effect the THEME's, and on a channel-less
+        // theme lerp() now degrades to an endpoint rather than inventing a
+        // triple.
         Style s;
         if (scrambling) {
             const bool flick = ((ms_total / 60 + k) & 1) == 0;
-            s = Style{}.with_fg(flick ? Color::rgb(255, 80, 180)
-                                      : Color::rgb(255, 160, 60))
+            s = Style{}.with_fg(flick ? Color::slot(ThemeSlot::Accent)
+                                      : Color::slot(ThemeSlot::Warning))
                        .with_bold();
         } else if (is_ghost) {
             // Ghost cell. ghost_conceal keeps the REAL glyph but conceals it
@@ -655,10 +680,12 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
             if (p.enable_sweep && i_from_tail == unrevealed_cp - 1) {
                 const double pp = reveal_detail::pulse01(ms_total, kSweepMs);
                 s = Style{}
-                    .with_fg(lerp(Color::rgb(255, 220, 140),
-                                  Color::rgb(180, 255, 220), pp))
-                    .with_bg(lerp(Color::rgb(60, 50, 20),
-                                  Color::rgb(90, 80, 40), pp))
+                    .with_fg(lerp(theme::live().resolve(
+                                      Color::slot(ThemeSlot::Warning)),
+                                  theme::live().resolve(
+                                      Color::slot(ThemeSlot::Info)), pp))
+                    .with_bg(theme::live().resolve(
+                                 Color::slot(ThemeSlot::Surface)))
                     .with_bold();
             }
         } else if (i_from_tail < unrevealed_cp) {
@@ -730,15 +757,19 @@ inline std::size_t clip_text_to_cursor(TextElement& leaf,
 inline void decorate_end_caret(TextElement& leaf, std::int64_t ms_total,
                                std::int64_t period_ms = 650) {
     const double pp = reveal_detail::pulse01(ms_total, period_ms);
-    const LitColor fg = lerp(Color::rgb(220, 80, 200), Color::rgb(100, 230, 255), pp);
-    // Both lerp endpoints are literal rgb, so fg is Kind::Rgb and the
-    // quarter-brightness backdrop below is real arithmetic on real
-    // channels. Stated rather than assumed: that is a fact about THIS
-    // function's inputs, and the day someone themes the caret it stops
-    // being true silently. has_channels() makes the dependency local.
+    // Theme slots, not literals: a hardcoded pulse is the caret stating its
+    // own palette over the user's, invisible to the #45 channel guard
+    // because a blend of two literals is still a literal.
+    const Theme& th = theme::live();
+    const LitColor fg = lerp(th.resolve(Color::slot(ThemeSlot::Accent)),
+                             th.resolve(Color::slot(ThemeSlot::Info)), pp);
+    // The quarter-brightness backdrop is real arithmetic, so it needs real
+    // channels — which a themed fg may not have. Surface is the slot that
+    // MEANS "a shade behind the text", and on native it is Default, i.e.
+    // the terminal's own background, which is the honest answer.
     const LitColor bg = fg.has_channels()
         ? LitColor::rgb(fg.r() / 4, fg.g() / 4, fg.b() / 4)
-        : fg;
+        : th.resolve(Color::slot(ThemeSlot::Surface));
     const Style caret = Style{}
         .with_fg(fg)
         .with_bg(bg)

@@ -1368,12 +1368,18 @@ private:
         // degrade would otherwise turn the dark band into a FULL bright
         // green/red block per row (the "garish bands over SSH" report).
         const bool bands = diff_bands_ok();
-        const Color bg      = is_add ? Color::rgb(12, 80, 38)
-                                     : Color::rgb(92, 18, 26);
-        const Color rail_bg = is_add ? Color::rgb(26, 116, 44)
-                                     : Color::rgb(140, 36, 44);
-        const Color fg_br   = is_add ? Color::rgb(170, 244, 190)
-                                     : Color::rgb(252, 180, 188);
+        // Slots, not literals. These were the last hardcoded diff colours in
+        // the file — the Edit path, which I missed when the git_diff and
+        // Write paths were done, because Themed only gates Config FIELDS
+        // and these are locals.
+        // Slots, not literals — the Edit path, missed when the git_diff and
+        // Write paths were done because Themed only gates Config FIELDS and
+        // these are locals. This is the band in agentty #45's screenshots.
+        const Color bg      = is_add ? Color::slot(ThemeSlot::DiffAdded)
+                                     : Color::slot(ThemeSlot::DiffRemoved);
+        const Color rail_bg = bg;   // rail separates by BOLD, not a second hue
+        const Color fg_br   = is_add ? Color::slot(ThemeSlot::Success)
+                                     : Color::slot(ThemeSlot::Error);
         (void)c;   // c was the legacy fg; kept in signature for callers
 
         const Style sign_st = bands

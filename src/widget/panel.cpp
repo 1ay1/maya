@@ -1175,12 +1175,19 @@ Element Panel::build() const {
         // text sitting directly on it, only the dark side has contrast.
         if (cfg_.tab_fill) {
             strip.theme.active_bg = cfg_.accent;
-            // inverse_text, not a literal black: the slot that MEANS "ink
-            // that reads on top of a filled accent". A hardcoded black is
-            // right only while the accent stays light, and on a light
-            // scheme (or theme::native's own palette) it is the reverse of
-            // what the user needs. Caught by Themed's consteval gate.
-            strip.theme.active    = Color::slot(ThemeSlot::InverseText);
+            // inverse_text only makes sense against a canvas the theme owns.
+            // Under native it is Default — the same colour as ordinary text
+            // — because there is no second canvas to invert against, so a
+            // filled tab would paint normal foreground on an ANSI-magenta
+            // block. Fall back to the terminal's background as the ink,
+            // which is the actual inverse of its own foreground.
+            const Theme& th = theme::live();
+            const bool owns_canvas =
+                th.resolve(Color::slot(ThemeSlot::Background)).kind()
+                    != ColorKind::Default;
+            strip.theme.active = owns_canvas
+                ? Color::slot(ThemeSlot::InverseText)
+                : Color::slot(ThemeSlot::Background);
         } else {
             strip.theme.active = cfg_.accent;
         }

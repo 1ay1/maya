@@ -1090,8 +1090,30 @@ private:
     // below 256 colors we drop the bands entirely and fall back to the
     // classic fg-colored diff (green/red +/- text, blue @@ headers) —
     // exactly what `git diff` itself looks like on such terminals.
+    //
+    // The THEME can fail the same way, and for the same reason. A band is a
+    // background wash, and theme::native has no background to wash — it
+    // states Default for surface/background so the user's own terminal
+    // shows through, which is the whole point of it. Its diff slots are
+    // therefore plain ANSI green/red, the same colours as success/error,
+    // so a "band" under native paints green text on a green block and red
+    // on red. Invisible, and invisible in a way the truecolor sweep cannot
+    // see: SGR 32 on SGR 32 is two perfectly legitimate palette colours.
+    //
+    // So ask the theme, not just the terminal. If diff_added has no more
+    // colour than the ink that sits on it, there is no band to draw and we
+    // fall back to the same fg-only diff a 16-colour terminal gets.
     [[nodiscard]] static bool diff_bands_ok() noexcept {
-        return terminal_color_level() >= 2;
+        if (terminal_color_level() < 2) return false;
+        const Theme& th = theme::live();
+        // A band needs a background DISTINCT from the text that goes on it.
+        // Compare what actually reaches the terminal, not the slot names:
+        // under native several slots collapse onto one ANSI colour.
+        const auto added   = th.resolve(Color::slot(ThemeSlot::DiffAdded)).fg_sgr();
+        const auto removed = th.resolve(Color::slot(ThemeSlot::DiffRemoved)).fg_sgr();
+        const auto ink_ok  = th.resolve(Color::slot(ThemeSlot::Success)).fg_sgr();
+        const auto ink_no  = th.resolve(Color::slot(ThemeSlot::Error)).fg_sgr();
+        return added != ink_ok && removed != ink_no;
     }
 
     // Helper: build a styled-text row with NoWrap so AgentTimeline's per-

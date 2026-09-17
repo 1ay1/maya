@@ -429,21 +429,32 @@ private:
         // error/warning/info are the slots that MEAN these three states,
         // every scheme ships them contrast-checked, and on native they map
         // to the ANSI red/yellow/cyan every terminal has meant since the
-        // seventies. inverse_text on the band keeps the banner readable
-        // whichever way the scheme's polarity runs.
+        // seventies.
+        //
+        // But a FILLED band needs a canvas to fill, and theme::native has
+        // none — it states Default for background/surface so the user's own
+        // terminal shows through. Its inverse_text is Default too (there is
+        // no second canvas to invert against), so a band there paints the
+        // terminal's ordinary foreground onto an ANSI-red block: legible by
+        // luck, and nothing like the white-on-crimson it is meant to be.
+        //
+        // So when the theme owns no canvas, drop the band and colour the
+        // TEXT instead — red/amber/cyan on the user's own background, which
+        // is how a status line has always read on a plain terminal. Same
+        // rule the diff bands use, for the same reason.
+        const Theme& th = theme::live();
+        const bool owns_canvas =
+            th.resolve(Color::slot(ThemeSlot::Background)).kind() != ColorKind::Default;
+
+        const Color state = (kind == Kind::Error) ? Color::slot(ThemeSlot::Error)
+                          : (kind == Kind::Warn)  ? Color::slot(ThemeSlot::Warning)
+                                                  : Color::slot(ThemeSlot::Info);
+
         struct Palette { Color bg; Color fg; Color rail; };
         const Palette p =
-            (kind == Kind::Error)
-                ? Palette{ Color::slot(ThemeSlot::Error),
-                           Color::slot(ThemeSlot::InverseText),
-                           Color::slot(ThemeSlot::Error) }
-          : (kind == Kind::Warn)
-                ? Palette{ Color::slot(ThemeSlot::Warning),
-                           Color::slot(ThemeSlot::InverseText),
-                           Color::slot(ThemeSlot::Warning) }
-                : Palette{ Color::slot(ThemeSlot::Info),
-                           Color::slot(ThemeSlot::InverseText),
-                           Color::slot(ThemeSlot::Info) };
+            owns_canvas
+                ? Palette{ state, Color::slot(ThemeSlot::InverseText), state }
+                : Palette{ Color::slot(ThemeSlot::Background), state, state };
 
         const std::string& msg = cfg_.status_banner.text;
         const char* glyph =

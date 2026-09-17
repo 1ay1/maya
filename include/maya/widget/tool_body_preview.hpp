@@ -1103,6 +1103,14 @@ private:
     // So ask the theme, not just the terminal. If diff_added has no more
     // colour than the ink that sits on it, there is no band to draw and we
     // fall back to the same fg-only diff a 16-colour terminal gets.
+public:
+    // Test hook: the band gate is the whole reason a native diff renders
+    // as coloured text instead of blocks, so a test needs to be able to
+    // tell "the fix worked" from "the band never drew".
+    [[nodiscard]] static bool diff_bands_ok_for_test() noexcept {
+        return diff_bands_ok();
+    }
+private:
     [[nodiscard]] static bool diff_bands_ok() noexcept {
         if (terminal_color_level() < 2) return false;
         const Theme& th = theme::live();

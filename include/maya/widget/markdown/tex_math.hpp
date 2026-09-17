@@ -615,6 +615,24 @@ struct Parser {
         if (w == "{") { Box b = hbox("{", pal.delim); b.klass = Box::Cls::Open;  return b; }
         if (w == "}") { Box b = hbox("}", pal.delim); b.klass = Box::Cls::Close; return b; }
 
+        // Escaped punctuation — the characters TeX reserves, which a source
+        // must backslash to print. They stand for THEMSELVES, so dropping
+        // the backslash is the whole job.
+        //
+        // Without this they fell through to the unknown-control-word arm
+        // and rendered as a literal "\_", which is worse than not
+        // supporting math at all: the escape is invisible in the source
+        // (\_ looks like an underscore to whoever wrote it) and the reader
+        // sees a stray backslash they cannot account for. `bright\_black`
+        // came out as `bright\_black` in a rendered agentty answer.
+        //
+        // \_ is by far the most common of these in our own output, because
+        // snake_case identifiers are everywhere and _ is TeX's subscript
+        // operator, so anything naming a C++ symbol inside math has to
+        // escape it.
+        if (w == "_" || w == "%" || w == "$" || w == "&" || w == "#")
+            return hbox(w, pal.normal);
+
         if (w == "frac" || w == "dfrac" || w == "tfrac" || w == "binom") {
             Box top = parse_group();
             Box bot = parse_group();

@@ -70,6 +70,27 @@ TEST_CASE("inline scripts") {
     CHECK(rows.size() >= 1, "e^{x+1} produced rows");
 }
 
+TEST_CASE("escaped punctuation prints itself") {
+    // TeX reserves these five, so printing one means backslashing it. They
+    // stand for THEMSELVES — dropping the backslash is the whole job.
+    //
+    // They used to fall through to the unknown-control-word arm and render
+    // as a literal "\\_", which is worse than no math support: the escape is
+    // invisible to whoever wrote the source (\_ reads as an underscore) and
+    // the reader sees a stray backslash they cannot account for. A real
+    // agentty answer rendered `bright\_black` verbatim, backslash included.
+    CHECK(joined("bright\\_black", false) == "bright_black", "\\_ is _");
+    CHECK(joined("50\\%", false)          == "50%",          "\\% is %");
+    CHECK(joined("a\\&b", false)          == "a&b",          "\\& is &");
+    CHECK(joined("\\#1", false)           == "#1",           "\\# is #");
+    CHECK(joined("x\\$y", false)          == "x$y",          "\\$ is $");
+
+    // \_ is the common one because _ is TeX's subscript operator and our
+    // own output is full of snake_case C++ identifiers. Escaping it must
+    // NOT disturb the unescaped operator.
+    CHECK(joined("a_1", false) == "a\u2081", "bare _ still subscripts");
+}
+
 TEST_CASE("greek and symbols") {
     CHECK(joined("\\alpha", false) == "\u03b1", "alpha");
     CHECK(joined("\\Sigma", false) == "\u03a3", "Sigma");

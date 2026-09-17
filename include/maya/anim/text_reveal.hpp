@@ -731,9 +731,17 @@ inline void decorate_end_caret(TextElement& leaf, std::int64_t ms_total,
                                std::int64_t period_ms = 650) {
     const double pp = reveal_detail::pulse01(ms_total, period_ms);
     const LitColor fg = lerp(Color::rgb(220, 80, 200), Color::rgb(100, 230, 255), pp);
+    // Both lerp endpoints are literal rgb, so fg is Kind::Rgb and the
+    // quarter-brightness backdrop below is real arithmetic on real
+    // channels. Stated rather than assumed: that is a fact about THIS
+    // function's inputs, and the day someone themes the caret it stops
+    // being true silently. has_channels() makes the dependency local.
+    const LitColor bg = fg.has_channels()
+        ? LitColor::rgb(fg.r() / 4, fg.g() / 4, fg.b() / 4)
+        : fg;
     const Style caret = Style{}
         .with_fg(fg)
-        .with_bg(LitColor::rgb(fg.r() / 4, fg.g() / 4, fg.b() / 4))
+        .with_bg(bg)
         .with_bold();
 
     if (!leaf.content.empty()) {

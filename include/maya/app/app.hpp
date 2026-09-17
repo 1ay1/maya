@@ -2863,17 +2863,20 @@ template <CanvasResizeFn ResizeFn, CanvasEventFn EventFn, CanvasPaintFn PaintFn>
 // the wrong palette with no indication why, and "set the theme, then start
 // the UI" is the obvious order to write.
 //
-// The reason for routing through the Runtime's slot is LIFETIME, not
-// gatekeeping: theme::set_live() stores a POINTER, so it needs storage that
-// outlives the call, and the Runtime owns a Theme by value. When there is no
+// Routing through the Runtime's slot is about the NO-OP GUARD below, not
+// lifetime: the guard needs the previous value to compare against, and the
+// Runtime owns a Theme by value that serves as it. (theme::set_live() used
+// to store the pointer, which made this a lifetime requirement too; the
+// live slot interns now, so a caller may hand it a temporary. The slot is
+// still the right place to keep the last-set value.) When there is no
 // Runtime we own one here instead, seeded to native so the first comparison
 // matches theme::live()'s actual initial state.
 inline void app_set_theme(const Theme& t) {
     Theme* slot = detail::Runtime::live_theme();
     if (slot == nullptr) {
-        // Pre-runtime storage. Static so the pointer theme::set_live() keeps
-        // stays valid; seeded to native so "set native before startup" is
-        // correctly a no-op rather than a spurious swap.
+        // Pre-runtime storage for the same comparison. Seeded to native so
+        // "set native before startup" is correctly a no-op rather than a
+        // spurious swap.
         static Theme pre_runtime = theme::native;
         slot = &pre_runtime;
     }

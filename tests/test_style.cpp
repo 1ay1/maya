@@ -591,10 +591,17 @@ TEST_CASE("theme: a swap re-derives cached SGR, and says that it did") {
 
     // THE SLOT. A host owns exactly one Theme object (Runtime::theme_) and
     // publishes its address once; app_set_theme() then assigns THROUGH it
-    // (`*slot = t`) on every change. Modelling it as one mutated object is
-    // what makes this test reproduce the real bug — with two distinct Theme
-    // locals the addresses differ and even the broken pointer compare
-    // "works", which is exactly why this shipped.
+    // (`*slot = t`) and hands the RESULT to set_live() on every change.
+    // Modelling it as one mutated object is what makes this test reproduce
+    // the real bug — with two distinct Theme locals the addresses differ and
+    // even the broken pointer compare "works", which is exactly why this
+    // shipped.
+    //
+    // Note the live slot INTERNS, so `&theme::live()` is not `&slot` and a
+    // mutation of `slot` alone is not a swap — the host has to publish it,
+    // which is precisely what app_set_theme() does on the next line after
+    // `*slot = t`. That is why the re-publish below is not test scaffolding:
+    // it is the production sequence.
     Theme slot = a;
     theme::set_live(slot);
 
@@ -620,11 +627,18 @@ TEST_CASE("theme: a swap re-derives cached SGR, and says that it did") {
     assert(pool.retheme() == false);
 
     // Swap the live theme exactly as app_set_theme() does: assign through
-    // the published slot. The address does not move, so a pointer compare
-    // sees nothing and every cached SGR string keeps the old background
-    // forever. Only a VALUE compare can observe this.
+    // the published slot, then publish. The ORIGINAL bug was retheme()
+    // comparing `&theme::live()` against the pointer it cached last time —
+    // and because the host mutates one object in place, that address never
+    // moves, so every cached SGR string kept the old background forever.
+    // Only a VALUE compare can observe this, which is what the assert below
+    // pins down. Interning means live() no longer even aliases `slot`, but
+    // the identity `&live_before == &live_after` would STILL hold for a
+    // repeat of the same theme, so the value compare is still the only
+    // thing standing between this and the bug.
     slot = b;
-    assert(&theme::live() == &slot);   // same address, different theme
+    theme::set_live(slot);
+    assert(theme::live() == b);        // the new value is live
     assert(pool.retheme() == true);
 
     // The same cells, unchanged and un-repainted, now serialize in the new
@@ -675,7 +689,13 @@ TEST_CASE("theme: a swap survives the fullscreen double-buffer too") {
 
     std::swap(front, back);         // present
     slot = b;                       // swap through the published slot
+    theme::set_live(slot);          // ...and publish it, as app_set_theme does
 
+    // This pipeline is handed `slot` directly, so the swap would land even
+    // without the publish above. It is here so the sequence matches the
+    // production one — the live slot interns, and a test that mutates a
+    // local without publishing is asserting against a theme the rest of the
+    // process cannot see.
     // The SAME tree, so every glyph and every style id is identical.
     std::string out2;
     RenderPipeline<stage::Idle>::start(back, pool, slot, out2)
@@ -758,6 +778,83 @@ TEST_CASE("style equality") {
     Style c = Style{}.with_bold().with_fg(Color::green());
     assert(a == b);
     assert(a != c);
+    std::println("PASS\n");
+}
+
+TEST_CASE("theme: the live slot owns what it publishes") {
+    std::println("--- test_live_slot_owns_its_theme ---");
+
+    // set_live() used to store `&t`, so the lifetime obligation lived in
+    // the CALLER and was invisible at the signature. The obvious call --
+    // set_live(a temporary) -- compiled and left live() dereferencing a
+    // dead object on the next paint. ASan called it stack-use-after-scope;
+    // without ASan it is a palette that is subtly, intermittently wrong.
+    //
+    // The slot interns now, so a temporary is safe. This is the regression
+    // guard: it reads every slot back through live() AFTER the argument is
+    // gone, which is exactly the window the old code got wrong.
+    {
+        theme::set_live(Theme{theme::dracula});   // rvalue; dead on return
+        const Theme& l = theme::live();
+        assert(l.complete());
+        assert(l == theme::dracula);
+    }
+
+    // Interning dedups by VALUE, which is what bounds the never-freed
+    // table. A host resolving `auto` per frame calls this every frame, and
+    // a background detect that flaps across an ssh hop alternates forever;
+    // neither may allocate per call.
+    {
+        const Theme* first = &theme::live();
+        for (int i = 0; i < 200; ++i) {
+            theme::set_live(Theme{theme::dracula});
+            assert(&theme::live() == first);
+        }
+    }
+
+    // Reset-to-native reuses the static rather than copying it.
+    theme::set_live(theme::native);
+    assert(&theme::live() == &theme::native);
+
+    std::println("PASS\n");
+}
+
+TEST_CASE("theme: an incomplete theme cannot go live") {
+    std::println("--- test_live_slot_rejects_holes ---");
+
+    // complete() is a static_assert for the 57 built-in schemes and for
+    // anything constexpr. But a theme parsed from a user config, built
+    // field-by-field, or derive()d at runtime reaches the slot without ever
+    // meeting that assert -- and an Unset slot paints as "inherit", so the
+    // failure is a widget quietly adopting the terminal's foreground
+    // instead of its role colour. Legible often enough to ship; wrong on
+    // exactly the light-background terminal nobody tested.
+    theme::set_live(theme::dracula);
+    const Theme* before   = &theme::live();
+    const unsigned epoch0 = theme::live_epoch();
+
+    Theme holed = theme::dracula;
+    holed.warning = LitColor{};            // back to ColorKind::Unset
+    assert(!holed.complete());
+    assert(holed.first_unset().has_value());
+    assert(std::string_view{slot_field_name(*holed.first_unset())} == "warning");
+
+    assert(theme::try_set_live(holed) == false);
+
+    // A refused set changes NOTHING. Not the theme -- a half-themed surface
+    // looks deliberate and is worse than a refusal -- and not the epoch,
+    // which would spuriously re-derive every projected palette.
+    assert(&theme::live() == before);
+    assert(theme::live_epoch() == epoch0);
+
+    // A complete theme still goes through, and still bumps the epoch: the
+    // projection cache keys off it, so a swap that failed to bump would
+    // leave every projected<P> palette permanently stale.
+    assert(theme::try_set_live(theme::nord) == true);
+    assert(theme::live() == theme::nord);
+    assert(theme::live_epoch() > epoch0);
+
+    theme::set_live(theme::native);
     std::println("PASS\n");
 }
 

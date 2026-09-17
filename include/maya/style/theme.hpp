@@ -31,11 +31,13 @@
 
 #include <atomic>
 #include <concepts>
+#include <cassert>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 // LSan's interface, when we are built under it. Used by immortal_snapshot()
 // below to mark the deliberately-never-freed projection snapshots as reachable
@@ -234,6 +236,7 @@ inline std::atomic<const Theme*>& live_slot() noexcept;
 
 [[nodiscard]] inline const Theme& live() noexcept;
 inline void set_live(const Theme& t) noexcept;
+[[nodiscard]] inline bool try_set_live(const Theme& t) noexcept;
 
 // ============================================================================
 // native — the default. The terminal's own colors, and nothing else.
@@ -387,15 +390,143 @@ inline std::atomic<unsigned>& epoch_slot() noexcept {
     return detail::epoch_slot().load(std::memory_order_acquire);
 }
 
-inline void set_live(const Theme& t) noexcept {
+// ── Interning: the slot OWNS what it points at ──────────────────────────
+//
+// set_live used to store `&t` and rely on the caller to keep `t` alive
+// forever. That contract was real — app_set_theme() routes through the
+// Runtime's slot or a function-local static precisely to satisfy it — but
+// it was unstated at the signature, so the obvious call
+//
+//     theme::set_live(Theme::derive(base, accent));   // temporary
+//
+// compiled, and left live() dereferencing a dead object on the very next
+// paint. A borrow whose lifetime obligation is documented in the CALLER is
+// not a contract, it is a convention; this one had exactly one honest
+// implementation and any number of wrong ones.
+//
+// So the slot interns. A theme handed in is copied into storage that is
+// never freed, and the pointer published to readers is into THAT copy. The
+// caller's object is no longer load-bearing and may be a temporary, a
+// stack local, or a member that outlives nothing.
+//
+// Never-freed is the same reasoning immortal_snapshot() states below: a
+// concurrent reader may hold the previous pointer, and anything that frees
+// hands the memory back to the allocator whose next write races that read.
+// Dedup keeps the count at "distinct theme VALUES ever set" rather than
+// "calls", which is what bounds it under a flapping auto-detect that
+// oscillates between two themes forever (see app_set_theme's note on
+// background detection flipping across an ssh hop).
+namespace detail {
+
+// Allocate an object that is meant to outlive the program.
+//
+// Two clients: the live-theme intern table just below, and the projection
+// snapshots further down. The leak is the DESIGN, stated once here so
+// neither has to re-argue it: a reader holding the previous pointer must
+// keep reading a valid, unwritten object, and anything that frees hands the
+// memory back to the allocator, whose next write into it races that reader.
+// Measured -- a deque-backed version was still flagged by TSan for exactly
+// this.
+//
+// But LSan cannot tell a deliberate immortal from a bug, and it was right to
+// complain: every theme change left a snapshot unreachable at exit, so maya's
+// sanitizer job reported 615 leaked allocations and had been red since the
+// projection cache landed. A red CI that is red on purpose stops being read,
+// which is the real cost -- it hid the MSVC break for six commits.
+//
+// __lsan_ignore_object() says "this one is intentional" at the allocation
+// site, so a snapshot is exempt while an actual leak anywhere else still
+// fails the build. Compiled out entirely when not under ASan.
+template <class T, class... Args>
+[[nodiscard]] T* immortal_snapshot(Args&&... args) {
+    T* p = new T{std::forward<Args>(args)...};
+#if defined(MAYA_HAS_LSAN)
+    __lsan_ignore_object(p);
+#endif
+    return p;
+}
+
+inline std::mutex& intern_mu() noexcept { static std::mutex m; return m; }
+
+// Append-only, and only ever appended to under intern_mu(). Readers never
+// touch this vector — they read the atomic slot, which points into a
+// stable heap object, not into the vector's buffer. That indirection is
+// what lets the table grow (and reallocate) without disturbing a reader.
+inline std::vector<const Theme*>& intern_table() {
+    static std::vector<const Theme*> v;
+    return v;
+}
+
+// The stable address for `t`'s VALUE. Returns the existing entry when this
+// theme has been seen before, so N swaps between two themes allocate twice.
+[[nodiscard]] inline const Theme* intern(const Theme& t) {
+    std::lock_guard lk(intern_mu());
+    auto& tab = intern_table();
+    for (const Theme* p : tab)
+        if (*p == t) return p;
+    // native is the initial slot value and is never interned by the loop
+    // above on first call; comparing against it here keeps the common
+    // "reset to native" path from minting a duplicate of a static.
+    if (t == native) return &native;
+    const Theme* p = immortal_snapshot<Theme>(t);
+    tab.push_back(p);
+    return p;
+}
+
+}  // namespace detail
+
+/// Install `t` as the live theme. Returns false — changing nothing — when
+/// `t` leaves a slot unstated.
+///
+/// Totality is checked HERE because this is the one place a Theme that was
+/// never a constant expression can enter the paint path. complete() is a
+/// static_assert for the 57 built-in schemes and for anything constexpr,
+/// but a theme parsed from a user config, or built field-by-field, or
+/// derive()d at runtime reaches the slot without ever meeting that assert.
+/// An Unset slot paints as "inherit" (ColorKind::Unset, color.hpp:492), so
+/// the failure is a widget silently adopting the terminal's foreground
+/// instead of its role colour — legible often enough to ship, wrong on
+/// exactly the light-background terminal nobody tested.
+///
+/// Rejecting is better than clamping: a theme missing a slot is a caller
+/// bug, and substituting native's answer for that one slot would produce a
+/// half-themed surface that looks deliberate.
+[[nodiscard]] inline bool try_set_live(const Theme& t) noexcept {
+    if (!t.complete()) return false;
+    const Theme* p = detail::intern(t);
+
     // Theme first, THEN the epoch, with release ordering. That order is the
     // contract projected<P>() relies on: a reader that observes epoch N+1 is
     // guaranteed to see the theme that produced it, so it can never cache an
     // OLD projection under a NEW epoch and go permanently stale. The reverse
     // race — observing the new theme under the old epoch — costs one
     // redundant re-derive and converges.
-    detail::live_slot().store(&t, std::memory_order_release);
+    detail::live_slot().store(p, std::memory_order_release);
     detail::epoch_slot().fetch_add(1, std::memory_order_release);
+    return true;
+}
+
+/// Install `t` as the live theme, asserting totality.
+///
+/// The ergonomic form, for the callers that build a theme from a built-in
+/// scheme or a derive() of one — where completeness is already a
+/// static_assert and a runtime failure would mean the static_assert lied.
+/// Hosts taking a theme from outside the program (a config file, a wire
+/// message) should call try_set_live() and handle false.
+inline void set_live(const Theme& t) noexcept {
+    const bool ok = try_set_live(t);
+    assert(ok && "theme::set_live: theme leaves a slot unstated — find it "
+                 "with slot_field_name(*t.first_unset())");
+    (void)ok;
+}
+
+/// Binding a temporary used to be the quiet way to get a dangling live
+/// theme. Interning made it safe, so this no longer needs to be deleted —
+/// `set_live(Theme::derive(base, fn))` is now correct, and the overload
+/// exists only to say so where a reader would otherwise wonder.
+inline void set_live(Theme&& t) noexcept { set_live(static_cast<const Theme&>(t)); }
+[[nodiscard]] inline bool try_set_live(Theme&& t) noexcept {
+    return try_set_live(static_cast<const Theme&>(t));
 }
 
 // ============================================================================
@@ -432,32 +563,6 @@ concept Projection = requires (const Theme& t) {
 };
 
 namespace detail {
-
-// Allocate a projection snapshot that is meant to outlive the program.
-//
-// The leak is the DESIGN, stated once here so the three call sites below
-// cannot each re-argue it: a reader holding the previous pointer must keep
-// reading a valid, unwritten object, and anything that frees hands the memory
-// back to the allocator, whose next write into it races that reader. Measured
-// -- a deque-backed version was still flagged by TSan for exactly this.
-//
-// But LSan cannot tell a deliberate immortal from a bug, and it was right to
-// complain: every theme change left a snapshot unreachable at exit, so maya's
-// sanitizer job reported 615 leaked allocations and had been red since the
-// projection cache landed. A red CI that is red on purpose stops being read,
-// which is the real cost -- it hid the MSVC break for six commits.
-//
-// __lsan_ignore_object() says "this one is intentional" at the allocation
-// site, so a snapshot is exempt while an actual leak anywhere else still
-// fails the build. Compiled out entirely when not under ASan.
-template <class T, class... Args>
-[[nodiscard]] T* immortal_snapshot(Args&&... args) {
-    T* p = new T{std::forward<Args>(args)...};
-#if defined(MAYA_HAS_LSAN)
-    __lsan_ignore_object(p);
-#endif
-    return p;
-}
 
 // Per-projection state. Snapshots are append-only and NEVER freed: a reader
 // holding the previous pointer must keep reading a valid, UNWRITTEN object,

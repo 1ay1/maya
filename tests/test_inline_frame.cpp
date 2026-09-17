@@ -429,9 +429,13 @@ static void test_theme_swap_reaches_the_wire() {
     CHECK(first.find("48;2;17;34;51") != std::string::npos);
 
     // Swap through the published slot and refresh the cache, as the runtime
-    // does at the top of a frame. retheme() must SEE it (value compare) and
-    // must SAY so (the bool), or there is nothing to act on.
+    // does at the top of a frame: assign, then PUBLISH (app_set_theme does
+    // `*slot = t` then hands the result to set_live). The live slot interns,
+    // so mutating `slot` alone is not a swap — publishing is what makes it
+    // one. retheme() must then SEE it (value compare) and must SAY so (the
+    // bool), or there is nothing to act on.
     slot = light;
+    theme::set_live(slot);
     CHECK(pool.retheme() == true);
 
     // The signal in hand, take the documented non-destructive repaint route:

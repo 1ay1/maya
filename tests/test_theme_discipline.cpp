@@ -12,6 +12,7 @@
 #undef NDEBUG
 #include "agtest.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <print>
@@ -35,17 +36,55 @@ namespace {
 //   * file_tree / editor_tab_bar — language BRAND colours (Rust orange, Go
 //     cyan). They identify a language, not a UI role, and are the same hue
 //     in every editor precisely because they are not themeable.
+//
+// Each entry is a repo-relative SUFFIX, matched at a path boundary — see
+// allowed(). Prefer Themed::brand(colour, "why") at the site over a new
+// entry here: an exemption that travels with the colour cannot go stale,
+// and states its reason where the next reader is already looking.
 const std::vector<std::string> kAllowed = {
-    "markdown/highlight.hpp",
-    "file_tree.hpp",
-    "editor_tab_bar.hpp",
+    "widget/markdown/highlight.hpp",
+    "widget/file_tree.hpp",
+    "widget/editor_tab_bar.hpp",
 };
 
+// True when `path` ends with `suffix` AT A PATH BOUNDARY.
+//
+// A bare suffix compare (what this used to do) exempts by spelling rather
+// than by identity: "file_tree.hpp" also matched my_file_tree.hpp,
+// scratch_file_tree.hpp, anything ending in those bytes. Every other
+// failure mode in this file was deliberately chosen to fail CLOSED — the
+// prefilter rule below is a whole essay about exactly that — and then the
+// exemption list quietly failed open. A new widget could inherit an
+// exemption it never asked for by picking a name ending the right way.
+//
+// So the match must consume a whole path component: either the suffix IS
+// the path, or the character before it is a separator.
+[[nodiscard]] bool ends_at_boundary(const std::string& path,
+                                    const std::string& suffix) {
+    if (path.size() < suffix.size()) return false;
+    const std::size_t at = path.size() - suffix.size();
+    if (path.compare(at, suffix.size(), suffix) != 0) return false;
+    return at == 0 || path[at - 1] == '/' || path[at - 1] == '\\';
+}
+
+// Which kAllowed entries actually exempted a file this run. Populated by
+// allowed(); checked for completeness after the walk, so an entry naming a
+// file that no longer exists fails instead of rotting.
+std::vector<std::string> matched_allowed;
+
 [[nodiscard]] bool allowed(const std::string& path) {
+    // Windows hands back backslashes; the entries are written with forward
+    // slashes because that is how the repo spells them.
+    std::string norm = path;
+    for (char& c : norm)
+        if (c == '\\') c = '/';
     for (const auto& a : kAllowed)
-        if (path.size() >= a.size()
-            && path.compare(path.size() - a.size(), a.size(), a) == 0)
+        if (ends_at_boundary(norm, a)) {
+            if (!std::any_of(matched_allowed.begin(), matched_allowed.end(),
+                             [&](const std::string& m) { return m == a; }))
+                matched_allowed.push_back(a);
             return true;
+        }
     return false;
 }
 
@@ -333,6 +372,30 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
     // passing for the wrong reason.
     assert(scanned > 20);
 
+    // An exemption that matches nothing is a rule that has quietly switched
+    // itself off. The file it named was renamed, moved, or deleted, and the
+    // entry now sits there looking like coverage while exempting nobody —
+    // or worse, waits to exempt the next file that happens to land at that
+    // path. Same failure shape as a prefilter that is stronger than its
+    // regex: the suite stays green and the rule is gone.
+    {
+        std::vector<std::string> unused;
+        for (const auto& a : kAllowed)
+            if (!std::any_of(matched_allowed.begin(), matched_allowed.end(),
+                             [&](const std::string& m) { return m == a; }))
+                unused.push_back(a);
+        if (!unused.empty()) {
+            std::println("stale kAllowed entr{}:",
+                         unused.size() == 1 ? "y" : "ies");
+            for (const auto& u : unused)
+                std::println("   {}  (matches no file under widget/)", u);
+            std::println("\nThe file moved or went away. Drop the entry, or fix");
+            std::println("its path — an exemption matching nothing exempts nobody");
+            std::println("and silently waits to exempt whatever lands there next.");
+        }
+        assert(unused.empty());
+    }
+
     if (!offenders.empty()) {
         std::println("{} widget colour literal(s) that should be theme slots:",
                      offenders.size());
@@ -340,8 +403,9 @@ TEST_CASE("theme discipline: widgets name roles, not colours") {
             std::println("   {}", offenders[i]);
         std::println("\nUse Color::slot(ThemeSlot::X) so the colour follows the");
         std::println("user's theme. If the literal is genuinely not a UI role");
-        std::println("(a language brand colour, a named syntax deck), add the");
-        std::println("file to kAllowed in this test with the reason why.");
+        std::println("(a language brand colour, a named syntax deck), say so at");
+        std::println("the site with Themed::brand(colour, \"why\") — that cannot");
+        std::println("go stale the way a path in kAllowed can.");
     }
     assert(offenders.empty());
 

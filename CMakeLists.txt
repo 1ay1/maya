@@ -90,7 +90,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
     endif()
 
-    if(MAYA_NATIVE_TUNING)
+    # -march=native asks the COMPILER to inspect the CPU it is running on.
+    # When cross-compiling that host is the wrong machine entirely: a Termux
+    # package built on an x86_64 CI box for aarch64 would either fail
+    # outright or bake x86 tuning into an ARM target. CMAKE_CROSSCOMPILING is
+    # set by every toolchain file, so honour it regardless of what the caller
+    # asked for — there is no sane reading of "native" across an arch gap.
+    if(MAYA_NATIVE_TUNING AND NOT CMAKE_CROSSCOMPILING)
         set(MAYA_ARCH_FLAGS -march=native -mtune=native)
     else()
         set(MAYA_ARCH_FLAGS)   # rely on the compiler's default arch baseline

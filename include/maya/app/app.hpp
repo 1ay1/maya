@@ -1426,11 +1426,31 @@ namespace detail {
 // Thread-safe message queue for background tasks → UI thread, plus an elastic
 // worker pool for Cmd::Task execution.
 //
-// Lifetime model:
-//   * The queue OWNS its wake mechanism (eventfd / pipe / Win32 event).
-//     Detached IsolatedTask threads hold a shared_ptr; the queue (and its
-//     wake fd) outlive the runtime when such a thread is still running, so
-//     dispatch from a wedged task never writes to a recycled fd.
+// Lifetime model — READ THIS BEFORE ADDING A CAPTURE:
+//   * The queue OWNS its wake mechanism (eventfd / pipe / Win32 event) and
+//     its workers. It is destroyed when the runtime drops the last reference.
+//   * A task body stored in `work_`, or running on a worker, must NEVER hold
+//     a strong reference to the queue. That is a cycle: the queue owns the
+//     task, the task owns the queue. Two distinct failures follow, and both
+//     were live before `sink()` existed:
+//
+//       (a) LEAK. Anything still QUEUED at teardown (quit with pending Cmds)
+//           keeps the queue alive forever. Workers are never joined, the wake
+//           fd is never closed.
+//       (b) ABORT. Worse: the last strong ref is then held by a task, so the
+//           queue is destroyed BY A WORKER when `work_` is cleared.
+//           ~BackgroundQueue calls workers_.clear(), which joins the very
+//           thread running the destructor → std::system_error "Resource
+//           deadlock avoided", std::terminate. Reproduced deterministically.
+//
+//     The type now makes this unrepresentable rather than documented: use
+//     `sink()` to get a dispatch callback. It captures weak_ptr, locks only
+//     for the instant of a send, and degrades to a silent no-op once the
+//     queue is gone — which is exactly the semantics a post-shutdown dispatch
+//     wants anyway.
+//   * Detached IsolatedTask threads therefore do NOT extend the queue's
+//     lifetime. A wedged task can no longer pin the runtime; its sends are
+//     dropped after shutdown instead of writing to a recycled fd.
 //
 // Wake protocol (race-free, no producer-side atomic):
 //   * send() holds mutex_, pushes the msg, and signals the wake fd ONLY when
@@ -1526,6 +1546,34 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
         if (need_signal) wake_.signal();
     }
 
+    // THE dispatch callback handed to every task body. Use this and nothing
+    // else — a task must never capture `shared_from_this()`.
+    //
+    // Why a weak_ptr, in one line: a task lives INSIDE this queue, so a
+    // strong capture is a reference cycle, and the cycle's failure mode is
+    // not a tidy leak — it is the queue being destroyed by one of its own
+    // workers, which then joins itself and aborts the process (see the
+    // lifetime note at the top of this type).
+    //
+    // Weak is also the semantically right answer independent of the cycle.
+    // "The runtime is gone, so there is nobody to deliver this Msg to" is a
+    // no-op, not an error: a wedged IsolatedTask that wakes up ten seconds
+    // after quit should quietly evaporate. The old strong capture instead
+    // kept the whole runtime alive waiting for it.
+    //
+    // The returned callable is copyable, thread-safe, and cheap: one weak
+    // lock per dispatch, which is an uncontended atomic increment in the
+    // common case.
+    [[nodiscard]] auto sink() {
+        return [weak = std::weak_ptr<BackgroundQueue>(this->shared_from_this())]
+               (Msg m) {
+            // lock() is the entire safety argument: either the queue is still
+            // alive and we hold it for exactly the duration of the send, or
+            // it is gone and this is a no-op. There is no window in between.
+            if (auto q = weak.lock()) q->send(std::move(m));
+        };
+    }
+
     auto drain() -> std::vector<Msg> {
         std::lock_guard lk(mutex_);
         std::vector<Msg> out;
@@ -1565,14 +1613,40 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
         // a worker is between iterations.
         for (auto& t : workers_) t.request_stop();
         work_cv_.notify_all();
-        // jthread's destructor joins automatically; clearing the vector
-        // forces those joins now (rather than at our own destruction
-        // order, which lets us close wake_ knowing no worker is alive).
+
+        // ── Self-join guard ───────────────────────────────────────────
+        //
+        // maya's own Cmd arms never let a task hold the queue (they capture
+        // sink(), which is weak). But `post()` is PUBLIC, and a host is free
+        // to write `q->post([q]{ ... })`. That is a cycle whose last strong
+        // reference is owned by a task — so this destructor ends up running
+        // ON A WORKER THREAD when `work_` is cleared.
+        //
+        // Joining a jthread from inside itself throws std::system_error
+        // ("Resource deadlock avoided") out of a destructor → std::terminate.
+        // A library cannot let a caller's capture choice crash the process,
+        // so the join is made unconditionally safe rather than merely
+        // documented: the worker that is running us detaches instead of
+        // joining itself. It is already unwinding — it will exit on its own
+        // the moment this returns.
+        //
+        // Every OTHER worker is still joined, so the common path (destroyed
+        // from the UI thread) is unchanged and fully synchronous.
+        const auto self = std::this_thread::get_id();
+        for (auto& t : workers_) {
+            if (t.get_id() == self) {
+                t.detach();     // cannot join ourselves; we are about to exit
+            } else if (t.joinable()) {
+                t.join();
+            }
+        }
+        // jthread's destructor would otherwise re-join; every handle above is
+        // now either joined or detached, so clearing is a no-op teardown.
         workers_.clear();
-        // wake_'s destructor closes the underlying fd/handle. Detached
-        // IsolatedTask threads each hold a shared_ptr<BackgroundQueue>,
-        // so this destructor only runs once they've all exited too —
-        // a wedged isolated task can't write to a recycled fd.
+        // wake_'s destructor closes the underlying fd/handle. Tasks hold only
+        // weak sinks, so nothing outside can still be holding this object:
+        // a post-shutdown dispatch resolves to a dead weak_ptr and is dropped
+        // rather than writing to a recycled fd.
     }
 
 private:
@@ -1595,7 +1669,23 @@ private:
             // queued behind it would hang the UI on "Running…". Tools already
             // report their own errors via dispatch, so swallowing here is
             // safe: if we get this far it's something unexpected.
+            //
+            // `task` is destroyed HERE, before the next loop iteration, and
+            // that destruction is what can destroy the queue itself: if a
+            // host captured a strong ref to the queue in its task (see the
+            // self-join guard in ~BackgroundQueue), releasing the task
+            // releases the last reference.
+            //
+            // So the loop must not touch a single member after running a
+            // task without first proving the object is still alive. The
+            // stop_token is the one thing we can safely read — it lives in
+            // the jthread's shared stop-state, not in this object — and the
+            // destructor requests stop before anything else. Checking it
+            // first means the self-destroying worker returns immediately
+            // instead of re-locking a destroyed mutex.
             try { task(); } catch (...) {}
+            task = nullptr;                    // may destroy *this
+            if (stop.stop_requested()) return; // ...so re-read nothing below
         }
     }
 };
@@ -1669,11 +1759,18 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
         },
         [&](const typename Cmd<Msg>::Task& t) {
             if (ctx.bg_queue) {
-                // shared_ptr keeps the queue alive even if run<P>() exits early
-                auto q = ctx.bg_queue;
-                auto task_fn = t.run;
-                q->post([q, task_fn = std::move(task_fn)] {
-                    task_fn([q](Msg m) { q->send(std::move(m)); });
+                // The task body captures ONLY the sink (weak), never the
+                // queue. A strong capture here was a reference cycle — the
+                // queue owns the task, the task owns the queue — which at
+                // teardown-with-backlog made a worker destroy its own queue
+                // and join itself: "Resource deadlock avoided", abort.
+                //
+                // With a weak sink, `work_` holds nothing that can keep the
+                // queue alive, so the runtime's reference is genuinely the
+                // last one and ~BackgroundQueue always runs on the UI thread.
+                ctx.bg_queue->post([task_fn = t.run, sink = ctx.bg_queue->sink()]
+                                   () mutable {
+                    task_fn(sink);
                 });
             } else {
                 // Fallback: synchronous (for simple run() without bg support)
@@ -1685,20 +1782,24 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
             // it's detached at construction so a wedged syscall (slow NFS,
             // dead FUSE mount, hung subprocess) leaks one thread instead of
             // permanently consuming a slot in the shared BG worker pool.
-            // The shared_ptr<BackgroundQueue> capture keeps the dispatch
-            // sink alive even if the runtime tears down before the thread
-            // finishes — Msg send becomes a no-op once the queue's wake fd
-            // is closed during shutdown, but the captured shared_ptr still
-            // holds the queue object so the lambda can run to completion.
+            //
+            // The thread carries a WEAK sink, not a strong queue reference.
+            // The old strong capture was justified as "keeps the dispatch
+            // sink alive so the lambda can run to completion" — but the
+            // lambda does not need the QUEUE to run to completion, it only
+            // needs somewhere to put a Msg *if* anyone is still listening.
+            // Holding the queue instead meant one wedged task pinned the
+            // entire runtime (workers unjoined, wake fd never closed) for as
+            // long as it hung. Now a post-shutdown dispatch is a silent
+            // no-op, which is what it always should have been.
             //
             // Without a bg_queue, we can't dispatch from another thread
             // safely. Fall back to the inline path the regular Task uses.
             if (ctx.bg_queue) {
-                auto q = ctx.bg_queue;
-                auto task_fn = t.run;
                 try {
-                    std::thread([q, task_fn = std::move(task_fn)] {
-                        task_fn([q](Msg m) { q->send(std::move(m)); });
+                    std::thread([task_fn = t.run, sink = ctx.bg_queue->sink()]
+                                () mutable {
+                        task_fn(sink);
                     }).detach();
                 } catch (const std::system_error&) {
                     // pthread_create returned EAGAIN (per-process or system
@@ -1706,10 +1807,9 @@ void execute_cmd(const Cmd<Msg>& cmd, CmdContext<Msg>& ctx) {
                     // on the shared pool. Worst case the shared pool is also
                     // saturated and the user sees the existing queueing
                     // behaviour — strictly better than dropping the work.
-                    auto qq = ctx.bg_queue;
-                    auto fn = t.run;
-                    qq->post([qq, fn = std::move(fn)] {
-                        fn([qq](Msg m) { qq->send(std::move(m)); });
+                    ctx.bg_queue->post([task_fn = t.run, sink = ctx.bg_queue->sink()]
+                                       () mutable {
+                        task_fn(sink);
                     });
                 }
             } else {

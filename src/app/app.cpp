@@ -1233,6 +1233,47 @@ auto Runtime::render(const Element& root) -> Status {
                     // so there is no code path that diffs an overflowed
                     // frame without having run this check — the type system
                     // enforces what used to be a disciplined bool call.
+                    // ── Retheme FIRST, before the scrollback gate ────────
+                    //
+                    // A palette swap changes what every cell PAINTS while
+                    // moving no glyph, and that has TWO consequences. The
+                    // order of these checks is what makes both come out
+                    // right, so do not reorder them:
+                    //
+                    //  1. The gate must not read a restyle as corruption.
+                    //     check_scrollback handles that itself now: it
+                    //     re-compares ignoring style_id and lets a
+                    //     style-only difference through.
+                    //
+                    //  2. But passing the gate is NOT enough. The diff that
+                    //     follows also compares packed cells, and style_id
+                    //     is a StylePool-LOCAL id that the retheme just
+                    //     re-interned — the same id can now mean a different
+                    //     colour. A cell whose glyph and id both happen to
+                    //     match is skipped, so the frame ships a cursor move
+                    //     and nothing else. Measured while browsing themes on
+                    //     a long thread: 88 of 151 frames emitted exactly 13
+                    //     bytes, which is the "whole screen lags one
+                    //     keypress" report.
+                    //
+                    // So a retheme is not diffable at all: it has to re-state
+                    // the viewport, which is what demote-to-Stale does (case
+                    // B, an in-place soft repaint with no scrollback wipe).
+                    // This check used to sit BELOW the gate, where it was
+                    // only reachable once the gate had already failed — so
+                    // fixing the gate to pass style-only diffs would have
+                    // silently stopped the repaint from happening at all.
+                    if (retheme_repaint_) {
+                        const int prev_rows = arm.rows();
+                        if (prev_rows > term_h.value()) {
+                            const int overflow = prev_rows - term_h.value();
+                            auto marker = arm.scrollback_marker(overflow);
+                            auto committed = std::move(arm).commit(marker);
+                            return std::move(committed).demote_to_stale();
+                        }
+                        return std::move(arm).demote_to_stale();
+                    }
+
                     auto proof = arm.check_scrollback(canvas_, term_h.value());
                     if (!proof) {
                         // Committed prefix SHIFTED. Same recovery as before:
@@ -1281,33 +1322,9 @@ auto Runtime::render(const Element& root) -> Status {
                         return std::move(committed).demote_to_stale();
                     }
 
-                    // A theme swap invalidates the shadow's MEANING without
-                    // changing a single packed cell: prev_cells holds
-                    // (glyph, style_id) pairs and a retheme rewrites what
-                    // those ids render as, so verify() still passes and the
-                    // per-row diff still finds every row equal. Nothing gets
-                    // emitted and the terminal keeps the old colours — most
-                    // visibly the background, since a bg-less style is
-                    // exactly what build_sgr() re-derives.
-                    //
-                    // Take the same NON-destructive route the poisoned-shadow
-                    // branch below uses: commit whatever has already scrolled
-                    // off (those rows are real scrollback and must not be
-                    // rewritten), then demote to Stale so the next render
-                    // re-states the live viewport in the new palette. Not
-                    // Empty — that re-anchors at the cursor and would print
-                    // the transcript a second time.
-                    if (retheme_repaint_) {
-                        const int prev_rows = arm.rows();
-                        if (prev_rows > term_h.value()) {
-                            const int overflow = prev_rows - term_h.value();
-                            auto marker = arm.scrollback_marker(overflow);
-                            auto committed = std::move(arm).commit(marker);
-                            return std::move(committed).demote_to_stale();
-                        }
-                        return std::move(arm).demote_to_stale();
-                    }
-
+                    // (The retheme repaint that used to live here now runs
+                    // BEFORE check_scrollback — see the comment there for the
+                    // full story and for why the order is load-bearing.)
                     auto wit = arm.verify();
                     if (!wit) {
                         verify_demoted = true;

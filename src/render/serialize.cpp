@@ -308,6 +308,31 @@ bool InlineFrameState::scrollback_prefix_matches(
     return match;
 }
 
+// Structure-only prefix compare: glyphs/hyperlink/width, ignoring style_id.
+//
+// Deliberately NOT a memcmp — masking has to touch each cell, so it is a word
+// loop. Affordable because it only runs on frames where the full compare
+// already FAILED: the rare something-changed-above-the-fold case, never in
+// steady streaming.
+bool InlineFrameState::scrollback_prefix_structure_matches(
+    const Canvas& canvas, int rows) const noexcept
+{
+    if (rows <= 0) return true;
+    const int W = prev_width_;
+    if (W <= 0 || canvas.width() != W) return false;
+    if (rows > prev_rows_) return false;
+    const std::size_t need = static_cast<std::size_t>(rows) * W;
+    if (prev_cells_.size() < need) return false;
+    if (canvas.cell_count() < need) return false;
+
+    const uint64_t* a = prev_cells_.data();
+    const uint64_t* b = canvas.cells();
+    for (std::size_t i = 0; i < need; ++i) {
+        if (((a[i] ^ b[i]) & cell_structure_mask) != 0) return false;
+    }
+    return true;
+}
+
 bool InlineFrameState::scrollback_prefix_window_matches(
     const Canvas& canvas, int lo, int hi) const noexcept
 {
@@ -416,13 +441,37 @@ std::optional<ScrollbackProof> check_scrollback(
             // principle, false-positive on a within-window-only change
             // that is actually benign; the full compare is the source of
             // truth). Cheap relative to the recovery it may trigger.
-            if (!state.scrollback_prefix_matches(canvas, overflow))
+            if (!state.scrollback_prefix_matches(canvas, overflow)
+                && !state.scrollback_prefix_structure_matches(canvas, overflow))
                 return std::nullopt;
         }
         return ScrollbackProof{&state, overflow, /*valid=*/true};
     }
     if (!state.scrollback_prefix_matches(canvas, overflow)) {
-        return std::nullopt;
+        // ── A RESTYLE IS NOT A SHIFT ──────────────────────────────────
+        //
+        // The full compare failed, but this gate's job is narrow: catch a
+        // committed-prefix SHIFT, where a row above the viewport MOVED and
+        // maya's idea of native scrollback is therefore wrong.
+        //
+        // A retheme fails the full compare without moving anything — swapping
+        // schemes re-interns every style, so `style_id` changes in nearly
+        // every cell while every glyph stays put. Treating that as corruption
+        // is what made the theme browser recover (full-viewport repaint, ~31
+        // KB) on every arrow key on any thread long enough to overflow the
+        // viewport: measured as a Synced->Stale demote on 35 of 35 keypresses.
+        //
+        // So re-check ignoring style_id. Identical structure means the prefix
+        // did not move and the scrollback is still valid.
+        //
+        // NOTE for whoever reads this next: passing the gate is necessary but
+        // NOT sufficient for a retheme to look right. The diff that follows
+        // also compares packed cells, and a re-interned style_id can collide
+        // with an old one — so the caller must ALSO force a repaint when a
+        // swap happened, which is why Runtime's Synced arm checks
+        // retheme_repaint_ BEFORE calling this.
+        if (!state.scrollback_prefix_structure_matches(canvas, overflow))
+            return std::nullopt;
     }
     return ScrollbackProof{&state, overflow, /*valid=*/true};
 }

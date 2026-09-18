@@ -336,7 +336,46 @@ inline void raf_after_thunk_(std::int64_t delay_ms) noexcept {
 }
 inline const ::maya::anim::detail::RafInstaller raf_installer_{
     &raf_thunk_, &raf_after_thunk_};
+
+// ── Frame-gate tracing ───────────────────────────────────────────────────
+//
+// visual_hash() decides whether view() runs at all, so when something is
+// wrong there the symptom is "the model changed but the screen didn't" — and
+// that decision was previously invisible from a running binary. Diagnosing it
+// meant editing maya and rebuilding, which a host author cannot do.
+//
+// maya carries no logger, so the host installs the sink (agentty wires it to
+// logx's `ui` channel). Unset is a null check the optimiser removes.
+using FrameTraceFn = void (*)(std::uint64_t hash, bool skipped, bool needs_render);
+
+inline FrameTraceFn& frame_trace_sink() noexcept {
+    static FrameTraceFn fn = nullptr;
+    return fn;
+}
+
+[[nodiscard]] inline bool frame_trace_enabled() noexcept {
+    return frame_trace_sink() != nullptr;
+}
+
+inline void frame_trace(std::uint64_t hash, bool skipped, bool needs_render) noexcept {
+    if (auto fn = frame_trace_sink()) fn(hash, skipped, needs_render);
+}
 } // namespace detail
+
+/// Install a frame-gate trace sink; nullptr disables.
+///
+/// Fires once per event-loop iteration, so a host should gate it on its own
+/// verbosity setting before installing.
+inline void set_frame_trace(detail::FrameTraceFn fn) noexcept {
+    detail::frame_trace_sink() = fn;
+}
+
+/// Install an emit trace sink (bytes shipped per composed frame); nullptr
+/// disables. The sink itself lives in render/frame_bytes.hpp — the renderer
+/// cannot include the app layer — so this is just its public spelling.
+inline void set_emit_trace(detail::EmitTraceFn fn) noexcept {
+    detail::emit_trace_sink() = fn;
+}
 
 // ============================================================================
 // Key event predicates — pure functions for use inside subscribe() filters
@@ -2467,6 +2506,9 @@ void run(RunConfig cfg = {}) {
                     last_visual_hash       = h;
                     last_visual_hash_valid = true;
                 }
+                // One line per loop iteration when a host installs the sink.
+                if (detail::frame_trace_enabled())
+                    detail::frame_trace(h, skip_render, needs_render);
             }
             // Backpressure overrides the gate. In inline mode the ONLY
             // residue drainer is rt.render() (its first act is

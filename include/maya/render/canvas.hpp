@@ -158,6 +158,25 @@ struct Cell {
     constexpr bool operator==(const Cell&) const = default;
 };
 
+/// Mask selecting the STRUCTURAL half of a packed cell: glyph, hyperlink and
+/// width — everything except `style_id`.
+///
+/// The scrollback gate exists to catch a committed-prefix SHIFT: a row above
+/// the viewport moved, so what maya believes is in the terminal's scrollback
+/// no longer matches what is there. That is a question about CONTENT.
+///
+/// A retheme is not that. Swapping colour schemes re-interns every style, so
+/// `style_id` changes on essentially every cell while not one glyph moves —
+/// the committed prefix is still exactly where it was. Comparing full packed
+/// cells cannot tell the two apart, so a theme change looked identical to
+/// corruption and forced a scrollback recovery (a full-viewport repaint, ~31
+/// KB) on every keystroke of the theme browser.
+///
+/// Masking style_id out makes the distinction structural rather than
+/// heuristic: this answers "did anything MOVE", and a caller that also needs
+/// to know "did anything RECOLOUR" asks that separately.
+inline constexpr uint64_t cell_structure_mask = ~(static_cast<uint64_t>(0xFFFF) << 32);
+
 // Verify packing round-trips correctly.
 static_assert(Cell{U'A', 42, 7, 1}.pack() != 0);
 static_assert(Cell::unpack(Cell{U'A', 42, 7, 1}.pack()) == Cell{U'A', 42, 7, 1});

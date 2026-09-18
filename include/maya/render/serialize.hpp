@@ -440,6 +440,17 @@ public:
     [[nodiscard]] bool scrollback_prefix_window_matches(
         const Canvas& canvas, int lo, int hi) const noexcept;
 
+    /// Like scrollback_prefix_matches, but compares only the STRUCTURAL half
+    /// of each cell (glyph / hyperlink / width), ignoring `style_id`.
+    ///
+    /// Answers the question the scrollback gate actually cares about: did any
+    /// committed row MOVE? A retheme re-interns every style, so a full packed
+    /// compare reports "shifted" for a prefix that is in exactly the same
+    /// place with different colours — which is why picking a theme used to
+    /// force a scrollback recovery on every keystroke.
+    [[nodiscard]] bool scrollback_prefix_structure_matches(
+        const Canvas& canvas, int rows) const noexcept;
+
     /// Consume the marker and return the successor state with
     /// `marker.rows()` rows shifted off the top of prev_cells. A
     /// marker that targets all rows (or more) returns a reset

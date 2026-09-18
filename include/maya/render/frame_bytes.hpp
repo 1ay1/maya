@@ -70,6 +70,8 @@
 // new allocations beyond what the prior path already paid; the
 // `out_` string is allocated once on the Runtime and reused via move.
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -78,6 +80,33 @@
 #include "../core/expected.hpp"
 #include "../terminal/writer.hpp"
 #include "serialize.hpp"
+
+namespace maya::detail {
+
+// ── Emit tracing ────────────────────────────────────────────────────────
+//
+// The frame-gate trace (app.hpp) answers "did view() run". This answers the
+// question that matters when the gate says `render` and the screen still does
+// not change: did the composed frame contain any BYTES?
+//
+// A 13-byte frame is a cursor move and nothing else. Seeing that while the
+// theme is changing is how the retheme-diff bug was finally located, after
+// several wrong guesses that this trace would have killed immediately.
+//
+// Lives here rather than in app.hpp because the renderer cannot include the
+// app layer. Host-installed; unset is a null check the optimiser removes.
+using EmitTraceFn = void (*)(const char* state, std::size_t bytes, bool empty);
+
+inline EmitTraceFn& emit_trace_sink() noexcept {
+    static EmitTraceFn fn = nullptr;
+    return fn;
+}
+
+inline void emit_trace(const char* state, std::size_t bytes, bool empty) noexcept {
+    if (auto fn = emit_trace_sink()) fn(state, bytes, empty);
+}
+
+} // namespace maya::detail
 
 namespace maya {
 

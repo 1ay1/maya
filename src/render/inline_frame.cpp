@@ -72,6 +72,10 @@ RenderOutcome InlineFrame<Fresh>::render(
         std::move(state_), *std::move(wit),
         synchronized_output, reset_prefix);
 
+    // Bytes this frame actually shipped. A 13-byte frame is a cursor
+    // move and nothing else; seeing that while content changed means the
+    // diff found nothing to say.
+    ::maya::detail::emit_trace("Fresh", capsule.byte_count(), capsule.empty());
     return detail::lift_commit_outcome(std::move(capsule).commit_to(writer));
 }
 
@@ -113,6 +117,10 @@ RenderOutcome InlineFrame<Synced>::render(
         std::move(state_), std::move(witness),
         synchronized_output);
 
+    // Bytes this frame actually shipped. A 13-byte frame is a cursor
+    // move and nothing else; seeing that while content changed means the
+    // diff found nothing to say.
+    ::maya::detail::emit_trace("Synced", capsule.byte_count(), capsule.empty());
     return detail::lift_commit_outcome(std::move(capsule).commit_to(writer));
 }
 
@@ -164,6 +172,10 @@ RenderOutcome InlineFrame<Stale>::render(
         std::move(state_), *std::move(wit),
         synchronized_output);
 
+    // Bytes this frame actually shipped. A 13-byte frame is a cursor
+    // move and nothing else; seeing that while content changed means the
+    // diff found nothing to say.
+    ::maya::detail::emit_trace("Stale", capsule.byte_count(), capsule.empty());
     return detail::lift_commit_outcome(std::move(capsule).commit_to(writer));
 }
 

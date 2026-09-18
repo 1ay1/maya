@@ -208,11 +208,16 @@ and status chips live):
 
 Three things make it affordable:
 
-**It is entirely compile-time.** C++26 made `<cmath>` `constexpr` (P0533R9), so
-CIEDE2000 — `cbrt`, `atan2`, five cosines, an `exp`, two 7th powers — evaluates
-during translation. Every palette entry's CIELAB coordinates are baked into the
-binary, and the numbers are identical on every platform because they are never
-computed on the target.
+**It is entirely compile-time.** CIEDE2000 — `cbrt`, `atan2`, five cosines, an
+`exp`, two 7th powers — evaluates during translation, so every palette entry's
+CIELAB coordinates are baked into the binary and the numbers are identical on
+every platform because they are never computed on the target. The eight
+transcendentals are implemented in the header rather than taken from `<cmath>`:
+C++26 makes `<cmath>` `constexpr` (P0533R9) but only GCC 16 ships it, and a
+header that needs one vendor's bleeding edge is not portable, it is lucky. The
+local versions are range-specialised and verified against `std::` to a worst
+relative error of 1.2e-12 — against a metric whose just-noticeable difference is
+~1.0 in units of tens.
 
 **The search is exact, not approximate.** CIEDE2000's lightness term is
 `|ΔL| / S_L`, and `S_L` is maximised at the ends of the lightness range at

@@ -759,7 +759,22 @@ inline constexpr std::string_view kTrueColorTerms[] = {
 
     const std::string_view term = env_or("TERM");
     if (term == "dumb") return ColorTier::Mono;   // see terminal_is_dumb()
-    if (!tty && !forced) return ColorTier::Mono;
+
+    // A host that NAMES ITSELF outranks the handle probe.
+    //
+    // `tty` is a property of a file descriptor; "I am Windows Terminal" is a
+    // property of the thing drawing the pixels, and the second is what the
+    // colour question is actually about. They disagree exactly where the
+    // handle is a VT pipe rather than a console object -- mintty, Git Bash,
+    // Cygwin, ConPTY -- and when they do, the descriptor is the one that is
+    // wrong. Ordering the probe first is what made a self-identified
+    // truecolor terminal answer Mono, collapsing every theme to native and
+    // dropping diff bands to plain text.
+    //
+    // is_tty() now understands VT pipes too, so this is belt AND braces: the
+    // tier survives even where the handle cannot be classified at all.
+    const bool self_identified = truecolor_host();
+    if (!tty && !forced && !self_identified) return ColorTier::Mono;
 
     // ── 3. COLORTERM ── the terminal's own capability claim ───────────────
     const std::string_view ct = env_or("COLORTERM");
@@ -775,8 +790,11 @@ inline constexpr std::string_view kTrueColorTerms[] = {
         if (contains(term, name)) return ColorTier::TrueColor;
 
     // ── 5. Host-application markers ─────────────────────────────────
-    // Weaker evidence than a capability claim, so it sits below both.
-    if (truecolor_host()) return ColorTier::TrueColor;
+    // Weaker evidence than a capability CLAIM (COLORTERM/TERM name it
+    // outright), so it sits below both -- but computed up at step 2,
+    // because it also decides whether a non-console handle is a terminal
+    // at all.
+    if (self_identified) return ColorTier::TrueColor;
 
     if (contains(term, "256color")) return ColorTier::Ansi256;
     if (term.empty())              return ColorTier::Mono;

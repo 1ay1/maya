@@ -1079,6 +1079,20 @@ public:
         return writer_ != nullptr && writer_->has_residue();
     }
 
+    // True iff the last render() COALESCED instead of composing — i.e. the
+    // frame the caller asked for has not been painted and no bytes are
+    // queued that would paint it.
+    //
+    // The caller must keep asking while this is true. `has_pending_writes()`
+    // answers "bytes are queued"; this answers "a frame was never composed",
+    // and only the pair covers every way a paint can still be owed. Without
+    // it the coalesce gate silently drops one-shot visual changes (the theme
+    // preview that rendered 28 KB and never reached the wire), because the
+    // gate's own "the caller re-fires" assumption only holds for streams.
+    [[nodiscard]] bool has_deferred_frame() const noexcept {
+        return coalesced_last_render_;
+    }
+
     // True iff the input parser is holding a partial escape sequence —
     // e.g. a lone ESC byte that is either a bare Escape keypress or the
     // head of an arrow / Home / End / function-key CSI whose tail hasn't
@@ -1257,6 +1271,21 @@ private:
     detail::CoalesceState coalesce_{};
     std::chrono::steady_clock::time_point coalesce_epoch_{
         std::chrono::steady_clock::now()};
+    // Set by render() when the coalesce gate SKIPPED a compose, cleared the
+    // moment one actually happens.
+    //
+    // Why this is not an internal detail: a coalesced frame returns ok() and
+    // emits nothing, which is byte-identical, from the caller's side, to a
+    // frame that painted. The loop then clears needs_render and the frame is
+    // GONE. That is fine for a streaming append (the next delta re-fires
+    // within milliseconds and the diff is cumulative) and wrong for a
+    // one-shot model change like a keystroke: nothing re-fires, so the paint
+    // is not deferred, it is dropped.
+    //
+    // The residue-retry path cannot cover this case either, because the gate
+    // returns BEFORE composing — there are no pending bytes for
+    // has_pending_writes() to notice. So the runtime has to say so itself.
+    bool coalesced_last_render_ = false;
     static constexpr int kHoldDecayFrames = 6;
     // Release-safe scrollback-invariant recovery counter. Bumped every
     // time the overflowed-frame gate (or the verify-poison arm) has to
@@ -2140,7 +2169,7 @@ void run(RunConfig cfg = {}) {
         // Surfaces as the resize-triggered full repaint resuming smoothly
         // — at a few hundred cheap deferred iterations/sec, not a spin —
         // when the tty buffer saturates.
-        if (rt.has_pending_writes()) {
+        if (rt.has_pending_writes() || rt.has_deferred_frame()) {
             poll_timeout = std::clamp(poll_timeout,
                                       std::chrono::milliseconds(2),
                                       std::chrono::milliseconds(8));
@@ -2521,7 +2550,8 @@ void run(RunConfig cfg = {}) {
             // undrained, then snaps in late. Force the render so each
             // loop iteration makes drain progress; the poll-timeout clamp
             // above bounds the retry cadence so this can't busy-spin.
-            if (rt.has_pending_writes()) skip_render = false;
+            if (rt.has_pending_writes() || rt.has_deferred_frame())
+                skip_render = false;
 
             // RAF override — the structural guarantee that an animation
             // can NEVER be stranded by a visual-hash coverage gap.
@@ -2621,7 +2651,18 @@ void run(RunConfig cfg = {}) {
             // genuinely needs another paint re-sets the flag next iteration
             // (input, a timer, a resize) or rides next_frame_at (RAF), both
             // of which are separate from this one.
-            needs_render = false;
+            //
+            // EXCEPT when the runtime says it owes us a frame. The visual
+            // hash gate and the coalesce gate are different claims: the hash
+            // gate means "nothing changed, there is nothing to paint", while
+            // a coalesced or wire-blocked render means "something DID change
+            // and I have not painted it yet". Consuming the request in the
+            // second case is what dropped one-shot visual changes — a theme
+            // preview keystroke composed 28 KB, got coalesced, and no later
+            // event ever re-asked, so the screen kept the previous scheme
+            // until some unrelated keypress happened to repaint. Streaming
+            // hid the bug because the next delta always re-fired.
+            needs_render = rt.has_deferred_frame();
 
             // Schedule the next frame. One clock: a frame is just
             // "wake again in kAnimationFrameInterval." The schedule is
@@ -2694,7 +2735,8 @@ void run(RunConfig cfg = {}) {
             // loop iteration drives the drain. Paired with the
             // poll-timeout cap above, this finishes the frame within
             // a few milliseconds instead of stalling for seconds.
-            if (rt.has_pending_writes()) needs_render = true;
+            if (rt.has_pending_writes() || rt.has_deferred_frame())
+                needs_render = true;
         }
     }
 
@@ -2843,7 +2885,7 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         // drains on its own instead of waiting for the next input event —
         // without this a backpressured first frame paints only partially
         // and fills in one chunk per keypress.
-        if (rt.has_pending_writes()) {
+        if (rt.has_pending_writes() || rt.has_deferred_frame()) {
             poll_timeout = std::clamp(poll_timeout,
                                       std::chrono::milliseconds(2),
                                       std::chrono::milliseconds(8));
@@ -2931,7 +2973,7 @@ void run(RunConfig cfg, EventFn&& event_fn, RenderFn&& render_fn) {
         // rt.render() with the SAME last frame — maya's compose path detects
         // pending residue and just drains it (it does not recompose), so this
         // is cheap and the per-frame view cost is paid once per real frame.
-        if (rt.has_pending_writes() && have_root) {
+        if ((rt.has_pending_writes() || rt.has_deferred_frame()) && have_root) {
             (void)rt.render(last_root);
             // Keep the poll short (clamped above to 8ms) so the drain
             // finishes promptly without spinning the view.

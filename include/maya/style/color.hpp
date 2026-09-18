@@ -11,6 +11,8 @@
 #include <optional>
 #include <string>
 
+#include "quantize.hpp"   // chroma-locked perceptual palette matching
+
 namespace maya {
 
 // ============================================================================
@@ -464,13 +466,13 @@ public:
                 if (level >= 2) return *this;
                 detail::Rgb3 c = detail::xterm256_to_rgb(r_);
                 return LitColor{static_cast<AnsiColor>(
-                    detail::rgb_to_ansi16(c.r, c.g, c.b))};
+                    color::nearest_16(c.r, c.g, c.b))};
             }
             case Kind::Rgb:
                 if (level >= 2)
-                    return BasicColor::indexed(detail::rgb_to_xterm256(r_, g_, b_));
+                    return BasicColor::indexed(color::nearest_256(r_, g_, b_));
                 return LitColor{static_cast<AnsiColor>(
-                    detail::rgb_to_ansi16(r_, g_, b_))};
+                    color::nearest_16(r_, g_, b_))};
             case Kind::Slot:
                 break;  // unreachable on Lit; keeps the switch exhaustive
         }

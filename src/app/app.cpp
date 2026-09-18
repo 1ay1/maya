@@ -713,6 +713,12 @@ auto Runtime::render(const Element& root) -> Status {
             auto d = writer_->try_drain_residue();
             if (!d) {
                 if (d.error().kind == ErrorKind::WouldBlock) {
+                    // Same contract as the coalesce gate below: this call
+                    // did not compose, so the caller still owes a paint.
+                    // has_pending_writes() also reports true here (there IS
+                    // residue), but say it explicitly so the caller needs
+                    // only one rule: keep rendering while a frame is owed.
+                    coalesced_last_render_ = true;
                     return ok();   // wire still backed up; retry next tick
                 }
                 // Hard I/O error — toss the residue and demote inline
@@ -758,9 +764,19 @@ auto Runtime::render(const Element& root) -> Status {
             const double now_ms = duration<double, std::milli>(
                 steady_clock::now() - coalesce_epoch_).count();
             if (coalesce_.should_coalesce(now_ms, congested_now)) {
+                // Tell the caller the frame was NOT painted. Returning ok()
+                // alone is indistinguishable from a successful compose, and
+                // the loop clears needs_render on ok() — which is exactly how
+                // a one-shot change (a theme preview keystroke) got dropped
+                // instead of deferred. The run loop re-fires while this is
+                // set, so "never lost" is now true by construction rather
+                // than by assuming a stream will come along and re-ask.
+                coalesced_last_render_ = true;
                 return ok();   // coalesce: skip this compose, batch into next
             }
         }
+        // Past the gate: this call composes, so nothing is owed.
+        coalesced_last_render_ = false;
 
         // ── Inline path: Witness Chain dispatch ─────────────────────────
         // std::visit selects the InlineFrame<Tag>::render whose

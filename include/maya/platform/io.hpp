@@ -252,13 +252,68 @@ struct IoVec {
 // ============================================================================
 // TTY detection
 // ============================================================================
-
+//
+// THE QUESTION THIS ANSWERS is "is a human looking at this", not "is this a
+// Win32 console object". The two are the same on POSIX and emphatically not
+// on Windows.
+//
+// GetConsoleMode() alone says NO for a terminal that is plainly interactive:
+// under mintty (MSYS2's default), Git Bash, Cygwin, and anything driving a
+// ConPTY, fds 0/1 are named PIPES carrying a VT byte stream, not console
+// handles. Win32Terminal::open() already knows this -- a failed
+// GetConsoleMode there means "pipe mode", not "no terminal", and that fix is
+// what made agentty run under MSYS2 at all.
+//
+// is_tty() was never told. So every OTHER consumer of the same question kept
+// getting the wrong answer, and the loudest one is colour: detect_tier()
+// returns Mono for a non-tty, which silently collapses every theme to native
+// and drops diff row bands to plain text. "Why is + green everywhere except
+// Windows Terminal" is this function, one layer down.
+//
+// A pipe is only a terminal if something on the far end is drawing it, so we
+// require positive evidence rather than assuming: either the host names
+// itself (WT_SESSION / ConEmuANSI / a TERM an MSYS2 shell exports) or the
+// handle is a pipe whose name matches the msys/cygwin PTY convention. A
+// plain redirect to a file or an anonymous pipe still answers false, which
+// is what keeps `agentty > log.txt` free of escape soup.
 [[nodiscard]] inline bool is_tty(NativeHandle h) noexcept {
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     return ::isatty(h) != 0;
 #else
     DWORD mode;
-    return ::GetConsoleMode(h, &mode) != 0;
+    if (::GetConsoleMode(h, &mode) != 0) return true;   // real console
+
+    // Not a console handle. It may still be a VT terminal on a pipe.
+    if (::GetFileType(h) != FILE_TYPE_PIPE) return false;   // file/redirect
+
+    // A host that identifies itself is the strongest evidence available,
+    // and it does not depend on naming the pipe.
+    const auto env_set = [](const char* k) noexcept {
+        const char* v = std::getenv(k);
+        return v != nullptr && *v != '\0';
+    };
+    if (env_set("WT_SESSION")) return true;          // Windows Terminal
+    if (env_set("ConEmuANSI")) return true;          // ConEmu
+    if (env_set("MSYSTEM"))    return true;          // MSYS2 / Git Bash
+
+    // Otherwise ask the pipe its name. MSYS2 and Cygwin PTYs are named
+    // \cygwin-<id>-pty<N>-{from,to}-master (msys- for MSYS2), which is the
+    // documented way to tell a PTY from an ordinary anonymous pipe.
+    struct NameInfo {
+        DWORD length;
+        WCHAR name[260];
+    } info{};
+    if (::GetFileInformationByHandleEx(h, FileNameInfo, &info, sizeof info)) {
+        const std::size_t n =
+            (std::min)(static_cast<std::size_t>(info.length / sizeof(WCHAR)),
+                       static_cast<std::size_t>(259));
+        std::wstring_view nm{info.name, n};
+        const bool ptyish = nm.find(L"pty") != std::wstring_view::npos;
+        if (ptyish && (nm.find(L"msys-")   != std::wstring_view::npos
+                    || nm.find(L"cygwin-") != std::wstring_view::npos))
+            return true;
+    }
+    return false;
 #endif
 }
 

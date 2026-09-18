@@ -506,6 +506,8 @@ if(MAYA_BUILD_TESTS)
         tests/test_simd.cpp
         tests/test_ansi.cpp
         tests/test_writer.cpp
+        tests/test_coalesce_never_drops.cpp
+        tests/test_color_tier_consistency.cpp
         tests/test_widgets.cpp
         tests/tab_strip_test.cpp
         tests/stat_sheet_test.cpp

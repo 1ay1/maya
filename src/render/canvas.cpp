@@ -34,9 +34,19 @@ int detect_color_level() noexcept {
     // (theme::detect_tier answers Mono for a pipe, which is the right
     // answer for "should I paint?" but not for "how precise are the bytes
     // if I do?" — the two questions differ only here.)
-    if (!env::is_tty()) return 3;
+    const bool tty = env::is_tty();
+    if (!tty) return 3;
 
-    switch (theme::detect_tier(/*tty=*/true)) {
+    // Pass the REAL answer, not a hardcoded true.
+    //
+    // This used to say `/*tty=*/true` unconditionally, which was harmless
+    // only while the branch above guaranteed it. It is a landmine either
+    // way: detect_tier's first act is to decide whether anything should be
+    // painted at all, and handing it a constant meant the emit path could
+    // reach a different conclusion than the settings UI (which passes the
+    // measured value). Two detectors for one fact is exactly what the
+    // comment above this function says was already fixed once.
+    switch (theme::detect_tier(tty)) {
         case theme::ColorTier::TrueColor: return 3;
         case theme::ColorTier::Ansi256:   return 2;
         case theme::ColorTier::Ansi16:    return 1;

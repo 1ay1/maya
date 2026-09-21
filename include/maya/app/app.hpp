@@ -1096,7 +1096,13 @@ public:
         // edge on the frame the theme moved, so if that frame then returns
         // early, nothing else would ever re-ask and the new palette would
         // sit latched but unpainted until the next unrelated repaint.
-        return coalesced_last_render_ || pending_retheme_;
+        //
+        // The third is the demote/paint split: a swap demotes the inline
+        // frame to Stale without emitting, and the repaint lands on the
+        // NEXT frame. That frame has to be guaranteed, or a fast key repeat
+        // keeps demoting and the paint never happens.
+        return coalesced_last_render_ || pending_retheme_
+            || retheme_paint_owed_;
     }
 
     // True iff the input parser is holding a partial escape sequence —
@@ -1192,6 +1198,14 @@ private:
     // detector that stores the new theme as it reports it, so the edge is
     // gone after the first call whether or not anything was painted.
     bool                            pending_retheme_  = false;
+    // Set when a theme swap DEMOTED the inline frame but did not paint.
+    //
+    // demote_to_stale() is a state change only; the Stale arm emits the
+    // repaint on the following frame. Without this latch that following
+    // frame was not guaranteed to happen before the next keypress, so the
+    // repaint could be deferred indefinitely while arrowing through the
+    // theme list — the screen stayed one entry behind.
+    bool                            retheme_paint_owed_ = false;
     int                             grid_prev_w_      = 0;
     int                             grid_prev_rows_   = 0;
     // Scrollback: rows the app has committed to history since the last grid

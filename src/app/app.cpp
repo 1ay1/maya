@@ -1310,6 +1310,20 @@ auto Runtime::render(const Element& root) -> Status {
                     // fixing the gate to pass style-only diffs would have
                     // silently stopped the repaint from happening at all.
                     if (retheme_repaint_) {
+                        // demote_to_stale() only CHANGES STATE; it emits
+                        // nothing. The Stale arm paints on the NEXT frame,
+                        // so a theme swap needs two frames: one to demote,
+                        // one to repaint. Nothing guaranteed that second
+                        // frame existed — if the next keypress arrived
+                        // first it published a new theme, this arm demoted
+                        // again, and the repaint kept being deferred. That
+                        // is the "every other entry" skip: the screen was
+                        // always one keystroke behind, and only caught up
+                        // when you stopped pressing.
+                        //
+                        // Latch the debt so has_deferred_frame() keeps the
+                        // loop rendering until a frame actually paints.
+                        retheme_paint_owed_ = true;
                         const int prev_rows = arm.rows();
                         if (prev_rows > term_h.value()) {
                             const int overflow = prev_rows - term_h.value();
@@ -1427,6 +1441,10 @@ auto Runtime::render(const Element& root) -> Status {
         // repaint attributed to the wrong keystroke. One unconditional clear
         // at the end of the frame is the whole invariant: the flag means
         // "a swap happened during THIS frame", never "...at some point".
+        // The debt is settled by any frame that did NOT itself demote for a
+        // retheme: that frame is the Stale repaint (or a later Synced one),
+        // so the new palette has reached the wire.
+        if (!retheme_repaint_) retheme_paint_owed_ = false;
         retheme_repaint_ = false;
 
         double cf_ms = since(t_cf0);

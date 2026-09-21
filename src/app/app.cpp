@@ -676,12 +676,41 @@ auto Runtime::render(const Element& root) -> Status {
 
     // Grid backend: emit a binary cell frame instead of ANSI. Self-contained
     // (own snapshot + diff), never touches the ANSI witness machine below.
-    if (grid_mode_) return render_grid_frame(root);
+    if (grid_mode_) {
+        note_theme_swap();
+        return render_grid_frame(root);
+    }
 
     render_ctx_.width       = w;
     render_ctx_.height      = size_.height.raw();
     render_ctx_.auto_height = is_inline();
     RenderContextGuard ctx_guard(render_ctx_);
+
+    // Consume the theme edge BEFORE anything can return early.
+    //
+    // StylePool::retheme() is an edge detector: it compares theme::live()
+    // against the theme it last built its SGR cache for, and STORES the new
+    // one on the way out. So the edge is consumed by whoever calls it first,
+    // and it can only ever be observed once.
+    //
+    // This used to be called further down, past the inline path's coalesce
+    // gate. On a congested wire that gate returns early, so retheme() was
+    // not reached and the edge stayed pending — which is fine for ONE
+    // deferred frame, because the re-fire picks it up. It is not fine across
+    // TWO keypresses: publish B, coalesce, publish C, then re-fire. The
+    // stored theme is still A, so retheme() compares C-vs-A, reports one
+    // swap, and B is never painted at all. Holding Down in the theme browser
+    // on a long thread is exactly that interleaving: big frames leave writer
+    // residue, residue raises the congestion EWMA, and the gate starts
+    // firing — which is why it works on a short thread and starts skipping
+    // every other entry once the transcript grows.
+    //
+    // Hoisting it here makes the observation unconditional: whatever else
+    // this call does or does not do, the swap is seen on the frame the theme
+    // actually moved, and the repaint flags it raises are sticky (cleared
+    // only after a frame composes), so the deferred compose still performs
+    // the work.
+    note_theme_swap();
 
     if (is_inline()) {
         // ── Adaptive wire coalescing: congestion sample ───────────────
@@ -941,7 +970,8 @@ auto Runtime::render(const Element& root) -> Status {
         // Synced arm below consumes by committing whatever already scrolled
         // off and demoting to Stale (a repaint of the live viewport, not a
         // re-anchor — re-seeding to Empty would print the transcript twice).
-        if (pool_.retheme()) {
+        if (pending_retheme_) {
+            pending_retheme_ = false;
             grid_need_full_ = true;
             retheme_repaint_ = true;
             render_detail::clear_component_cache();
@@ -1535,6 +1565,18 @@ auto Runtime::render(const Element& root) -> Status {
         canvas_.clear();
     }
 
+    // Same obligation as the inline and grid paths: a theme swap rewrites
+    // what every style ID renders as without changing any ID, so the
+    // fullscreen diff against s.front would emit nothing. Go Divergent to
+    // force a full re-state, and clear the latch — leaving it set would keep
+    // has_deferred_frame() true and spin the loop.
+    if (pending_retheme_) {
+        pending_retheme_ = false;
+        render_detail::clear_component_cache();
+        fs_coherence_ = coherent::Divergent{};
+        canvas_.clear();
+    }
+
     Status write_status = ok();
     fs_coherence_ = std::visit(overload{
         // Synced → Synced (success) or Synced → Divergent (write fail).
@@ -1622,6 +1664,17 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
     render_ctx_.height      = size_.height.raw();
     render_ctx_.auto_height = true;
     RenderContextGuard ctx_guard(render_ctx_);
+
+    // A theme swap re-derives every interned style's SGR bytes but leaves
+    // style IDS untouched, so the grid diff — which compares packed
+    // (glyph, style_id) cells against grid_prev_cells_ — sees every cell as
+    // unchanged and emits nothing. Force a full re-state so the new colours
+    // reach the wire. Same reason the ANSI path raises retheme_repaint_.
+    if (pending_retheme_) {
+        pending_retheme_ = false;
+        grid_need_full_  = true;
+        render_detail::clear_component_cache();
+    }
 
     // Paint the tree — same path as the ANSI inline render, so all the layout
     // + component-cache machinery is reused.  We keep it simple vs render():

@@ -1090,7 +1090,13 @@ public:
     // preview that rendered 28 KB and never reached the wire), because the
     // gate's own "the caller re-fires" assumption only holds for streams.
     [[nodiscard]] bool has_deferred_frame() const noexcept {
-        return coalesced_last_render_;
+        // A coalesced compose owes a frame — and so does an observed but
+        // still-unpainted theme swap. The second term is what makes the
+        // swap survive: note_theme_swap() consumes StylePool's one-shot
+        // edge on the frame the theme moved, so if that frame then returns
+        // early, nothing else would ever re-ask and the new palette would
+        // sit latched but unpainted until the next unrelated repaint.
+        return coalesced_last_render_ || pending_retheme_;
     }
 
     // True iff the input parser is holding a partial escape sequence —
@@ -1176,6 +1182,16 @@ private:
     // to both wire diffs (they compare style IDS, which do not change) so it
     // has to be carried as an explicit signal rather than detected.
     bool                            retheme_repaint_  = false;
+    // Sticky "a theme swap has been observed but not yet painted".
+    //
+    // Separate from retheme_repaint_ because the two have different
+    // lifetimes: retheme_repaint_ is consumed by the inline frame arm within
+    // one compose, while this survives across any number of frames that
+    // return early (coalesce, backed-up wire) until one actually composes.
+    // StylePool::retheme() cannot serve that role itself — it is an edge
+    // detector that stores the new theme as it reports it, so the edge is
+    // gone after the first call whether or not anything was painted.
+    bool                            pending_retheme_  = false;
     int                             grid_prev_w_      = 0;
     int                             grid_prev_rows_   = 0;
     // Scrollback: rows the app has committed to history since the last grid
@@ -1194,6 +1210,16 @@ private:
     // Paint `root`, diff against grid_prev_cells_, emit a grid frame. Called
     // from render() when grid_mode_. Returns the same Status contract.
     auto render_grid_frame(const Element& root) -> Status;
+
+    // Observe a theme swap and latch it until a frame actually composes.
+    //
+    // Must be called on EVERY render() entry, before any path that can
+    // return early. StylePool::retheme() both reports the swap and consumes
+    // it, so calling it late (past the coalesce gate) loses swaps whenever
+    // two keypresses straddle one deferred frame.
+    void note_theme_swap() {
+        if (pool_.retheme()) pending_retheme_ = true;
+    }
     // Initial state matters: in inline mode, defaulting to anything
     // that emits a hard-reset (\x1b[2J\x1b[3J\x1b[H) would wipe the
     // user's shell scrollback on startup. The Witness Chain's

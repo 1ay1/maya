@@ -465,6 +465,70 @@ static void test_theme_swap_reaches_the_wire() {
     theme::set_live(theme::native);
 }
 
+// ── owes_paint: the debt is DERIVED from the state, never enumerated ──
+//
+// The bug this pins: demote_to_stale() is a state change that emits nothing,
+// so the repaint lands on a LATER frame. The run loop has to know a frame is
+// owed, and it used to know via a hand-maintained OR of per-reason booleans
+// that drifted from the truth — a theme swap demoted without setting one, so
+// a key repeat could defer the paint indefinitely and the theme browser
+// stayed an entry behind.
+//
+// Now the question is asked of the variant. Only Synced (wire matches
+// canvas) and Sealed (shut down) rest; every other state owes a paint,
+// which is what those states already MEAN.
+static void test_owes_paint_is_derived() {
+    std::println("--- test_owes_paint_is_derived ---");
+
+    // States are REACHED, never conjured — the typestate keeps every
+    // constructor private, which is itself part of why this machine is
+    // trustworthy. So walk the real transitions.
+    StylePool pool;
+    auto [writer, rfd] = make_pipe_writer();
+    Canvas c = labeled_canvas(80, 3, pool);
+    pool.retheme();
+
+    // Empty: nothing painted yet, so a frame is owed.
+    CHECK(inline_frame::owes_paint(InlineCoherence{InlineFrame<Empty>{}}));
+
+    // Fresh: seeded but not yet painted.
+    CHECK(inline_frame::owes_paint(
+        InlineCoherence{InlineFrame<Empty>{}.seed()}));
+
+    // Synced: the wire matches the canvas — the one resting state. Checked
+    // through a const ref so the value survives for the demote below; this
+    // is the negative case the whole predicate hinges on, because if Synced
+    // ever reported a debt the loop would never go idle.
+    InlineFrame<Synced> s = std::visit([](auto&& arm) -> InlineFrame<Synced> {
+        using T = std::decay_t<decltype(arm)>;
+        if constexpr (std::is_same_v<T, InlineFrame<Synced>>) return std::move(arm);
+        else std::abort();
+    }, InlineFrame<Empty>{}.seed().render(
+        c, content_rows(c), term_rows_for_test(24), pool, writer, false));
+
+    {
+        InlineCoherence synced{std::move(s)};
+        CHECK(!inline_frame::owes_paint(synced));
+        s = std::get<InlineFrame<Synced>>(std::move(synced));
+    }
+
+    // THE REGRESSION. demote_to_stale() emits nothing, so the state it
+    // leaves behind MUST report a debt — otherwise the repaint it just
+    // scheduled is never guaranteed a frame, which is the shipped bug:
+    // holding a key in the theme browser kept demoting and the screen
+    // stayed one entry behind.
+    InlineCoherence after_demote{std::move(s).demote_to_stale()};
+    CHECK(inline_frame::owes_paint(after_demote));
+
+    // Sealed: shut down, no loop left to schedule anything.
+    std::string tail;
+    CHECK(!inline_frame::owes_paint(
+        InlineCoherence{inline_frame::finalize_coherence(
+            std::move(after_demote), tail)}));
+
+    (void)::close(rfd);
+}
+
 int main() {
     test_empty_to_fresh_to_synced();
     test_synced_verify_render();
@@ -472,6 +536,7 @@ int main() {
     test_scrollback_marker_monotone();
     test_finalize_to_sealed();
     test_theme_swap_reaches_the_wire();
+    test_owes_paint_is_derived();
     std::println("ALL INLINE-FRAME TESTS PASSED");
     return 0;
 }

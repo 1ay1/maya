@@ -447,6 +447,56 @@ using InlineCoherence = std::variant<InlineFrame<Empty>,
                                      InlineFrame<Sealed>>;
 
 // ─────────────────────────────────────────────────────────────────────────
+// owes_paint — does this state still owe the wire a frame?
+// ─────────────────────────────────────────────────────────────────────────
+//
+// DERIVED, never enumerated. The host used to answer this by OR-ing a
+// hand-maintained list of booleans ("did we coalesce", "is a theme swap
+// pending", "did a demote skip its paint"), which is a PARALLEL DESCRIPTION
+// of a fact this variant already states — and the two drifted. A theme swap
+// demotes Synced→Stale without emitting, the repaint lands on the NEXT
+// frame, and nothing in that list said so, so a key repeat could defer the
+// paint indefinitely and the screen stayed one keystroke behind.
+//
+// The states already mean this:
+//
+//   Synced     the wire matches the canvas — nothing owed
+//   Empty      nothing painted yet
+//   Fresh      seeded, not yet painted
+//   Stale      marked for repaint; the Stale arm paints on a LATER frame
+//   HardReset  wipe + repaint pending
+//   Sealed     shut down; the loop is gone, so nothing to schedule
+//
+// Only Synced and Sealed rest. Asking the variant means a new state cannot
+// forget to register itself, because there is no registry — and the visit
+// below names every alternative EXPLICITLY, so adding one to
+// InlineCoherence without deciding whether it owes a paint is a compile
+// error rather than a silently-dropped frame. That is the whole point: the
+// question is answered by the type, not by a list someone has to update.
+namespace detail {
+template <class> inline constexpr bool owes_paint_unhandled = false;
+}
+
+[[nodiscard]] inline bool owes_paint(const InlineCoherence& c) noexcept {
+    return std::visit([](const auto& f) -> bool {
+        using T = std::decay_t<decltype(f)>;
+        if      constexpr (std::is_same_v<T, InlineFrame<Synced>>)    return false;
+        else if constexpr (std::is_same_v<T, InlineFrame<Sealed>>)    return false;
+        else if constexpr (std::is_same_v<T, InlineFrame<Empty>>)     return true;
+        else if constexpr (std::is_same_v<T, InlineFrame<Fresh>>)     return true;
+        else if constexpr (std::is_same_v<T, InlineFrame<Stale>>)     return true;
+        else if constexpr (std::is_same_v<T, InlineFrame<HardReset>>) return true;
+        else {
+            static_assert(detail::owes_paint_unhandled<T>,
+                "a new InlineCoherence state must say whether it owes the "
+                "wire a paint: a state that is not Synced/Sealed and does "
+                "not emit will strand its own repaint");
+            return true;
+        }
+    }, c);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // finalize_coherence — emit terminal-restore bytes from any tag
 // ─────────────────────────────────────────────────────────────────────────
 //

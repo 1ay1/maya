@@ -7,6 +7,7 @@
 // sequences for terminal rendering.
 
 #include "color.hpp"
+#include "binding.hpp"   // MAYA_ASSERT_LATE_BOUND — Style is the late-binding seam
 
 #include <optional>
 #include <string>
@@ -321,6 +322,13 @@ inline constexpr Style bg_white   = Style{}.with_bg(Color::white());
 // ============================================================================
 // Compile-time validation
 // ============================================================================
+
+// THE load-bearing one. Style is the seam every stored Element carries, so a
+// resolved colour here freezes the palette of everything ever built — which
+// is the shipped bug this assertion exists to make unrepeatable. See
+// maya/style/binding.hpp for the full argument.
+MAYA_ASSERT_LATE_BOUND(decltype(Style::fg));
+MAYA_ASSERT_LATE_BOUND(decltype(Style::bg));
 
 static_assert(Style{}.empty(), "Default style must be empty");
 static_assert(!bold_style.empty(), "Bold style must not be empty");

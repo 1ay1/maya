@@ -237,7 +237,6 @@ void StreamingMarkdown::spawn_async_worker_(std::shared_ptr<std::string> source)
             meta.line_count = static_cast<std::uint16_t>(std::min<std::size_t>(lc, 0xFFFFu));
             slot->blocks.push_back(
                 std::make_shared<const Element>(md_block_to_element(block)));
-            slot->parsed_blocks.push_back(block);
             slot->metas.push_back(std::move(meta));
         }
         slot->ref_defs = std::move(defs);
@@ -304,7 +303,6 @@ void StreamingMarkdown::maybe_apply_async_() const {
         self->cp_to_byte_cache_at_    = 0;
         auto fresh = std::make_shared<CommittedPrefix>();
         fresh->blocks = std::move(slot->blocks);
-        fresh->parsed_blocks = std::move(slot->parsed_blocks);
         fresh->metas  = std::move(slot->metas);
         // Generation must STRICTLY exceed the prior gen so the
         // prefix ComponentElement's hash_id changes and the

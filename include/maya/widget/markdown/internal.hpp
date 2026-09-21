@@ -145,12 +145,33 @@ namespace colors {
 
 // The palette as a value. Immutable once published.
 //
-// LitColor, not Color: this is the PAINTED palette, projected from a theme
-// that has already resolved its slots. A renderer reading `colors::text`
-// gets something it can emit, with no "did anyone resolve this" question
-// left — and the parse worker, which cannot reach a Theme, does not need to.
+// Color, not LitColor: entries stay SYMBOLIC (Color::slot) and are resolved
+// at PAINT time, by Style::to_sgr() through live_color_resolver(). This is
+// the CSS-variable discipline, and it is what makes a theme switch free.
+//
+// It used to hold LitColor — a palette already projected through a theme —
+// on the reasoning that a renderer should get something it can emit, and
+// that the detached parse worker cannot reach a Theme. The second half is
+// still true and no longer relevant: Color::slot() is a pure value (a tag
+// plus a slot index) that names a colour without touching a Theme, so the
+// worker can build symbolic styles perfectly safely.
+//
+// The first half was the bug. md_block_to_element() stores a fully RENDERED
+// Element per committed block, so resolving here baked the live palette into
+// that Element at COMMIT time. A later theme switch could not reach it: the
+// bytes are unchanged, so set_content no-ops, nothing goes dirty, and every
+// cache tier replays the old Element. A settled transcript kept the outgoing
+// scheme forever while everything that rebuilds per frame (composer,
+// spinner, welcome screen) followed the new one — which is what made live
+// theme switching look intermittent rather than broken.
+//
+// Staying symbolic removes the failure mode instead of chasing it. There is
+// nothing to invalidate, because nothing was ever baked: StylePool::retheme()
+// re-derives the cached SGR bytes for every interned style on a swap, and
+// (its words) "ids stay valid and no canvas cell needs rewriting". Committed
+// Elements, component caches and cell caches all stay correct untouched.
 struct Palette {
-#define X(f, SLOT) LitColor f;
+#define X(f, SLOT) Color f;
     MAYA_MD_PALETTE(X)
 #undef X
     // Publishing compares before appending, so re-publishing the palette
@@ -158,10 +179,22 @@ struct Palette {
     constexpr bool operator==(const Palette&) const = default;
 };
 
+// This palette is projected into STORED Elements (md_block_to_element bakes
+// a committed block once and every later frame replays it), so a resolved
+// entry here pins that block's colours to the theme that was live when its
+// text committed. That was the shipped bug. Assert the shape rather than
+// trusting the next edit to remember.
+MAYA_ASSERT_LATE_BOUND(decltype(Palette::text));
+
 // Project a theme through the one mapping above.
-[[nodiscard]] constexpr Palette project_from(const Theme& t) noexcept {
+//
+// The theme argument is unused for a slot-valued palette — a slot means the
+// same thing under every theme, which is the entire point. It is kept so the
+// Projection concept still fits and so set_markdown_palette()'s override path
+// (which CAN carry literals) keeps working unchanged.
+[[nodiscard]] constexpr Palette project_from(const Theme&) noexcept {
     Palette p{};
-#define X(f, SLOT) p.f = t.resolve(Color::slot(ThemeSlot::SLOT));
+#define X(f, SLOT) p.f = Color::slot(ThemeSlot::SLOT);
     MAYA_MD_PALETTE(X)
 #undef X
     return p;
@@ -207,7 +240,14 @@ inline void publish(const Palette& p) {
 // Field accessors, so ~124 existing `colors::text` reads keep working
 // unchanged while going through the atomic. Functions rather than
 // references because the target moves on publish.
-#define X(f, SLOT) [[nodiscard]] inline LitColor f() noexcept { return live().f; }
+//
+// These return a SYMBOLIC Color. Style::with_fg/with_bg take Color, so every
+// call site compiles unchanged; the resolve happens in to_sgr() against the
+// theme in force at paint time. A caller that genuinely needs channels (a
+// blend, a contrast check) must resolve explicitly via theme::live().resolve
+// — which is the right obligation, since reading r()/g()/b() off an
+// unresolved or non-Rgb colour is its own long-standing bug class.
+#define X(f, SLOT) [[nodiscard]] inline Color f() noexcept { return live().f; }
 MAYA_MD_PALETTE(X)
 #undef X
 

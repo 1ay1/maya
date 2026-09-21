@@ -52,6 +52,56 @@ const Element& StreamingMarkdown::build() const {
     // DOES call build() (a resize relayout, a stray repaint). Guarded on
     // !live_ so the still-animating case is completely untouched, and on
     // !build_dirty_ so the one settle-frame rebuild still happens.
+    //
+    // ...and on the THEME not having moved. "Can never change until
+    // set_content mutates the widget" was false in exactly one way: a build
+    // resolves theme slots to concrete colours, so what is cached here is a
+    // function of (source, theme) while every dirty flag tracked only the
+    // source. A live theme switch does not touch a settled message's bytes,
+    // so set_content/set_content_async no-op, nothing goes dirty, and the
+    // old palette is served forever.
+    //
+    // That is the "live theme switch only sometimes works" report: a settled
+    // transcript kept the outgoing scheme while everything still animating
+    // (composer, spinner, welcome screen) repainted correctly — because
+    // those rebuild from live theme slots every frame, and a committed
+    // markdown block does not. It looked intermittent; it was systematic.
+    //
+    // Marking the build dirty is not enough, for two reasons:
+    //
+    //   1. The incremental paths below ("prefix grew", "windowed prefix")
+    //      are keyed on prefix_->generation / fold_generation_ and REUSE the
+    //      existing child Elements for every block they consider unchanged —
+    //      after a pure theme change, all of them.
+    //
+    //   2. The actual root cause: a committed block is stored as an
+    //      already-RENDERED Element (commit.cpp calls md_block_to_element,
+    //      which resolves ~58 colors:: slots AT COMMIT TIME), and
+    //      render_committed_block_ just replays it. No amount of
+    //      re-BUILDING recolours that — only re-RENDERING it from its
+    //      parsed form can.
+    //
+    // So: re-render the committed blocks from the parsed form retained
+    // beside them, and bump the prefix generation so every cache tier above
+    // notices. theme::live_epoch() is the existing one-relaxed-load
+    // statement of "the palette moved", and costs a settled widget exactly
+    // one re-render per theme change.
+    const unsigned theme_epoch = theme::live_epoch();
+    if (theme_epoch != built_theme_epoch_) {
+        built_theme_epoch_ = theme_epoch;
+        if (prefix_ && !prefix_->blocks.empty()) {
+            const std::size_t n =
+                std::min(prefix_->blocks.size(), prefix_->parsed_blocks.size());
+            for (std::size_t i = 0; i < n; ++i)
+                prefix_->blocks[i] = std::make_shared<const Element>(
+                    md_block_to_element(prefix_->parsed_blocks[i]));
+            ++prefix_->generation;
+        }
+        build_dirty_       = true;
+        cached_prefix_gen_ = static_cast<std::uint64_t>(-1);
+        cached_fold_gen_   = static_cast<std::uint64_t>(-1);
+    }
+
     if (!live_ && !build_dirty_ && !is_parsing()) {
         return cached_build_;
     }

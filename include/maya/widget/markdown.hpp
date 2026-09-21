@@ -224,6 +224,17 @@ private:
     struct CommittedPrefix {
         std::vector<std::shared_ptr<const Element>> blocks;
         std::vector<BlockMeta>                      metas;   ///< parallel to blocks
+        /// The PARSED form of each committed block, parallel to `blocks`.
+        ///
+        /// `blocks` holds fully RENDERED Elements, and rendering resolves
+        /// theme slots to concrete colours (md_block_to_element reads ~58
+        /// colors:: slots). That makes a committed block a snapshot of the
+        /// palette in force when the text was committed — so a live theme
+        /// switch could not recolour it, and a settled transcript kept the
+        /// outgoing scheme while everything still animating repainted
+        /// correctly. Keeping the parsed block lets build() RE-RENDER on a
+        /// theme change instead of re-parsing (or being stuck).
+        std::vector<md::Block>                      parsed_blocks;
         std::uint64_t                                generation = 0;
     };
     mutable std::shared_ptr<CommittedPrefix> prefix_ =
@@ -606,6 +617,14 @@ private:
     // Element directly — no parse, no assembly.  Any mutator (feed /
     // append / set_content / finish / clear) bumps `build_dirty_`.
     mutable Element cached_build_;
+    // The theme epoch cached_build_ was painted under. A build resolves theme
+    // slots to concrete colours, so cached_build_ is a function of (source,
+    // theme) — but every other dirty flag here tracks only the source. A
+    // live theme switch leaves a settled message's bytes untouched, so
+    // nothing else would invalidate the cache and the transcript would keep
+    // rendering the outgoing palette. Compared against theme::live_epoch()
+    // in build(); (unsigned)-1 forces one rebuild on the first build.
+    mutable unsigned built_theme_epoch_ = static_cast<unsigned>(-1);
     // Live-mode wrapper. When live_ is true, build() returns this
     // instead of cached_build_; it’s a vstack of [cached_build_,
     // cursor_row] rebuilt every frame and requests an animation
@@ -1043,6 +1062,10 @@ private:
         // would have arrived at via the synchronous incremental
         // path.
         std::vector<std::shared_ptr<const Element>> blocks;
+        // Parallel to `blocks` — see CommittedPrefix::parsed_blocks. Carried
+        // through the worker so an async-parsed prefix can be re-rendered on
+        // a theme change just like a synchronously committed one.
+        std::vector<md::Block>                      parsed_blocks;
         std::vector<BlockMeta>                      metas;
         std::unordered_map<std::string, md::LinkRef> ref_defs;
         bool                                        in_code_fence = false;

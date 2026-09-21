@@ -176,6 +176,7 @@ void StreamingMarkdown::commit_range(size_t boundary) {
 
     auto& prefix_blocks = prefix_->blocks;
     auto& prefix_metas  = prefix_->metas;
+    auto& prefix_parsed = prefix_->parsed_blocks;
     // NO exact-size reserve here. commit_range runs once per block boundary
     // for the whole turn, appending a handful of blocks each time; a
     // reserve(size + new) fills capacity exactly, so the NEXT commit's
@@ -217,6 +218,7 @@ void StreamingMarkdown::commit_range(size_t boundary) {
 
         prefix_blocks.push_back(
             std::make_shared<const Element>(md_block_to_element(block)));
+        prefix_parsed.push_back(block);
         prefix_metas.push_back(std::move(meta));
     }
     if (!parsed.blocks.empty()) ++prefix_->generation;

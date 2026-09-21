@@ -53,6 +53,22 @@ namespace {
     return n;
 }
 
+// Count roles where two palettes PAINT differently under `t`.
+//
+// The internal palette is late-bound, so two palettes can hold different
+// representations of the same colour: a slot and the literal that slot
+// resolves to. For anything about what the user SEES, resolving first is the
+// only comparison that means something.
+[[nodiscard]] int painted_divergences(const colors::Palette& a,
+                                      const colors::Palette& b,
+                                      const Theme& t) {
+    int n = 0;
+#define X(f, SLOT) if (!(t.resolve(a.f) == t.resolve(b.f))) ++n;
+    MAYA_MD_PALETTE(X)
+#undef X
+    return n;
+}
+
 }  // namespace
 
 TEST_CASE("markdown palette: the boot palette IS the projection") {
@@ -76,7 +92,12 @@ TEST_CASE("markdown palette: publishing lands exactly on the projection") {
 
     theme::set_live(*rose);
     set_markdown_palette(markdown_palette_from(*rose));
-    CHECK(divergences(colors::live(), colors::project(*rose)) == 0);
+    // Compared by what it PAINTS, not by representation. The override path
+    // hands back concrete colours (markdown_palette_from resolves against
+    // the theme the caller named) while the default palette holds slots, so
+    // the two are equal in effect and unequal in form. What has to hold is
+    // that publishing a theme's own palette changes nothing on screen.
+    CHECK(painted_divergences(colors::live(), colors::project(*rose), *rose) == 0);
 
     // Every built-in scheme round-trips through the public API onto its own
     // projection — the mapping cannot be partial or order-dependent.
@@ -84,7 +105,8 @@ TEST_CASE("markdown palette: publishing lands exactly on the projection") {
     for (const auto& s : theme::schemes) {
         theme::set_live(*s.theme);
         set_markdown_palette(markdown_palette_from(*s.theme));
-        CHECK(divergences(colors::live(), colors::project(*s.theme)) == 0);
+        CHECK(painted_divergences(colors::live(),
+                                  colors::project(*s.theme), *s.theme) == 0);
         ++checked;
     }
     CHECK(checked > 50);
@@ -94,19 +116,52 @@ TEST_CASE("markdown palette: publishing lands exactly on the projection") {
     std::println("PASS ({} schemes round-tripped)\n", checked);
 }
 
-TEST_CASE("markdown palette: every role resolves to a painted colour") {
+TEST_CASE("markdown palette: every role is a LATE-BOUND slot") {
     std::println("--- test_md_palette_total ---");
-    // The palette is LitColor, so nothing in it can still be an unresolved
-    // slot — a parse worker has no theme to resolve against, which is why
-    // the projection happens on the publishing side.
+    // The palette is symbolic: every role is a Color::slot resolved at PAINT
+    // time, never a literal decided when the palette was projected.
+    //
+    // This used to assert the opposite — that no role is a slot — because
+    // the palette held LitColor. That was the bug. md_block_to_element()
+    // stores a fully RENDERED Element per committed block, so resolving here
+    // baked the live palette into that block at COMMIT time and no later
+    // theme switch could reach it: a settled transcript kept the outgoing
+    // scheme while anything rebuilt per frame followed the new one.
+    //
+    // Slots cost the worker nothing — Color::slot() is a tag plus an index
+    // and touches no Theme — so the old reason for resolving early
+    // ("a parse worker has no theme") no longer applies.
     for (const auto& s : theme::schemes) {
         const colors::Palette p = colors::project(*s.theme);
-#define X(f, SLOT) CHECK(p.f.kind() != ColorKind::Slot); \
-                   CHECK(p.f.is_set());
+#define X(f, SLOT) CHECK(p.f.kind() == ColorKind::Slot); \
+                   CHECK(p.f.is_set());                  \
+                   CHECK(p.f.theme_slot() == ThemeSlot::SLOT);
         MAYA_MD_PALETTE(X)
 #undef X
     }
     std::println("PASS\n");
+}
+
+TEST_CASE("markdown palette: a slot resolves to the live theme's colour") {
+    std::println("--- test_md_palette_resolves ---");
+    // The other half of late binding: symbolic is only useful if resolving
+    // it at paint yields the right colour. Same palette value, two themes,
+    // two results — with nothing re-projected in between.
+    const Theme* rose = scheme_named("Rose Pine Dawn");
+    const Theme* drac = scheme_named("Dracula");
+    REQUIRE(rose != nullptr);
+    REQUIRE(drac != nullptr);
+
+    const colors::Palette p = colors::project(theme::native);
+
+    int differing = 0;
+#define X(f, SLOT) if (!(rose->resolve(p.f) == drac->resolve(p.f))) ++differing;
+    MAYA_MD_PALETTE(X)
+#undef X
+    // Two schemes this unalike must disagree on a good number of roles; if
+    // they agreed everywhere the resolve would be ignoring the theme.
+    CHECK(differing > 5);
+    std::println("PASS ({} roles differ between schemes)\n", differing);
 }
 
 TEST_CASE("markdown palette: a theme change alone refreshes it") {
@@ -216,15 +271,25 @@ TEST_CASE("markdown palette: readers never observe a torn palette") {
                 const colors::Palette p = colors::live();
                 // A coherent snapshot matches SOME theme's projection.
                 //
+                // Compared by what it PAINTS under that theme, not by
+                // representation: the publisher hands over concrete colours
+                // (markdown_palette_from resolves against the theme it was
+                // given) while the default palette holds slots, so a
+                // perfectly coherent snapshot can differ in form from the
+                // projection it came from. Only the painted value is
+                // evidence of tearing; comparing form would flag every read.
+                //
                 // native is in the candidate set because the reader can
                 // start before the first publish and legitimately observe
                 // the boot palette — which is native's projection, and is
                 // not equal to any of the 57 schemes. Leaving it out made
                 // exactly 3 valid reads per run look like tears.
-                bool coherent = divergences(p, colors::project(theme::native)) == 0;
+                bool coherent = painted_divergences(
+                    p, colors::project(theme::native), theme::native) == 0;
                 for (const auto& s : theme::schemes) {
                     if (coherent) break;
-                    if (divergences(p, colors::project(*s.theme)) == 0) {
+                    if (painted_divergences(p, colors::project(*s.theme),
+                                            *s.theme) == 0) {
                         coherent = true;
                         break;
                     }

@@ -1146,9 +1146,21 @@ MarkdownPalette markdown_palette_from(const Theme& t) {
     // rendered under one mapping until the first theme swap and the other
     // forever after, so headings, code spans and links visibly shifted on a
     // swap that changed nothing else.
+    //
+    // RESOLVED against `t`, not left symbolic. The internal palette is
+    // late-bound (its entries are Color::slot, resolved at paint) precisely
+    // so a stored Element follows a theme switch. This is the PUBLIC type,
+    // and it means something different: "the colours theme `t` produces",
+    // asked for by a host that names the theme explicitly. A slot here would
+    // resolve against whatever is live at PAINT time instead of against `t`,
+    // so `markdown_palette_from(A)` published while B is live would paint B
+    // — silently ignoring the argument.
+    //
+    // So the boundary is: symbolic inside, concrete at the public edge,
+    // resolved against the theme the caller actually named.
     const colors::Palette p = colors::project(t);
     MarkdownPalette out{};
-#define X(f, SLOT) out.f = p.f;
+#define X(f, SLOT) out.f = t.resolve(p.f);
     MAYA_MD_PALETTE(X)
 #undef X
     return out;
@@ -1172,25 +1184,26 @@ MarkdownPalette markdown_palette_from(const Theme& t) {
 // mutate, so there is no contract left to break and no lock on the hot path.
 void set_markdown_palette(const MarkdownPalette& p) {
     colors::Palette next{};
-    // try_literal, NOT theme::live().resolve().
+    // Stored VERBATIM — no resolve here.
     //
-    // A MarkdownPalette is the PUBLIC type, so its fields are Color and a
-    // host may hand us either literals (the normal case — markdown_palette_
-    // from() has already resolved them) or a slot it wants resolved.
+    // The internal palette is late-bound: its entries are normally
+    // Color::slot(...) and the resolve happens at paint, which is what lets
+    // a committed markdown block follow a later theme switch. An override is
+    // a deliberate exception to that: a host says "paint markdown with THESE
+    // colours", and it has already decided what they are —
+    // markdown_palette_from() resolves against the theme the caller named.
     //
-    // Resolving against theme::live() was wrong for the case that matters:
-    // "project theme T, then publish it" is the obvious call order, and a
-    // host that has not ALSO made T live yet would get its literals passed
-    // through (fine) but any slot resolved against the OUTGOING theme. The
-    // caller already said which theme it meant by projecting through it;
-    // second-guessing that with ambient state is how the two halves
-    // disagree.
+    // Resolving again here would be wrong twice over. Against theme::live()
+    // it second-guesses the caller with ambient state ("project theme T,
+    // then publish it" is the obvious call order, and a host that has not
+    // yet made T live would get its slots bound to the OUTGOING theme). And
+    // it would flatten a host that deliberately passed a SLOT wanting the
+    // late-bound behaviour — pinning it to today's palette forever, which is
+    // the exact bug class late binding exists to remove.
     //
-    // So: a literal is taken as given, and a slot — which only a host
-    // writing a palette by hand can produce — resolves against the live
-    // theme, because that is the only theme it could have meant.
-#define X(f, SLOT) next.f = LitColor::try_literal(p.f)                        \
-                                .value_or(theme::live().resolve(p.f));
+    // So: whatever the host handed us is what markdown paints with. A
+    // literal stays literal, a slot stays late-bound.
+#define X(f, SLOT) next.f = p.f;
     MAYA_MD_PALETTE(X)
 #undef X
     colors::publish(next);

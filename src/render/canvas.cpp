@@ -368,18 +368,27 @@ void StylePool::write_transition_sgr(uint16_t prev_id, uint16_t new_id,
     // Color::Default is the "occlude but emit no color SGR" sentinel —
     // skip it as if absent. fg / bg are emitted only when the
     // effective-color state actually changes.
-    auto effective_fg = [](const std::optional<Color>& c) -> const Color* {
-        if (c.has_value() && c->kind() != Color::Kind::Default) return &*c;
-        return nullptr;
+    //
+    // Compared as the TERMINAL will see them: resolved against the theme and
+    // degraded to its colour depth. On a 256-colour link (ssh, tmux) two
+    // truecolor inks a few units apart land on the same palette index, and
+    // comparing the RGBs emitted a `38;5;N` that repeated the pen exactly.
+    // Measured on doom_fire at TERM=tmux-256color: 8% of all bytes on the
+    // wire were such no-op SGRs.
+    const int level = active_color_level();
+    const Theme& th = theme::live();
+    auto effective_fg = [&](const std::optional<Color>& c) -> std::optional<LitColor> {
+        if (c.has_value() && c->kind() != Color::Kind::Default)
+            return th.resolve(*c).degrade(level);
+        return std::nullopt;
     };
-    const Color* from_fg = effective_fg(from.fg);
-    const Color* to_fg   = effective_fg(to.fg);
-    if ((from_fg == nullptr) != (to_fg == nullptr)
-        || (from_fg && to_fg && !(*from_fg == *to_fg)))
+    const std::optional<LitColor> from_fg = effective_fg(from.fg);
+    const std::optional<LitColor> to_fg   = effective_fg(to.fg);
+    if (from_fg != to_fg)
     {
         sep();
         if (to_fg) {
-            p = append_color_sgr(p, *to_fg, /*is_fg=*/true);
+            p = append_resolved_sgr(p, *to_fg, /*is_fg=*/true);
         } else {
             // Explicit fg disabled → ANSI 39 (default fg).
             *p++ = '3'; *p++ = '9';
@@ -394,19 +403,19 @@ void StylePool::write_transition_sgr(uint16_t prev_id, uint16_t new_id,
     //
     // Kind::Default still means the deliberate terminal-background opt-out
     // and still emits 49, so transparency survives on both paths.
-    const Theme& th = theme::live();
     const bool themed = theme::owns_canvas(th);
-    // Resolved, because the COMPARISON has to happen on the far side of the
-    // theme: two slots that differ as written may paint identically, and a
-    // slot and a literal that look different may be the same colour. nullopt
-    // means "terminal default" (emit 49).
+    // Resolved AND degraded, because the COMPARISON has to happen on the far
+    // side of the theme and the colour depth: two slots that differ as
+    // written may paint identically, a slot and a literal that look
+    // different may be the same colour, and two RGBs may be one palette
+    // index. nullopt means "terminal default" (emit 49).
     auto effective_bg = [&](const std::optional<Color>& c) -> std::optional<LitColor> {
         if (c.has_value()) {
             const LitColor lit = th.resolve(*c);
             if (lit.kind() == ColorKind::Default) return std::nullopt;
-            return lit;
+            return lit.degrade(level);
         }
-        return themed ? std::optional<LitColor>{th.background} : std::nullopt;
+        return themed ? std::optional<LitColor>{th.background.degrade(level)} : std::nullopt;
     };
     const std::optional<LitColor> from_bg = effective_bg(from.bg);
     const std::optional<LitColor> to_bg   = effective_bg(to.bg);

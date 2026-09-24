@@ -602,14 +602,22 @@ public:
 
     /// Publish this runtime's theme slot to app_set_theme().
     ///
-    /// Carries over whatever the live theme already is. app_set_theme() is
-    /// valid before any Runtime exists (it parks the theme in its own
-    /// storage), so by the time a Runtime adopts the slot the user's scheme
-    /// may already be set — and re-seating the pointer to this Runtime's own
-    /// `theme_` would silently revert to whatever it was constructed with.
-    /// Adoption must not lose a swap that already happened.
+    /// Two sources can name the starting theme, and exactly one wins:
+    ///
+    ///   * app_set_theme() called before any Runtime exists (it parks the
+    ///     theme in its own storage). That is the host saying "use THIS",
+    ///     after reading its own config, so it must not be reverted.
+    ///   * RunConfig::theme, stored in theme_ by create().
+    ///
+    /// Adoption used to be `theme_ = theme::live()` unconditionally, which
+    /// honoured the first and silently threw the second away: live() is
+    /// native when nobody set anything, so run<App>({.theme = dracula})
+    /// (the example API.md opens with) started in native on BOTH loops.
+    /// Whether anyone set a theme pre-runtime is exactly what live_epoch()
+    /// counts, so that decides it, rather than comparing against native (a
+    /// host may deliberately set native over a RunConfig default).
     void publish_theme_slot() noexcept {
-        theme_ = theme::live();
+        if (theme::live_epoch() != 0) theme_ = theme::live();
         live_theme() = &theme_;
         on_theme_changed(theme_);
     }

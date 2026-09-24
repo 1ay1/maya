@@ -13,9 +13,11 @@
 
 #include <maya/app/jaal_host.hpp>
 #include <maya/maya.hpp>
+#include <maya/style/schemes.hpp>
 
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -67,7 +69,9 @@ struct TerminalFx {
         rows.push_back(text("terminal fx on jaal") | Bold);
         rows.push_back(text("t title  c clip  o osc  r redraw  i reset  s suspend  q quit") | Dim);
         for (const auto& l : m.log) rows.push_back(text(l));
-        return v(std::move(rows)) | pad<1> | border_<Round>;
+        // Narrower than the terminal (content-sized, like agentty's frame),
+        // so the theme test checks the fill past the frame's own border.
+        return v(std::move(rows)) | pad<1> | border_<Round> | width(72);
     }
 
     static Sub subscribe(const Model&) {
@@ -80,6 +84,11 @@ struct TerminalFx {
 
 static_assert(JaalView<TerminalFx>);
 
-int main() {
-    return run_jaal<TerminalFx>({.title = "terminal fx", .mode = Mode::Inline});
+int main(int argc, char** argv) {
+    // --dracula: a scheme that OWNS its canvas (states a real background),
+    // so the host must fill the frame with it (apply_theme_canvas).
+    const bool canvas = argc > 1 && std::string_view(argv[1]) == "--dracula";
+    return run_jaal<TerminalFx>({.title = "terminal fx",
+                                 .mode  = Mode::Inline,
+                                 .theme = canvas ? theme::dracula : theme::native});
 }

@@ -109,5 +109,59 @@ def run(binary):
     print(f"{name}: {'ok' if not failures else 'FAILED'}")
     return 1 if failures else 0
 
+def canvas(binary):
+    """A theme that owns its canvas (Dracula, #282A36) must fill the frame.
+    maya's loop wraps the view in apply_theme_canvas; a host that forgets
+    leaves the terminal's own background showing through."""
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.environ["TERM"] = "xterm-256color"
+        os.environ["MAYA_COLOR"] = "truecolor"   # pin the tier: the caller may export NO_COLOR
+        os.execv(binary, [binary, "--dracula"])
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+    buf = bytearray()
+    end = time.time() + 3
+    while time.time() < end and b"terminal fx on jaal" not in buf:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if r:
+            try:
+                buf.extend(os.read(fd, 65536))
+            except OSError:
+                break
+    time.sleep(0.2)
+    try:
+        while select.select([fd], [], [], 0.1)[0]:
+            buf.extend(os.read(fd, 65536))
+    except OSError:
+        pass
+    os.write(fd, b"q")
+    time.sleep(0.3)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    os.waitpid(pid, 0)
+    # A theme that owns its canvas must reach the screen at all, and fill
+    # each frame row to the terminal's right edge. The first half is what
+    # broke: RunConfig::theme was dropped at startup on both loops (see
+    # Runtime::publish_theme_slot), so this starts in native and fails.
+    import pyte
+    screen = pyte.Screen(100, 30)
+    pyte.ByteStream(screen).feed(bytes(buf))
+    title_row = next((y for y in range(30)
+                      if "terminal fx on jaal" in "".join(
+                          screen.buffer[y][x].data for x in range(100))), None)
+    bg = lambda y, x: screen.buffer[y][x].bg
+    first_bg = bg(title_row, 0) if title_row is not None else None
+    edge_bg = bg(title_row, 99) if title_row is not None else None
+    ok = (title_row is not None and edge_bg not in ("default", None)
+          and edge_bg == first_bg)
+    print(("  ok    " if ok else "  FAIL  ") +
+          "a canvas-owning theme fills each frame row to the right edge"
+          + ("" if ok else f" (row {title_row}: col0={first_bg} col99={edge_bg})"))
+    return 0 if ok else 1
+
 if __name__ == "__main__":
-    sys.exit(run(sys.argv[1]))
+    rc = run(sys.argv[1])
+    rc |= canvas(sys.argv[1])
+    sys.exit(rc)

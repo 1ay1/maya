@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cstdint>
 #include <thread>
 #include <vector>
 
@@ -51,9 +52,19 @@ static Col3 col_clamp(Col3 c) { return {clampf(c.r,0,1), clampf(c.g,0,1), clampf
 
 // ── Noise ───────────────────────────────────────────────────────────────────
 
+// Lattice hash -> [0, 1). An integer mix, not the shader-classic
+// fract(sin(dot) * 43758): terrain_height() is 13 value_noise lookups (52
+// hashes) per ray-march step, and sinf of an argument in the thousands pays
+// a full range reduction every time. That made sinf the #1 frame in a
+// profile at 568% CPU / 7 fps. Same role (a well-mixed value per lattice
+// point), a few integer ops.
 static float hash(float x, float y) {
-    float h = std::sin(x * 127.1f + y * 311.7f) * 43758.5453f;
-    return h - std::floor(h);
+    auto h = static_cast<std::uint32_t>(static_cast<std::int32_t>(x)) * 0x8da6b343u
+           ^ static_cast<std::uint32_t>(static_cast<std::int32_t>(y)) * 0xd8163841u;
+    h ^= h >> 15; h *= 0x2c1b3c6du;
+    h ^= h >> 12; h *= 0x297a2d39u;
+    h ^= h >> 15;
+    return static_cast<float>(h >> 8) * (1.f / 16777216.f);
 }
 
 static float value_noise(float x, float y) {
@@ -729,25 +740,27 @@ static void paint(Canvas& canvas, int w, int h) {
     int canvas_h = h - 1;
     int ph = canvas_h * 2;
 
-    // Multi-threaded rendering
+    // Multi-threaded rendering. Rows are INTERLEAVED (thread t takes t,
+    // t+n, t+2n...), not split into contiguous bands: sky rows at the top
+    // cost almost nothing and terrain rows near the horizon march 200 steps,
+    // so with bands every thread but one finished early and waited
+    // (__ulock_wait was the #3 frame in a profile). Interleaved, each thread
+    // gets the same mix and they finish together.
     static const int n_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
-    auto render_rows = [&](int y0, int y1) {
-        for (int y = y0; y < y1; ++y)
+    auto render_rows = [&](int first, int stride) {
+        for (int y = first; y < ph; y += stride)
             for (int x = 0; x < g_pixel_w; ++x)
                 render_pixel(x, y, g_pixel_w, ph);
     };
 
     if (n_threads <= 1 || ph < 8) {
-        render_rows(0, ph);
+        render_rows(0, 1);
     } else {
         std::vector<std::jthread> threads;
-        threads.reserve(static_cast<size_t>(n_threads));
-        int chunk = (ph + n_threads - 1) / n_threads;
-        for (int t = 0; t < n_threads; ++t) {
-            int lo = t * chunk, hi = std::min(lo + chunk, ph);
-            if (lo >= hi) break;
-            threads.emplace_back([=] { render_rows(lo, hi); });
-        }
+        threads.reserve(static_cast<size_t>(n_threads - 1));
+        for (int t = 1; t < n_threads; ++t)
+            threads.emplace_back([=] { render_rows(t, n_threads); });
+        render_rows(0, n_threads);   // this thread works too, instead of only waiting
     }
 
     post_process(g_pixel_w, ph);

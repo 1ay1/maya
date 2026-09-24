@@ -68,21 +68,6 @@ inline float smooth_union(float a, float b, float k) {
     return std::fmin(a, b) - h * h * k * 0.25f;
 }
 
-// ── Rotation ─────────────────────────────────────────────────────────────────
-
-inline vec3 rot_y(vec3 p, float a) {
-    float c = std::cos(a), s = std::sin(a);
-    return {p.x*c + p.z*s, p.y, -p.x*s + p.z*c};
-}
-inline vec3 rot_x(vec3 p, float a) {
-    float c = std::cos(a), s = std::sin(a);
-    return {p.x, p.y*c - p.z*s, p.y*s + p.z*c};
-}
-inline vec3 rot_z(vec3 p, float a) {
-    float c = std::cos(a), s = std::sin(a);
-    return {p.x*c - p.y*s, p.x*s + p.y*c, p.z};
-}
-
 // ── Scenes ───────────────────────────────────────────────────────────────────
 
 static int   g_scene    = 0;
@@ -96,16 +81,60 @@ static float g_elapsed  = 0.f;
 // Material IDs: 0=ground, 1=primary, 2=secondary, 3=sky, 4=emissive
 struct Hit { float d; int mat; };
 
+// ── Per-frame scene constants ────────────────────────────────────────────────
+// Everything that depends only on g_time (object positions, rotation
+// sin/cos) is computed ONCE per frame here. The scene functions below run for
+// every march step of every ray, 60+ times per pixel: evaluating the same
+// sin(g_time * k) there put sinf/sincosf at the top of the profile (175% CPU).
+struct Rot { float c, s; };
+static Rot rot_of(float a) { return {std::cos(a), std::sin(a)}; }
+inline vec3 rot_y(vec3 p, Rot r) { return {p.x*r.c + p.z*r.s, p.y, -p.x*r.s + p.z*r.c}; }
+inline vec3 rot_x(vec3 p, Rot r) { return {p.x, p.y*r.c - p.z*r.s, p.y*r.s + p.z*r.c}; }
+inline vec3 rot_z(vec3 p, Rot r) { return {p.x*r.c - p.y*r.s, p.x*r.s + p.y*r.c, p.z}; }
+
+static struct FrameConsts {
+    // classic
+    float bob; Rot torus_y, torus_x, ring_y;
+    // metaballs
+    vec3 m1, m2, m3, m4;
+    // columns
+    vec3 orb_c, p1, p2;
+    // cathedral
+    vec3 cols[8]; float orb_y; Rot r1_y, r1_x, r2_y, r2_z;
+} g_fc;
+
+static void update_frame_consts() {
+    const float T = g_time;
+    g_fc.bob = std::sin(T * 1.8f) * 0.5f + 1.5f;
+    g_fc.torus_y = rot_of(T * 0.6f);
+    g_fc.torus_x = rot_of(T * 0.4f);
+    g_fc.ring_y  = rot_of(-T * 1.2f);
+    const float t = T * 0.8f;
+    g_fc.m1 = {std::sin(t)*1.5f, 1.2f + std::sin(t*1.3f)*0.4f, std::cos(t)*1.5f};
+    g_fc.m2 = {std::cos(t*0.7f)*1.8f, 1.5f + std::cos(t*1.1f)*0.3f, std::sin(t*0.9f)*1.8f};
+    g_fc.m3 = {0, 1.0f + std::sin(t*1.6f)*0.6f, 0};
+    g_fc.m4 = {std::sin(t*1.1f)*1.2f, 0.8f + std::cos(t*0.8f)*0.5f, std::cos(t*1.4f)*1.2f};
+    g_fc.orb_c = {0, 2.f + std::sin(T)*0.5f, 0};
+    g_fc.p1 = {std::sin(T*1.5f)*3.f, 1.5f + std::cos(T*2.f)*0.5f, std::cos(T*1.5f)*3.f};
+    g_fc.p2 = {std::cos(T*1.2f)*2.5f, 2.5f + std::sin(T*1.7f)*0.3f, std::sin(T*1.2f)*2.5f};
+    for (int i = 0; i < 8; ++i) {
+        const float a = float(i) * TAU / 8.f;
+        g_fc.cols[i] = {std::cos(a) * 4.f, 0, std::sin(a) * 4.f};
+    }
+    g_fc.orb_y = 3.f + std::sin(T * 0.7f) * 0.3f;
+    g_fc.r1_y = rot_of(T * 0.5f);  g_fc.r1_x = rot_of(PI * 0.3f);
+    g_fc.r2_y = rot_of(-T * 0.4f); g_fc.r2_z = rot_of(PI * 0.4f);
+}
+
 static Hit scene_classic(vec3 p) {
     float ground = sd_plane(p, {0,1,0}, 0.f);
-    float bob = std::sin(g_time * 1.8f) * 0.5f + 1.5f;
-    float sphere = sd_sphere(p - vec3{0, bob, 0}, 1.0f);
-    vec3 tp = rot_y(p - vec3{0, 1.2f, 0}, g_time * 0.6f);
-    tp = rot_x(tp, g_time * 0.4f);
+    float sphere = sd_sphere(p - vec3{0, g_fc.bob, 0}, 1.0f);
+    vec3 tp = rot_y(p - vec3{0, 1.2f, 0}, g_fc.torus_y);
+    tp = rot_x(tp, g_fc.torus_x);
     float torus = sd_torus(tp, 2.0f, 0.35f);
 
     // Floating crystal ring
-    vec3 rp = rot_y(p - vec3{0, bob, 0}, -g_time * 1.2f);
+    vec3 rp = rot_y(p - vec3{0, g_fc.bob, 0}, g_fc.ring_y);
     float ring = sd_torus(rp, 1.8f, 0.06f);
 
     Hit h = {ground, 0};
@@ -117,11 +146,10 @@ static Hit scene_classic(vec3 p) {
 
 static Hit scene_metaballs(vec3 p) {
     float ground = sd_plane(p, {0,1,0}, 0.f);
-    float t = g_time * 0.8f;
-    float s1 = sd_sphere(p - vec3{std::sin(t)*1.5f, 1.2f + std::sin(t*1.3f)*0.4f, std::cos(t)*1.5f}, 0.8f);
-    float s2 = sd_sphere(p - vec3{std::cos(t*0.7f)*1.8f, 1.5f + std::cos(t*1.1f)*0.3f, std::sin(t*0.9f)*1.8f}, 0.7f);
-    float s3 = sd_sphere(p - vec3{0, 1.0f + std::sin(t*1.6f)*0.6f, 0}, 0.9f);
-    float s4 = sd_sphere(p - vec3{std::sin(t*1.1f)*1.2f, 0.8f + std::cos(t*0.8f)*0.5f, std::cos(t*1.4f)*1.2f}, 0.5f);
+    float s1 = sd_sphere(p - g_fc.m1, 0.8f);
+    float s2 = sd_sphere(p - g_fc.m2, 0.7f);
+    float s3 = sd_sphere(p - g_fc.m3, 0.9f);
+    float s4 = sd_sphere(p - g_fc.m4, 0.5f);
     float blob = smooth_union(smooth_union(s1, s2, 0.8f), smooth_union(s3, s4, 0.8f), 0.8f);
 
     Hit h = {ground, 0};
@@ -137,10 +165,10 @@ static Hit scene_columns(vec3 p) {
     rp.z = std::fmod(std::fabs(rp.z) + 2.f, 4.f) - 2.f;
     float col = sd_box(rp - vec3{0, 2.5f, 0}, {0.3f, 2.5f, 0.3f});
     // Floating orb
-    float orb = sd_sphere(p - vec3{0, 2.f + std::sin(g_time)*0.5f, 0}, 0.6f);
+    float orb = sd_sphere(p - g_fc.orb_c, 0.6f);
     // Orbiting emissive particles
-    float p1 = sd_sphere(p - vec3{std::sin(g_time*1.5f)*3.f, 1.5f + std::cos(g_time*2.f)*0.5f, std::cos(g_time*1.5f)*3.f}, 0.15f);
-    float p2 = sd_sphere(p - vec3{std::cos(g_time*1.2f)*2.5f, 2.5f + std::sin(g_time*1.7f)*0.3f, std::sin(g_time*1.2f)*2.5f}, 0.12f);
+    float p1 = sd_sphere(p - g_fc.p1, 0.15f);
+    float p2 = sd_sphere(p - g_fc.p2, 0.12f);
 
     Hit h = {ground, 0};
     if (col < h.d) h = {col, 2};
@@ -156,22 +184,20 @@ static Hit scene_cathedral(vec3 p) {
     // Tall arched columns in a circle
     float cols = MAX_DIST;
     for (int i = 0; i < 8; ++i) {
-        float a = float(i) * TAU / 8.f;
-        float r = 4.f;
-        vec3 cp = {std::cos(a) * r, 0, std::sin(a) * r};
+        const vec3 cp = g_fc.cols[i];
         float c = sd_capsule(p, cp, cp + vec3{0, 5.f, 0}, 0.2f);
         cols = std::fmin(cols, c);
     }
 
     // Central glowing orb
-    float orb = sd_sphere(p - vec3{0, 3.f + std::sin(g_time * 0.7f) * 0.3f, 0}, 0.8f);
+    float orb = sd_sphere(p - vec3{0, g_fc.orb_y, 0}, 0.8f);
 
     // Rotating rings around orb
-    vec3 r1p = rot_y(p - vec3{0, 3.f, 0}, g_time * 0.5f);
-    r1p = rot_x(r1p, PI * 0.3f);
+    vec3 r1p = rot_y(p - vec3{0, 3.f, 0}, g_fc.r1_y);
+    r1p = rot_x(r1p, g_fc.r1_x);
     float ring1 = sd_torus(r1p, 1.8f, 0.05f);
-    vec3 r2p = rot_y(p - vec3{0, 3.f, 0}, -g_time * 0.4f);
-    r2p = rot_z(r2p, PI * 0.4f);
+    vec3 r2p = rot_y(p - vec3{0, 3.f, 0}, g_fc.r2_y);
+    r2p = rot_z(r2p, g_fc.r2_z);
     float ring2 = sd_torus(r2p, 2.2f, 0.04f);
 
     Hit h = {ground, 0};
@@ -551,6 +577,7 @@ int main() {
             g_frame++;
 
             if (W < 10 || H < 5) return;
+            update_frame_consts();   // once per frame, never per ray sample
 
             int bar_y = H - 1;
             int canvas_h = H - 1;
@@ -586,8 +613,8 @@ int main() {
             static const int n_threads = std::max(1, static_cast<int>(
                 std::thread::hardware_concurrency()));
 
-            auto trace_rows = [&](int y_begin, int y_end) {
-                for (int cy = y_begin; cy < y_end; ++cy) {
+            auto trace_rows = [&](int first, int stride) {
+                for (int cy = first; cy < canvas_h; cy += stride) {
                     for (int cx = 0; cx < pixel_w; ++cx) {
                         int py_top = cy * 2;
                         float u = (2.f * (cx + 0.5f) / pixel_w - 1.f) * aspect * fov;
@@ -606,18 +633,17 @@ int main() {
                 }
             };
 
+            // Rows INTERLEAVED across threads, and this thread takes a share:
+            // contiguous bands left the threads with cheap sky rows idle
+            // (__ulock_wait) while the ones with the scene finished the frame.
             if (n_threads <= 1 || canvas_h < 4) {
-                trace_rows(0, canvas_h);
+                trace_rows(0, 1);
             } else {
                 std::vector<std::jthread> threads;
-                threads.reserve(static_cast<size_t>(n_threads));
-                int chunk = (canvas_h + n_threads - 1) / n_threads;
-                for (int t = 0; t < n_threads; ++t) {
-                    int lo = t * chunk;
-                    int hi = std::min(lo + chunk, canvas_h);
-                    if (lo >= hi) break;
-                    threads.emplace_back([=, &canvas] { trace_rows(lo, hi); });
-                }
+                threads.reserve(static_cast<size_t>(n_threads - 1));
+                for (int t = 1; t < n_threads; ++t)
+                    threads.emplace_back([=, &trace_rows] { trace_rows(t, n_threads); });
+                trace_rows(0, n_threads);
                 // jthread destructor joins automatically
             }
 

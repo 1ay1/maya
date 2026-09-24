@@ -497,7 +497,7 @@ inline constexpr double kChromaFloor     = 0.5;
 // THE entry point. Perceptually nearest entry that PRESERVES THE HUE;
 // perceptually nearest overall when the source has no hue to preserve, or
 // when the palette cannot honour it.
-[[nodiscard]] constexpr std::uint8_t nearest_256(int r, int g, int b) noexcept {
+[[nodiscard]] constexpr std::uint8_t nearest_256_uncached(int r, int g, int b) noexcept {
     const Lab s = to_lab(r, g, b);
     const double sc = chroma_of(s);
 
@@ -569,7 +569,7 @@ inline constexpr auto kPalette16 = make_palette_16();
 // Chroma-locked ANSI-16. Sixteen candidates is few enough that no pruning is
 // worth the complexity -- the whole scan is compile-time anyway wherever the
 // input is a constant.
-[[nodiscard]] constexpr std::uint8_t nearest_16(int r, int g, int b) noexcept {
+[[nodiscard]] constexpr std::uint8_t nearest_16_uncached(int r, int g, int b) noexcept {
     const Lab s = to_lab(r, g, b);
     const double sc = chroma_of(s);
 
@@ -594,6 +594,56 @@ inline constexpr auto kPalette16 = make_palette_16();
         if (found) return best;
     }
     return nearest_16_unconstrained(r, g, b);
+}
+
+// ── The entry points: exact, and cheap at runtime ────────────────────────────────────
+//
+// One nearest_256 is ~250 CIEDE2000 evaluations (atan, exp, sin, cos, pow
+// each), a few microseconds. That is free for a theme's 40 constants and
+// fatal for a truecolor ANIMATION on a 256-colour terminal: every cell's
+// colour is degraded at SGR-emit time, every frame. Measured: doom_fire at
+// 214x60 over ssh + tmux (TERM=tmux-256color, no COLORTERM, so level 2) sat
+// at 99-100% of a core, and `sample` put 97% of it in nearest_256 ->
+// ciede2000 -> c_atan/c_exp. The frame rate collapsed to what the CPU could
+// quantize, which is what "super laggy" was.
+//
+// The answer is a pure function of 24 bits, so memoise it. A direct-mapped
+// table whose entry stores the full rgb it answers for, so a hit is exact,
+// never an approximation; thread_local so the render thread and a parse
+// worker never contend or race. 4096 x 4 bytes = 16 KB per thread per
+// depth. An animation's palette (doom_fire: 37 colours, gradients a few
+// hundred) fits with room to spare, and a miss costs exactly what every
+// call used to.
+//
+// In a constant expression the uncached scan runs as before, so every
+// static_assert below still proves the real algorithm, not the cache.
+namespace detail {
+template <std::uint8_t (*Scan)(int, int, int) noexcept>
+[[nodiscard]] inline std::uint8_t memo_nearest(int r, int g, int b) noexcept {
+    // Entry = valid(1) | rgb(24) | index(8) = 33 bits: bit 32 marks it
+    // filled, so black (rgb 0) can't be mistaken for an empty slot.
+    thread_local std::array<std::uint64_t, 4096> table{};
+    const std::uint32_t rgb = (static_cast<std::uint32_t>(r & 0xFF) << 16)
+                            | (static_cast<std::uint32_t>(g & 0xFF) << 8)
+                            |  static_cast<std::uint32_t>(b & 0xFF);
+    // Fibonacci hash -> 12-bit slot, so a gradient's neighbours spread out.
+    std::uint64_t& e = table[(rgb * 2654435769u) >> 20];
+    const std::uint64_t want = (std::uint64_t{1} << 32) | (std::uint64_t{rgb} << 8);
+    if ((e & ~std::uint64_t{0xFF}) == want) return static_cast<std::uint8_t>(e);
+    const std::uint8_t idx = Scan(r, g, b);
+    e = want | idx;
+    return idx;
+}
+}  // namespace detail
+
+[[nodiscard]] constexpr std::uint8_t nearest_256(int r, int g, int b) noexcept {
+    if consteval { return nearest_256_uncached(r, g, b); }
+    else         { return detail::memo_nearest<&nearest_256_uncached>(r, g, b); }
+}
+
+[[nodiscard]] constexpr std::uint8_t nearest_16(int r, int g, int b) noexcept {
+    if consteval { return nearest_16_uncached(r, g, b); }
+    else         { return detail::memo_nearest<&nearest_16_uncached>(r, g, b); }
 }
 
 // ── Compile-time conformance ────────────────────────────────────────────

@@ -397,9 +397,53 @@ else()
     endif()
 endif()
 
+# ── jaal: the runtime maya is being rebuilt on ─────────────────────────
+# third_party/jaal is a typed Elm runtime (loop, tasks, streams, faults,
+# replay) that replaces maya's hand-rolled one in app.hpp. It needs C++26
+# (structured binding packs), while maya can still fall back to C++23 on an
+# old toolchain, so it's opt-in and only offered where C++26 is available.
+# Until the migration is complete it builds BESIDE the existing runtime:
+# nothing in maya depends on it unless MAYA_WITH_JAAL is on.
+option(MAYA_WITH_JAAL "Build maya's jaal host (the new runtime)" OFF)
+if(MAYA_WITH_JAAL)
+    # A CMake older than the compiler (CMake 3.31 with AppleClang 21) doesn't
+    # LIST cxx_std_26 even though the compiler takes -std=c++2c, so asking
+    # CMake is the wrong test: probe the flag itself. jaal's own build does
+    # the same (third_party/jaal/CMakeLists.txt, JAAL_STD_FLAG).
+    set(MAYA_JAAL_STD_FLAG "")
+    if(NOT "cxx_std_26" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+        include(CheckCXXCompilerFlag)
+        check_cxx_compiler_flag("-std=c++2c" MAYA_HAS_CXX2C)
+        if(NOT MAYA_HAS_CXX2C)
+            message(FATAL_ERROR "MAYA_WITH_JAAL needs C++26; this compiler "
+                                "(${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}) "
+                                "accepts neither cxx_std_26 nor -std=c++2c.")
+        endif()
+        set(MAYA_JAAL_STD_FLAG "-std=c++2c")
+    endif()
+    if(NOT EXISTS ${PROJECT_SOURCE_DIR}/third_party/jaal/CMakeLists.txt)
+        message(FATAL_ERROR "MAYA_WITH_JAAL: third_party/jaal is empty. Run: "
+                            "git submodule update --init third_party/jaal")
+    endif()
+    set(JAAL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/jaal EXCLUDE_FROM_ALL)
+    target_link_libraries(maya PUBLIC jaal::jaal)
+    target_compile_definitions(maya PUBLIC MAYA_WITH_JAAL=1)
+    # PUBLIC: anything that includes maya's jaal host includes jaal's
+    # headers, which need C++26 (structured binding packs) to compile.
+    if(MAYA_JAAL_STD_FLAG)
+        target_compile_options(maya PUBLIC ${MAYA_JAAL_STD_FLAG})
+        target_compile_options(jaal PRIVATE ${MAYA_JAAL_STD_FLAG})
+    endif()
+endif()
+
 option(MAYA_BUILD_EXAMPLES "Build example programs" ON)
 if(MAYA_BUILD_EXAMPLES)
     file(GLOB MAYA_EXAMPLE_SOURCES CONFIGURE_DEPENDS examples/*.cpp)
+    # jaal_*.cpp run on the new runtime and need MAYA_WITH_JAAL.
+    if(NOT MAYA_WITH_JAAL)
+        list(FILTER MAYA_EXAMPLE_SOURCES EXCLUDE REGEX "/jaal_[^/]*\\.cpp$")
+    endif()
     foreach(src ${MAYA_EXAMPLE_SOURCES})
         get_filename_component(name ${src} NAME_WE)
         set(tgt maya_${name})

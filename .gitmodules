@@ -1,0 +1,4 @@
+[submodule "third_party/jaal"]
+	path = third_party/jaal
+	url = git@github.com:1ay1/jaal.git
+	branch = master

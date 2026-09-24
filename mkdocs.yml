@@ -93,6 +93,7 @@ nav:
       - Canvas API: 08-canvas-api.md
       - Widget Reference: 13-widgets.md
       - Examples Walkthrough: 10-examples.md
+      - Moving a Program onto jaal: jaal-migration.md
   - Reference:
       - API Reference: 11-api-reference.md
       - Glossary: glossary.md

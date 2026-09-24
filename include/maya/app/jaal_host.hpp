@@ -61,6 +61,7 @@
 #include <string>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -147,6 +148,76 @@ template <class C>
 /// Set the terminal window title (maya's Cmd::set_title).
 struct SetTitle { std::string title; };
 using set_title = jaal::pure_fx<SetTitle, "set_title">;
+
+/// Put text on the system clipboard (OSC 52; maya's Cmd::write_clipboard).
+struct WriteClipboard { std::string text; };
+using write_clipboard = jaal::pure_fx<WriteClipboard, "write_clipboard">;
+
+/// Ask the terminal for its clipboard (OSC 52 read). The reply arrives as a
+/// PasteEvent, so subscribe with on_paste (maya's Cmd::query_clipboard).
+struct QueryClipboard {};
+using query_clipboard = jaal::pure_fx<QueryClipboard, "query_clipboard">;
+
+/// An already-formed control sequence for a cooperating HOST terminal
+/// (editor OSC hooks, notifications), out of band with the frame renderer.
+struct EmitHostSequence { std::string sequence; };
+using emit_host_sequence = jaal::pure_fx<EmitHostSequence, "emit_host_sequence">;
+
+/// maya's Cmd::emit_osc: `ESC ] code ; payload ST`.
+[[nodiscard]] inline EmitHostSequence osc(int code, std::string_view payload) {
+    std::string seq = "\x1b]" + std::to_string(code) + ';';
+    seq.append(payload);
+    seq += "\x1b\\";
+    return {std::move(seq)};
+}
+
+/// Commit whatever of the last inline frame overflowed the viewport
+/// (maya's Cmd::commit_scrollback_overflow).
+struct CommitOverflow {};
+using commit_overflow = jaal::pure_fx<CommitOverflow, "commit_overflow">;
+
+/// Repaint everything from scratch (maya's Cmd::force_redraw).
+struct ForceRedraw {};
+using force_redraw = jaal::pure_fx<ForceRedraw, "force_redraw">;
+
+/// Drop the inline frame's history and start a fresh one below it
+/// (maya's Cmd::reset_inline).
+struct ResetInline {};
+using reset_inline = jaal::pure_fx<ResetInline, "reset_inline">;
+
+/// Hand the real terminal to an interactive child (sudo, $EDITOR, a pager)
+/// and fold the result back in (maya's Cmd::suspend). `run` executes on the
+/// loop thread with the TUI torn down to a cooked tty; its return value is
+/// the host's ANSWER (jaal D39), folded in the same step. It's a callback
+/// because the child IS the effect, but it never leaves the loop thread,
+/// and the answer is an ordinary message, so replay folds the result and
+/// never re-runs the child.
+template <class Msg> struct Suspend { std::function<Msg()> run; };
+struct suspend {
+    static constexpr std::string_view name = "suspend";
+    template <class Msg> using type = Suspend<Msg>;
+    template <class F, class M>
+    static auto fmap(F&& f, Suspend<M> e) -> Suspend<std::invoke_result_t<F, M>> {
+        return {[g = std::move(e.run), f = std::forward<F>(f)] { return f(g()); }};
+    }
+    template <class Id, class F, class M>
+    static auto fmap_with(const Id& id, F&& f, Suspend<M> e)
+        -> Suspend<std::invoke_result_t<F, const Id&, M>> {
+        return {[g = std::move(e.run), f = std::forward<F>(f), id] { return f(id, g()); }};
+    }
+    template <class Self, class Msg> struct ctors {
+        template <class F> requires std::is_invocable_r_v<Msg, F&>
+        [[nodiscard]] static Self suspend(F f) { return Self(Suspend<Msg>{std::move(f)}); }
+    };
+};
+
+/// Every terminal effect this host can carry out, for a program that wants
+/// the whole set: `jaal::Cmd<Msg, maya::terminal_fx>` is not valid (a row
+/// is a list), so spell it as `terminal_cmd<Msg>`.
+template <class Msg>
+using terminal_cmd = jaal::Cmd<Msg, commit_scrollback, set_title, write_clipboard,
+                               query_clipboard, emit_host_sequence, commit_overflow,
+                               force_redraw, reset_inline, suspend>;
 
 // ── key_map: the most common subscription ──────────────────────────────────────
 // maya's own key_map<Msg>() returns a maya::Sub, and 15 of maya's 20
@@ -265,7 +336,29 @@ public:
         // build() is what (re)sets the request, so clear it just before.
         detail::animation_requested_ = false;
         detail::next_frame_delay_ms_ = -1;
-        (void)rt_.render(P::view(k.model()));
+        // Two statements, not one call: view() is what calls app_set_theme(),
+        // and function arguments are unsequenced, so rt_.theme() could be
+        // read BEFORE view() ran and the canvas painted a frame late (maya's
+        // loop has the same comment, same reason).
+        Element built = P::view(k.model());
+        Element root  = detail::apply_theme_canvas(std::move(built), rt_.theme(),
+                                                   rt_.size().width.value);
+        // Optional one-shot cache warmup (a heavy thread just rehydrated):
+        // paint off-wire once on the RISING edge of needs_warmup, so the
+        // visible frame takes the cell-blit path.
+        if constexpr (detail::HasNeedsWarmup<P>::value) {
+            const bool want = P::needs_warmup(k.model());
+            if (want && !last_warmup_) rt_.warmup_render(root);
+            last_warmup_ = want;
+        }
+        (void)rt_.render(root);
+        // A ScrollState whose max_* changed during that paint means view()
+        // read stale zeros for it: draw once more so status text and
+        // clamping see the real values.
+        if (detail::scroll_writeback_dirty) {
+            detail::scroll_writeback_dirty = false;
+            dirty_ = true;
+        }
 
         schedule_next_frame();
     }
@@ -310,6 +403,7 @@ public:
     // just pressed was owed and nothing asked for it until the next key.
     [[nodiscard]] bool owes_frame() const noexcept {
         if (rt_.has_pending_writes() || rt_.has_deferred_frame()) return true;
+        if (dirty_) return true;                  // a re-render present() asked for
         // An animation frame that has come due is owed too: present() must
         // run even though no message changed the model.
         return next_frame_at_ && std::chrono::steady_clock::now() >= *next_frame_at_;
@@ -320,6 +414,7 @@ public:
     /// matters as much as the ceiling: a zero wait would spin the CPU until
     /// the tty drains.
     [[nodiscard]] std::optional<std::chrono::milliseconds> wait_hint() const noexcept {
+        if (dirty_) return std::chrono::milliseconds(0);
         if (rt_.has_pending_writes() || rt_.has_deferred_frame())
             return std::chrono::milliseconds(4);
         if (next_frame_at_) {
@@ -338,6 +433,26 @@ public:
     // its Cmd). Each is the call maya's own Cmd interpreter makes.
     void handle(CommitScrollback c) { rt_.commit_inline_prefix(c.debt.rows()); }
     void handle(SetTitle t)         { rt_.set_title(t.title); }
+    void handle(WriteClipboard w)   { rt_.write_clipboard(w.text); }
+    void handle(QueryClipboard)     { rt_.query_clipboard(); }
+    void handle(EmitHostSequence e) { rt_.emit_host_sequence(e.sequence); }
+    void handle(CommitOverflow)     { rt_.commit_inline_overflow(); dirty_ = true; }
+    void handle(ForceRedraw)        { rt_.force_redraw();           dirty_ = true; }
+    void handle(ResetInline)        { rt_.reset_inline();           dirty_ = true; }
+
+    // Hand the real tty to an interactive child and answer with how it went
+    // (jaal D39: the answer is folded in this step). Runs on the loop thread
+    // by design: the user is typing into the child; there is nothing else to
+    // do. The Runtime tears the TUI down to a cooked tty and restores it.
+    template <class M>
+    std::optional<M> handle(Suspend<M> s) {
+        if (!s.run) return std::nullopt;
+        std::optional<M> out;
+        rt_.suspend([&] { out.emplace(s.run()); });
+        dirty_ = true;                            // repaint over what the child left
+        last_hash_.reset();
+        return out;
+    }
 
     // 6. nothing: the Runtime's destructor restores the terminal, and
     //    jaal's teardown (kernel/teardown.hpp) has already taken the signal
@@ -351,6 +466,7 @@ private:
     std::optional<jaal::platform::native_reactor::registration> input_reg_;
     std::optional<std::uint64_t>                              last_hash_;
     bool                                                      dirty_ = true;
+    bool                                                      last_warmup_ = false;
     // The next animation frame a widget asked for, if any.
     std::optional<std::chrono::steady_clock::time_point>      next_frame_at_;
     std::chrono::nanoseconds                                  frame_period_;   // 0 = event-driven

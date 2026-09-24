@@ -69,6 +69,16 @@ run jaal_motion_showcase   --keys="c1"                        --animates="5"
 run jaal_agent             --keys="$(printf '\r') t"              --animates="$(printf '\r')"
 run jaal_messenger         --keys="xyz"                       --quit="$(printf '\003')"
 run jaal_agent_session     --keys="xy"                        --quit="$(printf '\003')" --animates="$(printf '\r')"
+run jaal_terminal_fx       --keys="tcori"
+
+# Deeper than the smoke checks: each terminal effect's bytes on the wire,
+# and suspend's answer folded back in (jaal D39).
+if python3 "$(dirname "$0")/jaal_terminal_fx_test.py" "$BUILD/maya_jaal_terminal_fx" >/dev/null; then
+    pass=$((pass + 1))
+else
+    fail=$((fail + 1)); failed="$failed jaal_terminal_fx_test"
+    echo "jaal_terminal_fx_test: FAILED (run it directly for details)"
+fi
 
 echo "$pass passed, $fail failed${failed:+ :$failed}"
 [ "$fail" -eq 0 ]

@@ -140,7 +140,14 @@ public:
     // run() (kernel_event_t), which is how SIGWINCH arrives.
     using event_type = std::variant<KeyEvent, MouseEvent, PasteEvent, FocusEvent, ResizeEvent>;
 
-    explicit jaal_host(detail::Runtime& rt) noexcept : rt_(rt) {}
+    /// `fps` > 0 redraws continuously at that rate (RunConfig::fps), for a
+    /// program whose view() reads the wall clock itself: a clock, a
+    /// throughput graph, an FPS counter. 0 (the default) is event-driven:
+    /// draw only when the model changes or a widget asks.
+    explicit jaal_host(detail::Runtime& rt, int fps = 0) noexcept
+        : rt_(rt),
+          frame_period_(fps > 0 ? std::chrono::nanoseconds(1'000'000'000LL / fps)
+                                : std::chrono::nanoseconds::zero()) {}
 
     jaal_host(const jaal_host&)            = delete;
     jaal_host& operator=(const jaal_host&) = delete;
@@ -217,18 +224,40 @@ public:
         detail::next_frame_delay_ms_ = -1;
         (void)rt_.render(P::view(k.model()));
 
-        // Schedule the next animation frame if a widget asked for one:
-        // its own minimum delay (a slow caret blink) or maya's default.
+        schedule_next_frame();
+    }
+
+
+    // The next frame, if anything wants one: the EARLIER of a widget's
+    // animation request and the fixed-rate tick (RunConfig::fps). One
+    // deadline, so owes_frame() and wait_hint() don't need to know which.
+    void schedule_next_frame() {
+        const auto now = std::chrono::steady_clock::now();
+        std::optional<std::chrono::steady_clock::time_point> next;
         if (detail::animation_requested_) {
+            // its own minimum delay (a slow caret blink) or maya's default
             const auto delay = detail::next_frame_delay_ms_ > 0
                 ? std::chrono::milliseconds(detail::next_frame_delay_ms_)
                 : detail::kAnimationFrameInterval;
-            next_frame_at_ = std::chrono::steady_clock::now() + delay;
-        } else {
-            next_frame_at_.reset();               // settled: back to idle
+            next = now + delay;
         }
+        if (frame_period_ > std::chrono::nanoseconds::zero()) {
+            // next_tick_ is when the next fixed-rate frame is due. Advance it
+            // by whole periods, so it keeps PHASE: a slow frame doesn't push
+            // every later frame back (30 fps stays 30, not 30 minus the
+            // render time). If we're a period or more behind (the loop
+            // stalled), resync to now instead of firing a burst of catch-up
+            // frames — the same rule jaal's `every` follows.
+            if (next_tick_ == std::chrono::steady_clock::time_point{})
+                next_tick_ = now + frame_period_;          // first frame
+            else if (next_tick_ <= now) {
+                next_tick_ += frame_period_;
+                if (next_tick_ <= now) next_tick_ = now + frame_period_;
+            }
+            if (!next || next_tick_ < *next) next = next_tick_;
+        }
+        next_frame_at_ = next;                    // nullopt: settled, back to idle
     }
-
 
     // maya's renderer can DEFER a frame: it coalesces when the terminal is
     // congested, or leaves bytes queued a slow tty wouldn't take. Its own
@@ -276,6 +305,8 @@ private:
     bool                                                      dirty_ = true;
     // The next animation frame a widget asked for, if any.
     std::optional<std::chrono::steady_clock::time_point>      next_frame_at_;
+    std::chrono::nanoseconds                                  frame_period_;   // 0 = event-driven
+    std::chrono::steady_clock::time_point                     next_tick_{};    // next fps frame
 };
 
 // ── the entry point ────────────────────────────────────────────────────────
@@ -287,7 +318,7 @@ int run_jaal(RunConfig cfg = {}, jaal::run_options opt = {}) {
     auto rt = detail::Runtime::create(cfg);
     if (!rt) return 70;                           // couldn't take the terminal
     rt->publish_theme_slot();
-    jaal_host<P> host{*rt};
+    jaal_host<P> host{*rt, cfg.fps};
     return jaal::run<P>(host, std::move(opt));
 }
 

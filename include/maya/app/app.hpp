@@ -2543,7 +2543,16 @@ void run(RunConfig cfg = {}) {
             }
         }
 
-        if (needs_render) {
+        if (needs_render && rt.is_running()) {
+            // Not after a quit. A quitting update commonly returns Model{} (the
+            // reset in every example's `[](Quit) { return pair{Model{}, quit}; }`)
+            // and view() indexes into that model's containers. With fps > 0
+            // needs_render is forced on every iteration, so the quit's own
+            // iteration rendered the EMPTY model: messenger's build_header()
+            // read channels[active_channel] from an empty vector and every
+            // Ctrl+C exited with SIGSEGV (-11) instead of 0. Found porting it
+            // to jaal, whose loop stops before drawing once quit is asked.
+            //
             // current_sub was rebuilt above when a model update made it stale.
 
             // Optional visual-hash gate. When the Program provides

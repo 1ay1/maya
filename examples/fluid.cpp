@@ -100,15 +100,27 @@ static void set_bnd(int b, std::vector<float>& x) {
     x[IX(N - 1, M - 1)] = 0.5f * (x[IX(N - 2, M - 1)] + x[IX(N - 1, M - 2)]);
 }
 
+// The two Gauss-Seidel sweeps below are the whole cost of this demo (the
+// profile: diffuse + project, nothing else). They read the grid size from
+// globals and write through std::vector&, so the compiler had to assume
+// every store might change g_N or alias another array and reload
+// everything each cell. Hoisting N/M into locals and taking __restrict
+// row pointers lets it keep the stencil in registers.
 static void diffuse(int b, std::vector<float>& x, std::vector<float>& x0, float diff) {
-    float a = DT * diff * (g_N - 2) * (g_M - 2);
-    float c = 1.f + 4.f * a;
+    const int N = g_N, M = g_M;
+    const float a = DT * diff * (N - 2) * (M - 2);
+    const float inv_c = 1.f / (1.f + 4.f * a);
+    float* __restrict xp = x.data();
+    const float* __restrict x0p = x0.data();
     for (int k = 0; k < ITER; ++k) {
-        for (int j = 1; j < g_M - 1; ++j)
-            for (int i = 1; i < g_N - 1; ++i)
-                x[IX(i, j)] = (x0[IX(i, j)] + a * (
-                    x[IX(i - 1, j)] + x[IX(i + 1, j)] +
-                    x[IX(i, j - 1)] + x[IX(i, j + 1)])) / c;
+        for (int j = 1; j < M - 1; ++j) {
+            float* __restrict row = xp + j * N;
+            const float* __restrict up = row - N;
+            const float* __restrict dn = row + N;
+            const float* __restrict src = x0p + j * N;
+            for (int i = 1; i < N - 1; ++i)
+                row[i] = (src[i] + a * (row[i - 1] + row[i + 1] + up[i] + dn[i])) * inv_c;
+        }
         set_bnd(b, x);
     }
 }
@@ -149,11 +161,17 @@ static void project(std::vector<float>& vx, std::vector<float>& vy,
     set_bnd(0, p);
 
     for (int k = 0; k < ITER; ++k) {
-        for (int j = 1; j < g_M - 1; ++j)
-            for (int i = 1; i < g_N - 1; ++i)
-                p[IX(i, j)] = (div[IX(i, j)] +
-                    p[IX(i - 1, j)] + p[IX(i + 1, j)] +
-                    p[IX(i, j - 1)] + p[IX(i, j + 1)]) / 4.f;
+        const int N = g_N, M = g_M;
+        float* __restrict pp = p.data();
+        const float* __restrict dv = div.data();
+        for (int j = 1; j < M - 1; ++j) {
+            float* __restrict row = pp + j * N;
+            const float* __restrict up = row - N;
+            const float* __restrict dn = row + N;
+            const float* __restrict d = dv + j * N;
+            for (int i = 1; i < N - 1; ++i)
+                row[i] = (d[i] + row[i - 1] + row[i + 1] + up[i] + dn[i]) * 0.25f;
+        }
         set_bnd(0, p);
     }
 
@@ -167,6 +185,21 @@ static void project(std::vector<float>& vx, std::vector<float>& vy,
 }
 
 static void step() {
+    // A field whose dye is below what the display can show and whose
+    // velocity has died away is, visibly, a fixed point: diffuse, project
+    // and advect only ever shrink it further, and the paint loop quantizes
+    // density to CSTEPS levels of d/5. Running the solver there is ~20 grid
+    // sweeps per frame that change no pixel: measured 27-35% of a core on a
+    // blank or long-settled screen at 30 fps. Exact zero was not enough of a
+    // test (the decay is exponential: after a drag the field approaches zero
+    // forever). One pass over the arrays; a new drag resumes it.
+    const float dens_eps = 5.f / (CSTEPS - 1) * 0.5f;   // half a display step
+    const auto below = [](const std::vector<float>& v, float eps) {
+        for (float f : v) if (f > eps || f < -eps) return false;
+        return true;
+    };
+    if (below(g_dens, dens_eps) && below(g_vx, 1e-3f) && below(g_vy, 1e-3f)) return;
+
     // Velocity step
     std::swap(g_vx, g_vx0);
     diffuse(1, g_vx, g_vx0, g_visc);

@@ -68,6 +68,7 @@ run jaal_agent_stats       --keys="2f-"
 run jaal_motion_showcase   --keys="c1"                        --animates="5"
 run jaal_agent             --keys="$(printf '\r') t"              --animates="$(printf '\r')"
 run jaal_messenger         --keys="xyz"                       --quit="$(printf '\003')"
+run jaal_agent_session     --keys="xy"                        --quit="$(printf '\003')" --animates="$(printf '\r')"
 
 echo "$pass passed, $fail failed${failed:+ :$failed}"
 [ "$fail" -eq 0 ]

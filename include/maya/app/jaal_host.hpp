@@ -58,6 +58,7 @@
 #endif
 
 #include <algorithm>
+#include <string>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -88,6 +89,11 @@ template <class Tag, class T>
 inline constexpr bool jaal::sendable_opt_in<maya::Strong<Tag, T>> = jaal::Sendable<T>;
 template <class Tag, class T>
 inline constexpr bool jaal::frozen_opt_in<maya::Strong<Tag, T>> = jaal::Frozen<T>;
+// ScrollbackDebt is one int behind a private constructor (only the ledger
+// mints one), so jaal can't look inside — but there's nothing inside to
+// share. It rides in a Cmd (commit_scrollback), which must be Sendable.
+template <> inline constexpr bool jaal::sendable_opt_in<maya::ScrollbackDebt> = true;
+template <> inline constexpr bool jaal::frozen_opt_in<maya::ScrollbackDebt>   = true;
 
 namespace maya {
 
@@ -104,6 +110,43 @@ using on_resize = jaal::router<ResizeEvent, "on_resize">;
 /// A jaal program that maya can draw: it has a view() returning an Element.
 template <class P>
 concept JaalView = jaal::Program<P> && jaal::Viewable<P, Element>;
+
+// ── terminal effects ──────────────────────────────────────────────────────────
+// Things only the TERMINAL can do, so they're this host's effects rather than
+// jaal core ones. A program lists the ones it uses in its Cmd:
+//
+//     using Cmd = jaal::Cmd<Msg, commit_scrollback>;
+//     return commit_from(m.frozen.harvest());
+//
+// and a host that can't do them (a test host, a GUI) won't compile against
+// it. They're the same operations as maya's own Cmd alternatives, which is
+// what makes a port a rename rather than a redesign.
+
+/// Commit rows of the last inline frame to the terminal's scrollback
+/// (maya's Cmd::commit_scrollback). Use it when view() is about to return
+/// a shorter tree — a chat that virtualises old messages — so the row-diff
+/// renderer doesn't read the shrink as rows removed from the bottom and
+/// erase them. No effect in fullscreen.
+///
+/// It carries maya's TYPED ScrollbackDebt, not an int, on purpose. A debt
+/// can only be minted by ScrollbackLedger::harvest(), whose rows were
+/// recorded by maya's own paint pass, so a program structurally can't
+/// commit a row count that drifts from what's on the wire — maya deprecated
+/// its raw-int commit for exactly that reason. An `int rows` payload here
+/// would have quietly thrown that guarantee away.
+struct CommitScrollback { ScrollbackDebt debt; };
+using commit_scrollback = jaal::pure_fx<CommitScrollback, "commit_scrollback">;
+
+/// The Cmd for a harvested debt: nothing to do when it's empty.
+template <class C>
+[[nodiscard]] C commit_from(ScrollbackDebt debt) {
+    if (debt.empty()) return C{};
+    return C(CommitScrollback{debt});
+}
+
+/// Set the terminal window title (maya's Cmd::set_title).
+struct SetTitle { std::string title; };
+using set_title = jaal::pure_fx<SetTitle, "set_title">;
 
 // ── key_map: the most common subscription ──────────────────────────────────────
 // maya's own key_map<Msg>() returns a maya::Sub, and 15 of maya's 20
@@ -290,6 +333,11 @@ public:
         }
         return std::nullopt;
     }
+
+    // Host effects: the terminal operations a program can ask for (listed in
+    // its Cmd). Each is the call maya's own Cmd interpreter makes.
+    void handle(CommitScrollback c) { rt_.commit_inline_prefix(c.debt.rows()); }
+    void handle(SetTitle t)         { rt_.set_title(t.title); }
 
     // 6. nothing: the Runtime's destructor restores the terminal, and
     //    jaal's teardown (kernel/teardown.hpp) has already taken the signal

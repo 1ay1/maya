@@ -1618,6 +1618,10 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
     std::deque<MoveOnlyFunction<void()>>      work_;
     std::vector<std::jthread>                        workers_;
     int                                              idle_workers_ = 0;
+    // Workers that have left worker_loop, so shutdown can wait for them with
+    // a timeout instead of an unbounded join. Guarded by work_mutex_.
+    std::size_t                                      exited_workers_ = 0;
+    std::condition_variable                          exited_cv_;
     unsigned                                         max_workers_ =
         std::max(4u, std::thread::hardware_concurrency());
 
@@ -1753,12 +1757,41 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
         //
         // Every OTHER worker is still joined, so the common path (destroyed
         // from the UI thread) is unchanged and fully synchronous.
+        //
+        // ...but only for a BOUNDED time. A Cmd::task body gets no stop
+        // token (its signature is fn(dispatch)), so it can't be asked to
+        // stop, and one that is mid-sleep or mid-syscall holds the join for
+        // as long as it likes. Measured on agent_session: Ctrl+C during a
+        // turn HUNG FOREVER, the main thread in ~BackgroundQueue ->
+        // std::thread::join() behind a scenario worker in sleep_for. So wait
+        // up to a grace period for every worker to leave its loop, and
+        // detach any that don't — the same rule jaal's pool follows
+        // (shutdown is bounded, D20). A detached worker is harmless: it holds
+        // only a WEAK sink, so its late dispatch lands on a dead weak_ptr and
+        // is dropped, and it can't reach this object (see the note below).
+        constexpr auto kShutdownGrace = std::chrono::milliseconds(500);
+        {
+            std::unique_lock lk(work_mutex_);
+            exited_cv_.wait_for(lk, kShutdownGrace,
+                                [this] { return exited_workers_ >= workers_.size(); });
+        }
         const auto self = std::this_thread::get_id();
+        std::size_t exited = 0;
+        {
+            std::lock_guard lk(work_mutex_);
+            exited = exited_workers_;
+        }
+        const bool all_out = exited >= workers_.size();
         for (auto& t : workers_) {
             if (t.get_id() == self) {
                 t.detach();     // cannot join ourselves; we are about to exit
+            } else if (!all_out) {
+                // Someone is stuck. Joining the ones that did exit, one by
+                // one, can't be told apart from joining the stuck one, so
+                // detach them all: the exited ones have nothing left to do.
+                if (t.joinable()) t.detach();
             } else if (t.joinable()) {
-                t.join();
+                t.join();       // every worker has left its loop: instant
             }
         }
         // jthread's destructor would otherwise re-join; every handle above is
@@ -1771,6 +1804,15 @@ struct BackgroundQueue : std::enable_shared_from_this<BackgroundQueue<Msg>> {
     }
 
 private:
+    // A worker leaving its loop. Only called where *this is PROVABLY alive:
+    // inside the lock (the destructor waits on this same mutex before it
+    // frees anything), never after a task has run (running a task can
+    // destroy the queue, see below).
+    void note_exit_locked() {
+        ++exited_workers_;
+        exited_cv_.notify_all();
+    }
+
     void worker_loop(std::stop_token stop) {
         while (!stop.stop_requested()) {
             MoveOnlyFunction<void()> task;
@@ -1782,7 +1824,10 @@ private:
                 // shutdown_ flag — stop_token IS the shutdown signal.
                 work_cv_.wait(lk, stop, [this] { return !work_.empty(); });
                 --idle_workers_;
-                if (work_.empty()) return;     // stop_requested + empty
+                if (work_.empty()) {           // stop_requested + empty
+                    note_exit_locked();
+                    return;
+                }
                 task = std::move(work_.front());
                 work_.pop_front();
             }

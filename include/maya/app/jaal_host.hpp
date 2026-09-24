@@ -72,6 +72,25 @@
 
 namespace maya {
 
+// ── maya's value types, as jaal sees them ───────────────────────────────────────
+// jaal's Sendable walks a type's fields to prove a Msg is safe to hand to
+// another thread. Strong<Tag, T> (Columns, Rows — inside every MouseEvent and
+// Size) has user-declared constructors, so it isn't an aggregate and jaal
+// can't look inside; it rejects it. The first ports each re-declared it safe
+// in their own file. It's declared once, here, and CONDITIONALLY: a
+// Strong<Tag, T> is exactly as safe as the T it wraps. (A blanket "true"
+// would also bless Strong<Tag, std::string_view>, a borrowed view — the one
+// thing Sendable exists to stop.)
+
+}  // namespace maya
+
+template <class Tag, class T>
+inline constexpr bool jaal::sendable_opt_in<maya::Strong<Tag, T>> = jaal::Sendable<T>;
+template <class Tag, class T>
+inline constexpr bool jaal::frozen_opt_in<maya::Strong<Tag, T>> = jaal::Frozen<T>;
+
+namespace maya {
+
 // ── what the host reports, as subscription kinds ───────────────────────────
 // One router per event kind, so a program subscribes to exactly what it
 // uses and a host that doesn't produce, say, mouse events would reject a
@@ -85,6 +104,33 @@ using on_resize = jaal::router<ResizeEvent, "on_resize">;
 /// A jaal program that maya can draw: it has a view() returning an Element.
 template <class P>
 concept JaalView = jaal::Program<P> && jaal::Viewable<P, Element>;
+
+// ── key_map: the most common subscription ──────────────────────────────────────
+// maya's own key_map<Msg>() returns a maya::Sub, and 15 of maya's 20
+// program examples use it. This is the same table, returning a subscription
+// for a jaal program. The Sub type is the program's own, so the router is
+// checked against the program's row like any other.
+//
+//   static Sub subscribe(const Model&) {
+//       return jaal_key_map<Sub>({{'q', Quit{}}, {SpecialKey::Up, Inc{}}});
+//   }
+//
+// Matching is exactly maya's key_is(): a plain key with no modifiers, so
+// 'q' doesn't also fire on Ctrl+Q.
+template <class S>
+[[nodiscard]] S jaal_key_map(
+    std::initializer_list<std::pair<KeySpec, typename S::msg_type>> entries) {
+    using Msg = typename S::msg_type;
+    return S::on(on_key{},
+        [table = std::vector(entries.begin(), entries.end())](const KeyEvent& k)
+            -> std::optional<Msg> {
+            for (const auto& [key, msg] : table) {
+                const bool hit = std::visit([&](auto want) { return key_is(k, want); }, key);
+                if (hit) return msg;
+            }
+            return std::nullopt;
+        });
+}
 
 // ── the host ───────────────────────────────────────────────────────────────
 template <JaalView P>
@@ -137,21 +183,52 @@ public:
         dirty_ = true;                            // re-lay-out even if nobody subscribed
     }
 
-    // 5. the model changed: draw it. view() is pure, render() diffs.
+    // 5. the model changed (or a frame is owed): draw it.
+    //
+    // Two things decide whether view() runs, exactly as in maya's own loop:
+    //
+    //   * visual_hash: a program that says what its pixels depend on lets
+    //     us skip view() when that hasn't moved.
+    //   * animation frames: a widget that called request_animation_frame()
+    //     during the last build() is ASKING to be drawn again (a spinner, a
+    //     caret, the motion framework's tweens). That request overrides the
+    //     hash — a skipped build can't re-request, so honouring the hash
+    //     there would freeze the animation until a keypress, which is the
+    //     bug class maya's loop documents at length.
     template <class K>
     void present(K& k) {
+        const auto now = std::chrono::steady_clock::now();
+        const bool frame_due = next_frame_at_ && now >= *next_frame_at_;
         if constexpr (jaal::HasVisualHash<P>) {
-            // A program that says what its pixels depend on lets us skip
-            // view() entirely when that hasn't moved (same contract as
-            // maya's own loop) — unless a frame is still owed, in which
-            // case skipping would strand it.
             const std::uint64_t h = P::visual_hash(k.model());
-            if (!dirty_ && !owes_frame() && last_hash_ && *last_hash_ == h) return;
+            if (!dirty_ && !owes_frame() && !frame_due
+                && !detail::animation_requested_ && last_hash_ && *last_hash_ == h)
+                return;
             last_hash_ = h;
         }
+        // present() runs after a model change, or when owes_frame() said a
+        // frame is due — both mean draw now. (An animation frame that isn't
+        // due yet never gets here: owes_frame() is false until it is.)
+        (void)frame_due;
         dirty_ = false;
+
+        // build() is what (re)sets the request, so clear it just before.
+        detail::animation_requested_ = false;
+        detail::next_frame_delay_ms_ = -1;
         (void)rt_.render(P::view(k.model()));
+
+        // Schedule the next animation frame if a widget asked for one:
+        // its own minimum delay (a slow caret blink) or maya's default.
+        if (detail::animation_requested_) {
+            const auto delay = detail::next_frame_delay_ms_ > 0
+                ? std::chrono::milliseconds(detail::next_frame_delay_ms_)
+                : detail::kAnimationFrameInterval;
+            next_frame_at_ = std::chrono::steady_clock::now() + delay;
+        } else {
+            next_frame_at_.reset();               // settled: back to idle
+        }
     }
+
 
     // maya's renderer can DEFER a frame: it coalesces when the terminal is
     // congested, or leaves bytes queued a slow tty wouldn't take. Its own
@@ -160,7 +237,10 @@ public:
     // model (found driving this host in a real pty): the frame for the key
     // just pressed was owed and nothing asked for it until the next key.
     [[nodiscard]] bool owes_frame() const noexcept {
-        return rt_.has_pending_writes() || rt_.has_deferred_frame();
+        if (rt_.has_pending_writes() || rt_.has_deferred_frame()) return true;
+        // An animation frame that has come due is owed too: present() must
+        // run even though no message changed the model.
+        return next_frame_at_ && std::chrono::steady_clock::now() >= *next_frame_at_;
     }
 
     /// While a frame is owed, don't sleep longer than maya's own loop would:
@@ -168,8 +248,18 @@ public:
     /// matters as much as the ceiling: a zero wait would spin the CPU until
     /// the tty drains.
     [[nodiscard]] std::optional<std::chrono::milliseconds> wait_hint() const noexcept {
-        if (!owes_frame()) return std::nullopt;
-        return std::chrono::milliseconds(4);
+        if (rt_.has_pending_writes() || rt_.has_deferred_frame())
+            return std::chrono::milliseconds(4);
+        if (next_frame_at_) {
+            // Wake for the next animation frame. CEIL, as maya's loop does:
+            // rounding a 0.4 ms remainder down to 0 is a hot spin for the
+            // sub-millisecond tail of every frame.
+            const auto left = *next_frame_at_ - std::chrono::steady_clock::now();
+            if (left <= std::chrono::steady_clock::duration::zero())
+                return std::chrono::milliseconds(0);
+            return std::chrono::ceil<std::chrono::milliseconds>(left);
+        }
+        return std::nullopt;
     }
 
     // 6. nothing: the Runtime's destructor restores the terminal, and
@@ -184,6 +274,8 @@ private:
     std::optional<jaal::platform::native_reactor::registration> input_reg_;
     std::optional<std::uint64_t>                              last_hash_;
     bool                                                      dirty_ = true;
+    // The next animation frame a widget asked for, if any.
+    std::optional<std::chrono::steady_clock::time_point>      next_frame_at_;
 };
 
 // ── the entry point ────────────────────────────────────────────────────────

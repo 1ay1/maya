@@ -11,6 +11,12 @@
 // That keeps scrolling correct and O(viewport), and re-flattening on resize
 // keeps it responsive. A full flatten is ~1 ms.
 //
+//   Model      the flattened lines, the width they were flattened at, the
+//              scroll offset and the viewport height.
+//   update()   Resize re-flattens (only when the width changes); scroll
+//              messages move and clamp the offset.
+//   view()     the visible slice of lines, a scrollbar and a status line.
+//
 // Four panels, each full width:
 //   1. CommonMark + GFM: headings, emphasis, nested loose/tight lists, a
 //      table, a blockquote, a fenced code block, links/autolinks.
@@ -19,8 +25,9 @@
 //   3. A raw HTML *block* in markdown — parsed and rendered, not literal tags.
 //   4. The standalone maya::html widget rendering a full HTML fragment.
 //
-// Keys: ↑/↓ scroll · PgUp/PgDn page · Home/End jump · q/Esc quit.
+// Keys: ↑/↓ (j/k) scroll · PgUp/PgDn (space) page · Home/End jump · q/Esc quit.
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/html.hpp>
 #include <maya/widget/markdown.hpp>
@@ -31,7 +38,9 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <optional>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #if !defined(_WIN32)
@@ -230,6 +239,108 @@ void dump() {
     std::fflush(stdout);
 }
 
+// ── the viewer ─────────────────────────────────────────────────────────────
+
+struct Model {
+    std::vector<Element> lines;   // the doc flattened at `flat_w`
+    int flat_w = -1;              // width `lines` was flattened at
+    int offset = 0;               // top visible line
+    int viewport_h = 1;           // rows available for the document
+
+    int max_offset() const { return std::max(0, static_cast<int>(lines.size()) - viewport_h); }
+};
+
+struct Resize { int cols, rows; };
+struct Scroll { int by; };        // lines; ±page is computed in update
+struct Page   { int dir; };
+struct Home {};
+struct End {};
+struct Quit {};
+using Msg = std::variant<Resize, Scroll, Page, Home, End, Quit>;
+
+struct Markup {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
+
+    static void clamp(Model& m) { m.offset = std::clamp(m.offset, 0, m.max_offset()); }
+
+    static Cmd update(Model& m, Resize r) {
+        // Re-flatten only when the width changes; 1 column for the scrollbar.
+        const int content_w = std::max(1, r.cols - 1);
+        if (content_w != m.flat_w) {
+            m.lines = flatten_to_lines(build_doc(), content_w);
+            m.flat_w = content_w;
+        }
+        m.viewport_h = std::max(1, r.rows - 3);   // header + help + status rows
+        clamp(m);
+        return {};
+    }
+    static Cmd update(Model& m, Scroll s) { m.offset += s.by; clamp(m); return {}; }
+    static Cmd update(Model& m, Page p) {
+        m.offset += p.dir * std::max(1, m.viewport_h - 1);
+        clamp(m);
+        return {};
+    }
+    static Cmd update(Model& m, Home) { m.offset = 0; return {}; }
+    static Cmd update(Model& m, End)  { m.offset = m.max_offset(); return {}; }
+    static Cmd update(Model&, Quit)   { return Cmd::quit(0); }
+
+    static Element view(const Model& m) {
+        const int total = static_cast<int>(m.lines.size());
+        const int start = std::clamp(m.offset, 0, m.max_offset());
+        const int count = std::max(0, std::min(m.viewport_h, total - start));
+        std::vector<Element> visible(m.lines.begin() + start,
+                                     m.lines.begin() + start + count);
+
+        // Mirror the offset into a ScrollState so scrollbar_y can draw the
+        // thumb. auto_dispatch = false: update() drives scrolling.
+        ScrollState bar;
+        bar.y = start;
+        bar.max_y = m.max_offset();
+        bar.auto_dispatch = false;
+
+        std::string status = "lines " + std::to_string(start + 1) + "–" +
+                             std::to_string(start + count) + " / " +
+                             std::to_string(total);
+
+        return v(
+            t<"maya markup — CommonMark + GFM + HTML widget">
+                | Bold | Fg<125, 207, 255>,
+            t<"↑/↓ PgUp/PgDn Home/End scroll · q quit"> | Dim,
+            h(
+                v(std::move(visible)) | grow_<1>,
+                scrollbar_y(bar, m.viewport_h)
+            ),
+            text(status) | Fg<224, 175, 104>
+        );
+    }
+
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+                return Resize{r.width.value, r.height.value};
+            }),
+            Sub::on(on_mouse{}, [](const MouseEvent& e) -> std::optional<Msg> {
+                if (e.kind != MouseEventKind::Press) return std::nullopt;
+                if (e.button == MouseButton::ScrollUp)   return Scroll{-3};
+                if (e.button == MouseButton::ScrollDown) return Scroll{+3};
+                return std::nullopt;
+            }),
+            keys<Sub>({
+                {SpecialKey::Up, Scroll{-1}}, {SpecialKey::Down, Scroll{+1}},
+                {'k', Scroll{-1}}, {'j', Scroll{+1}}, {' ', Page{+1}},
+                {SpecialKey::PageUp, Page{-1}}, {SpecialKey::PageDown, Page{+1}},
+                {SpecialKey::Home, Home{}}, {SpecialKey::End, End{}},
+                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+            }));
+    }
+    static bool subs_key(const Model&) { return true; }
+};
+
+static_assert(Program<Markup>);
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -237,78 +348,5 @@ int main(int argc, char** argv) {
         dump();
         return 0;
     }
-
-    const Element doc = build_doc();
-    std::vector<Element> lines;   // flattened doc, rebuilt on width change
-    int flat_w = -1;              // width `lines` was flattened at
-    int offset = 0;               // top visible line
-    int viewport_h = 1;
-
-    auto max_offset = [&] {
-        return std::max(0, static_cast<int>(lines.size()) - viewport_h);
-    };
-
-    run({.title = "markup"},
-        [&](const Event& ev) {
-            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-            int step = std::max(1, viewport_h - 1);
-            if (key(ev, SpecialKey::Up))       offset -= 1;
-            if (key(ev, SpecialKey::Down))     offset += 1;
-            if (key(ev, SpecialKey::PageUp))   offset -= step;
-            if (key(ev, SpecialKey::PageDown)) offset += step;
-            if (key(ev, SpecialKey::Home))     offset = 0;
-            if (key(ev, SpecialKey::End))      offset = max_offset();
-            if (auto* m = as_mouse(ev); m && m->kind == MouseEventKind::Press) {
-                if (m->button == MouseButton::ScrollUp)   offset -= 3;
-                if (m->button == MouseButton::ScrollDown) offset += 3;
-            }
-            offset = std::clamp(offset, 0, max_offset());
-            return true;
-        },
-        [&](const Ctx& ctx) -> Element {
-            const int W = ctx.size.width.value;
-            const int H = ctx.size.height.value;
-            // Flatten to the content width, reserving 1 column for the
-            // scrollbar. Re-flatten only when the width changes.
-            const int content_w = std::max(1, W - 1);
-            if (content_w != flat_w) {
-                lines = flatten_to_lines(doc, content_w);
-                flat_w = content_w;
-            }
-            viewport_h = std::max(1, H - 3);  // header + help + status rows
-            offset = std::clamp(offset, 0, max_offset());
-
-            // Emit ONLY the visible window — the slice pattern.
-            const int start = std::clamp(offset, 0, max_offset());
-            const int count = std::min(
-                viewport_h, static_cast<int>(lines.size()) - start);
-            std::vector<Element> visible(
-                lines.begin() + start, lines.begin() + start + std::max(0, count));
-
-            // Mirror the manual offset into a ScrollState so scrollbar_y can
-            // draw the thumb. auto_dispatch = false: we drive scrolling in the
-            // event handler, so the runtime must not also move this state.
-            ScrollState bar;
-            bar.y = start;
-            bar.max_y = max_offset();
-            bar.auto_dispatch = false;
-
-            const int total = static_cast<int>(lines.size());
-            std::string status =
-                "lines " + std::to_string(start + 1) + "–" +
-                std::to_string(start + std::max(0, count)) + " / " +
-                std::to_string(total);
-
-            return v(
-                t<"maya markup — CommonMark + GFM + HTML widget">
-                    | Bold | Fg<125, 207, 255>,
-                t<"↑/↓ PgUp/PgDn Home/End scroll · q quit"> | Dim,
-                h(
-                    v(std::move(visible)) | grow_<1>,
-                    scrollbar_y(bar, viewport_h)
-                ),
-                text(status) | Fg<224, 175, 104>
-            );
-        });
-    return 0;
+    return run<Markup>({.title = "markup", .mouse = true});
 }

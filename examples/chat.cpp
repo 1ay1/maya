@@ -1,8 +1,17 @@
 // maya — AI Agent Session Demo (Inline Mode)
 //
-// Uses maya::run() with Mode::Inline for keyboard-driven inline rendering.
-// Content streams in character-by-character like a real AI response.
-// Press 'q' or Escape to quit.
+// A Model/Msg/update/view/subscribe program run with Mode::Inline. A scripted
+// timeline plays out on a Sub::every tick (only subscribed while the script
+// or a stream is still running — a finished session is a still screen), and
+// content streams in character-by-character like a real AI response.
+//
+// You can type into the composer at the bottom at any time: keys arrive as
+// messages carrying the KeyEvent and update() does the editing.
+//
+//   type / ←→ / Home End / Backspace Del / Ctrl-U Ctrl-W   edit the composer
+//   Enter      send the composed message
+//   q          quit (when the composer is empty)
+//   Esc/Ctrl-C quit
 //
 // Showcases every tool widget:
 //   UserMessage, ThinkingBlock, ReadTool, SearchResult (Grep/Glob),
@@ -10,6 +19,7 @@
 //   AgentTool, FetchTool, AssistantMessage + StreamingMarkdown,
 //   ActivityBar, ToastManager, Badge, Callout
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/activity_bar.hpp>
 #include <maya/widget/agent_tool.hpp>
@@ -30,13 +40,14 @@
 #include <maya/widget/write_tool.hpp>
 
 #include <chrono>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 using namespace maya;
 using namespace maya::dsl;
-using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 
 // ── Timed event ──────────────────────────────────────────────────────────────
@@ -51,7 +62,6 @@ struct TimedEvent {
 struct ChatApp {
     float clock = 0.0f;
     int   next_event = 0;
-    Clock::time_point last_frame = Clock::now();
 
     std::vector<Element> frozen;      // committed conversation elements
     std::vector<TimedEvent> timeline;
@@ -73,6 +83,10 @@ struct ChatApp {
     bool show_thinking = false;
     bool show_permission = false;
     bool show_streaming = false;
+
+    // Composer (the user's own text input)
+    std::string composer;
+    int         cursor = 0;               // byte offset into composer
 
     ChatApp() {
         activity.set_model("claude-opus-4");
@@ -127,8 +141,6 @@ struct ChatApp {
         timeline.push_back({t, 99});        // done
     }
 };
-
-static ChatApp app;
 
 static Element gap() {
     return blank().build();
@@ -544,102 +556,196 @@ static void fire_event(ChatApp& app, int id) {
     }
 }
 
-// ── Build UI ─────────────────────────────────────────────────────────────────
+// ── Program ──────────────────────────────────────────────────────────────────
 
-static Element build_ui(ChatApp& app) {
-    return v(
-        // Frozen conversation history
-        dyn([&] { return Element{ElementList{app.frozen}}; }),
+namespace {
 
-        // Live thinking (with spinner)
-        dyn([&]() -> Element {
-            if (!app.show_thinking) return blank().build();
-            return v(blank(), app.thinking).build();
-        }),
+struct Chat {
+    using Model = ChatApp;
 
-        // Permission prompt
-        dyn([&]() -> Element {
-            if (!app.show_permission) return blank().build();
-            Permission perm("bash", "npm test -- --run src/hooks/useTheme.test.ts");
-            return v(blank(), perm).build();
-        }),
+    struct Tick {};
+    struct Key  { KeyEvent ev; };
+    struct Quit {};
+    using Msg = std::variant<Tick, Key, Quit>;
 
-        // Streaming markdown
-        dyn([&]() -> Element {
-            if (!app.show_streaming) return blank().build();
-            return v(blank(), AssistantMessage::build(app.streaming_md.build())).build();
-        }),
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
 
-        // Toasts
-        dyn([&]() -> Element {
-            if (app.toasts.empty()) return blank().build();
-            return v(blank(), app.toasts).build();
-        }),
+    static constexpr float kDt = 1.0f / 30.0f;   // tick period in seconds
 
-        // Activity bar
-        dyn([&] { return app.activity.build(); })
-    ).build();
-}
-
-// ── Tick: advance time, fire events, stream ─────────────────────────────────
-
-static void tick(ChatApp& app) {
-    auto now = Clock::now();
-    float dt = std::chrono::duration<float>(now - app.last_frame).count();
-    app.last_frame = now;
-    app.clock += dt;
-
-    // Fire timed events
-    while (app.next_event < static_cast<int>(app.timeline.size())
-           && app.clock >= app.timeline[static_cast<size_t>(app.next_event)].at)
-    {
-        fire_event(app, app.timeline[static_cast<size_t>(app.next_event)].id);
-        app.next_event++;
+    static bool animating(const Model& m) {
+        return m.next_event < static_cast<int>(m.timeline.size()) || m.streaming;
     }
 
-    // Stream markdown characters
-    if (app.streaming && app.md_cursor < static_cast<int>(app.md_target.size())) {
-        app.stream_accum += dt * app.stream_rate;
-        int chars_to_add = static_cast<int>(app.stream_accum);
-        if (chars_to_add > 0) {
-            app.stream_accum -= static_cast<float>(chars_to_add);
-            int end = app.md_cursor + chars_to_add;
-            if (end > static_cast<int>(app.md_target.size()))
-                end = static_cast<int>(app.md_target.size());
-
-            std::string_view chunk(
-                app.md_target.data() + app.md_cursor,
-                static_cast<size_t>(end - app.md_cursor)
-            );
-            app.streaming_md.append(chunk);
-            app.md_cursor = end;
+    static Cmd update(Model& m, Tick) {
+        m.clock += kDt;
+        while (m.next_event < static_cast<int>(m.timeline.size())
+               && m.clock >= m.timeline[static_cast<size_t>(m.next_event)].at) {
+            fire_event(m, m.timeline[static_cast<size_t>(m.next_event)].id);
+            m.next_event++;
         }
-    } else if (app.streaming && app.md_cursor >= static_cast<int>(app.md_target.size())) {
-        app.streaming = false;
-        app.streaming_md.finish();
-        app.frozen.push_back(gap());
-        app.frozen.push_back(AssistantMessage::build(app.streaming_md.build()));
-        app.streaming_md.clear();
-        app.show_streaming = false;
-        app.activity.set_status("");
-        app.toasts.push("Response complete", ToastLevel::Success);
+        if (m.streaming && m.md_cursor < static_cast<int>(m.md_target.size())) {
+            m.stream_accum += kDt * m.stream_rate;
+            int n = static_cast<int>(m.stream_accum);
+            if (n > 0) {
+                m.stream_accum -= static_cast<float>(n);
+                int end = std::min(m.md_cursor + n, static_cast<int>(m.md_target.size()));
+                m.streaming_md.append(std::string_view(
+                    m.md_target.data() + m.md_cursor, static_cast<size_t>(end - m.md_cursor)));
+                m.md_cursor = end;
+            }
+        } else if (m.streaming) {
+            m.streaming = false;
+            m.streaming_md.finish();
+            m.frozen.push_back(gap());
+            m.frozen.push_back(AssistantMessage::build(m.streaming_md.build()));
+            m.streaming_md.clear();
+            m.show_streaming = false;
+            m.activity.set_status("");
+            m.toasts.push("Response complete", ToastLevel::Success);
+        }
+        return {};
     }
 
-    // Animated widgets (thinking spinner, toast expiry) are clock-driven —
-    // nothing to advance.
-}
+    static int prev_cp(const std::string& s, int i) {
+        if (i <= 0) return 0;
+        --i;
+        while (i > 0 && (static_cast<unsigned char>(s[static_cast<size_t>(i)]) & 0xC0) == 0x80) --i;
+        return i;
+    }
+    static int next_cp(const std::string& s, int i) {
+        int n = static_cast<int>(s.size());
+        if (i >= n) return n;
+        ++i;
+        while (i < n && (static_cast<unsigned char>(s[static_cast<size_t>(i)]) & 0xC0) == 0x80) ++i;
+        return i;
+    }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+    static Cmd update(Model& m, Key k) {
+        const KeyEvent& ev = k.ev;
+        auto& s = m.composer;
+        if (ctrl_is(ev, 'c')) return Cmd::quit(0);
+        if (ctrl_is(ev, 'u')) { s.erase(0, static_cast<size_t>(m.cursor)); m.cursor = 0; return {}; }
+        if (ctrl_is(ev, 'w')) {
+            int p = m.cursor;
+            while (p > 0 && s[static_cast<size_t>(p - 1)] == ' ') --p;
+            while (p > 0 && s[static_cast<size_t>(p - 1)] != ' ') --p;
+            s.erase(static_cast<size_t>(p), static_cast<size_t>(m.cursor - p));
+            m.cursor = p;
+            return {};
+        }
+        if (key_is(ev, SpecialKey::Escape)) return Cmd::quit(0);
+        if (key_is(ev, SpecialKey::Enter)) {
+            if (s.empty()) return {};
+            m.frozen.push_back(gap());
+            m.frozen.push_back(UserMessage::build(s));
+            m.toasts.push("Message sent", ToastLevel::Info);
+            s.clear();
+            m.cursor = 0;
+            return {};
+        }
+        if (key_is(ev, SpecialKey::Backspace)) {
+            int p = prev_cp(s, m.cursor);
+            s.erase(static_cast<size_t>(p), static_cast<size_t>(m.cursor - p));
+            m.cursor = p;
+            return {};
+        }
+        if (key_is(ev, SpecialKey::Delete)) {
+            int p = next_cp(s, m.cursor);
+            s.erase(static_cast<size_t>(m.cursor), static_cast<size_t>(p - m.cursor));
+            return {};
+        }
+        if (key_is(ev, SpecialKey::Left))  { m.cursor = prev_cp(s, m.cursor); return {}; }
+        if (key_is(ev, SpecialKey::Right)) { m.cursor = next_cp(s, m.cursor); return {}; }
+        if (key_is(ev, SpecialKey::Home))  { m.cursor = 0; return {}; }
+        if (key_is(ev, SpecialKey::End))   { m.cursor = static_cast<int>(s.size()); return {}; }
+        if (auto* c = std::get_if<CharKey>(&ev.key); c && !ev.mods.ctrl && !ev.mods.alt) {
+            char32_t cp = c->codepoint;
+            if (cp == 'q' && s.empty()) return Cmd::quit(0);
+            if (cp < 0x20 || cp == 0x7F) return {};
+            char buf[4]; int len = 0;
+            if (cp < 0x80)         { buf[0] = static_cast<char>(cp); len = 1; }
+            else if (cp < 0x800)   { buf[0] = static_cast<char>(0xC0 | (cp >> 6));
+                                     buf[1] = static_cast<char>(0x80 | (cp & 0x3F)); len = 2; }
+            else if (cp < 0x10000) { buf[0] = static_cast<char>(0xE0 | (cp >> 12));
+                                     buf[1] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                                     buf[2] = static_cast<char>(0x80 | (cp & 0x3F)); len = 3; }
+            else                   { buf[0] = static_cast<char>(0xF0 | (cp >> 18));
+                                     buf[1] = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+                                     buf[2] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+                                     buf[3] = static_cast<char>(0x80 | (cp & 0x3F)); len = 4; }
+            s.insert(static_cast<size_t>(m.cursor), buf, static_cast<size_t>(len));
+            m.cursor += len;
+        }
+        return {};
+    }
+
+    static Cmd update(Model&, Quit) { return Cmd::quit(0); }
+
+    static Element composer_view(const Model& m) {
+        const std::string& s = m.composer;
+        size_t cur = static_cast<size_t>(m.cursor);
+        std::string content;
+        std::vector<StyledRun> runs;
+        if (cur > 0) { runs.push_back(StyledRun{0, cur, Style{}}); content = s.substr(0, cur); }
+        std::string ch = " ";
+        size_t after = cur;
+        if (cur < s.size()) {
+            size_t e = static_cast<size_t>(next_cp(s, m.cursor));
+            ch = s.substr(cur, e - cur);
+            after = e;
+        }
+        runs.push_back(StyledRun{content.size(), ch.size(), Style{}.with_inverse()});
+        content += ch;
+        if (after < s.size()) {
+            runs.push_back(StyledRun{content.size(), s.size() - after, Style{}});
+            content += s.substr(after);
+        }
+        Element inner = s.empty()
+            ? h(Element{TextElement{.content = " ", .style = Style{}.with_inverse()}},
+                text("Type a message\xe2\x80\xa6  (Enter to send)", Style{}.with_dim())).build()
+            : Element{TextElement{.content = std::move(content), .style = Style{}, .runs = std::move(runs)}};
+        return (v(h(text("\xe2\x9d\xaf ", Style{}.with_fg(Color::slot(ThemeSlot::Primary))),
+                    std::move(inner)).build())
+                | border(BorderStyle::Round) | bcolor(Color::slot(ThemeSlot::Primary))
+                | padding(0, 1, 0, 1)).build();
+    }
+
+    static Element view(const Model& m) {
+        std::vector<Element> rows;
+        rows.push_back(Element{ElementList{m.frozen}});
+        if (m.show_thinking) { rows.push_back(gap()); rows.push_back(m.thinking.build()); }
+        if (m.show_permission) {
+            rows.push_back(gap());
+            rows.push_back(Permission("bash", "npm test -- --run src/hooks/useTheme.test.ts").build());
+        }
+        if (m.show_streaming) {
+            rows.push_back(gap());
+            rows.push_back(AssistantMessage::build(m.streaming_md.build()));
+        }
+        if (!m.toasts.empty()) { rows.push_back(gap()); rows.push_back(m.toasts.build()); }
+        rows.push_back(gap());
+        rows.push_back(composer_view(m));
+        rows.push_back(m.activity.build());
+        return v(std::move(rows)).build();
+    }
+
+    static Sub subscribe(const Model& m) {
+        auto keys = Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
+            return Key{k};
+        });
+        if (animating(m))
+            return Sub::batch(std::move(keys), Sub::every(std::chrono::milliseconds{33}, Tick{}));
+        return keys;
+    }
+    static bool subs_key(const Model& m) { return animating(m); }
+};
+
+static_assert(Program<Chat>);
+
+} // namespace
 
 int main() {
-    maya::run(
-        {.fps = 30, .mode = Mode::Inline},
-        [](const Event& ev) {
-            return !(key(ev, 'q') || key(ev, SpecialKey::Escape));
-        },
-        [&] {
-            tick(app);
-            return build_ui(app);
-        }
-    );
+    return run<Chat>({.title = "chat", .fps = 30, .mode = Mode::Inline});
 }
+

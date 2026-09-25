@@ -3,11 +3,10 @@
 
 namespace maya::detail {
 
-auto Runtime::render_inline(const Element& root, int w) -> Status {
-    FILE* const prof_out = frame_prof_out();
-    const bool prof = prof_out != nullptr;
-    const auto t_frame_start = std::chrono::steady_clock::now();
-    auto since = [](auto t0) { return ms_since(t0); };
+// The wire gate: drain what the tty refused last frame and decide whether
+// to coalesce this one. A value means "no frame this tick" (the status to
+// return); nullopt means go on and compose.
+std::optional<Status> Runtime::inline_wire_gate() {
     // ── Adaptive wire coalescing: congestion sample ───────────────
     // Residue on entry = the wire couldn't take last frame in full →
     // a congestion sample of 1.0; a clean entry = 0.0. The EWMA
@@ -101,14 +100,13 @@ auto Runtime::render_inline(const Element& root, int w) -> Status {
     }
     // Past the gate: this call composes, so nothing is owed.
     coalesced_last_render_ = false;
+    return std::nullopt;
+}
 
-    // ── Inline path: Witness Chain dispatch ─────────────────────────
-    // std::visit selects the InlineFrame<Tag>::render whose
-    // precondition matches the current coherence state. Each arm
-    // returns a new InlineCoherence directly — the type system
-    // guarantees every legal transition is encoded by the return
-    // type, and that the only path into Synced is through a
-    // successful commit_to of a witness-verified compose.
+// Size the canvas for this frame and clear it, keeping the frozen prefix
+// (the rows already committed to scrollback) intact: a bounded clear is
+// what keeps a long transcript's per-frame cost flat.
+void Runtime::inline_prepare_canvas(int w) {
     constexpr int kMinCanvasHeight = 500;
 
     // Reasons to (re)allocate the canvas:
@@ -243,6 +241,25 @@ auto Runtime::render_inline(const Element& root, int w) -> Status {
     } else {
         canvas_.clear();
     }
+
+}
+
+auto Runtime::render_inline(const Element& root, int w) -> Status {
+    FILE* const prof_out = frame_prof_out();
+    const bool prof = prof_out != nullptr;
+    const auto t_frame_start = std::chrono::steady_clock::now();
+    auto since = [](auto t0) { return ms_since(t0); };
+    if (auto skip = inline_wire_gate()) return *skip;
+
+
+    // ── Inline path: Witness Chain dispatch ─────────────────────────
+    // std::visit selects the InlineFrame<Tag>::render whose
+    // precondition matches the current coherence state. Each arm
+    // returns a new InlineCoherence directly — the type system
+    // guarantees every legal transition is encoded by the return
+    // type, and that the only path into Synced is through a
+    // successful commit_to of a witness-verified compose.
+    inline_prepare_canvas(w);
 
     auto t_rt0 = std::chrono::steady_clock::now();
     // Refresh theme-derived SGR before anything is interned this frame.

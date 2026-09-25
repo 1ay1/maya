@@ -33,10 +33,45 @@ from it.
 |---|---|---|
 | `<maya/maya.hpp>` | elements, DSL, layout, style, widgets, `Image`/`pixels`, `print` | no |
 | `<maya/screen.hpp>` | `Screen`: the terminal device (raw mode, input, frame diff, flow control) | no |
-| `<maya/app.hpp>` | `run<P>`, `App` concept, event sources, terminal effects, `keys()` | yes |
+| `<maya/app.hpp>` | `run<P>`, `Program` concept, event sources, terminal effects, `keys()` | yes |
 
 `maya` (the library) stays free of jaal. `maya::app` (CMake target) is
 maya + jaal, and is what a program links.
+
+## One file, one job
+
+The device and the renderer are split by concern, not by size: a file is
+the unit you read to understand one thing.
+
+| The device (`include/maya/app/`, `src/app/`) | |
+|---|---|
+| `options.hpp` | how to take the terminal: `Mode`, `RenderBackend`, `Options` |
+| `frame_request.hpp` | a widget asks for the next frame; the host schedules it |
+| `keys.hpp` | key predicates, and which keys are navigation |
+| `runtime.hpp` | `detail::Runtime`: the device's state |
+| `theme_canvas.hpp` | a theme's background becomes pixels |
+| `runtime_create.cpp` | raw mode, alt screen or inline region, capability probes |
+| `runtime_input.cpp` | resize; bytes → events |
+| `render.cpp` | one frame: width check, theme edge, pick a path |
+| `render_inline.cpp` | the inline path (wire gate, canvas prepare, compose) |
+| `render_fullscreen.cpp` | the alt-screen path |
+| `render_grid.cpp` | the Grid backend, and the off-wire warmup |
+| `host_effects.cpp` | title, clipboard, raw sequences, suspend |
+| `runtime_lifetime.cpp` | finalize, cleanup, destructor, moves |
+
+| The renderer (`src/render/`) | |
+|---|---|
+| `renderer.cpp` | `render_tree`; `paint_element` dispatches per element kind |
+| `layout_build.cpp` | element tree → layout nodes |
+| `paint_box/text/list/component.cpp` | one painter per element kind |
+| `paint_border.cpp` | borders and their titles |
+| `serialize.cpp` | a whole frame's cells → VT bytes |
+| `compose_inline.cpp` | the inline row-diff producer, and caret placement |
+| `inline_state.cpp` | the inline frame's state and its scrollback proofs |
+
+`render_internal.hpp` / `serialize_internal.hpp` / `runtime_internal.hpp`
+are private to those directories: they hold what the split files share
+(the component cache, the cell-run emitter, the opt-in diagnostics).
 
 ## The app API
 

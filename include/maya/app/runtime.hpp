@@ -312,6 +312,10 @@ public:
     auto render(const Element& root) -> Status;
 private:
     auto render_inline(const Element& root, int w) -> Status;
+    // Drain refused bytes / decide to coalesce: a value = no frame this tick.
+    std::optional<Status> inline_wire_gate();
+    // Size + bounded-clear the canvas, keeping the committed prefix.
+    void inline_prepare_canvas(int w);
     auto render_fullscreen(const Element& root, int w) -> Status;
 public:
 

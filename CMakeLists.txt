@@ -49,6 +49,23 @@ option(MAYA_NATIVE_TUNING "Bake the host CPU into the binary (-march=native -mtu
 # target; -Wall -Wextra / -W4 are always on regardless of this flag.
 option(MAYA_WERROR "Treat compiler warnings as errors (CI)." OFF)
 
+# ── Compiler cache ────────────────────────────────────────────────────────
+# maya is header-heavy: every TU pulls in the DSL, the element tree and a
+# pile of widgets, so the SAME work is redone constantly — across the two
+# library variants (maya and maya_test), across 55 example binaries, and
+# after every `git checkout` or reconfigure. ccache collapses all of it to a
+# hash lookup. A full rebuild went 207s -> ~25s warm on an 8-core laptop.
+# Silently skipped when ccache isn't installed.
+option(MAYA_CCACHE "Compile through ccache when it's installed." ON)
+if(MAYA_CCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    find_program(MAYA_CCACHE_BIN NAMES ccache sccache)
+    if(MAYA_CCACHE_BIN)
+        set(CMAKE_C_COMPILER_LAUNCHER   "${MAYA_CCACHE_BIN}")
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${MAYA_CCACHE_BIN}")
+        message(STATUS "maya: compiling through ${MAYA_CCACHE_BIN}")
+    endif()
+endif()
+
 # ── Fast test iteration ───────────────────────────────────────────────────
 # The production `maya` library compiles every TU at -O3 with LTO + loop
 # unrolling + Graphite polyhedral passes (see MAYA_LINUX_CXX_FLAGS). Great for
@@ -451,14 +468,38 @@ if(MAYA_BUILD_APP)
 endif()
 
 option(MAYA_BUILD_EXAMPLES "Build example programs (needs maya::app)" ON)
+# The 55 examples are demos, not products: at -O3 with unrolling they were
+# the single biggest slice of a full build (and each is rebuilt whenever a
+# header moves). Two knobs:
+#   MAYA_FAST_EXAMPLES  compile them at -O1, no unroll/native (default ON).
+#                       The pixel demos still hit their frame rate; turn it
+#                       OFF to measure or ship one.
+#   MAYA_EXAMPLES_ALL   put them in the default target (default OFF). Off,
+#                       `ninja` builds the library and tests, and you ask for
+#                       the demo you want: `ninja maya_fps`. The smoke run
+#                       asks for all of them (`ninja maya_examples`).
+option(MAYA_FAST_EXAMPLES "Compile examples at -O1 instead of -O3." ON)
+option(MAYA_EXAMPLES_ALL  "Build every example as part of the default target." OFF)
 if(MAYA_BUILD_EXAMPLES AND MAYA_BUILD_APP)
     file(GLOB MAYA_EXAMPLE_SOURCES CONFIGURE_DEPENDS examples/*.cpp)
+    add_custom_target(maya_examples COMMENT "every example program")
     foreach(src ${MAYA_EXAMPLE_SOURCES})
         get_filename_component(name ${src} NAME_WE)
         set(tgt maya_${name})
-        add_executable(${tgt} ${src})
+        if(MAYA_EXAMPLES_ALL)
+            add_executable(${tgt} ${src})
+        else()
+            add_executable(${tgt} EXCLUDE_FROM_ALL ${src})
+        endif()
+        add_dependencies(maya_examples ${tgt})
         target_link_libraries(${tgt} PRIVATE maya_app)
-        if(DEFINED MAYA_LINUX_CXX_FLAGS)
+        if(MAYA_FAST_EXAMPLES)
+            target_compile_options(${tgt} PRIVATE
+                $<$<CXX_COMPILER_ID:GNU,Clang>:-O1 -g0 -fno-lto>)
+            target_link_options(${tgt} PRIVATE
+                $<$<CXX_COMPILER_ID:GNU,Clang>:-fno-lto>)
+            set_target_properties(${tgt} PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
+        elseif(DEFINED MAYA_LINUX_CXX_FLAGS)
             target_compile_options(${tgt} PRIVATE ${MAYA_LINUX_CXX_FLAGS})
             target_link_options(${tgt} PRIVATE ${MAYA_LINUX_LINK_FLAGS})
         else()

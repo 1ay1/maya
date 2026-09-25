@@ -155,7 +155,7 @@ jobs:
         run: >
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DMAYA_BUILD_TESTS=OFF -DMAYA_BUILD_EXAMPLES=ON
-          -DMAYA_NATIVE_TUNING=OFF
+          -DMAYA_EXAMPLES_ALL=ON -DMAYA_NATIVE_TUNING=OFF
       - name: Build
         run: cmake --build build -j
       - name: Drive every example in a real pty

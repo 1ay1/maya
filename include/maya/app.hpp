@@ -446,14 +446,26 @@ public:
             return P::view(k.model());
         };
         Presented f;
-        if constexpr (jaal::HasVisualHash<P>) {
-            f = term_.present_if(P::visual_hash(k.model()), build, force);
-        } else {
-            f = term_.present([&] {
-                Element root = build();
-                if constexpr (detail::HasNeedsWarmup<P>::value) warm(k, root);
-                return root;
-            });
+        // A view() that throws is a FAULT, not an abort: the model is
+        // untouched by a failed draw, so jaal's fault policy decides (stop
+        // by default, skip keeps the last good frame on screen), the fault
+        // is reported with its site, and the teardown still gives the
+        // terminal back. Escaping here instead would unwind through the
+        // reactor — the terminal was restored by the RAII device, but the
+        // program died with SIGABRT and no report.
+        try {
+            if constexpr (jaal::HasVisualHash<P>) {
+                f = term_.present_if(P::visual_hash(k.model()), build, force);
+            } else {
+                f = term_.present([&] {
+                    Element root = build();
+                    if constexpr (detail::HasNeedsWarmup<P>::value) warm(k, root);
+                    return root;
+                });
+            }
+        } catch (...) {
+            k.view_faulted(std::current_exception());
+            return false;                         // no frame this step
         }
         if (f.redraw_now) dirty_ = true;          // drawn from stale scroll sizes
         // The tty took only part of it: watch for writability and push the

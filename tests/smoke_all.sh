@@ -124,6 +124,11 @@ if $PY "$HERE/inline_progress_test.py" "$BUILD/maya_inline_progress" >/dev/null 
     echo "  ok       inline_progress"; pass=$((pass + 1))
 else echo "  FAIL     inline_progress"; fail=$((fail + 1)); failed="$failed inline_progress"; fi
 
+# A throwing view() is a fault, not an abort (both policies).
+if $PY "$HERE/view_fault_test.py" "$BUILD/maya_view_fault" >/dev/null 2>&1; then
+    echo "  ok       view_fault"; pass=$((pass + 1))
+else echo "  FAIL     view_fault"; fail=$((fail + 1)); failed="$failed view_fault"; fi
+
 # The navigation-frame contract: every Down in a key-repeat burst is drawn.
 if $PY "$HERE/nav_frames_test.py" "$BUILD/maya_navcheck" >/dev/null 2>&1; then
     echo "  ok       navcheck"; pass=$((pass + 1))

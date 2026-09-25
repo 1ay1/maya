@@ -212,6 +212,23 @@ so a header edit recompiles + relinks in seconds instead of waiting on the
 production `-O3 + LTO` build. Pass `-DMAYA_FAST_TESTS=OFF` to test against the
 full optimized library.
 
+### Build speed
+
+maya is header-heavy, so the defaults are tuned for the edit-build-run loop:
+
+| Option | Default | What it does |
+|---|---|---|
+| `MAYA_CCACHE` | ON | compile through ccache when installed |
+| `MAYA_FAST_EXAMPLES` | ON | examples at `-O1` (they were the biggest slice at `-O3`) |
+| `MAYA_EXAMPLES_ALL` | OFF | keep the 55 demos out of the default target |
+| `MAYA_FAST_TESTS` | ON | tests link a non-LTO `-O0` library |
+
+So `ninja` builds the library and tests; `ninja maya_fps` builds one demo and
+`ninja maya_examples` builds them all. On an 8-core laptop: a cold build of
+library + tests is ~95 s, a warm rebuild of everything ~1.5 s, and a real edit
+to a core header ~12 s. Turn `MAYA_FAST_EXAMPLES` off to measure or ship a
+demo at full optimisation.
+
 ## Using maya in your project
 
 ```bash

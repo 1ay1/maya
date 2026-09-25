@@ -1,756 +1,384 @@
-// examples/jaal_sorts.cpp — GENERATED from sorts.cpp by tools/port_canvas.py.
-// Do not edit: change sorts.cpp and re-run the tool.
+// examples/jaal_sorts.cpp — eight sorting algorithms racing, as a jaal program.
 //
-// The same demo on jaal: its canvas_run() call becomes run_canvas()
-// (maya/jaal/canvas.hpp), which draws it as a `paint` element through
-// maya::Screen, so it gets the Screen's flow control (never more than one
-// frame ahead of the terminal: `q` is instant over a slow ssh link).
+// Bubble, selection, insertion, shell, quick, merge, heap and LSD radix sort
+// run side by side on the same data, animated operation by operation, with
+// compares, swaps and writes highlighted and a rainbow celebration when one
+// finishes.
 //
-// Built only with -DMAYA_WITH_JAAL=ON.
-#include <maya/jaal/canvas.hpp>
-// maya -- Sorting Algorithm Visualizer
+//   Model      the eight races: each is its array, its recorded operation
+//              list (every compare / swap / write / "this is sorted" the
+//              algorithm makes, in order), the replay position, counters and
+//              highlights. Plus speed, input pattern, solo view, pause, the
+//              elapsed time and the RNG.
+//   update()   Tick replays `speed` operations of every race; keys restart,
+//              change pattern or speed, pause, or solo one algorithm.
+//   view()     a grid of panels (title, counters, progress, the bars as a
+//              pixels() image) and a two-line status bar.
 //
-// Eight sorting algorithms race side-by-side with half-block bars for
-// double vertical resolution. Watch each algorithm's unique access
-// pattern emerge: bubble's steady sweeps, quick's recursive partitions,
-// shell's diminishing gaps, radix's digit buckets.
-//
-// Keys: q/Esc=quit  space=restart  p=pattern  +/-/←/→=speed
-//       1-8=solo algorithm  0=show all
+// Keys: space restart   p pattern   ←/→ ↑/↓ +/- speed   k pause
+//       1-8 solo (again to unsolo)   0 show all   q quit
 
-#include <maya/internal.hpp>
+#include <maya/element/pixels.hpp>
+#include <maya/jaal/host.hpp>
+#include <maya/maya.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
-#include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <numeric>
 #include <random>
 #include <string>
+#include <variant>
 #include <vector>
 
 using namespace maya;
+using namespace maya::dsl;
+using namespace std::chrono_literals;
 
-// -- Constants ---------------------------------------------------------------
+namespace {
 
-static constexpr int NUM_ALGOS = 8;
-static constexpr int ARRAY_SIZE = 80;
-static constexpr int CELEBRATION_FRAMES = 50;
+constexpr int kAlgos = 8, kSize = 80, kCelebrate = 50, kTickMs = 33;
+constexpr std::array<const char*, kAlgos> kNames = {"Bubble Sort", "Selection Sort", "Insertion Sort", "Shell Sort",
+                                                    "Quick Sort",  "Merge Sort",     "Heap Sort",      "Radix Sort (LSD)"};
+constexpr std::array<const char*, 5> kPatterns = {"Random", "Reversed", "Nearly Sorted", "Few Unique", "Pipe Organ"};
 
-// -- Sorting state -----------------------------------------------------------
+// ── a race: an algorithm recorded as operations, replayed a few per tick ─────
 
-enum class HighlightKind { None, Compare, Swap, Sorted, Active };
+enum class Mark : std::uint8_t { None, Compare, Swap, Sorted, Active };
+struct Op { enum Kind : std::uint8_t { Compare, Swap, Sorted, Set } kind; int i, j; };
 
-struct SortState {
-    const char* name;
-    std::vector<int> arr;
-    int comparisons = 0;
-    int swaps       = 0;
-    bool done       = false;
-    int celebration_frame = 0;
+struct Race {
+    std::vector<int>  arr;
+    std::vector<Op>   ops;
+    std::vector<Mark> mark;
+    std::size_t at = 0;
+    int compares = 0, swaps = 0, celebrate = 0;
+    bool done = false;
 
-    std::vector<HighlightKind> highlight;
-
-    struct Op {
-        enum Type { COMPARE, SWAP, MARK_SORTED, SET } type;
-        int i, j;
-    };
-    std::vector<Op> ops;
-    size_t op_idx = 0;
-
-    void reset(const std::vector<int>& base) {
-        arr = base;
-        comparisons = 0;
-        swaps = 0;
-        done = false;
-        celebration_frame = 0;
-        highlight.assign(arr.size(), HighlightKind::None);
-        ops.clear();
-        op_idx = 0;
-    }
+    [[nodiscard]] float progress() const { return done ? 1.f : ops.empty() ? 0.f : static_cast<float>(at) / ops.size(); }
 
     void step() {
-        for (auto& h : highlight)
-            if (h != HighlightKind::Sorted) h = HighlightKind::None;
-
-        if (op_idx >= ops.size()) {
-            if (!done) {
-                done = true;
-                celebration_frame = 0;
-                for (auto& h : highlight) h = HighlightKind::Sorted;
-            }
+        for (auto& k : mark) if (k != Mark::Sorted) k = Mark::None;
+        if (at >= ops.size()) {
+            if (!done) { done = true; std::ranges::fill(mark, Mark::Sorted); }
             return;
         }
-
-        auto& op = ops[op_idx++];
-        int n = static_cast<int>(arr.size());
-        switch (op.type) {
-            case Op::COMPARE:
-                ++comparisons;
-                if (op.i >= 0 && op.i < n) highlight[op.i] = HighlightKind::Compare;
-                if (op.j >= 0 && op.j < n) highlight[op.j] = HighlightKind::Compare;
-                break;
-            case Op::SWAP:
-                ++swaps;
-                if (op.i >= 0 && op.i < n && op.j >= 0 && op.j < n) {
-                    std::swap(arr[op.i], arr[op.j]);
-                    highlight[op.i] = HighlightKind::Swap;
-                    highlight[op.j] = HighlightKind::Swap;
+        const Op op = ops[at++];
+        const int n = static_cast<int>(arr.size());
+        auto in = [n](int i) { return i >= 0 && i < n; };
+        switch (op.kind) {
+            case Op::Compare: ++compares; if (in(op.i)) mark[static_cast<std::size_t>(op.i)] = Mark::Compare;
+                                          if (in(op.j)) mark[static_cast<std::size_t>(op.j)] = Mark::Compare; break;
+            case Op::Swap: ++swaps;
+                if (in(op.i) && in(op.j)) {
+                    std::swap(arr[static_cast<std::size_t>(op.i)], arr[static_cast<std::size_t>(op.j)]);
+                    mark[static_cast<std::size_t>(op.i)] = mark[static_cast<std::size_t>(op.j)] = Mark::Swap;
                 }
                 break;
-            case Op::SET:
-                // Direct assignment (used by merge sort, radix sort)
-                if (op.i >= 0 && op.i < n) {
-                    arr[op.i] = op.j;
-                    highlight[op.i] = HighlightKind::Active;
-                }
-                break;
-            case Op::MARK_SORTED:
-                if (op.i >= 0 && op.i < n) highlight[op.i] = HighlightKind::Sorted;
-                break;
+            case Op::Set:    if (in(op.i)) { arr[static_cast<std::size_t>(op.i)] = op.j; mark[static_cast<std::size_t>(op.i)] = Mark::Active; } break;
+            case Op::Sorted: if (in(op.i)) mark[static_cast<std::size_t>(op.i)] = Mark::Sorted; break;
         }
-    }
-
-    [[nodiscard]] float progress() const {
-        if (done) return 1.f;
-        if (ops.empty()) return 0.f;
-        return static_cast<float>(op_idx) / static_cast<float>(ops.size());
     }
 };
 
-// -- Pre-generate operation lists for each algorithm -------------------------
+// ── the algorithms, each run once on a copy to record its operations ─────────
 
-static void gen_bubble_sort(SortState& s) {
-    auto a = s.arr;
-    int n = static_cast<int>(a.size());
+using Ops = std::vector<Op>;
+
+void bubble(std::vector<int> a, Ops& o) {
+    const int n = static_cast<int>(a.size());
     for (int i = 0; i < n - 1; ++i) {
         bool swapped = false;
         for (int j = 0; j < n - 1 - i; ++j) {
-            s.ops.push_back({SortState::Op::COMPARE, j, j + 1});
-            if (a[j] > a[j + 1]) {
-                std::swap(a[j], a[j + 1]);
-                s.ops.push_back({SortState::Op::SWAP, j, j + 1});
-                swapped = true;
-            }
+            o.push_back({Op::Compare, j, j + 1});
+            if (a[j] > a[j + 1]) { std::swap(a[j], a[j + 1]); o.push_back({Op::Swap, j, j + 1}); swapped = true; }
         }
-        s.ops.push_back({SortState::Op::MARK_SORTED, n - 1 - i, 0});
-        if (!swapped) {
-            // Already sorted — mark remaining
-            for (int k = 0; k <= n - 2 - i; ++k)
-                s.ops.push_back({SortState::Op::MARK_SORTED, k, 0});
-            break;
-        }
+        o.push_back({Op::Sorted, n - 1 - i, 0});
+        if (!swapped) { for (int k = 0; k <= n - 2 - i; ++k) o.push_back({Op::Sorted, k, 0}); return; }
     }
-    if (!s.ops.empty() && s.ops.back().type != SortState::Op::MARK_SORTED)
-        s.ops.push_back({SortState::Op::MARK_SORTED, 0, 0});
+    o.push_back({Op::Sorted, 0, 0});
 }
-
-static void gen_selection_sort(SortState& s) {
-    auto a = s.arr;
-    int n = static_cast<int>(a.size());
+void selection(std::vector<int> a, Ops& o) {
+    const int n = static_cast<int>(a.size());
     for (int i = 0; i < n - 1; ++i) {
-        int min_idx = i;
-        for (int j = i + 1; j < n; ++j) {
-            s.ops.push_back({SortState::Op::COMPARE, min_idx, j});
-            if (a[j] < a[min_idx]) min_idx = j;
-        }
-        if (min_idx != i) {
-            std::swap(a[i], a[min_idx]);
-            s.ops.push_back({SortState::Op::SWAP, i, min_idx});
-        }
-        s.ops.push_back({SortState::Op::MARK_SORTED, i, 0});
+        int m = i;
+        for (int j = i + 1; j < n; ++j) { o.push_back({Op::Compare, m, j}); if (a[j] < a[m]) m = j; }
+        if (m != i) { std::swap(a[i], a[m]); o.push_back({Op::Swap, i, m}); }
+        o.push_back({Op::Sorted, i, 0});
     }
-    s.ops.push_back({SortState::Op::MARK_SORTED, n - 1, 0});
+    o.push_back({Op::Sorted, n - 1, 0});
 }
-
-static void gen_insertion_sort(SortState& s) {
-    auto a = s.arr;
-    int n = static_cast<int>(a.size());
-    s.ops.push_back({SortState::Op::MARK_SORTED, 0, 0});
+void insertion(std::vector<int> a, Ops& o) {
+    const int n = static_cast<int>(a.size());
+    o.push_back({Op::Sorted, 0, 0});
     for (int i = 1; i < n; ++i) {
-        int j = i;
-        while (j > 0) {
-            s.ops.push_back({SortState::Op::COMPARE, j - 1, j});
-            if (a[j - 1] > a[j]) {
-                std::swap(a[j - 1], a[j]);
-                s.ops.push_back({SortState::Op::SWAP, j - 1, j});
-                --j;
-            } else {
-                break;
-            }
+        for (int j = i; j > 0; --j) {
+            o.push_back({Op::Compare, j - 1, j});
+            if (a[j - 1] <= a[j]) break;
+            std::swap(a[j - 1], a[j]); o.push_back({Op::Swap, j - 1, j});
         }
-        s.ops.push_back({SortState::Op::MARK_SORTED, i, 0});
+        o.push_back({Op::Sorted, i, 0});
     }
 }
-
-static void gen_shell_sort(SortState& s) {
-    auto a = s.arr;
-    int n = static_cast<int>(a.size());
-
-    // Ciura's gap sequence (extended)
-    int gaps[] = {301, 132, 57, 23, 10, 4, 1};
-    for (int gap : gaps) {
+void shell(std::vector<int> a, Ops& o) {
+    const int n = static_cast<int>(a.size());
+    for (int gap : {301, 132, 57, 23, 10, 4, 1}) {
         if (gap >= n) continue;
-        for (int i = gap; i < n; ++i) {
-            int j = i;
-            while (j >= gap) {
-                s.ops.push_back({SortState::Op::COMPARE, j - gap, j});
-                if (a[j - gap] > a[j]) {
-                    std::swap(a[j - gap], a[j]);
-                    s.ops.push_back({SortState::Op::SWAP, j - gap, j});
-                    j -= gap;
-                } else {
-                    break;
-                }
+        for (int i = gap; i < n; ++i)
+            for (int j = i; j >= gap; j -= gap) {
+                o.push_back({Op::Compare, j - gap, j});
+                if (a[j - gap] <= a[j]) break;
+                std::swap(a[j - gap], a[j]); o.push_back({Op::Swap, j - gap, j});
             }
-        }
     }
-    for (int i = 0; i < n; ++i)
-        s.ops.push_back({SortState::Op::MARK_SORTED, i, 0});
+    for (int i = 0; i < n; ++i) o.push_back({Op::Sorted, i, 0});
 }
-
-static void gen_quicksort(SortState& s) {
-    auto a = s.arr;
-    int n = static_cast<int>(a.size());
-
-    struct Frame { int lo, hi; };
-    std::vector<Frame> stack;
-    stack.push_back({0, n - 1});
-
+void quick(std::vector<int> a, Ops& o) {            // median-of-three, explicit stack
+    const int n = static_cast<int>(a.size());
+    std::vector<std::pair<int, int>> stack{{0, n - 1}};
+    auto order = [&](int x, int y) { o.push_back({Op::Compare, x, y}); if (a[x] > a[y]) { std::swap(a[x], a[y]); o.push_back({Op::Swap, x, y}); } };
     while (!stack.empty()) {
-        auto [lo, hi] = stack.back();
-        stack.pop_back();
-        if (lo >= hi) {
-            if (lo >= 0 && lo < n)
-                s.ops.push_back({SortState::Op::MARK_SORTED, lo, 0});
-            continue;
-        }
-
-        // Median-of-three pivot
-        int mid = lo + (hi - lo) / 2;
-        s.ops.push_back({SortState::Op::COMPARE, lo, mid});
-        if (a[lo] > a[mid]) { std::swap(a[lo], a[mid]); s.ops.push_back({SortState::Op::SWAP, lo, mid}); }
-        s.ops.push_back({SortState::Op::COMPARE, lo, hi});
-        if (a[lo] > a[hi])  { std::swap(a[lo], a[hi]);  s.ops.push_back({SortState::Op::SWAP, lo, hi}); }
-        s.ops.push_back({SortState::Op::COMPARE, mid, hi});
-        if (a[mid] > a[hi]) { std::swap(a[mid], a[hi]); s.ops.push_back({SortState::Op::SWAP, mid, hi}); }
-
-        int pivot = a[hi];
+        auto [lo, hi] = stack.back(); stack.pop_back();
+        if (lo >= hi) { if (lo >= 0 && lo < n) o.push_back({Op::Sorted, lo, 0}); continue; }
+        const int mid = lo + (hi - lo) / 2;
+        order(lo, mid); order(lo, hi); order(mid, hi);
+        const int pivot = a[hi];
         int i = lo;
         for (int j = lo; j < hi; ++j) {
-            s.ops.push_back({SortState::Op::COMPARE, j, hi});
-            if (a[j] <= pivot) {
-                if (i != j) {
-                    std::swap(a[i], a[j]);
-                    s.ops.push_back({SortState::Op::SWAP, i, j});
-                }
-                ++i;
-            }
+            o.push_back({Op::Compare, j, hi});
+            if (a[j] <= pivot) { if (i != j) { std::swap(a[i], a[j]); o.push_back({Op::Swap, i, j}); } ++i; }
         }
-        if (i != hi) {
-            std::swap(a[i], a[hi]);
-            s.ops.push_back({SortState::Op::SWAP, i, hi});
-        }
-        s.ops.push_back({SortState::Op::MARK_SORTED, i, 0});
-
-        if (i - 1 - lo > hi - i - 1) {
-            stack.push_back({lo, i - 1});
-            stack.push_back({i + 1, hi});
-        } else {
-            stack.push_back({i + 1, hi});
-            stack.push_back({lo, i - 1});
-        }
+        if (i != hi) { std::swap(a[i], a[hi]); o.push_back({Op::Swap, i, hi}); }
+        o.push_back({Op::Sorted, i, 0});
+        if (i - 1 - lo > hi - i - 1) { stack.push_back({lo, i - 1}); stack.push_back({i + 1, hi}); }
+        else                         { stack.push_back({i + 1, hi}); stack.push_back({lo, i - 1}); }
     }
 }
-
-static void gen_merge_sort(SortState& s) {
-    auto a = s.arr;
-    int n = static_cast<int>(a.size());
-
-    for (int width = 1; width < n; width *= 2) {
-        for (int lo = 0; lo < n; lo += 2 * width) {
-            int mid_val = std::min(lo + width, n);
-            int hi  = std::min(lo + 2 * width, n);
-
+void merge(std::vector<int> a, Ops& o) {            // bottom-up
+    const int n = static_cast<int>(a.size());
+    for (int w = 1; w < n; w *= 2)
+        for (int lo = 0; lo < n; lo += 2 * w) {
+            const int mid = std::min(lo + w, n), hi = std::min(lo + 2 * w, n);
             std::vector<int> tmp;
-            int i = lo, j = mid_val;
-            while (i < mid_val && j < hi) {
-                s.ops.push_back({SortState::Op::COMPARE, i, j});
-                if (a[i] <= a[j]) tmp.push_back(a[i++]);
-                else              tmp.push_back(a[j++]);
-            }
-            while (i < mid_val) tmp.push_back(a[i++]);
-            while (j < hi)      tmp.push_back(a[j++]);
-
-            for (int k = 0; k < static_cast<int>(tmp.size()); ++k) {
-                if (a[lo + k] != tmp[k]) {
-                    a[lo + k] = tmp[k];
-                    s.ops.push_back({SortState::Op::SET, lo + k, tmp[k]});
-                }
-            }
+            int i = lo, j = mid;
+            while (i < mid && j < hi) { o.push_back({Op::Compare, i, j}); tmp.push_back(a[i] <= a[j] ? a[i++] : a[j++]); }
+            while (i < mid) tmp.push_back(a[i++]);
+            while (j < hi)  tmp.push_back(a[j++]);
+            for (int k = 0; k < static_cast<int>(tmp.size()); ++k)
+                if (a[lo + k] != tmp[static_cast<std::size_t>(k)]) { a[lo + k] = tmp[static_cast<std::size_t>(k)]; o.push_back({Op::Set, lo + k, a[lo + k]}); }
         }
-    }
-    for (int i = 0; i < n; ++i)
-        s.ops.push_back({SortState::Op::MARK_SORTED, i, 0});
+    for (int i = 0; i < n; ++i) o.push_back({Op::Sorted, i, 0});
 }
-
-static void gen_heap_sort(SortState& s) {
-    auto a = s.arr;
-    int n = static_cast<int>(a.size());
-
-    auto sift_down = [&](int start, int end) {
-        int root = start;
+void heap(std::vector<int> a, Ops& o) {
+    const int n = static_cast<int>(a.size());
+    auto sift = [&](int root, int end) {
         while (2 * root + 1 <= end) {
-            int child = 2 * root + 1;
+            const int child = 2 * root + 1;
             int sw = root;
-            s.ops.push_back({SortState::Op::COMPARE, sw, child});
-            if (a[sw] < a[child]) sw = child;
-            if (child + 1 <= end) {
-                s.ops.push_back({SortState::Op::COMPARE, sw, child + 1});
-                if (a[sw] < a[child + 1]) sw = child + 1;
-            }
-            if (sw == root) break;
-            std::swap(a[root], a[sw]);
-            s.ops.push_back({SortState::Op::SWAP, root, sw});
+            o.push_back({Op::Compare, sw, child}); if (a[sw] < a[child]) sw = child;
+            if (child + 1 <= end) { o.push_back({Op::Compare, sw, child + 1}); if (a[sw] < a[child + 1]) sw = child + 1; }
+            if (sw == root) return;
+            std::swap(a[root], a[sw]); o.push_back({Op::Swap, root, sw});
             root = sw;
         }
     };
-
-    for (int start = (n - 2) / 2; start >= 0; --start)
-        sift_down(start, n - 1);
-
+    for (int s = (n - 2) / 2; s >= 0; --s) sift(s, n - 1);
     for (int end = n - 1; end > 0; --end) {
-        std::swap(a[0], a[end]);
-        s.ops.push_back({SortState::Op::SWAP, 0, end});
-        s.ops.push_back({SortState::Op::MARK_SORTED, end, 0});
-        sift_down(0, end - 1);
+        std::swap(a[0], a[end]); o.push_back({Op::Swap, 0, end}); o.push_back({Op::Sorted, end, 0});
+        sift(0, end - 1);
     }
-    s.ops.push_back({SortState::Op::MARK_SORTED, 0, 0});
+    o.push_back({Op::Sorted, 0, 0});
+}
+void radix(std::vector<int> a, Ops& o) {            // LSD, base 10
+    const int n = static_cast<int>(a.size()), top = *std::ranges::max_element(a);
+    for (int exp = 1; top / exp > 0; exp *= 10) {
+        std::array<int, 10> count{};
+        for (int i = 0; i < n; ++i) { o.push_back({Op::Compare, i, i}); ++count[static_cast<std::size_t>((a[i] / exp) % 10)]; }
+        for (std::size_t d = 1; d < 10; ++d) count[d] += count[d - 1];
+        std::vector<int> out(static_cast<std::size_t>(n));
+        for (int i = n - 1; i >= 0; --i) out[static_cast<std::size_t>(--count[static_cast<std::size_t>((a[i] / exp) % 10)])] = a[i];
+        for (int i = 0; i < n; ++i) if (a[i] != out[static_cast<std::size_t>(i)]) { a[i] = out[static_cast<std::size_t>(i)]; o.push_back({Op::Set, i, a[i]}); }
+    }
+    for (int i = 0; i < n; ++i) o.push_back({Op::Sorted, i, 0});
 }
 
-static void gen_radix_sort(SortState& s) {
-    auto a = s.arr;
-    int n = static_cast<int>(a.size());
-    int max_val = *std::max_element(a.begin(), a.end());
+using Algo = void (*)(std::vector<int>, Ops&);
+constexpr std::array<Algo, kAlgos> kAlgo = {bubble, selection, insertion, shell, quick, merge, heap, radix};
 
-    for (int exp = 1; max_val / exp > 0; exp *= 10) {
-        std::vector<int> output(n);
-        int count[10] = {};
+// ── model, messages ──────────────────────────────────────────────────────────
 
-        for (int i = 0; i < n; ++i) {
-            s.ops.push_back({SortState::Op::COMPARE, i, i}); // read access
-            count[(a[i] / exp) % 10]++;
-        }
-        for (int i = 1; i < 10; ++i) count[i] += count[i - 1];
+struct Model {
+    std::array<Race, kAlgos> races;
+    int speed = 4;                 // operations per tick
+    int pattern = 0;
+    int solo = -1;                 // -1: all eight
+    bool paused = false;
+    int ticks = 0;                 // elapsed, in ticks (the timer)
+    std::mt19937 rng{42};
+};
 
-        for (int i = n - 1; i >= 0; --i) {
-            int digit = (a[i] / exp) % 10;
-            output[count[digit] - 1] = a[i];
-            count[digit]--;
-        }
+struct Tick {};
+struct Restart {};
+struct NextPattern {};
+struct Speed { int add, mul; };    // speed = clamp(speed * mul + add)
+struct Pause {};
+struct Solo  { int i; };           // -1: show all
+struct Quit  {};
+using Msg = std::variant<Tick, Restart, NextPattern, Speed, Pause, Solo, Quit>;
 
-        for (int i = 0; i < n; ++i) {
-            if (a[i] != output[i]) {
-                a[i] = output[i];
-                s.ops.push_back({SortState::Op::SET, i, output[i]});
-            }
-        }
+std::vector<int> make_data(Model& m) {
+    std::vector<int> a(kSize);
+    std::iota(a.begin(), a.end(), 1);
+    switch (m.pattern) {
+        case 0: std::ranges::shuffle(a, m.rng); break;
+        case 1: std::ranges::reverse(a); break;
+        case 2: for (int i = 0; i < kSize / 10; ++i) std::swap(a[m.rng() % kSize], a[m.rng() % kSize]); break;
+        case 3: for (int i = 0; i < kSize; ++i) a[static_cast<std::size_t>(i)] = (i * 6 / kSize) * (kSize / 6) + kSize / 12;
+                std::ranges::shuffle(a, m.rng); break;
+        case 4: for (int i = 0; i < kSize; ++i) a[static_cast<std::size_t>(i)] = i < kSize / 2 ? i * 2 + 1 : (kSize - 1 - i) * 2 + 2; break;
     }
-    for (int i = 0; i < n; ++i)
-        s.ops.push_back({SortState::Op::MARK_SORTED, i, 0});
+    return a;
 }
 
-// -- Color helpers -----------------------------------------------------------
+void start(Model& m) {
+    const auto data = make_data(m);
+    for (int i = 0; i < kAlgos; ++i) {
+        Race& r = m.races[static_cast<std::size_t>(i)];
+        r = Race{};
+        r.arr = data;
+        r.mark.assign(data.size(), Mark::None);
+        kAlgo[static_cast<std::size_t>(i)](data, r.ops);
+    }
+    m.ticks = 0;
+}
 
-static Color value_color(int val, int max_val) {
-    float t = (max_val > 0) ? static_cast<float>(val) / static_cast<float>(max_val) : 0.f;
-    float hue = t * 300.f; // 0=red -> 60=yellow -> 120=green -> 180=cyan -> 240=blue -> 300=magenta
-    float h = std::fmod(hue, 360.f) / 60.f;
-    float c = 0.9f, x = c * (1.f - std::fabs(std::fmod(h, 2.f) - 1.f));
+// ── view helpers ─────────────────────────────────────────────────────────────
+
+Rgb hue_rgb(float hue, float lift) {                 // hue in degrees; lift 0..1 raises the floor
+    const float h = std::fmod(hue, 360.f) / 60.f, x = 1.f - std::fabs(std::fmod(h, 2.f) - 1.f);
     float r = 0, g = 0, b = 0;
-    if (h < 1)      { r = c; g = x; }
-    else if (h < 2) { r = x; g = c; }
-    else if (h < 3) { g = c; b = x; }
-    else if (h < 4) { g = x; b = c; }
-    else if (h < 5) { r = x; b = c; }
-    else             { r = c; b = x; }
-    return Color::rgb(
-        static_cast<uint8_t>(r * 235 + 20),
-        static_cast<uint8_t>(g * 235 + 20),
-        static_cast<uint8_t>(b * 235 + 20));
+    if (h < 1) { r = 1; g = x; } else if (h < 2) { r = x; g = 1; } else if (h < 3) { g = 1; b = x; }
+    else if (h < 4) { g = x; b = 1; } else if (h < 5) { r = x; b = 1; } else { r = 1; b = x; }
+    auto c = [lift](float v) { return static_cast<std::uint8_t>(lift * 20 + v * (255 - lift * 20) * (lift > 0 ? 0.92f : 1.f)); };
+    return {c(r), c(g), c(b)};
 }
 
-// -- Global state ------------------------------------------------------------
-
-static std::mt19937 g_rng{42};
-static SortState g_sorts[NUM_ALGOS];
-static int g_solo = -1;       // -1 = show all, 0-7 = solo one
-static int g_frame = 0;
-static int g_ops_per_frame = 4;
-static int g_pattern = 0;     // 0=random, 1=reversed, 2=nearly sorted, 3=few unique, 4=pipe organ
-static constexpr int NUM_PATTERNS = 5;
-static const char* g_pattern_names[] = {"Random", "Reversed", "Nearly Sorted", "Few Unique", "Pipe Organ"};
-static bool g_paused = false;
-static auto g_start_time = std::chrono::steady_clock::now();
-
-// Style caches
-static uint16_t S_BG, S_PANEL_BG;
-static uint16_t S_DIM, S_TITLE, S_TITLE_DONE;
-static uint16_t S_COMPARE, S_SWAP, S_SORTED, S_ACTIVE;
-static uint16_t S_BORDER, S_PROGRESS_FG, S_PROGRESS_BG;
-static uint16_t S_BAR_BG, S_BAR_FG, S_BAR_ACCENT;
-static uint16_t S_SPEED;
-
-static uint16_t S_VAL_BAR[ARRAY_SIZE];
-
-static constexpr int CELEB_HUES = 72;
-static uint16_t S_CELEB[CELEB_HUES];
-
-static std::vector<int> gen_pattern(int size, int pattern) {
-    std::vector<int> base(size);
-    std::iota(base.begin(), base.end(), 1);
-
-    switch (pattern) {
-        case 0: // Random
-            std::shuffle(base.begin(), base.end(), g_rng);
-            break;
-        case 1: // Reversed
-            std::reverse(base.begin(), base.end());
-            break;
-        case 2: // Nearly sorted (90% sorted, 10% random swaps)
-            for (int i = 0; i < size / 10; ++i) {
-                int a = g_rng() % size, b = g_rng() % size;
-                std::swap(base[a], base[b]);
-            }
-            break;
-        case 3: // Few unique (only 6 distinct values)
-            for (int i = 0; i < size; ++i)
-                base[i] = (i * 6 / size) * (size / 6) + size / 12;
-            std::shuffle(base.begin(), base.end(), g_rng);
-            break;
-        case 4: // Pipe organ (ascending then descending)
-            for (int i = 0; i < size; ++i)
-                base[i] = (i < size / 2) ? (i * 2 + 1) : ((size - 1 - i) * 2 + 2);
-            break;
+Rgb bar_colour(const Race& r, int i) {
+    const int val = r.arr[static_cast<std::size_t>(i)];
+    if (r.done && r.celebrate > 0 && r.celebrate <= kCelebrate
+        && std::sin(i * 0.2f - r.celebrate * 0.3f) > -0.3f)
+        return hue_rgb(static_cast<float>((i * 5 + r.celebrate * 7) % 360), 0);
+    if (!r.done || r.celebrate == 0) switch (r.mark[static_cast<std::size_t>(i)]) {
+        case Mark::Compare: return {40, 200, 100};
+        case Mark::Swap:    return {255, 50, 50};
+        case Mark::Active:  return {80, 160, 255};
+        case Mark::Sorted:  return {255, 200, 40};
+        case Mark::None:    break;
     }
-    return base;
+    return hue_rgb(static_cast<float>(val) / kSize * 300.f, 1);
 }
 
-static void init_data() {
-    auto base = gen_pattern(ARRAY_SIZE, g_pattern);
-
-    static const char* names[] = {
-        "Bubble Sort", "Selection Sort", "Insertion Sort", "Shell Sort",
-        "Quick Sort", "Merge Sort", "Heap Sort", "Radix Sort (LSD)"
-    };
-    using GenFn = void(*)(SortState&);
-    static const GenFn generators[] = {
-        gen_bubble_sort, gen_selection_sort, gen_insertion_sort, gen_shell_sort,
-        gen_quicksort, gen_merge_sort, gen_heap_sort, gen_radix_sort
-    };
-
-    for (int i = 0; i < NUM_ALGOS; ++i) {
-        g_sorts[i].name = names[i];
-        g_sorts[i].reset(base);
-        generators[i](g_sorts[i]);
+// The bars, bottom-up, as an image the panel's size (two pixels per row).
+Image bars(const Race& r, int w, int rows) {
+    const int ph = rows * 2;
+    Image img(w, ph, {18, 18, 28});
+    const float bw = static_cast<float>(w) / kSize;
+    for (int i = 0; i < kSize; ++i) {
+        const int x0 = static_cast<int>(i * bw), x1 = std::max(x0 + 1, static_cast<int>((i + 1) * bw));
+        const int bh = std::max(1, r.arr[static_cast<std::size_t>(i)] * ph / kSize);
+        const Rgb c = bar_colour(r, i);
+        for (int x = x0; x < std::min(x1, w); ++x)
+            for (int y = ph - bh; y < ph; ++y) img(x, y) = c;
     }
-    g_frame = 0;
-    g_start_time = std::chrono::steady_clock::now();
+    return img;
 }
 
-// -- Render helpers ----------------------------------------------------------
+struct Sorts {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key>;
 
-static uint16_t style_for_bar(int val, HighlightKind hk, bool celebrating,
-                              int celeb_frame, int bar_index) {
-    if (celebrating && celeb_frame > 0 && celeb_frame <= CELEBRATION_FRAMES) {
-        float wave = std::sin(static_cast<float>(bar_index) * 0.2f -
-                              static_cast<float>(celeb_frame) * 0.3f);
-        if (wave > -0.3f) {
-            int hue_idx = ((bar_index * 5 + celeb_frame * 7) % 360);
-            int ci = (hue_idx * CELEB_HUES) / 360;
-            return S_CELEB[std::clamp(ci, 0, CELEB_HUES - 1)];
+    static Cmd init(Model& m) { start(m); return {}; }
+
+    static Cmd update(Model& m, Tick) {
+        if (m.paused) return {};
+        ++m.ticks;
+        for (auto& r : m.races) {
+            if (!r.done) for (int k = 0; k < m.speed; ++k) r.step();
+            else if (r.celebrate <= kCelebrate) ++r.celebrate;
         }
+        return {};
+    }
+    static Cmd update(Model& m, Restart)     { m.rng.seed(std::random_device{}()); start(m); return {}; }
+    static Cmd update(Model& m, NextPattern) { m.pattern = (m.pattern + 1) % 5; m.rng.seed(std::random_device{}()); start(m); return {}; }
+    static Cmd update(Model& m, Speed s)     { m.speed = std::clamp(m.speed * s.mul + s.add, 1, 50); return {}; }
+    static Cmd update(Model& m, Pause)       { m.paused = !m.paused; return {}; }
+    static Cmd update(Model& m, Solo s)      { m.solo = (s.i < 0 || m.solo == s.i) ? -1 : s.i; return {}; }
+    static Cmd update(Model&, Quit)          { return Cmd::quit(0); }
+
+    static Element panel(const Race& r, int i) {
+        const Color bg = Color::rgb(18, 18, 28), dim = Color::rgb(90, 90, 110);
+        const auto title = std::string(" ") + kNames[static_cast<std::size_t>(i)] + (r.done ? " ✔" : "");
+        char counts[48]; std::snprintf(counts, sizeof counts, " cmp:%-5d swp:%-5d", r.compares, r.swaps);
+        const int pct = static_cast<int>(r.progress() * 100);
+        return v(text(title) | fgc(r.done ? Color::rgb(80, 255, 130) : Color::rgb(170, 200, 255)) | Bold,
+                 text(counts) | fgc(dim),
+                 h(component([p = r.progress()](int w, int) {
+                       const int filled = static_cast<int>(p * w);
+                       std::string s;
+                       for (int x = 0; x < w; ++x) s += x < filled ? "█" : "░";
+                       return Element{text(s) | fgc(Color::rgb(80, 180, 255))};
+                   }).grow(1),
+                   text(" " + std::to_string(pct) + "%") | fgc(dim)),
+                 paint([r](Canvas& c, int x, int y, int w, int hh) {
+                     detail::paint_pixels(c, bars(r, w, hh), x, y, w, hh);
+                 }).grow(1)) | bgc(bg) | grow_<1>;
     }
 
-    if (!celebrating || celeb_frame == 0) {
-        if (hk == HighlightKind::Compare) return S_COMPARE;
-        if (hk == HighlightKind::Swap)    return S_SWAP;
-        if (hk == HighlightKind::Active)  return S_ACTIVE;
-        if (hk == HighlightKind::Sorted)  return S_SORTED;
+    static Element grid(const Model& m) {
+        if (m.solo >= 0) return panel(m.races[static_cast<std::size_t>(m.solo)], m.solo);
+        auto row = [&](int from) {
+            return h(panel(m.races[static_cast<std::size_t>(from)], from),     panel(m.races[static_cast<std::size_t>(from + 1)], from + 1),
+                     panel(m.races[static_cast<std::size_t>(from + 2)], from + 2), panel(m.races[static_cast<std::size_t>(from + 3)], from + 3)) | grow_<1>;
+        };
+        return v(row(0), row(4)) | grow_<1>;
     }
 
-    int idx = std::clamp(val - 1, 0, ARRAY_SIZE - 1);
-    return S_VAL_BAR[idx];
-}
-
-static void draw_panel(Canvas& canvas, int px, int py, int pw, int ph,
-                       SortState& s, int max_val) {
-    if (pw < 4 || ph < 6) return;
-
-    // Panel background
-    canvas.fill({{Columns{px}, Rows{py}}, {Columns{pw}, Rows{ph}}}, U' ', S_PANEL_BG);
-
-    // Header: name
-    char buf[128];
-    if (s.done) {
-        std::snprintf(buf, sizeof(buf), " %s ", s.name);
-        canvas.write_text(px, py, buf, S_TITLE_DONE);
-        // Show checkmark
-        canvas.write_text(px + static_cast<int>(std::strlen(buf)), py, "\u2714", S_TITLE_DONE);
-    } else {
-        std::snprintf(buf, sizeof(buf), " %s", s.name);
-        canvas.write_text(px, py, buf, S_TITLE);
+    static Element status(const Model& m) {
+        const Color bar = Color::rgb(22, 22, 35);
+        char timer[16]; std::snprintf(timer, sizeof timer, "%d:%02d ", m.ticks * kTickMs / 60000, m.ticks * kTickMs / 1000 % 60);
+        return v(h(text(std::string(" [space] restart  [p] pattern  [←→] speed  [k] ") + (m.paused ? "resume" : "pause") +
+                        "  [1-8] solo  [q] quit") | fgc(Color::rgb(130, 130, 160)),
+                   spacer(), text(" SORTING VISUALIZER ") | fgc(Color::rgb(255, 180, 60)) | Bold) | bgc(bar),
+                 h(text(" Speed: " + std::to_string(m.speed) + "x") | fgc(Color::rgb(100, 220, 255)) | Bold,
+                   text(std::string("  Pattern: ") + kPatterns[static_cast<std::size_t>(m.pattern)]) | fgc(Color::rgb(200, 200, 220)),
+                   text(m.paused ? "  ⏸ PAUSED" : "") | fgc(Color::rgb(255, 180, 60)) | Bold,
+                   spacer(), text(timer) | fgc(Color::rgb(90, 90, 110))) | bgc(bar));
     }
 
-    // Stats line
-    std::snprintf(buf, sizeof(buf), " cmp:%-5d swp:%-5d", s.comparisons, s.swaps);
-    canvas.write_text(px, py + 1, buf, S_DIM);
+    static Element view(const Model& m) { return v(grid(m), status(m)) | bgc(Color::rgb(12, 12, 20)); }
 
-    // Progress bar (row 2)
-    float pct = s.progress();
-    int bar_w = pw - 2;
-    int filled = static_cast<int>(pct * static_cast<float>(bar_w));
-    canvas.set(px, py + 2, U' ', S_PANEL_BG);
-    for (int x = 0; x < bar_w; ++x) {
-        uint16_t sid = (x < filled) ? S_PROGRESS_FG : S_PROGRESS_BG;
-        canvas.set(px + 1 + x, py + 2, (x < filled) ? U'\u2588' : U'\u2591', sid);
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::every(std::chrono::milliseconds(kTickMs), Tick{}),
+            jaal_key_map<Sub>({
+                {' ', Restart{}}, {'p', NextPattern{}}, {'k', Pause{}},
+                {'+', Speed{1, 1}}, {'=', Speed{1, 1}}, {'-', Speed{-1, 1}},
+                {SpecialKey::Right, Speed{3, 1}}, {SpecialKey::Left, Speed{-3, 1}},
+                {SpecialKey::Up, Speed{0, 2}}, {SpecialKey::Down, Speed{0, 1}},
+                {'1', Solo{0}}, {'2', Solo{1}}, {'3', Solo{2}}, {'4', Solo{3}},
+                {'5', Solo{4}}, {'6', Solo{5}}, {'7', Solo{6}}, {'8', Solo{7}}, {'0', Solo{-1}},
+                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+            }));
     }
-    // Percentage on right
-    std::snprintf(buf, sizeof(buf), "%3d%%", static_cast<int>(pct * 100.f));
-    int pct_x = px + pw - 5;
-    if (pct_x > px + 1)
-        canvas.write_text(pct_x, py + 2, buf, S_DIM);
+    static bool subs_key(const Model&) { return true; }
+};
 
-    // Bar area (using half-block rendering for double vertical resolution)
-    int bar_top = py + 3;
-    int bar_height = (ph - 3) * 2; // double resolution
-    if (bar_height <= 0) return;
-    int rows = ph - 3;
+static_assert(JaalView<Sorts>);
 
-    int n = static_cast<int>(s.arr.size());
-    float bar_w_f = static_cast<float>(pw) / static_cast<float>(n);
+}  // namespace
 
-    for (int i = 0; i < n; ++i) {
-        int bx = px + static_cast<int>(static_cast<float>(i) * bar_w_f);
-        int bw = std::max(1, static_cast<int>(static_cast<float>(i + 1) * bar_w_f) -
-                             static_cast<int>(static_cast<float>(i) * bar_w_f));
-
-        int val = s.arr[i];
-        int bh = std::max(1, static_cast<int>(
-            static_cast<float>(val) / static_cast<float>(max_val) * static_cast<float>(bar_height)));
-
-        uint16_t sid = style_for_bar(val, s.highlight[i], s.done,
-                                     s.celebration_frame, i);
-
-        // Draw from bottom up using half-block characters
-        // Each terminal row represents 2 sub-rows
-        for (int row = 0; row < rows; ++row) {
-            int y = bar_top + rows - 1 - row;
-            int sub_lo = row * 2;       // bottom sub-pixel of this row
-            int sub_hi = row * 2 + 1;   // top sub-pixel of this row
-            bool lo_filled = sub_lo < bh;
-            bool hi_filled = sub_hi < bh;
-
-            for (int dx = 0; dx < bw; ++dx) {
-                int x = bx + dx;
-                if (x >= px + pw) break;
-                if (lo_filled && hi_filled) {
-                    canvas.set(x, y, U' ', sid);          // full block (bg color)
-                } else if (lo_filled) {
-                    canvas.set(x, y, U'\u2584', sid);     // lower half block ▄
-                }
-                // else: empty (panel bg already fills it)
-            }
-        }
-    }
-}
-
-// -- Main --------------------------------------------------------------------
-
-int main() {
-    init_data();
-
-    return run_canvas(
-        CanvasConfig{.fps = 30, .mouse = false, .mode = Mode::Fullscreen,
-                     .title = "sorting visualizer"},
-
-        // on_resize
-        [](StylePool& pool, int, int) {
-            S_BG          = pool.intern(Style{}.with_bg(Color::rgb(12, 12, 20)));
-            S_PANEL_BG    = pool.intern(Style{}.with_bg(Color::rgb(18, 18, 28)));
-            S_DIM         = pool.intern(Style{}.with_bg(Color::rgb(18, 18, 28)).with_fg(Color::rgb(90, 90, 110)));
-            S_TITLE       = pool.intern(Style{}.with_bg(Color::rgb(18, 18, 28)).with_fg(Color::rgb(170, 200, 255)).with_bold());
-            S_TITLE_DONE  = pool.intern(Style{}.with_bg(Color::rgb(18, 18, 28)).with_fg(Color::rgb(80, 255, 130)).with_bold());
-            S_COMPARE     = pool.intern(Style{}.with_bg(Color::rgb(40, 200, 100)));
-            S_SWAP        = pool.intern(Style{}.with_bg(Color::rgb(255, 50, 50)));
-            S_ACTIVE      = pool.intern(Style{}.with_bg(Color::rgb(80, 160, 255)));
-            S_SORTED      = pool.intern(Style{}.with_bg(Color::rgb(255, 200, 40)));
-            S_BORDER      = pool.intern(Style{}.with_fg(Color::rgb(40, 40, 60)).with_bg(Color::rgb(12, 12, 20)));
-            S_PROGRESS_FG = pool.intern(Style{}.with_fg(Color::rgb(80, 180, 255)).with_bg(Color::rgb(18, 18, 28)));
-            S_PROGRESS_BG = pool.intern(Style{}.with_fg(Color::rgb(35, 35, 50)).with_bg(Color::rgb(18, 18, 28)));
-            S_BAR_BG      = pool.intern(Style{}.with_bg(Color::rgb(22, 22, 35)).with_fg(Color::rgb(130, 130, 160)));
-            S_BAR_FG      = pool.intern(Style{}.with_bg(Color::rgb(22, 22, 35)).with_fg(Color::rgb(200, 200, 220)));
-            S_BAR_ACCENT  = pool.intern(Style{}.with_bg(Color::rgb(22, 22, 35)).with_fg(Color::rgb(255, 180, 60)).with_bold());
-            S_SPEED       = pool.intern(Style{}.with_bg(Color::rgb(22, 22, 35)).with_fg(Color::rgb(100, 220, 255)).with_bold());
-
-            for (int i = 0; i < ARRAY_SIZE; ++i) {
-                Color c = value_color(i + 1, ARRAY_SIZE);
-                S_VAL_BAR[i] = pool.intern(Style{}.with_bg(c));
-            }
-
-            for (int i = 0; i < CELEB_HUES; ++i) {
-                float hue = static_cast<float>(i) * 360.f / static_cast<float>(CELEB_HUES);
-                float h = hue / 60.f;
-                float cc = 1.f, xx = 1.f - std::fabs(std::fmod(h, 2.f) - 1.f);
-                float r = 0, g = 0, b = 0;
-                if (h < 1)      { r = cc; g = xx; }
-                else if (h < 2) { r = xx; g = cc; }
-                else if (h < 3) { g = cc; b = xx; }
-                else if (h < 4) { g = xx; b = cc; }
-                else if (h < 5) { r = xx; b = cc; }
-                else             { r = cc; b = xx; }
-                S_CELEB[i] = pool.intern(Style{}.with_bg(Color::rgb(
-                    static_cast<uint8_t>(r * 255),
-                    static_cast<uint8_t>(g * 255),
-                    static_cast<uint8_t>(b * 255))));
-            }
-        },
-
-        // on_event
-        [](const Event& ev) -> bool {
-            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-
-            // Restart
-            on(ev, ' ', [] {
-                g_rng.seed(static_cast<unsigned>(
-                    std::chrono::steady_clock::now().time_since_epoch().count()));
-                init_data();
-            });
-
-            // Pattern selection
-            on(ev, 'p', [] {
-                g_pattern = (g_pattern + 1) % NUM_PATTERNS;
-                g_rng.seed(static_cast<unsigned>(
-                    std::chrono::steady_clock::now().time_since_epoch().count()));
-                init_data();
-            });
-
-            // Pause
-            on(ev, 'k', [] { g_paused = !g_paused; });
-
-            // Speed controls
-            on(ev, '+', [] { g_ops_per_frame = std::min(50, g_ops_per_frame + 1); });
-            on(ev, '=', [] { g_ops_per_frame = std::min(50, g_ops_per_frame + 1); });
-            on(ev, '-', [] { g_ops_per_frame = std::max(1,  g_ops_per_frame - 1); });
-            on(ev, SpecialKey::Right, [] { g_ops_per_frame = std::min(50, g_ops_per_frame + 3); });
-            on(ev, SpecialKey::Left,  [] { g_ops_per_frame = std::max(1,  g_ops_per_frame - 3); });
-            on(ev, SpecialKey::Up,    [] { g_ops_per_frame = std::min(50, g_ops_per_frame * 2); });
-            on(ev, SpecialKey::Down,  [] { g_ops_per_frame = std::max(1,  g_ops_per_frame / 2); });
-
-            // Solo toggles (1-8)
-            for (int i = 0; i < NUM_ALGOS; ++i) {
-                on(ev, static_cast<char>('1' + i), [i] {
-                    g_solo = (g_solo == i) ? -1 : i;
-                });
-            }
-            on(ev, '0', [] { g_solo = -1; });
-
-            return true;
-        },
-
-        // on_paint
-        [](Canvas& canvas, int W, int H) {
-            ++g_frame;
-
-            // Fill background
-            canvas.fill({{Columns{0}, Rows{0}}, {Columns{W}, Rows{H}}}, U' ', S_BG);
-
-            // Step sorting algorithms
-            if (!g_paused) {
-                for (int i = 0; i < NUM_ALGOS; ++i) {
-                    auto& s = g_sorts[i];
-                    if (!s.done) {
-                        for (int k = 0; k < g_ops_per_frame; ++k)
-                            s.step();
-                    } else if (s.celebration_frame <= CELEBRATION_FRAMES) {
-                        ++s.celebration_frame;
-                    }
-                }
-            }
-
-            // Timer
-            auto elapsed = std::chrono::steady_clock::now() - g_start_time;
-            int secs = static_cast<int>(
-                std::chrono::duration_cast<std::chrono::seconds>(elapsed).count());
-
-            // Status bar (bottom 2 rows)
-            int bar_y = H - 2;
-            canvas.fill({{Columns{0}, Rows{bar_y}}, {Columns{W}, Rows{2}}}, U' ', S_BAR_BG);
-
-            // Top status line: controls
-            char buf[256];
-            std::snprintf(buf, sizeof(buf),
-                " [space] restart  [p] pattern  [\u2190\u2192] speed  [k] %s  [1-%d] solo  [q] quit",
-                g_paused ? "resume" : "pause", NUM_ALGOS);
-            canvas.write_text(0, bar_y, buf, S_BAR_BG);
-
-            // Bottom status line: speed + pattern + timer
-            std::snprintf(buf, sizeof(buf), " Speed: %dx", g_ops_per_frame);
-            canvas.write_text(0, bar_y + 1, buf, S_SPEED);
-
-            int off = static_cast<int>(std::strlen(buf));
-            std::snprintf(buf, sizeof(buf), "  Pattern: %s", g_pattern_names[g_pattern]);
-            canvas.write_text(off, bar_y + 1, buf, S_BAR_FG);
-            off += static_cast<int>(std::strlen(buf));
-
-            if (g_paused) {
-                canvas.write_text(off, bar_y + 1, "  \u23f8 PAUSED", S_BAR_ACCENT);
-                off += 10;
-            }
-
-            // Timer on right
-            std::snprintf(buf, sizeof(buf), "%d:%02d ", secs / 60, secs % 60);
-            int timer_x = W - static_cast<int>(std::strlen(buf));
-            if (timer_x > off)
-                canvas.write_text(timer_x, bar_y + 1, buf, S_DIM);
-
-            // Title on right of top status line
-            canvas.write_text(W - 21, bar_y, " SORTING VISUALIZER ", S_BAR_ACCENT);
-
-            // Content area
-            int content_h = H - 2;
-            if (content_h < 6) return;
-
-            if (g_solo >= 0 && g_solo < NUM_ALGOS) {
-                draw_panel(canvas, 0, 0, W, content_h, g_sorts[g_solo], ARRAY_SIZE);
-            } else {
-                // Dynamic grid layout for 8 algorithms
-                // Prefer 4x2 (4 columns, 2 rows) for wide terminals,
-                // 2x4 for narrow/tall terminals
-                int cols, rows;
-                if (W >= content_h * 3) {
-                    cols = 4; rows = 2;
-                } else if (W >= content_h * 2) {
-                    cols = 4; rows = 2;
-                } else {
-                    cols = 2; rows = 4;
-                }
-
-                int cell_w = W / cols;
-                int cell_h = content_h / rows;
-
-                for (int i = 0; i < NUM_ALGOS; ++i) {
-                    int col = i % cols;
-                    int row = i / cols;
-                    int px = col * cell_w;
-                    int py = row * cell_h;
-                    int pw = (col == cols - 1) ? (W - px) : cell_w;
-                    int ph = (row == rows - 1) ? (content_h - py) : cell_h;
-                    draw_panel(canvas, px, py, pw, ph, g_sorts[i], ARRAY_SIZE);
-                }
-            }
-        }
-    );
-}
+int main() { return run_jaal<Sorts>({.title = "sorting visualizer"}); }

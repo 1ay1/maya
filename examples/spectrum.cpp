@@ -1,157 +1,102 @@
-// examples/spectrum.cpp — GENERATED from spectrum.cpp by tools/port_canvas.py.
-// Do not edit: change spectrum.cpp and re-run the tool.
+// examples/spectrum.cpp — a simulated audio spectrum analyser.
 //
-// The same demo on jaal: its canvas_run() call becomes run_canvas()
-// (maya/jaal/canvas.hpp), which draws it as a `paint` element through
-// maya::Screen, so it gets the Screen's flow control (never more than one
-// frame ahead of the terminal: `q` is instant over a slow ssh link).
+// Five synthetic "tracks" (banks of amplitude-modulated oscillators) feed 64
+// frequency bins, drawn four ways: bars with falling peaks, mirrored bars, a
+// radial burst, and a scrolling waterfall. Beats (bass spikes over their
+// running average) flash the background.
 //
-#include <maya/app.hpp>
-// maya -- Audio Spectrum Analyzer
+//   Model      the bins (target, smoothed, peaks), the waterfall history,
+//              beat state, the mode, the track, the clock, the size, the RNG.
+//   update()   Tick synthesises the next spectrum and eases the display
+//              toward it; keys switch mode and track.
+//   view()     the chosen mode drawn into an Image (half blocks: two pixel
+//              rows per cell), and a status bar with a VU meter.
 //
-// Simulated real-time spectrum analyzer with four visualization modes.
-// Audio data is synthesized from layered sine waves that evolve over time,
-// creating convincing music-like patterns with beat detection.
-//
-// Keys: 1-4=mode  space=change track  q/Esc=quit
+// Keys: 1-4 mode   space next track   q quit
 
-#include <maya/internal.hpp>
+#include <maya/app.hpp>
+#include <maya/element/pixels.hpp>
+#include <maya/maya.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
+#include <optional>
 #include <random>
+#include <string>
+#include <variant>
 #include <vector>
 
 using namespace maya;
+using namespace maya::dsl;
+using namespace std::chrono_literals;
 
-// -- Constants ---------------------------------------------------------------
+namespace {
 
-static constexpr int NUM_BARS      = 64;
-static constexpr int NUM_WATERFALL = 128; // rows of waterfall history
-static constexpr float PEAK_DECAY  = 0.012f;
-static constexpr float BAR_SMOOTH  = 0.25f;  // interpolation factor per frame
-static constexpr float PI          = 3.14159265358979f;
-static constexpr float TWO_PI      = 6.28318530717959f;
+constexpr int   NUM_BARS      = 64;
+constexpr int   NUM_WATERFALL = 128;    // rows of waterfall history
+constexpr float PEAK_DECAY    = 0.012f;
+constexpr float BAR_SMOOTH    = 0.25f;  // ease-out per frame
+constexpr float PI            = 3.14159265358979f;
+constexpr float TWO_PI        = 6.28318530717959f;
+constexpr float kDt           = 1.f / 60.f;
 
-// -- State -------------------------------------------------------------------
+constexpr std::array<const char*, 4> kModeNames  = {"BARS", "MIRROR", "CIRCULAR", "WATERFALL"};
+constexpr std::array<const char*, 5> kTrackNames = {"EDM", "AMBIENT", "ROCK", "SYNTHWAVE", "GLITCH"};
 
-static std::mt19937 g_rng{42};
-static int g_mode = 0;          // 0=bars, 1=mirror, 2=circular, 3=waterfall
-static int g_track = 0;
-static int g_num_tracks = 5;
+// ── palettes ─────────────────────────────────────────────────────────────────
 
-// Spectrum data
-static float g_spectrum[NUM_BARS];        // current target values [0..1]
-static float g_display[NUM_BARS];         // smoothed display values
-static float g_peaks[NUM_BARS];           // peak hold positions
-static float g_peak_vel[NUM_BARS];        // peak fall velocity
-
-// Waterfall history
-static std::vector<std::vector<float>> g_waterfall;
-
-// Beat detection
-static float g_bass_avg    = 0.0f;
-static float g_bass_energy = 0.0f;
-static bool  g_beat        = false;
-static int   g_beat_flash  = 0;
-
-// Time
-static float g_time = 0.0f;
-using Clock = std::chrono::steady_clock;
-static auto g_last = Clock::now();
-
-// -- Style cache -------------------------------------------------------------
-
-// We pre-intern styles for the gradient at various amplitudes
-static constexpr int GRAD_STEPS = 64;
-static uint16_t S_GRAD[GRAD_STEPS];          // fg=gradient color, bg=black
-static uint16_t S_GRAD_BG[GRAD_STEPS];       // bg=gradient color (for filled bars)
-static uint16_t S_PEAK[GRAD_STEPS];          // peak dot style
-static uint16_t S_WATERFALL[GRAD_STEPS];     // bg=intensity color for waterfall
-
-// Half-block styles for circular mode: need fg/bg combos -- use dynamic
-// For circular mode we need arbitrary fg+bg combos; pre-intern a set
-static uint16_t S_CIRC[GRAD_STEPS * GRAD_STEPS]; // [fg_idx * GRAD_STEPS + bg_idx] -- too many
-// Instead, for circular we just use a smaller palette
-static constexpr int CIRC_STEPS = 16;
-static uint16_t S_CIRC_FB[CIRC_STEPS][CIRC_STEPS]; // fg x bg
-
-static uint16_t S_BAR_BG;
-static uint16_t S_BAR_DIM;
-static uint16_t S_BAR_ACC;
-static uint16_t S_BAR_BEAT;
-static uint16_t S_BLACK;
-static uint16_t S_BEAT_BG;      // flash background on beat
-
-// -- Gradient color -----------------------------------------------------------
-
-static Color gradient_color(float t) {
-    // blue -> cyan -> green -> yellow -> red
-    t = std::clamp(t, 0.0f, 1.0f);
-    if (t < 0.25f) {
-        float s = t / 0.25f;
-        return Color::rgb(0,
-                          static_cast<uint8_t>(s * 200),
-                          static_cast<uint8_t>(200 + s * 55));
-    }
-    if (t < 0.5f) {
-        float s = (t - 0.25f) / 0.25f;
-        return Color::rgb(0,
-                          static_cast<uint8_t>(200 + s * 55),
-                          static_cast<uint8_t>(255 - s * 255));
-    }
-    if (t < 0.75f) {
-        float s = (t - 0.5f) / 0.25f;
-        return Color::rgb(static_cast<uint8_t>(s * 255),
-                          static_cast<uint8_t>(255 - s * 30),
-                          0);
-    }
-    float s = (t - 0.75f) / 0.25f;
-    return Color::rgb(255,
-                      static_cast<uint8_t>(225 - s * 225),
-                      0);
+Rgb lerp_rgb(float s, Rgb a, Rgb b) {
+    auto l = [s](std::uint8_t x, std::uint8_t y) { return static_cast<std::uint8_t>(x + (y - x) * std::clamp(s, 0.f, 1.f)); };
+    return {l(a.r, b.r), l(a.g, b.g), l(a.b, b.b)};
 }
 
-// Waterfall uses a different palette: black -> blue -> purple -> red -> yellow -> white
-static Color waterfall_color(float t) {
-    t = std::clamp(t, 0.0f, 1.0f);
-    if (t < 0.2f) {
-        float s = t / 0.2f;
-        return Color::rgb(0, 0, static_cast<uint8_t>(s * 180));
-    }
-    if (t < 0.4f) {
-        float s = (t - 0.2f) / 0.2f;
-        return Color::rgb(static_cast<uint8_t>(s * 140),
-                          0,
-                          static_cast<uint8_t>(180 + s * 75));
-    }
-    if (t < 0.6f) {
-        float s = (t - 0.4f) / 0.2f;
-        return Color::rgb(static_cast<uint8_t>(140 + s * 115),
-                          static_cast<uint8_t>(s * 40),
-                          static_cast<uint8_t>(255 - s * 255));
-    }
-    if (t < 0.8f) {
-        float s = (t - 0.6f) / 0.2f;
-        return Color::rgb(255,
-                          static_cast<uint8_t>(40 + s * 215),
-                          0);
-    }
-    float s = (t - 0.8f) / 0.2f;
-    return Color::rgb(255, 255, static_cast<uint8_t>(s * 255));
+// blue -> cyan -> green -> yellow -> red
+Rgb gradient(float t) {
+    t = std::clamp(t, 0.f, 1.f);
+    if (t < 0.25f) return lerp_rgb(t / 0.25f, {0, 0, 200}, {0, 200, 255});
+    if (t < 0.50f) return lerp_rgb((t - 0.25f) / 0.25f, {0, 200, 255}, {0, 255, 0});
+    if (t < 0.75f) return lerp_rgb((t - 0.50f) / 0.25f, {0, 255, 0}, {255, 225, 0});
+    return lerp_rgb((t - 0.75f) / 0.25f, {255, 225, 0}, {255, 0, 0});
 }
 
-// -- Audio simulation --------------------------------------------------------
+// black -> blue -> purple -> red -> yellow -> white
+Rgb waterfall_color(float t) {
+    t = std::clamp(t, 0.f, 1.f);
+    if (t < 0.2f) return lerp_rgb(t / 0.2f, {0, 0, 0}, {0, 0, 180});
+    if (t < 0.4f) return lerp_rgb((t - 0.2f) / 0.2f, {0, 0, 180}, {140, 0, 255});
+    if (t < 0.6f) return lerp_rgb((t - 0.4f) / 0.2f, {140, 0, 255}, {255, 40, 0});
+    if (t < 0.8f) return lerp_rgb((t - 0.6f) / 0.2f, {255, 40, 0}, {255, 255, 0});
+    return lerp_rgb((t - 0.8f) / 0.2f, {255, 255, 0}, {255, 255, 255});
+}
+
+// The colour ramps as 64-step tables: the view is lookups, and the renderer
+// sees a few dozen colours, not thousands.
+constexpr int kSteps = 64;
+template <Rgb (*F)(float)>
+const std::array<Rgb, kSteps>& lut() {
+    static const auto t = [] {
+        std::array<Rgb, kSteps> a{};
+        for (int i = 0; i < kSteps; ++i) a[static_cast<std::size_t>(i)] = F(static_cast<float>(i) / (kSteps - 1));
+        return a;
+    }();
+    return t;
+}
+Rgb grad(float t)  { return lut<gradient>()[static_cast<std::size_t>(std::clamp(static_cast<int>(t * (kSteps - 1)), 0, kSteps - 1))]; }
+Rgb water(float t) { return lut<waterfall_color>()[static_cast<std::size_t>(std::clamp(static_cast<int>(t * (kSteps - 1)), 0, kSteps - 1))]; }
+
+constexpr Rgb kBlack   = {10, 10, 15};
+constexpr Rgb kBeatBg  = {25, 10, 20};
+
+// ── tracks ───────────────────────────────────────────────────────────────────
 
 struct TrackDef {
     struct Osc {
-        float freq;      // Hz
-        float amp;       // amplitude
-        float phase;     // phase offset
+        float freq;      // bin position (0..64)
+        float amp;
+        float phase;
         float mod_freq;  // amplitude modulation Hz
         float mod_depth; // 0..1
     };
@@ -161,504 +106,312 @@ struct TrackDef {
     float bass_mod;
 };
 
-static std::vector<TrackDef> g_tracks;
+const std::vector<TrackDef>& tracks() {
+    static const std::vector<TrackDef> t = [] {
+        std::vector<TrackDef> t;
+        // Track 0: EDM-like with strong bass kick
+        t.push_back({{
+            {2.0f,  0.9f, 0.0f, 0.5f,  0.8f},   // deep bass pulse
+            {4.0f,  0.7f, 0.3f, 1.0f,  0.5f},   // sub bass
+            {8.0f,  0.5f, 1.0f, 2.0f,  0.6f},   // low mid
+            {16.0f, 0.4f, 0.5f, 3.0f,  0.4f},   // mid
+            {24.0f, 0.3f, 0.8f, 4.5f,  0.5f},   // upper mid
+            {32.0f, 0.25f, 1.2f, 6.0f, 0.3f},   // presence
+            {48.0f, 0.15f, 0.2f, 8.0f, 0.7f},   // high
+        }, 2.0f, 0.9f, 0.5f});
 
-static void init_tracks() {
-    g_tracks.clear();
+        // Track 1: Ambient / pad
+        t.push_back({{
+            {1.5f,  0.4f, 0.0f, 0.1f, 0.3f},
+            {3.0f,  0.5f, 0.7f, 0.15f, 0.4f},
+            {6.0f,  0.6f, 1.4f, 0.2f, 0.5f},
+            {12.0f, 0.7f, 0.3f, 0.25f, 0.3f},
+            {20.0f, 0.5f, 2.0f, 0.3f, 0.4f},
+            {30.0f, 0.3f, 1.1f, 0.4f, 0.5f},
+            {45.0f, 0.2f, 0.5f, 0.5f, 0.6f},
+        }, 1.5f, 0.4f, 0.1f});
 
-    // Track 0: EDM-like with strong bass kick
-    g_tracks.push_back({{
-        {2.0f,  0.9f, 0.0f, 0.5f,  0.8f},   // deep bass pulse
-        {4.0f,  0.7f, 0.3f, 1.0f,  0.5f},   // sub bass
-        {8.0f,  0.5f, 1.0f, 2.0f,  0.6f},   // low mid
-        {16.0f, 0.4f, 0.5f, 3.0f,  0.4f},   // mid
-        {24.0f, 0.3f, 0.8f, 4.5f,  0.5f},   // upper mid
-        {32.0f, 0.25f, 1.2f, 6.0f, 0.3f},   // presence
-        {48.0f, 0.15f, 0.2f, 8.0f, 0.7f},   // high
-    }, 2.0f, 0.9f, 0.5f});
+        // Track 2: Rock / drums
+        t.push_back({{
+            {2.5f,  0.8f, 0.0f, 2.0f, 0.9f},
+            {5.0f,  0.6f, 0.5f, 2.0f, 0.7f},
+            {10.0f, 0.7f, 1.0f, 4.0f, 0.5f},
+            {15.0f, 0.5f, 0.3f, 3.0f, 0.6f},
+            {22.0f, 0.6f, 0.8f, 5.0f, 0.4f},
+            {35.0f, 0.4f, 1.5f, 7.0f, 0.5f},
+            {50.0f, 0.3f, 0.2f, 9.0f, 0.3f},
+        }, 2.5f, 0.8f, 2.0f});
 
-    // Track 1: Ambient / pad
-    g_tracks.push_back({{
-        {1.5f,  0.4f, 0.0f, 0.1f, 0.3f},
-        {3.0f,  0.5f, 0.7f, 0.15f, 0.4f},
-        {6.0f,  0.6f, 1.4f, 0.2f, 0.5f},
-        {12.0f, 0.7f, 0.3f, 0.25f, 0.3f},
-        {20.0f, 0.5f, 2.0f, 0.3f, 0.4f},
-        {30.0f, 0.3f, 1.1f, 0.4f, 0.5f},
-        {45.0f, 0.2f, 0.5f, 0.5f, 0.6f},
-    }, 1.5f, 0.4f, 0.1f});
+        // Track 3: Synthwave
+        t.push_back({{
+            {1.8f,  0.6f, 0.0f, 0.8f, 0.6f},
+            {3.6f,  0.5f, 1.0f, 1.2f, 0.5f},
+            {7.2f,  0.7f, 0.5f, 1.6f, 0.7f},
+            {14.0f, 0.8f, 1.5f, 2.4f, 0.4f},
+            {21.0f, 0.6f, 0.3f, 3.2f, 0.6f},
+            {28.0f, 0.5f, 0.8f, 4.0f, 0.5f},
+            {42.0f, 0.35f, 1.2f, 5.5f, 0.4f},
+        }, 1.8f, 0.6f, 0.8f});
 
-    // Track 2: Rock / drums
-    g_tracks.push_back({{
-        {2.5f,  0.8f, 0.0f, 2.0f, 0.9f},
-        {5.0f,  0.6f, 0.5f, 2.0f, 0.7f},
-        {10.0f, 0.7f, 1.0f, 4.0f, 0.5f},
-        {15.0f, 0.5f, 0.3f, 3.0f, 0.6f},
-        {22.0f, 0.6f, 0.8f, 5.0f, 0.4f},
-        {35.0f, 0.4f, 1.5f, 7.0f, 0.5f},
-        {50.0f, 0.3f, 0.2f, 9.0f, 0.3f},
-    }, 2.5f, 0.8f, 2.0f});
-
-    // Track 3: Synthwave
-    g_tracks.push_back({{
-        {1.8f,  0.6f, 0.0f, 0.8f, 0.6f},
-        {3.6f,  0.5f, 1.0f, 1.2f, 0.5f},
-        {7.2f,  0.7f, 0.5f, 1.6f, 0.7f},
-        {14.0f, 0.8f, 1.5f, 2.4f, 0.4f},
-        {21.0f, 0.6f, 0.3f, 3.2f, 0.6f},
-        {28.0f, 0.5f, 0.8f, 4.0f, 0.5f},
-        {42.0f, 0.35f, 1.2f, 5.5f, 0.4f},
-    }, 1.8f, 0.6f, 0.8f});
-
-    // Track 4: Glitch / IDM
-    g_tracks.push_back({{
-        {3.0f,  0.7f, 0.0f, 3.0f,  0.9f},
-        {7.0f,  0.5f, 0.4f, 5.0f,  0.8f},
-        {11.0f, 0.6f, 0.9f, 7.0f,  0.7f},
-        {17.0f, 0.5f, 1.3f, 11.0f, 0.6f},
-        {23.0f, 0.4f, 0.2f, 13.0f, 0.8f},
-        {37.0f, 0.3f, 0.7f, 17.0f, 0.5f},
-        {53.0f, 0.2f, 1.1f, 19.0f, 0.7f},
-    }, 3.0f, 0.7f, 3.0f});
-
-    g_num_tracks = static_cast<int>(g_tracks.size());
+        // Track 4: Glitch / IDM
+        t.push_back({{
+            {3.0f,  0.7f, 0.0f, 3.0f,  0.9f},
+            {7.0f,  0.5f, 0.4f, 5.0f,  0.8f},
+            {11.0f, 0.6f, 0.9f, 7.0f,  0.7f},
+            {17.0f, 0.5f, 1.3f, 11.0f, 0.6f},
+            {23.0f, 0.4f, 0.2f, 13.0f, 0.8f},
+            {37.0f, 0.3f, 0.7f, 17.0f, 0.5f},
+            {53.0f, 0.2f, 1.1f, 19.0f, 0.7f},
+        }, 3.0f, 0.7f, 3.0f});
+        return t;
+    }();
+    return t;
 }
 
-static void generate_spectrum(float dt) {
-    g_time += dt;
-    std::uniform_real_distribution<float> noise(-0.02f, 0.02f);
+// ── model ────────────────────────────────────────────────────────────────────
 
-    const auto& track = g_tracks[g_track];
+struct Model {
+    int w = 0, h = 0;                              // drawing area, in pixels (h = 2 * rows)
+    int mode = 0;                                  // 0 bars, 1 mirror, 2 circular, 3 waterfall
+    int track = 0;
+    float time = 0.f;
+    std::array<float, NUM_BARS> spectrum{};        // this frame's target values [0..1]
+    std::array<float, NUM_BARS> display{};         // eased toward spectrum
+    std::array<float, NUM_BARS> peaks{};           // peak hold
+    std::array<float, NUM_BARS> peak_vel{};
+    std::vector<std::array<float, NUM_BARS>> waterfall;   // oldest first
+    float bass_avg = 0.f;
+    int beat_flash = 0;                            // frames of background flash left
+    std::mt19937 rng{42};
+};
+
+void step(Model& m) {
+    m.time += kDt;
+    std::uniform_real_distribution<float> noise(-0.02f, 0.02f);
+    const TrackDef& track = tracks()[static_cast<std::size_t>(m.track)];
 
     for (int i = 0; i < NUM_BARS; ++i) {
-        float freq_pos = static_cast<float>(i) / NUM_BARS; // 0..1
-        float val = 0.0f;
-
+        const float freq_pos = static_cast<float>(i) / NUM_BARS;
+        float val = 0.f;
         for (const auto& osc : track.oscillators) {
-            // Each oscillator contributes to nearby frequency bins
-            float osc_pos = osc.freq / 64.0f; // normalize to 0..1 range
-            float dist = std::abs(freq_pos - osc_pos);
-            float spread = 0.08f + osc_pos * 0.05f; // wider spread for higher freqs
-            float influence = std::exp(-dist * dist / (2.0f * spread * spread));
-
-            // Amplitude with modulation
-            float mod = 1.0f - osc.mod_depth * (0.5f + 0.5f * std::sin(TWO_PI * osc.mod_freq * g_time + osc.phase));
+            const float osc_pos = osc.freq / 64.f;
+            const float dist = std::abs(freq_pos - osc_pos);
+            const float spread = 0.08f + osc_pos * 0.05f;              // wider at the top
+            const float influence = std::exp(-dist * dist / (2.f * spread * spread));
+            const float mod = 1.f - osc.mod_depth * (0.5f + 0.5f * std::sin(TWO_PI * osc.mod_freq * m.time + osc.phase));
             val += osc.amp * mod * influence;
         }
-
-        // Add some harmonics and noise for realism
-        float harmonic = 0.15f * std::sin(TWO_PI * (3.0f + freq_pos * 20.0f) * g_time * 0.1f);
-        val += harmonic * (1.0f - freq_pos); // harmonics stronger at low end
-
-        val += noise(g_rng);
-        val = std::clamp(val, 0.0f, 1.0f);
-        g_spectrum[i] = val;
+        val += 0.15f * std::sin(TWO_PI * (3.f + freq_pos * 20.f) * m.time * 0.1f) * (1.f - freq_pos);  // harmonics, low end
+        val += noise(m.rng);
+        m.spectrum[static_cast<std::size_t>(i)] = std::clamp(val, 0.f, 1.f);
     }
 
-    // Beat detection: check bass energy
-    float bass = 0.0f;
-    for (int i = 0; i < NUM_BARS / 8; ++i)
-        bass += g_spectrum[i];
-    bass /= (NUM_BARS / 8);
+    // Beat: the bass eighth spiking over its running average.
+    float bass = 0.f;
+    for (int i = 0; i < NUM_BARS / 8; ++i) bass += m.spectrum[static_cast<std::size_t>(i)];
+    bass /= NUM_BARS / 8;
+    m.bass_avg = m.bass_avg * 0.95f + bass * 0.05f;
+    if (bass > m.bass_avg * 1.4f && bass > 0.4f) m.beat_flash = 6;
+    else if (m.beat_flash > 0) --m.beat_flash;
 
-    g_bass_avg = g_bass_avg * 0.95f + bass * 0.05f;
-    g_bass_energy = bass;
-    g_beat = (bass > g_bass_avg * 1.4f && bass > 0.4f);
-
-    if (g_beat) g_beat_flash = 6;
-    if (g_beat_flash > 0) --g_beat_flash;
-
-    // Smooth display values
-    for (int i = 0; i < NUM_BARS; ++i) {
-        float target = g_spectrum[i];
-        // Faster rise, slower fall
-        float speed = (target > g_display[i]) ? 0.4f : BAR_SMOOTH;
-        g_display[i] += (target - g_display[i]) * speed;
-
-        // Peak hold
-        if (g_display[i] > g_peaks[i]) {
-            g_peaks[i] = g_display[i];
-            g_peak_vel[i] = 0.0f;
+    for (std::size_t i = 0; i < NUM_BARS; ++i) {
+        const float target = m.spectrum[i];
+        m.display[i] += (target - m.display[i]) * (target > m.display[i] ? 0.4f : BAR_SMOOTH);  // fast rise, slow fall
+        if (m.display[i] > m.peaks[i]) {
+            m.peaks[i] = m.display[i];
+            m.peak_vel[i] = 0.f;
         } else {
-            g_peak_vel[i] += PEAK_DECAY * 0.5f;
-            g_peaks[i] -= g_peak_vel[i];
-            if (g_peaks[i] < 0.0f) g_peaks[i] = 0.0f;
+            m.peak_vel[i] += PEAK_DECAY * 0.5f;
+            m.peaks[i] = std::max(0.f, m.peaks[i] - m.peak_vel[i]);
         }
     }
 
-    // Push into waterfall
-    std::vector<float> row(NUM_BARS);
-    for (int i = 0; i < NUM_BARS; ++i) row[i] = g_display[i];
-    g_waterfall.push_back(std::move(row));
-    if (static_cast<int>(g_waterfall.size()) > NUM_WATERFALL)
-        g_waterfall.erase(g_waterfall.begin());
+    m.waterfall.push_back(m.display);
+    if (static_cast<int>(m.waterfall.size()) > NUM_WATERFALL) m.waterfall.erase(m.waterfall.begin());
 }
 
-// -- Rebuild styles ----------------------------------------------------------
+// ── drawing ──────────────────────────────────────────────────────────────────
 
-static void rebuild(StylePool& pool, int /*w*/, int /*h*/) {
-    for (int i = 0; i < GRAD_STEPS; ++i) {
-        float t = static_cast<float>(i) / (GRAD_STEPS - 1);
-        Color c = gradient_color(t);
-        S_GRAD[i]    = pool.intern(Style{}.with_fg(c));
-        S_GRAD_BG[i] = pool.intern(Style{}.with_fg(c).with_bg(Color::rgb(10, 10, 15)));
-        S_PEAK[i]    = pool.intern(Style{}.with_fg(c).with_bold());
+void fill_rect(Image& img, int x0, int y0, int x1, int y1, Rgb c) {
+    x0 = std::max(x0, 0); y0 = std::max(y0, 0);
+    x1 = std::min(x1, img.width()); y1 = std::min(y1, img.height());
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x) img(x, y) = c;
+}
 
-        Color wc = waterfall_color(t);
-        S_WATERFALL[i] = pool.intern(Style{}.with_bg(wc));
+struct BarLayout { int count, width, draw; };
+BarLayout bar_layout(int w) {
+    const int count = std::min(NUM_BARS, w / 2);
+    const int width = count > 0 ? w / count : 0;
+    return {count, width, width - (width > 2 ? 1 : 0)};
+}
+
+void draw_bars(const Model& m, Image& img) {
+    const auto [count, width, draw] = bar_layout(img.width());
+    const int H = img.height();
+    for (int i = 0; i < count; ++i) {
+        const int x0 = i * width;
+        const int bar_h = static_cast<int>(m.display[static_cast<std::size_t>(i)] * static_cast<float>(H));
+        for (int j = 0; j < bar_h && j < H; ++j)
+            fill_rect(img, x0, H - 1 - j, x0 + draw, H - j, grad(static_cast<float>(j) / static_cast<float>(H)));
+        const int peak = static_cast<int>(m.peaks[static_cast<std::size_t>(i)] * static_cast<float>(H));
+        if (peak > 0 && peak < H)
+            fill_rect(img, x0, H - 1 - peak, x0 + draw, H - peak, grad(static_cast<float>(peak) / static_cast<float>(H)));
     }
+}
 
-    // Circular mode palette (smaller)
-    for (int f = 0; f < CIRC_STEPS; ++f) {
-        for (int b = 0; b < CIRC_STEPS; ++b) {
-            float tf = static_cast<float>(f) / (CIRC_STEPS - 1);
-            float tb = static_cast<float>(b) / (CIRC_STEPS - 1);
-            S_CIRC_FB[f][b] = pool.intern(
-                Style{}.with_fg(gradient_color(tf)).with_bg(gradient_color(tb)));
+void draw_mirror(const Model& m, Image& img) {
+    const auto [count, width, draw] = bar_layout(img.width());
+    const int mid = img.height() / 2;
+    for (int i = 0; i < count; ++i) {
+        const int x0 = i * width;
+        const int half = static_cast<int>(m.display[static_cast<std::size_t>(i)] * static_cast<float>(mid));
+        for (int j = 0; j < half && j < mid; ++j) {
+            const Rgb c = grad(static_cast<float>(j) / static_cast<float>(mid));
+            fill_rect(img, x0, mid - 1 - j, x0 + draw, mid - j, c);
+            fill_rect(img, x0, mid + j, x0 + draw, mid + j + 1, c);
+        }
+        const int peak = static_cast<int>(m.peaks[static_cast<std::size_t>(i)] * static_cast<float>(mid));
+        if (peak > 0 && peak < mid) {
+            const Rgb c = grad(static_cast<float>(peak) / static_cast<float>(mid));
+            fill_rect(img, x0, mid - 1 - peak, x0 + draw, mid - peak, c);
+            fill_rect(img, x0, mid + peak, x0 + draw, mid + peak + 1, c);
         }
     }
-
-    S_BLACK   = pool.intern(Style{}.with_bg(Color::rgb(10, 10, 15)));
-    S_BAR_BG  = pool.intern(Style{}.with_bg(Color::rgb(15, 15, 25)).with_fg(Color::rgb(100, 100, 120)));
-    S_BAR_DIM = pool.intern(Style{}.with_bg(Color::rgb(15, 15, 25)).with_fg(Color::rgb(60, 60, 80)));
-    S_BAR_ACC = pool.intern(Style{}.with_bg(Color::rgb(15, 15, 25)).with_fg(Color::rgb(80, 200, 255)).with_bold());
-    S_BAR_BEAT= pool.intern(Style{}.with_bg(Color::rgb(60, 15, 25)).with_fg(Color::rgb(255, 100, 100)).with_bold());
-    S_BEAT_BG = pool.intern(Style{}.with_bg(Color::rgb(25, 10, 20)));
 }
 
-// -- Event handling ----------------------------------------------------------
-
-static bool handle(const Event& ev) {
-    if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-
-    on(ev, '1', [] { g_mode = 0; });
-    on(ev, '2', [] { g_mode = 1; });
-    on(ev, '3', [] { g_mode = 2; });
-    on(ev, '4', [] { g_mode = 3; });
-    on(ev, ' ', [] {
-        g_track = (g_track + 1) % g_num_tracks;
-        // Reset peaks on track change
-        for (int i = 0; i < NUM_BARS; ++i) {
-            g_peaks[i] = 0.0f;
-            g_peak_vel[i] = 0.0f;
-        }
-    });
-
-    return true;
-}
-
-// -- Paint modes -------------------------------------------------------------
-
-static int grad_idx(float t) {
-    return std::clamp(static_cast<int>(t * (GRAD_STEPS - 1)), 0, GRAD_STEPS - 1);
-}
-
-static int circ_idx(float t) {
-    return std::clamp(static_cast<int>(t * (CIRC_STEPS - 1)), 0, CIRC_STEPS - 1);
-}
-
-static void paint_bars(Canvas& canvas, int w, int h, int bar_area_h) {
-    int num_bars = std::min(NUM_BARS, w / 2);
-    if (num_bars <= 0) return;
-    int bar_width = w / num_bars;
-    int gap = (bar_width > 2) ? 1 : 0;
-    int draw_w = bar_width - gap;
-
-    // Background
-    uint16_t bg = (g_beat_flash > 0) ? S_BEAT_BG : S_BLACK;
-    for (int y = 0; y < bar_area_h; ++y)
-        for (int x = 0; x < w; ++x)
-            canvas.set(x, y, U' ', bg);
-
-    for (int i = 0; i < num_bars; ++i) {
-        float val = g_display[i];
-        int bar_h = static_cast<int>(val * bar_area_h);
-        int peak_y = static_cast<int>(g_peaks[i] * bar_area_h);
-        int x0 = i * bar_width;
-
-        // Draw filled bar from bottom up
-        for (int j = 0; j < bar_h && j < bar_area_h; ++j) {
-            int y = bar_area_h - 1 - j;
-            float t = static_cast<float>(j) / bar_area_h;
-            int gi = grad_idx(t);
-            for (int dx = 0; dx < draw_w; ++dx) {
-                if (x0 + dx < w)
-                    canvas.set(x0 + dx, y, U'\u2588', S_GRAD[gi]); // full block
+void draw_circular(const Model& m, Image& img) {
+    const int W = img.width(), H = img.height();
+    const float cx = static_cast<float>(W) / 2.f, cy = static_cast<float>(H) / 2.f;
+    const float max_r = std::min(cx, cy) * 0.85f, inner_r = max_r * 0.3f;
+    std::vector<float> glow(static_cast<std::size_t>(W * H), 0.f);
+    auto plot = [&](int x, int y, float t) {
+        if (x < 0 || x >= W || y < 0 || y >= H) return;
+        float& g = glow[static_cast<std::size_t>(y * W + x)];
+        g = std::max(g, t);
+    };
+    for (int i = 0; i < NUM_BARS; ++i) {
+        const float a0 = TWO_PI * static_cast<float>(i) / NUM_BARS - PI / 2.f;
+        const float a1 = TWO_PI * static_cast<float>(i + 1) / NUM_BARS - PI / 2.f;
+        const float len = m.display[static_cast<std::size_t>(i)] * (max_r - inner_r);
+        for (int s = 0; static_cast<float>(s) <= len; ++s) {
+            const float r = inner_r + static_cast<float>(s);
+            const int arc = std::max(2, static_cast<int>((a1 - a0) * r));
+            for (int a = 0; a < arc; ++a) {
+                const float ang = a0 + (a1 - a0) * static_cast<float>(a) / static_cast<float>(arc);
+                plot(static_cast<int>(cx + r * std::cos(ang)), static_cast<int>(cy + r * std::sin(ang)),
+                     static_cast<float>(s) / (max_r - inner_r));
             }
         }
+        const float pr = inner_r + m.peaks[static_cast<std::size_t>(i)] * (max_r - inner_r);
+        const float mid_a = (a0 + a1) * 0.5f;
+        const int px = static_cast<int>(cx + pr * std::cos(mid_a)), py = static_cast<int>(cy + pr * std::sin(mid_a));
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) plot(px + dx, py + dy, 0.95f);
+    }
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            if (const float g = glow[static_cast<std::size_t>(y * W + x)]; g > 0.01f) img(x, y) = grad(g);
+}
 
-        // Peak indicator
-        if (peak_y > 0 && peak_y < bar_area_h) {
-            int py = bar_area_h - 1 - peak_y;
-            float t = static_cast<float>(peak_y) / bar_area_h;
-            int gi = grad_idx(t);
-            for (int dx = 0; dx < draw_w; ++dx) {
-                if (x0 + dx < w)
-                    canvas.set(x0 + dx, py, U'\u2594', S_PEAK[gi]); // upper 1/8 block
-            }
-        }
+void draw_waterfall(const Model& m, Image& img) {
+    const int W = img.width(), H = img.height();
+    const int bars_h = H / 4, wf_h = H - bars_h;
+    const int cols = std::min(NUM_BARS, W);
+    const float col_w = static_cast<float>(W) / static_cast<float>(cols);
+    auto col_x = [col_w](int i) { return static_cast<int>(static_cast<float>(i) * col_w); };
+
+    for (int i = 0; i < cols; ++i) {                                   // mini bars on top
+        const int bar_h = static_cast<int>(m.display[static_cast<std::size_t>(i)] * static_cast<float>(bars_h));
+        for (int j = 0; j < bar_h && j < bars_h; ++j)
+            fill_rect(img, col_x(i), bars_h - 1 - j, col_x(i + 1), bars_h - j, grad(static_cast<float>(j) / static_cast<float>(bars_h)));
+    }
+    const int rows = static_cast<int>(m.waterfall.size());           // history below, newest at the bottom
+    const int shown = std::min(wf_h, rows);
+    for (int r = 0; r < shown; ++r) {
+        const auto& data = m.waterfall[static_cast<std::size_t>(rows - shown + r)];
+        const int y = bars_h + (wf_h - shown) + r;
+        for (int i = 0; i < cols; ++i)
+            fill_rect(img, col_x(i), y, col_x(i + 1), y + 1, water(data[static_cast<std::size_t>(i)]));
     }
 }
 
-static void paint_mirror(Canvas& canvas, int w, int h, int bar_area_h) {
-    int num_bars = std::min(NUM_BARS, w / 2);
-    if (num_bars <= 0) return;
-    int bar_width = w / num_bars;
-    int gap = (bar_width > 2) ? 1 : 0;
-    int draw_w = bar_width - gap;
-    int mid = bar_area_h / 2;
+// ── program ──────────────────────────────────────────────────────────────────
 
-    uint16_t bg = (g_beat_flash > 0) ? S_BEAT_BG : S_BLACK;
-    for (int y = 0; y < bar_area_h; ++y)
-        for (int x = 0; x < w; ++x)
-            canvas.set(x, y, U' ', bg);
+struct Tick {};
+struct Resize    { int cols, rows; };
+struct SetMode   { int mode; };
+struct NextTrack {};
+struct Quit {};
+using Msg = std::variant<Tick, Resize, SetMode, NextTrack, Quit>;
 
-    for (int i = 0; i < num_bars; ++i) {
-        float val = g_display[i];
-        int half_h = static_cast<int>(val * mid);
-        int x0 = i * bar_width;
+struct Spectrum {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
 
-        for (int j = 0; j < half_h && j < mid; ++j) {
-            float t = static_cast<float>(j) / mid;
-            int gi = grad_idx(t);
-            // Upper half (going up from mid)
-            int yu = mid - 1 - j;
-            // Lower half (going down from mid)
-            int yl = mid + j;
-            for (int dx = 0; dx < draw_w; ++dx) {
-                if (x0 + dx < w) {
-                    canvas.set(x0 + dx, yu, U'\u2588', S_GRAD[gi]);
-                    canvas.set(x0 + dx, yl, U'\u2588', S_GRAD[gi]);
-                }
-            }
-        }
-
-        // Peak indicators
-        int peak_h = static_cast<int>(g_peaks[i] * mid);
-        if (peak_h > 0 && peak_h < mid) {
-            float t = static_cast<float>(peak_h) / mid;
-            int gi = grad_idx(t);
-            int pyu = mid - 1 - peak_h;
-            int pyl = mid + peak_h;
-            for (int dx = 0; dx < draw_w; ++dx) {
-                if (x0 + dx < w) {
-                    canvas.set(x0 + dx, pyu, U'\u2594', S_PEAK[gi]);
-                    if (pyl < bar_area_h)
-                        canvas.set(x0 + dx, pyl, U'\u2581', S_PEAK[gi]);
-                }
-            }
-        }
-    }
-}
-
-static void paint_circular(Canvas& canvas, int w, int h, int bar_area_h) {
-    // Clear with beat-aware background
-    uint16_t bg = (g_beat_flash > 0) ? S_BEAT_BG : S_BLACK;
-    for (int y = 0; y < bar_area_h; ++y)
-        for (int x = 0; x < w; ++x)
-            canvas.set(x, y, U' ', bg);
-
-    // Pixel grid: w columns, bar_area_h*2 pixel rows (half-block rendering)
-    int px_w = w;
-    int px_h = bar_area_h * 2;
-    float cx = static_cast<float>(px_w) / 2.0f;
-    float cy = static_cast<float>(px_h) / 2.0f;
-    float max_r = std::min(cx, cy) * 0.85f;
-    float inner_r = max_r * 0.3f;
-
-    // We'll build a pixel buffer
-    // Using a flat vector for the pixel intensities
-    std::vector<float> pixels(px_w * px_h, 0.0f);
-
-    int num_bars = NUM_BARS;
-    for (int i = 0; i < num_bars; ++i) {
-        float angle = TWO_PI * static_cast<float>(i) / num_bars - PI / 2.0f;
-        float next_angle = TWO_PI * static_cast<float>(i + 1) / num_bars - PI / 2.0f;
-        float val = g_display[i];
-        float bar_len = val * (max_r - inner_r);
-
-        // Draw radial line segments
-        int steps = static_cast<int>(bar_len) + 1;
-        for (int s = 0; s <= steps; ++s) {
-            float r = inner_r + static_cast<float>(s);
-            if (r > inner_r + bar_len) break;
-            // Sweep a small arc
-            int arc_steps = std::max(2, static_cast<int>((next_angle - angle) * r));
-            for (int a = 0; a < arc_steps; ++a) {
-                float ang = angle + (next_angle - angle) * static_cast<float>(a) / arc_steps;
-                int px = static_cast<int>(cx + r * std::cos(ang));
-                int py = static_cast<int>(cy + r * std::sin(ang));
-                if (px >= 0 && px < px_w && py >= 0 && py < px_h) {
-                    float t = static_cast<float>(s) / (max_r - inner_r);
-                    pixels[py * px_w + px] = std::max(pixels[py * px_w + px], t);
-                }
-            }
-        }
-
-        // Peak dot
-        float peak_r = inner_r + g_peaks[i] * (max_r - inner_r);
-        float mid_angle = (angle + next_angle) * 0.5f;
-        int ppx = static_cast<int>(cx + peak_r * std::cos(mid_angle));
-        int ppy = static_cast<int>(cy + peak_r * std::sin(mid_angle));
-        for (int dy = -1; dy <= 1; ++dy) {
-            for (int dx = -1; dx <= 1; ++dx) {
-                int fx = ppx + dx, fy = ppy + dy;
-                if (fx >= 0 && fx < px_w && fy >= 0 && fy < px_h)
-                    pixels[fy * px_w + fx] = std::max(pixels[fy * px_w + fx], 0.95f);
-            }
-        }
+    static Cmd update(Model& m, Tick)      { step(m); return {}; }
+    static Cmd update(Model& m, Resize r)  { m.w = std::max(1, r.cols); m.h = std::max(2, (r.rows - 1) * 2); return {}; }
+    static Cmd update(Model& m, SetMode s) { m.mode = s.mode; return {}; }
+    static Cmd update(Model&, Quit)        { return Cmd::quit(0); }
+    static Cmd update(Model& m, NextTrack) {
+        m.track = (m.track + 1) % static_cast<int>(tracks().size());
+        m.peaks.fill(0.f);                     // a new track starts its peaks from the floor
+        m.peak_vel.fill(0.f);
+        return {};
     }
 
-    // Render with half-block characters
-    for (int ty = 0; ty < bar_area_h; ++ty) {
-        int py_top = ty * 2;
-        int py_bot = ty * 2 + 1;
-        for (int x = 0; x < w; ++x) {
-            float top_val = (py_top < px_h) ? pixels[py_top * px_w + x] : 0.0f;
-            float bot_val = (py_bot < px_h) ? pixels[py_bot * px_w + x] : 0.0f;
-
-            if (top_val > 0.01f || bot_val > 0.01f) {
-                int fi = circ_idx(top_val);
-                int bi = circ_idx(bot_val);
-                canvas.set(x, ty, U'\u2580', S_CIRC_FB[fi][bi]);
-            }
+    static Image render(const Model& m) {
+        Image img(m.w, m.h);
+        img.fill(m.beat_flash > 0 && m.mode != 3 ? kBeatBg : kBlack);
+        switch (m.mode) {
+            case 0: draw_bars(m, img); break;
+            case 1: draw_mirror(m, img); break;
+            case 2: draw_circular(m, img); break;
+            default: draw_waterfall(m, img); break;
         }
-    }
-}
-
-static void paint_waterfall(Canvas& canvas, int w, int h, int bar_area_h) {
-    // Top portion: small bars (1/4 height)
-    int bars_h = bar_area_h / 4;
-    int wf_h = bar_area_h - bars_h;
-
-    // Mini bars at top
-    {
-        int num_bars = std::min(NUM_BARS, w);
-        float col_w = static_cast<float>(w) / num_bars;
-
-        for (int y = 0; y < bars_h; ++y)
-            for (int x = 0; x < w; ++x)
-                canvas.set(x, y, U' ', S_BLACK);
-
-        for (int i = 0; i < num_bars; ++i) {
-            float val = g_display[i];
-            int bar_h = static_cast<int>(val * bars_h);
-            int x0 = static_cast<int>(i * col_w);
-            int x1 = static_cast<int>((i + 1) * col_w);
-            for (int j = 0; j < bar_h && j < bars_h; ++j) {
-                int y = bars_h - 1 - j;
-                float t = static_cast<float>(j) / bars_h;
-                int gi = grad_idx(t);
-                for (int x = x0; x < x1 && x < w; ++x)
-                    canvas.set(x, y, U'\u2588', S_GRAD[gi]);
-            }
-        }
+        return img;
     }
 
-    // Waterfall below
-    int wf_rows = static_cast<int>(g_waterfall.size());
-    int display_rows = std::min(wf_h, wf_rows);
-
-    for (int row = 0; row < wf_h; ++row) {
-        int y = bars_h + row;
-        int data_idx = wf_rows - display_rows + row;
-        if (data_idx < 0 || data_idx >= wf_rows) {
-            for (int x = 0; x < w; ++x)
-                canvas.set(x, y, U' ', S_BLACK);
-            continue;
-        }
-
-        const auto& data = g_waterfall[data_idx];
-        int num_bars = std::min(NUM_BARS, static_cast<int>(data.size()));
-        float col_w = static_cast<float>(w) / num_bars;
-
-        for (int i = 0; i < num_bars; ++i) {
-            float val = data[i];
-            int gi = grad_idx(val);
-            int x0 = static_cast<int>(i * col_w);
-            int x1 = static_cast<int>((i + 1) * col_w);
-            for (int x = x0; x < x1 && x < w; ++x)
-                canvas.set(x, y, U' ', S_WATERFALL[gi]);
-        }
-    }
-}
-
-// -- Main paint --------------------------------------------------------------
-
-static void paint(Canvas& canvas, int w, int h) {
-    // Timing
-    auto now = Clock::now();
-    float dt = std::chrono::duration<float>(now - g_last).count();
-    g_last = now;
-    dt = std::clamp(dt, 0.001f, 0.1f);
-
-    generate_spectrum(dt);
-
-    int bar_y = h - 1;
-    int bar_area_h = h - 1;
-
-    switch (g_mode) {
-        case 0: paint_bars(canvas, w, h, bar_area_h); break;
-        case 1: paint_mirror(canvas, w, h, bar_area_h); break;
-        case 2: paint_circular(canvas, w, h, bar_area_h); break;
-        case 3: paint_waterfall(canvas, w, h, bar_area_h); break;
+    static Element status_bar(const Model& m) {
+        float vu = 0.f;
+        for (float d : m.display) vu += d;
+        vu /= NUM_BARS;
+        const int vu_width = std::clamp(m.w / 5, 1, 20);
+        const int fill = static_cast<int>(vu * static_cast<float>(vu_width));
+        const bool beat = m.beat_flash > 0;
+        const auto bg = beat ? Color::rgb(60, 15, 25) : Color::rgb(15, 15, 25);
+        return h(text(std::string(" ") + kModeNames[static_cast<std::size_t>(m.mode)] + "  Track: " +
+                      kTrackNames[static_cast<std::size_t>(m.track)] + "  VU [" +
+                      std::string(static_cast<std::size_t>(fill), '|') +
+                      std::string(static_cast<std::size_t>(vu_width - fill), ' ') + "]")
+                     | fgc(beat ? Color::rgb(255, 100, 100) : Color::rgb(80, 200, 255)) | Bold,
+                 spacer(),
+                 text("[1-4] mode  [space] track  [q] quit ") | fgc(Color::rgb(60, 60, 80))) | bgc(bg);
     }
 
-    // -- Status bar --
-    for (int x = 0; x < w; ++x)
-        canvas.set(x, bar_y, U' ', S_BAR_BG);
-
-    static const char* mode_names[] = {"BARS", "MIRROR", "CIRCULAR", "WATERFALL"};
-    static const char* track_names[] = {"EDM", "AMBIENT", "ROCK", "SYNTHWAVE", "GLITCH"};
-
-    // VU meter
-    float vu = 0.0f;
-    for (int i = 0; i < NUM_BARS; ++i) vu += g_display[i];
-    vu /= NUM_BARS;
-
-    int vu_width = std::min(20, w / 5);
-    int vu_fill = static_cast<int>(vu * vu_width);
-
-    char status[256];
-    std::snprintf(status, sizeof(status), " %s  Track: %s  VU [",
-                  mode_names[g_mode], track_names[g_track]);
-
-    // Build VU bar string
-    char vu_str[64];
-    int vi = 0;
-    for (int i = 0; i < vu_width; ++i) {
-        vu_str[vi++] = (i < vu_fill) ? '|' : ' ';
+    static Element view(const Model& m) {
+        if (m.w == 0) return text("");
+        return v(pixels(render(m)), status_bar(m));
     }
-    vu_str[vi] = '\0';
 
-    char full_status[384];
-    std::snprintf(full_status, sizeof(full_status), "%s%s]", status, vu_str);
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::every(16ms, Tick{}),
+            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+                return Resize{r.width.value, r.height.value};
+            }),
+            keys<Sub>({
+                {'1', SetMode{0}}, {'2', SetMode{1}}, {'3', SetMode{2}}, {'4', SetMode{3}},
+                {' ', NextTrack{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+            }));
+    }
+    static bool subs_key(const Model&) { return true; }
+};
 
-    uint16_t status_style = (g_beat_flash > 0) ? S_BAR_BEAT : S_BAR_ACC;
-    canvas.write_text(0, bar_y, full_status, status_style);
+static_assert(Program<Spectrum>);
 
-    // Right side: keybindings
-    const char* keys = "[1-4] mode  [space] track  [q] quit ";
-    int klen = static_cast<int>(std::strlen(keys));
-    if (klen < w)
-        canvas.write_text(w - klen, bar_y, keys, S_BAR_DIM);
-}
+}  // namespace
 
-// -- Main --------------------------------------------------------------------
-
-int main() {
-    init_tracks();
-
-    // Initialize display arrays
-    std::fill(std::begin(g_spectrum), std::end(g_spectrum), 0.0f);
-    std::fill(std::begin(g_display),  std::end(g_display),  0.0f);
-    std::fill(std::begin(g_peaks),    std::end(g_peaks),    0.0f);
-    std::fill(std::begin(g_peak_vel), std::end(g_peak_vel), 0.0f);
-
-    return run_canvas(
-        CanvasConfig{.fps = 60, .mouse = false, .mode = Mode::Fullscreen, .title = "spectrum"},
-        rebuild,
-        handle,
-        paint
-    );
-}
+int main() { return run<Spectrum>({.title = "spectrum"}); }

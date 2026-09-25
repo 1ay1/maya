@@ -130,16 +130,26 @@ public:
 
     // Register the terminal's input with jaal's reactor, and tell the
     // program its size before it ever draws.
-    void attach(jaal::host_context<terminal_host>& cx) {
+    //
+    // Templated on the CONTEXT, not fixed to host_context<terminal_host>.
+    // jaal detects these hooks with `requires { host.attach(cx) }` where cx
+    // is host_context<TheActualHost> — so a host that DERIVES from this one
+    // (to add its own effects) gets a different context type, the
+    // requires-test fails, and the kernel silently skips attach(). The
+    // symptom is an app that opens and then accepts no input at all, with
+    // nothing logged. Accepting any context keeps derived hosts working.
+    template <class Cx>
+    void attach(Cx& cx) {
         auto reg = cx.watch(term_.input_handle(), jaal::interest::read, kInput);
         if (!reg) { cx.stop(70); return; }        // no input: nothing to drive us
         input_reg_.emplace(std::move(*reg));
-        cx_ = &cx;
+        cx_ = ctx_ref{&cx};
         const auto sz = term_.size();
         cx.emit(ResizeEvent{sz.width, sz.height});
     }
 
-    void on_ready(jaal::host_context<terminal_host>& cx, const jaal::readiness& r) {
+    template <class Cx>
+    void on_ready(Cx& cx, const jaal::readiness& r) {
         if (r.token == kOutput) {
             // The tty took bytes again: push the rest of the backed-up frame.
             // Only when ALL of it has gone is the next frame composed (a
@@ -196,7 +206,8 @@ public:
         return a && *a < b ? *a : b;
     }
 
-    void emit_until_navigation(jaal::host_context<terminal_host>& cx, std::vector<Event>& events) {
+    template <class Cx>
+    void emit_until_navigation(Cx& cx, std::vector<Event>& events) {
         // jaal folds an emitted event on the spot (route() runs update), so
         // "emit, then draw" needs the loop to turn between two navigation
         // keys: stop right after one and hold the rest.
@@ -212,7 +223,8 @@ public:
     }
 
     // SIGWINCH is the one signal the host owns.
-    void on_signal(jaal::host_context<terminal_host>& cx, jaal::sig s) {
+    template <class Cx>
+    void on_signal(Cx& cx, jaal::sig s) {
         if (s != jaal::sig::resize) return;
         term_.on_resize();
         const auto sz = term_.size();
@@ -240,7 +252,7 @@ public:
             // Emitting folds the key now; returning with owes_frame() true
             // turns the loop once more, so its effect (a quit, a redraw)
             // is acted on in the next step rather than after the next input.
-            if (!flushed.empty()) { emit_until_navigation(*cx_, flushed); resolved_ = true; return; }
+            if (!flushed.empty()) { emit_until_navigation(cx_, flushed); resolved_ = true; return; }
         }
         const bool drew = present_frame(k);
         // A navigation key ended the last input batch so ITS frame could be
@@ -251,7 +263,7 @@ public:
         // Resuming the whole rest here drew every other row of a burst.
         if (drew && !held_.empty() && cx_) {
             auto rest = std::exchange(held_, {});
-            emit_until_navigation(*cx_, rest);
+            emit_until_navigation(cx_, rest);
         }
     }
 
@@ -389,7 +401,7 @@ public:
         return out;
     }
 
-    void release() { output_reg_.reset(); input_reg_.reset(); cx_ = nullptr; }
+    void release() { output_reg_.reset(); input_reg_.reset(); cx_ = ctx_ref{}; }
 
 private:
     static constexpr std::uint64_t kInput = 1;
@@ -414,7 +426,7 @@ private:
     void watch_output(bool on) {
         if (on == output_reg_.has_value() || !cx_) return;
         if (!on) { output_reg_.reset(); return; }
-        if (auto reg = cx_->watch(term_.output_handle(), jaal::interest::write, kOutput))
+        if (auto reg = cx_.watch(term_.output_handle(), jaal::interest::write, kOutput))
             output_reg_.emplace(std::move(*reg));
     }
 
@@ -427,8 +439,43 @@ private:
         last_warmup_ = want;
     }
 
+    // The attached context, type-erased.
+    //
+    // attach() is templated (see there), so the context type varies with the
+    // host that ends up running — but this member has to name ONE type. The
+    // host only ever asks the context to watch a handle or emit an event, so
+    // erase to those two.
+    struct ctx_ref {
+        void* p = nullptr;
+        jaal::result<jaal::platform::native_reactor::registration>
+            (*watch_fn)(void*, jaal::platform::native_reactor::handle,
+                        jaal::interest, std::uint64_t) = nullptr;
+        void (*emit_fn)(void*, const Event&) = nullptr;
+
+        ctx_ref() = default;
+        template <class Cx>
+        explicit ctx_ref(Cx* cx)
+            : p(cx),
+              watch_fn([](void* self,
+                          jaal::platform::native_reactor::handle h,
+                          jaal::interest what, std::uint64_t tok) {
+                  return static_cast<Cx*>(self)->watch(h, what, tok);
+              }),
+              emit_fn([](void* self, const Event& ev) {
+                  static_cast<Cx*>(self)->emit(ev);
+              }) {}
+
+        explicit operator bool() const noexcept { return p != nullptr; }
+        [[nodiscard]] auto watch(jaal::platform::native_reactor::handle h,
+                                 jaal::interest what,
+                                 std::uint64_t tok) const {
+            return watch_fn(p, h, what, tok);
+        }
+        void emit(const Event& ev) const { emit_fn(p, ev); }
+    };
+
     Dev&                                                    term_;
-    jaal::host_context<terminal_host>*                          cx_ = nullptr;
+    ctx_ref                                                     cx_;
     std::optional<jaal::platform::native_reactor::registration> input_reg_;
     std::optional<jaal::platform::native_reactor::registration> output_reg_;   // only while output is pending
     static constexpr std::uint64_t                            kOutput = 2;

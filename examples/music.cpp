@@ -19,7 +19,11 @@
 //
 // Usage:  ./maya_music
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
+
+#include <chrono>
+#include <variant>
 #include <maya/widget/badge.hpp>
 #include <maya/widget/heatmap.hpp>
 #include <maya/widget/progress.hpp>
@@ -38,10 +42,6 @@ using namespace maya::dsl;
 
 // -- Helpers -----------------------------------------------------------------
 
-static std::mt19937 rng{std::random_device{}()};
-static float randf(float lo, float hi) {
-    return std::uniform_real_distribution<float>(lo, hi)(rng);
-}
 
 static maya::Style fg_rgb(uint8_t r, uint8_t g, uint8_t b) {
     return maya::Style{}.with_fg(maya::Color::rgb(r, g, b));
@@ -60,7 +60,7 @@ struct Track {
     uint8_t art_r2, art_g2, art_b2;  // heatmap high color
 };
 
-static std::vector<Track> tracks = {
+static const std::vector<Track> tracks = {
     {"Neon Dreams",          "Synthwave Collective", "Synthwave",    15.0f, 2.0f, 1.5f,   20,  0, 60,    0, 255,200},
     {"Binary Sunset",        "The Algorithms",       "Ambient",      15.0f, 1.2f, 0.8f,   10, 10, 40,  255,140, 50},
     {"Stack Overflow",       "Debug Mode",           "Electronic",   15.0f, 3.5f, 2.2f,   40,  5, 10,  255, 60, 80},
@@ -80,91 +80,108 @@ static std::vector<Track> tracks = {
 
 // -- State -------------------------------------------------------------------
 
-static int current_track = 0;
-static float progress = 0.0f;      // 0..1
-static bool playing = true;
-static bool shuffle_on = false;
-static int repeat_mode = 0;         // 0=off, 1=one, 2=all
-static float volume = 0.75f;
-static int playlist_scroll = 0;
-static int frame = 0;
 
 // Visualizer data
 static constexpr int VIS_BINS = 32;
-static std::array<float, VIS_BINS> vis_left{};
-static std::array<float, VIS_BINS> vis_right{};
 
 // Shuffle order
-static std::vector<int> shuffle_order;
 
-static void init_shuffle() {
-    shuffle_order.resize(tracks.size());
+// Everything the screen shows, and the RNG that drives it.
+struct Model {
+    int current_track = 0;
+    float progress = 0.0f;
+    bool playing = true;
+    bool shuffle_on = false;
+    int repeat_mode = 0;
+    float volume = 0.75f;
+    int playlist_scroll = 0;
+    int frame = 0;
+    std::array<float, VIS_BINS> vis_left{};
+    std::array<float, VIS_BINS> vis_right{};
+    std::vector<int> shuffle_order;
+
+    std::mt19937 rng{std::random_device{}()};
+    int   randi(int lo, int hi)     { return std::uniform_int_distribution<int>(lo, hi)(rng); }
+    float randf(float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); }
+};
+
+static void init_shuffle(Model& m) {
+    m.shuffle_order.resize(tracks.size());
     for (int i = 0; i < static_cast<int>(tracks.size()); ++i)
-        shuffle_order[static_cast<size_t>(i)] = i;
-    std::shuffle(shuffle_order.begin(), shuffle_order.end(), rng);
+        m.shuffle_order[static_cast<size_t>(i)] = i;
+    std::shuffle(m.shuffle_order.begin(), m.shuffle_order.end(), m.rng);
 }
 
-static void advance_track(int direction) {
-    if (shuffle_on && direction == 1) {
+static constexpr int kPlaylistRows = 8;
+
+// Keep the playing track inside the playlist window.
+static void follow_current(Model& m) {
+    if (m.current_track < m.playlist_scroll) m.playlist_scroll = m.current_track;
+    if (m.current_track >= m.playlist_scroll + kPlaylistRows) m.playlist_scroll = m.current_track - kPlaylistRows + 1;
+    m.playlist_scroll = std::clamp(m.playlist_scroll, 0, std::max(0, static_cast<int>(tracks.size()) - kPlaylistRows));
+}
+
+static void advance_track(Model& m, int direction) {
+    if (m.shuffle_on && direction == 1) {
         // Find current in shuffle order and go next
-        for (int i = 0; i < static_cast<int>(shuffle_order.size()); ++i) {
-            if (shuffle_order[static_cast<size_t>(i)] == current_track) {
-                int next = (i + 1) % static_cast<int>(shuffle_order.size());
-                current_track = shuffle_order[static_cast<size_t>(next)];
-                progress = 0.0f;
+        for (int i = 0; i < static_cast<int>(m.shuffle_order.size()); ++i) {
+            if (m.shuffle_order[static_cast<size_t>(i)] == m.current_track) {
+                int next = (i + 1) % static_cast<int>(m.shuffle_order.size());
+                m.current_track = m.shuffle_order[static_cast<size_t>(next)];
+                m.progress = 0.0f;
                 return;
             }
         }
-        current_track = shuffle_order[0];
+        m.current_track = m.shuffle_order[0];
     } else {
-        current_track += direction;
-        if (current_track >= static_cast<int>(tracks.size())) {
-            current_track = (repeat_mode == 2) ? 0 : static_cast<int>(tracks.size()) - 1;
+        m.current_track += direction;
+        if (m.current_track >= static_cast<int>(tracks.size())) {
+            m.current_track = (m.repeat_mode == 2) ? 0 : static_cast<int>(tracks.size()) - 1;
         }
-        if (current_track < 0) current_track = 0;
+        if (m.current_track < 0) m.current_track = 0;
     }
-    progress = 0.0f;
+    m.progress = 0.0f;
 }
 
 // -- Tick --------------------------------------------------------------------
 
-static void tick(float dt) {
-    frame++;
-    if (!playing) return;
+static void tick(Model& m, float dt) {
+    m.frame++;
+    if (!m.playing) return;
 
-    auto& trk = tracks[static_cast<size_t>(current_track)];
-    progress += dt / trk.duration;
+    auto& trk = tracks[static_cast<size_t>(m.current_track)];
+    m.progress += dt / trk.duration;
 
-    if (progress >= 1.0f) {
-        progress = 0.0f;
-        if (repeat_mode == 1) {
+    if (m.progress >= 1.0f) {
+        m.progress = 0.0f;
+        if (m.repeat_mode == 1) {
             // repeat one: stay on same track
         } else {
-            advance_track(1);
+            advance_track(m, 1);
         }
     }
 
     // Update visualizer bins based on track's frequency signature
-    float t = static_cast<float>(frame) / 15.0f;
+    float t = static_cast<float>(m.frame) / 15.0f;
     for (int i = 0; i < VIS_BINS; ++i) {
         float fi = static_cast<float>(i) / static_cast<float>(VIS_BINS);
         float sig = std::sin(t * trk.freq_base + fi * 6.28f) * 0.3f
                   + std::sin(t * trk.freq_mod * 2.0f + fi * 12.56f) * 0.2f
-                  + randf(-0.15f, 0.15f);
+                  + m.randf(-0.15f, 0.15f);
         float energy = 0.5f + sig;
-        energy *= volume;
+        energy *= m.volume;
         energy = std::clamp(energy, 0.05f, 1.0f);
 
         // Smooth decay
-        vis_left[static_cast<size_t>(i)] += (energy - vis_left[static_cast<size_t>(i)]) * 0.4f;
+        m.vis_left[static_cast<size_t>(i)] += (energy - m.vis_left[static_cast<size_t>(i)]) * 0.4f;
 
         float sig2 = std::sin(t * trk.freq_base * 1.1f + fi * 6.28f + 1.0f) * 0.3f
                     + std::cos(t * trk.freq_mod * 1.8f + fi * 12.56f) * 0.2f
-                    + randf(-0.15f, 0.15f);
+                    + m.randf(-0.15f, 0.15f);
         float energy2 = 0.5f + sig2;
-        energy2 *= volume;
+        energy2 *= m.volume;
         energy2 = std::clamp(energy2, 0.05f, 1.0f);
-        vis_right[static_cast<size_t>(i)] += (energy2 - vis_right[static_cast<size_t>(i)]) * 0.4f;
+        m.vis_right[static_cast<size_t>(i)] += (energy2 - m.vis_right[static_cast<size_t>(i)]) * 0.4f;
     }
 }
 
@@ -203,11 +220,11 @@ static maya::Badge genre_badge(const std::string& genre) {
 
 // -- UI Builders -------------------------------------------------------------
 
-static maya::Element build_now_playing() {
-    auto& trk = tracks[static_cast<size_t>(current_track)];
+static maya::Element build_now_playing(const Model& m) {
+    auto& trk = tracks[static_cast<size_t>(m.current_track)];
 
-    auto status_icon = playing ? "▶" : "⏸";
-    auto status_style = playing ? fg_rgb(0, 220, 120) : fg_rgb(255, 200, 60);
+    auto status_icon = m.playing ? "▶" : "⏸";
+    auto status_style = m.playing ? fg_rgb(0, 220, 120) : fg_rgb(255, 200, 60);
 
     return (h(
         text(std::string(status_icon), status_style) | w_<2>,
@@ -217,13 +234,13 @@ static maya::Element build_now_playing() {
         text("  "),
         genre_badge(trk.genre).build(),
         space,
-        text(fmt_time(progress * trk.duration) + " / " + fmt_time(trk.duration)) | Dim
+        text(fmt_time(m.progress * trk.duration) + " / " + fmt_time(trk.duration)) | Dim
     ) | pad<0, 1, 0, 1>).build();
 }
 
-static maya::Element build_album_art() {
-    auto& trk = tracks[static_cast<size_t>(current_track)];
-    float t = static_cast<float>(frame) / 15.0f;
+static maya::Element build_album_art(const Model& m) {
+    auto& trk = tracks[static_cast<size_t>(m.current_track)];
+    float t = static_cast<float>(m.frame) / 15.0f;
 
     constexpr int rows = 6;
     constexpr int cols = 20;
@@ -252,8 +269,8 @@ static maya::Element build_album_art() {
         .padding(0, 1, 0, 1)(hm.build());
 }
 
-static maya::Element build_progress() {
-    auto& trk = tracks[static_cast<size_t>(current_track)];
+static maya::Element build_progress(const Model& m) {
+    auto& trk = tracks[static_cast<size_t>(m.current_track)];
 
     maya::ProgressBar bar(maya::ProgressConfig{
         .width = 0,
@@ -262,14 +279,14 @@ static maya::Element build_progress() {
         .show_track = true,
         .show_percentage = false,
     });
-    bar.set(progress);
-    bar.set_label(fmt_time(progress * trk.duration) + " / " + fmt_time(trk.duration));
+    bar.set(m.progress);
+    bar.set_label(fmt_time(m.progress * trk.duration) + " / " + fmt_time(trk.duration));
 
     return (v(bar.build()) | padding(0, 1, 0, 1)).build();
 }
 
-static maya::Element build_controls() {
-    auto& trk = tracks[static_cast<size_t>(current_track)];
+static maya::Element build_controls(const Model& m) {
+    auto& trk = tracks[static_cast<size_t>(m.current_track)];
     auto accent = maya::Color::rgb(trk.art_r2, trk.art_g2, trk.art_b2);
 
     auto ctrl = [&](const std::string& icon, bool active) {
@@ -278,28 +295,28 @@ static maya::Element build_controls() {
         return text(icon) | Dim;
     };
 
-    std::string repeat_label = repeat_mode == 0 ? "off" : (repeat_mode == 1 ? "one" : "all");
+    std::string repeat_label = m.repeat_mode == 0 ? "off" : (m.repeat_mode == 1 ? "one" : "all");
 
     return (h(
         text("    "),
         ctrl("\xe2\x8f\xae", false),  // ⏮
         text("  "),
-        ctrl(playing ? "\xe2\x96\xb6" : "\xe2\x8f\xb8", true),  // ▶ or ⏸
+        ctrl(m.playing ? "\xe2\x96\xb6" : "\xe2\x8f\xb8", true),  // ▶ or ⏸
         text("  "),
         ctrl("\xe2\x8f\xad", false),  // ⏭
         text("    "),
-        ctrl("\xf0\x9f\x94\x80", shuffle_on),  // 🔀
+        ctrl("\xf0\x9f\x94\x80", m.shuffle_on),  // 🔀
         text(" "),
-        text(shuffle_on ? "on" : "off", shuffle_on ? fg_rgb(0, 220, 120) : fg_rgb(80, 80, 100)),
+        text(m.shuffle_on ? "on" : "off", m.shuffle_on ? fg_rgb(0, 220, 120) : fg_rgb(80, 80, 100)),
         text("    "),
-        ctrl("\xf0\x9f\x94\x81", repeat_mode > 0),  // 🔁
+        ctrl("\xf0\x9f\x94\x81", m.repeat_mode > 0),  // 🔁
         text(" "),
-        text(repeat_label, repeat_mode > 0 ? fg_rgb(0, 220, 120) : fg_rgb(80, 80, 100)),
+        text(repeat_label, m.repeat_mode > 0 ? fg_rgb(0, 220, 120) : fg_rgb(80, 80, 100)),
         space
     ) | pad<0, 1, 0, 1>).build();
 }
 
-static maya::Element build_playlist() {
+static maya::Element build_playlist(const Model& m) {
     std::vector<maya::Element> rows;
 
     // Header
@@ -310,16 +327,11 @@ static maya::Element build_playlist() {
         t<"TIME"> | Bold | Dim | w_<6>
     ) | gap_<1>).build());
 
-    int visible = 8;
-    // Ensure current track is visible
-    if (current_track < playlist_scroll) playlist_scroll = current_track;
-    if (current_track >= playlist_scroll + visible) playlist_scroll = current_track - visible + 1;
-    playlist_scroll = std::clamp(playlist_scroll, 0,
-        std::max(0, static_cast<int>(tracks.size()) - visible));
+    const int visible = kPlaylistRows;
 
-    for (int i = playlist_scroll; i < std::min(playlist_scroll + visible, static_cast<int>(tracks.size())); ++i) {
+    for (int i = m.playlist_scroll; i < std::min(m.playlist_scroll + visible, static_cast<int>(tracks.size())); ++i) {
         auto& trk = tracks[static_cast<size_t>(i)];
-        bool is_current = (i == current_track);
+        bool is_current = (i == m.current_track);
 
         auto num_style = is_current ? fg_rgb(trk.art_r2, trk.art_g2, trk.art_b2).with_bold()
                                     : fg_rgb(80, 80, 100);
@@ -341,8 +353,8 @@ static maya::Element build_playlist() {
     // Scroll indicator
     if (static_cast<int>(tracks.size()) > visible) {
         int total = static_cast<int>(tracks.size());
-        std::string indicator = std::to_string(playlist_scroll + 1) + "-"
-            + std::to_string(std::min(playlist_scroll + visible, total))
+        std::string indicator = std::to_string(m.playlist_scroll + 1) + "-"
+            + std::to_string(std::min(m.playlist_scroll + visible, total))
             + " of " + std::to_string(total);
         rows.push_back((h(space, text(indicator) | Dim)).build());
     }
@@ -353,11 +365,11 @@ static maya::Element build_playlist() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static maya::Element build_visualizer() {
-    std::vector<float> left_data(vis_left.begin(), vis_left.end());
-    std::vector<float> right_data(vis_right.begin(), vis_right.end());
+static maya::Element build_visualizer(const Model& m) {
+    std::vector<float> left_data(m.vis_left.begin(), m.vis_left.end());
+    std::vector<float> right_data(m.vis_right.begin(), m.vis_right.end());
 
-    auto& trk = tracks[static_cast<size_t>(current_track)];
+    auto& trk = tracks[static_cast<size_t>(m.current_track)];
 
     maya::Sparkline left_spark(std::move(left_data), maya::SparklineConfig{
         .color = maya::Color::rgb(trk.art_r2, trk.art_g2, trk.art_b2),
@@ -385,25 +397,25 @@ static maya::Element build_visualizer() {
         );
 }
 
-static maya::Element build_queue() {
+static maya::Element build_queue(const Model& m) {
     std::vector<maya::Element> rows;
 
     rows.push_back((text("Up Next") | Bold | Fg<170, 170, 190>).build());
 
     for (int i = 1; i <= 4; ++i) {
         int idx;
-        if (shuffle_on) {
+        if (m.shuffle_on) {
             // find current in shuffle order
             int pos = 0;
-            for (int j = 0; j < static_cast<int>(shuffle_order.size()); ++j) {
-                if (shuffle_order[static_cast<size_t>(j)] == current_track) {
+            for (int j = 0; j < static_cast<int>(m.shuffle_order.size()); ++j) {
+                if (m.shuffle_order[static_cast<size_t>(j)] == m.current_track) {
                     pos = j;
                     break;
                 }
             }
-            idx = shuffle_order[static_cast<size_t>((pos + i) % static_cast<int>(shuffle_order.size()))];
+            idx = m.shuffle_order[static_cast<size_t>((pos + i) % static_cast<int>(m.shuffle_order.size()))];
         } else {
-            idx = (current_track + i) % static_cast<int>(tracks.size());
+            idx = (m.current_track + i) % static_cast<int>(tracks.size());
         }
 
         auto& trk = tracks[static_cast<size_t>(idx)];
@@ -421,14 +433,14 @@ static maya::Element build_queue() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static maya::Element build_status_bar() {
-    auto& trk = tracks[static_cast<size_t>(current_track)];
+static maya::Element build_status_bar(const Model& m) {
+    auto& trk = tracks[static_cast<size_t>(m.current_track)];
 
     // Volume bar
-    std::string vol_bar = block_bar(volume, 10);
-    int vol_pct = static_cast<int>(volume * 100.0f);
+    std::string vol_bar = block_bar(m.volume, 10);
+    int vol_pct = static_cast<int>(m.volume * 100.0f);
 
-    std::string repeat_str = repeat_mode == 0 ? "off" : (repeat_mode == 1 ? "one" : "all");
+    std::string repeat_str = m.repeat_mode == 0 ? "off" : (m.repeat_mode == 1 ? "one" : "all");
 
     return (h(
         text(" VOL") | Fg<140, 140, 160>,
@@ -436,9 +448,9 @@ static maya::Element build_status_bar() {
         text(" " + std::to_string(vol_pct) + "%") | Fg<140, 140, 160>,
         text("  |") | Fg<60, 60, 80>,
         text("  repeat:") | Fg<140, 140, 160>,
-        text(repeat_str, repeat_mode > 0 ? fg_rgb(0, 220, 120) : fg_rgb(80, 80, 100)),
+        text(repeat_str, m.repeat_mode > 0 ? fg_rgb(0, 220, 120) : fg_rgb(80, 80, 100)),
         text("  shuffle:") | Fg<140, 140, 160>,
-        text(shuffle_on ? "on" : "off", shuffle_on ? fg_rgb(0, 220, 120) : fg_rgb(80, 80, 100)),
+        text(m.shuffle_on ? "on" : "off", m.shuffle_on ? fg_rgb(0, 220, 120) : fg_rgb(80, 80, 100)),
         space,
         text(" spc") | Bold | Fg<180, 220, 255>, text(":play") | Fg<120, 120, 140>,
         text(" n") | Bold | Fg<180, 220, 255>, text(":next") | Fg<120, 120, 140>,
@@ -452,17 +464,17 @@ static maya::Element build_status_bar() {
 
 // -- Render (without tick) ---------------------------------------------------
 
-static maya::Element render() {
+static maya::Element render(const Model& m) {
     // Left column: album art + visualizer + queue
     auto left_col = (v(
-        build_album_art(),
-        build_visualizer(),
-        build_queue()
+        build_album_art(m),
+        build_visualizer(m),
+        build_queue(m)
     ) | grow(1)).build();
 
     // Right column: playlist
     auto right_col = (v(
-        build_playlist()
+        build_playlist(m)
     ) | grow(2)).build();
 
     // Main content: left | right
@@ -472,40 +484,63 @@ static maya::Element render() {
     )).build();
 
     return vstack()(
-        build_now_playing(),
-        build_progress(),
-        build_controls(),
+        build_now_playing(m),
+        build_progress(m),
+        build_controls(m),
         std::move(main_content),
-        build_status_bar()
+        build_status_bar(m)
     );
 }
 
 // -- Main --------------------------------------------------------------------
 
-int main() {
-    init_shuffle();
+// -- Program -----------------------------------------------------------------
 
-    maya::run(
-        {.title = "music", .fps = 15, .mode = Mode::Fullscreen},
-        [](const Event& ev) {
-            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-            if (key(ev, ' '))  playing = !playing;
-            if (key(ev, 'n'))  advance_track(1);
-            if (key(ev, 'p'))  advance_track(-1);
-            if (key(ev, 's'))  { shuffle_on = !shuffle_on; if (shuffle_on) init_shuffle(); }
-            if (key(ev, 'r'))  repeat_mode = (repeat_mode + 1) % 3;
-            if (key(ev, '+') || key(ev, '=')) volume = std::min(1.0f, volume + 0.05f);
-            if (key(ev, '-'))  volume = std::max(0.0f, volume - 0.05f);
-            if (key(ev, 'j') || key(ev, SpecialKey::Down))
-                playlist_scroll = std::min(playlist_scroll + 1,
-                    std::max(0, static_cast<int>(tracks.size()) - 8));
-            if (key(ev, 'k') || key(ev, SpecialKey::Up))
-                playlist_scroll = std::max(0, playlist_scroll - 1);
-            return true;
-        },
-        [] {
-            tick(1.0f / 15.0f);
-            return render();
-        }
-    );
-}
+struct Tick {};
+struct PlayPause {};
+struct Skip { int dir; };
+struct Shuffle {};
+struct Repeat {};
+struct Volume { float by; };
+struct ScrollList { int by; };
+struct Quit {};
+using Msg = std::variant<Tick, PlayPause, Skip, Shuffle, Repeat, Volume, ScrollList, Quit>;
+
+struct Music {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key>;
+
+    static Cmd init(Model& m)             { init_shuffle(m); return {}; }
+    static Cmd update(Model& m, Tick)     { const int t = m.current_track; tick(m, 1.0f / 15.0f); if (m.current_track != t) follow_current(m); return {}; }
+    static Cmd update(Model& m, PlayPause){ m.playing = !m.playing; return {}; }
+    static Cmd update(Model& m, Skip s)   { advance_track(m, s.dir); follow_current(m); return {}; }
+    static Cmd update(Model& m, Shuffle)  { m.shuffle_on = !m.shuffle_on; if (m.shuffle_on) init_shuffle(m); return {}; }
+    static Cmd update(Model& m, Repeat)   { m.repeat_mode = (m.repeat_mode + 1) % 3; return {}; }
+    static Cmd update(Model& m, Volume v) { m.volume = std::clamp(m.volume + v.by, 0.0f, 1.0f); return {}; }
+    static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
+    static Cmd update(Model& m, ScrollList s) {
+        const int max_scroll = std::max(0, static_cast<int>(tracks.size()) - kPlaylistRows);
+        m.playlist_scroll = std::clamp(m.playlist_scroll + s.by, 0, max_scroll);
+        return {};
+    }
+
+    static Element view(const Model& m) { return render(m); }
+
+    // The visualiser and progress bar move only while playing.
+    static Sub subscribe(const Model& m) {
+        auto k = keys<Sub>({
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {' ', PlayPause{}}, {'n', Skip{1}}, {'p', Skip{-1}},
+            {'s', Shuffle{}}, {'r', Repeat{}}, {'+', Volume{0.05f}}, {'=', Volume{0.05f}}, {'-', Volume{-0.05f}},
+            {'j', ScrollList{1}}, {SpecialKey::Down, ScrollList{1}}, {'k', ScrollList{-1}}, {SpecialKey::Up, ScrollList{-1}},
+        });
+        if (!m.playing) return k;
+        return Sub::batch(Sub::every(std::chrono::milliseconds{66}, Tick{}), std::move(k));
+    }
+    static bool subs_key(const Model& m) { return m.playing; }
+};
+
+static_assert(Program<Music>);
+
+int main() { return run<Music>({.title = "music"}); }

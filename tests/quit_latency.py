@@ -13,13 +13,13 @@ animation keeps the tty buffer full, the way it is for a real user. After
 """
 import argparse, fcntl, os, pty, select, signal, struct, termios, time
 
-def run(binary, rate_kbs, key):
+def run(binary, rate_kbs, key, cols=214, rows=60):
     env = {k: v for k, v in os.environ.items() if k not in ("NO_COLOR", "COLORTERM")}
     env["TERM"] = "xterm-256color"
     pid, fd = pty.fork()
     if pid == 0:
         os.execve(binary, [binary], env)
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 60, 214, 0, 0))
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
     os.kill(pid, signal.SIGWINCH)
     per_tick = rate_kbs * 1024 / 200 if rate_kbs else 1 << 30   # 5 ms ticks
     def pump(until, count):
@@ -52,10 +52,12 @@ if __name__ == "__main__":
     ap.add_argument("binaries", nargs="+")
     ap.add_argument("--rate", type=int, action="append", help="reader KB/s; 0 = unlimited")
     ap.add_argument("--key", default="q")
+    ap.add_argument("--size", default="214x60", help="COLSxROWS")
     a = ap.parse_args()
+    cols, rows = (int(v) for v in a.size.split("x"))
     for b in a.binaries:
         for r in (a.rate or [0, 1000, 300]):
-            ms, after = run(b, r, a.key.encode())
+            ms, after = run(b, r, a.key.encode(), cols, rows)
             label = f"{r} KB/s" if r else "unlimited"
             print(f"{os.path.basename(b):24s} reader {label:>10s}: exit after "
                   f"{('%6.0f ms' % ms) if ms is not None else ' >10 s'}   {after/1024:7.0f} KB still to draw",

@@ -1,329 +1,216 @@
-// examples/jaal_doom_fire.cpp — GENERATED from doom_fire.cpp by tools/port_canvas.py.
-// Do not edit: change doom_fire.cpp and re-run the tool.
+// examples/jaal_doom_fire.cpp — the Doom PSX fire, as a jaal program.
 //
-// The same demo on jaal: its canvas_run() call becomes run_canvas()
-// (maya/jaal/canvas.hpp), which draws it as a `paint` element through
-// maya::Screen, so it gets the Screen's flow control (never more than one
-// frame ahead of the terminal: `q` is instant over a slow ssh link).
+//   Model      the heat field (twice the rows, for half blocks), the embers
+//              floating out of it, the source switch, wind, intensity,
+//              palette and the RNG.
+//   update()   Tick propagates heat upward (each pixel copies a jittered,
+//              wind-blown neighbour from below, minus a random decay),
+//              spawns embers from hot spots and moves them; keys toggle the
+//              source, blow the wind, change the heat and the palette.
+//   view()     the field through the palette into an Image, embers drawn
+//              over it as whole bright cells, and a status bar.
 //
-// Built only with -DMAYA_WITH_JAAL=ON.
-#include <maya/jaal/canvas.hpp>
-// maya -- Doom PSX fire effect (enhanced)
-//
-// The classic fire propagation algorithm with enhancements:
-//   - 3 color palettes: classic, inferno (purple→blue), toxic (green)
-//   - Ember particles that float up and fade
-//   - Heat intensity control (+/-)
-//   - Half-block rendering for 2x vertical resolution
-//
-// Keys: q/Esc=quit  space=toggle  ←/→=wind  +/-=intensity  1-3=palette
+// Keys: space source   left/right wind   +/- heat   1-3 palette   q quit
 
-#include <maya/internal.hpp>
+#include <maya/element/pixels.hpp>
+#include <maya/jaal/host.hpp>
+#include <maya/maya.hpp>
 
 #include <algorithm>
-#include <cmath>
+#include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <random>
+#include <string>
+#include <variant>
 #include <vector>
 
 using namespace maya;
+using namespace maya::dsl;
+using namespace std::chrono_literals;
 
-// -- Constants ---------------------------------------------------------------
+namespace {
 
-static constexpr int MAX_HEAT = 48;
-static constexpr int NUM_PALETTES = 3;
+constexpr int kMaxHeat = 48;
 
-// -- State -------------------------------------------------------------------
+// ── palettes: heat 0..kMaxHeat -> colour, piecewise-linear ramps ────────────
 
-static std::mt19937 g_rng{42};
-static std::vector<uint8_t> g_fire;
-static int g_w = 0, g_h = 0;
-static bool g_source = true;
-static int g_wind = 0;
-static int g_palette = 0;
-static int g_intensity = 3;  // 1-5 heat (higher = taller flames; mapped to inverse decay below)
+struct Stop { float at; float r, g, b; };
+template <std::size_t N> using Ramp = std::array<Stop, N>;
 
-// Ember particles
-struct Ember {
-    float x, y, vx, vy;
-    int heat;
-    float life;
-};
-static std::vector<Ember> g_embers;
-static float g_time = 0.f;
+constexpr Ramp<5> kClassic = {{{0, 0, 0, 0}, {.15f, 180, 0, 0}, {.4f, 255, 100, 0}, {.7f, 255, 255, 0}, {1, 255, 255, 255}}};
+constexpr Ramp<5> kInferno = {{{0, 0, 0, 0}, {.2f, 60, 0, 100}, {.45f, 220, 0, 160}, {.7f, 255, 140, 0}, {1, 255, 255, 200}}};
+constexpr Ramp<5> kToxic   = {{{0, 0, 0, 0}, {.2f, 0, 60, 0}, {.5f, 0, 255, 30}, {.75f, 200, 255, 0}, {1, 255, 255, 255}}};
+constexpr std::array<const char*, 3> kPaletteName = {"CLASSIC", "INFERNO", "TOXIC"};
 
-// Style IDs: half-block styles (fg=top, bg=bottom), plus status bar
-static constexpr int Q = 6;   // quantization levels per channel (6³×6³ = 46656 < 65535)
-static uint16_t g_fire_styles[Q * Q * Q][Q * Q * Q];  // [fg_idx][bg_idx]
-static uint16_t g_bar_bg;
-static uint16_t g_bar_dim;
-static uint16_t g_bar_accent;
-
-// -- Palettes ----------------------------------------------------------------
-
-struct Palette {
-    const char* name;
-    // Returns color for a heat level 0..MAX_HEAT
-    LitColor (*color_fn)(int h);
-};
-
-static LitColor classic_color(int h) {
-    h = std::clamp(h, 0, MAX_HEAT);
-    float t = static_cast<float>(h) / MAX_HEAT;
-    if (t < 0.15f) {
-        float u = t / 0.15f;
-        return Color::rgb(static_cast<uint8_t>(u * 180), 0, 0);
-    }
-    if (t < 0.4f) {
-        float u = (t - 0.15f) / 0.25f;
-        return Color::rgb(static_cast<uint8_t>(180 + u * 75), static_cast<uint8_t>(u * 100), 0);
-    }
-    if (t < 0.7f) {
-        float u = (t - 0.4f) / 0.3f;
-        return Color::rgb(255, static_cast<uint8_t>(100 + u * 155), 0);
-    }
-    float u = (t - 0.7f) / 0.3f;
-    return Color::rgb(255, 255, static_cast<uint8_t>(u * 255));
+template <std::size_t N>
+Rgb sample(const Ramp<N>& ramp, float t) {
+    std::size_t i = 1;
+    while (i + 1 < N && t > ramp[i].at) ++i;
+    const Stop &a = ramp[i - 1], &b = ramp[i];
+    const float u = std::clamp((t - a.at) / (b.at - a.at), 0.f, 1.f);
+    auto mix = [u](float x, float y) { return static_cast<std::uint8_t>(x + (y - x) * u); };
+    return {mix(a.r, b.r), mix(a.g, b.g), mix(a.b, b.b)};
 }
 
-static LitColor inferno_color(int h) {
-    h = std::clamp(h, 0, MAX_HEAT);
-    float t = static_cast<float>(h) / MAX_HEAT;
-    // Black → deep purple → magenta → orange → white
-    if (t < 0.2f) {
-        float u = t / 0.2f;
-        return Color::rgb(static_cast<uint8_t>(u * 60), 0, static_cast<uint8_t>(u * 100));
+// All three palettes, precomputed per heat level: the view is a table lookup.
+using Lut = std::array<std::array<Rgb, kMaxHeat + 1>, 3>;
+const Lut kLut = [] {
+    Lut l{};
+    for (int h = 0; h <= kMaxHeat; ++h) {
+        const float t = static_cast<float>(h) / kMaxHeat;
+        l[0][h] = sample(kClassic, t);
+        l[1][h] = sample(kInferno, t);
+        l[2][h] = sample(kToxic, t);
     }
-    if (t < 0.45f) {
-        float u = (t - 0.2f) / 0.25f;
-        return Color::rgb(static_cast<uint8_t>(60 + u * 160), 0, static_cast<uint8_t>(100 + u * 60));
-    }
-    if (t < 0.7f) {
-        float u = (t - 0.45f) / 0.25f;
-        return Color::rgb(static_cast<uint8_t>(220 + u * 35), static_cast<uint8_t>(u * 140),
-                          static_cast<uint8_t>(160 - u * 160));
-    }
-    float u = (t - 0.7f) / 0.3f;
-    return Color::rgb(255, static_cast<uint8_t>(140 + u * 115), static_cast<uint8_t>(u * 200));
-}
+    return l;
+}();
 
-static LitColor toxic_color(int h) {
-    h = std::clamp(h, 0, MAX_HEAT);
-    float t = static_cast<float>(h) / MAX_HEAT;
-    // Black → dark green → bright green → yellow → white
-    if (t < 0.2f) {
-        float u = t / 0.2f;
-        return Color::rgb(0, static_cast<uint8_t>(u * 60), 0);
-    }
-    if (t < 0.5f) {
-        float u = (t - 0.2f) / 0.3f;
-        return Color::rgb(0, static_cast<uint8_t>(60 + u * 195), static_cast<uint8_t>(u * 30));
-    }
-    if (t < 0.75f) {
-        float u = (t - 0.5f) / 0.25f;
-        return Color::rgb(static_cast<uint8_t>(u * 200), 255, static_cast<uint8_t>(30 - u * 30));
-    }
-    float u = (t - 0.75f) / 0.25f;
-    return Color::rgb(static_cast<uint8_t>(200 + u * 55), 255, static_cast<uint8_t>(u * 255));
-}
+// ── model ────────────────────────────────────────────────────────────────────
 
-static const Palette g_palettes[NUM_PALETTES] = {
-    {"CLASSIC", classic_color},
-    {"INFERNO", inferno_color},
-    {"TOXIC",   toxic_color},
+struct Ember { float x, y, vx, vy; int heat; float life; };   // x, y in pixels
+
+struct Model {
+    int w = 0, h = 0;                      // the heat field, in pixels (h = 2 * terminal rows)
+    std::vector<std::uint8_t> heat;
+    std::vector<Ember> embers;
+    bool source = true;
+    int wind = 0;                          // -5..5
+    int intensity = 3;                     // 1..5, higher = taller flames
+    int palette = 0;
+    std::mt19937 rng{42};
+
+    std::uint8_t& at(int x, int y) { return heat[static_cast<std::size_t>(y * w + x)]; }
+    [[nodiscard]] int at(int x, int y) const { return heat[static_cast<std::size_t>(y * w + x)]; }
+
+    void set_source_row() {
+        for (int x = 0; x < w; ++x) at(x, h - 1) = source ? kMaxHeat : 0;
+    }
 };
 
-// -- Quantization for half-block rendering ------------------------------------
+// ── messages ─────────────────────────────────────────────────────────────────
 
-static int to_idx(uint8_t r, uint8_t g, uint8_t b) {
-    return (r * Q / 256) * Q * Q + (g * Q / 256) * Q + (b * Q / 256);
-}
+struct Tick {};
+struct Resize       { int cols, rows; };
+struct ToggleSource {};
+struct Wind         { int by; };
+struct Heat         { int by; };
+struct SetPalette   { int p; };
+struct Quit         {};
+using Msg = std::variant<Tick, Resize, ToggleSource, Wind, Heat, SetPalette, Quit>;
 
-static uint8_t to8(int level) {
-    return static_cast<uint8_t>(level * 255 / (Q - 1));
-}
+// ── program ──────────────────────────────────────────────────────────────────
 
-// -- Resize ------------------------------------------------------------------
+struct DoomFire {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key, on_resize>;
 
-static void rebuild(StylePool& pool, int w, int h) {
-    g_w = w;
-    g_h = h;
-    int fire_h = h * 2;  // half-block = 2x resolution
-    g_fire.assign(static_cast<size_t>(w * fire_h), 0);
-
-    if (g_source) {
-        for (int x = 0; x < w; ++x)
-            g_fire[static_cast<size_t>((fire_h - 1) * w + x)] = MAX_HEAT;
+    static Cmd update(Model& m, Resize r) {
+        m.w = std::max(1, r.cols);
+        m.h = std::max(2, r.rows * 2);
+        m.heat.assign(static_cast<std::size_t>(m.w * m.h), 0);
+        m.embers.clear();
+        m.set_source_row();
+        return {};
     }
+    static Cmd update(Model& m, ToggleSource) { m.source = !m.source; if (m.w) m.set_source_row(); return {}; }
+    static Cmd update(Model& m, Wind d)       { m.wind = std::clamp(m.wind + d.by, -5, 5); return {}; }
+    static Cmd update(Model& m, Heat d)       { m.intensity = std::clamp(m.intensity + d.by, 1, 5); return {}; }
+    static Cmd update(Model& m, SetPalette s) { m.palette = s.p; return {}; }
+    static Cmd update(Model&, Quit)           { return Cmd::quit(0); }
 
-    // Intern all fg/bg color combinations
-    for (int fi = 0; fi < Q * Q * Q; ++fi) {
-        int fr = fi / (Q * Q), fg = (fi / Q) % Q, fb = fi % Q;
-        for (int bi = 0; bi < Q * Q * Q; ++bi) {
-            int br = bi / (Q * Q), bg = (bi / Q) % Q, bb = bi % Q;
-            g_fire_styles[fi][bi] = pool.intern(
-                Style{}.with_fg(Color::rgb(to8(fr), to8(fg), to8(fb)))
-                       .with_bg(Color::rgb(to8(br), to8(bg), to8(bb))));
+    static Cmd update(Model& m, Tick) {
+        if (m.w == 0) return {};
+        propagate(m);
+        spawn_ember(m);
+        for (auto& e : m.embers) {
+            e.x += e.vx; e.y += e.vy;
+            e.vy -= 0.006f;                                   // buoyancy
+            e.life -= 0.02f;
+            e.heat = static_cast<int>(static_cast<float>(e.heat) * 0.97f);
         }
+        std::erase_if(m.embers, [](const Ember& e) { return e.life <= 0.f || e.heat <= 1; });
+        return {};
     }
 
-    g_bar_bg     = pool.intern(Style{}.with_bg(Color::rgb(20, 20, 20)).with_fg(Color::rgb(120, 120, 120)));
-    g_bar_dim    = pool.intern(Style{}.with_bg(Color::rgb(20, 20, 20)).with_fg(Color::rgb(100, 100, 110)));
-    g_bar_accent = pool.intern(Style{}.with_bg(Color::rgb(20, 20, 20)).with_fg(Color::rgb(255, 140, 40)).with_bold());
-}
+    // Each pixel takes the heat of a jittered, wind-blown pixel below it,
+    // minus a random decay. Higher intensity = smaller decay range.
+    static void propagate(Model& m) {
+        std::uniform_int_distribution<int> decay(0, 6 - m.intensity), gust(0, std::abs(m.wind)), spread(-1, 1);
+        for (int y = 0; y < m.h - 1; ++y)
+            for (int x = 0; x < m.w; ++x) {
+                const int blow = m.wind == 0 ? 0 : (m.wind > 0 ? gust(m.rng) : -gust(m.rng));
+                const int sx = std::clamp(x + blow + spread(m.rng), 0, m.w - 1);
+                m.at(x, y) = static_cast<std::uint8_t>(std::max(0, m.at(sx, y + 1) - decay(m.rng)));
+            }
+        m.set_source_row();
+    }
 
-// -- Event -------------------------------------------------------------------
+    static void spawn_ember(Model& m) {
+        if (!m.source || m.rng() % 3 != 0 || m.h < 3) return;
+        const int x = static_cast<int>(m.rng() % static_cast<unsigned>(m.w));
+        const int y = m.h / 3 + static_cast<int>(m.rng() % static_cast<unsigned>(m.h / 3));
+        const int heat = m.at(x, y);
+        if (heat <= kMaxHeat / 2) return;
+        const float vx = (static_cast<float>(m.rng() % 100) - 50.f) / 200.f + static_cast<float>(m.wind) * 0.05f;
+        const float vy = -(static_cast<float>(m.rng() % 100) + 30.f) / 100.f;
+        m.embers.push_back({static_cast<float>(x), static_cast<float>(y), vx, vy, heat, 1.f});
+    }
 
-static bool handle(const Event& ev) {
-    if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
+    // ── view ────────────────────────────────────────────────────────────────
 
-    on(ev, ' ', [] {
-        g_source = !g_source;
-        int fire_h = g_h * 2;
-        if (!g_source) {
-            for (int x = 0; x < g_w; ++x)
-                g_fire[static_cast<size_t>((fire_h - 1) * g_w + x)] = 0;
-        } else {
-            for (int x = 0; x < g_w; ++x)
-                g_fire[static_cast<size_t>((fire_h - 1) * g_w + x)] = MAX_HEAT;
+    static Image render(const Model& m) {
+        const int shown = m.h - 2;                            // the bottom row of cells is the status bar
+        const auto& lut = kLut[static_cast<std::size_t>(m.palette)];
+        Image img(m.w, shown);
+        for (int y = 0; y < shown; ++y)
+            for (int x = 0; x < m.w; ++x) img(x, y) = lut[static_cast<std::size_t>(m.at(x, y))];
+        for (const auto& e : m.embers) {                     // a whole bright cell
+            const int x = static_cast<int>(e.x), top = static_cast<int>(e.y) & ~1;
+            if (x < 0 || x >= m.w || top < 0 || top + 1 >= shown) continue;
+            const Rgb c = lut[static_cast<std::size_t>(std::clamp(e.heat, 0, kMaxHeat))];
+            img(x, top) = img(x, top + 1) = c;
         }
-    });
-
-    on(ev, SpecialKey::Right, [] { g_wind = std::min(g_wind + 1, 5); });
-    on(ev, SpecialKey::Left,  [] { g_wind = std::max(g_wind - 1, -5); });
-    on(ev, '+', [] { g_intensity = std::min(g_intensity + 1, 5); });
-    on(ev, '=', [] { g_intensity = std::min(g_intensity + 1, 5); });
-    on(ev, '-', [] { g_intensity = std::max(g_intensity - 1, 1); });
-    on(ev, '1', [] { g_palette = 0; });
-    on(ev, '2', [] { g_palette = 1; });
-    on(ev, '3', [] { g_palette = 2; });
-
-    return true;
-}
-
-// -- Paint -------------------------------------------------------------------
-
-static void paint(Canvas& canvas, int w, int h) {
-    if (w != g_w || h != g_h) return;
-    g_time += 1.f / 60.f;
-
-    int fire_h = h * 2;  // pixel height in half-blocks
-
-    // Propagate fire upward with intensity-dependent decay. The control
-    // exposes 1..5 as HEAT (higher = taller flames), so invert here: a
-    // higher intensity means a SMALLER decay range. 5 → decay ∈ [0,1],
-    // 1 → decay ∈ [0,5].
-    std::uniform_int_distribution<int> decay_dist(0, 6 - g_intensity);
-    std::uniform_int_distribution<int> wind_dist(0, std::abs(g_wind));
-    std::uniform_int_distribution<int> spread_dist(-1, 1);
-
-    for (int y = 0; y < fire_h - 1; ++y) {
-        for (int x = 0; x < w; ++x) {
-            int src_y = y + 1;
-            int wind_offset = (g_wind == 0) ? 0
-                : (g_wind > 0 ? wind_dist(g_rng) : -wind_dist(g_rng));
-            int src_x = std::clamp(x + wind_offset + spread_dist(g_rng), 0, w - 1);
-
-            int decay = decay_dist(g_rng);
-            int heat = g_fire[static_cast<size_t>(src_y * w + src_x)] - decay;
-            if (heat < 0) heat = 0;
-
-            g_fire[static_cast<size_t>(y * w + x)] = static_cast<uint8_t>(heat);
-        }
+        return img;
     }
 
-    // Maintain source row
-    if (g_source) {
-        for (int x = 0; x < w; ++x)
-            g_fire[static_cast<size_t>((fire_h - 1) * w + x)] = MAX_HEAT;
+    static Element status_bar(const Model& m) {
+        const auto bg = Color::rgb(20, 20, 20);
+        auto accent = [](std::string s) { return text(std::move(s)) | fgc(Color::rgb(255, 140, 40)) | Bold; };
+        char stats[64];
+        std::snprintf(stats, sizeof stats, " h:%d w:%+d e:%d ", m.intensity, m.wind, static_cast<int>(m.embers.size()));
+        return h(text(" "), accent("DOOM FIRE"),
+                 text(" │ [1-3] palette │ [+/-] heat │ [←→] wind │ [space] toggle │ [q] quit") | fgc(Color::rgb(100, 100, 110)),
+                 spacer(), accent(std::string(kPaletteName[static_cast<std::size_t>(m.palette)]) + stats)) | bgc(bg);
     }
 
-    // Spawn ember particles from high-heat areas
-    if (g_source && g_rng() % 3 == 0) {
-        int ex = static_cast<int>(g_rng() % static_cast<unsigned>(w));
-        int ey_row = fire_h / 3 + static_cast<int>(g_rng() % static_cast<unsigned>(fire_h / 3));
-        int heat = g_fire[static_cast<size_t>(ey_row * w + ex)];
-        if (heat > MAX_HEAT / 2) {
-            float fex = static_cast<float>(ex);
-            float fey = static_cast<float>(ey_row) / 2.f;
-            float vx = (static_cast<float>(g_rng() % 100) - 50.f) / 200.f + g_wind * 0.05f;
-            float vy = -(static_cast<float>(g_rng() % 100) + 30.f) / 200.f;
-            g_embers.push_back({fex, fey, vx, vy, heat, 1.0f});
-        }
+    static Element view(const Model& m) {
+        if (m.w == 0) return text("");
+        return v(pixels(render(m)), status_bar(m));
     }
 
-    // Update embers
-    for (auto& e : g_embers) {
-        e.x += e.vx;
-        e.y += e.vy;
-        e.vy -= 0.003f;  // slight upward acceleration (buoyancy)
-        e.life -= 0.02f;
-        e.heat = static_cast<int>(static_cast<float>(e.heat) * 0.97f);
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::every(16ms, Tick{}),
+            Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+                return Resize{r.width.value, r.height.value};
+            }),
+            jaal_key_map<Sub>({
+                {' ', ToggleSource{}},
+                {SpecialKey::Left, Wind{-1}}, {SpecialKey::Right, Wind{1}},
+                {'+', Heat{1}}, {'=', Heat{1}}, {'-', Heat{-1}},
+                {'1', SetPalette{0}}, {'2', SetPalette{1}}, {'3', SetPalette{2}},
+                {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
+            }));
     }
-    std::erase_if(g_embers, [](const Ember& e) {
-        return e.life <= 0.f || e.heat <= 1;
-    });
+    static bool subs_key(const Model&) { return true; }
+};
 
-    // Render fire with half-block characters
-    auto color_fn = g_palettes[g_palette].color_fn;
-    int canvas_h = h - 1;  // reserve last row for status bar
+static_assert(JaalView<DoomFire>);
 
-    for (int cy = 0; cy < canvas_h; ++cy) {
-        for (int cx = 0; cx < w; ++cx) {
-            int py_top = cy * 2;
-            int py_bot = cy * 2 + 1;
-            int heat_top = g_fire[static_cast<size_t>(py_top * w + cx)];
-            int heat_bot = g_fire[static_cast<size_t>(py_bot * w + cx)];
+}  // namespace
 
-            LitColor c_top = color_fn(heat_top);
-            LitColor c_bot = color_fn(heat_bot);
-
-            int fi = to_idx(c_top.r(), c_top.g(), c_top.b());
-            int bi = to_idx(c_bot.r(), c_bot.g(), c_bot.b());
-            canvas.set(cx, cy, U'\u2580', g_fire_styles[fi][bi]);
-        }
-    }
-
-    // Render embers on top
-    for (const auto& e : g_embers) {
-        int ex = static_cast<int>(e.x);
-        int ey = static_cast<int>(e.y);
-        if (ex >= 0 && ex < w && ey >= 0 && ey < canvas_h) {
-            LitColor c = color_fn(e.heat);
-            int fi = to_idx(c.r(), c.g(), c.b());
-            // Ember appears as a bright dot using the upper half-block
-            canvas.set(ex, ey, U'\u2580', g_fire_styles[fi][fi]);
-        }
-    }
-
-    // Status bar
-    int bar_y = h - 1;
-    for (int x = 0; x < w; ++x)
-        canvas.set(x, bar_y, U' ', g_bar_bg);
-
-    const char* bar = "DOOM FIRE \xe2\x94\x82 [1-3] palette \xe2\x94\x82 [+/-] heat \xe2\x94\x82 [\xe2\x86\x90\xe2\x86\x92] wind \xe2\x94\x82 [space] toggle \xe2\x94\x82 [q] quit";
-    canvas.write_text(1, bar_y, bar, g_bar_dim);
-    canvas.write_text(1, bar_y, "DOOM FIRE", g_bar_accent);
-
-    // Right side: palette name + stats
-    char rbuf[64];
-    std::snprintf(rbuf, sizeof(rbuf), "%s h:%d w:%+d e:%d",
-        g_palettes[g_palette].name, g_intensity, g_wind,
-        static_cast<int>(g_embers.size()));
-    int rlen = static_cast<int>(std::strlen(rbuf));
-    if (w > rlen + 2)
-        canvas.write_text(w - rlen - 1, bar_y, rbuf, g_bar_accent);
-}
-
-// -- Main --------------------------------------------------------------------
-
-int main() {
-    return run_canvas(
-        CanvasConfig{.fps = 60, .auto_clear = false, .title = "doom fire"},
-        rebuild,
-        handle,
-        paint
-    );
-}
+int main() { return run_jaal<DoomFire>({.title = "doom fire"}); }

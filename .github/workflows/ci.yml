@@ -4,16 +4,24 @@ name: ci
 # supported toolchains. This is the correctness gate the project was missing.
 #
 # Jobs:
-#   build-test   — gcc-14 / clang-19 build all tests + ctest; MSVC builds the
+#   build-test   — gcc-16 / clang-22 build all tests + ctest; MSVC builds the
 #                  library only (the test harness mocks terminal fds with POSIX
 #                  open()/pipe()/forkpty(), which MSVC lacks — the suite runs on
-#                  the POSIX legs). clang-18 — the distro default — can't compile
-#                  maya's C++26 (incomplete libstdc++ <expected>), so we pull
-#                  clang-19 from apt.llvm.org.
-#   sanitizers   — ASan+UBSan and TSan (clang), the parser/writer/render path
-#                  is the most exposed to adversarial bytes. Clang's sanitizer
-#                  runtimes are the reference implementation; gcc-14 also ICEs
-#                  building reveal_fx.cpp under -fsanitize=address.
+#                  the POSIX legs).
+#
+#                  TOOLCHAIN FLOOR: maya::app vendors jaal, and jaal needs
+#                  C++26 structured binding packs (P1061) to see inside a
+#                  struct for its Sendable/Frozen checks — without them
+#                  jaal/meta/fields.hpp is a hard #error. P1061 landed in
+#                  GCC 16 and clang 22, so gcc-14/clang-19 can no longer
+#                  build this repo at all. Neither is in the runner image:
+#                  g++-16 comes from ubuntu-toolchain-r/test, clang-22 from
+#                  apt.llvm.org. Do not lower these without also setting
+#                  -DMAYA_BUILD_APP=OFF.
+#   sanitizers   — ASan+UBSan and TSan (clang-22), the parser/writer/render
+#                  path is the most exposed to adversarial bytes. Clang's
+#                  sanitizer runtimes are the reference implementation; gcc
+#                  also ICEs building reveal_fx.cpp under -fsanitize=address.
 #   fuzz-smoke   — build the libFuzzer harnesses and run each for a few
 #                  seconds (a real fuzzing run is a scheduled job, see fuzz.yml).
 
@@ -35,18 +43,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux-gcc14
+          - name: linux-gcc16
             os: ubuntu-latest
-            cc: gcc-14
-            cxx: g++-14
-          - name: linux-clang19
+            cc: gcc-16
+            cxx: g++-16
+          - name: linux-clang22
             os: ubuntu-latest
-            cc: clang-19
-            cxx: clang++-19
+            cc: clang-22
+            cxx: clang++-22
           - name: macos-gcc
             os: macos-14
-            cc: gcc-14
-            cxx: g++-14
+            cc: gcc-16
+            cxx: g++-16
           - name: windows-msvc
             os: windows-2025
             cc: ""
@@ -59,23 +67,30 @@ jobs:
       - name: Install toolchain (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          if [ "${{ matrix.cc }}" = "clang-19" ]; then
-            # clang-19 from apt.llvm.org (distro default clang-18 can't build
-            # maya's C++26). Keep the runner's preinstalled cmake — apt's 3.28
-            # doesn't recognise cxx_std_26 for clang. libstdc++-14 supplies a
-            # complete <expected>; clang-tools-19 supplies clang-scan-deps-19.
+          if [ "${{ matrix.cc }}" = "clang-22" ]; then
+            # clang-22 from apt.llvm.org — the first clang with P1061, which
+            # jaal requires. Keep the runner's preinstalled cmake (apt's 3.28
+            # doesn't recognise cxx_std_26 for clang; maya probes -std=c++2c
+            # directly anyway). libstdc++-16 supplies the matching headers.
             wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
             chmod +x /tmp/llvm.sh
-            sudo /tmp/llvm.sh 19
-            sudo apt-get install -y clang-tools-19 libstdc++-14-dev ninja-build
+            sudo /tmp/llvm.sh 22
+            # libstdc++-16 lives in the same PPA as g++-16.
+            sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+            sudo apt-get update
+            sudo apt-get install -y clang-tools-22 libstdc++-16-dev ninja-build
           else
-            sudo apt-get install -y g++-14 cmake ninja-build
+            # g++-16 is not in the runner image; ubuntu-toolchain-r/test has it.
+            sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+            sudo apt-get update
+            sudo apt-get install -y g++-16 cmake ninja-build
           fi
 
       - name: Install toolchain (macOS)
         if: runner.os == 'macOS'
-        run: brew install gcc@14 cmake ninja || true
+        run: |
+          # gcc@16 for P1061 (jaal). Homebrew installs it as g++-16 on PATH.
+          brew install gcc@16 cmake ninja || true
 
       - name: Install Ninja (Windows)
         if: runner.os == 'Windows'
@@ -137,11 +152,13 @@ jobs:
           sudo apt-get update
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 19
-          sudo apt-get install -y libstdc++-14-dev ninja-build
+          sudo /tmp/llvm.sh 22
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y libstdc++-16-dev ninja-build
           pip3 install --break-system-packages pyte
-          echo "CC=clang-19"   >> "$GITHUB_ENV"
-          echo "CXX=clang++-19" >> "$GITHUB_ENV"
+          echo "CC=clang-22"   >> "$GITHUB_ENV"
+          echo "CXX=clang++-22" >> "$GITHUB_ENV"
       - name: Install toolchain (macOS)
         if: runner.os == 'macOS'
         run: brew install ninja && pip3 install --break-system-packages pyte
@@ -180,12 +197,14 @@ jobs:
           sudo apt-get update
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 19
-          sudo apt-get install -y clang-tools-19 libstdc++-14-dev ninja-build
+          sudo /tmp/llvm.sh 22
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y clang-tools-22 libstdc++-16-dev ninja-build
       - name: Configure with sanitizer
         env:
-          CC: clang-19
-          CXX: clang++-19
+          CC: clang-22
+          CXX: clang++-22
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -215,12 +234,14 @@ jobs:
           sudo apt-get update
           wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
           chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 19
-          sudo apt-get install -y clang-tools-19 libstdc++-14-dev ninja-build
+          sudo /tmp/llvm.sh 22
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y clang-tools-22 libstdc++-16-dev ninja-build
       - name: Build fuzzers
         env:
-          CC: clang-19
-          CXX: clang++-19
+          CC: clang-22
+          CXX: clang++-22
         run: |
           cmake -B fuzzbuild -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \

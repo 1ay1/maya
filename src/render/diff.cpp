@@ -190,7 +190,13 @@ void diff(
             const int cx = static_cast<int>(x);
             if (cursor_x != cx || cursor_y != y) {
                 flush_ascii();
-                detail::write_cup(out, cx + 1, y + 1);
+                // Same row, moving right, and the cursor is a real column
+                // (not parked past the edge in a pending-wrap state, which
+                // cursor_x < cx < width rules out): CUF is the shorter move.
+                if (cursor_y == y && cursor_x >= 0 && cursor_x < cx)
+                    detail::write_cuf(out, cx - cursor_x);
+                else
+                    detail::write_cup(out, cx + 1, y + 1);
                 cursor_x = cx;
                 cursor_y = y;
             }

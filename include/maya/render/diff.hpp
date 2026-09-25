@@ -107,6 +107,24 @@ MAYA_FORCEINLINE void write_cup(std::string& out, int col, int row) {
     out.append(buf, static_cast<std::size_t>(p - buf));
 }
 
+/// Cursor forward (CUF) by n >= 1 columns: `ESC[C` or `ESC[nC`.
+///
+/// A same-row skip over unchanged cells used to be a full CUP
+/// (`ESC[row;colH`, 8-10 bytes on a real-size screen). CUF is 3-5 bytes
+/// and reaches the same cell. Measured on doom_fire at 214x60: CUPs were
+/// 7.4% of the stream, nearly all of them same-row skips. CUF stops at
+/// the right margin rather than wrapping, but a skip never passes it: the
+/// target is a cell of this row that the diff is about to write.
+MAYA_FORCEINLINE void write_cuf(std::string& out, int n) {
+    if (n == 1) { out.append("\x1b[C", 3); return; }
+    char buf[16];
+    char* p = buf;
+    *p++ = '\x1b'; *p++ = '[';
+    p = write_uint_pos(p, static_cast<unsigned>(n));
+    *p++ = 'C';
+    out.append(buf, static_cast<std::size_t>(p - buf));
+}
+
 } // namespace detail
 
 // ============================================================================

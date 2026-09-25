@@ -89,7 +89,7 @@ namespace maya {
 //
 // These were 35 plain mutable globals, written by the UI thread in
 // set_markdown_palette() and read by the markdown render path — which
-// includes a DETACHED std::thread doing the streaming re-parse (see
+// includes a background std::thread doing the streaming re-parse (see
 // streaming/async.cpp), across ~124 reads in render_block/render_inline/
 // render_tail. That is a data race by construction, and the appearance
 // panel has no streaming gate, so live-previewing a theme mid-response is

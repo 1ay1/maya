@@ -1172,7 +1172,7 @@ MarkdownPalette markdown_palette_from(const Theme& t) {
 // This used to overwrite ~35 mutable globals in place, with a THREADING
 // CONTRACT in the comment asking callers to only do it while no
 // StreamingMarkdown was live: the async worker (spawn_async_worker_) parses
-// on a DETACHED thread and reaches md_block_to_element, which reads the
+// on a background worker thread and reaches md_block_to_element, which reads the
 // palette directly across ~165 sites. That contract could not be honoured by
 // the one caller that matters — agentty's theme picker previews live, and the
 // appearance panel has no streaming gate — so re-theming mid-response was a

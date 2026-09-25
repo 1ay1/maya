@@ -14,13 +14,10 @@
 
 #if MAYA_PLATFORM_MACOS
     #include "macos/terminal.hpp"
-    #include "macos/signal.hpp"
 #elif MAYA_PLATFORM_POSIX
     #include "posix/terminal.hpp"
-    #include "posix/signal.hpp"
 #elif MAYA_PLATFORM_WIN32
     #include "win32/terminal.hpp"
-    #include "win32/signal.hpp"
 #endif
 
 namespace maya::platform {
@@ -31,13 +28,10 @@ namespace maya::platform {
 
 #if MAYA_PLATFORM_MACOS
     using NativeTerminal     = macos::MacTerminal;
-    using NativeResizeSignal = macos::MacResizeSignal;
 #elif MAYA_PLATFORM_WIN32
     using NativeTerminal     = win32::Win32Terminal;
-    using NativeResizeSignal = win32::Win32ResizeSignal;
 #else
     using NativeTerminal     = posix::PosixTerminal;
-    using NativeResizeSignal = posix::PosixResizeSignal;
 #endif
 
 // ============================================================================
@@ -51,10 +45,5 @@ static_assert(TerminalBackend<NativeTerminal>,
     "Check that all required methods (open, enable_raw, disable_raw, "
     "write_all, write_some, read_raw, size, input_handle, output_handle) "
     "are implemented with the correct signatures.");
-
-static_assert(ResizeSource<NativeResizeSignal>,
-    "Native resize signal does not satisfy ResizeSource concept. "
-    "Check that install(), pending(), drain(), native_handle() are implemented.");
-
 
 } // namespace maya::platform

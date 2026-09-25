@@ -4,8 +4,6 @@
 namespace maya::detail {
 
 void Device::handle_resize() {
-    if (resize_signal_) resize_signal_->drain();
-
     Size new_size;
     if (alt_terminal_) {
         new_size = alt_terminal_->size();

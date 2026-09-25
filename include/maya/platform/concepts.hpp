@@ -47,17 +47,4 @@ concept TerminalBackend = requires(T& t, const T& ct, std::string_view sv) {
 } && std::movable<T> && (!std::copyable<T>);
 
 // ============================================================================
-// ResizeSource — detects terminal resize events
-// ============================================================================
-// POSIX: sigaction(SIGWINCH) + self-pipe.
-// Win32: console size polling.
-
-template <typename T>
-concept ResizeSource = requires(T& t) {
-    { T::install() } -> std::same_as<Result<T>>;
-    { t.pending() } -> std::same_as<bool>;
-    { t.drain() };
-    { t.native_handle() } -> std::same_as<NativeHandle>;
-} && std::movable<T> && (!std::copyable<T>);
-
 } // namespace maya::platform

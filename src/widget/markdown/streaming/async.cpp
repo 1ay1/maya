@@ -106,15 +106,18 @@ void StreamingMarkdown::spawn_async_worker_(std::shared_ptr<std::string> source)
         async_slot_ = slot;
     }
 
-    // Detached worker: result lifetime is tied to the shared_ptr in
-    // the slot, which the foreground holds the only other copy of.
-    // If the StreamingMarkdown is destroyed while a worker is alive,
-    // the foreground's slot copy is dropped on destruction; the
-    // worker writes into its own slot copy (still alive), and the
-    // result is then silently discarded when the worker's local
-    // shared_ptr falls out of scope.
-    std::thread([slot]() mutable {
-        // The slot retains the source for the entire detached task; using a
+    // The worker is OWNED, not detached. maya's rule is that it starts no
+    // thread the process doesn't account for (docs/internals/design.md rule
+    // 1); a detached thread is one nobody can wait for, so at exit it ran on
+    // in a process tearing its statics down. The registry below holds every
+    // worker, reaps finished ones as new ones start, and joins the rest in
+    // its destructor — so the process leaves with no parse in flight.
+    //
+    // Result lifetime is unchanged and independent of the join: the slot is
+    // a shared_ptr the worker co-owns, so a StreamingMarkdown destroyed
+    // mid-parse just drops its copy and the worker's result retires with it.
+    md_detail::async_workers().spawn([slot]() mutable {
+        // The slot retains the source for the entire task; using a
         // reference avoids a second full-buffer copy in the thread closure.
         const std::string& src = *slot->source;
         auto publish_cancelled = [&] {
@@ -258,7 +261,7 @@ void StreamingMarkdown::spawn_async_worker_(std::shared_ptr<std::string> source)
         // Publish: release-store on `ready` so the foreground's
         // acquire-load sees the populated vectors above.
         slot->ready.store(true, std::memory_order_release);
-    }).detach();
+    });
 }
 
 void StreamingMarkdown::maybe_apply_async_() const {

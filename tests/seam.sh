@@ -22,10 +22,17 @@ fail() { echo "  FAIL  $1"; status=1; }
 
 # 1. The compiled view layer knows nothing of jaal, so libmaya.a links
 #    without it and a non-terminal host could reuse the whole renderer.
-hits=$(grep -rl 'jaal' src/ 2>/dev/null)
+#    Comments may NAME jaal (that's how a reader finds the seam); code may
+#    not depend on it.
+hits=""
+for f in $(grep -rl 'jaal' src/ 2>/dev/null); do
+    if sed 's://.*::' "$f" | grep -qE '#[[:space:]]*include[[:space:]]*<jaal|jaal::'; then
+        hits="$hits $f"
+    fi
+done
 if [ -n "$hits" ]; then
-    fail "src/ mentions jaal:"
-    echo "$hits" | sed 's/^/          /'
+    fail "src/ depends on jaal:"
+    for f in $hits; do echo "          $f"; done
 else
     echo "  ok    src/ is jaal-free"
 fi
@@ -70,6 +77,52 @@ if [ -d include/maya/app ] || [ -d src/app ]; then
     fail "an app/ directory is back — name the layer, not the product"
 else
     echo "  ok    no app/ layer: device, renderer, view, host"
+fi
+
+# 6. No detached threads. The loop and the threads are jaal's (rule 1); the
+#    two maya owns are joined before they can outlive their caller. A
+#    detached thread is one nobody can wait for, so at exit it runs on
+#    inside a process destroying the statics under it.
+detached=$(grep -rn '\.detach()' src/ include/ --include='*.cpp' --include='*.hpp' 2>/dev/null)
+if [ -n "$detached" ]; then
+    fail "a detached thread is back — own it and join it:"
+    echo "$detached" | sed 's/^/          /'
+else
+    echo "  ok    no detached threads: every one is owned and joined"
+fi
+
+# 7. Signals are the runtime's. jaal watches SIGWINCH and delivers
+#    jaal::sig::resize; maya used to install a SECOND handler whose
+#    self-pipe nobody read, and whoever installs last wins — jaal carries a
+#    special case to this day because maya's handler ate resizes. Only the
+#    emergency tty-restore may touch sigaction, and it chains to the prior
+#    handler and re-raises rather than keeping the signal.
+sigwinch=""
+for f in $(grep -rl 'SIGWINCH' src/ include/ --include='*.cpp' --include='*.hpp' 2>/dev/null); do
+    [ "$f" = "include/maya/terminal/terminal.hpp" ] && continue
+    # Code (not comments) that INSTALLS a handler for it. `::sigaction(` /
+    # `std::signal(` — not `on_signal(`, which is how the host RECEIVES
+    # jaal's delivery.
+    if sed 's://.*::' "$f" | grep -qE '(^|[^_[:alnum:]])(::)?(sigaction|signal)[[:space:]]*\(' ; then
+        sigwinch="$sigwinch $f"
+    fi
+done
+if [ -n "$sigwinch" ]; then
+    fail "maya installs a SIGWINCH handler again — that is jaal's, via on_signal:"
+    for f in $sigwinch; do echo "          $f"; done
+else
+    echo "  ok    SIGWINCH is jaal's: one owner, delivered as sig::resize"
+fi
+
+# 8. Quitting is a Cmd, not a flag. The device used to carry running_ /
+#    request_quit() from the old loop; a program ends by returning
+#    Cmd::quit(n) and jaal unwinds. A flag in the device means the device
+#    is deciding when the program is over, which is the runtime's call.
+if grep -rn 'request_quit\|is_running' src/ include/ --include='*.cpp' --include='*.hpp' 2>/dev/null \
+     | grep -v '^[^:]*:[0-9]*:[[:space:]]*//' | grep -q .; then
+    fail "a quit flag is back in maya — a program quits with Cmd::quit(n)"
+else
+    echo "  ok    no quit flag: a program ends with Cmd::quit"
 fi
 
 [ $status -eq 0 ] && echo "seam: ok" || echo "seam: FAILED"

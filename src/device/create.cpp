@@ -11,8 +11,15 @@ auto Device::create(Options cfg) -> Result<Device> {
     auto input_h  = raw.input_handle();
     auto output_h = raw.output_handle();
 
-    // Install resize signal handler.
-    MAYA_TRY_DECL(auto resize_sig, platform::NativeResizeSignal::install());
+    // No resize handler here. SIGWINCH belongs to the runtime: jaal watches
+    // it and delivers `jaal::sig::resize`, which terminal_host::on_signal
+    // turns into on_resize() + a ResizeEvent. maya used to install a second
+    // handler with a self-pipe, and nothing ever read that pipe — only
+    // drain()ed it — so the device's copy was pure overhead AND a hazard:
+    // whoever installs last wins, and jaal had to add a special case for
+    // maya's handler to stop resizes being dropped (see the comment on
+    // honour_inherited_ignore in jaal's src/platform/posix/signals.cpp).
+    // One owner, and it is jaal's.
 
     // Both Fullscreen and Inline transitions consume the Raw terminal and
     // return a new type-state whose destructor reverses the opt-ins.  This
@@ -37,7 +44,6 @@ auto Device::create(Options cfg) -> Result<Device> {
     rt.inline_terminal_ = std::move(inline_term);
     rt.output_handle_   = output_h;
     rt.input_handle_    = input_h;
-    rt.resize_signal_   = std::move(resize_sig);
     rt.writer_          = std::make_unique<Writer>(output_h);
     rt.theme_           = cfg.theme;
     // NOTE: the theme slot is NOT published here. This `rt` is a local that

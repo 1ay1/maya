@@ -22,6 +22,11 @@
 #include <type_traits>
 #include <utility>
 
+// The MAYA_PLATFORM_* macros the guard below tests. This used to arrive
+// transitively through platform/*/signal.hpp; those are gone (SIGWINCH is
+// jaal's now), so depend on it directly rather than on an accident.
+#include "../platform/detect.hpp"
+
 #if MAYA_PLATFORM_POSIX || MAYA_PLATFORM_MACOS
     #include <cerrno>       // errno, EINTR (for emergency_emit's retry loop)
     #include <unistd.h>     // ::write, STDOUT_FILENO

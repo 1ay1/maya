@@ -11,7 +11,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <atomic>
+#include <mutex>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 #include "maya/element/element.hpp"
 #include "maya/widget/markdown.hpp"
@@ -25,6 +30,74 @@ namespace maya {
 [[nodiscard]] Element assemble_markdown(md::Document&& doc);
 
 namespace md_detail {
+
+// ── owned parse workers ───────────────────────────────────────────────────
+// maya starts no thread the process can't account for: rule 1 in
+// docs/internals/design.md says the loop, the timers and the threads are
+// jaal's. The big-document markdown parse is the one place maya still needs
+// a thread of its own (it is a widget call, `md.set_content_async(...)`, not
+// something a program can return as a Cmd), so it owns it properly instead
+// of detaching it.
+//
+// Detaching was the actual problem: a detached thread is one nobody can
+// wait for, so at exit it kept parsing inside a process that was destroying
+// the statics underneath it. This registry keeps every worker joinable,
+// reaps the finished ones each time a new one starts (so a long session
+// doesn't accumulate thread objects), and joins whatever is left in its
+// destructor.
+//
+// It does NOT extend result lifetime: the AsyncResult slot is a shared_ptr
+// the worker co-owns, so a StreamingMarkdown destroyed mid-parse still just
+// drops its copy and the worker's result retires with it.
+class AsyncWorkers {
+public:
+    void spawn(std::function<void()> fn) {
+        std::lock_guard<std::mutex> lk(mu_);
+        reap_finished_();
+        threads_.emplace_back([fn = std::move(fn), this] {
+            fn();
+            done_.fetch_add(1, std::memory_order_release);
+        });
+    }
+
+    /// Join every worker still running. Called at process exit, and by tests
+    /// that want a quiescent point.
+    void join_all() {
+        std::vector<std::thread> taken;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            taken.swap(threads_);
+        }
+        for (auto& t : taken)
+            if (t.joinable()) t.join();
+    }
+
+    ~AsyncWorkers() { join_all(); }
+
+private:
+    // Cheap hygiene, under mu_: if as many workers have finished as we hold
+    // threads for, none is running and all of them can be joined at once.
+    void reap_finished_() {
+        if (threads_.empty()) return;
+        if (done_.load(std::memory_order_acquire) < threads_.size()) return;
+        for (auto& t : threads_)
+            if (t.joinable()) t.join();
+        threads_.clear();
+        done_.store(0, std::memory_order_release);
+    }
+
+    std::mutex               mu_;
+    std::vector<std::thread> threads_;
+    std::atomic<std::size_t> done_{0};
+};
+
+/// The one registry. Function-local static so it is constructed on first use
+/// and destroyed (joining) during normal static teardown.
+inline AsyncWorkers& async_workers() {
+    static AsyncWorkers w;
+    return w;
+}
+
 namespace streaming {
 
 // ── FNV-1a 64-bit ─────────────────────────────────────────────────────────

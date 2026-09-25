@@ -10,8 +10,16 @@ from it.
 ## The rules
 
 1. **One loop, and it is jaal's.** maya has no event loop, no timers, no
-   worker threads, no effect types. `maya::run<P>()` is a thin function
-   that opens the terminal and hands it to `jaal::run`.
+   effect types. `maya::run<P>()` is a thin function that opens the
+   terminal and hands it to `jaal::run`. maya starts no thread the process
+   can't account for: there are exactly two, both owned and both joined
+   before they can outlive their caller — `Image::fill_rows` (a parallel
+   for that joins before it returns) and the big-document markdown parse
+   (`md.set_content_async`, owned by `md_detail::async_workers()`, joined
+   at exit). Neither is a loop, and nothing is detached: a detached thread
+   is one nobody can wait for, which at exit means code running inside a
+   process destroying the statics under it. Concurrency a PROGRAM asks for
+   is jaal's `Cmd::task` — maya never spawns on a program's behalf.
 2. **A program is a jaal program with a `view()` that returns an
    `Element`.** Nothing else. There is no callback loop, no canvas loop,
    no "live" loop: a canvas demo is a program whose view is `pixels(img)`

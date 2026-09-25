@@ -110,7 +110,6 @@ Device::Device(Device&& o) noexcept
     , inline_terminal_(std::move(o.inline_terminal_))
     , output_handle_(std::exchange(o.output_handle_, platform::invalid_handle))
     , input_handle_(std::exchange(o.input_handle_, platform::invalid_handle))
-    , resize_signal_(std::move(o.resize_signal_))
     , writer_(std::move(o.writer_))
     , pool_(std::move(o.pool_))
     , canvas_(std::move(o.canvas_))
@@ -131,7 +130,6 @@ Device::Device(Device&& o) noexcept
     , render_ctx_(o.render_ctx_)
     , resize_generation_(o.resize_generation_)
     , parser_(std::move(o.parser_))
-    , running_(o.running_)
     , inline_top_row_(o.inline_top_row_)
     , inline_frame_rows_(o.inline_frame_rows_)
     , startup_events_(std::move(o.startup_events_))
@@ -146,7 +144,6 @@ Device& Device::operator=(Device&& o) noexcept {
         inline_terminal_   = std::move(o.inline_terminal_);
         output_handle_     = std::exchange(o.output_handle_, platform::invalid_handle);
         input_handle_      = std::exchange(o.input_handle_, platform::invalid_handle);
-        resize_signal_     = std::move(o.resize_signal_);
         writer_            = std::move(o.writer_);
         pool_              = std::move(o.pool_);
         canvas_            = std::move(o.canvas_);
@@ -167,7 +164,6 @@ Device& Device::operator=(Device&& o) noexcept {
         render_ctx_        = o.render_ctx_;
         resize_generation_ = o.resize_generation_;
         parser_            = std::move(o.parser_);
-        running_           = o.running_;
         inline_top_row_    = o.inline_top_row_;
         inline_frame_rows_ = o.inline_frame_rows_;
         startup_events_    = std::move(o.startup_events_);

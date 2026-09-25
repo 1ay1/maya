@@ -2337,7 +2337,6 @@ static_assert(Program<App>);
 int main() {
     return run<App>({
         .title = "agent session",
-        .fps   = 30,
         .mode  = Mode::Inline,
     });
 }

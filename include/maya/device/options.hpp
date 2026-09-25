@@ -35,7 +35,18 @@ enum class RenderBackend {
 /// How to take the terminal: shared by Screen::open and maya::run.
 struct Options {
     std::string_view title      = "";               ///< Terminal window title (OSC 0)
-    int              fps        = 0;                ///< Continuous rendering at N fps (0 = event-driven)
+    /// Continuous rendering at N fps. 0 (the default) is event-driven:
+    /// draw when the model changes or a widget asks for a frame.
+    ///
+    /// You almost certainly want 0. fps > 0 means "repaint N times a second
+    /// forever", so the process never idles — it is for a view() that reads
+    /// the wall clock itself (a clock, an FPS counter, a throughput graph).
+    /// An animation does NOT need it: a widget that calls
+    /// request_animation_frame, a Sub::every tick, or the motion framework
+    /// already wakes the loop exactly when it has something new to show.
+    /// Setting both is how two examples here came to burn 45% of a core
+    /// sitting at an idle prompt.
+    int              fps        = 0;
     bool             mouse      = false;            ///< Enable mouse event reporting
     bool             hover_motion = false;          ///< Also report bare (no-button) motion (mode 1003)
                                                     ///< for hover highlights. Off by default: 1003 floods

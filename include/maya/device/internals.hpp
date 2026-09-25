@@ -121,8 +121,6 @@ class Device {
 public:
     static auto create(Options cfg) -> Result<Device>;
 
-    void request_quit() noexcept { running_ = false; }
-    [[nodiscard]] bool is_running() const noexcept { return running_; }
     [[nodiscard]] Size size() const noexcept { return size_; }
     [[nodiscard]] const Theme& theme() const noexcept { return theme_; }
 
@@ -716,7 +714,6 @@ private:
     platform::NativeHandle input_handle_  = platform::invalid_handle;
 
     // -- Platform signal handling ---------------------------------------------
-    std::optional<platform::NativeResizeSignal> resize_signal_;
 
     // -- Rendering pipeline ---------------------------------------------------
     // canvas_ is the back buffer that every render paints into.  The
@@ -966,7 +963,6 @@ public:
 private:
     // -- State ----------------------------------------------------------------
     InputParser parser_;
-    bool        running_ = true;
 
     // Dedup guard for clipboard-read paste replies. Inside tmux we send BOTH
     // OSC 5522 (kitty image) and OSC 52 (text) because kitty is undetectable

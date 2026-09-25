@@ -19,6 +19,7 @@ namespace maya {
 
 namespace detail {
 
+// Declared in print.hpp: the terminal's size for a default-width print().
 int detect_terminal_width() noexcept {
     auto sz = platform::query_terminal_size(platform::stdout_handle());
     return sz.width.raw() > 0 ? sz.width.raw() : 80;
@@ -29,23 +30,25 @@ int detect_terminal_height() noexcept {
     return sz.height.raw() > 0 ? sz.height.raw() : 24;
 }
 
+namespace {          // print()'s one-shot inline renderer: internal to this file
+
 
 // The one-frame inline renderer print() is built on (private).
 ///
-/// Lifecycle: `LiveState{}` → repeated `render_live(root, w, pool, std::move(state))`
+/// Lifecycle: `PrintFrame{}` → `render_one_shot(root, w, pool, std::move(state))`
 /// → terminal `std::move(state).finalize(buf)`. Each step consumes the
 /// previous value and returns the next; there is no in-place mutator path.
-class [[nodiscard("LiveState owns the live inline frame — dropping it strands the witness chain and the writer's residue, corrupting the next render")]] LiveState {
+class [[nodiscard("PrintFrame owns the one-shot inline frame — dropping it strands the witness chain and the writer's residue, corrupting the next render")]] PrintFrame {
 public:
     // Pre-reserve so the first frame's tree build doesn't pay an
     // unbounded chain of vector reallocs. 1024 nodes covers typical
     // live-rendered trees; deeper trees still grow on demand.
-    LiveState() { layout_nodes_.reserve(1024); }
+    PrintFrame() { layout_nodes_.reserve(1024); }
 
-    LiveState(const LiveState&)            = delete;
-    LiveState& operator=(const LiveState&) = delete;
-    LiveState(LiveState&&) noexcept            = default;
-    LiveState& operator=(LiveState&&) noexcept = default;
+    PrintFrame(const PrintFrame&)            = delete;
+    PrintFrame& operator=(const PrintFrame&) = delete;
+    PrintFrame(PrintFrame&&) noexcept            = default;
+    PrintFrame& operator=(PrintFrame&&) noexcept = default;
 
     /// Consume the state and emit any finalization bytes (DECAWM /
     /// cursor restore) the witness chain still owes the wire.
@@ -62,41 +65,38 @@ private:
         inline_frame::InlineFrame<inline_frame::Empty>{};
     std::vector<layout::LayoutNode> layout_nodes_;
 
-    // Writer is owned by LiveState rather than constructed per-call so
+    // Writer is owned by PrintFrame rather than constructed per-call so
     // residue (bytes left over from a non-blocking partial write) is
-    // preserved across render_live invocations. Dropping it between
+    // preserved across render_one_shot invocations. Dropping it between
     // frames would lose residue and let the next compose's prev_cells
     // reflect bytes the wire never received — the canonical inline-
     // corruption pattern the Witness Chain is designed to prevent.
     std::optional<Writer>           writer_;
 
-    // render_live is the sole authorised mutator of these fields; the
-    // live<> template loop chains LiveState values by move only.
-    friend LiveState render_live(const Element& root, int width,
-                                 StylePool& pool, LiveState state,
+    // render_one_shot is the sole authorised mutator of these fields; the
+    // live<> template loop chains PrintFrame values by move only.
+    friend PrintFrame render_one_shot(const Element& root, int width,
+                                 StylePool& pool, PrintFrame state,
                                  bool blocking);
 };
 
 // Render element → serialize → write to stdout, preserving stable rows
 // in scrollback. Consumes the state by value and returns the next one;
-// callers must chain by move (`state = render_live(..., std::move(state));`).
-[[nodiscard("render_live returns the next LiveState — dropping it loses the witness chain, the writer residue, and the cached canvas; the next frame will corrupt scrollback")]]
+// callers must chain by move (`state = render_one_shot(..., std::move(state));`).
+[[nodiscard("render_one_shot returns the next PrintFrame — dropping it loses the witness chain, the writer residue, and the cached canvas; the next frame will corrupt scrollback")]]
 // `blocking` = true uses a blocking writer (one-shot maya::print): the whole
 // frame is written in a single pass so a wide frame can't be truncated by a
 // non-blocking partial write that no later compose would drain.
-LiveState render_live(const Element& root, int width, StylePool& pool,
-                      LiveState state, bool blocking = false);
 
 
 
-
-LiveState render_live(const Element& root, int width, StylePool& pool,
-                      LiveState st, bool blocking) {
+PrintFrame render_one_shot(const Element& root, int width, StylePool& pool,
+                      PrintFrame st, bool blocking) {
     constexpr int kMinHeight = 500;
 
-    // Lazy-init the LiveState's Writer on stdout. Owning it here (rather
+    // Lazy-init the PrintFrame's Writer on stdout. Owning it here (rather
     // than constructing per-call) preserves the writer's residue buffer
-    // across render_live invocations — critical for slow ttys where a
+    // across render_one_shot invocations — critical for slow ttys where a
     // single frame may not drain in one call.
     if (!st.writer_.has_value()) {
         st.writer_.emplace(platform::stdout_handle(), /*nonblocking=*/!blocking);
@@ -254,6 +254,7 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
 }
 
 
+}  // namespace
 } // namespace detail
 
 void print(const Element& root) {
@@ -261,8 +262,8 @@ void print(const Element& root) {
     int width = detail::detect_terminal_width();
     StylePool pool;
     std::string buf;
-    detail::LiveState st;
-    st = detail::render_live(root, width, pool, std::move(st), /*blocking=*/true);
+    detail::PrintFrame st;
+    st = detail::render_one_shot(root, width, pool, std::move(st), /*blocking=*/true);
     // Restore DECAWM/cursor visibility owned by InlineFrameState.
     // compose_inline_frame leaves DECAWM off across frames to save
     // bytes on slow ttys; finalize emits the restore and consumes
@@ -285,8 +286,8 @@ void print(const Element& root, int width) {
     platform::ensure_utf8();
     StylePool pool;
     std::string buf;
-    detail::LiveState st;
-    st = detail::render_live(root, width, pool, std::move(st), /*blocking=*/true);
+    detail::PrintFrame st;
+    st = detail::render_one_shot(root, width, pool, std::move(st), /*blocking=*/true);
     buf.clear();
     std::move(st).finalize(buf);
     buf += tmux::sync_end();   // never leave the terminal in ?2026 sync mode

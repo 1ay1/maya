@@ -40,8 +40,6 @@
 #include <maya/app/app.hpp>
 #include <maya/app/events.hpp>
 #include <maya/app/environment.hpp>
-#include <maya/app/error_boundary.hpp>
-#include <maya/app/static_region.hpp>
 #include <maya/print.hpp>
 
 // ── DSL: compile-time UI tree builder ───────────────────────────────────

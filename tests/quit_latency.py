@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """tests/quit_latency.py BIN... : how long after 'q' does the program exit?
 
-Runs each binary in a pty at 214x60 and reads its output at a FIXED rate
+Answers the terminal's queries (DSR, cursor position, DA) like a real
+terminal, then reads each binary's output in a pty at a FIXED rate
 (like a terminal over ssh: default 1000 KB/s), so a high-throughput
 animation keeps the tty buffer full, the way it is for a real user. After
 2 s it presses q and measures:
@@ -31,6 +32,12 @@ def run(binary, rate_kbs, key, cols=214, rows=60):
                 try: d = os.read(fd, int(min(want, 65536)))
                 except OSError: return n, True
                 if not d: return n, True
+                # Answer the terminal queries a real terminal answers, so the
+                # frame-ack flow control is exercised (an unanswered DSR makes
+                # maya fall back to its no-ack timeout: a different code path).
+                for _ in range(d.count(b"\x1b[5n")): os.write(fd, b"\x1b[0n")
+                if b"\x1b[6n" in d: os.write(fd, b"\x1b[1;1R")
+                if b"\x1b[c"  in d: os.write(fd, b"\x1b[?62;22c")
                 n += len(d); want -= len(d)
             time.sleep(max(0, tick_end - time.perf_counter()))
             if count and os.waitpid(pid, os.WNOHANG)[0] == pid: return n, True

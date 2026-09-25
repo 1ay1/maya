@@ -415,7 +415,7 @@ void paint_component(const PaintCtx& c, const ComponentElement& node) {
                 captured_rows = entry->height;
             // Skip cache capture when the read rect overruns
             // the canvas — happens on the first pass of the
-            // inline grow-and-retry loop in app.cpp before
+            // inline grow-and-retry loop in src/app/render_inline.cpp before
             // the canvas is resized to fit. Capturing
             // partial-blank rows from OOB reads poisons the
             // cache: garbage style IDs in the cached cells

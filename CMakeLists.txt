@@ -210,6 +210,8 @@ set(MAYA_LIB_SOURCES
     src/render/paint_component.cpp
     src/render/diff.cpp
     src/render/serialize.cpp
+    src/render/inline_state.cpp
+    src/render/compose_inline.cpp
     src/render/grid_emit.cpp
     src/render/frame_bytes.cpp
     src/render/inline_frame.cpp

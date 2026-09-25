@@ -1,17 +1,17 @@
-// src/app/runtime_lifetime.cpp — finalize, cleanup, destructor, moves.
-#include "runtime_internal.hpp"
+// src/app/device_lifetime.cpp — finalize, cleanup, destructor, moves.
+#include "device_internal.hpp"
 
 namespace maya::detail {
 
 // ============================================================================
-// Runtime::cleanup — final terminal cleanup
+// Device::cleanup — final terminal cleanup
 // ============================================================================
 
 // ============================================================================
-// Runtime::finalize_inline_frame — seal the inline chain, restore cursor
+// Device::finalize_inline_frame — seal the inline chain, restore cursor
 // ============================================================================
 
-void Runtime::finalize_inline_frame() noexcept {
+void Device::finalize_inline_frame() noexcept {
     if (!inline_terminal_) return;   // alt-screen path owes nothing here
     std::string buf;
     in_coherence_ = inline_frame::finalize_coherence(
@@ -32,7 +32,7 @@ void Runtime::finalize_inline_frame() noexcept {
     }
 }
 
-auto Runtime::cleanup() -> Status {
+auto Device::cleanup() -> Status {
     // ── Inline frame finalize ──────────────────────────────────
     // MUST run before the Terminal<InlineMode> destructor's teardown
     // bytes. The hardware-caret epilogue ends every frame with the
@@ -53,7 +53,7 @@ auto Runtime::cleanup() -> Status {
     // know nothing about mouse tracking, so without this the terminal is
     // left echoing SGR mouse reports (\x1b[<…M) as literal text into the
     // user's shell after the app exits. output_handle_ is still valid here
-    // (cleanup runs before ~Runtime / the terminal destructors). Idempotent.
+    // (cleanup runs before ~Device / the terminal destructors). Idempotent.
     if (mouse_enabled_) {
         static constexpr std::string_view kMouseOff =
             "\x1b[?1007l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
@@ -72,17 +72,17 @@ auto Runtime::cleanup() -> Status {
     // Both terminal states (Terminal<AltScreen>, Terminal<Inline>) reverse
     // their own opt-ins in their destructors, so the rest of cleanup is
     // structurally guaranteed by the type system — there is no path where
-    // ~Runtime runs without the terminal being restored. This method is
+    // ~Device runs without the terminal being restored. This method is
     // kept for ABI/API stability with pre-type-state callers that still
     // invoke (void)rt.cleanup().
     return ok();
 }
 
 // ============================================================================
-// Runtime move constructor
+// Device move constructor
 // ============================================================================
 
-Runtime::~Runtime() {
+Device::~Device() {
     // Guaranteed mouse-off on EVERY exit path, including stack unwinding
     // from an exception thrown inside a render/event callback (the simple
     // run() loops call cleanup() only on the normal path; a throwing
@@ -105,7 +105,7 @@ Runtime::~Runtime() {
     }
 }
 
-Runtime::Runtime(Runtime&& o) noexcept
+Device::Device(Device&& o) noexcept
     : alt_terminal_(std::move(o.alt_terminal_))
     , inline_terminal_(std::move(o.inline_terminal_))
     , output_handle_(std::exchange(o.output_handle_, platform::invalid_handle))
@@ -140,7 +140,7 @@ Runtime::Runtime(Runtime&& o) noexcept
     hover_motion_  = std::exchange(o.hover_motion_, false);
 }
 
-Runtime& Runtime::operator=(Runtime&& o) noexcept {
+Device& Device::operator=(Device&& o) noexcept {
     if (this != &o) {
         alt_terminal_      = std::move(o.alt_terminal_);
         inline_terminal_   = std::move(o.inline_terminal_);

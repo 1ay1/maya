@@ -1,9 +1,9 @@
 // src/app/render.cpp — one frame: width check, theme edge, then a path.
-#include "runtime_internal.hpp"
+#include "device_internal.hpp"
 
 namespace maya::detail {
 
-auto Runtime::render(const Element& root) -> Status {
+auto Device::render(const Element& root) -> Status {
     io_log("render");
 
     const int prev_known_w = size_.width.raw();

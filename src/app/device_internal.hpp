@@ -1,5 +1,5 @@
 #pragma once
-// src/app/runtime_internal.hpp — shared by the Runtime's .cpp files only:
+// src/app/device_internal.hpp — shared by the Device's .cpp files only:
 // the opt-in diagnostics (MAYA_IO_LOG, MAYA_INPUT_LOG, MAYA_FRAME_PROF).
 #include "maya/app/app.hpp"
 #include "maya/app/wire_coalesce.hpp"
@@ -28,7 +28,7 @@
 
 namespace maya::detail {
 
-inline namespace runtime_diag {
+inline namespace device_diag {
 // Opt-in event-loop diagnostics. Set MAYA_IO_LOG=<path> to trace the
 // poll/wait/read/render boundary to a file; no-op (one getenv) otherwise.
 // Diagnostic scaffolding for the WezTerm-on-Windows "frozen animation"
@@ -49,9 +49,9 @@ inline void io_log(const char* fmt, ...) {
     std::fputc('\n', f);
     std::fflush(f);
 }
-} // namespace runtime_diag
+} // namespace device_diag
 
-inline namespace runtime_diag {
+inline namespace device_diag {
 // MAYA_INPUT_LOG=<path>: every byte the terminal sends, and what the parser
 // made of it. One line per read(), then one per event, so a key that
 // "didn't work" can be followed from the wire to the program: did it arrive,
@@ -110,7 +110,7 @@ inline void log_input_event(std::FILE* f, const Event& ev) {
         else if constexpr (std::is_same_v<E, ResizeEvent>)   std::fputs("            resize\n", f);
     }, ev);
 }
-} // namespace runtime_diag
+} // namespace device_diag
 
 // MAYA_FRAME_PROF: per-frame timing, shared by the inline and fullscreen
 // paths. Resolved once; null when profiling is off.

@@ -33,10 +33,27 @@ from it.
 |---|---|---|
 | `<maya/maya.hpp>` | elements, DSL, layout, style, widgets, `Image`/`pixels`, `print` | no |
 | `<maya/screen.hpp>` | `Screen`: the terminal device (raw mode, input, frame diff, flow control) | no |
-| `<maya/app.hpp>` | `run<P>`, `Program` concept, event sources, terminal effects, `keys()` | yes |
+| `<maya/app.hpp>` | the seam's table of contents: five includes, no declarations | yes |
+| `include/maya/jaal/` | the seam itself, and the ONLY place in maya that may name jaal | yes |
 
 `maya` (the library) stays free of jaal. `maya::app` (CMake target) is
 maya + jaal, and is what a program links.
+
+| The seam (`include/maya/jaal/`) | |
+|---|---|
+| `interop.hpp` | maya's value types, as jaal sees them (`Sendable`/`Frozen`) |
+| `effects.hpp` | what only the TERMINAL can do: `set_title`, `commit_scrollback`, `suspend`, ... |
+| `sources.hpp` | what the terminal REPORTS: `on_key`, `on_mouse`, ...; `Program`; `keys<Sub>()` |
+| `host.hpp` | `terminal_host`: the class that makes maya a jaal host |
+| `run.hpp` | `run<P>()`: open the Screen, hand it to jaal |
+
+The rule is mechanical, and `tests/seam.sh` runs it in CI:
+
+    grep -rl jaal include/maya --include=*.hpp | grep -v maya/jaal/
+
+prints `app.hpp` and nothing else. Everything else may NAME jaal in a
+comment — that is how a reader finds the seam — but may not include it or
+use its types.
 
 ## One file, one job
 
@@ -48,16 +65,16 @@ the unit you read to understand one thing.
 | `options.hpp` | how to take the terminal: `Mode`, `RenderBackend`, `Options` |
 | `frame_request.hpp` | a widget asks for the next frame; the host schedules it |
 | `keys.hpp` | key predicates, and which keys are navigation |
-| `runtime.hpp` | `detail::Runtime`: the device's state |
+| `device.hpp` | `detail::Device`: the device's state |
 | `theme_canvas.hpp` | a theme's background becomes pixels |
-| `runtime_create.cpp` | raw mode, alt screen or inline region, capability probes |
-| `runtime_input.cpp` | resize; bytes → events |
+| `device_create.cpp` | raw mode, alt screen or inline region, capability probes |
+| `device_input.cpp` | resize; bytes → events |
 | `render.cpp` | one frame: width check, theme edge, pick a path |
 | `render_inline.cpp` | the inline path (wire gate, canvas prepare, compose) |
 | `render_fullscreen.cpp` | the alt-screen path |
 | `render_grid.cpp` | the Grid backend, and the off-wire warmup |
 | `host_effects.cpp` | title, clipboard, raw sequences, suspend |
-| `runtime_lifetime.cpp` | finalize, cleanup, destructor, moves |
+| `device_lifetime.cpp` | finalize, cleanup, destructor, moves |
 
 | The renderer (`src/render/`) | |
 |---|---|
@@ -69,7 +86,7 @@ the unit you read to understand one thing.
 | `compose_inline.cpp` | the inline row-diff producer, and caret placement |
 | `inline_state.cpp` | the inline frame's state and its scrollback proofs |
 
-`render_internal.hpp` / `serialize_internal.hpp` / `runtime_internal.hpp`
+`render_internal.hpp` / `serialize_internal.hpp` / `device_internal.hpp`
 are private to those directories: they hold what the split files share
 (the component cache, the cell-run emitter, the opt-in diagnostics).
 
@@ -105,6 +122,7 @@ int main() { return maya::run<Counter>({.title = "counter"}); }
 | `maya::on_key`, `on_mouse`, `on_paste`, `on_focus`, `on_resize` | same | the host's event sources |
 | `maya::set_title`, `commit_scrollback`, `write_clipboard`, ... | same | the host's effects |
 | `maya::terminal_host<P>` | `jaal_host<P>` | the host, for tests and custom drivers |
+| `detail::Device` | `detail::Runtime` | it is the terminal device; the runtime is jaal's, and only one thing may wear that name |
 
 `jaal::` stays visible: `jaal::Cmd`, `jaal::Sub`, `Cmd::quit`,
 `Sub::every` are the runtime's words, the way `useState` is React's word

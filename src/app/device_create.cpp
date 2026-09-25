@@ -1,9 +1,9 @@
-// src/app/runtime_create.cpp — take the terminal: raw mode, screen, probes.
-#include "runtime_internal.hpp"
+// src/app/device_create.cpp — take the terminal: raw mode, screen, probes.
+#include "device_internal.hpp"
 
 namespace maya::detail {
 
-auto Runtime::create(Options cfg) -> Result<Runtime> {
+auto Device::create(Options cfg) -> Result<Device> {
     // Move the terminal through the type-state chain: Cooked → Raw → AltScreen
     MAYA_TRY_DECL(auto cooked, Terminal<Cooked>::create());
     MAYA_TRY_DECL(auto raw, std::move(cooked).enable_raw_mode());
@@ -31,7 +31,7 @@ auto Runtime::create(Options cfg) -> Result<Runtime> {
     }
 
 
-    Runtime rt;
+    Device rt;
 
     rt.alt_terminal_    = std::move(alt_term);
     rt.inline_terminal_ = std::move(inline_term);
@@ -41,7 +41,7 @@ auto Runtime::create(Options cfg) -> Result<Runtime> {
     rt.writer_          = std::make_unique<Writer>(output_h);
     rt.theme_           = cfg.theme;
     // NOTE: the theme slot is NOT published here. This `rt` is a local that
-    // gets moved into Result<Runtime>, then moved AGAIN into the caller's
+    // gets moved into Result<Device>, then moved AGAIN into the caller's
     // variable, so a pointer taken now names storage that is dead before
     // the first frame. Publishing happens in run<>(), against the object
     // that actually lives for the session. (This was the bug behind "the
@@ -98,7 +98,7 @@ auto Runtime::create(Options cfg) -> Result<Runtime> {
     // extended coordinates) + 1007 (alt-scroll). This matches what
     // enter_alt_screen() emits and what kitty / xterm / wezterm expect —
     // 1003 (ANY-motion) floods move events and some terminals (kitty)
-    // handle it inconsistently. Cached on the Runtime so cleanup()/dtor
+    // handle it inconsistently. Cached on the Device so cleanup()/dtor
     // emit the matching disable on every exit path (the InlineMode /
     // AltScreen destructors restore raw mode + screen but the simple-run
     // inline path does NOT enable mouse on its own).
@@ -158,7 +158,7 @@ auto Runtime::create(Options cfg) -> Result<Runtime> {
     // deeper trees still grow on demand via vector's amortised
     // doubling, but the steady-state working set lives entirely
     // inside this initial capacity. Cost: 1024 * sizeof(LayoutNode)
-    // ≈ 184 KB — paid once per Runtime lifetime.
+    // ≈ 184 KB — paid once per Device lifetime.
     rt.layout_nodes_.reserve(1024);
 
     // Schedule hint — see platform/thread.hpp. macOS: QoS user-interactive.
@@ -324,8 +324,8 @@ auto Runtime::create(Options cfg) -> Result<Runtime> {
             }
             if (ps >= 0)
                 rt.osc5522_support_ = (ps >= 1 && ps <= 4)
-                    ? detail::Runtime::Osc5522::Supported
-                    : detail::Runtime::Osc5522::Unsupported;
+                    ? detail::Device::Osc5522::Supported
+                    : detail::Device::Osc5522::Unsupported;
             // The DA1 fence reply may still be in the buffer (we break on
             // the DECRPM as soon as it lands — the fence arrives behind
             // it). Strip it so it is never replayed as input; if it is
@@ -345,7 +345,7 @@ auto Runtime::create(Options cfg) -> Result<Runtime> {
 }
 
 // ============================================================================
-// Runtime::handle_resize — update internal state on terminal resize
+// Device::handle_resize — update internal state on terminal resize
 // ============================================================================
 
 } // namespace maya::detail

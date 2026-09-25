@@ -5,8 +5,8 @@
 // raw mode, alt screen or inline, the input parser,
 // the frame encoder and what it knows is on screen and in scrollback) and
 // NOTHING that waits. Every method is one non-blocking step; there is no
-// loop, no timer, no thread, no quit flag. A runtime (jaal, via maya-jaal,
-// or a hand-written loop in a test) drives it:
+// loop, no timer, no thread, no quit flag. A runtime (jaal, through
+// <maya/app.hpp>, or a hand-written loop in a test) drives it:
 //
 //     auto term = maya::Screen::open({.mode = Mode::Inline});
 //     watch(term->input_handle());                 // the runtime's reactor
@@ -70,7 +70,7 @@ public:
     /// Take the terminal: raw mode, alt screen or inline region, capability
     /// probes. The destructor gives it back, on every path.
     [[nodiscard]] static Result<Screen> open(const Options& cfg) {
-        auto rt = detail::Runtime::create(cfg);
+        auto rt = detail::Device::create(cfg);
         if (!rt) return std::unexpected(rt.error());
         Screen t{std::move(*rt)};
         // Published only now: this is the address that lives (see
@@ -291,10 +291,10 @@ public:
 
     /// The underlying implementation, for the runtimes being migrated off
     /// it. Not part of the device API.
-    [[nodiscard]] detail::Runtime& impl() noexcept { return *rt_; }
+    [[nodiscard]] detail::Device& impl() noexcept { return *rt_; }
 
 private:
-    explicit Screen(detail::Runtime rt) : rt_(std::make_unique<detail::Runtime>(std::move(rt))) {
+    explicit Screen(detail::Device rt) : rt_(std::make_unique<detail::Device>(std::move(rt))) {
         rt_->publish_theme_slot();
     }
 
@@ -370,7 +370,7 @@ private:
 
     // Heap-held: the Runtime publishes its own address (the theme slot), so
     // it must not move once published. The Screen handle can.
-    std::unique_ptr<detail::Runtime> rt_;
+    std::unique_ptr<detail::Device> rt_;
     std::optional<std::uint64_t>     last_hash_;
     bool                             pending_redraw_ = false;
 };

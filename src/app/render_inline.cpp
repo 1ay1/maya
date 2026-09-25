@@ -1,12 +1,12 @@
 // src/app/render_inline.cpp — the inline path: row-diff under the scrollback.
-#include "runtime_internal.hpp"
+#include "device_internal.hpp"
 
 namespace maya::detail {
 
 // The wire gate: drain what the tty refused last frame and decide whether
 // to coalesce this one. A value means "no frame this tick" (the status to
 // return); nullopt means go on and compose.
-std::optional<Status> Runtime::inline_wire_gate() {
+std::optional<Status> Device::inline_wire_gate() {
     // ── Adaptive wire coalescing: congestion sample ───────────────
     // Residue on entry = the wire couldn't take last frame in full →
     // a congestion sample of 1.0; a clean entry = 0.0. The EWMA
@@ -106,7 +106,7 @@ std::optional<Status> Runtime::inline_wire_gate() {
 // Size the canvas for this frame and clear it, keeping the frozen prefix
 // (the rows already committed to scrollback) intact: a bounded clear is
 // what keeps a long transcript's per-frame cost flat.
-void Runtime::inline_prepare_canvas(int w) {
+void Device::inline_prepare_canvas(int w) {
     constexpr int kMinCanvasHeight = 500;
 
     // Reasons to (re)allocate the canvas:
@@ -244,7 +244,7 @@ void Runtime::inline_prepare_canvas(int w) {
 
 }
 
-auto Runtime::render_inline(const Element& root, int w) -> Status {
+auto Device::render_inline(const Element& root, int w) -> Status {
     FILE* const prof_out = frame_prof_out();
     const bool prof = prof_out != nullptr;
     const auto t_frame_start = std::chrono::steady_clock::now();

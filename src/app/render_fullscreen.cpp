@@ -1,9 +1,9 @@
 // src/app/render_fullscreen.cpp — the alt-screen path: cell diff.
-#include "runtime_internal.hpp"
+#include "device_internal.hpp"
 
 namespace maya::detail {
 
-auto Runtime::render_fullscreen(const Element& root, int w) -> Status {
+auto Device::render_fullscreen(const Element& root, int w) -> Status {
     FILE* const prof_out = frame_prof_out();
     const bool prof = prof_out != nullptr;
     const auto t_frame_start = std::chrono::steady_clock::now();

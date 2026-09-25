@@ -1,10 +1,10 @@
 // src/app/host_effects.cpp — title, clipboard, raw sequences, suspend.
-#include "runtime_internal.hpp"
+#include "device_internal.hpp"
 
 namespace maya::detail {
 
 // ============================================================================
-// Runtime::set_title — set terminal title via OSC 0
+// Device::set_title — set terminal title via OSC 0
 // ============================================================================
 //
 // Routed through write_or_buffer so the OSC queues behind any pending
@@ -17,13 +17,13 @@ namespace maya::detail {
 // a hard redraw (resize) rebuilt shadow from scratch. Same fix shape
 // as write_clipboard's earlier migration; the two OSC paths now have
 // identical residue semantics.
-void Runtime::set_title(std::string_view title) {
+void Device::set_title(std::string_view title) {
     auto seq = std::format("\x1b]0;{}\x07", title);
     (void)writer_->write_or_buffer(seq);
 }
 
 // ============================================================================
-// Runtime::write_clipboard — system clipboard via OSC 52
+// Device::write_clipboard — system clipboard via OSC 52
 // ============================================================================
 //
 // OSC 52 protocol:
@@ -60,7 +60,7 @@ void Runtime::set_title(std::string_view title) {
 // per ECMA-48 §8.3.143; BEL is the historic xterm shorthand. ST
 // survives tmux's set-clipboard passthrough cleanly on every tmux
 // version we've tested; BEL is mangled by some older builds.
-void Runtime::write_clipboard(std::string_view text) {
+void Device::write_clipboard(std::string_view text) {
     // RFC 4648 standard alphabet — OSC 52 requires standard (not URL-safe)
     // base64. Padding is required per the OSC 52 spec; terminals reject
     // non-padded payloads inconsistently.
@@ -101,7 +101,7 @@ void Runtime::write_clipboard(std::string_view text) {
     (void)writer_->write_or_buffer(seq);
 }
 
-void Runtime::query_clipboard() {
+void Device::query_clipboard() {
     // Clipboard read query. Two dialects:
     //   • OSC 5522 (kitty) — multi-format: the reply can carry IMAGE
     //     bytes, which OSC 52 read replies never do. kitty is the only
@@ -145,9 +145,9 @@ void Runtime::query_clipboard() {
 }
 
 // ============================================================================
-// Runtime::emit_host_sequence — raw host escape, out-of-band with the frame
+// Device::emit_host_sequence — raw host escape, out-of-band with the frame
 // ============================================================================
-void Runtime::emit_host_sequence(std::string_view sequence) {
+void Device::emit_host_sequence(std::string_view sequence) {
     if (sequence.empty()) return;
     // Same transport + buffering discipline as set_title/write_clipboard: the
     // bytes ride write_or_buffer so a congested tty stashes rather than drops
@@ -158,7 +158,7 @@ void Runtime::emit_host_sequence(std::string_view sequence) {
 }
 
 // ============================================================================
-// Runtime::suspend — hand the real terminal to an interactive child
+// Device::suspend — hand the real terminal to an interactive child
 // ============================================================================
 //
 // Blocks on the UI thread for the child's whole run — deliberate: the
@@ -183,9 +183,9 @@ void Runtime::emit_host_sequence(std::string_view sequence) {
 //     like shell history above a freshly-launched TUI.
 //
 // Mouse reporting is torn down/restored by the Terminal suspend only in
-// alt mode; inline mode enables mouse at the Runtime layer (create), so
+// alt mode; inline mode enables mouse at the Device layer (create), so
 // mirror that here.
-void Runtime::suspend(const std::function<void()>& fn) {
+void Device::suspend(const std::function<void()>& fn) {
     if (!fn) return;
     static constexpr std::string_view kMouseOn      = "\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?1007h";
     static constexpr std::string_view kMouseOnHover = "\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?1007h";

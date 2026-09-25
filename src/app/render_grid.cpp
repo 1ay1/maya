@@ -1,10 +1,10 @@
 // src/app/render_grid.cpp — the Grid backend and the off-wire warmup.
-#include "runtime_internal.hpp"
+#include "device_internal.hpp"
 
 namespace maya::detail {
 
 // ============================================================================
-// Runtime::warmup_render — pre-populate cross-frame component cache
+// Device::warmup_render — pre-populate cross-frame component cache
 // ============================================================================
 //
 // Hot path on resume of a heavy thread: the FIRST render() pays full
@@ -21,7 +21,7 @@ namespace maya::detail {
 // Width/height: matches the live canvas_'s width (cached cells are
 // width-keyed and a width mismatch invalidates the entry); height
 // gets `auto_height=true` and grows under content.
-auto Runtime::render_grid_frame(const Element& root) -> Status {
+auto Device::render_grid_frame(const Element& root) -> Status {
     const int w = size_.width.raw();
     if (w <= 0) return ok();
 
@@ -263,7 +263,7 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
 // Same paint path as render()'s inline branch (so cache entries match: keys are
 // width-keyed and a width mismatch invalidates the entry); height
 // gets `auto_height=true` and grows under content.
-void Runtime::warmup_render(const Element& root) {
+void Device::warmup_render(const Element& root) {
     const int w = canvas_.width();
 
     // Scratch canvas — same pool as the live render so captured style

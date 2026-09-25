@@ -2,7 +2,7 @@
 // maya/app/theme_canvas.hpp — a theme fills the frame with its background;
 // switching the running app's theme.
 
-#include "runtime.hpp"
+#include "device.hpp"
 
 namespace maya {
 namespace detail {
@@ -106,7 +106,7 @@ namespace detail {
 // Runtime we own one here instead, seeded to native so the first comparison
 // matches theme::live()'s actual initial state.
 inline void app_set_theme(const Theme& t) {
-    Theme* slot = detail::Runtime::live_theme();
+    Theme* slot = detail::Device::live_theme();
     if (slot == nullptr) {
         // Pre-runtime storage for the same comparison. Seeded to native so
         // "set native before startup" is correctly a no-op rather than a
@@ -129,7 +129,7 @@ inline void app_set_theme(const Theme& t) {
     // Same notification as Runtime::set_theme — this is the path hosts
     // actually use (they have no Runtime&), so a projected palette that
     // only re-derived on set_theme would never update in practice.
-    detail::Runtime::on_theme_changed(*slot);
+    detail::Device::on_theme_changed(*slot);
 }
 
 /// Register a callback invoked whenever the live theme is replaced.
@@ -143,7 +143,7 @@ inline void app_set_theme(const Theme& t) {
 /// Call once, before the UI loop. The callback runs on the thread that
 /// swapped the theme.
 inline void on_theme_changed(void (*fn)(const Theme&)) {
-    detail::Runtime::theme_subscribers().push_back(fn);
+    detail::Device::theme_subscribers().push_back(fn);
 }
 
 } // namespace maya

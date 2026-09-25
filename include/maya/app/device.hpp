@@ -1,5 +1,5 @@
 #pragma once
-// maya/app/runtime.hpp — detail::Runtime, the terminal device's internals
+// maya/app/device.hpp — detail::Device, the terminal device's internals
 // (terminal, input parser, writer, canvases, render state). Not a loop:
 // maya::Screen (<maya/screen.hpp>) is its public face; the host in
 // <maya/app.hpp> drives it one step at a time. Implemented in src/app/,
@@ -56,10 +56,10 @@
 
 namespace maya {
 
-inline void app_set_theme(const Theme& t);   // defined below Runtime
+inline void app_set_theme(const Theme& t);   // defined below Device
 
 // ============================================================================
-// detail::Runtime — terminal resource owner (not public API)
+// detail::Device — terminal resource owner (not public API)
 // ============================================================================
 // Owns the terminal, event source, writer, canvases, and render state.
 // Exposes granular methods; maya::Screen is its public face and the jaal
@@ -117,9 +117,9 @@ using FullscreenState = std::variant<FullscreenSynced, Divergent>;
 
 } // namespace coherent
 
-class Runtime {
+class Device {
 public:
-    static auto create(Options cfg) -> Result<Runtime>;
+    static auto create(Options cfg) -> Result<Device>;
 
     void request_quit() noexcept { running_ = false; }
     [[nodiscard]] bool is_running() const noexcept { return running_; }
@@ -140,7 +140,7 @@ public:
     ///
     /// Two sources can name the starting theme, and exactly one wins:
     ///
-    ///   * app_set_theme() called before any Runtime exists (it parks the
+    ///   * app_set_theme() called before any Device exists (it parks the
     ///     theme in its own storage). That is the host saying "use THIS",
     ///     after reading its own config, so it must not be reverted.
     ///   * Options::theme, stored in theme_ by create().
@@ -195,7 +195,7 @@ public:
         // Re-seat the style layer's view of the theme. Slot-kind colours
         // (every themed widget Config default) resolve against this at
         // SGR-emit time, which is below the app layer and cannot reach a
-        // Runtime — so it gets its own pointer to the same object.
+        // Device — so it gets its own pointer to the same object.
         //
         // This also bumps the theme EPOCH, which is what refreshes every
         // theme::projected<P> palette. Those used to need a subscriber each
@@ -253,7 +253,7 @@ public:
     }
 
     // Does the host terminal honor DEC mode 2026 (synchronized update)?
-    // Detected once at Runtime::create() via env-var heuristic; immutable
+    // Detected once at Device::create() via env-var heuristic; immutable
     // afterwards.
     //
     // This is the HONEST answer (env_supports_synchronized_output()), NOT
@@ -319,7 +319,7 @@ private:
     auto render_fullscreen(const Element& root, int w) -> Status;
 public:
 
-    // True when this Runtime emits binary grid frames (RenderBackend::Grid)
+    // True when this Device emits binary grid frames (RenderBackend::Grid)
     // instead of ANSI — a cooperating host is painting cells for us.
     [[nodiscard]] bool grid_mode() const noexcept { return grid_mode_; }
 
@@ -424,7 +424,7 @@ public:
     }
 
     // Legacy no-op. The inline composer anti-bounce is now FULLY
-    // AUTONOMOUS inside Runtime::render (see the transient-hold block):
+    // AUTONOMOUS inside Device::render (see the transient-hold block):
     // maya detects a 1-frame content dip and bridges it itself, with no
     // host policy bit. An earlier design drove the hold from this setter
     // via a Cmd, but the Cmd reliably arrived AFTER the dip window had
@@ -693,14 +693,14 @@ public:
     void finalize_inline_frame() noexcept;
 
     // Move-only
-    Runtime(Runtime&&) noexcept;
-    Runtime& operator=(Runtime&&) noexcept;
-    Runtime(const Runtime&) = delete;
-    Runtime& operator=(const Runtime&) = delete;
-    ~Runtime();
+    Device(Device&&) noexcept;
+    Device& operator=(Device&&) noexcept;
+    Device(const Device&) = delete;
+    Device& operator=(const Device&) = delete;
+    ~Device();
 
 private:
-    Runtime() = default;
+    Device() = default;
 
     // -- Terminal ownership ---------------------------------------------------
     // Exactly one of these is engaged for the lifetime of the runtime.
@@ -800,7 +800,7 @@ private:
     Size          size_{};
     RenderContext render_ctx_;
     uint32_t      resize_generation_  = 0;
-    // Per-frame width-backstop debounce. The backstop (Runtime::render)
+    // Per-frame width-backstop debounce. The backstop (Device::render)
     // re-queries TIOCGWINSZ every frame to catch a missed SIGWINCH; but
     // some terminals (observed: kitty under certain DPI / decoration
     // states) momentarily report a width 1-2 cols off on alternating
@@ -819,7 +819,7 @@ private:
     // peak. After kHoldDecayFrames the shrink is treated as real and the
     // peak falls to it (pad → 0) so idle/post-settle never carries dead
     // space. Fully autonomous — no host policy bit, no Cmd race. See the
-    // hold block in Runtime::render.
+    // hold block in Device::render.
     //
     // kHoldDecayFrames must exceed the indicator→content handoff window:
     // the 1-row activity indicator hands off to a transient intermediate
@@ -842,7 +842,7 @@ private:
     // frame removes that per-frame overhead (identical content reaches the
     // wire) — measured 3-5x less wire.
     //
-    // Runtime::render() enforces a MINIMUM interval between composes that is
+    // Device::render() enforces a MINIMUM interval between composes that is
     // 0 on a fast wire (zero behavior change) and grows only when the wire
     // shows backpressure. `coalesce_.congestion` is an EWMA in [0,1] of "did
     // last frame leave residue / defer": 0 = wire keeps up, 1 = saturated.
@@ -881,14 +881,14 @@ private:
     // longer matches the wire — i.e. a frame that would have corrupted
     // native scrollback was caught and recovered. Zero on a healthy
     // session. Unlike the #ifndef NDEBUG abort tripwire in
-    // Runtime::render (which fires on the specific committed-prefix
+    // Device::render (which fires on the specific committed-prefix
     // MISMATCH), this counts EVERY non-Synced recovery and survives into
     // release builds, so a field regression surfaces as a rising metric
     // in the profiler line / via scrollback_recovery_count() instead of
     // only under a debug build. Monotonic; never reset.
     unsigned long scrollback_recovery_count_ = 0;
     // One-shot inhibitor for the bounded-clear canvas preservation in
-    // Runtime::render. Set by commit_inline_prefix / commit_inline_overflow
+    // Device::render. Set by commit_inline_prefix / commit_inline_overflow
     // — the two structural events that shift the shadow while REMAINING
     // Synced, which the gate's coherence-index check cannot see. Consumed
     // (cleared) by the next render, which full-clears the canvas instead
@@ -905,7 +905,7 @@ private:
     // append sync_start/sync_end.
     //
     // The exception is TERM=dumb, and it is the DEFAULT that has to know:
-    // Runtime::create() refines this flag, but the inline path a host like
+    // Device::create() refines this flag, but the inline path a host like
     // agentty uses never runs create(), so a default of plain `true` meant
     // the wrapper was emitted no matter what TERM said. "Unknown modes are
     // no-ops" assumes a DEC private-mode parser; a dumb terminal has none,
@@ -938,7 +938,7 @@ private:
 public:
     /// The terminal's input handle. The host (<maya/app.hpp>) watches it with
     /// jaal's reactor and calls read_events() when it's readable. Borrowed:
-    /// the Runtime keeps ownership; the handle is valid while it lives.
+    /// the Device keeps ownership; the handle is valid while it lives.
     [[nodiscard]] platform::NativeHandle input_handle() const noexcept { return input_handle_; }
 
     /// The tty's output handle: a runtime watches it for WRITABILITY

@@ -200,9 +200,9 @@ elseif(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND MAYA_HEAVY_OPT)
 endif()
 
 set(MAYA_LIB_SOURCES
-    src/app/runtime_create.cpp
-    src/app/runtime_input.cpp
-    src/app/runtime_lifetime.cpp
+    src/app/device_create.cpp
+    src/app/device_input.cpp
+    src/app/device_lifetime.cpp
     src/app/render.cpp
     src/app/render_inline.cpp
     src/app/render_fullscreen.cpp
@@ -728,6 +728,12 @@ set_tests_properties(
     #     toolchain doesn't expose cleanly from this TU, and the restore
     #     behaviour it guards is platform-identical.
     if(UNIX)
+        # The layering rule, as a test: nothing outside include/maya/jaal/ may
+        # depend on jaal. Reads the tree, so it needs no build.
+        add_test(NAME seam
+                 COMMAND ${CMAKE_COMMAND} -E env sh ${PROJECT_SOURCE_DIR}/tests/seam.sh)
+        set_tests_properties(seam PROPERTIES TIMEOUT 60)
+
         set(_maya_posix_tests test_inline_frame test_composer_caret_shrink
             test_tmux_capabilities test_fresh_oversized_scrollback)
         if(NOT APPLE)

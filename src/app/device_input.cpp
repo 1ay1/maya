@@ -1,9 +1,9 @@
-// src/app/runtime_input.cpp — resize and input: size, bytes -> events.
-#include "runtime_internal.hpp"
+// src/app/device_input.cpp — resize and input: size, bytes -> events.
+#include "device_internal.hpp"
 
 namespace maya::detail {
 
-void Runtime::handle_resize() {
+void Device::handle_resize() {
     if (resize_signal_) resize_signal_->drain();
 
     Size new_size;
@@ -91,10 +91,10 @@ void Runtime::handle_resize() {
 }
 
 // ============================================================================
-// Runtime::read_events — read and parse terminal input
+// Device::read_events — read and parse terminal input
 // ============================================================================
 
-auto Runtime::read_events() -> Result<std::vector<Event>> {
+auto Device::read_events() -> Result<std::vector<Event>> {
     std::vector<Event> result;
 
     // Replay events that arrived during create()'s cursor-position query
@@ -161,7 +161,7 @@ auto Runtime::read_events() -> Result<std::vector<Event>> {
 // identical pastes 250 ms apart are indistinguishable from the tmux double-
 // answer even in principle, and dropping one of those is the same behaviour
 // as before; a human cannot paste the same buffer twice that fast anyway.
-void Runtime::dedup_clipboard_pastes(std::vector<Event>& events) {
+void Device::dedup_clipboard_pastes(std::vector<Event>& events) {
     constexpr auto kWindow = std::chrono::milliseconds(250);
     const auto now = std::chrono::steady_clock::now();
     std::vector<Event> kept;
@@ -184,10 +184,10 @@ void Runtime::dedup_clipboard_pastes(std::vector<Event>& events) {
 }
 
 // ============================================================================
-// Runtime::flush_timeouts — flush parser timeout events
+// Device::flush_timeouts — flush parser timeout events
 // ============================================================================
 
-auto Runtime::flush_timeouts() -> std::vector<Event> {
+auto Device::flush_timeouts() -> std::vector<Event> {
     std::vector<Event> result;
     std::FILE* const lf = input_log();
     for (auto& ev : parser_.flush_timeout()) {
@@ -198,7 +198,7 @@ auto Runtime::flush_timeouts() -> std::vector<Event> {
 }
 
 // ============================================================================
-// Runtime::render — render an element tree to the terminal
+// Device::render — render an element tree to the terminal
 // ============================================================================
 // Fullscreen: RenderPipeline type-state machine (Idle→Cleared→Painted→Opened→Closed)
 // Inline: compose_inline_frame (row-diff, scrollback-preserving)

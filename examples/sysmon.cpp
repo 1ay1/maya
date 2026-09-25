@@ -14,6 +14,7 @@
 //
 // Usage:  ./maya_sysmon
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 
 #include <algorithm>
@@ -21,8 +22,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <random>
 #include <string>
+#include <variant>
 #include <vector>
 
 using namespace maya;
@@ -47,15 +50,6 @@ static maya::Style level_color(int lvl) {
     return fg_rgb(80, 80, 100);
 }
 
-static std::mt19937 rng{std::random_device{}()};
-
-static int randi(int lo, int hi) {
-    return std::uniform_int_distribution<int>(lo, hi)(rng);
-}
-
-static float randf(float lo, float hi) {
-    return std::uniform_real_distribution<float>(lo, hi)(rng);
-}
 
 // ── Braille spark ───────────────────────────────────────────────────────────
 // Maps 0.0–1.0 to a braille vertical bar character (8 levels).
@@ -83,13 +77,6 @@ static std::string block_bar(float v, int width) {
 static const char* dot_spin(int frame) {
     static const char* frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
     return frames[frame % 10];
-}
-
-static const char* hex_char() {
-    static const char hex[] = "0123456789abcdef";
-    static char buf[2] = {};
-    buf[0] = hex[rng() % 16];
-    return buf;
 }
 
 // ── Data Model ──────────────────────────────────────────────────────────────
@@ -138,42 +125,50 @@ static constexpr int NUM_MEM = 4;
 static constexpr int NUM_NET = 3;
 static constexpr int MAX_LOG = 8;
 
-static std::array<Core, NUM_CORES> cores;
-static std::array<MemBank, NUM_MEM> mem_banks;
-static std::array<NetIface, NUM_NET> net_ifaces;
-static std::vector<Process> processes;
-static std::vector<LogEntry> activity_log;
-static float uptime = 0;
-static int frame_count = 0;
-static float entropy_pool = 0.72f;
-static uint64_t total_syscalls = 0;
+// Everything the screen shows, and the RNG that drives it.
+struct Model {
+    std::array<Core, NUM_CORES> cores;
+    std::array<MemBank, NUM_MEM> mem_banks;
+    std::array<NetIface, NUM_NET> net_ifaces;
+    std::vector<Process> processes;
+    std::vector<LogEntry> activity_log;
+    float uptime = 0;
+    int frame_count = 0;
+    float entropy_pool = 0.72f;
+    uint64_t total_syscalls = 0;
+    std::string hash;                 // the header's churning node hash
 
-// Controls
-static bool paused = false;
-static bool show_log = true;
-static int sort_mode = 0;  // 0=cpu, 1=mem, 2=pid
-static float speed = 1.0f;
+    bool paused = false;
+    bool show_log = true;
+    int sort_mode = 0;                // 0=cpu, 1=mem, 2=pid
+    float speed = 1.0f;
+
+    std::mt19937 rng{std::random_device{}()};
+    int   randi(int lo, int hi)       { return std::uniform_int_distribution<int>(lo, hi)(rng); }
+    float randf(float lo, float hi)   { return std::uniform_real_distribution<float>(lo, hi)(rng); }
+};
+
 static const char* sort_names[] = {"cpu", "mem", "pid"};
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
-static void init_state() {
+static void init_state(Model& m) {
     for (int i = 0; i < NUM_CORES; ++i) {
-        cores[i].usage = randf(0.05f, 0.4f);
-        cores[i].temp = randf(42, 58);
-        cores[i].freq = randf(2.8f, 4.2f);
+        m.cores[i].usage = m.randf(0.05f, 0.4f);
+        m.cores[i].temp = m.randf(42, 58);
+        m.cores[i].freq = m.randf(2.8f, 4.2f);
     }
 
-    mem_banks[0] = {"DIMM-A1", 0.62f, 16};
-    mem_banks[1] = {"DIMM-A2", 0.45f, 16};
-    mem_banks[2] = {"DIMM-B1", 0.38f, 32};
-    mem_banks[3] = {"DIMM-B2", 0.21f, 32};
+    m.mem_banks[0] = {"DIMM-A1", 0.62f, 16};
+    m.mem_banks[1] = {"DIMM-A2", 0.45f, 16};
+    m.mem_banks[2] = {"DIMM-B1", 0.38f, 32};
+    m.mem_banks[3] = {"DIMM-B2", 0.21f, 32};
 
-    net_ifaces[0] = {"eth0",  0, 0, 0, 0, {}, 0};
-    net_ifaces[1] = {"wlan0", 0, 0, 0, 0, {}, 0};
-    net_ifaces[2] = {"lo",    0, 0, 0, 0, {}, 0};
+    m.net_ifaces[0] = {"eth0",  0, 0, 0, 0, {}, 0};
+    m.net_ifaces[1] = {"wlan0", 0, 0, 0, 0, {}, 0};
+    m.net_ifaces[2] = {"lo",    0, 0, 0, 0, {}, 0};
 
-    processes = {
+    m.processes = {
         {"systemd",     1,    0.1f,  12.4f},
         {"sshd",        892,  0.3f,  8.2f},
         {"postgres",    1204, 4.2f,  256.0f},
@@ -206,35 +201,37 @@ static const std::array<std::string, 16> log_msgs = {
     "kernel: Out of memory: Killed process 9921 (chrome)",
 };
 
-static void tick(float dt) {
-    if (paused) { frame_count++; return; }
-    dt *= speed;
-    uptime += dt;
-    frame_count++;
-    total_syscalls += static_cast<uint64_t>(randi(800, 3000));
+static void tick(Model& m, float dt) {
+    if (m.paused) { m.frame_count++; return; }
+    m.hash.clear();
+    for (int i = 0; i < 8; ++i) m.hash += "0123456789abcdef"[m.rng() % 16];
+    dt *= m.speed;
+    m.uptime += dt;
+    m.frame_count++;
+    m.total_syscalls += static_cast<uint64_t>(m.randi(800, 3000));
 
-    // CPU cores — simulate bursty workloads
-    for (auto& c : cores) {
-        float target = randf(0.02f, 0.95f);
+    // CPU m.cores — simulate bursty workloads
+    for (auto& c : m.cores) {
+        float target = m.randf(0.02f, 0.95f);
         // Occasionally spike
-        if (randi(0, 60) == 0) target = randf(0.8f, 1.0f);
+        if (m.randi(0, 60) == 0) target = m.randf(0.8f, 1.0f);
         c.usage += (target - c.usage) * 0.15f;
-        c.temp = 42.0f + c.usage * 38.0f + randf(-2, 2);
-        c.freq = 2.4f + c.usage * 2.0f + randf(-0.1f, 0.1f);
+        c.temp = 42.0f + c.usage * 38.0f + m.randf(-2, 2);
+        c.freq = 2.4f + c.usage * 2.0f + m.randf(-0.1f, 0.1f);
         c.history[static_cast<size_t>(c.hist_idx)] = c.usage;
         c.hist_idx = (c.hist_idx + 1) % 20;
     }
 
     // Memory — slow drift
-    for (auto& m : mem_banks) {
-        m.used += randf(-0.01f, 0.015f);
-        m.used = std::clamp(m.used, 0.05f, 0.95f);
+    for (auto& b : m.mem_banks) {
+        b.used += m.randf(-0.01f, 0.015f);
+        b.used = std::clamp(b.used, 0.05f, 0.95f);
     }
 
     // Network
-    for (auto& n : net_ifaces) {
-        float base_rx = (&n == &net_ifaces[2]) ? randf(0, 5) : randf(0, 800);
-        float base_tx = (&n == &net_ifaces[2]) ? randf(0, 5) : randf(0, 200);
+    for (auto& n : m.net_ifaces) {
+        float base_rx = (&n == &m.net_ifaces[2]) ? m.randf(0, 5) : m.randf(0, 800);
+        float base_tx = (&n == &m.net_ifaces[2]) ? m.randf(0, 5) : m.randf(0, 200);
         n.rx_mbps += (base_rx - n.rx_mbps) * 0.2f;
         n.tx_mbps += (base_tx - n.tx_mbps) * 0.2f;
         n.rx_total += static_cast<uint64_t>(n.rx_mbps * dt * 125000);
@@ -244,36 +241,35 @@ static void tick(float dt) {
     }
 
     // Processes — jitter CPU
-    for (auto& p : processes) {
-        p.cpu += randf(-2, 2);
+    for (auto& p : m.processes) {
+        p.cpu += m.randf(-2, 2);
         p.cpu = std::clamp(p.cpu, 0.0f, 100.0f);
-        p.mem_mb += randf(-5, 5);
+        p.mem_mb += m.randf(-5, 5);
         p.mem_mb = std::max(1.0f, p.mem_mb);
     }
 
     // Entropy
-    entropy_pool += randf(-0.03f, 0.03f);
-    entropy_pool = std::clamp(entropy_pool, 0.3f, 1.0f);
+    m.entropy_pool += m.randf(-0.03f, 0.03f);
+    m.entropy_pool = std::clamp(m.entropy_pool, 0.3f, 1.0f);
 
     // Log
-    if (randi(0, 8) == 0) {
-        int lvl = (randi(0, 10) < 7) ? 0 : (randi(0, 3) == 0 ? 2 : 1);
-        activity_log.push_back({uptime, log_msgs[static_cast<size_t>(randi(0, 15))], lvl});
-        if (activity_log.size() > MAX_LOG)
-            activity_log.erase(activity_log.begin());
+    if (m.randi(0, 8) == 0) {
+        int lvl = (m.randi(0, 10) < 7) ? 0 : (m.randi(0, 3) == 0 ? 2 : 1);
+        m.activity_log.push_back({m.uptime, log_msgs[static_cast<size_t>(m.randi(0, 15))], lvl});
+        if (m.activity_log.size() > MAX_LOG)
+            m.activity_log.erase(m.activity_log.begin());
     }
 }
 
 // ── UI Builders ─────────────────────────────────────────────────────────────
 
-static auto build_header() {
-    std::string hash;
-    for (int i = 0; i < 8; ++i) hash += hex_char();
+static auto build_header(const Model& m) {
+    const std::string& hash = m.hash;
 
-    auto spin = std::string(dot_spin(frame_count));
+    auto spin = std::string(dot_spin(m.frame_count));
 
-    std::string state_str = paused ? " ⏸ PAUSED" : "";
-    std::string speed_str = " ×" + std::to_string(static_cast<int>(speed));
+    std::string state_str = m.paused ? " ⏸ PAUSED" : "";
+    std::string speed_str = " ×" + std::to_string(static_cast<int>(m.speed));
 
     return h(
         text(spin + " SYSMON") | Bold | Fg<0, 255, 136>,
@@ -287,11 +283,11 @@ static auto build_header() {
     ) | pad<0, 1, 0, 1>;
 }
 
-static auto build_cpu_panel() {
+static auto build_cpu_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
     for (int i = 0; i < NUM_CORES; ++i) {
-        auto& c = cores[static_cast<size_t>(i)];
+        auto& c = m.cores[static_cast<size_t>(i)];
 
         // Sparkline from history
         std::string spark;
@@ -323,7 +319,7 @@ static auto build_cpu_panel() {
 
     // Total CPU line
     float avg = 0;
-    for (auto& c : cores) avg += c.usage;
+    for (auto& c : m.cores) avg += c.usage;
     avg /= NUM_CORES;
 
     rows.push_back((h(
@@ -339,22 +335,22 @@ static auto build_cpu_panel() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static auto build_mem_panel() {
+static auto build_mem_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
     float total_used = 0, total_cap = 0;
-    for (auto& m : mem_banks) {
-        total_used += m.used * static_cast<float>(m.total_gb);
-        total_cap += static_cast<float>(m.total_gb);
+    for (const auto& bank : m.mem_banks) {
+        total_used += bank.used * static_cast<float>(bank.total_gb);
+        total_cap += static_cast<float>(bank.total_gb);
 
-        auto used_gb = m.used * static_cast<float>(m.total_gb);
-        auto bar = block_bar(m.used, 16);
+        auto used_gb = bank.used * static_cast<float>(bank.total_gb);
+        auto bar = block_bar(bank.used, 16);
 
-        auto mem_str = std::to_string(static_cast<int>(used_gb)) + "/" + std::to_string(m.total_gb) + "G";
+        auto mem_str = std::to_string(static_cast<int>(used_gb)) + "/" + std::to_string(bank.total_gb) + "G";
 
         rows.push_back((h(
-            text(m.name) | Fg<100, 180, 255> | w_<8>,
-            text(bar, usage_color(m.used)) | w_<16>,
+            text(bank.name) | Fg<100, 180, 255> | w_<8>,
+            text(bar, usage_color(bank.used)) | w_<16>,
             text(mem_str) | Dim | w_<8>
         ) | gap_<1>).build());
     }
@@ -374,10 +370,10 @@ static auto build_mem_panel() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static auto build_net_panel() {
+static auto build_net_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
-    for (auto& n : net_ifaces) {
+    for (auto& n : m.net_ifaces) {
         // Mini sparkline
         std::string spark;
         for (int j = 0; j < 16; ++j) {
@@ -411,11 +407,11 @@ static auto build_net_panel() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static auto build_proc_panel() {
-    auto sorted = processes;
-    if (sort_mode == 0)
+static auto build_proc_panel(const Model& m) {
+    auto sorted = m.processes;
+    if (m.sort_mode == 0)
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.cpu > b.cpu; });
-    else if (sort_mode == 1)
+    else if (m.sort_mode == 1)
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.mem_mb > b.mem_mb; });
     else
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.pid < b.pid; });
@@ -442,14 +438,14 @@ static auto build_proc_panel() {
 
     return vstack().border(maya::BorderStyle::Round)
         .border_color(maya::Color::rgb(50, 55, 70))
-        .border_text(std::string(" PROC [sort:") + sort_names[sort_mode] + "] ", maya::BorderTextPos::Top)
+        .border_text(std::string(" PROC [sort:") + sort_names[m.sort_mode] + "] ", maya::BorderTextPos::Top)
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static auto build_log_panel() {
+static auto build_log_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
-    for (auto& e : activity_log) {
+    for (auto& e : m.activity_log) {
         int mins = static_cast<int>(e.timestamp) / 60;
         int secs = static_cast<int>(e.timestamp) % 60;
         char ts[16];
@@ -475,20 +471,20 @@ static auto build_log_panel() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static auto build_status_bar() {
-    int mins = static_cast<int>(uptime) / 60;
-    int secs = static_cast<int>(uptime) % 60;
+static auto build_status_bar(const Model& m) {
+    int mins = static_cast<int>(m.uptime) / 60;
+    int secs = static_cast<int>(m.uptime) % 60;
     char ts[16];
     std::snprintf(ts, sizeof(ts), "%02d:%02d", mins, secs);
 
-    auto entropy_bar = block_bar(entropy_pool, 8);
+    auto entropy_bar = block_bar(m.entropy_pool, 8);
 
     // Syscall counter
     std::string sc_str;
-    if (total_syscalls > 1'000'000'000) sc_str = std::to_string(total_syscalls / 1'000'000'000) + "G";
-    else if (total_syscalls > 1'000'000) sc_str = std::to_string(total_syscalls / 1'000'000) + "M";
-    else if (total_syscalls > 1'000) sc_str = std::to_string(total_syscalls / 1'000) + "K";
-    else sc_str = std::to_string(total_syscalls);
+    if (m.total_syscalls > 1'000'000'000) sc_str = std::to_string(m.total_syscalls / 1'000'000'000) + "G";
+    else if (m.total_syscalls > 1'000'000) sc_str = std::to_string(m.total_syscalls / 1'000'000) + "M";
+    else if (m.total_syscalls > 1'000) sc_str = std::to_string(m.total_syscalls / 1'000) + "K";
+    else sc_str = std::to_string(m.total_syscalls);
 
     return h(
         text(" ⏱ " + std::string(ts)) | Fg<100, 180, 255>,
@@ -496,60 +492,79 @@ static auto build_status_bar() {
         text(entropy_bar) | Fg<0, 255, 136>,
         text("  syscalls:") | Fg<140, 140, 160>,
         text(sc_str) | Fg<255, 200, 60>,
-        text("  f:" + std::to_string(frame_count)) | Fg<100, 100, 120>,
+        text("  f:" + std::to_string(m.frame_count)) | Fg<100, 100, 120>,
         space,
         text(" q") | Bold | Fg<180, 220, 255>, text(":quit") | Fg<120, 120, 140>,
         text(" p") | Bold | Fg<180, 220, 255>, text(":pause") | Fg<120, 120, 140>,
         text(" s") | Bold | Fg<180, 220, 255>, text(":sort") | Fg<120, 120, 140>,
         text(" l") | Bold | Fg<180, 220, 255>, text(":log") | Fg<120, 120, 140>,
-        text(" 1-3") | Bold | Fg<180, 220, 255>, text(":speed") | Fg<120, 120, 140>,
+        text(" 1-3") | Bold | Fg<180, 220, 255>, text(":m.speed") | Fg<120, 120, 140>,
         text(" ␣") | Bold | Fg<180, 220, 255>, text(":burst ") | Fg<120, 120, 140>
     ) | pad<0, 1, 0, 1> | Bg<30, 30, 42>;
 }
 
 // ── Render ──────────────────────────────────────────────────────────────────
 
-static maya::Element render() {
+static maya::Element render(const Model& m) {
     std::vector<maya::Element> panels;
-    panels.push_back(build_header().build());
-    panels.push_back(build_cpu_panel());
-    panels.push_back(build_mem_panel());
-    panels.push_back(build_net_panel());
-    panels.push_back(build_proc_panel());
-    if (show_log) panels.push_back(build_log_panel());
-    panels.push_back(build_status_bar().build());
+    panels.push_back(build_header(m).build());
+    panels.push_back(build_cpu_panel(m));
+    panels.push_back(build_mem_panel(m));
+    panels.push_back(build_net_panel(m));
+    panels.push_back(build_proc_panel(m));
+    if (m.show_log) panels.push_back(build_log_panel(m));
+    panels.push_back(build_status_bar(m).build());
 
     return vstack()(std::move(panels));
 }
 
-// ── Main ────────────────────────────────────────────────────────────────────
+// ── Program ─────────────────────────────────────────────────────────────────
 
-int main() {
-    init_state();
+struct Tick {};
+struct Pause {};
+struct ToggleLog {};
+struct CycleSort {};
+struct Speed { float x; };
+struct Burst {};
+struct Quit {};
+using Msg = std::variant<Tick, Pause, ToggleLog, CycleSort, Speed, Burst, Quit>;
 
-    maya::run(
-        {.title = "sysmon", .fps = 15, .mode = maya::Mode::Inline},
-        [](const Event& ev) {
-            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-            if (key(ev, 'p')) paused = !paused;
-            if (key(ev, 'l')) show_log = !show_log;
-            if (key(ev, 's')) sort_mode = (sort_mode + 1) % 3;
-            if (key(ev, '1')) speed = 0.25f;
-            if (key(ev, '2')) speed = 1.0f;
-            if (key(ev, '3')) speed = 4.0f;
-            if (key(ev, ' ')) {
-                for (int i = 0; i < 5; ++i) {
-                    int lvl = randi(0, 2);
-                    activity_log.push_back({uptime, log_msgs[static_cast<size_t>(randi(0, 15))], lvl});
-                }
-                while (activity_log.size() > MAX_LOG)
-                    activity_log.erase(activity_log.begin());
-            }
-            return true;
-        },
-        [] {
-            tick(1.0f / 15.0f);
-            return render();
+struct Sysmon {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key>;
+
+    static Cmd init(Model& m)             { init_state(m); return {}; }
+    static Cmd update(Model& m, Tick)     { tick(m, 1.0f / 15.0f); return {}; }
+    static Cmd update(Model& m, Pause)    { m.paused = !m.paused; return {}; }
+    static Cmd update(Model& m, ToggleLog){ m.show_log = !m.show_log; return {}; }
+    static Cmd update(Model& m, CycleSort){ m.sort_mode = (m.sort_mode + 1) % 3; return {}; }
+    static Cmd update(Model& m, Speed s)  { m.speed = s.x; return {}; }
+    static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
+    static Cmd update(Model& m, Burst) {
+        for (int i = 0; i < 5; ++i) {
+            const int lvl = m.randi(0, 2);
+            m.activity_log.push_back({m.uptime, log_msgs[static_cast<size_t>(m.randi(0, 15))], lvl});
         }
-    );
-}
+        while (m.activity_log.size() > MAX_LOG) m.activity_log.erase(m.activity_log.begin());
+        return {};
+    }
+
+    static Element view(const Model& m) { return render(m); }
+
+    // Paused, nothing moves: no clock.
+    static Sub subscribe(const Model& m) {
+        auto k = keys<Sub>({
+            {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {'p', Pause{}}, {'l', ToggleLog{}},
+            {'s', CycleSort{}}, {'1', Speed{0.25f}}, {'2', Speed{1.0f}}, {'3', Speed{4.0f}}, {' ', Burst{}},
+        });
+        if (m.paused) return k;
+        return Sub::batch(Sub::every(std::chrono::milliseconds{66}, Tick{}), std::move(k));
+    }
+    static bool subs_key(const Model& m) { return m.paused; }
+};
+
+static_assert(Program<Sysmon>);
+
+int main() { return run<Sysmon>({.title = "sysmon", .mode = Mode::Inline}); }

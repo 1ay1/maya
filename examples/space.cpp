@@ -14,7 +14,11 @@
 //
 // Usage:  ./maya_space
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
+
+#include <chrono>
+#include <variant>
 #include <maya/widget/badge.hpp>
 #include <maya/widget/bar_chart.hpp>
 #include <maya/widget/callout.hpp>
@@ -37,13 +41,6 @@ using namespace maya::dsl;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-static std::mt19937 rng{std::random_device{}()};
-static float randf(float lo, float hi) {
-    return std::uniform_real_distribution<float>(lo, hi)(rng);
-}
-static int randi(int lo, int hi) {
-    return std::uniform_int_distribution<int>(lo, hi)(rng);
-}
 
 static maya::Style fg_rgb(uint8_t r, uint8_t g, uint8_t b) {
     return maya::Style{}.with_fg(maya::Color::rgb(r, g, b));
@@ -103,31 +100,16 @@ struct EventToast {
 // ── State ───────────────────────────────────────────────────────────────────
 
 // Telemetry
-static float fuel = 0.92f;
-static float o2 = 0.97f;
-static float power = 0.85f;
-static float hull = 1.0f;
 
 // Navigation
-static float pos_x = 0, pos_y = 0, pos_z = 0;
-static float heading = 47.3f;
-static float dist_to_target = 225000000.0f; // km to Mars
-static float velocity = 11.2f; // km/s
-static float altitude = 400.0f; // km
-static float temperature = 22.0f;
 
 // History buffers
 static constexpr int HIST_SIZE = 30;
-static std::vector<float> vel_hist(HIST_SIZE, 11.2f);
-static std::vector<float> alt_hist(HIST_SIZE, 400.0f);
-static std::vector<float> temp_hist(HIST_SIZE, 22.0f);
-static std::vector<float> traj_hist(HIST_SIZE, 400.0f);
 
 // Heatmap 8x8
-static std::vector<std::vector<float>> thermal_grid(8, std::vector<float>(8, 0.3f));
 
 // Crew
-static std::array<CrewMember, 4> crew = {{
+static const std::array<CrewMember, 4> kCrew = {{
     {"Cmdr. Chen",   "Commander",     0.95f, 0.12f},
     {"Dr. Okafor",   "Flight Surgeon", 0.88f, 0.18f},
     {"Lt. Vasquez",  "Pilot",         0.92f, 0.15f},
@@ -135,7 +117,7 @@ static std::array<CrewMember, 4> crew = {{
 }};
 
 // Subsystems
-static std::array<Subsystem, 8> subsystems = {{
+static const std::array<Subsystem, 8> kSubsystems = {{
     {"Main Engine",    0, 1.0f},
     {"Life Support",   0, 1.0f},
     {"Comms Array",    0, 1.0f},
@@ -147,29 +129,14 @@ static std::array<Subsystem, 8> subsystems = {{
 }};
 
 // Power distribution
-static float pwr_engines = 0.35f;
-static float pwr_lifesup = 0.25f;
-static float pwr_comms   = 0.15f;
-static float pwr_nav     = 0.10f;
-static float pwr_thermal = 0.10f;
-static float pwr_shield  = 0.05f;
 
 // Comm log
 static constexpr int MAX_LOG = 6;
-static std::vector<LogEntry> comm_log;
 
 // Events / toasts
-static std::vector<EventToast> toasts;
 
 // Mission
-static int mission_phase = 0; // 0=launch, 1=transit, 2=orbit
 static const char* phase_names[] = {"LAUNCH", "TRANSIT", "ORBIT INSERTION"};
-static float elapsed = 0;
-static int frame_count = 0;
-static bool abort_sequence = false;
-static float abort_timer = 0;
-static bool diag_mode = false;
-static float diag_timer = 0;
 
 // ── Log messages ────────────────────────────────────────────────────────────
 
@@ -190,156 +157,198 @@ static const std::array<std::string, 12> log_msgs = {
 
 // ── Init ────────────────────────────────────────────────────────────────────
 
-static void init_state() {
+// Everything the screen shows, and the RNG that drives it.
+struct Model {
+    float fuel = 0.92f;
+    float o2 = 0.97f;
+    float power = 0.85f;
+    float hull = 1.0f;
+    float pos_x = 0;
+    float pos_y = 0;
+    float pos_z = 0;
+    float heading = 47.3f;
+    float dist_to_target = 225000000.0f;
+    float velocity = 11.2f;
+    float altitude = 400.0f;
+    float temperature = 22.0f;
+    std::vector<float> vel_hist = std::vector<float>(HIST_SIZE, 11.2f);
+    std::vector<float> alt_hist = std::vector<float>(HIST_SIZE, 400.0f);
+    std::vector<float> temp_hist = std::vector<float>(HIST_SIZE, 22.0f);
+    std::vector<float> traj_hist = std::vector<float>(HIST_SIZE, 400.0f);
+    std::vector<std::vector<float>> thermal_grid = std::vector<std::vector<float>>(8, std::vector<float>(8, 0.3f));
+    std::array<CrewMember, 4> crew = kCrew;
+    std::array<Subsystem, 8> subsystems = kSubsystems;
+    float pwr_engines = 0.35f;
+    float pwr_lifesup = 0.25f;
+    float pwr_comms   = 0.15f;
+    float pwr_nav     = 0.10f;
+    float pwr_thermal = 0.10f;
+    float pwr_shield  = 0.05f;
+    std::vector<LogEntry> comm_log;
+    std::vector<EventToast> toasts;
+    int mission_phase = 0;
+    float elapsed = 0;
+    int frame_count = 0;
+    bool abort_sequence = false;
+    float abort_timer = 0;
+    bool diag_mode = false;
+    float diag_timer = 0;
+
+    std::mt19937 rng{std::random_device{}()};
+    int   randi(int lo, int hi)     { return std::uniform_int_distribution<int>(lo, hi)(rng); }
+    float randf(float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); }
+};
+
+static void init_state(Model& m) {
     for (int i = 0; i < HIST_SIZE; ++i) {
-        vel_hist[static_cast<size_t>(i)] = 11.2f + randf(-0.3f, 0.3f);
-        alt_hist[static_cast<size_t>(i)] = 400.0f + randf(-10, 10);
-        temp_hist[static_cast<size_t>(i)] = 22.0f + randf(-2, 2);
-        traj_hist[static_cast<size_t>(i)] = 400.0f + static_cast<float>(i) * 5.0f + randf(-5, 5);
+        m.vel_hist[static_cast<size_t>(i)] = 11.2f + m.randf(-0.3f, 0.3f);
+        m.alt_hist[static_cast<size_t>(i)] = 400.0f + m.randf(-10, 10);
+        m.temp_hist[static_cast<size_t>(i)] = 22.0f + m.randf(-2, 2);
+        m.traj_hist[static_cast<size_t>(i)] = 400.0f + static_cast<float>(i) * 5.0f + m.randf(-5, 5);
     }
 
     // Init thermal grid
     for (int r = 0; r < 8; ++r)
         for (int c = 0; c < 8; ++c)
-            thermal_grid[static_cast<size_t>(r)][static_cast<size_t>(c)] = randf(0.15f, 0.45f);
+            m.thermal_grid[static_cast<size_t>(r)][static_cast<size_t>(c)] = m.randf(0.15f, 0.45f);
 }
 
 // ── Tick ────────────────────────────────────────────────────────────────────
 
-static void tick(float dt) {
-    elapsed += dt;
-    frame_count++;
+static void tick(Model& m, float dt) {
+    m.elapsed += dt;
+    m.frame_count++;
 
     // Abort countdown
-    if (abort_sequence) {
-        abort_timer -= dt;
-        if (abort_timer <= 0) abort_sequence = false;
+    if (m.abort_sequence) {
+        m.abort_timer -= dt;
+        if (m.abort_timer <= 0) m.abort_sequence = false;
     }
-    if (diag_mode) {
-        diag_timer -= dt;
-        if (diag_timer <= 0) diag_mode = false;
+    if (m.diag_mode) {
+        m.diag_timer -= dt;
+        if (m.diag_timer <= 0) m.diag_mode = false;
     }
 
     // Toast decay
-    for (auto& t : toasts) t.ttl -= dt;
-    std::erase_if(toasts, [](const EventToast& t) { return t.ttl <= 0; });
+    for (auto& t : m.toasts) t.ttl -= dt;
+    std::erase_if(m.toasts, [](const EventToast& t) { return t.ttl <= 0; });
 
     // Fuel depletes slowly
-    float fuel_rate = (mission_phase == 0) ? 0.0008f : 0.0002f;
-    fuel -= fuel_rate * dt;
-    fuel = std::clamp(fuel, 0.0f, 1.0f);
+    float fuel_rate = (m.mission_phase == 0) ? 0.0008f : 0.0002f;
+    m.fuel -= fuel_rate * dt;
+    m.fuel = std::clamp(m.fuel, 0.0f, 1.0f);
 
     // O2 fluctuates
-    o2 += randf(-0.002f, 0.001f) * dt;
-    o2 = std::clamp(o2, 0.3f, 1.0f);
+    m.o2 += m.randf(-0.002f, 0.001f) * dt;
+    m.o2 = std::clamp(m.o2, 0.3f, 1.0f);
 
     // Power varies
-    power += randf(-0.003f, 0.003f) * dt;
-    power = std::clamp(power, 0.2f, 1.0f);
+    m.power += m.randf(-0.003f, 0.003f) * dt;
+    m.power = std::clamp(m.power, 0.2f, 1.0f);
 
     // Hull stays high unless event
-    hull += randf(-0.0001f, 0.00005f) * dt;
-    hull = std::clamp(hull, 0.5f, 1.0f);
+    m.hull += m.randf(-0.0001f, 0.00005f) * dt;
+    m.hull = std::clamp(m.hull, 0.5f, 1.0f);
 
     // Velocity evolves
-    float vel_drift = (mission_phase == 0) ? 0.05f : -0.01f;
-    velocity += vel_drift * dt + randf(-0.1f, 0.1f) * dt;
-    velocity = std::clamp(velocity, 3.0f, 30.0f);
+    float vel_drift = (m.mission_phase == 0) ? 0.05f : -0.01f;
+    m.velocity += vel_drift * dt + m.randf(-0.1f, 0.1f) * dt;
+    m.velocity = std::clamp(m.velocity, 3.0f, 30.0f);
 
     // Altitude
-    float alt_rate = (mission_phase == 0) ? 15.0f : (mission_phase == 2 ? -2.0f : 5.0f);
-    altitude += alt_rate * dt + randf(-2, 2) * dt;
-    altitude = std::max(100.0f, altitude);
+    float alt_rate = (m.mission_phase == 0) ? 15.0f : (m.mission_phase == 2 ? -2.0f : 5.0f);
+    m.altitude += alt_rate * dt + m.randf(-2, 2) * dt;
+    m.altitude = std::max(100.0f, m.altitude);
 
     // Temperature — sun exposure cycle
-    float sun_angle = std::sin(elapsed * 0.1f);
-    temperature = 20.0f + sun_angle * 15.0f + randf(-0.5f, 0.5f);
+    float sun_angle = std::sin(m.elapsed * 0.1f);
+    m.temperature = 20.0f + sun_angle * 15.0f + m.randf(-0.5f, 0.5f);
 
     // Navigation
-    pos_x += velocity * 0.7f * dt;
-    pos_y += velocity * 0.3f * dt + randf(-0.1f, 0.1f);
-    pos_z += randf(-0.05f, 0.05f);
-    heading += randf(-0.2f, 0.2f);
-    heading = std::fmod(heading + 360.0f, 360.0f);
-    dist_to_target -= velocity * dt;
-    dist_to_target = std::max(0.0f, dist_to_target);
+    m.pos_x += m.velocity * 0.7f * dt;
+    m.pos_y += m.velocity * 0.3f * dt + m.randf(-0.1f, 0.1f);
+    m.pos_z += m.randf(-0.05f, 0.05f);
+    m.heading += m.randf(-0.2f, 0.2f);
+    m.heading = std::fmod(m.heading + 360.0f, 360.0f);
+    m.dist_to_target -= m.velocity * dt;
+    m.dist_to_target = std::max(0.0f, m.dist_to_target);
 
     // Update histories
     auto push_hist = [](std::vector<float>& h, float v) {
         h.erase(h.begin());
         h.push_back(v);
     };
-    push_hist(vel_hist, velocity);
-    push_hist(alt_hist, altitude);
-    push_hist(temp_hist, temperature);
-    push_hist(traj_hist, altitude);
+    push_hist(m.vel_hist, m.velocity);
+    push_hist(m.alt_hist, m.altitude);
+    push_hist(m.temp_hist, m.temperature);
+    push_hist(m.traj_hist, m.altitude);
 
     // Animate thermal grid
     for (int r = 0; r < 8; ++r) {
         for (int c = 0; c < 8; ++c) {
-            float& cell = thermal_grid[static_cast<size_t>(r)][static_cast<size_t>(c)];
+            float& cell = m.thermal_grid[static_cast<size_t>(r)][static_cast<size_t>(c)];
             // Sun-facing side (top rows) hotter
             float base = static_cast<float>(8 - r) / 8.0f * 0.3f;
             float sun = (sun_angle + 1.0f) / 2.0f * 0.3f;
-            cell += (base + sun + randf(-0.05f, 0.05f) - cell) * 0.15f;
+            cell += (base + sun + m.randf(-0.05f, 0.05f) - cell) * 0.15f;
             cell = std::clamp(cell, 0.0f, 1.0f);
         }
     }
 
     // Crew health drift
-    for (auto& c : crew) {
-        c.health += randf(-0.002f, 0.001f) * dt;
+    for (auto& c : m.crew) {
+        c.health += m.randf(-0.002f, 0.001f) * dt;
         c.health = std::clamp(c.health, 0.4f, 1.0f);
-        c.stress += randf(-0.003f, 0.004f) * dt;
+        c.stress += m.randf(-0.003f, 0.004f) * dt;
         c.stress = std::clamp(c.stress, 0.0f, 0.8f);
     }
 
     // Subsystem status jitter
-    for (auto& s : subsystems) {
+    for (auto& s : m.subsystems) {
         s.uptime += dt;
-        if (randi(0, 500) == 0) {
-            s.status = randi(0, 1); // occasional warning
-        } else if (randi(0, 2000) == 0) {
+        if (m.randi(0, 500) == 0) {
+            s.status = m.randi(0, 1); // occasional warning
+        } else if (m.randi(0, 2000) == 0) {
             s.status = 2; // rare failure
         }
-        if (s.status > 0 && randi(0, 100) == 0) {
+        if (s.status > 0 && m.randi(0, 100) == 0) {
             s.status = 0; // auto-recovery
         }
     }
 
     // Power distribution jitter
-    pwr_engines += randf(-0.01f, 0.01f); pwr_engines = std::clamp(pwr_engines, 0.1f, 0.5f);
-    pwr_lifesup += randf(-0.005f, 0.005f); pwr_lifesup = std::clamp(pwr_lifesup, 0.15f, 0.35f);
-    pwr_comms   += randf(-0.005f, 0.005f); pwr_comms = std::clamp(pwr_comms, 0.05f, 0.25f);
+    m.pwr_engines += m.randf(-0.01f, 0.01f); m.pwr_engines = std::clamp(m.pwr_engines, 0.1f, 0.5f);
+    m.pwr_lifesup += m.randf(-0.005f, 0.005f); m.pwr_lifesup = std::clamp(m.pwr_lifesup, 0.15f, 0.35f);
+    m.pwr_comms   += m.randf(-0.005f, 0.005f); m.pwr_comms = std::clamp(m.pwr_comms, 0.05f, 0.25f);
 
     // Comm log
-    if (randi(0, 15) == 0) {
-        int lvl = (randi(0, 10) < 7) ? 0 : (randi(0, 3) == 0 ? 2 : 1);
-        comm_log.push_back({elapsed, log_msgs[static_cast<size_t>(randi(0, 11))], lvl});
-        if (comm_log.size() > MAX_LOG)
-            comm_log.erase(comm_log.begin());
+    if (m.randi(0, 15) == 0) {
+        int lvl = (m.randi(0, 10) < 7) ? 0 : (m.randi(0, 3) == 0 ? 2 : 1);
+        m.comm_log.push_back({m.elapsed, log_msgs[static_cast<size_t>(m.randi(0, 11))], lvl});
+        if (m.comm_log.size() > MAX_LOG)
+            m.comm_log.erase(m.comm_log.begin());
     }
 
     // Random events
-    if (randi(0, 200) == 0) {
+    if (m.randi(0, 200) == 0) {
         static const std::array<std::pair<std::string, maya::Severity>, 6> events = {{
-            {"Micrometeorite detected — hull scan initiated", maya::Severity::Warning},
+            {"Micrometeorite detected — m.hull scan initiated", maya::Severity::Warning},
             {"Solar flare warning — radiation spike", maya::Severity::Error},
             {"Comm signal degraded — switching to backup", maya::Severity::Warning},
             {"Course correction burn completed", maya::Severity::Success},
             {"Deep Space Network handover complete", maya::Severity::Info},
             {"Thermal anomaly detected in module B4", maya::Severity::Warning},
         }};
-        auto& ev = events[static_cast<size_t>(randi(0, 5))];
-        toasts.push_back({ev.first, ev.second, 5.0f});
+        auto& ev = events[static_cast<size_t>(m.randi(0, 5))];
+        m.toasts.push_back({ev.first, ev.second, 5.0f});
 
         // Effects
         if (ev.second == maya::Severity::Error) {
-            hull -= 0.02f;
-            hull = std::max(0.5f, hull);
+            m.hull -= 0.02f;
+            m.hull = std::max(0.5f, m.hull);
         }
-        if (ev.second == maya::Severity::Warning && randi(0, 2) == 0) {
-            subsystems[static_cast<size_t>(randi(0, 7))].status = 1;
+        if (ev.second == maya::Severity::Warning && m.randi(0, 2) == 0) {
+            m.subsystems[static_cast<size_t>(m.randi(0, 7))].status = 1;
         }
     }
 }
@@ -365,18 +374,18 @@ static maya::Style severity_color(int lvl) {
     return fg_rgb(80, 80, 100);
 }
 
-static maya::Element build_header() {
-    auto spin = std::string(dot_spin(frame_count));
-    std::string met = fmt_time(elapsed);
+static maya::Element build_header(const Model& m) {
+    auto spin = std::string(dot_spin(m.frame_count));
+    std::string met = fmt_time(m.elapsed);
 
-    std::string phase_str = phase_names[mission_phase];
-    auto phase_sty = (mission_phase == 0) ? fg_rgb(255, 140, 50) :
-                     (mission_phase == 1) ? fg_rgb(100, 180, 255) :
+    std::string phase_str = phase_names[m.mission_phase];
+    auto phase_sty = (m.mission_phase == 0) ? fg_rgb(255, 140, 50) :
+                     (m.mission_phase == 1) ? fg_rgb(100, 180, 255) :
                                             fg_rgb(0, 255, 136);
 
     std::string abort_str;
-    if (abort_sequence) {
-        abort_str = " ABORT T-" + fmt_f(abort_timer, 0) + "s";
+    if (m.abort_sequence) {
+        abort_str = " ABORT T-" + fmt_f(m.abort_timer, 0) + "s";
     }
 
     return (h(
@@ -389,16 +398,16 @@ static maya::Element build_header() {
         text("  PHASE: ") | Dim,
         text(phase_str, phase_sty.with_bold()),
         text(abort_str, fg_rgb(255, 50, 50).with_bold()),
-        text(diag_mode ? "  [DIAG]" : "") | Fg<255, 200, 60>
+        text(m.diag_mode ? "  [DIAG]" : "") | Fg<255, 200, 60>
     ) | pad<0, 1, 0, 1>).build();
 }
 
-static maya::Element build_telemetry_panel() {
+static maya::Element build_telemetry_panel(const Model& m) {
     // Four gauges side by side
-    maya::Gauge g_fuel(fuel, "FUEL", maya::Color::rgb(0, 255, 136));
-    maya::Gauge g_o2(o2, "O2", maya::Color::rgb(100, 180, 255));
-    maya::Gauge g_pwr(power, "POWER", maya::Color::rgb(255, 200, 60));
-    maya::Gauge g_hull(hull, "HULL", maya::Color::rgb(198, 160, 246));
+    maya::Gauge g_fuel(m.fuel, "FUEL", maya::Color::rgb(0, 255, 136));
+    maya::Gauge g_o2(m.o2, "O2", maya::Color::rgb(100, 180, 255));
+    maya::Gauge g_pwr(m.power, "POWER", maya::Color::rgb(255, 200, 60));
+    maya::Gauge g_hull(m.hull, "HULL", maya::Color::rgb(198, 160, 246));
 
     return panel(" TELEMETRY ")(
         (h(
@@ -410,16 +419,16 @@ static maya::Element build_telemetry_panel() {
     );
 }
 
-static maya::Element build_sparklines_panel() {
-    maya::Sparkline sp_vel(vel_hist, {.color = maya::Color::rgb(0, 255, 200)});
+static maya::Element build_sparklines_panel(const Model& m) {
+    maya::Sparkline sp_vel(m.vel_hist, {.color = maya::Color::rgb(0, 255, 200)});
     sp_vel.set_label("VEL");
     sp_vel.set_show_min_max(true);
 
-    maya::Sparkline sp_alt(alt_hist, {.color = maya::Color::rgb(100, 180, 255)});
+    maya::Sparkline sp_alt(m.alt_hist, {.color = maya::Color::rgb(100, 180, 255)});
     sp_alt.set_label("ALT");
     sp_alt.set_show_min_max(true);
 
-    maya::Sparkline sp_temp(temp_hist, {.color = maya::Color::rgb(255, 140, 50)});
+    maya::Sparkline sp_temp(m.temp_hist, {.color = maya::Color::rgb(255, 140, 50)});
     sp_temp.set_label("TMP");
     sp_temp.set_show_min_max(true);
 
@@ -430,12 +439,12 @@ static maya::Element build_sparklines_panel() {
     );
 }
 
-static maya::Element build_nav_panel() {
+static maya::Element build_nav_panel(const Model& m) {
     char coord_buf[64];
     std::snprintf(coord_buf, sizeof(coord_buf), "%.1f, %.1f, %.1f",
-        static_cast<double>(pos_x), static_cast<double>(pos_y), static_cast<double>(pos_z));
+        static_cast<double>(m.pos_x), static_cast<double>(m.pos_y), static_cast<double>(m.pos_z));
 
-    auto dist_str = fmt_f(dist_to_target / 1000000.0f, 1) + "M km";
+    auto dist_str = fmt_f(m.dist_to_target / 1000000.0f, 1) + "M km";
 
     return panel(" NAVIGATION ")(
         (h(
@@ -444,11 +453,11 @@ static maya::Element build_nav_panel() {
         )).build(),
         (h(
             t<"HDG"> | Fg<100, 180, 255> | w_<7>,
-            text(fmt_f(heading, 1) + "\xc2\xb0") | Dim
+            text(fmt_f(m.heading, 1) + "\xc2\xb0") | Dim
         )).build(),
         (h(
             t<"VEL"> | Fg<100, 180, 255> | w_<7>,
-            text(fmt_f(velocity, 2) + " km/s", status_color(velocity / 15.0f))
+            text(fmt_f(m.velocity, 2) + " km/s", status_color(m.velocity / 15.0f))
         )).build(),
         (h(
             t<"DIST"> | Fg<100, 180, 255> | w_<7>,
@@ -457,8 +466,8 @@ static maya::Element build_nav_panel() {
     );
 }
 
-static maya::Element build_heatmap_panel() {
-    maya::Heatmap hm(thermal_grid);
+static maya::Element build_heatmap_panel(const Model& m) {
+    maya::Heatmap hm(m.thermal_grid);
     hm.set_low_color(maya::Color::rgb(20, 20, 80));
     hm.set_high_color(maya::Color::rgb(255, 80, 30));
     hm.set_y_labels({"F1","F2","F3","F4","A1","A2","A3","A4"});
@@ -468,8 +477,8 @@ static maya::Element build_heatmap_panel() {
     );
 }
 
-static maya::Element build_trajectory_panel() {
-    maya::LineChart chart(traj_hist, 6);
+static maya::Element build_trajectory_panel(const Model& m) {
+    maya::LineChart chart(m.traj_hist, 6);
     chart.set_label("Altitude (km)");
     chart.set_color(maya::Color::rgb(0, 200, 255));
 
@@ -478,10 +487,10 @@ static maya::Element build_trajectory_panel() {
     );
 }
 
-static maya::Element build_comm_log_panel() {
+static maya::Element build_comm_log_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
-    for (auto& e : comm_log) {
+    for (auto& e : m.comm_log) {
         int mins = static_cast<int>(e.timestamp) / 60;
         int secs = static_cast<int>(e.timestamp) % 60;
         char ts[16];
@@ -502,10 +511,10 @@ static maya::Element build_comm_log_panel() {
     return panel(" COMM LOG ")(std::move(rows));
 }
 
-static maya::Element build_crew_panel() {
+static maya::Element build_crew_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
-    for (auto& c : crew) {
+    for (auto& c : m.crew) {
         auto health_pct = static_cast<int>(c.health * 100);
         auto badge = (c.role == "Commander") ? maya::Badge::info(c.role) :
                      (c.role == "Pilot") ? maya::Badge::warning(c.role) :
@@ -529,10 +538,10 @@ static maya::Element build_crew_panel() {
     return panel(" CREW STATUS ")(std::move(rows));
 }
 
-static maya::Element build_subsystems_panel() {
+static maya::Element build_subsystems_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
-    for (auto& s : subsystems) {
+    for (auto& s : m.subsystems) {
         auto icon = (s.status == 0) ? "\xe2\x9c\x93" : (s.status == 1 ? "\xe2\x9a\xa0" : "\xe2\x9c\x97");
         auto sty = (s.status == 0) ? fg_rgb(0, 255, 136) :
                    (s.status == 1) ? fg_rgb(255, 200, 60) :
@@ -548,14 +557,14 @@ static maya::Element build_subsystems_panel() {
     return panel(" SUBSYSTEMS ")(std::move(rows));
 }
 
-static maya::Element build_power_panel() {
+static maya::Element build_power_panel(const Model& m) {
     maya::BarChart chart({
-        {"Engines",   pwr_engines, maya::Color::rgb(255, 140, 50)},
-        {"Life Sup",  pwr_lifesup, maya::Color::rgb(0, 255, 136)},
-        {"Comms",     pwr_comms,   maya::Color::rgb(100, 180, 255)},
-        {"Nav",       pwr_nav,     maya::Color::rgb(198, 160, 246)},
-        {"Thermal",   pwr_thermal, maya::Color::rgb(255, 200, 60)},
-        {"Shielding", pwr_shield,  maya::Color::rgb(255, 80, 100)},
+        {"Engines",   m.pwr_engines, maya::Color::rgb(255, 140, 50)},
+        {"Life Sup",  m.pwr_lifesup, maya::Color::rgb(0, 255, 136)},
+        {"Comms",     m.pwr_comms,   maya::Color::rgb(100, 180, 255)},
+        {"Nav",       m.pwr_nav,     maya::Color::rgb(198, 160, 246)},
+        {"Thermal",   m.pwr_thermal, maya::Color::rgb(255, 200, 60)},
+        {"Shielding", m.pwr_shield,  maya::Color::rgb(255, 80, 100)},
     }, 0.5f);
 
     return panel(" POWER DIST ")(
@@ -563,20 +572,20 @@ static maya::Element build_power_panel() {
     );
 }
 
-static maya::Element build_toasts() {
-    if (toasts.empty()) return text("").build();
+static maya::Element build_toasts(const Model& m) {
+    if (m.toasts.empty()) return text("").build();
 
     std::vector<maya::Element> elems;
-    for (auto& t : toasts) {
+    for (auto& t : m.toasts) {
         elems.push_back(maya::Callout(t.severity, t.msg).build());
     }
     return v(std::move(elems)).build();
 }
 
-static maya::Element build_status_bar() {
+static maya::Element build_status_bar(const Model& m) {
     // Count subsystem issues
     int warnings = 0, errors = 0;
-    for (auto& s : subsystems) {
+    for (auto& s : m.subsystems) {
         if (s.status == 1) warnings++;
         if (s.status == 2) errors++;
     }
@@ -589,8 +598,8 @@ static maya::Element build_status_bar() {
     return (h(
         text(" STATUS: ") | Fg<140, 140, 160>,
         text(std::string(overall), overall_sty.with_bold()),
-        text("  FUEL:" + std::to_string(static_cast<int>(fuel * 100)) + "%",
-             status_color(fuel)),
+        text("  FUEL:" + std::to_string(static_cast<int>(m.fuel * 100)) + "%",
+             status_color(m.fuel)),
         space,
         text(" \xe2\x90\xa3") | Bold | Fg<180, 220, 255>, text(":burn") | Fg<120, 120, 140>,
         text(" a") | Bold | Fg<180, 220, 255>, text(":abort") | Fg<120, 120, 140>,
@@ -602,26 +611,26 @@ static maya::Element build_status_bar() {
 
 // ── Render ──────────────────────────────────────────────────────────────────
 
-static maya::Element render() {
+static maya::Element render(const Model& m) {
     // Left column: telemetry, sparklines, nav
     auto left = (v(
-        build_telemetry_panel(),
-        build_sparklines_panel(),
-        build_nav_panel()
+        build_telemetry_panel(m),
+        build_sparklines_panel(m),
+        build_nav_panel(m)
     ) | grow_<1>).build();
 
     // Center column: heatmap, trajectory, comm log
     auto center = (v(
-        build_heatmap_panel(),
-        build_trajectory_panel(),
-        build_comm_log_panel()
+        build_heatmap_panel(m),
+        build_trajectory_panel(m),
+        build_comm_log_panel(m)
     ) | grow_<1>).build();
 
-    // Right column: crew, subsystems, power
+    // Right column: m.crew, m.subsystems, m.power
     auto right = (v(
-        build_crew_panel(),
-        build_subsystems_panel(),
-        build_power_panel()
+        build_crew_panel(m),
+        build_subsystems_panel(m),
+        build_power_panel(m)
     ) | grow_<1>).build();
 
     auto main_area = (h(
@@ -632,76 +641,98 @@ static maya::Element render() {
 
     // Build final layout
     std::vector<maya::Element> layout;
-    layout.push_back(build_header());
+    layout.push_back(build_header(m));
     layout.push_back(std::move(main_area));
 
     // Toasts overlay
-    if (!toasts.empty())
-        layout.push_back(build_toasts());
+    if (!m.toasts.empty())
+        layout.push_back(build_toasts(m));
 
-    layout.push_back(build_status_bar());
+    layout.push_back(build_status_bar(m));
 
     return vstack()(std::move(layout));
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
-int main() {
-    init_state();
+// ── Program ──────────────────────────────────────────────────────────────────
 
-    maya::run(
-        {.title = "ARES VII Mission Control", .fps = 15, .mode = Mode::Fullscreen},
-        [](const Event& ev) {
-            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-            if (key(ev, ' ')) {
-                if (fuel > 0.05f) {
-                    fuel -= 0.03f;
-                    velocity += 1.5f;
-                    toasts.push_back({"Manual thruster burn executed — delta-v +1.5 km/s",
-                                      maya::Severity::Success, 3.0f});
-                    comm_log.push_back({elapsed, "FLIGHT: Manual burn confirmed, delta-v applied", 0});
-                    if (comm_log.size() > MAX_LOG)
-                        comm_log.erase(comm_log.begin());
-                } else {
-                    toasts.push_back({"FUEL CRITICAL — burn denied",
-                                      maya::Severity::Error, 4.0f});
-                }
-            }
-            if (key(ev, 'a')) {
-                if (!abort_sequence) {
-                    abort_sequence = true;
-                    abort_timer = 10.0f;
-                    toasts.push_back({"ABORT SEQUENCE INITIATED — T-10s",
-                                      maya::Severity::Error, 5.0f});
-                    comm_log.push_back({elapsed, "FLIGHT: ABORT ABORT ABORT — all stations standby", 2});
-                    if (comm_log.size() > MAX_LOG)
-                        comm_log.erase(comm_log.begin());
-                    for (auto& c : crew) c.stress += 0.15f;
-                } else {
-                    abort_sequence = false;
-                    toasts.push_back({"Abort sequence cancelled",
-                                      maya::Severity::Info, 3.0f});
-                }
-            }
-            if (key(ev, 'd')) {
-                diag_mode = !diag_mode;
-                diag_timer = 5.0f;
-                if (diag_mode) {
-                    toasts.push_back({"Diagnostics scan in progress...",
-                                      maya::Severity::Info, 3.0f});
-                    for (auto& s : subsystems) {
-                        if (s.status > 0) { s.status = 0; break; }
-                    }
-                }
-            }
-            if (key(ev, '1')) { mission_phase = 0; toasts.push_back({"Phase set: LAUNCH", maya::Severity::Info, 2.0f}); }
-            if (key(ev, '2')) { mission_phase = 1; toasts.push_back({"Phase set: TRANSIT", maya::Severity::Info, 2.0f}); }
-            if (key(ev, '3')) { mission_phase = 2; toasts.push_back({"Phase set: ORBIT INSERTION", maya::Severity::Info, 2.0f}); }
-            return true;
-        },
-        [] {
-            tick(1.0f / 15.0f);
-            return render();
-        }
-    );
+struct Tick {};
+struct Burn {};
+struct Abort {};
+struct Diagnose {};
+struct SetPhase { int phase; };
+struct Quit {};
+using Msg = std::variant<Tick, Burn, Abort, Diagnose, SetPhase, Quit>;
+
+static void log_comm(Model& m, std::string msg, int level) {
+    m.comm_log.push_back({m.elapsed, std::move(msg), level});
+    if (m.comm_log.size() > MAX_LOG) m.comm_log.erase(m.comm_log.begin());
 }
+
+struct Space {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key>;
+
+    static Cmd init(Model& m)           { init_state(m); return {}; }
+    static Cmd update(Model& m, Tick)   { tick(m, 1.0f / 15.0f); return {}; }
+    static Cmd update(Model&, Quit)     { return Cmd::quit(0); }
+
+    static Cmd update(Model& m, Burn) {
+        if (m.fuel > 0.05f) {
+            m.fuel -= 0.03f;
+            m.velocity += 1.5f;
+            m.toasts.push_back({"Manual thruster burn executed — delta-v +1.5 km/s", maya::Severity::Success, 3.0f});
+            log_comm(m, "FLIGHT: Manual burn confirmed, delta-v applied", 0);
+        } else {
+            m.toasts.push_back({"FUEL CRITICAL — burn denied", maya::Severity::Error, 4.0f});
+        }
+        return {};
+    }
+    static Cmd update(Model& m, Abort) {
+        if (!m.abort_sequence) {
+            m.abort_sequence = true;
+            m.abort_timer = 10.0f;
+            m.toasts.push_back({"ABORT SEQUENCE INITIATED — T-10s", maya::Severity::Error, 5.0f});
+            log_comm(m, "FLIGHT: ABORT ABORT ABORT — all stations standby", 2);
+            for (auto& c : m.crew) c.stress += 0.15f;
+        } else {
+            m.abort_sequence = false;
+            m.toasts.push_back({"Abort sequence cancelled", maya::Severity::Info, 3.0f});
+        }
+        return {};
+    }
+    static Cmd update(Model& m, Diagnose) {
+        m.diag_mode = !m.diag_mode;
+        m.diag_timer = 5.0f;
+        if (m.diag_mode) {
+            m.toasts.push_back({"Diagnostics scan in progress...", maya::Severity::Info, 3.0f});
+            for (auto& s : m.subsystems)
+                if (s.status > 0) { s.status = 0; break; }
+        }
+        return {};
+    }
+    static Cmd update(Model& m, SetPhase p) {
+        m.mission_phase = p.phase;
+        m.toasts.push_back({std::string("Phase set: ") + phase_names[p.phase], maya::Severity::Info, 2.0f});
+        return {};
+    }
+
+    static Element view(const Model& m) { return render(m); }
+
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::every(std::chrono::milliseconds{66}, Tick{}),
+            keys<Sub>({
+                {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {' ', Burn{}}, {'a', Abort{}}, {'d', Diagnose{}},
+                {'1', SetPhase{0}}, {'2', SetPhase{1}}, {'3', SetPhase{2}},
+            }));
+    }
+    static bool subs_key(const Model&) { return true; }
+};
+
+static_assert(Program<Space>);
+
+int main() { return run<Space>({.title = "ARES VII Mission Control"}); }

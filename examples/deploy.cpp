@@ -14,7 +14,11 @@
 //
 // Usage:  ./maya_deploy
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
+
+#include <chrono>
+#include <variant>
 #include <maya/widget/sparkline.hpp>
 
 #include <algorithm>
@@ -32,13 +36,6 @@ using namespace maya::dsl;
 
 // -- Helpers -----------------------------------------------------------------
 
-static std::mt19937 rng{std::random_device{}()};
-static int randi(int lo, int hi) {
-    return std::uniform_int_distribution<int>(lo, hi)(rng);
-}
-static float randf(float lo, float hi) {
-    return std::uniform_real_distribution<float>(lo, hi)(rng);
-}
 
 static maya::Style fg_rgb(uint8_t r, uint8_t g, uint8_t b) {
     return maya::Style{}.with_fg(maya::Color::rgb(r, g, b));
@@ -111,29 +108,37 @@ static const uint8_t env_colors[][3] = {
 
 // -- Global State ------------------------------------------------------------
 
-static std::vector<Service> services;
-static std::vector<LogEntry> logs;
 static constexpr int MAX_LOGS = 10;
-static Env current_env = Env::Staging;
-static float uptime = 0.0f;
-static int frame_count = 0;
-static int total_deploys = 0;
-static int total_failures = 0;
-static int total_rollbacks = 0;
-static bool force_mode = false;
 
 // Metrics history for sparklines
-static std::vector<float> deploy_freq_history;
-static std::vector<float> test_pass_history;
-static std::vector<float> build_time_history;
 static constexpr int SPARK_SIZE = 24;
 
 // -- Helpers -----------------------------------------------------------------
 
-static void add_log(int level, const std::string& msg) {
-    logs.push_back({uptime, msg, level});
-    if (logs.size() > MAX_LOGS)
-        logs.erase(logs.begin());
+// Everything the screen shows, and the RNG that drives it.
+struct Model {
+    std::vector<Service> services;
+    std::vector<LogEntry> logs;
+    Env current_env = Env::Staging;
+    float uptime = 0.0f;
+    int frame_count = 0;
+    int total_deploys = 0;
+    int total_failures = 0;
+    int total_rollbacks = 0;
+    bool force_mode = false;
+    std::vector<float> deploy_freq_history;
+    std::vector<float> test_pass_history;
+    std::vector<float> build_time_history;
+
+    std::mt19937 rng{std::random_device{}()};
+    int   randi(int lo, int hi)     { return std::uniform_int_distribution<int>(lo, hi)(rng); }
+    float randf(float lo, float hi) { return std::uniform_real_distribution<float>(lo, hi)(rng); }
+};
+
+static void add_log(Model& m, int level, const std::string& msg) {
+    m.logs.push_back({m.uptime, msg, level});
+    if (m.logs.size() > MAX_LOGS)
+        m.logs.erase(m.logs.begin());
 }
 
 static std::string fmt_time(float secs) {
@@ -150,30 +155,30 @@ static std::string fmt_time(float secs) {
     return buf;
 }
 
-static std::string make_version() {
+static std::string make_version(Model& m) {
     char buf[16];
-    std::snprintf(buf, sizeof(buf), "v%d.%d.%d", randi(1, 5), randi(0, 12), randi(0, 99));
+    std::snprintf(buf, sizeof(buf), "v%d.%d.%d", m.randi(1, 5), m.randi(0, 12), m.randi(0, 99));
     return buf;
 }
 
 // -- Stage templates per environment -----------------------------------------
 
-static std::vector<PipelineStage> make_stages() {
-    float mult = (current_env == Env::Prod) ? 1.5f : (current_env == Env::Staging) ? 1.0f : 0.6f;
-    float fail_mult = (current_env == Env::Prod) ? 0.5f : (current_env == Env::Dev) ? 1.5f : 1.0f;
+static std::vector<PipelineStage> make_stages(Model& m) {
+    float mult = (m.current_env == Env::Prod) ? 1.5f : (m.current_env == Env::Staging) ? 1.0f : 0.6f;
+    float fail_mult = (m.current_env == Env::Prod) ? 0.5f : (m.current_env == Env::Dev) ? 1.5f : 1.0f;
     return {
-        {"Build",         StageStatus::Pending, 0, 0, randf(3.0f, 8.0f) * mult,   0.05f * fail_mult},
-        {"Test",          StageStatus::Pending, 0, 0, randf(5.0f, 15.0f) * mult,  0.12f * fail_mult},
-        {"Security Scan", StageStatus::Pending, 0, 0, randf(2.0f, 6.0f) * mult,   0.03f * fail_mult},
-        {"Deploy",        StageStatus::Pending, 0, 0, randf(4.0f, 10.0f) * mult,  0.08f * fail_mult},
-        {"Health Check",  StageStatus::Pending, 0, 0, randf(2.0f, 5.0f) * mult,   0.04f * fail_mult},
+        {"Build",         StageStatus::Pending, 0, 0, m.randf(3.0f, 8.0f) * mult,   0.05f * fail_mult},
+        {"Test",          StageStatus::Pending, 0, 0, m.randf(5.0f, 15.0f) * mult,  0.12f * fail_mult},
+        {"Security Scan", StageStatus::Pending, 0, 0, m.randf(2.0f, 6.0f) * mult,   0.03f * fail_mult},
+        {"Deploy",        StageStatus::Pending, 0, 0, m.randf(4.0f, 10.0f) * mult,  0.08f * fail_mult},
+        {"Health Check",  StageStatus::Pending, 0, 0, m.randf(2.0f, 5.0f) * mult,   0.04f * fail_mult},
     };
 }
 
 // -- Init --------------------------------------------------------------------
 
-static void init_services() {
-    services = {
+static void init_services(Model& m) {
+    m.services = {
         {"api-gateway",   "🌐", {}, -1, false, false, 0, 0, "v2.4.1"},
         {"auth-service",  "🔐", {}, -1, false, false, 0, 0, "v1.8.3"},
         {"data-pipeline", "📊", {}, -1, false, false, 0, 0, "v3.1.0"},
@@ -181,41 +186,41 @@ static void init_services() {
         {"ml-model",      "🤖", {}, -1, false, false, 0, 0, "v1.0.5"},
     };
 
-    deploy_freq_history.resize(SPARK_SIZE, 0.0f);
-    test_pass_history.resize(SPARK_SIZE, 0.85f);
-    build_time_history.resize(SPARK_SIZE, 5.0f);
+    m.deploy_freq_history.resize(SPARK_SIZE, 0.0f);
+    m.test_pass_history.resize(SPARK_SIZE, 0.85f);
+    m.build_time_history.resize(SPARK_SIZE, 5.0f);
 }
 
 // -- Deployment triggers -----------------------------------------------------
 
-static void start_deploy(Service& svc) {
-    svc.stages = make_stages();
+static void start_deploy(Model& m, Service& svc) {
+    svc.stages = make_stages(m);
     svc.current_stage = 0;
     svc.deploying = true;
     svc.rollback = false;
     svc.total_time = 0.0f;
-    svc.version = make_version();
+    svc.version = make_version(m);
     svc.stages[0].status = StageStatus::Running;
-    add_log(0, svc.name + " " + svc.version + ": deployment started [" + std::string(env_names[static_cast<int>(current_env)]) + "]");
+    add_log(m, 0, svc.name + " " + svc.version + ": deployment started [" + std::string(env_names[static_cast<int>(m.current_env)]) + "]");
 }
 
-static void trigger_deploy_wave() {
+static void trigger_deploy_wave(Model& m) {
     // Stagger service starts
-    for (size_t i = 0; i < services.size(); ++i) {
-        auto& svc = services[i];
+    for (size_t i = 0; i < m.services.size(); ++i) {
+        auto& svc = m.services[i];
         if (!svc.deploying) {
-            start_deploy(svc);
+            start_deploy(m, svc);
         }
     }
-    total_deploys++;
+    m.total_deploys++;
 
     // Update sparkline data
-    deploy_freq_history.erase(deploy_freq_history.begin());
-    deploy_freq_history.push_back(static_cast<float>(total_deploys));
+    m.deploy_freq_history.erase(m.deploy_freq_history.begin());
+    m.deploy_freq_history.push_back(static_cast<float>(m.total_deploys));
 }
 
-static void trigger_rollback() {
-    for (auto& svc : services) {
+static void trigger_rollback(Model& m) {
+    for (auto& svc : m.services) {
         if (svc.deploying) {
             svc.rollback = true;
             for (auto& stage : svc.stages) {
@@ -223,10 +228,10 @@ static void trigger_rollback() {
                     stage.status = StageStatus::RollingBack;
                 }
             }
-            add_log(1, svc.name + ": rollback initiated");
+            add_log(m, 1, svc.name + ": rollback initiated");
         }
     }
-    total_rollbacks++;
+    m.total_rollbacks++;
 }
 
 // -- Tick (simulation) -------------------------------------------------------
@@ -254,11 +259,11 @@ static const std::array<std::string, 20> log_messages = {
     "static asset upload: 1.2MB compressed",
 };
 
-static void tick(float dt) {
-    uptime += dt;
-    frame_count++;
+static void tick(Model& m, float dt) {
+    m.uptime += dt;
+    m.frame_count++;
 
-    for (auto& svc : services) {
+    for (auto& svc : m.services) {
         if (!svc.deploying) continue;
         if (svc.current_stage < 0 || svc.current_stage >= static_cast<int>(svc.stages.size())) continue;
 
@@ -272,7 +277,7 @@ static void tick(float dt) {
                 stage.status = StageStatus::Skipped;
                 svc.deploying = false;
                 svc.rollback = false;
-                add_log(1, svc.name + ": rollback complete");
+                add_log(m, 1, svc.name + ": rollback complete");
             }
             continue;
         }
@@ -282,21 +287,21 @@ static void tick(float dt) {
             stage.progress = std::clamp(stage.elapsed / stage.duration, 0.0f, 1.0f);
 
             // Emit log messages occasionally
-            if (randi(0, 40) == 0) {
-                add_log(0, svc.name + "/" + stage.name + ": " +
-                    log_messages[static_cast<size_t>(randi(0, 19))]);
+            if (m.randi(0, 40) == 0) {
+                add_log(m, 0, svc.name + "/" + stage.name + ": " +
+                    log_messages[static_cast<size_t>(m.randi(0, 19))]);
             }
 
             // Check for completion
             if (stage.elapsed >= stage.duration) {
                 // Check for failure
-                bool failed = randf(0.0f, 1.0f) < stage.fail_chance && !force_mode;
+                bool failed = m.randf(0.0f, 1.0f) < stage.fail_chance && !m.force_mode;
                 if (failed) {
                     stage.status = StageStatus::Failed;
                     stage.progress = stage.elapsed / stage.duration;
                     svc.deploying = false;
-                    total_failures++;
-                    add_log(2, svc.name + "/" + stage.name + ": FAILED - " +
+                    m.total_failures++;
+                    add_log(m, 2, svc.name + "/" + stage.name + ": FAILED - " +
                         (stage.name == "Test" ? "3 tests failed" :
                          stage.name == "Security Scan" ? "critical vulnerability detected" :
                          stage.name == "Deploy" ? "pod crash loop detected" :
@@ -304,12 +309,12 @@ static void tick(float dt) {
                          "build error in module"));
 
                     // Update test pass sparkline
-                    test_pass_history.erase(test_pass_history.begin());
-                    test_pass_history.push_back(randf(0.5f, 0.8f));
+                    m.test_pass_history.erase(m.test_pass_history.begin());
+                    m.test_pass_history.push_back(m.randf(0.5f, 0.8f));
                 } else {
                     stage.status = StageStatus::Success;
                     stage.progress = 1.0f;
-                    add_log(3, svc.name + "/" + stage.name + ": completed in " + fmt_time(stage.elapsed));
+                    add_log(m, 3, svc.name + "/" + stage.name + ": completed in " + fmt_time(stage.elapsed));
 
                     // Advance to next stage
                     int next = svc.current_stage + 1;
@@ -319,13 +324,13 @@ static void tick(float dt) {
                     } else {
                         svc.deploying = false;
                         svc.deploy_count++;
-                        add_log(3, svc.name + " " + svc.version + ": deployment successful! (" + fmt_time(svc.total_time) + ")");
+                        add_log(m, 3, svc.name + " " + svc.version + ": deployment successful! (" + fmt_time(svc.total_time) + ")");
 
                         // Update sparklines
-                        test_pass_history.erase(test_pass_history.begin());
-                        test_pass_history.push_back(randf(0.85f, 1.0f));
-                        build_time_history.erase(build_time_history.begin());
-                        build_time_history.push_back(svc.total_time);
+                        m.test_pass_history.erase(m.test_pass_history.begin());
+                        m.test_pass_history.push_back(m.randf(0.85f, 1.0f));
+                        m.build_time_history.erase(m.build_time_history.begin());
+                        m.build_time_history.push_back(svc.total_time);
                     }
                 }
             }
@@ -333,7 +338,7 @@ static void tick(float dt) {
     }
 
     // Force mode auto-disables
-    if (force_mode && frame_count % 150 == 0) force_mode = false;
+    if (m.force_mode && m.frame_count % 150 == 0) m.force_mode = false;
 }
 
 // -- UI Builders -------------------------------------------------------------
@@ -362,19 +367,19 @@ static const char* status_icon(StageStatus s, int frame) {
     return "?";
 }
 
-static maya::Element build_header() {
-    auto spin = std::string(dot_spin(frame_count));
+static maya::Element build_header(const Model& m) {
+    auto spin = std::string(dot_spin(m.frame_count));
 
-    auto& ec = env_colors[static_cast<int>(current_env)];
+    auto& ec = env_colors[static_cast<int>(m.current_env)];
     auto env_style = fg_rgb(ec[0], ec[1], ec[2]);
 
     // Animated gradient accent
-    int phase = frame_count % 12;
+    int phase = m.frame_count % 12;
     const char* blocks[] = {"░","▒","▓","█","▓","▒"};
     std::string grad;
     for (int i = 0; i < 6; ++i) grad += blocks[(i + phase) % 6];
 
-    std::string force_str = force_mode ? "  FORCE" : "";
+    std::string force_str = m.force_mode ? "  FORCE" : "";
 
     return (h(
         text(spin) | Fg<0, 200, 255>,
@@ -382,15 +387,15 @@ static maya::Element build_header() {
         text(" " + grad, fg_rgb(0, 150, 200)),
         space,
         text("ENV:") | Dim,
-        text(std::string(" ") + env_names[static_cast<int>(current_env)], env_style.with_bold()),
+        text(std::string(" ") + env_names[static_cast<int>(m.current_env)], env_style.with_bold()),
         text(force_str) | Bold | Fg<255, 100, 50>,
         space,
         text("deploys:") | Dim,
-        text(std::to_string(total_deploys)) | Fg<100, 200, 255>,
+        text(std::to_string(m.total_deploys)) | Fg<100, 200, 255>,
         text("  failures:") | Dim,
-        text(std::to_string(total_failures)) | Fg<255, 60, 80>,
+        text(std::to_string(m.total_failures)) | Fg<255, 60, 80>,
         text("  rollbacks:") | Dim,
-        text(std::to_string(total_rollbacks)) | Fg<255, 200, 60>
+        text(std::to_string(m.total_rollbacks)) | Fg<255, 200, 60>
     ) | pad<0, 1, 0, 1>).build();
 }
 
@@ -434,10 +439,10 @@ static maya::Element build_stage_cell(const PipelineStage& stage, int frame) {
     return vstack().padding(0, 1, 0, 0)(std::move(parts));
 }
 
-static maya::Element build_pipeline_panel() {
+static maya::Element build_pipeline_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
-    for (auto& svc : services) {
+    for (auto& svc : m.services) {
         // Service name + version
         std::vector<maya::Element> stage_cells;
 
@@ -451,7 +456,7 @@ static maya::Element build_pipeline_panel() {
         // Stage chain
         std::vector<maya::Element> chain;
         for (size_t i = 0; i < svc.stages.size(); ++i) {
-            chain.push_back(build_stage_cell(svc.stages[i], frame_count));
+            chain.push_back(build_stage_cell(svc.stages[i], m.frame_count));
             if (i + 1 < svc.stages.size()) {
                 auto arrow_col = (svc.stages[i].status == StageStatus::Success)
                     ? fg_rgb(0, 230, 118) : fg_rgb(60, 60, 80);
@@ -499,7 +504,7 @@ static maya::Element build_pipeline_panel() {
         rows.push_back(std::move(chain_elem));
 
         // Separator between services (thin line)
-        if (&svc != &services.back()) {
+        if (&svc != &m.services.back()) {
             rows.push_back((text("") | Dim).build());
         }
     }
@@ -510,10 +515,10 @@ static maya::Element build_pipeline_panel() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static maya::Element build_log_panel() {
+static maya::Element build_log_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
-    for (auto& entry : logs) {
+    for (auto& entry : m.logs) {
         int mins = static_cast<int>(entry.timestamp) / 60;
         int secs = static_cast<int>(entry.timestamp) % 60;
         char ts[16];
@@ -545,15 +550,15 @@ static maya::Element build_log_panel() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static maya::Element build_metrics_panel() {
+static maya::Element build_metrics_panel(const Model& m) {
     // Deploy frequency sparkline
-    auto deploy_spark = maya::Sparkline(deploy_freq_history,
+    auto deploy_spark = maya::Sparkline(m.deploy_freq_history,
         maya::SparklineConfig{.color = maya::Color::rgb(0, 200, 255)});
     deploy_spark.set_label("Deploy Freq");
     deploy_spark.set_show_last(true);
 
     // Test pass rate sparkline
-    auto test_spark = maya::Sparkline(test_pass_history,
+    auto test_spark = maya::Sparkline(m.test_pass_history,
         maya::SparklineConfig{.color = maya::Color::rgb(0, 230, 118)});
     test_spark.set_label("Test Pass %");
     test_spark.set_min(0.0f);
@@ -561,14 +566,14 @@ static maya::Element build_metrics_panel() {
     test_spark.set_show_last(true);
 
     // Build time sparkline
-    auto build_spark = maya::Sparkline(build_time_history,
+    auto build_spark = maya::Sparkline(m.build_time_history,
         maya::SparklineConfig{.color = maya::Color::rgb(255, 200, 60)});
     build_spark.set_label("Build Time ");
     build_spark.set_show_last(true);
 
     // Overall pipeline health
     int active = 0, succeeded = 0, failed = 0;
-    for (auto& svc : services) {
+    for (auto& svc : m.services) {
         for (auto& stage : svc.stages) {
             if (stage.status == StageStatus::Running) active++;
             if (stage.status == StageStatus::Success) succeeded++;
@@ -601,22 +606,22 @@ static maya::Element build_metrics_panel() {
         );
 }
 
-static maya::Element build_status_bar() {
-    int mins = static_cast<int>(uptime) / 60;
-    int secs = static_cast<int>(uptime) % 60;
+static maya::Element build_status_bar(const Model& m) {
+    int mins = static_cast<int>(m.uptime) / 60;
+    int secs = static_cast<int>(m.uptime) % 60;
     char ts[16];
     std::snprintf(ts, sizeof(ts), "%02d:%02d", mins, secs);
 
     // Count active deployments
     int active = 0;
-    for (auto& svc : services) {
+    for (auto& svc : m.services) {
         if (svc.deploying) active++;
     }
 
     // Overall progress
     int total_stages = 0;
     int completed_stages = 0;
-    for (auto& svc : services) {
+    for (auto& svc : m.services) {
         total_stages += static_cast<int>(svc.stages.size());
         for (auto& stage : svc.stages) {
             if (stage.status == StageStatus::Success) completed_stages++;
@@ -644,41 +649,66 @@ static maya::Element build_status_bar() {
 
 // -- Render ------------------------------------------------------------------
 
-static maya::Element render() {
+static maya::Element render(const Model& m) {
     return vstack()(
-        build_header(),
-        build_pipeline_panel(),
-        build_log_panel(),
-        build_metrics_panel(),
-        build_status_bar()
+        build_header(m),
+        build_pipeline_panel(m),
+        build_log_panel(m),
+        build_metrics_panel(m),
+        build_status_bar(m)
     );
 }
 
-// -- Main --------------------------------------------------------------------
+// -- Program ---------------------------------------------------------------
 
-int main() {
-    init_services();
-    trigger_deploy_wave();
+struct Tick {};
+struct Wave {};
+struct Rollback {};
+struct ToggleForce {};
+struct SetEnv { Env env; };
+struct Quit {};
+using Msg = std::variant<Tick, Wave, Rollback, ToggleForce, SetEnv, Quit>;
 
-    maya::run(
-        {.title = "deploy", .fps = 15, .mode = Mode::Fullscreen},
-        [](const Event& ev) {
-            if (key(ev, 'q') || key(ev, SpecialKey::Escape)) return false;
-            if (key(ev, ' '))  trigger_deploy_wave();
-            if (key(ev, 'r'))  trigger_rollback();
-            if (key(ev, 'f')) {
-                force_mode = !force_mode;
-                if (force_mode) add_log(1, "FORCE MODE enabled - skipping failure checks");
-                else add_log(0, "FORCE MODE disabled");
-            }
-            if (key(ev, '1')) { current_env = Env::Dev;     add_log(0, "Switched to DEV environment"); }
-            if (key(ev, '2')) { current_env = Env::Staging;  add_log(0, "Switched to STAGING environment"); }
-            if (key(ev, '3')) { current_env = Env::Prod;     add_log(1, "Switched to PROD environment - caution!"); }
-            return true;
-        },
-        [&] {
-            tick(1.0f / 15.0f);
-            return render();
+struct Deploy {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, on_key>;
+
+    static Cmd init(Model& m)              { init_services(m); trigger_deploy_wave(m); return {}; }
+    static Cmd update(Model& m, Tick)      { tick(m, 1.0f / 15.0f); return {}; }
+    static Cmd update(Model& m, Wave)      { trigger_deploy_wave(m); return {}; }
+    static Cmd update(Model& m, Rollback)  { trigger_rollback(m); return {}; }
+    static Cmd update(Model&, Quit)        { return Cmd::quit(0); }
+    static Cmd update(Model& m, ToggleForce) {
+        m.force_mode = !m.force_mode;
+        if (m.force_mode) add_log(m, 1, "FORCE MODE enabled - skipping failure checks");
+        else              add_log(m, 0, "FORCE MODE disabled");
+        return {};
+    }
+    static Cmd update(Model& m, SetEnv e) {
+        m.current_env = e.env;
+        switch (e.env) {
+            case Env::Dev:     add_log(m, 0, "Switched to DEV environment"); break;
+            case Env::Staging: add_log(m, 0, "Switched to STAGING environment"); break;
+            case Env::Prod:    add_log(m, 1, "Switched to PROD environment - caution!"); break;
         }
-    );
-}
+        return {};
+    }
+
+    static Element view(const Model& m) { return render(m); }
+
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::every(std::chrono::milliseconds{66}, Tick{}),
+            keys<Sub>({
+                {'q', Quit{}}, {SpecialKey::Escape, Quit{}}, {' ', Wave{}}, {'r', Rollback{}},
+                {'f', ToggleForce{}}, {'1', SetEnv{Env::Dev}}, {'2', SetEnv{Env::Staging}}, {'3', SetEnv{Env::Prod}},
+            }));
+    }
+    static bool subs_key(const Model&) { return true; }
+};
+
+static_assert(Program<Deploy>);
+
+int main() { return run<Deploy>({.title = "deploy"}); }

@@ -1,4 +1,8 @@
-// ide.cpp — VS Code / Zed-inspired terminal IDE layout (simple run() API)
+// ide.cpp — VS Code / Zed-inspired terminal IDE layout
+//
+// Model holds panel visibility, the active tab and the simulated build state;
+// update() handles one message per key plus Tick, which advances the build
+// (subscribed only while building); view() is a pure function of Model.
 //
 // A stunning mini IDE showcasing the full maya widget toolkit:
 // file tree, tabbed editor with syntax highlighting, outline,
@@ -14,6 +18,7 @@
 //
 // Usage:  ./maya_ide
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/badge.hpp>
 #include <maya/widget/breadcrumb.hpp>
@@ -22,9 +27,11 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <variant>
 #include <vector>
 
 using namespace maya::dsl;
@@ -52,15 +59,23 @@ static maya::Style punct_style()   { return fgc(150, 156, 170); }   // punctuati
 
 // ── State ───────────────────────────────────────────────────────────────────
 
-static int active_tab = 0;
-static bool show_left = true;
-static bool show_right = true;
-static bool show_bottom = true;
-static bool building = false;
-static float build_progress = 0.0f;
-static bool build_done = false;
-static int frame = 0;
-static int selected_file = 3; // index into file tree
+struct Model {
+    int   active_tab     = 0;
+    bool  show_left      = true;
+    bool  show_right     = true;
+    bool  show_bottom    = true;
+    bool  building       = false;
+    float build_progress = 0.0f;
+    bool  build_done     = false;
+    int   frame          = 0;
+    int   selected_file  = 3;   // index into file tree
+    std::vector<std::string> build_log = {
+        "$ cmake --build build --target app",
+        "[1/12] Compiling src/main.cpp",
+        "[2/12] Compiling src/app.cpp",
+        "[3/12] Compiling src/renderer.cpp",
+    };
+};
 
 // ── File tree data ──────────────────────────────────────────────────────────
 
@@ -72,7 +87,7 @@ struct FileNode {
     const char* ext; // for coloring
 };
 
-static std::vector<FileNode> file_tree = {
+static const std::vector<FileNode> file_tree = {
     {"src",           0, true,  true,  ""},
     {"main.cpp",      1, false, false, ".cpp"},
     {"app.cpp",       1, false, false, ".cpp"},
@@ -101,7 +116,7 @@ struct TabInfo {
     std::vector<std::string> breadcrumb;
 };
 
-static std::array<TabInfo, 4> tabs = {{
+static const std::array<TabInfo, 4> tabs = {{
     {"main.cpp",     "src/main.cpp",      "C++", {"src", "main.cpp"}},
     {"app.hpp",      "src/app.hpp",       "C++", {"src", "app.hpp"}},
     {"button.cpp",   "src/widget/button.cpp", "C++", {"src", "widget", "button.cpp"}},
@@ -449,14 +464,9 @@ static std::vector<CodeLine> make_config_py() {
     return lines;
 }
 
-static std::array<std::vector<CodeLine>, 4> code_buffers;
-
-static void init_code() {
-    code_buffers[0] = make_main_cpp();
-    code_buffers[1] = make_app_hpp();
-    code_buffers[2] = make_button_cpp();
-    code_buffers[3] = make_config_py();
-}
+static const std::array<std::vector<CodeLine>, 4> code_buffers = {
+    make_main_cpp(), make_app_hpp(), make_button_cpp(), make_config_py(),
+};
 
 // ── Outline data ────────────────────────────────────────────────────────────
 
@@ -466,7 +476,7 @@ struct Symbol {
     int line;
 };
 
-static std::array<std::vector<Symbol>, 4> outlines = {{
+static const std::array<std::vector<Symbol>, 4> outlines = {{
     {{"main", "fn", 7}, {"config", "var", 8}, {"app", "var", 9}, {"init", "fn", 12}, {"run", "fn", 17}},
     {{"Config", "struct", 9}, {"load", "fn", 16}, {"Application", "class", 19}, {"init", "fn", 24}, {"run", "fn", 25}, {"quit", "fn", 26}},
     {{"Button", "class", 5}, {"render", "fn", 10}, {"offset", "var", 20}, {"write", "fn", 21}},
@@ -482,7 +492,7 @@ struct Diagnostic {
     int severity; // 0=error, 1=warn, 2=info
 };
 
-static std::vector<Diagnostic> diagnostics = {
+static const std::vector<Diagnostic> diagnostics = {
     {"src/renderer.cpp", 42, "unused variable 'tmp'",              1},
     {"src/app.cpp",      87, "implicit conversion loses precision", 1},
     {"src/widget/input.cpp", 15, "uninitialized member 'buf_'",    0},
@@ -499,7 +509,7 @@ struct GitChange {
     char status; // M, A, D
 };
 
-static std::vector<GitChange> git_changes = {
+static const std::vector<GitChange> git_changes = {
     {"src/main.cpp",        12,  3, 'M'},
     {"src/app.cpp",         45, 18, 'M'},
     {"src/widget/button.cpp", 8,  0, 'A'},
@@ -509,18 +519,8 @@ static std::vector<GitChange> git_changes = {
 
 // ── Build output ────────────────────────────────────────────────────────────
 
-static std::vector<std::string> build_log;
 
-static void init_build_log() {
-    build_log = {
-        "$ cmake --build build --target app",
-        "[1/12] Compiling src/main.cpp",
-        "[2/12] Compiling src/app.cpp",
-        "[3/12] Compiling src/renderer.cpp",
-    };
-}
-
-static std::vector<std::string> build_complete_log = {
+static const std::vector<std::string> build_complete_log = {
     "$ cmake --build build --target app",
     "[1/12] Compiling src/main.cpp",
     "[2/12] Compiling src/app.cpp",
@@ -539,7 +539,7 @@ static std::vector<std::string> build_complete_log = {
 
 // ── UI Builders ─────────────────────────────────────────────────────────────
 
-static maya::Element build_file_tree() {
+static maya::Element build_file_tree(const Model& m) {
     std::vector<maya::Element> rows;
 
     for (int i = 0; i < static_cast<int>(file_tree.size()); ++i) {
@@ -575,7 +575,7 @@ static maya::Element build_file_tree() {
         // Icon
         runs.push_back(run(indent.size(), icon.size(), fgc(150, 156, 170)));
         // Name
-        if (i == selected_file) {
+        if (i == m.selected_file) {
             runs.push_back(run(indent.size() + icon.size(), f.name.size(),
                               name_style.with_bold().with_underline()));
         } else {
@@ -596,7 +596,7 @@ static maya::Element build_file_tree() {
         .width(22)(std::move(rows));
 }
 
-static maya::Element build_tab_bar() {
+static maya::Element build_tab_bar(const Model& m) {
     std::string content;
     std::vector<maya::StyledRun> runs;
 
@@ -614,7 +614,7 @@ static maya::Element build_tab_bar() {
         auto& tab = tabs[static_cast<size_t>(i)];
         runs.push_back(maya::StyledRun{
             content.size(), tab.name.size(),
-            (i == active_tab) ? active_style : inactive_style,
+            (i == m.active_tab) ? active_style : inactive_style,
         });
         content += tab.name;
     }
@@ -626,14 +626,14 @@ static maya::Element build_tab_bar() {
     }};
 }
 
-static maya::Element build_breadcrumb() {
-    auto& tab = tabs[static_cast<size_t>(active_tab)];
+static maya::Element build_breadcrumb(const Model& m) {
+    auto& tab = tabs[static_cast<size_t>(m.active_tab)];
     maya::Breadcrumb bc(tab.breadcrumb);
     return bc.build();
 }
 
-static maya::Element build_code_editor() {
-    auto& lines = code_buffers[static_cast<size_t>(active_tab)];
+static maya::Element build_code_editor(const Model& m) {
+    auto& lines = code_buffers[static_cast<size_t>(m.active_tab)];
 
     std::vector<maya::Element> rows;
 
@@ -676,8 +676,8 @@ static maya::Element build_code_editor() {
     return vstack()(std::move(rows));
 }
 
-static maya::Element build_minimap() {
-    auto& lines = code_buffers[static_cast<size_t>(active_tab)];
+static maya::Element build_minimap(const Model& m) {
+    auto& lines = code_buffers[static_cast<size_t>(m.active_tab)];
 
     // Build sparkline data: "code density" per line
     std::vector<float> density;
@@ -693,27 +693,27 @@ static maya::Element build_minimap() {
     return spark.build();
 }
 
-static maya::Element build_editor_panel() {
+static maya::Element build_editor_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
-    rows.push_back(build_tab_bar());
-    rows.push_back(build_breadcrumb());
+    rows.push_back(build_tab_bar(m));
+    rows.push_back(build_breadcrumb(m));
     rows.push_back((h(
-        build_code_editor(),
+        build_code_editor(m),
         space,
-        build_minimap()
+        build_minimap(m)
     )).build());
 
     return vstack().border(maya::BorderStyle::Round)
         .border_color(rgb(50, 55, 70))
-        .border_text(std::string(" ") + tabs[static_cast<size_t>(active_tab)].name + " ",
+        .border_text(std::string(" ") + tabs[static_cast<size_t>(m.active_tab)].name + " ",
                      maya::BorderTextPos::Top)
         .padding(0, 1, 0, 1)
         .grow(1)(std::move(rows));
 }
 
-static maya::Element build_outline_panel() {
-    auto& syms = outlines[static_cast<size_t>(active_tab)];
+static maya::Element build_outline_panel(const Model& m) {
+    auto& syms = outlines[static_cast<size_t>(m.active_tab)];
     std::vector<maya::Element> rows;
 
     for (auto& sym : syms) {
@@ -754,7 +754,7 @@ static maya::Element build_outline_panel() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static maya::Element build_diagnostics_panel() {
+static maya::Element build_diagnostics_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
     for (auto& d : diagnostics) {
@@ -778,7 +778,7 @@ static maya::Element build_diagnostics_panel() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static maya::Element build_git_panel() {
+static maya::Element build_git_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
     for (auto& g : git_changes) {
@@ -828,21 +828,21 @@ static maya::Element build_git_panel() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static maya::Element build_right_sidebar() {
+static maya::Element build_right_sidebar(const Model& m) {
     return vstack().width(28)(
-        build_outline_panel(),
-        build_diagnostics_panel(),
-        build_git_panel()
+        build_outline_panel(m),
+        build_diagnostics_panel(m),
+        build_git_panel(m)
     );
 }
 
-static maya::Element build_terminal_panel() {
+static maya::Element build_terminal_panel(const Model& m) {
     std::vector<maya::Element> rows;
 
-    auto& log = building || build_done ? build_complete_log : build_log;
-    int show_lines = building
+    auto& log = m.building || m.build_done ? build_complete_log : m.build_log;
+    int show_lines = m.building
         ? std::min(static_cast<int>(log.size()),
-                   static_cast<int>(build_progress * static_cast<float>(log.size())))
+                   static_cast<int>(m.build_progress * static_cast<float>(log.size())))
         : static_cast<int>(log.size());
 
     for (int i = 0; i < show_lines && i < static_cast<int>(log.size()); ++i) {
@@ -863,9 +863,9 @@ static maya::Element build_terminal_panel() {
     }
 
     // Progress bar if building
-    if (building) {
+    if (m.building) {
         maya::ProgressBar bar;
-        bar.set(build_progress);
+        bar.set(m.build_progress);
         bar.set_label("Building...");
         rows.push_back(bar.build());
     }
@@ -881,8 +881,8 @@ static maya::Element build_terminal_panel() {
         .padding(0, 1, 0, 1)(std::move(rows));
 }
 
-static maya::Element build_status_bar() {
-    auto& tab = tabs[static_cast<size_t>(active_tab)];
+static maya::Element build_status_bar(const Model& m) {
+    auto& tab = tabs[static_cast<size_t>(m.active_tab)];
 
     // Error/warning counts
     int errors = 0, warnings = 0;
@@ -911,18 +911,18 @@ static maya::Element build_status_bar() {
 
 // ── Render ──────────────────────────────────────────────────────────────────
 
-static maya::Element render() {
+static maya::Element render(const Model& m) {
     // Main layout: 3 columns with optional sidebars
     std::vector<maya::Element> columns;
 
-    if (show_left) {
-        columns.push_back(build_file_tree());
+    if (m.show_left) {
+        columns.push_back(build_file_tree(m));
     }
 
-    columns.push_back(build_editor_panel());
+    columns.push_back(build_editor_panel(m));
 
-    if (show_right) {
-        columns.push_back(build_right_sidebar());
+    if (m.show_right) {
+        columns.push_back(build_right_sidebar(m));
     }
 
     auto main_row = hstack().grow(1)(std::move(columns));
@@ -931,52 +931,81 @@ static maya::Element render() {
     std::vector<maya::Element> main_stack;
     main_stack.push_back(std::move(main_row));
 
-    if (show_bottom) {
-        main_stack.push_back(build_terminal_panel());
+    if (m.show_bottom) {
+        main_stack.push_back(build_terminal_panel(m));
     }
 
-    main_stack.push_back(build_status_bar());
+    main_stack.push_back(build_status_bar(m));
 
     return vstack()(std::move(main_stack));
 }
 
-// ── Main ────────────────────────────────────────────────────────────────────
+// ── Program ─────────────────────────────────────────────────────────────────
+
+struct Tick {};
+struct NextTab {};
+struct ToggleLeft {};
+struct ToggleRight {};
+struct ToggleBottom {};
+struct StartBuild {};
+struct Quit {};
+using Msg = std::variant<Tick, NextTab, ToggleLeft, ToggleRight, ToggleBottom, StartBuild, Quit>;
+
+struct Ide {
+    using Model = ::Model;
+    using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg>;
+    using Sub   = jaal::Sub<Msg, maya::on_key>;
+
+    static Cmd update(Model& m, Tick) {
+        m.frame++;
+        // Advance build simulation
+        if (m.building) {
+            m.build_progress += 0.02f;
+            if (m.build_progress >= 1.0f) {
+                m.build_progress = 1.0f;
+                m.building = false;
+                m.build_done = true;
+            }
+        }
+        return {};
+    }
+    static Cmd update(Model& m, NextTab)      { m.active_tab = (m.active_tab + 1) % 4; return {}; }
+    static Cmd update(Model& m, ToggleLeft)   { m.show_left = !m.show_left; return {}; }
+    static Cmd update(Model& m, ToggleRight)  { m.show_right = !m.show_right; return {}; }
+    static Cmd update(Model& m, ToggleBottom) { m.show_bottom = !m.show_bottom; return {}; }
+    static Cmd update(Model& m, StartBuild) {
+        if (!m.building) {
+            m.building = true;
+            m.build_progress = 0.0f;
+            m.build_done = false;
+        }
+        return {};
+    }
+    static Cmd update(Model&, Quit) { return Cmd::quit(0); }
+
+    static maya::Element view(const Model& m) { return render(m); }
+
+    static Sub subscribe(const Model& m) {
+        auto on_keys = maya::keys<Sub>({
+            {'q', Quit{}},
+            {maya::SpecialKey::Escape, Quit{}},
+            {maya::SpecialKey::Tab, NextTab{}},
+            {'1', ToggleLeft{}},
+            {'2', ToggleRight{}},
+            {'3', ToggleBottom{}},
+            {'b', StartBuild{}},
+        });
+        if (m.building)
+            return Sub::batch(std::move(on_keys),
+                              Sub::every(std::chrono::milliseconds(100), Tick{}));
+        return on_keys;
+    }
+    static bool subs_key(const Model& m) { return m.building; }
+};
+
+static_assert(maya::Program<Ide>);
 
 int main() {
-    init_code();
-    init_build_log();
-
-    maya::run(
-        {.title = "ide", .fps = 10, .mode = maya::Mode::Fullscreen},
-        [](const maya::Event& ev) {
-            if (maya::key(ev, 'q') || maya::key(ev, maya::SpecialKey::Escape))
-                return false;
-            if (maya::key(ev, maya::SpecialKey::Tab))
-                active_tab = (active_tab + 1) % 4;
-            if (maya::key(ev, '1')) show_left = !show_left;
-            if (maya::key(ev, '2')) show_right = !show_right;
-            if (maya::key(ev, '3')) show_bottom = !show_bottom;
-            if (maya::key(ev, 'b') && !building) {
-                building = true;
-                build_progress = 0.0f;
-                build_done = false;
-            }
-            return true;
-        },
-        [] {
-            frame++;
-
-            // Advance build simulation
-            if (building) {
-                build_progress += 0.02f;
-                if (build_progress >= 1.0f) {
-                    build_progress = 1.0f;
-                    building = false;
-                    build_done = true;
-                }
-            }
-
-            return render();
-        }
-    );
+    return maya::run<Ide>({.title = "ide"});
 }

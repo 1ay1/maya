@@ -185,20 +185,31 @@ static void project(std::vector<float>& vx, std::vector<float>& vy,
 }
 
 static void step() {
-    // A field whose dye is below what the display can show and whose
-    // velocity has died away is, visibly, a fixed point: diffuse, project
-    // and advect only ever shrink it further, and the paint loop quantizes
-    // density to CSTEPS levels of d/5. Running the solver there is ~20 grid
-    // sweeps per frame that change no pixel: measured 27-35% of a core on a
-    // blank or long-settled screen at 30 fps. Exact zero was not enough of a
-    // test (the decay is exponential: after a drag the field approaches zero
-    // forever). One pass over the arrays; a new drag resumes it.
-    const float dens_eps = 5.f / (CSTEPS - 1) * 0.5f;   // half a display step
+    // Skip the solver when the field can't show anything: every cell's dye
+    // is below the first display step, so the paint loop (which TRUNCATES
+    // d/5 * (CSTEPS-1)) draws colour 0 everywhere. Velocity doesn't need
+    // its own test: advection only moves dye and diffusion only spreads
+    // it, and neither can raise a cell above the field's current maximum,
+    // so invisible dye stays invisible whatever the velocity is.
+    //
+    // Measured after a drag: dye decays to ~0.05 within a few seconds and
+    // then crawls (0.054 -> 0.040 over 8 s), while velocity takes ~10 s to
+    // die. The previous test (half a display step, AND velocity < 1e-3) kept
+    // the full solver running at 28% of a core for 10+ s on a screen that
+    // was already uniformly colour 0.
+    const float dens_visible = 5.f / (CSTEPS - 1);   // first non-zero colour
     const auto below = [](const std::vector<float>& v, float eps) {
-        for (float f : v) if (f > eps || f < -eps) return false;
+        for (float f : v) if (f >= eps) return false;
         return true;
     };
-    if (below(g_dens, dens_eps) && below(g_vx, 1e-3f) && below(g_vy, 1e-3f)) return;
+    if (below(g_dens, dens_visible)) {
+        // Settled: drop the remnants so a new drag starts from rest instead
+        // of stirring up motion the user can't see the cause of.
+        std::fill(g_dens.begin(), g_dens.end(), 0.f);
+        std::fill(g_vx.begin(), g_vx.end(), 0.f);
+        std::fill(g_vy.begin(), g_vy.end(), 0.f);
+        return;
+    }
 
     // Velocity step
     std::swap(g_vx, g_vx0);

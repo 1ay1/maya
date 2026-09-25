@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <memory>
 #include <utility>
+#include <thread>
 #include <vector>
 
 #include "builder.hpp"
@@ -62,6 +63,27 @@ public:
     [[nodiscard]] const std::vector<Rgb>& data() const noexcept { return px_; }
 
     void fill(Rgb c) { std::fill(px_.begin(), px_.end(), c); }
+
+    /// Compute every pixel with `fn(x, y) -> Rgb`, rows spread over the
+    /// machine's cores. For views whose picture is a pure per-pixel
+    /// function of the model (a fractal, a ray tracer, a shader): the
+    /// function only reads, so running rows in parallel is safe, and
+    /// rows are INTERLEAVED across threads (thread t takes t, t+n, ...),
+    /// because cost varies by region (sky is cheap, terrain is not) and
+    /// contiguous bands leave most threads idle behind the slowest.
+    template <class Fn>
+    void fill_rows(Fn&& fn) {
+        const int n = std::max(1, std::min(static_cast<int>(std::thread::hardware_concurrency()), h_));
+        auto rows = [&](int first) {
+            for (int y = first; y < h_; y += n)
+                for (int x = 0; x < w_; ++x) px_[idx(x, y)] = fn(x, y);
+        };
+        if (n == 1 || static_cast<long>(w_) * h_ < 4096) { for (int y = 0; y < h_; ++y) for (int x = 0; x < w_; ++x) px_[idx(x, y)] = fn(x, y); return; }
+        std::vector<std::jthread> pool;
+        pool.reserve(static_cast<std::size_t>(n - 1));
+        for (int t = 1; t < n; ++t) pool.emplace_back(rows, t);
+        rows(0);
+    }
 
     /// The pixel size of a cell area: w columns, 2*h rows (half blocks).
     [[nodiscard]] static constexpr std::pair<int, int> for_cells(int cols, int rows) noexcept {

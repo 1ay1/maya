@@ -122,8 +122,31 @@ def look():
     return "\n".join(rows)
 
 
+# The child is reaped exactly once, here, and its status is remembered.
+# Every later "has it exited yet?" reads that memo: calling waitpid() again
+# after the child is gone raises ChildProcessError and took the whole
+# harness down with it (a program that quits on its own — markup — hit this
+# every run, and the traceback hid the real result).
+reaped = None          # exit code once known, else None
+
+
+def poll_exit():
+    """Exit code if the child has finished, else None. Safe to call always."""
+    global reaped
+    if reaped is not None:
+        return reaped
+    try:
+        w = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        reaped = 0      # already gone; someone else got the status
+        return reaped
+    if w[0] != 0:
+        reaped = os.waitstatus_to_exitcode(w[1])
+    return reaped
+
+
 def alive():
-    return os.waitpid(pid, os.WNOHANG)[0] == 0
+    return poll_exit() is None
 
 
 print(f"{name}:")
@@ -203,25 +226,26 @@ else:
 os.write(fd, args.quit.encode())
 deadline, rc = time.time() + 3, None
 while time.time() < deadline:
-    w = os.waitpid(pid, os.WNOHANG)
-    if w[0] != 0:
-        rc = os.waitstatus_to_exitcode(w[1])
+    rc = poll_exit()
+    if rc is not None:
         break
     settle(0.05, 0.1)
 if rc is None:                      # its quit key didn't work: try Ctrl+C
     os.write(fd, b"\x03")
     deadline = time.time() + 3
     while time.time() < deadline:
-        w = os.waitpid(pid, os.WNOHANG)
-        if w[0] != 0:
-            rc = os.waitstatus_to_exitcode(w[1])
+        rc = poll_exit()
+        if rc is not None:
             break
         settle(0.05, 0.1)
 check(rc is not None, f"quits (exit {rc})")
 check(rc == 0 or rc == 130, f"exits cleanly (0, or 130 for Ctrl+C) — got {rc}")
 if rc is None:
     os.kill(pid, signal.SIGKILL)
-    os.waitpid(pid, 0)
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
 
 # 6. the terminal is given back: whatever it switched on, it switched off.
 #    Alt screen (?1049) and a hidden cursor (?25l) are the two that leave a

@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "builder.hpp"
+#include "../render/canvas.hpp"
 
 namespace maya {
 

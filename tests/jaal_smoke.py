@@ -113,6 +113,16 @@ def text():
     return "\n".join(screen.display)
 
 
+def look():
+    """Glyphs AND colours. A key in a pixel game moves colour (a paddle is a
+    run of coloured half blocks), which the text alone can't see."""
+    rows = []
+    for y in range(screen.lines):
+        row = screen.buffer[y]
+        rows.append("".join(f"{c.data}{c.fg}{c.bg}" for c in row.values()))
+    return "\n".join(rows)
+
+
 def alive():
     return os.waitpid(pid, os.WNOHANG)[0] == 0
 
@@ -130,10 +140,10 @@ if args.no_input_change:
 else:
     changed = False
     for k in args.keys:
-        before = text()
+        before = look()
         os.write(fd, k.encode())
         settle()
-        if text() != before:
+        if look() != before:
             changed = True
             break
     check(changed, f"a key reaches the screen (tried {args.keys!r})")
@@ -151,12 +161,6 @@ if args.animates:
     # Hash glyphs AND colours: a colour-only animation (a fire, a fluid, a
     # gradient of half-blocks) never changes screen.display's text, and
     # hashing text alone reported it as frozen - for maya's own loop too.
-    def look():
-        rows = []
-        for y in range(screen.lines):
-            row = screen.buffer[y]
-            rows.append("".join(f"{c.data}{c.fg}{c.bg}" for c in row.values()))
-        return "\n".join(rows)
     while time.time() < end:
         settle(0.02, 0.04)
         seen.add(hashlib.md5(look().encode()).hexdigest())

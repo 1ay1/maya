@@ -1,3 +1,14 @@
+// jaal_motion_showcase.cpp — motion_showcase.cpp, on jaal.
+//
+// The port that proves maya's animation framework runs under jaal. Nothing
+// here reads a clock or calls request_animation_frame(); widgets do, during
+// view(). Under maya's own loop that request schedules the next frame. Under
+// jaal the HOST does the same (maya/jaal/host.hpp: next_frame_at_, owes_frame,
+// wait_hint), so a spring settles and a pulse breathes with no input at all.
+// It also runs in Mode::Inline, which run passes straight through.
+//
+// ---- original header follows ----
+//
 // motion_showcase.cpp — the maya animation FRAMEWORK in one screen
 // ============================================================================
 //
@@ -19,6 +30,7 @@
 //   cmake --build build-test --target maya_motion_showcase
 //   ./build-test/maya_motion_showcase
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/anim/text_reveal.hpp>
 
@@ -93,7 +105,8 @@ struct Showcase {
                              CycleColor, FireProgress, FireBall, FireWave,
                              FireMatrix, Quit>;
 
-    static Model init() { return {}; }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
 
     static LitColor palette(int i) {
         static const LitColor stops[] = {
@@ -107,57 +120,62 @@ struct Showcase {
         return stops[((i % 6) + 6) % 6];
     }
 
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Toggle) {
-                m.slider_on = !m.slider_on;
-                m.slider.spring_to(m.slider_on ? 1.0 : 0.0);
-                return std::pair{std::move(m), Cmd<Msg>{}};
-            },
-            [&](FireIntro) {
-                m.intro.play();
-                return std::pair{std::move(m), Cmd<Msg>{}};
-            },
-            [&](FireStagger) {
-                m.stagger_mount.remount();
-                m.stagger_playing = true;
-                return std::pair{std::move(m), Cmd<Msg>{}};
-            },
-            [&](FireReveal) {
-                m.reveal_mount.remount();
-                m.reveal_playing = true;
-                return std::pair{std::move(m), Cmd<Msg>{}};
-            },
-            [&](CycleColor) {
-                m.tint_idx++;
-                m.tint.to(palette(m.tint_idx), 0.4);
-                return std::pair{std::move(m), Cmd<Msg>{}};
-            },
-            [&](FireProgress) {
-                m.progress_target = (m.progress_target + 25) % 125;
-                if (m.progress_target > 100) m.progress_target = 0;
-                m.progress.to(m.progress_target / 100.0, 0.8,
-                              anim::ease::out_back);
-                return std::pair{std::move(m), Cmd<Msg>{}};
-            },
-            [&](FireBall) {
-                m.ball_up = !m.ball_up;
-                m.ball.spring_to(m.ball_up ? 1.0 : 0.0);
-                return std::pair{std::move(m), Cmd<Msg>{}};
-            },
-            [&](FireWave) {
-                m.wave_mount.remount();
-                m.wave_playing = true;
-                return std::pair{std::move(m), Cmd<Msg>{}};
-            },
-            [&](FireMatrix) {
-                m.matrix_mount.remount();
-                m.matrix_playing = true;
-                return std::pair{std::move(m), Cmd<Msg>{}};
-            },
-            [](Quit) { return std::pair{Model{}, Cmd<Msg>::quit()}; },
-        }, msg);
+    static Cmd update(Model& m, Toggle) {
+            m.slider_on = !m.slider_on;
+            m.slider.spring_to(m.slider_on ? 1.0 : 0.0);
+        return {};
     }
+
+    static Cmd update(Model& m, FireIntro) {
+            m.intro.play();
+        return {};
+    }
+
+    static Cmd update(Model& m, FireStagger) {
+            m.stagger_mount.remount();
+            m.stagger_playing = true;
+        return {};
+    }
+
+    static Cmd update(Model& m, FireReveal) {
+            m.reveal_mount.remount();
+            m.reveal_playing = true;
+        return {};
+    }
+
+    static Cmd update(Model& m, CycleColor) {
+            m.tint_idx++;
+            m.tint.to(palette(m.tint_idx), 0.4);
+        return {};
+    }
+
+    static Cmd update(Model& m, FireProgress) {
+            m.progress_target = (m.progress_target + 25) % 125;
+            if (m.progress_target > 100) m.progress_target = 0;
+            m.progress.to(m.progress_target / 100.0, 0.8,
+                          anim::ease::out_back);
+        return {};
+    }
+
+    static Cmd update(Model& m, FireBall) {
+            m.ball_up = !m.ball_up;
+            m.ball.spring_to(m.ball_up ? 1.0 : 0.0);
+        return {};
+    }
+
+    static Cmd update(Model& m, FireWave) {
+            m.wave_mount.remount();
+            m.wave_playing = true;
+        return {};
+    }
+
+    static Cmd update(Model& m, FireMatrix) {
+            m.matrix_mount.remount();
+            m.matrix_playing = true;
+        return {};
+    }
+
+    static Cmd update(Model&, Quit) { return Cmd::quit(0); }
 
     // ── view: pure, declarative, animated ────────────────────────────────
     static Element view(const Model& m_const) {
@@ -429,8 +447,8 @@ struct Showcase {
         ) | pad<1> | border_<Round> | bcolor(Color::rgb(80, 90, 110));
     }
 
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return key_map<Msg>({
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({
             {' ', Toggle{}},
             {'1', FireIntro{}},
             {'2', FireStagger{}},
@@ -448,5 +466,5 @@ struct Showcase {
 static_assert(Program<Showcase>);
 
 int main() {
-    run<Showcase>({.title = "maya motion showcase", .mode = Mode::Inline});
+    return run<Showcase>({.title = "maya motion showcase", .mode = Mode::Inline});
 }

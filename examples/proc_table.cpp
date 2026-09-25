@@ -1,4 +1,9 @@
-// proc_table.cpp — the rockbottom-shaped process list on maya::Table.
+// jaal_proc_table.cpp — maya's proc_table.cpp, on jaal.
+//
+// A faithful port of examples/proc_table.cpp to the jaal runtime: update()
+// is split per message case and Cmd/Sub are jaal's; view() is unchanged.
+//
+// The rockbottom-shaped process list on maya::Table.
 //
 // Everything a real proc list needs, all from ONE widget:
 //
@@ -29,6 +34,7 @@
 // Resize the terminal — width resheds columns, height rewindows rows.
 // q quits.
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/table.hpp>
 
@@ -144,14 +150,16 @@ struct ProcTableDemo {
     struct Quit {};
     using Msg = std::variant<Key, Mouse, Quit>;
 
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key, on_mouse>;
+
     // Hit kinds for the row / header click rects the Table registers.
     static constexpr std::uint32_t kHitRow    = 1;
     static constexpr std::uint32_t kHitHeader = 2;
 
-    static Model init() {
-        Model m;
+    static Cmd init(Model& m) {
         sort_procs(m);
-        return m;
+        return {};
     }
 
     static void sort_procs(Model& m) {
@@ -173,17 +181,16 @@ struct ProcTableDemo {
         std::stable_sort(m.procs.begin(), m.procs.end(), cmp);
     }
 
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        using C = Cmd<Msg>;
-        if (std::holds_alternative<Quit>(msg)) return {std::move(m), C::quit()};
-        const int n = static_cast<int>(m.procs.size());
+    static Cmd update(Model&, Quit) { return Cmd::quit(0); }
 
-        if (const auto* mo = std::get_if<Mouse>(&msg)) {
+    static Cmd update(Model& m, Mouse mo) {
+        const int n = static_cast<int>(m.procs.size());
+        {
             // Resolve the click against the rects the Table registered this
             // frame: a row selects, a header cell sorts on that column's key
             // (toggling direction if it's already the sort column).
-            const auto& me = mo->ev;
-            if (me.kind != MouseEventKind::Press) return {std::move(m), C{}};
+            const auto& me = mo.ev;
+            if (me.kind != MouseEventKind::Press) return {};
             if (me.button == MouseButton::Left) {
                 if (const auto hit = hit_test(me.x.value, me.y.value)) {
                     if (hit_kind(*hit) == kHitRow) {
@@ -201,10 +208,13 @@ struct ProcTableDemo {
             } else if (me.button == MouseButton::ScrollDown) {
                 m.cursor = std::clamp(m.cursor + 3, 0, n - 1);
             }
-            return {std::move(m), C{}};
+            return {};
         }
+    }
 
-        const auto& ev = std::get<Key>(msg).ev;
+    static Cmd update(Model& m, Key k) {
+        const int n = static_cast<int>(m.procs.size());
+        const auto& ev = k.ev;
         bool handled = std::visit(overload{
             [&](SpecialKey sk) {
                 switch (sk) {
@@ -233,7 +243,7 @@ struct ProcTableDemo {
         }, ev.key);
         (void)handled;
         m.cursor = std::clamp(m.cursor, 0, n - 1);
-        return {std::move(m), C{}};
+        return {};
     }
 
     static Element view(const Model& m) {
@@ -380,23 +390,23 @@ struct ProcTableDemo {
         );
     }
 
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return Sub<Msg>::batch({
-            Sub<Msg>::on_key([](const KeyEvent& ev) -> std::optional<Msg> {
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::on(on_key{}, [](const KeyEvent& ev) -> std::optional<Msg> {
                 if (const auto* ck = std::get_if<CharKey>(&ev.key);
                     ck && ck->codepoint == 'q')
                     return Quit{};
                 return Key{ev};
             }),
-            Sub<Msg>::on_mouse([](const MouseEvent& me) -> std::optional<Msg> {
+            Sub::on(on_mouse{}, [](const MouseEvent& me) -> std::optional<Msg> {
                 return Mouse{me};
-            }),
-        });
+            })
+        );
     }
 };
 
-static_assert(Program<ProcTableDemo>, "ProcTableDemo must satisfy Program");
+static_assert(Program<ProcTableDemo>, "ProcTableDemo must satisfy App");
 
 int main() {
-    run<ProcTableDemo>({.title = "proc_table", .mouse = true});
+    return run<ProcTableDemo>({.title = "proc_table", .mouse = true});
 }

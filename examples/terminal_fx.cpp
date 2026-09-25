@@ -1,4 +1,4 @@
-// examples/jaal_terminal_fx.cpp — every terminal effect the jaal host carries.
+// examples/terminal_fx.cpp — every terminal effect the jaal host carries.
 //
 // A small checklist program: each key fires one effect and the screen says
 // what came back. It exists so each effect agentty needs is exercised on a
@@ -9,9 +9,8 @@
 //   i   reset_inline        s   suspend: run `sh -c 'echo …'` on the real tty,
 //   q   quit                    and fold how it exited back in (jaal D39)
 //
-// Built only with -DMAYA_WITH_JAAL=ON.
 
-#include <maya/jaal/host.hpp>
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/style/schemes.hpp>
 
@@ -75,20 +74,20 @@ struct TerminalFx {
     }
 
     static Sub subscribe(const Model&) {
-        return jaal_key_map<Sub>({
+        return keys<Sub>({
             {'t', Title{}}, {'c', Clip{}}, {'o', Osc{}}, {'r', Redraw{}},
             {'i', Reset{}}, {'s', RunChild{}}, {'q', Quit{}},
         });
     }
 };
 
-static_assert(JaalView<TerminalFx>);
+static_assert(Program<TerminalFx>);
 
 int main(int argc, char** argv) {
     // --dracula: a scheme that OWNS its canvas (states a real background),
     // so the host must fill the frame with it (apply_theme_canvas).
     const bool canvas = argc > 1 && std::string_view(argv[1]) == "--dracula";
-    return run_jaal<TerminalFx>({.title = "terminal fx",
+    return run<TerminalFx>({.title = "terminal fx",
                                  .mode  = Mode::Inline,
                                  .theme = canvas ? theme::dracula : theme::native});
 }

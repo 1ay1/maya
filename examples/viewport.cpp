@@ -1,4 +1,9 @@
-// viewport.cpp — the viewport() layout widget, exercised with real widgets,
+// jaal_viewport.cpp — maya's viewport.cpp, on jaal.
+//
+// A faithful port of examples/viewport.cpp to the jaal runtime: update()
+// is split per message case and Cmd/Sub are jaal's; view() is unchanged.
+//
+// The viewport() layout widget, exercised with real widgets,
 // now SCROLLABLE.
 //
 // viewport(cells, max_width) is PURELY layout. It chooses a column count from
@@ -27,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/element/grid.hpp>          // viewport(), columns(), grid()
 #include <maya/widget/bar_chart.hpp>
@@ -139,7 +145,8 @@ struct Viewport {
     struct Quit {};
     using Msg = std::variant<Wider, Narrower, ToggleFlow, Scroll, Wheel, Resize, Quit>;
 
-    static Model init() { return {}; }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
 
     // The scroll viewport height in rows: the terminal minus this app's own
     // chrome (title + status + border + padding). One number, used by both
@@ -158,19 +165,15 @@ struct Viewport {
         return std::max(1, m.term_w - kPad - kGap - kBar);
     }
 
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Wider)    { m.ceiling = std::min(m.ceiling + 4, 80); return std::pair{m, Cmd<Msg>{}}; },
-            [&](Narrower) { m.ceiling = std::max(m.ceiling - 4, 12); return std::pair{m, Cmd<Msg>{}}; },
-            [&](ToggleFlow) { m.flow = (m.flow == Flow::Row) ? Flow::Column : Flow::Row;
-                              return std::pair{m, Cmd<Msg>{}}; },
-            [&](Scroll s) { (void)m.scroll.handle(s.key, viewport_h(m)); return std::pair{m, Cmd<Msg>{}}; },
-            [&](Wheel w)  { (void)m.scroll.handle(w.mouse);               return std::pair{m, Cmd<Msg>{}}; },
-            [&](Resize r) { m.term_w = r.size.width.value;
-                            m.term_h = r.size.height.value;         return std::pair{m, Cmd<Msg>{}}; },
-            [](Quit)      { return std::pair{Model{}, Cmd<Msg>::quit()}; },
-        }, msg);
-    }
+    static Cmd update(Model& m, Wider)    { m.ceiling = std::min(m.ceiling + 4, 80); return {}; }
+    static Cmd update(Model& m, Narrower) { m.ceiling = std::max(m.ceiling - 4, 12); return {}; }
+    static Cmd update(Model& m, ToggleFlow) { m.flow = (m.flow == Flow::Row) ? Flow::Column : Flow::Row;
+                                              return {}; }
+    static Cmd update(Model& m, Scroll s) { (void)m.scroll.handle(s.key, viewport_h(m)); return {}; }
+    static Cmd update(Model& m, Wheel w)  { (void)m.scroll.handle(w.mouse);               return {}; }
+    static Cmd update(Model& m, Resize r) { m.term_w = r.size.width.value;
+                                            m.term_h = r.size.height.value;         return {}; }
+    static Cmd update(Model& m, Quit)     { m = Model{}; return Cmd::quit(0); }
 
     static Element view(const Model& m) {
         // Build every card, then hand the whole set to viewport(). It spreads
@@ -222,30 +225,32 @@ struct Viewport {
         );
     }
 
-    static auto subscribe(const Model&) -> Sub<Msg> {
+    static Sub subscribe(const Model&) {
         // +/- and q are ordinary keys. Everything the ScrollState recognises
         // (arrows, j/k, PgUp/PgDn, Home/End) is forwarded verbatim as a
         // Scroll message; the wheel goes through as Wheel. Resize keeps the
         // viewport height current.
-        auto keys = Sub<Msg>::on_key([](const KeyEvent& k) -> std::optional<Msg> {
+        auto keys = Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
             if (key_is(k, 'q')) return Quit{};
             if (key_is(k, '+') || key_is(k, '=')) return Wider{};
             if (key_is(k, '-')) return Narrower{};
             if (key_is(k, 'f')) return ToggleFlow{};
             return Scroll{k};   // let ScrollState decide if it's a scroll key
         });
-        auto wheel  = Sub<Msg>::on_mouse([](const MouseEvent& me) -> std::optional<Msg> {
+        auto wheel  = Sub::on(on_mouse{}, [](const MouseEvent& me) -> std::optional<Msg> {
             return Wheel{me};
         });
-        auto resize = Sub<Msg>::on_resize([](Size sz) -> Msg { return Resize{sz}; });
-        return Sub<Msg>::batch(std::move(keys), std::move(wheel), std::move(resize));
+        auto resize = Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+            return Resize{Size{r.width, r.height}};
+        });
+        return Sub::batch(std::move(keys), std::move(wheel), std::move(resize));
     }
 };
 
-static_assert(Program<Viewport>, "Viewport must satisfy the Program concept");
+static_assert(Program<Viewport>, "Viewport must satisfy the App concept");
 
 } // namespace
 
 int main() {
-    run<Viewport>({.title = "viewport", .mouse = true});
+    return run<Viewport>({.title = "viewport", .mouse = true});
 }

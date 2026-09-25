@@ -16,7 +16,7 @@
 //
 // Keys: q/Esc quit   space toggle source   ←/→ wind   +/- heat   1-3 palette
 
-#include <maya/jaal/host.hpp>
+#include <maya/app.hpp>
 #include <maya/element/pixels.hpp>
 #include <maya/maya.hpp>
 
@@ -216,7 +216,7 @@ struct Fire {
             Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
                 return Resize{r.width.value, r.height.value};
             }),
-            jaal_key_map<Sub>({
+            keys<Sub>({
                 {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
                 {' ', Toggle{}},
                 {SpecialKey::Left, Wind{-1}}, {SpecialKey::Right, Wind{+1}},
@@ -227,8 +227,8 @@ struct Fire {
     static bool subs_key(const Model&) { return true; }   // the same sources, always
 };
 
-static_assert(JaalView<Fire>);
+static_assert(Program<Fire>);
 
 }  // namespace
 
-int main() { return run_jaal<Fire>({.title = "doom fire"}); }
+int main() { return run<Fire>({.title = "doom fire"}); }

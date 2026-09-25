@@ -9,7 +9,7 @@
 // widgets are lifetime-safe. Run under ASAN for use-after-scope detection.
 
 #include <maya/maya.hpp>
-#include <maya/app/inline.hpp>
+#include <maya/print.hpp>
 
 #include <maya/widget/code_view.hpp>
 #include <maya/widget/editor_view.hpp>

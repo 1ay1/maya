@@ -8,12 +8,12 @@
 //   update(Model m, Msg) -> pair<M, Cmd>   update(Model& m, Case) -> Cmd,
 //     + a std::visit over every case         one overload per case
 //   return {Model{m.count+1}, Cmd{}}       ++m.count; return {};
-//   Sub<Msg> + key_map<Msg>(...)           jaal::Sub + jaal_key_map<Sub>(...)
-//   run<Counter>(...)                      run_jaal<Counter>(...)
+//   Sub<Msg> + key_map<Msg>(...)           jaal::Sub + keys<Sub>(...)
+//   run<Counter>(...)                      run<Counter>(...)
 //
 // view() is unchanged: the toolkit is the same toolkit.
 
-#include <maya/jaal/host.hpp>
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 
 using namespace maya;
@@ -47,7 +47,7 @@ struct Counter {
     }
 
     static Sub subscribe(const Model&) {
-        return jaal_key_map<Sub>({
+        return keys<Sub>({
             {'q', Quit{}},
             {'+', Increment{}},  {'=', Increment{}},
             {'-', Decrement{}},  {'r', Reset{}},
@@ -57,8 +57,8 @@ struct Counter {
     }
 };
 
-static_assert(JaalView<Counter>);
+static_assert(Program<Counter>);
 
 int main() {
-    return run_jaal<Counter>({.title = "counter"});
+    return run<Counter>({.title = "counter"});
 }

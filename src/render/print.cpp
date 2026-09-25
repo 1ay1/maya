@@ -1,4 +1,10 @@
-#include "maya/app/inline.hpp"
+#include "maya/print.hpp"
+
+#include <optional>
+#include <string>
+
+#include "maya/render/canvas.hpp"
+#include "maya/render/inline_frame.hpp"
 #include "maya/terminal/tmux.hpp"
 
 #include <cstdio>
@@ -22,6 +28,66 @@ int detect_terminal_height() noexcept {
     auto sz = platform::query_terminal_size(platform::stdout_handle());
     return sz.height.raw() > 0 ? sz.height.raw() : 24;
 }
+
+
+// The one-frame inline renderer print() is built on (private).
+///
+/// Lifecycle: `LiveState{}` → repeated `render_live(root, w, pool, std::move(state))`
+/// → terminal `std::move(state).finalize(buf)`. Each step consumes the
+/// previous value and returns the next; there is no in-place mutator path.
+class [[nodiscard("LiveState owns the live inline frame — dropping it strands the witness chain and the writer's residue, corrupting the next render")]] LiveState {
+public:
+    // Pre-reserve so the first frame's tree build doesn't pay an
+    // unbounded chain of vector reallocs. 1024 nodes covers typical
+    // live-rendered trees; deeper trees still grow on demand.
+    LiveState() { layout_nodes_.reserve(1024); }
+
+    LiveState(const LiveState&)            = delete;
+    LiveState& operator=(const LiveState&) = delete;
+    LiveState(LiveState&&) noexcept            = default;
+    LiveState& operator=(LiveState&&) noexcept = default;
+
+    /// Consume the state and emit any finalization bytes (DECAWM /
+    /// cursor restore) the witness chain still owes the wire.
+    /// After this call the state is gone — accidental reuse is a
+    /// use-after-move, caught by the variant's monostate.
+    void finalize(std::string& buf) && {
+        inline_frame::finalize_coherence(std::move(frame_), buf);
+    }
+
+private:
+    Canvas                          canvas_;            // persistent canvas (avoids per-frame alloc)
+    int                             canvas_width_ = 0;  // cached width — drives resize-demotion
+    inline_frame::InlineCoherence   frame_ =
+        inline_frame::InlineFrame<inline_frame::Empty>{};
+    std::vector<layout::LayoutNode> layout_nodes_;
+
+    // Writer is owned by LiveState rather than constructed per-call so
+    // residue (bytes left over from a non-blocking partial write) is
+    // preserved across render_live invocations. Dropping it between
+    // frames would lose residue and let the next compose's prev_cells
+    // reflect bytes the wire never received — the canonical inline-
+    // corruption pattern the Witness Chain is designed to prevent.
+    std::optional<Writer>           writer_;
+
+    // render_live is the sole authorised mutator of these fields; the
+    // live<> template loop chains LiveState values by move only.
+    friend LiveState render_live(const Element& root, int width,
+                                 StylePool& pool, LiveState state,
+                                 bool blocking);
+};
+
+// Render element → serialize → write to stdout, preserving stable rows
+// in scrollback. Consumes the state by value and returns the next one;
+// callers must chain by move (`state = render_live(..., std::move(state));`).
+[[nodiscard("render_live returns the next LiveState — dropping it loses the witness chain, the writer residue, and the cached canvas; the next frame will corrupt scrollback")]]
+// `blocking` = true uses a blocking writer (one-shot maya::print): the whole
+// frame is written in a single pass so a wide frame can't be truncated by a
+// non-blocking partial write that no later compose would drain.
+LiveState render_live(const Element& root, int width, StylePool& pool,
+                      LiveState state, bool blocking = false);
+
+
 
 
 LiveState render_live(const Element& root, int width, StylePool& pool,
@@ -186,6 +252,7 @@ LiveState render_live(const Element& root, int width, StylePool& pool,
 
     return st;
 }
+
 
 } // namespace detail
 

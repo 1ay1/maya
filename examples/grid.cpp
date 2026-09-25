@@ -1,3 +1,5 @@
+// jaal_grid.cpp — jaal port of examples/grid.cpp (view unchanged).
+//
 // grid.cpp — a rockbottom-shaped system dashboard in two lines
 //
 // The whole responsive story:
@@ -19,6 +21,7 @@
 //
 // Zero width arithmetic, zero tier switches, zero breakpoints. q quits.
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 
 #include <string>
@@ -92,10 +95,10 @@ struct GridDemo {
     struct Quit {};
     using Msg = std::variant<Quit>;
 
-    static Model init() { return {}; }
-    static auto update(Model, Msg) -> std::pair<Model, Cmd<Msg>> {
-        return {Model{}, Cmd<Msg>::quit()};
-    }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
+
+    static Cmd update(Model&, Quit) { return Cmd::quit(0); }
 
     static Element view(const Model&) {
         // Two lines, three layouts. The stats row restacks by itself
@@ -115,13 +118,13 @@ struct GridDemo {
         );
     }
 
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return key_map<Msg>({{'q', Quit{}}});
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({{'q', Quit{}}});
     }
 };
 
-static_assert(Program<GridDemo>, "GridDemo must satisfy the Program concept");
+static_assert(Program<GridDemo>);
 
 int main() {
-    run<GridDemo>({.title = "grid"});
+    return run<GridDemo>({.title = "grid"});
 }

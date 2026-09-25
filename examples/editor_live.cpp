@@ -1,7 +1,8 @@
-// examples/editor_live.cpp — a working interactive code editor.
+// examples/editor_live.cpp — maya's editor_live.cpp, on jaal.
 //
-//   cmake --build build --target maya_editor_live && ./build/maya_editor_live
+//   cmake --build build-jaal --target maya_jaal_editor_live && ./build-jaal/maya_jaal_editor_live
 //
+// A faithful port of examples/editor_live.cpp to the jaal runtime.
 // A real editable buffer (TextEditor) with syntax highlight, cursor, shift-
 // selection, undo/redo, and clipboard — wrapped in editor chrome (tab bar,
 // breadcrumb, status line). Type to edit; Ctrl-Q to quit.
@@ -10,6 +11,7 @@
 //        Home/End · Ctrl-Z undo · Ctrl-Y redo · Ctrl-A all · Ctrl-C/X/V ·
 //        Ctrl-Q quit.
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/text_editor.hpp>
 #include <maya/widget/editor_tab_bar.hpp>
@@ -44,17 +46,21 @@ struct App {
     struct Quit {};
     using Msg = std::variant<KeyMsg, PasteMsg, Quit>;
 
-    static Model init() {
-        Model m; m.ed.set_text(kSeed); return m;
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key, on_paste>;
+
+    static Cmd init(Model& m) {
+        m.ed.set_text(kSeed); return {};
     }
 
-    static std::pair<Model, Cmd<Msg>> update(Model m, Msg msg) {
-        if (std::holds_alternative<Quit>(msg)) return {std::move(m), Cmd<Msg>::quit()};
-        if (auto* k = std::get_if<KeyMsg>(&msg)) { if (m.ed.handle(k->ev)) m.dirty = true; }
-        if (auto* p = std::get_if<PasteMsg>(&msg)) {
-            PasteEvent pe; pe.content = p->text; m.ed.handle_paste(pe); m.dirty = true;
-        }
-        return {std::move(m), Cmd<Msg>::none()};
+    static Cmd update(Model&, Quit) { return Cmd::quit(0); }
+    static Cmd update(Model& m, KeyMsg k) {
+        if (m.ed.handle(k.ev)) m.dirty = true;
+        return {};
+    }
+    static Cmd update(Model& m, PasteMsg p) {
+        PasteEvent pe; pe.content = p.text; m.ed.handle_paste(pe); m.dirty = true;
+        return {};
     }
 
     static Element view(const Model& m) {
@@ -81,17 +87,21 @@ struct App {
         ) | grow(1);
     }
 
-    static Sub<Msg> subscribe(const Model&) {
-        return Sub<Msg>::batch(
-            Sub<Msg>::on_key([](const KeyEvent& k) -> std::optional<Msg> {
+    static Sub subscribe(const Model&) {
+        return Sub::batch(
+            Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
                 if (k.mods.ctrl && std::holds_alternative<CharKey>(k.key) &&
                     std::get<CharKey>(k.key).codepoint == 'q')
                     return Quit{};
                 return KeyMsg{k};
             }),
-            Sub<Msg>::on_paste([](std::string s) -> Msg { return PasteMsg{std::move(s)}; })
+            Sub::on(on_paste{}, [](const PasteEvent& p) -> std::optional<Msg> {
+                return PasteMsg{p.content};
+            })
         );
     }
 };
 
-int main() { run<App>({.title = "maya — live editor"}); }
+static_assert(Program<App>);
+
+int main() { return run<App>({.title = "maya — live editor"}); }

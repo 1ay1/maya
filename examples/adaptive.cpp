@@ -1,3 +1,5 @@
+// jaal_adaptive.cpp — jaal port of examples/adaptive.cpp (view unchanged).
+//
 // adaptive.cpp — pick() + clamp() + fit_col(): good at EVERY size, both axes
 //
 // Three primitives, one idea — measure, don't estimate:
@@ -20,6 +22,7 @@
 //
 // q quits.
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 
 #include <string>
@@ -64,10 +67,10 @@ struct Adaptive {
     struct Quit {};
     using Msg = std::variant<Quit>;
 
-    static Model init() { return {}; }
-    static auto update(Model, Msg) -> std::pair<Model, Cmd<Msg>> {
-        return {Model{}, Cmd<Msg>::quit()};
-    }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
+
+    static Cmd update(Model&, Quit) { return Cmd::quit(0); }
 
     static Element view(const Model&) {
         // The richest header that actually fits — measured, not breakpointed.
@@ -94,13 +97,13 @@ struct Adaptive {
         );
     }
 
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return key_map<Msg>({{'q', Quit{}}});
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({{'q', Quit{}}});
     }
 };
 
-static_assert(Program<Adaptive>, "Adaptive must satisfy the Program concept");
+static_assert(Program<Adaptive>);
 
 int main() {
-    run<Adaptive>({.title = "adaptive"});
+    return run<Adaptive>({.title = "adaptive"});
 }

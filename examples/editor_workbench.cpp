@@ -1,3 +1,5 @@
+// examples/editor_workbench.cpp — jaal port of examples/editor_workbench.cpp (view unchanged).
+//
 // examples/editor_workbench.cpp — a full IDE shell assembled from the layout
 // widgets (Workbench, ActivityBar, SplitView) + the content widgets.
 //
@@ -6,6 +8,7 @@
 // Keys: Tab switches the focused split pane, p toggles the bottom panel,
 //       b toggles the sidebar, ↑/↓ move the file-tree selection, q quits.
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/workbench.hpp>
 #include <maya/widget/activity_rail.hpp>
@@ -45,17 +48,15 @@ struct App {
     struct TabP{}; struct TogPanel{}; struct TogSide{}; struct Up{}; struct Down{}; struct Quit{};
     using Msg = std::variant<TabP, TogPanel, TogSide, Up, Down, Quit>;
 
-    static Model init() { return {}; }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
 
-    static std::pair<Model, Cmd<Msg>> update(Model m, Msg msg) {
-        if (std::holds_alternative<Quit>(msg))     return {m, Cmd<Msg>::quit()};
-        if (std::holds_alternative<TabP>(msg))     m.pane ^= 1;
-        if (std::holds_alternative<TogPanel>(msg)) m.panel = !m.panel;
-        if (std::holds_alternative<TogSide>(msg))  m.side = !m.side;
-        if (std::holds_alternative<Up>(msg))       m.sel = std::max(0, m.sel - 1);
-        if (std::holds_alternative<Down>(msg))     m.sel = std::min(6, m.sel + 1);
-        return {m, Cmd<Msg>::none()};
-    }
+    static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
+    static Cmd update(Model& m, TabP)     { m.pane ^= 1; return {}; }
+    static Cmd update(Model& m, TogPanel) { m.panel = !m.panel; return {}; }
+    static Cmd update(Model& m, TogSide)  { m.side = !m.side; return {}; }
+    static Cmd update(Model& m, Up)       { m.sel = std::max(0, m.sel - 1); return {}; }
+    static Cmd update(Model& m, Down)     { m.sel = std::min(6, m.sel + 1); return {}; }
 
     static Element view(const Model& m) {
         // activity rail
@@ -132,8 +133,8 @@ struct App {
         return wb | grow(1);
     }
 
-    static Sub<Msg> subscribe(const Model&) {
-        return key_map<Msg>({
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({
             {SpecialKey::Tab, TabP{}},
             {'p', TogPanel{}}, {'b', TogSide{}},
             {SpecialKey::Up, Up{}}, {'k', Up{}},
@@ -143,4 +144,6 @@ struct App {
     }
 };
 
-int main() { run<App>({.title = "maya editor — workbench"}); }
+static_assert(Program<App>);
+
+int main() { return run<App>({.title = "maya editor — workbench"}); }

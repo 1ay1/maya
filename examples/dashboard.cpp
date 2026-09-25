@@ -1,3 +1,12 @@
+// examples/dashboard.cpp — GENERATED from dashboard.cpp by tools/port_canvas.py.
+// Do not edit: change dashboard.cpp and re-run the tool.
+//
+// The same demo on jaal: its canvas_run() call becomes run_canvas()
+// (maya/jaal/canvas.hpp), which draws it as a `paint` element through
+// maya::Screen, so it gets the Screen's flow control (never more than one
+// frame ahead of the terminal: `q` is instant over a slow ssh link).
+//
+#include <maya/app.hpp>
 // maya — NEXUS: Cyberpunk Mission Control Dashboard
 //
 // A flashy animated data visualization dashboard with:
@@ -1134,7 +1143,7 @@ int main() {
         }
     };
 
-    (void)canvas_run(
+    return run_canvas(
         CanvasConfig{.fps = 60, .mouse = false, .mode = Mode::Fullscreen, .title = "NEXUS"},
 
         rebuild_styles,

@@ -1,69 +1,93 @@
-// counter.cpp — minimal Program example
+// examples/counter.cpp — maya running on jaal.
 //
-// Demonstrates the type-theoretic architecture:
-//   - Model is plain data (no signals, no shared state)
-//   - update() is a pure function: (Model, Msg) → Element
-//   - view() is a pure function: Model → Element (using the DSL)
-//   - subscribe() maps keys to messages declaratively
-//   - Effects are data (Cmd), never performed directly
-//   - Cmd<Msg>{} is shorthand for Cmd<Msg>::none() (no effects)
+// The first maya program on the new runtime. Same toolkit, same terminal
+// handling, same rendering — only the loop underneath is jaal's.
+//
+//   +/-      change the count
+//   space    start / stop a ticking timer (a Sub that comes and goes)
+//   q, ^C    quit
+//
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 
+#include <chrono>
+#include <string>
+#include <variant>
+
+using namespace std::chrono_literals;
 using namespace maya;
 using namespace maya::dsl;
 
 struct Counter {
-    // ── Model: plain value type ───────────────────────────────────────────
-    struct Model { int count = 0; };
+    struct Model {
+        int  count   = 0;
+        int  ticks   = 0;
+        bool ticking = false;
+        int  width   = 0;
+        int  height  = 0;
+    };
 
-    // ── Msg: closed sum type (every possible event) ───────────────────────
-    struct Increment {};
-    struct Decrement {};
-    struct Reset {};
+    struct Inc {};
+    struct Dec {};
+    struct Toggle {};
+    struct Tick {};
+    struct Resized { int w, h; };
     struct Quit {};
-    using Msg = std::variant<Increment, Decrement, Reset, Quit>;
+    using Msg = std::variant<Inc, Dec, Toggle, Tick, Resized, Quit>;
 
-    // ── init: just a Model (no startup effects needed) ───────────────────
-    static Model init() { return {}; }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key, on_resize, jaal::fx::on_signal>;
 
-    // ── update: pure state transition ────────────────────────────────────
-    // Returns {new_model, cmd}. Use {} for no effects (Cmd defaults to none).
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Increment) { return std::pair{Model{m.count + 1}, Cmd<Msg>{}}; },
-            [&](Decrement) { return std::pair{Model{m.count - 1}, Cmd<Msg>{}}; },
-            [&](Reset)     { return std::pair{Model{0}, Cmd<Msg>{}}; },
-            [](Quit)       { return std::pair{Model{}, Cmd<Msg>::quit()}; },
-        }, msg);
-    }
+    static Cmd update(Model& m, Inc)       { ++m.count; return {}; }
+    static Cmd update(Model& m, Dec)       { --m.count; return {}; }
+    static Cmd update(Model& m, Toggle)    { m.ticking = !m.ticking; return {}; }
+    static Cmd update(Model& m, Tick)      { ++m.ticks; return {}; }
+    static Cmd update(Model& m, Resized r) { m.width = r.w; m.height = r.h; return {}; }
+    static Cmd update(Model&, Quit)        { return Cmd::quit(0); }
 
-    // ── view: pure rendering with the DSL ─────────────────────────────────
     static Element view(const Model& m) {
         return v(
-            t<"Counter"> | Bold | Fg<100, 180, 255>,
-            blank_,
-            text(m.count) | Bold,
-            blank_,
-            t<"+/- to change, r to reset, q to quit"> | Dim
-        ) | pad<1> | border_<Round>;
+            t<"maya on jaal"> | Bold | Fg<100, 180, 255>,
+            text(""),
+            text("count: " + std::to_string(m.count)) | Bold,
+            text(std::string("timer: ") + (m.ticking ? "on" : "off")
+                 + "   ticks: " + std::to_string(m.ticks)),
+            text("terminal: " + std::to_string(m.width) + "x" + std::to_string(m.height)),
+            text(""),
+            t<"+/- count   space timer   q quit"> | Dim
+        ) | padding(1) | border(BorderStyle::Round);
     }
 
-    // ── subscribe: declarative key→message mapping ───────────────────────
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return key_map<Msg>({
-            {'q', Quit{}},
-            {'+', Increment{}},  {'=', Increment{}},
-            {'-', Decrement{}},  {'r', Reset{}},
-            {SpecialKey::Up,   Increment{}},
-            {SpecialKey::Down, Decrement{}},
+    // What subscribe() reads: only `ticking` decides the timer. The key and
+    // resize routers capture nothing, so they can't go stale.
+    static bool subs_key(const Model& m) { return m.ticking; }
+
+    static Sub subscribe(const Model& m) {
+        auto keys = Sub::on(on_key{}, [](const KeyEvent& e) -> std::optional<Msg> {
+            if (auto* c = std::get_if<CharKey>(&e.key)) {
+                switch (c->codepoint) {
+                    case U'+': case U'=': return Inc{};
+                    case U'-':            return Dec{};
+                    case U' ':            return Toggle{};
+                    case U'q':            return Quit{};
+                    default:              return std::nullopt;
+                }
+            }
+            return std::nullopt;
         });
+        auto resize = Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+            return Resized{r.width.raw(), r.height.raw()};
+        });
+        auto sigint = Sub::on_signal({jaal::sig::interrupt},
+                                     [](jaal::sig) -> std::optional<Msg> { return Quit{}; });
+        if (m.ticking)
+            return Sub::batch(std::move(keys), std::move(resize), std::move(sigint),
+                              Sub::every(250ms, Tick{}));
+        return Sub::batch(std::move(keys), std::move(resize), std::move(sigint));
     }
 };
 
-// Compile-time proof: Counter satisfies Program.
-static_assert(Program<Counter>, "Counter must satisfy the Program concept");
-
 int main() {
-    run<Counter>({.title = "counter"});
+    return run<Counter>({.title = "maya on jaal"});
 }

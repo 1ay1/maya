@@ -1,3 +1,12 @@
+// examples/spectrum.cpp — GENERATED from spectrum.cpp by tools/port_canvas.py.
+// Do not edit: change spectrum.cpp and re-run the tool.
+//
+// The same demo on jaal: its canvas_run() call becomes run_canvas()
+// (maya/jaal/canvas.hpp), which draws it as a `paint` element through
+// maya::Screen, so it gets the Screen's flow control (never more than one
+// frame ahead of the terminal: `q` is instant over a slow ssh link).
+//
+#include <maya/app.hpp>
 // maya -- Audio Spectrum Analyzer
 //
 // Simulated real-time spectrum analyzer with four visualization modes.
@@ -646,7 +655,7 @@ int main() {
     std::fill(std::begin(g_peaks),    std::end(g_peaks),    0.0f);
     std::fill(std::begin(g_peak_vel), std::end(g_peak_vel), 0.0f);
 
-    (void)canvas_run(
+    return run_canvas(
         CanvasConfig{.fps = 60, .mouse = false, .mode = Mode::Fullscreen, .title = "spectrum"},
         rebuild,
         handle,

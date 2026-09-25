@@ -1,5 +1,9 @@
-// agent_stats.cpp — a tabbed, animated "AI agent stats" dashboard laid out
-// with viewport().
+// jaal_agent_stats.cpp — maya's agent_stats.cpp, on jaal.
+//
+// A faithful port of examples/agent_stats.cpp to the jaal runtime: update()
+// is split per message case and Cmd/Sub are jaal's; view() is unchanged.
+//
+// A tabbed, animated "AI agent stats" dashboard laid out with viewport().
 //
 // The star of the show is maya::viewport(): a purely-layout responsive grid
 // that fans its cards into 1/2/3/… columns as the terminal widens, keeps
@@ -24,6 +28,7 @@
 #include <string>
 #include <vector>
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/element/grid.hpp>
 #include <maya/widget/bar_chart.hpp>
@@ -488,27 +493,24 @@ struct AgentStats {
     using Msg = std::variant<Tick, NextTab, PrevTab, GotoTab, Wider, Narrower,
                              ToggleFlow, Scroll, Wheel, Resize, Quit>;
 
-    static Model init() { return {}; }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
 
     static int viewport_h(const Model& m) { return std::max(4, m.term_h - 7); }
     static constexpr int kBar = 1, kGap = 1, kPad = 2;
     static int grid_w(const Model& m) { return std::max(1, m.term_w - kPad - kGap - kBar); }
 
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Tick)     { m.stats.tick(0.12f); return std::pair{m, Cmd<Msg>{}}; },
-            [&](NextTab)  { m.tab = (m.tab + 1) % kTabCount; m.scroll.y = 0; return std::pair{m, Cmd<Msg>{}}; },
-            [&](PrevTab)  { m.tab = (m.tab + kTabCount - 1) % kTabCount; m.scroll.y = 0; return std::pair{m, Cmd<Msg>{}}; },
-            [&](GotoTab g){ if (g.i >= 0 && g.i < kTabCount) { m.tab = g.i; m.scroll.y = 0; } return std::pair{m, Cmd<Msg>{}}; },
-            [&](Wider)    { m.ceiling = std::min(m.ceiling + 4, 90); return std::pair{m, Cmd<Msg>{}}; },
-            [&](Narrower) { m.ceiling = std::max(m.ceiling - 4, 16); return std::pair{m, Cmd<Msg>{}}; },
-            [&](ToggleFlow){ m.flow = (m.flow == Flow::Row) ? Flow::Column : Flow::Row; return std::pair{m, Cmd<Msg>{}}; },
-            [&](Scroll sm){ (void)m.scroll.handle(sm.key, viewport_h(m)); return std::pair{m, Cmd<Msg>{}}; },
-            [&](Wheel w)  { (void)m.scroll.handle(w.mouse); return std::pair{m, Cmd<Msg>{}}; },
-            [&](Resize r) { m.term_w = r.size.width.value; m.term_h = r.size.height.value; return std::pair{m, Cmd<Msg>{}}; },
-            [](Quit)      { return std::pair{Model{}, Cmd<Msg>::quit()}; },
-        }, msg);
-    }
+    static Cmd update(Model& m, Tick)      { m.stats.tick(0.12f); return {}; }
+    static Cmd update(Model& m, NextTab)   { m.tab = (m.tab + 1) % kTabCount; m.scroll.y = 0; return {}; }
+    static Cmd update(Model& m, PrevTab)   { m.tab = (m.tab + kTabCount - 1) % kTabCount; m.scroll.y = 0; return {}; }
+    static Cmd update(Model& m, GotoTab g) { if (g.i >= 0 && g.i < kTabCount) { m.tab = g.i; m.scroll.y = 0; } return {}; }
+    static Cmd update(Model& m, Wider)     { m.ceiling = std::min(m.ceiling + 4, 90); return {}; }
+    static Cmd update(Model& m, Narrower)  { m.ceiling = std::max(m.ceiling - 4, 16); return {}; }
+    static Cmd update(Model& m, ToggleFlow){ m.flow = (m.flow == Flow::Row) ? Flow::Column : Flow::Row; return {}; }
+    static Cmd update(Model& m, Scroll sm) { (void)m.scroll.handle(sm.key, viewport_h(m)); return {}; }
+    static Cmd update(Model& m, Wheel w)   { (void)m.scroll.handle(w.mouse); return {}; }
+    static Cmd update(Model& m, Resize r)  { m.term_w = r.size.width.value; m.term_h = r.size.height.value; return {}; }
+    static Cmd update(Model& m, Quit)      { m = Model{}; return Cmd::quit(0); }
 
     static Element view(const Model& m) {
         // Header: title + tab strip.
@@ -569,8 +571,8 @@ struct AgentStats {
         );
     }
 
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        auto keys = Sub<Msg>::on_key([](const KeyEvent& k) -> std::optional<Msg> {
+    static Sub subscribe(const Model&) {
+        auto keys = Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
             if (key_is(k, 'q')) return Quit{};
             if (key_is(k, 'f')) return ToggleFlow{};
             if (key_is(k, '+') || key_is(k, '=')) return Wider{};
@@ -582,20 +584,22 @@ struct AgentStats {
                 if (key_is(k, c)) return GotoTab{c - '1'};
             return Scroll{k};
         });
-        auto wheel  = Sub<Msg>::on_mouse([](const MouseEvent& me) -> std::optional<Msg> {
+        auto wheel  = Sub::on(on_mouse{}, [](const MouseEvent& me) -> std::optional<Msg> {
             return Wheel{me};
         });
-        auto resize = Sub<Msg>::on_resize([](Size sz) -> Msg { return Resize{sz}; });
-        auto tick   = Sub<Msg>::every(std::chrono::milliseconds{120}, Tick{});
-        return Sub<Msg>::batch(std::move(keys), std::move(wheel),
-                               std::move(resize), std::move(tick));
+        auto resize = Sub::on(on_resize{}, [](const ResizeEvent& r) -> std::optional<Msg> {
+            return Resize{Size{r.width, r.height}};
+        });
+        auto tick   = Sub::every(std::chrono::milliseconds{120}, Tick{});
+        return Sub::batch(std::move(keys), std::move(wheel),
+                          std::move(resize), std::move(tick));
     }
 };
 
-static_assert(Program<AgentStats>, "AgentStats must satisfy the Program concept");
+static_assert(Program<AgentStats>, "AgentStats must satisfy the App concept");
 
 } // namespace
 
 int main() {
-    run<AgentStats>({.title = "agent stats", .mouse = true});
+    return run<AgentStats>({.title = "agent stats", .mouse = true});
 }

@@ -1,3 +1,12 @@
+// examples/space3d.cpp — GENERATED from space3d.cpp by tools/port_canvas.py.
+// Do not edit: change space3d.cpp and re-run the tool.
+//
+// The same demo on jaal: its canvas_run() call becomes run_canvas()
+// (maya/jaal/canvas.hpp), which draws it as a `paint` element through
+// maya::Screen, so it gets the Screen's flow control (never more than one
+// frame ahead of the terminal: `q` is instant over a slow ssh link).
+//
+#include <maya/app.hpp>
 // maya — TERRAIN: 3D flight over raymarched terrain
 //
 // Per-pixel raymarched heightmap terrain with water reflections, ambient
@@ -830,7 +839,7 @@ static void paint(Canvas& canvas, int w, int h) {
 
 int main() {
     reset_game();
-    (void)canvas_run(
+    return run_canvas(
         CanvasConfig{.fps = 30, .mouse = false, .mode = Mode::Fullscreen, .auto_clear = false, .title = "terrain"},
         rebuild, handle, paint
     );

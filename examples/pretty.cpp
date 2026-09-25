@@ -1,3 +1,5 @@
+// jaal_pretty.cpp — jaal port of examples/pretty.cpp (view unchanged).
+//
 // pretty.cpp — the pretty + responsive toolkit, live
 //
 // Resize your terminal while this runs. Everything re-solves:
@@ -9,6 +11,7 @@
 //
 // Not one hand-computed breakpoint or byte count in the file.
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 
 using namespace maya;
@@ -44,11 +47,10 @@ struct Pretty {
     struct Quit {};
     using Msg = std::variant<Quit>;
 
-    static Model init() { return {}; }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
 
-    static auto update(Model, Msg) -> std::pair<Model, Cmd<Msg>> {
-        return {Model{}, Cmd<Msg>::quit()};
-    }
+    static Cmd update(Model&, Quit) { return Cmd::quit(0); }
 
     static Element view(const Model&) {
         // Header sheds chips right-to-left as the terminal narrows.
@@ -87,13 +89,13 @@ struct Pretty {
         );
     }
 
-    static auto subscribe(const Model&) -> Sub<Msg> {
-        return key_map<Msg>({{'q', Quit{}}});
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({{'q', Quit{}}});
     }
 };
 
-static_assert(Program<Pretty>, "Pretty must satisfy the Program concept");
+static_assert(Program<Pretty>);
 
 int main() {
-    run<Pretty>({.title = "pretty"});
+    return run<Pretty>({.title = "pretty"});
 }

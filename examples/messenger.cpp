@@ -1,6 +1,11 @@
-// messenger.cpp — multi-channel terminal chat
+// jaal_messenger.cpp — maya's messenger.cpp (multi-channel terminal chat), on jaal.
 //
-// Built on maya's Program (Elm-shape) architecture. Simulates a small group
+// A faithful port of examples/messenger.cpp to the jaal runtime. view() is
+// unchanged; only the program shape (init/update mutate the model in place,
+// one update per case, jaal Cmd/Sub with on_key/on_mouse/on_resize routers)
+// differs.
+//
+// Originally built on maya's Program (Elm-shape) architecture. Simulates a small group
 // of peers chatting across four channels. Demonstrates:
 //
 //   - Pure update() / view() / subscribe() — no Signal, no mutable globals
@@ -43,6 +48,7 @@
 //     /who                        list members as a system message
 //     /quit                       exit
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/overlay.hpp>
 #include <maya/widget/scrollbar.hpp>
@@ -308,10 +314,12 @@ struct Messenger {
         OpenJumper, CloseJumper, JumperChar, JumperBack, JumperUp, JumperDown, JumperPick,
         OpenHelp, CloseHelp, Resize, RawMouse, ToggleRightPanel, Quit>;
 
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key, on_mouse, on_resize>;
+
     // -- init ---------------------------------------------------------------
 
-    static Model init() {
-        Model m;
+    static Cmd init(Model& m) {
         m.users    = seed_users();
         m.channels = seed_channels();
         m.script   = seed_script();
@@ -332,7 +340,7 @@ struct Messenger {
             sys.timestamp  = -10.f;
             ch.messages.push_back(std::move(sys));
         }
-        return m;
+        return {};
     }
 
     // -- Pure helpers -------------------------------------------------------
@@ -712,68 +720,76 @@ struct Messenger {
 
     // -- update -------------------------------------------------------------
 
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return std::visit(overload{
-            [&](Tick) {
+    static Cmd update(Model& m, Tick) {
                 tick_bots(m, 0.05f);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](CharIn c) {
+                return {};
+    }
+
+    static Cmd update(Model& m, CharIn c) {
                 if (m.composer.size() < 500) {
                     encode_utf8(c.cp, m.composer, m.cursor);
                     char32_t cp = c.cp;
                     int len = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
                     m.cursor += len;
                 }
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](Backspace) {
+                return {};
+    }
+
+    static Cmd update(Model& m, Backspace) {
                 if (m.cursor > 0) {
                     int p = utf8_prev(m.composer, m.cursor);
                     m.composer.erase(p, m.cursor - p);
                     m.cursor = p;
                 }
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](DeleteWord) {
+                return {};
+    }
+
+    static Cmd update(Model& m, DeleteWord) {
                 int p = prev_word(m.composer, m.cursor);
                 m.composer.erase(p, m.cursor - p);
                 m.cursor = p;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](DeleteToStart) {
+                return {};
+    }
+
+    static Cmd update(Model& m, DeleteToStart) {
                 m.composer.erase(0, m.cursor);
                 m.cursor = 0;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](DeleteToEnd) {
+                return {};
+    }
+
+    static Cmd update(Model& m, DeleteToEnd) {
                 m.composer.erase(m.cursor);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](CursorLeft) {
+                return {};
+    }
+
+    static Cmd update(Model& m, CursorLeft) {
                 m.cursor = utf8_prev(m.composer, m.cursor);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](CursorRight) {
+                return {};
+    }
+
+    static Cmd update(Model& m, CursorRight) {
                 m.cursor = utf8_next(m.composer, m.cursor);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](CursorHome) {
+                return {};
+    }
+
+    static Cmd update(Model& m, CursorHome) {
                 m.cursor = 0;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](CursorEnd) {
+                return {};
+    }
+
+    static Cmd update(Model& m, CursorEnd) {
                 m.cursor = int(m.composer.size());
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](SendComposer) {
+                return {};
+    }
+
+    static Cmd update(Model& m, SendComposer) {
                 auto& s = m.composer;
                 while (!s.empty() && s.front() == ' ') s.erase(s.begin());
                 while (!s.empty() && s.back()  == ' ') s.pop_back();
-                if (s.empty()) return std::pair{m, Cmd<Msg>{}};
+                if (s.empty()) return {};
 
                 if (s == "/quit" || s == "/exit") {
-                    return std::pair{Model{}, Cmd<Msg>::quit()};
+                    return Cmd::quit(0);
                 }
 
                 if (s[0] == '/') {
@@ -784,93 +800,109 @@ struct Messenger {
                 s.clear();
                 m.cursor = 0;
                 m.msg_scroll.y = kBottomAnchor;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](NextChannel) {
+                return {};
+    }
+
+    static Cmd update(Model& m, NextChannel) {
                 int n = int(m.channels.size());
                 m.active_channel = (m.active_channel + 1) % n;
                 m.channels[m.active_channel].unread = 0;
                 m.msg_scroll.y = kBottomAnchor;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](PrevChannel) {
+                return {};
+    }
+
+    static Cmd update(Model& m, PrevChannel) {
                 int n = int(m.channels.size());
                 m.active_channel = (m.active_channel - 1 + n) % n;
                 m.channels[m.active_channel].unread = 0;
                 m.msg_scroll.y = kBottomAnchor;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ClearChannel) {
+                return {};
+    }
+
+    static Cmd update(Model& m, ClearChannel) {
                 auto& ch = m.channels[m.active_channel];
                 ch.messages.clear();
                 push_system(ch, "channel cleared", m.clock);
                 m.msg_scroll.y = kBottomAnchor;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ScrollUp) {
+                return {};
+    }
+
+    static Cmd update(Model& m, ScrollUp) {
                 m.msg_scroll.scroll_by(0, -1);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ScrollDown) {
+                return {};
+    }
+
+    static Cmd update(Model& m, ScrollDown) {
                 m.msg_scroll.scroll_by(0, +1);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ScrollPageUp) {
+                return {};
+    }
+
+    static Cmd update(Model& m, ScrollPageUp) {
                 int page = std::max(1, m.msg_scroll.viewport_bounds.h - 2);
                 m.msg_scroll.scroll_by(0, -page);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ScrollPageDn) {
+                return {};
+    }
+
+    static Cmd update(Model& m, ScrollPageDn) {
                 int page = std::max(1, m.msg_scroll.viewport_bounds.h - 2);
                 m.msg_scroll.scroll_by(0, +page);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ScrollLatest) {
+                return {};
+    }
+
+    static Cmd update(Model& m, ScrollLatest) {
                 m.msg_scroll.y = kBottomAnchor;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](HelpScroll s) {
+                return {};
+    }
+
+    static Cmd update(Model& m, HelpScroll s) {
                 m.help_scroll.scroll_by(0, s.dy);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](OpenJumper) {
+                return {};
+    }
+
+    static Cmd update(Model& m, OpenJumper) {
                 m.jumper_open   = true;
                 m.jumper_filter.clear();
                 m.jumper_index  = 0;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](CloseJumper) {
+                return {};
+    }
+
+    static Cmd update(Model& m, CloseJumper) {
                 m.jumper_open = false;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](JumperChar c) {
+                return {};
+    }
+
+    static Cmd update(Model& m, JumperChar c) {
                 if (m.jumper_filter.size() < 32) {
                     encode_utf8(c.cp, m.jumper_filter,
                                 int(m.jumper_filter.size()));
                 }
                 m.jumper_index = 0;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](JumperBack) {
+                return {};
+    }
+
+    static Cmd update(Model& m, JumperBack) {
                 if (!m.jumper_filter.empty()) {
                     int p = utf8_prev(m.jumper_filter,
                                       int(m.jumper_filter.size()));
                     m.jumper_filter.erase(p);
                 }
                 m.jumper_index = 0;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](JumperUp) {
+                return {};
+    }
+
+    static Cmd update(Model& m, JumperUp) {
                 m.jumper_index = std::max(0, m.jumper_index - 1);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](JumperDown) {
+                return {};
+    }
+
+    static Cmd update(Model& m, JumperDown) {
                 int n = int(jumper_matches(m).size());
                 m.jumper_index = std::min(std::max(0, n - 1),
                                           m.jumper_index + 1);
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](JumperPick) {
+                return {};
+    }
+
+    static Cmd update(Model& m, JumperPick) {
                 auto matches = jumper_matches(m);
                 if (!matches.empty()) {
                     int idx = std::clamp(m.jumper_index, 0,
@@ -880,16 +912,18 @@ struct Messenger {
                     m.msg_scroll.y = kBottomAnchor;
                 }
                 m.jumper_open = false;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](OpenHelp)  { m.help_open = true;  return std::pair{m, Cmd<Msg>{}}; },
-            [&](CloseHelp) { m.help_open = false; return std::pair{m, Cmd<Msg>{}}; },
-            [&](Resize r) {
+                return {};
+    }
+
+    static Cmd update(Model& m, OpenHelp)  { m.help_open = true;  return {}; }
+    static Cmd update(Model& m, CloseHelp) { m.help_open = false; return {}; }
+    static Cmd update(Model& m, Resize r) {
                 m.term_w = r.w;
                 m.term_h = r.h;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](RawMouse rm) {
+                return {};
+    }
+
+    static Cmd update(Model& m, RawMouse rm) {
                 const MouseEvent& me = rm.ev;
                 int mx = me.x.value - 1;
                 int my = me.y.value - 1;
@@ -897,7 +931,7 @@ struct Messenger {
                 // ── 1) Continue an in-progress drag on the messages bar ──
                 if (m.msg_scroll.is_dragging()) {
                     (void)m.msg_scroll.handle(me);
-                    return std::pair{m, Cmd<Msg>{}};
+                    return {};
                 }
 
                 // ── 2) Wheel — route to the panel under the cursor ──────
@@ -917,7 +951,7 @@ struct Messenger {
                     } else if (m.msg_scroll.viewport_bounds.contains(mx, my)) {
                         m.msg_scroll.scroll_by(0, dy);
                     }
-                    return std::pair{m, Cmd<Msg>{}};
+                    return {};
                 }
 
                 // ── 3) Press on a scrollbar → start drag (handled by state) ─
@@ -926,7 +960,7 @@ struct Messenger {
 
                     if (m.msg_scroll.bar_v_bounds.contains(mx, my)) {
                         (void)m.msg_scroll.handle(me);
-                        return std::pair{m, Cmd<Msg>{}};
+                        return {};
                     }
 
                     // ── 3a) Click ✕ in top-right of the right panel → close
@@ -937,7 +971,7 @@ struct Messenger {
                             && mx >= rvb.x + rvb.w - 4
                             && mx <= rvb.x + rvb.w) {
                             m.right_panel_open = false;
-                            return std::pair{m, Cmd<Msg>{}};
+                            return {};
                         }
                     }
 
@@ -955,7 +989,7 @@ struct Messenger {
                         if (!show_right && m.term_w >= 110
                             && my < 2 && mx >= middle_left && mx < middle_right) {
                             m.right_panel_open = true;
-                            return std::pair{m, Cmd<Msg>{}};
+                            return {};
                         }
                     }
 
@@ -973,7 +1007,7 @@ struct Messenger {
                                             m.active_channel = int(ci);
                                             m.channels[ci].unread = 0;
                                             m.msg_scroll.y = kBottomAnchor;
-                                            return std::pair{m, Cmd<Msg>{}};
+                                            return {};
                                         }
                                     }
                                 }
@@ -1003,7 +1037,7 @@ struct Messenger {
                                 m.active_channel = int(i);
                                 m.channels[i].unread = 0;
                                 m.msg_scroll.y = kBottomAnchor;
-                                return std::pair{m, Cmd<Msg>{}};
+                                return {};
                             }
                             y -= 3;
                         }
@@ -1014,7 +1048,7 @@ struct Messenger {
                                 m.active_channel = int(i);
                                 m.channels[i].unread = 0;
                                 m.msg_scroll.y = kBottomAnchor;
-                                return std::pair{m, Cmd<Msg>{}};
+                                return {};
                             }
                             y -= 3;
                         }
@@ -1025,15 +1059,15 @@ struct Messenger {
                 if (me.kind == MouseEventKind::Release) {
                     (void)m.msg_scroll.handle(me);
                 }
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [&](ToggleRightPanel) {
-                m.right_panel_open = !m.right_panel_open;
-                return std::pair{m, Cmd<Msg>{}};
-            },
-            [](Quit) { return std::pair{Model{}, Cmd<Msg>::quit()}; },
-        }, msg);
+                return {};
     }
+
+    static Cmd update(Model& m, ToggleRightPanel) {
+                m.right_panel_open = !m.right_panel_open;
+                return {};
+    }
+
+    static Cmd update(Model&, Quit) { return Cmd::quit(0); }
 
     // ─── View builders ─────────────────────────────────────────────────────
 
@@ -2199,11 +2233,11 @@ struct Messenger {
 
     // ─── subscribe ─────────────────────────────────────────────────────────
 
-    static auto subscribe(const Model& m) -> Sub<Msg> {
+    static Sub subscribe(const Model& m) {
         const bool jumper_open = m.jumper_open;
         const bool help_open   = m.help_open;
 
-        auto keys = Sub<Msg>::on_key(
+        auto keys = Sub::on(on_key{},
             [jumper_open, help_open](const KeyEvent& k) -> std::optional<Msg> {
                 // ── Help: arrows scroll, escape/other keys close ──
                 if (help_open) {
@@ -2293,21 +2327,21 @@ struct Messenger {
                 return std::nullopt;
             });
 
-        auto resize = Sub<Msg>::on_resize(
-            [](Size sz) -> Msg {
-                return Msg{Resize{sz.width.value, sz.height.value}};
+        auto resize = Sub::on(on_resize{},
+            [](const ResizeEvent& r) -> std::optional<Msg> {
+                return Msg{Resize{r.width.value, r.height.value}};
             });
 
-        auto mouse = Sub<Msg>::on_mouse(
+        auto mouse = Sub::on(on_mouse{},
             [](const MouseEvent& me) -> std::optional<Msg> {
                 return Msg{RawMouse{me}};
             });
 
-        return Sub<Msg>::batch(
+        return Sub::batch(
             std::move(keys),
             std::move(mouse),
             std::move(resize),
-            Sub<Msg>::every(50ms, Msg{Tick{}})
+            Sub::every(50ms, Tick{})
         );
     }
 };
@@ -2315,7 +2349,7 @@ struct Messenger {
 static_assert(Program<Messenger>);
 
 int main() {
-    run<Messenger>({
+    return run<Messenger>({
         .title = "maya/chat",
         .fps   = 30,
         .mouse = true,

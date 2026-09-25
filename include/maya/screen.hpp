@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "app/app.hpp"
+#include "render/scrollback_ledger.hpp"
 
 namespace maya {
 
@@ -62,32 +63,14 @@ struct Presented {
 
 /// Device configuration: only what the TERMINAL needs. (Frame rate, key
 /// maps and quitting are the runtime's business.)
-struct TermConfig {
-    std::string_view title             = "";
-    Mode             mode              = Mode::Fullscreen;
-    bool             mouse             = false;
-    bool             hover_motion      = false;
-    RenderBackend    backend           = RenderBackend::Ansi;
-    Theme            theme             = theme::native;
-    bool             enhanced_keyboard = true;
-};
-
 class Screen {
 public:
     using clock = Presented::clock;
 
     /// Take the terminal: raw mode, alt screen or inline region, capability
     /// probes. The destructor gives it back, on every path.
-    [[nodiscard]] static Result<Screen> open(const TermConfig& cfg) {
-        RunConfig rc{};
-        rc.title             = cfg.title;
-        rc.mode              = cfg.mode;
-        rc.mouse             = cfg.mouse;
-        rc.hover_motion      = cfg.hover_motion;
-        rc.backend           = cfg.backend;
-        rc.theme             = cfg.theme;
-        rc.enhanced_keyboard = cfg.enhanced_keyboard;
-        auto rt = detail::Runtime::create(rc);
+    [[nodiscard]] static Result<Screen> open(const Options& cfg) {
+        auto rt = detail::Runtime::create(cfg);
         if (!rt) return std::unexpected(rt.error());
         Screen t{std::move(*rt)};
         // Published only now: this is the address that lives (see
@@ -155,12 +138,6 @@ public:
     /// they are BUILT, so a tree built before this call has already made
     /// its requests; to keep them, build through present(build) instead.
     Presented present(const Element& root) {
-        // maya::set_mouse() from a handler: applied here, before the frame,
-        // so every runtime honours it without reading the flag itself.
-        if (detail::mouse_request >= 0) {
-            rt_->apply_mouse(detail::mouse_request != 0);
-            detail::mouse_request = -1;
-        }
         Element framed = detail::apply_theme_canvas(root, rt_->theme(), rt_->size().width.value);
         (void)rt_->render(framed);
         send_probe();

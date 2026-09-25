@@ -1,3 +1,12 @@
+// examples/fps.cpp — GENERATED from fps.cpp by tools/port_canvas.py.
+// Do not edit: change fps.cpp and re-run the tool.
+//
+// The same demo on jaal: its canvas_run() call becomes run_canvas()
+// (maya/jaal/canvas.hpp), which draws it as a `paint` element through
+// maya::Screen, so it gets the Screen's flow control (never more than one
+// frame ahead of the terminal: `q` is instant over a slow ssh link).
+//
+#include <maya/app.hpp>
 // maya — FPS: Wolfenstein-style raycaster
 //
 // DDA raycasting with real brick-textured walls, mortar lines, stone floors,
@@ -1226,7 +1235,7 @@ int main() {
     spawn_enemies();
     spawn_pickups();
 
-    (void)canvas_run(
+    return run_canvas(
         CanvasConfig{.fps = 30, .mouse = false, .mode = Mode::Fullscreen, .auto_clear = false, .title = "fps"},
         rebuild, handle, paint
     );

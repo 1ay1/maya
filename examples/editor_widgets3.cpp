@@ -1,3 +1,5 @@
+// examples/editor_widgets3.cpp — jaal port of examples/editor_widgets3.cpp (view unchanged).
+//
 // examples/editor_widgets3.cpp — third showcase browser (decorations, lenses,
 // status readouts, doc rendering). Keeps the other browsers small.
 //
@@ -5,6 +7,7 @@
 //
 //   ← / → (h/l)  switch      ↑ / ↓ (k/j)  interact      q  quit
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/widget/code_lens.hpp>
 #include <maya/widget/snippet_preview.hpp>
@@ -51,15 +54,14 @@ struct Show {
     using Msg = std::variant<Prev, Next, Up, Down, Quit>;
     static constexpr int N = static_cast<int>(kNames.size());
 
-    static Model init() { return {}; }
-    static std::pair<Model, Cmd<Msg>> update(Model m, Msg msg) {
-        if (std::holds_alternative<Quit>(msg)) return {m, Cmd<Msg>::quit()};
-        if (std::holds_alternative<Prev>(msg)) { m.page = (m.page + N - 1) % N; m.k = 0; }
-        if (std::holds_alternative<Next>(msg)) { m.page = (m.page + 1) % N; m.k = 0; }
-        if (std::holds_alternative<Up>(msg))   m.k = std::max(0, m.k - 1);
-        if (std::holds_alternative<Down>(msg)) m.k += 1;
-        return {m, Cmd<Msg>::none()};
-    }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
+
+    static Cmd update(Model&, Quit)   { return Cmd::quit(0); }
+    static Cmd update(Model& m, Prev) { m.page = (m.page + N - 1) % N; m.k = 0; return {}; }
+    static Cmd update(Model& m, Next) { m.page = (m.page + 1) % N; m.k = 0; return {}; }
+    static Cmd update(Model& m, Up)   { m.k = std::max(0, m.k - 1); return {}; }
+    static Cmd update(Model& m, Down) { m.k += 1; return {}; }
 
     static Element widget(int page, int k) {
         switch (page) {
@@ -193,8 +195,8 @@ struct Show {
              | padding(1, 3, 1, 3) | grow(1);
     }
 
-    static Sub<Msg> subscribe(const Model&) {
-        return key_map<Msg>({
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({
             {SpecialKey::Left, Prev{}},  {'h', Prev{}},
             {SpecialKey::Right, Next{}}, {'l', Next{}},
             {SpecialKey::Up, Up{}},      {'k', Up{}},
@@ -204,4 +206,6 @@ struct Show {
     }
 };
 
-int main() { run<Show>({.title = "maya editor widgets III"}); }
+static_assert(Program<Show>);
+
+int main() { return run<Show>({.title = "maya editor widgets III"}); }

@@ -1,3 +1,5 @@
+// examples/floating.cpp — jaal port of examples/floating.cpp (view unchanged).
+//
 // examples/floating.cpp — the caret-anchored floating overlay system.
 //
 //   cmake --build build --target maya_floating && ./build/maya_floating
@@ -6,6 +8,7 @@
 // it, flipping above when near the bottom and clamping at the screen edges.
 // Space cycles the side (Below/Above/Right/Left). q quits.
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 #include <maya/app/floating.hpp>
 
@@ -19,13 +22,12 @@ struct App {
     struct Move { int dx, dy; }; struct Cycle {}; struct Quit {};
     using Msg = std::variant<Move, Cycle, Quit>;
 
-    static Model init() { return {}; }
-    static std::pair<Model, Cmd<Msg>> update(Model m, Msg msg) {
-        if (std::holds_alternative<Quit>(msg)) return {m, Cmd<Msg>::quit()};
-        if (auto* mv = std::get_if<Move>(&msg)) { m.cx = std::max(0, m.cx + mv->dx); m.cy = std::max(0, m.cy + mv->dy); }
-        if (std::holds_alternative<Cycle>(msg)) m.side = (m.side + 1) % 4;
-        return {m, Cmd<Msg>::none()};
-    }
+    using Cmd = jaal::Cmd<Msg>;
+    using Sub = jaal::Sub<Msg, on_key>;
+
+    static Cmd update(Model&, Quit)       { return Cmd::quit(0); }
+    static Cmd update(Model& m, Move mv)  { m.cx = std::max(0, m.cx + mv.dx); m.cy = std::max(0, m.cy + mv.dy); return {}; }
+    static Cmd update(Model& m, Cycle)    { m.side = (m.side + 1) % 4; return {}; }
 
     static Element view(const Model& m) {
         // background: a caret marker at (cx,cy) via the same absolute-placement helper
@@ -50,8 +52,8 @@ struct App {
               .side = sides[m.side], .gap = 0, .flip = true, .clamp = true });
     }
 
-    static Sub<Msg> subscribe(const Model&) {
-        return key_map<Msg>({
+    static Sub subscribe(const Model&) {
+        return keys<Sub>({
             {SpecialKey::Left,  Move{-1, 0}}, {SpecialKey::Right, Move{1, 0}},
             {SpecialKey::Up,    Move{0, -1}}, {SpecialKey::Down,  Move{0, 1}},
             {' ', Cycle{}}, {'q', Quit{}}, {SpecialKey::Escape, Quit{}},
@@ -64,4 +66,6 @@ struct App {
     }
 };
 
-int main() { run<App>({.title = "maya floating overlays"}); }
+static_assert(Program<App>);
+
+int main() { return run<App>({.title = "maya floating overlays"}); }

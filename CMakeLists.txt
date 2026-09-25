@@ -185,7 +185,7 @@ endif()
 set(MAYA_LIB_SOURCES
     src/app/app.cpp
     src/app/events.cpp
-    src/app/inline.cpp
+    src/render/print.cpp
     src/element/builder.cpp
     src/element/text.cpp
     src/terminal/ansi.cpp
@@ -397,66 +397,51 @@ else()
     endif()
 endif()
 
-# ── jaal: the runtime maya is being rebuilt on ─────────────────────────
-# third_party/jaal is a typed Elm runtime (loop, tasks, streams, faults,
-# replay) that replaces maya's hand-rolled one in app.hpp. It needs C++26
-# (structured binding packs), while maya can still fall back to C++23 on an
-# old toolchain, so it's opt-in and only offered where C++26 is available.
-# Until the migration is complete it builds BESIDE the existing runtime:
-# nothing in maya depends on it unless MAYA_WITH_JAAL is on.
-option(MAYA_WITH_JAAL "Build maya's jaal host (the new runtime)" OFF)
-if(MAYA_WITH_JAAL)
+# ── maya::app: maya on jaal ─────────────────────────────────────────────
+# jaal (third_party/jaal) is the runtime; maya is the view layer and the
+# terminal device. The `maya` library knows nothing of jaal; `maya::app`
+# (maya + jaal + <maya/app.hpp>) is what a program links. jaal needs C++26.
+# docs/internals/design.md.
+option(MAYA_BUILD_APP "Build maya::app (needs C++26 and third_party/jaal)" ON)
+if(MAYA_BUILD_APP)
     # A CMake older than the compiler (CMake 3.31 with AppleClang 21) doesn't
     # LIST cxx_std_26 even though the compiler takes -std=c++2c, so asking
     # CMake is the wrong test: probe the flag itself. jaal's own build does
     # the same (third_party/jaal/CMakeLists.txt, JAAL_STD_FLAG).
-    set(MAYA_JAAL_STD_FLAG "")
+    set(MAYA_APP_STD_FLAG "")
     if(NOT "cxx_std_26" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
         include(CheckCXXCompilerFlag)
         check_cxx_compiler_flag("-std=c++2c" MAYA_HAS_CXX2C)
         if(NOT MAYA_HAS_CXX2C)
-            message(FATAL_ERROR "MAYA_WITH_JAAL needs C++26; this compiler "
+            message(FATAL_ERROR "maya::app needs C++26; this compiler "
                                 "(${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}) "
-                                "accepts neither cxx_std_26 nor -std=c++2c.")
+                                "accepts neither cxx_std_26 nor -std=c++2c. Configure with -DMAYA_BUILD_APP=OFF.")
         endif()
-        set(MAYA_JAAL_STD_FLAG "-std=c++2c")
+        set(MAYA_APP_STD_FLAG "-std=c++2c")
     endif()
     if(NOT EXISTS ${PROJECT_SOURCE_DIR}/third_party/jaal/CMakeLists.txt)
-        message(FATAL_ERROR "MAYA_WITH_JAAL: third_party/jaal is empty. Run: "
+        message(FATAL_ERROR "maya::app: third_party/jaal is empty. Run: "
                             "git submodule update --init third_party/jaal")
     endif()
     set(JAAL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     add_subdirectory(third_party/jaal EXCLUDE_FROM_ALL)
-    # The adapter is its OWN target: maya (view + Screen device) stays a
-    # C++23 library with no idea jaal exists, and only code that includes
-    # maya/jaal/host.hpp pays for jaal and its C++26 requirement.
-    # docs/internals/runtime-free.md: maya never depends on the runtime.
-    add_library(maya_jaal INTERFACE)
-    add_library(maya::jaal ALIAS maya_jaal)
-    target_link_libraries(maya_jaal INTERFACE maya jaal::jaal)
-    target_compile_definitions(maya_jaal INTERFACE MAYA_WITH_JAAL=1)
-    if(MAYA_JAAL_STD_FLAG)
-        target_compile_options(maya_jaal INTERFACE ${MAYA_JAAL_STD_FLAG})
-        target_compile_options(jaal PRIVATE ${MAYA_JAAL_STD_FLAG})
+    add_library(maya_app INTERFACE)
+    add_library(maya::app ALIAS maya_app)
+    target_link_libraries(maya_app INTERFACE maya jaal::jaal)
+    if(MAYA_APP_STD_FLAG)
+        target_compile_options(maya_app INTERFACE ${MAYA_APP_STD_FLAG})
+        target_compile_options(jaal PRIVATE ${MAYA_APP_STD_FLAG})
     endif()
 endif()
 
-option(MAYA_BUILD_EXAMPLES "Build example programs" ON)
-if(MAYA_BUILD_EXAMPLES)
+option(MAYA_BUILD_EXAMPLES "Build example programs (needs maya::app)" ON)
+if(MAYA_BUILD_EXAMPLES AND MAYA_BUILD_APP)
     file(GLOB MAYA_EXAMPLE_SOURCES CONFIGURE_DEPENDS examples/*.cpp)
-    # jaal_*.cpp run on the new runtime and need MAYA_WITH_JAAL.
-    if(NOT MAYA_WITH_JAAL)
-        list(FILTER MAYA_EXAMPLE_SOURCES EXCLUDE REGEX "/jaal_[^/]*\\.cpp$")
-    endif()
     foreach(src ${MAYA_EXAMPLE_SOURCES})
         get_filename_component(name ${src} NAME_WE)
         set(tgt maya_${name})
         add_executable(${tgt} ${src})
-        if(name MATCHES "^jaal_")
-            target_link_libraries(${tgt} PRIVATE maya_jaal)
-        else()
-            target_link_libraries(${tgt} PRIVATE maya)
-        endif()
+        target_link_libraries(${tgt} PRIVATE maya_app)
         if(DEFINED MAYA_LINUX_CXX_FLAGS)
             target_compile_options(${tgt} PRIVATE ${MAYA_LINUX_CXX_FLAGS})
             target_link_options(${tgt} PRIVATE ${MAYA_LINUX_LINK_FLAGS})

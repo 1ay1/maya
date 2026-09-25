@@ -1,12 +1,9 @@
 #pragma once
-// maya/jaal/host.hpp — maya on jaal: the adapter between a Screen and a runtime.
-//
-// maya is a view layer (Element, layout, paint, widgets, theme) and a device
-// (maya::Screen: the terminal, driven one non-blocking step at a time).
-// jaal is the runtime: the loop, timers, tasks, streams, signals, shutdown,
-// replay. This file is the only place the two meet, and it's its own
-// target (maya::jaal), so maya's core never depends on the runtime.
-// docs/internals/runtime-free.md has the design.
+// maya/app.hpp — run a program in the terminal. maya is to jaal what Ink is
+// to React: jaal is the runtime (model, update, Cmd, Sub, threads, timers,
+// shutdown), maya draws it (elements, layout, widgets, the terminal device).
+// This header is the one place they meet; link maya::app.
+// docs/internals/design.md has the rules.
 //
 // The host protocol (jaal/kernel/run.hpp), each step one Screen call:
 //
@@ -34,14 +31,10 @@
 //       static Cmd update(Model&, Quit)   { return Cmd::quit(0); }
 //       static maya::Element view(const Model& m) { return text(...); }
 //       static Sub subscribe(const Model&) {
-//           return maya::jaal_key_map<Sub>({{'+', Inc{}}, {'q', Quit{}}});
+//           return maya::keys<Sub>({{'+', Inc{}}, {'q', Quit{}}});
 //       }
 //   };
-//   int main() { return maya::run_jaal<Counter>({.title = "counter"}); }
-
-#if !MAYA_WITH_JAAL
-#error "maya/jaal/host.hpp needs MAYA_WITH_JAAL (cmake -DMAYA_WITH_JAAL=ON)"
-#endif
+//   int main() { return maya::run<Counter>({.title = "counter"}); }
 
 #include <algorithm>
 #include <string>
@@ -54,10 +47,10 @@
 
 #include <jaal/jaal.hpp>
 
-#include "../element/element.hpp"
-#include "../terminal/input.hpp"
-#include "../app/app.hpp"
-#include "../screen.hpp"
+#include "element/element.hpp"
+#include "terminal/input.hpp"
+#include "app/app.hpp"
+#include "screen.hpp"
 
 namespace maya {
 
@@ -97,7 +90,7 @@ using on_resize = jaal::router<ResizeEvent, "on_resize">;
 
 /// A jaal program that maya can draw: it has a view() returning an Element.
 template <class P>
-concept JaalView = jaal::Program<P> && jaal::Viewable<P, Element>;
+concept Program = jaal::Program<P> && jaal::Viewable<P, Element>;
 
 // ── terminal effects ──────────────────────────────────────────────────────────
 // Things only the TERMINAL can do, so they're this host's effects rather than
@@ -107,11 +100,9 @@ concept JaalView = jaal::Program<P> && jaal::Viewable<P, Element>;
 //     return commit_from(m.frozen.harvest());
 //
 // and a host that can't do them (a test host, a GUI) won't compile against
-// it. They're the same operations as maya's own Cmd alternatives, which is
-// what makes a port a rename rather than a redesign.
+// it.
 
-/// Commit rows of the last inline frame to the terminal's scrollback
-/// (maya's Cmd::commit_scrollback). Use it when view() is about to return
+/// Commit rows of the last inline frame to the terminal's scrollback. Use it when view() is about to return
 /// a shorter tree — a chat that virtualises old messages — so the row-diff
 /// renderer doesn't read the shrink as rows removed from the bottom and
 /// erase them. No effect in fullscreen.
@@ -132,16 +123,16 @@ template <class C>
     return C(CommitScrollback{debt});
 }
 
-/// Set the terminal window title (maya's Cmd::set_title).
+/// Set the terminal window title.
 struct SetTitle { std::string title; };
 using set_title = jaal::pure_fx<SetTitle, "set_title">;
 
-/// Put text on the system clipboard (OSC 52; maya's Cmd::write_clipboard).
+/// Put text on the system clipboard (OSC 52).
 struct WriteClipboard { std::string text; };
 using write_clipboard = jaal::pure_fx<WriteClipboard, "write_clipboard">;
 
 /// Ask the terminal for its clipboard (OSC 52 read). The reply arrives as a
-/// PasteEvent, so subscribe with on_paste (maya's Cmd::query_clipboard).
+/// PasteEvent, so subscribe with on_paste.
 struct QueryClipboard {};
 using query_clipboard = jaal::pure_fx<QueryClipboard, "query_clipboard">;
 
@@ -150,7 +141,7 @@ using query_clipboard = jaal::pure_fx<QueryClipboard, "query_clipboard">;
 struct EmitHostSequence { std::string sequence; };
 using emit_host_sequence = jaal::pure_fx<EmitHostSequence, "emit_host_sequence">;
 
-/// maya's Cmd::emit_osc: `ESC ] code ; payload ST`.
+/// `ESC ] code ; payload ST`.
 [[nodiscard]] inline EmitHostSequence osc(int code, std::string_view payload) {
     std::string seq = "\x1b]" + std::to_string(code) + ';';
     seq.append(payload);
@@ -158,22 +149,25 @@ using emit_host_sequence = jaal::pure_fx<EmitHostSequence, "emit_host_sequence">
     return {std::move(seq)};
 }
 
-/// Commit whatever of the last inline frame overflowed the viewport
-/// (maya's Cmd::commit_scrollback_overflow).
+/// Commit whatever of the last inline frame overflowed the viewport.
 struct CommitOverflow {};
 using commit_overflow = jaal::pure_fx<CommitOverflow, "commit_overflow">;
 
-/// Repaint everything from scratch (maya's Cmd::force_redraw).
+/// Repaint everything from scratch.
 struct ForceRedraw {};
 using force_redraw = jaal::pure_fx<ForceRedraw, "force_redraw">;
 
-/// Drop the inline frame's history and start a fresh one below it
-/// (maya's Cmd::reset_inline).
+/// Drop the inline frame's history and start a fresh one below it.
 struct ResetInline {};
 using reset_inline = jaal::pure_fx<ResetInline, "reset_inline">;
 
+/// Turn mouse capture on or off (off lets the terminal's own text
+/// selection work). Starts as Options::mouse says.
+struct SetMouse { bool on; };
+using set_mouse = jaal::pure_fx<SetMouse, "set_mouse">;
+
 /// Hand the real terminal to an interactive child (sudo, $EDITOR, a pager)
-/// and fold the result back in (maya's Cmd::suspend). `run` executes on the
+/// and fold the result back in. `run` executes on the
 /// loop thread with the TUI torn down to a cooked tty; its return value is
 /// the host's ANSWER (jaal D39), folded in the same step. It's a callback
 /// because the child IS the effect, but it never leaves the loop thread,
@@ -204,22 +198,22 @@ struct suspend {
 template <class Msg>
 using terminal_cmd = jaal::Cmd<Msg, commit_scrollback, set_title, write_clipboard,
                                query_clipboard, emit_host_sequence, commit_overflow,
-                               force_redraw, reset_inline, suspend>;
+                               force_redraw, reset_inline, set_mouse, suspend>;
 
-// ── key_map: the most common subscription ──────────────────────────────────────
-// maya's own key_map<Msg>() returns a maya::Sub, and 15 of maya's 20
-// program examples use it. This is the same table, returning a subscription
-// for a jaal program. The Sub type is the program's own, so the router is
-// checked against the program's row like any other.
+// ── keys: the most common subscription ───────────────────────────────────────────
+// A table from keys to messages, as a subscription in the program's own Sub
+// type (so the router is checked against the program's row like any other):
 //
 //   static Sub subscribe(const Model&) {
-//       return jaal_key_map<Sub>({{'q', Quit{}}, {SpecialKey::Up, Inc{}}});
+//       return keys<Sub>({{'q', Quit{}}, {SpecialKey::Up, Inc{}}});
 //   }
 //
-// Matching is exactly maya's key_is(): a plain key with no modifiers, so
-// 'q' doesn't also fire on Ctrl+Q.
+// Matching is key_is(): a plain key with no modifiers, so 'q' doesn't also
+// fire on Ctrl+Q. For anything richer, write Sub::on(on_key{}, fn).
+using KeySpec = std::variant<char, SpecialKey>;
+
 template <class S>
-[[nodiscard]] S jaal_key_map(
+[[nodiscard]] S keys(
     std::initializer_list<std::pair<KeySpec, typename S::msg_type>> entries) {
     using Msg = typename S::msg_type;
     return S::on(on_key{},
@@ -240,29 +234,29 @@ template <class S>
 // "the model changed" into Screen::present(). Everything a draw needs from
 // the scheduler comes back in Presented (an animation deadline, a redraw
 // the frame asked for, a backed-up tty): the host reads no globals.
-template <JaalView P>
-class jaal_host {
+template <Program P>
+class terminal_host {
 public:
     // Everything the terminal produces. signal_event is added by jaal's
     // run() (kernel_event_t), which is how SIGWINCH arrives.
     using event_type = std::variant<KeyEvent, MouseEvent, PasteEvent, FocusEvent, ResizeEvent>;
     using clock      = Presented::clock;
 
-    /// `fps` > 0 redraws continuously at that rate (RunConfig::fps), for a
+    /// `fps` > 0 redraws continuously at that rate (Options::fps), for a
     /// program whose view() reads the wall clock itself: a clock, a
     /// throughput graph, an FPS counter. 0 (the default) is event-driven:
     /// draw only when the model changes or a widget asks.
-    explicit jaal_host(Screen& term, int fps = 0) noexcept
+    explicit terminal_host(Screen& term, int fps = 0) noexcept
         : term_(term),
           frame_period_(fps > 0 ? std::chrono::nanoseconds(1'000'000'000LL / fps)
                                 : std::chrono::nanoseconds::zero()) {}
 
-    jaal_host(const jaal_host&)            = delete;
-    jaal_host& operator=(const jaal_host&) = delete;
+    terminal_host(const terminal_host&)            = delete;
+    terminal_host& operator=(const terminal_host&) = delete;
 
     // Register the terminal's input with jaal's reactor, and tell the
     // program its size before it ever draws.
-    void attach(jaal::host_context<jaal_host>& cx) {
+    void attach(jaal::host_context<terminal_host>& cx) {
         auto reg = cx.watch(term_.input_handle(), jaal::interest::read, kInput);
         if (!reg) { cx.stop(70); return; }        // no input: nothing to drive us
         input_reg_.emplace(std::move(*reg));
@@ -271,7 +265,7 @@ public:
         cx.emit(ResizeEvent{sz.width, sz.height});
     }
 
-    void on_ready(jaal::host_context<jaal_host>& cx, const jaal::readiness& r) {
+    void on_ready(jaal::host_context<terminal_host>& cx, const jaal::readiness& r) {
         if (r.token == kOutput) {
             // The tty took bytes again: push the rest of the backed-up frame.
             // Only when ALL of it has gone is the next frame composed (a
@@ -307,7 +301,7 @@ public:
     // in between were computed and never shown, so the cursor visibly
     // jumped 2 -> 4 -> 6. The cursor IS the feedback for an arrow key, so
     // each one is drawn. (maya's old loop did this too; it's the same rule.)
-    void emit_until_navigation(jaal::host_context<jaal_host>& cx, std::vector<Event>& events) {
+    void emit_until_navigation(jaal::host_context<terminal_host>& cx, std::vector<Event>& events) {
         // jaal folds an emitted event on the spot (route() runs update), so
         // "emit, then draw" needs the loop to turn between two navigation
         // keys: stop right after one and hold the rest.
@@ -323,7 +317,7 @@ public:
     }
 
     // SIGWINCH is the one signal the host owns.
-    void on_signal(jaal::host_context<jaal_host>& cx, jaal::sig s) {
+    void on_signal(jaal::host_context<terminal_host>& cx, jaal::sig s) {
         if (s != jaal::sig::resize) return;
         term_.on_resize();
         const auto sz = term_.size();
@@ -460,6 +454,7 @@ public:
     void handle(CommitOverflow)     { term_.commit_overflow(); dirty_ = true; }
     void handle(ForceRedraw)        { term_.force_redraw();    dirty_ = true; }
     void handle(ResetInline)        { term_.reset_inline();    dirty_ = true; }
+    void handle(SetMouse s)         { term_.set_mouse(s.on); }
 
     // Hand the real tty to an interactive child and answer with how it went
     // (jaal D39: the answer is folded in this step).
@@ -510,7 +505,7 @@ private:
     }
 
     Screen&                                                 term_;
-    jaal::host_context<jaal_host>*                          cx_ = nullptr;
+    jaal::host_context<terminal_host>*                          cx_ = nullptr;
     std::optional<jaal::platform::native_reactor::registration> input_reg_;
     std::optional<jaal::platform::native_reactor::registration> output_reg_;   // only while output is pending
     static constexpr std::uint64_t                            kOutput = 2;
@@ -524,13 +519,11 @@ private:
 };
 
 /// Run a Program on jaal, in this terminal. The one entry point.
-template <JaalView P>
-int run_jaal(RunConfig cfg = {}, jaal::run_options opt = {}) {
-    auto term = Screen::open({.title = cfg.title, .mode = cfg.mode, .mouse = cfg.mouse,
-                                .hover_motion = cfg.hover_motion, .backend = cfg.backend,
-                                .theme = cfg.theme, .enhanced_keyboard = cfg.enhanced_keyboard});
+template <Program P>
+int run(Options cfg = {}, jaal::run_options opt = {}) {
+    auto term = Screen::open(cfg);
     if (!term) return 70;                         // couldn't take the terminal
-    jaal_host<P> host{*term, cfg.fps};
+    terminal_host<P> host{*term, cfg.fps};
     return jaal::run<P>(host, std::move(opt));
 }
 

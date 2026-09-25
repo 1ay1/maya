@@ -17,7 +17,7 @@
 // the host treats it as an unknown APC and ignores it (no corruption); the
 // host scans for `ESC _ G`, reads the payload length, decodes exactly that many
 // bytes, and never involves a terminal emulator.  Grid mode REPLACES ANSI
-// frame output — it is chosen at startup (RunConfig / env), not mixed per frame.
+// frame output — it is chosen at startup (Options / env), not mixed per frame.
 //
 // Wire envelope (v2):
 //

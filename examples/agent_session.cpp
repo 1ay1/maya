@@ -1,15 +1,36 @@
-// agent_session.cpp — Auto-piloted AI agent session demo.
+// jaal_agent_session.cpp — maya's agent_session.cpp, on jaal.
+//
+// A port of examples/agent_session.cpp to the jaal runtime. view() and every
+// widget-building helper are unchanged; the program shape is jaal's (one
+// static update overload per Msg case, jaal Cmd/Sub, run). The one real
+// design change is the permission gate — see "Permission gate" below.
 //
 // A Claude-Code-style inline TUI driven by a real background "SSE" stream
-// (Cmd::task → worker thread → message queue), with a fully functional
+// (Sub::stream → worker thread → mailbox), with a fully functional
 // Composer at the bottom for multi-turn conversation.  Runs end-to-end
 // without any input: launches into the first scenario after a beat,
 // auto-grants permissions, and cycles indefinitely through all four
 // scenarios — useful for unattended demos and recordings.  Press q,
 // Esc, or Ctrl-C to exit; type any time to drive it manually instead.
 //
+// Permission gate (jaal port):
+//   The original's worker thread blocked on a shared_ptr<atomic<bool>> that
+//   the UI thread flipped on grant. jaal forbids that by design: a stream
+//   body is captureless and every argument must be Sendable, and a pointer
+//   to state two threads mutate is exactly what Sendable rejects. So the
+//   decision lives in the MODEL and no thread waits on another:
+//     * the worker is a Sub::stream keyed "turn/<n>/<phase>", subscribed
+//       only while a turn is in flight and NOT while awaiting permission;
+//     * gated scenarios (auth, theme) are split at the gate: phase 1 runs
+//       up to and including PermissionAsk, then returns; phase 2 starts
+//       with PermissionDone and runs to MessageStop;
+//     * the grant is just a message: GrantPerm sets stream_phase = 2, the
+//       key changes, and subscribe() starts the phase-2 stream.
+//   A turn abandoned mid-flight drops its key, so jaal stops its worker and
+//   discards any late messages from it.
+//
 // What this demos:
-//   - Cmd::task — events arrive on a worker thread, dispatched into the
+//   - Sub::stream — events arrive on a worker thread, dispatched into the
 //     pure Elm-style update() loop.
 //   - Anthropic-shaped events: SessionStart, ThinkingDelta, ToolBegin /
 //     ToolDetailDelta / ToolBodyDelta / ToolEnd, PlanCreated / PlanAdvance,
@@ -25,7 +46,7 @@
 //     scenario (auth / theme / perf / general).
 //   - WelcomeScreen on empty thread (brand splash + starter chips).
 //   - SystemBanner appears when context exceeds 60%.
-//   - Real worker↔UI sync for permission via shared_ptr<atomic<bool>>.
+//   - Permission as a model decision + message (worker split at the gate).
 //   - Status bar: PhaseChip (breathing), ContextGauge, TokenStreamSparkline
 //     (EMA-smoothed live tok/s), ModelBadge.
 //   - Final ChangesStrip + Callout summarizes the turn.
@@ -39,8 +60,9 @@
 //   q / Esc    quit (only when not actively typing)
 //   Ctrl-C     force quit anytime
 //
-// Usage:  ./maya_agent_session
+// Usage:  ./maya_jaal_agent_session
 
+#include <maya/app.hpp>
 #include <maya/maya.hpp>
 
 #include <maya/widget/agent_timeline.hpp>
@@ -220,12 +242,10 @@ static Composer::State composer_state(Phase p) {
 }
 
 // ============================================================================
-// Worker↔UI permission gate — shared_ptr keeps it alive past either side
+// Worker↔UI permission gate — jaal port: no shared state. The grant is a
+// message (GrantPerm) that bumps Model::stream_phase; subscribe() then starts
+// the post-gate half of the scenario as a new stream. See the top comment.
 // ============================================================================
-
-struct PermSync {
-    std::atomic<bool> granted{false};
-};
 
 // ============================================================================
 // Messages — what update() receives
@@ -331,7 +351,13 @@ struct Model {
     // Permission gate.
     std::string             pending_perm_cmd;
     bool                    perm_open = false;
-    std::shared_ptr<PermSync> perm_sync;
+
+    // The in-flight turn's worker, as the model sees it: the prompt that
+    // picks the scenario, and which half of it runs (1 = up to the
+    // permission gate / whole scenario if ungated, 2 = after the grant,
+    // 0 = no worker). subscribe() turns these into a Sub::stream.
+    std::string             turn_prompt;
+    int                     stream_phase = 0;
 
     // Status-bar telemetry.
     Phase                   phase           = Phase::Idle;
@@ -444,16 +470,14 @@ void stream_text(std::string_view src, Send&& send_chunk,
 
 using Dispatch = std::function<void(Msg)>;
 
+// Thrown by the stream body's Dispatch when jaal has stopped the stream (the
+// model dropped its key: the turn was abandoned or the program is quitting).
+// Unwinds the scenario at its next send instead of letting it run on for
+// seconds with every message discarded. Caught in the stream body.
+struct Cancelled {};
+
 static void send(Dispatch& d, ev::Event e) {
     d(Msg{Stream{std::move(e)}});
-}
-
-static void wait_for_permission(const std::shared_ptr<PermSync>& sync) {
-    // Poll the atomic in 50ms ticks. Real apps would use a condvar, but
-    // for a demo with a single gate this is fine and self-evident.
-    while (!sync->granted.load(std::memory_order_acquire)) {
-        std::this_thread::sleep_for(12ms);
-    }
 }
 
 // ── Helpers shared across scenarios ────────────────────────────────────────
@@ -486,8 +510,8 @@ static void say(Dispatch& d, std::string_view text, std::mt19937& rng,
 }
 
 // ── Scenario A: auth flaky-test race fix ───────────────────────────────────
-static void run_auth(Dispatch d, std::shared_ptr<PermSync> sync,
-                     std::mt19937& rng)
+// Phase 1: everything up to and including the PermissionAsk.
+static void run_auth(Dispatch d, std::mt19937& rng)
 {
     constexpr std::string_view THINKING =
         "The user reports a flaky auth test with timeout failures. That "
@@ -500,23 +524,6 @@ static void run_auth(Dispatch d, std::shared_ptr<PermSync> sync,
         "start by grepping for any existing flaky markers in the test "
         "file, then read both the test body and the implementation it "
         "exercises so I can spot the actual synchronization seam.";
-
-    constexpr std::string_view BASH =
-        "Running 4 tests from auth_test\n"
-        "[==========] Running 4 tests from 1 test suite.\n"
-        "[----------] Global test environment set-up.\n"
-        "[ RUN      ] auth_test.refreshes_before_expiry\n"
-        "[       OK ] auth_test.refreshes_before_expiry (12 ms)\n"
-        "[ RUN      ] auth_test.expired_token_triggers_refresh\n"
-        "[       OK ] auth_test.expired_token_triggers_refresh (8 ms)\n"
-        "[ RUN      ] auth_test.concurrent_refresh_is_coalesced\n"
-        "    note: stress-running 200 iterations under TSAN\n"
-        "[       OK ] auth_test.concurrent_refresh_is_coalesced (24 ms)\n"
-        "[ RUN      ] auth_test.refresh_during_grace_window\n"
-        "[       OK ] auth_test.refresh_during_grace_window (15 ms)\n"
-        "[----------] 4 tests from auth_test (61 ms total)\n"
-        "[----------] Global test environment tear-down.\n"
-        "[==========] 4 tests passed.\n";
 
     auto inter = [&]{
         std::uniform_int_distribution<int> g(15, 40);
@@ -663,7 +670,36 @@ static void run_auth(Dispatch d, std::shared_ptr<PermSync> sync,
 
     // ── Permission gate ─────────────────────────────────────────────
     send(d, ev::PermissionAsk{"ctest -R auth_test --output-on-failure"});
-    wait_for_permission(sync);
+    // Phase 1 ends here. The grant is a message to the MODEL; when it
+    // arrives, subscribe() starts run_auth_after_gate as a new stream.
+}
+
+// Phase 2: everything after the grant. Its locals (BASH, inter, rng) are
+// its own — nothing crosses the gate but the prompt.
+static void run_auth_after_gate(Dispatch d, std::mt19937& rng)
+{
+    constexpr std::string_view BASH =
+        "Running 4 tests from auth_test\n"
+        "[==========] Running 4 tests from 1 test suite.\n"
+        "[----------] Global test environment set-up.\n"
+        "[ RUN      ] auth_test.refreshes_before_expiry\n"
+        "[       OK ] auth_test.refreshes_before_expiry (12 ms)\n"
+        "[ RUN      ] auth_test.expired_token_triggers_refresh\n"
+        "[       OK ] auth_test.expired_token_triggers_refresh (8 ms)\n"
+        "[ RUN      ] auth_test.concurrent_refresh_is_coalesced\n"
+        "    note: stress-running 200 iterations under TSAN\n"
+        "[       OK ] auth_test.concurrent_refresh_is_coalesced (24 ms)\n"
+        "[ RUN      ] auth_test.refresh_during_grace_window\n"
+        "[       OK ] auth_test.refresh_during_grace_window (15 ms)\n"
+        "[----------] 4 tests from auth_test (61 ms total)\n"
+        "[----------] Global test environment tear-down.\n"
+        "[==========] 4 tests passed.\n";
+
+    auto inter = [&]{
+        std::uniform_int_distribution<int> g(15, 40);
+        std::this_thread::sleep_for(std::chrono::milliseconds(g(rng)));
+    };
+
     send(d, ev::PermissionDone{});
     std::this_thread::sleep_for(35ms);
 
@@ -737,8 +773,8 @@ static void run_auth(Dispatch d, std::shared_ptr<PermSync> sync,
 }
 
 // ── Scenario B: dark mode (multi-block, with TodoListTool + Write) ─────────
-static void run_theme(Dispatch d, std::shared_ptr<PermSync> sync,
-                      std::mt19937& rng)
+// Phase 1: everything up to and including the PermissionAsk.
+static void run_theme(Dispatch d, std::mt19937& rng)
 {
     constexpr std::string_view THINKING =
         "Dark mode is three concrete pieces: a `darkTheme` palette, a "
@@ -749,24 +785,6 @@ static void run_theme(Dispatch d, std::shared_ptr<PermSync> sync,
         "text sizes, and (b) avoiding a hydration flash where the page "
         "renders in light mode for one frame before the hook reads from "
         "localStorage. Let me build a todo list and walk through it.";
-
-    constexpr std::string_view BASH =
-        "\n"
-        "> useTheme@1.0.0 test\n"
-        "> jest --runInBand src/hooks/useTheme.test.ts\n"
-        "\n"
-        " PASS  src/hooks/useTheme.test.ts\n"
-        "  useTheme\n"
-        "    \xe2\x9c\x93 defaults to light theme on first render (4 ms)\n"
-        "    \xe2\x9c\x93 toggle() flips light\xe2\x86\x92" "dark (1 ms)\n"
-        "    \xe2\x9c\x93 persists chosen mode to localStorage (3 ms)\n"
-        "    \xe2\x9c\x93 reads persisted mode on mount (1 ms)\n"
-        "    \xe2\x9c\x93 falls back to system preference if no saved value (2 ms)\n"
-        "\n"
-        "Test Suites: 1 passed, 1 total\n"
-        "Tests:       5 passed, 5 total\n"
-        "Snapshots:   0 total\n"
-        "Time:        1.18 s\n";
 
     auto inter = [&]{
         std::uniform_int_distribution<int> g(15, 40);
@@ -940,7 +958,35 @@ static void run_theme(Dispatch d, std::shared_ptr<PermSync> sync,
 
     // ── Permission gate ─────────────────────────────────────────────
     send(d, ev::PermissionAsk{"npm test useTheme"});
-    wait_for_permission(sync);
+    // Phase 1 ends here; see run_auth.
+}
+
+// Phase 2: everything after the grant (own BASH, inter, rng).
+static void run_theme_after_gate(Dispatch d, std::mt19937& rng)
+{
+    constexpr std::string_view BASH =
+        "\n"
+        "> useTheme@1.0.0 test\n"
+        "> jest --runInBand src/hooks/useTheme.test.ts\n"
+        "\n"
+        " PASS  src/hooks/useTheme.test.ts\n"
+        "  useTheme\n"
+        "    \xe2\x9c\x93 defaults to light theme on first render (4 ms)\n"
+        "    \xe2\x9c\x93 toggle() flips light\xe2\x86\x92" "dark (1 ms)\n"
+        "    \xe2\x9c\x93 persists chosen mode to localStorage (3 ms)\n"
+        "    \xe2\x9c\x93 reads persisted mode on mount (1 ms)\n"
+        "    \xe2\x9c\x93 falls back to system preference if no saved value (2 ms)\n"
+        "\n"
+        "Test Suites: 1 passed, 1 total\n"
+        "Tests:       5 passed, 5 total\n"
+        "Snapshots:   0 total\n"
+        "Time:        1.18 s\n";
+
+    auto inter = [&]{
+        std::uniform_int_distribution<int> g(15, 40);
+        std::this_thread::sleep_for(std::chrono::milliseconds(g(rng)));
+    };
+
     send(d, ev::PermissionDone{});
     std::this_thread::sleep_for(35ms);
     send(d, ev::TodoAdvance{4});
@@ -1006,8 +1052,7 @@ static void run_theme(Dispatch d, std::shared_ptr<PermSync> sync,
 }
 
 // ── Scenario C: perf investigation (sub-agent + fetch + multi-block) ──────
-static void run_perf(Dispatch d, std::shared_ptr<PermSync> /*sync*/,
-                     std::mt19937& rng)
+static void run_perf(Dispatch d, std::mt19937& rng)
 {
     constexpr std::string_view THINKING =
         "A p99 latency jump from one release to the next is almost "
@@ -1209,8 +1254,7 @@ static void run_perf(Dispatch d, std::shared_ptr<PermSync> /*sync*/,
 }
 
 // ── Scenario D: general unwrap audit (multi-block) ─────────────────────────
-static void run_general(Dispatch d, std::shared_ptr<PermSync> /*sync*/,
-                        std::mt19937& rng)
+static void run_general(Dispatch d, std::mt19937& rng)
 {
     constexpr std::string_view THINKING =
         "An audit for `unwrap()` in production paths is a triage "
@@ -1325,31 +1369,36 @@ static void run_general(Dispatch d, std::shared_ptr<PermSync> /*sync*/,
 }
 
 // ── Dispatcher: pick scenario from prompt ──────────────────────────────────
-inline void run(std::string prompt, Dispatch dispatch,
-                std::shared_ptr<PermSync> sync)
+// `phase` 1 runs a scenario from the start (to its permission gate, or to
+// the end if it has none); 2 runs a gated scenario's post-grant half. The
+// phase-2 rng is seeded afresh — the jitter it drives is cosmetic.
+inline void run(const std::string& prompt, int phase, Dispatch dispatch)
 {
     std::mt19937 rng{
         std::random_device{}() ^ std::uint32_t(prompt.size()) ^ 0xC0DEC0DE
+            ^ std::uint32_t(phase)
     };
 
     if (contains_ci(prompt, "auth") || contains_ci(prompt, "flak") ||
         contains_ci(prompt, "deadlin") || contains_ci(prompt, "test_auth"))
     {
-        run_auth(std::move(dispatch), std::move(sync), rng);
+        if (phase == 1) run_auth(std::move(dispatch), rng);
+        else            run_auth_after_gate(std::move(dispatch), rng);
     }
     else if (contains_ci(prompt, "dark") || contains_ci(prompt, "theme") ||
              contains_ci(prompt, "wcag"))
     {
-        run_theme(std::move(dispatch), std::move(sync), rng);
+        if (phase == 1) run_theme(std::move(dispatch), rng);
+        else            run_theme_after_gate(std::move(dispatch), rng);
     }
     else if (contains_ci(prompt, "p99") || contains_ci(prompt, "perf") ||
              contains_ci(prompt, "slow") || contains_ci(prompt, "latency") ||
              contains_ci(prompt, "profil"))
     {
-        run_perf(std::move(dispatch), std::move(sync), rng);
+        if (phase == 1) run_perf(std::move(dispatch), rng);   // ungated
     }
     else {
-        run_general(std::move(dispatch), std::move(sync), rng);
+        if (phase == 1) run_general(std::move(dispatch), rng); // ungated
     }
 }
 
@@ -1817,455 +1866,482 @@ static void reset_turn(Model& m) {
     m.pending_perm_cmd.clear();
 }
 
-static Cmd<Msg> spawn_stream(std::string prompt,
-                             std::shared_ptr<PermSync> sync)
+// The turn's worker: a jaal stream body. Captureless, and its arguments
+// (the prompt, the phase) are owned values — nothing here is shared with
+// the UI thread. sim's scenarios talk through a Dispatch; this builds one
+// locally that posts into the Sink, and unwinds the scenario (Cancelled)
+// at its next send once jaal has stopped the stream or the loop is gone.
+static void turn_worker(jaal::Sink<Msg> out, std::stop_token st,
+                        std::string prompt, int phase)
 {
-    return Cmd<Msg>::task(
-        [prompt = std::move(prompt), sync = std::move(sync)]
-        (std::function<void(Msg)> dispatch) {
-            sim::run(std::move(prompt), std::move(dispatch), std::move(sync));
-        });
-}
-
-static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-    return std::visit(overload{
-        [&](Quit) -> std::pair<Model, Cmd<Msg>> {
-            return {std::move(m), Cmd<Msg>::quit()};
-        },
-
-        [&](Tick) -> std::pair<Model, Cmd<Msg>> {
-            m.spinner_frame = (m.spinner_frame + 1) & 0xFFFF;
-            // thinking's spinner is clock-driven — nothing to advance.
-            if (m.phase != Phase::Idle && m.phase != Phase::Done)
-                m.total_elapsed += 0.05f;
-            return {std::move(m), Cmd<Msg>::none()};
-        },
-
-        // ── Composer input ────────────────────────────────────────────
-        [&](ComposerChar c) -> std::pair<Model, Cmd<Msg>> {
-            if (m.phase != Phase::Idle && m.phase != Phase::Done)
-                return {std::move(m), Cmd<Msg>::none()};
-            if (c.cp == '\r' || c.cp == '\n')
-                return {std::move(m), Cmd<Msg>::none()};
-            // Inline UTF-8 encode (cp < 0x80 covers ASCII; anything else
-            // arrives as multi-byte from CharKey already serialized).
-            if (c.cp < 0x80) {
-                m.composer_text += char(c.cp);
-            } else if (c.cp < 0x800) {
-                m.composer_text += char(0xC0 | (c.cp >> 6));
-                m.composer_text += char(0x80 | (c.cp & 0x3F));
-            } else if (c.cp < 0x10000) {
-                m.composer_text += char(0xE0 | (c.cp >> 12));
-                m.composer_text += char(0x80 | ((c.cp >> 6) & 0x3F));
-                m.composer_text += char(0x80 | (c.cp & 0x3F));
-            }
-            m.composer_cursor = int(m.composer_text.size());
-            m.starter_idx = -1;
-            return {std::move(m), Cmd<Msg>::none()};
-        },
-
-        [&](ComposerBackspace) -> std::pair<Model, Cmd<Msg>> {
-            if (m.phase != Phase::Idle && m.phase != Phase::Done)
-                return {std::move(m), Cmd<Msg>::none()};
-            if (!m.composer_text.empty()) {
-                // Trim trailing UTF-8 continuation bytes too.
-                while (!m.composer_text.empty() &&
-                       (static_cast<unsigned char>(m.composer_text.back()) & 0xC0) == 0x80) {
-                    m.composer_text.pop_back();
-                }
-                if (!m.composer_text.empty()) m.composer_text.pop_back();
-                m.composer_cursor = int(m.composer_text.size());
-            }
-            return {std::move(m), Cmd<Msg>::none()};
-        },
-
-        [&](ComposerCycle e) -> std::pair<Model, Cmd<Msg>> {
-            if (m.phase != Phase::Idle && m.phase != Phase::Done)
-                return {std::move(m), Cmd<Msg>::none()};
-            const auto& list = starters();
-            int n = int(list.size());
-            int idx = m.starter_idx;
-            idx = (idx < 0 ? 0 : idx + e.delta);
-            idx = ((idx % n) + n) % n;
-            m.starter_idx = idx;
-            m.composer_text   = list[std::size_t(idx)];
-            m.composer_cursor = int(m.composer_text.size());
-            return {std::move(m), Cmd<Msg>::none()};
-        },
-
-        [&](ComposerSubmit) -> std::pair<Model, Cmd<Msg>> {
-            if (m.phase != Phase::Idle && m.phase != Phase::Done)
-                return {std::move(m), Cmd<Msg>::none()};
-            if (m.composer_text.empty())
-                return {std::move(m), Cmd<Msg>::none()};
-
-            std::string prompt = std::move(m.composer_text);
-            m.composer_text.clear();
-            m.composer_cursor = 0;
-            m.starter_idx     = -1;
-
-            reset_turn(m);
-            m.user_prompt = prompt;
-            m.turn_number += 1;
-            m.turn_in_tokens = int(prompt.size() / 4);
-            m.in_tokens     += m.turn_in_tokens;
-            m.total_elapsed  = 0.f;
-            m.phase          = Phase::Thinking;
-            m.perm_sync      = std::make_shared<PermSync>();
-
-            return {std::move(m),
-                    spawn_stream(std::move(prompt), m.perm_sync)};
-        },
-
-        [&](GrantPerm) -> std::pair<Model, Cmd<Msg>> {
-            if (m.perm_open && m.perm_sync) {
-                m.perm_sync->granted.store(true, std::memory_order_release);
-                m.perm_open = false;
-                m.phase     = Phase::Tooling;
-            }
-            return {std::move(m), Cmd<Msg>::none()};
-        },
-
-        [&](AutoNext e) -> std::pair<Model, Cmd<Msg>> {
-            // Don't interrupt an in-flight turn; if the user happened to
-            // hit a key, defer until next idle.  In practice this branch
-            // never fires because we only schedule AutoNext on Done /
-            // init, but the guard keeps the autopilot from racing user
-            // input.
-            if (m.phase != Phase::Idle && m.phase != Phase::Done)
-                return {std::move(m), Cmd<Msg>::none()};
-
-            const auto& list = starters();
-            int n = int(list.size());
-            int idx = ((e.starter_idx % n) + n) % n;
-            std::string prompt = list[std::size_t(idx)];
-
-            m.composer_text.clear();
-            m.composer_cursor = 0;
-            m.starter_idx     = -1;
-
-            reset_turn(m);
-            m.user_prompt    = prompt;
-            m.turn_number   += 1;
-            m.turn_in_tokens = int(prompt.size() / 4);
-            m.in_tokens     += m.turn_in_tokens;
-            m.total_elapsed  = 0.f;
-            m.phase          = Phase::Thinking;
-            m.perm_sync      = std::make_shared<PermSync>();
-
-            return {std::move(m),
-                    spawn_stream(std::move(prompt), m.perm_sync)};
-        },
-
-        [&](Stream s) -> std::pair<Model, Cmd<Msg>> {
-            // followup is a Cmd we may schedule from inside the visit
-            // (auto-grant on PermissionAsk, auto-cycle on MessageStop).
-            Cmd<Msg> followup = Cmd<Msg>::none();
-            std::visit(overload{
-                [&](ev::SessionStart&) {
-                    m.phase = Phase::Thinking;
-                    // Commit the user message NOW (agentty pattern):
-                    // every settled turn pair is one user Turn followed
-                    // by one assistant Turn. The assistant body slots
-                    // accumulate in m.assistant_body across the turn
-                    // and get wrapped in a single Role::Assistant Turn
-                    // at MessageStop.
-                    if (!m.user_committed && !m.user_prompt.empty()) {
-                        m.frozen.seal(gap(), 1, /*separator=*/true);
-                        m.frozen.seal_measured(
-                            user_turn_element(m, m.user_prompt),
-                            /*fallback_est_rows=*/3);
-                        m.user_committed = true;
-                    }
-                    m.assistant_body.clear();
-                },
-                [&](ev::ThinkingDelta& e) {
-                    if (!m.thinking_active) {
-                        m.thinking.set_active(true);
-                        m.thinking_active = true;
-                    }
-                    m.thinking.append(e.text);
-                    track_tokens(m, int(e.text.size() / 4) + 1);
-                    m.phase = Phase::Thinking;
-                },
-                [&](ev::ThinkingStop&) {
-                    m.thinking.set_active(false);
-                    m.thinking_active = false;
-                    // Append to assistant body — committed inside the
-                    // wrapping assistant Turn at MessageStop.
-                    m.assistant_body.push_back(m.thinking.build());
-                    m.thinking = ThinkingBlock{};
-                    m.phase = Phase::Tooling;
-                },
-                [&](ev::ToolBegin& e) {
-                    LiveTool t;
-                    t.id     = e.id;
-                    t.kind   = e.kind;
-                    t.detail = std::move(e.detail_partial);
-                    t.status = AgentEventStatus::Pending;
-                    m.tools.push_back(std::move(t));
-                    m.phase = Phase::Tooling;
-                },
-                [&](ev::ToolDetailDelta& e) {
-                    if (auto* t = find_tool(m, e.id))
-                        t->detail += e.chunk;
-                },
-                [&](ev::ToolBodyDelta& e) {
-                    if (auto* t = find_tool(m, e.id)) {
-                        if (t->status == AgentEventStatus::Pending)
-                            t->status = AgentEventStatus::Running;
-                        t->body += e.chunk;
-                        track_tokens(m, int(e.chunk.size() / 6) + 1);
-                    }
-                },
-                [&](ev::ToolEnd& e) {
-                    if (auto* t = find_tool(m, e.id)) {
-                        t->status = e.ok ? AgentEventStatus::Done
-                                         : AgentEventStatus::Failed;
-                        t->elapsed = e.elapsed;
-                    }
-                },
-                [&](ev::PlanCreated& e) {
-                    m.plan.clear();
-                    for (auto& s_ : e.tasks)
-                        m.plan.push_back({std::move(s_), TaskStatus::Pending});
-                },
-                [&](ev::PlanAdvance& e) {
-                    if (e.task_index >= 0 && e.task_index < int(m.plan.size())) {
-                        for (int i = 0; i < e.task_index; ++i)
-                            m.plan[std::size_t(i)].status = TaskStatus::Completed;
-                        m.plan[std::size_t(e.task_index)].status = TaskStatus::InProgress;
-                    }
-                },
-                [&](ev::TodoCreated& e) {
-                    m.todos.clear();
-                    for (auto& s_ : e.items)
-                        m.todos.push_back({std::move(s_), TodoItemStatus::Pending});
-                    m.todos_status = TodoListStatus::Running;
-                },
-                [&](ev::TodoAdvance& e) {
-                    if (e.item_index >= 0 && e.item_index < int(m.todos.size())) {
-                        for (int i = 0; i < e.item_index; ++i)
-                            m.todos[std::size_t(i)].status = TodoItemStatus::Completed;
-                        m.todos[std::size_t(e.item_index)].status = TodoItemStatus::InProgress;
-                    }
-                },
-                [&](ev::PermissionAsk& e) {
-                    m.pending_perm_cmd = std::move(e.command);
-                    m.perm_open       = true;
-                    m.phase           = Phase::AwaitingPermission;
-                    // Autopilot: grant after a short beat so the demo
-                    // runs end-to-end unattended. (Press space yourself
-                    // sooner if you want to skip the wait.)
-                    followup = Cmd<Msg>::after(160ms, Msg{GrantPerm{}});
-                },
-                [&](ev::PermissionDone&) {
-                    m.perm_open = false;
-                    m.phase     = Phase::Tooling;
-                },
-                [&](ev::FileChanged& e) {
-                    FileChange fc;
-                    fc.path          = std::move(e.path);
-                    fc.kind          = e.kind;
-                    fc.lines_added   = e.added;
-                    fc.lines_removed = e.removed;
-                    m.changes.push_back(std::move(fc));
-                    m.turn_changes_count += 1;
-                },
-                [&](ev::ContextWarning& e) {
-                    m.ctx_warning = std::move(e.text);
-                    // Bump used tokens to make the gauge match.
-                    m.in_tokens = std::max(m.in_tokens,
-                                           int(m.ctx_max * 0.62));
-                },
-                [&](ev::AssistantDelta& e) {
-                    if (!m.md_active) {
-                        // Roll up in-flight live panels into the
-                        // assistant body BEFORE the prose block starts
-                        // — same interleave-within-one-message shape
-                        // agentty produces. These become body slots of
-                        // the single assistant Turn we push at
-                        // MessageStop.
-                        if (!m.tools.empty()) {
-                            m.assistant_body.push_back(
-                                actions_panel(m, /*live=*/false));
-                            m.tools.clear();
-                        }
-                        if (!m.plan.empty()) {
-                            for (auto& it : m.plan)
-                                it.status = TaskStatus::Completed;
-                            m.assistant_body.push_back(plan_card(m));
-                            m.plan.clear();
-                        }
-                        if (!m.todos.empty()) {
-                            for (auto& it : m.todos)
-                                it.status = TodoItemStatus::Completed;
-                            m.todos_status = TodoListStatus::Done;
-                            m.assistant_body.push_back(todos_card(m));
-                            m.todos.clear();
-                        }
-                        if (!m.ctx_warning.empty()) {
-                            m.assistant_body.push_back(ctx_banner(m));
-                            m.ctx_warning.clear();
-                        }
-                        m.md = StreamingMarkdown{};
-                        m.md_active = true;
-                    }
-                    m.md.append(e.text);
-                    track_tokens(m, int(e.text.size() / 4) + 1);
-                    m.phase = Phase::Streaming;
-                },
-                [&](ev::TextBlockStop&) {
-                    // Append the just-closed text block to the assistant
-                    // body; more tools / text blocks may follow inside
-                    // the same Turn.
-                    if (m.md_active) {
-                        m.md.finish();
-                        m.assistant_body.push_back(
-                            AssistantMessage::build(m.md.build()));
-                        m.md = StreamingMarkdown{};
-                        m.md_active = false;
-                    }
-                    m.phase = Phase::Tooling;
-                },
-                [&](ev::MessageStop&) {
-                    // Final commit. Roll any remaining live state into
-                    // the assistant body, then wrap the entire body in
-                    // ONE Role::Assistant Turn and push it to frozen.
-                    // Mirrors agentty's one-Message-equals-one-Turn
-                    // shape exactly.
-                    if (m.md_active) {
-                        m.md.finish();
-                        m.assistant_body.push_back(
-                            AssistantMessage::build(m.md.build()));
-                        m.md = StreamingMarkdown{};
-                        m.md_active = false;
-                    }
-                    if (!m.tools.empty()) {
-                        m.assistant_body.push_back(
-                            actions_panel(m, /*live=*/false));
-                        m.tools.clear();
-                    }
-
-                    if (!m.assistant_body.empty()) {
-                        m.frozen.seal(gap(), 1, /*separator=*/true);
-                        m.frozen.seal_measured(
-                            settled_assistant_turn_element(m),
-                            /*fallback_est_rows=*/12);
-                        m.assistant_body.clear();
-                    }
-
-                    if (!m.changes.empty()) {
-                        m.frozen.seal(gap(), 1, /*separator=*/true);
-                        m.frozen.seal_measured(changes_card(m),
-                                               /*fallback_est_rows=*/4);
-                        m.changes.clear();
-                    }
-                    m.phase = Phase::Done;
-
-                    // ── Bounded scrollback ─────────────────────────────
-                    // Each turn seals ~2-6 blocks into m.frozen, and
-                    // the inline renderer's prev_cells buffer mirrors
-                    // every row ever drawn so the row diff has something
-                    // to compare against.  Without bounding, a multi-hour
-                    // autopilot loop accumulates hundreds of MB resident,
-                    // which macOS jetsam will kill with SIGKILL.
-                    //
-                    // When frozen exceeds the soft cap, drop the oldest
-                    // chunk and tell the renderer those rows are now
-                    // committed to terminal scrollback.  The commit count
-                    // is NOT guessed: ledger.harvest() mints a typed
-                    // ScrollbackDebt from the heights maya's own paint
-                    // pass recorded for the dropped blocks — exact by
-                    // construction (Witness Chain, Trim Accounting).
-                    // The dropped content is still visible in the user's
-                    // terminal scrollback — we're only shrinking the
-                    // *renderer's* mirror, not what the user can see.
-                    Cmd<Msg> trim_cmd = Cmd<Msg>::none();
-                    constexpr int FROZEN_MAX  = 240;
-                    constexpr int FROZEN_TRIM = 80;
-                    if (int(m.frozen.size()) > FROZEN_MAX) {
-                        int n = std::min<int>(FROZEN_TRIM,
-                            int(m.frozen.size()) - FROZEN_MAX / 2);
-                        m.frozen.drop_front(std::size_t(n));
-                        trim_cmd = Cmd<Msg>::commit_scrollback(
-                            m.frozen.harvest());
-                    }
-
-                    int next_idx = m.turn_number % int(starters().size());
-                    Cmd<Msg> cycle = Cmd<Msg>::after(700ms,
-                        Msg{AutoNext{next_idx}});
-                    followup = trim_cmd.is_none()
-                        ? std::move(cycle)
-                        : Cmd<Msg>::batch(std::move(trim_cmd),
-                                          std::move(cycle));
-                },
-            }, s.ev);
-            return {std::move(m), std::move(followup)};
-        },
-    }, std::move(msg));
+    sim::Dispatch d = [&out, &st](Msg msg) {
+        if (st.stop_requested() || !out.send(std::move(msg)))
+            throw sim::Cancelled{};
+    };
+    try {
+        sim::run(prompt, phase, std::move(d));
+    } catch (const sim::Cancelled&) {
+        // Turn abandoned / program quitting: just end.
+    }
 }
 
 // ============================================================================
-// Subscriptions — keys + animation tick
-// ============================================================================
-
-static auto subscribe(const Model& /*m*/) -> Sub<Msg> {
-    auto keys = Sub<Msg>::on_key([](const KeyEvent& k) -> std::optional<Msg> {
-        // Hard-quit chord
-        if (ctrl_is(k, 'c')) return Msg{Quit{}};
-
-        // Specials
-        if (key_is(k, SpecialKey::Escape))    return Msg{Quit{}};
-        if (key_is(k, SpecialKey::Enter))     return Msg{ComposerSubmit{}};
-        if (key_is(k, SpecialKey::Tab))       return Msg{ComposerCycle{+1}};
-        if (key_is(k, SpecialKey::BackTab))   return Msg{ComposerCycle{-1}};
-        if (key_is(k, SpecialKey::Up))        return Msg{ComposerCycle{-1}};
-        if (key_is(k, SpecialKey::Down))      return Msg{ComposerCycle{+1}};
-        if (key_is(k, SpecialKey::Backspace)) return Msg{ComposerBackspace{}};
-
-        // Space — context-sensitive: if a permission card is open it grants;
-        // otherwise it's just a literal space character into the composer.
-        if (key_is(k, ' ')) return Msg{GrantPerm{}};
-
-        // Plain character — type into the composer.
-        if (auto* ch = std::get_if<CharKey>(&k.key)) {
-            if (!k.mods.ctrl && !k.mods.alt && !k.mods.super_) {
-                return Msg{ComposerChar{ch->codepoint}};
-            }
-        }
-        return std::nullopt;
-    });
-    auto tick = Sub<Msg>::every(50ms, Msg{Tick{}});
-    return Sub<Msg>::batch(std::move(keys), std::move(tick));
-}
-
-// ============================================================================
-// Program — wire it together
+// Program — wire it together. jaal dispatches P::update(Model&, Case) by
+// overload resolution, so each Msg case is its own static member.
 // ============================================================================
 
 struct App {
     using Model = ::Model;
     using Msg   = ::Msg;
+    using Cmd   = jaal::Cmd<Msg, commit_scrollback>;
+    using Sub   = jaal::Sub<Msg, on_key>;
 
-    static auto init() -> std::pair<Model, Cmd<Msg>> {
-        Model m;
+    static Cmd init(Model& m) {
         m.phase = Phase::Idle;
         // Autopilot: kick off the first scenario after a short beat so
         // the WelcomeScreen flashes briefly, then the demo starts on
         // its own. Pressing q / Esc / Ctrl-C still quits anytime.
-        return {std::move(m),
-                Cmd<Msg>::after(450ms, Msg{AutoNext{0}})};
+        return Cmd::after(450ms, AutoNext{0});
     }
-    static auto update(Model m, Msg msg) -> std::pair<Model, Cmd<Msg>> {
-        return ::update(std::move(m), std::move(msg));
+
+    static Cmd update(Model&, Quit) {
+        return Cmd::quit(0);
     }
+
+    static Cmd update(Model& m, Tick) {
+        m.spinner_frame = (m.spinner_frame + 1) & 0xFFFF;
+        // thinking's spinner is clock-driven — nothing to advance.
+        if (m.phase != Phase::Idle && m.phase != Phase::Done)
+            m.total_elapsed += 0.05f;
+        return {};
+    }
+
+    // ── Composer input ────────────────────────────────────────────
+
+    static Cmd update(Model& m, ComposerChar c) {
+        if (m.phase != Phase::Idle && m.phase != Phase::Done)
+            return {};
+        if (c.cp == '\r' || c.cp == '\n')
+            return {};
+        // Inline UTF-8 encode (cp < 0x80 covers ASCII; anything else
+        // arrives as multi-byte from CharKey already serialized).
+        if (c.cp < 0x80) {
+            m.composer_text += char(c.cp);
+        } else if (c.cp < 0x800) {
+            m.composer_text += char(0xC0 | (c.cp >> 6));
+            m.composer_text += char(0x80 | (c.cp & 0x3F));
+        } else if (c.cp < 0x10000) {
+            m.composer_text += char(0xE0 | (c.cp >> 12));
+            m.composer_text += char(0x80 | ((c.cp >> 6) & 0x3F));
+            m.composer_text += char(0x80 | (c.cp & 0x3F));
+        }
+        m.composer_cursor = int(m.composer_text.size());
+        m.starter_idx = -1;
+        return {};
+    }
+
+    static Cmd update(Model& m, ComposerBackspace) {
+        if (m.phase != Phase::Idle && m.phase != Phase::Done)
+            return {};
+        if (!m.composer_text.empty()) {
+            // Trim trailing UTF-8 continuation bytes too.
+            while (!m.composer_text.empty() &&
+                   (static_cast<unsigned char>(m.composer_text.back()) & 0xC0) == 0x80) {
+                m.composer_text.pop_back();
+            }
+            if (!m.composer_text.empty()) m.composer_text.pop_back();
+            m.composer_cursor = int(m.composer_text.size());
+        }
+        return {};
+    }
+
+    static Cmd update(Model& m, ComposerCycle e) {
+        if (m.phase != Phase::Idle && m.phase != Phase::Done)
+            return {};
+        const auto& list = starters();
+        int n = int(list.size());
+        int idx = m.starter_idx;
+        idx = (idx < 0 ? 0 : idx + e.delta);
+        idx = ((idx % n) + n) % n;
+        m.starter_idx = idx;
+        m.composer_text   = list[std::size_t(idx)];
+        m.composer_cursor = int(m.composer_text.size());
+        return {};
+    }
+
+    static Cmd update(Model& m, ComposerSubmit) {
+        if (m.phase != Phase::Idle && m.phase != Phase::Done)
+            return {};
+        if (m.composer_text.empty())
+            return {};
+
+        std::string prompt = std::move(m.composer_text);
+        m.composer_text.clear();
+        m.composer_cursor = 0;
+        m.starter_idx     = -1;
+
+        reset_turn(m);
+        m.user_prompt = prompt;
+        m.turn_number += 1;
+        m.turn_in_tokens = int(prompt.size() / 4);
+        m.in_tokens     += m.turn_in_tokens;
+        m.total_elapsed  = 0.f;
+        m.phase          = Phase::Thinking;
+        // The turn's worker is a Sub::stream keyed on (turn, phase):
+        // setting these is what starts it (see subscribe()).
+        m.turn_prompt    = std::move(prompt);
+        m.stream_phase   = 1;
+        return {};
+    }
+
+    static Cmd update(Model& m, GrantPerm) {
+        // The grant is a MODEL change, not a flag a worker thread polls.
+        // Phase 1's stream already ended at the ask; moving to phase 2
+        // changes the stream key, so subscribe() starts the post-gate half
+        // of the scenario as a fresh stream. No thread waits on another.
+        if (m.perm_open && m.stream_phase == 1) {
+            m.perm_open    = false;
+            m.phase        = Phase::Tooling;
+            m.stream_phase = 2;
+        }
+        return {};
+    }
+
+    static Cmd update(Model& m, AutoNext e) {
+        // Don't interrupt an in-flight turn; if the user happened to
+        // hit a key, defer until next idle.  In practice this branch
+        // never fires because we only schedule AutoNext on Done /
+        // init, but the guard keeps the autopilot from racing user
+        // input.
+        if (m.phase != Phase::Idle && m.phase != Phase::Done)
+            return {};
+
+        const auto& list = starters();
+        int n = int(list.size());
+        int idx = ((e.starter_idx % n) + n) % n;
+        std::string prompt = list[std::size_t(idx)];
+
+        m.composer_text.clear();
+        m.composer_cursor = 0;
+        m.starter_idx     = -1;
+
+        reset_turn(m);
+        m.user_prompt    = prompt;
+        m.turn_number   += 1;
+        m.turn_in_tokens = int(prompt.size() / 4);
+        m.in_tokens     += m.turn_in_tokens;
+        m.total_elapsed  = 0.f;
+        m.phase          = Phase::Thinking;
+        // The turn's worker is a Sub::stream keyed on (turn, phase):
+        // setting these is what starts it (see subscribe()).
+        m.turn_prompt    = std::move(prompt);
+        m.stream_phase   = 1;
+        return {};
+    }
+
+    static Cmd update(Model& m, Stream s) {
+        // followup is a Cmd we may schedule from inside the visit
+        // (auto-grant on PermissionAsk, auto-cycle on MessageStop).
+        Cmd followup = Cmd{};
+        std::visit(overload{
+            [&](ev::SessionStart&) {
+                m.phase = Phase::Thinking;
+                // Commit the user message NOW (agentty pattern):
+                // every settled turn pair is one user Turn followed
+                // by one assistant Turn. The assistant body slots
+                // accumulate in m.assistant_body across the turn
+                // and get wrapped in a single Role::Assistant Turn
+                // at MessageStop.
+                if (!m.user_committed && !m.user_prompt.empty()) {
+                    m.frozen.seal(gap(), 1, /*separator=*/true);
+                    m.frozen.seal_measured(
+                        user_turn_element(m, m.user_prompt),
+                        /*fallback_est_rows=*/3);
+                    m.user_committed = true;
+                }
+                m.assistant_body.clear();
+            },
+            [&](ev::ThinkingDelta& e) {
+                if (!m.thinking_active) {
+                    m.thinking.set_active(true);
+                    m.thinking_active = true;
+                }
+                m.thinking.append(e.text);
+                track_tokens(m, int(e.text.size() / 4) + 1);
+                m.phase = Phase::Thinking;
+            },
+            [&](ev::ThinkingStop&) {
+                m.thinking.set_active(false);
+                m.thinking_active = false;
+                // Append to assistant body — committed inside the
+                // wrapping assistant Turn at MessageStop.
+                m.assistant_body.push_back(m.thinking.build());
+                m.thinking = ThinkingBlock{};
+                m.phase = Phase::Tooling;
+            },
+            [&](ev::ToolBegin& e) {
+                LiveTool t;
+                t.id     = e.id;
+                t.kind   = e.kind;
+                t.detail = std::move(e.detail_partial);
+                t.status = AgentEventStatus::Pending;
+                m.tools.push_back(std::move(t));
+                m.phase = Phase::Tooling;
+            },
+            [&](ev::ToolDetailDelta& e) {
+                if (auto* t = find_tool(m, e.id))
+                    t->detail += e.chunk;
+            },
+            [&](ev::ToolBodyDelta& e) {
+                if (auto* t = find_tool(m, e.id)) {
+                    if (t->status == AgentEventStatus::Pending)
+                        t->status = AgentEventStatus::Running;
+                    t->body += e.chunk;
+                    track_tokens(m, int(e.chunk.size() / 6) + 1);
+                }
+            },
+            [&](ev::ToolEnd& e) {
+                if (auto* t = find_tool(m, e.id)) {
+                    t->status = e.ok ? AgentEventStatus::Done
+                                     : AgentEventStatus::Failed;
+                    t->elapsed = e.elapsed;
+                }
+            },
+            [&](ev::PlanCreated& e) {
+                m.plan.clear();
+                for (auto& s_ : e.tasks)
+                    m.plan.push_back({std::move(s_), TaskStatus::Pending});
+            },
+            [&](ev::PlanAdvance& e) {
+                if (e.task_index >= 0 && e.task_index < int(m.plan.size())) {
+                    for (int i = 0; i < e.task_index; ++i)
+                        m.plan[std::size_t(i)].status = TaskStatus::Completed;
+                    m.plan[std::size_t(e.task_index)].status = TaskStatus::InProgress;
+                }
+            },
+            [&](ev::TodoCreated& e) {
+                m.todos.clear();
+                for (auto& s_ : e.items)
+                    m.todos.push_back({std::move(s_), TodoItemStatus::Pending});
+                m.todos_status = TodoListStatus::Running;
+            },
+            [&](ev::TodoAdvance& e) {
+                if (e.item_index >= 0 && e.item_index < int(m.todos.size())) {
+                    for (int i = 0; i < e.item_index; ++i)
+                        m.todos[std::size_t(i)].status = TodoItemStatus::Completed;
+                    m.todos[std::size_t(e.item_index)].status = TodoItemStatus::InProgress;
+                }
+            },
+            [&](ev::PermissionAsk& e) {
+                m.pending_perm_cmd = std::move(e.command);
+                m.perm_open       = true;
+                m.phase           = Phase::AwaitingPermission;
+                // Autopilot: grant after a short beat so the demo
+                // runs end-to-end unattended. (Press space yourself
+                // sooner if you want to skip the wait.)
+                followup = Cmd::after(160ms, GrantPerm{});
+            },
+            [&](ev::PermissionDone&) {
+                m.perm_open = false;
+                m.phase     = Phase::Tooling;
+            },
+            [&](ev::FileChanged& e) {
+                FileChange fc;
+                fc.path          = std::move(e.path);
+                fc.kind          = e.kind;
+                fc.lines_added   = e.added;
+                fc.lines_removed = e.removed;
+                m.changes.push_back(std::move(fc));
+                m.turn_changes_count += 1;
+            },
+            [&](ev::ContextWarning& e) {
+                m.ctx_warning = std::move(e.text);
+                // Bump used tokens to make the gauge match.
+                m.in_tokens = std::max(m.in_tokens,
+                                       int(m.ctx_max * 0.62));
+            },
+            [&](ev::AssistantDelta& e) {
+                if (!m.md_active) {
+                    // Roll up in-flight live panels into the
+                    // assistant body BEFORE the prose block starts
+                    // — same interleave-within-one-message shape
+                    // agentty produces. These become body slots of
+                    // the single assistant Turn we push at
+                    // MessageStop.
+                    if (!m.tools.empty()) {
+                        m.assistant_body.push_back(
+                            actions_panel(m, /*live=*/false));
+                        m.tools.clear();
+                    }
+                    if (!m.plan.empty()) {
+                        for (auto& it : m.plan)
+                            it.status = TaskStatus::Completed;
+                        m.assistant_body.push_back(plan_card(m));
+                        m.plan.clear();
+                    }
+                    if (!m.todos.empty()) {
+                        for (auto& it : m.todos)
+                            it.status = TodoItemStatus::Completed;
+                        m.todos_status = TodoListStatus::Done;
+                        m.assistant_body.push_back(todos_card(m));
+                        m.todos.clear();
+                    }
+                    if (!m.ctx_warning.empty()) {
+                        m.assistant_body.push_back(ctx_banner(m));
+                        m.ctx_warning.clear();
+                    }
+                    m.md = StreamingMarkdown{};
+                    m.md_active = true;
+                }
+                m.md.append(e.text);
+                track_tokens(m, int(e.text.size() / 4) + 1);
+                m.phase = Phase::Streaming;
+            },
+            [&](ev::TextBlockStop&) {
+                // Append the just-closed text block to the assistant
+                // body; more tools / text blocks may follow inside
+                // the same Turn.
+                if (m.md_active) {
+                    m.md.finish();
+                    m.assistant_body.push_back(
+                        AssistantMessage::build(m.md.build()));
+                    m.md = StreamingMarkdown{};
+                    m.md_active = false;
+                }
+                m.phase = Phase::Tooling;
+            },
+            [&](ev::MessageStop&) {
+                // Final commit. Roll any remaining live state into
+                // the assistant body, then wrap the entire body in
+                // ONE Role::Assistant Turn and push it to frozen.
+                // Mirrors agentty's one-Message-equals-one-Turn
+                // shape exactly.
+                if (m.md_active) {
+                    m.md.finish();
+                    m.assistant_body.push_back(
+                        AssistantMessage::build(m.md.build()));
+                    m.md = StreamingMarkdown{};
+                    m.md_active = false;
+                }
+                if (!m.tools.empty()) {
+                    m.assistant_body.push_back(
+                        actions_panel(m, /*live=*/false));
+                    m.tools.clear();
+                }
+
+                if (!m.assistant_body.empty()) {
+                    m.frozen.seal(gap(), 1, /*separator=*/true);
+                    m.frozen.seal_measured(
+                        settled_assistant_turn_element(m),
+                        /*fallback_est_rows=*/12);
+                    m.assistant_body.clear();
+                }
+
+                if (!m.changes.empty()) {
+                    m.frozen.seal(gap(), 1, /*separator=*/true);
+                    m.frozen.seal_measured(changes_card(m),
+                                           /*fallback_est_rows=*/4);
+                    m.changes.clear();
+                }
+                m.phase = Phase::Done;
+
+                // ── Bounded scrollback ─────────────────────────────
+                // Each turn seals ~2-6 blocks into m.frozen, and
+                // the inline renderer's prev_cells buffer mirrors
+                // every row ever drawn so the row diff has something
+                // to compare against.  Without bounding, a multi-hour
+                // autopilot loop accumulates hundreds of MB resident,
+                // which macOS jetsam will kill with SIGKILL.
+                //
+                // When frozen exceeds the soft cap, drop the oldest
+                // chunk and tell the renderer those rows are now
+                // committed to terminal scrollback.  The commit count
+                // is NOT guessed: ledger.harvest() mints a typed
+                // ScrollbackDebt from the heights maya's own paint
+                // pass recorded for the dropped blocks — exact by
+                // construction (Witness Chain, Trim Accounting).
+                // The dropped content is still visible in the user's
+                // terminal scrollback — we're only shrinking the
+                // *renderer's* mirror, not what the user can see.
+                Cmd trim_cmd = Cmd{};
+                constexpr int FROZEN_MAX  = 240;
+                constexpr int FROZEN_TRIM = 80;
+                if (int(m.frozen.size()) > FROZEN_MAX) {
+                    int n = std::min<int>(FROZEN_TRIM,
+                        int(m.frozen.size()) - FROZEN_MAX / 2);
+                    m.frozen.drop_front(std::size_t(n));
+                    // The debt, not a row count: only the ledger can mint
+                    // one, from rows maya's paint pass recorded, so this
+                    // can't commit a number that drifts from the wire.
+                    trim_cmd = commit_from<Cmd>(m.frozen.harvest());
+                }
+
+                int next_idx = m.turn_number % int(starters().size());
+                Cmd cycle = Cmd::after(700ms,
+                    AutoNext{next_idx});
+                followup = trim_cmd.is_none()
+                    ? std::move(cycle)
+                    : Cmd::batch(std::move(trim_cmd),
+                                      std::move(cycle));
+            },
+        }, s.ev);
+        return followup;
+    }
+
     static Element view(const Model& m) { return ::view(m); }
-    static auto subscribe(const Model& m) -> Sub<Msg> { return ::subscribe(m); }
+
+    // Keys and the animation tick, as before — plus the turn's WORKER.
+    //
+    // The worker is a Sub::stream keyed on (turn, phase). It runs exactly as
+    // long as the model says a turn is in flight and not blocked on the
+    // user: while the permission card is open there is NO worker at all
+    // (phase 1 has finished at the ask, phase 2 hasn't started). The grant
+    // bumps stream_phase, the key changes, and jaal starts phase 2. A turn
+    // abandoned for a new prompt changes the key too, so jaal stops the old
+    // worker and drops anything it still sends.
+    static Sub subscribe(const Model& m) {
+        auto keys = Sub::on(on_key{}, [](const KeyEvent& k) -> std::optional<Msg> {
+            // Hard-quit chord
+            if (ctrl_is(k, 'c')) return Msg{Quit{}};
+
+            // Specials
+            if (key_is(k, SpecialKey::Escape))    return Msg{Quit{}};
+            if (key_is(k, SpecialKey::Enter))     return Msg{ComposerSubmit{}};
+            if (key_is(k, SpecialKey::Tab))       return Msg{ComposerCycle{+1}};
+            if (key_is(k, SpecialKey::BackTab))   return Msg{ComposerCycle{-1}};
+            if (key_is(k, SpecialKey::Up))        return Msg{ComposerCycle{-1}};
+            if (key_is(k, SpecialKey::Down))      return Msg{ComposerCycle{+1}};
+            if (key_is(k, SpecialKey::Backspace)) return Msg{ComposerBackspace{}};
+
+            // Space — context-sensitive: if a permission card is open it grants;
+            // otherwise it's just a literal space character into the composer.
+            if (key_is(k, ' ')) return Msg{GrantPerm{}};
+
+            // Plain character — type into the composer.
+            if (auto* ch = std::get_if<CharKey>(&k.key)) {
+                if (!k.mods.ctrl && !k.mods.alt && !k.mods.super_) {
+                    return Msg{ComposerChar{ch->codepoint}};
+                }
+            }
+            return std::nullopt;
+        });
+        auto tick = Sub::every(50ms, Tick{});
+
+        const bool working = m.stream_phase > 0 && !m.perm_open
+                          && m.phase != Phase::Idle && m.phase != Phase::Done;
+        if (!working) return Sub::batch(std::move(keys), std::move(tick));
+
+        auto worker = Sub::stream(
+            "turn/" + std::to_string(m.turn_number) + "/" + std::to_string(m.stream_phase),
+            turn_worker, m.turn_prompt, m.stream_phase);
+        return Sub::batch(std::move(keys), std::move(tick), std::move(worker));
+    }
 };
 
+static_assert(Program<App>);
+
 int main() {
-    maya::run<App>({
+    return run<App>({
         .title = "agent session",
         .fps   = 30,
         .mode  = Mode::Inline,

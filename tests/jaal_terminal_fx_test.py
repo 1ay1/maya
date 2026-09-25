@@ -7,7 +7,7 @@ and that `suspend` hands the tty to a child and folds its exit back in as a
 message (jaal D39): the child's own output appears, then the program's
 "child exited 3" line.
 
-    python3 tests/jaal_terminal_fx_test.py build-jaal/maya_jaal_terminal_fx
+    python3 tests/jaal_terminal_fx_test.py build-app/maya_terminal_fx
 """
 import os, pty, select, signal, struct, fcntl, termios, sys, time
 

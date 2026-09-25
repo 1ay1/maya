@@ -1,6 +1,6 @@
 // space.cpp — NASA-style Mission Control Dashboard
 //
-// Uses maya::run() with fps=15 for continuous rendering.
+// A jaal program: state in Model, a 15 Hz Tick in subscribe(), pure view().
 // An animated spacecraft telemetry display tracking a journey to Mars.
 // Features gauges, sparklines, heatmap, line chart, bar chart, crew
 // status, subsystem health, random events, and physics simulation.

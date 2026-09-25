@@ -23,7 +23,7 @@ maya draws diffs with cursor moves, so the text on the wire is never the text
 on the screen. And it waits for output to go QUIET rather than sleeping a
 fixed time, so it tests behaviour instead of timing.
 
-    python3 tests/jaal_host_pty_test.py build-jaal/maya_jaal_counter
+    python3 tests/jaal_host_pty_test.py build-app/maya_counter
 
 Needs: pip install pyte. Exits non-zero on the first failure.
 """
@@ -44,7 +44,7 @@ except ImportError:
     print("SKIP: needs pyte (pip install pyte)")
     sys.exit(0)
 
-BIN = sys.argv[1] if len(sys.argv) > 1 else "build-jaal/maya_jaal_counter"
+BIN = sys.argv[1] if len(sys.argv) > 1 else "build-app/maya_counter"
 failures = 0
 
 

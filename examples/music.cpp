@@ -1,6 +1,6 @@
 // music.cpp — Terminal music player with animated visualizations
 //
-// Uses maya::run() with fps=15 for continuous rendering.
+// A jaal program: state in Model, a 15 Hz Tick in subscribe(), pure view().
 // A Spotify/Apple Music-inspired terminal music player with animated
 // heatmap album art, sparkline audio visualizer, progress bar, and
 // scrollable playlist. All data is simulated.

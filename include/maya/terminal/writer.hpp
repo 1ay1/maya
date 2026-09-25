@@ -108,6 +108,8 @@ class Writer : MoveOnly {
     /// breaking the next diff's correctness. See the comment in
     /// `Runtime::render` for the drain-before-compose protocol.
     std::string residue_;
+    std::size_t residue_head_ = 0;   // bytes of residue_ already written
+    std::size_t residue_safe_ = 0;   // residue_[0, safe) is known to end on a unit boundary
 
     /// The fd's original `F_GETFL` flags at Writer construction. Set
     /// once in the constructor and restored in the destructor so the
@@ -205,7 +207,7 @@ public:
     /// before calling compose_inline_frame, since a fresh compose
     /// would update prev_cells to reflect bytes that haven't actually
     /// reached the wire yet.
-    [[nodiscard]] bool has_residue() const noexcept { return !residue_.empty(); }
+    [[nodiscard]] bool has_residue() const noexcept { return residue_head_ < residue_.size(); }
 
     /// Discard pending residue without writing. Use ONLY when the
     /// caller has just dropped its cell-cache (e.g. transitioning
@@ -225,7 +227,7 @@ public:
     /// DEC's spec) and costs 8 bytes on a code path that already
     /// committed to a full redraw.
     void discard_residue() noexcept {
-        if (!residue_.empty()) {
+        if (has_residue()) {
             static constexpr std::string_view sync_close =
                 "\x1b[?2026l\x1b[0m";
             (void)platform::io_write(handle_,
@@ -233,6 +235,7 @@ public:
                                      sync_close.size());
         }
         residue_.clear();
+        residue_head_ = residue_safe_ = 0;
     }
 
     /// EMA of ns-per-byte measured across recent `write_all` calls. 0

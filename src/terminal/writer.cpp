@@ -170,6 +170,8 @@ Writer::Writer(Writer&& other) noexcept
     , reserve_hint_(other.reserve_hint_)
     , ns_per_byte_ema_(other.ns_per_byte_ema_)
     , residue_(std::move(other.residue_))
+    , residue_head_(std::exchange(other.residue_head_, 0))
+    , residue_safe_(std::exchange(other.residue_safe_, 0))
     , prior_output_flags_(std::exchange(other.prior_output_flags_, -1))
 {
     other.handle_ = platform::invalid_handle;
@@ -282,42 +284,56 @@ auto Writer::write_raw(std::string_view data) -> Status {
 // part of the previous frame sits in our buffer.
 
 auto Writer::try_drain_residue() -> Status {
-    if (residue_.empty()) return ok();
-    // Cap the physical write at the longest safe-ending prefix of
-    // residue_, so even a 1-byte kernel accept can't leave the wire
-    // mid-CSI. The unsafe tail stays in residue_ as raw bytes and
-    // joins the next safe prefix the next time we drain (or, if
-    // appended bytes complete the in-flight sequence, becomes safe
-    // outright on the next safe_break_len pass).
-    const std::size_t safe = detail::safe_break_len(residue_);
+    if (residue_head_ >= residue_.size()) { residue_.clear(); residue_head_ = residue_safe_ = 0; return ok(); }
+    // Cap the physical write at the longest safe-ending prefix of what's
+    // left, so even a 1-byte kernel accept can't leave the wire mid-CSI.
+    //
+    // The safe end is scanned INCREMENTALLY: `residue_safe_` remembers how
+    // far the bytes are known to end on a unit boundary, so each drain
+    // scans only bytes it hasn't seen. It used to rescan the whole residue
+    // on every drain, and the kernel takes a tty's bytes 1 KB at a time:
+    // a 50 KB frame drained in 50 writes rescanned ~1.3 MB, which put
+    // safe_break_len at the top of a 2.5 MB/s animation's profile.
+    if (residue_safe_ < residue_head_) residue_safe_ = residue_head_;
+    residue_safe_ += detail::safe_break_len(
+        std::string_view{residue_}.substr(residue_safe_));
+    const std::size_t safe = residue_safe_ - residue_head_;
     if (safe == 0) {
-        // The current buffer starts mid-sequence and has no safe
-        // breakpoint yet — nothing to ship without risking a split.
-        // Report WouldBlock so the caller polls again; appended bytes
-        // will eventually complete the sequence.
+        // The rest starts mid-sequence and has no safe breakpoint yet:
+        // nothing to ship without risking a split. Appended bytes will
+        // complete it.
         return err(Error::would_block());
     }
-    std::string_view head{residue_.data(), safe};
+    std::string_view head{residue_.data() + residue_head_, safe};
     auto r = write_some(head);   // already loops on EINTR, stops on EAGAIN
     if (!r) return std::unexpected{r.error()};
-    const std::size_t n = *r;
-    if (n >= residue_.size()) {
+    residue_head_ += *r;
+    if (residue_head_ >= residue_.size()) {
         residue_.clear();
+        residue_head_ = residue_safe_ = 0;
         return ok();
     }
-    if (n > 0) residue_.erase(0, n);
+    // Compact rarely: erasing the consumed prefix on every drain is itself
+    // O(residue) per call. Once more than half is consumed, shift once.
+    if (residue_head_ > residue_.size() / 2) {
+        residue_.erase(0, residue_head_);
+        residue_safe_ -= residue_head_;
+        residue_head_ = 0;
+    }
     return err(Error::would_block());
 }
 
 auto Writer::write_or_buffer(std::string_view data) -> Status {
     // Drain old residue first so the new bytes don't get reordered
     // around bytes from a prior frame that haven't shipped yet.
-    if (!residue_.empty()) {
+    if (!has_residue()) {
+        // Nothing backed up: this is the fresh-write path below.
+    } else {
         auto d = try_drain_residue();
         if (!d && d.error().kind != ErrorKind::WouldBlock) {
             return d;   // hard I/O error — caller handles
         }
-        if (!residue_.empty()) {
+        if (has_residue()) {
             // Wire still backed up. Queue the new bytes behind the
             // residue so order is preserved when the buffer drains.
             residue_.append(data);

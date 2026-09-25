@@ -451,9 +451,18 @@ static Color3 shade(vec3 p, vec3 n, vec3 rd, int mat, int depth) {
 
     Color3 col = cadd(cadd(diffuse, specular), ambient);
 
-    // Reflections for metallic/smooth surfaces
-    if ((metallic > 0.3f || roughness < 0.35f) && depth < 1) {
-        Color3 refl = get_reflection(p, n, rd, depth);
+    // Reflections for metallic/smooth surfaces. The reflected ray depends
+    // only on (p, n, rd), so it's traced ONCE and shared: the ground
+    // (roughness 0.3) qualifies for this block AND the ground block below,
+    // and each used to call get_reflection itself - a second full
+    // raymarch + normal + shade + shadow + AO for the same ray, on every
+    // ground pixel (the floor is most of the screen in every scene).
+    const bool want_refl = (metallic > 0.3f || roughness < 0.35f) && depth < 1;
+    const bool want_ground_refl = (mat == 0 && depth < 1);
+    Color3 refl{};
+    if (want_refl || want_ground_refl) refl = get_reflection(p, n, rd, depth);
+
+    if (want_refl) {
         float refl_strength = f * (1.f - roughness * 0.7f);
         if (metallic > 0.5f) {
             col = cmix(col, cmul(refl, albedo), refl_strength * 0.6f);
@@ -463,8 +472,7 @@ static Color3 shade(vec3 p, vec3 n, vec3 rd, int mat, int depth) {
     }
 
     // Ground reflection (subtle)
-    if (mat == 0 && depth < 1) {
-        Color3 refl = get_reflection(p, n, rd, depth);
+    if (want_ground_refl) {
         float ground_f = fresnel(ndv, 0.02f);
         col = cmix(col, refl, ground_f * 0.35f);
     }

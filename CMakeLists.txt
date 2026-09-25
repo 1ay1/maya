@@ -342,6 +342,35 @@ elseif(DEFINED MAYA_MACOS_CXX_FLAGS)
     target_compile_options(maya PRIVATE ${MAYA_MACOS_CXX_FLAGS})
     target_link_options(maya PRIVATE ${MAYA_MACOS_LINK_FLAGS})
 else()
+    if(MSVC)
+        # These four are not "how maya is built", they are what it takes to
+        # PARSE maya's public headers at all, so consumers need them too:
+        #
+        #   /utf-8            the headers are UTF-8 and contain char32_t box
+        #                     glyphs (U'─' in element/builder.hpp). Without
+        #                     this MSVC reads them as the system codepage and
+        #                     a single glyph becomes a multi-byte character
+        #                     constant — C2015, "too many characters in
+        #                     constant".
+        #   /std:c++latest    maya::app needs C++26; CMake has no cxx_std_26
+        #                     for MSVC yet, so the flag can't come from
+        #                     target_compile_features.
+        #   /Zc:preprocessor  the conforming preprocessor the variadic macros
+        #                     in the DSL assume.
+        #   /Zc:__cplusplus   without it __cplusplus reports 199711L and the
+        #                     headers' own version checks misfire.
+        #
+        # They were PRIVATE, so libmaya.lib built fine while every example
+        # and test including the same headers failed — which is exactly what
+        # the examples (windows-msvc) lane was reporting.
+        target_compile_options(maya INTERFACE
+            /utf-8
+            /std:c++latest
+            /Zc:preprocessor
+            /Zc:__cplusplus
+        )
+    endif()
+
     target_compile_options(maya PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:
             $<$<BOOL:${MAYA_HEAVY_OPT}>:-O3>

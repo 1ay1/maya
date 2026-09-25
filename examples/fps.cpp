@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <random>
+#include <cstdint>
 #include <thread>
 #include <vector>
 
@@ -35,9 +36,16 @@ static Col3 operator*(Col3 a, float s) { return {a.r*s, a.g*s, a.b*s}; }
 static Col3 col_lerp(Col3 a, Col3 b, float t) { return {lerp(a.r,b.r,t), lerp(a.g,b.g,t), lerp(a.b,b.b,t)}; }
 static Col3 col_clamp(Col3 c) { return {clampf(c.r,0,1), clampf(c.g,0,1), clampf(c.b,0,1)}; }
 
+// Lattice hash -> [0, 1): an integer mix, not fract(sin(dot) * 43758).
+// sinf of an argument in the thousands pays a full range reduction on every
+// texel, and it was the top libm frame in this demo's profile.
 static float hash(float x, float y) {
-    float h = std::sin(x * 127.1f + y * 311.7f) * 43758.5453f;
-    return h - std::floor(h);
+    auto h = static_cast<std::uint32_t>(static_cast<std::int32_t>(std::floor(x))) * 0x8da6b343u
+           ^ static_cast<std::uint32_t>(static_cast<std::int32_t>(std::floor(y))) * 0xd8163841u;
+    h ^= h >> 15; h *= 0x2c1b3c6du;
+    h ^= h >> 12; h *= 0x297a2d39u;
+    h ^= h >> 15;
+    return static_cast<float>(h >> 8) * (1.f / 16777216.f);
 }
 
 static float value_noise(float x, float y) {
@@ -1126,21 +1134,23 @@ static void paint(Canvas& canvas, int w, int h) {
     int pixel_h = canvas_h * 2;
     std::fill(g_pixels.begin(), g_pixels.end(), Pixel{0, 0, 0});
 
-    // Multi-threaded column rendering
+    // Multi-threaded column rendering. Columns INTERLEAVED (thread t takes
+    // t, t+n, ...) and this thread takes a share: a contiguous band of
+    // near-wall columns costs far more than one looking down a corridor, so
+    // bands left most threads idle (__ulock_wait) until the slowest finished.
     static const int n_threads = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
-    auto render_cols = [&](int x0, int x1) { for (int x = x0; x < x1; ++x) render_column(x, pixel_h); };
+    auto render_cols = [&](int first, int stride) {
+        for (int x = first; x < g_pixel_w; x += stride) render_column(x, pixel_h);
+    };
 
     if (n_threads <= 1 || g_pixel_w < 16) {
-        render_cols(0, g_pixel_w);
+        render_cols(0, 1);
     } else {
         std::vector<std::jthread> threads;
-        threads.reserve(static_cast<size_t>(n_threads));
-        int chunk = (g_pixel_w + n_threads - 1) / n_threads;
-        for (int t = 0; t < n_threads; ++t) {
-            int lo = t * chunk, hi = std::min(lo + chunk, g_pixel_w);
-            if (lo >= hi) break;
-            threads.emplace_back([=] { render_cols(lo, hi); });
-        }
+        threads.reserve(static_cast<size_t>(n_threads - 1));
+        for (int t = 1; t < n_threads; ++t)
+            threads.emplace_back([=] { render_cols(t, n_threads); });
+        render_cols(0, n_threads);
     }
 
     // Sprites (farthest first)

@@ -16,6 +16,12 @@
 
 BUILD=${1:-build-app}
 HERE=$(dirname "$0")
+# The harness reads the screen through pyte: use a python3 that has it
+# (a non-login shell may find the system one first).
+PY=python3
+for cand in python3 /opt/homebrew/opt/python@3.13/libexec/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import pyte" 2>/dev/null; then PY=$cand; break; fi
+done
 pass=0
 fail=0
 failed=""
@@ -28,7 +34,7 @@ run() {
         fail=$((fail + 1)); failed="$failed $name"
         return
     fi
-    if out=$(python3 "$HERE/jaal_smoke.py" "$bin" "$@" 2>&1); then
+    if out=$($PY "$HERE/jaal_smoke.py" "$bin" "$@" 2>&1); then
         echo "  ok       $name"
         pass=$((pass + 1))
     else
@@ -73,7 +79,7 @@ run terminal_fx            --keys="tcori"
 
 # Canvas-style demos (pixels / glyphs). Ray tracers render every frame by
 # design, so their idle budget is the cost of a frame, not zero.
-run breakout               --keys="ad"
+run breakout               --keys="hl"
 run snake                  --keys="dw"
 run life                   --keys=" r"
 run matrix                 --keys="2+"
@@ -103,17 +109,26 @@ run scroll_2d              --keys="jj"
 run scroll_clip            --keys="jj"
 run scroll_slice           --keys="jj"
 run scroll_styles          --keys="jj"
-run inline_progress        --no-input-change
-run navcheck               --keys="jj"
 
 # Deeper than the smoke checks: each terminal effect's bytes on the wire,
 # and suspend's answer folded back in (jaal D39).
-if python3 "$(dirname "$0")/jaal_terminal_fx_test.py" "$BUILD/maya_terminal_fx" >/dev/null; then
+if $PY "$HERE/jaal_terminal_fx_test.py" "$BUILD/maya_terminal_fx" >/dev/null; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1)); failed="$failed terminal_fx_test"
     echo "terminal_fx_test: FAILED (run it directly for details)"
 fi
+
+# Runs to completion by itself (a 3 s inline progress bar): it must exit 0
+# and leave the finished card in the scrollback.
+if $PY "$HERE/inline_progress_test.py" "$BUILD/maya_inline_progress" >/dev/null 2>&1; then
+    echo "  ok       inline_progress"; pass=$((pass + 1))
+else echo "  FAIL     inline_progress"; fail=$((fail + 1)); failed="$failed inline_progress"; fi
+
+# The navigation-frame contract: every Down in a key-repeat burst is drawn.
+if $PY "$HERE/jaal_nav_frames_test.py" "$BUILD/maya_navcheck" >/dev/null 2>&1; then
+    echo "  ok       navcheck"; pass=$((pass + 1))
+else echo "  FAIL     navcheck"; fail=$((fail + 1)); failed="$failed navcheck"; fi
 
 # Print-only examples (no runtime): they must run to completion.
 for p in stat_sheet_demo editor_widget_check; do

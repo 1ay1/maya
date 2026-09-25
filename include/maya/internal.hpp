@@ -3,7 +3,7 @@
 //
 // Use this in code that needs direct access to Canvas, StylePool,
 // diff engine, terminal I/O, or the layout engine. This is for
-// maya's own examples and advanced use cases like canvas_run().
+// custom hosts, tests and benchmarks (the renderer, canvas, diff, terminal I/O).
 //
 // Downstream projects should use <maya/maya.hpp> instead.
 

@@ -140,11 +140,6 @@ auto Runtime::create(Options cfg) -> Result<Runtime> {
         inline_term = std::move(inl);
     }
 
-    // Create event source — multiplexes terminal input and resize signals.
-    // The wake fd/handle is registered later via rt.set_wake_fd() /
-    // set_wake_handle() once the BackgroundQueue exists in run<P>().
-    auto sig_handle = resize_sig.native_handle();
-    platform::NativeEventSource event_source(input_h, sig_handle);
 
     Runtime rt;
 
@@ -153,7 +148,6 @@ auto Runtime::create(Options cfg) -> Result<Runtime> {
     rt.output_handle_   = output_h;
     rt.input_handle_    = input_h;
     rt.resize_signal_   = std::move(resize_sig);
-    rt.event_source_    = std::move(event_source);
     rt.writer_          = std::make_unique<Writer>(output_h);
     rt.theme_           = cfg.theme;
     // NOTE: the theme slot is NOT published here. This `rt` is a local that
@@ -458,22 +452,6 @@ auto Runtime::create(Options cfg) -> Result<Runtime> {
     }
 
     return ok(std::move(rt));
-}
-
-// ============================================================================
-// Runtime::poll — wait for events on the multiplexed event source
-// ============================================================================
-
-auto Runtime::poll(std::chrono::milliseconds timeout) -> Result<PollResult> {
-    const auto t0 = std::chrono::steady_clock::now();
-    MAYA_TRY_DECL(auto ready, event_source_->wait(timeout));
-    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - t0).count();
-    io_log("poll  timeout=%4lld waited=%4lld  input=%d resize=%d wake=%d",
-           static_cast<long long>(timeout.count()),
-           static_cast<long long>(waited),
-           ready.input ? 1 : 0, ready.resize ? 1 : 0, ready.wake ? 1 : 0);
-    return ok(PollResult{.resize = ready.resize, .input = ready.input, .wake = ready.wake, .hangup = ready.hangup});
 }
 
 // ============================================================================
@@ -1854,7 +1832,7 @@ auto Runtime::render_grid_frame(const Element& root) -> Status {
 
     // ── EXPLICIT COMMITS (host-side scrollback freeze) ──
     // The app's frozen-block ledger commits N front rows via
-    // Cmd::commit_scrollback -> commit_inline_prefix -> grid_pending_commit_.
+    // the commit_scrollback effect -> commit_inline_prefix -> grid_pending_commit_.
     // Those rows' TEXT is already present and correct in the host buffer (we
     // emitted it on earlier frames), so a commit needs NO glyphs on the wire:
     // a header-only Commit(n) tells the host "freeze your top n live lines
@@ -2187,7 +2165,7 @@ void Runtime::emit_host_sequence(std::string_view sequence) {
     // Same transport + buffering discipline as set_title/write_clipboard: the
     // bytes ride write_or_buffer so a congested tty stashes rather than drops
     // them, and the frame diff never accounts for or re-emits them. The
-    // caller guarantees cursor-neutrality (Cmd::EmitHostSequence contract), so
+    // caller guarantees cursor-neutrality (the emit_host_sequence effect's contract), so
     // no coherence-state change is needed here.
     (void)writer_->write_or_buffer(sequence);
 }
@@ -2405,7 +2383,6 @@ Runtime::Runtime(Runtime&& o) noexcept
     , output_handle_(std::exchange(o.output_handle_, platform::invalid_handle))
     , input_handle_(std::exchange(o.input_handle_, platform::invalid_handle))
     , resize_signal_(std::move(o.resize_signal_))
-    , event_source_(std::move(o.event_source_))
     , writer_(std::move(o.writer_))
     , pool_(std::move(o.pool_))
     , canvas_(std::move(o.canvas_))
@@ -2442,7 +2419,6 @@ Runtime& Runtime::operator=(Runtime&& o) noexcept {
         output_handle_     = std::exchange(o.output_handle_, platform::invalid_handle);
         input_handle_      = std::exchange(o.input_handle_, platform::invalid_handle);
         resize_signal_     = std::move(o.resize_signal_);
-        event_source_      = std::move(o.event_source_);
         writer_            = std::move(o.writer_);
         pool_              = std::move(o.pool_);
         canvas_            = std::move(o.canvas_);

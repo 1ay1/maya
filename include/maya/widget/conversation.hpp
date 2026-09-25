@@ -76,7 +76,7 @@ public:
         // records every block's laid-out height back into the ledger,
         // so the host's front-trims mint their scrollback commit
         // counts from maya's OWN measurements (ScrollbackLedger::
-        // harvest → Cmd::commit_scrollback(ScrollbackDebt)). A host
+        // harvest → the commit_scrollback effect). A host
         // that trims a sealed prefix MUST use this path; the bare
         // `frozen` pointer remains for hosts that never trim.
         const ScrollbackLedger*                  ledger           = nullptr;

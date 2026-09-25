@@ -1358,7 +1358,7 @@ compose_inline_frame_impl(const Canvas& canvas,
             //     is destructive to the host's prior output).
             //
             // Callers wiring a user-facing "redraw" hotkey to this
-            // path (see agentty's RedrawScreen → Cmd::force_redraw
+            // path (see agentty's RedrawScreen → the force_redraw effect
             // in update/meta.cpp) should mirror this scope in their
             // user-facing docs so users don't expect Ctrl-L to fix
             // every kind of terminal corruption.

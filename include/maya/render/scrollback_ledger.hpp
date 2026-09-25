@@ -37,7 +37,7 @@
 //   2. the commit count is a typed token, not an int. drop_front()
 //      accrues the recorded heights of the dropped blocks as internal
 //      debt; harvest() mints a ScrollbackDebt whose constructor is
-//      private to the ledger. Cmd::commit_scrollback(ScrollbackDebt) is
+//      private to the ledger. the commit_scrollback effect (CommitScrollback{ScrollbackDebt}) is
 //      the only consumer. The host cannot fabricate, scale, or "adjust"
 //      a count — it can only transport the token. (The legacy int
 //      overload remains for non-ledger hosts; ledger hosts must use the
@@ -102,7 +102,7 @@ class ScrollbackLedger;
 // Constructible only by ScrollbackLedger::harvest(). Carries the number
 // of paint-recorded rows the host's tree shed from the front of the
 // sealed prefix since the last harvest. Consumed by
-// Cmd::commit_scrollback(ScrollbackDebt).
+// the commit_scrollback effect (CommitScrollback{ScrollbackDebt}).
 
 class [[nodiscard(
     "ScrollbackDebt carries rows the shadow must be advanced by; "
@@ -271,7 +271,7 @@ public:
 
     /// Mint the accumulated debt as a typed token and reset it. The
     /// caller forwards the token verbatim into
-    /// Cmd::commit_scrollback(ScrollbackDebt). Debt is monotonic and
+    /// the commit_scrollback effect (CommitScrollback{ScrollbackDebt}). Debt is monotonic and
     /// never lost: multiple drops in one update cycle accumulate into
     /// one harvest; an unharvested cycle's debt rides into the next.
     [[nodiscard]] ScrollbackDebt harvest() noexcept {

@@ -21,18 +21,6 @@
 namespace maya::platform {
 
 // ============================================================================
-// ReadyFlags — what became ready after a wait
-// ============================================================================
-
-struct ReadyFlags {
-    bool input     : 1 = false;   // stdin has data
-    bool resize    : 1 = false;   // terminal was resized
-    bool writeable : 1 = false;   // stdout can accept more data
-    bool wake      : 1 = false;   // background task posted a message
-    bool hangup    : 1 = false;   // stdin reached EOF (controlling terminal closed)
-};
-
-// ============================================================================
 // TerminalBackend — raw terminal I/O
 // ============================================================================
 // Owns the terminal state. Provides raw mode toggling, byte-level I/O,
@@ -59,16 +47,6 @@ concept TerminalBackend = requires(T& t, const T& ct, std::string_view sv) {
 } && std::movable<T> && (!std::copyable<T>);
 
 // ============================================================================
-// EventMultiplexer — waits for I/O + signal readiness
-// ============================================================================
-// POSIX: poll(). Win32: WaitForMultipleObjects().
-
-template <typename T>
-concept EventMultiplexer = requires(T& t, std::chrono::milliseconds ms, bool want_write) {
-    { t.wait(ms, want_write) } -> std::same_as<Result<ReadyFlags>>;
-};
-
-// ============================================================================
 // ResizeSource — detects terminal resize events
 // ============================================================================
 // POSIX: sigaction(SIGWINCH) + self-pipe.
@@ -80,33 +58,6 @@ concept ResizeSource = requires(T& t) {
     { t.pending() } -> std::same_as<bool>;
     { t.drain() };
     { t.native_handle() } -> std::same_as<NativeHandle>;
-} && std::movable<T> && (!std::copyable<T>);
-
-// ============================================================================
-// WakeFdBackend — many-writer / one-reader inter-thread wake
-// ============================================================================
-// A native handle (eventfd / pipe / NT auto-reset event) that any number
-// of threads can `signal()` and the UI thread drains by reading the
-// `native_handle()` to readiness through the EventMultiplexer.
-//
-// `valid()` lets callers detect construction failure without exceptions —
-// if it returns false, signal()/drain() must be no-ops and
-// native_handle() returns the invalid sentinel so EventMultiplexer
-// implementations skip registration.
-//
-// Backends:
-//   POSIX (Linux): eventfd, falls back to self-pipe if eventfd is blocked
-//                  by seccomp / fd table pressure.
-//   POSIX (BSD/macOS): self-pipe with O_NONBLOCK + FD_CLOEXEC.
-//   Win32: CreateEventW (manual-reset).
-
-template <typename T>
-concept WakeFdBackend = requires(T& t, const T& ct) {
-    { T::create() } -> std::same_as<Result<T>>;
-    { ct.native_handle() } -> std::same_as<NativeHandle>;
-    { ct.valid() } -> std::same_as<bool>;
-    { t.signal() } noexcept;
-    { t.drain() } noexcept;
 } && std::movable<T> && (!std::copyable<T>);
 
 } // namespace maya::platform

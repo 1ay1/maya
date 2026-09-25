@@ -376,7 +376,7 @@ public:
     /// Raw -> Inline: enables the per-feature opt-ins that inline-mode
     /// applications (Claude-Code-style chat UIs) need WITHOUT entering the
     /// alt screen — scrollback is preserved.  The destructor disables each
-    /// feature in reverse order; an exception escaping `run<P>()` therefore
+    /// feature in reverse order; an exception escaping `maya::run()` therefore
     /// restores the user's terminal exactly as well as a graceful exit.
     /// This is the linear-RAII counterpart to the loose `(void)write(...)`
     /// calls that used to live in `Runtime::create`.

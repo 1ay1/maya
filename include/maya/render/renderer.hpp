@@ -114,7 +114,7 @@ void render_tree(
 
 /// Render an element tree into a sub-region of a canvas without clearing it.
 /// This lets you mix component-based Elements with direct canvas painting
-/// in canvas_run mode — build your Element, then stamp it at (x, y, w, h).
+/// inside a paint() element — build your Element, then stamp it at (x, y, w, h).
 void render_tree_at(
     const Element& root,
     Canvas& canvas,

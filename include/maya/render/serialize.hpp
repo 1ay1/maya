@@ -602,7 +602,7 @@ struct FinalizeResult {
 /// the witness-chain entrypoint declared in `frame_bytes.hpp`. There
 /// is no out-parameter / mutating-state form — the Witness Chain is
 /// the only path. Callers without a Witness Chain state should drive
-/// rendering through `maya::print` / `maya::live` / `maya::Runtime`,
+/// rendering through `maya::print` / `maya::Screen`,
 /// which manage the chain internally.
 
 // ============================================================================

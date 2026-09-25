@@ -5,6 +5,9 @@
 #include "check.hpp"
 #include "agtest.hpp"
 #include <print>
+#if !defined(_WIN32)
+#include <fcntl.h>    // ::open for the writer test
+#endif
 #include <string>
 #include <vector>
 

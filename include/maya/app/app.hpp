@@ -372,7 +372,7 @@ inline void set_emit_trace(detail::EmitTraceFn fn) noexcept {
 
 namespace detail {
 // Optional Program::visual_hash detector. When a Program type defines
-// `static std::uint64_t visual_hash(const Model&)`, the run<P> loop
+// `static std::uint64_t visual_hash(const Model&)`, the host
 // hashes the model just before calling view() and skips the view()
 // + render() pair when the hash is unchanged since the last render.
 // Cuts the wasted work for Tick-driven wakeups whose deltas don't
@@ -388,7 +388,7 @@ struct HasVisualHash<P, std::void_t<decltype(
 
 // Optional Program::needs_warmup detector. When a Program type defines
 // `static bool needs_warmup(const Model&)` AND it returns true for the
-// current model, the run<P> loop performs an off-wire warmup_render of
+// current model, the host performs an off-wire warmup_render of
 // the same view BEFORE the user-visible render. The warmup populates
 // maya's hash-keyed component cache; the user-visible render then
 // takes the cell-blit fast path. Burns one extra render() worth of
@@ -412,7 +412,8 @@ struct HasNeedsWarmup<P, std::void_t<decltype(
 // detail::Runtime — terminal resource owner (not public API)
 // ============================================================================
 // Owns the terminal, event source, writer, canvases, and render state.
-// Exposes granular methods that run<P>() orchestrates into an event loop.
+// Exposes granular methods; maya::Screen is its public face and the jaal
+// host (<maya/app.hpp>) drives it one non-blocking step at a time.
 
 namespace detail {
 
@@ -621,10 +622,6 @@ public:
         return sync_supported_;
     }
 
-    // Poll the event source for ready flags.
-    struct PollResult { bool resize = false; bool input = false; bool wake = false; bool hangup = false; };
-    auto poll(std::chrono::milliseconds timeout) -> Result<PollResult>;
-
     // Handle a resize signal: drain, update size, mark needs_clear.
     void handle_resize();
 
@@ -651,8 +648,8 @@ public:
                                std::make_move_iterator(evs.end()));
     }
 
-    // Are there events waiting from a batch that ended early? The run loop
-    // must not block in poll() while input it already holds is undelivered.
+    // Are there events waiting from a batch that ended early? The host
+    // must not wait for input while it already holds undelivered events.
     [[nodiscard]] bool has_deferred_events() const noexcept {
         return !startup_events_.empty();
     }
@@ -725,7 +722,7 @@ public:
     void query_clipboard();
 
     // Emit an arbitrary, already-formed control sequence to the host
-    // terminal, out-of-band with the frame renderer (see Cmd::EmitHostSequence
+    // terminal, out-of-band with the frame renderer (see the emit_host_sequence effect
     // for the cursor-neutrality contract). Rides the SAME writer path as
     // set_title / write_clipboard — write_or_buffer, so a congested tty won't
     // drop it and the frame diff never re-emits it. The caller owns
@@ -779,7 +776,7 @@ public:
     // host policy bit. An earlier design drove the hold from this setter
     // via a Cmd, but the Cmd reliably arrived AFTER the dip window had
     // passed (and after content overflowed the viewport), so it never
-    // engaged. Kept as a no-op so the Cmd::SetHeightHold plumbing and any
+    // engaged. Kept as a no-op so the old SetHeightHold plumbing and any
     // host call site remain valid. No effect.
     void set_height_hold(bool /*on*/) noexcept {}
     [[nodiscard]] int inline_min_content() const noexcept {
@@ -1017,7 +1014,7 @@ public:
     // head of an arrow / Home / End / function-key CSI whose tail hasn't
     // arrived yet. The parser can only RESOLVE the ambiguity via
     // flush_timeout() once escape_timeout_ (50ms) elapses, and the main
-    // loop calls flush_timeouts() once per iteration AFTER poll() returns.
+    // host calls flush_timeouts() after each wait for input returns.
     //
     // Without surfacing this, an idle (fps=0) loop with no timers/spinner
     // sleeps the full 100ms idle poll while the parser sits on the ESC,
@@ -1058,7 +1055,7 @@ private:
     // leaves the alt screen + restores keyboard/mouse state, and
     // ~Terminal<Inline> reverses the per-feature opt-ins (KKP,
     // modifyOtherKeys, bracketed paste, cursor) before disabling raw mode.
-    // An exception escaping run<P>() therefore restores the terminal as
+    // An exception escaping maya::run() therefore restores the terminal as
     // cleanly as a graceful exit — the type system enforces it.
     std::optional<Terminal<AltScreen>>  alt_terminal_;
     std::optional<Terminal<InlineMode>> inline_terminal_;
@@ -1067,7 +1064,6 @@ private:
 
     // -- Platform signal handling ---------------------------------------------
     std::optional<platform::NativeResizeSignal> resize_signal_;
-    std::optional<platform::NativeEventSource>  event_source_;
 
     // -- Rendering pipeline ---------------------------------------------------
     // canvas_ is the back buffer that every render paints into.  The
@@ -1286,22 +1282,10 @@ private:
     // sharing the terminal).
     bool          kitty_kbd_enabled_  = false;
 
-    // -- Wake signaling (background task → UI thread) -------------------------
-    // The fd/handle is owned by BackgroundQueue: it must live as long as any
-    // detached IsolatedTask thread that may try to signal it, even past the
-    // runtime's lifetime. The runtime borrows it via this setter and
-    // multiplexes it through event_source_'s wait(). Handle-vs-fd is hidden
-    // by platform::NativeHandle (int on POSIX, HANDLE on Win32).
 public:
-    void set_wake_handle(platform::NativeHandle h) noexcept {
-        if (event_source_) event_source_->set_wake_handle(h);
-    }
-
-    /// The terminal's input handle, for a loop that owns its own reactor.
-    /// maya's own run<P>() multiplexes this through event_source_; the jaal
-    /// host (maya/jaal/host.hpp) watches it with jaal's reactor instead, and
-    /// then calls read_events() exactly as run<P>() does. Borrowed: the
-    /// Runtime keeps ownership, and the handle is valid while it lives.
+    /// The terminal's input handle. The host (<maya/app.hpp>) watches it with
+    /// jaal's reactor and calls read_events() when it's readable. Borrowed:
+    /// the Runtime keeps ownership; the handle is valid while it lives.
     [[nodiscard]] platform::NativeHandle input_handle() const noexcept { return input_handle_; }
 
     /// The tty's output handle: a runtime watches it for WRITABILITY

@@ -233,7 +233,7 @@ struct ComponentElement {
     ///
     /// This is what a canvas animation (a fire, a fluid, a ray tracer) IS
     /// in the view layer: a leaf that owns its cells. It used to need its
-    /// own event loop (canvas_run) because there was no element for it;
+    /// own event loop because there was no element for it;
     /// as an element it's drawn by whatever runtime draws the view, beside
     /// ordinary widgets (a status bar, a border), with the same diff.
     std::function<void(Canvas& canvas, int x, int y, int width, int height)> draw = nullptr;

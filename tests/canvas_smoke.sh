@@ -7,6 +7,7 @@
 # spin idle, quits on q with exit 0, restores the terminal.
 set -u
 BUILD=${1:-build-jaal}
+ONLY=${2:-}              # optional: space-separated demo names to run
 HERE=$(cd "$(dirname "$0")" && pwd)
 pass=0; fail=0; failed=""
 
@@ -14,6 +15,7 @@ pass=0; fail=0; failed=""
 # ("-" = the demo doesn't animate without the mouse: skip that check)
 while read -r name keys anim; do
     [ -z "$name" ] && continue
+    if [ -n "$ONLY" ]; then case " $ONLY " in *" $name "*) ;; *) continue ;; esac; fi
     for variant in "$name" "jaal_$name"; do
         bin="$BUILD/maya_$variant"
         if [ ! -x "$bin" ]; then echo "  MISSING  $variant"; fail=$((fail+1)); failed="$failed $variant"; continue; fi
@@ -22,6 +24,9 @@ while read -r name keys anim; do
         # A ray tracer renders every frame by design: a real cost, not a spin
         # (a spin is a whole core). Its idle bar is set above what it costs.
         [ "$name" = raymarch ] || [ "$name" = space3d ] && set -- "$@" --idle-cpu=0.9
+        # snake steps one cell every few frames: 3 screens in 1.2 s is it
+        # moving; frozen is 1.
+        [ "$name" = snake ] && set -- "$@" --min-frames=2
         if out=$(python3 "$HERE/jaal_smoke.py" "$bin" "$@" 2>&1); then
             echo "  ok       $variant"; pass=$((pass+1))
         else

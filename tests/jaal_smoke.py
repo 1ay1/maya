@@ -48,6 +48,10 @@ ap.add_argument("--keys", default="+-jk ",
 ap.add_argument("--quit", default="q", help="the program's quit key")
 ap.add_argument("--no-input-change", action="store_true",
                 help="the program doesn't react to keys (display-only)")
+ap.add_argument("--min-frames", type=int, default=8,
+                help="distinct screens required in 1.2 s for --animates (default 8). "
+                     "A slow mover (snake steps every few frames) animates at fewer; "
+                     "a frozen one shows 1")
 ap.add_argument("--idle-cpu", type=float, default=0.10,
                 help="max share of a core while idle (default 0.10). An animation that "
                      "renders every frame by design (a ray tracer) costs more than that "
@@ -156,7 +160,7 @@ if args.animates:
     while time.time() < end:
         settle(0.02, 0.04)
         seen.add(hashlib.md5(look().encode()).hexdigest())
-    check(len(seen) >= 8,
+    check(len(seen) >= args.min_frames,
           f"animates with no input ({len(seen)} distinct frames in 1.2s after {args.animates!r})")
 
 # 3. resize

@@ -111,7 +111,34 @@ public:
     [[nodiscard]] Result<std::vector<Event>> read() {
         auto evs = rt_->read_events();
         if (const int acks = rt_->take_acks(); acks > 0) on_acks(acks);
-        return evs;
+        if (!evs) return evs;
+        // Input the DEVICE owns, done here so every runtime gets it:
+        //
+        //  * inline mouse rows: the terminal reports screen rows, a program
+        //    draws in frame rows. Translate, and drop clicks outside the
+        //    frame (they're on the user's scrollback, not on us).
+        //  * scroll views painted last frame take the wheel/drag before the
+        //    program sees the event (ScrollState::auto_dispatch), which is
+        //    what makes a scrollbar work with no code in update().
+        //
+        // maya's callback loop did both; the jaal host did neither, so a
+        // scroll view in a jaal program ignored the wheel.
+        std::vector<Event> out;
+        out.reserve(evs->size());
+        for (auto& ev : *evs) {
+            if (const int dy = rt_->inline_mouse_dy(); dy > 0) {
+                if (auto* me = std::get_if<MouseEvent>(&ev)) {
+                    const int fr = me->y.value - dy;
+                    const int fh = rt_->inline_frame_rows();
+                    if (fh > 0 && (fr < 1 || fr > fh)) continue;
+                    me->y = Rows{fr};
+                }
+            }
+            for (auto* s : detail::live_scroll_states())
+                if (s && s->auto_dispatch) (void)s->handle_event(ev);
+            out.push_back(std::move(ev));
+        }
+        return out;
     }
 
     /// Call after SIGWINCH: re-reads the size and invalidates the frame.
@@ -128,6 +155,12 @@ public:
     /// they are BUILT, so a tree built before this call has already made
     /// its requests; to keep them, build through present(build) instead.
     Presented present(const Element& root) {
+        // maya::set_mouse() from a handler: applied here, before the frame,
+        // so every runtime honours it without reading the flag itself.
+        if (detail::mouse_request >= 0) {
+            rt_->apply_mouse(detail::mouse_request != 0);
+            detail::mouse_request = -1;
+        }
         Element framed = detail::apply_theme_canvas(root, rt_->theme(), rt_->size().width.value);
         (void)rt_->render(framed);
         send_probe();

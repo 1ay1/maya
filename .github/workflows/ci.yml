@@ -136,7 +136,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux-clang19
+          - name: linux-clang22
             os: ubuntu-latest
           - name: macos
             os: macos-14
@@ -161,7 +161,14 @@ jobs:
           echo "CXX=clang++-22" >> "$GITHUB_ENV"
       - name: Install toolchain (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja && pip3 install --break-system-packages pyte
+        # AppleClang on macos-14 has no C++26, so maya::app's configure gate
+        # (MAYA_BUILD_APP, which vendors jaal) fails before a single example
+        # compiles. Use the same gcc@16 the build+test macOS leg uses.
+        run: |
+          brew install gcc@16 ninja
+          pip3 install --break-system-packages pyte
+          echo "CC=gcc-16"  >> "$GITHUB_ENV"
+          echo "CXX=g++-16" >> "$GITHUB_ENV"
       - name: Install Ninja (Windows)
         if: runner.os == 'Windows'
         uses: seanmiddleditch/gha-setup-ninja@v6

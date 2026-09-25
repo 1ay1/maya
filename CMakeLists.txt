@@ -482,6 +482,16 @@ option(MAYA_FAST_EXAMPLES "Compile examples at -O1 instead of -O3." ON)
 option(MAYA_EXAMPLES_ALL  "Build every example as part of the default target." OFF)
 if(MAYA_BUILD_EXAMPLES AND MAYA_BUILD_APP)
     file(GLOB MAYA_EXAMPLE_SOURCES CONFIGURE_DEPENDS examples/*.cpp)
+    # A few examples demonstrate things that only exist on POSIX — running a
+    # child on the real tty (sys/wait.h, std::system) and isatty(). They are
+    # about the host OS, not about maya, so there is nothing to port: skip
+    # them on MSVC instead of letting the glob hand the compiler a
+    # <sys/wait.h> it will never find (C1083).
+    if(MSVC)
+        foreach(posix_only terminal_fx markup)
+            list(FILTER MAYA_EXAMPLE_SOURCES EXCLUDE REGEX "/${posix_only}\\.cpp$")
+        endforeach()
+    endif()
     add_custom_target(maya_examples COMMENT "every example program")
     foreach(src ${MAYA_EXAMPLE_SOURCES})
         get_filename_component(name ${src} NAME_WE)

@@ -99,6 +99,12 @@ fi
 #    handler and re-raises rather than keeping the signal.
 sigwinch=""
 for f in $(grep -rl 'SIGWINCH' src/ include/ --include='*.cpp' --include='*.hpp' 2>/dev/null); do
+    # Normalise the path before comparing. BSD grep (macOS) echoes the root
+    # back verbatim, so `grep -r include/` yields `include//maya/...` with a
+    # doubled slash while GNU grep yields `include/maya/...`. An exact-string
+    # exclusion then silently misses on macOS only, and the emergency
+    # tty-restore below reads as a re-installed SIGWINCH handler.
+    f=$(printf '%s\n' "$f" | sed 's://*:/:g')
     [ "$f" = "include/maya/terminal/terminal.hpp" ] && continue
     # Code (not comments) that INSTALLS a handler for it. `::sigaction(` /
     # `std::signal(` — not `on_signal(`, which is how the host RECEIVES
